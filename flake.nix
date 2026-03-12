@@ -21,61 +21,81 @@
         };
         python = pkgs.python312;
         pythonPkgs = python.pkgs;
+
+        # Shared build function — backends list is the only difference
+        mkCoreCyclerLx =
+          {
+            backends ? [
+              pkgs.stress-ng
+            ],
+            pnameSuffix ? "",
+          }:
+          pythonPkgs.buildPythonApplication {
+            pname = "corecyclerlx${pnameSuffix}";
+            version = "0.2.0";
+            pyproject = true;
+
+            src = ./.;
+
+            build-system = [
+              pythonPkgs.setuptools
+              pythonPkgs.setuptools-scm
+            ];
+
+            dependencies = [
+              pythonPkgs.pyside6
+            ];
+
+            nativeCheckInputs = [ pythonPkgs.pytest ];
+
+            # Qt6 runtime needs
+            nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];
+            buildInputs = [ pkgs.qt6.qtbase ];
+
+            dontWrapQtApps = true;
+            preFixup = ''
+              makeWrapperArgs+=("''${qtWrapperArgs[@]}")
+            '';
+
+            # Install icon, desktop file, and asset SVGs
+            postInstall = ''
+              install -Dm644 assets/icon.svg $out/share/icons/hicolor/scalable/apps/corecyclerlx.svg
+              install -Dm644 assets/corecyclerlx.desktop $out/share/applications/corecyclerlx.desktop
+              install -d $out/share/corecyclerlx/assets
+              install -Dm644 assets/*.svg $out/share/corecyclerlx/assets/
+            '';
+
+            # Make stress test backends available on PATH at runtime
+            postFixup = ''
+              wrapProgram $out/bin/corecyclerlx \
+                --prefix PATH : ${
+                  pkgs.lib.makeBinPath (
+                    backends
+                    ++ [
+                      pkgs.util-linux # for taskset
+                    ]
+                  )
+                }
+            '';
+
+            meta = {
+              description = "Per-core CPU stability tester and PBO Curve Optimizer tuner for AMD Ryzen";
+              license = pkgs.lib.licenses.gpl3Plus;
+              mainProgram = "corecyclerlx";
+              platforms = pkgs.lib.platforms.linux;
+            };
+          };
       in
       {
-        packages.default = pythonPkgs.buildPythonApplication {
-          pname = "corecyclerlx";
-          version = "0.2.0";
-          pyproject = true;
+        # FOSS-only: stress-ng only (no unfree software)
+        packages.default = mkCoreCyclerLx { };
 
-          src = ./.;
-
-          build-system = [
-            pythonPkgs.setuptools
-            pythonPkgs.setuptools-scm
+        # Full: includes mprime (unfree)
+        packages.full = mkCoreCyclerLx {
+          backends = [
+            pkgs.mprime
+            pkgs.stress-ng
           ];
-
-          dependencies = [
-            pythonPkgs.pyside6
-          ];
-
-          nativeCheckInputs = [ pythonPkgs.pytest ];
-
-          # Qt6 runtime needs
-          nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];
-          buildInputs = [ pkgs.qt6.qtbase ];
-
-          dontWrapQtApps = true;
-          preFixup = ''
-            makeWrapperArgs+=("''${qtWrapperArgs[@]}")
-          '';
-
-          # Install icon, desktop file, and asset SVGs
-          postInstall = ''
-            install -Dm644 assets/icon.svg $out/share/icons/hicolor/scalable/apps/corecyclerlx.svg
-            install -Dm644 assets/corecyclerlx.desktop $out/share/applications/corecyclerlx.desktop
-            install -d $out/share/corecyclerlx/assets
-            install -Dm644 assets/*.svg $out/share/corecyclerlx/assets/
-          '';
-
-          # Make stress test backends available on PATH at runtime
-          postFixup = ''
-            wrapProgram $out/bin/corecyclerlx \
-              --prefix PATH : ${
-                pkgs.lib.makeBinPath [
-                  pkgs.mprime
-                  pkgs.stress-ng
-                  pkgs.util-linux # for taskset
-                ]
-              }
-          '';
-
-          meta = {
-            description = "Per-core CPU stability tester and PBO Curve Optimizer tuner for AMD Ryzen";
-            license = pkgs.lib.licenses.gpl3Plus;
-            mainProgram = "corecyclerlx";
-            platforms = pkgs.lib.platforms.linux;
-          };
         };
 
         devShells.default = pkgs.mkShell {
