@@ -1,0 +1,372 @@
+"""Main application window — tabs, toolbar, test control."""
+
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+from PySide6.QtCore import QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QAction, QFont
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QStatusBar,
+    QTabWidget,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
+)
+
+from config.settings import AppSettings, TestProfile, load_settings, save_settings
+from engine.backends.base import StressConfig, StressResult
+from engine.backends.mprime import MprimeBackend
+from engine.backends.stress_ng import StressNgBackend
+from engine.backends.ycruncher import YCruncherBackend
+from engine.scheduler import CoreScheduler, CoreTestStatus, SchedulerConfig, TestState
+from engine.topology import CPUTopology, detect_topology
+from gui.config_tab import ConfigTab
+from gui.monitor_tab import MonitorTab
+from gui.results_tab import ResultsTab
+from gui.smu_tab import SMUTab
+from gui.widgets.core_grid import CoreGridWidget
+
+
+class TestWorker(QThread):
+    """Worker thread that runs the core scheduler."""
+
+    core_started = Signal(int, int)  # core_id, cycle
+    core_finished = Signal(int, object)  # core_id, StressResult
+    status_updated = Signal(int, object)  # core_id, CoreTestStatus
+    cycle_completed = Signal(int)
+    test_completed = Signal(dict)
+
+    def __init__(self, scheduler: CoreScheduler) -> None:
+        super().__init__()
+        self.scheduler = scheduler
+
+        # wire callbacks
+        self.scheduler.on_core_start = [lambda cid, cyc: self.core_started.emit(cid, cyc)]
+        self.scheduler.on_core_finish = [lambda cid, res: self.core_finished.emit(cid, res)]
+        self.scheduler.on_status_update = [lambda cid, st: self.status_updated.emit(cid, st)]
+        self.scheduler.on_cycle_complete = [lambda cyc: self.cycle_completed.emit(cyc)]
+        self.scheduler.on_test_complete = [lambda res: self.test_completed.emit(res)]
+
+    def run(self) -> None:
+        self.scheduler.run()
+
+
+class MainWindow(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("Linux CoreCycler")
+        self.setMinimumSize(1000, 700)
+
+        self._settings = load_settings()
+        self._topology: CPUTopology | None = None
+        self._worker: TestWorker | None = None
+        self._test_start_time: float = 0
+
+        self._detect_cpu()
+        self._setup_ui()
+        self._setup_toolbar()
+        self._setup_status_bar()
+        self._setup_timer()
+
+        self.resize(self._settings.window_width, self._settings.window_height)
+
+    def _detect_cpu(self) -> None:
+        self._topology = detect_topology()
+
+    def _setup_ui(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
+
+        # left: core grid
+        left = QVBoxLayout()
+
+        cpu_label = QLabel(self._topology.model_name if self._topology else "Unknown CPU")
+        cpu_label.setFont(QFont("monospace", 11, QFont.Weight.Bold))
+        cpu_label.setStyleSheet("padding: 6px;")
+        left.addWidget(cpu_label)
+
+        if self._topology:
+            info_parts = [f"{self._topology.physical_cores}C/{self._topology.logical_cpus_count}T"]
+            if self._topology.ccds > 1:
+                info_parts.append(f"{self._topology.ccds} CCDs")
+            if self._topology.is_x3d:
+                info_parts.append("X3D V-Cache")
+            if self._topology.smt_enabled:
+                info_parts.append("SMT")
+            info_label = QLabel(" | ".join(info_parts))
+            info_label.setStyleSheet("color: #aaa; padding: 0 6px;")
+            left.addWidget(info_label)
+
+        self._core_grid = CoreGridWidget(self._topology)
+        left.addWidget(self._core_grid)
+
+        main_layout.addLayout(left, stretch=1)
+
+        # right: tabs
+        self._tabs = QTabWidget()
+
+        self._config_tab = ConfigTab(self._topology)
+        self._config_tab.set_profile(self._settings.active_profile)
+        self._tabs.addTab(self._config_tab, "Configuration")
+
+        self._results_tab = ResultsTab()
+        self._tabs.addTab(self._results_tab, "Results")
+
+        self._monitor_tab = MonitorTab()
+        self._tabs.addTab(self._monitor_tab, "Monitor")
+
+        self._smu_tab = SMUTab(self._topology)
+        self._tabs.addTab(self._smu_tab, "Curve Optimizer")
+
+        main_layout.addWidget(self._tabs, stretch=2)
+
+    def _setup_toolbar(self) -> None:
+        toolbar = QToolBar("Test Control")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+
+        self._start_btn = QPushButton("▶ Start Test")
+        self._start_btn.setStyleSheet(
+            "QPushButton { background: #1b5e20; color: white; padding: 8px 16px; "
+            "border-radius: 4px; font-weight: bold; } "
+            "QPushButton:hover { background: #2e7d32; }"
+        )
+        self._start_btn.clicked.connect(self._start_test)
+        toolbar.addWidget(self._start_btn)
+
+        self._stop_btn = QPushButton("⏹ Stop")
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.setStyleSheet(
+            "QPushButton { background: #b71c1c; color: white; padding: 8px 16px; "
+            "border-radius: 4px; font-weight: bold; } "
+            "QPushButton:hover { background: #c62828; } "
+            "QPushButton:disabled { background: #333; color: #666; }"
+        )
+        self._stop_btn.clicked.connect(self._stop_test)
+        toolbar.addWidget(self._stop_btn)
+
+        toolbar.addSeparator()
+
+        # profile management
+        save_action = QAction("Save Profile", self)
+        save_action.triggered.connect(self._save_profile)
+        toolbar.addAction(save_action)
+
+        load_action = QAction("Load Profile", self)
+        load_action.triggered.connect(self._load_profile)
+        toolbar.addAction(load_action)
+
+    def _setup_status_bar(self) -> None:
+        self._status_bar = QStatusBar()
+        self.setStatusBar(self._status_bar)
+        self._status_msg = QLabel("Ready")
+        self._status_bar.addWidget(self._status_msg)
+
+    def _setup_timer(self) -> None:
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.timeout.connect(self._update_elapsed)
+
+    def _start_test(self) -> None:
+        if not self._topology:
+            QMessageBox.warning(self, "Error", "CPU topology not detected")
+            return
+
+        profile = self._config_tab.get_profile()
+
+        # select backend
+        backend = self._get_backend(profile.backend)
+        if not backend:
+            return
+
+        if not backend.is_available():
+            QMessageBox.warning(
+                self,
+                "Backend Not Found",
+                f"'{profile.backend}' is not installed or not on PATH.\n\n"
+                "Install it or select a different backend.",
+            )
+            return
+
+        stress_config = StressConfig(
+            mode=profile.get_stress_mode(),
+            fft_preset=profile.get_fft_preset(),
+            fft_min=profile.fft_min,
+            fft_max=profile.fft_max,
+            threads=profile.threads,
+        )
+
+        scheduler_config = SchedulerConfig(
+            seconds_per_core=profile.seconds_per_core,
+            cores_to_test=profile.cores_to_test,
+            test_smt_siblings=profile.test_smt,
+            stop_on_error=profile.stop_on_error,
+            cycle_count=profile.cycle_count,
+        )
+
+        work_dir = Path(self._settings.work_dir)
+        scheduler = CoreScheduler(
+            topology=self._topology,
+            backend=backend,
+            stress_config=stress_config,
+            scheduler_config=scheduler_config,
+            work_dir=work_dir,
+        )
+
+        # init results tab
+        self._results_tab.init_cores(scheduler.core_status)
+
+        # create worker
+        self._worker = TestWorker(scheduler)
+        self._worker.core_started.connect(self._on_core_started)
+        self._worker.core_finished.connect(self._on_core_finished)
+        self._worker.status_updated.connect(self._on_status_updated)
+        self._worker.cycle_completed.connect(self._on_cycle_completed)
+        self._worker.test_completed.connect(self._on_test_completed)
+        self._worker.finished.connect(self._on_worker_finished)
+
+        # UI state
+        self._start_btn.setEnabled(False)
+        self._stop_btn.setEnabled(True)
+        self._test_start_time = time.monotonic()
+        self._elapsed_timer.start(1000)
+        self._tabs.setCurrentWidget(self._results_tab)
+        self._status_msg.setText("Testing...")
+
+        self._worker.start()
+
+    def _stop_test(self) -> None:
+        if self._worker:
+            self._worker.scheduler.stop()
+            self._status_msg.setText("Stopping...")
+
+    def _get_backend(self, name: str):
+        match name:
+            case "mprime":
+                return MprimeBackend()
+            case "stress-ng":
+                return StressNgBackend()
+            case "y-cruncher":
+                return YCruncherBackend()
+            case _:
+                QMessageBox.warning(self, "Error", f"Unknown backend: {name}")
+                return None
+
+    @Slot(int, int)
+    def _on_core_started(self, core_id: int, cycle: int) -> None:
+        self._status_msg.setText(f"Testing core {core_id} (cycle {cycle + 1})")
+
+    @Slot(int, object)
+    def _on_core_finished(self, core_id: int, result: StressResult) -> None:
+        status = self._worker.scheduler.core_status.get(core_id) if self._worker else None
+        if status:
+            self._core_grid.update_core_status(core_id, status)
+            self._results_tab.update_core(core_id, status)
+
+        if result and not result.passed:
+            self._results_tab.add_error(core_id, result.error_message or "Unknown error")
+
+    @Slot(int, object)
+    def _on_status_updated(self, core_id: int, status: CoreTestStatus) -> None:
+        self._core_grid.update_core_status(core_id, status)
+
+    @Slot(int)
+    def _on_cycle_completed(self, cycle: int) -> None:
+        self._status_msg.setText(f"Cycle {cycle + 1} complete")
+
+    @Slot(dict)
+    def _on_test_completed(self, results: dict) -> None:
+        total = len(results)
+        passed = sum(1 for r_list in results.values() if r_list and all(r.passed for r in r_list))
+        failed = total - passed
+        elapsed = time.monotonic() - self._test_start_time
+
+        profile = self._config_tab.get_profile()
+        self._results_tab.update_summary(
+            total=total,
+            passed=passed,
+            failed=failed,
+            elapsed=elapsed,
+            cycle=profile.cycle_count,
+            total_cycles=profile.cycle_count,
+        )
+
+    def _on_worker_finished(self) -> None:
+        self._start_btn.setEnabled(True)
+        self._stop_btn.setEnabled(False)
+        self._elapsed_timer.stop()
+        self._status_msg.setText("Test complete")
+        self._worker = None
+
+    def _update_elapsed(self) -> None:
+        if not self._worker:
+            return
+        elapsed = time.monotonic() - self._test_start_time
+        scheduler = self._worker.scheduler
+        total = len(scheduler.core_status)
+        passed = sum(1 for s in scheduler.core_status.values() if s.state == "passed")
+        failed = sum(1 for s in scheduler.core_status.values() if s.state == "failed")
+
+        profile = self._config_tab.get_profile()
+        self._results_tab.update_summary(
+            total=total,
+            passed=passed,
+            failed=failed,
+            elapsed=elapsed,
+            cycle=scheduler._current_cycle + 1,
+            total_cycles=profile.cycle_count,
+        )
+
+    def _save_profile(self) -> None:
+        from config.settings import save_profile
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Profile", str(Path.home()), "JSON (*.json)"
+        )
+        if path:
+            profile = self._config_tab.get_profile()
+            save_profile(profile, Path(path))
+
+    def _load_profile(self) -> None:
+        from config.settings import load_profile
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Profile", str(Path.home()), "JSON (*.json)"
+        )
+        if path:
+            try:
+                profile = load_profile(Path(path))
+                self._config_tab.set_profile(profile)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to load profile: {e}")
+
+    def closeEvent(self, event) -> None:
+        if self._worker and self._worker.isRunning():
+            reply = QMessageBox.question(
+                self,
+                "Test Running",
+                "A test is still running. Stop and exit?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self._worker.scheduler.force_stop()
+            self._worker.wait(5000)
+
+        # save window size
+        self._settings.window_width = self.width()
+        self._settings.window_height = self.height()
+        save_settings(self._settings)
+
+        self._monitor_tab.stop_monitoring()
+        event.accept()

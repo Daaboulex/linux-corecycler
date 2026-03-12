@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=75.0", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linux-corecycler"
+version = "0.1.0"
+description = "Per-core CPU stability tester and PBO Curve Optimizer tuner for AMD Ryzen on Linux"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.12"
+authors = [{ name = "Daaboulex" }]
+dependencies = [
+    "PySide6>=6.7",
+    "psutil>=6.0",
+]
+
+[project.scripts]
+linux-corecycler = "main:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "TCH"]
