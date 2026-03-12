@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QGridLayout, QGroupBox, QLabel, QVBoxLayout, QWidget
 
@@ -38,9 +40,11 @@ class MonitorTab(QWidget):
         self._power_label = QLabel("Package: --W")
         self._max_freq_label = QLabel("Max Boost: --MHz")
 
-        for i, label in enumerate(
-            [self._tctl_label, self._tdie_label, self._vcore_label, self._power_label, self._max_freq_label]
-        ):
+        labels = [
+            self._tctl_label, self._tdie_label, self._vcore_label,
+            self._power_label, self._max_freq_label,
+        ]
+        for i, label in enumerate(labels):
             label.setStyleSheet("font: bold 11px monospace; padding: 4px;")
             values_layout.addWidget(label, 0, i)
 
@@ -68,10 +72,13 @@ class MonitorTab(QWidget):
             self._freq_chart.max_val = max_freq * 1.1
 
     def _update(self) -> None:
+        with contextlib.suppress(Exception):
+            self._do_update()
+
+    def _do_update(self) -> None:
         # frequencies
         freqs = read_core_frequencies()
         if freqs:
-            avg_freq = sum(freqs.values()) / len(freqs)
             max_freq = max(freqs.values())
             self._freq_chart.add_value(max_freq)
 

@@ -8,7 +8,6 @@ from pathlib import Path
 from PySide6.QtCore import QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
-    QApplication,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -22,12 +21,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config.settings import AppSettings, TestProfile, load_settings, save_settings
+from config.settings import load_settings, save_settings
 from engine.backends.base import StressConfig, StressResult
 from engine.backends.mprime import MprimeBackend
 from engine.backends.stress_ng import StressNgBackend
 from engine.backends.ycruncher import YCruncherBackend
-from engine.scheduler import CoreScheduler, CoreTestStatus, SchedulerConfig, TestState
+from engine.scheduler import CoreScheduler, CoreTestStatus, SchedulerConfig
 from engine.topology import CPUTopology, detect_topology
 from gui.config_tab import ConfigTab
 from gui.monitor_tab import MonitorTab
@@ -211,16 +210,24 @@ class MainWindow(QMainWindow):
             test_smt_siblings=profile.test_smt,
             stop_on_error=profile.stop_on_error,
             cycle_count=profile.cycle_count,
+            max_temperature=profile.max_temperature,
+            variable_load=profile.variable_load,
+            idle_stability_test=profile.idle_stability_test,
+            idle_between_cores=profile.idle_between_cores,
         )
 
         work_dir = Path(self._settings.work_dir)
-        scheduler = CoreScheduler(
-            topology=self._topology,
-            backend=backend,
-            stress_config=stress_config,
-            scheduler_config=scheduler_config,
-            work_dir=work_dir,
-        )
+        try:
+            scheduler = CoreScheduler(
+                topology=self._topology,
+                backend=backend,
+                stress_config=stress_config,
+                scheduler_config=scheduler_config,
+                work_dir=work_dir,
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to initialize scheduler: {e}")
+            return
 
         # init results tab
         self._results_tab.init_cores(scheduler.core_status)
@@ -333,8 +340,11 @@ class MainWindow(QMainWindow):
             self, "Save Profile", str(Path.home()), "JSON (*.json)"
         )
         if path:
-            profile = self._config_tab.get_profile()
-            save_profile(profile, Path(path))
+            try:
+                profile = self._config_tab.get_profile()
+                save_profile(profile, Path(path))
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to save profile: {e}")
 
     def _load_profile(self) -> None:
         from config.settings import load_profile

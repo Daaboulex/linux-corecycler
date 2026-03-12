@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import re
 import textwrap
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .base import FFTPreset, StressBackend, StressConfig, StressMode
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # FFT ranges in K for each preset (Prime95 30.x conventions)
 FFT_RANGES: dict[FFTPreset, tuple[int, int]] = {

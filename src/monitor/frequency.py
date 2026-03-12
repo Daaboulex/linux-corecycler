@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 CPUFREQ_BASE = Path("/sys/devices/system/cpu")
@@ -47,10 +48,8 @@ def _read_from_proc() -> dict[int, float]:
         if line.startswith("processor"):
             current_cpu = int(line.split(":")[1].strip())
         elif line.startswith("cpu MHz") and current_cpu >= 0:
-            try:
+            with contextlib.suppress(ValueError):
                 freqs[current_cpu] = float(line.split(":")[1].strip())
-            except ValueError:
-                pass
 
     return freqs
 

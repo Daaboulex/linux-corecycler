@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import signal
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,6 +31,16 @@ class TestState(Enum):
     FINISHED = auto()
 
 
+class TestMode(Enum):
+    """Pre-configured test thoroughness levels."""
+
+    QUICK = auto()  # 2 min/core, 1 cycle — fast screening
+    STANDARD = auto()  # 10 min/core, 1 cycle — initial CO tuning
+    THOROUGH = auto()  # 30 min/core, 2 cycles — validation
+    FULL_SPECTRUM = auto()  # multi-pass: SSE, AVX2, variable load, idle — comprehensive
+    CUSTOM = auto()  # user-configured
+
+
 @dataclass(slots=True)
 class CoreTestStatus:
     core_id: int
@@ -40,6 +51,7 @@ class CoreTestStatus:
     last_error: str | None = None
     elapsed_seconds: float = 0.0
     current_fft: int | None = None
+    current_phase: str = ""  # "SSE small", "AVX2 heavy", "idle", "variable"
 
 
 @dataclass(slots=True)
@@ -53,6 +65,12 @@ class SchedulerConfig:
     poll_interval: float = 1.0  # seconds between status checks
     max_temperature: float = 95.0  # celsius — pause/stop if exceeded
     stall_timeout: float = 30.0  # seconds of near-zero CPU before declaring stall
+    test_mode: TestMode = TestMode.CUSTOM
+    # Full spectrum options
+    variable_load: bool = False  # periodically stop/start stress during test
+    variable_load_interval: float = 15.0  # seconds between load transitions
+    idle_between_cores: float = 0.0  # seconds of idle between core tests
+    idle_stability_test: float = 0.0  # seconds of idle test per core (catches C-state transitions)
 
 
 class CoreScheduler:
@@ -90,6 +108,7 @@ class CoreScheduler:
         self.on_test_complete: list = []  # (results) -> None
         self.on_thermal_throttle: list = []  # (temperature) -> None
         self.on_stall_detected: list = []  # (core_id) -> None
+        self.on_phase_change: list = []  # (core_id, phase_name) -> None
 
         self._init_core_status()
 
@@ -127,6 +146,12 @@ class CoreScheduler:
                     if self._stop_requested:
                         break
                     self._test_core(core_id, cycle)
+
+                    # Inter-core idle period (catches C-state transition issues)
+                    if self.config.idle_between_cores > 0 and not self._stop_requested:
+                        self._idle_period(
+                            core_id, self.config.idle_between_cores, "inter-core idle"
+                        )
 
                 for cb in self.on_cycle_complete:
                     cb(cycle)
@@ -175,7 +200,7 @@ class CoreScheduler:
                     continue
 
                 # AMD: k10temp exposes Tctl/Tdie; Intel: coretemp
-                if name not in ("k10temp", "coretemp", "zenpower"):
+                if name not in ("k10temp", "coretemp", "zenpower", "zenpower3"):
                     continue
 
                 # find highest temp input
@@ -259,6 +284,121 @@ class CoreScheduler:
             return None
 
     # ------------------------------------------------------------------
+    # Idle period (for C-state transition testing)
+    # ------------------------------------------------------------------
+
+    def _idle_period(self, core_id: int, duration: float, phase_name: str) -> None:
+        """Wait for a specified duration while monitoring for MCE.
+
+        CO instability often manifests during idle/light load — the CPU
+        boosts a single core to max clocks with reduced voltage. This
+        catches errors that pure stress testing misses.
+        """
+        status = self.core_status.get(core_id)
+        if status:
+            status.current_phase = phase_name
+        for cb in self.on_phase_change:
+            cb(core_id, phase_name)
+
+        start = time.monotonic()
+        while time.monotonic() - start < duration:
+            if self._stop_requested:
+                return
+
+            # Check for MCE during idle (the primary purpose of idle testing)
+            core_info = self.topology.cores.get(core_id)
+            if core_info:
+                logical_cpu = core_info.logical_cpus[0]
+                mce_events = self.detector.check_mce(target_cpu=logical_cpu)
+                if mce_events and status:
+                    status.errors += 1
+                    status.last_error = f"MCE during idle: {mce_events[0].message}"
+                    if self.config.stop_on_error:
+                        return
+
+            time.sleep(min(1.0, duration - (time.monotonic() - start)))
+
+    # ------------------------------------------------------------------
+    # Variable load (load transitions stress test)
+    # ------------------------------------------------------------------
+
+    def _run_variable_load(
+        self, core_id: int, logical_cpu: int, total_duration: float, core_work_dir: Path
+    ) -> tuple[bool, str | None]:
+        """Run stress test with periodic stop/start to simulate real-world load transitions.
+
+        This catches instability during frequency/voltage transitions that steady
+        load testing misses. The CPU rapidly shifts between idle (high-boost) and
+        loaded states, which is when CO-related errors most commonly occur.
+        """
+        status = self.core_status.get(core_id)
+        if status:
+            status.current_phase = "variable load"
+        for cb in self.on_phase_change:
+            cb(core_id, "variable load")
+
+        start_time = time.monotonic()
+        deadline = start_time + total_duration
+        interval = self.config.variable_load_interval
+        passed = True
+        error_msg = None
+        load_on = True
+
+        while time.monotonic() < deadline and not self._stop_requested:
+            segment_end = min(time.monotonic() + interval, deadline)
+
+            if load_on:
+                # Run stress for one interval
+                cmd = self.backend.get_command(self.stress_config, core_work_dir)
+                full_cmd = ["taskset", "-c", str(logical_cpu)] + cmd
+                try:
+                    self._process = subprocess.Popen(
+                        full_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        cwd=str(core_work_dir),
+                        preexec_fn=os.setsid,
+                    )
+
+                    while time.monotonic() < segment_end and not self._stop_requested:
+                        if self._process.poll() is not None:
+                            break
+                        mce_events = self.detector.check_mce(target_cpu=logical_cpu)
+                        if mce_events:
+                            passed = False
+                            error_msg = f"MCE during variable load: {mce_events[0].message}"
+                            break
+                        time.sleep(0.5)
+
+                    self._kill_current()
+                except OSError as e:
+                    passed = False
+                    error_msg = f"Failed to start variable load: {e}"
+                    break
+                finally:
+                    self._process = None
+                    self._reap_zombies()
+            else:
+                # Idle period — CPU transitions to boost clocks
+                while time.monotonic() < segment_end and not self._stop_requested:
+                    mce_events = self.detector.check_mce(target_cpu=logical_cpu)
+                    if mce_events:
+                        passed = False
+                        error_msg = f"MCE during idle transition: {mce_events[0].message}"
+                        break
+                    time.sleep(0.5)
+
+            if not passed:
+                break
+
+            load_on = not load_on
+            if status:
+                status.elapsed_seconds = time.monotonic() - start_time
+
+        return passed, error_msg
+
+    # ------------------------------------------------------------------
     # Core test execution
     # ------------------------------------------------------------------
 
@@ -282,6 +422,75 @@ class CoreScheduler:
         core_work_dir = self.work_dir / f"core_{core_id}"
         self.backend.prepare(core_work_dir, self.stress_config)
 
+        passed = True
+        error_msg = None
+        start_time = time.monotonic()
+
+        # --- Phase 1: Main stress test ---
+        status.current_phase = "stress"
+        for cb in self.on_phase_change:
+            cb(core_id, "stress")
+
+        phase_passed, phase_error = self._run_stress_phase(
+            core_id, logical_cpu, core_work_dir, status
+        )
+        if not phase_passed:
+            passed = False
+            error_msg = phase_error
+
+        # --- Phase 2: Variable load test (if enabled) ---
+        if passed and self.config.variable_load and not self._stop_requested:
+            # Use 1/3 of the per-core time for variable load
+            var_duration = self.config.seconds_per_core / 3.0
+            var_passed, var_error = self._run_variable_load(
+                core_id, logical_cpu, var_duration, core_work_dir
+            )
+            if not var_passed:
+                passed = False
+                error_msg = var_error
+                status.errors += 1
+                status.last_error = error_msg
+
+        # --- Phase 3: Idle stability test (if enabled) ---
+        if passed and self.config.idle_stability_test > 0 and not self._stop_requested:
+            self._idle_period(core_id, self.config.idle_stability_test, "idle stability")
+            # Check if MCE occurred during idle
+            if status.last_error and "idle" in status.last_error.lower():
+                passed = False
+                error_msg = status.last_error
+
+        elapsed = time.monotonic() - start_time
+        status.elapsed_seconds = elapsed
+        status.iterations += 1
+        status.state = "passed" if passed else "failed"
+        status.current_phase = ""
+
+        result = StressResult(
+            core_id=core_id,
+            passed=passed,
+            duration_seconds=elapsed,
+            error_message=error_msg,
+            error_type=self._classify_error(error_msg) if error_msg else None,
+            iterations_completed=status.iterations,
+        )
+        self.results[core_id].append(result)
+
+        for cb in self.on_core_finish:
+            cb(core_id, result)
+
+        self.backend.cleanup(core_work_dir)
+
+    def _run_stress_phase(
+        self,
+        core_id: int,
+        logical_cpu: int,
+        core_work_dir: Path,
+        status: CoreTestStatus,
+    ) -> tuple[bool, str | None]:
+        """Run the main stress test phase for a core.
+
+        Returns (passed, error_message).
+        """
         # build command with taskset for CPU pinning
         cmd = self.backend.get_command(self.stress_config, core_work_dir)
         full_cmd = ["taskset", "-c", str(logical_cpu)] + cmd
@@ -398,25 +607,7 @@ class CoreScheduler:
             # Reap any zombies from this process group
             self._reap_zombies()
 
-        elapsed = time.monotonic() - start_time
-        status.elapsed_seconds = elapsed
-        status.iterations += 1
-        status.state = "passed" if passed else "failed"
-
-        result = StressResult(
-            core_id=core_id,
-            passed=passed,
-            duration_seconds=elapsed,
-            error_message=error_msg,
-            error_type=self._classify_error(error_msg) if error_msg else None,
-            iterations_completed=status.iterations,
-        )
-        self.results[core_id].append(result)
-
-        for cb in self.on_core_finish:
-            cb(core_id, result)
-
-        self.backend.cleanup(core_work_dir)
+        return passed, error_msg
 
     def _kill_current(self) -> None:
         """Kill the current stress test process and all children in its group.
@@ -433,26 +624,20 @@ class CoreScheduler:
             pgid = os.getpgid(pid)
         except (OSError, ProcessLookupError):
             # Already gone
-            try:
+            with contextlib.suppress(Exception):
                 proc.wait(timeout=1)
-            except Exception:
-                pass
             return
 
         # SIGTERM the whole process group
-        try:
+        with contextlib.suppress(OSError, ProcessLookupError):
             os.killpg(pgid, signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            pass
 
         try:
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             # Escalate to SIGKILL
-            try:
+            with contextlib.suppress(OSError, ProcessLookupError):
                 os.killpg(pgid, signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                pass
             try:
                 proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
@@ -461,10 +646,8 @@ class CoreScheduler:
         # Close pipe fds to avoid resource leaks
         for stream in (proc.stdout, proc.stderr):
             if stream:
-                try:
+                with contextlib.suppress(OSError):
                     stream.close()
-                except OSError:
-                    pass
 
     @staticmethod
     def _reap_zombies() -> None:
@@ -495,4 +678,65 @@ class CoreScheduler:
             return "timeout"
         if "crash" in msg_lower or "signal" in msg_lower:
             return "crash"
+        if "idle" in msg_lower:
+            return "idle_instability"
+        if "variable" in msg_lower or "transition" in msg_lower:
+            return "load_transition"
         return "unknown"
+
+
+# ===========================================================================
+# Pre-configured test mode factories
+# ===========================================================================
+
+
+def make_quick_config() -> SchedulerConfig:
+    """Quick screening: 2 min/core, 1 cycle. Fast but less sensitive."""
+    return SchedulerConfig(
+        seconds_per_core=120,
+        cycle_count=1,
+        test_mode=TestMode.QUICK,
+    )
+
+
+def make_standard_config() -> SchedulerConfig:
+    """Standard CO tuning: 10 min/core, 1 cycle. Good starting point."""
+    return SchedulerConfig(
+        seconds_per_core=600,
+        cycle_count=1,
+        test_mode=TestMode.STANDARD,
+    )
+
+
+def make_thorough_config() -> SchedulerConfig:
+    """Thorough validation: 30 min/core, 2 cycles. Catches intermittent errors."""
+    return SchedulerConfig(
+        seconds_per_core=1800,
+        cycle_count=2,
+        test_mode=TestMode.THOROUGH,
+    )
+
+
+def make_full_spectrum_config() -> SchedulerConfig:
+    """Full spectrum: stress + variable load + idle stability, 3 cycles.
+
+    Tests the full range of operating conditions:
+    - Sustained maximum load (catches voltage droop errors)
+    - Variable load transitions (catches C-state transition errors)
+    - Idle stability (catches boost-to-idle errors, the #1 cause of
+      CO-related crashes in daily use)
+    - Multiple cycles (catches thermal cycling fatigue)
+
+    This is the most comprehensive test. It takes significantly longer
+    but provides the highest confidence that CO values are stable across
+    all real-world scenarios.
+    """
+    return SchedulerConfig(
+        seconds_per_core=1200,  # 20 min stress per core
+        cycle_count=3,
+        variable_load=True,
+        variable_load_interval=15.0,
+        idle_between_cores=10.0,  # 10s idle between cores
+        idle_stability_test=60.0,  # 60s idle test per core
+        test_mode=TestMode.FULL_SPECTRUM,
+    )

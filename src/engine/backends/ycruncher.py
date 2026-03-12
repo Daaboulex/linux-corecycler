@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .base import StressBackend, StressConfig, StressMode
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class YCruncherBackend(StressBackend):

@@ -436,9 +436,9 @@ def zen3_commands():
         generation=CPUGeneration.ZEN3_VERMEER,
         set_co_cmd=0x35,
         get_co_cmd=0x48,
-        reset_co_cmd=0x36,
+        set_all_co_cmd=0x36,
         mailbox="mp1",
-        co_range=(-30, 0),
+        co_range=(-30, 30),
     )
 
 
@@ -446,9 +446,9 @@ def zen3_commands():
 def zen5_commands():
     return SMUCommandSet(
         generation=CPUGeneration.ZEN5_GRANITE_RIDGE,
-        set_co_cmd=0x6,
+        set_co_cmd=0x06,
         get_co_cmd=0xD5,
-        reset_co_cmd=None,
+        set_all_co_cmd=0x07,
         mailbox="rsmu",
         co_range=(-60, 10),
         set_boost_limit_cmd=0x70,
