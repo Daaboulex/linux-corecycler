@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QThread, QTimer, Signal, Slot
@@ -29,12 +31,19 @@ from engine.backends.ycruncher import YCruncherBackend
 from engine.scheduler import CoreScheduler, CoreTestStatus, SchedulerConfig
 from engine.topology import CPUTopology, detect_topology
 from gui.config_tab import ConfigTab
+from gui.history_tab import HistoryTab
 from gui.monitor_tab import MonitorTab
 from gui.results_tab import ResultsTab
 from gui.smu_tab import SMUTab
+from gui.tuner_tab import TunerTab
 from gui.widgets.core_grid import CoreGridWidget
+from history.context import detect_bios_change
+from history.db import HistoryDB
+from history.logger import TestRunLogger
 from monitor.frequency import read_core_frequencies
 from monitor.hwmon import HWMonReader
+
+log = logging.getLogger(__name__)
 
 
 class TestWorker(QThread):
@@ -73,6 +82,38 @@ class MainWindow(QMainWindow):
         self._test_start_time: float = 0
         self._hwmon = HWMonReader()
         self._core_telemetry: dict[int, dict] = {}  # core_id -> {max_freq, max_temp, last_vcore}
+        self._logger: TestRunLogger | None = None
+
+        # History database
+        self._history_db: HistoryDB | None = None
+        if self._settings.record_history:
+            try:
+                self._history_db = HistoryDB()
+                recovered = self._history_db.recover_incomplete_runs()
+                if recovered:
+                    log.info("Recovered %d incomplete run(s) marked as crashed", recovered)
+                # Purge old runs
+                if self._settings.history_retention_days > 0:
+                    cutoff = datetime.now(timezone.utc) - timedelta(
+                        days=self._settings.history_retention_days
+                    )
+                    self._history_db.purge_before(cutoff.isoformat())
+                # Check for BIOS version changes
+                self._bios_changed = False
+                self._bios_old = ""
+                self._bios_current = ""
+                try:
+                    changed, old, current = detect_bios_change(self._history_db)
+                    if changed:
+                        self._bios_changed = True
+                        self._bios_old = old
+                        self._bios_current = current
+                        log.info("BIOS version changed: %s -> %s", old, current)
+                except Exception:
+                    log.debug("Failed to detect BIOS change", exc_info=True)
+            except Exception:
+                log.exception("Failed to initialize history database")
+                self._history_db = None
 
         self._detect_cpu()
         self._setup_ui()
@@ -114,7 +155,7 @@ class MainWindow(QMainWindow):
         self._core_grid = CoreGridWidget(self._topology)
         left.addWidget(self._core_grid)
 
-        main_layout.addLayout(left, stretch=2)
+        main_layout.addLayout(left, stretch=1)
 
         # right: tabs — align with CPU header on the left
         self._tabs = QTabWidget()
@@ -134,7 +175,17 @@ class MainWindow(QMainWindow):
         self._smu_tab = SMUTab(self._topology)
         self._tabs.addTab(self._smu_tab, "Curve Optimizer")
 
-        main_layout.addWidget(self._tabs, stretch=3)
+        smu = self._smu_tab.smu if hasattr(self._smu_tab, "smu") else None
+        self._tuner_tab = TunerTab(self._history_db, self._topology, smu)
+        self._tuner_tab.tuner_running_changed.connect(self._on_tuner_running_changed)
+        self._tabs.addTab(self._tuner_tab, "Auto-Tuner")
+
+        self._history_tab = HistoryTab(self._history_db)
+        if getattr(self, "_bios_changed", False):
+            self._history_tab.set_bios_warning(self._bios_old, self._bios_current)
+        self._tabs.addTab(self._history_tab, "History")
+
+        main_layout.addWidget(self._tabs, stretch=2)
 
     def _setup_toolbar(self) -> None:
         toolbar = QToolBar("Test Control")
@@ -154,7 +205,7 @@ class MainWindow(QMainWindow):
         self._stop_btn.setEnabled(False)
         self._stop_btn.setStyleSheet(
             "QPushButton { background: #b71c1c; color: white; padding: 8px 16px; "
-            "border-radius: 4px; font-weight: bold; min-width: 80px; } "
+            "border-radius: 4px; font-weight: bold; } "
             "QPushButton:hover { background: #c62828; } "
             "QPushButton:disabled { background: #333; color: #666; }"
         )
@@ -247,9 +298,25 @@ class MainWindow(QMainWindow):
         self._worker.test_completed.connect(self._on_test_completed)
         self._worker.finished.connect(self._on_worker_finished)
 
-        # UI state
+        # History logger
+        self._logger = None
+        if self._settings.record_history and self._history_db and self._topology:
+            try:
+                smu = self._smu_tab.smu if hasattr(self, '_smu_tab') else None
+                self._logger = TestRunLogger(self._history_db, self._topology, profile, smu=smu)
+                self._worker.core_started.connect(self._logger.on_core_started)
+                self._worker.core_finished.connect(self._logger.on_core_finished)
+                self._worker.status_updated.connect(self._logger.on_status_updated)
+                self._worker.cycle_completed.connect(self._logger.on_cycle_completed)
+                self._worker.test_completed.connect(self._logger.on_test_completed)
+            except Exception:
+                log.exception("Failed to create history logger")
+                self._logger = None
+
+        # UI state — mutual exclusion with tuner
         self._start_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
+        self._tuner_tab.set_test_running(True)
         self._test_start_time = time.monotonic()
         self._elapsed_timer.start(1000)
         self._tabs.setCurrentWidget(self._results_tab)
@@ -261,6 +328,12 @@ class MainWindow(QMainWindow):
         if self._worker:
             self._worker.scheduler.stop()
             self._status_msg.setText("Stopping...")
+            if self._logger:
+                try:
+                    self._logger.on_test_stopped()
+                except Exception:
+                    log.exception("Failed to record test stop in history")
+                self._logger = None
 
     def _get_backend(self, name: str):
         match name:
@@ -301,6 +374,19 @@ class MainWindow(QMainWindow):
                 f"Max temp: {t['max_temp']:.1f}C{vcore_str}",
             )
 
+            # Record peak telemetry in history
+            if self._logger:
+                try:
+                    self._logger.update_core_telemetry_peaks(
+                        core_id,
+                        peak_freq_mhz=t["max_freq"],
+                        max_temp_c=t["max_temp"],
+                        min_vcore_v=t["min_vcore"],
+                        max_vcore_v=t["max_vcore"],
+                    )
+                except Exception:
+                    log.exception("Failed to record telemetry peaks")
+
     @Slot(int, object)
     def _on_status_updated(self, core_id: int, status: CoreTestStatus) -> None:
         self._core_grid.update_core_status(core_id, status)
@@ -336,14 +422,22 @@ class MainWindow(QMainWindow):
 
     def _on_worker_finished(self) -> None:
         self._cleanup_worker()
+        self._logger = None
+        self._history_tab.refresh()
         self._status_msg.setText("Test complete")
 
     def _cleanup_worker(self) -> None:
         """Reset UI state after worker finishes or crashes."""
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
+        self._tuner_tab.set_test_running(False)
         self._elapsed_timer.stop()
         self._worker = None
+
+    @Slot(bool)
+    def _on_tuner_running_changed(self, running: bool) -> None:
+        """Mutual exclusion: disable manual test Start when tuner is active."""
+        self._start_btn.setEnabled(not running)
 
     def _update_elapsed(self) -> None:
         if not self._worker:
@@ -394,6 +488,13 @@ class MainWindow(QMainWindow):
         vcore = hwmon_data.vcore_v
 
         self._core_grid.update_core_telemetry(current_core, freq, temp, vcore)
+
+        # Record telemetry sample in history
+        if self._logger and self._settings.record_telemetry:
+            try:
+                self._logger.record_telemetry_sample(current_core, freq, temp, vcore)
+            except Exception:
+                pass  # don't spam logs every second
 
         # track peak telemetry per core for the log
         if current_core not in self._core_telemetry:
@@ -465,4 +566,6 @@ class MainWindow(QMainWindow):
         save_settings(self._settings)
 
         self._monitor_tab.stop_monitoring()
+        if self._history_db:
+            self._history_db.close()
         event.accept()

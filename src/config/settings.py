@@ -53,6 +53,10 @@ class AppSettings:
     active_profile_idx: int = 0
     window_width: int = 1200
     window_height: int = 800
+    # History
+    record_history: bool = True
+    record_telemetry: bool = True
+    history_retention_days: int = 90
 
     @property
     def active_profile(self) -> TestProfile:

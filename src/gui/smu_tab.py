@@ -43,6 +43,11 @@ class SMUTab(QWidget):
         if topology:
             self.set_topology(topology)
 
+    @property
+    def smu(self) -> RyzenSMU | None:
+        """Expose the SMU driver instance for external use (e.g. history logger)."""
+        return self._smu
+
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
