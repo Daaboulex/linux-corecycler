@@ -108,12 +108,12 @@ class ConfigTab(QWidget):
         self._fft_min_spin.setRange(4, 65536)
         self._fft_min_spin.setValue(4)
         self._fft_min_spin.setSuffix("K")
-        self._fft_min_spin.valueChanged.connect(self._on_change)
+        self._fft_min_spin.valueChanged.connect(self._on_fft_range_change)
         self._fft_max_spin = QSpinBox()
         self._fft_max_spin.setRange(4, 65536)
         self._fft_max_spin.setValue(8192)
         self._fft_max_spin.setSuffix("K")
-        self._fft_max_spin.valueChanged.connect(self._on_change)
+        self._fft_max_spin.valueChanged.connect(self._on_fft_range_change)
         fft_range_layout.addWidget(QLabel("Min:"))
         fft_range_layout.addWidget(self._fft_min_spin)
         fft_range_layout.addWidget(QLabel("Max:"))
@@ -271,6 +271,14 @@ class ConfigTab(QWidget):
     def _on_fft_change(self) -> None:
         is_custom = self._fft_combo.currentText() == "CUSTOM"
         self._fft_range_widget.setVisible(is_custom)
+        self._on_change()
+
+    def _on_fft_range_change(self) -> None:
+        """Enforce fft_min <= fft_max."""
+        if self._fft_min_spin.value() > self._fft_max_spin.value():
+            self._building = True
+            self._fft_max_spin.setValue(self._fft_min_spin.value())
+            self._building = False
         self._on_change()
 
     def _on_change(self) -> None:

@@ -82,6 +82,7 @@ class LiveChart(QWidget):
             val_range = 1
 
         path = QPainterPath()
+        last_x = margin_left
         for i, val in enumerate(data):
             x = margin_left + (i / max(n - 1, 1)) * chart_w
             y = margin_top + (1.0 - (val - self.min_val) / val_range) * chart_h
@@ -90,13 +91,18 @@ class LiveChart(QWidget):
                 path.moveTo(x, y)
             else:
                 path.lineTo(x, y)
+            last_x = x
 
         painter.setPen(QPen(self.color, 2))
-        painter.drawPath(path)
+        if n == 1:
+            # single point — draw a visible dot
+            painter.drawEllipse(path.currentPosition(), 3, 3)
+        else:
+            painter.drawPath(path)
 
         # fill under curve
         fill_path = QPainterPath(path)
-        fill_path.lineTo(margin_left + chart_w, margin_top + chart_h)
+        fill_path.lineTo(last_x, margin_top + chart_h)
         fill_path.lineTo(margin_left, margin_top + chart_h)
         fill_path.closeSubpath()
 
