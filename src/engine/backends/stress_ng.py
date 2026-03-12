@@ -53,11 +53,15 @@ class StressNgBackend(StressBackend):
         combined = stdout + "\n" + stderr
 
         # stress-ng verification failures
+        # Note: avoid matching "0 FAILED" in metrics output (false positive)
         error_patterns = [
-            r"FAILED",
+            r"[1-9]\d*\s+FAILED",  # "N FAILED" where N > 0
+            r"\bFAIL\b(?!\w)",  # standalone FAIL (not part of FAILED)
             r"verification error",
             r"computation mismatch",
             r"error.*incorrect",
+            r"killed by signal \d+",
+            r"out of memory",
         ]
         for pattern in error_patterns:
             match = re.search(pattern, combined, re.IGNORECASE)

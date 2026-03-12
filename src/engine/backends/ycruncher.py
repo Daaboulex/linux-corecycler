@@ -51,15 +51,17 @@ class YCruncherBackend(StressBackend):
     def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
         combined = stdout + "\n" + stderr
 
+        # y-cruncher error patterns — avoid false positives from benign output
+        # e.g., "Error Checking: Enabled", "Tests Failed: 0"
         error_patterns = [
-            r"Failed",
-            r"FAILED",
-            r"Error",
-            r"Verification .* FAIL",
-            r"Result: FAIL",
+            r"Verification\b.*\bFAIL",  # "Verification ... FAIL"
+            r"Result:\s*FAIL",  # "Result: FAIL"
+            r"Tests?\s+Failed:\s*[1-9]",  # "Tests Failed: N" where N > 0
+            r"\bFAILED\b",  # standalone FAILED
+            r"\berror\b(?![\s:]*(?:checking|rate|count)\b)",  # "error" not followed by "checking/rate/count"
         ]
         for pattern in error_patterns:
-            match = re.search(pattern, combined)
+            match = re.search(pattern, combined, re.IGNORECASE)
             if match:
                 return False, f"y-cruncher error: {match.group(0)}"
 

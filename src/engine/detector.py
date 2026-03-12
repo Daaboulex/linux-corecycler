@@ -165,19 +165,30 @@ class ErrorDetector:
                 self._last_dmesg_events = []
                 return events
 
+            # If we have no baseline timestamp, we can't distinguish old from
+            # new dmesg messages — skip entirely to avoid false positives.
+            if self._dmesg_baseline_ts <= 0:
+                self._last_dmesg_events = []
+                return events
+
             for line in result.stdout.splitlines():
-                if "mce" not in line.lower() and "machine check" not in line.lower():
+                # Only match actual MCE error lines — exclude boot/info messages
+                # like "mce: CPU supports N MCE banks", "Machine check events logged"
+                lower = line.lower()
+                if not _is_mce_error_line(lower):
                     continue
 
                 # filter by baseline timestamp — only report NEW messages
                 ts_match = re.match(r"\s*([\d.]+)", line)
-                if ts_match and self._dmesg_baseline_ts > 0:
+                if ts_match:
                     try:
                         msg_ts = float(ts_match.group(1))
                         if msg_ts <= self._dmesg_baseline_ts:
                             continue  # pre-existing message, skip
                     except ValueError:
                         pass
+                else:
+                    continue  # no timestamp — can't verify it's new, skip
 
                 # extract CPU number from MCE message
                 cpu_match = re.search(r"CPU (\d+)", line)
@@ -186,7 +197,6 @@ class ErrorDetector:
                 bank_match = re.search(r"Bank (\d+)", line)
                 bank_num = int(bank_match.group(1)) if bank_match else -1
 
-                lower = line.lower()
                 corrected = (
                     bool(re.search(r"\bcorrected\b", lower))
                     and "uncorrect" not in lower
@@ -278,6 +288,52 @@ class ErrorDetector:
                 except (ValueError, OSError, PermissionError):
                     continue
         return total
+
+
+def _is_mce_error_line(line_lower: str) -> bool:
+    """Return True if a dmesg line is an actual MCE error, not informational.
+
+    Excludes boot/info messages like:
+    - "mce: CPU supports N MCE banks"
+    - "Machine check events logged"
+    - "mce_cpu_quirks"
+    - "mce: [Hardware Error]:" informational lines about MCE configuration
+    """
+    # Must mention MCE or machine check at all
+    if "mce" not in line_lower and "machine check" not in line_lower:
+        return False
+
+    # Exclude known informational patterns
+    info_patterns = [
+        "cpu supports",
+        "mce banks",
+        "events logged",
+        "mce_cpu_quirks",
+        "mce: using",
+        "mce: cmci",
+        "mce_intel",
+        "check polling timer",
+    ]
+    for pat in info_patterns:
+        if pat in line_lower:
+            return False
+
+    # Real MCE error indicators
+    error_indicators = [
+        "hardware error",
+        "bank ",  # "Bank N:" with actual bank data
+        "machine check exception",
+        "fatal machine check",
+        "uncorrected",
+        "corrected error",
+        "mca:",
+        "status:",
+        "tsc:",
+        "addr:",
+        "misc:",
+        "severity:",
+    ]
+    return any(ind in line_lower for ind in error_indicators)
 
 
 def _get_dmesg_raw_timestamp() -> float:
