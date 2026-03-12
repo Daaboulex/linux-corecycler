@@ -79,7 +79,7 @@ class ResultsTab(QWidget):
         splitter.addWidget(self._table)
 
         # error log
-        log_group = QGroupBox("Error Log")
+        log_group = QGroupBox("Test Log")
         log_layout = QVBoxLayout(log_group)
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
@@ -110,7 +110,11 @@ class ResultsTab(QWidget):
         self._set_row(row, core_id, status)
 
     def add_error(self, core_id: int, message: str) -> None:
-        """Add an entry to the error log."""
+        """Add an error entry to the log."""
+        self._log.appendPlainText(f"[Core {core_id}] ERROR: {message}")
+
+    def add_log(self, core_id: int, message: str) -> None:
+        """Add an informational entry to the log."""
         self._log.appendPlainText(f"[Core {core_id}] {message}")
 
     def update_summary(

@@ -110,7 +110,52 @@ def _dark_stylesheet() -> str:
         }
         QComboBox::drop-down {
             border: none;
+            width: 24px;
+            subcontrol-position: right center;
+        }
+        QComboBox::down-arrow {
+            image: none;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 6px solid #888;
+            margin-right: 6px;
+        }
+        QComboBox::down-arrow:hover {
+            border-top-color: #4fc3f7;
+        }
+        QSpinBox::up-button, QDoubleSpinBox::up-button {
+            subcontrol-position: top right;
+            border: none;
+            border-left: 1px solid #444;
             width: 20px;
+        }
+        QSpinBox::down-button, QDoubleSpinBox::down-button {
+            subcontrol-position: bottom right;
+            border: none;
+            border-left: 1px solid #444;
+            width: 20px;
+        }
+        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+            image: none;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-bottom: 5px solid #888;
+        }
+        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+            image: none;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid #888;
+        }
+        QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {
+            border-bottom-color: #4fc3f7;
+        }
+        QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {
+            border-top-color: #4fc3f7;
+        }
+        QSpinBox::up-button:hover, QSpinBox::down-button:hover,
+        QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
+            background: #353535;
         }
         QPushButton {
             background-color: #2d2d2d;

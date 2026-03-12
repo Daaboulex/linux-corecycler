@@ -31,13 +31,14 @@ CO instability often manifests at idle or during load transitions, not under sus
 - **Comprehensive SMU integration** for runtime Curve Optimizer, PBO limits, boost override, and PBO scalar via the ryzen_smu kernel module
 - **System state detection** -- auto-detects current CO offsets, PBO limits, boost override, PBO scalar, and estimated BCLK before testing
 - **MCE error detection** -- monitors Machine Check Exceptions via sysfs and dmesg during stress and idle phases
-- **Dark Qt6 GUI** with CCD-aware core grid showing real-time test status per core
+- **Dark Qt6 GUI** with CCD-aware core grid showing real-time per-core frequency, temperature, and voltage during testing
+- **Per-core telemetry logging** -- peak frequency, max temperature, and Vcore range recorded for each core's test run
 - **Test profile save/load** -- export and import test configurations as JSON files
 - **Safety features** -- thermal limit monitoring (configurable, default 95C), process group cleanup on stop, confirmation dialogs for CO writes, dry-run mode, backup/restore CO values, volatile-only SMU writes (never touches BIOS)
 
 ## Screenshots
 
-<!-- TODO: Add screenshots -->
+*Screenshots coming soon — the GUI features a dark theme with CCD-aware core grid, live monitoring charts, per-core results table, and Curve Optimizer SMU interface.*
 
 ## Supported Hardware
 
@@ -222,7 +223,7 @@ mprime is the Linux command-line build of Prime95. It is unfree software distrib
 1. Launch Linux CoreCycler (`linux-corecycler` or `python src/main.py`)
 2. The application detects your CPU topology automatically (cores, CCDs, SMT, X3D)
 3. In the Configuration tab, select a backend -- use stress-ng if mprime is not installed
-4. Choose a test preset or configure custom settings
+4. The default preset is **Standard** (10 min/core, 1 cycle) -- adjust or choose a different preset as needed
 5. Click **Start Test**
 6. Watch the core grid on the left -- each core lights up as it is tested, turning green (passed) or red (failed)
 7. The Results tab shows detailed per-core status, elapsed time, and error messages
@@ -233,8 +234,8 @@ mprime is the Linux command-line build of Prime95. It is unfree software distrib
 |---|---|---|---|---|---|
 | Quick | 2 min | 1 | No | No | Fast screening, rough check |
 | Standard | 10 min | 1 | No | No | Initial CO tuning |
-| Thorough | 30 min | 2 | Yes | 30s | Validation after tuning |
-| Full Spectrum | 60 min | 3 | Yes | 60s | Comprehensive stability proof |
+| Thorough | 30 min | 2 | No | 5s between cores | Validation after tuning |
+| Full Spectrum | 20 min | 3 | Yes | 60s + 10s between | Comprehensive stability proof |
 | Custom | User-defined | User-defined | Optional | Optional | Fine-tuned testing |
 
 ### Finding Optimal CO Values (Step by Step)
