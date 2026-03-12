@@ -308,14 +308,23 @@ class MainWindow(QMainWindow):
         )
 
     def _on_worker_finished(self) -> None:
+        self._cleanup_worker()
+        self._status_msg.setText("Test complete")
+
+    def _cleanup_worker(self) -> None:
+        """Reset UI state after worker finishes or crashes."""
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
         self._elapsed_timer.stop()
-        self._status_msg.setText("Test complete")
         self._worker = None
 
     def _update_elapsed(self) -> None:
         if not self._worker:
+            return
+        # crash watchdog: if thread object exists but is no longer running
+        if not self._worker.isRunning():
+            self._cleanup_worker()
+            self._status_msg.setText("Test stopped (worker exited unexpectedly)")
             return
         elapsed = time.monotonic() - self._test_start_time
         scheduler = self._worker.scheduler

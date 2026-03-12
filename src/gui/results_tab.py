@@ -147,7 +147,13 @@ class ResultsTab(QWidget):
         status_item = _item(
             status.state.capitalize(), Qt.AlignmentFlag.AlignCenter
         )
-        color_map = {"passed": "#4caf50", "failed": "#f44336", "testing": "#4fc3f7"}
+        color_map = {
+            "passed": "#4caf50",
+            "failed": "#f44336",
+            "testing": "#4fc3f7",
+            "pending": "#888888",
+            "skipped": "#555555",
+        }
         color = color_map.get(status.state, "#888")
         status_item.setForeground(QColor(color))
         self._table.setItem(row, 2, status_item)

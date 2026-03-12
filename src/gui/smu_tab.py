@@ -212,6 +212,17 @@ class SMUTab(QWidget):
         if self._smu:
             self._smu.dry_run = checked
 
+        # visual feedback on write buttons
+        dry_style = (
+            "QPushButton { border: 2px dashed #ff9800; color: #ff9800; }"
+            if checked
+            else ""
+        )
+        self._apply_all_btn.setStyleSheet(dry_style)
+        self._reset_btn.setStyleSheet(dry_style)
+        self._apply_all_btn.setText("Apply All [DRY]" if checked else "Apply All New Values")
+        self._reset_btn.setText("Reset All [DRY]" if checked else "Reset All to 0")
+
     # ------------------------------------------------------------------
     # Confirmation dialog (shared by all write paths)
     # ------------------------------------------------------------------
@@ -244,8 +255,15 @@ class SMUTab(QWidget):
         if not self._smu or not self._topology:
             return
 
+        max_retries = 2
         for core_id, row in self._core_row_map().items():
             val = self._smu.get_co_offset(core_id)
+            # retry individually on failure
+            if val is None:
+                for _ in range(max_retries):
+                    val = self._smu.get_co_offset(core_id)
+                    if val is not None:
+                        break
             text = str(val) if val is not None else "ERR"
             self._table.setItem(row, 2, _item(text))
             if val is not None and core_id in self._spinboxes:
