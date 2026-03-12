@@ -86,7 +86,7 @@ class CoreScheduler:
         self.backend = backend
         self.stress_config = stress_config
         self.config = scheduler_config
-        self.work_dir = work_dir or Path("/tmp/linux-corecycler")
+        self.work_dir = work_dir or Path("/tmp/corecyclerlx")
         self.detector = ErrorDetector()
 
         self.state = TestState.IDLE

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from engine.backends.base import FFTPreset, StressMode
 
-CONFIG_DIR = Path.home() / ".config" / "linux-corecycler"
+CONFIG_DIR = Path.home() / ".config" / "corecyclerlx"
 DEFAULT_PROFILE = CONFIG_DIR / "default.json"
 
 
@@ -45,7 +45,7 @@ class TestProfile:
 
 @dataclass(slots=True)
 class AppSettings:
-    work_dir: str = "/tmp/linux-corecycler"
+    work_dir: str = "/tmp/corecyclerlx"
     theme: str = "system"
     poll_interval: float = 1.0
     show_smt_threads: bool = False

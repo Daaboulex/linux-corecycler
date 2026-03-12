@@ -24,7 +24,7 @@
       in
       {
         packages.default = pythonPkgs.buildPythonApplication {
-          pname = "linux-corecycler";
+          pname = "corecyclerlx";
           version = "0.2.0";
           pyproject = true;
 
@@ -52,15 +52,15 @@
 
           # Install icon, desktop file, and asset SVGs
           postInstall = ''
-            install -Dm644 assets/icon.svg $out/share/icons/hicolor/scalable/apps/linux-corecycler.svg
-            install -Dm644 assets/linux-corecycler.desktop $out/share/applications/linux-corecycler.desktop
-            install -d $out/share/linux-corecycler/assets
-            install -Dm644 assets/*.svg $out/share/linux-corecycler/assets/
+            install -Dm644 assets/icon.svg $out/share/icons/hicolor/scalable/apps/corecyclerlx.svg
+            install -Dm644 assets/corecyclerlx.desktop $out/share/applications/corecyclerlx.desktop
+            install -d $out/share/corecyclerlx/assets
+            install -Dm644 assets/*.svg $out/share/corecyclerlx/assets/
           '';
 
           # Make stress test backends available on PATH at runtime
           postFixup = ''
-            wrapProgram $out/bin/linux-corecycler \
+            wrapProgram $out/bin/corecyclerlx \
               --prefix PATH : ${
                 pkgs.lib.makeBinPath [
                   pkgs.mprime
@@ -73,7 +73,7 @@
           meta = {
             description = "Per-core CPU stability tester and PBO Curve Optimizer tuner for AMD Ryzen";
             license = pkgs.lib.licenses.gpl3Plus;
-            mainProgram = "linux-corecycler";
+            mainProgram = "corecyclerlx";
             platforms = pkgs.lib.platforms.linux;
           };
         };
@@ -96,7 +96,7 @@
           env.QT_QPA_PLATFORM_PLUGIN_PATH = "${pkgs.qt6.qtbase}/lib/qt-6/plugins/platforms";
 
           shellHook = ''
-            echo "linux-corecycler dev shell"
+            echo "corecyclerlx dev shell"
             echo "  Run:  python src/main.py"
             echo "  Test: pytest tests/"
           '';

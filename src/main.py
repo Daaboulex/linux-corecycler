@@ -1,4 +1,4 @@
-"""Linux CoreCycler — Per-core CPU stability tester and PBO Curve Optimizer tuner."""
+"""CoreCyclerLx — Per-core CPU stability tester and PBO Curve Optimizer tuner."""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ def main() -> int:
     )
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Linux CoreCycler")
-    app.setOrganizationName("linux-corecycler")
+    app.setApplicationName("CoreCyclerLx")
+    app.setOrganizationName("corecyclerlx")
 
     # Locate assets — dev mode (src/../assets) or installed ($out/share/...)
     assets_dir = _find_assets_dir()
@@ -52,8 +52,8 @@ def _find_assets_dir() -> Path:
     if dev_assets.is_dir():
         return dev_assets
     # Nix installed: __file__ is $out/lib/python3.x/site-packages/main.py
-    # so go up 4 levels to $out, then into share/linux-corecycler/assets
-    nix_assets = Path(__file__).resolve().parents[3] / "share" / "linux-corecycler" / "assets"
+    # so go up 4 levels to $out, then into share/corecyclerlx/assets
+    nix_assets = Path(__file__).resolve().parents[3] / "share" / "corecyclerlx" / "assets"
     if nix_assets.is_dir():
         return nix_assets
     return dev_assets  # fallback

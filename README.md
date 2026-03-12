@@ -1,4 +1,4 @@
-# Linux CoreCycler
+# CoreCyclerLx
 
 Per-core CPU stress testing and AMD PBO Curve Optimizer tuning for Linux.
 
@@ -8,16 +8,16 @@ Per-core CPU stress testing and AMD PBO Curve Optimizer tuning for Linux.
 
 ## What Is This?
 
-Linux CoreCycler is a Linux equivalent of [CoreCycler](https://github.com/sp00n/corecycler) (Windows) for AMD PBO Curve Optimizer tuning. It provides a graphical interface for running per-core stress tests and optionally reading/writing Curve Optimizer values via the AMD SMU (System Management Unit).
+CoreCyclerLx is a Linux equivalent of [CoreCycler](https://github.com/sp00n/corecycler) (Windows) for AMD PBO Curve Optimizer tuning. It provides a graphical interface for running per-core stress tests and optionally reading/writing Curve Optimizer values via the AMD SMU (System Management Unit).
 
 **What is Curve Optimizer?**
 AMD Precision Boost Overdrive (PBO) Curve Optimizer (CO) lets you adjust the voltage-frequency curve on a per-core basis. Negative CO values reduce voltage at a given frequency, allowing the CPU to boost higher within its thermal and power limits. Each core in a processor is unique -- some can handle aggressive negative offsets (e.g., -30), while others become unstable past modest values (e.g., -10). Finding the right value for each core requires per-core testing.
 
 **Why per-core testing matters:**
-All-core stress tests (Prime95 with all threads, Cinebench, etc.) cannot reliably detect per-core instability. When all cores are loaded simultaneously, each core runs at lower boost clocks and voltages than it would under single-threaded load. A core that passes an all-core test at 5.0 GHz may crash when it boosts to 5.7 GHz under single-threaded load with an aggressive CO offset. Linux CoreCycler solves this by testing one core at a time at full single-threaded boost clocks, cycling through every core in sequence.
+All-core stress tests (Prime95 with all threads, Cinebench, etc.) cannot reliably detect per-core instability. When all cores are loaded simultaneously, each core runs at lower boost clocks and voltages than it would under single-threaded load. A core that passes an all-core test at 5.0 GHz may crash when it boosts to 5.7 GHz under single-threaded load with an aggressive CO offset. CoreCyclerLx solves this by testing one core at a time at full single-threaded boost clocks, cycling through every core in sequence.
 
 **Why idle and variable load testing matters:**
-CO instability often manifests at idle or during load transitions, not under sustained full load. When a core drops to deep C-states (idle) and then wakes up, the voltage ramp-up may be insufficient with an aggressive CO offset. Similarly, the transition from idle to load or from light load to heavy load stresses the voltage regulator in ways that sustained load does not. A CO value that passes hours of Prime95 can still cause random crashes during normal desktop use. Linux CoreCycler addresses this with dedicated idle stability tests and variable load modes.
+CO instability often manifests at idle or during load transitions, not under sustained full load. When a core drops to deep C-states (idle) and then wakes up, the voltage ramp-up may be insufficient with an aggressive CO offset. Similarly, the transition from idle to load or from light load to heavy load stresses the voltage regulator in ways that sustained load does not. A CO value that passes hours of Prime95 can still cause random crashes during normal desktop use. CoreCyclerLx addresses this with dedicated idle stability tests and variable load modes.
 
 ## Features
 
@@ -103,7 +103,7 @@ The Auto-Tuner also writes CO values via SMU as part of its automated search -- 
 The full lifecycle of CO values:
 
 1. **Boot**: BIOS applies your configured PBO Curve Optimizer values (e.g., -20 all-core)
-2. **Runtime (optional)**: Linux CoreCycler can override individual core CO values via SMU writes -- these override the BIOS values in the CPU's runtime state
+2. **Runtime (optional)**: CoreCyclerLx can override individual core CO values via SMU writes -- these override the BIOS values in the CPU's runtime state
 3. **Reboot**: All SMU-written values are discarded; BIOS values are reapplied from step 1
 
 If you have PBO values already set in BIOS, those are your baseline. The stress testing feature tests whether those values are stable under per-core load. The SMU tab lets you experiment with different values at runtime without rebooting between each change.
@@ -125,7 +125,7 @@ Add the flake input to your `flake.nix`:
 ```nix
 {
   inputs = {
-    linux-corecycler.url = "github:Daaboulex/linux-corecycler";
+    corecyclerlx.url = "github:Daaboulex/corecyclerlx";
     # ...
   };
 }
@@ -136,12 +136,12 @@ Then add the package to your system or Home Manager configuration:
 ```nix
 # In your nixosConfiguration or home-manager module:
 environment.systemPackages = [
-  inputs.linux-corecycler.packages.${pkgs.system}.default
+  inputs.corecyclerlx.packages.${pkgs.system}.default
 ];
 
 # Or with Home Manager:
 home.packages = [
-  inputs.linux-corecycler.packages.${pkgs.system}.default
+  inputs.corecyclerlx.packages.${pkgs.system}.default
 ];
 ```
 
@@ -152,14 +152,14 @@ The Nix package includes stress-ng and taskset (util-linux) on PATH automaticall
 Run directly without installing:
 
 ```bash
-nix run github:Daaboulex/linux-corecycler
+nix run github:Daaboulex/corecyclerlx
 ```
 
 ### From source (non-Nix)
 
 ```bash
-git clone https://github.com/Daaboulex/linux-corecycler.git
-cd linux-corecycler
+git clone https://github.com/Daaboulex/corecyclerlx.git
+cd corecyclerlx
 pip install PySide6
 python src/main.py
 ```
@@ -224,7 +224,7 @@ mprime is the Linux command-line build of Prime95. It is unfree software distrib
 
 ### Quick Start
 
-1. Launch Linux CoreCycler (`linux-corecycler` or `python src/main.py`)
+1. Launch CoreCyclerLx (`corecyclerlx` or `python src/main.py`)
 2. The application detects your CPU topology automatically (cores, CCDs, SMT, X3D)
 3. In the Configuration tab, select a backend -- use stress-ng if mprime is not installed
 4. The default preset is **Standard** (10 min/core, 1 cycle) -- adjust or choose a different preset as needed
@@ -248,7 +248,7 @@ This is the primary workflow for tuning AMD PBO Curve Optimizer:
 
 1. **Set conservative starting CO values in BIOS.** Start with a modest negative offset for all cores (e.g., -15 all-core). This is your baseline.
 
-2. **Run a screening pass.** Launch Linux CoreCycler with mprime, SSE mode, Small FFTs, Standard preset (10 minutes per core, 1 cycle). This takes roughly `10 min * core_count` to complete.
+2. **Run a screening pass.** Launch CoreCyclerLx with mprime, SSE mode, Small FFTs, Standard preset (10 minutes per core, 1 cycle). This takes roughly `10 min * core_count` to complete.
 
 3. **Identify failing cores.** Note which cores fail. These are the cores that cannot sustain the -15 offset at full single-threaded boost clocks.
 
@@ -406,7 +406,7 @@ src/
     frequency.py             # Per-core frequency monitoring
     power.py                 # Power consumption monitoring
   config/
-    settings.py              # JSON settings and test profile persistence (~/.config/linux-corecycler/)
+    settings.py              # JSON settings and test profile persistence (~/.config/corecyclerlx/)
   tuner/
     __init__.py              # Package re-exports
     config.py                # TunerConfig dataclass (14 search parameters with defaults)
