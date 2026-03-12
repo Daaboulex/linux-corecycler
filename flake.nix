@@ -27,7 +27,10 @@
 
           src = ./.;
 
-          build-system = [ pythonPkgs.setuptools ];
+          build-system = [
+            pythonPkgs.setuptools
+            pythonPkgs.setuptools-scm
+          ];
 
           dependencies = [
             pythonPkgs.pyside6
