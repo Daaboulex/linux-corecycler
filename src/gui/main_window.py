@@ -214,7 +214,6 @@ class MainWindow(QMainWindow):
         scheduler_config = SchedulerConfig(
             seconds_per_core=profile.seconds_per_core,
             cores_to_test=profile.cores_to_test,
-            test_smt_siblings=profile.test_smt,
             stop_on_error=profile.stop_on_error,
             cycle_count=profile.cycle_count,
             max_temperature=profile.max_temperature,
@@ -326,6 +325,14 @@ class MainWindow(QMainWindow):
             cycle=profile.cycle_count,
             total_cycles=profile.cycle_count,
         )
+
+        # enable "Retest Failed" button with the list of failed cores
+        failed_cores = [
+            cid
+            for cid, r_list in results.items()
+            if r_list and not all(r.passed for r in r_list)
+        ]
+        self._config_tab.set_failed_cores(failed_cores)
 
     def _on_worker_finished(self) -> None:
         self._cleanup_worker()
@@ -447,7 +454,10 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             self._worker.scheduler.force_stop()
-            self._worker.wait(5000)
+            if not self._worker.wait(5000):
+                # Worker didn't finish — terminate thread and kill any orphans
+                self._worker.terminate()
+                self._worker.wait(2000)
 
         # save window size
         self._settings.window_width = self.width()

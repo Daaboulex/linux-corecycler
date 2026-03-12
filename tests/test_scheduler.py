@@ -63,7 +63,6 @@ class TestTestState:
     def test_all_states(self):
         assert TestState.IDLE
         assert TestState.RUNNING
-        assert TestState.PAUSED
         assert TestState.STOPPING
         assert TestState.FINISHED
 
@@ -95,9 +94,7 @@ class TestSchedulerConfig:
     def test_defaults(self):
         cfg = SchedulerConfig()
         assert cfg.seconds_per_core == 360
-        assert cfg.iterations_per_core == 0
         assert cfg.cores_to_test is None
-        assert cfg.test_smt_siblings is False
         assert cfg.stop_on_error is False
         assert cfg.cycle_count == 1
         assert cfg.poll_interval == 1.0

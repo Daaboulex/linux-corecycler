@@ -39,14 +39,16 @@ class ErrorDetector:
 
     def __init__(self) -> None:
         self._mce_baseline: int = 0
-        self._dmesg_offset: str = ""
+        self._mce_bank_baseline: dict[str, int] = {}  # "cpu:bank" -> count
+        self._dmesg_baseline_ts: float = 0.0  # raw monotonic timestamp
         self._last_dmesg_time: float = 0.0
         self._last_dmesg_events: list[MCEEvent] = []
 
     def reset(self) -> None:
         """Reset error tracking — call before starting a new test run."""
         self._mce_baseline = self._count_mce_events()
-        self._dmesg_offset = _get_dmesg_timestamp()
+        self._mce_bank_baseline = self._snapshot_mce_banks()
+        self._dmesg_baseline_ts = _get_dmesg_raw_timestamp()
         self._last_dmesg_time = 0.0
         self._last_dmesg_events = []
 
@@ -105,15 +107,22 @@ class ErrorDetector:
             for bank_file in bank_files:
                 try:
                     count = int(bank_file.read_text().strip())
-                    if count > 0:
-                        match = re.search(r"\d+", bank_file.name)
-                        bank_num = int(match.group()) if match else -1
+                    match = re.search(r"\d+", bank_file.name)
+                    bank_num = int(match.group()) if match else -1
+                    # compare against baseline — only report NEW events
+                    baseline_key = f"{cpu_num}:{bank_num}"
+                    baseline_count = self._mce_bank_baseline.get(baseline_key, 0)
+                    new_count = count - baseline_count
+                    if new_count > 0:
                         events.append(
                             MCEEvent(
                                 timestamp=time.time(),
                                 cpu=cpu_num,
                                 bank=bank_num,
-                                message=f"MCE bank {bank_num} error count: {count}",
+                                message=(
+                                    f"MCE bank {bank_num} error count: {count} "
+                                    f"(+{new_count} since test start)"
+                                ),
                                 corrected=True,  # sysfs only shows corrected
                             )
                         )
@@ -160,6 +169,16 @@ class ErrorDetector:
                 if "mce" not in line.lower() and "machine check" not in line.lower():
                     continue
 
+                # filter by baseline timestamp — only report NEW messages
+                ts_match = re.match(r"\s*([\d.]+)", line)
+                if ts_match and self._dmesg_baseline_ts > 0:
+                    try:
+                        msg_ts = float(ts_match.group(1))
+                        if msg_ts <= self._dmesg_baseline_ts:
+                            continue  # pre-existing message, skip
+                    except ValueError:
+                        pass
+
                 # extract CPU number from MCE message
                 cpu_match = re.search(r"CPU (\d+)", line)
                 cpu_num = int(cpu_match.group(1)) if cpu_match else -1
@@ -193,6 +212,42 @@ class ErrorDetector:
             return events
         return [e for e in events if e.cpu == target_cpu or e.cpu == -1]
 
+    def _snapshot_mce_banks(self) -> dict[str, int]:
+        """Capture per-CPU per-bank MCE counts as a baseline snapshot."""
+        snapshot: dict[str, int] = {}
+        mce_base = Path("/sys/devices/system/machinecheck")
+        try:
+            if not mce_base.exists():
+                return snapshot
+        except OSError:
+            return snapshot
+
+        try:
+            mce_dirs = list(mce_base.iterdir())
+        except (OSError, PermissionError):
+            return snapshot
+
+        for mce_dir in mce_dirs:
+            if not mce_dir.name.startswith("machinecheck"):
+                continue
+            try:
+                cpu_num = int(mce_dir.name.removeprefix("machinecheck"))
+            except ValueError:
+                continue
+            try:
+                bank_files = list(mce_dir.glob("bank*"))
+            except (OSError, PermissionError):
+                continue
+            for bank_file in bank_files:
+                try:
+                    count = int(bank_file.read_text().strip())
+                    match = re.search(r"\d+", bank_file.name)
+                    bank_num = int(match.group()) if match else -1
+                    snapshot[f"{cpu_num}:{bank_num}"] = count
+                except (ValueError, OSError, PermissionError, AttributeError):
+                    continue
+        return snapshot
+
     def _count_mce_events(self) -> int:
         """Count total MCE events across all CPUs.
 
@@ -225,8 +280,8 @@ class ErrorDetector:
         return total
 
 
-def _get_dmesg_timestamp() -> str:
-    """Get the latest dmesg timestamp for offset tracking."""
+def _get_dmesg_raw_timestamp() -> float:
+    """Get the latest dmesg raw monotonic timestamp for baseline filtering."""
     try:
         import subprocess
 
@@ -238,7 +293,11 @@ def _get_dmesg_timestamp() -> str:
         )
         lines = result.stdout.strip().splitlines()
         if lines:
-            return lines[-1].split()[0] if lines[-1] else ""
+            ts_str = lines[-1].split()[0] if lines[-1] else ""
+            try:
+                return float(ts_str)
+            except ValueError:
+                return 0.0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError):
         pass
-    return ""
+    return 0.0
