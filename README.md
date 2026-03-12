@@ -31,7 +31,7 @@ CO instability often manifests at idle or during load transitions, not under sus
 - **Comprehensive SMU integration** for runtime Curve Optimizer, PBO limits, boost override, and PBO scalar via the ryzen_smu kernel module
 - **System state detection** -- auto-detects current CO offsets, PBO limits, boost override, PBO scalar, and estimated BCLK before testing
 - **MCE error detection** -- monitors Machine Check Exceptions via sysfs and dmesg during stress and idle phases
-- **Dark Qt6 GUI** with CCD-aware core grid showing real-time per-core frequency, temperature, and voltage during testing
+- **Dark Qt6 GUI** with modern underline-style tabs, SVG-rendered controls, and CCD-aware core grid showing real-time per-core frequency, temperature, and voltage during testing
 - **Per-core telemetry logging** -- peak frequency, max temperature, and Vcore range recorded for each core's test run
 - **Test profile save/load** -- export and import test configurations as JSON files
 - **Safety features** -- thermal limit monitoring (configurable, default 95C), process group cleanup on stop, confirmation dialogs for CO writes, dry-run mode, backup/restore CO values, volatile-only SMU writes (never touches BIOS)
