@@ -47,10 +47,12 @@
             makeWrapperArgs+=("''${qtWrapperArgs[@]}")
           '';
 
-          # Install icon and desktop file
+          # Install icon, desktop file, and asset SVGs
           postInstall = ''
             install -Dm644 assets/icon.svg $out/share/icons/hicolor/scalable/apps/linux-corecycler.svg
             install -Dm644 assets/linux-corecycler.desktop $out/share/applications/linux-corecycler.desktop
+            install -d $out/share/linux-corecycler/assets
+            install -Dm644 assets/*.svg $out/share/linux-corecycler/assets/
           '';
 
           # Make stress test backends available on PATH at runtime

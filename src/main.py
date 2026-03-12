@@ -24,15 +24,17 @@ def main() -> int:
     app.setApplicationName("Linux CoreCycler")
     app.setOrganizationName("linux-corecycler")
 
+    # Locate assets — dev mode (src/../assets) or installed ($out/share/...)
+    assets_dir = _find_assets_dir()
+
     # app icon
     from PySide6.QtGui import QIcon
 
-    icon_path = Path(__file__).parent.parent / "assets" / "icon.svg"
+    icon_path = assets_dir / "icon.svg"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
-    # dark theme — resolve arrow SVGs relative to this file
-    assets_dir = Path(__file__).parent.parent / "assets"
+    # dark theme
     app.setStyleSheet(_dark_stylesheet(assets_dir))
 
     from gui.main_window import MainWindow
@@ -41,6 +43,20 @@ def main() -> int:
     window.show()
 
     return app.exec()
+
+
+def _find_assets_dir() -> Path:
+    """Find assets directory — works in dev mode and Nix-installed."""
+    # Dev mode: src/../assets
+    dev_assets = Path(__file__).parent.parent / "assets"
+    if dev_assets.is_dir():
+        return dev_assets
+    # Nix installed: __file__ is $out/lib/python3.x/site-packages/main.py
+    # so go up 4 levels to $out, then into share/linux-corecycler/assets
+    nix_assets = Path(__file__).resolve().parents[3] / "share" / "linux-corecycler" / "assets"
+    if nix_assets.is_dir():
+        return nix_assets
+    return dev_assets  # fallback
 
 
 def _dark_stylesheet(assets_dir: Path) -> str:
