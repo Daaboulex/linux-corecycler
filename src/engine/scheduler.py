@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import signal
 import subprocess
 import time
@@ -92,6 +93,7 @@ class CoreScheduler:
         self.results: dict[int, list[StressResult]] = {}
         self.core_status: dict[int, CoreTestStatus] = {}
         self._process: subprocess.Popen | None = None
+        self._we_killed_it = False  # track intentional kills vs external (OOM)
         self._current_core: int | None = None
         self._current_cycle: int = 0
         self._stop_requested = False
@@ -356,6 +358,7 @@ class CoreScheduler:
                 cmd = self.backend.get_command(self.stress_config, core_work_dir)
                 full_cmd = ["taskset", "-c", str(logical_cpu)] + cmd
                 try:
+                    self._we_killed_it = False
                     self._process = subprocess.Popen(
                         full_cmd,
                         stdout=subprocess.PIPE,
@@ -529,6 +532,7 @@ class CoreScheduler:
         last_active_time = start_time  # for stall detection
 
         try:
+            self._we_killed_it = False  # reset before each process launch
             self._process = subprocess.Popen(
                 full_cmd,
                 stdout=subprocess.PIPE,
@@ -621,16 +625,33 @@ class CoreScheduler:
             # parse backend output for errors
             if passed:  # only check output if no MCE already detected
                 returncode = self._process.returncode or 0
-                backend_passed, backend_error = self.backend.parse_output(
-                    stdout_data, stderr_data, returncode
-                )
-                if not backend_passed:
+
+                # If we killed the process (timeout/stop), signal-exit codes are
+                # expected — pass that context to the backend so it doesn't treat
+                # our intentional kill as an OOM or crash.  If we did NOT kill it
+                # and it died to a signal, that's a real crash (OOM killer, etc).
+                if not self._we_killed_it and returncode in (-9, -15, 137, 143):
+                    # External kill (OOM, admin) — treat as error
                     passed = False
-                    error_msg = backend_error
+                    error_msg = (
+                        f"Stress process killed externally (code {returncode}) — "
+                        f"possible OOM or system issue"
+                    )
                     status.errors += 1
                     status.last_error = error_msg
                     if self.config.stop_on_error:
                         self._stop_requested = True
+                else:
+                    backend_passed, backend_error = self.backend.parse_output(
+                        stdout_data, stderr_data, returncode
+                    )
+                    if not backend_passed:
+                        passed = False
+                        error_msg = backend_error
+                        status.errors += 1
+                        status.last_error = error_msg
+                        if self.config.stop_on_error:
+                            self._stop_requested = True
 
         except (OSError, RuntimeError) as e:
             passed = False
@@ -663,6 +684,7 @@ class CoreScheduler:
                 proc.wait(timeout=1)
             return
 
+        self._we_killed_it = True
         # SIGTERM the whole process group
         with contextlib.suppress(OSError, ProcessLookupError):
             os.killpg(pgid, signal.SIGTERM)
@@ -707,11 +729,17 @@ class CoreScheduler:
             return "thermal"
         if "stall" in msg_lower:
             return "stall"
-        if any(w in msg_lower for w in ("rounding", "fatal", "illegal", "sumout", "mismatch")):
+        if any(w in msg_lower for w in (
+            "rounding", "fatal", "illegal", "sumout", "mismatch",
+            "jacobi", "verification", "computation",
+        )):
             return "computation"
         if "timeout" in msg_lower:
             return "timeout"
+        # detect signal exits: "exited with code -11", "killed by signal"
         if "crash" in msg_lower or "signal" in msg_lower:
+            return "crash"
+        if re.search(r"exited with code -\d+", msg_lower):
             return "crash"
         if "idle" in msg_lower:
             return "idle_instability"

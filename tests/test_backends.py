@@ -441,7 +441,7 @@ class TestStressNgBackend:
     @pytest.mark.parametrize(
         "output",
         [
-            "FAILED during stress test",
+            "3 FAILED during stress test",
             "verification error on cpu 0",
             "computation mismatch detected",
             "error: incorrect result",

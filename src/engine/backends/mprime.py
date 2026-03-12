@@ -37,6 +37,7 @@ class MprimeBackend(StressBackend):
 
     def __init__(self) -> None:
         self._binary: str | None = None
+        self._last_work_dir: Path | None = None
 
     def is_available(self) -> bool:
         self._binary = self.find_binary("mprime")
@@ -57,6 +58,7 @@ class MprimeBackend(StressBackend):
 
     def prepare(self, work_dir: Path, config: StressConfig) -> None:
         work_dir.mkdir(parents=True, exist_ok=True)
+        self._last_work_dir = work_dir
 
         # determine FFT range
         if config.fft_preset == FFTPreset.CUSTOM and config.fft_min and config.fft_max:
@@ -107,15 +109,27 @@ class MprimeBackend(StressBackend):
     def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
         combined = stdout + "\n" + stderr
 
-        # check for fatal errors
+        # also check results.txt if available (mprime writes errors there)
+        if self._last_work_dir:
+            results_file = self._last_work_dir / "results.txt"
+            if results_file.exists():
+                try:
+                    combined += "\n" + results_file.read_text()
+                except OSError:
+                    pass
+
+        # check for fatal errors — comprehensive Prime95/mprime patterns
         fatal_patterns = [
             r"FATAL ERROR",
             r"Rounding was [\d.]+ expected less than",
             r"Hardware failure detected",
             r"Possible hardware failure",
             r"ILLEGAL SUMOUT",
-            r"SUM\(INPUTS\) != SUM\(OUTPUTS\)",
+            r"SUM\(INPUTS?\) != SUM\(OUTPUTS?\)",  # handles singular/plural
+            r"SUMINP\w* error",  # SUMINP/SUMINPUT variants
             r"ERROR: ILLEGAL",
+            r"Jacobi error check failed",
+            r"torture test completed \d+ tests?,\s*[1-9]\d*\s+errors?",  # summary with errors>0
         ]
         for pattern in fatal_patterns:
             match = re.search(pattern, combined, re.IGNORECASE)

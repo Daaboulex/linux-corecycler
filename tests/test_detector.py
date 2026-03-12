@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.detector import ErrorDetector, ErrorState, MCEEvent, _get_dmesg_raw_timestamp
+from engine.detector import ErrorDetector, ErrorState, MCEEvent, _get_dmesg_raw_timestamp, _is_mce_error_line
 
 
 # ===========================================================================
@@ -175,15 +175,22 @@ class TestSysfsMCE:
 
 
 class TestDmesgMCE:
+    def _make_detector_with_baseline(self, baseline_ts: float = 10000.0) -> ErrorDetector:
+        """Create a detector with a non-zero dmesg baseline so detection isn't skipped."""
+        det = ErrorDetector()
+        det._dmesg_baseline_ts = baseline_ts
+        return det
+
     def test_dmesg_with_mce_lines(self):
-        """Should parse MCE lines from dmesg output."""
+        """Should parse MCE error lines from dmesg output."""
+        # Lines must pass _is_mce_error_line — use real MCE error patterns
         dmesg_output = (
-            "12345.678 mce: CPU 3 Bank 5: some error\n"
-            "12345.679 corrected machine check on CPU 3\n"
+            "12345.678 mce: [Hardware Error]: CPU 3 Bank 5: status 0xbc00000000010135\n"
+            "12345.679 corrected error, machine check on CPU 3 Bank 0\n"
             "12345.680 normal log line\n"
         )
 
-        det = ErrorDetector()
+        det = self._make_detector_with_baseline(12345.0)
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout=dmesg_output, stderr=""
@@ -194,11 +201,11 @@ class TestDmesgMCE:
 
     def test_dmesg_filter_by_cpu(self):
         dmesg_output = (
-            "12345.678 mce: CPU 3 Bank 5: error\n"
-            "12345.679 mce: CPU 7 Bank 1: error\n"
+            "12345.678 mce: [Hardware Error]: CPU 3 Bank 5: status error\n"
+            "12345.679 mce: [Hardware Error]: CPU 7 Bank 1: status error\n"
         )
 
-        det = ErrorDetector()
+        det = self._make_detector_with_baseline(12345.0)
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout=dmesg_output, stderr=""
@@ -209,9 +216,9 @@ class TestDmesgMCE:
         assert events[0].cpu == 3
 
     def test_dmesg_bank_extraction(self):
-        dmesg_output = "12345.678 mce: CPU 5 Bank 12: fatal error\n"
+        dmesg_output = "12345.678 mce: [Hardware Error]: CPU 5 Bank 12: fatal\n"
 
-        det = ErrorDetector()
+        det = self._make_detector_with_baseline(12345.0)
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout=dmesg_output, stderr=""
@@ -223,9 +230,9 @@ class TestDmesgMCE:
         assert events[0].cpu == 5
 
     def test_dmesg_corrected_detection(self):
-        dmesg_output = "12345.678 corrected mce on CPU 0 Bank 0: minor\n"
+        dmesg_output = "12345.678 corrected mce on CPU 0 Bank 0: status minor\n"
 
-        det = ErrorDetector()
+        det = self._make_detector_with_baseline(12345.0)
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout=dmesg_output, stderr=""
@@ -236,9 +243,9 @@ class TestDmesgMCE:
         assert events[0].corrected is True
 
     def test_dmesg_uncorrected(self):
-        dmesg_output = "12345.678 uncorrectable mce CPU 2 Bank 3: fatal\n"
+        dmesg_output = "12345.678 uncorrected mce CPU 2 Bank 3: fatal machine check exception\n"
 
-        det = ErrorDetector()
+        det = self._make_detector_with_baseline(12345.0)
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout=dmesg_output, stderr=""
@@ -249,9 +256,9 @@ class TestDmesgMCE:
         assert events[0].corrected is False
 
     def test_dmesg_no_cpu_number(self):
-        dmesg_output = "12345.678 machine check exception detected\n"
+        dmesg_output = "12345.678 fatal machine check exception detected\n"
 
-        det = ErrorDetector()
+        det = self._make_detector_with_baseline(12345.0)
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout=dmesg_output, stderr=""
@@ -262,9 +269,9 @@ class TestDmesgMCE:
         assert events[0].cpu == -1  # unknown CPU
 
     def test_dmesg_no_bank_number(self):
-        dmesg_output = "12345.678 mce: CPU 0: some error\n"
+        dmesg_output = "12345.678 mce: [Hardware Error]: CPU 0: severity corrected\n"
 
-        det = ErrorDetector()
+        det = self._make_detector_with_baseline(12345.0)
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout=dmesg_output, stderr=""
@@ -276,7 +283,7 @@ class TestDmesgMCE:
 
     def test_dmesg_failure(self):
         """dmesg returning non-zero should return empty list."""
-        det = ErrorDetector()
+        det = self._make_detector_with_baseline()
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
             events = det._check_dmesg_mce(target_cpu=None)
@@ -285,19 +292,19 @@ class TestDmesgMCE:
     def test_dmesg_timeout(self):
         import subprocess
 
-        det = ErrorDetector()
+        det = self._make_detector_with_baseline()
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("dmesg", 5)):
             events = det._check_dmesg_mce(target_cpu=None)
         assert events == []
 
     def test_dmesg_not_found(self):
-        det = ErrorDetector()
+        det = self._make_detector_with_baseline()
         with patch("subprocess.run", side_effect=FileNotFoundError):
             events = det._check_dmesg_mce(target_cpu=None)
         assert events == []
 
     def test_dmesg_empty_output(self):
-        det = ErrorDetector()
+        det = self._make_detector_with_baseline()
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             events = det._check_dmesg_mce(target_cpu=None)
@@ -308,13 +315,56 @@ class TestDmesgMCE:
             "12345.678 usb 1-1: new device\n"
             "12345.679 ext4: mounted filesystem\n"
         )
-        det = ErrorDetector()
+        det = self._make_detector_with_baseline(12345.0)
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout=dmesg_output, stderr=""
             )
             events = det._check_dmesg_mce(target_cpu=None)
         assert events == []
+
+    def test_dmesg_skipped_when_no_baseline(self):
+        """When baseline_ts is 0.0, dmesg detection should be skipped entirely."""
+        dmesg_output = "12345.678 mce: [Hardware Error]: CPU 0 Bank 1: status error\n"
+        det = ErrorDetector()  # baseline_ts defaults to 0.0
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout=dmesg_output, stderr=""
+            )
+            events = det._check_dmesg_mce(target_cpu=None)
+        assert events == []
+
+    def test_dmesg_filters_boot_info_messages(self):
+        """Boot/info MCE messages should be excluded."""
+        dmesg_output = (
+            "12345.678 mce: CPU supports 32 MCE banks\n"
+            "12345.679 Machine check events logged\n"
+            "12345.680 mce: [Hardware Error]: CPU 0 Bank 5: status 0xbc00\n"
+        )
+        det = self._make_detector_with_baseline(12345.0)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout=dmesg_output, stderr=""
+            )
+            events = det._check_dmesg_mce(target_cpu=None)
+        # Only the real error line should match, not the boot messages
+        assert len(events) == 1
+        assert "Bank 5" in events[0].message
+
+    def test_dmesg_pre_baseline_messages_skipped(self):
+        """Messages with timestamps <= baseline should be skipped."""
+        dmesg_output = (
+            "10000.000 mce: [Hardware Error]: CPU 0 Bank 1: status old\n"
+            "10001.000 mce: [Hardware Error]: CPU 0 Bank 2: status new\n"
+        )
+        det = self._make_detector_with_baseline(10000.5)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout=dmesg_output, stderr=""
+            )
+            events = det._check_dmesg_mce(target_cpu=None)
+        assert len(events) == 1
+        assert "Bank 2" in events[0].message
 
 
 # ===========================================================================
@@ -453,3 +503,42 @@ class TestGetDmesgTimestamp:
         with patch("subprocess.run", side_effect=OSError("Permission denied")):
             ts = _get_dmesg_raw_timestamp()
         assert ts == 0.0
+
+
+# ===========================================================================
+# _is_mce_error_line — distinguishes real MCE errors from boot/info
+# ===========================================================================
+
+
+class TestIsMCEErrorLine:
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "mce: [hardware error]: cpu 0 bank 5: status 0xbc00000000010135",
+            "corrected error, machine check on cpu 3 bank 0",
+            "uncorrected mce cpu 2 bank 3: fatal machine check exception",
+            "fatal machine check exception detected",
+            "mce: cpu 0: mca: bank 1 status 0xbe00",
+            "mce: [hardware error]: cpu 5 severity: fatal",
+        ],
+    )
+    def test_real_mce_errors_detected(self, line):
+        assert _is_mce_error_line(line) is True
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "mce: cpu supports 32 mce banks",
+            "machine check events logged",
+            "mce: using 32 mce banks",
+            "mce: cmci storm subsided",
+            "mce_cpu_quirks: setting threshold",
+            "machine check polling timer started",
+        ],
+    )
+    def test_boot_info_messages_excluded(self, line):
+        assert _is_mce_error_line(line) is False
+
+    def test_non_mce_lines_excluded(self):
+        assert _is_mce_error_line("usb 1-1: new device") is False
+        assert _is_mce_error_line("ext4: mounted filesystem") is False

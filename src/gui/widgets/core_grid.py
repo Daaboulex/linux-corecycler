@@ -12,13 +12,15 @@ if TYPE_CHECKING:
     from engine.scheduler import CoreTestStatus
     from engine.topology import CPUTopology
 
-# state -> (background color, text color)
-STATE_COLORS: dict[str, tuple[str, str]] = {
-    "pending": ("#2d2d2d", "#888888"),
-    "testing": ("#1a3a5c", "#4fc3f7"),
-    "passed": ("#1b3a1b", "#4caf50"),
-    "failed": ("#3a1b1b", "#f44336"),
-    "skipped": ("#2d2d2d", "#555555"),
+# state -> (background color, text color, border color)
+STATE_COLORS: dict[str, tuple[str, str, str]] = {
+    "pending": ("#2d2d2d", "#888888", "#444"),
+    "testing": ("#1a3a5c", "#4fc3f7", "#4fc3f7"),
+    "passed": ("#1b3a1b", "#4caf50", "#4caf50"),
+    "failed": ("#3a1b1b", "#f44336", "#f44336"),
+    "skipped": ("#2d2d2d", "#555555", "#444"),
+    # passed but had errors in earlier iterations — warning state
+    "warned": ("#3a3a1b", "#ffb74d", "#ffb74d"),
 }
 
 
@@ -69,11 +71,18 @@ class CoreCell(QWidget):
         self._apply_state_style()
 
     def update_status(self, status: CoreTestStatus) -> None:
-        self._state = status.state
         self._errors = status.errors
         self._elapsed = status.elapsed_seconds
 
+        # Determine visual state: "warned" = passed but had errors in prior iterations
+        if status.state == "passed" and status.errors > 0:
+            self._state = "warned"
+        else:
+            self._state = status.state
+
         state_text = status.state.capitalize()
+        if status.state == "testing" and status.current_phase:
+            state_text = status.current_phase.capitalize()
         if status.errors > 0:
             state_text += f" ({status.errors} err)"
         self._status_label.setText(state_text)
@@ -101,9 +110,11 @@ class CoreCell(QWidget):
                 self._detail_label.setText(f"{vcore_v:.4f}V")
 
     def _apply_state_style(self) -> None:
-        bg, fg = STATE_COLORS.get(self._state, STATE_COLORS["pending"])
+        bg, fg, border = STATE_COLORS.get(self._state, STATE_COLORS["pending"])
+        border_width = "2px" if self._state in ("testing", "failed", "warned") else "1px"
         self.setStyleSheet(
-            f"CoreCell {{ background-color: {bg}; border: 1px solid #444; border-radius: 4px; }}"
+            f"CoreCell {{ background-color: {bg}; border: {border_width} solid {border}; "
+            f"border-radius: 4px; }}"
             f" QLabel {{ color: {fg}; background: transparent; }}"
         )
 
