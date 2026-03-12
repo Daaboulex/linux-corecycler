@@ -3,7 +3,7 @@ requires = ["setuptools>=75.0", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "linux-corecycler"
+name = "corecyclerlx"
 version = "0.2.0"
 description = "Per-core CPU stability tester and PBO Curve Optimizer tuner for AMD Ryzen on Linux"
 readme = "README.md"
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-linux-corecycler = "main:main"
+corecyclerlx = "main:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.8"]

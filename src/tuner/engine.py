@@ -110,7 +110,7 @@ class TunerEngine(QObject):
         self._smu = smu
         self._backend = backend
         self._config = config or TunerConfig()
-        self._work_dir = work_dir or Path("/tmp/linux-corecycler/tuner")
+        self._work_dir = work_dir or Path("/tmp/corecyclerlx/tuner")
 
         self._session_id: int | None = None
         self._core_states: dict[int, CoreState] = {}

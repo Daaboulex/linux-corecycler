@@ -1,8 +1,8 @@
 [Desktop Entry]
-Name=Linux CoreCycler
+Name=CoreCyclerLx
 Comment=Per-core CPU stability tester and PBO Curve Optimizer tuner
-Exec=linux-corecycler
-Icon=linux-corecycler
+Exec=corecyclerlx
+Icon=corecyclerlx
 Terminal=false
 Type=Application
 Categories=System;Monitor;Utility;

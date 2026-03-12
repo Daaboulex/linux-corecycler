@@ -15,7 +15,7 @@ from pathlib import Path
 
 SCHEMA_VERSION = 3
 
-DATA_DIR = Path.home() / ".local" / "share" / "linux-corecycler" / "history"
+DATA_DIR = Path.home() / ".local" / "share" / "corecyclerlx" / "history"
 DEFAULT_DB_PATH = DATA_DIR / "history.db"
 
 
