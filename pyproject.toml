@@ -23,6 +23,9 @@ dev = ["pytest>=8.0", "ruff>=0.8"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools]
+py-modules = ["main"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
