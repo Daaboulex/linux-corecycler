@@ -109,7 +109,7 @@ class MainWindow(QMainWindow):
         self._core_grid = CoreGridWidget(self._topology)
         left.addWidget(self._core_grid)
 
-        main_layout.addLayout(left, stretch=1)
+        main_layout.addLayout(left, stretch=2)
 
         # right: tabs
         self._tabs = QTabWidget()
@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
         self._smu_tab = SMUTab(self._topology)
         self._tabs.addTab(self._smu_tab, "Curve Optimizer")
 
-        main_layout.addWidget(self._tabs, stretch=2)
+        main_layout.addWidget(self._tabs, stretch=3)
 
     def _setup_toolbar(self) -> None:
         toolbar = QToolBar("Test Control")

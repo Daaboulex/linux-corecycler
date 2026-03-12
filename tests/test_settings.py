@@ -36,7 +36,7 @@ class TestTestProfile:
         assert p.fft_min is None
         assert p.fft_max is None
         assert p.threads == 1
-        assert p.seconds_per_core == 360
+        assert p.seconds_per_core == 600
         assert p.iterations_per_core == 0
         assert p.cycle_count == 1
         assert p.stop_on_error is False

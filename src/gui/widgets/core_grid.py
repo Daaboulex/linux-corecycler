@@ -38,22 +38,18 @@ class CoreCell(QWidget):
         self._errors: int = 0
         self._elapsed: float = 0
 
-        self.setMinimumSize(120, 80)
+        self.setMinimumSize(90, 80)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(1)
 
-        # core label
-        vcache_tag = " [V$]" if has_vcache else ""
-        ccd_tag = f"CCD{ccd}" if ccd is not None else ""
+        # core label — CCD is shown in the group header, keep cells compact
         header = f"Core {core_id}"
-        if ccd_tag:
-            header += f"  {ccd_tag}"
-        if vcache_tag:
-            header += vcache_tag
+        if has_vcache:
+            header += " V$"
 
         self._header_label = QLabel(header)
         self._header_label.setFont(QFont("monospace", 9, QFont.Weight.Bold))

@@ -21,7 +21,7 @@ class TestProfile:
     fft_min: int | None = None
     fft_max: int | None = None
     threads: int = 1
-    seconds_per_core: int = 360
+    seconds_per_core: int = 600
     iterations_per_core: int = 0
     cycle_count: int = 1
     stop_on_error: bool = False
@@ -30,7 +30,7 @@ class TestProfile:
     # Safety
     max_temperature: float = 95.0
     # Test mode preset
-    test_mode: str = "CUSTOM"
+    test_mode: str = "STANDARD"
     # Advanced testing
     variable_load: bool = False
     idle_stability_test: float = 0.0
