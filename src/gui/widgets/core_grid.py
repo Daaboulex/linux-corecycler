@@ -84,7 +84,9 @@ class CoreCell(QWidget):
 
         self._apply_state_style()
 
-    def update_telemetry(self, freq_mhz: float = 0, temp_c: float = 0) -> None:
+    def update_telemetry(
+        self, freq_mhz: float = 0, temp_c: float = 0, vcore_v: float | None = None
+    ) -> None:
         self._freq_mhz = freq_mhz
         self._temp_c = temp_c
         if self._state == "testing":
@@ -92,9 +94,11 @@ class CoreCell(QWidget):
             if freq_mhz > 0:
                 parts.append(f"{freq_mhz:.0f}MHz")
             if temp_c > 0:
-                parts.append(f"{temp_c:.0f}°C")
+                parts.append(f"{temp_c:.1f}C")
             if parts:
-                self._detail_label.setText(" | ".join(parts))
+                self._status_label.setText(" | ".join(parts))
+            if vcore_v is not None:
+                self._detail_label.setText(f"{vcore_v:.4f}V")
 
     def _apply_state_style(self) -> None:
         bg, fg = STATE_COLORS.get(self._state, STATE_COLORS["pending"])
@@ -180,10 +184,12 @@ class CoreGridWidget(QWidget):
         if cell:
             cell.update_status(status)
 
-    def update_core_telemetry(self, core_id: int, freq_mhz: float, temp_c: float) -> None:
+    def update_core_telemetry(
+        self, core_id: int, freq_mhz: float, temp_c: float, vcore_v: float | None = None
+    ) -> None:
         cell = self._cells.get(core_id)
         if cell:
-            cell.update_telemetry(freq_mhz, temp_c)
+            cell.update_telemetry(freq_mhz, temp_c, vcore_v)
 
     def _clear_layout(self, layout) -> None:
         while layout.count():

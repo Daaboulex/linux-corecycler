@@ -33,6 +33,8 @@ from gui.monitor_tab import MonitorTab
 from gui.results_tab import ResultsTab
 from gui.smu_tab import SMUTab
 from gui.widgets.core_grid import CoreGridWidget
+from monitor.frequency import read_core_frequencies
+from monitor.hwmon import HWMonReader
 
 
 class TestWorker(QThread):
@@ -69,6 +71,8 @@ class MainWindow(QMainWindow):
         self._topology: CPUTopology | None = None
         self._worker: TestWorker | None = None
         self._test_start_time: float = 0
+        self._hwmon = HWMonReader()
+        self._core_telemetry: dict[int, dict] = {}  # core_id -> {max_freq, max_temp, last_vcore}
 
         self._detect_cpu()
         self._setup_ui()
@@ -282,6 +286,19 @@ class MainWindow(QMainWindow):
         if result and not result.passed:
             self._results_tab.add_error(core_id, result.error_message or "Unknown error")
 
+        # log telemetry summary for this core
+        t = self._core_telemetry.pop(core_id, None)
+        if t and t["max_freq"] > 0:
+            vcore_str = ""
+            if t["min_vcore"] is not None and t["max_vcore"] is not None:
+                vcore_str = f"  Vcore: {t['min_vcore']:.4f}-{t['max_vcore']:.4f}V"
+            state = "PASS" if (result and result.passed) else "FAIL"
+            self._results_tab.add_log(
+                core_id,
+                f"[{state}] Peak: {t['max_freq']:.0f} MHz, "
+                f"Max temp: {t['max_temp']:.1f}C{vcore_str}",
+            )
+
     @Slot(int, object)
     def _on_status_updated(self, core_id: int, status: CoreTestStatus) -> None:
         self._core_grid.update_core_status(core_id, status)
@@ -341,6 +358,53 @@ class MainWindow(QMainWindow):
             cycle=scheduler._current_cycle + 1,
             total_cycles=profile.cycle_count,
         )
+
+        # feed per-core telemetry to the grid for the active core
+        self._poll_core_telemetry(scheduler)
+
+    def _poll_core_telemetry(self, scheduler: CoreScheduler) -> None:
+        """Read freq/temp/voltage and push to the active core's grid cell."""
+        current_core = scheduler._current_core
+        if current_core is None:
+            return
+
+        core_info = self._topology.cores.get(current_core) if self._topology else None
+        if not core_info:
+            return
+
+        logical_cpu = core_info.logical_cpus[0]
+
+        # per-core frequency
+        freqs = read_core_frequencies()
+        freq = freqs.get(logical_cpu, 0)
+
+        # package temperature and voltage
+        hwmon_data = self._hwmon.read()
+        temp = hwmon_data.tctl_c or 0
+        vcore = hwmon_data.vcore_v
+
+        self._core_grid.update_core_telemetry(current_core, freq, temp, vcore)
+
+        # track peak telemetry per core for the log
+        if current_core not in self._core_telemetry:
+            self._core_telemetry[current_core] = {
+                "max_freq": 0.0,
+                "max_temp": 0.0,
+                "last_vcore": None,
+                "min_vcore": None,
+                "max_vcore": None,
+            }
+        t = self._core_telemetry[current_core]
+        if freq > t["max_freq"]:
+            t["max_freq"] = freq
+        if temp > t["max_temp"]:
+            t["max_temp"] = temp
+        if vcore is not None:
+            t["last_vcore"] = vcore
+            if t["min_vcore"] is None or vcore < t["min_vcore"]:
+                t["min_vcore"] = vcore
+            if t["max_vcore"] is None or vcore > t["max_vcore"]:
+                t["max_vcore"] = vcore
 
     def _save_profile(self) -> None:
         from config.settings import save_profile
