@@ -68,24 +68,28 @@ def _dark_stylesheet(assets_dir: Path) -> str:
             color: #ddd;
         }}
         QTabWidget::pane {{
-            border: 1px solid #333;
+            border: none;
+            border-top: 1px solid #333;
             background: #1e1e1e;
+        }}
+        QTabBar {{
+            background: transparent;
         }}
         QTabBar::tab {{
-            background: #2d2d2d;
-            color: #aaa;
-            padding: 8px 16px;
-            border: 1px solid #333;
-            border-bottom: none;
-            border-top-left-radius: 4px;
-            border-top-right-radius: 4px;
+            background: transparent;
+            color: #888;
+            padding: 8px 18px;
+            border: none;
+            border-bottom: 2px solid transparent;
+            margin-right: 2px;
         }}
         QTabBar::tab:selected {{
-            background: #1e1e1e;
             color: #fff;
+            border-bottom: 2px solid #4fc3f7;
         }}
-        QTabBar::tab:hover {{
-            background: #353535;
+        QTabBar::tab:hover:!selected {{
+            color: #ccc;
+            border-bottom: 2px solid #555;
         }}
         QGroupBox {{
             border: 1px solid #333;
@@ -198,20 +202,20 @@ def _dark_stylesheet(assets_dir: Path) -> str:
             image: url({a}/arrow-down-disabled.svg);
         }}
         /* --- Buttons --- */
-        QPushButton {{
+        QPushButton, QToolButton {{
             background-color: #2d2d2d;
             color: #ddd;
             border: 1px solid #444;
             border-radius: 4px;
             padding: 6px 12px;
         }}
-        QPushButton:hover {{
+        QPushButton:hover, QToolButton:hover {{
             background-color: #353535;
         }}
-        QPushButton:pressed {{
+        QPushButton:pressed, QToolButton:pressed {{
             background-color: #1a1a1a;
         }}
-        QPushButton:disabled {{
+        QPushButton:disabled, QToolButton:disabled {{
             color: #555;
             background-color: #222;
         }}

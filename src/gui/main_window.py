@@ -154,7 +154,7 @@ class MainWindow(QMainWindow):
         self._stop_btn.setEnabled(False)
         self._stop_btn.setStyleSheet(
             "QPushButton { background: #b71c1c; color: white; padding: 8px 16px; "
-            "border-radius: 4px; font-weight: bold; } "
+            "border-radius: 4px; font-weight: bold; min-width: 80px; } "
             "QPushButton:hover { background: #c62828; } "
             "QPushButton:disabled { background: #333; color: #666; }"
         )
