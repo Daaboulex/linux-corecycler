@@ -31,8 +31,9 @@ def main() -> int:
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
-    # dark theme
-    app.setStyleSheet(_dark_stylesheet())
+    # dark theme — resolve arrow SVGs relative to this file
+    assets_dir = Path(__file__).parent.parent / "assets"
+    app.setStyleSheet(_dark_stylesheet(assets_dir))
 
     from gui.main_window import MainWindow
 
@@ -42,17 +43,19 @@ def main() -> int:
     return app.exec()
 
 
-def _dark_stylesheet() -> str:
-    return """
-        QMainWindow, QWidget {
+def _dark_stylesheet(assets_dir: Path) -> str:
+    # Qt QSS requires forward slashes even on Windows
+    a = str(assets_dir).replace("\\", "/")
+    return f"""
+        QMainWindow, QWidget {{
             background-color: #1e1e1e;
             color: #ddd;
-        }
-        QTabWidget::pane {
+        }}
+        QTabWidget::pane {{
             border: 1px solid #333;
             background: #1e1e1e;
-        }
-        QTabBar::tab {
+        }}
+        QTabBar::tab {{
             background: #2d2d2d;
             color: #aaa;
             padding: 8px 16px;
@@ -60,166 +63,188 @@ def _dark_stylesheet() -> str:
             border-bottom: none;
             border-top-left-radius: 4px;
             border-top-right-radius: 4px;
-        }
-        QTabBar::tab:selected {
+        }}
+        QTabBar::tab:selected {{
             background: #1e1e1e;
             color: #fff;
-        }
-        QTabBar::tab:hover {
+        }}
+        QTabBar::tab:hover {{
             background: #353535;
-        }
-        QGroupBox {
+        }}
+        QGroupBox {{
             border: 1px solid #333;
             border-radius: 4px;
             margin-top: 12px;
             padding-top: 12px;
             font-weight: bold;
             color: #aaa;
-        }
-        QGroupBox::title {
+        }}
+        QGroupBox::title {{
             subcontrol-origin: margin;
             left: 10px;
             padding: 0 4px;
-        }
-        QTableWidget {
+        }}
+        QTableWidget {{
             background-color: #252525;
             alternate-background-color: #2a2a2a;
             gridline-color: #333;
             border: 1px solid #333;
             color: #ddd;
-        }
-        QTableWidget::item:selected {
+        }}
+        QTableWidget::item:selected {{
             background-color: #1a3a5c;
-        }
-        QHeaderView::section {
+        }}
+        QHeaderView::section {{
             background-color: #2d2d2d;
             color: #aaa;
             padding: 4px;
             border: 1px solid #333;
             font-weight: bold;
-        }
-        QComboBox, QSpinBox, QLineEdit {
+        }}
+        QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{
             background-color: #2d2d2d;
             color: #ddd;
             border: 1px solid #444;
             border-radius: 3px;
             padding: 4px 8px;
-        }
-        QComboBox:focus, QSpinBox:focus, QLineEdit:focus {
+        }}
+        QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
             border-color: #4fc3f7;
-        }
-        QComboBox::drop-down {
-            border: none;
-            width: 24px;
-            subcontrol-position: right center;
-        }
-        QComboBox::down-arrow {
-            image: none;
-            border-left: 5px solid transparent;
-            border-right: 5px solid transparent;
-            border-top: 6px solid #888;
-            margin-right: 6px;
-        }
-        QComboBox::down-arrow:hover {
-            border-top-color: #4fc3f7;
-        }
-        QSpinBox::up-button, QDoubleSpinBox::up-button {
+        }}
+        /* --- QComboBox dropdown --- */
+        QComboBox::drop-down {{
+            subcontrol-origin: padding;
             subcontrol-position: top right;
-            border: none;
+            width: 24px;
             border-left: 1px solid #444;
-            width: 20px;
-        }
-        QSpinBox::down-button, QDoubleSpinBox::down-button {
-            subcontrol-position: bottom right;
-            border: none;
-            border-left: 1px solid #444;
-            width: 20px;
-        }
-        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-            image: none;
-            border-left: 4px solid transparent;
-            border-right: 4px solid transparent;
-            border-bottom: 5px solid #888;
-        }
-        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-            image: none;
-            border-left: 4px solid transparent;
-            border-right: 4px solid transparent;
-            border-top: 5px solid #888;
-        }
-        QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {
-            border-bottom-color: #4fc3f7;
-        }
-        QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {
-            border-top-color: #4fc3f7;
-        }
-        QSpinBox::up-button:hover, QSpinBox::down-button:hover,
-        QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
+            border-top-right-radius: 3px;
+            border-bottom-right-radius: 3px;
             background: #353535;
-        }
-        QPushButton {
+        }}
+        QComboBox::drop-down:hover {{
+            background: #3d3d3d;
+        }}
+        QComboBox::down-arrow {{
+            image: url({a}/arrow-down.svg);
+            width: 10px;
+            height: 6px;
+        }}
+        QComboBox::down-arrow:hover {{
+            image: url({a}/arrow-down-hover.svg);
+        }}
+        QComboBox::down-arrow:disabled {{
+            image: url({a}/arrow-down-disabled.svg);
+        }}
+        /* --- QSpinBox / QDoubleSpinBox buttons --- */
+        QSpinBox::up-button, QDoubleSpinBox::up-button {{
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 20px;
+            border-left: 1px solid #444;
+            border-bottom: 1px solid #444;
+            border-top-right-radius: 3px;
+            background: #353535;
+        }}
+        QSpinBox::down-button, QDoubleSpinBox::down-button {{
+            subcontrol-origin: padding;
+            subcontrol-position: bottom right;
+            width: 20px;
+            border-left: 1px solid #444;
+            border-bottom-right-radius: 3px;
+            background: #353535;
+        }}
+        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+            background: #3d3d3d;
+        }}
+        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+            image: url({a}/arrow-up.svg);
+            width: 10px;
+            height: 6px;
+        }}
+        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+            image: url({a}/arrow-down.svg);
+            width: 10px;
+            height: 6px;
+        }}
+        QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {{
+            image: url({a}/arrow-up-hover.svg);
+        }}
+        QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {{
+            image: url({a}/arrow-down-hover.svg);
+        }}
+        QSpinBox::up-arrow:disabled, QSpinBox::up-arrow:off,
+        QDoubleSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:off {{
+            image: url({a}/arrow-up-disabled.svg);
+        }}
+        QSpinBox::down-arrow:disabled, QSpinBox::down-arrow:off,
+        QDoubleSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:off {{
+            image: url({a}/arrow-down-disabled.svg);
+        }}
+        /* --- Buttons --- */
+        QPushButton {{
             background-color: #2d2d2d;
             color: #ddd;
             border: 1px solid #444;
             border-radius: 4px;
             padding: 6px 12px;
-        }
-        QPushButton:hover {
+        }}
+        QPushButton:hover {{
             background-color: #353535;
-        }
-        QPushButton:pressed {
+        }}
+        QPushButton:pressed {{
             background-color: #1a1a1a;
-        }
-        QPushButton:disabled {
+        }}
+        QPushButton:disabled {{
             color: #555;
             background-color: #222;
-        }
-        QCheckBox {
+        }}
+        QCheckBox {{
             color: #ddd;
             spacing: 8px;
-        }
-        QCheckBox::indicator {
+        }}
+        QCheckBox::indicator {{
             width: 16px;
             height: 16px;
-        }
-        QPlainTextEdit {
+        }}
+        QPlainTextEdit {{
             background-color: #1a1a1a;
             color: #ddd;
             border: 1px solid #333;
-        }
-        QScrollBar:vertical {
+        }}
+        QScrollBar:vertical {{
             background: #1e1e1e;
             width: 10px;
-        }
-        QScrollBar::handle:vertical {
+        }}
+        QScrollBar::handle:vertical {{
             background: #444;
             border-radius: 5px;
             min-height: 20px;
-        }
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+        }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
             height: 0;
-        }
-        QStatusBar {
+        }}
+        QStatusBar {{
             background: #252525;
             color: #aaa;
             border-top: 1px solid #333;
-        }
-        QToolBar {
+        }}
+        QToolBar {{
             background: #252525;
             border-bottom: 1px solid #333;
             spacing: 8px;
             padding: 4px;
-        }
-        QLabel {
+        }}
+        QLabel {{
             color: #ddd;
-        }
-        QScrollArea {
+        }}
+        QScrollArea {{
             border: none;
-        }
-        QSplitter::handle {
+        }}
+        QSplitter::handle {{
             background: #333;
             height: 2px;
-        }
+        }}
     """
 
 
