@@ -35,6 +35,8 @@ CO instability often manifests at idle or during load transitions, not under sus
 - **Per-core telemetry logging** -- peak frequency, max temperature, and Vcore range recorded for each core's test run
 - **Test profile save/load** -- export and import test configurations as JSON files
 - **Safety features** -- thermal limit monitoring (configurable, default 95C), process group cleanup on stop, confirmation dialogs for CO writes, dry-run mode, backup/restore CO values, volatile-only SMU writes (never touches BIOS)
+- **Automated PBO Curve Optimizer tuner** -- coarse-to-fine search algorithm that finds optimal per-core CO values automatically; crash-safe SQLite persistence resumes exactly where it left off after reboot or crash; configurable search parameters with best-practice defaults
+- **Tuner session history** -- the History tab's "Tuner Sessions" view shows all past auto-tuner sessions with date, status, CPU, core count, confirmed count, duration, and BIOS info; clicking a session reveals per-core state details and the complete test log; detail sections stay hidden until a session is selected to avoid wasted space
 
 ## Screenshots
 
@@ -90,9 +92,11 @@ This tool cannot and does not modify your BIOS configuration. Your BIOS Curve Op
 
 The stress testing feature (Start Test button, core cycling, all backends) only runs computational workloads pinned to individual cores. It does not write any CO values, change any voltages, modify any frequencies, or interact with the SMU in any way. It is purely a test harness.
 
-### The Curve Optimizer tab is the only place that writes CO
+### The Curve Optimizer tab and Auto-Tuner are the only places that write CO
 
 The SMU tab provides explicit per-core spinboxes, per-core Apply buttons, and an "Apply All" bulk action. Each write operation requires a confirmation dialog. Dry-run mode lets you preview writes without touching hardware. Backup/restore lets you save and revert CO values within a session.
+
+The Auto-Tuner also writes CO values via SMU as part of its automated search -- it applies one offset at a time per core, tests it, and advances. All writes are logged and every state transition is persisted to SQLite before acting. The tuner and manual Curve Optimizer tab cannot run simultaneously (mutual exclusion).
 
 ### The BIOS-SMU interaction
 
@@ -273,6 +277,71 @@ For Zen 2 (Matisse, Castle Peak), the tab shows "Connected (no CO support)" beca
 
 Remember: all values written here are **volatile** and reset on reboot. To make changes permanent, set them in your BIOS. This tab is useful for rapid iteration -- adjust CO, run a stress test, adjust again -- without rebooting between each change.
 
+### Using the Auto-Tuner
+
+The Auto-Tuner tab automates the entire PBO Curve Optimizer search process. Instead of manually adjusting CO values core-by-core, rebooting into BIOS, retesting, and repeating, the auto-tuner does it all in one run using runtime SMU writes. It requires the ryzen_smu kernel module.
+
+**How it works:**
+
+The tuner uses a coarse-to-fine search for each core:
+
+1. **Coarse search** -- starts at `start_offset` (default 0) and steps in increments of `coarse_step` (default -5) toward `max_offset`. Each step runs a short stress test (`search_duration`, default 60s). If a step passes, the tuner goes more aggressive. If it fails, the tuner knows the limit is between the last passing value and the failing value.
+
+2. **Fine search** -- starting from the last passing coarse value, steps in increments of `fine_step` (default -1) toward the failure point. This narrows down the exact limit for the core.
+
+3. **Confirmation** -- once the best offset is found, a longer confirmation test (`confirm_duration`, default 300s) validates the value. If confirmation fails, the tuner backs off by one fine step and retries. After `max_confirm_retries` (default 2) failures at a value, it backs off further.
+
+4. **Result** -- each core ends up with a confirmed best CO offset. The final profile can be exported as JSON or applied to the Curve Optimizer tab.
+
+**Crash safety:**
+
+Every state transition is committed to SQLite before acting. If the system crashes or reboots mid-test (which is expected during CO tuning -- that's how you find the limit), the tuner detects the interrupted session on next launch and offers to resume. It re-applies CO offsets from saved state, treats the interrupted test as a failure, and continues from the next action. No progress is lost.
+
+**Per-core state machine:**
+
+```
+NOT_STARTED → COARSE_SEARCH → FINE_SEARCH → SETTLED → CONFIRMING → CONFIRMED
+                                    |                       |
+                                    ↓                       ↓
+                                 SETTLED              FAILED_CONFIRM
+                                                      (backs off, retries)
+```
+
+**Configuration options:**
+
+| Parameter | Default | Range | Description |
+|---|---|---|---|
+| Start Offset | 0 | -60 to +30 | Starting CO value for all cores |
+| Coarse Step | 5 | 1-15 | Step size during coarse search |
+| Fine Step | 1 | 1-5 | Step size during fine search |
+| Max Offset | -50 | -60 to +60 | Most aggressive offset to try (auto-clamped to CPU generation) |
+| Search Duration | 60s | 10-600s | Test duration per step during search |
+| Confirm Duration | 300s | 30-1800s | Test duration for confirmation run |
+| Max Confirm Retries | 2 | 0-5 | Retries before backing off from a value |
+| Backend | mprime | mprime/stress-ng/y-cruncher | Stress test backend |
+| Mode | SSE | SSE/AVX/AVX2/AVX512 | Stress test instruction set |
+| FFT Preset | SMALL | SMALL/MEDIUM/LARGE/HEAVY/ALL | FFT size preset (mprime) |
+| Test Order | sequential | sequential/round_robin/weakest_first | Core testing order |
+| Abort on Consecutive Failures | 0 | 0-10 | Abort if N cores fail at start_offset (0 = disabled) |
+
+**Workflow:**
+
+1. Go to the **Auto-Tuner** tab
+2. Configure search parameters (defaults are good for most CPUs)
+3. Click **Start** -- the tuner begins testing cores sequentially
+4. Watch the core status table update in real-time: phase, current offset, best offset, test count, last result
+5. When all cores are confirmed, the session completes with a full CO profile
+6. Use **Export Profile** to copy the results or apply them to the Curve Optimizer tab
+7. Completed (and interrupted) sessions appear in the **History** tab's **Tuner Sessions** view -- click any session to review per-core state details and the full test log
+
+**Tips:**
+
+- **mprime with Small FFTs and SSE mode** is the gold standard for CO testing -- it produces the highest single-core clocks and the most sensitive error detection
+- The default `max_offset` of -50 is appropriate for Zen 4. For Zen 5, you can push to -60. For Zen 3/3D, the CPU generation's range (-30) is enforced automatically.
+- **Sequential test order** (default) finishes one core completely before moving to the next. Use **round robin** if you want partial results for all cores faster.
+- A typical 16-core run with default settings takes roughly 2-4 hours depending on how aggressive each core can go.
+- If many cores fail at the starting offset, enable **abort on consecutive failures** (e.g., 3) to stop early -- this usually means BIOS PBO settings need adjustment first.
+
 ### Recommended Test Settings
 
 | Scenario | Backend | Mode | FFT Preset | Preset | Notes |
@@ -338,12 +407,20 @@ src/
     power.py                 # Power consumption monitoring
   config/
     settings.py              # JSON settings and test profile persistence (~/.config/linux-corecycler/)
+  tuner/
+    __init__.py              # Package re-exports
+    config.py                # TunerConfig dataclass (14 search parameters with defaults)
+    state.py                 # CoreState and TunerSession dataclasses
+    persistence.py           # SQLite operations: session CRUD, core state upsert, test log
+    engine.py                # TunerEngine orchestrator: state machine, core scheduling, crash recovery
   gui/
     main_window.py           # Main window: toolbar, tabs, test worker thread, profile management
     config_tab.py            # Test configuration UI (backend, mode, FFT, timing, presets, safety)
     results_tab.py           # Per-core results table and summary
     monitor_tab.py           # Live temperature, voltage, frequency charts
     smu_tab.py               # Curve Optimizer read/write interface with backup/restore and dry-run
+    tuner_tab.py             # Auto-Tuner UI: config panel, core status table, test log, controls
+    history_tab.py           # History tab: test run log and tuner session browser with per-core detail view
     widgets/
       core_grid.py           # CCD-aware visual core grid with per-core status coloring
       charts.py              # Real-time monitoring charts
@@ -359,6 +436,10 @@ tests/
   test_backends.py           # Backend command generation and output parsing
   test_monitor.py            # Hardware monitoring
   test_pmtable.py            # PM table reading
+  test_tuner_config.py       # TunerConfig defaults, JSON roundtrip, CO range clamping
+  test_tuner_persistence.py  # Session CRUD, core state upsert, test log, schema migration
+  test_tuner_engine.py       # State machine transitions, crash recovery, core scheduling
+  test_tuner_tab.py          # Auto-Tuner GUI widget tests
 ```
 
 The stress test runs in a `QThread` worker. The scheduler pins each stress process to a single logical CPU using `taskset`, monitors for MCE events during both stress and idle phases, parses backend output for computation errors, and emits Qt signals for GUI updates. Processes are launched in their own process group for clean teardown.
