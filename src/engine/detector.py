@@ -162,10 +162,7 @@ class ErrorDetector:
 
                 # extract CPU number from MCE message
                 cpu_match = re.search(r"CPU (\d+)", line)
-                if cpu_match:
-                    cpu_num = int(cpu_match.group(1))
-                else:
-                    cpu_num = -1
+                cpu_num = int(cpu_match.group(1)) if cpu_match else -1
 
                 bank_match = re.search(r"Bank (\d+)", line)
                 bank_num = int(bank_match.group(1)) if bank_match else -1

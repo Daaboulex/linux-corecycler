@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,10 +57,8 @@ class HWMonReader:
             label_file = temp_file.parent / temp_file.name.replace("_input", "_label")
             label = ""
             if label_file.exists():
-                try:
+                with contextlib.suppress(OSError):
                     label = label_file.read_text().strip().lower()
-                except OSError:
-                    pass
 
             if "tctl" in label:
                 data.tctl_c = temp_c
@@ -85,10 +84,8 @@ class HWMonReader:
             label_file = in_file.parent / in_file.name.replace("_input", "_label")
             label = ""
             if label_file.exists():
-                try:
+                with contextlib.suppress(OSError):
                     label = label_file.read_text().strip().lower()
-                except OSError:
-                    pass
 
             if "vsoc" in label or "svi2_vddnb" in label:
                 data.vsoc_v = voltage

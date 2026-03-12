@@ -27,9 +27,9 @@ def zen3_cmds():
         generation=CPUGeneration.ZEN3_VERMEER,
         set_co_cmd=0x35,
         get_co_cmd=0x48,
-        reset_co_cmd=0x36,
+        set_all_co_cmd=0x36,
         mailbox="mp1",
-        co_range=(-30, 0),
+        co_range=(-30, 30),
     )
 
 
@@ -37,9 +37,9 @@ def zen3_cmds():
 def zen5_cmds():
     return SMUCommandSet(
         generation=CPUGeneration.ZEN5_GRANITE_RIDGE,
-        set_co_cmd=0x6,
+        set_co_cmd=0x06,
         get_co_cmd=0xD5,
-        reset_co_cmd=None,
+        set_all_co_cmd=0x07,
         mailbox="rsmu",
         co_range=(-60, 10),
         set_boost_limit_cmd=0x70,
@@ -229,10 +229,10 @@ class TestSetCOOffset:
         with pytest.raises(ValueError, match="CO value -31 out of range"):
             smu.set_co_offset(0, -31)
 
-    def test_positive_rejected_zen3(self, smu_dir, zen3_cmds):
+    def test_above_max_rejected_zen3(self, smu_dir, zen3_cmds):
         smu = RyzenSMU(zen3_cmds, smu_dir)
-        with pytest.raises(ValueError, match="CO value 1 out of range"):
-            smu.set_co_offset(0, 1)
+        with pytest.raises(ValueError, match="CO value 31 out of range"):
+            smu.set_co_offset(0, 31)
 
     def test_smu_rejection(self, smu_dir, zen5_cmds):
         smu = RyzenSMU(zen5_cmds, smu_dir)
@@ -275,8 +275,11 @@ class TestResetAllCO:
         with patch.object(smu, "_send_command", return_value=success):
             assert smu.reset_all_co() is True
 
-    def test_reset_zen5_not_supported(self, smu_dir, zen5_cmds):
-        assert RyzenSMU(zen5_cmds, smu_dir).reset_all_co() is False
+    def test_reset_zen5(self, smu_dir, zen5_cmds):
+        smu = RyzenSMU(zen5_cmds, smu_dir)
+        success = SMUResponse(success=True, args=(0,) * 6, raw=b"\x00" * 24)
+        with patch.object(smu, "_send_command", return_value=success):
+            assert smu.reset_all_co() is True
 
     def test_reset_failure(self, smu_dir, zen3_cmds):
         smu = RyzenSMU(zen3_cmds, smu_dir)
@@ -313,7 +316,7 @@ class TestBoostLimit:
     def test_get(self, smu_dir, zen5_cmds):
         smu = RyzenSMU(zen5_cmds, smu_dir)
         resp = SMUResponse(success=True, args=(5700, 0, 0, 0, 0, 0), raw=b"\x00" * 24)
-        with patch.object(smu, "_send_command", return_value=resp):
+        with patch.object(smu, "_send_rsmu_command", return_value=resp):
             assert smu.get_boost_limit() == 5700
 
     def test_get_unsupported(self, smu_dir, zen3_cmds):
@@ -322,13 +325,13 @@ class TestBoostLimit:
     def test_get_failure(self, smu_dir, zen5_cmds):
         smu = RyzenSMU(zen5_cmds, smu_dir)
         resp = SMUResponse(success=False, args=(0,) * 6, raw=b"\x00" * 24)
-        with patch.object(smu, "_send_command", return_value=resp):
+        with patch.object(smu, "_send_rsmu_command", return_value=resp):
             assert smu.get_boost_limit() is None
 
     def test_set(self, smu_dir, zen5_cmds):
         smu = RyzenSMU(zen5_cmds, smu_dir)
         resp = SMUResponse(success=True, args=(0,) * 6, raw=b"\x00" * 24)
-        with patch.object(smu, "_send_command", return_value=resp):
+        with patch.object(smu, "_send_rsmu_command", return_value=resp):
             assert smu.set_boost_limit(5500) is True
 
     def test_set_unsupported(self, smu_dir, zen3_cmds):
@@ -337,7 +340,7 @@ class TestBoostLimit:
     def test_set_failure(self, smu_dir, zen5_cmds):
         smu = RyzenSMU(zen5_cmds, smu_dir)
         resp = SMUResponse(success=False, args=(0,) * 6, raw=b"\x00" * 24)
-        with patch.object(smu, "_send_command", return_value=resp):
+        with patch.object(smu, "_send_rsmu_command", return_value=resp):
             assert smu.set_boost_limit(5500) is False
 
     def test_set_dry_run(self, smu_dir, zen5_cmds):

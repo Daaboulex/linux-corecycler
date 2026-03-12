@@ -6,10 +6,10 @@ import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum, auto
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
     pass
 
 
@@ -79,10 +79,10 @@ class StressBackend(ABC):
         """Return list of FFT presets this backend supports. Override if applicable."""
         return []
 
-    def prepare(self, work_dir: Path, config: StressConfig) -> None:
+    def prepare(self, work_dir: Path, config: StressConfig) -> None:  # noqa: B027
         """Prepare working directory and config files before running. Override if needed."""
 
-    def cleanup(self, work_dir: Path) -> None:
+    def cleanup(self, work_dir: Path) -> None:  # noqa: B027
         """Clean up after test run. Override if needed."""
 
     def find_binary(self, name: str) -> str | None:

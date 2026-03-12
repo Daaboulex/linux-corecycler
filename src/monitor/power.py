@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import time
+from pathlib import Path
 
 RAPL_BASE = Path("/sys/class/powercap/intel-rapl")
 
@@ -29,10 +29,13 @@ class PowerMonitor:
         for rapl_dir in sorted(RAPL_BASE.parent.glob("intel-rapl*")):
             energy = rapl_dir / "energy_uj"
             name = rapl_dir / "name"
-            if energy.exists() and name.exists():
-                if "package" in name.read_text().strip().lower():
-                    self._package_path = energy
-                    return
+            if (
+                energy.exists()
+                and name.exists()
+                and "package" in name.read_text().strip().lower()
+            ):
+                self._package_path = energy
+                return
 
     def is_available(self) -> bool:
         return self._package_path is not None

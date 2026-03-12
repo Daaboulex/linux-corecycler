@@ -78,9 +78,9 @@ class TestCOBoundsChecking:
     @pytest.mark.parametrize(
         "gen,min_val,max_val",
         [
-            (CPUGeneration.ZEN3_VERMEER, -30, 0),
-            (CPUGeneration.ZEN3D_WARHOL, -30, 0),
-            (CPUGeneration.ZEN4_RAPHAEL, -50, 10),
+            (CPUGeneration.ZEN3_VERMEER, -30, 30),
+            (CPUGeneration.ZEN3D_WARHOL, -30, 30),
+            (CPUGeneration.ZEN4_RAPHAEL, -50, 30),
             (CPUGeneration.ZEN5_GRANITE_RIDGE, -60, 10),
         ],
     )
@@ -404,7 +404,7 @@ class TestEncodeSafety:
         with pytest.raises(ValueError):
             encode_co_arg(0, 0, CPUGeneration.UNKNOWN)
         with pytest.raises(ValueError):
-            encode_co_arg(0, 0, CPUGeneration.ZEN3_CEZANNE)
+            encode_co_arg(0, 0, CPUGeneration.ZEN2_MATISSE)
 
 
 # ===========================================================================

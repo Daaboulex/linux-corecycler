@@ -27,6 +27,14 @@ class TestProfile:
     stop_on_error: bool = False
     test_smt: bool = False
     cores_to_test: list[int] | None = None
+    # Safety
+    max_temperature: float = 95.0
+    # Test mode preset
+    test_mode: str = "CUSTOM"
+    # Advanced testing
+    variable_load: bool = False
+    idle_stability_test: float = 0.0
+    idle_between_cores: float = 0.0
 
     def get_stress_mode(self) -> StressMode:
         return StressMode[self.stress_mode]

@@ -1,4 +1,4 @@
-"""Test configuration tab — backend, mode, timing, core selection."""
+"""Test configuration tab — backend, mode, timing, core selection, test presets."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -24,6 +25,19 @@ from engine.backends.base import FFTPreset, StressMode
 
 if TYPE_CHECKING:
     from engine.topology import CPUTopology
+
+
+# Pre-configured test mode descriptions
+TEST_MODE_INFO: dict[str, str] = {
+    "CUSTOM": "Configure all settings manually",
+    "QUICK": "2 min/core, 1 cycle — fast screening, lower sensitivity",
+    "STANDARD": "10 min/core, 1 cycle — good starting point for CO tuning",
+    "THOROUGH": "30 min/core, 2 cycles — catches intermittent errors",
+    "FULL_SPECTRUM": (
+        "Stress + variable load + idle stability, 3 cycles — "
+        "most comprehensive, tests all real-world scenarios"
+    ),
+}
 
 
 class ConfigTab(QWidget):
@@ -44,6 +58,27 @@ class ConfigTab(QWidget):
         layout = QVBoxLayout(content)
         layout.setSpacing(12)
 
+        # test mode preset
+        mode_group = QGroupBox("Test Mode")
+        mode_layout = QVBoxLayout(mode_group)
+
+        mode_row = QHBoxLayout()
+        self._mode_combo = QComboBox()
+        for mode_name, _desc in TEST_MODE_INFO.items():
+            self._mode_combo.addItem(mode_name)
+        self._mode_combo.setCurrentText("CUSTOM")
+        self._mode_combo.currentTextChanged.connect(self._on_mode_change)
+        mode_row.addWidget(QLabel("Preset:"))
+        mode_row.addWidget(self._mode_combo, stretch=1)
+        mode_layout.addLayout(mode_row)
+
+        self._mode_desc = QLabel(TEST_MODE_INFO["CUSTOM"])
+        self._mode_desc.setWordWrap(True)
+        self._mode_desc.setStyleSheet("color: #888; padding: 4px;")
+        mode_layout.addWidget(self._mode_desc)
+
+        layout.addWidget(mode_group)
+
         # stress test backend
         backend_group = QGroupBox("Stress Test Backend")
         backend_layout = QFormLayout(backend_group)
@@ -53,11 +88,11 @@ class ConfigTab(QWidget):
         self._backend_combo.currentTextChanged.connect(self._on_change)
         backend_layout.addRow("Backend:", self._backend_combo)
 
-        self._mode_combo = QComboBox()
+        self._stress_mode_combo = QComboBox()
         for mode in StressMode:
-            self._mode_combo.addItem(mode.name)
-        self._mode_combo.currentTextChanged.connect(self._on_change)
-        backend_layout.addRow("Stress Mode:", self._mode_combo)
+            self._stress_mode_combo.addItem(mode.name)
+        self._stress_mode_combo.currentTextChanged.connect(self._on_change)
+        backend_layout.addRow("Stress Mode:", self._stress_mode_combo)
 
         self._fft_combo = QComboBox()
         for preset in FFTPreset:
@@ -114,6 +149,56 @@ class ConfigTab(QWidget):
 
         layout.addWidget(timing_group)
 
+        # safety
+        safety_group = QGroupBox("Safety")
+        safety_layout = QFormLayout(safety_group)
+
+        self._max_temp_spin = QDoubleSpinBox()
+        self._max_temp_spin.setRange(50.0, 115.0)
+        self._max_temp_spin.setValue(95.0)
+        self._max_temp_spin.setSuffix(" °C")
+        self._max_temp_spin.setDecimals(1)
+        self._max_temp_spin.valueChanged.connect(self._on_change)
+        safety_layout.addRow("Max temperature:", self._max_temp_spin)
+
+        layout.addWidget(safety_group)
+
+        # advanced testing options
+        advanced_group = QGroupBox("Advanced Testing")
+        advanced_layout = QFormLayout(advanced_group)
+
+        self._variable_load = QCheckBox("Variable load testing (stop/start stress periodically)")
+        self._variable_load.setToolTip(
+            "Simulates real-world load transitions. CO instability often manifests "
+            "during frequency/voltage transitions, not under steady load."
+        )
+        self._variable_load.stateChanged.connect(self._on_change)
+        advanced_layout.addRow(self._variable_load)
+
+        self._idle_stability_spin = QSpinBox()
+        self._idle_stability_spin.setRange(0, 300)
+        self._idle_stability_spin.setValue(0)
+        self._idle_stability_spin.setSuffix(" seconds")
+        self._idle_stability_spin.setToolTip(
+            "Time to monitor each core at idle after stress. Catches errors during "
+            "C-state transitions — the #1 cause of CO-related crashes in daily use."
+        )
+        self._idle_stability_spin.valueChanged.connect(self._on_change)
+        advanced_layout.addRow("Idle stability test:", self._idle_stability_spin)
+
+        self._idle_between_spin = QSpinBox()
+        self._idle_between_spin.setRange(0, 60)
+        self._idle_between_spin.setValue(0)
+        self._idle_between_spin.setSuffix(" seconds")
+        self._idle_between_spin.setToolTip(
+            "Idle pause between testing each core. Allows the CPU to cool and "
+            "return to idle voltages before testing the next core."
+        )
+        self._idle_between_spin.valueChanged.connect(self._on_change)
+        advanced_layout.addRow("Idle between cores:", self._idle_between_spin)
+
+        layout.addWidget(advanced_group)
+
         # behavior
         behavior_group = QGroupBox("Behavior")
         behavior_layout = QFormLayout(behavior_group)
@@ -146,6 +231,43 @@ class ConfigTab(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
 
+    def _on_mode_change(self, mode_name: str) -> None:
+        """Apply a test mode preset."""
+        self._mode_desc.setText(TEST_MODE_INFO.get(mode_name, ""))
+
+        if mode_name == "CUSTOM":
+            self._on_change()
+            return
+
+        self._building = True
+        match mode_name:
+            case "QUICK":
+                self._time_spin.setValue(120)
+                self._cycles_spin.setValue(1)
+                self._variable_load.setChecked(False)
+                self._idle_stability_spin.setValue(0)
+                self._idle_between_spin.setValue(0)
+            case "STANDARD":
+                self._time_spin.setValue(600)
+                self._cycles_spin.setValue(1)
+                self._variable_load.setChecked(False)
+                self._idle_stability_spin.setValue(0)
+                self._idle_between_spin.setValue(0)
+            case "THOROUGH":
+                self._time_spin.setValue(1800)
+                self._cycles_spin.setValue(2)
+                self._variable_load.setChecked(False)
+                self._idle_stability_spin.setValue(0)
+                self._idle_between_spin.setValue(5)
+            case "FULL_SPECTRUM":
+                self._time_spin.setValue(1200)
+                self._cycles_spin.setValue(3)
+                self._variable_load.setChecked(True)
+                self._idle_stability_spin.setValue(60)
+                self._idle_between_spin.setValue(10)
+        self._building = False
+        self._on_change()
+
     def _on_fft_change(self) -> None:
         is_custom = self._fft_combo.currentText() == "CUSTOM"
         self._fft_range_widget.setVisible(is_custom)
@@ -167,22 +289,31 @@ class ConfigTab(QWidget):
 
         return TestProfile(
             backend=self._backend_combo.currentText(),
-            stress_mode=self._mode_combo.currentText(),
+            stress_mode=self._stress_mode_combo.currentText(),
             fft_preset=self._fft_combo.currentText(),
-            fft_min=self._fft_min_spin.value() if self._fft_combo.currentText() == "CUSTOM" else None,
-            fft_max=self._fft_max_spin.value() if self._fft_combo.currentText() == "CUSTOM" else None,
+            fft_min=(
+                self._fft_min_spin.value() if self._fft_combo.currentText() == "CUSTOM" else None
+            ),
+            fft_max=(
+                self._fft_max_spin.value() if self._fft_combo.currentText() == "CUSTOM" else None
+            ),
             threads=self._threads_spin.value(),
             seconds_per_core=self._time_spin.value(),
             cycle_count=self._cycles_spin.value(),
             stop_on_error=self._stop_on_error.isChecked(),
             test_smt=self._test_smt.isChecked(),
             cores_to_test=cores,
+            max_temperature=self._max_temp_spin.value(),
+            test_mode=self._mode_combo.currentText(),
+            variable_load=self._variable_load.isChecked(),
+            idle_stability_test=self._idle_stability_spin.value(),
+            idle_between_cores=self._idle_between_spin.value(),
         )
 
     def set_profile(self, profile: TestProfile) -> None:
         self._building = True
         self._backend_combo.setCurrentText(profile.backend)
-        self._mode_combo.setCurrentText(profile.stress_mode)
+        self._stress_mode_combo.setCurrentText(profile.stress_mode)
         self._fft_combo.setCurrentText(profile.fft_preset)
         if profile.fft_min:
             self._fft_min_spin.setValue(profile.fft_min)
@@ -197,4 +328,14 @@ class ConfigTab(QWidget):
             self._cores_input.setText(",".join(str(c) for c in profile.cores_to_test))
         else:
             self._cores_input.clear()
+        if hasattr(profile, "max_temperature"):
+            self._max_temp_spin.setValue(profile.max_temperature)
+        if hasattr(profile, "test_mode"):
+            self._mode_combo.setCurrentText(profile.test_mode)
+        if hasattr(profile, "variable_load"):
+            self._variable_load.setChecked(profile.variable_load)
+        if hasattr(profile, "idle_stability_test"):
+            self._idle_stability_spin.setValue(int(profile.idle_stability_test))
+        if hasattr(profile, "idle_between_cores"):
+            self._idle_between_spin.setValue(int(profile.idle_between_cores))
         self._building = False

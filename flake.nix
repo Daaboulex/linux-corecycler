@@ -22,7 +22,7 @@
       {
         packages.default = pythonPkgs.buildPythonApplication {
           pname = "linux-corecycler";
-          version = "0.1.0";
+          version = "0.2.0";
           pyproject = true;
 
           src = ./.;
@@ -31,7 +31,6 @@
 
           dependencies = [
             pythonPkgs.pyside6
-            pythonPkgs.psutil
           ];
 
           nativeCheckInputs = [ pythonPkgs.pytest ];
@@ -45,10 +44,22 @@
             makeWrapperArgs+=("''${qtWrapperArgs[@]}")
           '';
 
+          # Make stress test backends available on PATH at runtime
+          postFixup = ''
+            wrapProgram $out/bin/linux-corecycler \
+              --prefix PATH : ${
+                pkgs.lib.makeBinPath [
+                  pkgs.stress-ng
+                  pkgs.util-linux # for taskset
+                ]
+              }
+          '';
+
           meta = {
             description = "Per-core CPU stability tester and PBO Curve Optimizer tuner for AMD Ryzen";
             license = pkgs.lib.licenses.gpl3Plus;
             mainProgram = "linux-corecycler";
+            platforms = pkgs.lib.platforms.linux;
           };
         };
 
@@ -57,13 +68,13 @@
             (python.withPackages (
               ps: with ps; [
                 pyside6
-                psutil
                 pytest
                 ruff
               ]
             ))
             pkgs.qt6.qtbase
             pkgs.stress-ng
+            pkgs.util-linux # taskset
           ];
 
           env.QT_QPA_PLATFORM_PLUGIN_PATH = "${pkgs.qt6.qtbase}/lib/qt-6/plugins/platforms";

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -19,9 +21,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from engine.topology import CPUTopology
-from smu.commands import CPUGeneration, SMUCommandSet, detect_generation, get_commands
+from smu.commands import SMUCommandSet, detect_generation, get_commands
 from smu.driver import RyzenSMU
+
+if TYPE_CHECKING:
+    from engine.topology import CPUTopology
 
 
 class SMUTab(QWidget):
@@ -93,7 +97,9 @@ class SMUTab(QWidget):
         safety_layout = QHBoxLayout()
 
         self._backup_btn = QPushButton("Backup Current CO")
-        self._backup_btn.setToolTip("Save current CO values so they can be restored later this session")
+        self._backup_btn.setToolTip(
+            "Save current CO values so they can be restored later this session"
+        )
         self._backup_btn.clicked.connect(self._backup_co)
         safety_layout.addWidget(self._backup_btn)
 
@@ -133,14 +139,21 @@ class SMUTab(QWidget):
         self._commands = get_commands(gen)
 
         smu_available = self._commands is not None and RyzenSMU.is_available()
+        has_co = self._commands is not None and self._commands.has_co
 
-        if smu_available:
+        if smu_available and has_co:
             self._smu = RyzenSMU(self._commands, dry_run=self._dry_run_cb.isChecked())
             self._status_label.setText("ryzen_smu: Connected")
             self._status_label.setStyleSheet("color: #4caf50;")
             self._gen_label.setText(f"Generation: {gen.name}")
             co_min, co_max = self._commands.co_range
             self._range_label.setText(f"CO Range: [{co_min}, {co_max}]")
+        elif smu_available and not has_co:
+            self._smu = RyzenSMU(self._commands, dry_run=self._dry_run_cb.isChecked())
+            self._status_label.setText("ryzen_smu: Connected (no CO support)")
+            self._status_label.setStyleSheet("color: #ff9800;")
+            self._gen_label.setText(f"Generation: {gen.name}")
+            self._range_label.setText("CO: Not supported on this generation")
         elif self._commands:
             self._status_label.setText("ryzen_smu: Driver not loaded")
             self._status_label.setStyleSheet("color: #f44336;")
@@ -149,10 +162,11 @@ class SMUTab(QWidget):
             self._status_label.setText(f"Unsupported CPU generation: {gen.name}")
             self._status_label.setStyleSheet("color: #ff9800;")
 
-        # Disable write buttons if SMU is not available
-        self._apply_all_btn.setEnabled(smu_available)
-        self._reset_btn.setEnabled(smu_available)
-        self._backup_btn.setEnabled(smu_available)
+        # Disable CO buttons if SMU is not available or generation lacks CO
+        co_available = smu_available and has_co
+        self._apply_all_btn.setEnabled(co_available)
+        self._reset_btn.setEnabled(co_available)
+        self._backup_btn.setEnabled(co_available)
         self._restore_btn.setEnabled(False)  # no backup yet
 
         self._populate_table()

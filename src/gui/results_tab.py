@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
@@ -17,8 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from engine.backends.base import StressResult
-from engine.scheduler import CoreTestStatus
+if TYPE_CHECKING:
+    from engine.scheduler import CoreTestStatus
 
 
 class ResultsTab(QWidget):
@@ -43,7 +45,11 @@ class ResultsTab(QWidget):
         self._elapsed_label = QLabel("Elapsed: 0:00:00")
         self._cycle_label = QLabel("Cycle: 0/0")
 
-        for w in [self._total_label, self._passed_label, self._failed_label, self._elapsed_label, self._cycle_label]:
+        summary_widgets = [
+            self._total_label, self._passed_label, self._failed_label,
+            self._elapsed_label, self._cycle_label,
+        ]
+        for w in summary_widgets:
             w.setFont(QFont("monospace", 10))
             summary_layout.addWidget(w)
 
@@ -133,12 +139,16 @@ class ResultsTab(QWidget):
 
     def _set_row(self, row: int, core_id: int, status: CoreTestStatus) -> None:
         self._table.setItem(row, 0, _item(str(core_id), Qt.AlignmentFlag.AlignCenter))
+        ccd_text = str(status.ccd) if status.ccd is not None else "-"
         self._table.setItem(
-            row, 1, _item(str(status.ccd) if status.ccd is not None else "-", Qt.AlignmentFlag.AlignCenter)
+            row, 1, _item(ccd_text, Qt.AlignmentFlag.AlignCenter)
         )
 
-        status_item = _item(status.state.capitalize(), Qt.AlignmentFlag.AlignCenter)
-        color = {"passed": "#4caf50", "failed": "#f44336", "testing": "#4fc3f7"}.get(status.state, "#888")
+        status_item = _item(
+            status.state.capitalize(), Qt.AlignmentFlag.AlignCenter
+        )
+        color_map = {"passed": "#4caf50", "failed": "#f44336", "testing": "#4fc3f7"}
+        color = color_map.get(status.state, "#888")
         status_item.setForeground(QColor(color))
         self._table.setItem(row, 2, status_item)
 
