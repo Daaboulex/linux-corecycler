@@ -375,6 +375,16 @@ class TunerTab(QWidget):
             QMessageBox.warning(self, "Error", "Database or topology not available")
             return
 
+        if not self._smu or not self._smu.is_available():
+            QMessageBox.warning(
+                self,
+                "SMU Not Available",
+                "The ryzen_smu kernel module is not loaded.\n\n"
+                "The auto-tuner requires SMU access to write Curve Optimizer values.\n"
+                "Load the module with: sudo modprobe ryzen_smu",
+            )
+            return
+
         backend = self._get_backend()
         if backend is None:
             return
@@ -407,6 +417,17 @@ class TunerTab(QWidget):
             resume_id = self._pending_resume_id
 
         if resume_id is None:
+            return
+
+        # Validate dependencies are still available
+        if not self._smu or not self._smu.is_available():
+            QMessageBox.warning(
+                self,
+                "SMU Not Available",
+                "The ryzen_smu kernel module is not loaded.\n\n"
+                "The auto-tuner requires SMU access to write Curve Optimizer values.\n"
+                "Load the module with: sudo modprobe ryzen_smu",
+            )
             return
 
         # Create engine if needed (cold start resume)
@@ -643,22 +664,32 @@ class TunerTab(QWidget):
 
     def _get_backend(self) -> StressBackend | None:
         if self._backend_factory:
-            return self._backend_factory(self._backend_combo.currentText())
+            backend = self._backend_factory(self._backend_combo.currentText())
+        else:
+            name = self._backend_combo.currentText()
+            match name:
+                case "mprime":
+                    from engine.backends.mprime import MprimeBackend
+                    backend = MprimeBackend()
+                case "stress-ng":
+                    from engine.backends.stress_ng import StressNgBackend
+                    backend = StressNgBackend()
+                case "y-cruncher":
+                    from engine.backends.ycruncher import YCruncherBackend
+                    backend = YCruncherBackend()
+                case _:
+                    QMessageBox.warning(self, "Error", f"Unknown backend: {name}")
+                    return None
 
-        name = self._backend_combo.currentText()
-        match name:
-            case "mprime":
-                from engine.backends.mprime import MprimeBackend
-                return MprimeBackend()
-            case "stress-ng":
-                from engine.backends.stress_ng import StressNgBackend
-                return StressNgBackend()
-            case "y-cruncher":
-                from engine.backends.ycruncher import YCruncherBackend
-                return YCruncherBackend()
-            case _:
-                QMessageBox.warning(self, "Error", f"Unknown backend: {name}")
-                return None
+        if backend and not backend.is_available():
+            QMessageBox.warning(
+                self,
+                "Backend Not Found",
+                f"'{self._backend_combo.currentText()}' is not installed or not on PATH.\n\n"
+                "Install it or select a different backend.",
+            )
+            return None
+        return backend
 
     def _check_resume(self) -> None:
         """Check for active tuner sessions on startup."""

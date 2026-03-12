@@ -15,7 +15,10 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+        };
         python = pkgs.python312;
         pythonPkgs = python.pkgs;
       in
@@ -60,6 +63,7 @@
             wrapProgram $out/bin/linux-corecycler \
               --prefix PATH : ${
                 pkgs.lib.makeBinPath [
+                  pkgs.mprime
                   pkgs.stress-ng
                   pkgs.util-linux # for taskset
                 ]
@@ -84,6 +88,7 @@
               ]
             ))
             pkgs.qt6.qtbase
+            pkgs.mprime
             pkgs.stress-ng
             pkgs.util-linux # taskset
           ];
