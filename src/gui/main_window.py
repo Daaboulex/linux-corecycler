@@ -92,10 +92,11 @@ class MainWindow(QMainWindow):
 
         # left: core grid
         left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
 
         cpu_label = QLabel(self._topology.model_name if self._topology else "Unknown CPU")
         cpu_label.setFont(QFont("monospace", 11, QFont.Weight.Bold))
-        cpu_label.setStyleSheet("padding: 6px;")
+        cpu_label.setStyleSheet("padding: 4px 6px;")
         left.addWidget(cpu_label)
 
         if self._topology:
@@ -115,8 +116,10 @@ class MainWindow(QMainWindow):
 
         main_layout.addLayout(left, stretch=2)
 
-        # right: tabs
+        # right: tabs — align with CPU header on the left
         self._tabs = QTabWidget()
+        self._tabs.setContentsMargins(0, 0, 0, 0)
+        self._tabs.setDocumentMode(True)
 
         self._config_tab = ConfigTab(self._topology)
         self._config_tab.set_profile(self._settings.active_profile)
