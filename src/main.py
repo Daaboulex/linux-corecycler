@@ -24,6 +24,13 @@ def main() -> int:
     app.setApplicationName("Linux CoreCycler")
     app.setOrganizationName("linux-corecycler")
 
+    # app icon
+    from PySide6.QtGui import QIcon
+
+    icon_path = Path(__file__).parent.parent / "assets" / "icon.svg"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
     # dark theme
     app.setStyleSheet(_dark_stylesheet())
 

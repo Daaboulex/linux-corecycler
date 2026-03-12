@@ -50,6 +50,8 @@ class ConfigTab(QWidget):
         self._topology = topology
         self._building = False  # prevent signal loops during build
         self._setup_ui()
+        # apply STANDARD defaults to widgets
+        self._on_mode_change("STANDARD")
 
     def _setup_ui(self) -> None:
         scroll = QScrollArea()
@@ -66,13 +68,13 @@ class ConfigTab(QWidget):
         self._mode_combo = QComboBox()
         for mode_name, _desc in TEST_MODE_INFO.items():
             self._mode_combo.addItem(mode_name)
-        self._mode_combo.setCurrentText("CUSTOM")
+        self._mode_combo.setCurrentText("STANDARD")
         self._mode_combo.currentTextChanged.connect(self._on_mode_change)
         mode_row.addWidget(QLabel("Preset:"))
         mode_row.addWidget(self._mode_combo, stretch=1)
         mode_layout.addLayout(mode_row)
 
-        self._mode_desc = QLabel(TEST_MODE_INFO["CUSTOM"])
+        self._mode_desc = QLabel(TEST_MODE_INFO["STANDARD"])
         self._mode_desc.setWordWrap(True)
         self._mode_desc.setStyleSheet("color: #888; padding: 4px;")
         mode_layout.addWidget(self._mode_desc)

@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- CPU chip body -->
+  <rect x="24" y="24" width="80" height="80" rx="6" fill="#1e1e1e" stroke="#4fc3f7" stroke-width="3"/>
+
+  <!-- CPU pins - top -->
+  <rect x="38" y="14" width="6" height="14" rx="1" fill="#4fc3f7"/>
+  <rect x="52" y="14" width="6" height="14" rx="1" fill="#4fc3f7"/>
+  <rect x="66" y="14" width="6" height="14" rx="1" fill="#4fc3f7"/>
+  <rect x="80" y="14" width="6" height="14" rx="1" fill="#4fc3f7"/>
+
+  <!-- CPU pins - bottom -->
+  <rect x="38" y="100" width="6" height="14" rx="1" fill="#4fc3f7"/>
+  <rect x="52" y="100" width="6" height="14" rx="1" fill="#4fc3f7"/>
+  <rect x="66" y="100" width="6" height="14" rx="1" fill="#4fc3f7"/>
+  <rect x="80" y="100" width="6" height="14" rx="1" fill="#4fc3f7"/>
+
+  <!-- CPU pins - left -->
+  <rect x="14" y="38" width="14" height="6" rx="1" fill="#4fc3f7"/>
+  <rect x="14" y="52" width="14" height="6" rx="1" fill="#4fc3f7"/>
+  <rect x="14" y="66" width="14" height="6" rx="1" fill="#4fc3f7"/>
+  <rect x="14" y="80" width="14" height="6" rx="1" fill="#4fc3f7"/>
+
+  <!-- CPU pins - right -->
+  <rect x="100" y="38" width="14" height="6" rx="1" fill="#4fc3f7"/>
+  <rect x="100" y="52" width="14" height="6" rx="1" fill="#4fc3f7"/>
+  <rect x="100" y="66" width="14" height="6" rx="1" fill="#4fc3f7"/>
+  <rect x="100" y="80" width="14" height="6" rx="1" fill="#4fc3f7"/>
+
+  <!-- Inner die area -->
+  <rect x="36" y="36" width="56" height="56" rx="3" fill="#252525" stroke="#444" stroke-width="1"/>
+
+  <!-- Cycling arrow (circular) representing core cycling -->
+  <path d="M 64 44 A 18 18 0 1 1 46 62" fill="none" stroke="#4caf50" stroke-width="3.5" stroke-linecap="round"/>
+  <polygon points="46,54 46,66 38,60" fill="#4caf50"/>
+
+  <!-- Small core dots in corners of die -->
+  <circle cx="42" cy="42" r="2.5" fill="#ff7043"/>
+  <circle cx="86" cy="42" r="2.5" fill="#4caf50"/>
+  <circle cx="42" cy="86" r="2.5" fill="#4caf50"/>
+  <circle cx="86" cy="86" r="2.5" fill="#4fc3f7"/>
+</svg>
