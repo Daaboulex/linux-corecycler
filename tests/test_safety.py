@@ -252,7 +252,8 @@ class TestDetectorSafety:
         det = ErrorDetector()
         with (
             patch.object(det, "_count_mce_events", return_value=0),
-            patch("engine.detector._get_dmesg_timestamp", return_value=""),
+            patch.object(det, "_snapshot_mce_banks", return_value={}),
+            patch("engine.detector._get_dmesg_raw_timestamp", return_value=0.0),
         ):
             det.reset()  # must not raise
 

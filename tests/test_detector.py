@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.detector import ErrorDetector, ErrorState, MCEEvent, _get_dmesg_timestamp
+from engine.detector import ErrorDetector, ErrorState, MCEEvent, _get_dmesg_raw_timestamp
 
 
 # ===========================================================================
@@ -360,20 +360,24 @@ class TestReset:
         det = ErrorDetector()
         with (
             patch.object(det, "_count_mce_events", return_value=42),
-            patch("engine.detector._get_dmesg_timestamp", return_value="99999.0"),
+            patch.object(det, "_snapshot_mce_banks", return_value={"0:0": 5}),
+            patch("engine.detector._get_dmesg_raw_timestamp", return_value=99999.0),
         ):
             det.reset()
         assert det._mce_baseline == 42
-        assert det._dmesg_offset == "99999.0"
+        assert det._dmesg_baseline_ts == pytest.approx(99999.0)
+        assert det._mce_bank_baseline == {"0:0": 5}
 
     def test_reset_with_no_mce_events(self):
         det = ErrorDetector()
         with (
             patch.object(det, "_count_mce_events", return_value=0),
-            patch("engine.detector._get_dmesg_timestamp", return_value=""),
+            patch.object(det, "_snapshot_mce_banks", return_value={}),
+            patch("engine.detector._get_dmesg_raw_timestamp", return_value=0.0),
         ):
             det.reset()
         assert det._mce_baseline == 0
+        assert det._dmesg_baseline_ts == 0.0
 
 
 # ===========================================================================
@@ -414,7 +418,7 @@ class TestCountMCEEvents:
 
 
 # ===========================================================================
-# _get_dmesg_timestamp
+# _get_dmesg_raw_timestamp
 # ===========================================================================
 
 
@@ -424,28 +428,28 @@ class TestGetDmesgTimestamp:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout="12345.678 first line\n12346.789 last line\n"
             )
-            ts = _get_dmesg_timestamp()
-        assert ts == "12346.789"
+            ts = _get_dmesg_raw_timestamp()
+        assert ts == pytest.approx(12346.789)
 
     def test_empty_output(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="")
-            ts = _get_dmesg_timestamp()
-        assert ts == ""
+            ts = _get_dmesg_raw_timestamp()
+        assert ts == 0.0
 
     def test_timeout(self):
         import subprocess
 
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("dmesg", 5)):
-            ts = _get_dmesg_timestamp()
-        assert ts == ""
+            ts = _get_dmesg_raw_timestamp()
+        assert ts == 0.0
 
     def test_file_not_found(self):
         with patch("subprocess.run", side_effect=FileNotFoundError):
-            ts = _get_dmesg_timestamp()
-        assert ts == ""
+            ts = _get_dmesg_raw_timestamp()
+        assert ts == 0.0
 
     def test_os_error(self):
         with patch("subprocess.run", side_effect=OSError("Permission denied")):
-            ts = _get_dmesg_timestamp()
-        assert ts == ""
+            ts = _get_dmesg_raw_timestamp()
+        assert ts == 0.0

@@ -26,7 +26,6 @@ log = logging.getLogger(__name__)
 class TestState(Enum):
     IDLE = auto()
     RUNNING = auto()
-    PAUSED = auto()
     STOPPING = auto()
     FINISHED = auto()
 
@@ -57,9 +56,7 @@ class CoreTestStatus:
 @dataclass(slots=True)
 class SchedulerConfig:
     seconds_per_core: int = 360  # 6 minutes default
-    iterations_per_core: int = 0  # 0 = time-based only
     cores_to_test: list[int] | None = None  # None = all physical cores
-    test_smt_siblings: bool = False  # also test SMT thread?
     stop_on_error: bool = False
     cycle_count: int = 1  # how many full cycles through all cores
     poll_interval: float = 1.0  # seconds between status checks
@@ -98,7 +95,6 @@ class CoreScheduler:
         self._current_core: int | None = None
         self._current_cycle: int = 0
         self._stop_requested = False
-        self._thermal_paused = False
 
         # callbacks for GUI integration
         self.on_core_start: list = []  # (core_id, cycle) -> None
@@ -164,16 +160,13 @@ class CoreScheduler:
         return self.results
 
     def stop(self) -> None:
-        """Request graceful stop after current core finishes."""
+        """Stop the test — kills the current stress process immediately."""
         self._stop_requested = True
         self.state = TestState.STOPPING
         self._kill_current()
 
-    def force_stop(self) -> None:
-        """Immediately kill the running stress test."""
-        self._stop_requested = True
-        self.state = TestState.STOPPING
-        self._kill_current()
+    # keep force_stop as alias for backward compatibility
+    force_stop = stop
 
     # ------------------------------------------------------------------
     # Temperature monitoring
@@ -236,7 +229,6 @@ class CoreScheduler:
                 temp,
                 self.config.max_temperature,
             )
-            self._thermal_paused = True
             for cb in self.on_thermal_throttle:
                 cb(temp)
             return False
@@ -305,6 +297,17 @@ class CoreScheduler:
             if self._stop_requested:
                 return
 
+            # temperature safety check during idle
+            if not self._check_temperature():
+                self._stop_requested = True
+                if status:
+                    status.errors += 1
+                    status.last_error = (
+                        f"CPU temperature exceeded {self.config.max_temperature} C "
+                        f"safety limit during {phase_name}"
+                    )
+                return
+
             # Check for MCE during idle (the primary purpose of idle testing)
             core_info = self.topology.cores.get(core_id)
             if core_info:
@@ -314,7 +317,8 @@ class CoreScheduler:
                     status.errors += 1
                     status.last_error = f"MCE during idle: {mce_events[0].message}"
                     if self.config.stop_on_error:
-                        return
+                        self._stop_requested = True
+                    return  # always stop idle on MCE
 
             time.sleep(min(1.0, duration - (time.monotonic() - start)))
 
@@ -364,10 +368,21 @@ class CoreScheduler:
                     while time.monotonic() < segment_end and not self._stop_requested:
                         if self._process.poll() is not None:
                             break
+                        # temperature safety check
+                        if not self._check_temperature():
+                            passed = False
+                            error_msg = (
+                                f"CPU temperature exceeded {self.config.max_temperature} C "
+                                f"safety limit during variable load"
+                            )
+                            self._stop_requested = True
+                            break
                         mce_events = self.detector.check_mce(target_cpu=logical_cpu)
                         if mce_events:
                             passed = False
                             error_msg = f"MCE during variable load: {mce_events[0].message}"
+                            if self.config.stop_on_error:
+                                self._stop_requested = True
                             break
                         time.sleep(0.5)
 
@@ -382,10 +397,20 @@ class CoreScheduler:
             else:
                 # Idle period — CPU transitions to boost clocks
                 while time.monotonic() < segment_end and not self._stop_requested:
+                    if not self._check_temperature():
+                        passed = False
+                        error_msg = (
+                            f"CPU temperature exceeded {self.config.max_temperature} C "
+                            f"safety limit during idle transition"
+                        )
+                        self._stop_requested = True
+                        break
                     mce_events = self.detector.check_mce(target_cpu=logical_cpu)
                     if mce_events:
                         passed = False
                         error_msg = f"MCE during idle transition: {mce_events[0].message}"
+                        if self.config.stop_on_error:
+                            self._stop_requested = True
                         break
                     time.sleep(0.5)
 
@@ -453,11 +478,12 @@ class CoreScheduler:
 
         # --- Phase 3: Idle stability test (if enabled) ---
         if passed and self.config.idle_stability_test > 0 and not self._stop_requested:
+            errors_before = status.errors
             self._idle_period(core_id, self.config.idle_stability_test, "idle stability")
-            # Check if MCE occurred during idle
-            if status.last_error and "idle" in status.last_error.lower():
+            # Check if new errors occurred during idle phase
+            if status.errors > errors_before:
                 passed = False
-                error_msg = status.last_error
+                error_msg = status.last_error or "Error during idle stability test"
 
         elapsed = time.monotonic() - start_time
         status.elapsed_seconds = elapsed
@@ -556,6 +582,8 @@ class CoreScheduler:
                         )
                         status.errors += 1
                         status.last_error = error_msg
+                        if self.config.stop_on_error:
+                            self._stop_requested = True
                         break
 
                 # periodic MCE check
@@ -566,7 +594,8 @@ class CoreScheduler:
                     status.errors += 1
                     status.last_error = error_msg
                     if self.config.stop_on_error:
-                        break
+                        self._stop_requested = True
+                    break  # always stop this core on MCE
 
                 # update elapsed time
                 status.elapsed_seconds = now - start_time
@@ -583,7 +612,11 @@ class CoreScheduler:
                 stdout_data, stderr_data = self._process.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 self._process.kill()
-                stdout_data, stderr_data = self._process.communicate()
+                try:
+                    stdout_data, stderr_data = self._process.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    log.warning("Process did not respond to SIGKILL — output lost")
+                    stdout_data, stderr_data = "", ""
 
             # parse backend output for errors
             if passed:  # only check output if no MCE already detected
@@ -596,8 +629,10 @@ class CoreScheduler:
                     error_msg = backend_error
                     status.errors += 1
                     status.last_error = error_msg
+                    if self.config.stop_on_error:
+                        self._stop_requested = True
 
-        except OSError as e:
+        except (OSError, RuntimeError) as e:
             passed = False
             error_msg = f"Failed to start stress test: {e}"
             status.errors += 1

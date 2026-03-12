@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
@@ -209,10 +210,6 @@ class ConfigTab(QWidget):
         self._stop_on_error.stateChanged.connect(self._on_change)
         behavior_layout.addRow(self._stop_on_error)
 
-        self._test_smt = QCheckBox("Also test SMT sibling threads")
-        self._test_smt.stateChanged.connect(self._on_change)
-        behavior_layout.addRow(self._test_smt)
-
         layout.addWidget(behavior_group)
 
         # core selection
@@ -224,6 +221,15 @@ class ConfigTab(QWidget):
         self._cores_input.setPlaceholderText("e.g., 0,1,4,5 (physical core IDs)")
         self._cores_input.textChanged.connect(self._on_change)
         cores_layout.addWidget(self._cores_input)
+
+        self._retest_failed_btn = QPushButton("Retest Failed Cores Only")
+        self._retest_failed_btn.setToolTip(
+            "After a test run, populate the core selection with only the "
+            "cores that failed — skip already-stable cores."
+        )
+        self._retest_failed_btn.setEnabled(False)
+        self._retest_failed_btn.clicked.connect(self._on_retest_failed)
+        cores_layout.addWidget(self._retest_failed_btn)
 
         layout.addWidget(cores_group)
         layout.addStretch()
@@ -311,7 +317,7 @@ class ConfigTab(QWidget):
             seconds_per_core=self._time_spin.value(),
             cycle_count=self._cycles_spin.value(),
             stop_on_error=self._stop_on_error.isChecked(),
-            test_smt=self._test_smt.isChecked(),
+            test_smt=False,
             cores_to_test=cores,
             max_temperature=self._max_temp_spin.value(),
             test_mode=self._mode_combo.currentText(),
@@ -333,7 +339,6 @@ class ConfigTab(QWidget):
         self._time_spin.setValue(profile.seconds_per_core)
         self._cycles_spin.setValue(profile.cycle_count)
         self._stop_on_error.setChecked(profile.stop_on_error)
-        self._test_smt.setChecked(profile.test_smt)
         if profile.cores_to_test:
             self._cores_input.setText(",".join(str(c) for c in profile.cores_to_test))
         else:
@@ -349,3 +354,21 @@ class ConfigTab(QWidget):
         if hasattr(profile, "idle_between_cores"):
             self._idle_between_spin.setValue(int(profile.idle_between_cores))
         self._building = False
+
+    def set_failed_cores(self, failed_cores: list[int]) -> None:
+        """Store failed cores from a test run and enable the retest button."""
+        self._last_failed_cores = failed_cores
+        self._retest_failed_btn.setEnabled(bool(failed_cores))
+        if failed_cores:
+            n = len(failed_cores)
+            self._retest_failed_btn.setText(
+                f"Retest {n} Failed Core{'s' if n != 1 else ''} Only"
+            )
+        else:
+            self._retest_failed_btn.setText("Retest Failed Cores Only")
+
+    def _on_retest_failed(self) -> None:
+        """Populate core selection with only the failed cores."""
+        cores = getattr(self, "_last_failed_cores", [])
+        if cores:
+            self._cores_input.setText(",".join(str(c) for c in sorted(cores)))
