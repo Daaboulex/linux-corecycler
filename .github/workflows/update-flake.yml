@@ -1,0 +1,39 @@
+name: Update flake inputs
+
+on:
+  schedule:
+    # Every Monday at 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Update flake inputs
+        run: nix flake update
+
+      - name: Build package (verify it still works)
+        run: nix build --no-link
+
+      - name: Run tests
+        run: nix develop -c python -m pytest tests/ -q
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore: update flake inputs"
+          title: "chore: update flake inputs"
+          body: |
+            Automated weekly flake input update.
+
+            Updates nixpkgs (stress-ng, mprime, util-linux, Python, Qt6, etc.) to latest nixos-unstable.
+
+            - Build verified
+            - Tests passed
+          branch: auto-update-flake
+          delete-branch: true

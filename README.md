@@ -134,25 +134,34 @@ Add the flake input to your `flake.nix`:
 Then add the package to your system or Home Manager configuration:
 
 ```nix
-# In your nixosConfiguration or home-manager module:
+# FOSS-only (stress-ng bundled, no unfree software):
 environment.systemPackages = [
   inputs.corecyclerlx.packages.${pkgs.system}.default
 ];
 
-# Or with Home Manager:
-home.packages = [
-  inputs.corecyclerlx.packages.${pkgs.system}.default
+# Full (stress-ng + mprime bundled — requires allowUnfree):
+environment.systemPackages = [
+  inputs.corecyclerlx.packages.${pkgs.system}.full
 ];
 ```
 
-The Nix package includes stress-ng and taskset (util-linux) on PATH automatically.
+| Package variant | Backends included | Unfree software |
+|---|---|---|
+| `packages.default` | stress-ng | No |
+| `packages.full` | stress-ng + mprime | Yes (mprime) |
+
+Both variants include taskset (util-linux) for CPU core pinning. Flake inputs are auto-updated weekly via GitHub Actions, keeping all bundled backends at their latest nixpkgs versions.
 
 ### Nix (any distro)
 
 Run directly without installing:
 
 ```bash
+# FOSS-only
 nix run github:Daaboulex/corecyclerlx
+
+# Full (with mprime)
+nix run github:Daaboulex/corecyclerlx#full
 ```
 
 ### From source (non-Nix)
@@ -164,6 +173,8 @@ pip install PySide6
 python src/main.py
 ```
 
+When running from source, you must install backends separately (see below).
+
 ### Dependencies
 
 **Required:**
@@ -171,20 +182,132 @@ python src/main.py
 - PySide6 >= 6.7 (Qt6 bindings)
 
 **Runtime (needed for stress testing):**
-- **taskset** (from util-linux) -- used for CPU core pinning. Pre-installed on virtually all Linux distributions.
+- **taskset** (from util-linux) -- CPU core pinning. Pre-installed on virtually all Linux distributions.
 - At least one stress test backend (see below)
-
-**Optional stress test backends (at least one recommended):**
-- **mprime** -- Prime95 command-line version (most sensitive for CO testing)
-- **stress-ng** -- general-purpose stress tester (often pre-installed on Linux)
-- **y-cruncher** -- multi-algorithm computational stress test
 
 **Optional for Curve Optimizer features:**
 - **ryzen_smu** kernel module ([amkillam fork](https://github.com/amkillam/ryzen_smu)) -- required for reading/writing CO values via SMU. Supports Zen 1 through Zen 5.
 
-### Installing ryzen_smu
+## Backend Setup
 
-The amkillam fork of ryzen_smu supports Zen through Zen 5 processors:
+CoreCyclerLx supports three stress test backends. You need at least one installed to run tests. The Nix package bundles backends automatically (see [Installation](#installation)), but if you're running from source or want additional backends, follow the guides below.
+
+### mprime (recommended for CO tuning)
+
+mprime is the Linux command-line build of Prime95 by Mersenne Research. It is the most sensitive backend for detecting Curve Optimizer instability because its FFT workloads exercise different power/thermal profiles per core.
+
+**Why mprime?** Small FFTs generate high power draw on a single core, which is exactly the condition that exposes CO instability. Most CO errors manifest as computation errors in mprime's FFT verification, not as system crashes, making it the safest and most informative tool for finding per-core limits.
+
+**mprime is unfree software** (proprietary, free to use). The `packages.full` Nix variant includes it. The `packages.default` variant does not.
+
+#### NixOS
+
+```nix
+# Option 1: Use the full package variant (includes mprime automatically)
+environment.systemPackages = [
+  inputs.corecyclerlx.packages.${pkgs.system}.full
+];
+
+# Option 2: Install mprime separately (requires nixpkgs.config.allowUnfree = true)
+environment.systemPackages = [ pkgs.mprime ];
+```
+
+#### Arch Linux
+
+```bash
+# AUR
+yay -S mprime-bin
+```
+
+#### Ubuntu / Debian
+
+```bash
+# Download from mersenne.org
+wget https://www.mersenne.org/download/software/v30/30.19/p95v3019b20.linux64.tar.gz
+tar xzf p95v3019b20.linux64.tar.gz
+sudo install -m755 mprime /usr/local/bin/mprime
+```
+
+#### Manual (any distro)
+
+1. Download from [mersenne.org/download](https://www.mersenne.org/download/) (Linux 64-bit)
+2. Extract the archive
+3. Place the `mprime` binary on your PATH:
+   ```bash
+   sudo install -m755 mprime /usr/local/bin/mprime
+   # or for user-local install:
+   install -m755 mprime ~/.local/bin/mprime
+   ```
+4. Verify: `mprime -v`
+
+### stress-ng (FOSS alternative)
+
+stress-ng is a general-purpose stress testing tool. Less sensitive than mprime for CO detection, but fully open source and often pre-installed.
+
+#### NixOS
+
+Bundled automatically in both `packages.default` and `packages.full`. No extra setup needed.
+
+#### Ubuntu / Debian
+
+```bash
+sudo apt install stress-ng
+```
+
+#### Arch Linux
+
+```bash
+sudo pacman -S stress-ng
+```
+
+#### Fedora
+
+```bash
+sudo dnf install stress-ng
+```
+
+Verify: `stress-ng --version`
+
+### y-cruncher
+
+y-cruncher is a multi-algorithm computational stress test. Useful as a secondary validation backend.
+
+#### Manual (any distro)
+
+1. Download from [numberworld.org/y-cruncher](http://www.numberworld.org/y-cruncher/)
+2. Extract and place `y-cruncher` on your PATH:
+   ```bash
+   sudo install -m755 y-cruncher /usr/local/bin/y-cruncher
+   ```
+3. Verify: `y-cruncher version`
+
+y-cruncher is not currently packaged in nixpkgs. If you need it on NixOS, install the binary manually to `~/.local/bin/`.
+
+### Backend comparison
+
+| Backend | License | Sensitivity | Best for | Bundled in Nix |
+|---|---|---|---|---|
+| mprime | Unfree (free to use) | Highest | CO tuning, finding per-core limits | `packages.full` only |
+| stress-ng | GPL-2.0 | Medium | General stability, quick screening | Both variants |
+| y-cruncher | Freeware | Medium-High | Secondary validation, AVX-heavy loads | Not bundled |
+
+### ryzen_smu kernel module
+
+Required for the **Curve Optimizer tab** and **Auto-Tuner**. Not needed for stress testing alone.
+
+The [amkillam fork](https://github.com/amkillam/ryzen_smu) supports Zen 1 through Zen 5 processors.
+
+#### NixOS
+
+```nix
+# Build as a kernel module (adjust the source path or use a flake input)
+boot.extraModulePackages = [
+  (config.boot.kernelPackages.callPackage /path/to/ryzen_smu/package.nix {})
+];
+boot.kernelModules = [ "ryzen_smu" ];
+```
+
+#### Other distros (DKMS)
 
 ```bash
 git clone https://github.com/amkillam/ryzen_smu.git
@@ -194,31 +317,20 @@ sudo make install   # installs as a DKMS module
 sudo modprobe ryzen_smu
 ```
 
-On NixOS, you can build it as a kernel module:
-
-```nix
-boot.extraModulePackages = [
-  (config.boot.kernelPackages.callPackage /path/to/ryzen_smu/package.nix {})
-];
-boot.kernelModules = [ "ryzen_smu" ];
-```
-
-Verify the module is loaded:
+#### Verify
 
 ```bash
 ls /sys/kernel/ryzen_smu_drv/
-# Expected: mp1_smu_cmd  rsmu_cmd  smu_args  version  ...
+# Expected: mp1_smu_cmd  rsmu_cmd  smu_args  version  pm_table
 ```
 
-Note: reading and writing CO values through sysfs requires root access or appropriate file permissions on the `/sys/kernel/ryzen_smu_drv/` entries.
+Reading and writing CO values through sysfs requires root access or appropriate file permissions on `/sys/kernel/ryzen_smu_drv/`. You can use a udev rule to grant access to a specific group:
 
-### Installing mprime
-
-mprime is the Linux command-line build of Prime95. It is unfree software distributed by Mersenne Research.
-
-1. Download from [mersenne.org/download](https://www.mersenne.org/download/)
-2. Extract and place the `mprime` binary somewhere on your `PATH` (e.g., `/usr/local/bin/mprime` or `~/.local/bin/mprime`)
-3. Verify: `mprime -v`
+```bash
+# /etc/udev/rules.d/99-ryzen-smu.rules
+KERNEL=="ryzen_smu_drv", SUBSYSTEM=="platform", ATTR{smu_args}="", \
+  RUN+="/bin/chmod 0660 /sys/kernel/ryzen_smu_drv/smu_args /sys/kernel/ryzen_smu_drv/rsmu_cmd /sys/kernel/ryzen_smu_drv/mp1_smu_cmd"
+```
 
 ## Usage Tutorial
 
@@ -440,6 +552,15 @@ tests/
   test_tuner_persistence.py  # Session CRUD, core state upsert, test log, schema migration
   test_tuner_engine.py       # State machine transitions, crash recovery, core scheduling
   test_tuner_tab.py          # Auto-Tuner GUI widget tests
+flake.nix                  # Nix package: default (FOSS) and full (+ mprime) variants
+pyproject.toml             # Python project metadata, entry point
+assets/
+  icon.svg                 # Application icon (gear with cycling arrows)
+  corecyclerlx.desktop     # XDG desktop entry
+  arrow-*.svg              # Qt widget arrows for dark theme
+.github/
+  workflows/
+    update-flake.yml       # Weekly auto-update of flake inputs (nixpkgs, backends)
 ```
 
 The stress test runs in a `QThread` worker. The scheduler pins each stress process to a single logical CPU using `taskset`, monitors for MCE events during both stress and idle phases, parses backend output for computation errors, and emits Qt signals for GUI updates. Processes are launched in their own process group for clean teardown.
