@@ -247,7 +247,14 @@ class TunerEngine(QObject):
         self._run_next()
 
     def resume(self, session_id: int) -> None:
-        """Resume a crashed/paused session."""
+        """Resume a crashed/paused session.
+
+        Order matters for crash safety:
+        1. Advance interrupted cores FIRST (treat crash as failure, back off)
+        2. THEN re-apply only safe offsets for cores at known-good values
+        This prevents re-applying the exact offset that caused a crash,
+        which could crash the system again even at idle with extreme values.
+        """
         self._abort_requested = False
         self._paused = False
         self._session_id = session_id
@@ -263,40 +270,49 @@ class TunerEngine(QObject):
 
         self._core_states = tp.load_core_states(self._db, session_id)
 
-        # Re-apply CO offsets from saved state — verify each one
+        # Step 1: Advance interrupted cores BEFORE touching SMU.
+        # Cores in active test phases crashed at their current_offset — that
+        # offset is potentially dangerous. Advance the state machine (treating
+        # the crash as a test failure) so it backs off to a safe value.
+        for cs in list(self._core_states.values()):
+            if cs.phase in ("coarse_search", "fine_search", "confirming"):
+                self.log_message.emit(
+                    f"Core {cs.core_id} was interrupted at offset {cs.current_offset} "
+                    f"— treating as failure and backing off"
+                )
+                self._advance_core(cs.core_id, passed=False)
+
+        # Step 2: Re-apply CO offsets that are now at safe (backed-off) values.
+        # Skip "not_started" and "confirmed" cores — they don't need CO set.
+        # _run_next() will apply the correct offset when testing resumes.
         if self._smu is not None:
             failed_cores: list[int] = []
             for cs in self._core_states.values():
-                if cs.phase not in ("not_started", "confirmed"):
-                    try:
-                        success = self._smu.set_co_offset(cs.core_id, cs.current_offset)
-                        if not success:
-                            failed_cores.append(cs.core_id)
-                            self.log_message.emit(
-                                f"CO re-apply failed for core {cs.core_id} at offset "
-                                f"{cs.current_offset} — read-back mismatch or SMU rejection"
-                            )
-                    except Exception as e:
+                if cs.phase in ("not_started", "confirmed"):
+                    continue
+                # Only re-apply if the core has a non-zero offset to restore
+                if cs.current_offset == 0:
+                    continue
+                try:
+                    success = self._smu.set_co_offset(cs.core_id, cs.current_offset)
+                    if not success:
                         failed_cores.append(cs.core_id)
-                        log.warning("Failed to re-apply CO for core %d: %s", cs.core_id, e)
                         self.log_message.emit(
-                            f"CO re-apply error for core {cs.core_id}: {e}"
+                            f"CO re-apply failed for core {cs.core_id} at offset "
+                            f"{cs.current_offset} — read-back mismatch or SMU rejection"
                         )
+                except Exception as e:
+                    failed_cores.append(cs.core_id)
+                    log.warning("Failed to re-apply CO for core %d: %s", cs.core_id, e)
+                    self.log_message.emit(
+                        f"CO re-apply error for core {cs.core_id}: {e}"
+                    )
             if failed_cores:
                 self.log_message.emit(
                     f"WARNING: CO offsets could not be re-applied for cores {failed_cores}. "
                     f"SMU access may have changed since last session. "
                     f"These cores will be treated as failures."
                 )
-
-        # Find cores that were mid-test (in an active phase) — treat as failure
-        for cs in self._core_states.values():
-            if cs.phase in ("coarse_search", "fine_search", "confirming"):
-                self.log_message.emit(
-                    f"Core {cs.core_id} was interrupted at offset {cs.current_offset} "
-                    f"— treating as failure"
-                )
-                self._advance_core(cs.core_id, passed=False)
 
         self._set_status("running")
         tp.update_session_status(self._db, session_id, "running")
