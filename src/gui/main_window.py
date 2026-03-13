@@ -237,11 +237,22 @@ class MainWindow(QMainWindow):
         self._status_msg = QLabel("Ready")
         self._status_bar.addWidget(self._status_msg)
 
-        self._is_root = os.geteuid() == 0
-        if not self._is_root:
+        # Check actual device access rather than euid — supports udev/group-based
+        # permissions without requiring root
+        missing: list[str] = []
+        try:
+            fd = os.open("/dev/cpu/0/msr", os.O_RDONLY)
+            os.close(fd)
+        except (OSError, PermissionError):
+            missing.append("MSR (clock stretch, per-core power, package power)")
+        if not Path("/sys/kernel/ryzen_smu_drv/smu_args").exists() or not os.access(
+            "/sys/kernel/ryzen_smu_drv/smu_args", os.W_OK
+        ):
+            missing.append("Curve Optimizer (SMU)")
+        if missing:
             priv_label = QLabel(
-                "  ⚠ Not running as root — MSR clock stretch, per-core power, "
-                "package power, and Curve Optimizer unavailable"
+                "  ⚠ " + " and ".join(missing) + " unavailable — "
+                "check device permissions or run as root"
             )
             priv_label.setStyleSheet("color: #ffb74d; font: 10px monospace;")
             self._status_bar.addPermanentWidget(priv_label)
