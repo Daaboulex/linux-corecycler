@@ -9,8 +9,15 @@ from pathlib import Path
 
 HWMON_BASE = Path("/sys/class/hwmon")
 
-# Super I/O chips that can provide Vcore via analog input (in0)
-_SUPERIO_CHIPS = ("nct6799", "nct6798", "nct6797", "nct6796", "nct6795")
+# Super I/O chips that can provide Vcore via analog input (in0 on most boards).
+# Nuvoton NCT67xx: common on ASUS, MSI, ASRock boards
+# ITE IT868x/IT866x/IT871x: common on Gigabyte boards
+_SUPERIO_CHIPS = (
+    "nct6799", "nct6798", "nct6797", "nct6796", "nct6795",
+    "nct6793", "nct6792", "nct6791", "nct6779", "nct6776", "nct6775",
+    "it8689", "it8688", "it8686", "it8665", "it8628", "it8625",
+    "it8720", "it8728", "it8771", "it8772",
+)
 
 
 @dataclass(slots=True)
@@ -26,7 +33,7 @@ class HWMonReader:
     """Read CPU temperatures and voltages from hwmon (k10temp/zenpower/coretemp)."""
 
     # Prefer AMD-specific drivers (richer data) over generic coretemp
-    _PREFERRED = ("zenpower", "zenpower3", "k10temp")
+    _PREFERRED = ("zenpower", "zenpower3", "zenpower5", "k10temp")
     _FALLBACK = ("coretemp",)
 
     def __init__(self) -> None:

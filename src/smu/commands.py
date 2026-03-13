@@ -12,13 +12,13 @@ from enum import Enum, auto
 
 class CPUGeneration(Enum):
     ZEN2_MATISSE = auto()       # 3000 series desktop (family 0x17, model 0x71)
-    ZEN2_CASTLE_PEAK = auto()   # 3000 TR (family 0x17, model 0x31)
+    ZEN2_CASTLE_PEAK = auto()   # 3000 TR (family 0x17, model 0x31) — same SMU as Matisse
     ZEN3_VERMEER = auto()       # 5000 series desktop (family 0x19, model 0x20-0x2F)
     ZEN3_CEZANNE = auto()       # 5000 APU (family 0x19, model 0x50)
     ZEN3D_WARHOL = auto()       # 5800X3D (family 0x19, model 0x20-0x21 + X3D name)
     ZEN4_RAPHAEL = auto()       # 7000 series desktop (family 0x19, model 0x60-0x7F)
     ZEN4_PHOENIX = auto()       # 7040/8040 APU (family 0x19, model 0x74-0x75)
-    ZEN4_DRAGON_RANGE = auto()  # 7045 mobile
+    ZEN4_DRAGON_RANGE = auto()  # 7045 mobile — uses Raphael commands
     ZEN4_STORM_PEAK = auto()    # Zen 4 TR (family 0x19, model 0x18)
     ZEN5_GRANITE_RIDGE = auto() # 9000 series desktop (family 0x1A, model 0x44)
     ZEN5_STRIX_POINT = auto()   # 9050 APU (family 0x1A, model 0x24)
@@ -108,6 +108,30 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         set_all_co_cmd=None,
         get_co_cmd=None,
         # PBO limits (RSMU)
+        set_ppt_cmd=0x53,
+        set_tdc_cmd=0x54,
+        set_edc_cmd=0x55,
+        set_htc_cmd=0x56,
+        set_pbo_scalar_cmd=0x58,
+        get_pbo_scalar_cmd=0x6C,
+        set_oc_freq_all_cmd=0x5C,
+        set_oc_freq_per_core_cmd=0x5D,
+        enable_oc_cmd=0x5A,
+        disable_oc_cmd=0x5B,
+        is_overclockable_cmd=0x6F,
+        get_fastest_core_cmd=0x59,
+        get_boost_limit_cmd=0x6E,
+        transfer_table_cmd=0x05,
+        get_dram_base_cmd=0x06,
+        get_table_version_cmd=0x08,
+    ),
+    # -----------------------------------------------------------------------
+    # Zen 2 Castle Peak (ThreadRipper 3000) — same commands as Matisse
+    # -----------------------------------------------------------------------
+    CPUGeneration.ZEN2_CASTLE_PEAK: SMUCommandSet(
+        generation=CPUGeneration.ZEN2_CASTLE_PEAK,
+        co_range=(0, 0),  # no CO support
+        mailbox="rsmu",
         set_ppt_cmd=0x53,
         set_tdc_cmd=0x54,
         set_edc_cmd=0x55,
@@ -279,6 +303,35 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         get_table_version_cmd=0x05,
     ),
     # -----------------------------------------------------------------------
+    # Zen 4 Dragon Range (7045 mobile) — same commands as Raphael (same silicon)
+    # -----------------------------------------------------------------------
+    CPUGeneration.ZEN4_DRAGON_RANGE: SMUCommandSet(
+        generation=CPUGeneration.ZEN4_DRAGON_RANGE,
+        co_range=(-50, 30),
+        mailbox="rsmu",
+        set_co_cmd=0x06,
+        set_all_co_cmd=0x07,
+        get_co_cmd=0xD5,
+        set_ppt_cmd=0x56,
+        set_tdc_cmd=0x57,
+        set_edc_cmd=0x58,
+        set_htc_cmd=0x59,
+        set_pbo_scalar_cmd=0x5B,
+        get_pbo_scalar_cmd=0x6D,
+        set_boost_limit_cmd=0x70,
+        get_boost_limit_cmd=0x6E,
+        set_oc_freq_all_cmd=0x5F,
+        set_oc_freq_per_core_cmd=0x60,
+        enable_oc_cmd=0x5D,
+        disable_oc_cmd=0x5E,
+        is_overclockable_cmd=0x6F,
+        get_fastest_core_cmd=0x59,
+        get_ln2_mode_cmd=0xDD,
+        transfer_table_cmd=0x03,
+        get_dram_base_cmd=0x04,
+        get_table_version_cmd=0x05,
+    ),
+    # -----------------------------------------------------------------------
     # Zen 5 Granite Ridge — same RSMU cmd IDs as Zen 4, wider CO range
     # -----------------------------------------------------------------------
     CPUGeneration.ZEN5_GRANITE_RIDGE: SMUCommandSet(
@@ -375,13 +428,19 @@ def detect_generation(family: int, model: int, model_name: str) -> CPUGeneration
             return CPUGeneration.ZEN2_MATISSE
         if model in (0x31,):  # Castle Peak (TR)
             return CPUGeneration.ZEN2_CASTLE_PEAK
+        # Zen 1 (0x01, 0x11) and Zen+ (0x08, 0x18) — same PBO limits as Matisse
         return CPUGeneration.ZEN2_MATISSE  # fallback for family 23
 
     # AMD family 0x19 (25) = Zen 3 / Zen 4
     if family == 25:
         # X3D detection first (overrides model-based detection)
+        # Zen 3 X3D (5800X3D): model 0x20-0x2F + X3D name
         if "5800x3d" in name_lower or ("x3d" in name_lower and model in range(0x20, 0x30)):
             return CPUGeneration.ZEN3D_WARHOL
+        # Zen 4 X3D (7800X3D, 7900X3D, 7950X3D): model 0x60-0x7F + X3D name
+        # Same Raphael commands — X3D CO tuning works but V-Cache is sensitive
+        if "x3d" in name_lower and model in range(0x60, 0x80):
+            return CPUGeneration.ZEN4_RAPHAEL
 
         if model in range(0x20, 0x30):  # Vermeer
             return CPUGeneration.ZEN3_VERMEER
@@ -389,10 +448,10 @@ def detect_generation(family: int, model: int, model_name: str) -> CPUGeneration
             return CPUGeneration.ZEN3_CEZANNE
         if model in (0x18,):  # Storm Peak (Zen 4 TR)
             return CPUGeneration.ZEN4_STORM_PEAK
-        if model in range(0x60, 0x70):  # Raphael
-            return CPUGeneration.ZEN4_RAPHAEL
-        if model in (0x74, 0x75):  # Phoenix / Hawk Point
+        if model in (0x74, 0x75):  # Phoenix / Hawk Point (must be before Raphael range)
             return CPUGeneration.ZEN4_PHOENIX
+        if model in range(0x60, 0x80):  # Raphael + Dragon Range (same silicon)
+            return CPUGeneration.ZEN4_RAPHAEL
         if model in range(0x40, 0x50):  # Rembrandt (Zen 3+ APU)
             return CPUGeneration.ZEN3_CEZANNE  # same SMU commands
 
