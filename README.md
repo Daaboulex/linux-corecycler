@@ -435,7 +435,15 @@ The tuner uses a coarse-to-fine search for each core:
 
 **Crash safety:**
 
-Every state transition is committed to SQLite before acting. If the system crashes or reboots mid-test (which is expected during CO tuning -- that's how you find the limit), the tuner detects the interrupted session on next launch and offers to resume. It re-applies CO offsets from saved state, treats the interrupted test as a failure, and continues from the next action. No progress is lost.
+Every state transition is committed to SQLite (WAL mode) before acting. If the system crashes or reboots mid-test (which is expected during CO tuning -- that's how you find the limit), the tuner detects the interrupted session on next launch and offers to resume.
+
+Resume follows a strict safety order to prevent infinite crash loops:
+
+1. **Advance interrupted cores first** -- any core that was mid-test (coarse search, fine search, or confirming) is treated as a failure and backed off *before* touching the SMU. This ensures the crashing offset is never re-applied.
+2. **Re-apply only safe offsets** -- after all interrupted cores have been advanced to their next safe value, the tuner re-applies CO offsets via SMU for cores still in progress. Cores that are `not_started`, `confirmed`, or at offset 0 are skipped.
+3. **Continue from next action** -- the tuner picks the next core to test and proceeds normally.
+
+This ordering is critical: if the system crashed because a CO offset was too aggressive, naively re-applying saved offsets on resume would re-apply that same crashing value, causing another crash on every boot attempt. By advancing first, the tuner always moves past the dangerous value before re-engaging the hardware.
 
 **Per-core state machine:**
 
