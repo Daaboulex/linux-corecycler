@@ -20,24 +20,34 @@ class HWMonData:
 
 
 class HWMonReader:
-    """Read CPU temperatures and voltages from hwmon (k10temp/zenpower)."""
+    """Read CPU temperatures and voltages from hwmon (k10temp/zenpower/coretemp)."""
+
+    # Prefer AMD-specific drivers (richer data) over generic coretemp
+    _PREFERRED = ("zenpower", "zenpower3", "k10temp")
+    _FALLBACK = ("coretemp",)
 
     def __init__(self) -> None:
         self._hwmon_path: Path | None = None
         self._find_device()
 
     def _find_device(self) -> None:
-        """Find the k10temp or zenpower hwmon device."""
+        """Find a supported CPU hwmon device (prefer AMD drivers over coretemp)."""
         if not HWMON_BASE.exists():
             return
 
+        fallback: Path | None = None
         for hwmon_dir in sorted(HWMON_BASE.iterdir()):
             name_file = hwmon_dir / "name"
             if name_file.exists():
                 name = name_file.read_text().strip()
-                if name in ("k10temp", "zenpower", "zenpower3"):
+                if name in self._PREFERRED:
                     self._hwmon_path = hwmon_dir
                     return
+                if name in self._FALLBACK and fallback is None:
+                    fallback = hwmon_dir
+
+        if fallback is not None:
+            self._hwmon_path = fallback
 
     def is_available(self) -> bool:
         return self._hwmon_path is not None

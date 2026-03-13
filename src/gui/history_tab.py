@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -122,10 +123,16 @@ class HistoryTab(QWidget):
 
         layout.addWidget(summary_group)
 
-        # --- Vertical splitter ---
+        # --- Two-section vertical splitter: top (context+runs) / bottom (detail+log) ---
         splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # Context table (top section — hidden in "All Runs" mode)
+        # === Top section: context table + runs table ===
+        top_widget = QWidget()
+        top_layout = QVBoxLayout(top_widget)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(0)
+
+        # Context table (hidden in "All Runs" mode, auto-sized to rows)
         self._context_table = QTableWidget()
         self._context_table.setColumnCount(6)
         self._context_table.setHorizontalHeaderLabels(
@@ -148,28 +155,33 @@ class HistoryTab(QWidget):
         self._context_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._context_table.customContextMenuRequested.connect(self._show_context_table_menu)
         self._context_table.selectionModel().selectionChanged.connect(self._on_context_selected)
-        splitter.addWidget(self._context_table)
+        self._context_table.clicked.connect(lambda: self._on_context_selected())
+        self._context_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._context_table.setMaximumHeight(200)
+        top_layout.addWidget(self._context_table)
 
-        # Runs table (middle section)
+        # Runs table (stretches to fill remaining top space)
         self._runs_table = QTableWidget()
-        self._runs_table.setColumnCount(7)
+        self._runs_table.setColumnCount(8)
         self._runs_table.setHorizontalHeaderLabels(
-            ["Date", "CPU", "Backend", "Mode", "Result", "Duration", "Status"]
+            ["Date", "Backend", "Mode", "Result", "Duration", "Status", "Cores", "BIOS"]
         )
         header = self._runs_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
-        self._runs_table.setColumnWidth(0, 150)
-        self._runs_table.setColumnWidth(2, 80)
-        self._runs_table.setColumnWidth(3, 60)
-        self._runs_table.setColumnWidth(4, 80)
-        self._runs_table.setColumnWidth(5, 90)
-        self._runs_table.setColumnWidth(6, 80)
+        self._runs_table.setColumnWidth(0, 140)
+        self._runs_table.setColumnWidth(1, 70)
+        self._runs_table.setColumnWidth(2, 50)
+        self._runs_table.setColumnWidth(3, 70)
+        self._runs_table.setColumnWidth(4, 70)
+        self._runs_table.setColumnWidth(5, 75)
+        self._runs_table.setColumnWidth(6, 40)
         self._runs_table.setAlternatingRowColors(True)
         self._runs_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._runs_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -177,11 +189,13 @@ class HistoryTab(QWidget):
         self._runs_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._runs_table.customContextMenuRequested.connect(self._show_context_menu)
         self._runs_table.selectionModel().selectionChanged.connect(self._on_run_selection_changed)
-        splitter.addWidget(self._runs_table)
+        top_layout.addWidget(self._runs_table)
 
-        # Detail: core results + events
-        detail_widget = QWidget()
-        detail_layout = QVBoxLayout(detail_widget)
+        splitter.addWidget(top_widget)
+
+        # === Bottom section: detail info + core results + events log ===
+        self._detail_widget = QWidget()
+        detail_layout = QVBoxLayout(self._detail_widget)
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(2)
 
@@ -215,19 +229,22 @@ class HistoryTab(QWidget):
         self._core_results_table.setColumnWidth(7, 120)
         self._core_results_table.setAlternatingRowColors(True)
         self._core_results_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._core_results_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._core_results_table.setMaximumHeight(300)
         detail_layout.addWidget(self._core_results_table)
-        splitter.addWidget(detail_widget)
 
-        # Events log (bottom section — hidden until a run is selected)
+        # Events log (stretches to fill remaining bottom space)
         self._events_log = QPlainTextEdit()
         self._events_log.setReadOnly(True)
         self._events_log.setFont(QFont("monospace", 9))
         self._events_log.setMaximumBlockCount(2000)
-        self._events_log.setVisible(False)
-        splitter.addWidget(self._events_log)
+        detail_layout.addWidget(self._events_log)
+
+        splitter.addWidget(self._detail_widget)
+        self._detail_widget.setVisible(False)
 
         self._splitter = splitter
-        splitter.setSizes([150, 200, 0, 0])
+        splitter.setChildrenCollapsible(False)
         layout.addWidget(splitter)
 
     # ------------------------------------------------------------------
@@ -265,7 +282,12 @@ class HistoryTab(QWidget):
         else:
             self._context_table.setVisible(True)
             self._populate_context_table()
-            self._runs_table.setRowCount(0)
+            # Auto-select first context so runs are always visible
+            if self._context_table.rowCount() > 0:
+                self._context_table.selectRow(0)
+                return
+            else:
+                self._runs_table.setRowCount(0)
         self._clear_detail()
 
     # ------------------------------------------------------------------
@@ -276,6 +298,47 @@ class HistoryTab(QWidget):
     def refresh(self) -> None:
         if not self._db:
             return
+        self._refresh_preserve_context()
+
+    def _refresh_preserve_context(self) -> None:
+        """Refresh data but keep the currently selected context and detail view."""
+        if not self._db:
+            return
+
+        # remember which context was selected
+        selected_ctx_id = None
+        if self._view_mode == self.VIEW_GROUPED:
+            ctx_rows = sorted(
+                {idx.row() for idx in self._context_table.selectionModel().selectedRows()}
+            )
+            if ctx_rows and ctx_rows[0] < len(self._contexts):
+                selected_ctx_id = self._contexts[ctx_rows[0]].id
+
+        self._reload_data()
+        self._update_summary()
+
+        if self._view_mode == self.VIEW_GROUPED and selected_ctx_id is not None:
+            # Rebuild context table but restore selection without clearing detail
+            self._populate_context_table()
+            for i, ctx in enumerate(self._contexts):
+                if ctx.id == selected_ctx_id:
+                    self._context_table.selectRow(i)
+                    # Force refresh — selectRow may not fire signal if same row index
+                    self._on_context_selected()
+                    return
+            # Context was deleted (all its runs gone) — fall through to full refresh
+        elif self._view_mode == self.VIEW_ALL:
+            self._populate_runs_table(self._runs)
+            self._clear_detail()
+            return
+        elif self._view_mode == self.VIEW_TUNER:
+            self._populate_tuner_sessions()
+            return
+
+        # Fallback: full view mode reset
+        self._apply_view_mode()
+
+    def _reload_data(self) -> None:
         self._runs = self._db.list_runs(limit=500)
         self._contexts = self._db.list_contexts()
 
@@ -286,9 +349,6 @@ class HistoryTab(QWidget):
 
         # Load tuner sessions
         self._tuner_sessions = self._load_tuner_sessions()
-
-        self._update_summary()
-        self._apply_view_mode()
 
     def _update_summary(self) -> None:
         total = len(self._runs)
@@ -369,6 +429,38 @@ class HistoryTab(QWidget):
                 cell.setForeground(QColor("#888"))
                 self._context_table.setItem(row, col, cell)
 
+        # Auto-size context table height to fit rows (capped at 200px)
+        self._auto_size_context_table()
+
+    def _auto_size_context_table(self) -> None:
+        """Set context table max height to fit its content."""
+        rc = self._context_table.rowCount()
+        if rc == 0:
+            self._context_table.setMaximumHeight(0)
+            return
+        row_h = self._context_table.rowHeight(0)
+        if row_h < 10:
+            row_h = 30
+        header_h = self._context_table.horizontalHeader().height()
+        if header_h < 10:
+            header_h = 26
+        self._context_table.setMaximumHeight(min(header_h + row_h * rc + 6, 200))
+
+    def _auto_size_core_results_table(self) -> None:
+        """Set core results table max height to fit its content."""
+        rc = self._core_results_table.rowCount()
+        if rc == 0:
+            self._core_results_table.setMaximumHeight(0)
+            return
+        row_h = self._core_results_table.rowHeight(0)
+        if row_h < 10:
+            row_h = 30
+        header_h = self._core_results_table.horizontalHeader().height()
+        if header_h < 10:
+            header_h = 26
+        # Cap at 300px — enough for ~10 rows, rest goes to events log
+        self._core_results_table.setMaximumHeight(min(header_h + row_h * rc + 6, 300))
+
     @Slot()
     def _on_context_selected(self) -> None:
         rows = sorted({idx.row() for idx in self._context_table.selectionModel().selectedRows()})
@@ -406,7 +498,7 @@ class HistoryTab(QWidget):
         )
         if ok:
             self._db.update_context_notes(ctx.id, text)
-            self.refresh()
+            self._refresh_preserve_context()
 
     # ------------------------------------------------------------------
     # Runs table
@@ -414,20 +506,46 @@ class HistoryTab(QWidget):
 
     def _populate_runs_table(self, runs: list[RunRecord]) -> None:
         self._displayed_runs = runs
+
+        # Always reset column headers (tuner sessions view may have changed them)
+        self._runs_table.setColumnCount(8)
+        self._runs_table.setHorizontalHeaderLabels(
+            ["Date", "Backend", "Mode", "Result", "Duration", "Status", "Cores", "BIOS"]
+        )
+        header = self._runs_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
+        self._runs_table.setColumnWidth(0, 140)
+        self._runs_table.setColumnWidth(1, 70)
+        self._runs_table.setColumnWidth(2, 50)
+        self._runs_table.setColumnWidth(3, 70)
+        self._runs_table.setColumnWidth(4, 70)
+        self._runs_table.setColumnWidth(5, 75)
+        self._runs_table.setColumnWidth(6, 40)
+
         self._runs_table.setRowCount(len(runs))
         for row, run in enumerate(runs):
             date_str = run.started_at[:19].replace("T", " ") if run.started_at else ""
-            result_str = f"{run.cores_passed}P / {run.cores_failed}F" if run.status == "completed" else ""
+            result_str = f"{run.cores_passed}P/{run.cores_failed}F" if run.status == "completed" else ""
             duration_str = _format_duration(run.total_seconds) if run.total_seconds > 0 else ""
+            cores_str = str(run.total_cores) if run.total_cores else ""
+            bios_str = run.bios_version if hasattr(run, "bios_version") and run.bios_version else ""
 
             items = [
                 (date_str, Qt.AlignmentFlag.AlignLeft),
-                (run.cpu_model[:30], Qt.AlignmentFlag.AlignLeft),
                 (run.backend, Qt.AlignmentFlag.AlignCenter),
                 (run.stress_mode, Qt.AlignmentFlag.AlignCenter),
                 (result_str, Qt.AlignmentFlag.AlignCenter),
                 (duration_str, Qt.AlignmentFlag.AlignCenter),
                 (run.status.capitalize(), Qt.AlignmentFlag.AlignCenter),
+                (cores_str, Qt.AlignmentFlag.AlignCenter),
+                (bios_str, Qt.AlignmentFlag.AlignCenter),
             ]
 
             status_color = {
@@ -439,7 +557,7 @@ class HistoryTab(QWidget):
 
             for col, (text, align) in enumerate(items):
                 item = _item(str(text), align)
-                if col == 6:
+                if col == 5:
                     item.setForeground(QColor(status_color))
                 elif run.cores_failed > 0 and run.status == "completed":
                     item.setForeground(QColor("#f44336"))
@@ -479,7 +597,6 @@ class HistoryTab(QWidget):
         if not self._db or run.id is None:
             return
 
-        self._events_log.setVisible(True)
         self._expand_detail()
 
         # Info line
@@ -533,6 +650,8 @@ class HistoryTab(QWidget):
                     cell.setForeground(QColor("#f44336"))
                 self._core_results_table.setItem(row, col, cell)
 
+        self._auto_size_core_results_table()
+
         # Events log + context info
         lines: list[str] = []
 
@@ -582,11 +701,23 @@ class HistoryTab(QWidget):
             for cid in sorted(per_core):
                 core_samples = per_core[cid]
                 freqs = [s.freq_mhz for s in core_samples if s.freq_mhz]
+                eff_maxes = [s.effective_max_mhz for s in core_samples if s.effective_max_mhz]
                 temps = [s.temp_c for s in core_samples if s.temp_c]
                 vcores = [s.vcore_v for s in core_samples if s.vcore_v]
                 parts = [f"  Core {cid}: {len(core_samples)} samples"]
                 if freqs:
                     parts.append(f"    Freq: {min(freqs):.0f}-{max(freqs):.0f} MHz")
+                if eff_maxes:
+                    eff_max = max(eff_maxes)
+                    parts.append(f"    Boost ceiling: {eff_max:.0f} MHz")
+                    # clock stretch: worst deficit between actual and max
+                    if freqs:
+                        min_freq = min(freqs)
+                        stretch_pct = (1.0 - min_freq / eff_max) * 100.0
+                        if stretch_pct > 5.0:
+                            parts.append(f"    Clock stretch: {stretch_pct:.1f}% (min {min_freq:.0f} vs max {eff_max:.0f})")
+                        else:
+                            parts.append(f"    Clock stretch: none ({stretch_pct:.1f}%)")
                 if temps:
                     parts.append(f"    Temp: {min(temps):.1f}-{max(temps):.1f} C")
                 if vcores:
@@ -693,7 +824,6 @@ class HistoryTab(QWidget):
         if not self._db or sess.id is None:
             return
 
-        self._events_log.setVisible(True)
         self._expand_detail()
 
         # Info line
@@ -782,6 +912,8 @@ class HistoryTab(QWidget):
                         cell.setForeground(QColor("#f44336"))
                 self._core_results_table.setItem(row_idx, col, cell)
 
+        self._auto_size_core_results_table()
+
         # Events log — show test log entries
         lines: list[str] = []
         lines.append("── Tuner Configuration ──")
@@ -813,30 +945,19 @@ class HistoryTab(QWidget):
         self._events_log.setPlainText("\n".join(lines))
 
     def _expand_detail(self) -> None:
-        """Expand the detail and events sections in the splitter."""
-        sizes = self._splitter.sizes()
-        # Redistribute: give detail and events reasonable space
-        total = sum(sizes)
-        if total > 0 and sizes[2] < 100:
-            # Context/runs get ~40%, detail ~35%, events ~25%
-            s0 = sizes[0] if sizes[0] > 0 else int(total * 0.15)
-            s1 = int(total * 0.25)
-            s2 = int(total * 0.35)
-            s3 = total - s0 - s1 - s2
-            self._splitter.setSizes([s0, s1, s2, s3])
+        """Show the detail section and split space evenly with the top."""
+        self._detail_widget.setVisible(True)
+        # Give top 50%, bottom 50%
+        total = sum(self._splitter.sizes())
+        if total > 0:
+            self._splitter.setSizes([total // 2, total - total // 2])
 
     def _clear_detail(self) -> None:
         self._detail_info.setText("Select a run to view details")
         self._detail_info.setStyleSheet("color: #888; padding: 2px;")
         self._core_results_table.setRowCount(0)
         self._events_log.clear()
-        self._events_log.setVisible(False)
-        # Collapse detail sections — give all space to context + runs tables
-        sizes = self._splitter.sizes()
-        total = sum(sizes)
-        if total > 0:
-            s0 = sizes[0] if sizes[0] > 0 else int(total * 0.4)
-            self._splitter.setSizes([s0, total - s0, 0, 0])
+        self._detail_widget.setVisible(False)
 
     # ------------------------------------------------------------------
     # Context menu (runs table)
@@ -927,22 +1048,28 @@ class HistoryTab(QWidget):
 
         displayed = getattr(self, "_displayed_runs", self._runs)
         count = len(rows)
+        # Build description of what we're deleting
+        run_ids = []
+        for row in rows:
+            if row < len(displayed) and displayed[row].id is not None:
+                run_ids.append(displayed[row].id)
+
+        if not run_ids:
+            return
+
         reply = QMessageBox.question(
             self,
             "Delete Runs",
-            f"Delete {count} run(s) and all associated data?",
+            f"Delete {len(run_ids)} run(s) and all associated data?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        for row in reversed(rows):
-            if row < len(displayed):
-                run = displayed[row]
-                if run.id is not None:
-                    self._db.delete_run(run.id)
+        for run_id in run_ids:
+            self._db.delete_run(run_id)
 
-        self.refresh()
+        self._refresh_preserve_context()
 
     # ------------------------------------------------------------------
     # Compare mode

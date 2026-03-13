@@ -6,6 +6,8 @@ Per-core CPU stress testing and AMD PBO Curve Optimizer tuning for Linux.
 ![License GPL-3.0](https://img.shields.io/badge/License-GPL--3.0--or--later-green)
 ![Linux only](https://img.shields.io/badge/Platform-Linux-yellow)
 
+> **Development status:** CoreCyclerLx is actively developed and tested on an **AMD Ryzen 9 9950X3D** (Zen 5, dual-CCD X3D, AM5). Other AMD Ryzen processors (Zen 2–5) should work but have not been tested as thoroughly. Intel CPUs are supported for stress testing only (no Curve Optimizer). If you encounter issues on other hardware, please [open an issue](https://github.com/Daaboulex/corecyclerlx/issues) with your CPU model and description.
+
 ## What Is This?
 
 CoreCyclerLx is a Linux equivalent of [CoreCycler](https://github.com/sp00n/corecycler) (Windows) for AMD PBO Curve Optimizer tuning. It provides a graphical interface for running per-core stress tests and optionally reading/writing Curve Optimizer values via the AMD SMU (System Management Unit).
@@ -27,7 +29,8 @@ CO instability often manifests at idle or during load transitions, not under sus
 - **Variable load testing**: periodically stops and restarts stress to catch load transition errors
 - **Idle stability testing**: monitors for MCE during idle periods between cores to catch C-state transition errors
 - **X3D-aware CPU topology detection** -- identifies CCDs, V-Cache CCD (by L3 size comparison), and SMT siblings
-- **Live hardware monitoring** -- CPU temperature (Tctl, Tdie, per-CCD Tccd), core voltage (Vcore, Vsoc), frequency, and power via hwmon/k10temp/zenpower
+- **Live hardware monitoring** -- CPU temperature (Tctl, Tdie, per-CCD Tccd), core voltage (Vcore, Vsoc), frequency, per-core CPU usage, and power via hwmon (k10temp/zenpower/coretemp); with root access, MSR-based clock stretch detection (APERF/MPERF), per-core power (RAPL MSR), and package power. Per-core view shows actual frequency vs boost ceiling (scaling_max_freq), usage %, stretch %, per-core watts, and temperature with active core highlighting during tests.
+- **MSR-based clock stretch detection** -- reads APERF/MPERF counters to compute the actual-vs-reference clock ratio per core; values below ~97% under load indicate clock stretching (a sign of CO instability or power limiting). Stretch % is only displayed for active cores (>5% usage) to avoid false readings from C-state sleep noise on idle cores. Requires root.
 - **Comprehensive SMU integration** for runtime Curve Optimizer, PBO limits, boost override, and PBO scalar via the ryzen_smu kernel module
 - **System state detection** -- auto-detects current CO offsets, PBO limits, boost override, PBO scalar, and estimated BCLK before testing
 - **MCE error detection** -- monitors Machine Check Exceptions via sysfs and dmesg during stress and idle phases
@@ -114,7 +117,7 @@ Stress test processes are launched in their own process group (`setsid`). On sto
 
 ### Thermal safety
 
-The hardware monitor continuously reads CPU temperatures from hwmon (k10temp/zenpower). The configurable temperature limit (default 95C, adjustable 50-115C in the Configuration tab) controls automatic test pausing when thermal limits are approached.
+The hardware monitor continuously reads CPU temperatures from hwmon (k10temp/zenpower/coretemp). The configurable temperature limit (default 95C, adjustable 50-115C in the Configuration tab) controls automatic test pausing when thermal limits are approached.
 
 ## Installation
 
@@ -174,6 +177,31 @@ python src/main.py
 ```
 
 When running from source, you must install backends separately (see below).
+
+### Running as Root
+
+CoreCyclerLx should be run as root (`sudo`) for full functionality:
+
+```bash
+sudo corecyclerlx          # Nix-installed
+sudo python src/main.py    # from source
+```
+
+| Feature | Without root | With root |
+|---|---|---|
+| Stress testing (per-core cycling) | ✅ Full | ✅ Full |
+| Temperature monitoring (k10temp) | ✅ Full | ✅ Full |
+| Per-CCD temperatures (Tccd1/Tccd2) | ✅ Full | ✅ Full |
+| Core frequency monitoring (sysfs) | ✅ Full | ✅ Full |
+| Package power (RAPL sysfs) | ❌ Permission denied | ✅ Full |
+| Per-core power (RAPL MSR) | ❌ Needs /dev/cpu/N/msr | ✅ Full |
+| Clock stretch detection (APERF/MPERF) | ❌ Needs /dev/cpu/N/msr | ✅ Full |
+| Vcore voltage (zenpower only) | ⚠ Needs zenpower module | ⚠ Needs zenpower module |
+| Curve Optimizer (SMU read/write) | ❌ Needs /sys/kernel/ryzen_smu_drv | ✅ Full |
+
+When running without root, the status bar displays a warning listing unavailable features. The app adapts gracefully — unavailable data shows "N/A" instead of stale or missing values.
+
+**Note:** Vcore voltage requires the `zenpower` or `zenpower3` kernel module. The standard `k10temp` driver (used by most distributions including CachyOS) does not expose SVI2 voltage rails on Zen 5. If you need Vcore monitoring, install zenpower.
 
 ### Dependencies
 
@@ -336,7 +364,7 @@ KERNEL=="ryzen_smu_drv", SUBSYSTEM=="platform", ATTR{smu_args}="", \
 
 ### Quick Start
 
-1. Launch CoreCyclerLx (`corecyclerlx` or `python src/main.py`)
+1. Launch CoreCyclerLx (`sudo corecyclerlx` or `sudo python src/main.py`) — root is recommended for full monitoring (clock stretch, per-core power, Curve Optimizer). The app works without root but shows reduced telemetry with a status bar warning.
 2. The application detects your CPU topology automatically (cores, CCDs, SMT, X3D)
 3. In the Configuration tab, select a backend -- use stress-ng if mprime is not installed
 4. The default preset is **Standard** (10 min/core, 1 cycle) -- adjust or choose a different preset as needed
@@ -434,6 +462,7 @@ NOT_STARTED → COARSE_SEARCH → FINE_SEARCH → SETTLED → CONFIRMING → CON
 | Mode | SSE | SSE/AVX/AVX2/AVX512 | Stress test instruction set |
 | FFT Preset | SMALL | SMALL/MEDIUM/LARGE/HEAVY/ALL | FFT size preset (mprime) |
 | Test Order | sequential | sequential/round_robin/weakest_first | Core testing order |
+| Stretch Threshold | 3.0% | 0-20% | Clock stretch failure threshold (0 = disabled, requires root) |
 | Abort on Consecutive Failures | 0 | 0-10 | Abort if N cores fail at start_offset (0 = disabled) |
 
 **Workflow:**
@@ -514,9 +543,11 @@ src/
     driver.py                # ryzen_smu sysfs interface (CO, PBO limits, boost, scalar, system state)
     pmtable.py               # PM table reading
   monitor/
-    hwmon.py                 # k10temp/zenpower: Tctl, Tdie, Tccd temps, Vcore, Vsoc voltages
-    frequency.py             # Per-core frequency monitoring
-    power.py                 # Power consumption monitoring
+    hwmon.py                 # k10temp/zenpower/coretemp: Tctl, Tdie, Tccd temps, Vcore, Vsoc voltages
+    cpu_usage.py             # Per-logical-CPU usage % from /proc/stat (delta-based)
+    frequency.py             # Per-core frequency monitoring (sysfs cpufreq), actual + boost ceiling
+    power.py                 # Package power monitoring (RAPL sysfs)
+    msr.py                   # MSR reader (root): APERF/MPERF clock stretch, per-core RAPL power
   config/
     settings.py              # JSON settings and test profile persistence (~/.config/corecyclerlx/)
   tuner/
@@ -546,7 +577,8 @@ tests/
   test_topology.py           # CPU topology parsing and CCD detection
   test_settings.py           # Settings persistence and profile save/load
   test_backends.py           # Backend command generation and output parsing
-  test_monitor.py            # Hardware monitoring
+  test_monitor.py            # Hardware monitoring (hwmon, frequency, power)
+  test_msr.py                # MSR reader: clock stretch, per-core power, availability
   test_pmtable.py            # PM table reading
   test_tuner_config.py       # TunerConfig defaults, JSON roundtrip, CO range clamping
   test_tuner_persistence.py  # Session CRUD, core state upsert, test log, schema migration
@@ -563,7 +595,7 @@ assets/
     update-flake.yml       # Weekly auto-update of flake inputs (nixpkgs, backends)
 ```
 
-The stress test runs in a `QThread` worker. The scheduler pins each stress process to a single logical CPU using `taskset`, monitors for MCE events during both stress and idle phases, parses backend output for computation errors, and emits Qt signals for GUI updates. Processes are launched in their own process group for clean teardown.
+The stress test runs in a `QThread` worker. The scheduler pins each stress process to both SMT siblings of the physical core being tested using `taskset` (e.g., `taskset -c 0,16`), with the backend configured for 2 threads to fully utilize the core. It monitors for MCE events during both stress and idle phases, parses backend output for computation errors, and emits Qt signals for GUI updates. Processes are launched in their own process group for clean teardown.
 
 ## Contributing
 

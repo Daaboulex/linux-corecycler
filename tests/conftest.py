@@ -424,7 +424,7 @@ def mock_backend():
             work_dir.mkdir(parents=True, exist_ok=True)
             self.prepared_dirs.append(work_dir)
 
-        def cleanup(self, work_dir: Path) -> None:
+        def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
             self.cleaned_dirs.append(work_dir)
 
     return ControllableMockBackend()

@@ -416,7 +416,13 @@ def get_commands(generation: CPUGeneration) -> SMUCommandSet | None:
     return COMMAND_SETS.get(generation)
 
 
-def encode_co_arg(core_id: int, value: int, generation: CPUGeneration) -> int:
+def encode_co_arg(
+    core_id: int,
+    value: int,
+    generation: CPUGeneration,
+    *,
+    ccd: int | None = None,
+) -> int:
     """Encode core ID and CO value into SMU command argument.
 
     Bit layout (Zen 3+ per-core set):
@@ -428,6 +434,11 @@ def encode_co_arg(core_id: int, value: int, generation: CPUGeneration) -> int:
 
     For Zen 2 (family 0x17): CCD << 28 | CCX << 24 | (core % 4) << 20
     For Zen 3+: CCD << 28 | (core % 8) << 20
+
+    Args:
+        ccd: Topology-detected CCD index. If provided, used instead of
+             deriving CCD from ``core_id // 8``. Always prefer passing the
+             L3-detected CCD from topology when available.
     """
     # Encode the CO value: negative values use two's complement in 16 bits.
     # ZenStates uses: offset = 0x100000 if margin < 0 else 0; (offset + margin) & 0xFFFF
@@ -453,9 +464,10 @@ def encode_co_arg(core_id: int, value: int, generation: CPUGeneration) -> int:
             | CPUGeneration.ZEN5_SHIMADA_PEAK
         ):
             # Zen 4/5: CCD in bits [31:28], core within CCD in bits [23:20]
-            ccd = core_id // 8
+            # Prefer topology-detected CCD; fall back to core_id // 8
+            detected_ccd = ccd if ccd is not None else core_id // 8
             core_in_ccd = core_id % 8
-            return (ccd << 28) | (core_in_ccd << 20) | margin
+            return (detected_ccd << 28) | (core_in_ccd << 20) | margin
 
         case _:
             raise ValueError(f"Unsupported generation: {generation}")

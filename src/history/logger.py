@@ -202,6 +202,7 @@ class TestRunLogger:
         freq_mhz: float | None,
         temp_c: float | None,
         vcore_v: float | None,
+        effective_max_mhz: float | None = None,
     ) -> None:
         self._db.insert_telemetry_batch(
             [
@@ -209,6 +210,7 @@ class TestRunLogger:
                     run_id=self._run_id,
                     core_id=core_id,
                     freq_mhz=freq_mhz,
+                    effective_max_mhz=effective_max_mhz,
                     temp_c=temp_c,
                     vcore_v=vcore_v,
                 )

@@ -10,6 +10,7 @@ Test execution runs on a QThread so the GUI remains responsive.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,6 +19,7 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from engine.backends.base import StressConfig
 from engine.scheduler import CoreScheduler, SchedulerConfig
+from monitor.msr import MSRReader
 
 from . import persistence as tp
 from .config import TunerConfig
@@ -37,26 +39,59 @@ log = logging.getLogger(__name__)
 # ------------------------------------------------------------------
 
 
-class _TunerWorker(QThread):
-    """Runs one CoreScheduler test on a background thread."""
+_STRETCH_WARMUP_SECONDS = 5  # skip startup noise (process exec, turbo ramp)
+_STRETCH_SAMPLE_INTERVAL = 5  # seconds between APERF/MPERF samples
 
-    finished = Signal(int, bool, str, str, float)  # core_id, passed, error_msg, error_type, duration
+
+class _TunerWorker(QThread):
+    """Runs one CoreScheduler test on a background thread.
+
+    Optionally samples APERF/MPERF clock stretch during the test via a
+    background sampler thread. The sampler waits for turbo to stabilise
+    after process startup, then takes periodic 5-second windows and
+    reports the **peak** stretch observed — not the average over the
+    whole test. This avoids false positives from startup overhead,
+    turbo ramp-up, and C-state transitions before load reaches 100%.
+    """
+
+    # core_id, passed, error_msg, error_type, duration, peak_stretch_pct
+    finished = Signal(int, bool, str, str, float, float)
 
     def __init__(
         self,
         core_id: int,
+        logical_cpu: int,
         scheduler: CoreScheduler,
+        msr: MSRReader | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._core_id = core_id
+        self._logical_cpu = logical_cpu
         self._scheduler = scheduler
+        self._msr = msr
 
     def run(self) -> None:
         try:
+            # Start background stretch sampler (if MSR available)
+            stretch_samples: list[float] = []
+            stop_event = threading.Event()
+
+            if self._msr and self._msr.is_available():
+                sampler = threading.Thread(
+                    target=self._stretch_sampler,
+                    args=(stretch_samples, stop_event),
+                    daemon=True,
+                )
+                sampler.start()
+
             start = time.monotonic()
             results = self._scheduler.run()
             elapsed = time.monotonic() - start
+
+            # Stop sampler and collect results
+            stop_event.set()
+            peak_stretch = max(stretch_samples) if stretch_samples else 0.0
 
             core_results = results.get(self._core_id, [])
             if core_results:
@@ -64,14 +99,44 @@ class _TunerWorker(QThread):
                 self.finished.emit(
                     self._core_id, r.passed,
                     r.error_message or "", r.error_type or "", elapsed,
+                    peak_stretch,
                 )
             else:
                 self.finished.emit(
                     self._core_id, False, "No result returned", "", elapsed,
+                    peak_stretch,
                 )
         except Exception as e:
             log.exception("Tuner worker crashed for core %d", self._core_id)
-            self.finished.emit(self._core_id, False, str(e), "crash", 0.0)
+            self.finished.emit(self._core_id, False, str(e), "crash", 0.0, 0.0)
+
+    def _stretch_sampler(
+        self, samples: list[float], stop: threading.Event
+    ) -> None:
+        """Background thread: sample APERF/MPERF stretch during sustained load.
+
+        Waits for warmup (turbo ramp + process startup), then re-primes
+        the baseline and samples every interval. Each sample covers only
+        its own window — startup noise is discarded.
+        """
+        cpu = self._logical_cpu
+        msr = self._msr
+        if not msr:
+            return
+
+        # Wait for warmup — let stress process start and turbo stabilise
+        if stop.wait(_STRETCH_WARMUP_SECONDS):
+            return  # test ended before warmup finished (very short test)
+
+        # Prime fresh baseline AFTER warmup (discards startup noise)
+        msr.read_clock_stretch([cpu])
+
+        # Sample at intervals until test ends
+        while not stop.wait(_STRETCH_SAMPLE_INTERVAL):
+            readings = msr.read_clock_stretch([cpu])
+            reading = readings.get(cpu)
+            if reading:
+                samples.append(reading.stretch_pct)
 
 
 # ------------------------------------------------------------------
@@ -111,6 +176,8 @@ class TunerEngine(QObject):
         self._backend = backend
         self._config = config or TunerConfig()
         self._work_dir = work_dir or Path("/tmp/corecyclerlx/tuner")
+
+        self._msr = MSRReader()
 
         self._session_id: int | None = None
         self._core_states: dict[int, CoreState] = {}
@@ -196,14 +263,31 @@ class TunerEngine(QObject):
 
         self._core_states = tp.load_core_states(self._db, session_id)
 
-        # Re-apply CO offsets from saved state
+        # Re-apply CO offsets from saved state — verify each one
         if self._smu is not None:
+            failed_cores: list[int] = []
             for cs in self._core_states.values():
                 if cs.phase not in ("not_started", "confirmed"):
                     try:
-                        self._smu.set_co_offset(cs.core_id, cs.current_offset)
-                    except Exception:
-                        log.warning("Failed to re-apply CO for core %d", cs.core_id)
+                        success = self._smu.set_co_offset(cs.core_id, cs.current_offset)
+                        if not success:
+                            failed_cores.append(cs.core_id)
+                            self.log_message.emit(
+                                f"CO re-apply failed for core {cs.core_id} at offset "
+                                f"{cs.current_offset} — read-back mismatch or SMU rejection"
+                            )
+                    except Exception as e:
+                        failed_cores.append(cs.core_id)
+                        log.warning("Failed to re-apply CO for core %d: %s", cs.core_id, e)
+                        self.log_message.emit(
+                            f"CO re-apply error for core {cs.core_id}: {e}"
+                        )
+            if failed_cores:
+                self.log_message.emit(
+                    f"WARNING: CO offsets could not be re-applied for cores {failed_cores}. "
+                    f"SMU access may have changed since last session. "
+                    f"These cores will be treated as failures."
+                )
 
         # Find cores that were mid-test (in an active phase) — treat as failure
         for cs in self._core_states.values():
@@ -347,6 +431,7 @@ class TunerEngine(QObject):
             case "confirming":
                 if passed:
                     cs.phase = "confirmed"
+                    cs.confirm_attempts = 0
                 else:
                     cs.confirm_attempts += 1
                     if cs.confirm_attempts >= cfg.max_confirm_retries:
@@ -485,16 +570,24 @@ class TunerEngine(QObject):
             f"(phase: {cs.phase})"
         )
 
-        # Apply CO offset via SMU
+        # Apply CO offset via SMU — verify it actually took effect
         if self._smu is not None:
             try:
-                self._smu.set_co_offset(core_id, cs.current_offset)
+                success = self._smu.set_co_offset(core_id, cs.current_offset)
             except Exception as e:
                 self.log_message.emit(
                     f"Failed to set CO for core {core_id}: {e}"
                 )
-                # Treat as failure and continue
                 self._on_test_finished(core_id, False, str(e), "", 0.0)
+                return
+
+            if not success:
+                msg = (
+                    f"CO write failed or read-back mismatch for core {core_id} "
+                    f"at offset {cs.current_offset} — SMU did not apply the value"
+                )
+                self.log_message.emit(msg)
+                self._on_test_finished(core_id, False, msg, "co_write_failed", 0.0)
                 return
 
         # Determine test duration based on phase
@@ -538,11 +631,16 @@ class TunerEngine(QObject):
             self._on_test_finished(core_id, False, str(e), "", 0.0)
             return
 
-        self._worker = _TunerWorker(core_id, scheduler, parent=self)
+        logical_cpu = core_info.logical_cpus[0] if core_info.logical_cpus else core_id
+        self._worker = _TunerWorker(
+            core_id, logical_cpu, scheduler,
+            msr=self._msr if self._config.stretch_threshold_pct > 0 else None,
+            parent=self,
+        )
         self._worker.finished.connect(self._on_test_finished)
         self._worker.start()
 
-    @Slot(int, bool, str, str, float)
+    @Slot(int, bool, str, str, float, float)
     def _on_test_finished(
         self,
         core_id: int,
@@ -550,6 +648,7 @@ class TunerEngine(QObject):
         error_msg: str,
         error_type: str,
         duration: float,
+        peak_stretch_pct: float = 0.0,
     ) -> None:
         """Process test result — log, advance state machine, continue."""
         # Clean up worker reference
@@ -564,6 +663,18 @@ class TunerEngine(QObject):
         cs = self._core_states.get(core_id)
         if cs is None:
             return
+
+        # Clock stretch check — if stress test "passed" but core was stretching
+        # badly, treat it as a failure (CO too aggressive, voltage drooping)
+        threshold = self._config.stretch_threshold_pct
+        if passed and threshold > 0 and peak_stretch_pct > threshold:
+            passed = False
+            error_msg = f"clock stretch {peak_stretch_pct:.1f}% > {threshold:.1f}% threshold"
+            error_type = "clock_stretch"
+            log.info(
+                "Core %d offset %d: stress passed but stretch %.1f%% exceeds threshold — marking FAIL",
+                core_id, cs.current_offset, peak_stretch_pct,
+            )
 
         # Determine log phase
         phase_map = {
@@ -588,8 +699,9 @@ class TunerEngine(QObject):
             )
 
         status_str = "PASS" if passed else "FAIL"
+        stretch_info = f" stretch:{peak_stretch_pct:.1f}%" if peak_stretch_pct > 0 else ""
         self.log_message.emit(
-            f"Core {core_id} offset {cs.current_offset}: {status_str}"
+            f"Core {core_id} offset {cs.current_offset}: {status_str}{stretch_info}"
             + (f" ({error_msg})" if error_msg else "")
         )
         self.test_completed.emit(core_id, cs.current_offset, passed)

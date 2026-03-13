@@ -172,10 +172,10 @@ class ErrorDetector:
                 return events
 
             for line in result.stdout.splitlines():
-                # Only match actual MCE error lines — exclude boot/info messages
-                # like "mce: CPU supports N MCE banks", "Machine check events logged"
+                # Match MCE error lines and kernel oops/panic/BUG lines —
+                # CO instability can cause kernel crashes that don't generate MCE
                 lower = line.lower()
-                if not _is_mce_error_line(lower):
+                if not _is_mce_error_line(lower) and not _is_kernel_error_line(lower):
                     continue
 
                 # filter by baseline timestamp — only report NEW messages
@@ -334,6 +334,27 @@ def _is_mce_error_line(line_lower: str) -> bool:
         "severity:",
     ]
     return any(ind in line_lower for ind in error_indicators)
+
+
+def _is_kernel_error_line(line_lower: str) -> bool:
+    """Return True if a dmesg line indicates a kernel crash, oops, or BUG.
+
+    CO undervolting can cause kernel-level faults that manifest as oops or
+    BUG traps rather than MCE events — especially under heavy instruction
+    pressure with AVX/SSE workloads.
+    """
+    indicators = [
+        "kernel panic",
+        "oops:",
+        "bug:",
+        "bug at ",
+        "general protection fault",
+        "invalid opcode",
+        "rip:",
+        "call trace:",
+        "kernel bug at",
+    ]
+    return any(ind in line_lower for ind in indicators)
 
 
 def _get_dmesg_raw_timestamp() -> float:

@@ -37,6 +37,9 @@ class TunerConfig:
     stress_mode: str = "SSE"
     fft_preset: str = "SMALL"
 
+    # Clock stretch detection
+    stretch_threshold_pct: float = 3.0  # treat as failure if stretch > this % during test
+
     # Safety
     abort_on_consecutive_failures: int = 0  # 0 = disabled
 

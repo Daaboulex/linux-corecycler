@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -42,6 +44,7 @@ from history.db import HistoryDB
 from history.logger import TestRunLogger
 from monitor.frequency import read_core_frequencies
 from monitor.hwmon import HWMonReader
+from monitor.msr import MSRReader
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +84,7 @@ class MainWindow(QMainWindow):
         self._worker: TestWorker | None = None
         self._test_start_time: float = 0
         self._hwmon = HWMonReader()
+        self._msr = MSRReader()
         self._core_telemetry: dict[int, dict] = {}  # core_id -> {max_freq, max_temp, last_vcore}
         self._logger: TestRunLogger | None = None
 
@@ -153,9 +157,10 @@ class MainWindow(QMainWindow):
             left.addWidget(info_label)
 
         self._core_grid = CoreGridWidget(self._topology)
+        self._core_grid.setMaximumWidth(200)
         left.addWidget(self._core_grid)
 
-        main_layout.addLayout(left, stretch=1)
+        main_layout.addLayout(left, stretch=0)
 
         # right: tabs — align with CPU header on the left
         self._tabs = QTabWidget()
@@ -169,7 +174,7 @@ class MainWindow(QMainWindow):
         self._results_tab = ResultsTab()
         self._tabs.addTab(self._results_tab, "Results")
 
-        self._monitor_tab = MonitorTab()
+        self._monitor_tab = MonitorTab(topology=self._topology)
         self._tabs.addTab(self._monitor_tab, "Monitor")
 
         self._smu_tab = SMUTab(self._topology)
@@ -193,21 +198,24 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         self._start_btn = QPushButton("▶ Start Test")
+        self._start_btn.setFixedHeight(36)
         self._start_btn.setStyleSheet(
-            "QPushButton { background: #1b5e20; color: white; padding: 8px 16px; "
-            "border-radius: 4px; font-weight: bold; } "
-            "QPushButton:hover { background: #2e7d32; }"
+            "QPushButton { background: #1b5e20; color: white; padding: 0 16px; "
+            "border-radius: 4px; font-weight: bold; font-size: 13px; } "
+            "QPushButton:hover { background: #2e7d32; } "
+            "QPushButton:disabled { background: #444; color: #777; }"
         )
         self._start_btn.clicked.connect(self._start_test)
         toolbar.addWidget(self._start_btn)
 
         self._stop_btn = QPushButton("⏹ Stop")
+        self._stop_btn.setFixedHeight(36)
         self._stop_btn.setEnabled(False)
         self._stop_btn.setStyleSheet(
-            "QPushButton { background: #b71c1c; color: white; padding: 8px 16px; "
-            "border-radius: 4px; font-weight: bold; } "
+            "QPushButton { background: #b71c1c; color: white; padding: 0 16px; "
+            "border-radius: 4px; font-weight: bold; font-size: 13px; } "
             "QPushButton:hover { background: #c62828; } "
-            "QPushButton:disabled { background: #333; color: #666; }"
+            "QPushButton:disabled { background: #444; color: #777; }"
         )
         self._stop_btn.clicked.connect(self._stop_test)
         toolbar.addWidget(self._stop_btn)
@@ -228,6 +236,15 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self._status_bar)
         self._status_msg = QLabel("Ready")
         self._status_bar.addWidget(self._status_msg)
+
+        self._is_root = os.geteuid() == 0
+        if not self._is_root:
+            priv_label = QLabel(
+                "  ⚠ Not running as root — MSR clock stretch, per-core power, "
+                "package power, and Curve Optimizer unavailable"
+            )
+            priv_label.setStyleSheet("color: #ffb74d; font: 10px monospace;")
+            self._status_bar.addPermanentWidget(priv_label)
 
     def _setup_timer(self) -> None:
         self._elapsed_timer = QTimer(self)
@@ -325,15 +342,45 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
     def _stop_test(self) -> None:
-        if self._worker:
-            self._worker.scheduler.stop()
-            self._status_msg.setText("Stopping...")
-            if self._logger:
-                try:
-                    self._logger.on_test_stopped()
-                except Exception:
-                    log.exception("Failed to record test stop in history")
-                self._logger = None
+        if not self._worker:
+            return
+        self._stop_btn.setEnabled(False)
+        self._status_msg.setText("Stopping...")
+
+        # Disconnect logger from worker signals BEFORE stopping — prevents
+        # half-torn-down logger from receiving queued signals during shutdown
+        if self._logger and self._worker:
+            with contextlib.suppress(RuntimeError):
+                self._worker.core_started.disconnect(self._logger.on_core_started)
+                self._worker.core_finished.disconnect(self._logger.on_core_finished)
+                self._worker.status_updated.disconnect(self._logger.on_status_updated)
+                self._worker.cycle_completed.disconnect(self._logger.on_cycle_completed)
+                self._worker.test_completed.disconnect(self._logger.on_test_completed)
+
+        if self._logger:
+            # Save any accumulated peak telemetry before stopping
+            for core_id, t in self._core_telemetry.items():
+                if t["max_freq"] > 0:
+                    try:
+                        self._logger.update_core_telemetry_peaks(
+                            core_id,
+                            peak_freq_mhz=t["max_freq"],
+                            max_temp_c=t["max_temp"],
+                            min_vcore_v=t["min_vcore"],
+                            max_vcore_v=t["max_vcore"],
+                        )
+                    except Exception:
+                        pass
+            try:
+                self._logger.on_test_stopped()
+            except Exception:
+                log.exception("Failed to record test stop in history")
+            self._logger = None
+        self._core_telemetry.clear()
+
+        # Signal the scheduler to stop — worker thread will finish naturally
+        # and _on_worker_finished will handle UI cleanup
+        self._worker.scheduler.stop()
 
     def _get_backend(self, name: str):
         match name:
@@ -350,6 +397,7 @@ class MainWindow(QMainWindow):
     @Slot(int, int)
     def _on_core_started(self, core_id: int, cycle: int) -> None:
         self._status_msg.setText(f"Testing core {core_id} (cycle {cycle + 1})")
+        self._monitor_tab.set_active_core(core_id)
 
     @Slot(int, object)
     def _on_core_finished(self, core_id: int, result: StressResult) -> None:
@@ -364,14 +412,19 @@ class MainWindow(QMainWindow):
         # log telemetry summary for this core
         t = self._core_telemetry.pop(core_id, None)
         if t and t["max_freq"] > 0:
-            vcore_str = ""
+            extra_parts = []
             if t["min_vcore"] is not None and t["max_vcore"] is not None:
-                vcore_str = f"  Vcore: {t['min_vcore']:.4f}-{t['max_vcore']:.4f}V"
+                extra_parts.append(f"Vcore: {t['min_vcore']:.4f}-{t['max_vcore']:.4f}V")
+            if t["max_stretch_pct"] > 0.5:
+                extra_parts.append(f"Stretch: {t['max_stretch_pct']:.1f}%")
+            if t.get("core_watts") is not None:
+                extra_parts.append(f"Power: {t['core_watts']:.1f}W")
+            extra = ("  " + "  ".join(extra_parts)) if extra_parts else ""
             state = "PASS" if (result and result.passed) else "FAIL"
             self._results_tab.add_log(
                 core_id,
                 f"[{state}] Peak: {t['max_freq']:.0f} MHz, "
-                f"Max temp: {t['max_temp']:.1f}C{vcore_str}",
+                f"Max temp: {t['max_temp']:.1f}C{extra}",
             )
 
             # Record peak telemetry in history
@@ -421,16 +474,28 @@ class MainWindow(QMainWindow):
         self._config_tab.set_failed_cores(failed_cores)
 
     def _on_worker_finished(self) -> None:
+        was_stopping = not self._stop_btn.isEnabled()
         self._cleanup_worker()
+
+        # Process any pending queued signals from the worker thread before
+        # discarding the logger — cross-thread signals use QueuedConnection
+        # and may still be in the event queue.
+        from PySide6.QtCore import QCoreApplication
+        QCoreApplication.processEvents()
+
         self._logger = None
         self._history_tab.refresh()
-        self._status_msg.setText("Test complete")
+        if was_stopping:
+            self._status_msg.setText("Test stopped")
+        else:
+            self._status_msg.setText("Test complete")
 
     def _cleanup_worker(self) -> None:
         """Reset UI state after worker finishes or crashes."""
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
         self._tuner_tab.set_test_running(False)
+        self._monitor_tab.set_active_core(None)
         self._elapsed_timer.stop()
         self._worker = None
 
@@ -467,7 +532,7 @@ class MainWindow(QMainWindow):
         self._poll_core_telemetry(scheduler)
 
     def _poll_core_telemetry(self, scheduler: CoreScheduler) -> None:
-        """Read freq/temp/voltage and push to the active core's grid cell."""
+        """Read freq/temp/voltage/stretch and push to the active core's grid cell."""
         current_core = scheduler._current_core
         if current_core is None:
             return
@@ -482,17 +547,39 @@ class MainWindow(QMainWindow):
         freqs = read_core_frequencies()
         freq = freqs.get(logical_cpu, 0)
 
-        # package temperature and voltage
+        # MSR-based clock stretch detection (APERF/MPERF ratio)
+        stretch_pct: float | None = None
+        if self._msr.is_available():
+            stretch_readings = self._msr.read_clock_stretch([logical_cpu])
+            stretch_reading = stretch_readings.get(logical_cpu)
+            if stretch_reading:
+                stretch_pct = stretch_reading.stretch_pct
+
+        # Per-core power from MSR RAPL
+        core_watts: float | None = None
+        if self._msr.is_available():
+            power_readings = self._msr.read_core_power([logical_cpu])
+            power_reading = power_readings.get(logical_cpu)
+            if power_reading:
+                core_watts = power_reading.watts
+
+        # temperature (prefer per-CCD temp over package Tctl)
         hwmon_data = self._hwmon.read()
-        temp = hwmon_data.tctl_c or 0
+        ccd = core_info.ccd if core_info.ccd is not None else 0
+        # k10temp: Tccd1 → CCD 0 (index offset)
+        temp = hwmon_data.tccd_temps.get(ccd + 1, hwmon_data.tctl_c or 0)
         vcore = hwmon_data.vcore_v
 
-        self._core_grid.update_core_telemetry(current_core, freq, temp, vcore)
+        self._core_grid.update_core_telemetry(
+            current_core, freq, temp, vcore, stretch_pct=stretch_pct,
+        )
 
         # Record telemetry sample in history
         if self._logger and self._settings.record_telemetry:
             try:
-                self._logger.record_telemetry_sample(current_core, freq, temp, vcore)
+                self._logger.record_telemetry_sample(
+                    current_core, freq, temp, vcore, effective_max_mhz=None,
+                )
             except Exception:
                 pass  # don't spam logs every second
 
@@ -500,6 +587,8 @@ class MainWindow(QMainWindow):
         if current_core not in self._core_telemetry:
             self._core_telemetry[current_core] = {
                 "max_freq": 0.0,
+                "max_stretch_pct": 0.0,
+                "core_watts": None,
                 "max_temp": 0.0,
                 "last_vcore": None,
                 "min_vcore": None,
@@ -508,6 +597,10 @@ class MainWindow(QMainWindow):
         t = self._core_telemetry[current_core]
         if freq > t["max_freq"]:
             t["max_freq"] = freq
+        if stretch_pct is not None and stretch_pct > t["max_stretch_pct"]:
+            t["max_stretch_pct"] = stretch_pct
+        if core_watts is not None:
+            t["core_watts"] = core_watts
         if temp > t["max_temp"]:
             t["max_temp"] = temp
         if vcore is not None:
@@ -554,11 +647,31 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
+
+            # Disconnect logger BEFORE stopping worker — prevents queued signals
+            # from writing to the DB after we close it
+            if self._logger and self._worker:
+                with contextlib.suppress(RuntimeError):
+                    self._worker.core_started.disconnect(self._logger.on_core_started)
+                    self._worker.core_finished.disconnect(self._logger.on_core_finished)
+                    self._worker.status_updated.disconnect(self._logger.on_status_updated)
+                    self._worker.cycle_completed.disconnect(self._logger.on_cycle_completed)
+                    self._worker.test_completed.disconnect(self._logger.on_test_completed)
+                # Mark the run as stopped before closing DB
+                try:
+                    self._logger.on_test_stopped()
+                except Exception:
+                    pass
+                self._logger = None
+
             self._worker.scheduler.force_stop()
             if not self._worker.wait(5000):
-                # Worker didn't finish — terminate thread and kill any orphans
                 self._worker.terminate()
                 self._worker.wait(2000)
+
+        # Process any remaining queued signals before closing DB
+        from PySide6.QtCore import QCoreApplication
+        QCoreApplication.processEvents()
 
         # save window size
         self._settings.window_width = self.width()
@@ -566,6 +679,8 @@ class MainWindow(QMainWindow):
         save_settings(self._settings)
 
         self._monitor_tab.stop_monitoring()
+        if self._msr:
+            self._msr.close()
         if self._history_db:
             self._history_db.close()
         event.accept()

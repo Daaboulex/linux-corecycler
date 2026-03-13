@@ -41,6 +41,13 @@ class StressNgBackend(StressBackend):
             "--temp-path",
             str(work_dir),
         ]
+
+        # Add matrix verification stressor alongside cpu for SSE mode.
+        # matrixprod has no built-in verification — adding matrix stressor
+        # with --verify provides actual computation checking.
+        if method == "matrixprod":
+            cmd += ["--matrix", str(config.threads), "--matrix-method", "prod"]
+
         return cmd
 
     def get_supported_modes(self) -> list[StressMode]:
@@ -68,13 +75,18 @@ class StressNgBackend(StressBackend):
             if match:
                 return False, f"stress-ng error: {match.group(0)}"
 
-        # killed by us (timeout) = passed
+        # killed by us (timeout) = passed, but only if no error patterns matched above
         if returncode in (-9, -15, 137, 143, 0):
             return True, None
 
+        # SIGSEGV/SIGABRT/SIGBUS = likely CO instability crash
+        signal_names = {-11: "SIGSEGV", -6: "SIGABRT", -7: "SIGBUS", -5: "SIGTRAP"}
+        if returncode in signal_names:
+            return False, f"stress-ng crashed with {signal_names[returncode]} (exit {returncode})"
+
         return False, f"stress-ng exited with code {returncode}"
 
-    def cleanup(self, work_dir: Path) -> None:
+    def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
         pass
 
 
