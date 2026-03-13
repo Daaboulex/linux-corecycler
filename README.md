@@ -29,7 +29,7 @@ CO instability often manifests at idle or during load transitions, not under sus
 - **Variable load testing**: periodically stops and restarts stress to catch load transition errors
 - **Idle stability testing**: monitors for MCE during idle periods between cores to catch C-state transition errors
 - **X3D-aware CPU topology detection** -- identifies CCDs, V-Cache CCD (by L3 size comparison), and SMT siblings
-- **Live hardware monitoring** -- CPU temperature (Tctl, Tdie, per-CCD Tccd), core voltage (Vcore, Vsoc), frequency, per-core CPU usage, and power via hwmon (k10temp/zenpower/coretemp); with root access, MSR-based clock stretch detection (APERF/MPERF), per-core power (RAPL MSR), and package power. Per-core view shows actual frequency vs boost ceiling (scaling_max_freq), usage %, stretch %, per-core watts, and temperature with active core highlighting during tests.
+- **Live hardware monitoring** -- CPU temperature (Tctl, Tdie, per-CCD Tccd), core voltage (Vcore, Vsoc), frequency, per-core CPU usage, and power via hwmon (k10temp/zenpower/coretemp) with automatic Super I/O fallback (nct6799/nct6798) for Vcore on Zen 5; with root access, MSR-based clock stretch detection (APERF/MPERF), per-core power (RAPL MSR), and package power. Per-core view shows actual frequency vs boost ceiling (scaling_max_freq), usage %, stretch %, per-core watts, and temperature with active core highlighting during tests.
 - **MSR-based clock stretch detection** -- reads APERF/MPERF counters to compute the actual-vs-reference clock ratio per core; values below ~97% under load indicate clock stretching (a sign of CO instability or power limiting). Stretch % is only displayed for active cores (>5% usage) to avoid false readings from C-state sleep noise on idle cores. Requires root.
 - **Comprehensive SMU integration** for runtime Curve Optimizer, PBO limits, boost override, and PBO scalar via the ryzen_smu kernel module
 - **System state detection** -- auto-detects current CO offsets, PBO limits, boost override, PBO scalar, and estimated BCLK before testing
@@ -196,12 +196,12 @@ sudo python src/main.py    # from source
 | Package power (RAPL sysfs) | ❌ Permission denied | ✅ Full |
 | Per-core power (RAPL MSR) | ❌ Needs /dev/cpu/N/msr | ✅ Full |
 | Clock stretch detection (APERF/MPERF) | ❌ Needs /dev/cpu/N/msr | ✅ Full |
-| Vcore voltage (zenpower only) | ⚠ Needs zenpower module | ⚠ Needs zenpower module |
+| Vcore voltage | ✅ Via Super I/O or zenpower | ✅ Via Super I/O or zenpower |
 | Curve Optimizer (SMU read/write) | ❌ Needs /sys/kernel/ryzen_smu_drv | ✅ Full |
 
-When running without root, the status bar displays a warning listing unavailable features. The app adapts gracefully — unavailable data shows "N/A" instead of stale or missing values.
+When running without root, the status bar displays a warning listing unavailable features. The app adapts gracefully — unavailable data shows "N/A" instead of stale or missing values. Qt/KDE platform warnings (D-Bus portal, window system) that would normally appear under `sudo` are suppressed automatically.
 
-**Note:** Vcore voltage requires the `zenpower` or `zenpower3` kernel module. The standard `k10temp` driver (used by most distributions including CachyOS) does not expose SVI2 voltage rails on Zen 5. If you need Vcore monitoring, install zenpower.
+**Note:** Vcore voltage is read from the CPU hwmon driver (zenpower/k10temp SVI2 registers) when available. On **Zen 5** CPUs, voltage telemetry uses SVI3 which no Linux driver supports yet — the tool automatically falls back to the **Super I/O chip** (nct6799/nct6798) which provides an analog Vcore reading from the motherboard's voltage regulator. This works on most ASUS and other mainstream boards. If neither source is available, Vcore shows "N/A".
 
 ### Dependencies
 
@@ -483,6 +483,8 @@ NOT_STARTED → COARSE_SEARCH → FINE_SEARCH → SETTLED → CONFIRMING → CON
 6. Use **Export Profile** to copy the results or apply them to the Curve Optimizer tab
 7. Completed (and interrupted) sessions appear in the **History** tab's **Tuner Sessions** view -- click any session to review per-core state details and the full test log
 
+**Data persistence:** every tuner session is permanently saved in SQLite -- the config parameters, per-core state machine progress, and every individual test result (offset, phase, pass/fail, duration, error). Starting a new session does not delete old ones. **Load Defaults** only resets the config spinboxes to factory defaults; it does not affect any historical data or in-progress sessions. Action buttons (Start, Abort, Pause, Resume, Validate, Export) gray out when not applicable to the current state.
+
 **Tips:**
 
 - **mprime with Small FFTs and SSE mode** is the gold standard for CO testing -- it produces the highest single-core clocks and the most sensitive error detection
@@ -551,7 +553,7 @@ src/
     driver.py                # ryzen_smu sysfs interface (CO, PBO limits, boost, scalar, system state)
     pmtable.py               # PM table reading
   monitor/
-    hwmon.py                 # k10temp/zenpower/coretemp: Tctl, Tdie, Tccd temps, Vcore, Vsoc voltages
+    hwmon.py                 # k10temp/zenpower/coretemp: Tctl, Tdie, Tccd temps, Vcore, Vsoc voltages; nct6799 Super I/O fallback for Zen 5 Vcore
     cpu_usage.py             # Per-logical-CPU usage % from /proc/stat (delta-based)
     frequency.py             # Per-core frequency monitoring (sysfs cpufreq), actual + boost ceiling
     power.py                 # Package power monitoring (RAPL sysfs)
