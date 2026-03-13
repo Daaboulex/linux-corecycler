@@ -82,8 +82,13 @@ class StressBackend(ABC):
     def prepare(self, work_dir: Path, config: StressConfig) -> None:  # noqa: B027
         """Prepare working directory and config files before running. Override if needed."""
 
-    def cleanup(self, work_dir: Path) -> None:  # noqa: B027
-        """Clean up after test run. Override if needed."""
+    def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:  # noqa: B027
+        """Clean up after test run. Override if needed.
+
+        Args:
+            preserve_on_error: If True, keep diagnostic files (results, logs)
+                for post-mortem analysis of failures.
+        """
 
     def find_binary(self, name: str) -> str | None:
         """Find a binary on PATH."""

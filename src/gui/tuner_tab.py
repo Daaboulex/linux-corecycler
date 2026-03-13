@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -250,6 +251,18 @@ class TunerTab(QWidget):
         )
         search_layout.addRow("Confirm retries:", self._max_retries_spin)
 
+        self._stretch_threshold_spin = QDoubleSpinBox()
+        self._stretch_threshold_spin.setRange(0.0, 20.0)
+        self._stretch_threshold_spin.setSingleStep(0.5)
+        self._stretch_threshold_spin.setValue(3.0)
+        self._stretch_threshold_spin.setSuffix("%")
+        self._stretch_threshold_spin.setToolTip(
+            "Clock stretch threshold — if APERF/MPERF stretch exceeds this %\n"
+            "during a test, mark it as FAIL even if stress test passed.\n"
+            "0 = disabled. 3% = recommended. Requires root (MSR access)."
+        )
+        search_layout.addRow("Stretch threshold:", self._stretch_threshold_spin)
+
         self._order_combo = QComboBox()
         self._order_combo.addItems(["sequential", "round_robin", "weakest_first"])
         self._order_combo.setToolTip(
@@ -346,6 +359,7 @@ class TunerTab(QWidget):
             search_duration_seconds=self._search_dur_spin.value(),
             confirm_duration_seconds=self._confirm_dur_spin.value(),
             max_confirm_retries=self._max_retries_spin.value(),
+            stretch_threshold_pct=self._stretch_threshold_spin.value(),
             test_order=self._order_combo.currentText(),
             backend=self._backend_combo.currentText(),
             stress_mode=self._mode_combo.currentText(),
@@ -361,6 +375,7 @@ class TunerTab(QWidget):
         self._search_dur_spin.setValue(cfg.search_duration_seconds)
         self._confirm_dur_spin.setValue(cfg.confirm_duration_seconds)
         self._max_retries_spin.setValue(cfg.max_confirm_retries)
+        self._stretch_threshold_spin.setValue(cfg.stretch_threshold_pct)
         self._order_combo.setCurrentText(cfg.test_order)
         self._backend_combo.setCurrentText(cfg.backend)
         self._mode_combo.setCurrentText(cfg.stress_mode)

@@ -102,6 +102,20 @@ class RyzenSMU:
         self.sysfs = sysfs_path
         self.dry_run = dry_run
         self._backup: dict[int, int] | None = None
+        # Topology-detected CCD map: {physical_core_id: ccd_index}
+        # Set via set_topology() to use L3-detected CCD instead of core_id // 8
+        self._topology_ccd: dict[int, int] | None = None
+
+    def set_topology(self, topology) -> None:
+        """Load CCD mapping from CPU topology for accurate SMU encoding.
+
+        Without this, CCD is derived from ``core_id // 8`` which is correct
+        for standard AMD desktop layouts but may break on non-standard configs.
+        """
+        self._topology_ccd = {}
+        for core_id, core_info in topology.cores.items():
+            if core_info.ccd is not None:
+                self._topology_ccd[core_id] = core_info.ccd
 
     @staticmethod
     def is_available(sysfs_path: Path = SYSFS_BASE) -> bool:
@@ -244,7 +258,8 @@ class RyzenSMU:
         """
         if not self.commands.has_co:
             return None
-        arg = encode_co_arg(core_id, 0, self.commands.generation)
+        ccd = self._topology_ccd.get(core_id) if self._topology_ccd else None
+        arg = encode_co_arg(core_id, 0, self.commands.generation, ccd=ccd)
         resp = self._send_command(self.commands.get_co_cmd, (arg,))
         if not resp.success:
             return None
@@ -287,7 +302,8 @@ class RyzenSMU:
             log.error("Permission check failed before CO write: %s", msg)
             return False
 
-        arg = encode_co_arg(core_id, value, self.commands.generation)
+        ccd = self._topology_ccd.get(core_id) if self._topology_ccd else None
+        arg = encode_co_arg(core_id, value, self.commands.generation, ccd=ccd)
         resp = self._send_command(self.commands.set_co_cmd, (arg,))
         if not resp.success:
             log.error("SMU rejected CO write for core %d value %d", core_id, value)
@@ -330,7 +346,20 @@ class RyzenSMU:
         if self.commands.set_all_co_cmd is not None:
             margin = value & 0xFFFF
             resp = self._send_command(self.commands.set_all_co_cmd, (margin,))
-            return resp.success
+            if not resp.success:
+                log.error("SMU rejected set_all_co with value %d", value)
+                return False
+
+            # Read-back verification on core 0 to confirm the write took effect
+            readback = self.get_co_offset(0)
+            if readback != value:
+                log.error(
+                    "set_all_co read-back mismatch: wrote %d, read back %s from core 0",
+                    value,
+                    readback,
+                )
+                return False
+            return True
         return False
 
     def reset_all_co(self) -> bool:

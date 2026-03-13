@@ -68,9 +68,14 @@ class YCruncherBackend(StressBackend):
         if returncode in (-9, -15, 137, 143, 0):
             return True, None
 
+        # SIGSEGV/SIGABRT/SIGBUS = likely CO instability crash
+        signal_names = {-11: "SIGSEGV", -6: "SIGABRT", -7: "SIGBUS", -5: "SIGTRAP"}
+        if returncode in signal_names:
+            return False, f"y-cruncher crashed with {signal_names[returncode]} (exit {returncode})"
+
         return False, f"y-cruncher exited with code {returncode}"
 
-    def cleanup(self, work_dir: Path) -> None:
+    def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
         pass
 
 

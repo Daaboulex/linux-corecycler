@@ -26,6 +26,16 @@ where = ["src"]
 [tool.setuptools]
 py-modules = ["main"]
 
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+filterwarnings = [
+    # Production classes named Test* (TestProfile, TestState, TestRunLogger)
+    # trigger PytestCollectionWarning on import — suppress them
+    "ignore::pytest.PytestCollectionWarning",
+]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100

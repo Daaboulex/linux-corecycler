@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 DATA_DIR = Path.home() / ".local" / "share" / "corecyclerlx" / "history"
 DEFAULT_DB_PATH = DATA_DIR / "history.db"
@@ -106,6 +106,7 @@ class TelemetrySample:
     core_id: int = 0
     timestamp: str = ""
     freq_mhz: float | None = None
+    effective_max_mhz: float | None = None  # scaling_max_freq — boost ceiling for clock stretch detection
     temp_c: float | None = None
     vcore_v: float | None = None
 
@@ -143,7 +144,7 @@ class HistoryDB:
         )
         if cur.fetchone() is None:
             # Fresh database — create everything at current version
-            self._conn.executescript(self._DDL_V3)
+            self._conn.executescript(self._DDL_V4)
             return
 
         # Existing database — check version and migrate
@@ -155,13 +156,17 @@ class HistoryDB:
         if version < 3:
             self._conn.executescript(self._DDL_MIGRATE_V3)
             self._conn.execute("UPDATE schema_version SET version=3")
+            version = 3
+        if version < 4:
+            self._conn.executescript(self._DDL_MIGRATE_V4)
+            self._conn.execute("UPDATE schema_version SET version=4")
 
-    # Full schema for fresh databases (v3)
-    _DDL_V3 = """\
+    # Full schema for fresh databases (v4)
+    _DDL_V4 = """\
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
-INSERT OR IGNORE INTO schema_version (version) VALUES (3);
+INSERT OR IGNORE INTO schema_version (version) VALUES (4);
 
 CREATE TABLE IF NOT EXISTS tuning_contexts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -203,6 +208,8 @@ CREATE TABLE IF NOT EXISTS runs (
     total_seconds   REAL    NOT NULL DEFAULT 0.0
 );
 
+CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC);
+
 CREATE TABLE IF NOT EXISTS core_results (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id          INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -240,6 +247,7 @@ CREATE TABLE IF NOT EXISTS telemetry_samples (
     core_id         INTEGER NOT NULL,
     timestamp       TEXT    NOT NULL,
     freq_mhz       REAL,
+    effective_max_mhz REAL,
     temp_c          REAL,
     vcore_v         REAL
 );
@@ -345,6 +353,14 @@ CREATE TABLE IF NOT EXISTS tuner_test_log (
     tested_at           TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tuner_log_session ON tuner_test_log(session_id, core_id);
+
+-- Performance index for time-based queries on runs
+CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC);
+"""
+
+    # Migration from v3 to v4 — add effective_max_mhz for clock stretch detection
+    _DDL_MIGRATE_V4 = """\
+ALTER TABLE telemetry_samples ADD COLUMN effective_max_mhz REAL;
 """
 
     # ------------------------------------------------------------------
@@ -663,11 +679,11 @@ CREATE INDEX IF NOT EXISTS idx_tuner_log_session ON tuner_test_log(session_id, c
             return
         self._conn.executemany(
             """\
-            INSERT INTO telemetry_samples (run_id, core_id, timestamp, freq_mhz, temp_c, vcore_v)
-            VALUES (?,?,?,?,?,?)
+            INSERT INTO telemetry_samples (run_id, core_id, timestamp, freq_mhz, effective_max_mhz, temp_c, vcore_v)
+            VALUES (?,?,?,?,?,?,?)
             """,
             [
-                (s.run_id, s.core_id, s.timestamp or self._now_iso(), s.freq_mhz, s.temp_c, s.vcore_v)
+                (s.run_id, s.core_id, s.timestamp or self._now_iso(), s.freq_mhz, s.effective_max_mhz, s.temp_c, s.vcore_v)
                 for s in samples
             ],
         )
@@ -692,6 +708,7 @@ CREATE INDEX IF NOT EXISTS idx_tuner_log_session ON tuner_test_log(session_id, c
                 core_id=r["core_id"],
                 timestamp=r["timestamp"],
                 freq_mhz=r["freq_mhz"],
+                effective_max_mhz=r["effective_max_mhz"],
                 temp_c=r["temp_c"],
                 vcore_v=r["vcore_v"],
             )

@@ -148,6 +148,7 @@ class SMUTab(QWidget):
 
         if smu_available and has_co:
             self._smu = RyzenSMU(self._commands, dry_run=self._dry_run_cb.isChecked())
+            self._smu.set_topology(topology)
             self._status_label.setText("ryzen_smu: Connected")
             self._status_label.setStyleSheet("color: #4caf50;")
             self._gen_label.setText(f"Generation: {gen.name}")
@@ -155,6 +156,7 @@ class SMUTab(QWidget):
             self._range_label.setText(f"CO Range: [{co_min}, {co_max}]")
         elif smu_available and not has_co:
             self._smu = RyzenSMU(self._commands, dry_run=self._dry_run_cb.isChecked())
+            self._smu.set_topology(topology)
             self._status_label.setText("ryzen_smu: Connected (no CO support)")
             self._status_label.setStyleSheet("color: #ff9800;")
             self._gen_label.setText(f"Generation: {gen.name}")

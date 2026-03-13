@@ -69,6 +69,9 @@ class MprimeBackend(StressBackend):
         torture_type = MODE_TO_TORTURE.get(config.mode, 0)
 
         # write local.txt — mprime config
+        # NumCPUs=1 + CoresPerTest=1 are CRITICAL: mprime ignores TortureThreads
+        # and taskset, spawning workers per detected core with explicit
+        # sched_setaffinity() calls that override our taskset pinning.
         local_txt = work_dir / "local.txt"
         local_txt.write_text(
             textwrap.dedent(f"""\
@@ -77,9 +80,11 @@ class MprimeBackend(StressBackend):
                 V30OptionsConverted=1
                 StressTester=1
                 UsePrimenet=0
+                NumCPUs=1
+                CoresPerTest=1
                 MinTortureFFT={fft_min}
                 MaxTortureFFT={fft_max}
-                TortureHyperthreading=0
+                TortureHyperthreading={1 if config.threads > 1 else 0}
                 TortureThreads={config.threads}
                 CpuSupportsAVX=1
                 CpuSupportsAVX2=1
@@ -96,9 +101,11 @@ class MprimeBackend(StressBackend):
                 V30OptionsConverted=1
                 StressTester=1
                 UsePrimenet=0
+                NumCPUs=1
+                CoresPerTest=1
                 MinTortureFFT={fft_min}
                 MaxTortureFFT={fft_max}
-                TortureHyperthreading=0
+                TortureHyperthreading={1 if config.threads > 1 else 0}
                 TortureThreads={config.threads}
                 TortureWeak={torture_type}
                 ResultsFile=results.txt
@@ -119,17 +126,27 @@ class MprimeBackend(StressBackend):
                     pass
 
         # check for fatal errors — comprehensive Prime95/mprime patterns
+        # These cover all known CO/PBO instability signatures from Windows CoreCycler
         fatal_patterns = [
             r"FATAL ERROR",
             r"Rounding was [\d.]+ expected less than",
+            r"Rounding check failed",
             r"Hardware failure detected",
             r"Possible hardware failure",
             r"ILLEGAL SUMOUT",
             r"SUM\(INPUTS?\) != SUM\(OUTPUTS?\)",  # handles singular/plural
             r"SUMINP\w* error",  # SUMINP/SUMINPUT variants
+            r"SUMOUT\w* error",
             r"ERROR: ILLEGAL",
             r"Jacobi error check failed",
             r"torture test completed \d+ tests?,\s*[1-9]\d*\s+errors?",  # summary with errors>0
+            r"Bad ending value",  # memory corruption — common CO failure
+            r"Worker stopped",
+            r"Worker threads? died",
+            r"Disassociation",  # memory allocation failure
+            r"Assignment check failed",
+            r"Coefficient.*mismatch",
+            r"Final multiplier.*error",
         ]
         for pattern in fatal_patterns:
             match = re.search(pattern, combined, re.IGNORECASE)
@@ -146,14 +163,23 @@ class MprimeBackend(StressBackend):
         if returncode in (-9, -15, 137, 143):
             return True, None
 
+        # SIGSEGV/SIGABRT/SIGBUS = likely CO instability crash
+        signal_names = {-11: "SIGSEGV", -6: "SIGABRT", -7: "SIGBUS", -5: "SIGTRAP"}
+        if returncode in signal_names:
+            return False, f"mprime crashed with {signal_names[returncode]} (exit {returncode})"
+
         # unknown state — check return code
         if returncode != 0:
             return False, f"mprime exited with code {returncode}"
 
         return True, None
 
-    def cleanup(self, work_dir: Path) -> None:
+    def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
+        # If preserving on error, keep results.txt and prime.log for post-mortem analysis
+        skip = {"results.txt", "prime.log"} if preserve_on_error else set()
         for f in ("prime.txt", "local.txt", "prime.log", "results.txt", "prime.spl"):
+            if f in skip:
+                continue
             p = work_dir / f
             if p.exists():
                 p.unlink()

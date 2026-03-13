@@ -97,6 +97,7 @@ class CoreScheduler:
         self._current_core: int | None = None
         self._current_cycle: int = 0
         self._stop_requested = False
+        self._thermal_tripped = False  # hysteresis state for temperature checks
 
         # callbacks for GUI integration
         self.on_core_start: list = []  # (core_id, cycle) -> None
@@ -216,25 +217,63 @@ class CoreScheduler:
         return None
 
     def _check_temperature(self) -> bool:
-        """Check CPU temperature against the safety limit.
+        """Check CPU temperature against the safety limit with hysteresis.
 
         Returns True if temperature is safe, False if over limit.
         When over limit, fires the on_thermal_throttle callback.
+        Uses 5°C hysteresis to avoid rapid start/stop oscillation at boundary.
         """
         temp = self._read_cpu_temperature()
         if temp is None:
             return True  # can't read -> don't block
 
+        hysteresis = 5.0
         if temp >= self.config.max_temperature:
-            log.warning(
-                "CPU temperature %.1f C exceeds safety limit %.1f C — stopping test",
-                temp,
-                self.config.max_temperature,
-            )
-            for cb in self.on_thermal_throttle:
-                cb(temp)
+            if not self._thermal_tripped:
+                log.warning(
+                    "CPU temperature %.1f C exceeds safety limit %.1f C — stopping test",
+                    temp,
+                    self.config.max_temperature,
+                )
+                self._thermal_tripped = True
+                for cb in self.on_thermal_throttle:
+                    cb(temp)
             return False
+
+        if self._thermal_tripped:
+            if temp < self.config.max_temperature - hysteresis:
+                log.info(
+                    "CPU temperature %.1f C dropped below resume threshold %.1f C",
+                    temp,
+                    self.config.max_temperature - hysteresis,
+                )
+                self._thermal_tripped = False
+                return True
+            return False  # still in hysteresis zone
+
         return True
+
+    # ------------------------------------------------------------------
+    # Affinity verification
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _verify_affinity(pid: int, expected_cpus: str) -> bool:
+        """Verify a process is pinned to the expected CPUs via /proc/pid/status.
+
+        expected_cpus is a comma-separated list like "0,16".
+        Returns True if Cpus_allowed_list matches (order-insensitive).
+        Returns True (lenient) if /proc is unreadable — don't block the test.
+        """
+        try:
+            status_path = Path(f"/proc/{pid}/status")
+            for line in status_path.read_text().splitlines():
+                if line.startswith("Cpus_allowed_list:"):
+                    allowed = line.split(":", 1)[1].strip()
+                    return allowed == expected_cpus
+            return True  # field not found — don't block
+        except (OSError, ValueError):
+            return True  # can't read /proc — don't block
 
     # ------------------------------------------------------------------
     # Stall detection
@@ -329,7 +368,7 @@ class CoreScheduler:
     # ------------------------------------------------------------------
 
     def _run_variable_load(
-        self, core_id: int, logical_cpu: int, total_duration: float, core_work_dir: Path
+        self, core_id: int, logical_cpu: int, cpu_list: str, total_duration: float, core_work_dir: Path
     ) -> tuple[bool, str | None]:
         """Run stress test with periodic stop/start to simulate real-world load transitions.
 
@@ -356,7 +395,7 @@ class CoreScheduler:
             if load_on:
                 # Run stress for one interval
                 cmd = self.backend.get_command(self.stress_config, core_work_dir)
-                full_cmd = ["taskset", "-c", str(logical_cpu)] + cmd
+                full_cmd = ["taskset", "-c", cpu_list] + cmd
                 try:
                     self._we_killed_it = False
                     self._process = subprocess.Popen(
@@ -443,8 +482,14 @@ class CoreScheduler:
             status.state = "skipped"
             return
 
-        # use first logical CPU of this physical core
-        logical_cpu = core_info.logical_cpus[0]
+        # Pin to ALL logical CPUs of this physical core (both SMT siblings)
+        # so the stress test can fully utilize the core's resources.
+        logical_cpus = core_info.logical_cpus
+        logical_cpu = logical_cpus[0]  # primary — used for stall/MCE checks
+        cpu_list = ",".join(str(c) for c in logical_cpus)
+
+        # Tell the backend how many threads to use (= SMT width of this core)
+        self.stress_config.threads = len(logical_cpus)
 
         # prepare backend work directory for this core
         core_work_dir = self.work_dir / f"core_{core_id}"
@@ -460,7 +505,7 @@ class CoreScheduler:
             cb(core_id, "stress")
 
         phase_passed, phase_error = self._run_stress_phase(
-            core_id, logical_cpu, core_work_dir, status
+            core_id, logical_cpu, cpu_list, core_work_dir, status
         )
         if not phase_passed:
             passed = False
@@ -471,7 +516,7 @@ class CoreScheduler:
             # Use 1/3 of the per-core time for variable load
             var_duration = self.config.seconds_per_core / 3.0
             var_passed, var_error = self._run_variable_load(
-                core_id, logical_cpu, var_duration, core_work_dir
+                core_id, logical_cpu, cpu_list, var_duration, core_work_dir
             )
             if not var_passed:
                 passed = False
@@ -507,12 +552,13 @@ class CoreScheduler:
         for cb in self.on_core_finish:
             cb(core_id, result)
 
-        self.backend.cleanup(core_work_dir)
+        self.backend.cleanup(core_work_dir, preserve_on_error=not passed)
 
     def _run_stress_phase(
         self,
         core_id: int,
         logical_cpu: int,
+        cpu_list: str,
         core_work_dir: Path,
         status: CoreTestStatus,
     ) -> tuple[bool, str | None]:
@@ -520,9 +566,9 @@ class CoreScheduler:
 
         Returns (passed, error_message).
         """
-        # build command with taskset for CPU pinning
+        # build command with taskset for CPU pinning (all SMT siblings)
         cmd = self.backend.get_command(self.stress_config, core_work_dir)
-        full_cmd = ["taskset", "-c", str(logical_cpu)] + cmd
+        full_cmd = ["taskset", "-c", cpu_list] + cmd
 
         start_time = time.monotonic()
         stdout_data = ""
@@ -543,6 +589,7 @@ class CoreScheduler:
             )
 
             deadline = start_time + self.config.seconds_per_core
+            affinity_verified = False
 
             while self._process.poll() is None:
                 if self._stop_requested:
@@ -589,6 +636,17 @@ class CoreScheduler:
                         if self.config.stop_on_error:
                             self._stop_requested = True
                         break
+
+                # Deferred affinity verification (once, after process has exec'd)
+                if not affinity_verified and self._process is not None:
+                    affinity_verified = True
+                    if not self._verify_affinity(self._process.pid, cpu_list):
+                        log.warning(
+                            "CPU affinity check: PID %d not pinned to CPUs %s "
+                            "(taskset may not have applied yet or process respawned workers)",
+                            self._process.pid,
+                            cpu_list,
+                        )
 
                 # periodic MCE check
                 mce_events = self.detector.check_mce(target_cpu=logical_cpu)

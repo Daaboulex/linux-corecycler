@@ -80,8 +80,14 @@ class TestHWMonReader:
             reader = HWMonReader()
             assert reader.is_available() is True
 
-    def test_not_found(self, tmp_path):
+    def test_find_coretemp(self, tmp_path):
         hwmon_base = self._create_hwmon(tmp_path, "coretemp")
+        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+            reader = HWMonReader()
+            assert reader.is_available() is True
+
+    def test_not_found(self, tmp_path):
+        hwmon_base = self._create_hwmon(tmp_path, "acpitz")
         with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             assert reader.is_available() is False
