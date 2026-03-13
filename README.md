@@ -140,7 +140,37 @@ Add the flake input to your `flake.nix`:
 }
 ```
 
-Then add the package to your system or Home Manager configuration:
+Then import the NixOS module and enable the service:
+
+```nix
+{
+  # Import the module
+  imports = [ inputs.corecyclerlx.nixosModules.default ];
+
+  # Enable with all defaults (FOSS-only, ryzen_smu, device access)
+  services.corecyclerlx = {
+    enable = true;
+    deviceAccessUser = "your-username";  # required — user added to the corecycler group
+  };
+}
+```
+
+The module handles everything: the corecyclerlx package, kernel modules (ryzen_smu, zenpower5), udev rules for MSR device access, tmpfiles for SMU sysfs permissions, and the `corecycler` group. No manual kernel module configuration needed.
+
+**Module options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `enable` | bool | `false` | Enable CoreCyclerLx |
+| `unfreeBackends` | bool | `false` | Include mprime (unfree). When false, only stress-ng is bundled |
+| `ryzenSmu` | bool | `true` | Load ryzen_smu kernel module for CO read/write via SMU |
+| `zenpower` | bool | `false` | Use zenpower5 instead of k10temp for SVI2 voltage monitoring. Blacklists k10temp |
+| `deviceAccess` | bool | `true` | Grant `deviceAccessUser` access to MSR/SMU sysfs without sudo |
+| `deviceAccessUser` | string | `""` | Username for device access (required when `deviceAccess` is true) |
+
+The kernel modules (ryzen_smu, zenpower5) are built automatically against your running kernel. Both standard GCC kernels and Clang/LTO kernels (e.g., CachyOS) are supported — the build system auto-detects the compiler toolchain.
+
+**Package-only install** (no kernel modules or device access — manual setup):
 
 ```nix
 # FOSS-only (stress-ng bundled, no unfree software):
@@ -333,13 +363,7 @@ The [amkillam fork](https://github.com/amkillam/ryzen_smu) supports Zen 1 throug
 
 #### NixOS
 
-```nix
-# Build as a kernel module (adjust the source path or use a flake input)
-boot.extraModulePackages = [
-  (config.boot.kernelPackages.callPackage /path/to/ryzen_smu/package.nix {})
-];
-boot.kernelModules = [ "ryzen_smu" ];
-```
+The NixOS module (`services.corecyclerlx`) handles ryzen_smu automatically when `ryzenSmu = true` (the default). It builds the module against your kernel, loads it, and sets up sysfs permissions. No manual configuration needed.
 
 #### Other distros (DKMS)
 
@@ -358,7 +382,7 @@ ls /sys/kernel/ryzen_smu_drv/
 # Expected: mp1_smu_cmd  rsmu_cmd  smu_args  version  pm_table
 ```
 
-Reading and writing CO values through sysfs requires root access or appropriate file permissions on `/sys/kernel/ryzen_smu_drv/`. You can use a udev rule to grant access to a specific group:
+Reading and writing CO values through sysfs requires root access or appropriate file permissions on `/sys/kernel/ryzen_smu_drv/`. The NixOS module handles this via tmpfiles rules. On other distros, you can use a udev rule to grant access to a specific group:
 
 ```bash
 # /etc/udev/rules.d/99-ryzen-smu.rules
@@ -609,7 +633,11 @@ tests/
   test_tuner_persistence.py  # Session CRUD, core state upsert, test log, schema migration
   test_tuner_engine.py       # State machine transitions, crash recovery, core scheduling
   test_tuner_tab.py          # Auto-Tuner GUI widget tests
-flake.nix                  # Nix package: default (FOSS) and full (+ mprime) variants
+nix/
+  module.nix               # NixOS module: services.corecyclerlx options, kernel modules, device access
+  ryzen-smu.nix            # ryzen_smu kernel module derivation (GCC + Clang/LTO auto-detect)
+  zenpower.nix             # zenpower5 kernel module derivation (GCC + Clang/LTO auto-detect)
+flake.nix                  # Nix flake: packages (default/full), nixosModules.default, devShell
 pyproject.toml             # Python project metadata, entry point
 assets/
   icon.svg                 # Application icon (gear with cycling arrows)
@@ -647,11 +675,50 @@ ruff format src/
 
 When adding a new stress test backend, subclass `StressBackend` from `src/engine/backends/base.py` and implement the required methods (`is_available`, `get_command`, `parse_output`, `get_supported_modes`). Register it in `MainWindow._get_backend()`.
 
+## Driver and Kernel Module Sources
+
+CoreCyclerLx integrates with several Linux kernel drivers for hardware monitoring and SMU access. Below are the upstream sources for all supported drivers:
+
+### SMU Access
+
+| Driver | Source | Description |
+|---|---|---|
+| ryzen_smu (amkillam fork) | [github.com/amkillam/ryzen_smu](https://github.com/amkillam/ryzen_smu) | Zen 1–5 SMU access — CO, PBO limits, boost override, PM table. Fork with Zen 5 support |
+| ryzen_smu (upstream) | [github.com/leogx9r/ryzen_smu](https://github.com/leogx9r/ryzen_smu) | Original ryzen_smu (Zen 1–4 only) |
+
+### CPU Temperature and Voltage
+
+| Driver | Source | Description |
+|---|---|---|
+| zenpower5 | [github.com/mattkeenan/zenpower5](https://github.com/mattkeenan/zenpower5) | Zen 5 hwmon: Tctl/Tdie/Tccd temps + RAPL package power. SVI3 voltage not available |
+| zenpower3 | [github.com/Ta180m/zenpower3](https://github.com/Ta180m/zenpower3) | Zen 1–4 hwmon: temps + SVI2 voltage/current |
+| zenpower (original) | [github.com/ocerman/zenpower](https://github.com/ocerman/zenpower) | Zen 1–2 hwmon: temps + SVI2 voltage |
+| k10temp | [kernel.org (in-tree)](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/hwmon/k10temp.c) | In-tree AMD hwmon driver — Tctl/Tdie/Tccd temps. No voltage (requires zenpower for SVI2) |
+| coretemp | [kernel.org (in-tree)](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/hwmon/coretemp.c) | In-tree Intel hwmon driver — per-core/package temperatures |
+
+### Super I/O (Motherboard Voltage Fallback)
+
+| Driver | Source | Supported Chips | Common Boards |
+|---|---|---|---|
+| nct6775 | [kernel.org (in-tree)](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/hwmon/nct6775-core.c) | NCT6775–NCT6799 | ASUS, MSI, ASRock AM5/AM4 |
+| it87 | [kernel.org (in-tree)](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/hwmon/it87.c) | IT8625–IT8772 | Gigabyte AM5/AM4 |
+
+Super I/O chips provide analog Vcore (in0_input) from the voltage regulator — world-readable, no root needed. Used as automatic fallback on Zen 5 where SVI3 voltage is unsupported.
+
+### Related Tools
+
+| Tool | Source | Description |
+|---|---|---|
+| lm-sensors | [github.com/lm-sensors/lm-sensors](https://github.com/lm-sensors/lm-sensors) | `sensors` command, `sensors-detect` for finding hwmon drivers |
+| ZenStates-Core | [github.com/irusanov/ZenStates-Core](https://github.com/irusanov/ZenStates-Core) | Reference for SMU command IDs across AMD generations |
+
 ## Acknowledgments
 
 - [CoreCycler](https://github.com/sp00n/corecycler) by sp00n -- the original Windows per-core stress test cycler that inspired this project
 - [CoreCycler-GUI](https://github.com/LucidLuxxx/CoreCycler-GUI) by LucidLuxxx -- Windows GUI for CoreCycler
 - [ryzen_smu](https://github.com/leogx9r/ryzen_smu) by leogx9r and the [amkillam fork](https://github.com/amkillam/ryzen_smu) -- Linux kernel module for AMD SMU access
+- [zenpower5](https://github.com/mattkeenan/zenpower5) by mattkeenan -- Zen 5 hwmon driver with RAPL power support
+- [zenpower3](https://github.com/Ta180m/zenpower3) by Ta180m -- Zen 1-4 hwmon driver with SVI2 voltage
 - [ZenStates-Core](https://github.com/irusanov/ZenStates-Core) by irusanov -- reference for SMU command IDs across generations
 
 ## License
