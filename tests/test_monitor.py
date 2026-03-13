@@ -207,6 +207,49 @@ class TestHWMonReader:
             data = reader.read()
             assert data.tctl_c == 72.0
 
+    def test_superio_voltage_fallback(self, tmp_path):
+        """Super I/O chip in0 used as Vcore when CPU driver has no voltage."""
+        hwmon_base = tmp_path / "hwmon"
+        # CPU driver without voltage (e.g. zenpower on Zen 5)
+        cpu = hwmon_base / "hwmon0"
+        cpu.mkdir(parents=True)
+        (cpu / "name").write_text("zenpower")
+        (cpu / "temp1_input").write_text("65000")
+        (cpu / "temp1_label").write_text("Tctl")
+        # Super I/O chip with in0 = Vcore
+        sio = hwmon_base / "hwmon1"
+        sio.mkdir(parents=True)
+        (sio / "name").write_text("nct6799")
+        (sio / "in0_input").write_text("1350")
+
+        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+            reader = HWMonReader()
+            data = reader.read()
+
+        assert data.tctl_c == 65.0
+        assert data.vcore_v == 1.35
+
+    def test_superio_not_used_when_cpu_has_voltage(self, tmp_path):
+        """Super I/O voltage NOT used when CPU driver already provides Vcore."""
+        hwmon_base = tmp_path / "hwmon"
+        # CPU driver with voltage
+        cpu = hwmon_base / "hwmon0"
+        cpu.mkdir(parents=True)
+        (cpu / "name").write_text("k10temp")
+        (cpu / "in0_input").write_text("1250")
+        (cpu / "in0_label").write_text("Vcore")
+        # Super I/O with different value
+        sio = hwmon_base / "hwmon1"
+        sio.mkdir(parents=True)
+        (sio / "name").write_text("nct6799")
+        (sio / "in0_input").write_text("999")
+
+        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+            reader = HWMonReader()
+            data = reader.read()
+
+        assert data.vcore_v == 1.25  # from CPU driver, not Super I/O
+
 
 # ===========================================================================
 # Frequency reader tests
