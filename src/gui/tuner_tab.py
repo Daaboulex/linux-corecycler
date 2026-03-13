@@ -115,6 +115,7 @@ class TunerTab(QWidget):
         self._start_btn.setStyleSheet(
             "QPushButton { background: #1b5e20; color: white; padding: 6px 14px; "
             "border-radius: 4px; font-weight: bold; }"
+            "QPushButton:disabled { background: #555; color: #888; }"
         )
         self._start_btn.clicked.connect(self._on_start)
         btn_layout.addWidget(self._start_btn)
@@ -134,6 +135,7 @@ class TunerTab(QWidget):
         self._abort_btn.setStyleSheet(
             "QPushButton { background: #b71c1c; color: white; padding: 6px 14px; "
             "border-radius: 4px; font-weight: bold; }"
+            "QPushButton:disabled { background: #555; color: #888; }"
         )
         self._abort_btn.clicked.connect(self._on_abort)
         btn_layout.addWidget(self._abort_btn)
