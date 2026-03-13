@@ -193,7 +193,7 @@ sudo python src/main.py    # from source
 | Temperature monitoring (k10temp) | ✅ Full | ✅ Full |
 | Per-CCD temperatures (Tccd1/Tccd2) | ✅ Full | ✅ Full |
 | Core frequency monitoring (sysfs) | ✅ Full | ✅ Full |
-| Package power (RAPL sysfs) | ❌ Permission denied | ✅ Full |
+| Package power (RAPL sysfs or hwmon) | ✅ Via hwmon (zenpower) | ✅ Full |
 | Per-core power (RAPL MSR) | ❌ Needs /dev/cpu/N/msr | ✅ Full |
 | Clock stretch detection (APERF/MPERF) | ❌ Needs /dev/cpu/N/msr | ✅ Full |
 | Vcore voltage | ✅ Via Super I/O or zenpower | ✅ Via Super I/O or zenpower |
