@@ -13,7 +13,7 @@ RAPL_BASE = Path("/sys/class/powercap/intel-rapl")
 HWMON_BASE = Path("/sys/class/hwmon")
 
 # Hwmon drivers that expose package power via power1_input (microwatts)
-_POWER_HWMON_DRIVERS = ("zenpower", "zenpower3", "k10temp")
+_POWER_HWMON_DRIVERS = ("zenpower", "zenpower3", "zenpower5", "k10temp")
 
 
 class PowerMonitor:

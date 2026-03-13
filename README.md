@@ -51,16 +51,22 @@ CO instability often manifests at idle or during load transitions, not under sus
 
 | Generation | Example CPUs | CO Range | SMU Mailbox | PBO Limits | Boost Limit | Notes |
 |---|---|---|---|---|---|---|
-| Zen 2 (Matisse) | 3600X, 3700X, 3900X, 3950X | -- | RSMU | PPT/TDC/EDC | Read only | No CO -- PBO limits and scalar only |
-| Zen 2 (Castle Peak) | 3960X, 3990X | -- | RSMU | PPT/TDC/EDC | Read only | Threadripper, no CO |
+| Zen 1 / Zen+ | 1800X, 2700X | -- | RSMU | PPT/TDC/EDC | Read only | No CO — PBO limits and scalar only (Matisse SMU fallback) |
+| Zen 2 (Matisse) | 3600X, 3700X, 3900X, 3950X | -- | RSMU | PPT/TDC/EDC | Read only | No CO — PBO limits and scalar only |
+| Zen 2 (Castle Peak) | 3960X, 3970X, 3990X | -- | RSMU | PPT/TDC/EDC | Read only | Threadripper, no CO |
 | Zen 3 (Vermeer) | 5600X, 5800X, 5900X, 5950X | -30 to +30 | MP1 | PPT/TDC/EDC | Read only | Full CO support |
 | Zen 3 (Cezanne) | 5600G, 5700G | -30 to +30 | MP1 | PPT/TDC/EDC | -- | APU, same CO commands as Vermeer |
+| Zen 3 (Rembrandt) | 6800U, 6900HX | -30 to +30 | MP1 | PPT/TDC/EDC | -- | APU, uses Cezanne CO commands |
 | Zen 3D (Warhol) | 5800X3D | -30 to +30 | MP1 | PPT/TDC/EDC | Read only | V-Cache; be conservative (>-25 risky) |
 | Zen 4 (Raphael) | 7600X, 7700X, 7900X, 7950X | -50 to +30 | RSMU | PPT/TDC/EDC | Read/Write | Extended negative range |
-| Zen 4 (Phoenix) | 7840U, 8845HS | -50 to +30 | RSMU | PPT/TDC/EDC | -- | APU |
-| Zen 4 (Storm Peak) | 7980X TR | -50 to +30 | RSMU | PPT/TDC/EDC | Read/Write | Threadripper |
+| Zen 4 X3D (Raphael) | 7800X3D, 7900X3D, 7950X3D | -50 to +30 | RSMU | PPT/TDC/EDC | Read/Write | V-Cache; same commands as Raphael |
+| Zen 4 (Phoenix) | 7840U, 7840HS, 8845HS | -50 to +30 | RSMU | PPT/TDC/EDC | -- | APU (Phoenix / Hawk Point) |
+| Zen 4 (Dragon Range) | 7945HX, 7845HX | -50 to +30 | RSMU | PPT/TDC/EDC | Read/Write | Mobile, same silicon as Raphael |
+| Zen 4 (Storm Peak) | 7980X, 7970X TR | -50 to +30 | RSMU | PPT/TDC/EDC | Read/Write | Threadripper PRO |
 | Zen 5 (Granite Ridge) | 9600X, 9700X, 9900X, 9950X | -60 to +10 | RSMU | PPT/TDC/EDC | Read/Write | Widest negative CO range |
+| Zen 5 X3D (Granite Ridge) | 9800X3D, 9900X3D, 9950X3D | -60 to +10 | RSMU | PPT/TDC/EDC | Read/Write | V-Cache; same commands as Granite Ridge |
 | Zen 5 (Strix Point) | Ryzen AI 9 HX 370 | -60 to +10 | RSMU | PPT/TDC/EDC | -- | APU |
+| Zen 5 (Strix Halo) | Ryzen AI Max | -60 to +10 | RSMU | PPT/TDC/EDC | -- | APU, uses Strix Point commands |
 | Zen 5 (Shimada Peak) | Zen 5 Threadripper | -60 to +10 | RSMU | PPT/TDC/EDC | Read/Write | Different SMU addresses (get_co=0xA3) |
 
 All generations support PBO scalar read/write (1.0x to 10.0x) and OC mode enable/disable.
@@ -117,7 +123,7 @@ Stress test processes are launched in their own process group (`setsid`). On sto
 
 ### Thermal safety
 
-The hardware monitor continuously reads CPU temperatures from hwmon (k10temp/zenpower/coretemp). The configurable temperature limit (default 95C, adjustable 50-115C in the Configuration tab) controls automatic test pausing when thermal limits are approached.
+The hardware monitor continuously reads CPU temperatures from hwmon (k10temp/zenpower/zenpower3/zenpower5/coretemp). The configurable temperature limit (default 95C, adjustable 50-115C in the Configuration tab) controls automatic test pausing when thermal limits are approached.
 
 ## Installation
 
@@ -201,7 +207,7 @@ sudo python src/main.py    # from source
 
 When running without root, the status bar displays a warning listing unavailable features. The app adapts gracefully — unavailable data shows "N/A" instead of stale or missing values. Qt/KDE platform warnings (D-Bus portal, window system) that would normally appear under `sudo` are suppressed automatically.
 
-**Note:** Vcore voltage is read from the CPU hwmon driver (zenpower/k10temp SVI2 registers) when available. On **Zen 5** CPUs, voltage telemetry uses SVI3 which no Linux driver supports yet — the tool automatically falls back to the **Super I/O chip** (nct6799/nct6798) which provides an analog Vcore reading from the motherboard's voltage regulator. This works on most ASUS and other mainstream boards. If neither source is available, Vcore shows "N/A".
+**Note:** Vcore voltage is read from the CPU hwmon driver (zenpower/zenpower3/zenpower5/k10temp SVI2 registers) when available. On **Zen 5** CPUs, voltage telemetry uses SVI3 which no Linux driver supports yet — the tool automatically falls back to the **Super I/O chip** on the motherboard, which provides an analog Vcore reading from the voltage regulator. Supported Super I/O chips include Nuvoton (nct6775–nct6799, common on ASUS/MSI/ASRock) and ITE (IT8625–IT8772, common on Gigabyte). If neither source is available, Vcore shows "N/A".
 
 ### Dependencies
 
@@ -549,15 +555,20 @@ src/
       stress_ng.py           # stress-ng backend (cpu-method selection, verification)
       ycruncher.py           # y-cruncher backend (component stress mode)
   smu/
-    commands.py              # SMU command IDs per CPU generation (12 gens), CO argument encoding/decoding
+    commands.py              # SMU command IDs per CPU generation (14 gens, Zen 1 through Zen 5), CO argument encoding/decoding
     driver.py                # ryzen_smu sysfs interface (CO, PBO limits, boost, scalar, system state)
     pmtable.py               # PM table reading
   monitor/
-    hwmon.py                 # k10temp/zenpower/coretemp: Tctl, Tdie, Tccd temps, Vcore, Vsoc voltages; nct6799 Super I/O fallback for Zen 5 Vcore
+    hwmon.py                 # k10temp/zenpower/zenpower5/coretemp: Tctl, Tdie, Tccd temps, Vcore, Vsoc; Super I/O fallback (Nuvoton/ITE) for Zen 5 Vcore
     cpu_usage.py             # Per-logical-CPU usage % from /proc/stat (delta-based)
     frequency.py             # Per-core frequency monitoring (sysfs cpufreq), actual + boost ceiling
-    power.py                 # Package power monitoring (RAPL sysfs)
+    power.py                 # Package power (RAPL sysfs preferred, hwmon zenpower/zenpower5/k10temp fallback)
     msr.py                   # MSR reader (root): APERF/MPERF clock stretch, per-core RAPL power
+  history/
+    db.py                    # SQLite WAL-mode database: schema migrations, run/context/tuner tables
+    context.py               # Tuning context detection (BIOS version + CO snapshot grouping)
+    logger.py                # TestRunLogger: connects worker signals to DB writes
+    export.py                # JSON/CSV export of test results and tuner sessions
   config/
     settings.py              # JSON settings and test profile persistence (~/.config/corecyclerlx/)
   tuner/
@@ -587,9 +598,13 @@ tests/
   test_topology.py           # CPU topology parsing and CCD detection
   test_settings.py           # Settings persistence and profile save/load
   test_backends.py           # Backend command generation and output parsing
-  test_monitor.py            # Hardware monitoring (hwmon, frequency, power)
+  test_monitor.py            # Hardware monitoring (hwmon, frequency, power, Super I/O fallback)
   test_msr.py                # MSR reader: clock stretch, per-core power, availability
   test_pmtable.py            # PM table reading
+  test_history_db.py         # SQLite history database: schema, migrations, queries
+  test_history_context.py    # Tuning context detection and grouping
+  test_history_logger.py     # TestRunLogger integration
+  test_history_export.py     # JSON/CSV export
   test_tuner_config.py       # TunerConfig defaults, JSON roundtrip, CO range clamping
   test_tuner_persistence.py  # Session CRUD, core state upsert, test log, schema migration
   test_tuner_engine.py       # State machine transitions, crash recovery, core scheduling
