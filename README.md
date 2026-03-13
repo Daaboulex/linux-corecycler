@@ -155,7 +155,31 @@ Then import the NixOS module and enable the service:
 }
 ```
 
-The module handles everything: the corecyclerlx package, kernel modules (ryzen_smu, zenpower5), udev rules for MSR device access, tmpfiles for SMU sysfs permissions, and the `corecycler` group. No manual kernel module configuration needed.
+The module handles everything: the corecyclerlx package, kernel modules, udev rules for MSR device access, tmpfiles for SMU sysfs permissions, and the `corecycler` group. No manual kernel module configuration needed.
+
+**Full example** (AMD Zen 5 desktop with Nuvoton Super I/O):
+
+```nix
+services.corecyclerlx = {
+  enable = true;
+  deviceAccessUser = "your-username";
+  unfreeBackends = true;   # include mprime (best for CO tuning)
+  ryzenSmu = true;         # SMU access for Curve Optimizer (default)
+  zenpower = true;         # zenpower5: richer monitoring than k10temp
+  nct6775 = true;          # Nuvoton Super I/O: motherboard Vcore fallback
+};
+```
+
+**Full example** (AMD system with Gigabyte board / ITE Super I/O):
+
+```nix
+services.corecyclerlx = {
+  enable = true;
+  deviceAccessUser = "your-username";
+  unfreeBackends = true;
+  it87 = true;             # ITE Super I/O: motherboard Vcore on Gigabyte
+};
+```
 
 **Module options:**
 
@@ -163,12 +187,21 @@ The module handles everything: the corecyclerlx package, kernel modules (ryzen_s
 |---|---|---|---|
 | `enable` | bool | `false` | Enable CoreCyclerLx |
 | `unfreeBackends` | bool | `false` | Include mprime (unfree). When false, only stress-ng is bundled |
-| `ryzenSmu` | bool | `true` | Load ryzen_smu kernel module for CO read/write via SMU |
-| `zenpower` | bool | `false` | Use zenpower5 instead of k10temp for SVI2 voltage monitoring. Blacklists k10temp |
+| **AMD SMU** | | | |
+| `ryzenSmu` | bool | `true` | Load [ryzen_smu](https://github.com/amkillam/ryzen_smu) kernel module for CO read/write via SMU. Zen 1–5 |
+| **CPU hwmon** | | | |
+| `zenpower` | bool | `false` | Load [zenpower5](https://github.com/mattkeenan/zenpower5) instead of k10temp — temps, SVI2 voltage (Zen 1–4), RAPL power. Blacklists k10temp. Zen 1–5 |
+| `coretemp` | bool | `false` | Load in-tree coretemp for Intel CPU temperature monitoring |
+| **Super I/O** | | | |
+| `nct6775` | bool | `false` | Load in-tree nct6775 for Nuvoton Super I/O chips (Vcore, fans, temps). ASUS, MSI, ASRock |
+| `it87` | bool | `false` | Load out-of-tree [it87](https://github.com/frankcrawford/it87) for ITE Super I/O chips (38+ models). Gigabyte |
+| **Utility** | | | |
+| `cpuid` | bool | `false` | Load in-tree cpuid module for /dev/cpu/*/cpuid access |
+| **Device access** | | | |
 | `deviceAccess` | bool | `true` | Grant `deviceAccessUser` access to MSR/SMU sysfs without sudo |
 | `deviceAccessUser` | string | `""` | Username for device access (required when `deviceAccess` is true) |
 
-The kernel modules (ryzen_smu, zenpower5) are built automatically against your running kernel. Both standard GCC kernels and Clang/LTO kernels (e.g., CachyOS) are supported — the build system auto-detects the compiler toolchain.
+All out-of-tree kernel modules (ryzen_smu, zenpower5, it87) are built automatically against your running kernel. Both standard GCC kernels and Clang/LTO kernels (e.g., CachyOS) are supported — the build system auto-detects the compiler toolchain. In-tree modules (msr, nct6775, coretemp, cpuid) are simply loaded via `boot.kernelModules`.
 
 **Package-only install** (no kernel modules or device access — manual setup):
 
@@ -634,9 +667,10 @@ tests/
   test_tuner_engine.py       # State machine transitions, crash recovery, core scheduling
   test_tuner_tab.py          # Auto-Tuner GUI widget tests
 nix/
-  module.nix               # NixOS module: services.corecyclerlx options, kernel modules, device access
+  module.nix               # NixOS module: services.corecyclerlx options, all kernel modules, device access
   ryzen-smu.nix            # ryzen_smu kernel module derivation (GCC + Clang/LTO auto-detect)
   zenpower.nix             # zenpower5 kernel module derivation (GCC + Clang/LTO auto-detect)
+  it87.nix                 # it87 ITE Super I/O kernel module derivation (GCC + Clang/LTO auto-detect)
 flake.nix                  # Nix flake: packages (default/full), nixosModules.default, devShell
 pyproject.toml             # Python project metadata, entry point
 assets/
