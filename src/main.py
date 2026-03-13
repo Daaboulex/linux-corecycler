@@ -12,6 +12,14 @@ if str(src_dir) not in sys.path:
 
 
 def main() -> int:
+    import os
+
+    # Suppress Qt/KDE warnings when running under sudo (no D-Bus session)
+    os.environ.setdefault(
+        "QT_LOGGING_RULES",
+        "qt.qpa.services.warning=false;kf.windowsystem.warning=false",
+    )
+
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 

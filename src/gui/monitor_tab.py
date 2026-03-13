@@ -196,7 +196,7 @@ class MonitorTab(QWidget):
             self._tctl_label.setText("Tctl: N/A")
         has_voltage = self._hwmon.is_available() and self._hwmon.read().vcore_v is not None
         if not has_voltage:
-            self._vcore_label.setText("Vcore: N/A (SVI3 not supported)")
+            self._vcore_label.setText("Vcore: N/A (no voltage source)")
         has_power = self._power.is_available() or self._msr.is_available()
         if not has_power:
             self._power_label.setText("Package: N/A (needs root)")
