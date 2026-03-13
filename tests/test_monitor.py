@@ -415,7 +415,10 @@ class TestPowerMonitor:
             assert mon.is_available() is True
 
     def test_not_available(self, tmp_path):
-        with patch("monitor.power.RAPL_BASE", tmp_path / "nonexistent"):
+        with (
+            patch("monitor.power.RAPL_BASE", tmp_path / "nonexistent"),
+            patch("monitor.power.HWMON_BASE", tmp_path / "nonexistent2"),
+        ):
             mon = PowerMonitor()
             assert mon.is_available() is False
 
@@ -492,7 +495,10 @@ class TestPowerMonitor:
         assert watts > 0
 
     def test_read_when_not_available(self, tmp_path):
-        with patch("monitor.power.RAPL_BASE", tmp_path / "nonexistent"):
+        with (
+            patch("monitor.power.RAPL_BASE", tmp_path / "nonexistent"),
+            patch("monitor.power.HWMON_BASE", tmp_path / "nonexistent2"),
+        ):
             mon = PowerMonitor()
             assert mon.read_power_watts() is None
 
@@ -502,10 +508,56 @@ class TestPowerMonitor:
         (rapl_dir / "energy_uj").write_text("not_a_number")
 
         rapl_base = tmp_path / "powercap" / "intel-rapl"
-        with patch("monitor.power.RAPL_BASE", rapl_base):
+        with (
+            patch("monitor.power.RAPL_BASE", rapl_base),
+            patch("monitor.power.HWMON_BASE", tmp_path / "nonexistent"),
+        ):
             mon = PowerMonitor()
             result = mon.read_power_watts()
         assert result is None
+
+    def test_hwmon_power_fallback(self, tmp_path):
+        """When RAPL is unavailable, use zenpower power1_input (microwatts)."""
+        hwmon_base = tmp_path / "hwmon"
+        hwmon_dir = hwmon_base / "hwmon0"
+        hwmon_dir.mkdir(parents=True)
+        (hwmon_dir / "name").write_text("zenpower")
+        (hwmon_dir / "power1_input").write_text("51000000")  # 51W in microwatts
+        (hwmon_dir / "power1_label").write_text("RAPL_P_Package")
+
+        with (
+            patch("monitor.power.RAPL_BASE", tmp_path / "nonexistent"),
+            patch("monitor.power.HWMON_BASE", hwmon_base),
+        ):
+            mon = PowerMonitor()
+            assert mon.is_available() is True
+            watts = mon.read_power_watts()
+
+        assert watts == pytest.approx(51.0)
+
+    def test_hwmon_power_not_used_when_rapl_available(self, tmp_path):
+        """RAPL is preferred over hwmon power."""
+        # Create RAPL
+        rapl_dir = tmp_path / "powercap" / "intel-rapl" / "intel-rapl:0"
+        rapl_dir.mkdir(parents=True)
+        (rapl_dir / "energy_uj").write_text("1000000")
+        # Create hwmon
+        hwmon_base = tmp_path / "hwmon"
+        hwmon_dir = hwmon_base / "hwmon0"
+        hwmon_dir.mkdir(parents=True)
+        (hwmon_dir / "name").write_text("zenpower")
+        (hwmon_dir / "power1_input").write_text("51000000")
+
+        rapl_base = tmp_path / "powercap" / "intel-rapl"
+        with (
+            patch("monitor.power.RAPL_BASE", rapl_base),
+            patch("monitor.power.HWMON_BASE", hwmon_base),
+        ):
+            mon = PowerMonitor()
+            assert mon.is_available() is True
+            # First RAPL read returns None (needs baseline)
+            assert mon.read_power_watts() is None
+            # This confirms it's using RAPL (delta-based), not hwmon (instant)
 
     def test_zero_time_delta(self, tmp_path):
         """dt=0 should not cause division by zero."""
