@@ -9,12 +9,14 @@ import subprocess
 from PySide6.QtCore import QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -27,17 +29,34 @@ log = logging.getLogger(__name__)
 
 
 class _StressWorker(QThread):
-    """Runs stressapptest in background."""
+    """Runs memory stress test in background."""
     done = Signal(bool, str)
+
+    def __init__(self, tool: str, duration_minutes: int, parent=None) -> None:
+        super().__init__(parent)
+        self._tool = tool
+        self._duration = duration_minutes
 
     def run(self) -> None:
         try:
+            seconds = self._duration * 60
+            if self._tool == "stressapptest":
+                cmd = ["stressapptest", "-W", "-s", str(seconds)]
+            elif self._tool == "stress-ng --vm":
+                cmd = ["stress-ng", "--vm", "1", "--vm-bytes", "75%", "--verify", "--timeout", f"{seconds}s"]
+            else:
+                self.done.emit(False, f"Unknown tool: {self._tool}")
+                return
+
             result = subprocess.run(
-                ["stressapptest", "-W", "-s", "300"],
-                capture_output=True, text=True, timeout=360,
+                cmd, capture_output=True, text=True, timeout=seconds + 60,
             )
-            passed = "Status: PASS" in result.stdout
-            self.done.emit(passed, result.stdout[-500:] if result.stdout else "")
+            if self._tool == "stressapptest":
+                passed = "Status: PASS" in result.stdout
+            else:
+                passed = result.returncode in (0, -9, -15, 137, 143)
+            output = (result.stdout + result.stderr)[-500:]
+            self.done.emit(passed, output)
         except Exception as e:
             self.done.emit(False, str(e))
 
@@ -66,6 +85,11 @@ class MemoryTab(QWidget):
         self._summary_label.setFont(QFont("monospace", 11, QFont.Weight.Bold))
         layout.addWidget(self._summary_label)
 
+        # Dependency status
+        self._deps_label = QLabel("")
+        self._deps_label.setStyleSheet("color: #888; font: 9px monospace;")
+        layout.addWidget(self._deps_label)
+
         self._temp_group = QGroupBox("DIMM Temperatures (SPD5118)")
         temp_layout = QHBoxLayout(self._temp_group)
         self._temp_labels: list[QLabel] = []
@@ -84,21 +108,46 @@ class MemoryTab(QWidget):
         self._dimm_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self._dimm_table)
 
-        btn_layout = QHBoxLayout()
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self._load_dimm_info)
-        btn_layout.addWidget(refresh_btn)
+        layout.addWidget(refresh_btn)
 
-        self._stress_btn = QPushButton("Run Memory Stress (5 min)")
-        self._stress_btn.setToolTip(
-            "Run stressapptest for 5 minutes to check memory stability.\n"
-            "Uses write-after-read verification to detect errors."
-        )
+        # Stress test controls
+        stress_group = QGroupBox("Memory Stress Test")
+        stress_layout = QHBoxLayout(stress_group)
+
+        stress_layout.addWidget(QLabel("Duration:"))
+        self._stress_duration = QSpinBox()
+        self._stress_duration.setRange(1, 60)
+        self._stress_duration.setValue(5)
+        self._stress_duration.setSuffix(" min")
+        stress_layout.addWidget(self._stress_duration)
+
+        stress_layout.addWidget(QLabel("Tool:"))
+        self._stress_tool = QComboBox()
+        self._stress_tool.addItems(self._detect_available_tools())
+        stress_layout.addWidget(self._stress_tool)
+
+        self._stress_btn = QPushButton("Run")
         self._stress_btn.clicked.connect(self._run_memory_stress)
-        btn_layout.addWidget(self._stress_btn)
+        stress_layout.addWidget(self._stress_btn)
 
-        btn_layout.addStretch()
-        layout.addLayout(btn_layout)
+        self._stress_status = QLabel("")
+        stress_layout.addWidget(self._stress_status)
+        stress_layout.addStretch()
+
+        layout.addWidget(stress_group)
+
+    def _detect_available_tools(self) -> list[str]:
+        """Detect which memory stress tools are installed."""
+        tools = []
+        if shutil.which("stressapptest"):
+            tools.append("stressapptest")
+        if shutil.which("stress-ng"):
+            tools.append("stress-ng --vm")
+        if not tools:
+            tools.append("(none installed)")
+        return tools
 
     def _load_dimm_info(self) -> None:
         self._dimms = read_dimm_info()
@@ -132,6 +181,14 @@ class MemoryTab(QWidget):
                 temp_layout.addWidget(lbl)
                 self._temp_labels.append(lbl)
 
+        # Update dependency status
+        deps = []
+        deps.append("dmidecode: " + ("found" if shutil.which("dmidecode") else "missing"))
+        deps.append("stressapptest: " + ("found" if shutil.which("stressapptest") else "missing"))
+        deps.append("stress-ng: " + ("found" if shutil.which("stress-ng") else "missing"))
+        deps.append("spd5118: " + ("available" if self._spd_reader.is_available() else "not loaded"))
+        self._deps_label.setText("  |  ".join(deps))
+
     def _populate_table(self) -> None:
         self._dimm_table.setRowCount(len(self._dimms))
         for row, d in enumerate(self._dimms):
@@ -157,18 +214,20 @@ class MemoryTab(QWidget):
                 self._temp_labels[i].setText(f"DIMM {i}: {temp:.1f}C")
 
     def _run_memory_stress(self) -> None:
-        if not shutil.which("stressapptest"):
-            QMessageBox.warning(self, "Not Found", "stressapptest is not installed or not on PATH.")
+        tool = self._stress_tool.currentText()
+        if tool == "(none installed)":
+            QMessageBox.warning(self, "Not Found", "No memory stress tools installed.\nInstall stressapptest or stress-ng.")
             return
+        duration = self._stress_duration.value()
         self._stress_btn.setEnabled(False)
-        self._stress_btn.setText("Running...")
-        self._stress_worker = _StressWorker(parent=self)
+        self._stress_status.setText(f"Running {tool} for {duration}min...")
+        self._stress_worker = _StressWorker(tool, duration, parent=self)
         self._stress_worker.done.connect(self._on_stress_done)
         self._stress_worker.start()
 
     @Slot(bool, str)
     def _on_stress_done(self, passed: bool, output: str) -> None:
         self._stress_btn.setEnabled(True)
-        self._stress_btn.setText("Run Memory Stress (5 min)")
         status = "PASS" if passed else "FAIL"
+        self._stress_status.setText(f"Result: {status}")
         QMessageBox.information(self, f"Memory Stress: {status}", output[-500:])
