@@ -266,11 +266,12 @@ class TunerTab(QWidget):
         search_layout.addRow("Stretch threshold:", self._stretch_threshold_spin)
 
         self._order_combo = QComboBox()
-        self._order_combo.addItems(["sequential", "round_robin", "weakest_first"])
+        self._order_combo.addItems(["sequential", "round_robin", "weakest_first", "ccd_alternating"])
         self._order_combo.setToolTip(
             "sequential: finish each core before moving to next\n"
             "round_robin: cycle through all cores, one test each\n"
-            "weakest_first: prioritize cores closest to settling"
+            "weakest_first: prioritize cores closest to settling\n"
+            "ccd_alternating: alternate between CCDs (catches thermal interactions)"
         )
         search_layout.addRow("Test order:", self._order_combo)
 
