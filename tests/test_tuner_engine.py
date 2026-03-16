@@ -406,6 +406,27 @@ class TestInheritCurrentCO:
         assert eng._core_states[0].current_offset == -15
         assert eng._core_states[1].current_offset == -20
 
+    def test_inherit_survives_first_advance(self, db, simple_topology, mock_smu, mock_backend):
+        """Inherited offset should be used as base for first coarse step."""
+        mock_smu.get_co_offset = MagicMock(side_effect=lambda cid: {0: -15}.get(cid, 0))
+        cfg = TunerConfig(
+            cores_to_test=[0],
+            inherit_current=True,
+            coarse_step=5,
+            search_duration_seconds=1,
+        )
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        with patch.object(eng, "_run_next"):
+            eng.start()
+        # Core starts at -15 (inherited), first advance should go to -15 + (-1)*5 = -20
+        cs = eng._core_states[0]
+        eng._advance_core(0, passed=False)  # not_started -> coarse_search
+        assert cs.phase == "coarse_search"
+        assert cs.current_offset == -20  # -15 (inherited base) + -5 (coarse step)
+
     def test_inherit_false_uses_start_offset(self, db, simple_topology, mock_smu, mock_backend):
         """When inherit_current=False (default), use config start_offset."""
         cfg = TunerConfig(
