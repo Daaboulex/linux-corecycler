@@ -676,7 +676,11 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Error", f"Failed to load profile: {e}")
 
     def closeEvent(self, event) -> None:
-        if self._worker and self._worker.isRunning():
+        # Check if ANYTHING is running (manual test OR tuner OR memory stress)
+        manual_running = self._worker and self._worker.isRunning()
+        tuner_running = self._tuner_tab.is_running
+
+        if manual_running or tuner_running:
             reply = QMessageBox.question(
                 self,
                 "Test Running",
@@ -687,6 +691,8 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
+        # Stop manual test worker
+        if manual_running:
             # Disconnect logger BEFORE stopping worker — prevents queued signals
             # from writing to the DB after we close it
             if self._logger and self._worker:
@@ -707,6 +713,14 @@ class MainWindow(QMainWindow):
             if not self._worker.wait(5000):
                 self._worker.terminate()
                 self._worker.wait(2000)
+
+        # Stop auto-tuner
+        if tuner_running:
+            self._tuner_tab.force_stop()
+
+        # Stop memory stress test if running
+        if hasattr(self, '_memory_tab'):
+            self._memory_tab.force_stop()
 
         # Process any remaining queued signals before closing DB
         from PySide6.QtCore import QCoreApplication

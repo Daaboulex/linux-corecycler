@@ -48,6 +48,31 @@ def main() -> int:
     from gui.main_window import MainWindow
 
     window = MainWindow()
+
+    import atexit
+    import signal
+
+    def _cleanup_on_exit():
+        """Kill any running stress processes on forced exit."""
+        if hasattr(window, '_worker') and window._worker and window._worker.isRunning():
+            window._worker.scheduler.force_stop()
+            window._worker.terminate()
+            window._worker.wait(2000)
+        if hasattr(window, '_tuner_tab') and window._tuner_tab.is_running:
+            window._tuner_tab.force_stop()
+        if hasattr(window, '_memory_tab'):
+            window._memory_tab.force_stop()
+
+    atexit.register(_cleanup_on_exit)
+
+    # Handle SIGTERM/SIGINT gracefully
+    def _signal_handler(signum, frame):
+        _cleanup_on_exit()
+        app.quit()
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+
     window.show()
 
     return app.exec()
