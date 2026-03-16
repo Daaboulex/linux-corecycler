@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -221,6 +222,14 @@ class TunerTab(QWidget):
         )
         search_layout.addRow("Start offset:", self._start_offset_spin)
 
+        self._inherit_current_check = QCheckBox("Inherit current CO from SMU")
+        self._inherit_current_check.setToolTip(
+            "Read current CO offsets from SMU at session start and use them\n"
+            "as starting points instead of the fixed start offset above.\n"
+            "Useful for incremental tuning from an existing baseline."
+        )
+        search_layout.addRow("", self._inherit_current_check)
+
         self._coarse_step_spin = QSpinBox()
         self._coarse_step_spin.setRange(1, 15)
         self._coarse_step_spin.setValue(5)
@@ -363,6 +372,7 @@ class TunerTab(QWidget):
             confirm_duration_seconds=self._confirm_dur_spin.value(),
             max_confirm_retries=self._max_retries_spin.value(),
             stretch_threshold_pct=self._stretch_threshold_spin.value(),
+            inherit_current=self._inherit_current_check.isChecked(),
             test_order=self._order_combo.currentText(),
             backend=self._backend_combo.currentText(),
             stress_mode=self._mode_combo.currentText(),
@@ -379,6 +389,7 @@ class TunerTab(QWidget):
         self._confirm_dur_spin.setValue(cfg.confirm_duration_seconds)
         self._max_retries_spin.setValue(cfg.max_confirm_retries)
         self._stretch_threshold_spin.setValue(cfg.stretch_threshold_pct)
+        self._inherit_current_check.setChecked(cfg.inherit_current)
         self._order_combo.setCurrentText(cfg.test_order)
         self._backend_combo.setCurrentText(cfg.backend)
         self._mode_combo.setCurrentText(cfg.stress_mode)
