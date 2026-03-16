@@ -195,6 +195,7 @@ class MainWindow(QMainWindow):
         self._memory_tab = MemoryTab()
         self._tabs.addTab(self._memory_tab, "Memory")
 
+        self._tabs.currentChanged.connect(self._on_tab_changed)
         main_layout.addWidget(self._tabs, stretch=2)
 
     def _setup_toolbar(self) -> None:
@@ -525,6 +526,15 @@ class MainWindow(QMainWindow):
         """Update core grid when auto-tuner changes core state."""
         status = CoreTestStatus(core_id=core_id, state=state)
         self._core_grid.update_core_status(core_id, status)
+
+    @Slot(int)
+    def _on_tab_changed(self, index: int) -> None:
+        """Refresh data when switching tabs."""
+        widget = self._tabs.widget(index)
+        # Auto-refresh CO values when switching to Curve Optimizer tab
+        if widget is self._smu_tab and hasattr(self._smu_tab, '_read_all_co'):
+            if self._tuner_tab.is_running:
+                self._smu_tab._read_all_co()
 
     def _update_elapsed(self) -> None:
         if not self._worker:

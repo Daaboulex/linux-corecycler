@@ -339,6 +339,10 @@ class HistoryTab(QWidget):
         self._apply_view_mode()
 
     def _reload_data(self) -> None:
+        # Auto-clean orphaned contexts (0 runs)
+        if self._db:
+            self._db.delete_orphaned_contexts()
+
         self._runs = self._db.list_runs(limit=500)
         self._contexts = self._db.list_contexts()
 
@@ -1050,6 +1054,15 @@ class HistoryTab(QWidget):
             if rows:
                 self._delete_tuner_sessions(rows)
             return
+
+        # In grouped view, allow deleting contexts directly from context table
+        if self._view_mode == self.VIEW_GROUPED:
+            ctx_rows = sorted({idx.row() for idx in self._context_table.selectionModel().selectedRows()})
+            if ctx_rows and not self._selected_run_rows():
+                # User selected contexts, not runs — delete contexts
+                self._delete_contexts(ctx_rows)
+                return
+
         rows = self._selected_run_rows()
         if rows:
             self._delete_runs(rows)
@@ -1084,6 +1097,34 @@ class HistoryTab(QWidget):
         # Clean up orphaned contexts (no remaining runs)
         if self._db:
             self._db.delete_orphaned_contexts()
+
+        self._refresh_preserve_context()
+
+    def _delete_contexts(self, rows: list[int]) -> None:
+        if not self._db:
+            return
+        ctx_ids = []
+        for row in rows:
+            if row < len(self._contexts):
+                ctx_id = self._contexts[row].id
+                if ctx_id is not None:
+                    ctx_ids.append(ctx_id)
+        if not ctx_ids:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Delete Contexts",
+            f"Delete {len(ctx_ids)} context(s) and all associated runs?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        for ctx_id in ctx_ids:
+            # Delete all runs for this context first
+            self._db._conn.execute("DELETE FROM runs WHERE context_id = ?", (ctx_id,))
+            self._db._conn.execute("DELETE FROM tuning_contexts WHERE id = ?", (ctx_id,))
 
         self._refresh_preserve_context()
 

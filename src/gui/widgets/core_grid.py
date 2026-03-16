@@ -106,12 +106,17 @@ class CoreCell(QWidget):
 
         mins = int(status.elapsed_seconds // 60)
         secs = int(status.elapsed_seconds % 60)
+        time_str = f"{mins}m{secs:02d}s" if status.elapsed_seconds > 0 else ""
+
         # When testing, combine phase + time in status label (detail_label is used for telemetry)
         if self._state == "testing":
-            self._status_label.setText(f"{state_text}  {mins}m{secs:02d}s")
+            if time_str:
+                self._status_label.setText(f"{state_text}  {time_str}")
+            else:
+                self._status_label.setText(state_text)
         else:
             self._status_label.setText(state_text)
-            self._detail_label.setText(f"{mins}m{secs:02d}s")
+            self._detail_label.setText(time_str)
 
         # Expand/collapse cell for testing state
         if self._state == "testing" and prev_state != "testing":
