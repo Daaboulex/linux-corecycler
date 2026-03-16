@@ -720,6 +720,7 @@ class TunerEngine(QObject):
         stress_config = StressConfig(
             mode=self._get_stress_mode(),
             fft_preset=self._get_fft_preset(),
+            threads=len(core_info.logical_cpus),
         )
         scheduler_config = SchedulerConfig(
             seconds_per_core=duration,

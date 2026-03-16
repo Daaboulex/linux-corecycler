@@ -669,6 +669,15 @@ class CoreScheduler:
             # kill process if still running (timeout or stop requested)
             self._kill_current()
 
+            # Warn if the process exited almost immediately — likely a missing
+            # binary, bad path, or misconfigured backend.
+            if self._process.poll() is not None and (time.monotonic() - start_time) < 2.0:
+                log.warning(
+                    "Stress process for core %d exited in <2s (code %d) — "
+                    "binary may be missing or misconfigured",
+                    core_id, self._process.returncode,
+                )
+
             # collect output
             try:
                 stdout_data, stderr_data = self._process.communicate(timeout=5)
