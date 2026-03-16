@@ -388,6 +388,42 @@ class TestPickFunctionsPure:
         assert picked == 0
 
 
+class TestInheritCurrentCO:
+    def test_inherit_reads_smu_offsets(self, db, simple_topology, mock_smu, mock_backend):
+        """When inherit_current=True, start offsets come from SMU, not config."""
+        mock_smu.get_co_offset = MagicMock(side_effect=lambda cid: {0: -15, 1: -20}.get(cid, 0))
+        cfg = TunerConfig(
+            cores_to_test=[0, 1],
+            inherit_current=True,
+            search_duration_seconds=1,
+        )
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        with patch.object(eng, "_run_next"):
+            eng.start()
+        assert eng._core_states[0].current_offset == -15
+        assert eng._core_states[1].current_offset == -20
+
+    def test_inherit_false_uses_start_offset(self, db, simple_topology, mock_smu, mock_backend):
+        """When inherit_current=False (default), use config start_offset."""
+        cfg = TunerConfig(
+            cores_to_test=[0, 1],
+            inherit_current=False,
+            start_offset=-5,
+            search_duration_seconds=1,
+        )
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        with patch.object(eng, "_run_next"):
+            eng.start()
+        assert eng._core_states[0].current_offset == -5
+        assert eng._core_states[1].current_offset == -5
+
+
 class TestExceedsMax:
     def test_negative_direction(self, db, simple_topology, mock_smu, mock_backend):
         cfg = TunerConfig(max_offset=-30, direction=-1)
