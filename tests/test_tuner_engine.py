@@ -505,8 +505,8 @@ class TestCCDAlternatingOrder:
 
 
 class TestCCDRoundRobinOrder:
-    def test_interleaves_ccds_and_rotates(self, db, topo_dual_ccd_x3d, mock_smu, mock_backend):
-        """Should alternate CCDs AND rotate (not finish one core before next)."""
+    def test_interleaves_ccds_and_rotates_cores(self, db, topo_dual_ccd_x3d, mock_smu, mock_backend):
+        """Should produce: CCD0[0]→CCD1[0]→CCD0[1]→CCD1[1]→..."""
         cfg = TunerConfig(
             cores_to_test=[0, 1, 2, 3, 4, 5, 6, 7],
             test_order="ccd_round_robin",
@@ -516,26 +516,35 @@ class TestCCDRoundRobinOrder:
             backend=mock_backend, config=cfg,
         )
         eng._session_id = tp.create_session(db, cfg, "", "")
-        # All cores in coarse_search — simulates mid-tuning
         eng._core_states = {
             i: CoreState(core_id=i, phase="coarse_search", current_offset=-5)
             for i in range(8)
         }
 
-        # Pick 4 times and check alternation
         picks = []
-        for _ in range(4):
+        for _ in range(8):
             picked = eng._pick_next_core()
             assert picked is not None
             picks.append(picked)
-            eng._last_tested_core = picked  # simulate rotation tracking
+            eng._last_tested_core = picked
+            # Update per-CCD tracking
+            core_info = topo_dual_ccd_x3d.cores.get(picked)
+            if core_info and core_info.ccd is not None:
+                eng._ccd_last_tested[core_info.ccd] = picked
+            # Mark as confirmed so it's not picked again
+            eng._core_states[picked] = CoreState(
+                core_id=picked, phase="confirmed", current_offset=-5, best_offset=-5,
+            )
 
-        # Should alternate CCDs
         topo = topo_dual_ccd_x3d
+        # Verify CCD alternation
         for i in range(1, len(picks)):
             prev_ccd = topo.cores[picks[i-1]].ccd
             curr_ccd = topo.cores[picks[i]].ccd
-            assert prev_ccd != curr_ccd, f"Consecutive picks {picks[i-1]}, {picks[i]} on same CCD"
+            assert prev_ccd != curr_ccd, f"Picks {i-1},{i} ({picks[i-1]},{picks[i]}) same CCD"
+
+        # Verify all 8 cores were picked (rotation worked)
+        assert sorted(picks) == [0, 1, 2, 3, 4, 5, 6, 7]
 
 
 class TestExceedsMax:
