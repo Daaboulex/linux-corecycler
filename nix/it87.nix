@@ -48,7 +48,7 @@ buildStdenv.mkDerivation {
     ];
 
   makeFlags = [
-    "KERNELDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
+    "KERNEL_BUILD=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
     "INSTALL_MOD_PATH=${placeholder "out"}"
   ]
   ++ lib.optionals kernelUsesLLVM [
