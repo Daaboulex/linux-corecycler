@@ -403,7 +403,9 @@ class TunerEngine(QObject):
             case "not_started":
                 # First step: enter coarse search
                 cs.phase = "coarse_search"
-                cs.current_offset = cfg.start_offset + direction * cfg.coarse_step
+                # Use inherited offset as base when inherit_current is active
+                base = cs.current_offset if (cfg.inherit_current and cs.current_offset != 0) else cfg.start_offset
+                cs.current_offset = base + direction * cfg.coarse_step
                 if self._exceeds_max(cs.current_offset):
                     cs.current_offset = cfg.max_offset
 
