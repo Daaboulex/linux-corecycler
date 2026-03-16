@@ -189,6 +189,12 @@ class TunerTab(QWidget):
         self._log_filter_label.setStyleSheet("color: #aaa;")
         log_header.addWidget(self._log_filter_label)
         log_header.addStretch()
+
+        clear_log_btn = QPushButton("Clear")
+        clear_log_btn.setFixedWidth(60)
+        clear_log_btn.clicked.connect(lambda: self._log_table.setRowCount(0))
+        log_header.addWidget(clear_log_btn)
+
         bottom_layout.addLayout(log_header)
 
         self._log_table = QTableWidget()

@@ -792,6 +792,18 @@ ALTER TABLE telemetry_samples ADD COLUMN effective_max_mhz REAL;
     # Maintenance
     # ------------------------------------------------------------------
 
+    def delete_orphaned_contexts(self) -> int:
+        """Delete tuning contexts that have no associated runs. Returns count deleted."""
+        cursor = self._conn.execute(
+            "DELETE FROM tuning_contexts WHERE id NOT IN "
+            "(SELECT DISTINCT context_id FROM runs WHERE context_id IS NOT NULL)"
+        )
+        return cursor.rowcount
+
+    def delete_tuner_session(self, session_id: int) -> None:
+        """Delete a tuner session and all related records (CASCADE)."""
+        self._conn.execute("DELETE FROM tuner_sessions WHERE id=?", (session_id,))
+
     def recover_incomplete_runs(self) -> int:
         """Mark any 'running' runs as 'crashed'. Returns count recovered."""
         cur = self._conn.execute(

@@ -373,18 +373,25 @@ class HistoryTab(QWidget):
         row_count = len(self._contexts) + (1 if ungrouped else 0)
         self._context_table.setRowCount(row_count)
 
-        bios_versions_seen: list[str] = []
+        # Pre-compute which contexts have a BIOS change from their chronological
+        # predecessor.  self._contexts is newest-first, so the chronological
+        # predecessor of index i is index i+1.  We mark the *newer* context
+        # (the one that introduced the change) with the indicator.
+        bios_changed_set: set[int] = set()
+        for i in range(len(self._contexts) - 1):
+            if self._contexts[i].bios_version != self._contexts[i + 1].bios_version:
+                bios_changed_set.add(i)
+
         row = 0
 
-        for ctx in self._contexts:
+        for idx, ctx in enumerate(self._contexts):
             runs = self._context_runs.get(ctx.id, [])
             co_summary = _co_summary(ctx.co_offsets_json)
             scalar_str = f"{ctx.pbo_scalar:.1f}" if ctx.pbo_scalar is not None else "-"
             best = _best_result(runs)
 
-            # Detect BIOS change between consecutive contexts
-            bios_changed = bios_versions_seen and bios_versions_seen[-1] != ctx.bios_version
-            bios_versions_seen.append(ctx.bios_version)
+            # Detect BIOS change — mark the newer context that introduced the change
+            bios_changed = idx in bios_changed_set
 
             bios_text = ctx.bios_version or "-"
             if bios_changed:
@@ -573,7 +580,7 @@ class HistoryTab(QWidget):
 
         if self._view_mode == self.VIEW_TUNER:
             # Tuner session selection
-            self._delete_btn.setEnabled(False)
+            self._delete_btn.setEnabled(len(rows) >= 1)
             self._compare_btn.setEnabled(False)
             if len(rows) == 1 and rows[0] < len(self._tuner_sessions):
                 self._show_tuner_session_detail(self._tuner_sessions[rows[0]])
@@ -1038,6 +1045,11 @@ class HistoryTab(QWidget):
 
     @Slot()
     def _delete_selected(self) -> None:
+        if self._view_mode == self.VIEW_TUNER:
+            rows = self._selected_run_rows()
+            if rows:
+                self._delete_tuner_sessions(rows)
+            return
         rows = self._selected_run_rows()
         if rows:
             self._delete_runs(rows)
@@ -1068,6 +1080,36 @@ class HistoryTab(QWidget):
 
         for run_id in run_ids:
             self._db.delete_run(run_id)
+
+        # Clean up orphaned contexts (no remaining runs)
+        if self._db:
+            self._db.delete_orphaned_contexts()
+
+        self._refresh_preserve_context()
+
+    def _delete_tuner_sessions(self, rows: list[int]) -> None:
+        if not self._db:
+            return
+
+        session_ids = []
+        for row in rows:
+            if row < len(self._tuner_sessions) and self._tuner_sessions[row].id is not None:
+                session_ids.append(self._tuner_sessions[row].id)
+
+        if not session_ids:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Delete Tuner Sessions",
+            f"Delete {len(session_ids)} tuner session(s) and all associated data?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        for sid in session_ids:
+            self._db.delete_tuner_session(sid)
 
         self._refresh_preserve_context()
 
