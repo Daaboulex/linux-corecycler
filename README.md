@@ -4,7 +4,7 @@ Per-core CPU stress testing and AMD PBO Curve Optimizer tuning for Linux.
 
 ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue)
 ![License GPL-3.0](https://img.shields.io/badge/License-GPL--3.0--or--later-green)
-![Version 0.3.0-beta](https://img.shields.io/badge/Version-0.3.0--beta-orange)
+![Version 0.0.1-dev](https://img.shields.io/badge/Version-0.0.1--dev-orange)
 ![Linux only](https://img.shields.io/badge/Platform-Linux-yellow)
 
 > **Development status:** CoreCyclerLx is actively developed and tested on an **AMD Ryzen 9 9950X3D** (Zen 5, dual-CCD X3D, AM5). Other AMD Ryzen processors (Zen 2–5) should work but have not been tested as thoroughly. Intel CPUs are supported for stress testing only (no Curve Optimizer). If you encounter issues on other hardware, please [open an issue](https://github.com/Daaboulex/corecyclerlx/issues) with your CPU model and description.
