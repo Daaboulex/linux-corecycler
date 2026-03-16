@@ -37,7 +37,7 @@
           }:
           pythonPkgs.buildPythonApplication {
             pname = "corecyclerlx${pnameSuffix}";
-            version = "0.3.0";
+            version = "0.0.1";
             pyproject = true;
 
             src = ./.;

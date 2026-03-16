@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "corecyclerlx"
-version = "0.3.0"
+version = "0.0.1"
 description = "Per-core CPU stability tester and PBO Curve Optimizer tuner for AMD Ryzen on Linux"
 readme = "README.md"
 license = "GPL-3.0-or-later"
