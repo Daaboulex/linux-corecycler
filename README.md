@@ -25,7 +25,7 @@ CO instability often manifests at idle or during load transitions, not under sus
 ## Features
 
 - **Per-core stress test cycling** with configurable time, iterations, and cycle count per core
-- **Three stress test backends**: mprime (Prime95 CLI), stress-ng, and y-cruncher
+- **Four stress test backends**: mprime (Prime95 CLI), stress-ng, y-cruncher, and stressapptest (Google's memory stress tool)
 - **Five test mode presets**: Quick (2 min/core), Standard (10 min), Thorough (30 min + 2 cycles), Full Spectrum (multi-pass with variable load and idle tests), and Custom
 - **Variable load testing**: periodically stops and restarts stress to catch load transition errors
 - **Idle stability testing**: monitors for MCE during idle periods between cores to catch C-state transition errors
@@ -39,8 +39,12 @@ CO instability often manifests at idle or during load transitions, not under sus
 - **Per-core telemetry logging** -- peak frequency, max temperature, and Vcore range recorded for each core's test run
 - **Test profile save/load** -- export and import test configurations as JSON files
 - **Safety features** -- thermal limit monitoring (configurable, default 95C), process group cleanup on stop, confirmation dialogs for CO writes, dry-run mode, backup/restore CO values, volatile-only SMU writes (never touches BIOS)
-- **Automated PBO Curve Optimizer tuner** -- coarse-to-fine search algorithm that finds optimal per-core CO values automatically; crash-safe SQLite persistence resumes exactly where it left off after reboot or crash; configurable search parameters with best-practice defaults
-- **Tuner session history** -- the History tab's "Tuner Sessions" view shows all past auto-tuner sessions with date, status, CPU, core count, confirmed count, duration, and BIOS info; clicking a session reveals per-core state details and the complete test log; detail sections stay hidden until a session is selected to avoid wasted space
+- **Automated PBO Curve Optimizer tuner** -- coarse-to-fine search algorithm that finds optimal per-core CO values automatically; crash-safe SQLite persistence (WAL mode) resumes exactly where it left off after reboot or crash; configurable search parameters with best-practice defaults; **inherit current CO** option reads existing SMU offsets as starting points for incremental tuning
+- **Five tuner test orderings**: sequential (finish each core), round_robin (cycle one test per core), weakest_first (prioritize cores nearest to settling), **ccd_alternating** (alternate between CCDs for thermal coverage), and **ccd_round_robin** (rotate one test per core across CCDs — gives each core cool-down time between tests, catches cold-boot and thermal transition failures)
+- **Tuner state machine** -- 7 phases per core: not_started → coarse_search → fine_search → settled → confirming → confirmed (or failed_confirm → back off). Clock stretch detection (APERF/MPERF) during tuner tests with configurable threshold — marks test as FAIL even if stress passed when voltage droop is detected
+- **Memory information tab** -- displays per-DIMM details (size, type, speed, manufacturer, part number, rank, voltage) via dmidecode; live DDR5 DIMM temperature monitoring via SPD5118 hwmon; configurable memory stress testing (1–60 minutes) with tool selection (stressapptest or stress-ng --vm); dependency status display showing available tools and drivers
+- **Tuner session history** -- the History tab's "Tuner Sessions" view shows all past auto-tuner sessions with date, status, CPU, core count, confirmed count, duration, and BIOS info; clicking a session reveals per-core state details and the complete test log; sessions can be deleted individually; detail sections stay hidden until a session is selected to avoid wasted space
+- **History management** -- grouped view with tuning context detection (BIOS + CO snapshot), run comparison, context deletion, orphan cleanup, BIOS change detection with visual indicators
 
 ## Screenshots
 
@@ -182,12 +186,25 @@ services.corecyclerlx = {
 };
 ```
 
+**Full example** (DDR5 system with DIMM temperature monitoring):
+
+```nix
+services.corecyclerlx = {
+  enable = true;
+  deviceAccessUser = "your-username";
+  unfreeBackends = true;
+  zenpower = true;         # CPU monitoring
+  nct6775 = true;          # Vcore via Super I/O
+  spd5118 = true;          # DDR5 DIMM temperatures via SPD hub
+};
+```
+
 **Module options:**
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `enable` | bool | `false` | Enable CoreCyclerLx |
-| `unfreeBackends` | bool | `false` | Include mprime (unfree). When false, only stress-ng is bundled |
+| `unfreeBackends` | bool | `false` | Include mprime (unfree). When false, stress-ng and stressapptest are bundled |
 | **AMD SMU** | | | |
 | `ryzenSmu` | bool | `true` | Load [ryzen_smu](https://github.com/amkillam/ryzen_smu) kernel module for CO read/write via SMU. Zen 1–5 |
 | **CPU hwmon** | | | |
@@ -198,6 +215,8 @@ services.corecyclerlx = {
 | `it87` | bool | `false` | Load out-of-tree [it87](https://github.com/frankcrawford/it87) for ITE Super I/O chips (38+ models). Gigabyte |
 | **Utility** | | | |
 | `cpuid` | bool | `false` | Load in-tree cpuid module for /dev/cpu/*/cpuid access |
+| **Memory** | | | |
+| `spd5118` | bool | `false` | Load spd5118 + i2c_dev modules for DDR5 DIMM temperature monitoring via the SPD hub chip |
 | **Device access** | | | |
 | `deviceAccess` | bool | `true` | Grant `deviceAccessUser` access to MSR/SMU sysfs without sudo |
 | `deviceAccessUser` | string | `""` | Username for device access (required when `deviceAccess` is true) |
@@ -220,8 +239,8 @@ environment.systemPackages = [
 
 | Package variant | Backends included | Unfree software |
 |---|---|---|
-| `packages.default` | stress-ng | No |
-| `packages.full` | stress-ng + mprime | Yes (mprime) |
+| `packages.default` | stress-ng, stressapptest | No |
+| `packages.full` | stress-ng, stressapptest, mprime | Yes (mprime) |
 
 Both variants include taskset (util-linux) for CPU core pinning. Flake inputs are auto-updated weekly via GitHub Actions, keeping all bundled backends at their latest nixpkgs versions.
 
@@ -267,6 +286,8 @@ sudo python src/main.py    # from source
 | Per-core power (RAPL MSR) | ❌ Needs /dev/cpu/N/msr | ✅ Full |
 | Clock stretch detection (APERF/MPERF) | ❌ Needs /dev/cpu/N/msr | ✅ Full |
 | Vcore voltage | ✅ Via Super I/O or zenpower | ✅ Via Super I/O or zenpower |
+| DIMM info (dmidecode) | ❌ Needs root | ✅ Full |
+| DDR5 DIMM temperatures (SPD5118) | ✅ If spd5118 module loaded | ✅ If spd5118 module loaded |
 | Curve Optimizer (SMU read/write) | ❌ Needs /sys/kernel/ryzen_smu_drv | ✅ Full |
 
 When running without root, the status bar displays a warning listing unavailable features. The app adapts gracefully — unavailable data shows "N/A" instead of stale or missing values. Qt/KDE platform warnings (D-Bus portal, window system) that would normally appear under `sudo` are suppressed automatically.
@@ -288,7 +309,7 @@ When running without root, the status bar displays a warning listing unavailable
 
 ## Backend Setup
 
-CoreCyclerLx supports three stress test backends. You need at least one installed to run tests. The Nix package bundles backends automatically (see [Installation](#installation)), but if you're running from source or want additional backends, follow the guides below.
+CoreCyclerLx supports four stress test backends. You need at least one installed to run tests. The Nix package bundles backends automatically (see [Installation](#installation)), but if you're running from source or want additional backends, follow the guides below.
 
 ### mprime (recommended for CO tuning)
 
@@ -381,6 +402,30 @@ y-cruncher is a multi-algorithm computational stress test. Useful as a secondary
 
 y-cruncher is not currently packaged in nixpkgs. If you need it on NixOS, install the binary manually to `~/.local/bin/`.
 
+### stressapptest (memory stress)
+
+[stressapptest](https://github.com/stressapptest/stressapptest) is Google's hardware stress test tool, designed to maximize randomized memory traffic to expose RAM errors. It is the fastest tool for finding DDR5 frequency/timing instability and memory controller issues.
+
+stressapptest is used in the **Memory tab** for dedicated memory stress testing (configurable 1–60 minute duration) and is also available as a stress backend for the per-core scheduler. In the scheduler, it runs indefinitely (the scheduler handles timing and termination).
+
+#### NixOS
+
+Bundled automatically in both `packages.default` and `packages.full`. No extra setup needed.
+
+#### Ubuntu / Debian
+
+```bash
+sudo apt install stressapptest
+```
+
+#### Arch Linux
+
+```bash
+sudo pacman -S stressapptest
+```
+
+Verify: `stressapptest --help`
+
 ### Backend comparison
 
 | Backend | License | Sensitivity | Best for | Bundled in Nix |
@@ -388,6 +433,7 @@ y-cruncher is not currently packaged in nixpkgs. If you need it on NixOS, instal
 | mprime | Unfree (free to use) | Highest | CO tuning, finding per-core limits | `packages.full` only |
 | stress-ng | GPL-2.0 | Medium | General stability, quick screening | Both variants |
 | y-cruncher | Freeware | Medium-High | Secondary validation, AVX-heavy loads | Not bundled |
+| stressapptest | Apache-2.0 | High (memory) | DDR5/RAM stability, memory controller errors | Both variants |
 
 ### ryzen_smu kernel module
 
