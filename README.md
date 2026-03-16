@@ -304,7 +304,8 @@ When running without root, the status bar displays a warning listing unavailable
 - **taskset** (from util-linux) -- CPU core pinning. Pre-installed on virtually all Linux distributions.
 - At least one stress test backend (see below)
 
-**Optional for Curve Optimizer features:**
+**Optional:**
+- **dmidecode** -- DIMM information (size, type, speed, manufacturer) in the Memory tab. Bundled in the Nix package. Requires root.
 - **ryzen_smu** kernel module ([amkillam fork](https://github.com/amkillam/ryzen_smu)) -- required for reading/writing CO values via SMU. Supports Zen 1 through Zen 5.
 
 ## Backend Setup
