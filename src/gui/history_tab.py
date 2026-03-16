@@ -1122,8 +1122,10 @@ class HistoryTab(QWidget):
             return
 
         for ctx_id in ctx_ids:
-            # Delete all runs for this context first
+            # Delete all associated records first (runs, tuner sessions + cascaded children)
             self._db._conn.execute("DELETE FROM runs WHERE context_id = ?", (ctx_id,))
+            # Tuner sessions reference context — delete them (CASCADE handles core_states/test_log)
+            self._db._conn.execute("DELETE FROM tuner_sessions WHERE context_id = ?", (ctx_id,))
             self._db._conn.execute("DELETE FROM tuning_contexts WHERE id = ?", (ctx_id,))
 
         self._refresh_preserve_context()
@@ -1152,6 +1154,8 @@ class HistoryTab(QWidget):
         for sid in session_ids:
             self._db.delete_tuner_session(sid)
 
+        # Clean up contexts that no longer have any runs or sessions
+        self._db.delete_orphaned_contexts()
         self._refresh_preserve_context()
 
     # ------------------------------------------------------------------
