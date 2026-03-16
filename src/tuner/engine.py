@@ -233,8 +233,21 @@ class TunerEngine(QObject):
         # Initialize core states
         cores = self._get_cores_to_test()
         self._core_states = {}
+
+        # Read current CO offsets from SMU if inheriting
+        current_offsets: dict[int, int] = {}
+        if self._config.inherit_current and self._smu is not None:
+            for core_id in cores:
+                val = self._smu.get_co_offset(core_id)
+                if val is not None:
+                    current_offsets[core_id] = val
+            self.log_message.emit(
+                f"Inherited current CO offsets from SMU: {current_offsets}"
+            )
+
         for core_id in cores:
-            cs = CoreState(core_id=core_id, current_offset=self._config.start_offset)
+            start = current_offsets.get(core_id, self._config.start_offset)
+            cs = CoreState(core_id=core_id, current_offset=start)
             self._core_states[core_id] = cs
             tp.save_core_state(self._db, self._session_id, cs)
 

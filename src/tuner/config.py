@@ -43,6 +43,9 @@ class TunerConfig:
     # Safety
     abort_on_consecutive_failures: int = 0  # 0 = disabled
 
+    # Inherit current CO offsets from SMU as starting point
+    inherit_current: bool = False
+
     def to_json(self) -> str:
         return json.dumps(asdict(self), separators=(",", ":"))
 
