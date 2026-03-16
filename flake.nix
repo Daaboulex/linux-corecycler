@@ -78,6 +78,7 @@
                     backends
                     ++ [
                       pkgs.util-linux # for taskset
+                      pkgs.dmidecode # for DIMM info in Memory tab
                     ]
                   )
                 }
