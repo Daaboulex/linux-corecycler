@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 DATA_DIR = Path.home() / ".local" / "share" / "corecyclerlx" / "history"
 DEFAULT_DB_PATH = DATA_DIR / "history.db"
@@ -144,7 +144,7 @@ class HistoryDB:
         )
         if cur.fetchone() is None:
             # Fresh database — create everything at current version
-            self._conn.executescript(self._DDL_V4)
+            self._conn.executescript(self._DDL_V5)
             return
 
         # Existing database — check version and migrate
@@ -160,13 +160,17 @@ class HistoryDB:
         if version < 4:
             self._conn.executescript(self._DDL_MIGRATE_V4)
             self._conn.execute("UPDATE schema_version SET version=4")
+            version = 4
+        if version < 5:
+            self._conn.executescript(self._DDL_MIGRATE_V5)
+            self._conn.execute("UPDATE schema_version SET version=5")
 
-    # Full schema for fresh databases (v4)
-    _DDL_V4 = """\
+    # Full schema for fresh databases (v5)
+    _DDL_V5 = """\
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
-INSERT OR IGNORE INTO schema_version (version) VALUES (4);
+INSERT OR IGNORE INTO schema_version (version) VALUES (5);
 
 CREATE TABLE IF NOT EXISTS tuning_contexts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,7 +180,8 @@ CREATE TABLE IF NOT EXISTS tuning_contexts (
     co_hash         TEXT    NOT NULL DEFAULT '',
     pbo_scalar      REAL,
     boost_limit_mhz INTEGER,
-    notes           TEXT    NOT NULL DEFAULT ''
+    notes           TEXT    NOT NULL DEFAULT '',
+    UNIQUE(co_hash, bios_version)
 );
 CREATE INDEX IF NOT EXISTS idx_context_hash ON tuning_contexts(co_hash, bios_version);
 
@@ -361,6 +366,17 @@ CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC);
     # Migration from v3 to v4 — add effective_max_mhz for clock stretch detection
     _DDL_MIGRATE_V4 = """\
 ALTER TABLE telemetry_samples ADD COLUMN effective_max_mhz REAL;
+"""
+
+    # Migration from v4 to v5 — deduplicate tuning contexts, add UNIQUE constraint
+    _DDL_MIGRATE_V5 = """\
+-- Deduplicate existing rows: keep the oldest (smallest id) for each (co_hash, bios_version)
+DELETE FROM tuning_contexts
+WHERE id NOT IN (
+    SELECT MIN(id) FROM tuning_contexts GROUP BY co_hash, bios_version
+);
+-- Add UNIQUE constraint via index (SQLite cannot ALTER TABLE ADD CONSTRAINT)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_hash, bios_version);
 """
 
     # ------------------------------------------------------------------
@@ -720,12 +736,16 @@ ALTER TABLE telemetry_samples ADD COLUMN effective_max_mhz REAL;
     # ------------------------------------------------------------------
 
     def create_context(self, ctx: TuningContextRecord) -> int:
-        """Insert a new tuning context. Returns the context id."""
+        """Insert a new tuning context. Returns the context id.
+
+        Uses INSERT OR IGNORE to handle races with concurrent instances
+        that may create the same (co_hash, bios_version) pair.
+        """
         if not ctx.created_at:
             ctx.created_at = self._now_iso()
         cur = self._conn.execute(
             """\
-            INSERT INTO tuning_contexts (
+            INSERT OR IGNORE INTO tuning_contexts (
                 created_at, bios_version, co_offsets_json, co_hash,
                 pbo_scalar, boost_limit_mhz, notes
             ) VALUES (?,?,?,?,?,?,?)
@@ -740,8 +760,16 @@ ALTER TABLE telemetry_samples ADD COLUMN effective_max_mhz REAL;
                 ctx.notes,
             ),
         )
-        ctx.id = cur.lastrowid
-        return ctx.id
+        if cur.lastrowid and cur.rowcount > 0:
+            ctx.id = cur.lastrowid
+            return ctx.id
+        # Row already existed (concurrent insert) — fetch it
+        existing = self.get_context_by_hash(ctx.co_hash, ctx.bios_version)
+        if existing:
+            ctx.id = existing.id
+            return existing.id
+        # Fallback (should not happen)
+        return cur.lastrowid
 
     def get_context(self, context_id: int) -> TuningContextRecord | None:
         row = self._conn.execute(

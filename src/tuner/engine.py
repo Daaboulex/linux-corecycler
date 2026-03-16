@@ -9,6 +9,7 @@ Test execution runs on a QThread so the GUI remains responsive.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -351,10 +352,14 @@ class TunerEngine(QObject):
     def abort(self) -> None:
         """Stop immediately, save state."""
         self._abort_requested = True
-        # Stop the running worker if any
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.terminate()
-            self._worker.wait(3000)
+        if self._worker is not None:
+            # Disconnect signal FIRST to prevent _on_test_finished firing during cleanup
+            with contextlib.suppress(RuntimeError):
+                self._worker.finished.disconnect(self._on_test_finished)
+            if self._worker.isRunning():
+                self._worker.terminate()
+                self._worker.wait(3000)
+            self._worker.deleteLater()
             self._worker = None
         self._set_status("idle")
         if self._session_id:
@@ -693,7 +698,7 @@ class TunerEngine(QObject):
                 self.log_message.emit(
                     f"Failed to set CO for core {core_id}: {e}"
                 )
-                self._on_test_finished(core_id, False, str(e), "", 0.0)
+                self._on_test_finished(core_id, False, str(e), "", 0.0, 0.0)
                 return
 
             if not success:
@@ -702,7 +707,7 @@ class TunerEngine(QObject):
                     f"at offset {cs.current_offset} — SMU did not apply the value"
                 )
                 self.log_message.emit(msg)
-                self._on_test_finished(core_id, False, msg, "co_write_failed", 0.0)
+                self._on_test_finished(core_id, False, msg, "co_write_failed", 0.0, 0.0)
                 return
 
         # Determine test duration based on phase
@@ -720,7 +725,7 @@ class TunerEngine(QObject):
         """Launch a _TunerWorker thread for the given core."""
         core_info = self._topology.cores.get(core_id)
         if not core_info:
-            self._on_test_finished(core_id, False, f"Core {core_id} not found", "", 0.0)
+            self._on_test_finished(core_id, False, f"Core {core_id} not found", "", 0.0, 0.0)
             return
 
         stress_config = StressConfig(
@@ -744,7 +749,7 @@ class TunerEngine(QObject):
                 work_dir=self._work_dir,
             )
         except Exception as e:
-            self._on_test_finished(core_id, False, str(e), "", 0.0)
+            self._on_test_finished(core_id, False, str(e), "", 0.0, 0.0)
             return
 
         logical_cpu = core_info.logical_cpus[0] if core_info.logical_cpus else core_id
@@ -764,7 +769,7 @@ class TunerEngine(QObject):
         error_msg: str,
         error_type: str,
         duration: float,
-        peak_stretch_pct: float = 0.0,
+        peak_stretch_pct: float,
     ) -> None:
         """Process test result — log, advance state machine, continue."""
         # Clean up worker reference
