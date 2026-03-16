@@ -132,10 +132,11 @@ class MemoryTab(QWidget):
         layout.addWidget(self._temp_group)
 
         self._dimm_table = QTableWidget()
-        self._dimm_table.setColumnCount(10)
+        self._dimm_table.setColumnCount(12)
         self._dimm_table.setHorizontalHeaderLabels([
-            "Slot", "Size", "Type", "Speed", "Configured",
-            "Manufacturer", "Part Number", "Rank", "Rated Voltage", "Width",
+            "Slot", "Size", "Type", "SPD Speed", "Running",
+            "Manufacturer", "Part Number", "Serial", "Rank",
+            "Form", "SPD Rated V", "Width",
         ])
         self._dimm_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
@@ -203,8 +204,13 @@ class MemoryTab(QWidget):
             speeds = set(d.configured_speed_mt for d in self._dimms if d.configured_speed_mt)
             type_str = "/".join(sorted(types)) if types else "Unknown"
             speed_str = "/".join(f"{s} MT/s" for s in sorted(speeds)) if speeds else ""
+            # Detect ECC: total_width > data_width means ECC bits present
+            has_ecc = any(d.total_width > d.data_width for d in self._dimms if d.total_width and d.data_width)
+            ecc_str = "ECC" if has_ecc else "Non-ECC"
+            rank_set = set(d.rank for d in self._dimms if d.rank)
+            rank_str = f"{max(rank_set)}R" if rank_set else ""
             self._summary_label.setText(
-                f"{len(self._dimms)} DIMMs | {total_gb} GB {type_str} {speed_str}"
+                f"{len(self._dimms)} DIMMs | {total_gb} GB {type_str} {speed_str} {ecc_str} {rank_str}".rstrip()
             )
         else:
             self._summary_label.setText(
@@ -244,7 +250,9 @@ class MemoryTab(QWidget):
                 f"{d.configured_speed_mt} MT/s" if d.configured_speed_mt else "-",
                 d.manufacturer,
                 d.part_number,
+                d.serial_number or "-",
                 str(d.rank) if d.rank else "-",
+                d.form_factor or "-",
                 f"{d.configured_voltage:.2f}V" if d.configured_voltage else "-",
                 f"{d.data_width}/{d.total_width} bit" if d.data_width else "-",
             ]
