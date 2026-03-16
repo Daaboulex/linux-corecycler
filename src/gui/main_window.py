@@ -38,6 +38,7 @@ from gui.monitor_tab import MonitorTab
 from gui.results_tab import ResultsTab
 from gui.smu_tab import SMUTab
 from gui.tuner_tab import TunerTab
+from gui.memory_tab import MemoryTab
 from gui.widgets.core_grid import CoreGridWidget
 from history.context import detect_bios_change
 from history.db import HistoryDB
@@ -189,6 +190,9 @@ class MainWindow(QMainWindow):
         if getattr(self, "_bios_changed", False):
             self._history_tab.set_bios_warning(self._bios_old, self._bios_current)
         self._tabs.addTab(self._history_tab, "History")
+
+        self._memory_tab = MemoryTab()
+        self._tabs.addTab(self._memory_tab, "Memory")
 
         main_layout.addWidget(self._tabs, stretch=2)
 
