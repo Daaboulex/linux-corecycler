@@ -71,6 +71,13 @@ class TestParseDmidecode:
     def test_no_memory_devices(self):
         assert parse_dmidecode_output("# dmidecode 3.6\nBIOS Information\n") == []
 
+    def test_dimm_with_mb_size(self):
+        """DIMMs reported in MB should still be parsed (rounded up to GB)."""
+        text = SAMPLE_DMIDECODE.replace("32 GB", "512 MB")
+        dimms = parse_dmidecode_output(text)
+        assert len(dimms) == 2
+        assert dimms[0].size_gb == 1  # 512MB rounds up to 1GB
+
 
 class TestSPD5118Reader:
     def test_finds_spd5118_devices(self, tmp_path):

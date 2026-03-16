@@ -217,6 +217,12 @@ class TunerEngine(QObject):
         self._paused = False
         self._consecutive_start_failures = 0
 
+        # Validate config
+        errors = self._config.validate()
+        if errors:
+            self.log_message.emit(f"Invalid tuner config: {'; '.join(errors)}")
+            return
+
         # Capture system context
         num_cores = len(self._topology.cores)
         ctx = capture_system_context(self._smu, num_cores)

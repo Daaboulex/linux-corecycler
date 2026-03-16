@@ -50,6 +50,7 @@ def parse_dmidecode_output(text: str) -> list[DIMMInfo]:
 
         size_str = fields.get("Size", "")
         size_gb = 0
+        size_mb = 0
         if "GB" in size_str:
             try:
                 size_gb = int(size_str.replace("GB", "").strip())
@@ -57,12 +58,13 @@ def parse_dmidecode_output(text: str) -> list[DIMMInfo]:
                 pass
         elif "MB" in size_str:
             try:
-                size_gb = int(size_str.replace("MB", "").strip()) // 1024
+                size_mb = int(size_str.replace("MB", "").strip())
+                size_gb = (size_mb + 1023) // 1024  # round up: 512MB→1GB
             except ValueError:
                 pass
 
-        if size_gb == 0:
-            continue
+        if size_gb == 0 and size_mb == 0:
+            continue  # truly empty slot
 
         speed = 0
         speed_str = fields.get("Speed", "")
@@ -152,7 +154,9 @@ class SPD5118Reader:
             if temp_file.exists():
                 try:
                     raw = int(temp_file.read_text().strip())
-                    temps.append(raw / 1000.0)
+                    temp_c = raw / 1000.0
+                    if -40.0 <= temp_c <= 125.0:  # SPD5118 sensor range
+                        temps.append(temp_c)
                 except (ValueError, OSError):
                     pass
         return temps
