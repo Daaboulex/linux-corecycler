@@ -155,7 +155,7 @@ class TunerEngine(QObject):
     # Signals
     core_state_changed = Signal(int, str, int)  # core_id, phase, offset
     test_completed = Signal(int, int, bool)  # core_id, offset, passed
-    session_completed = Signal(dict)  # {core_id: best_offset}
+    session_completed = Signal(str)  # JSON-encoded {core_id: best_offset}
     status_changed = Signal(str)  # global status
     progress_updated = Signal(int, int)  # cores_done, cores_total
     log_message = Signal(str)  # human-readable log entry
@@ -787,7 +787,8 @@ class TunerEngine(QObject):
         self.log_message.emit(
             f"Tuner complete — {len(profile)} cores confirmed"
         )
-        self.session_completed.emit(profile)
+        import json
+        self.session_completed.emit(json.dumps(profile))
 
     # ------------------------------------------------------------------
     # Helpers

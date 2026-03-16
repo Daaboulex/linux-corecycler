@@ -530,8 +530,10 @@ class TunerTab(QWidget):
         self._update_core_row(core_id)
         self._add_log_entry(core_id, offset, passed)
 
-    @Slot(dict)
-    def _on_session_completed(self, profile: dict) -> None:
+    @Slot(str)
+    def _on_session_completed(self, profile_json: str) -> None:
+        import json
+        profile = json.loads(profile_json) if profile_json else {}
         self._set_running_state(False)
         self._validate_btn.setEnabled(bool(profile))
         self._export_btn.setEnabled(bool(profile))
