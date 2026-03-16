@@ -510,6 +510,8 @@ class TunerEngine(QObject):
                 return self._pick_round_robin()
             case "weakest_first":
                 return self._pick_weakest_first()
+            case "ccd_alternating":
+                return self._pick_ccd_alternating()
             case _:
                 return self._pick_sequential()
 
@@ -557,6 +559,32 @@ class TunerEngine(QObject):
             return None
         candidates.sort()
         return candidates[0][1]
+
+    def _pick_ccd_alternating(self) -> int | None:
+        """Alternate between CCDs: picks from the CCD with fewest confirmed cores."""
+        ccd_cores: dict[int, list[int]] = {}
+        for core_id, cs in self._core_states.items():
+            if cs.phase == "confirmed":
+                continue
+            core_info = self._topology.cores.get(core_id)
+            ccd = core_info.ccd if core_info and core_info.ccd is not None else 0
+            ccd_cores.setdefault(ccd, []).append(core_id)
+
+        if not ccd_cores:
+            return None
+
+        for ccd in ccd_cores:
+            ccd_cores[ccd].sort()
+
+        ccd_confirmed: dict[int, int] = {}
+        for core_id, cs in self._core_states.items():
+            core_info = self._topology.cores.get(core_id)
+            ccd = core_info.ccd if core_info and core_info.ccd is not None else 0
+            if cs.phase == "confirmed":
+                ccd_confirmed[ccd] = ccd_confirmed.get(ccd, 0) + 1
+
+        sorted_ccds = sorted(ccd_cores.keys(), key=lambda c: ccd_confirmed.get(c, 0))
+        return ccd_cores[sorted_ccds[0]][0]
 
     # ------------------------------------------------------------------
     # Test execution

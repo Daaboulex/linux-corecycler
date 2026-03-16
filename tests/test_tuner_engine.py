@@ -424,6 +424,65 @@ class TestInheritCurrentCO:
         assert eng._core_states[1].current_offset == -5
 
 
+class TestCCDAlternatingOrder:
+    def test_alternates_between_ccds(self, db, topo_dual_ccd_x3d, mock_smu, mock_backend):
+        """CCD-alternating should pick from CCD0, then CCD1, then CCD0, etc."""
+        cfg = TunerConfig(
+            cores_to_test=[0, 1, 2, 3, 4, 5, 6, 7],
+            test_order="ccd_alternating",
+        )
+        eng = TunerEngine(
+            db=db, topology=topo_dual_ccd_x3d, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        eng._session_id = tp.create_session(db, cfg, "", "")
+        eng._core_states = {
+            i: CoreState(core_id=i, phase="coarse_search", current_offset=-5)
+            for i in range(8)
+        }
+
+        order = []
+        for _ in range(8):
+            picked = eng._pick_next_core()
+            if picked is None:
+                break
+            order.append(picked)
+            eng._core_states[picked] = CoreState(
+                core_id=picked, phase="confirmed", current_offset=-5, best_offset=-5,
+            )
+
+        # Verify alternation: consecutive picks should be from different CCDs
+        topo = topo_dual_ccd_x3d
+        for i in range(1, len(order)):
+            ccd_prev = topo.cores[order[i - 1]].ccd
+            ccd_curr = topo.cores[order[i]].ccd
+            if i < len(order) - 1:
+                assert ccd_prev != ccd_curr, (
+                    f"Picks {i-1} and {i} ({order[i-1]}, {order[i]}) "
+                    f"are both on CCD {ccd_curr}"
+                )
+
+    def test_falls_back_when_one_ccd_exhausted(self, db, topo_dual_ccd_x3d, mock_smu, mock_backend):
+        """When one CCD is all confirmed, pick remaining from the other."""
+        cfg = TunerConfig(
+            cores_to_test=[0, 1, 4, 5],
+            test_order="ccd_alternating",
+        )
+        eng = TunerEngine(
+            db=db, topology=topo_dual_ccd_x3d, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        eng._session_id = tp.create_session(db, cfg, "", "")
+        eng._core_states = {
+            0: CoreState(core_id=0, phase="coarse_search", current_offset=-5),
+            1: CoreState(core_id=1, phase="coarse_search", current_offset=-5),
+            4: CoreState(core_id=4, phase="confirmed", current_offset=-10, best_offset=-10),
+            5: CoreState(core_id=5, phase="confirmed", current_offset=-10, best_offset=-10),
+        }
+        picked = eng._pick_next_core()
+        assert picked in (0, 1)
+
+
 class TestExceedsMax:
     def test_negative_direction(self, db, simple_topology, mock_smu, mock_backend):
         cfg = TunerConfig(max_offset=-30, direction=-1)

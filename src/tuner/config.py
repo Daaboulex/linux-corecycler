@@ -32,7 +32,7 @@ class TunerConfig:
 
     # Behavior
     cores_to_test: list[int] | None = None  # None = all physical cores
-    test_order: str = "sequential"  # sequential, round_robin, weakest_first
+    test_order: str = "sequential"  # sequential, round_robin, weakest_first, ccd_alternating
     backend: str = "mprime"
     stress_mode: str = "SSE"
     fft_preset: str = "SMALL"
