@@ -36,8 +36,11 @@ class _StressWorker(QThread):
         super().__init__(parent)
         self._tool = tool
         self._duration = duration_minutes
+        self._process: subprocess.Popen | None = None
 
     def run(self) -> None:
+        import os
+        import signal as sig
         try:
             seconds = self._duration * 60
             if self._tool == "stressapptest":
@@ -48,17 +51,34 @@ class _StressWorker(QThread):
                 self.done.emit(False, f"Unknown tool: {self._tool}")
                 return
 
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=seconds + 60,
+            self._process = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, preexec_fn=os.setsid,
             )
+            try:
+                stdout, stderr = self._process.communicate(timeout=seconds + 60)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(self._process.pid), sig.SIGKILL)
+                stdout, stderr = self._process.communicate()
+
             if self._tool == "stressapptest":
-                passed = "Status: PASS" in result.stdout
+                passed = "Status: PASS" in stdout
             else:
-                passed = result.returncode in (0, -9, -15, 137, 143)
-            output = (result.stdout + result.stderr)[-500:]
+                passed = self._process.returncode in (0, -9, -15, 137, 143)
+            output = (stdout + stderr)[-500:]
             self.done.emit(passed, output)
         except Exception as e:
             self.done.emit(False, str(e))
+
+    def stop(self) -> None:
+        """Kill the running stress process and its children."""
+        import os
+        import signal as sig
+        if self._process and self._process.poll() is None:
+            try:
+                os.killpg(os.getpgid(self._process.pid), sig.SIGTERM)
+            except (OSError, ProcessLookupError):
+                pass
 
 
 class MemoryTab(QWidget):
@@ -224,6 +244,14 @@ class MemoryTab(QWidget):
         self._stress_worker = _StressWorker(tool, duration, parent=self)
         self._stress_worker.done.connect(self._on_stress_done)
         self._stress_worker.start()
+
+    def force_stop(self) -> None:
+        """Kill any running memory stress test."""
+        if self._stress_worker and self._stress_worker.isRunning():
+            self._stress_worker.stop()
+            self._stress_worker.wait(3000)
+            if self._stress_worker.isRunning():
+                self._stress_worker.terminate()
 
     @Slot(bool, str)
     def _on_stress_done(self, passed: bool, output: str) -> None:
