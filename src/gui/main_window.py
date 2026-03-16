@@ -184,6 +184,7 @@ class MainWindow(QMainWindow):
         smu = self._smu_tab.smu if hasattr(self._smu_tab, "smu") else None
         self._tuner_tab = TunerTab(self._history_db, self._topology, smu)
         self._tuner_tab.tuner_running_changed.connect(self._on_tuner_running_changed)
+        self._tuner_tab.tuner_core_testing.connect(self._on_tuner_core_update)
         self._tabs.addTab(self._tuner_tab, "Auto-Tuner")
 
         self._history_tab = HistoryTab(self._history_db)
@@ -518,6 +519,12 @@ class MainWindow(QMainWindow):
     def _on_tuner_running_changed(self, running: bool) -> None:
         """Mutual exclusion: disable manual test Start when tuner is active."""
         self._start_btn.setEnabled(not running)
+
+    @Slot(int, str)
+    def _on_tuner_core_update(self, core_id: int, state: str) -> None:
+        """Update core grid when auto-tuner changes core state."""
+        status = CoreTestStatus(core_id=core_id, state=state)
+        self._core_grid.update_core_status(core_id, status)
 
     def _update_elapsed(self) -> None:
         if not self._worker:

@@ -57,6 +57,7 @@ class TunerTab(QWidget):
 
     # Emitted when tuner starts/stops so MainWindow can disable manual test
     tuner_running_changed = Signal(bool)
+    tuner_core_testing = Signal(int, str)  # core_id, state ("testing"/"passed"/"failed"/etc)
 
     def __init__(
         self,
@@ -524,6 +525,18 @@ class TunerTab(QWidget):
     @Slot(int, str, int)
     def _on_core_state_changed(self, core_id: int, phase: str, offset: int) -> None:
         self._update_core_row(core_id)
+        # Map tuner phases to core grid visual states
+        phase_to_grid = {
+            "coarse_search": "testing",
+            "fine_search": "testing",
+            "confirming": "testing",
+            "confirmed": "passed",
+            "settled": "pending",
+            "failed_confirm": "failed",
+            "not_started": "pending",
+        }
+        grid_state = phase_to_grid.get(phase, "pending")
+        self.tuner_core_testing.emit(core_id, grid_state)
 
     @Slot(int, int, bool)
     def _on_test_completed(self, core_id: int, offset: int, passed: bool) -> None:
