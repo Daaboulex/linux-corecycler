@@ -821,10 +821,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
     # ------------------------------------------------------------------
 
     def delete_orphaned_contexts(self) -> int:
-        """Delete tuning contexts that have no associated runs. Returns count deleted."""
+        """Delete tuning contexts that have no associated runs or tuner sessions."""
         cursor = self._conn.execute(
             "DELETE FROM tuning_contexts WHERE id NOT IN "
-            "(SELECT DISTINCT context_id FROM runs WHERE context_id IS NOT NULL)"
+            "(SELECT DISTINCT context_id FROM runs WHERE context_id IS NOT NULL) "
+            "AND id NOT IN "
+            "(SELECT DISTINCT context_id FROM tuner_sessions WHERE context_id IS NOT NULL)"
         )
         return cursor.rowcount
 
