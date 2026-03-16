@@ -44,7 +44,10 @@ class _StressWorker(QThread):
         try:
             seconds = self._duration * 60
             if self._tool == "stressapptest":
-                cmd = ["stressapptest", "-W", "-s", str(seconds)]
+                # Limit to 75% of free memory to avoid "freepages < neededpages"
+                free_mb = _get_free_memory_mb()
+                mem_mb = max(256, int(free_mb * 0.75)) if free_mb else 1024
+                cmd = ["stressapptest", "-W", "-M", str(mem_mb), "-s", str(seconds)]
             elif self._tool == "stress-ng --vm":
                 cmd = ["stress-ng", "--vm", "1", "--vm-bytes", "75%", "--verify", "--timeout", f"{seconds}s"]
             else:
@@ -79,6 +82,18 @@ class _StressWorker(QThread):
                 os.killpg(os.getpgid(self._process.pid), sig.SIGTERM)
             except (OSError, ProcessLookupError):
                 pass
+
+
+def _get_free_memory_mb() -> int | None:
+    """Read available memory from /proc/meminfo in MB."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024  # kB → MB
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 class MemoryTab(QWidget):
@@ -120,7 +135,7 @@ class MemoryTab(QWidget):
         self._dimm_table.setColumnCount(10)
         self._dimm_table.setHorizontalHeaderLabels([
             "Slot", "Size", "Type", "Speed", "Configured",
-            "Manufacturer", "Part Number", "Rank", "Voltage", "Width",
+            "Manufacturer", "Part Number", "Rank", "Rated Voltage", "Width",
         ])
         self._dimm_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
@@ -151,6 +166,15 @@ class MemoryTab(QWidget):
         self._stress_btn = QPushButton("Run")
         self._stress_btn.clicked.connect(self._run_memory_stress)
         stress_layout.addWidget(self._stress_btn)
+
+        self._stop_btn = QPushButton("Stop")
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.setStyleSheet(
+            "QPushButton { background: #b71c1c; color: white; padding: 4px 10px; "
+            "border-radius: 3px; } QPushButton:disabled { background: #555; color: #888; }"
+        )
+        self._stop_btn.clicked.connect(self._stop_memory_stress)
+        stress_layout.addWidget(self._stop_btn)
 
         self._stress_status = QLabel("")
         stress_layout.addWidget(self._stress_status)
@@ -240,13 +264,22 @@ class MemoryTab(QWidget):
             return
         duration = self._stress_duration.value()
         self._stress_btn.setEnabled(False)
+        self._stop_btn.setEnabled(True)
+        self._stress_duration.setEnabled(False)
+        self._stress_tool.setEnabled(False)
         self._stress_status.setText(f"Running {tool} for {duration}min...")
         self._stress_worker = _StressWorker(tool, duration, parent=self)
         self._stress_worker.done.connect(self._on_stress_done)
         self._stress_worker.start()
 
+    def _stop_memory_stress(self) -> None:
+        """Stop the running memory stress test."""
+        if self._stress_worker and self._stress_worker.isRunning():
+            self._stress_status.setText("Stopping...")
+            self._stress_worker.stop()
+
     def force_stop(self) -> None:
-        """Kill any running memory stress test."""
+        """Kill any running memory stress test — called on app exit."""
         if self._stress_worker and self._stress_worker.isRunning():
             self._stress_worker.stop()
             self._stress_worker.wait(3000)
@@ -256,6 +289,9 @@ class MemoryTab(QWidget):
     @Slot(bool, str)
     def _on_stress_done(self, passed: bool, output: str) -> None:
         self._stress_btn.setEnabled(True)
+        self._stop_btn.setEnabled(False)
+        self._stress_duration.setEnabled(True)
+        self._stress_tool.setEnabled(True)
         status = "PASS" if passed else "FAIL"
         self._stress_status.setText(f"Result: {status}")
         QMessageBox.information(self, f"Memory Stress: {status}", output[-500:])
