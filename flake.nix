@@ -20,7 +20,7 @@
       system:
       let
         pkgs = import nixpkgs {
-          inherit system;
+          localSystem.system = system;
           config.allowUnfree = true;
         };
         python = pkgs.python312;
