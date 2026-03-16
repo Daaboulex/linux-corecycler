@@ -31,6 +31,7 @@
           {
             backends ? [
               pkgs.stress-ng
+              pkgs.stressapptest
             ],
             pnameSuffix ? "",
           }:
@@ -99,6 +100,7 @@
           backends = [
             pkgs.mprime
             pkgs.stress-ng
+            pkgs.stressapptest
           ];
         };
 
@@ -114,6 +116,7 @@
             pkgs.qt6.qtbase
             pkgs.mprime
             pkgs.stress-ng
+            pkgs.stressapptest
             pkgs.util-linux # taskset
           ];
 

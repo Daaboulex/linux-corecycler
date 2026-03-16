@@ -1,0 +1,174 @@
+"""Memory information tab — DIMM details and DDR5 temperature monitoring."""
+
+from __future__ import annotations
+
+import logging
+import shutil
+import subprocess
+
+from PySide6.QtCore import QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from monitor.memory import DIMMInfo, SPD5118Reader, read_dimm_info
+
+log = logging.getLogger(__name__)
+
+
+class _StressWorker(QThread):
+    """Runs stressapptest in background."""
+    done = Signal(bool, str)
+
+    def run(self) -> None:
+        try:
+            result = subprocess.run(
+                ["stressapptest", "-W", "-s", "300"],
+                capture_output=True, text=True, timeout=360,
+            )
+            passed = "Status: PASS" in result.stdout
+            self.done.emit(passed, result.stdout[-500:] if result.stdout else "")
+        except Exception as e:
+            self.done.emit(False, str(e))
+
+
+class MemoryTab(QWidget):
+    """Memory information tab showing DIMM details and live temperatures."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._dimms: list[DIMMInfo] = []
+        self._spd_reader = SPD5118Reader()
+        self._stress_worker: _StressWorker | None = None
+        self._setup_ui()
+        self._load_dimm_info()
+
+        if self._spd_reader.is_available():
+            self._temp_timer = QTimer(self)
+            self._temp_timer.timeout.connect(self._update_temperatures)
+            self._temp_timer.start(2000)
+
+    def _setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        self._summary_label = QLabel("Loading DIMM information...")
+        self._summary_label.setFont(QFont("monospace", 11, QFont.Weight.Bold))
+        layout.addWidget(self._summary_label)
+
+        self._temp_group = QGroupBox("DIMM Temperatures (SPD5118)")
+        temp_layout = QHBoxLayout(self._temp_group)
+        self._temp_labels: list[QLabel] = []
+        self._temp_group.setVisible(False)
+        layout.addWidget(self._temp_group)
+
+        self._dimm_table = QTableWidget()
+        self._dimm_table.setColumnCount(10)
+        self._dimm_table.setHorizontalHeaderLabels([
+            "Slot", "Size", "Type", "Speed", "Configured",
+            "Manufacturer", "Part Number", "Rank", "Voltage", "Width",
+        ])
+        self._dimm_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self._dimm_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        layout.addWidget(self._dimm_table)
+
+        btn_layout = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._load_dimm_info)
+        btn_layout.addWidget(refresh_btn)
+
+        self._stress_btn = QPushButton("Run Memory Stress (5 min)")
+        self._stress_btn.setToolTip(
+            "Run stressapptest for 5 minutes to check memory stability.\n"
+            "Uses write-after-read verification to detect errors."
+        )
+        self._stress_btn.clicked.connect(self._run_memory_stress)
+        btn_layout.addWidget(self._stress_btn)
+
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+    def _load_dimm_info(self) -> None:
+        self._dimms = read_dimm_info()
+        self._populate_table()
+
+        if self._dimms:
+            total_gb = sum(d.size_gb for d in self._dimms)
+            types = set(d.mem_type for d in self._dimms)
+            speeds = set(d.configured_speed_mt for d in self._dimms if d.configured_speed_mt)
+            type_str = "/".join(sorted(types)) if types else "Unknown"
+            speed_str = "/".join(f"{s} MT/s" for s in sorted(speeds)) if speeds else ""
+            self._summary_label.setText(
+                f"{len(self._dimms)} DIMMs | {total_gb} GB {type_str} {speed_str}"
+            )
+        else:
+            self._summary_label.setText(
+                "No DIMM info available (dmidecode requires root)"
+            )
+
+        if self._spd_reader.is_available():
+            temps = self._spd_reader.read_temperatures()
+            self._temp_group.setVisible(True)
+            temp_layout = self._temp_group.layout()
+            for lbl in self._temp_labels:
+                lbl.deleteLater()
+            self._temp_labels.clear()
+            for i, temp in enumerate(temps):
+                lbl = QLabel(f"DIMM {i}: {temp:.1f}C")
+                lbl.setFont(QFont("monospace", 10))
+                lbl.setStyleSheet("padding: 4px;")
+                temp_layout.addWidget(lbl)
+                self._temp_labels.append(lbl)
+
+    def _populate_table(self) -> None:
+        self._dimm_table.setRowCount(len(self._dimms))
+        for row, d in enumerate(self._dimms):
+            items = [
+                f"{d.locator} ({d.bank_locator})" if d.bank_locator else d.locator,
+                f"{d.size_gb} GB",
+                d.mem_type,
+                f"{d.speed_mt} MT/s" if d.speed_mt else "-",
+                f"{d.configured_speed_mt} MT/s" if d.configured_speed_mt else "-",
+                d.manufacturer,
+                d.part_number,
+                str(d.rank) if d.rank else "-",
+                f"{d.configured_voltage:.2f}V" if d.configured_voltage else "-",
+                f"{d.data_width}/{d.total_width} bit" if d.data_width else "-",
+            ]
+            for col, text in enumerate(items):
+                self._dimm_table.setItem(row, col, QTableWidgetItem(text))
+
+    def _update_temperatures(self) -> None:
+        temps = self._spd_reader.read_temperatures()
+        for i, temp in enumerate(temps):
+            if i < len(self._temp_labels):
+                self._temp_labels[i].setText(f"DIMM {i}: {temp:.1f}C")
+
+    def _run_memory_stress(self) -> None:
+        if not shutil.which("stressapptest"):
+            QMessageBox.warning(self, "Not Found", "stressapptest is not installed or not on PATH.")
+            return
+        self._stress_btn.setEnabled(False)
+        self._stress_btn.setText("Running...")
+        self._stress_worker = _StressWorker(parent=self)
+        self._stress_worker.done.connect(self._on_stress_done)
+        self._stress_worker.start()
+
+    @Slot(bool, str)
+    def _on_stress_done(self, passed: bool, output: str) -> None:
+        self._stress_btn.setEnabled(True)
+        self._stress_btn.setText("Run Memory Stress (5 min)")
+        status = "PASS" if passed else "FAIL"
+        QMessageBox.information(self, f"Memory Stress: {status}", output[-500:])

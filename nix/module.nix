@@ -91,6 +91,12 @@ in
       description = "Whether to load the in-tree cpuid module. Exposes /dev/cpu/*/cpuid for CPUID leaf access. Useful for CPU topology and feature detection.";
     };
 
+    spd5118 = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Whether to load spd5118 and i2c_dev modules for DDR5 DIMM temperature monitoring via the SPD5118 hub chip.";
+    };
+
     # --- Device access ---
 
     deviceAccess = lib.mkOption {
@@ -136,7 +142,11 @@ in
     ++ lib.optional cfg.coretemp "coretemp"
     ++ lib.optional cfg.nct6775 "nct6775"
     ++ lib.optional cfg.it87 "it87"
-    ++ lib.optional cfg.cpuid "cpuid";
+    ++ lib.optional cfg.cpuid "cpuid"
+    ++ lib.optionals cfg.spd5118 [
+      "i2c_dev"
+      "spd5118"
+    ];
 
     # Out-of-tree kernel modules — custom derivations that build with
     # clang for CachyOS LTO kernels, gcc otherwise
