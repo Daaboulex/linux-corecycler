@@ -187,6 +187,7 @@ class TunerEngine(QObject):
         self._consecutive_start_failures = 0
         self._worker: _TunerWorker | None = None
         self._last_tested_core: int | None = None
+        self._ccd_last_tested: dict[int, int | None] = {}  # CCD index → last core_id tested in that CCD
 
         # Clamp max_offset to CPU generation range
         if smu is not None:
@@ -593,10 +594,9 @@ class TunerEngine(QObject):
     def _pick_ccd_round_robin(self) -> int | None:
         """Round-robin with CCD interleaving — one test per core, alternating CCDs.
 
-        Gives each core cool-down time between tests and alternates CCDs
-        for thermal diversity. Order: CCD0 core, CCD1 core, CCD0 core...
+        Order: CCD0[0]→CCD1[0]→CCD0[1]→CCD1[1]→CCD0[2]→CCD1[2]...
+        Each core gets cool-down time between tests.
         """
-        # Group active cores by CCD
         ccd_cores: dict[int, list[int]] = {}
         for core_id, cs in self._core_states.items():
             if cs.phase == "confirmed":
@@ -612,24 +612,28 @@ class TunerEngine(QObject):
             ccd_cores[ccd].sort()
 
         sorted_ccds = sorted(ccd_cores.keys())
+
         if len(sorted_ccds) < 2:
-            # Single CCD — fall back to round-robin
             return self._pick_round_robin()
 
-        # Determine which CCD to pick from based on last tested core
+        # Pick CCD: alternate from last tested core's CCD
         if self._last_tested_core is not None:
             last_info = self._topology.cores.get(self._last_tested_core)
             last_ccd = last_info.ccd if last_info and last_info.ccd is not None else 0
-            # Pick from a DIFFERENT CCD
             other_ccds = [c for c in sorted_ccds if c != last_ccd and c in ccd_cores]
-            if other_ccds:
-                target_ccd = other_ccds[0]
-            else:
-                target_ccd = sorted_ccds[0]
+            target_ccd = other_ccds[0] if other_ccds else sorted_ccds[0]
         else:
             target_ccd = sorted_ccds[0]
 
-        return ccd_cores[target_ccd][0]
+        cores = ccd_cores[target_ccd]
+
+        # Within this CCD, rotate from last tested position
+        last_in_ccd = self._ccd_last_tested.get(target_ccd)
+        if last_in_ccd is not None and last_in_ccd in cores:
+            idx = cores.index(last_in_ccd)
+            rotated = cores[idx + 1:] + cores[:idx + 1]
+            return rotated[0]
+        return cores[0]
 
     # ------------------------------------------------------------------
     # Test execution
@@ -665,6 +669,10 @@ class TunerEngine(QObject):
             self._advance_core(core_id, passed=False)  # → confirming
             cs = self._core_states[core_id]
         self._last_tested_core = core_id
+        # Track per-CCD position for ccd_round_robin
+        core_info = self._topology.cores.get(core_id)
+        if core_info and core_info.ccd is not None:
+            self._ccd_last_tested[core_info.ccd] = core_id
         self._emit_progress()
         self.log_message.emit(
             f"Testing core {core_id} at offset {cs.current_offset} "

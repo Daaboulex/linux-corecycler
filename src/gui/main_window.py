@@ -185,6 +185,7 @@ class MainWindow(QMainWindow):
         self._tuner_tab = TunerTab(self._history_db, self._topology, smu)
         self._tuner_tab.tuner_running_changed.connect(self._on_tuner_running_changed)
         self._tuner_tab.tuner_core_testing.connect(self._on_tuner_core_update)
+        self._tuner_tab.tuner_core_elapsed.connect(self._on_tuner_core_elapsed)
         self._tabs.addTab(self._tuner_tab, "Auto-Tuner")
 
         self._history_tab = HistoryTab(self._history_db)
@@ -525,6 +526,12 @@ class MainWindow(QMainWindow):
     def _on_tuner_core_update(self, core_id: int, state: str) -> None:
         """Update core grid when auto-tuner changes core state."""
         status = CoreTestStatus(core_id=core_id, state=state)
+        self._core_grid.update_core_status(core_id, status)
+
+    @Slot(int, float)
+    def _on_tuner_core_elapsed(self, core_id: int, elapsed: float) -> None:
+        """Update core grid with live elapsed time during tuner tests."""
+        status = CoreTestStatus(core_id=core_id, state="testing", elapsed_seconds=elapsed)
         self._core_grid.update_core_status(core_id, status)
 
     @Slot(int)

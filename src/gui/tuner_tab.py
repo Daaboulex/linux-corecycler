@@ -6,7 +6,7 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -58,6 +58,7 @@ class TunerTab(QWidget):
     # Emitted when tuner starts/stops so MainWindow can disable manual test
     tuner_running_changed = Signal(bool)
     tuner_core_testing = Signal(int, str)  # core_id, state ("testing"/"passed"/"failed"/etc)
+    tuner_core_elapsed = Signal(int, float)  # core_id, elapsed_seconds
 
     def __init__(
         self,
@@ -75,6 +76,11 @@ class TunerTab(QWidget):
         self._engine: TunerEngine | None = None
         self._selected_core: int | None = None
         self._pending_resume_id: int | None = None
+
+        self._tuner_timer = QTimer(self)
+        self._tuner_timer.timeout.connect(self._tick_tuner)
+        self._active_test_core: int | None = None
+        self._test_start_time: float = 0
 
         self._setup_ui()
         self._check_resume()
@@ -439,6 +445,10 @@ class TunerTab(QWidget):
         self._set_running_state(True)
         self._engine.start()
 
+        # Initialize table with all cores
+        for core_id in self._engine.core_states:
+            self._update_core_row(core_id)
+
     def _on_pause(self) -> None:
         if self._engine:
             self._engine.pause()
@@ -486,6 +496,10 @@ class TunerTab(QWidget):
         self._pending_resume_id = None
         self._set_running_state(True)
         self._engine.resume(resume_id)
+
+        # Initialize table with all cores
+        for core_id in self._engine.core_states:
+            self._update_core_row(core_id)
 
     def _on_abort(self) -> None:
         if self._engine:
@@ -545,6 +559,16 @@ class TunerTab(QWidget):
         grid_state = phase_to_grid.get(phase, "pending")
         self.tuner_core_testing.emit(core_id, grid_state)
 
+        # Track active test for elapsed timer
+        if grid_state == "testing":
+            import time
+            self._active_test_core = core_id
+            self._test_start_time = time.monotonic()
+            if not self._tuner_timer.isActive():
+                self._tuner_timer.start(1000)
+        elif core_id == self._active_test_core:
+            self._active_test_core = None
+
     @Slot(int, int, bool)
     def _on_test_completed(self, core_id: int, offset: int, passed: bool) -> None:
         self._update_core_row(core_id)
@@ -569,6 +593,14 @@ class TunerTab(QWidget):
     @Slot(str)
     def _on_log_message(self, msg: str) -> None:
         log.info("[tuner] %s", msg)
+
+    def _tick_tuner(self) -> None:
+        if self._active_test_core is not None:
+            import time
+            elapsed = time.monotonic() - self._test_start_time
+            self.tuner_core_elapsed.emit(self._active_test_core, elapsed)
+        elif self._engine is None or self._engine.status == "idle":
+            self._tuner_timer.stop()
 
     # ------------------------------------------------------------------
     # Table updates
