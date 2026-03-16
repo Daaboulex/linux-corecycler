@@ -186,6 +186,7 @@ class TunerEngine(QObject):
         self._abort_requested = False
         self._consecutive_start_failures = 0
         self._worker: _TunerWorker | None = None
+        self._last_tested_core: int | None = None
 
         # Clamp max_offset to CPU generation range
         if smu is not None:
@@ -500,53 +501,44 @@ class TunerEngine(QObject):
                 return self._pick_sequential()
 
     def _pick_sequential(self) -> int | None:
-        """Finish each core completely before moving to next."""
+        """Finish each core completely before moving to next (pure selector)."""
+        # Pass 1: active phases (not confirmed, not settled)
         for core_id in sorted(self._core_states.keys()):
             cs = self._core_states[core_id]
             if cs.phase not in ("confirmed", "settled"):
-                if cs.phase == "not_started":
-                    self._advance_core(core_id, passed=False)  # trigger first step
                 return core_id
-        # Check for settled cores that need confirmation
+        # Pass 2: settled cores needing confirmation
         for core_id in sorted(self._core_states.keys()):
             cs = self._core_states[core_id]
             if cs.phase == "settled":
-                self._advance_core(core_id, passed=False)  # trigger settled→confirming
-                if cs.phase == "confirming":
-                    return core_id
-        return None
-
-    def _pick_round_robin(self) -> int | None:
-        """Cycle through all cores, one test each per round."""
-        active = [
-            cid for cid, cs in sorted(self._core_states.items())
-            if cs.phase not in ("confirmed",)
-        ]
-        if not active:
-            return None
-        for core_id in active:
-            cs = self._core_states[core_id]
-            if cs.phase == "not_started":
-                self._advance_core(core_id, passed=False)
-            if cs.phase == "settled":
-                self._advance_core(core_id, passed=False)
-            if cs.phase not in ("confirmed",):
                 return core_id
         return None
 
+    def _pick_round_robin(self) -> int | None:
+        """Cycle through all cores, one test each per round (pure selector)."""
+        active = sorted(
+            cid for cid, cs in self._core_states.items()
+            if cs.phase not in ("confirmed",)
+        )
+        if not active:
+            return None
+        if self._last_tested_core is not None and self._last_tested_core in active:
+            idx = active.index(self._last_tested_core)
+            rotated = active[idx + 1:] + active[:idx + 1]
+            return rotated[0]
+        return active[0]
+
     def _pick_weakest_first(self) -> int | None:
-        """Prioritize cores closest to settling."""
+        """Prioritize cores closest to settling (pure selector)."""
         candidates = []
         for core_id, cs in self._core_states.items():
-            if cs.phase == "not_started":
-                self._advance_core(core_id, passed=False)
-            if cs.phase == "settled":
-                self._advance_core(core_id, passed=False)
-            if cs.phase in ("confirmed",):
+            if cs.phase == "confirmed":
                 continue
-            # Score: fine_search > coarse_search > confirming
-            score = {"fine_search": 0, "confirming": 1, "coarse_search": 2,
-                     "failed_confirm": 0}.get(cs.phase, 3)
+            score = {
+                "fine_search": 0, "failed_confirm": 0,
+                "confirming": 1, "coarse_search": 2,
+                "settled": 3, "not_started": 4,
+            }.get(cs.phase, 5)
             candidates.append((score, core_id))
         if not candidates:
             return None
@@ -580,6 +572,13 @@ class TunerEngine(QObject):
             return
 
         cs = self._core_states[core_id]
+        if cs.phase == "not_started":
+            self._advance_core(core_id, passed=False)  # → coarse_search
+            cs = self._core_states[core_id]
+        elif cs.phase == "settled":
+            self._advance_core(core_id, passed=False)  # → confirming
+            cs = self._core_states[core_id]
+        self._last_tested_core = core_id
         self._emit_progress()
         self.log_message.emit(
             f"Testing core {core_id} at offset {cs.current_offset} "

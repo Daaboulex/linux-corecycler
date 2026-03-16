@@ -306,6 +306,88 @@ class TestPickNextCore:
         assert picked is None
 
 
+class TestPickFunctionsPure:
+    """Verify pick functions are pure selectors — no state mutation."""
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=5, fine_step=1, max_offset=-30, cores_to_test=[0, 1, 2])
+        defaults.update(cfg_kwargs)
+        cfg = TunerConfig(**defaults)
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        eng._session_id = tp.create_session(db, cfg, "", "")
+        return eng
+
+    def test_sequential_does_not_advance_not_started(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, test_order="sequential")
+        eng._core_states = {
+            0: CoreState(core_id=0, phase="not_started"),
+            1: CoreState(core_id=1, phase="not_started"),
+        }
+        picked = eng._pick_next_core()
+        assert picked == 0
+        assert eng._core_states[0].phase == "not_started"
+
+    def test_sequential_does_not_advance_settled(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, test_order="sequential")
+        eng._core_states = {
+            0: CoreState(core_id=0, phase="confirmed"),
+            1: CoreState(core_id=1, phase="settled", current_offset=-8, best_offset=-8),
+        }
+        picked = eng._pick_next_core()
+        assert picked == 1
+        assert eng._core_states[1].phase == "settled"
+
+    def test_round_robin_does_not_advance(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, test_order="round_robin")
+        eng._core_states = {
+            0: CoreState(core_id=0, phase="not_started"),
+            1: CoreState(core_id=1, phase="settled", current_offset=-8, best_offset=-8),
+            2: CoreState(core_id=2, phase="coarse_search", current_offset=-5),
+        }
+        eng._pick_next_core()
+        assert eng._core_states[0].phase == "not_started"
+        assert eng._core_states[1].phase == "settled"
+
+    def test_weakest_first_does_not_advance(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, test_order="weakest_first")
+        eng._core_states = {
+            0: CoreState(core_id=0, phase="not_started"),
+            1: CoreState(core_id=1, phase="fine_search", current_offset=-6, best_offset=-5, coarse_fail_offset=-10),
+        }
+        picked = eng._pick_next_core()
+        assert picked == 1  # fine_search scores 0, not_started scores 4
+        assert eng._core_states[0].phase == "not_started"
+
+    def test_round_robin_rotates(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, test_order="round_robin")
+        eng._core_states = {
+            0: CoreState(core_id=0, phase="coarse_search", current_offset=-5),
+            1: CoreState(core_id=1, phase="coarse_search", current_offset=-5),
+            2: CoreState(core_id=2, phase="coarse_search", current_offset=-5),
+        }
+        # No last tested — should pick first active
+        picked = eng._pick_next_core()
+        assert picked == 0
+
+        # After testing core 0, should pick core 1
+        eng._last_tested_core = 0
+        picked = eng._pick_next_core()
+        assert picked == 1
+
+        # After testing core 1, should pick core 2
+        eng._last_tested_core = 1
+        picked = eng._pick_next_core()
+        assert picked == 2
+
+        # After testing core 2, should wrap back to core 0
+        eng._last_tested_core = 2
+        picked = eng._pick_next_core()
+        assert picked == 0
+
+
 class TestExceedsMax:
     def test_negative_direction(self, db, simple_topology, mock_smu, mock_backend):
         cfg = TunerConfig(max_offset=-30, direction=-1)
