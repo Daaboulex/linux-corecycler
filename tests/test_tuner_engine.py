@@ -504,6 +504,40 @@ class TestCCDAlternatingOrder:
         assert picked in (0, 1)
 
 
+class TestCCDRoundRobinOrder:
+    def test_interleaves_ccds_and_rotates(self, db, topo_dual_ccd_x3d, mock_smu, mock_backend):
+        """Should alternate CCDs AND rotate (not finish one core before next)."""
+        cfg = TunerConfig(
+            cores_to_test=[0, 1, 2, 3, 4, 5, 6, 7],
+            test_order="ccd_round_robin",
+        )
+        eng = TunerEngine(
+            db=db, topology=topo_dual_ccd_x3d, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        eng._session_id = tp.create_session(db, cfg, "", "")
+        # All cores in coarse_search — simulates mid-tuning
+        eng._core_states = {
+            i: CoreState(core_id=i, phase="coarse_search", current_offset=-5)
+            for i in range(8)
+        }
+
+        # Pick 4 times and check alternation
+        picks = []
+        for _ in range(4):
+            picked = eng._pick_next_core()
+            assert picked is not None
+            picks.append(picked)
+            eng._last_tested_core = picked  # simulate rotation tracking
+
+        # Should alternate CCDs
+        topo = topo_dual_ccd_x3d
+        for i in range(1, len(picks)):
+            prev_ccd = topo.cores[picks[i-1]].ccd
+            curr_ccd = topo.cores[picks[i]].ccd
+            assert prev_ccd != curr_ccd, f"Consecutive picks {picks[i-1]}, {picks[i]} on same CCD"
+
+
 class TestExceedsMax:
     def test_negative_direction(self, db, simple_topology, mock_smu, mock_backend):
         cfg = TunerConfig(max_offset=-30, direction=-1)

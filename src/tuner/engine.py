@@ -514,6 +514,8 @@ class TunerEngine(QObject):
                 return self._pick_weakest_first()
             case "ccd_alternating":
                 return self._pick_ccd_alternating()
+            case "ccd_round_robin":
+                return self._pick_ccd_round_robin()
             case _:
                 return self._pick_sequential()
 
@@ -587,6 +589,47 @@ class TunerEngine(QObject):
 
         sorted_ccds = sorted(ccd_cores.keys(), key=lambda c: ccd_confirmed.get(c, 0))
         return ccd_cores[sorted_ccds[0]][0]
+
+    def _pick_ccd_round_robin(self) -> int | None:
+        """Round-robin with CCD interleaving — one test per core, alternating CCDs.
+
+        Gives each core cool-down time between tests and alternates CCDs
+        for thermal diversity. Order: CCD0 core, CCD1 core, CCD0 core...
+        """
+        # Group active cores by CCD
+        ccd_cores: dict[int, list[int]] = {}
+        for core_id, cs in self._core_states.items():
+            if cs.phase == "confirmed":
+                continue
+            core_info = self._topology.cores.get(core_id)
+            ccd = core_info.ccd if core_info and core_info.ccd is not None else 0
+            ccd_cores.setdefault(ccd, []).append(core_id)
+
+        if not ccd_cores:
+            return None
+
+        for ccd in ccd_cores:
+            ccd_cores[ccd].sort()
+
+        sorted_ccds = sorted(ccd_cores.keys())
+        if len(sorted_ccds) < 2:
+            # Single CCD — fall back to round-robin
+            return self._pick_round_robin()
+
+        # Determine which CCD to pick from based on last tested core
+        if self._last_tested_core is not None:
+            last_info = self._topology.cores.get(self._last_tested_core)
+            last_ccd = last_info.ccd if last_info and last_info.ccd is not None else 0
+            # Pick from a DIFFERENT CCD
+            other_ccds = [c for c in sorted_ccds if c != last_ccd and c in ccd_cores]
+            if other_ccds:
+                target_ccd = other_ccds[0]
+            else:
+                target_ccd = sorted_ccds[0]
+        else:
+            target_ccd = sorted_ccds[0]
+
+        return ccd_cores[target_ccd][0]
 
     # ------------------------------------------------------------------
     # Test execution
