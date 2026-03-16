@@ -78,6 +78,13 @@ class TestParseDmidecode:
         assert len(dimms) == 2
         assert dimms[0].size_gb == 1  # 512MB rounds up to 1GB
 
+    def test_dimm_with_gib_format(self):
+        """dmidecode 3.7+ uses GiB instead of GB."""
+        text = SAMPLE_DMIDECODE.replace("32 GB", "16 GiB")
+        dimms = parse_dmidecode_output(text)
+        assert len(dimms) == 2
+        assert dimms[0].size_gb == 16
+
 
 class TestSPD5118Reader:
     def test_finds_spd5118_devices(self, tmp_path):
