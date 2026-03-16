@@ -51,17 +51,16 @@ def parse_dmidecode_output(text: str) -> list[DIMMInfo]:
         size_str = fields.get("Size", "")
         size_gb = 0
         size_mb = 0
-        if "GB" in size_str:
-            try:
-                size_gb = int(size_str.replace("GB", "").strip())
-            except ValueError:
-                pass
-        elif "MB" in size_str:
-            try:
-                size_mb = int(size_str.replace("MB", "").strip())
-                size_gb = (size_mb + 1023) // 1024  # round up: 512MB→1GB
-            except ValueError:
-                pass
+        # dmidecode 3.6 uses "GB"/"MB", dmidecode 3.7+ uses "GiB"/"MiB"
+        size_num = re.match(r"(\d+)\s*(GiB|GB|MiB|MB)", size_str)
+        if size_num:
+            val = int(size_num.group(1))
+            unit = size_num.group(2)
+            if unit in ("GB", "GiB"):
+                size_gb = val
+            elif unit in ("MB", "MiB"):
+                size_mb = val
+                size_gb = (val + 1023) // 1024
 
         if size_gb == 0 and size_mb == 0:
             continue  # truly empty slot
@@ -116,8 +115,13 @@ def read_dimm_info() -> list[DIMMInfo]:
             ["dmidecode", "-t", "memory"],
             capture_output=True, text=True, timeout=5,
         )
-        if result.returncode == 0:
-            return parse_dmidecode_output(result.stdout)
+        if result.returncode != 0:
+            log.warning("dmidecode exited with code %d: %s", result.returncode, result.stderr.strip())
+        # Parse even on non-zero exit — some systems return 1 but still output data
+        dimms = parse_dmidecode_output(result.stdout)
+        if not dimms and result.stdout:
+            log.debug("dmidecode produced output but no DIMMs parsed (stdout length: %d)", len(result.stdout))
+        return dimms
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
         log.debug("dmidecode not available: %s", e)
     return []
