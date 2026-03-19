@@ -29,11 +29,11 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### Memory Diagnostics
 
-- [ ] **MEM-01**: Memory tab displays FCLK, UCLK, MCLK from ryzen_smu PM table with 1:1 vs 1:2 ratio indicator
-- [ ] **MEM-02**: Memory tab displays actual running VDD/VDDQ voltage (from PM table, not SPD default 1.10V)
+- [x] **MEM-01**: Memory tab displays FCLK, UCLK, MCLK from ryzen_smu PM table with 1:1 vs 1:2 ratio indicator
+- [x] **MEM-02**: Memory tab displays actual running VDD/VDDQ voltage (from PM table, not SPD default 1.10V)
 - [ ] **MEM-03**: Memory tab displays DDR5 primary timings (tCL, tRCD, tRP, tRAS, tRC) from SPD EEPROM
 - [ ] **MEM-04**: Memory tab displays DDR5 secondary timings (tRFC1, tRFCsb, tWR, tRRDS, tRRDL, tFAW, tREFI) from SPD EEPROM
-- [ ] **MEM-05**: PM table parsing is version-aware (dispatches to correct offset map based on pm_table_version)
+- [x] **MEM-05**: PM table parsing is version-aware (dispatches to correct offset map based on pm_table_version)
 - [ ] **MEM-06**: DIMM temperature display updates in real-time during stress tests (not just on manual refresh)
 - [ ] **MEM-07**: Memory info layout fits properly without column truncation (visible in current UI)
 
@@ -83,11 +83,11 @@ Deferred to future milestone. Tracked but not in current roadmap.
 | HIST-02 | Phase 5 | Pending |
 | HIST-03 | Phase 5 | Pending |
 | HIST-04 | Phase 5 | Pending |
-| MEM-01 | Phase 3 | Pending |
-| MEM-02 | Phase 3 | Pending |
+| MEM-01 | Phase 3 | Complete |
+| MEM-02 | Phase 3 | Complete |
 | MEM-03 | Phase 4 | Pending |
 | MEM-04 | Phase 4 | Pending |
-| MEM-05 | Phase 3 | Pending |
+| MEM-05 | Phase 3 | Complete |
 | MEM-06 | Phase 3 | Pending |
 | MEM-07 | Phase 4 | Pending |
 | UI-01 | Phase 6 | Pending |

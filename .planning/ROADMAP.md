@@ -60,11 +60,11 @@ Plans:
   2. Memory tab shows actual running VDD and VDDQ voltages (not the SPD default 1.10V)
   3. PM table parser checks pm_table_version before decoding and shows "uncalibrated" state for unknown versions (no silent garbage data)
   4. DIMM temperature readings update in real-time during stress tests without requiring manual refresh
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 03-01: TBD
-- [ ] 03-02: TBD
+- [ ] 03-01-PLAN.md -- Version-aware PM table parsing: PMTableOffsets registry, version dispatch, memory clock/voltage fields
+- [ ] 03-02-PLAN.md -- Memory Controller QGroupBox, unified 1s timer, graceful degradation for unknown versions and missing driver
 
 ### Phase 4: SPD Timings & Memory UI
 **Goal**: Memory tab displays DDR5 timing parameters decoded from SPD EEPROM with a clean, untruncated layout
@@ -116,7 +116,7 @@ Note: Phases 3-4 (memory) and Phase 5 (history) are independent tracks. Phase 5 
 |-------|----------------|--------|-----------|
 | 1. Core Engine Fixes | 2/2 | Complete | 2026-03-19 |
 | 2. Process & Thread Lifecycle | 0/2 | Not started | - |
-| 3. PM Table Clocks & Voltages | 0/? | Not started | - |
+| 3. PM Table Clocks & Voltages | 0/2 | Not started | - |
 | 4. SPD Timings & Memory UI | 0/? | Not started | - |
 | 5. History & Database Integrity | 0/? | Not started | - |
 | 6. UI Data Consistency | 0/? | Not started | - |
