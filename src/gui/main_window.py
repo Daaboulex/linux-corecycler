@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import time
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -57,7 +59,7 @@ class TestWorker(QThread):
     core_finished = Signal(int, object)  # core_id, StressResult
     status_updated = Signal(int, object)  # core_id, CoreTestStatus
     cycle_completed = Signal(int)
-    test_completed = Signal(dict)
+    test_completed = Signal(str)  # JSON-encoded results — avoids PySide6 dict marshalling crash
 
     def __init__(self, scheduler: CoreScheduler) -> None:
         super().__init__()
@@ -68,7 +70,14 @@ class TestWorker(QThread):
         self.scheduler.on_core_finish = [lambda cid, res: self.core_finished.emit(cid, res)]
         self.scheduler.on_status_update = [lambda cid, st: self.status_updated.emit(cid, st)]
         self.scheduler.on_cycle_complete = [lambda cyc: self.cycle_completed.emit(cyc)]
-        self.scheduler.on_test_complete = [lambda res: self.test_completed.emit(res)]
+        self.scheduler.on_test_complete = [
+            lambda res: self.test_completed.emit(
+                json.dumps({
+                    str(k): [asdict(r) for r in v]
+                    for k, v in res.items()
+                })
+            )
+        ]
 
     def run(self) -> None:
         self.scheduler.run()
@@ -466,10 +475,16 @@ class MainWindow(QMainWindow):
     def _on_cycle_completed(self, cycle: int) -> None:
         self._status_msg.setText(f"Cycle {cycle + 1} complete")
 
-    @Slot(dict)
-    def _on_test_completed(self, results: dict) -> None:
+    @Slot(str)
+    def _on_test_completed(self, results_json: str) -> None:
+        results = json.loads(results_json)
+        # Keys are stringified core_ids, values are lists of result dicts
         total = len(results)
-        passed = sum(1 for r_list in results.values() if r_list and all(r.passed for r in r_list))
+        passed = sum(
+            1
+            for r_list in results.values()
+            if r_list and all(r["passed"] for r in r_list)
+        )
         failed = total - passed
         elapsed = time.monotonic() - self._test_start_time
 
@@ -485,9 +500,9 @@ class MainWindow(QMainWindow):
 
         # enable "Retest Failed" button with the list of failed cores
         failed_cores = [
-            cid
+            int(cid)
             for cid, r_list in results.items()
-            if r_list and not all(r.passed for r in r_list)
+            if r_list and not all(r["passed"] for r in r_list)
         ]
         self._config_tab.set_failed_cores(failed_cores)
 
