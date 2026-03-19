@@ -163,6 +163,7 @@ class PMTableData:
     mclk_mhz: float = 0.0
     vddcr_soc_v: float = 0.0
     vdd_mem_v: float = 0.0
+    vddq_v: float = 0.0
     pm_table_version: int = 0
     is_calibrated: bool = False
 
@@ -280,6 +281,8 @@ class PMTableReader:
         data.vddcr_soc_v = _read_float(raw, offsets.vddcr_soc)
         if offsets.vdd_mem >= 0:
             data.vdd_mem_v = _read_float(raw, offsets.vdd_mem)
+        if offsets.vdd_misc >= 0:
+            data.vddq_v = _read_float(raw, offsets.vdd_misc)
 
     def _parse_granite_ridge(self, data: PMTableData, floats: list[float]) -> None:
         """Parse PM table with Granite Ridge (Zen 5) approximate offsets."""
