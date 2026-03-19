@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: phase-complete
-stopped_at: Completed 01-01-PLAN.md (all Phase 01 plans done)
-last_updated: "2026-03-19T13:49:14Z"
+status: unknown
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-03-19T14:12:16.392Z"
 progress:
   total_phases: 6
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 4
+  completed_plans: 3
 ---
 
 # Project State
@@ -19,30 +19,31 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-19)
 
 **Core value:** Every per-core stress test result must be accurate and trustworthy
-**Current focus:** Phase 01 — core-engine-fixes
+**Current focus:** Phase 02 — process-thread-lifecycle
 
 ## Current Position
 
-Phase: 01 (core-engine-fixes) — COMPLETE
+Phase: 02 (process-thread-lifecycle) — EXECUTING
 Plan: 2 of 2
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 2
+- Total plans completed: 3
 - Average duration: 4min
-- Total execution time: 0.13 hours
+- Total execution time: 0.18 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-core-engine-fixes | 2 | 8min | 4min |
+| 02-process-thread-lifecycle | 1 | 3min | 3min |
 
 **Recent Trend:**
 
-- Last 5 plans: 3min, 5min
+- Last 5 plans: 3min, 5min, 3min
 - Trend: stable
 
 *Updated after each plan completion*
@@ -60,6 +61,8 @@ Recent decisions affecting current work:
 - [Phase 01]: Signal(str) JSON marshalling pattern for all cross-thread PySide6 signals carrying complex data
 - [Phase 01]: proc_base kwarg pattern for testable /proc access without global Path mocking
 - [Phase 01]: Stall baseline reset at grace period end -- startup time never counts toward stall timeout
+- [Phase 02]: _make_preexec pattern: all subprocess.Popen calls must use combined setsid+PR_SET_PDEATHSIG preexec_fn
+- [Phase 02]: Independent try/except blocks for multi-subsystem cleanup -- one failure cannot cascade
 
 ### Pending Todos
 
@@ -72,6 +75,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T13:49:14Z
-Stopped at: Completed 01-01-PLAN.md (Phase 01 fully complete)
+Last session: 2026-03-19T14:12:16.391Z
+Stopped at: Completed 02-01-PLAN.md
 Resume file: None
