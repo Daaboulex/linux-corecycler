@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import struct
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,66 @@ class DIMMInfo:
     max_voltage: float = 0.0
     data_width: int = 0
     total_width: int = 0
+
+
+DDR5_ROUNDING_FACTOR = 30  # picoseconds tolerance per JEDEC
+
+
+@dataclass(frozen=True, slots=True)
+class SPDTimingData:
+    """DDR5 timing parameters decoded from SPD EEPROM."""
+
+    tCK_ps: int = 0
+    freq_mt: int = 0
+    tCL: int = 0
+    tRCD: int = 0
+    tRP: int = 0
+    tRAS: int = 0
+    tRC: int = 0
+    tWR_ns: float = 0.0
+    tRFC1_ns: int = 0
+    tRFCsb_ns: int = 0
+    dimm_index: int = 0
+
+
+def decode_spd_timings(data: bytes, dimm_index: int = 0) -> SPDTimingData | None:
+    """Decode DDR5 SPD primary and secondary timings from raw EEPROM bytes.
+
+    Returns None if data is too short, not DDR5, or has zero clock period.
+    """
+    if len(data) < 48:
+        return None
+    if data[2] != 0x12:  # DDR5 type identifier
+        return None
+
+    tCK_ps = struct.unpack_from('<H', data, 20)[0]
+    if tCK_ps == 0:
+        return None
+
+    freq_mt = int((1.0 / tCK_ps * 2e6 + 50) / 100) * 100
+
+    def _ps_to_ck(ps_val: int) -> int:
+        return (ps_val + tCK_ps - DDR5_ROUNDING_FACTOR) // tCK_ps
+
+    tCL = _ps_to_ck(struct.unpack_from('<H', data, 30)[0])
+    tCL += tCL % 2  # round to next even per JEDEC
+    tRCD = _ps_to_ck(struct.unpack_from('<H', data, 32)[0])
+    tRP = _ps_to_ck(struct.unpack_from('<H', data, 34)[0])
+    tRAS = _ps_to_ck(struct.unpack_from('<H', data, 36)[0])
+    tRC = _ps_to_ck(struct.unpack_from('<H', data, 38)[0])
+
+    tWR_ps = struct.unpack_from('<H', data, 40)[0]
+    tWR_ns = tWR_ps / 1000.0
+
+    tRFC1_ns = struct.unpack_from('<H', data, 42)[0]
+    tRFCsb_ns = struct.unpack_from('<H', data, 46)[0]
+
+    return SPDTimingData(
+        tCK_ps=tCK_ps, freq_mt=freq_mt,
+        tCL=tCL, tRCD=tRCD, tRP=tRP, tRAS=tRAS, tRC=tRC,
+        tWR_ns=tWR_ns, tRFC1_ns=tRFC1_ns, tRFCsb_ns=tRFCsb_ns,
+        dimm_index=dimm_index,
+    )
 
 
 def parse_dmidecode_output(text: str) -> list[DIMMInfo]:

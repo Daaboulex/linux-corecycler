@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from monitor.memory import DIMMInfo, parse_dmidecode_output, SPD5118Reader
+from monitor.memory import DIMMInfo, parse_dmidecode_output, SPD5118Reader, SPDTimingData, decode_spd_timings
 from smu.pmtable import PMTableData, compute_fclk_uclk_ratio
 
 SAMPLE_DMIDECODE = """\
@@ -330,3 +330,97 @@ class TestMemoryTabBehavior:
         tab._update_live_data()
         assert "2000" in tab._fclk_label.text()
         assert "Verified" in tab._cal_label.text()
+
+
+import struct
+
+
+def _make_ddr5_4800_eeprom() -> bytes:
+    """Build a synthetic 48-byte DDR5-4800 EEPROM for testing."""
+    data = bytearray(48)
+    data[2] = 0x12  # DDR5
+    struct.pack_into('<H', data, 20, 416)    # tCK = 416ps (DDR5-4800)
+    struct.pack_into('<H', data, 30, 16666)  # tCL
+    struct.pack_into('<H', data, 32, 16666)  # tRCD
+    struct.pack_into('<H', data, 34, 16666)  # tRP
+    struct.pack_into('<H', data, 36, 32000)  # tRAS
+    struct.pack_into('<H', data, 38, 48666)  # tRC
+    struct.pack_into('<H', data, 40, 30000)  # tWR
+    struct.pack_into('<H', data, 42, 295)    # tRFC1 (ns)
+    struct.pack_into('<H', data, 44, 160)    # tRFC2 (ns) - in data but not decoded
+    struct.pack_into('<H', data, 46, 130)    # tRFCsb (ns)
+    return bytes(data)
+
+
+class TestSPDTimingDecode:
+    def test_primary_timings_ddr5_4800(self):
+        """DDR5-4800 EEPROM returns correct primary timings in clock cycles."""
+        eeprom = _make_ddr5_4800_eeprom()
+        result = decode_spd_timings(eeprom)
+        assert result is not None
+        assert result.tCL == 40
+        assert result.tRCD == 40
+        assert result.tRP == 40
+        assert result.tRAS == 77
+        assert result.tRC == 117
+
+    def test_secondary_timings_ddr5_4800(self):
+        """DDR5-4800 EEPROM returns correct secondary timings."""
+        eeprom = _make_ddr5_4800_eeprom()
+        result = decode_spd_timings(eeprom)
+        assert result is not None
+        assert result.tRFC1_ns == 295
+        assert result.tRFCsb_ns == 130
+        assert result.tWR_ns == 30.0
+
+    def test_freq_mt_ddr5_4800(self):
+        """DDR5-4800 tCK_ps=416 yields freq_mt=4800."""
+        eeprom = _make_ddr5_4800_eeprom()
+        result = decode_spd_timings(eeprom)
+        assert result is not None
+        assert result.freq_mt == 4800
+
+    def test_non_ddr5_returns_none(self):
+        """Non-DDR5 EEPROM (byte 2 != 0x12) returns None."""
+        data = bytearray(48)
+        data[2] = 0x0C  # DDR4 type
+        assert decode_spd_timings(bytes(data)) is None
+
+    def test_short_data_returns_none(self):
+        """Data shorter than 48 bytes returns None."""
+        assert decode_spd_timings(b"\x00" * 47) is None
+
+    def test_zero_tck_returns_none(self):
+        """Zero tCK_ps (bytes 20-21 = 0) returns None."""
+        data = bytearray(48)
+        data[2] = 0x12  # DDR5
+        # bytes 20-21 default to 0 — zero tCK
+        assert decode_spd_timings(bytes(data)) is None
+
+    def test_tcl_rounds_to_even(self):
+        """tCL rounds to next even number per JEDEC convention."""
+        data = bytearray(48)
+        data[2] = 0x12
+        # Use tCK=500ps so we can control rounding
+        struct.pack_into('<H', data, 20, 500)  # tCK = 500ps
+        # Set tCL to a value that gives an odd number of cycles
+        # (14750 + 500 - 30) // 500 = 15220 // 500 = 30 (even, stays 30)
+        # (15250 + 500 - 30) // 500 = 15720 // 500 = 31 (odd, rounds to 32)
+        struct.pack_into('<H', data, 30, 15250)  # tCL -> 31 -> rounds to 32
+        struct.pack_into('<H', data, 32, 15250)  # tRCD
+        struct.pack_into('<H', data, 34, 15250)  # tRP
+        struct.pack_into('<H', data, 36, 15250)  # tRAS
+        struct.pack_into('<H', data, 38, 15250)  # tRC
+        struct.pack_into('<H', data, 40, 15000)  # tWR
+        struct.pack_into('<H', data, 42, 200)    # tRFC1
+        struct.pack_into('<H', data, 46, 100)    # tRFCsb
+        result = decode_spd_timings(bytes(data))
+        assert result is not None
+        assert result.tCL == 32  # odd 31 rounded up to even 32
+
+    def test_dimm_index_passed_through(self):
+        """dimm_index parameter is preserved in result."""
+        eeprom = _make_ddr5_4800_eeprom()
+        result = decode_spd_timings(eeprom, dimm_index=3)
+        assert result is not None
+        assert result.dimm_index == 3
