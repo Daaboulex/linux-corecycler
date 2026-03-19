@@ -4,7 +4,7 @@ Per-core CPU stress testing and AMD PBO Curve Optimizer tuning for Linux.
 
 ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue)
 ![License GPL-3.0](https://img.shields.io/badge/License-GPL--3.0--or--later-green)
-![Version 0.0.1-dev](https://img.shields.io/badge/Version-0.0.1--dev-orange)
+![Version 1.0](https://img.shields.io/badge/Version-1.0-brightgreen)
 ![Linux only](https://img.shields.io/badge/Platform-Linux-yellow)
 
 > **Development status:** CoreCyclerLx is actively developed and tested on an **AMD Ryzen 9 9950X3D** (Zen 5, dual-CCD X3D, AM5). Other AMD Ryzen processors (Zen 2–5) should work but have not been tested as thoroughly. Intel CPUs are supported for stress testing only (no Curve Optimizer). If you encounter issues on other hardware, please [open an issue](https://github.com/Daaboulex/corecyclerlx/issues) with your CPU model and description.
@@ -42,9 +42,9 @@ CO instability often manifests at idle or during load transitions, not under sus
 - **Automated PBO Curve Optimizer tuner** -- coarse-to-fine search algorithm that finds optimal per-core CO values automatically; crash-safe SQLite persistence (WAL mode) resumes exactly where it left off after reboot or crash; configurable search parameters with best-practice defaults; **inherit current CO** option reads existing SMU offsets as starting points for incremental tuning
 - **Five tuner test orderings**: sequential (finish each core), round_robin (cycle one test per core), weakest_first (prioritize cores nearest to settling), **ccd_alternating** (alternate between CCDs for thermal coverage), and **ccd_round_robin** (rotate one test per core across CCDs — gives each core cool-down time between tests, catches cold-boot and thermal transition failures)
 - **Tuner state machine** -- 7 phases per core: not_started → coarse_search → fine_search → settled → confirming → confirmed (or failed_confirm → back off). Clock stretch detection (APERF/MPERF) during tuner tests with configurable threshold — marks test as FAIL even if stress passed when voltage droop is detected
-- **Memory information tab** -- displays per-DIMM details (size, type, speed, manufacturer, part number, rank, voltage) via dmidecode; live DDR5 DIMM temperature monitoring via SPD5118 hwmon; configurable memory stress testing (1–60 minutes) with tool selection (stressapptest or stress-ng --vm); dependency status display showing available tools and drivers
+- **Memory information tab** -- displays per-DIMM details (size, type, speed, manufacturer, part number, rank, voltage) via dmidecode; **Memory Controller group box** showing live FCLK/UCLK/MCLK frequencies and FCLK:UCLK ratio indicator (green for 1:1 coupled, amber for decoupled) from ryzen_smu PM table with version-aware parsing; live VDD voltage from PM table (not the SPD default 1.10V); **SPD Timings group box** showing DDR5 primary timings (tCL-tRCD-tRP-tRAS-tRC in clock cycles) and secondary timings (tRFC1, tRFCsb, tWR in nanoseconds) decoded from SPD EEPROM via spd5118 sysfs; live DDR5 DIMM temperature monitoring via SPD5118 hwmon; configurable memory stress testing (1–60 minutes) with tool selection (stressapptest or stress-ng --vm); dependency status display showing available tools and drivers; PM table version displayed with "Verified" or "Uncalibrated" status for unknown versions
 - **Tuner session history** -- the History tab's "Tuner Sessions" view shows all past auto-tuner sessions with date, status, CPU, core count, confirmed count, duration, and BIOS info; clicking a session reveals per-core state details and the complete test log; sessions can be deleted individually; detail sections stay hidden until a session is selected to avoid wasted space
-- **History management** -- grouped view with tuning context detection (BIOS + CO snapshot), run comparison, context deletion, orphan cleanup, BIOS change detection with visual indicators
+- **History management** -- grouped view with tuning context detection (BIOS + CO snapshot), run comparison, context deletion, orphan cleanup, BIOS change detection with visual indicators; SQL-based summary counters (Completed/Crashed/Stopped) that correctly aggregate all sessions; automatic stale session recovery on startup (sessions left "Running" from a crash are marked "Crashed" with per-session logging)
 
 ## Screenshots
 
@@ -124,7 +124,7 @@ If you have PBO values already set in BIOS, those are your baseline. The stress 
 
 ### Process cleanup
 
-Stress test processes are launched in their own process group (`setsid`). On stop, the scheduler sends SIGTERM to the entire process group, waits 3 seconds, then escalates to SIGKILL if needed. No zombie processes are left behind. Closing the application window while a test is running prompts for confirmation and performs the same cleanup.
+Stress test processes are launched in their own process group (`setsid`) with `PR_SET_PDEATHSIG(SIGKILL)` — if the parent process dies unexpectedly, the kernel automatically kills the stress process (no orphans). On stop, the scheduler sends SIGTERM to the entire process group, waits 3 seconds, then escalates to SIGKILL if needed. No zombie processes are left behind. Closing the application window while a test is running prompts for confirmation and performs the same cleanup. QThread workers use a graceful `force_stop()` → `terminate()` shutdown escalation.
 
 ### Thermal safety
 
@@ -662,11 +662,12 @@ src/
   smu/
     commands.py              # SMU command IDs per CPU generation (14 gens, Zen 1 through Zen 5), CO argument encoding/decoding
     driver.py                # ryzen_smu sysfs interface (CO, PBO limits, boost, scalar, system state)
-    pmtable.py               # PM table reading
+    pmtable.py               # Version-aware PM table parsing: FCLK/UCLK/MCLK, voltages, ratio computation (Zen 2–5 offset registry)
   monitor/
     hwmon.py                 # k10temp/zenpower/zenpower5/coretemp: Tctl, Tdie, Tccd temps, Vcore, Vsoc; Super I/O fallback (Nuvoton/ITE) for Zen 5 Vcore
     cpu_usage.py             # Per-logical-CPU usage % from /proc/stat (delta-based)
     frequency.py             # Per-core frequency monitoring (sysfs cpufreq), actual + boost ceiling
+    memory.py                # DIMM info (dmidecode), SPD5118 hwmon temps, DDR5 SPD EEPROM timing decode
     power.py                 # Package power (RAPL sysfs preferred, hwmon zenpower/zenpower5/k10temp fallback)
     msr.py                   # MSR reader (root): APERF/MPERF clock stretch, per-core RAPL power
   history/
@@ -689,6 +690,7 @@ src/
     monitor_tab.py           # Live temperature, voltage, frequency charts
     smu_tab.py               # Curve Optimizer read/write interface with backup/restore and dry-run
     tuner_tab.py             # Auto-Tuner UI: config panel, core status table, test log, controls
+    memory_tab.py            # Memory tab: PM table clocks/voltages, SPD timings, DIMM info, temps, stress test
     history_tab.py           # History tab: test run log and tuner session browser with per-core detail view
     widgets/
       core_grid.py           # CCD-aware visual core grid with per-core status coloring
@@ -705,7 +707,9 @@ tests/
   test_backends.py           # Backend command generation and output parsing
   test_monitor.py            # Hardware monitoring (hwmon, frequency, power, Super I/O fallback)
   test_msr.py                # MSR reader: clock stretch, per-core power, availability
-  test_pmtable.py            # PM table reading
+  test_pmtable.py            # PM table version dispatch, clock/voltage parsing, ratio computation
+  test_memory_monitor.py     # SPD timing decode, EEPROM discovery, MemoryTab behavioral tests
+  test_ui_consistency.py     # CoreGridWidget telemetry, MonitorTab staleness, poll interval
   test_history_db.py         # SQLite history database: schema, migrations, queries
   test_history_context.py    # Tuning context detection and grouping
   test_history_logger.py     # TestRunLogger integration
