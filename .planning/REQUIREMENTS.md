@@ -35,7 +35,7 @@ Requirements for this milestone. Each maps to roadmap phases.
 - [x] **MEM-04**: Memory tab displays DDR5 secondary timings (tRFC1, tRFCsb, tWR) from SPD EEPROM
 - [x] **MEM-05**: PM table parsing is version-aware (dispatches to correct offset map based on pm_table_version)
 - [x] **MEM-06**: DIMM temperature display updates in real-time during stress tests (not just on manual refresh)
-- [ ] **MEM-07**: Memory info layout fits properly without column truncation (visible in current UI)
+- [x] **MEM-07**: Memory info layout fits properly without column truncation (visible in current UI)
 
 ### UI Robustness
 
@@ -91,7 +91,7 @@ Deferred to future milestone. Tracked but not in current roadmap.
 | MEM-04 | Phase 4 | Complete |
 | MEM-05 | Phase 3 | Complete |
 | MEM-06 | Phase 3 | Complete |
-| MEM-07 | Phase 4 | Pending |
+| MEM-07 | Phase 4 | Complete |
 | UI-01 | Phase 6 | Pending |
 | UI-02 | Phase 6 | Pending |
 
