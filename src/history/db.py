@@ -1035,13 +1035,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         """Delete a tuner session and all related records (CASCADE)."""
         self.__conn.execute("DELETE FROM tuner_sessions WHERE id=?", (session_id,))
 
-    def recover_incomplete_runs(self) -> int:
-        """Mark any 'running' runs as 'crashed'. Returns count recovered."""
-        cur = self.__conn.execute(
-            "UPDATE runs SET status='crashed', finished_at=? WHERE status='running'",
-            (self._now_iso(),),
-        )
-        return cur.rowcount
+    def recover_incomplete_runs(self) -> list[tuple[int, str]]:
+        """Mark any 'running' runs as 'crashed'. Returns list of (id, started_at) recovered."""
+        stale = self.__conn.execute(
+            "SELECT id, started_at FROM runs WHERE status='running'"
+        ).fetchall()
+        if stale:
+            self.__conn.execute(
+                "UPDATE runs SET status='crashed', finished_at=? WHERE status='running'",
+                (self._now_iso(),),
+            )
+        return [(r["id"], r["started_at"]) for r in stale]
 
     def purge_before(self, iso_date: str) -> int:
         """Delete all runs started before the given ISO date. Returns count deleted."""

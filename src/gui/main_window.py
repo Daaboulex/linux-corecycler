@@ -107,7 +107,8 @@ class MainWindow(QMainWindow):
                 self._history_db = HistoryDB()
                 recovered = self._history_db.recover_incomplete_runs()
                 if recovered:
-                    log.info("Recovered %d incomplete run(s) marked as crashed", recovered)
+                    for run_id, started_at in recovered:
+                        log.info("Recovered stale session id=%d started_at=%s, marked as crashed", run_id, started_at)
                 # Purge old runs
                 if self._settings.history_retention_days > 0:
                     cutoff = datetime.now(timezone.utc) - timedelta(
