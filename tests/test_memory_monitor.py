@@ -424,3 +424,71 @@ class TestSPDTimingDecode:
         result = decode_spd_timings(eeprom, dimm_index=3)
         assert result is not None
         assert result.dimm_index == 3
+
+
+class TestSPDEepromDiscovery:
+    def _make_hwmon_with_eeprom(self, tmp_path, eeprom_data: bytes | None = None):
+        """Create hwmon dir with device symlink to i2c dir containing eeprom."""
+        import os
+
+        hwmon0 = tmp_path / "hwmon0"
+        hwmon0.mkdir()
+        (hwmon0 / "name").write_text("spd5118\n")
+        (hwmon0 / "temp1_input").write_text("42500\n")
+
+        i2c_dir = tmp_path / "i2c-device"
+        i2c_dir.mkdir()
+
+        if eeprom_data is not None:
+            (i2c_dir / "eeprom").write_bytes(eeprom_data)
+
+        os.symlink(str(i2c_dir), str(hwmon0 / "device"))
+        return hwmon0, i2c_dir
+
+    def test_discovers_eeprom_via_device_symlink(self, tmp_path):
+        """SPD5118Reader discovers eeprom path via hwmon device symlink."""
+        self._make_hwmon_with_eeprom(tmp_path, _make_ddr5_4800_eeprom())
+        reader = SPD5118Reader(hwmon_base=tmp_path)
+        assert len(reader._eeprom_paths) == 1
+
+    def test_spd_timings_returns_data(self, tmp_path):
+        """spd_timings property returns SPDTimingData from first available eeprom."""
+        self._make_hwmon_with_eeprom(tmp_path, _make_ddr5_4800_eeprom())
+        reader = SPD5118Reader(hwmon_base=tmp_path)
+        result = reader.spd_timings
+        assert result is not None
+        assert isinstance(result, SPDTimingData)
+        assert result.tCL == 40
+        assert result.freq_mt == 4800
+
+    def test_spd_timings_none_when_no_eeprom(self, tmp_path):
+        """spd_timings returns None when no eeprom paths found."""
+        hwmon0 = tmp_path / "hwmon0"
+        hwmon0.mkdir()
+        (hwmon0 / "name").write_text("spd5118\n")
+        (hwmon0 / "temp1_input").write_text("42500\n")
+        # No device symlink -> no eeprom
+        reader = SPD5118Reader(hwmon_base=tmp_path)
+        assert reader.spd_timings is None
+
+    def test_spd_timings_none_when_non_ddr5(self, tmp_path):
+        """spd_timings returns None when eeprom contains non-DDR5 data."""
+        non_ddr5 = bytearray(48)
+        non_ddr5[2] = 0x0C  # DDR4
+        self._make_hwmon_with_eeprom(tmp_path, bytes(non_ddr5))
+        reader = SPD5118Reader(hwmon_base=tmp_path)
+        assert reader.spd_timings is None
+
+    def test_spd_timings_cached(self, tmp_path):
+        """spd_timings caches result (eeprom read only once)."""
+        _, i2c_dir = self._make_hwmon_with_eeprom(tmp_path, _make_ddr5_4800_eeprom())
+        reader = SPD5118Reader(hwmon_base=tmp_path)
+
+        # First access reads eeprom
+        result1 = reader.spd_timings
+        assert result1 is not None
+
+        # Remove eeprom file -- second access should still return cached result
+        (i2c_dir / "eeprom").unlink()
+        result2 = reader.spd_timings
+        assert result2 is result1  # exact same object (cached)
