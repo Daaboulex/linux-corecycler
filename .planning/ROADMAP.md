@@ -117,8 +117,8 @@ Note: Phases 3-4 (memory) and Phase 5 (history) are independent tracks. Phase 5 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Core Engine Fixes | 2/2 | Complete | 2026-03-19 |
-| 2. Process & Thread Lifecycle | 0/2 | Not started | - |
-| 3. PM Table Clocks & Voltages | 0/2 | Not started | - |
-| 4. SPD Timings & Memory UI | 0/2 | Not started | - |
-| 5. History & Database Integrity | 0/2 | Not started | - |
-| 6. UI Data Consistency | 0/2 | Not started | - |
+| 2. Process & Thread Lifecycle | 2/2 | Complete | 2026-03-19 |
+| 3. PM Table Clocks & Voltages | 2/2 | Complete | 2026-03-19 |
+| 4. SPD Timings & Memory UI | 2/2 | Complete | 2026-03-19 |
+| 5. History & Database Integrity | 2/2 | Complete | 2026-03-19 |
+| 6. UI Data Consistency | 2/2 | Complete | 2026-03-19 |
