@@ -24,10 +24,12 @@ from PySide6.QtWidgets import (
 )
 
 from config.settings import load_settings
-from monitor.memory import DIMMInfo, SPD5118Reader, read_dimm_info
+from monitor.memory import DIMMInfo, SPD5118Reader, SPDTimingData, read_dimm_info
 from smu.pmtable import PMTableReader, compute_fclk_uclk_ratio
 
 log = logging.getLogger(__name__)
+
+PART_NUMBER_COL = 6
 
 
 class _StressWorker(QThread):
@@ -143,6 +145,7 @@ class MemoryTab(QWidget):
         self._stress_worker: _StressWorker | None = None
         self._setup_ui()
         self._load_dimm_info()
+        self._update_spd_labels()
 
         # Unified timer for PM table + DIMM temperature polling
         self._update_timer = QTimer(self)
@@ -211,6 +214,21 @@ class MemoryTab(QWidget):
 
         layout.addWidget(self._mc_group)
 
+        # SPD Timings group box (DDR5 EEPROM data, cached at startup)
+        self._spd_group = QGroupBox("SPD Timings (DDR5)")
+        spd_layout = QVBoxLayout(self._spd_group)
+        self._primary_label = QLabel("Primary: --")
+        self._primary_label.setFont(QFont("monospace", 10))
+        self._secondary_label = QLabel("Secondary: --")
+        self._secondary_label.setFont(QFont("monospace", 10))
+        self._spd_unavailable_label = QLabel("")
+        self._spd_unavailable_label.setStyleSheet("color: #888; font: 10px monospace; padding: 4px;")
+        self._spd_unavailable_label.setVisible(False)
+        spd_layout.addWidget(self._primary_label)
+        spd_layout.addWidget(self._secondary_label)
+        spd_layout.addWidget(self._spd_unavailable_label)
+        layout.addWidget(self._spd_group)
+
         self._summary_label = QLabel("Loading DIMM information...")
         self._summary_label.setFont(QFont("monospace", 11, QFont.Weight.Bold))
         layout.addWidget(self._summary_label)
@@ -233,9 +251,9 @@ class MemoryTab(QWidget):
             "Manufacturer", "Part Number", "Serial", "Rank",
             "Form", "SPD Rated V", "Width",
         ])
-        self._dimm_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
+        header = self._dimm_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(PART_NUMBER_COL, QHeaderView.ResizeMode.Stretch)
         self._dimm_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self._dimm_table)
 
@@ -334,6 +352,36 @@ class MemoryTab(QWidget):
         deps.append("spd5118: " + ("available" if self._spd_reader.is_available() else "not loaded"))
         deps.append("ryzen_smu: " + ("available" if self._pm_reader.is_available() else "not loaded"))
         self._deps_label.setText("  |  ".join(deps))
+
+    def _update_spd_labels(self) -> None:
+        """Populate SPD timing labels from cached EEPROM data."""
+        spd = self._spd_reader.spd_timings
+        if spd is None:
+            self._primary_label.setVisible(False)
+            self._secondary_label.setVisible(False)
+            self._spd_unavailable_label.setText(
+                "SPD Timings unavailable \u2014 spd5118 eeprom not exposed"
+            )
+            self._spd_unavailable_label.setVisible(True)
+            self._spd_group.setTitle("SPD Timings (DDR5)")
+            return
+
+        self._primary_label.setVisible(True)
+        self._secondary_label.setVisible(True)
+        self._spd_unavailable_label.setVisible(False)
+
+        dimm_num = spd.dimm_index + 1
+        self._spd_group.setTitle(f"SPD Timings (DDR5) (DIMM {dimm_num})")
+
+        self._primary_label.setText(
+            f"Primary: {spd.tCL}-{spd.tRCD}-{spd.tRP}-{spd.tRAS}-{spd.tRC}"
+        )
+
+        parts = []
+        parts.append(f"tRFC1: {spd.tRFC1_ns}ns")
+        parts.append(f"tRFCsb: {spd.tRFCsb_ns}ns")
+        parts.append(f"tWR: {spd.tWR_ns:.0f}ns")
+        self._secondary_label.setText("Secondary: " + "  ".join(parts))
 
     def _populate_table(self) -> None:
         self._dimm_table.setRowCount(len(self._dimms))
