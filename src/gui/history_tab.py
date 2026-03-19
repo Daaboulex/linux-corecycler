@@ -355,10 +355,11 @@ class HistoryTab(QWidget):
         self._tuner_sessions = self._load_tuner_sessions()
 
     def _update_summary(self) -> None:
-        total = len(self._runs)
-        completed = sum(1 for r in self._runs if r.status == "completed")
-        crashed = sum(1 for r in self._runs if r.status == "crashed")
-        stopped = sum(1 for r in self._runs if r.status == "stopped")
+        counts = self._db.get_status_counts() if self._db else {}
+        total = sum(counts.values())
+        completed = counts.get("completed", 0)
+        crashed = counts.get("crashed", 0)
+        stopped = counts.get("stopped", 0)
         tuner_count = len(self._tuner_sessions)
         self._total_label.setText(f"Runs: {total}")
         self._completed_label.setText(f"Completed: {completed}")
