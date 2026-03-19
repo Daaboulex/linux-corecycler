@@ -71,6 +71,9 @@ class SchedulerConfig:
     idle_stability_test: float = 0.0  # seconds of idle test per core (catches C-state transitions)
 
 
+_STALL_GRACE_SECONDS = 5.0  # skip stall checks during benchmark startup
+
+
 class CoreScheduler:
     """Orchestrates per-core stress testing with cycling and error detection."""
 
@@ -612,30 +615,38 @@ class CoreScheduler:
                     break
 
                 # --- stall watchdog ---
-                usage = self._read_core_usage(logical_cpu)
-                if usage is not None:
-                    if usage > 5.0:
+                # Skip stall checks during startup grace period -- stress processes
+                # need time to initialize before reaching full CPU load
+                if now - start_time >= _STALL_GRACE_SECONDS:
+                    # Reset stall baseline when grace period ends -- don't count
+                    # startup time toward the stall timeout
+                    if last_active_time == start_time:
                         last_active_time = now
-                    elif now - last_active_time > self.config.stall_timeout:
-                        log.warning(
-                            "Stall detected on core %d (CPU%d): "
-                            "near-zero usage for %.0f s",
-                            core_id,
-                            logical_cpu,
-                            now - last_active_time,
-                        )
-                        for cb in self.on_stall_detected:
-                            cb(core_id)
-                        passed = False
-                        error_msg = (
-                            f"Stress test stalled on core {core_id} "
-                            f"(CPU usage near 0 for {self.config.stall_timeout:.0f}s)"
-                        )
-                        status.errors += 1
-                        status.last_error = error_msg
-                        if self.config.stop_on_error:
-                            self._stop_requested = True
-                        break
+
+                    usage = self._read_core_usage(logical_cpu)
+                    if usage is not None:
+                        if usage > 5.0:
+                            last_active_time = now
+                        elif now - last_active_time > self.config.stall_timeout:
+                            log.warning(
+                                "Stall detected on core %d (CPU%d): "
+                                "near-zero usage for %.0f s",
+                                core_id,
+                                logical_cpu,
+                                now - last_active_time,
+                            )
+                            for cb in self.on_stall_detected:
+                                cb(core_id)
+                            passed = False
+                            error_msg = (
+                                f"Stress test stalled on core {core_id} "
+                                f"(CPU usage near 0 for {self.config.stall_timeout:.0f}s)"
+                            )
+                            status.errors += 1
+                            status.last_error = error_msg
+                            if self.config.stop_on_error:
+                                self._stop_requested = True
+                            break
 
                 # Deferred affinity verification (once, after process has exec'd)
                 if not affinity_verified and self._process is not None:
