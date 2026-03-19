@@ -12,7 +12,7 @@ Requirements for this milestone. Each maps to roadmap phases.
 - [x] **ENG-01**: Stress benchmark actually runs on the target core for the configured duration (core cycling works across all 16 cores)
 - [x] **ENG-02**: Stall detection does not fire false positives during benchmark startup (grace period or readiness detection)
 - [x] **ENG-03**: Child threads/processes of stress backends inherit and maintain CPU affinity (verified for mprime, stress-ng, y-cruncher)
-- [ ] **ENG-04**: All stress processes are fully terminated on test stop/crash/exit (no orphaned process groups)
+- [x] **ENG-04**: All stress processes are fully terminated on test stop/crash/exit (no orphaned process groups)
 - [ ] **ENG-05**: QThread workers are properly cleaned up on abnormal exit (no stale thread state)
 
 ### Signal/Threading Safety
@@ -75,7 +75,7 @@ Deferred to future milestone. Tracked but not in current roadmap.
 | ENG-01 | Phase 1 | Complete |
 | ENG-02 | Phase 1 | Complete |
 | ENG-03 | Phase 1 | Complete |
-| ENG-04 | Phase 2 | Pending |
+| ENG-04 | Phase 2 | Complete |
 | ENG-05 | Phase 2 | Pending |
 | SIG-01 | Phase 1 | Complete |
 | SIG-02 | Phase 2 | Pending |

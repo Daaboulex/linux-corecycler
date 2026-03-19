@@ -45,11 +45,11 @@ Plans:
   2. Killing the application mid-test (SIGTERM, SIGKILL) leaves zero orphaned stress processes (PR_SET_PDEATHSIG or equivalent)
   3. QThread workers reach a clean shutdown state on application exit (no stale thread references, no segfault on close)
   4. All cross-thread Qt object access uses signal/slot or explicit synchronization (no unprotected shared state)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
+- [ ] 02-01-PLAN.md -- Process orphan prevention: PR_SET_PDEATHSIG on all subprocess launches, hardened cleanup handler
+- [ ] 02-02-PLAN.md -- QThread lifecycle and cross-thread safety: tuner abort fix, core_status cache, audit tests
 
 ### Phase 3: PM Table Clocks & Voltages
 **Goal**: Memory tab displays live clock frequencies and voltages sourced from the ryzen_smu PM table with version-aware parsing
@@ -115,7 +115,7 @@ Note: Phases 3-4 (memory) and Phase 5 (history) are independent tracks. Phase 5 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Core Engine Fixes | 2/2 | Complete | 2026-03-19 |
-| 2. Process & Thread Lifecycle | 0/? | Not started | - |
+| 2. Process & Thread Lifecycle | 0/2 | Not started | - |
 | 3. PM Table Clocks & Voltages | 0/? | Not started | - |
 | 4. SPD Timings & Memory UI | 0/? | Not started | - |
 | 5. History & Database Integrity | 0/? | Not started | - |
