@@ -12,6 +12,10 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tuner.state import CoreState, TunerSession
 
 SCHEMA_VERSION = 5
 
@@ -815,6 +819,203 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
             boost_limit_mhz=row["boost_limit_mhz"],
             notes=row["notes"],
         )
+
+    # ------------------------------------------------------------------
+    # Tuner sessions
+    # ------------------------------------------------------------------
+
+    def create_tuner_session(
+        self,
+        config_json: str,
+        bios_version: str,
+        cpu_model: str,
+        context_id: int | None = None,
+    ) -> int:
+        """Create a new tuner session. Returns the session id."""
+        now = self._now_iso()
+        cur = self._conn.execute(
+            """\
+            INSERT INTO tuner_sessions
+                (created_at, updated_at, status, bios_version, cpu_model,
+                 config_json, context_id, notes)
+            VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (now, now, "running", bios_version, cpu_model, config_json, context_id, ""),
+        )
+        return cur.lastrowid
+
+    def update_tuner_session_status(self, session_id: int, status: str) -> None:
+        self._conn.execute(
+            "UPDATE tuner_sessions SET status=?, updated_at=? WHERE id=?",
+            (status, self._now_iso(), session_id),
+        )
+
+    def get_tuner_session(self, session_id: int) -> TunerSession | None:
+        row = self._conn.execute(
+            "SELECT * FROM tuner_sessions WHERE id=?", (session_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_tuner_session(row)
+
+    def get_latest_tuner_session(self) -> TunerSession | None:
+        row = self._conn.execute(
+            "SELECT * FROM tuner_sessions ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_tuner_session(row)
+
+    def get_active_tuner_session(self) -> TunerSession | None:
+        row = self._conn.execute(
+            "SELECT * FROM tuner_sessions WHERE status IN ('running','paused') "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_tuner_session(row)
+
+    def list_tuner_sessions(self, *, limit: int = 100) -> list[TunerSession]:
+        rows = self._conn.execute(
+            "SELECT * FROM tuner_sessions ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [self._row_to_tuner_session(r) for r in rows]
+
+    def upsert_tuner_core_state(self, session_id: int, cs: CoreState) -> None:
+        now = self._now_iso()
+        self._conn.execute(
+            """\
+            INSERT INTO tuner_core_states
+                (session_id, core_id, phase, current_offset, best_offset,
+                 coarse_fail_offset, confirm_attempts, updated_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(session_id, core_id) DO UPDATE SET
+                phase=excluded.phase,
+                current_offset=excluded.current_offset,
+                best_offset=excluded.best_offset,
+                coarse_fail_offset=excluded.coarse_fail_offset,
+                confirm_attempts=excluded.confirm_attempts,
+                updated_at=excluded.updated_at
+            """,
+            (
+                session_id,
+                cs.core_id,
+                cs.phase,
+                cs.current_offset,
+                cs.best_offset,
+                cs.coarse_fail_offset,
+                cs.confirm_attempts,
+                now,
+            ),
+        )
+
+    def get_tuner_core_states(self, session_id: int) -> dict[int, CoreState]:
+        from tuner.state import CoreState as _CoreState
+
+        rows = self._conn.execute(
+            "SELECT * FROM tuner_core_states WHERE session_id=? ORDER BY core_id",
+            (session_id,),
+        ).fetchall()
+        result: dict[int, _CoreState] = {}
+        for r in rows:
+            result[r["core_id"]] = _CoreState(
+                core_id=r["core_id"],
+                phase=r["phase"],
+                current_offset=r["current_offset"],
+                best_offset=r["best_offset"],
+                coarse_fail_offset=r["coarse_fail_offset"],
+                confirm_attempts=r["confirm_attempts"],
+            )
+        return result
+
+    def insert_tuner_test_log(
+        self,
+        session_id: int,
+        core_id: int,
+        offset: int,
+        phase: str,
+        passed: bool,
+        error_msg: str | None = None,
+        error_type: str | None = None,
+        duration: float | None = None,
+        run_id: int | None = None,
+    ) -> int:
+        cur = self._conn.execute(
+            """\
+            INSERT INTO tuner_test_log
+                (session_id, core_id, offset_tested, phase, passed,
+                 error_message, error_type, duration_seconds, run_id, tested_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                session_id,
+                core_id,
+                offset,
+                phase,
+                int(passed),
+                error_msg,
+                error_type,
+                duration,
+                run_id,
+                self._now_iso(),
+            ),
+        )
+        return cur.lastrowid
+
+    def get_tuner_test_log(
+        self, session_id: int, core_id: int | None = None
+    ) -> list[dict]:
+        if core_id is not None:
+            rows = self._conn.execute(
+                "SELECT * FROM tuner_test_log WHERE session_id=? AND core_id=? ORDER BY id",
+                (session_id, core_id),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM tuner_test_log WHERE session_id=? ORDER BY id",
+                (session_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_tuner_best_profile(self, session_id: int) -> dict[int, int]:
+        rows = self._conn.execute(
+            "SELECT core_id, best_offset FROM tuner_core_states "
+            "WHERE session_id=? AND phase='confirmed' AND best_offset IS NOT NULL",
+            (session_id,),
+        ).fetchall()
+        return {r["core_id"]: r["best_offset"] for r in rows}
+
+    def delete_context_cascade(self, context_id: int) -> None:
+        """Delete a tuning context and all associated runs and tuner sessions."""
+        self._conn.execute("DELETE FROM runs WHERE context_id=?", (context_id,))
+        self._conn.execute("DELETE FROM tuner_sessions WHERE context_id=?", (context_id,))
+        self._conn.execute("DELETE FROM tuning_contexts WHERE id=?", (context_id,))
+
+    def get_status_counts(self) -> dict[str, int]:
+        rows = self._conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM runs GROUP BY status"
+        ).fetchall()
+        return {r["status"]: r["cnt"] for r in rows}
+
+    @staticmethod
+    def _row_to_tuner_session(row: sqlite3.Row) -> TunerSession:
+        from tuner.state import TunerSession as _TunerSession
+
+        return _TunerSession(
+            id=row["id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            status=row["status"],
+            bios_version=row["bios_version"],
+            cpu_model=row["cpu_model"],
+            config_json=row["config_json"],
+            context_id=row["context_id"],
+            notes=row["notes"],
+        )
+
+    def _execute_raw(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        """Internal: raw SQL access for testing. Not for application code."""
+        return self._conn.execute(sql, params)
 
     # ------------------------------------------------------------------
     # Maintenance
