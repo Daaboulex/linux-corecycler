@@ -278,6 +278,74 @@ class CoreScheduler:
         except (OSError, ValueError):
             return True  # can't read /proc — don't block
 
+    @staticmethod
+    def _verify_child_affinity(
+        pid: int,
+        expected_cpus: set[int],
+        cpu_list: str,
+        *,
+        proc_base: Path | None = None,
+    ) -> bool:
+        """Verify ALL threads of a process are pinned to expected CPUs.
+
+        Scans /proc/pid/task/ for child TIDs and checks Cpus_allowed_list.
+        Re-pins any drifted threads with os.sched_setaffinity().
+
+        Args:
+            pid: Parent process ID
+            expected_cpus: Set of allowed logical CPU IDs (e.g. {0, 16})
+            cpu_list: Comma-separated CPU list string for logging (e.g. "0,16")
+            proc_base: Override /proc path for testing
+
+        Returns True if all threads are correctly pinned (or were re-pinned).
+        Returns True (lenient) if /proc is unreadable.
+        """
+        base = proc_base or Path("/proc")
+        try:
+            task_dir = base / str(pid) / "task"
+            if not task_dir.exists():
+                return True
+
+            all_pinned = True
+            for tid_dir in task_dir.iterdir():
+                try:
+                    tid = int(tid_dir.name)
+                except ValueError:
+                    continue
+                status_path = tid_dir / "status"
+                try:
+                    for line in status_path.read_text().splitlines():
+                        if line.startswith("Cpus_allowed_list:"):
+                            allowed = line.split(":", 1)[1].strip()
+                            # Parse the allowed list into a set of CPU IDs
+                            allowed_set: set[int] = set()
+                            for part in allowed.split(","):
+                                part = part.strip()
+                                if "-" in part:
+                                    lo, hi = part.split("-", 1)
+                                    allowed_set.update(range(int(lo), int(hi) + 1))
+                                else:
+                                    allowed_set.add(int(part))
+                            if allowed_set != expected_cpus:
+                                log.warning(
+                                    "TID %d drifted to CPUs %s, re-pinning to %s",
+                                    tid,
+                                    allowed,
+                                    cpu_list,
+                                )
+                                try:
+                                    os.sched_setaffinity(tid, expected_cpus)
+                                except OSError:
+                                    log.debug("Failed to re-pin TID %d", tid)
+                                    all_pinned = False
+                            break
+                except (OSError, ValueError):
+                    continue  # TID may have exited between listing and reading
+
+            return all_pinned
+        except (OSError, ValueError):
+            return True  # can't read /proc — don't block
+
     # ------------------------------------------------------------------
     # Stall detection
     # ------------------------------------------------------------------
@@ -592,7 +660,8 @@ class CoreScheduler:
             )
 
             deadline = start_time + self.config.seconds_per_core
-            affinity_verified = False
+            last_affinity_check = 0.0  # time of last TID affinity scan
+            _AFFINITY_CHECK_INTERVAL = 2.0
 
             while self._process.poll() is None:
                 if self._stop_requested:
@@ -648,16 +717,15 @@ class CoreScheduler:
                                 self._stop_requested = True
                             break
 
-                # Deferred affinity verification (once, after process has exec'd)
-                if not affinity_verified and self._process is not None:
-                    affinity_verified = True
-                    if not self._verify_affinity(self._process.pid, cpu_list):
-                        log.warning(
-                            "CPU affinity check: PID %d not pinned to CPUs %s "
-                            "(taskset may not have applied yet or process respawned workers)",
-                            self._process.pid,
-                            cpu_list,
-                        )
+                # Periodic child-thread affinity verification -- mprime and other
+                # backends may spawn threads that reset their own CPU affinity
+                affinity_due = (now - last_affinity_check) >= _AFFINITY_CHECK_INTERVAL
+                if self._process is not None and affinity_due:
+                    last_affinity_check = now
+                    expected_cpu_set = {int(c) for c in cpu_list.split(",")}
+                    self._verify_child_affinity(
+                        self._process.pid, expected_cpu_set, cpu_list
+                    )
 
                 # periodic MCE check
                 mce_events = self.detector.check_mce(target_cpu=logical_cpu)
