@@ -184,10 +184,11 @@ def compute_fclk_uclk_ratio(
     """
     if fclk_mhz <= 0 or uclk_mhz <= 0:
         return None
-    ratio = round(uclk_mhz / fclk_mhz)
-    if ratio == 1:
+    ratio = uclk_mhz / fclk_mhz
+    # Tolerance: within 5% of exact integer ratio (handles measurement noise)
+    if abs(ratio - 1.0) < 0.05:
         return (1, 1)
-    elif ratio == 2:
+    elif abs(ratio - 2.0) < 0.05:
         return (1, 2)
     return None
 
