@@ -36,6 +36,8 @@ class PMTableOffsets:
 
 # Exact version match first, then prefix fallback.
 # Source: ZenStates-Core PowerTable.cs + empirical verification on 9950X3D.
+# VDD_MEM at 0x0A8: stable 1.397V (EXPO), verified idle+load on DDR5-6000.
+# VDDQ at 0x0E8: stable 1.100V (JEDEC default), per-channel pair at 0x0E8/0x0EC.
 PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
     0x620205: PMTableOffsets(
         table_size=0x994,
@@ -47,7 +49,7 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         cldo_vddg_iod=0x40C,
         cldo_vddg_ccd=0x414,
         vdd_misc=0xE8,
-        vdd_mem=0x43C,
+        vdd_mem=0x0A8,
     ),
     0x621102: PMTableOffsets(
         table_size=0x724,
@@ -71,7 +73,7 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         cldo_vddg_iod=0x40C,
         cldo_vddg_ccd=0x414,
         vdd_misc=0xE8,
-        vdd_mem=0x43C,
+        vdd_mem=0x0A8,
     ),
     0x620105: PMTableOffsets(
         table_size=0x724,
