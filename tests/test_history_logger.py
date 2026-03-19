@@ -148,13 +148,13 @@ class TestStatusAndCycle:
 
 class TestTestCompletion:
     def test_on_test_completed(self, db, logger):
-        # simulate results dict as TestWorker sends it
+        # Signal(str) contract from Phase 1: results arrive as JSON string
         results = {
-            0: [StressResult(core_id=0, passed=True, duration_seconds=600)],
-            1: [StressResult(core_id=1, passed=False, duration_seconds=300, error_message="fail")],
-            2: [StressResult(core_id=2, passed=True, duration_seconds=600)],
+            "0": [{"passed": True, "duration_seconds": 600}],
+            "1": [{"passed": False, "duration_seconds": 300, "error_message": "fail"}],
+            "2": [{"passed": True, "duration_seconds": 600}],
         }
-        logger.on_test_completed(results)
+        logger.on_test_completed(json.dumps(results))
 
         run = db.get_run(logger.run_id)
         assert run.status == "completed"

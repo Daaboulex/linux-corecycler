@@ -316,6 +316,36 @@ class TestStatusCounts:
         assert counts == {"completed": 5}
 
 
+class TestTunerSessionMethods:
+    """Verify public tuner methods that both Grouped and Tuner views use."""
+
+    def test_list_tuner_sessions(self, db):
+        sid1 = db.create_tuner_session("{}", "BIOS-1", "CPU1")
+        sid2 = db.create_tuner_session("{}", "BIOS-1", "CPU1")
+        sessions = db.list_tuner_sessions()
+        assert len(sessions) == 2
+        assert sessions[0].id == sid2  # newest first
+        assert sessions[1].id == sid1
+
+    def test_list_tuner_sessions_limit(self, db):
+        for _ in range(5):
+            db.create_tuner_session("{}", "", "")
+        sessions = db.list_tuner_sessions(limit=3)
+        assert len(sessions) == 3
+
+    def test_delete_context_cascade(self, db):
+        ctx_id = db.create_context(TuningContextRecord(bios_version="v1"))
+        db.create_run(RunRecord(cpu_model="test", context_id=ctx_id))
+        sid = db.create_tuner_session("{}", "v1", "test", context_id=ctx_id)
+
+        db.delete_context_cascade(ctx_id)
+
+        runs = db.list_runs_for_context(ctx_id)
+        assert len(runs) == 0
+        assert db.get_tuner_session(sid) is None
+        assert db.get_context(ctx_id) is None
+
+
 class TestBooleanConversion:
     """Verify bool fields survive the SQLite INTEGER round-trip."""
 
