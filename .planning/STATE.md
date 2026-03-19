@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 03-01-PLAN.md
-last_updated: "2026-03-19T15:09:34.166Z"
+stopped_at: Completed 03-02-PLAN.md
+last_updated: "2026-03-19T15:15:50Z"
 progress:
   total_phases: 6
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 6
-  completed_plans: 5
+  completed_plans: 6
 ---
 
 # Project State
@@ -19,20 +19,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-19)
 
 **Core value:** Every per-core stress test result must be accurate and trustworthy
-**Current focus:** Phase 03 — PM Table Clocks & Voltages
+**Current focus:** Phase 03 — PM Table Clocks & Voltages (COMPLETE)
 
 ## Current Position
 
-Phase: 03 (PM Table Clocks & Voltages) — EXECUTING
-Plan: 2 of 2
+Phase: 03 (PM Table Clocks & Voltages) — COMPLETE
+Plan: 2 of 2 (all complete)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 5
+- Total plans completed: 6
 - Average duration: 5min
-- Total execution time: 0.38 hours
+- Total execution time: 0.46 hours
 
 **By Phase:**
 
@@ -40,11 +40,11 @@ Plan: 2 of 2
 |-------|-------|-------|----------|
 | 01-core-engine-fixes | 2 | 8min | 4min |
 | 02-process-thread-lifecycle | 2 | 7min | 3.5min |
-| 03-pm-table-clocks-voltages | 1 | 8min | 8min |
+| 03-pm-table-clocks-voltages | 2 | 13min | 6.5min |
 
 **Recent Trend:**
 
-- Last 5 plans: 3min, 5min, 3min, 4min, 8min
+- Last 5 plans: 5min, 3min, 4min, 8min, 5min
 - Trend: stable
 
 *Updated after each plan completion*
@@ -69,6 +69,9 @@ Recent decisions affecting current work:
 - [Phase 03]: Version-keyed offset registry (PM_TABLE_OFFSETS dict) for PM table version dispatch
 - [Phase 03]: Zen 5 prefix fallback with conservative vdd_mem=-1 -- only exact version matches expose VDD_MEM
 - [Phase 03]: _parse_granite_ridge always runs for legacy core data regardless of version dispatch
+- [Phase 03]: Headless Qt widget testing using SimpleNamespace + MethodType to avoid pytest-qt dependency
+- [Phase 03]: Tolerance-based ratio check (5%) replaces round() to avoid banker's rounding edge cases
+- [Phase 03]: Unified QTimer for PM table + SPD temp reads in single callback at AppSettings.poll_interval
 
 ### Pending Todos
 
@@ -81,6 +84,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T15:09:34.164Z
-Stopped at: Completed 03-01-PLAN.md
+Last session: 2026-03-19T15:15:50Z
+Stopped at: Completed 03-02-PLAN.md
 Resume file: None
