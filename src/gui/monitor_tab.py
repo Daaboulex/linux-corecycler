@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 from collections import deque
 
 from PySide6.QtCore import QTimer, Qt
@@ -28,6 +27,7 @@ from monitor.frequency import (
 )
 from monitor.hwmon import HWMonReader
 from monitor.msr import MSRReader
+from config.settings import load_settings
 from monitor.power import PowerMonitor
 
 MAX_FREQ_HISTORY = 60  # 1 minute at 1s
@@ -179,6 +179,11 @@ class CoreFreqBar(QWidget):
 class MonitorTab(QWidget):
     """Live system monitoring with package charts + per-core view toggle."""
 
+    # Staleness tracking — grey out labels after consecutive sensor read failures
+    _STALE_THRESHOLD = 3
+    _NORMAL_STYLE = "font: bold 11px monospace; padding: 2px;"
+    _STALE_STYLE = "font: bold 11px monospace; padding: 2px; color: #666;"
+
     def __init__(self, topology=None) -> None:
         super().__init__()
         self._topology = topology
@@ -188,6 +193,8 @@ class MonitorTab(QWidget):
         self._cpu_usage = CPUUsageReader()
         self._per_core_bars: dict[int, CoreFreqBar] = {}
         self._per_core_visible = False
+        self._hwmon_fail_count: int = 0
+        self._power_fail_count: int = 0
 
         self._setup_ui()
 
@@ -203,7 +210,8 @@ class MonitorTab(QWidget):
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._update)
-        self._timer.start(1000)
+        settings = load_settings()
+        self._timer.start(int(settings.poll_interval * 1000))
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -337,8 +345,10 @@ class MonitorTab(QWidget):
         self._toggle_btn.setText("Package View" if checked else "Per-Core View")
 
     def _update(self) -> None:
-        with contextlib.suppress(Exception):
+        try:
             self._do_update()
+        except (OSError, ValueError, PermissionError):
+            pass  # legitimate sysfs/procfs read failures
 
     def _do_update(self) -> None:
         # frequencies — read both actual and boost ceiling per-core
@@ -363,8 +373,15 @@ class MonitorTab(QWidget):
         hwmon_data = self._hwmon.read()
         tctl = hwmon_data.tctl_c
         if tctl is not None:
+            self._hwmon_fail_count = 0
+            self._tctl_label.setStyleSheet(self._NORMAL_STYLE)
             self._tctl_label.setText(f"Tctl: {tctl:.1f}°C")
             self._temp_chart.add_value(tctl)
+        else:
+            self._hwmon_fail_count += 1
+            if self._hwmon_fail_count >= self._STALE_THRESHOLD:
+                self._tctl_label.setStyleSheet(self._STALE_STYLE)
+            # Keep last-known text — don't clear it
         # Per-CCD temps — create labels dynamically on first appearance
         for tccd_idx in sorted(hwmon_data.tccd_temps):
             temp = hwmon_data.tccd_temps[tccd_idx]
@@ -388,20 +405,36 @@ class MonitorTab(QWidget):
                 f"CCD{ccd_idx}{vcache_tag}: {temp:.1f}°C"
             )
         if hwmon_data.vcore_v is not None:
+            self._vcore_label.setStyleSheet(self._NORMAL_STYLE)
             self._vcore_label.setText(f"Vcore: {hwmon_data.vcore_v:.4f}V")
             self._voltage_chart.add_value(hwmon_data.vcore_v)
+        else:
+            if self._hwmon_fail_count >= self._STALE_THRESHOLD:
+                self._vcore_label.setStyleSheet(self._STALE_STYLE)
 
         # power — sysfs RAPL (user-accessible) or MSR RAPL (root-only)
         watts = self._power.read_power_watts()
         if watts is not None:
+            self._power_fail_count = 0
+            self._power_label.setStyleSheet(self._NORMAL_STYLE)
             self._power_label.setText(f"Package: {watts:.1f}W")
             self._power_chart.add_value(watts)
         elif self._msr.is_available():
             # Fallback: read package energy from MSR RAPL
             pkg_power = self._msr.read_package_power()
             if pkg_power is not None:
+                self._power_fail_count = 0
+                self._power_label.setStyleSheet(self._NORMAL_STYLE)
                 self._power_label.setText(f"Package: {pkg_power:.1f}W")
                 self._power_chart.add_value(pkg_power)
+            else:
+                self._power_fail_count += 1
+                if self._power_fail_count >= self._STALE_THRESHOLD:
+                    self._power_label.setStyleSheet(self._STALE_STYLE)
+        else:
+            self._power_fail_count += 1
+            if self._power_fail_count >= self._STALE_THRESHOLD:
+                self._power_label.setStyleSheet(self._STALE_STYLE)
 
         # CPU usage from /proc/stat
         usage_data = self._cpu_usage.read()  # logical cpu → usage %
@@ -485,7 +518,8 @@ class MonitorTab(QWidget):
 
     def start_monitoring(self) -> None:
         if not self._timer.isActive():
-            self._timer.start(1000)
+            settings = load_settings()
+            self._timer.start(int(settings.poll_interval * 1000))
 
     def stop_monitoring(self) -> None:
         self._timer.stop()
