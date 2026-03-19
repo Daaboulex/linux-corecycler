@@ -755,23 +755,7 @@ class HistoryTab(QWidget):
     def _load_tuner_sessions(self) -> list[TunerSession]:
         if not self._db:
             return []
-        rows = self._db._conn.execute(
-            "SELECT * FROM tuner_sessions ORDER BY id DESC LIMIT 100"
-        ).fetchall()
-        sessions = []
-        for r in rows:
-            sessions.append(TunerSession(
-                id=r["id"],
-                created_at=r["created_at"],
-                updated_at=r["updated_at"],
-                status=r["status"],
-                bios_version=r["bios_version"],
-                cpu_model=r["cpu_model"],
-                config_json=r["config_json"],
-                context_id=r["context_id"],
-                notes=r["notes"],
-            ))
-        return sessions
+        return self._db.list_tuner_sessions(limit=100)
 
     def _populate_tuner_sessions(self) -> None:
         sessions = self._tuner_sessions
@@ -1122,11 +1106,7 @@ class HistoryTab(QWidget):
             return
 
         for ctx_id in ctx_ids:
-            # Delete all associated records first (runs, tuner sessions + cascaded children)
-            self._db._conn.execute("DELETE FROM runs WHERE context_id = ?", (ctx_id,))
-            # Tuner sessions reference context — delete them (CASCADE handles core_states/test_log)
-            self._db._conn.execute("DELETE FROM tuner_sessions WHERE context_id = ?", (ctx_id,))
-            self._db._conn.execute("DELETE FROM tuning_contexts WHERE id = ?", (ctx_id,))
+            self._db.delete_context_cascade(ctx_id)
 
         self._refresh_preserve_context()
 
