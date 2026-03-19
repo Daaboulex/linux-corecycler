@@ -921,3 +921,63 @@ class TestProcessCleanup:
             "All subprocess launches must use _make_preexec() or equivalent.\n"
             + "\n".join(violations)
         )
+
+
+# ===========================================================================
+# Cross-thread safety audit
+# ===========================================================================
+
+
+class TestCrossThreadSafety:
+    """Enforce that GUI code never directly accesses scheduler state across threads."""
+
+    def test_no_direct_core_status_access_in_gui(self):
+        """GUI files must not access scheduler.core_status directly — use signal/slot cache.
+
+        The one allowed exception is in _start_test() where scheduler.core_status is read
+        BEFORE the worker thread starts (no cross-thread race).
+        """
+        import re
+
+        gui_dir = Path(__file__).parent.parent / "src" / "gui"
+        violations = []
+        for py_file in gui_dir.glob("*.py"):
+            text = py_file.read_text()
+            for i, line in enumerate(text.splitlines(), 1):
+                stripped = line.lstrip()
+                if stripped.startswith("#"):
+                    continue
+                if re.search(r"scheduler\.core_status", line):
+                    # Allow the init_cores() call in _start_test — happens before thread start
+                    if "init_cores" in line:
+                        continue
+                    violations.append(f"{py_file.name}:{i}: {line.strip()}")
+        assert violations == [], (
+            "Direct cross-thread scheduler.core_status access found:\n"
+            + "\n".join(violations)
+        )
+
+    def test_tuner_abort_stops_scheduler_before_terminate(self):
+        """TunerEngine.abort() must call force_stop() before terminate()."""
+        import re
+
+        engine_file = Path(__file__).parent.parent / "src" / "tuner" / "engine.py"
+        text = engine_file.read_text()
+        abort_match = re.search(
+            r"def abort\(self\).*?(?=\n    def |\nclass |\Z)", text, re.DOTALL
+        )
+        assert abort_match, "TunerEngine.abort() method not found"
+        abort_body = abort_match.group()
+        force_pos = abort_body.find("force_stop")
+        term_pos = abort_body.find("terminate")
+        assert force_pos != -1, "abort() must call force_stop()"
+        assert term_pos != -1, "abort() must call terminate() as fallback"
+        assert force_pos < term_pos, "force_stop() must be called BEFORE terminate()"
+
+    def test_main_window_has_core_status_cache(self):
+        """MainWindow must use _core_status_cache for thread-safe status access."""
+        mw_file = Path(__file__).parent.parent / "src" / "gui" / "main_window.py"
+        text = mw_file.read_text()
+        assert "_core_status_cache" in text, "MainWindow must define _core_status_cache"
+        assert "_core_status_cache: dict" in text or "_core_status_cache =" in text, \
+            "MainWindow must initialize _core_status_cache"
