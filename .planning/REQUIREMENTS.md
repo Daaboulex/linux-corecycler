@@ -13,12 +13,12 @@ Requirements for this milestone. Each maps to roadmap phases.
 - [x] **ENG-02**: Stall detection does not fire false positives during benchmark startup (grace period or readiness detection)
 - [x] **ENG-03**: Child threads/processes of stress backends inherit and maintain CPU affinity (verified for mprime, stress-ng, y-cruncher)
 - [x] **ENG-04**: All stress processes are fully terminated on test stop/crash/exit (no orphaned process groups)
-- [ ] **ENG-05**: QThread workers are properly cleaned up on abnormal exit (no stale thread state)
+- [x] **ENG-05**: QThread workers are properly cleaned up on abnormal exit (no stale thread state)
 
 ### Signal/Threading Safety
 
 - [x] **SIG-01**: PySide6 Signal(dict) crash fixed — all cross-thread signals use JSON string marshalling
-- [ ] **SIG-02**: No cross-thread Qt object access without signal/slot or mutex protection
+- [x] **SIG-02**: No cross-thread Qt object access without signal/slot or mutex protection
 
 ### History & Database
 
@@ -76,9 +76,9 @@ Deferred to future milestone. Tracked but not in current roadmap.
 | ENG-02 | Phase 1 | Complete |
 | ENG-03 | Phase 1 | Complete |
 | ENG-04 | Phase 2 | Complete |
-| ENG-05 | Phase 2 | Pending |
+| ENG-05 | Phase 2 | Complete |
 | SIG-01 | Phase 1 | Complete |
-| SIG-02 | Phase 2 | Pending |
+| SIG-02 | Phase 2 | Complete |
 | HIST-01 | Phase 5 | Pending |
 | HIST-02 | Phase 5 | Pending |
 | HIST-03 | Phase 5 | Pending |

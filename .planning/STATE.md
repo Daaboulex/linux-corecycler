@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: unknown
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-03-19T14:12:16.392Z"
+status: phase-complete
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-03-19T14:17:52Z"
 progress:
   total_phases: 6
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 4
-  completed_plans: 3
+  completed_plans: 4
 ---
 
 # Project State
@@ -19,31 +19,31 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-19)
 
 **Core value:** Every per-core stress test result must be accurate and trustworthy
-**Current focus:** Phase 02 — process-thread-lifecycle
+**Current focus:** Phase 02 — process-thread-lifecycle (COMPLETE)
 
 ## Current Position
 
-Phase: 02 (process-thread-lifecycle) — EXECUTING
-Plan: 2 of 2
+Phase: 02 (process-thread-lifecycle) — COMPLETE
+Plan: 2 of 2 (all done)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 3
+- Total plans completed: 4
 - Average duration: 4min
-- Total execution time: 0.18 hours
+- Total execution time: 0.25 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-core-engine-fixes | 2 | 8min | 4min |
-| 02-process-thread-lifecycle | 1 | 3min | 3min |
+| 02-process-thread-lifecycle | 2 | 7min | 3.5min |
 
 **Recent Trend:**
 
-- Last 5 plans: 3min, 5min, 3min
+- Last 5 plans: 3min, 5min, 3min, 4min
 - Trend: stable
 
 *Updated after each plan completion*
@@ -63,6 +63,8 @@ Recent decisions affecting current work:
 - [Phase 01]: Stall baseline reset at grace period end -- startup time never counts toward stall timeout
 - [Phase 02]: _make_preexec pattern: all subprocess.Popen calls must use combined setsid+PR_SET_PDEATHSIG preexec_fn
 - [Phase 02]: Independent try/except blocks for multi-subsystem cleanup -- one failure cannot cascade
+- [Phase 02]: Signal/slot cache pattern: _core_status_cache for thread-safe GUI access to scheduler state
+- [Phase 02]: Graceful QThread abort: force_stop() before terminate(), wait for clean exit first
 
 ### Pending Todos
 
@@ -75,6 +77,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T14:12:16.391Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-03-19T14:17:52Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None
