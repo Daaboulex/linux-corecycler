@@ -24,7 +24,7 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 - [ ] **HIST-01**: History summary counters (Completed/Crashed/Stopped) correctly aggregate session statuses
 - [ ] **HIST-02**: Stale "Running" sessions are detected and marked as "Crashed" on application startup
-- [ ] **HIST-03**: Database access uses public HistoryDB methods, not private `db._conn`
+- [x] **HIST-03**: Database access uses public HistoryDB methods, not private `db._conn`
 - [ ] **HIST-04**: History tab data is consistent between Grouped and Tuner Sessions views
 
 ### Memory Diagnostics
@@ -83,7 +83,7 @@ Deferred to future milestone. Tracked but not in current roadmap.
 | SIG-02 | Phase 2 | Complete |
 | HIST-01 | Phase 5 | Pending |
 | HIST-02 | Phase 5 | Pending |
-| HIST-03 | Phase 5 | Pending |
+| HIST-03 | Phase 5 | Complete |
 | HIST-04 | Phase 5 | Pending |
 | MEM-01 | Phase 3 | Complete |
 | MEM-02 | Phase 3 | Complete |
