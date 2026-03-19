@@ -193,6 +193,9 @@ class SPD5118Reader:
 
     def __init__(self, hwmon_base: Path = HWMON_BASE) -> None:
         self._devices: list[Path] = []
+        self._eeprom_paths: list[Path] = []
+        self._spd_timings: SPDTimingData | None = None
+        self._spd_loaded: bool = False
         self._scan(hwmon_base)
 
     def _scan(self, hwmon_base: Path) -> None:
@@ -207,6 +210,33 @@ class SPD5118Reader:
                     continue
                 if name == "spd5118":
                     self._devices.append(hwmon_dir)
+                    # Discover eeprom via device symlink to i2c parent
+                    device_link = hwmon_dir / "device"
+                    if device_link.exists():
+                        try:
+                            i2c_device = device_link.resolve()
+                            eeprom_path = i2c_device / "eeprom"
+                            if eeprom_path.exists():
+                                self._eeprom_paths.append(eeprom_path)
+                        except OSError:
+                            pass
+
+    @property
+    def spd_timings(self) -> SPDTimingData | None:
+        """DDR5 timing data from first available EEPROM. Cached at first access."""
+        if self._spd_loaded:
+            return self._spd_timings
+        self._spd_loaded = True
+        for i, eeprom_path in enumerate(self._eeprom_paths):
+            try:
+                data = eeprom_path.read_bytes()
+                result = decode_spd_timings(data, dimm_index=i)
+                if result is not None:
+                    self._spd_timings = result
+                    return self._spd_timings
+            except OSError:
+                log.debug("Failed to read SPD EEPROM: %s", eeprom_path)
+        return None
 
     def is_available(self) -> bool:
         return len(self._devices) > 0
