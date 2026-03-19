@@ -625,9 +625,13 @@ class TestComputeFclkUclkRatio:
     def test_negative_returns_none(self):
         assert compute_fclk_uclk_ratio(-100.0, 2000.0) is None
 
-    def test_unexpected_ratio_returns_none(self):
-        """Ratio that is not 1 or 2 returns None."""
-        assert compute_fclk_uclk_ratio(1000.0, 3000.0) is None
+    def test_ratio_2_3(self):
+        """DDR5-6000 with FCLK capped: FCLK=2000, UCLK=3000 → 2:3."""
+        assert compute_fclk_uclk_ratio(2000.0, 3000.0) == (2, 3)
+
+    def test_ratio_1_3(self):
+        """FCLK=1000, UCLK=3000 → 1:3."""
+        assert compute_fclk_uclk_ratio(1000.0, 3000.0) == (1, 3)
 
     def test_near_1_1_ratio(self):
         """Slightly off ratio should still round to 1:1."""

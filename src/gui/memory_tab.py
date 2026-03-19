@@ -437,15 +437,15 @@ class MemoryTab(QWidget):
         self._uclk_label.setStyleSheet("")
         self._mclk_label.setStyleSheet("")
         ratio = compute_fclk_uclk_ratio(pm_data.fclk_mhz, pm_data.uclk_mhz)
-        if ratio == (1, 1):
-            self._ratio_label.setText("FCLK:UCLK 1:1")
-            self._ratio_label.setStyleSheet("color: #4caf50;")  # green
-        elif ratio == (1, 2):
-            self._ratio_label.setText("FCLK:UCLK 1:2")
-            self._ratio_label.setStyleSheet("color: #ffb74d;")  # yellow/amber
+        if ratio is not None:
+            self._ratio_label.setText(f"FCLK:UCLK {ratio[0]}:{ratio[1]}")
+            if ratio == (1, 1):
+                self._ratio_label.setStyleSheet("color: #4caf50;")  # green — coupled
+            else:
+                self._ratio_label.setStyleSheet("color: #ffb74d;")  # amber — decoupled
         else:
-            self._ratio_label.setText("FCLK:UCLK ?")
-            self._ratio_label.setStyleSheet("color: #ffb74d;")
+            self._ratio_label.setText("FCLK:UCLK --")
+            self._ratio_label.setStyleSheet("")
 
     def _update_voltage_labels(self, pm_data) -> None:
         if pm_data.vdd_mem_v > 0:
