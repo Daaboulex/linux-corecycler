@@ -250,12 +250,19 @@ class TestTelemetry:
 
 class TestMaintenance:
     def test_recover_incomplete_runs(self, db):
-        db.create_run(RunRecord(cpu_model="running1", status="running"))
-        db.create_run(RunRecord(cpu_model="running2", status="running"))
+        r1 = db.create_run(RunRecord(cpu_model="running1", status="running"))
+        r2 = db.create_run(RunRecord(cpu_model="running2", status="running"))
         db.create_run(RunRecord(cpu_model="completed", status="completed"))
 
-        count = db.recover_incomplete_runs()
-        assert count == 2
+        recovered = db.recover_incomplete_runs()
+        assert len(recovered) == 2
+        recovered_ids = {r[0] for r in recovered}
+        assert r1 in recovered_ids
+        assert r2 in recovered_ids
+        # Each tuple has (id, started_at)
+        for rid, started_at in recovered:
+            assert isinstance(started_at, str)
+            assert len(started_at) > 0
 
         runs = db.list_runs()
         statuses = {r.cpu_model: r.status for r in runs}
@@ -264,7 +271,7 @@ class TestMaintenance:
         assert statuses["completed"] == "completed"
 
         # second call recovers nothing
-        assert db.recover_incomplete_runs() == 0
+        assert db.recover_incomplete_runs() == []
 
     def test_purge_before(self, db):
         db.create_run(RunRecord(cpu_model="old", started_at="2020-01-01T00:00:00+00:00"))
@@ -279,6 +286,34 @@ class TestMaintenance:
 
     def test_vacuum(self, db):
         db.vacuum()  # should not error
+
+
+class TestStatusCounts:
+    def test_basic_counts(self, db):
+        for _ in range(3):
+            rid = db.create_run(RunRecord(cpu_model="test"))
+            db.finish_run(rid, status="completed")
+        for _ in range(2):
+            rid = db.create_run(RunRecord(cpu_model="test"))
+            db.finish_run(rid, status="crashed")
+        rid = db.create_run(RunRecord(cpu_model="test"))
+        db.finish_run(rid, status="stopped")
+
+        counts = db.get_status_counts()
+        assert counts["completed"] == 3
+        assert counts["crashed"] == 2
+        assert counts["stopped"] == 1
+
+    def test_empty_db(self, db):
+        counts = db.get_status_counts()
+        assert counts == {}
+
+    def test_single_status(self, db):
+        for _ in range(5):
+            rid = db.create_run(RunRecord(cpu_model="test"))
+            db.finish_run(rid, status="completed")
+        counts = db.get_status_counts()
+        assert counts == {"completed": 5}
 
 
 class TestBooleanConversion:
