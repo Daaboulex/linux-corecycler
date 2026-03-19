@@ -39,6 +39,7 @@ class _StressWorker(QThread):
         self._process: subprocess.Popen | None = None
 
     def run(self) -> None:
+        import contextlib
         import os
         import signal as sig
         try:
@@ -54,14 +55,23 @@ class _StressWorker(QThread):
                 self.done.emit(False, f"Unknown tool: {self._tool}")
                 return
 
+            def _make_preexec():
+                os.setsid()
+                # PR_SET_PDEATHSIG: kernel sends SIGKILL to this process if parent dies
+                import ctypes
+                import ctypes.util
+                libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+                libc.prctl(1, sig.SIGKILL)  # PR_SET_PDEATHSIG
+
             self._process = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, preexec_fn=os.setsid,
+                text=True, preexec_fn=_make_preexec,
             )
             try:
                 stdout, stderr = self._process.communicate(timeout=seconds + 60)
             except subprocess.TimeoutExpired:
-                os.killpg(os.getpgid(self._process.pid), sig.SIGKILL)
+                with contextlib.suppress(OSError, ProcessLookupError):
+                    os.killpg(os.getpgid(self._process.pid), sig.SIGKILL)
                 stdout, stderr = self._process.communicate()
 
             if self._tool == "stressapptest":
@@ -74,14 +84,38 @@ class _StressWorker(QThread):
             self.done.emit(False, str(e))
 
     def stop(self) -> None:
-        """Kill the running stress process and its children."""
+        """Kill the running stress process and its entire process group.
+
+        Uses SIGTERM -> wait(3) -> SIGKILL -> wait(2) escalation pattern
+        matching CoreScheduler._kill_current().
+        """
+        import contextlib
         import os
         import signal as sig
-        if self._process and self._process.poll() is None:
-            try:
-                os.killpg(os.getpgid(self._process.pid), sig.SIGTERM)
-            except (OSError, ProcessLookupError):
-                pass
+        proc = self._process
+        if proc is None or proc.poll() is not None:
+            return
+
+        pid = proc.pid
+        try:
+            pgid = os.getpgid(pid)
+        except (OSError, ProcessLookupError):
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=1)
+            return
+
+        # SIGTERM the whole process group
+        with contextlib.suppress(OSError, ProcessLookupError):
+            os.killpg(pgid, sig.SIGTERM)
+
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            # Escalate to SIGKILL
+            with contextlib.suppress(OSError, ProcessLookupError):
+                os.killpg(pgid, sig.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=2)
 
 
 def _get_free_memory_mb() -> int | None:
