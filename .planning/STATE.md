@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 03-02-PLAN.md
-last_updated: "2026-03-19T15:15:50Z"
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-03-19T16:08:02.117Z"
 progress:
   total_phases: 6
   completed_phases: 3
-  total_plans: 6
-  completed_plans: 6
+  total_plans: 8
+  completed_plans: 7
 ---
 
 # Project State
@@ -19,20 +19,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-19)
 
 **Core value:** Every per-core stress test result must be accurate and trustworthy
-**Current focus:** Phase 03 — PM Table Clocks & Voltages (COMPLETE)
+**Current focus:** Phase 04 — SPD Timings & Memory UI
 
 ## Current Position
 
-Phase: 03 (PM Table Clocks & Voltages) — COMPLETE
-Plan: 2 of 2 (all complete)
+Phase: 04 (SPD Timings & Memory UI) — EXECUTING
+Plan: 2 of 2
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 6
+- Total plans completed: 7
 - Average duration: 5min
-- Total execution time: 0.46 hours
+- Total execution time: 0.53 hours
 
 **By Phase:**
 
@@ -41,10 +41,11 @@ Plan: 2 of 2 (all complete)
 | 01-core-engine-fixes | 2 | 8min | 4min |
 | 02-process-thread-lifecycle | 2 | 7min | 3.5min |
 | 03-pm-table-clocks-voltages | 2 | 13min | 6.5min |
+| 04-spd-timings-memory-ui | 1 | 4min | 4min |
 
 **Recent Trend:**
 
-- Last 5 plans: 5min, 3min, 4min, 8min, 5min
+- Last 5 plans: 3min, 4min, 8min, 5min, 4min
 - Trend: stable
 
 *Updated after each plan completion*
@@ -72,6 +73,9 @@ Recent decisions affecting current work:
 - [Phase 03]: Headless Qt widget testing using SimpleNamespace + MethodType to avoid pytest-qt dependency
 - [Phase 03]: Tolerance-based ratio check (5%) replaces round() to avoid banker's rounding edge cases
 - [Phase 03]: Unified QTimer for PM table + SPD temp reads in single callback at AppSettings.poll_interval
+- [Phase 04]: DDR5 EEPROM discovery via hwmon device symlink resolution to i2c parent
+- [Phase 04]: Lazy cache pattern (_spd_loaded flag) for SPD timings -- read on first access, not at init
+- [Phase 04]: JEDEC ceiling rounding: (ps + tCK - 30) // tCK with tCL even-number enforcement
 
 ### Pending Todos
 
@@ -84,6 +88,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T15:15:50Z
-Stopped at: Completed 03-02-PLAN.md
+Last session: 2026-03-19T16:08:02.116Z
+Stopped at: Completed 04-01-PLAN.md
 Resume file: None
