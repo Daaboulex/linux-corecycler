@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-03-19T16:43:25.332Z"
+stopped_at: Completed 05-02-PLAN.md
+last_updated: "2026-03-19T16:50:02.421Z"
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 10
-  completed_plans: 9
+  completed_plans: 10
 ---
 
 # Project State
@@ -19,20 +19,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-19)
 
 **Core value:** Every per-core stress test result must be accurate and trustworthy
-**Current focus:** Phase 05 — History & Database Integrity
+**Current focus:** Phase 05 — History & Database Integrity (COMPLETE)
 
 ## Current Position
 
-Phase: 05 (History & Database Integrity) — EXECUTING
-Plan: 2 of 2
+Phase: 05 (History & Database Integrity) — COMPLETE
+Plan: 2 of 2 (all done)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 9
-- Average duration: 4.6min
-- Total execution time: 0.65 hours
+- Total plans completed: 10
+- Average duration: 4.4min
+- Total execution time: 0.73 hours
 
 **By Phase:**
 
@@ -42,11 +42,11 @@ Plan: 2 of 2
 | 02-process-thread-lifecycle | 2 | 7min | 3.5min |
 | 03-pm-table-clocks-voltages | 2 | 13min | 6.5min |
 | 04-spd-timings-memory-ui | 2 | 7min | 3.5min |
-| 05-history-database-integrity | 1 | 4min | 4min |
+| 05-history-database-integrity | 2 | 7min | 3.5min |
 
 **Recent Trend:**
 
-- Last 5 plans: 8min, 5min, 4min, 3min, 4min
+- Last 5 plans: 5min, 4min, 3min, 4min, 3min
 - Trend: stable
 
 *Updated after each plan completion*
@@ -82,6 +82,8 @@ Recent decisions affecting current work:
 - [Phase 04]: _MockVisibleLabel extends _MockLabel with visibility tracking for headless SPD label tests
 - [Phase 05]: Runtime imports for TunerSession/CoreState in HistoryDB methods to avoid circular dependency
 - [Phase 05]: Name-mangled __conn for HistoryDB encapsulation -- all DB access through public methods
+- [Phase 05]: SQL GROUP BY aggregation for dashboard summary counters instead of Python-side counting from limited list
+- [Phase 05]: SELECT-then-UPDATE pattern in recover_incomplete_runs to capture per-session details for structured logging
 
 ### Pending Todos
 
@@ -94,6 +96,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T16:43:25.330Z
-Stopped at: Completed 05-01-PLAN.md
+Last session: 2026-03-19T16:50:02.420Z
+Stopped at: Completed 05-02-PLAN.md
 Resume file: None
