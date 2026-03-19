@@ -24,7 +24,7 @@ def db():
 
 class TestSchema:
     def test_schema_created(self, db):
-        tables = db._conn.execute(
+        tables = db._execute_raw(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         ).fetchall()
         names = {r["name"] for r in tables}
@@ -35,11 +35,11 @@ class TestSchema:
         assert "schema_version" in names
 
     def test_schema_version(self, db):
-        row = db._conn.execute("SELECT version FROM schema_version").fetchone()
+        row = db._execute_raw("SELECT version FROM schema_version").fetchone()
         assert row["version"] == 5
 
     def test_foreign_keys_enabled(self, db):
-        row = db._conn.execute("PRAGMA foreign_keys").fetchone()
+        row = db._execute_raw("PRAGMA foreign_keys").fetchone()
         assert row[0] == 1
 
 
@@ -408,11 +408,11 @@ class TestTuningContexts:
 
 class TestSchemaV2:
     def test_schema_version_is_2(self, db):
-        row = db._conn.execute("SELECT version FROM schema_version").fetchone()
+        row = db._execute_raw("SELECT version FROM schema_version").fetchone()
         assert row["version"] == 5
 
     def test_tuning_contexts_table_exists(self, db):
-        tables = db._conn.execute(
+        tables = db._execute_raw(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         ).fetchall()
         names = {r["name"] for r in tables}
@@ -515,11 +515,11 @@ CREATE TABLE telemetry_samples (
             db = HistoryDB(db_path)
 
             # Verify migration
-            version = db._conn.execute("SELECT version FROM schema_version").fetchone()[0]
+            version = db._execute_raw("SELECT version FROM schema_version").fetchone()[0]
             assert version == 5
 
             # tuning_contexts table exists
-            tables = db._conn.execute(
+            tables = db._execute_raw(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
             assert "tuning_contexts" in {r["name"] for r in tables}

@@ -206,7 +206,7 @@ class TestBestProfile:
 class TestSchemaMigration:
     def test_fresh_db_has_tuner_tables(self, db):
         """Fresh v3 database should have all tuner tables."""
-        tables = db._conn.execute(
+        tables = db._execute_raw(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         ).fetchall()
         table_names = [t["name"] for t in tables]
@@ -215,5 +215,5 @@ class TestSchemaMigration:
         assert "tuner_test_log" in table_names
 
     def test_schema_version_is_5(self, db):
-        version = db._conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        version = db._execute_raw("SELECT version FROM schema_version").fetchone()[0]
         assert version == 5
