@@ -492,3 +492,120 @@ class TestSPDEepromDiscovery:
         (i2c_dir / "eeprom").unlink()
         result2 = reader.spd_timings
         assert result2 is result1  # exact same object (cached)
+
+
+class _MockGroupBox:
+    """Lightweight mock of QGroupBox for headless testing."""
+
+    def __init__(self, title: str = "") -> None:
+        self._title = title
+
+    def setTitle(self, t: str) -> None:
+        self._title = t
+
+    def title(self) -> str:
+        return self._title
+
+
+class _MockVisibleLabel(_MockLabel):
+    """Mock QLabel that also tracks visibility state."""
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self._visible = True
+
+    def setVisible(self, v: bool) -> None:
+        self._visible = v
+
+    def isVisible(self) -> bool:
+        return self._visible
+
+    def setFont(self, f) -> None:
+        pass
+
+
+class TestSPDTimingDisplay:
+    """Tests for _update_spd_labels display logic."""
+
+    def _make_spd_tab(self, spd_data):
+        """Create a headless tab with mock SPD reader returning given data."""
+        import types
+
+        from gui.memory_tab import MemoryTab, PART_NUMBER_COL
+
+        tab = types.SimpleNamespace()
+        tab._primary_label = _MockVisibleLabel("Primary: --")
+        tab._secondary_label = _MockVisibleLabel("Secondary: --")
+        tab._spd_unavailable_label = _MockVisibleLabel("")
+        tab._spd_group = _MockGroupBox("SPD Timings (DDR5)")
+        tab._spd_reader = MagicMock()
+        tab._spd_reader.spd_timings = spd_data
+        tab._update_spd_labels = types.MethodType(MemoryTab._update_spd_labels, tab)
+        return tab
+
+    def test_primary_label_format(self):
+        """Primary label shows 'Primary: tCL-tRCD-tRP-tRAS-tRC' format."""
+        spd = SPDTimingData(
+            tCK_ps=416, freq_mt=4800,
+            tCL=40, tRCD=40, tRP=40, tRAS=77, tRC=117,
+            tWR_ns=30.0, tRFC1_ns=295, tRFCsb_ns=130,
+            dimm_index=0,
+        )
+        tab = self._make_spd_tab(spd)
+        tab._update_spd_labels()
+        assert tab._primary_label.text() == "Primary: 40-40-40-77-117"
+
+    def test_secondary_label_format(self):
+        """Secondary label shows 'Secondary: tRFC1: 295ns  tRFCsb: 130ns  tWR: 30ns'."""
+        spd = SPDTimingData(
+            tCK_ps=416, freq_mt=4800,
+            tCL=40, tRCD=40, tRP=40, tRAS=77, tRC=117,
+            tWR_ns=30.0, tRFC1_ns=295, tRFCsb_ns=130,
+            dimm_index=0,
+        )
+        tab = self._make_spd_tab(spd)
+        tab._update_spd_labels()
+        assert tab._secondary_label.text() == "Secondary: tRFC1: 295ns  tRFCsb: 130ns  tWR: 30ns"
+
+    def test_unavailable_when_none(self):
+        """None SPD data shows 'SPD Timings unavailable' message."""
+        tab = self._make_spd_tab(None)
+        tab._update_spd_labels()
+        assert "SPD Timings unavailable" in tab._spd_unavailable_label.text()
+        assert tab._spd_unavailable_label.isVisible()
+        assert not tab._primary_label.isVisible()
+        assert not tab._secondary_label.isVisible()
+
+    def test_group_title_shows_dimm_number(self):
+        """Group box title contains 'DIMM 1' when dimm_index=0."""
+        spd = SPDTimingData(
+            tCK_ps=416, freq_mt=4800,
+            tCL=40, tRCD=40, tRP=40, tRAS=77, tRC=117,
+            tWR_ns=30.0, tRFC1_ns=295, tRFCsb_ns=130,
+            dimm_index=0,
+        )
+        tab = self._make_spd_tab(spd)
+        tab._update_spd_labels()
+        assert "DIMM 1" in tab._spd_group.title()
+
+    def test_labels_visible_when_data_available(self):
+        """Primary and secondary labels are visible when SPD data exists."""
+        spd = SPDTimingData(
+            tCK_ps=416, freq_mt=4800,
+            tCL=40, tRCD=40, tRP=40, tRAS=77, tRC=117,
+            tWR_ns=30.0, tRFC1_ns=295, tRFCsb_ns=130,
+            dimm_index=0,
+        )
+        tab = self._make_spd_tab(spd)
+        tab._update_spd_labels()
+        assert tab._primary_label.isVisible()
+        assert tab._secondary_label.isVisible()
+        assert not tab._spd_unavailable_label.isVisible()
+
+
+class TestColumnResize:
+    """Tests for DIMM table column resize constants."""
+
+    def test_part_number_col_is_6(self):
+        from gui.memory_tab import PART_NUMBER_COL
+        assert PART_NUMBER_COL == 6
