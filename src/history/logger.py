@@ -158,12 +158,13 @@ class TestRunLogger:
             )
         )
 
-    def on_test_completed(self, results: dict) -> None:
+    def on_test_completed(self, results_json: str) -> None:
+        results = json.loads(results_json)
         total = len(results)
         passed = sum(
             1
             for r_list in results.values()
-            if r_list and all(r.passed for r in r_list)
+            if r_list and all(r["passed"] for r in r_list)
         )
         failed = total - passed
         elapsed = time.monotonic() - self._start_time
