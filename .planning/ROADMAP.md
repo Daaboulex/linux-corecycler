@@ -89,11 +89,11 @@ Plans:
   2. On application startup, any sessions left in "Running" status from a previous crash are automatically marked "Crashed"
   3. All database queries go through public HistoryDB methods (no direct db._conn access in application code)
   4. Switching between Grouped and Tuner Sessions views shows consistent, matching data for the same sessions
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 05-01: TBD
-- [ ] 05-02: TBD
+- [ ] 05-01-PLAN.md -- Database access migration: add public HistoryDB methods, migrate all _conn call sites, rename _conn to __conn
+- [ ] 05-02-PLAN.md -- Summary counter fix (SQL aggregation), stale session recovery enhancement, view consistency, test fix
 
 ### Phase 6: UI Data Consistency
 **Goal**: All displayed sensor values are accurate and update reliably during active test runs
@@ -119,5 +119,5 @@ Note: Phases 3-4 (memory) and Phase 5 (history) are independent tracks. Phase 5 
 | 2. Process & Thread Lifecycle | 0/2 | Not started | - |
 | 3. PM Table Clocks & Voltages | 0/2 | Not started | - |
 | 4. SPD Timings & Memory UI | 0/2 | Not started | - |
-| 5. History & Database Integrity | 0/? | Not started | - |
+| 5. History & Database Integrity | 0/2 | Not started | - |
 | 6. UI Data Consistency | 0/? | Not started | - |
