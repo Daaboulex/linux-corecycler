@@ -15,7 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from engine.backends.base import StressConfig, StressMode, StressResult
-from engine.scheduler import CoreScheduler, CoreTestStatus, SchedulerConfig, TestState
+from engine.scheduler import CoreScheduler, CoreTestStatus, SchedulerConfig, TestState, _STALL_GRACE_SECONDS
 from engine.topology import CPUTopology, PhysicalCore
 
 
@@ -620,3 +620,110 @@ class TestMissingCore:
         # Core 99 should be skipped
         assert sched.core_status[99].state == "skipped"
         assert results[0][0].passed is True
+
+
+# ===========================================================================
+# Stall grace period
+# ===========================================================================
+
+
+class TestStallGracePeriod:
+    """Tests for the startup grace period in stall detection."""
+
+    def test_stall_grace_period_constant(self):
+        """_STALL_GRACE_SECONDS should be 5.0."""
+        assert _STALL_GRACE_SECONDS == 5.0
+
+    def test_no_stall_during_grace_period(self, simple_topo, mock_backend, tmp_path):
+        """During the grace period, near-zero CPU usage should NOT trigger a stall."""
+        cfg = SchedulerConfig(
+            seconds_per_core=3,  # run for 3s (within 5s grace)
+            poll_interval=0.1,
+            stall_timeout=1.0,  # would fire after 1s without grace
+        )
+        sched = CoreScheduler(
+            topology=simple_topo,
+            backend=mock_backend,
+            stress_config=StressConfig(),
+            scheduler_config=cfg,
+            work_dir=tmp_path,
+        )
+
+        # Process that stays alive for the full duration
+        call_count = [0]
+        mock_proc = MagicMock()
+
+        def poll_side_effect():
+            call_count[0] += 1
+            # Exit after enough polls to fill 3 seconds
+            if call_count[0] > 30:
+                return 0
+            return None
+
+        mock_proc.poll.side_effect = poll_side_effect
+        mock_proc.communicate.return_value = ("", "")
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        with (
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch.object(sched, "_read_core_usage", return_value=0.0),
+            patch.object(sched, "_check_temperature", return_value=True),
+            patch.object(sched.detector, "check_mce", return_value=[]),
+            patch.object(sched.detector, "reset"),
+        ):
+            results = sched.run()
+
+        # Core 0 should pass -- stall should NOT have fired during grace period
+        assert results[0][0].passed is True
+
+    def test_stall_fires_after_grace_period(self, simple_topo, mock_backend, tmp_path):
+        """After the grace period, near-zero CPU usage should trigger a stall."""
+        cfg = SchedulerConfig(
+            seconds_per_core=60,  # long enough to exceed grace + stall timeout
+            poll_interval=0.01,
+            stall_timeout=2.0,
+        )
+        sched = CoreScheduler(
+            topology=simple_topo,
+            backend=mock_backend,
+            stress_config=StressConfig(),
+            scheduler_config=cfg,
+            work_dir=tmp_path,
+        )
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # stays alive
+        mock_proc.communicate.return_value = ("", "")
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        stall_callbacks = []
+        sched.on_stall_detected.append(lambda cid: stall_callbacks.append(cid))
+
+        # Simulate time: start at 0, advance past grace + stall_timeout
+        # _read_core_usage always returns 0.0 (no CPU activity)
+        time_values = [0.0]  # mutable container for monotonic mock
+
+        original_monotonic = time.monotonic
+
+        def mock_monotonic():
+            # Advance time by 0.5s each call to speed through grace+stall
+            time_values[0] += 0.5
+            return time_values[0]
+
+        with (
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch.object(sched, "_read_core_usage", return_value=0.0),
+            patch.object(sched, "_check_temperature", return_value=True),
+            patch.object(sched.detector, "check_mce", return_value=[]),
+            patch.object(sched.detector, "reset"),
+            patch("time.monotonic", side_effect=mock_monotonic),
+            patch("time.sleep"),  # skip actual sleeping
+        ):
+            results = sched.run()
+
+        # Core 0 should FAIL with stall error
+        assert results[0][0].passed is False
+        assert "stall" in results[0][0].error_message.lower()
+        assert len(stall_callbacks) > 0
