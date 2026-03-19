@@ -760,3 +760,135 @@ class TestStallGracePeriod:
         assert results[0][0].passed is False
         assert "stall" in results[0][0].error_message.lower()
         assert len(stall_callbacks) > 0
+
+
+# ===========================================================================
+# Child TID affinity verification
+# ===========================================================================
+
+
+class TestChildAffinityVerification:
+    """Tests for periodic child-thread affinity scanning and re-pinning."""
+
+    def test_verify_child_affinity_all_pinned(self, tmp_path):
+        """When all TIDs have correct Cpus_allowed_list, return True without re-pinning."""
+        # Build a fake /proc/PID/task/ tree with 3 TIDs all correctly pinned
+        pid = 9999
+        task_dir = tmp_path / "proc" / str(pid) / "task"
+        for tid in [9999, 10000, 10001]:
+            tid_dir = task_dir / str(tid)
+            tid_dir.mkdir(parents=True)
+            (tid_dir / "status").write_text(
+                "Name:\tstress\n"
+                "State:\tR (running)\n"
+                "Cpus_allowed_list:\t0,16\n"
+            )
+
+        with patch("os.sched_setaffinity") as mock_setaff:
+            # Patch Path to use our fake /proc
+            original_path_class = Path
+
+            def fake_path_factory(*args):
+                path_str = str(args[0]) if args else ""
+                if path_str == f"/proc/{pid}/task":
+                    return original_path_class(task_dir)
+                return original_path_class(*args)
+
+            # Instead of patching Path, patch the task_dir reference
+            with patch.object(
+                CoreScheduler,
+                "_verify_child_affinity",
+                wraps=CoreScheduler._verify_child_affinity,
+            ):
+                # Call directly with our fake proc path
+                result = CoreScheduler._verify_child_affinity.__wrapped__(
+                    pid, {0, 16}, "0,16", proc_base=tmp_path / "proc"
+                )
+
+        assert result is True
+        mock_setaff.assert_not_called()
+
+    def test_verify_child_affinity_drifted_tid(self, tmp_path):
+        """When a TID has drifted, os.sched_setaffinity should re-pin it."""
+        pid = 9999
+        task_dir = tmp_path / "proc" / str(pid) / "task"
+
+        # TID 10000 is correctly pinned
+        tid_ok = task_dir / "10000"
+        tid_ok.mkdir(parents=True)
+        (tid_ok / "status").write_text("Cpus_allowed_list:\t0,16\n")
+
+        # TID 10001 has drifted to all CPUs
+        tid_bad = task_dir / "10001"
+        tid_bad.mkdir(parents=True)
+        (tid_bad / "status").write_text("Cpus_allowed_list:\t0-31\n")
+
+        with patch("os.sched_setaffinity") as mock_setaff:
+            result = CoreScheduler._verify_child_affinity.__wrapped__(
+                pid, {0, 16}, "0,16", proc_base=tmp_path / "proc"
+            )
+
+        # Should have called sched_setaffinity on the drifted TID
+        mock_setaff.assert_called_once_with(10001, {0, 16})
+
+    def test_verify_child_affinity_proc_unreadable(self):
+        """When /proc/pid/task/ is unreadable (OSError), return True (lenient)."""
+        with patch("os.sched_setaffinity") as mock_setaff:
+            result = CoreScheduler._verify_child_affinity.__wrapped__(
+                99999, {0, 16}, "0,16", proc_base=Path("/nonexistent")
+            )
+        assert result is True
+        mock_setaff.assert_not_called()
+
+    def test_affinity_check_periodic(self, simple_topo, mock_backend, tmp_path):
+        """Affinity verification should run multiple times during a >4s stress phase."""
+        cfg = SchedulerConfig(
+            seconds_per_core=60,
+            poll_interval=0.01,
+            stall_timeout=999,  # don't trigger stall
+            cores_to_test=[0],
+        )
+        sched = CoreScheduler(
+            topology=simple_topo,
+            backend=mock_backend,
+            stress_config=StressConfig(),
+            scheduler_config=cfg,
+            work_dir=tmp_path,
+        )
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.communicate.return_value = ("", "")
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        affinity_check_calls = []
+        original_verify = CoreScheduler._verify_child_affinity.__func__
+
+        def tracking_verify(*args, **kwargs):
+            affinity_check_calls.append(time.monotonic())
+            return True
+
+        # Simulate 6 seconds of wall time (0.5s per monotonic call)
+        time_values = [0.0]
+
+        def mock_monotonic():
+            time_values[0] += 0.5
+            return time_values[0]
+
+        with (
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch.object(CoreScheduler, "_verify_child_affinity", side_effect=tracking_verify),
+            patch.object(sched, "_read_core_usage", return_value=50.0),
+            patch.object(sched, "_check_temperature", return_value=True),
+            patch.object(sched.detector, "check_mce", return_value=[]),
+            patch.object(sched.detector, "reset"),
+            patch("time.monotonic", side_effect=mock_monotonic),
+            patch("time.sleep"),
+        ):
+            results = sched.run()
+
+        # With 6+ seconds and 2s interval, should have at least 2 affinity checks
+        assert len(affinity_check_calls) >= 2, (
+            f"Expected at least 2 affinity checks, got {len(affinity_check_calls)}"
+        )
