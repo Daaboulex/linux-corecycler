@@ -102,10 +102,11 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. During an active test run, all sensor values (frequency, temperature, voltage, power) update at the configured refresh interval without stale readings
   2. Monitor tab per-core view shows frequency and usage bars that accurately reflect the core currently under test (active core shows high usage, idle cores show low)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 06-01: TBD
+- [ ] 06-01-PLAN.md -- CoreGridWidget telemetry pipeline fix: NameError elimination, signal-cached active core, cross-thread safety
+- [ ] 06-02-PLAN.md -- MonitorTab reliability: poll_interval propagation, staleness indicator (grey text), narrowed exception handling
 
 ## Progress
 
@@ -120,4 +121,4 @@ Note: Phases 3-4 (memory) and Phase 5 (history) are independent tracks. Phase 5 
 | 3. PM Table Clocks & Voltages | 0/2 | Not started | - |
 | 4. SPD Timings & Memory UI | 0/2 | Not started | - |
 | 5. History & Database Integrity | 0/2 | Not started | - |
-| 6. UI Data Consistency | 0/? | Not started | - |
+| 6. UI Data Consistency | 0/2 | Not started | - |

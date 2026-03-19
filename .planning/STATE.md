@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 05-02-PLAN.md
-last_updated: "2026-03-19T16:50:02.421Z"
+stopped_at: Completed 06-01-PLAN.md
+last_updated: "2026-03-19T17:21:47.165Z"
 progress:
   total_phases: 6
   completed_phases: 5
-  total_plans: 10
-  completed_plans: 10
+  total_plans: 12
+  completed_plans: 11
 ---
 
 # Project State
@@ -19,20 +19,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-19)
 
 **Core value:** Every per-core stress test result must be accurate and trustworthy
-**Current focus:** Phase 05 — History & Database Integrity (COMPLETE)
+**Current focus:** Phase 06 — UI Data Consistency
 
 ## Current Position
 
-Phase: 05 (History & Database Integrity) — COMPLETE
-Plan: 2 of 2 (all done)
+Phase: 06 (UI Data Consistency) — EXECUTING
+Plan: 2 of 2
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 10
-- Average duration: 4.4min
-- Total execution time: 0.73 hours
+- Total plans completed: 11
+- Average duration: 4.2min
+- Total execution time: 0.77 hours
 
 **By Phase:**
 
@@ -43,10 +43,11 @@ Plan: 2 of 2 (all done)
 | 03-pm-table-clocks-voltages | 2 | 13min | 6.5min |
 | 04-spd-timings-memory-ui | 2 | 7min | 3.5min |
 | 05-history-database-integrity | 2 | 7min | 3.5min |
+| 06-ui-data-consistency | 1 | 3min | 3min |
 
 **Recent Trend:**
 
-- Last 5 plans: 5min, 4min, 3min, 4min, 3min
+- Last 5 plans: 4min, 3min, 4min, 3min, 3min
 - Trend: stable
 
 *Updated after each plan completion*
@@ -84,6 +85,7 @@ Recent decisions affecting current work:
 - [Phase 05]: Name-mangled __conn for HistoryDB encapsulation -- all DB access through public methods
 - [Phase 05]: SQL GROUP BY aggregation for dashboard summary counters instead of Python-side counting from limited list
 - [Phase 05]: SELECT-then-UPDATE pattern in recover_incomplete_runs to capture per-session details for structured logging
+- [Phase 06]: Signal-cached _active_test_core replaces cross-thread scheduler._current_core access for CoreGridWidget telemetry
 
 ### Pending Todos
 
@@ -96,6 +98,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T16:50:02.420Z
-Stopped at: Completed 05-02-PLAN.md
+Last session: 2026-03-19T17:21:47.164Z
+Stopped at: Completed 06-01-PLAN.md
 Resume file: None
