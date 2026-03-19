@@ -357,8 +357,13 @@ class TunerEngine(QObject):
             with contextlib.suppress(RuntimeError):
                 self._worker.finished.disconnect(self._on_test_finished)
             if self._worker.isRunning():
-                self._worker.terminate()
-                self._worker.wait(3000)
+                # Stop the scheduler first — kills stress process and lets worker exit cleanly
+                with contextlib.suppress(Exception):
+                    self._worker.scheduler.force_stop()
+                if not self._worker.wait(5000):
+                    # Worker didn't exit after scheduler stop — force terminate
+                    self._worker.terminate()
+                    self._worker.wait(3000)
             self._worker.deleteLater()
             self._worker = None
         self._set_status("idle")
