@@ -54,14 +54,26 @@ def main() -> int:
 
     def _cleanup_on_exit():
         """Kill any running stress processes on forced exit."""
-        if hasattr(window, '_worker') and window._worker and window._worker.isRunning():
-            window._worker.scheduler.force_stop()
-            window._worker.terminate()
-            window._worker.wait(2000)
-        if hasattr(window, '_tuner_tab') and window._tuner_tab.is_running:
-            window._tuner_tab.force_stop()
-        if hasattr(window, '_memory_tab'):
+        # Each subsystem wrapped independently — one failure must not block others
+        try:
+            if window._worker and window._worker.isRunning():
+                window._worker.scheduler.force_stop()
+                if not window._worker.wait(3000):
+                    window._worker.terminate()
+                    window._worker.wait(2000)
+        except Exception:
+            pass  # best-effort on exit
+
+        try:
+            if window._tuner_tab.is_running:
+                window._tuner_tab.force_stop()
+        except Exception:
+            pass
+
+        try:
             window._memory_tab.force_stop()
+        except Exception:
+            pass
 
     atexit.register(_cleanup_on_exit)
 
