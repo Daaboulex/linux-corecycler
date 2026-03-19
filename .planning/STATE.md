@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: unknown
-stopped_at: Completed 06-01-PLAN.md
-last_updated: "2026-03-19T17:21:47.165Z"
+status: complete
+stopped_at: Completed 06-02-PLAN.md
+last_updated: "2026-03-19T17:27:03.000Z"
 progress:
   total_phases: 6
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 12
-  completed_plans: 11
+  completed_plans: 12
 ---
 
 # Project State
@@ -19,20 +19,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-19)
 
 **Core value:** Every per-core stress test result must be accurate and trustworthy
-**Current focus:** Phase 06 — UI Data Consistency
+**Current focus:** All phases complete
 
 ## Current Position
 
-Phase: 06 (UI Data Consistency) — EXECUTING
-Plan: 2 of 2
+Phase: 06 (UI Data Consistency) — COMPLETE
+Plan: 2 of 2 (done)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 11
-- Average duration: 4.2min
-- Total execution time: 0.77 hours
+- Total plans completed: 12
+- Average duration: 4.1min
+- Total execution time: 0.82 hours
 
 **By Phase:**
 
@@ -43,11 +43,11 @@ Plan: 2 of 2
 | 03-pm-table-clocks-voltages | 2 | 13min | 6.5min |
 | 04-spd-timings-memory-ui | 2 | 7min | 3.5min |
 | 05-history-database-integrity | 2 | 7min | 3.5min |
-| 06-ui-data-consistency | 1 | 3min | 3min |
+| 06-ui-data-consistency | 2 | 6min | 3min |
 
 **Recent Trend:**
 
-- Last 5 plans: 4min, 3min, 4min, 3min, 3min
+- Last 5 plans: 3min, 4min, 3min, 3min, 3min
 - Trend: stable
 
 *Updated after each plan completion*
@@ -86,6 +86,8 @@ Recent decisions affecting current work:
 - [Phase 05]: SQL GROUP BY aggregation for dashboard summary counters instead of Python-side counting from limited list
 - [Phase 05]: SELECT-then-UPDATE pattern in recover_incomplete_runs to capture per-session details for structured logging
 - [Phase 06]: Signal-cached _active_test_core replaces cross-thread scheduler._current_core access for CoreGridWidget telemetry
+- [Phase 06]: Class-level _STALE_THRESHOLD=3 with _hwmon_fail_count/_power_fail_count for grey-out staleness indicators
+- [Phase 06]: Narrowed suppress(Exception) to except (OSError, ValueError, PermissionError) in MonitorTab._update
 
 ### Pending Todos
 
@@ -98,6 +100,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T17:21:47.164Z
-Stopped at: Completed 06-01-PLAN.md
+Last session: 2026-03-19T17:27:03Z
+Stopped at: Completed 06-02-PLAN.md
 Resume file: None

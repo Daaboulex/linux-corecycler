@@ -39,7 +39,7 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### UI Robustness
 
-- [ ] **UI-01**: All displayed sensor values update reliably during test runs (no stale data)
+- [x] **UI-01**: All displayed sensor values update reliably during test runs (no stale data)
 - [x] **UI-02**: Monitor tab per-core view shows accurate per-core frequency/usage during active testing
 
 ## v2 Requirements
@@ -92,7 +92,7 @@ Deferred to future milestone. Tracked but not in current roadmap.
 | MEM-05 | Phase 3 | Complete |
 | MEM-06 | Phase 3 | Complete |
 | MEM-07 | Phase 4 | Complete |
-| UI-01 | Phase 6 | Pending |
+| UI-01 | Phase 6 | Complete |
 | UI-02 | Phase 6 | Complete |
 
 **Coverage:**
