@@ -772,7 +772,6 @@ class TestChildAffinityVerification:
 
     def test_verify_child_affinity_all_pinned(self, tmp_path):
         """When all TIDs have correct Cpus_allowed_list, return True without re-pinning."""
-        # Build a fake /proc/PID/task/ tree with 3 TIDs all correctly pinned
         pid = 9999
         task_dir = tmp_path / "proc" / str(pid) / "task"
         for tid in [9999, 10000, 10001]:
@@ -785,25 +784,9 @@ class TestChildAffinityVerification:
             )
 
         with patch("os.sched_setaffinity") as mock_setaff:
-            # Patch Path to use our fake /proc
-            original_path_class = Path
-
-            def fake_path_factory(*args):
-                path_str = str(args[0]) if args else ""
-                if path_str == f"/proc/{pid}/task":
-                    return original_path_class(task_dir)
-                return original_path_class(*args)
-
-            # Instead of patching Path, patch the task_dir reference
-            with patch.object(
-                CoreScheduler,
-                "_verify_child_affinity",
-                wraps=CoreScheduler._verify_child_affinity,
-            ):
-                # Call directly with our fake proc path
-                result = CoreScheduler._verify_child_affinity.__wrapped__(
-                    pid, {0, 16}, "0,16", proc_base=tmp_path / "proc"
-                )
+            result = CoreScheduler._verify_child_affinity(
+                pid, {0, 16}, "0,16", proc_base=tmp_path / "proc"
+            )
 
         assert result is True
         mock_setaff.assert_not_called()
@@ -824,7 +807,7 @@ class TestChildAffinityVerification:
         (tid_bad / "status").write_text("Cpus_allowed_list:\t0-31\n")
 
         with patch("os.sched_setaffinity") as mock_setaff:
-            result = CoreScheduler._verify_child_affinity.__wrapped__(
+            result = CoreScheduler._verify_child_affinity(
                 pid, {0, 16}, "0,16", proc_base=tmp_path / "proc"
             )
 
@@ -834,7 +817,7 @@ class TestChildAffinityVerification:
     def test_verify_child_affinity_proc_unreadable(self):
         """When /proc/pid/task/ is unreadable (OSError), return True (lenient)."""
         with patch("os.sched_setaffinity") as mock_setaff:
-            result = CoreScheduler._verify_child_affinity.__wrapped__(
+            result = CoreScheduler._verify_child_affinity(
                 99999, {0, 16}, "0,16", proc_base=Path("/nonexistent")
             )
         assert result is True
@@ -863,10 +846,9 @@ class TestChildAffinityVerification:
         mock_proc.pid = 12345
 
         affinity_check_calls = []
-        original_verify = CoreScheduler._verify_child_affinity.__func__
 
         def tracking_verify(*args, **kwargs):
-            affinity_check_calls.append(time.monotonic())
+            affinity_check_calls.append(True)
             return True
 
         # Simulate 6 seconds of wall time (0.5s per monotonic call)
