@@ -623,6 +623,39 @@ class TestMissingCore:
 
 
 # ===========================================================================
+# Signal marshalling audit (regression guard)
+# ===========================================================================
+
+
+class TestSignalMarshallingAudit:
+    """Ensure no Signal(dict) or Signal(list) exists in the codebase.
+
+    PySide6 cannot copy-convert these types across QThread boundaries.
+    All complex data must use Signal(str) with JSON serialization.
+    """
+
+    def test_no_signal_dict_in_codebase(self):
+        """Scan all .py files under src/ for Signal(dict) or Signal(list)."""
+        src_dir = Path(__file__).parent.parent / "src"
+        violations = []
+        for py_file in src_dir.rglob("*.py"):
+            content = py_file.read_text()
+            for i, line in enumerate(content.splitlines(), 1):
+                # Skip comments
+                stripped = line.lstrip()
+                if stripped.startswith("#"):
+                    continue
+                if "Signal(dict)" in line or "Signal(list)" in line:
+                    violations.append(f"{py_file.relative_to(src_dir)}:{i}: {line.strip()}")
+
+        assert violations == [], (
+            "Found Signal(dict) or Signal(list) — these crash across QThread boundaries.\n"
+            "Use Signal(str) with json.dumps/loads instead.\n"
+            + "\n".join(violations)
+        )
+
+
+# ===========================================================================
 # Stall grace period
 # ===========================================================================
 
