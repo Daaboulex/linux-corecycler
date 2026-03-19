@@ -10,7 +10,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from smu.pmtable import PMTableData, PMTableReader
+from smu.pmtable import (
+    PMTableData,
+    PMTableOffsets,
+    PMTableReader,
+    PM_TABLE_OFFSETS,
+    compute_fclk_uclk_ratio,
+)
 
 
 # ===========================================================================
@@ -291,3 +297,342 @@ class TestPMTableReader:
         assert result is not None
         # Should parse 201 floats (ignoring trailing 2 bytes)
         assert len(result.raw_floats) == 201
+
+
+# ===========================================================================
+# Helper for version-aware sysfs mocking
+# ===========================================================================
+
+
+def _make_smu_dir(
+    tmp_path: Path,
+    *,
+    version_int: int | None = None,
+    raw_bytes: bytes | None = None,
+    num_floats: int = 0,
+) -> Path:
+    """Create a mock sysfs smu directory with optional version and pm_table data.
+
+    If raw_bytes is provided, it is written directly as pm_table.
+    Otherwise, num_floats zero-floats are packed as pm_table.
+    If version_int is provided, pm_table_version is written as 4-byte LE uint32.
+    """
+    smu_dir = tmp_path / "ryzen_smu_drv"
+    smu_dir.mkdir(exist_ok=True)
+
+    if raw_bytes is not None:
+        (smu_dir / "pm_table").write_bytes(raw_bytes)
+    elif num_floats > 0:
+        (smu_dir / "pm_table").write_bytes(
+            struct.pack(f"<{num_floats}f", *([0.0] * num_floats))
+        )
+
+    if version_int is not None:
+        (smu_dir / "pm_table_version").write_bytes(
+            struct.pack("<I", version_int)
+        )
+
+    return smu_dir
+
+
+def _build_versioned_pm_table(
+    version: int,
+    *,
+    fclk: float = 0.0,
+    uclk: float = 0.0,
+    mclk: float = 0.0,
+    vddcr_soc: float = 0.0,
+    vdd_mem: float = 0.0,
+) -> bytes:
+    """Build a raw PM table with values at the correct byte offsets for a version.
+
+    Creates a zeroed byte array of the appropriate table_size and inserts
+    float values at the known offsets. Also populates enough data for
+    legacy _parse_granite_ridge (200+ floats).
+    """
+    offsets = PM_TABLE_OFFSETS.get(version)
+    if offsets is None:
+        # Use a generic size for unknown versions
+        table_size = 0x994
+    else:
+        table_size = offsets.table_size
+
+    # Ensure table is large enough for legacy parsing (>= 200 floats = 800 bytes)
+    table_size = max(table_size, 800)
+    raw = bytearray(table_size)
+
+    if offsets is not None:
+        if fclk != 0.0:
+            struct.pack_into("<f", raw, offsets.fclk, fclk)
+        if uclk != 0.0:
+            struct.pack_into("<f", raw, offsets.uclk, uclk)
+        if mclk != 0.0:
+            struct.pack_into("<f", raw, offsets.mclk, mclk)
+        if vddcr_soc != 0.0:
+            struct.pack_into("<f", raw, offsets.vddcr_soc, vddcr_soc)
+        if vdd_mem != 0.0 and offsets.vdd_mem >= 0:
+            struct.pack_into("<f", raw, offsets.vdd_mem, vdd_mem)
+
+    return bytes(raw)
+
+
+# ===========================================================================
+# PMTableOffsets tests
+# ===========================================================================
+
+
+class TestPMTableOffsets:
+    def test_frozen_dataclass_with_slots(self):
+        """PMTableOffsets is a frozen dataclass with slots."""
+        offsets = PMTableOffsets(
+            table_size=0x994,
+            fclk=0x11C,
+            uclk=0x12C,
+            mclk=0x13C,
+            vddcr_soc=0x14C,
+            cldo_vddp=0x434,
+            cldo_vddg_iod=0x40C,
+            cldo_vddg_ccd=0x414,
+            vdd_misc=0xE8,
+            vdd_mem=0x43C,
+        )
+        assert offsets.fclk == 0x11C
+        assert offsets.uclk == 0x12C
+        assert offsets.mclk == 0x13C
+        # Verify frozen
+        with pytest.raises(AttributeError):
+            offsets.fclk = 0x200  # type: ignore[misc]
+        # Verify slots
+        assert hasattr(offsets, "__slots__")
+
+    def test_known_version_0x620205_exists(self):
+        """PM_TABLE_OFFSETS[0x620205] exists with correct clock offsets."""
+        offsets = PM_TABLE_OFFSETS[0x620205]
+        assert offsets.fclk == 0x11C
+        assert offsets.uclk == 0x12C
+        assert offsets.mclk == 0x13C
+        assert offsets.vddcr_soc == 0x14C
+        assert offsets.vdd_mem == 0x43C
+
+    def test_known_version_0x621102_exists(self):
+        """PM_TABLE_OFFSETS[0x621102] exists (Zen 5 variant)."""
+        offsets = PM_TABLE_OFFSETS[0x621102]
+        assert offsets.fclk == 0x11C
+        assert offsets.uclk == 0x12C
+        assert offsets.mclk == 0x13C
+        assert offsets.vdd_mem == -1  # not available on this version
+
+
+# ===========================================================================
+# PMTableData new fields tests
+# ===========================================================================
+
+
+class TestPMTableDataNewFields:
+    def test_new_fields_defaults(self):
+        """PMTableData has new memory controller fields with correct defaults."""
+        data = PMTableData()
+        assert data.fclk_mhz == 0.0
+        assert data.uclk_mhz == 0.0
+        assert data.mclk_mhz == 0.0
+        assert data.vddcr_soc_v == 0.0
+        assert data.vdd_mem_v == 0.0
+        assert data.pm_table_version == 0
+        assert data.is_calibrated is False
+
+
+# ===========================================================================
+# Version-dispatch tests
+# ===========================================================================
+
+
+class TestVersionDispatch:
+    def test_known_version_dispatch(self, tmp_path):
+        """read() with version 0x00620205 produces correct clock/voltage values."""
+        raw = _build_versioned_pm_table(
+            0x620205,
+            fclk=2000.0,
+            uclk=3000.0,
+            mclk=3000.0,
+            vddcr_soc=1.25,
+            vdd_mem=1.395,
+        )
+        smu_dir = _make_smu_dir(tmp_path, version_int=0x00620205, raw_bytes=raw)
+        reader = PMTableReader(sysfs_path=smu_dir)
+        result = reader.read()
+
+        assert result is not None
+        assert result.is_calibrated is True
+        assert result.pm_table_version == 0x00620205
+        assert result.fclk_mhz == pytest.approx(2000.0)
+        assert result.uclk_mhz == pytest.approx(3000.0)
+        assert result.mclk_mhz == pytest.approx(3000.0)
+        assert result.vddcr_soc_v == pytest.approx(1.25)
+        assert result.vdd_mem_v == pytest.approx(1.395)
+
+    def test_unknown_version_uncalibrated(self, tmp_path):
+        """read() with unknown version produces is_calibrated=False."""
+        # Use a table big enough for legacy parsing
+        floats = [0.0] * 300
+        raw = struct.pack(f"<{len(floats)}f", *floats)
+        smu_dir = _make_smu_dir(tmp_path, version_int=0x99999999, raw_bytes=raw)
+        reader = PMTableReader(sysfs_path=smu_dir)
+        result = reader.read()
+
+        assert result is not None
+        assert result.is_calibrated is False
+        assert result.pm_table_version == 0x99999999
+        assert len(result.raw_floats) > 0
+
+    def test_no_version_file_falls_back_to_legacy(self, tmp_path):
+        """read() without pm_table_version file uses legacy _parse_granite_ridge."""
+        floats = [0.0] * 420
+        floats[0] = 200.0  # PPT limit
+        floats[100] = 5700.0  # core 0 freq
+        raw = struct.pack(f"<{len(floats)}f", *floats)
+        smu_dir = _make_smu_dir(tmp_path, version_int=None, raw_bytes=raw)
+        reader = PMTableReader(num_cores=16, sysfs_path=smu_dir)
+        result = reader.read()
+
+        assert result is not None
+        # Legacy behavior: core data parsed, no version info
+        assert result.ppt_limit_w == pytest.approx(200.0)
+        assert result.core_frequency_mhz[0] == pytest.approx(5700.0)
+        # No version dispatch happened
+        assert result.pm_table_version == 0
+        assert result.is_calibrated is False
+
+    def test_zen5_prefix_match(self, tmp_path):
+        """read() with Zen 5 prefix match (0x621102) uses Zen 5 offsets."""
+        raw = _build_versioned_pm_table(
+            0x621102,
+            fclk=1800.0,
+            uclk=3600.0,
+            mclk=3600.0,
+            vddcr_soc=1.15,
+        )
+        smu_dir = _make_smu_dir(tmp_path, version_int=0x00621102, raw_bytes=raw)
+        reader = PMTableReader(sysfs_path=smu_dir)
+        result = reader.read()
+
+        assert result is not None
+        assert result.is_calibrated is True
+        assert result.fclk_mhz == pytest.approx(1800.0)
+        assert result.uclk_mhz == pytest.approx(3600.0)
+        assert result.mclk_mhz == pytest.approx(3600.0)
+
+    def test_zen5_unknown_exact_prefix_fallback(self, tmp_path):
+        """read() with unknown 0x62xxxx version falls back to Zen 5 prefix offsets."""
+        # 0x62FFFF is not in PM_TABLE_OFFSETS but matches Zen 5 prefix 0x62
+        # Build raw bytes large enough with values at Zen 5 clock offsets
+        raw = bytearray(0x994)
+        struct.pack_into("<f", raw, 0x11C, 1900.0)  # fclk
+        struct.pack_into("<f", raw, 0x12C, 1900.0)  # uclk
+        struct.pack_into("<f", raw, 0x13C, 1900.0)  # mclk
+        struct.pack_into("<f", raw, 0x14C, 1.1)      # vddcr_soc
+        smu_dir = _make_smu_dir(tmp_path, version_int=0x0062FFFF, raw_bytes=bytes(raw))
+        reader = PMTableReader(sysfs_path=smu_dir)
+        result = reader.read()
+
+        assert result is not None
+        assert result.is_calibrated is True
+        assert result.fclk_mhz == pytest.approx(1900.0)
+
+    def test_vdd_mem_negative_offset_stays_zero(self, tmp_path):
+        """offset -1 for vdd_mem means field stays at 0.0 (not read)."""
+        # 0x621102 has vdd_mem=-1
+        raw = _build_versioned_pm_table(
+            0x621102,
+            fclk=2000.0,
+            uclk=3000.0,
+            mclk=3000.0,
+            vddcr_soc=1.25,
+            vdd_mem=1.4,  # this should NOT be written since offset is -1
+        )
+        smu_dir = _make_smu_dir(tmp_path, version_int=0x00621102, raw_bytes=raw)
+        reader = PMTableReader(sysfs_path=smu_dir)
+        result = reader.read()
+
+        assert result is not None
+        assert result.is_calibrated is True
+        assert result.vdd_mem_v == 0.0  # not read because offset is -1
+
+    def test_out_of_range_offset_returns_zero(self, tmp_path):
+        """Out-of-range offset (beyond raw bytes) returns 0.0, no crash."""
+        # Create a PM table that is smaller than the expected table_size
+        # so some offsets will be out of range
+        small_raw = bytearray(256)  # much smaller than 0x994
+        struct.pack_into("<f", small_raw, 0x11C % 256, 2000.0)  # may or may not work
+        smu_dir = _make_smu_dir(
+            tmp_path, version_int=0x00620205, raw_bytes=bytes(small_raw)
+        )
+        reader = PMTableReader(sysfs_path=smu_dir)
+        result = reader.read()
+
+        # Should not crash -- out-of-range offsets produce 0.0
+        assert result is not None
+        # vdd_mem at 0x43C is way beyond 256 bytes
+        assert result.vdd_mem_v == 0.0
+
+    def test_legacy_core_data_still_parsed_with_version(self, tmp_path):
+        """Legacy _parse_granite_ridge core data is still parsed when version is known."""
+        raw = bytearray(_build_versioned_pm_table(
+            0x620205,
+            fclk=2000.0,
+            uclk=3000.0,
+            mclk=3000.0,
+            vddcr_soc=1.25,
+            vdd_mem=1.395,
+        ))
+        # Insert legacy core data
+        # PPT limit at float index 0 (byte offset 0)
+        struct.pack_into("<f", raw, 0, 200.0)
+        # Core 0 freq at float index 100 (byte offset 400)
+        struct.pack_into("<f", raw, 400, 5700.0)
+        smu_dir = _make_smu_dir(tmp_path, version_int=0x00620205, raw_bytes=bytes(raw))
+        reader = PMTableReader(num_cores=16, sysfs_path=smu_dir)
+        result = reader.read()
+
+        assert result is not None
+        # Versioned data
+        assert result.is_calibrated is True
+        assert result.fclk_mhz == pytest.approx(2000.0)
+        # Legacy core data also parsed
+        assert result.ppt_limit_w == pytest.approx(200.0)
+        assert result.core_frequency_mhz[0] == pytest.approx(5700.0)
+
+
+# ===========================================================================
+# compute_fclk_uclk_ratio tests
+# ===========================================================================
+
+
+class TestComputeFclkUclkRatio:
+    def test_ratio_1_1(self):
+        """FCLK=UCLK produces (1, 1) ratio."""
+        assert compute_fclk_uclk_ratio(2000.0, 2000.0) == (1, 1)
+
+    def test_ratio_1_2(self):
+        """UCLK=2*FCLK produces (1, 2) ratio."""
+        assert compute_fclk_uclk_ratio(1000.0, 2000.0) == (1, 2)
+
+    def test_zero_fclk_returns_none(self):
+        assert compute_fclk_uclk_ratio(0.0, 2000.0) is None
+
+    def test_zero_uclk_returns_none(self):
+        assert compute_fclk_uclk_ratio(2000.0, 0.0) is None
+
+    def test_negative_returns_none(self):
+        assert compute_fclk_uclk_ratio(-100.0, 2000.0) is None
+
+    def test_unexpected_ratio_returns_none(self):
+        """Ratio that is not 1 or 2 returns None."""
+        assert compute_fclk_uclk_ratio(1000.0, 3000.0) is None
+
+    def test_near_1_1_ratio(self):
+        """Slightly off ratio should still round to 1:1."""
+        assert compute_fclk_uclk_ratio(2000.0, 2001.0) == (1, 1)
+
+    def test_near_1_2_ratio(self):
+        """Slightly off ratio should still round to 1:2."""
+        assert compute_fclk_uclk_ratio(1000.0, 1999.0) == (1, 2)
