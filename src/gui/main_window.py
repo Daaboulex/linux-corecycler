@@ -96,6 +96,8 @@ class MainWindow(QMainWindow):
         self._hwmon = HWMonReader()
         self._msr = MSRReader()
         self._core_telemetry: dict[int, dict] = {}  # core_id -> {max_freq, max_temp, last_vcore}
+        self._core_status_cache: dict[int, CoreTestStatus] = {}
+        self._cached_cycle: int = 0
         self._logger: TestRunLogger | None = None
 
         # History database
@@ -334,11 +336,15 @@ class MainWindow(QMainWindow):
         self._results_tab.init_cores(scheduler.core_status)
 
         # create worker
+        self._core_status_cache.clear()
+        self._cached_cycle = 0
         self._worker = TestWorker(scheduler)
         self._worker.core_started.connect(self._on_core_started)
         self._worker.core_finished.connect(self._on_core_finished)
         self._worker.status_updated.connect(self._on_status_updated)
+        self._worker.status_updated.connect(self._on_status_cached)
         self._worker.cycle_completed.connect(self._on_cycle_completed)
+        self._worker.cycle_completed.connect(self._on_cycle_cached)
         self._worker.test_completed.connect(self._on_test_completed)
         self._worker.finished.connect(self._on_worker_finished)
 
@@ -384,6 +390,12 @@ class MainWindow(QMainWindow):
                 self._worker.cycle_completed.disconnect(self._logger.on_cycle_completed)
                 self._worker.test_completed.disconnect(self._logger.on_test_completed)
 
+        # Disconnect thread-safety cache signals
+        if self._worker:
+            with contextlib.suppress(RuntimeError):
+                self._worker.status_updated.disconnect(self._on_status_cached)
+                self._worker.cycle_completed.disconnect(self._on_cycle_cached)
+
         if self._logger:
             # Save any accumulated peak telemetry before stopping
             for core_id, t in self._core_telemetry.items():
@@ -427,8 +439,18 @@ class MainWindow(QMainWindow):
         self._monitor_tab.set_active_core(core_id)
 
     @Slot(int, object)
+    def _on_status_cached(self, core_id: int, status: CoreTestStatus) -> None:
+        """Cache core status from worker thread — signal/slot is thread-safe."""
+        self._core_status_cache[core_id] = status
+
+    @Slot(int)
+    def _on_cycle_cached(self, cycle: int) -> None:
+        """Cache cycle number from worker thread — signal/slot is thread-safe."""
+        self._cached_cycle = cycle
+
+    @Slot(int, object)
     def _on_core_finished(self, core_id: int, result: StressResult) -> None:
-        status = self._worker.scheduler.core_status.get(core_id) if self._worker else None
+        status = self._core_status_cache.get(core_id)
         if status:
             self._core_grid.update_core_status(core_id, status)
             self._results_tab.update_core(core_id, status)
@@ -530,6 +552,8 @@ class MainWindow(QMainWindow):
         self._tuner_tab.set_test_running(False)
         self._monitor_tab.set_active_core(None)
         self._elapsed_timer.stop()
+        self._core_status_cache.clear()
+        self._cached_cycle = 0
         self._worker = None
 
     @Slot(bool)
@@ -567,10 +591,10 @@ class MainWindow(QMainWindow):
             self._status_msg.setText("Test stopped (worker exited unexpectedly)")
             return
         elapsed = time.monotonic() - self._test_start_time
-        scheduler = self._worker.scheduler
-        total = len(scheduler.core_status)
-        passed = sum(1 for s in scheduler.core_status.values() if s.state == "passed")
-        failed = sum(1 for s in scheduler.core_status.values() if s.state == "failed")
+        cache = self._core_status_cache
+        total = len(cache)
+        passed = sum(1 for s in cache.values() if s.state == "passed")
+        failed = sum(1 for s in cache.values() if s.state == "failed")
 
         profile = self._config_tab.get_profile()
         self._results_tab.update_summary(
@@ -578,7 +602,7 @@ class MainWindow(QMainWindow):
             passed=passed,
             failed=failed,
             elapsed=elapsed,
-            cycle=scheduler._current_cycle + 1,
+            cycle=self._cached_cycle + 1,
             total_cycles=profile.cycle_count,
         )
 
@@ -723,6 +747,11 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
                 self._logger = None
+
+            # Disconnect thread-safety cache signals
+            with contextlib.suppress(RuntimeError):
+                self._worker.status_updated.disconnect(self._on_status_cached)
+                self._worker.cycle_completed.disconnect(self._on_cycle_cached)
 
             self._worker.scheduler.force_stop()
             if not self._worker.wait(5000):
