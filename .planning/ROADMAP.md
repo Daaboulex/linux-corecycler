@@ -74,10 +74,11 @@ Plans:
   1. Memory tab displays DDR5 primary timings (tCL, tRCD, tRP, tRAS, tRC) labeled as "SPD Rated" values
   2. Memory tab displays DDR5 secondary timings (tRFC1, tRFCsb, tWR, tRRDS, tRRDL, tFAW, tREFI) labeled as "SPD Rated" values
   3. All memory info columns are fully visible without truncation at the default window size
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: TBD
+- [ ] 04-01-PLAN.md -- SPD EEPROM timing decode: SPDTimingData dataclass, decode_spd_timings function, eeprom discovery in SPD5118Reader
+- [ ] 04-02-PLAN.md -- SPD Timings QGroupBox display, primary/secondary timing labels, DIMM table column resize fix
 
 ### Phase 5: History & Database Integrity
 **Goal**: History tab displays correct session data with proper status tracking and clean database access patterns
@@ -117,6 +118,6 @@ Note: Phases 3-4 (memory) and Phase 5 (history) are independent tracks. Phase 5 
 | 1. Core Engine Fixes | 2/2 | Complete | 2026-03-19 |
 | 2. Process & Thread Lifecycle | 0/2 | Not started | - |
 | 3. PM Table Clocks & Voltages | 0/2 | Not started | - |
-| 4. SPD Timings & Memory UI | 0/? | Not started | - |
+| 4. SPD Timings & Memory UI | 0/2 | Not started | - |
 | 5. History & Database Integrity | 0/? | Not started | - |
 | 6. UI Data Consistency | 0/? | Not started | - |

@@ -31,8 +31,8 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 - [x] **MEM-01**: Memory tab displays FCLK, UCLK, MCLK from ryzen_smu PM table with 1:1 vs 1:2 ratio indicator
 - [x] **MEM-02**: Memory tab displays actual running VDD/VDDQ voltage (from PM table, not SPD default 1.10V)
-- [ ] **MEM-03**: Memory tab displays DDR5 primary timings (tCL, tRCD, tRP, tRAS, tRC) from SPD EEPROM
-- [ ] **MEM-04**: Memory tab displays DDR5 secondary timings (tRFC1, tRFCsb, tWR, tRRDS, tRRDL, tFAW, tREFI) from SPD EEPROM
+- [x] **MEM-03**: Memory tab displays DDR5 primary timings (tCL, tRCD, tRP, tRAS, tRC) from SPD EEPROM
+- [x] **MEM-04**: Memory tab displays DDR5 secondary timings (tRFC1, tRFCsb, tWR) from SPD EEPROM
 - [x] **MEM-05**: PM table parsing is version-aware (dispatches to correct offset map based on pm_table_version)
 - [x] **MEM-06**: DIMM temperature display updates in real-time during stress tests (not just on manual refresh)
 - [ ] **MEM-07**: Memory info layout fits properly without column truncation (visible in current UI)
@@ -51,6 +51,8 @@ Deferred to future milestone. Tracked but not in current roadmap.
 - **MEM-A01**: Display actual running DDR5 timings from UMC registers via SMN interface (tCL, tRCD, tRP as the memory controller sees them vs SPD rated values)
 - **MEM-A02**: Side-by-side comparison of SPD rated vs actual running timings
 - **MEM-A03**: Memory bandwidth estimation from FCLK/channel configuration
+- **MEM-A04**: Display additional DDR5 secondary timings (tRRDS, tRRDL, tFAW) once SPD byte offsets are confirmed
+- **MEM-A05**: Display tREFI as JEDEC fixed constant (3900ns for DDR5)
 
 ### Auto-Tuner Enhancements
 
@@ -85,8 +87,8 @@ Deferred to future milestone. Tracked but not in current roadmap.
 | HIST-04 | Phase 5 | Pending |
 | MEM-01 | Phase 3 | Complete |
 | MEM-02 | Phase 3 | Complete |
-| MEM-03 | Phase 4 | Pending |
-| MEM-04 | Phase 4 | Pending |
+| MEM-03 | Phase 4 | Complete |
+| MEM-04 | Phase 4 | Complete |
 | MEM-05 | Phase 3 | Complete |
 | MEM-06 | Phase 3 | Complete |
 | MEM-07 | Phase 4 | Pending |
