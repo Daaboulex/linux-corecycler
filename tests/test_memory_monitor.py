@@ -123,8 +123,8 @@ class TestFCLKUCLKRatio:
     def test_negative_returns_none(self):
         assert compute_fclk_uclk_ratio(-100.0, 2000.0) is None
 
-    def test_unexpected_ratio_returns_none(self):
-        assert compute_fclk_uclk_ratio(2000.0, 5000.0) is None
+    def test_arbitrary_ratio(self):
+        assert compute_fclk_uclk_ratio(2000.0, 5000.0) == (2, 5)
 
     def test_ratio_with_rounding(self):
         assert compute_fclk_uclk_ratio(2000.0, 2000.1) == (1, 1)

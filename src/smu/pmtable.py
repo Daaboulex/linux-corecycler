@@ -177,20 +177,25 @@ class PMTableData:
 def compute_fclk_uclk_ratio(
     fclk_mhz: float, uclk_mhz: float
 ) -> tuple[int, int] | None:
-    """Compute FCLK:UCLK ratio. Returns (1,1) or (1,2) or None if indeterminate.
+    """Compute FCLK:UCLK ratio as a simplified integer pair.
 
-    AMD memory controllers run at either 1:1 (coupled) or 1:2 (decoupled)
-    FCLK:UCLK ratio. Any other ratio is unexpected.
+    Common AMD DDR5 ratios:
+    - 1:1 — FCLK=UCLK (coupled, optimal latency)
+    - 2:3 — FCLK=2000, UCLK=3000 (DDR5-6000 with FCLK capped at ~2000)
+    - 1:2 — FCLK=UCLK/2 (decoupled)
+    Returns None only if values are zero/negative.
     """
     if fclk_mhz <= 0 or uclk_mhz <= 0:
         return None
-    ratio = uclk_mhz / fclk_mhz
-    # Tolerance: within 5% of exact integer ratio (handles measurement noise)
-    if abs(ratio - 1.0) < 0.05:
-        return (1, 1)
-    elif abs(ratio - 2.0) < 0.05:
-        return (1, 2)
-    return None
+    from math import gcd
+
+    # Round to nearest 100 MHz to handle measurement noise
+    f = round(fclk_mhz / 100)
+    u = round(uclk_mhz / 100)
+    if f <= 0 or u <= 0:
+        return None
+    g = gcd(f, u)
+    return (f // g, u // g)
 
 
 # ===========================================================================
