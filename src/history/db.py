@@ -128,14 +128,14 @@ class HistoryDB:
         if str(self._db_path) != ":memory:":
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._conn = sqlite3.connect(
+        self.__conn = sqlite3.connect(
             str(self._db_path),
             isolation_level=None,  # autocommit
         )
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
+        self.__conn.row_factory = sqlite3.Row
+        self.__conn.execute("PRAGMA journal_mode=WAL")
+        self.__conn.execute("PRAGMA synchronous=NORMAL")
+        self.__conn.execute("PRAGMA foreign_keys=ON")
         self._create_schema()
 
     # ------------------------------------------------------------------
@@ -143,31 +143,31 @@ class HistoryDB:
     # ------------------------------------------------------------------
 
     def _create_schema(self) -> None:
-        cur = self._conn.execute(
+        cur = self.__conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
         )
         if cur.fetchone() is None:
             # Fresh database — create everything at current version
-            self._conn.executescript(self._DDL_V5)
+            self.__conn.executescript(self._DDL_V5)
             return
 
         # Existing database — check version and migrate
-        version = self._conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        version = self.__conn.execute("SELECT version FROM schema_version").fetchone()[0]
         if version < 2:
-            self._conn.executescript(self._DDL_MIGRATE_V2)
-            self._conn.execute("UPDATE schema_version SET version=2")
+            self.__conn.executescript(self._DDL_MIGRATE_V2)
+            self.__conn.execute("UPDATE schema_version SET version=2")
             version = 2
         if version < 3:
-            self._conn.executescript(self._DDL_MIGRATE_V3)
-            self._conn.execute("UPDATE schema_version SET version=3")
+            self.__conn.executescript(self._DDL_MIGRATE_V3)
+            self.__conn.execute("UPDATE schema_version SET version=3")
             version = 3
         if version < 4:
-            self._conn.executescript(self._DDL_MIGRATE_V4)
-            self._conn.execute("UPDATE schema_version SET version=4")
+            self.__conn.executescript(self._DDL_MIGRATE_V4)
+            self.__conn.execute("UPDATE schema_version SET version=4")
             version = 4
         if version < 5:
-            self._conn.executescript(self._DDL_MIGRATE_V5)
-            self._conn.execute("UPDATE schema_version SET version=5")
+            self.__conn.executescript(self._DDL_MIGRATE_V5)
+            self.__conn.execute("UPDATE schema_version SET version=5")
 
     # Full schema for fresh databases (v5)
     _DDL_V5 = """\
@@ -399,7 +399,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         """Insert a new run record. Returns the run id."""
         if not run.started_at:
             run.started_at = self._now_iso()
-        cur = self._conn.execute(
+        cur = self.__conn.execute(
             """\
             INSERT INTO runs (
                 started_at, status, cpu_model, physical_cores, logical_cpus,
@@ -449,7 +449,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         cores_failed: int = 0,
         total_seconds: float = 0.0,
     ) -> None:
-        self._conn.execute(
+        self.__conn.execute(
             """\
             UPDATE runs SET finished_at=?, status=?,
                 total_cores=?, cores_passed=?, cores_failed=?, total_seconds=?
@@ -467,13 +467,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         )
 
     def get_run(self, run_id: int) -> RunRecord | None:
-        row = self._conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        row = self.__conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if row is None:
             return None
         return self._row_to_run(row)
 
     def list_runs(self, *, limit: int = 100, offset: int = 0) -> list[RunRecord]:
-        rows = self._conn.execute(
+        rows = self.__conn.execute(
             "SELECT * FROM runs ORDER BY id DESC LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
@@ -481,11 +481,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
 
     def delete_run(self, run_id: int) -> None:
         """Delete a run and all related records (CASCADE)."""
-        self._conn.execute("DELETE FROM runs WHERE id=?", (run_id,))
+        self.__conn.execute("DELETE FROM runs WHERE id=?", (run_id,))
 
     def list_runs_for_context(self, context_id: int) -> list[RunRecord]:
         """Return all runs belonging to a specific tuning context."""
-        rows = self._conn.execute(
+        rows = self.__conn.execute(
             "SELECT * FROM runs WHERE context_id=? ORDER BY id DESC",
             (context_id,),
         ).fetchall()
@@ -528,7 +528,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
     def insert_core_result(self, rec: CoreResultRecord) -> int:
         if not rec.started_at:
             rec.started_at = self._now_iso()
-        cur = self._conn.execute(
+        cur = self.__conn.execute(
             """\
             INSERT INTO core_results (
                 run_id, core_id, ccd, cycle, started_at, finished_at,
@@ -608,13 +608,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         if not sets:
             return
         vals.append(result_id)
-        self._conn.execute(
+        self.__conn.execute(
             f"UPDATE core_results SET {', '.join(sets)} WHERE id=?",
             vals,
         )
 
     def get_core_results(self, run_id: int) -> list[CoreResultRecord]:
-        rows = self._conn.execute(
+        rows = self.__conn.execute(
             "SELECT * FROM core_results WHERE run_id=? ORDER BY cycle, core_id",
             (run_id,),
         ).fetchall()
@@ -648,7 +648,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
     def insert_event(self, event: EventRecord) -> int:
         if not event.timestamp:
             event.timestamp = self._now_iso()
-        cur = self._conn.execute(
+        cur = self.__conn.execute(
             """\
             INSERT INTO events (run_id, timestamp, event_type, core_id, message, details_json)
             VALUES (?,?,?,?,?,?)
@@ -667,12 +667,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
 
     def get_events(self, run_id: int, *, event_type: str | None = None) -> list[EventRecord]:
         if event_type:
-            rows = self._conn.execute(
+            rows = self.__conn.execute(
                 "SELECT * FROM events WHERE run_id=? AND event_type=? ORDER BY id",
                 (run_id, event_type),
             ).fetchall()
         else:
-            rows = self._conn.execute(
+            rows = self.__conn.execute(
                 "SELECT * FROM events WHERE run_id=? ORDER BY id",
                 (run_id,),
             ).fetchall()
@@ -697,7 +697,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
     def insert_telemetry_batch(self, samples: list[TelemetrySample]) -> None:
         if not samples:
             return
-        self._conn.executemany(
+        self.__conn.executemany(
             """\
             INSERT INTO telemetry_samples (run_id, core_id, timestamp, freq_mhz, effective_max_mhz, temp_c, vcore_v)
             VALUES (?,?,?,?,?,?,?)
@@ -712,12 +712,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         self, run_id: int, *, core_id: int | None = None
     ) -> list[TelemetrySample]:
         if core_id is not None:
-            rows = self._conn.execute(
+            rows = self.__conn.execute(
                 "SELECT * FROM telemetry_samples WHERE run_id=? AND core_id=? ORDER BY id",
                 (run_id, core_id),
             ).fetchall()
         else:
-            rows = self._conn.execute(
+            rows = self.__conn.execute(
                 "SELECT * FROM telemetry_samples WHERE run_id=? ORDER BY id",
                 (run_id,),
             ).fetchall()
@@ -747,7 +747,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         """
         if not ctx.created_at:
             ctx.created_at = self._now_iso()
-        cur = self._conn.execute(
+        cur = self.__conn.execute(
             """\
             INSERT OR IGNORE INTO tuning_contexts (
                 created_at, bios_version, co_offsets_json, co_hash,
@@ -776,7 +776,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         return cur.lastrowid
 
     def get_context(self, context_id: int) -> TuningContextRecord | None:
-        row = self._conn.execute(
+        row = self.__conn.execute(
             "SELECT * FROM tuning_contexts WHERE id=?", (context_id,)
         ).fetchone()
         if row is None:
@@ -787,7 +787,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         self, co_hash: str, bios_version: str
     ) -> TuningContextRecord | None:
         """Find an existing context matching the given CO hash and BIOS version."""
-        row = self._conn.execute(
+        row = self.__conn.execute(
             "SELECT * FROM tuning_contexts WHERE co_hash=? AND bios_version=? LIMIT 1",
             (co_hash, bios_version),
         ).fetchone()
@@ -797,13 +797,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
 
     def list_contexts(self, *, limit: int = 100) -> list[TuningContextRecord]:
         """List tuning contexts, newest first."""
-        rows = self._conn.execute(
+        rows = self.__conn.execute(
             "SELECT * FROM tuning_contexts ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [self._row_to_context(r) for r in rows]
 
     def update_context_notes(self, context_id: int, notes: str) -> None:
-        self._conn.execute(
+        self.__conn.execute(
             "UPDATE tuning_contexts SET notes=? WHERE id=?", (notes, context_id)
         )
 
@@ -833,7 +833,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
     ) -> int:
         """Create a new tuner session. Returns the session id."""
         now = self._now_iso()
-        cur = self._conn.execute(
+        cur = self.__conn.execute(
             """\
             INSERT INTO tuner_sessions
                 (created_at, updated_at, status, bios_version, cpu_model,
@@ -845,13 +845,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         return cur.lastrowid
 
     def update_tuner_session_status(self, session_id: int, status: str) -> None:
-        self._conn.execute(
+        self.__conn.execute(
             "UPDATE tuner_sessions SET status=?, updated_at=? WHERE id=?",
             (status, self._now_iso(), session_id),
         )
 
     def get_tuner_session(self, session_id: int) -> TunerSession | None:
-        row = self._conn.execute(
+        row = self.__conn.execute(
             "SELECT * FROM tuner_sessions WHERE id=?", (session_id,)
         ).fetchone()
         if row is None:
@@ -859,7 +859,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         return self._row_to_tuner_session(row)
 
     def get_latest_tuner_session(self) -> TunerSession | None:
-        row = self._conn.execute(
+        row = self.__conn.execute(
             "SELECT * FROM tuner_sessions ORDER BY id DESC LIMIT 1"
         ).fetchone()
         if row is None:
@@ -867,7 +867,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         return self._row_to_tuner_session(row)
 
     def get_active_tuner_session(self) -> TunerSession | None:
-        row = self._conn.execute(
+        row = self.__conn.execute(
             "SELECT * FROM tuner_sessions WHERE status IN ('running','paused') "
             "ORDER BY id DESC LIMIT 1"
         ).fetchone()
@@ -876,14 +876,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         return self._row_to_tuner_session(row)
 
     def list_tuner_sessions(self, *, limit: int = 100) -> list[TunerSession]:
-        rows = self._conn.execute(
+        rows = self.__conn.execute(
             "SELECT * FROM tuner_sessions ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [self._row_to_tuner_session(r) for r in rows]
 
     def upsert_tuner_core_state(self, session_id: int, cs: CoreState) -> None:
         now = self._now_iso()
-        self._conn.execute(
+        self.__conn.execute(
             """\
             INSERT INTO tuner_core_states
                 (session_id, core_id, phase, current_offset, best_offset,
@@ -912,7 +912,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
     def get_tuner_core_states(self, session_id: int) -> dict[int, CoreState]:
         from tuner.state import CoreState as _CoreState
 
-        rows = self._conn.execute(
+        rows = self.__conn.execute(
             "SELECT * FROM tuner_core_states WHERE session_id=? ORDER BY core_id",
             (session_id,),
         ).fetchall()
@@ -940,7 +940,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         duration: float | None = None,
         run_id: int | None = None,
     ) -> int:
-        cur = self._conn.execute(
+        cur = self.__conn.execute(
             """\
             INSERT INTO tuner_test_log
                 (session_id, core_id, offset_tested, phase, passed,
@@ -966,19 +966,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
         self, session_id: int, core_id: int | None = None
     ) -> list[dict]:
         if core_id is not None:
-            rows = self._conn.execute(
+            rows = self.__conn.execute(
                 "SELECT * FROM tuner_test_log WHERE session_id=? AND core_id=? ORDER BY id",
                 (session_id, core_id),
             ).fetchall()
         else:
-            rows = self._conn.execute(
+            rows = self.__conn.execute(
                 "SELECT * FROM tuner_test_log WHERE session_id=? ORDER BY id",
                 (session_id,),
             ).fetchall()
         return [dict(r) for r in rows]
 
     def get_tuner_best_profile(self, session_id: int) -> dict[int, int]:
-        rows = self._conn.execute(
+        rows = self.__conn.execute(
             "SELECT core_id, best_offset FROM tuner_core_states "
             "WHERE session_id=? AND phase='confirmed' AND best_offset IS NOT NULL",
             (session_id,),
@@ -987,12 +987,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
 
     def delete_context_cascade(self, context_id: int) -> None:
         """Delete a tuning context and all associated runs and tuner sessions."""
-        self._conn.execute("DELETE FROM runs WHERE context_id=?", (context_id,))
-        self._conn.execute("DELETE FROM tuner_sessions WHERE context_id=?", (context_id,))
-        self._conn.execute("DELETE FROM tuning_contexts WHERE id=?", (context_id,))
+        self.__conn.execute("DELETE FROM runs WHERE context_id=?", (context_id,))
+        self.__conn.execute("DELETE FROM tuner_sessions WHERE context_id=?", (context_id,))
+        self.__conn.execute("DELETE FROM tuning_contexts WHERE id=?", (context_id,))
 
     def get_status_counts(self) -> dict[str, int]:
-        rows = self._conn.execute(
+        rows = self.__conn.execute(
             "SELECT status, COUNT(*) as cnt FROM runs GROUP BY status"
         ).fetchall()
         return {r["status"]: r["cnt"] for r in rows}
@@ -1015,7 +1015,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
 
     def _execute_raw(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Internal: raw SQL access for testing. Not for application code."""
-        return self._conn.execute(sql, params)
+        return self.__conn.execute(sql, params)
 
     # ------------------------------------------------------------------
     # Maintenance
@@ -1023,7 +1023,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
 
     def delete_orphaned_contexts(self) -> int:
         """Delete tuning contexts that have no associated runs or tuner sessions."""
-        cursor = self._conn.execute(
+        cursor = self.__conn.execute(
             "DELETE FROM tuning_contexts WHERE id NOT IN "
             "(SELECT DISTINCT context_id FROM runs WHERE context_id IS NOT NULL) "
             "AND id NOT IN "
@@ -1033,11 +1033,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
 
     def delete_tuner_session(self, session_id: int) -> None:
         """Delete a tuner session and all related records (CASCADE)."""
-        self._conn.execute("DELETE FROM tuner_sessions WHERE id=?", (session_id,))
+        self.__conn.execute("DELETE FROM tuner_sessions WHERE id=?", (session_id,))
 
     def recover_incomplete_runs(self) -> int:
         """Mark any 'running' runs as 'crashed'. Returns count recovered."""
-        cur = self._conn.execute(
+        cur = self.__conn.execute(
             "UPDATE runs SET status='crashed', finished_at=? WHERE status='running'",
             (self._now_iso(),),
         )
@@ -1045,7 +1045,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
 
     def purge_before(self, iso_date: str) -> int:
         """Delete all runs started before the given ISO date. Returns count deleted."""
-        cur = self._conn.execute(
+        cur = self.__conn.execute(
             "DELETE FROM runs WHERE started_at < ?",
             (iso_date,),
         )
@@ -1053,7 +1053,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
 
     def vacuum(self) -> None:
         """Reclaim space after bulk deletes."""
-        self._conn.execute("VACUUM")
+        self.__conn.execute("VACUUM")
 
     def close(self) -> None:
-        self._conn.close()
+        self.__conn.close()

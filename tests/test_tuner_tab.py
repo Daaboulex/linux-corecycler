@@ -40,7 +40,7 @@ class TestTunerTabCreation:
 
     def test_db_schema_has_tuner_tables(self, db):
         """The DB fixture should have tuner tables from v3 schema."""
-        tables = db._conn.execute(
+        tables = db._execute_raw(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
         names = [t["name"] for t in tables]
