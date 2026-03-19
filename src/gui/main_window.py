@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
         self._core_telemetry: dict[int, dict] = {}  # core_id -> {max_freq, max_temp, last_vcore}
         self._core_status_cache: dict[int, CoreTestStatus] = {}
         self._cached_cycle: int = 0
+        self._active_test_core: int | None = None
         self._logger: TestRunLogger | None = None
 
         # History database
@@ -339,6 +340,7 @@ class MainWindow(QMainWindow):
         # create worker
         self._core_status_cache.clear()
         self._cached_cycle = 0
+        self._active_test_core = None
         self._worker = TestWorker(scheduler)
         self._worker.core_started.connect(self._on_core_started)
         self._worker.core_finished.connect(self._on_core_finished)
@@ -438,6 +440,7 @@ class MainWindow(QMainWindow):
     def _on_core_started(self, core_id: int, cycle: int) -> None:
         self._status_msg.setText(f"Testing core {core_id} (cycle {cycle + 1})")
         self._monitor_tab.set_active_core(core_id)
+        self._active_test_core = core_id
 
     @Slot(int, object)
     def _on_status_cached(self, core_id: int, status: CoreTestStatus) -> None:
@@ -555,6 +558,7 @@ class MainWindow(QMainWindow):
         self._elapsed_timer.stop()
         self._core_status_cache.clear()
         self._cached_cycle = 0
+        self._active_test_core = None
         self._worker = None
 
     @Slot(bool)
@@ -608,11 +612,16 @@ class MainWindow(QMainWindow):
         )
 
         # feed per-core telemetry to the grid for the active core
-        self._poll_core_telemetry(scheduler)
+        self._feed_core_grid_telemetry()
 
-    def _poll_core_telemetry(self, scheduler: CoreScheduler) -> None:
-        """Read freq/temp/voltage/stretch and push to the active core's grid cell."""
-        current_core = scheduler._current_core
+    def _feed_core_grid_telemetry(self) -> None:
+        """Read freq/temp/voltage/stretch and push to the active core's grid cell.
+
+        Uses ``_active_test_core`` (set by ``_on_core_started`` signal handler
+        in the GUI thread) instead of reading scheduler state directly
+        across threads -- this is the Phase 2 signal/slot cache pattern.
+        """
+        current_core = self._active_test_core
         if current_core is None:
             return
 
@@ -645,7 +654,7 @@ class MainWindow(QMainWindow):
         # temperature (prefer per-CCD temp over package Tctl)
         hwmon_data = self._hwmon.read()
         ccd = core_info.ccd if core_info.ccd is not None else 0
-        # k10temp: Tccd1 → CCD 0 (index offset)
+        # k10temp: Tccd1 -> CCD 0 (index offset)
         temp = hwmon_data.tccd_temps.get(ccd + 1, hwmon_data.tctl_c or 0)
         vcore = hwmon_data.vcore_v
 
