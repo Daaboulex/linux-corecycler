@@ -874,3 +874,50 @@ class TestChildAffinityVerification:
         assert len(affinity_check_calls) >= 2, (
             f"Expected at least 2 affinity checks, got {len(affinity_check_calls)}"
         )
+
+
+# ===========================================================================
+# Process cleanup — PR_SET_PDEATHSIG and kill escalation
+# ===========================================================================
+
+
+class TestProcessCleanup:
+    """Tests for preexec_fn PR_SET_PDEATHSIG and process group cleanup."""
+
+    def test_make_preexec_calls_setsid_and_pdeathsig(self):
+        """_make_preexec() returns a callable that calls both os.setsid() and prctl(PR_SET_PDEATHSIG, SIGKILL)."""
+        preexec = CoreScheduler._make_preexec()
+        assert callable(preexec)
+
+        with (
+            patch("os.setsid") as mock_setsid,
+            patch("ctypes.CDLL") as mock_cdll,
+            patch("ctypes.util.find_library", return_value="libc.so.6"),
+        ):
+            mock_libc = MagicMock()
+            mock_cdll.return_value = mock_libc
+
+            preexec()
+
+            mock_setsid.assert_called_once()
+            # PR_SET_PDEATHSIG = 1, signal.SIGKILL = 9
+            mock_libc.prctl.assert_called_once_with(1, signal.SIGKILL)
+
+    def test_no_bare_setsid_in_src(self):
+        """Scan all .py files under src/ for bare preexec_fn=os.setsid — assert zero matches."""
+        src_dir = Path(__file__).parent.parent / "src"
+        violations = []
+        for py_file in src_dir.rglob("*.py"):
+            content = py_file.read_text()
+            for i, line in enumerate(content.splitlines(), 1):
+                stripped = line.lstrip()
+                if stripped.startswith("#"):
+                    continue
+                if "preexec_fn=os.setsid" in line:
+                    violations.append(f"{py_file.relative_to(src_dir)}:{i}: {line.strip()}")
+
+        assert violations == [], (
+            "Found bare preexec_fn=os.setsid without PR_SET_PDEATHSIG.\n"
+            "All subprocess launches must use _make_preexec() or equivalent.\n"
+            + "\n".join(violations)
+        )
