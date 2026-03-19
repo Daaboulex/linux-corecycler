@@ -475,7 +475,7 @@ class CoreScheduler:
                         stderr=subprocess.PIPE,
                         text=True,
                         cwd=str(core_work_dir),
-                        preexec_fn=os.setsid,
+                        preexec_fn=self._make_preexec(),
                     )
 
                     while time.monotonic() < segment_end and not self._stop_requested:
@@ -656,7 +656,7 @@ class CoreScheduler:
                 stderr=subprocess.PIPE,
                 text=True,
                 cwd=str(core_work_dir),
-                preexec_fn=os.setsid,  # own process group for clean kill
+                preexec_fn=self._make_preexec(),  # own process group + PR_SET_PDEATHSIG
             )
 
             deadline = start_time + self.config.seconds_per_core
@@ -810,6 +810,19 @@ class CoreScheduler:
             self._reap_zombies()
 
         return passed, error_msg
+
+    @staticmethod
+    def _make_preexec():
+        """Create preexec_fn that isolates process group AND ensures child dies with parent."""
+        def _preexec():
+            os.setsid()
+            # PR_SET_PDEATHSIG: kernel sends SIGKILL to this process if parent dies
+            import ctypes
+            import ctypes.util
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+            PR_SET_PDEATHSIG = 1
+            libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+        return _preexec
 
     def _kill_current(self) -> None:
         """Kill the current stress test process and all children in its group.
