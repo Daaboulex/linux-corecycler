@@ -180,6 +180,36 @@ class _MockLabel:
         self._stylesheet = ss
 
 
+class _MockGroupBox:
+    """Lightweight mock of QGroupBox for headless testing."""
+
+    def __init__(self, title: str = "") -> None:
+        self._title = title
+
+    def setTitle(self, t: str) -> None:
+        self._title = t
+
+    def title(self) -> str:
+        return self._title
+
+
+class _MockVisibleLabel(_MockLabel):
+    """Mock QLabel that also tracks visibility state."""
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self._visible = True
+
+    def setVisible(self, v: bool) -> None:
+        self._visible = v
+
+    def isVisible(self) -> bool:
+        return self._visible
+
+    def setFont(self, f) -> None:
+        pass
+
+
 def _make_headless_tab():
     """Create a mock MemoryTab-like object with mock labels for headless testing.
 
@@ -202,6 +232,11 @@ def _make_headless_tab():
     tab._pm_reader.is_available.return_value = True
     tab._spd_reader = MagicMock()
     tab._spd_reader.is_available.return_value = False
+    # SPD timing labels (added in Plan 04-02)
+    tab._primary_label = _MockLabel("Primary: --")
+    tab._secondary_label = _MockLabel("Secondary: --")
+    tab._spd_unavailable_label = _MockLabel("")
+    tab._spd_group = _MockGroupBox("SPD Timings (DDR5)")
     # Bind MemoryTab methods to our namespace object
     tab._update_clock_labels = types.MethodType(MemoryTab._update_clock_labels, tab)
     tab._update_voltage_labels = types.MethodType(MemoryTab._update_voltage_labels, tab)
@@ -209,6 +244,7 @@ def _make_headless_tab():
     tab._set_clocks_unavailable = types.MethodType(MemoryTab._set_clocks_unavailable, tab)
     tab._update_live_data = types.MethodType(MemoryTab._update_live_data, tab)
     tab._update_temperatures = types.MethodType(MemoryTab._update_temperatures, tab)
+    tab._update_spd_labels = types.MethodType(MemoryTab._update_spd_labels, tab)
     tab._temp_labels = []
     return tab
 
@@ -492,36 +528,6 @@ class TestSPDEepromDiscovery:
         (i2c_dir / "eeprom").unlink()
         result2 = reader.spd_timings
         assert result2 is result1  # exact same object (cached)
-
-
-class _MockGroupBox:
-    """Lightweight mock of QGroupBox for headless testing."""
-
-    def __init__(self, title: str = "") -> None:
-        self._title = title
-
-    def setTitle(self, t: str) -> None:
-        self._title = t
-
-    def title(self) -> str:
-        return self._title
-
-
-class _MockVisibleLabel(_MockLabel):
-    """Mock QLabel that also tracks visibility state."""
-
-    def __init__(self, text: str = "") -> None:
-        super().__init__(text)
-        self._visible = True
-
-    def setVisible(self, v: bool) -> None:
-        self._visible = v
-
-    def isVisible(self) -> bool:
-        return self._visible
-
-    def setFont(self, f) -> None:
-        pass
 
 
 class TestSPDTimingDisplay:
