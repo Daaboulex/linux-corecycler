@@ -12,7 +12,7 @@ CoreCyclerLx is a mature Linux per-core CPU stability tester whose primary funct
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Core Engine Fixes** - Fix core cycling, stall detection, affinity verification, and Signal crash so per-core testing actually works
+- [x] **Phase 1: Core Engine Fixes** - Fix core cycling, stall detection, affinity verification, and Signal crash so per-core testing actually works
 - [ ] **Phase 2: Process & Thread Lifecycle** - Harden subprocess cleanup, QThread shutdown, and cross-thread safety to prevent orphans and stale state
 - [ ] **Phase 3: PM Table Clocks & Voltages** - Display running FCLK/UCLK/MCLK and VDD/VDDQ from version-aware PM table parsing with real-time updates
 - [ ] **Phase 4: SPD Timings & Memory UI** - Decode DDR5 timing parameters from SPD EEPROM and fix memory tab layout
@@ -33,8 +33,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 2 plans
 
 Plans:
-- [ ] 01-01-PLAN.md -- Core cycling engine: stall detection grace period + periodic child TID affinity verification
-- [ ] 01-02-PLAN.md -- Signal(dict) crash fix: JSON string marshalling for cross-thread test completion signal
+- [x] 01-01-PLAN.md -- Core cycling engine: stall detection grace period + periodic child TID affinity verification
+- [x] 01-02-PLAN.md -- Signal(dict) crash fix: JSON string marshalling for cross-thread test completion signal
 
 ### Phase 2: Process & Thread Lifecycle
 **Goal**: Stress processes and worker threads are fully managed -- no orphans survive application exit, no stale thread state accumulates
@@ -114,7 +114,7 @@ Note: Phases 3-4 (memory) and Phase 5 (history) are independent tracks. Phase 5 
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Core Engine Fixes | 0/2 | Planning complete | - |
+| 1. Core Engine Fixes | 2/2 | Complete | 2026-03-19 |
 | 2. Process & Thread Lifecycle | 0/? | Not started | - |
 | 3. PM Table Clocks & Voltages | 0/? | Not started | - |
 | 4. SPD Timings & Memory UI | 0/? | Not started | - |
