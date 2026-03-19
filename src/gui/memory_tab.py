@@ -23,7 +23,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from config.settings import load_settings
 from monitor.memory import DIMMInfo, SPD5118Reader, read_dimm_info
+from smu.pmtable import PMTableReader, compute_fclk_uclk_ratio
 
 log = logging.getLogger(__name__)
 
@@ -137,18 +139,77 @@ class MemoryTab(QWidget):
         super().__init__(parent)
         self._dimms: list[DIMMInfo] = []
         self._spd_reader = SPD5118Reader()
+        self._pm_reader = PMTableReader()
         self._stress_worker: _StressWorker | None = None
         self._setup_ui()
         self._load_dimm_info()
 
-        if self._spd_reader.is_available():
-            self._temp_timer = QTimer(self)
-            self._temp_timer.timeout.connect(self._update_temperatures)
-            self._temp_timer.start(2000)
+        # Unified timer for PM table + DIMM temperature polling
+        self._update_timer = QTimer(self)
+        self._update_timer.timeout.connect(self._update_live_data)
+        if self._pm_reader.is_available() or self._spd_reader.is_available():
+            settings = load_settings()
+            self._update_timer.start(int(settings.poll_interval * 1000))
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
+
+        # Memory Controller group box (PM Table data)
+        self._mc_group = QGroupBox("Memory Controller (PM Table)")
+        mc_layout = QVBoxLayout(self._mc_group)
+
+        # Clock row: FCLK, UCLK, MCLK, ratio
+        clk_row = QHBoxLayout()
+        self._fclk_label = QLabel("FCLK: --")
+        self._fclk_label.setFont(QFont("monospace", 10))
+        self._uclk_label = QLabel("UCLK: --")
+        self._uclk_label.setFont(QFont("monospace", 10))
+        self._mclk_label = QLabel("MCLK: --")
+        self._mclk_label.setFont(QFont("monospace", 10))
+        self._ratio_label = QLabel("FCLK:UCLK --")
+        self._ratio_label.setFont(QFont("monospace", 10, QFont.Weight.Bold))
+        clk_row.addWidget(self._fclk_label)
+        clk_row.addWidget(self._uclk_label)
+        clk_row.addWidget(self._mclk_label)
+        clk_row.addWidget(self._ratio_label)
+        clk_row.addStretch()
+        mc_layout.addLayout(clk_row)
+
+        # Voltage row: VDD, VDDQ
+        volt_row = QHBoxLayout()
+        self._vdd_label = QLabel("VDD: --")
+        self._vdd_label.setFont(QFont("monospace", 10))
+        self._vddq_label = QLabel("VDDQ: --")
+        self._vddq_label.setFont(QFont("monospace", 10))
+        volt_row.addWidget(self._vdd_label)
+        volt_row.addWidget(self._vddq_label)
+        volt_row.addStretch()
+        mc_layout.addLayout(volt_row)
+
+        # Calibration status
+        self._cal_label = QLabel("")
+        self._cal_label.setStyleSheet("color: #888; font: 9px monospace;")
+        mc_layout.addWidget(self._cal_label)
+
+        # Driver-missing message (hidden by default)
+        self._mc_missing_label = QLabel("Requires ryzen_smu driver")
+        self._mc_missing_label.setStyleSheet("color: #888; font: 10px monospace; padding: 8px;")
+        self._mc_missing_label.setVisible(False)
+        mc_layout.addWidget(self._mc_missing_label)
+
+        if not self._pm_reader.is_available():
+            # Hide clock/voltage rows, show driver-missing message
+            self._fclk_label.setVisible(False)
+            self._uclk_label.setVisible(False)
+            self._mclk_label.setVisible(False)
+            self._ratio_label.setVisible(False)
+            self._vdd_label.setVisible(False)
+            self._vddq_label.setVisible(False)
+            self._cal_label.setVisible(False)
+            self._mc_missing_label.setVisible(True)
+
+        layout.addWidget(self._mc_group)
 
         self._summary_label = QLabel("Loading DIMM information...")
         self._summary_label.setFont(QFont("monospace", 11, QFont.Weight.Bold))
@@ -271,6 +332,7 @@ class MemoryTab(QWidget):
         deps.append("stressapptest: " + ("found" if shutil.which("stressapptest") else "missing"))
         deps.append("stress-ng: " + ("found" if shutil.which("stress-ng") else "missing"))
         deps.append("spd5118: " + ("available" if self._spd_reader.is_available() else "not loaded"))
+        deps.append("ryzen_smu: " + ("available" if self._pm_reader.is_available() else "not loaded"))
         self._deps_label.setText("  |  ".join(deps))
 
     def _populate_table(self) -> None:
@@ -298,6 +360,79 @@ class MemoryTab(QWidget):
         for i, temp in enumerate(temps):
             if i < len(self._temp_labels):
                 self._temp_labels[i].setText(f"DIMM {i}: {temp:.1f}C")
+
+    def _update_live_data(self) -> None:
+        """Read PM table and DIMM temps in one tick."""
+        # PM table (controller clocks + voltages)
+        if self._pm_reader.is_available():
+            pm_data = self._pm_reader.read()
+            if pm_data is not None and pm_data.is_calibrated:
+                self._update_clock_labels(pm_data)
+                self._update_voltage_labels(pm_data)
+                self._cal_label.setText(
+                    f"PM Table v{pm_data.pm_table_version:#010x} \u2014 Verified"
+                )
+            elif pm_data is not None:
+                self._show_uncalibrated(pm_data)
+            else:
+                self._set_clocks_unavailable()
+
+        # DIMM temperatures (SPD5118 hwmon)
+        if self._spd_reader.is_available():
+            self._update_temperatures()
+
+    def _update_clock_labels(self, pm_data) -> None:
+        self._fclk_label.setText(f"FCLK: {pm_data.fclk_mhz:.0f} MHz")
+        self._uclk_label.setText(f"UCLK: {pm_data.uclk_mhz:.0f} MHz")
+        self._mclk_label.setText(f"MCLK: {pm_data.mclk_mhz:.0f} MHz")
+        self._fclk_label.setStyleSheet("")
+        self._uclk_label.setStyleSheet("")
+        self._mclk_label.setStyleSheet("")
+        ratio = compute_fclk_uclk_ratio(pm_data.fclk_mhz, pm_data.uclk_mhz)
+        if ratio == (1, 1):
+            self._ratio_label.setText("FCLK:UCLK 1:1")
+            self._ratio_label.setStyleSheet("color: #4caf50;")  # green
+        elif ratio == (1, 2):
+            self._ratio_label.setText("FCLK:UCLK 1:2")
+            self._ratio_label.setStyleSheet("color: #ffb74d;")  # yellow/amber
+        else:
+            self._ratio_label.setText("FCLK:UCLK ?")
+            self._ratio_label.setStyleSheet("color: #ffb74d;")
+
+    def _update_voltage_labels(self, pm_data) -> None:
+        if pm_data.vdd_mem_v > 0:
+            self._vdd_label.setText(f"VDD: {pm_data.vdd_mem_v:.3f}V")
+            self._vdd_label.setStyleSheet("")
+        else:
+            self._vdd_label.setText("VDD: --")
+            self._vdd_label.setStyleSheet("color: #888;")
+        self._vddq_label.setText("VDDQ: --")
+        self._vddq_label.setStyleSheet("color: #888;")
+
+    def _show_uncalibrated(self, pm_data) -> None:
+        self._fclk_label.setText("FCLK: --")
+        self._uclk_label.setText("UCLK: --")
+        self._mclk_label.setText("MCLK: --")
+        self._ratio_label.setText("FCLK:UCLK --")
+        self._ratio_label.setStyleSheet("")
+        self._vdd_label.setText("VDD: --")
+        self._vddq_label.setText("VDDQ: --")
+        for lbl in (self._fclk_label, self._uclk_label, self._mclk_label,
+                     self._vdd_label, self._vddq_label):
+            lbl.setStyleSheet("color: #888;")
+        self._cal_label.setText(
+            f"PM Table v{pm_data.pm_table_version:#010x} \u2014 Uncalibrated "
+            f"({len(pm_data.raw_floats)} floats)"
+        )
+
+    def _set_clocks_unavailable(self) -> None:
+        for lbl in (self._fclk_label, self._uclk_label, self._mclk_label,
+                     self._vdd_label, self._vddq_label):
+            lbl.setText(lbl.text().split(":")[0] + ": --")
+            lbl.setStyleSheet("color: #888;")
+        self._ratio_label.setText("FCLK:UCLK --")
+        self._ratio_label.setStyleSheet("color: #888;")
+        self._cal_label.setText("")
 
     def _run_memory_stress(self) -> None:
         tool = self._stress_tool.currentText()
