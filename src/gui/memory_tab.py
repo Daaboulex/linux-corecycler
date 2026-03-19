@@ -454,8 +454,12 @@ class MemoryTab(QWidget):
         else:
             self._vdd_label.setText("VDD: --")
             self._vdd_label.setStyleSheet("color: #888;")
-        self._vddq_label.setText("VDDQ: --")
-        self._vddq_label.setStyleSheet("color: #888;")
+        if pm_data.vddq_v > 0:
+            self._vddq_label.setText(f"VDDQ: {pm_data.vddq_v:.3f}V")
+            self._vddq_label.setStyleSheet("")
+        else:
+            self._vddq_label.setText("VDDQ: --")
+            self._vddq_label.setStyleSheet("color: #888;")
 
     def _show_uncalibrated(self, pm_data) -> None:
         self._fclk_label.setText("FCLK: --")
