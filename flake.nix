@@ -15,6 +15,12 @@
     {
       # NixOS module — kernel modules, device access, udev rules, package
       nixosModules.default = import ./nix/module.nix { inherit self; };
+
+      # Overlay — makes pkgs.linux-corecycler and pkgs.linux-corecycler-full available
+      overlays.default = final: _prev: {
+        linux-corecycler = self.packages.${final.stdenv.hostPlatform.system}.default;
+        linux-corecycler-full = self.packages.${final.stdenv.hostPlatform.system}.full;
+      };
     }
     // flake-utils.lib.eachDefaultSystem (
       system:
