@@ -50,7 +50,7 @@ jobs:
               fi
             fi
           elif [ "$CHECK" = "elf" ]; then
-            FOUND=$(find result/bin/ -type f -executable 2>/dev/null | head -1)
+            FOUND=$(find result/bin/ \( -type f -o -type l \) -executable 2>/dev/null | head -1)
             if [ -z "$FOUND" ]; then FOUND=$(find result/lib/ -name "*.so" 2>/dev/null | head -1); fi
             if [ -n "$FOUND" ]; then
               file "$FOUND" | grep -q ELF || { echo "::error::Not an ELF binary: $FOUND"; exit 1; }
@@ -58,6 +58,6 @@ jobs:
           elif [ "$CHECK" = "desktop" ]; then
             find result/share/applications/ -name "*.desktop" | head -1 | grep -q . || echo "::warning::No desktop file found"
           elif [ "$CHECK" = "wrapper" ]; then
-            FOUND=$(find result/bin/ -type f 2>/dev/null | head -1)
+            FOUND=$(find result/bin/ \( -type f -o -type l \) 2>/dev/null | head -1)
             [ -n "$FOUND" ] && [ -x "$FOUND" ] || { echo "::error::No executable wrapper found"; exit 1; }
           fi
