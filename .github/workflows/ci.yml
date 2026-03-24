@@ -1,0 +1,63 @@
+name: CI
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - uses: DeterminateSystems/nix-installer-action@d96bc962e61b3049ce8128d03d57a1144fa96539
+      - uses: DeterminateSystems/magic-nix-cache-action@87b14cf437d03d37989d87f0fa5ce4f5dc1a330b  # v8
+
+      - name: Eval check
+        run: nix flake check --no-build
+
+      - name: Format check
+        run: nix fmt -- --check .
+
+      - name: Build
+        run: |
+          # Skip build for module-only repos (no packages output)
+          if nix eval .#packages.x86_64-linux.default --apply 'x: true' 2>/dev/null; then
+            nix build --print-build-logs
+          else
+            echo "No default package — skipping build (module-only repo)"
+          fi
+
+      - name: Verify
+        run: |
+          if [ ! -f .github/update.json ]; then exit 0; fi
+          if [ ! -L result ] && [ ! -d result ]; then exit 0; fi  # no build output
+          BINARY=$(jq -r '.verify.binary // empty' .github/update.json)
+          CHECK=$(jq -r '.verify.check // empty' .github/update.json)
+          if [ -n "$BINARY" ]; then
+            ARGS=$(jq -r '.verify.args // "--version"' .github/update.json)
+            echo "Verifying: result/bin/$BINARY $ARGS"
+            ./result/bin/"$BINARY" $ARGS
+            # ldd check for ELF binaries
+            if file ./result/bin/"$BINARY" | grep -q ELF; then
+              MISSING=$(ldd ./result/bin/"$BINARY" 2>&1 | grep "not found" || true)
+              if [ -n "$MISSING" ]; then
+                echo "::error::Missing shared libraries:"
+                echo "$MISSING"
+                exit 1
+              fi
+            fi
+          elif [ "$CHECK" = "elf" ]; then
+            FOUND=$(find result/bin/ -type f -executable 2>/dev/null | head -1)
+            if [ -z "$FOUND" ]; then FOUND=$(find result/lib/ -name "*.so" 2>/dev/null | head -1); fi
+            if [ -n "$FOUND" ]; then
+              file "$FOUND" | grep -q ELF || { echo "::error::Not an ELF binary: $FOUND"; exit 1; }
+            fi
+          elif [ "$CHECK" = "desktop" ]; then
+            find result/share/applications/ -name "*.desktop" | head -1 | grep -q . || echo "::warning::No desktop file found"
+          elif [ "$CHECK" = "wrapper" ]; then
+            FOUND=$(find result/bin/ -type f 2>/dev/null | head -1)
+            [ -n "$FOUND" ] && [ -x "$FOUND" ] || { echo "::error::No executable wrapper found"; exit 1; }
+          fi
