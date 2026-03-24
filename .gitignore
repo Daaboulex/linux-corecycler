@@ -17,3 +17,5 @@ result-*
 AI-progress.json
 AI-tasks.json
 .planning/
+.direnv
+.envrc

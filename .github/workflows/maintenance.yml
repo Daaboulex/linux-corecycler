@@ -1,0 +1,108 @@
+name: Maintenance
+on:
+  schedule:
+    - cron: '0 4 * * 0'  # Weekly Sunday 4 AM UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  update-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - uses: DeterminateSystems/nix-installer-action@d96bc962e61b3049ce8128d03d57a1144fa96539
+      - uses: DeterminateSystems/magic-nix-cache-action@87b14cf437d03d37989d87f0fa5ce4f5dc1a330b  # v8
+
+      - name: Update flake.lock
+        run: nix flake update
+
+      - name: Verify build
+        id: build
+        run: |
+          set +e
+          nix build --no-link --print-build-logs 2>&1 | tee /tmp/lock-build.log
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Push if build passes
+        if: steps.build.outputs.exit_code == '0'
+        run: |
+          if git diff --quiet flake.lock; then
+            echo "No changes to flake.lock"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add flake.lock
+          git commit -m "chore: update flake.lock"
+          git push
+
+      - name: Issue if build fails
+        if: steps.build.outputs.exit_code != '0'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const log = fs.readFileSync('/tmp/lock-build.log', 'utf8');
+            const lastLines = log.split('\n').slice(-80).join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: 'Maintenance: flake.lock update broke build',
+              labels: ['maintenance'],
+              body: [
+                '## flake.lock update failed to build',
+                '',
+                'The weekly `nix flake update` produced a flake.lock that does not build.',
+                '**flake.lock was NOT pushed.**',
+                '',
+                '<details><summary>Build log (last 80 lines)</summary>',
+                '',
+                '```',
+                lastLines,
+                '```',
+                '</details>',
+                '',
+                '### Recovery',
+                '```bash',
+                'nix flake update',
+                'nix build --no-link  # investigate failure',
+                '```',
+                '',
+                '---',
+                '*Created by [maintenance workflow](.github/workflows/maintenance.yml)*'
+              ].join('\n')
+            });
+
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - name: Cleanup stale branches
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7
+        with:
+          script: |
+            // Delete update/* branches older than 30 days
+            const { data: refs } = await github.rest.git.listMatchingRefs({
+              owner: context.repo.owner, repo: context.repo.repo,
+              ref: 'heads/update/'
+            });
+            const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+            for (const ref of refs) {
+              try {
+                const { data: commit } = await github.rest.git.getCommit({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  commit_sha: ref.object.sha
+                });
+                if (new Date(commit.author.date).getTime() < thirtyDaysAgo) {
+                  console.log(`Deleting stale branch: ${ref.ref}`);
+                  await github.rest.git.deleteRef({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    ref: ref.ref.replace('refs/', '')
+                  });
+                }
+              } catch (e) {
+                console.log(`Skip ${ref.ref}: ${e.message}`);
+              }
+            }

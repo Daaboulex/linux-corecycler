@@ -1,0 +1,141 @@
+name: Update
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - uses: DeterminateSystems/nix-installer-action@d96bc962e61b3049ce8128d03d57a1144fa96539
+      - uses: DeterminateSystems/magic-nix-cache-action@87b14cf437d03d37989d87f0fa5ce4f5dc1a330b  # v8
+
+      - name: Run update
+        id: update
+        run: |
+          set +e
+          bash scripts/update.sh 2>&1 | tee /tmp/update.log
+          EXIT_CODE=$?
+          {
+            echo "exit_code=$EXIT_CODE"
+          } >> "$GITHUB_OUTPUT"
+          if [ -f /tmp/update-outputs.env ]; then
+            cat /tmp/update-outputs.env >> "$GITHUB_OUTPUT"
+          fi
+
+      # Silent success: commit + push
+      - name: Push update
+        if: steps.update.outputs.updated == 'true' && steps.update.outputs.exit_code == '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A ':!AI-*.json'
+          OLDV="${{ steps.update.outputs.old_version }}"
+          NEWV="${{ steps.update.outputs.new_version }}"
+          PKG="${{ steps.update.outputs.package_name }}"
+          git diff --cached --quiet && { echo "No changes to commit"; exit 0; }
+          git commit -m "chore: update ${PKG} ${OLDV} → ${NEWV}"
+          git push
+
+      # Auto-close previous failure issues on success
+      - name: Close resolved issues
+        if: steps.update.outputs.updated == 'true' && steps.update.outputs.exit_code == '0'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7
+        with:
+          script: |
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: 'update-failed', state: 'open'
+            });
+            for (const issue of issues.data) {
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, state: 'closed',
+                state_reason: 'completed'
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Resolved by auto-update to ${{ steps.update.outputs.new_version }}.`
+              });
+            }
+
+      # Diagnostic issue on failure
+      - name: Create failure issue
+        if: steps.update.outputs.updated == 'true' && steps.update.outputs.exit_code == '1'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const log = fs.readFileSync('/tmp/update.log', 'utf8');
+            const lastLines = log.split('\n').slice(-100).join('\n');
+            const errorType = '${{ steps.update.outputs.error_type }}' || 'unknown';
+            const oldV = '${{ steps.update.outputs.old_version }}' || '?';
+            const newV = '${{ steps.update.outputs.new_version }}' || '?';
+            const upstream = '${{ steps.update.outputs.upstream_url }}' || '';
+            const pkg = '${{ steps.update.outputs.package_name }}' || context.repo.repo;
+
+            // Close previous update-failed issues
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: 'update-failed', state: 'open'
+            });
+            for (const issue of existing.data) {
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, state: 'closed',
+                state_reason: 'not_planned'
+              });
+            }
+
+            // Push attempted update to branch (best-effort)
+            const { execSync } = require('child_process');
+            let branchPushed = false;
+            try {
+              execSync('git config user.name "github-actions[bot]"');
+              execSync('git config user.email "41898282+github-actions[bot]@users.noreply.github.com"');
+              execSync(`git checkout -B update/${pkg}-${newV}`);
+              execSync('git add -A \':!AI-*.json\'');
+              execSync(`git commit -m "wip: attempted update ${oldV} → ${newV}" --allow-empty`);
+              execSync(`git push -f origin update/${pkg}-${newV}`);
+              branchPushed = true;
+            } catch (e) { /* best-effort */ }
+
+            const recoveryBlock = branchPushed ? [
+              '### Recovery',
+              '```bash',
+              `git fetch && git checkout update/${pkg}-${newV}`,
+              '# Fix the issue, then:',
+              'nix build --no-link && nix flake check --no-build',
+              `git checkout main && git merge update/${pkg}-${newV}`,
+              '```'
+            ] : [];
+
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: `Update ${pkg} ${oldV} → ${newV}: ${errorType}`,
+              labels: ['update-failed'],
+              body: [
+                `## Update Failed: ${pkg} ${oldV} → ${newV}`,
+                '',
+                `**Failure**: \`${errorType}\``,
+                upstream ? `**Upstream**: ${upstream}` : '',
+                '',
+                '### Build log (last 100 lines)',
+                '<details><summary>Click to expand</summary>',
+                '',
+                '```',
+                lastLines,
+                '```',
+                '</details>',
+                '',
+                ...recoveryBlock,
+                '',
+                '---',
+                '*Created by [update workflow](.github/workflows/update.yml)*'
+              ].filter(Boolean).join('\n')
+            });
