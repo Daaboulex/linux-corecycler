@@ -270,9 +270,32 @@ class HistoryTab(QWidget):
             self._view_mode = self.VIEW_GROUPED
         self._apply_view_mode()
 
+    def _update_toggle_labels(self) -> None:
+        """Update toggle button labels to reflect current view mode.
+
+        Called after every view mode change and after summary updates
+        so the labels stay consistent.
+        """
+        tuner_count = len(self._tuner_sessions)
+        count_suffix = f" ({tuner_count})" if tuner_count > 0 else ""
+
+        if self._view_mode == self.VIEW_ALL:
+            self._view_toggle.setText("All Runs \u2713")
+            self._tuner_toggle.setText(f"Tuner Sessions{count_suffix}")
+        elif self._view_mode == self.VIEW_TUNER:
+            self._view_toggle.setText("All Runs")
+            self._tuner_toggle.setText(f"Tuner Sessions{count_suffix} \u2713")
+        else:
+            self._view_toggle.setText("All Runs")
+            self._tuner_toggle.setText(f"Tuner Sessions{count_suffix}")
+
     def _apply_view_mode(self) -> None:
-        self._view_toggle.setText("Grouped" if self._view_mode != self.VIEW_ALL else "All Runs ✓")
-        self._tuner_toggle.setText("Tuner Sessions ✓" if self._view_mode == self.VIEW_TUNER else "Tuner Sessions")
+        self._update_toggle_labels()
+
+        # Reload data to ensure we have fresh content for the new view
+        if self._db:
+            self._reload_data()
+            self._update_summary()
 
         if self._view_mode == self.VIEW_TUNER:
             self._context_table.setVisible(False)
@@ -299,6 +322,21 @@ class HistoryTab(QWidget):
     def refresh(self) -> None:
         if not self._db:
             return
+
+        # On first load, pick the best default view based on available data.
+        # Must run BEFORE _refresh_preserve_context so the view mode is set
+        # before any table population happens.
+        if self._initial_load:
+            self._initial_load = False
+            self._reload_data()
+            if self._tuner_sessions:
+                self._view_mode = self.VIEW_TUNER
+                self._tuner_toggle.setChecked(True)
+                self._view_toggle.setChecked(False)
+            self._update_summary()
+            self._apply_view_mode()
+            return
+
         self._refresh_preserve_context()
 
     def _refresh_preserve_context(self) -> None:
@@ -355,33 +393,18 @@ class HistoryTab(QWidget):
         # Load tuner sessions
         self._tuner_sessions = self._load_tuner_sessions()
 
-        # On first load, auto-select the best view based on available data
-        if self._initial_load:
-            self._initial_load = False
-            if self._tuner_sessions and not self._runs:
-                # Only tuner sessions exist — show them by default
-                self._view_mode = self.VIEW_TUNER
-                self._tuner_toggle.setChecked(True)
-                self._view_toggle.setChecked(False)
-            elif self._tuner_sessions and self._runs:
-                # Both exist — default to tuner sessions (more likely what user wants)
-                self._view_mode = self.VIEW_TUNER
-                self._tuner_toggle.setChecked(True)
-                self._view_toggle.setChecked(False)
-
     def _update_summary(self) -> None:
         counts = self._db.get_status_counts() if self._db else {}
         total = sum(counts.values())
         completed = counts.get("completed", 0)
         crashed = counts.get("crashed", 0)
         stopped = counts.get("stopped", 0)
-        tuner_count = len(self._tuner_sessions)
         self._total_label.setText(f"Runs: {total}")
         self._completed_label.setText(f"Completed: {completed}")
         self._crashed_label.setText(f"Crashed: {crashed}")
         self._stopped_label.setText(f"Stopped: {stopped}")
-        if tuner_count > 0:
-            self._tuner_toggle.setText(f"Tuner Sessions ({tuner_count})")
+        # Update toggle labels (incorporates session count + current view mode)
+        self._update_toggle_labels()
 
     # ------------------------------------------------------------------
     # Context table

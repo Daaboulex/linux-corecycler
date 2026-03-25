@@ -373,6 +373,37 @@ class SMUTab(QWidget):
             )
             self._read_all_co()
 
+    def set_tuner_running(self, running: bool) -> None:
+        """Disable CO write operations while the auto-tuner controls SMU.
+
+        Reading is still allowed (informational). Writing would conflict
+        with the tuner's CO isolation and validation offsets.
+        """
+        self._tuner_active = running
+
+        # When re-enabling, check that SMU is still available
+        smu_ok = self._smu is not None and self._smu.is_available() if hasattr(self, "_smu") else False
+        write_enabled = not running and smu_ok
+
+        self._apply_all_btn.setEnabled(write_enabled)
+        self._reset_btn.setEnabled(write_enabled)
+        self._restore_btn.setEnabled(write_enabled and bool(getattr(self, "_backup", None)))
+        # Per-row Apply buttons
+        for row in range(self._table.rowCount()):
+            btn = self._table.cellWidget(row, 4)
+            if btn is not None:
+                btn.setEnabled(write_enabled)
+        # Spinboxes
+        for spin in self._spinboxes.values():
+            spin.setEnabled(not running)  # editing is fine even without SMU
+
+        if running:
+            self._apply_all_btn.setToolTip("Disabled while auto-tuner is running")
+        elif not smu_ok:
+            self._apply_all_btn.setToolTip("SMU not available")
+        else:
+            self._apply_all_btn.setToolTip("")
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------

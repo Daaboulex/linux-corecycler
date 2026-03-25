@@ -46,6 +46,9 @@ class TunerConfig:
     # Inherit current CO offsets from SMU as starting point
     inherit_current: bool = False
 
+    # Automatically run multi-core validation after all cores are individually confirmed
+    auto_validate: bool = True
+
     def to_json(self) -> str:
         return json.dumps(asdict(self), separators=(",", ":"))
 

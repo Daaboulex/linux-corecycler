@@ -878,12 +878,20 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
 
     def get_active_tuner_session(self) -> TunerSession | None:
         row = self.__conn.execute(
-            "SELECT * FROM tuner_sessions WHERE status IN ('running','paused') "
+            "SELECT * FROM tuner_sessions WHERE status IN ('running','paused','validating') "
             "ORDER BY id DESC LIMIT 1"
         ).fetchone()
         if row is None:
             return None
         return self._row_to_tuner_session(row)
+
+    def list_resumable_tuner_sessions(self) -> list[TunerSession]:
+        """Return all tuner sessions that can be resumed (paused, running, or validating)."""
+        rows = self.__conn.execute(
+            "SELECT * FROM tuner_sessions WHERE status IN ('running','paused','validating') "
+            "ORDER BY id DESC"
+        ).fetchall()
+        return [self._row_to_tuner_session(r) for r in rows]
 
     def list_tuner_sessions(self, *, limit: int = 100) -> list[TunerSession]:
         rows = self.__conn.execute(
