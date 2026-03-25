@@ -4,10 +4,10 @@ Per-core CPU stress testing and AMD PBO Curve Optimizer tuning for Linux.
 
 ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue)
 ![License GPL-3.0](https://img.shields.io/badge/License-GPL--3.0--or--later-green)
-![Version 1.0](https://img.shields.io/badge/Version-1.0-brightgreen)
+![Version 0.0.1](https://img.shields.io/badge/Version-0.0.1-brightgreen)
 ![Linux only](https://img.shields.io/badge/Platform-Linux-yellow)
 
-> **Development status:** CoreCycler is actively developed and tested on an **AMD Ryzen 9 9950X3D** (Zen 5, dual-CCD X3D, AM5). Other AMD Ryzen processors (Zen 2–5) should work but have not been tested as thoroughly. Intel CPUs are supported for stress testing only (no Curve Optimizer). If you encounter issues on other hardware, please [open an issue](https://github.com/Daaboulex/corecycler/issues) with your CPU model and description.
+> **Development status:** CoreCycler is actively developed and tested on an **AMD Ryzen 9 9950X3D** (Zen 5, dual-CCD X3D, AM5). Other AMD Ryzen processors (Zen 2–5) should work but have not been tested as thoroughly. Intel CPUs are supported for stress testing only (no Curve Optimizer). If you encounter issues on other hardware, please [open an issue](https://github.com/Daaboulex/linux-corecycler/issues) with your CPU model and description.
 
 ## What Is This?
 
@@ -39,11 +39,11 @@ CO instability often manifests at idle or during load transitions, not under sus
 - **Per-core telemetry logging** -- peak frequency, max temperature, and Vcore range recorded for each core's test run
 - **Test profile save/load** -- export and import test configurations as JSON files
 - **Safety features** -- thermal limit monitoring (configurable, default 95C), process group cleanup on stop, confirmation dialogs for CO writes, dry-run mode, backup/restore CO values, volatile-only SMU writes (never touches BIOS)
-- **Automated PBO Curve Optimizer tuner** -- coarse-to-fine search algorithm that finds optimal per-core CO values automatically; crash-safe SQLite persistence (WAL mode) resumes exactly where it left off after reboot or crash; configurable search parameters with best-practice defaults; **inherit current CO** option reads existing SMU offsets as starting points for incremental tuning
+- **Automated PBO Curve Optimizer tuner** -- coarse-to-fine search algorithm that finds optimal per-core CO values automatically; crash-safe SQLite persistence (WAL mode) resumes exactly where it left off after reboot or crash; configurable search parameters with best-practice defaults; **inherit current CO** option reads existing SMU offsets as starting points for incremental tuning; **CO isolation** ensures only the tested core has a non-baseline offset during search (prevents false blame when a crash occurs); profile validation applies all confirmed offsets simultaneously to test power delivery interactions
 - **Five tuner test orderings**: sequential (finish each core), round_robin (cycle one test per core), weakest_first (prioritize cores nearest to settling), **ccd_alternating** (alternate between CCDs for thermal coverage), and **ccd_round_robin** (rotate one test per core across CCDs — gives each core cool-down time between tests, catches cold-boot and thermal transition failures)
 - **Tuner state machine** -- 7 phases per core: not_started → coarse_search → fine_search → settled → confirming → confirmed (or failed_confirm → back off). Clock stretch detection (APERF/MPERF) during tuner tests with configurable threshold — marks test as FAIL even if stress passed when voltage droop is detected
 - **Memory information tab** -- displays per-DIMM details (size, type, speed, manufacturer, part number, rank, voltage) via dmidecode; **Memory Controller group box** showing live FCLK/UCLK/MCLK frequencies and FCLK:UCLK ratio indicator (green for 1:1 coupled, amber for decoupled) from ryzen_smu PM table with version-aware parsing; live VDD voltage from PM table (not the SPD default 1.10V); **SPD Timings group box** showing DDR5 primary timings (tCL-tRCD-tRP-tRAS-tRC in clock cycles) and secondary timings (tRFC1, tRFCsb, tWR in nanoseconds) decoded from SPD EEPROM via spd5118 sysfs; live DDR5 DIMM temperature monitoring via SPD5118 hwmon; configurable memory stress testing (1–60 minutes) with tool selection (stressapptest or stress-ng --vm); dependency status display showing available tools and drivers; PM table version displayed with "Verified" or "Uncalibrated" status for unknown versions
-- **Tuner session history** -- the History tab's "Tuner Sessions" view shows all past auto-tuner sessions with date, status, CPU, core count, confirmed count, duration, and BIOS info; clicking a session reveals per-core state details and the complete test log; sessions can be deleted individually; detail sections stay hidden until a session is selected to avoid wasted space
+- **Tuner session history** -- the History tab auto-detects tuner sessions and defaults to the Tuner Sessions view with the latest session pre-selected; shows date, status, CPU, core count, confirmed count, duration, and BIOS info; clicking a session reveals per-core state details and the complete test log; sessions can be deleted individually; Ctrl+C copies selected rows from tuner tables as tab-separated text
 - **History management** -- grouped view with tuning context detection (BIOS + CO snapshot), run comparison, context deletion, orphan cleanup, BIOS change detection with visual indicators; SQL-based summary counters (Completed/Crashed/Stopped) that correctly aggregate all sessions; automatic stale session recovery on startup (sessions left "Running" from a crash are marked "Crashed" with per-session logging)
 
 ## Screenshots
@@ -544,6 +544,12 @@ The tuner uses a coarse-to-fine search for each core:
 
 4. **Result** -- each core ends up with a confirmed best CO offset. The final profile can be exported as JSON or applied to the Curve Optimizer tab.
 
+**CO isolation:**
+
+During per-core search, the tuner ensures that the **only non-baseline CO offset** on the CPU is the one being actively stress-tested. Before each test, all other cores are reverted to their baseline offsets (the values inherited from BIOS/SMU at session start). After each test, the tested core is also reverted. This prevents a scenario where a previously-tested core sits at an aggressive offset (e.g., -39), crashes the system while a different core is being tested, and the tuner incorrectly blames the wrong core.
+
+During profile validation (after all cores are individually confirmed), CO isolation is disabled — all confirmed offsets are applied simultaneously to test power delivery interactions between cores.
+
 **Crash safety:**
 
 Every state transition is committed to SQLite (WAL mode) before acting. If the system crashes or reboots mid-test (which is expected during CO tuning -- that's how you find the limit), the tuner detects the interrupted session on next launch and offers to resume.
@@ -551,10 +557,10 @@ Every state transition is committed to SQLite (WAL mode) before acting. If the s
 Resume follows a strict safety order to prevent infinite crash loops:
 
 1. **Advance interrupted cores first** -- any core that was mid-test (coarse search, fine search, or confirming) is treated as a failure and backed off *before* touching the SMU. This ensures the crashing offset is never re-applied.
-2. **Re-apply only safe offsets** -- after all interrupted cores have been advanced to their next safe value, the tuner re-applies CO offsets via SMU for cores still in progress. Cores that are `not_started`, `confirmed`, or at offset 0 are skipped.
-3. **Continue from next action** -- the tuner picks the next core to test and proceeds normally.
+2. **Restore all baselines** -- after all interrupted cores have been advanced, the tuner restores all cores to their baseline offsets from the database (not from SMU, which resets to zero on reboot). This returns the CPU to its known-stable BIOS configuration.
+3. **Continue with isolation** -- the tuner picks the next core and applies isolation (baseline all others, test offset on target only).
 
-This ordering is critical: if the system crashed because a CO offset was too aggressive, naively re-applying saved offsets on resume would re-apply that same crashing value, causing another crash on every boot attempt. By advancing first, the tuner always moves past the dangerous value before re-engaging the hardware.
+This ordering is critical: if the system crashed because a CO offset was too aggressive, naively re-applying saved offsets on resume would re-apply that same crashing value, causing another crash on every boot attempt. By advancing first and restoring baselines, the tuner always moves past the dangerous value before re-engaging the hardware.
 
 **Per-core state machine:**
 
@@ -576,13 +582,25 @@ NOT_STARTED → COARSE_SEARCH → FINE_SEARCH → SETTLED → CONFIRMING → CON
 | Max Offset | -50 | -60 to +60 | Most aggressive offset to try (auto-clamped to CPU generation) |
 | Search Duration | 60s | 10-600s | Test duration per step during search |
 | Confirm Duration | 300s | 30-1800s | Test duration for confirmation run |
+| Validate Duration | 300s | 30-1800s | Test duration for profile validation |
 | Max Confirm Retries | 2 | 0-5 | Retries before backing off from a value |
-| Backend | mprime | mprime/stress-ng/y-cruncher | Stress test backend |
+| Backend | mprime | mprime/stress-ng/y-cruncher/stressapptest | Stress test backend |
 | Mode | SSE | SSE/AVX/AVX2/AVX512 | Stress test instruction set |
 | FFT Preset | SMALL | SMALL/MEDIUM/LARGE/HEAVY/ALL | FFT size preset (mprime) |
-| Test Order | sequential | sequential/round_robin/weakest_first | Core testing order |
+| Test Order | sequential | sequential/round_robin/weakest_first/ccd_alternating/ccd_round_robin | Core testing order (see below) |
 | Stretch Threshold | 3.0% | 0-20% | Clock stretch failure threshold (0 = disabled, requires root) |
 | Abort on Consecutive Failures | 0 | 0-10 | Abort if N cores fail at start_offset (0 = disabled) |
+| Inherit Current CO | false | true/false | Read current SMU offsets as starting points (skip testing values already proven stable) |
+
+**Test orderings:**
+
+| Order | Strategy | Best for |
+|---|---|---|
+| sequential | Finish each core completely before moving to next | Simple, easy to follow progress |
+| round_robin | One test per core per round, cycling through all | Partial results for all cores faster |
+| weakest_first | Prioritize cores closest to confirmation | Finish off nearly-done cores first |
+| ccd_alternating | Alternate between CCDs, prioritize the CCD with fewest confirmed | Balanced thermal coverage across CCDs |
+| ccd_round_robin | Round-robin within each CCD, alternating CCDs | Best thermal profile — each core gets cool-down time while the other CCD is tested |
 
 **Workflow:**
 
