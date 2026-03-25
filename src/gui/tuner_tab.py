@@ -60,6 +60,7 @@ class TunerTab(QWidget):
     tuner_running_changed = Signal(bool)
     tuner_core_testing = Signal(int, str)  # core_id, state ("testing"/"passed"/"failed"/etc)
     tuner_core_elapsed = Signal(int, float)  # core_id, elapsed_seconds
+    tuner_core_info = Signal(int, int, str)  # core_id, co_offset, phase — for sidebar enrichment
 
     def __init__(
         self,
@@ -548,6 +549,23 @@ class TunerTab(QWidget):
         self._engine.status_changed.connect(self._on_status_changed)
         self._engine.progress_updated.connect(self._on_progress_updated)
         self._engine.log_message.connect(self._on_log_message)
+        self._engine.co_drift_detected.connect(self._on_co_drift)
+
+    @Slot(str)
+    def _on_co_drift(self, drift_json: str) -> None:
+        """Warn user that SMU CO values differ from session baselines."""
+        import json
+        drift = json.loads(drift_json)
+        lines = [f"Core {cid}: expected {v['expected']}, found {v['actual']}"
+                 for cid, v in sorted(drift.items(), key=lambda x: int(x[0]))]
+        QMessageBox.warning(
+            self, "CO Drift Detected",
+            "CO offsets in SMU differ from session baselines.\n"
+            "This may happen if you changed CO values manually (Curve Optimizer tab) "
+            "or ran other tools since the last session.\n\n"
+            "Baselines will be restored before testing resumes.\n\n"
+            + "\n".join(lines),
+        )
 
     @Slot(int, str, int)
     def _on_core_state_changed(self, core_id: int, phase: str, offset: int) -> None:
@@ -564,6 +582,7 @@ class TunerTab(QWidget):
         }
         grid_state = phase_to_grid.get(phase, "pending")
         self.tuner_core_testing.emit(core_id, grid_state)
+        self.tuner_core_info.emit(core_id, offset, phase)
 
         # Track active test for elapsed timer
         if grid_state == "testing":
