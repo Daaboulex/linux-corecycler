@@ -39,7 +39,7 @@ CO instability often manifests at idle or during load transitions, not under sus
 - **Per-core telemetry logging** -- peak frequency, max temperature, and Vcore range recorded for each core's test run
 - **Test profile save/load** -- export and import test configurations as JSON files
 - **Safety features** -- thermal limit monitoring (configurable, default 95C), process group cleanup on stop, confirmation dialogs for CO writes, dry-run mode, backup/restore CO values, volatile-only SMU writes (never touches BIOS)
-- **Automated PBO Curve Optimizer tuner** -- coarse-to-fine search algorithm that finds optimal per-core CO values automatically; crash-safe SQLite persistence (WAL mode) resumes exactly where it left off after reboot or crash; configurable search parameters with best-practice defaults; **inherit current CO** option reads existing SMU offsets as starting points for incremental tuning; **CO isolation** ensures only the tested core has a non-baseline offset during search (prevents false blame when a crash occurs); profile validation applies all confirmed offsets simultaneously to test power delivery interactions
+- **Automated PBO Curve Optimizer tuner** -- coarse-to-fine search algorithm that finds optimal per-core CO values automatically; crash-safe SQLite persistence (WAL mode) resumes exactly where it left off after reboot or crash; configurable search parameters with best-practice defaults; **inherit current CO** option reads existing SMU offsets as starting points for incremental tuning; **CO isolation** ensures only the tested core has a non-baseline offset during search (prevents false blame when a crash occurs); **automatic 3-stage multi-core validation** after all cores are individually confirmed: (1) per-core with all offsets live — catches power delivery interactions, (2) all-core simultaneous stress — full package power worst case, (3) alternating half-core load split by CCD — catches boost ramp voltage transients; failed cores are automatically backed off and validation restarts; session picker dialog for resuming from multiple paused/interrupted sessions; Curve Optimizer tab is locked during tuner operation to prevent SMU conflicts
 - **Five tuner test orderings**: sequential (finish each core), round_robin (cycle one test per core), weakest_first (prioritize cores nearest to settling), **ccd_alternating** (alternate between CCDs for thermal coverage), and **ccd_round_robin** (rotate one test per core across CCDs — gives each core cool-down time between tests, catches cold-boot and thermal transition failures)
 - **Tuner state machine** -- 7 phases per core: not_started → coarse_search → fine_search → settled → confirming → confirmed (or failed_confirm → back off). Clock stretch detection (APERF/MPERF) during tuner tests with configurable threshold — marks test as FAIL even if stress passed when voltage droop is detected
 - **Memory information tab** -- displays per-DIMM details (size, type, speed, manufacturer, part number, rank, voltage) via dmidecode; **Memory Controller group box** showing live FCLK/UCLK/MCLK frequencies and FCLK:UCLK ratio indicator (green for 1:1 coupled, amber for decoupled) from ryzen_smu PM table with version-aware parsing; live VDD voltage from PM table (not the SPD default 1.10V); **SPD Timings group box** showing DDR5 primary timings (tCL-tRCD-tRP-tRAS-tRC in clock cycles) and secondary timings (tRFC1, tRFCsb, tWR in nanoseconds) decoded from SPD EEPROM via spd5118 sysfs; live DDR5 DIMM temperature monitoring via SPD5118 hwmon; configurable memory stress testing (1–60 minutes) with tool selection (stressapptest or stress-ng --vm); dependency status display showing available tools and drivers; PM table version displayed with "Verified" or "Uncalibrated" status for unknown versions
@@ -110,7 +110,7 @@ The stress testing feature (Start Test button, core cycling, all backends) only 
 
 The SMU tab provides explicit per-core spinboxes, per-core Apply buttons, and an "Apply All" bulk action. Each write operation requires a confirmation dialog. Dry-run mode lets you preview writes without touching hardware. Backup/restore lets you save and revert CO values within a session.
 
-The Auto-Tuner also writes CO values via SMU as part of its automated search -- it applies one offset at a time per core, tests it, and advances. All writes are logged and every state transition is persisted to SQLite before acting. The tuner and manual Curve Optimizer tab cannot run simultaneously (mutual exclusion).
+The Auto-Tuner also writes CO values via SMU as part of its automated search -- it applies one offset at a time per core, tests it, and advances. All writes are logged and every state transition is persisted to SQLite before acting. The tuner and manual Curve Optimizer tab cannot run simultaneously -- when the tuner is active, all Curve Optimizer write buttons (Apply, Apply All, Reset, Restore) and spinboxes are disabled. The manual Start Test button is also disabled. This mutual exclusion is enforced automatically.
 
 ### The BIOS-SMU interaction
 
@@ -542,13 +542,23 @@ The tuner uses a coarse-to-fine search for each core:
 
 3. **Confirmation** -- once the best offset is found, a longer confirmation test (`confirm_duration`, default 300s) validates the value. If confirmation fails, the tuner backs off by one fine step and retries. After `max_confirm_retries` (default 2) failures at a value, it backs off further.
 
-4. **Result** -- each core ends up with a confirmed best CO offset. The final profile can be exported as JSON or applied to the Curve Optimizer tab.
+4. **Multi-core validation** (automatic, `auto_validate` enabled by default) -- after all cores are individually confirmed, the tuner automatically enters a 3-stage validation sequence that catches failures invisible to per-core testing:
+
+   - **Stage 1 — Per-core with all offsets live**: applies ALL confirmed best offsets simultaneously, then stress tests each core one at a time (cycling per test order). This catches "core 0 at -39 is stable alone but unstable when core 1 is also at -33 due to shared VRM power delivery."
+   - **Stage 2 — All-core simultaneous**: all confirmed offsets applied, ALL cores stressed at once for `validate_duration`. Full package power draw worst case. Tests the absolute maximum thermal and electrical stress the offset profile will see.
+   - **Stage 3 — Alternating half-core load**: half the cores loaded, half idle, then swap. Split by CCD when available (tests cross-CCD power interactions), else by even/odd index. Catches voltage transients during boost ramp-up/ramp-down as cores enter and exit C-states.
+
+   If any stage fails: the most aggressive core (highest absolute offset) is backed off by one `fine_step`, and validation restarts from stage 1. If no core can be backed off further (all at `start_offset`), the tuner finalizes with the current profile.
+
+   The status label shows the active validation stage and progress (e.g., "VALIDATING S1 (per-core) 5/16"). Disable with `auto_validate = false` if you want to validate manually.
+
+5. **Result** -- each core ends up with a confirmed and cross-validated best CO offset. The final profile can be exported as JSON or applied to the Curve Optimizer tab.
 
 **CO isolation:**
 
 During per-core search, the tuner ensures that the **only non-baseline CO offset** on the CPU is the one being actively stress-tested. Before each test, all other cores are reverted to their baseline offsets (the values inherited from BIOS/SMU at session start). After each test, the tested core is also reverted. This prevents a scenario where a previously-tested core sits at an aggressive offset (e.g., -39), crashes the system while a different core is being tested, and the tuner incorrectly blames the wrong core.
 
-During profile validation (after all cores are individually confirmed), CO isolation is disabled — all confirmed offsets are applied simultaneously to test power delivery interactions between cores.
+During multi-core validation (after all cores are individually confirmed), CO isolation is deliberately disabled — all confirmed offsets are applied simultaneously to test power delivery interactions between cores. If a validation stage fails, all cores are reverted to baseline before pausing. If an SMU write fails partway through applying offsets, all already-applied cores are reverted to baseline and the tuner pauses (no partial state left on hardware).
 
 **Crash safety:**
 
@@ -562,14 +572,21 @@ Resume follows a strict safety order to prevent infinite crash loops:
 
 This ordering is critical: if the system crashed because a CO offset was too aggressive, naively re-applying saved offsets on resume would re-apply that same crashing value, causing another crash on every boot attempt. By advancing first and restoring baselines, the tuner always moves past the dangerous value before re-engaging the hardware.
 
+**Crash during validation:** if the system crashes during multi-core validation, the session is recoverable. On resume, the tuner detects that all cores are confirmed and re-enters validation from stage 1. Sessions in 'validating' status are included in the resume session picker alongside 'running' and 'paused' sessions.
+
+**Pause during validation:** pausing during validation saves the session as 'paused'. On resume, the tuner detects the all-confirmed state and re-enters validation from stage 1 (validation stage progress is not persisted across pause/resume — stages are fast enough that restarting from S1 is acceptable).
+
 **Per-core state machine:**
 
 ```
 NOT_STARTED → COARSE_SEARCH → FINE_SEARCH → SETTLED → CONFIRMING → CONFIRMED
-                                    |                       |
-                                    ↓                       ↓
-                                 SETTLED              FAILED_CONFIRM
-                                                      (backs off, retries)
+                                    |                       |            |
+                                    ↓                       ↓            ↓ (all cores)
+                                 SETTLED              FAILED_CONFIRM   VALIDATION
+                                                      (backs off)     S1 → S2 → S3 → DONE
+                                                                        ↑     |     |
+                                                                        └─────┴─────┘
+                                                                      (backoff, restart S1)
 ```
 
 **Configuration options:**
@@ -582,8 +599,9 @@ NOT_STARTED → COARSE_SEARCH → FINE_SEARCH → SETTLED → CONFIRMING → CON
 | Max Offset | -50 | -60 to +60 | Most aggressive offset to try (auto-clamped to CPU generation) |
 | Search Duration | 60s | 10-600s | Test duration per step during search |
 | Confirm Duration | 300s | 30-1800s | Test duration for confirmation run |
-| Validate Duration | 300s | 30-1800s | Test duration for profile validation |
+| Validate Duration | 300s | 30-3600s | Test duration per stage during multi-core validation |
 | Max Confirm Retries | 2 | 0-5 | Retries before backing off from a value |
+| Auto Validate | true | true/false | Automatically run 3-stage multi-core validation after all cores are individually confirmed |
 | Backend | mprime | mprime/stress-ng/y-cruncher/stressapptest | Stress test backend |
 | Mode | SSE | SSE/AVX/AVX2/AVX512 | Stress test instruction set |
 | FFT Preset | SMALL | SMALL/MEDIUM/LARGE/HEAVY/ALL | FFT size preset (mprime) |
@@ -606,21 +624,26 @@ NOT_STARTED → COARSE_SEARCH → FINE_SEARCH → SETTLED → CONFIRMING → CON
 
 1. Go to the **Auto-Tuner** tab
 2. Configure search parameters (defaults are good for most CPUs)
-3. Click **Start** -- the tuner begins testing cores sequentially
+3. Click **Start Tuning** -- the tuner begins testing cores sequentially
 4. Watch the core status table update in real-time: phase, current offset, best offset, test count, last result
-5. When all cores are confirmed, the session completes with a full CO profile
-6. Use **Export Profile** to copy the results or apply them to the Curve Optimizer tab
-7. Completed (and interrupted) sessions appear in the **History** tab's **Tuner Sessions** view -- click any session to review per-core state details and the full test log
+5. When all cores are individually confirmed, the tuner automatically enters multi-core validation (3 stages — status label shows "VALIDATING S1/S2/S3" with progress)
+6. If validation fails, the most aggressive core is backed off and validation restarts -- this continues until the profile is stable or no further backoff is possible
+7. When validation passes, the confirmed CO profile is applied to the SMU and the session completes
+8. Use **Export Profile** to copy the results or apply them to the Curve Optimizer tab
+9. Completed (and interrupted) sessions appear in the **History** tab's **Tuner Sessions** view -- click any session to review per-core state details and the full test log
+10. **Resume** shows a session picker dialog when multiple paused/interrupted sessions exist
 
-**Data persistence:** every tuner session is permanently saved in SQLite -- the config parameters, per-core state machine progress, and every individual test result (offset, phase, pass/fail, duration, error). Starting a new session does not delete old ones. **Load Defaults** only resets the config spinboxes to factory defaults; it does not affect any historical data or in-progress sessions. Action buttons (Start, Abort, Pause, Resume, Validate, Export) gray out when not applicable to the current state.
+**Data persistence:** every tuner session is permanently saved in SQLite -- the config parameters, per-core state machine progress, and every individual test result (offset, phase, pass/fail, duration, error). Starting a new session does not delete old ones. **Load Defaults** only resets the config spinboxes to factory defaults; it does not affect any historical data or in-progress sessions. Action buttons (Start, Abort, Pause, Resume, Validate, Export) gray out when not applicable to the current state. During an active tuner session, the **Curve Optimizer tab** is locked (all Apply buttons, Reset, spinboxes disabled) to prevent SMU conflicts, and the manual **Start Test** button is disabled. Config spinboxes are also disabled during a run — the engine uses a snapshot of the config taken at start time, so changing UI values mid-run has no effect.
 
 **Tips:**
 
 - **mprime with Small FFTs and SSE mode** is the gold standard for CO testing -- it produces the highest single-core clocks and the most sensitive error detection
 - The default `max_offset` of -50 is appropriate for Zen 4. For Zen 5, you can push to -60. For Zen 3/3D, the CPU generation's range (-30) is enforced automatically.
 - **Sequential test order** (default) finishes one core completely before moving to the next. Use **round robin** if you want partial results for all cores faster.
-- A typical 16-core run with default settings takes roughly 2-4 hours depending on how aggressive each core can go.
+- A typical 16-core run with default settings takes roughly 2-4 hours depending on how aggressive each core can go, plus ~80 minutes for 3-stage validation (16 cores x 300s for stage 1, plus stage 2 and 3).
 - If many cores fail at the starting offset, enable **abort on consecutive failures** (e.g., 3) to stop early -- this usually means BIOS PBO settings need adjustment first.
+- **Multi-core validation** is the key differentiator from manual testing -- a core that passes in isolation may fail when all cores draw power simultaneously. The 3-stage validation catches these power delivery and voltage transient failures that per-core testing misses.
+- If validation keeps backing off cores and restarting, your VRM or power delivery may not support the aggregate offset profile. Consider reducing `max_offset` or testing with fewer cores.
 
 ### Recommended Test Settings
 
@@ -700,7 +723,7 @@ src/
     config.py                # TunerConfig dataclass (14 search parameters with defaults)
     state.py                 # CoreState and TunerSession dataclasses
     persistence.py           # SQLite operations: session CRUD, core state upsert, test log
-    engine.py                # TunerEngine orchestrator: state machine, core scheduling, crash recovery
+    engine.py                # TunerEngine orchestrator: state machine, core scheduling, crash recovery, 3-stage validation
   gui/
     main_window.py           # Main window: toolbar, tabs, test worker thread, profile management
     config_tab.py            # Test configuration UI (backend, mode, FFT, timing, presets, safety)
