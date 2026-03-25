@@ -199,6 +199,7 @@ class MainWindow(QMainWindow):
         self._tuner_tab.tuner_running_changed.connect(self._on_tuner_running_changed)
         self._tuner_tab.tuner_core_testing.connect(self._on_tuner_core_update)
         self._tuner_tab.tuner_core_elapsed.connect(self._on_tuner_core_elapsed)
+        self._tuner_tab.tuner_core_info.connect(self._on_tuner_core_info)
         self._tabs.addTab(self._tuner_tab, "Auto-Tuner")
 
         self._history_tab = HistoryTab(self._history_db)
@@ -285,6 +286,25 @@ class MainWindow(QMainWindow):
         if not self._topology:
             QMessageBox.warning(self, "Error", "CPU topology not detected")
             return
+
+        # Warn if an active/paused tuner session exists — running a manual test
+        # won't corrupt CO offsets (manual tests don't touch SMU), but the user
+        # should be aware their tuner session is waiting.
+        if self._history_db:
+            from tuner import persistence as _tp
+            active = _tp.get_active_session(self._history_db)
+            if active:
+                reply = QMessageBox.question(
+                    self, "Active Tuner Session",
+                    f"A tuner session is {active.status} (started {active.created_at[:10]}).\n\n"
+                    "Manual stress tests don't modify CO offsets, but you may want to "
+                    "resume or abort the tuner session first.\n\n"
+                    "Continue with manual test anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
 
         profile = self._config_tab.get_profile()
 
@@ -577,6 +597,11 @@ class MainWindow(QMainWindow):
         """Update core grid with live elapsed time during tuner tests."""
         status = CoreTestStatus(core_id=core_id, state="testing", elapsed_seconds=elapsed)
         self._core_grid.update_core_status(core_id, status)
+
+    @Slot(int, int, str)
+    def _on_tuner_core_info(self, core_id: int, co_offset: int, phase: str) -> None:
+        """Pass CO offset and tuner phase to core grid for sidebar display."""
+        self._core_grid.update_core_telemetry(core_id, co_offset=co_offset, tuner_phase=phase)
 
     @Slot(int)
     def _on_tab_changed(self, index: int) -> None:

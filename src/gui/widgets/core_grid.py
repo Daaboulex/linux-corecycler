@@ -135,13 +135,20 @@ class CoreCell(QWidget):
         temp_c: float = 0,
         vcore_v: float | None = None,
         stretch_pct: float | None = None,
+        co_offset: int | None = None,
+        tuner_phase: str | None = None,
     ) -> None:
         self._freq_mhz = freq_mhz
         self._temp_c = temp_c
         self._vcore_v = vcore_v
 
         if self._state == "testing":
-            # Row 1 right: keep clear (status has phase + time)
+            # Row 1 right: show CO offset + tuner phase if available
+            if co_offset is not None:
+                phase_short = (tuner_phase or "").replace("_", " ").title()
+                self._detail_label.setText(f"CO:{co_offset}  {phase_short}")
+            else:
+                self._detail_label.setText("")
             # Row 2: all telemetry on the expanded line
             parts = []
             if freq_mhz > 0:
@@ -153,7 +160,6 @@ class CoreCell(QWidget):
             if vcore_v is not None:
                 parts.append(f"{vcore_v:.4f}V")
             self._telemetry_label.setText("  ".join(parts))
-            self._detail_label.setText("")
         else:
             # Non-testing: show last reading in detail label
             parts = []
@@ -252,14 +258,16 @@ class CoreGridWidget(QWidget):
     def update_core_telemetry(
         self,
         core_id: int,
-        freq_mhz: float,
-        temp_c: float,
+        freq_mhz: float = 0,
+        temp_c: float = 0,
         vcore_v: float | None = None,
         stretch_pct: float | None = None,
+        co_offset: int | None = None,
+        tuner_phase: str | None = None,
     ) -> None:
         cell = self._cells.get(core_id)
         if cell:
-            cell.update_telemetry(freq_mhz, temp_c, vcore_v, stretch_pct)
+            cell.update_telemetry(freq_mhz, temp_c, vcore_v, stretch_pct, co_offset, tuner_phase)
 
     def _clear_layout(self, layout) -> None:
         while layout.count():

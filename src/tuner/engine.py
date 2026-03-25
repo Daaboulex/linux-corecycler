@@ -160,6 +160,7 @@ class TunerEngine(QObject):
     status_changed = Signal(str)  # global status
     progress_updated = Signal(int, int)  # cores_done, cores_total
     log_message = Signal(str)  # human-readable log entry
+    co_drift_detected = Signal(str)  # JSON-encoded {core_id: {expected, actual}}
 
     def __init__(
         self,
@@ -293,6 +294,24 @@ class TunerEngine(QObject):
             self._config.clamp_max_offset(self._smu.commands.co_range)
 
         self._core_states = tp.load_core_states(self._db, session_id)
+
+        # Check for CO drift — warn if SMU values don't match expected baselines.
+        # This catches cases where the user manually changed CO (via Curve Optimizer
+        # tab) or ran other tools between pause and resume.
+        if self._smu is not None:
+            import json as _json
+            drift: dict[int, dict[str, int]] = {}
+            for cs in self._core_states.values():
+                actual = self._smu.get_co_offset(cs.core_id)
+                if actual is not None and actual != cs.baseline_offset:
+                    drift[cs.core_id] = {"expected": cs.baseline_offset, "actual": actual}
+            if drift:
+                self.log_message.emit(
+                    f"CO drift detected on {len(drift)} core(s) — "
+                    f"SMU values differ from session baselines. "
+                    f"Baselines will be restored."
+                )
+                self.co_drift_detected.emit(_json.dumps(drift))
 
         # Step 1: Advance interrupted cores BEFORE touching SMU.
         # Cores in active test phases crashed at their current_offset — that
