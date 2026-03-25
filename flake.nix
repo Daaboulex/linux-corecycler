@@ -57,7 +57,7 @@
           pythonPkgs = python.pkgs;
 
           # Shared build function — backends list is the only difference
-          mkCoreCyclerLx =
+          mkCoreCycler =
             {
               backends ? [
                 pkgs.stress-ng
@@ -66,7 +66,7 @@
               pnameSuffix ? "",
             }:
             pythonPkgs.buildPythonApplication {
-              pname = "corecyclerlx${pnameSuffix}";
+              pname = "corecycler${pnameSuffix}";
               version = "0.0.1";
               pyproject = true;
 
@@ -94,15 +94,15 @@
 
               # Install icon, desktop file, and asset SVGs
               postInstall = ''
-                install -Dm644 assets/icon.svg $out/share/icons/hicolor/scalable/apps/corecyclerlx.svg
-                install -Dm644 assets/corecyclerlx.desktop $out/share/applications/corecyclerlx.desktop
-                install -d $out/share/corecyclerlx/assets
-                install -Dm644 assets/*.svg $out/share/corecyclerlx/assets/
+                install -Dm644 assets/icon.svg $out/share/icons/hicolor/scalable/apps/corecycler.svg
+                install -Dm644 assets/corecycler.desktop $out/share/applications/corecycler.desktop
+                install -d $out/share/corecycler/assets
+                install -Dm644 assets/*.svg $out/share/corecycler/assets/
               '';
 
               # Make stress test backends available on PATH at runtime
               postFixup = ''
-                wrapProgram $out/bin/corecyclerlx \
+                wrapProgram $out/bin/corecycler \
                   --prefix PATH : ${
                     pkgs.lib.makeBinPath (
                       backends
@@ -117,17 +117,17 @@
               meta = {
                 description = "Per-core CPU stability tester and PBO Curve Optimizer tuner for AMD Ryzen";
                 license = pkgs.lib.licenses.gpl3Plus;
-                mainProgram = "corecyclerlx";
+                mainProgram = "corecycler";
                 platforms = pkgs.lib.platforms.linux;
               };
             };
         in
         {
           # FOSS-only: stress-ng only (no unfree software)
-          default = mkCoreCyclerLx { };
+          default = mkCoreCycler { };
 
           # Full: includes mprime (unfree)
-          full = mkCoreCyclerLx {
+          full = mkCoreCycler {
             backends = [
               pkgs.mprime
               pkgs.stress-ng
@@ -167,7 +167,7 @@
 
             shellHook = ''
               ${self.checks.${system}.pre-commit.shellHook}
-              echo "corecyclerlx dev shell"
+              echo "corecycler dev shell"
               echo "  Run:  python src/main.py"
               echo "  Test: pytest tests/"
             '';

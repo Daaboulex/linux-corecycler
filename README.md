@@ -1,4 +1,4 @@
-# CoreCyclerLx
+# CoreCycler
 
 Per-core CPU stress testing and AMD PBO Curve Optimizer tuning for Linux.
 
@@ -7,20 +7,20 @@ Per-core CPU stress testing and AMD PBO Curve Optimizer tuning for Linux.
 ![Version 1.0](https://img.shields.io/badge/Version-1.0-brightgreen)
 ![Linux only](https://img.shields.io/badge/Platform-Linux-yellow)
 
-> **Development status:** CoreCyclerLx is actively developed and tested on an **AMD Ryzen 9 9950X3D** (Zen 5, dual-CCD X3D, AM5). Other AMD Ryzen processors (Zen 2–5) should work but have not been tested as thoroughly. Intel CPUs are supported for stress testing only (no Curve Optimizer). If you encounter issues on other hardware, please [open an issue](https://github.com/Daaboulex/corecyclerlx/issues) with your CPU model and description.
+> **Development status:** CoreCycler is actively developed and tested on an **AMD Ryzen 9 9950X3D** (Zen 5, dual-CCD X3D, AM5). Other AMD Ryzen processors (Zen 2–5) should work but have not been tested as thoroughly. Intel CPUs are supported for stress testing only (no Curve Optimizer). If you encounter issues on other hardware, please [open an issue](https://github.com/Daaboulex/corecycler/issues) with your CPU model and description.
 
 ## What Is This?
 
-CoreCyclerLx is a Linux equivalent of [CoreCycler](https://github.com/sp00n/corecycler) (Windows) for AMD PBO Curve Optimizer tuning. It provides a graphical interface for running per-core stress tests and optionally reading/writing Curve Optimizer values via the AMD SMU (System Management Unit).
+CoreCycler is a Linux equivalent of [CoreCycler](https://github.com/sp00n/corecycler) (Windows) for AMD PBO Curve Optimizer tuning. It provides a graphical interface for running per-core stress tests and optionally reading/writing Curve Optimizer values via the AMD SMU (System Management Unit).
 
 **What is Curve Optimizer?**
 AMD Precision Boost Overdrive (PBO) Curve Optimizer (CO) lets you adjust the voltage-frequency curve on a per-core basis. Negative CO values reduce voltage at a given frequency, allowing the CPU to boost higher within its thermal and power limits. Each core in a processor is unique -- some can handle aggressive negative offsets (e.g., -30), while others become unstable past modest values (e.g., -10). Finding the right value for each core requires per-core testing.
 
 **Why per-core testing matters:**
-All-core stress tests (Prime95 with all threads, Cinebench, etc.) cannot reliably detect per-core instability. When all cores are loaded simultaneously, each core runs at lower boost clocks and voltages than it would under single-threaded load. A core that passes an all-core test at 5.0 GHz may crash when it boosts to 5.7 GHz under single-threaded load with an aggressive CO offset. CoreCyclerLx solves this by testing one core at a time at full single-threaded boost clocks, cycling through every core in sequence.
+All-core stress tests (Prime95 with all threads, Cinebench, etc.) cannot reliably detect per-core instability. When all cores are loaded simultaneously, each core runs at lower boost clocks and voltages than it would under single-threaded load. A core that passes an all-core test at 5.0 GHz may crash when it boosts to 5.7 GHz under single-threaded load with an aggressive CO offset. CoreCycler solves this by testing one core at a time at full single-threaded boost clocks, cycling through every core in sequence.
 
 **Why idle and variable load testing matters:**
-CO instability often manifests at idle or during load transitions, not under sustained full load. When a core drops to deep C-states (idle) and then wakes up, the voltage ramp-up may be insufficient with an aggressive CO offset. Similarly, the transition from idle to load or from light load to heavy load stresses the voltage regulator in ways that sustained load does not. A CO value that passes hours of Prime95 can still cause random crashes during normal desktop use. CoreCyclerLx addresses this with dedicated idle stability tests and variable load modes.
+CO instability often manifests at idle or during load transitions, not under sustained full load. When a core drops to deep C-states (idle) and then wakes up, the voltage ramp-up may be insufficient with an aggressive CO offset. Similarly, the transition from idle to load or from light load to heavy load stresses the voltage regulator in ways that sustained load does not. A CO value that passes hours of Prime95 can still cause random crashes during normal desktop use. CoreCycler addresses this with dedicated idle stability tests and variable load modes.
 
 ## Features
 
@@ -117,7 +117,7 @@ The Auto-Tuner also writes CO values via SMU as part of its automated search -- 
 The full lifecycle of CO values:
 
 1. **Boot**: BIOS applies your configured PBO Curve Optimizer values (e.g., -20 all-core)
-2. **Runtime (optional)**: CoreCyclerLx can override individual core CO values via SMU writes -- these override the BIOS values in the CPU's runtime state
+2. **Runtime (optional)**: CoreCycler can override individual core CO values via SMU writes -- these override the BIOS values in the CPU's runtime state
 3. **Reboot**: All SMU-written values are discarded; BIOS values are reapplied from step 1
 
 If you have PBO values already set in BIOS, those are your baseline. The stress testing feature tests whether those values are stable under per-core load. The SMU tab lets you experiment with different values at runtime without rebooting between each change.
@@ -139,7 +139,7 @@ Add the flake input to your `flake.nix`:
 ```nix
 {
   inputs = {
-    corecyclerlx.url = "github:Daaboulex/corecyclerlx";
+    corecycler.url = "github:Daaboulex/corecycler";
     # ...
   };
 }
@@ -150,22 +150,22 @@ Then import the NixOS module and enable the service:
 ```nix
 {
   # Import the module
-  imports = [ inputs.corecyclerlx.nixosModules.default ];
+  imports = [ inputs.corecycler.nixosModules.default ];
 
   # Enable with all defaults (FOSS-only, ryzen_smu, device access)
-  services.corecyclerlx = {
+  services.corecycler = {
     enable = true;
     deviceAccessUser = "your-username";  # required — user added to the corecycler group
   };
 }
 ```
 
-The module handles everything: the corecyclerlx package, kernel modules, udev rules for MSR device access, tmpfiles for SMU sysfs permissions, and the `corecycler` group. No manual kernel module configuration needed.
+The module handles everything: the corecycler package, kernel modules, udev rules for MSR device access, tmpfiles for SMU sysfs permissions, and the `corecycler` group. No manual kernel module configuration needed.
 
 **Full example** (AMD Zen 5 desktop with Nuvoton Super I/O):
 
 ```nix
-services.corecyclerlx = {
+services.corecycler = {
   enable = true;
   deviceAccessUser = "your-username";
   unfreeBackends = true;   # include mprime (best for CO tuning)
@@ -178,7 +178,7 @@ services.corecyclerlx = {
 **Full example** (AMD system with Gigabyte board / ITE Super I/O):
 
 ```nix
-services.corecyclerlx = {
+services.corecycler = {
   enable = true;
   deviceAccessUser = "your-username";
   unfreeBackends = true;
@@ -189,7 +189,7 @@ services.corecyclerlx = {
 **Full example** (DDR5 system with DIMM temperature monitoring):
 
 ```nix
-services.corecyclerlx = {
+services.corecycler = {
   enable = true;
   deviceAccessUser = "your-username";
   unfreeBackends = true;
@@ -203,7 +203,7 @@ services.corecyclerlx = {
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enable` | bool | `false` | Enable CoreCyclerLx |
+| `enable` | bool | `false` | Enable CoreCycler |
 | `unfreeBackends` | bool | `false` | Include mprime (unfree). When false, stress-ng and stressapptest are bundled |
 | **AMD SMU** | | | |
 | `ryzenSmu` | bool | `true` | Load [ryzen_smu](https://github.com/amkillam/ryzen_smu) kernel module for CO read/write via SMU. Zen 1–5 |
@@ -228,12 +228,12 @@ All out-of-tree kernel modules (ryzen_smu, zenpower5, it87) are built automatica
 ```nix
 # FOSS-only (stress-ng bundled, no unfree software):
 environment.systemPackages = [
-  inputs.corecyclerlx.packages.${pkgs.system}.default
+  inputs.corecycler.packages.${pkgs.system}.default
 ];
 
 # Full (stress-ng + mprime bundled — requires allowUnfree):
 environment.systemPackages = [
-  inputs.corecyclerlx.packages.${pkgs.system}.full
+  inputs.corecycler.packages.${pkgs.system}.full
 ];
 ```
 
@@ -250,17 +250,17 @@ Run directly without installing:
 
 ```bash
 # FOSS-only
-nix run github:Daaboulex/corecyclerlx
+nix run github:Daaboulex/corecycler
 
 # Full (with mprime)
-nix run github:Daaboulex/corecyclerlx#full
+nix run github:Daaboulex/corecycler#full
 ```
 
 ### From source (non-Nix)
 
 ```bash
-git clone https://github.com/Daaboulex/corecyclerlx.git
-cd corecyclerlx
+git clone https://github.com/Daaboulex/corecycler.git
+cd corecycler
 pip install PySide6
 python src/main.py
 ```
@@ -269,10 +269,10 @@ When running from source, you must install backends separately (see below).
 
 ### Running as Root
 
-CoreCyclerLx should be run as root (`sudo`) for full functionality:
+CoreCycler should be run as root (`sudo`) for full functionality:
 
 ```bash
-sudo corecyclerlx          # Nix-installed
+sudo corecycler          # Nix-installed
 sudo python src/main.py    # from source
 ```
 
@@ -310,7 +310,7 @@ When running without root, the status bar displays a warning listing unavailable
 
 ## Backend Setup
 
-CoreCyclerLx supports four stress test backends. You need at least one installed to run tests. The Nix package bundles backends automatically (see [Installation](#installation)), but if you're running from source or want additional backends, follow the guides below.
+CoreCycler supports four stress test backends. You need at least one installed to run tests. The Nix package bundles backends automatically (see [Installation](#installation)), but if you're running from source or want additional backends, follow the guides below.
 
 ### mprime (recommended for CO tuning)
 
@@ -325,7 +325,7 @@ mprime is the Linux command-line build of Prime95 by Mersenne Research. It is th
 ```nix
 # Option 1: Use the full package variant (includes mprime automatically)
 environment.systemPackages = [
-  inputs.corecyclerlx.packages.${pkgs.system}.full
+  inputs.corecycler.packages.${pkgs.system}.full
 ];
 
 # Option 2: Install mprime separately (requires nixpkgs.config.allowUnfree = true)
@@ -444,7 +444,7 @@ The [amkillam fork](https://github.com/amkillam/ryzen_smu) supports Zen 1 throug
 
 #### NixOS
 
-The NixOS module (`services.corecyclerlx`) handles ryzen_smu automatically when `ryzenSmu = true` (the default). It builds the module against your kernel, loads it, and sets up sysfs permissions. No manual configuration needed.
+The NixOS module (`services.corecycler`) handles ryzen_smu automatically when `ryzenSmu = true` (the default). It builds the module against your kernel, loads it, and sets up sysfs permissions. No manual configuration needed.
 
 #### Other distros (DKMS)
 
@@ -475,7 +475,7 @@ KERNEL=="ryzen_smu_drv", SUBSYSTEM=="platform", ATTR{smu_args}="", \
 
 ### Quick Start
 
-1. Launch CoreCyclerLx (`sudo corecyclerlx` or `sudo python src/main.py`) — root is recommended for full monitoring (clock stretch, per-core power, Curve Optimizer). The app works without root but shows reduced telemetry with a status bar warning.
+1. Launch CoreCycler (`sudo corecycler` or `sudo python src/main.py`) — root is recommended for full monitoring (clock stretch, per-core power, Curve Optimizer). The app works without root but shows reduced telemetry with a status bar warning.
 2. The application detects your CPU topology automatically (cores, CCDs, SMT, X3D)
 3. In the Configuration tab, select a backend -- use stress-ng if mprime is not installed
 4. The default preset is **Standard** (10 min/core, 1 cycle) -- adjust or choose a different preset as needed
@@ -499,7 +499,7 @@ This is the primary workflow for tuning AMD PBO Curve Optimizer:
 
 1. **Set conservative starting CO values in BIOS.** Start with a modest negative offset for all cores (e.g., -15 all-core). This is your baseline.
 
-2. **Run a screening pass.** Launch CoreCyclerLx with mprime, SSE mode, Small FFTs, Standard preset (10 minutes per core, 1 cycle). This takes roughly `10 min * core_count` to complete.
+2. **Run a screening pass.** Launch CoreCycler with mprime, SSE mode, Small FFTs, Standard preset (10 minutes per core, 1 cycle). This takes roughly `10 min * core_count` to complete.
 
 3. **Identify failing cores.** Note which cores fail. These are the cores that cannot sustain the -15 offset at full single-threaded boost clocks.
 
@@ -676,7 +676,7 @@ src/
     logger.py                # TestRunLogger: connects worker signals to DB writes
     export.py                # JSON/CSV export of test results and tuner sessions
   config/
-    settings.py              # JSON settings and test profile persistence (~/.config/corecyclerlx/)
+    settings.py              # JSON settings and test profile persistence (~/.config/corecycler/)
   tuner/
     __init__.py              # Package re-exports
     config.py                # TunerConfig dataclass (14 search parameters with defaults)
@@ -719,7 +719,7 @@ tests/
   test_tuner_engine.py       # State machine transitions, crash recovery, core scheduling
   test_tuner_tab.py          # Auto-Tuner GUI widget tests
 nix/
-  module.nix               # NixOS module: services.corecyclerlx options, all kernel modules, device access
+  module.nix               # NixOS module: services.corecycler options, all kernel modules, device access
   ryzen-smu.nix            # ryzen_smu kernel module derivation (GCC + Clang/LTO auto-detect)
   zenpower.nix             # zenpower5 kernel module derivation (GCC + Clang/LTO auto-detect)
   it87.nix                 # it87 ITE Super I/O kernel module derivation (GCC + Clang/LTO auto-detect)
@@ -727,7 +727,7 @@ flake.nix                  # Nix flake: packages (default/full), nixosModules.de
 pyproject.toml             # Python project metadata, entry point
 assets/
   icon.svg                 # Application icon (gear with cycling arrows)
-  corecyclerlx.desktop     # XDG desktop entry
+  corecycler.desktop     # XDG desktop entry
   arrow-*.svg              # Qt widget arrows for dark theme
 .github/
   workflows/
@@ -763,7 +763,7 @@ When adding a new stress test backend, subclass `StressBackend` from `src/engine
 
 ## Driver and Kernel Module Sources
 
-CoreCyclerLx integrates with several Linux kernel drivers for hardware monitoring and SMU access. Below are the upstream sources for all supported drivers:
+CoreCycler integrates with several Linux kernel drivers for hardware monitoring and SMU access. Below are the upstream sources for all supported drivers:
 
 ### SMU Access
 

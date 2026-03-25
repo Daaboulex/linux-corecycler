@@ -143,7 +143,7 @@ class TestSchedulerInit:
             stress_config=StressConfig(),
             scheduler_config=SchedulerConfig(),
         )
-        assert sched.work_dir == Path("/tmp/corecyclerlx")
+        assert sched.work_dir == Path("/tmp/corecycler")
 
     def test_ccd_assigned_in_status(self, simple_topo, mock_backend, tmp_path):
         sched = CoreScheduler(

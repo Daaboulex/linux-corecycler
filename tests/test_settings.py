@@ -100,7 +100,7 @@ class TestTestProfile:
 class TestAppSettings:
     def test_defaults(self):
         s = AppSettings()
-        assert s.work_dir == "/tmp/corecyclerlx"
+        assert s.work_dir == "/tmp/corecycler"
         assert s.theme == "system"
         assert s.poll_interval == 1.0
         assert s.show_smt_threads is False
@@ -182,7 +182,7 @@ class TestSaveLoadSettings:
     def test_load_default_when_missing(self, tmp_path, monkeypatch):
         monkeypatch.setattr("config.settings.CONFIG_DIR", tmp_path)
         s = load_settings()
-        assert s.work_dir == "/tmp/corecyclerlx"
+        assert s.work_dir == "/tmp/corecycler"
         assert len(s.profiles) == 1
 
     def test_load_corrupted_json(self, tmp_path, monkeypatch):
@@ -190,7 +190,7 @@ class TestSaveLoadSettings:
         (tmp_path / "settings.json").write_text("not valid json{{{")
         s = load_settings()
         assert isinstance(s, AppSettings)
-        assert s.work_dir == "/tmp/corecyclerlx"
+        assert s.work_dir == "/tmp/corecycler"
 
     def test_load_wrong_types(self, tmp_path, monkeypatch):
         monkeypatch.setattr("config.settings.CONFIG_DIR", tmp_path)

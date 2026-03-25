@@ -7,8 +7,9 @@ import logging
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -176,7 +177,9 @@ class TunerTab(QWidget):
             QTableWidget.SelectionBehavior.SelectRows
         )
         self._core_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._core_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self._core_table.currentCellChanged.connect(self._on_core_selected)
+        self._install_copy_shortcut(self._core_table)
         top_layout.addWidget(self._core_table)
 
         splitter.addWidget(top)
@@ -212,6 +215,9 @@ class TunerTab(QWidget):
             QHeaderView.ResizeMode.Stretch
         )
         self._log_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._log_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
+        self._log_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._install_copy_shortcut(self._log_table)
         bottom_layout.addWidget(self._log_table)
 
         splitter.addWidget(bottom)
@@ -732,6 +738,43 @@ class TunerTab(QWidget):
                 if col_idx == 4:
                     item.setForeground(color)
                 self._log_table.setItem(row, col_idx, item)
+
+    # ------------------------------------------------------------------
+    # Clipboard
+    # ------------------------------------------------------------------
+
+    def _install_copy_shortcut(self, table: QTableWidget) -> None:
+        """Add Ctrl+C support to a QTableWidget — copies selected rows as TSV."""
+        shortcut = QShortcut(QKeySequence.StandardKey.Copy, table)
+        shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        shortcut.activated.connect(lambda: self._copy_table_selection(table))
+
+    def _copy_table_selection(self, table: QTableWidget) -> None:
+        """Copy selected rows (or all rows if none selected) as tab-separated text."""
+        rows = sorted({idx.row() for idx in table.selectedIndexes()})
+        if not rows:
+            rows = list(range(table.rowCount()))
+        if not rows:
+            return
+
+        # Header
+        headers = []
+        for col in range(table.columnCount()):
+            h = table.horizontalHeaderItem(col)
+            headers.append(h.text() if h else "")
+        lines = ["\t".join(headers)]
+
+        # Data
+        for row in rows:
+            cells = []
+            for col in range(table.columnCount()):
+                item = table.item(row, col)
+                cells.append(item.text() if item else "")
+            lines.append("\t".join(cells))
+
+        clipboard = QApplication.clipboard()
+        if clipboard:
+            clipboard.setText("\n".join(lines))
 
     # ------------------------------------------------------------------
     # Helpers

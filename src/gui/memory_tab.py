@@ -215,7 +215,7 @@ class MemoryTab(QWidget):
         layout.addWidget(self._mc_group)
 
         # SPD Timings group box (DDR5 EEPROM data, cached at startup)
-        self._spd_group = QGroupBox("SPD Timings (DDR5)")
+        self._spd_group = QGroupBox("SPD Timings — JEDEC Spec (DDR5)")
         spd_layout = QVBoxLayout(self._spd_group)
         self._primary_label = QLabel("Primary: --")
         self._primary_label.setFont(QFont("monospace", 10))
@@ -363,7 +363,7 @@ class MemoryTab(QWidget):
                 "SPD Timings unavailable \u2014 spd5118 eeprom not exposed"
             )
             self._spd_unavailable_label.setVisible(True)
-            self._spd_group.setTitle("SPD Timings (DDR5)")
+            self._spd_group.setTitle("SPD Timings — JEDEC Spec (DDR5)")
             return
 
         self._primary_label.setVisible(True)
@@ -371,7 +371,7 @@ class MemoryTab(QWidget):
         self._spd_unavailable_label.setVisible(False)
 
         dimm_num = spd.dimm_index + 1
-        self._spd_group.setTitle(f"SPD Timings (DDR5) (DIMM {dimm_num})")
+        self._spd_group.setTitle(f"SPD Timings — JEDEC Spec (DDR5) (DIMM {dimm_num})")
 
         self._primary_label.setText(
             f"Primary: {spd.tCL}-{spd.tRCD}-{spd.tRP}-{spd.tRAS}-{spd.tRC}"

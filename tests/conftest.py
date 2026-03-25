@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for CoreCyclerLx tests."""
+"""Shared pytest fixtures for CoreCycler tests."""
 
 from __future__ import annotations
 

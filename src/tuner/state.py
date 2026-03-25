@@ -19,6 +19,7 @@ class CoreState:
     best_offset: int | None = None
     coarse_fail_offset: int | None = None
     confirm_attempts: int = 0
+    baseline_offset: int = 0
 
 
 @dataclass(slots=True)
