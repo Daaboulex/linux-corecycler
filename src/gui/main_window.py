@@ -583,8 +583,9 @@ class MainWindow(QMainWindow):
 
     @Slot(bool)
     def _on_tuner_running_changed(self, running: bool) -> None:
-        """Mutual exclusion: disable manual test Start when tuner is active."""
+        """Mutual exclusion: disable manual test Start and CO writes when tuner is active."""
         self._start_btn.setEnabled(not running)
+        self._smu_tab.set_tuner_running(running)
 
     @Slot(int, str)
     def _on_tuner_core_update(self, core_id: int, state: str) -> None:

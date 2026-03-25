@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
 from engine.backends.base import StressConfig
 from engine.scheduler import CoreScheduler, SchedulerConfig
@@ -161,6 +161,7 @@ class TunerEngine(QObject):
     progress_updated = Signal(int, int)  # cores_done, cores_total
     log_message = Signal(str)  # human-readable log entry
     co_drift_detected = Signal(str)  # JSON-encoded {core_id: {expected, actual}}
+    validation_progress = Signal(int, int, int)  # stage, current_index, total
 
     def __init__(
         self,
@@ -192,6 +193,13 @@ class TunerEngine(QObject):
         self._ccd_last_tested: dict[int, int | None] = {}  # CCD index → last core_id tested in that CCD
         self._co_applied: dict[int, int | None] = {}  # core_id → last CO value written to SMU (None = unknown)
 
+        # Multi-core validation state
+        self._validation_stage: int = 0  # 0 = not validating, 1/2/3 = stage
+        self._validation_core_index: int = 0  # index into _validation_core_order for stage 1
+        self._validation_core_order: list[int] = []  # cores to cycle through in stage 1
+        self._validation_half_index: int = 0  # which half to test in stage 3
+        self._validation_halves: list[list[int]] = []  # [half_a, half_b] for stage 3
+
         # Clamp max_offset to CPU generation range
         if smu is not None:
             self._config.clamp_max_offset(smu.commands.co_range)
@@ -219,6 +227,7 @@ class TunerEngine(QObject):
         self._abort_requested = False
         self._paused = False
         self._consecutive_start_failures = 0
+        self._validation_stage = 0
 
         # Validate config
         errors = self._config.validate()
@@ -282,6 +291,7 @@ class TunerEngine(QObject):
         """
         self._abort_requested = False
         self._paused = False
+        self._validation_stage = 0
         self._session_id = session_id
 
         session = tp.get_session(self._db, session_id)
@@ -362,10 +372,25 @@ class TunerEngine(QObject):
             else:
                 self.log_message.emit(f"Restored baselines: {baselines}")
 
-        self._set_status("running")
-        tp.update_session_status(self._db, session_id, "running")
-        self.log_message.emit(f"Resumed session {session_id}")
-        self._run_next()
+        # Check if all cores are confirmed — if so, we were paused during
+        # validation and should re-enter validation instead of per-core search.
+        all_confirmed = all(cs.phase == "confirmed" for cs in self._core_states.values())
+        if all_confirmed and self._config.auto_validate and len(self._core_states) > 1:
+            profile = {
+                cs.core_id: cs.best_offset
+                for cs in self._core_states.values()
+                if cs.best_offset is not None
+            }
+            self.log_message.emit(
+                f"Resumed session {session_id} — "
+                f"all cores confirmed, re-entering validation"
+            )
+            self._enter_auto_validation(profile)
+        else:
+            self._set_status("running")
+            tp.update_session_status(self._db, session_id, "running")
+            self.log_message.emit(f"Resumed session {session_id}")
+            self._run_next()
 
     def pause(self) -> None:
         """Pause after the current test completes."""
@@ -399,6 +424,7 @@ class TunerEngine(QObject):
         # without rebooting)
         if tested_core is not None:
             self._revert_core_to_baseline(tested_core)
+        self._validation_stage = 0
         self._set_status("idle")
         if self._session_id:
             tp.update_session_status(self._db, self._session_id, "aborted")
@@ -408,6 +434,7 @@ class TunerEngine(QObject):
         """Re-test all confirmed values from a completed session."""
         self._abort_requested = False
         self._paused = False
+        self._validation_stage = 0
         self._session_id = session_id
 
         profile = tp.get_best_profile(self._db, session_id)
@@ -805,14 +832,21 @@ class TunerEngine(QObject):
         peak_stretch_pct: float,
     ) -> None:
         """Process test result — log, advance state machine, continue."""
+        # Check abort FIRST — if abort() already ran, don't touch any state.
+        # The signal may fire after abort() disconnected it (Qt queued delivery).
+        if self._abort_requested:
+            # Still clean up the worker if it exists
+            if self._worker is not None:
+                self._worker.wait(1000)
+                self._worker.deleteLater()
+                self._worker = None
+            return
+
         # Clean up worker reference
         if self._worker is not None:
             self._worker.wait(1000)
             self._worker.deleteLater()
             self._worker = None
-
-        if self._abort_requested:
-            return
 
         cs = self._core_states.get(core_id)
         if cs is None:
@@ -836,7 +870,10 @@ class TunerEngine(QObject):
             "fine_search": "fine",
             "confirming": "confirm",
         }
-        log_phase = phase_map.get(cs.phase, "validate" if self._status == "validating" else cs.phase)
+        if self._status == "validating" and self._validation_stage > 0:
+            log_phase = f"validate_s{self._validation_stage}"
+        else:
+            log_phase = phase_map.get(cs.phase, "validate" if self._status == "validating" else cs.phase)
 
         # Log to DB
         if self._session_id:
@@ -869,6 +906,11 @@ class TunerEngine(QObject):
         if passed:
             self._consecutive_start_failures = 0
 
+        # Multi-core validation uses its own flow — don't advance per-core state machine
+        if self._validation_stage > 0:
+            self._on_validation_test_finished(core_id, passed)
+            return
+
         # Advance state machine
         self._advance_core(core_id, passed)
 
@@ -876,15 +918,29 @@ class TunerEngine(QObject):
         self._run_next()
 
     def _complete_session(self) -> None:
-        """All cores done — finalize session and apply confirmed profile."""
+        """All cores done — enter auto-validation or finalize session."""
         profile = {}
         for cs in self._core_states.values():
             if cs.best_offset is not None:
                 profile[cs.core_id] = cs.best_offset
 
-        # Apply the full confirmed profile to SMU so the user gets tuned
-        # values immediately. During testing all cores are at baseline;
-        # now that everything is confirmed, apply the real offsets.
+        # If auto_validate is on and we just finished per-core search (not
+        # already validating), enter multi-core validation instead of completing.
+        if (
+            self._config.auto_validate
+            and self._status != "validating"
+            and len(profile) > 1  # single-core has nothing to cross-validate
+        ):
+            self.log_message.emit(
+                f"All {len(profile)} cores confirmed — entering multi-core validation"
+            )
+            self._enter_auto_validation(profile)
+            return
+
+        self._finalize_session(profile)
+
+    def _finalize_session(self, profile: dict[int, int]) -> None:
+        """Apply confirmed profile to SMU and emit completion."""
         if self._smu is not None and profile:
             failed: list[int] = []
             for core_id, offset in profile.items():
@@ -907,6 +963,7 @@ class TunerEngine(QObject):
         if self._session_id:
             tp.update_session_status(self._db, self._session_id, "completed")
 
+        self._validation_stage = 0
         self._set_status("idle")
         self._emit_progress()
         self.log_message.emit(
@@ -914,6 +971,321 @@ class TunerEngine(QObject):
         )
         import json
         self.session_completed.emit(json.dumps(profile))
+
+    # ------------------------------------------------------------------
+    # Multi-core validation (3-stage)
+    # ------------------------------------------------------------------
+
+    def _enter_auto_validation(self, profile: dict[int, int]) -> None:
+        """Begin the 3-stage multi-core validation sequence.
+
+        Stage 1: Per-core with all offsets live — stress each core individually
+                 while all other cores hold their confirmed offsets.
+        Stage 2: All-core simultaneous — all cores stressed at once.
+        Stage 3: Alternating half-core load — half loaded / half idle, rotating.
+        """
+        # Apply all confirmed offsets (validation mode — no isolation)
+        self._set_status("validating")
+        if self._session_id:
+            tp.update_session_status(self._db, self._session_id, "validating")
+
+        # Set up core order for stage 1 (follows test_order from config)
+        self._validation_core_order = sorted(profile.keys())
+        self._validation_core_index = 0
+
+        # Set up halves for stage 3 (split by CCD if available, else even/odd)
+        # Filter out empty halves to prevent IndexError with odd core counts
+        self._validation_halves = [
+            h for h in self._split_cores_into_halves(profile) if h
+        ]
+        self._validation_half_index = 0
+
+        self._validation_stage = 1
+        self.log_message.emit("Validation stage 1: per-core with all offsets live")
+        self.validation_progress.emit(1, 0, len(self._validation_core_order))
+        self._run_validation_next()
+
+    def _split_cores_into_halves(self, profile: dict[int, int]) -> list[list[int]]:
+        """Split confirmed cores into two halves for stage 3.
+
+        Uses CCD boundaries when available (tests cross-CCD power interactions).
+        Falls back to even index / odd index split.
+        """
+        cores = sorted(profile.keys())
+        ccd_groups: dict[int, list[int]] = {}
+        for core_id in cores:
+            core_info = self._topology.cores.get(core_id)
+            ccd = core_info.ccd if core_info and core_info.ccd is not None else 0
+            ccd_groups.setdefault(ccd, []).append(core_id)
+
+        if len(ccd_groups) >= 2:
+            # Split by CCD — half_a = first CCD(s), half_b = remaining
+            sorted_ccds = sorted(ccd_groups.keys())
+            mid = len(sorted_ccds) // 2
+            half_a = []
+            half_b = []
+            for i, ccd in enumerate(sorted_ccds):
+                if i < mid:
+                    half_a.extend(ccd_groups[ccd])
+                else:
+                    half_b.extend(ccd_groups[ccd])
+            return [sorted(half_a), sorted(half_b)]
+
+        # Single CCD — split by index
+        return [cores[::2], cores[1::2]]
+
+    def _run_validation_next(self) -> None:
+        """Dispatch the next validation test based on current stage."""
+        if self._abort_requested or self._paused:
+            return
+
+        match self._validation_stage:
+            case 1:
+                self._run_validation_stage1()
+            case 2:
+                self._run_validation_stage2()
+            case 3:
+                self._run_validation_stage3()
+            case _:
+                # All stages complete
+                profile = {
+                    cs.core_id: cs.best_offset
+                    for cs in self._core_states.values()
+                    if cs.best_offset is not None
+                }
+                self.log_message.emit("All validation stages passed")
+                self._finalize_session(profile)
+
+    def _run_validation_stage1(self) -> None:
+        """Stage 1: test each core individually with all offsets applied."""
+        if self._validation_core_index >= len(self._validation_core_order):
+            # Stage 1 complete — advance to stage 2
+            self._validation_stage = 2
+            self.log_message.emit(
+                "Validation stage 1 passed — "
+                "stage 2: all-core simultaneous stress"
+            )
+            QTimer.singleShot(0, self._run_validation_next)
+            return
+
+        core_id = self._validation_core_order[self._validation_core_index]
+        cs = self._core_states[core_id]
+        offset = cs.best_offset if cs.best_offset is not None else cs.baseline_offset
+
+        self.log_message.emit(
+            f"Validation 1/{len(self._validation_core_order)}: "
+            f"core {core_id} at offset {offset} (all offsets live)"
+        )
+        self.validation_progress.emit(
+            1, self._validation_core_index, len(self._validation_core_order)
+        )
+
+        # Apply all confirmed offsets
+        if self._smu is not None:
+            if not self._apply_validation_offsets(core_id, offset):
+                return
+
+        self._last_tested_core = core_id
+        self._start_worker(core_id, self._config.validate_duration_seconds)
+
+    def _run_validation_stage2(self) -> None:
+        """Stage 2: all cores stressed simultaneously.
+
+        Uses CoreScheduler with all confirmed core IDs — full power draw.
+        Picks the first core as the "reported" core for the worker signal,
+        but all cores are stressed.
+        """
+        cores = self._validation_core_order
+        self.log_message.emit(
+            f"Validation stage 2: stressing all {len(cores)} cores simultaneously"
+        )
+        self.validation_progress.emit(2, 0, 1)
+
+        # Apply all confirmed offsets
+        if self._smu is not None:
+            first_core = cores[0]
+            cs = self._core_states[first_core]
+            offset = cs.best_offset if cs.best_offset is not None else cs.baseline_offset
+            if not self._apply_validation_offsets(first_core, offset):
+                return
+
+        self._last_tested_core = cores[0]
+        self._start_multi_core_worker(cores, self._config.validate_duration_seconds)
+
+    def _run_validation_stage3(self) -> None:
+        """Stage 3: alternating half-core load — catches voltage transients."""
+        if self._validation_half_index >= len(self._validation_halves):
+            # Stage 3 complete — all validation passed
+            self._validation_stage = 4  # sentinel → _run_validation_next finalizes
+            QTimer.singleShot(0, self._run_validation_next)
+            return
+
+        half = self._validation_halves[self._validation_half_index]
+        half_label = "A" if self._validation_half_index == 0 else "B"
+        self.log_message.emit(
+            f"Validation stage 3{half_label}: stressing cores {half} "
+            f"(half loaded, half idle — catching boost ramp transients)"
+        )
+        self.validation_progress.emit(
+            3, self._validation_half_index, len(self._validation_halves)
+        )
+
+        # Apply all confirmed offsets (even idle cores hold their offsets)
+        if self._smu is not None:
+            first_core = half[0]
+            cs = self._core_states[first_core]
+            offset = cs.best_offset if cs.best_offset is not None else cs.baseline_offset
+            if not self._apply_validation_offsets(first_core, offset):
+                return
+
+        self._last_tested_core = half[0]
+        self._start_multi_core_worker(half, self._config.validate_duration_seconds)
+
+    def _start_multi_core_worker(self, cores: list[int], duration: int) -> None:
+        """Launch a worker that stresses multiple cores simultaneously.
+
+        Uses CoreScheduler with multiple cores_to_test. The finished signal
+        reports the first core ID — the engine treats pass/fail as applying
+        to the whole set.
+        """
+        stress_config = StressConfig(
+            mode=self._get_stress_mode(),
+            fft_preset=self._get_fft_preset(),
+            threads=0,  # let scheduler figure out threads per core
+        )
+
+        # For multi-core: each core gets its own threads via scheduler
+        scheduler_config = SchedulerConfig(
+            seconds_per_core=duration,
+            cores_to_test=cores,
+            stop_on_error=True,
+            cycle_count=1,
+        )
+
+        try:
+            scheduler = CoreScheduler(
+                topology=self._topology,
+                backend=self._backend,
+                stress_config=stress_config,
+                scheduler_config=scheduler_config,
+                work_dir=self._work_dir,
+            )
+        except Exception as e:
+            self._on_test_finished(cores[0], False, str(e), "", 0.0, 0.0)
+            return
+
+        core_info = self._topology.cores.get(cores[0])
+        logical_cpu = core_info.logical_cpus[0] if core_info and core_info.logical_cpus else cores[0]
+        self._worker = _TunerWorker(
+            cores[0], logical_cpu, scheduler,
+            msr=None,  # stretch detection not meaningful for multi-core
+            parent=self,
+        )
+        self._worker.finished.connect(self._on_test_finished)
+        self._worker.start()
+
+    def _find_most_aggressive_core(self) -> int | None:
+        """Find the confirmed core with the highest absolute offset that can be backed off.
+
+        Skips cores already at start_offset (nothing to give).
+        """
+        best_core = None
+        best_abs = -1
+        start = self._config.start_offset
+        for cs in self._core_states.values():
+            if cs.best_offset is not None and cs.best_offset != start:
+                if abs(cs.best_offset) > best_abs:
+                    best_abs = abs(cs.best_offset)
+                    best_core = cs.core_id
+        return best_core
+
+    def _backoff_core(self, core_id: int) -> bool:
+        """Back off a core's best_offset by one fine_step.
+
+        Returns False if the offset is already at start (can't back off further).
+        """
+        cs = self._core_states[core_id]
+        cfg = self._config
+        if cs.best_offset is None:
+            return False
+        if cs.best_offset == cfg.start_offset:
+            return False  # already at start — nothing to back off
+
+        old_offset = cs.best_offset
+        new_offset = cs.best_offset - cfg.direction * cfg.fine_step
+        # Clamp to start if we've backed off past it
+        if (cfg.direction < 0 and new_offset >= cfg.start_offset) or (
+            cfg.direction > 0 and new_offset <= cfg.start_offset
+        ):
+            cs.best_offset = cfg.start_offset
+            cs.current_offset = cfg.start_offset
+        else:
+            cs.best_offset = new_offset
+            cs.current_offset = new_offset
+
+        if self._session_id:
+            tp.save_core_state(self._db, self._session_id, cs)
+
+        self.log_message.emit(
+            f"Backed off core {core_id}: offset {cs.best_offset} (was {old_offset})"
+        )
+        self.core_state_changed.emit(cs.core_id, cs.phase, cs.current_offset)
+        return True
+
+    def _on_validation_test_finished(self, core_id: int, passed: bool) -> None:
+        """Handle test result during multi-core validation stages."""
+        if passed:
+            match self._validation_stage:
+                case 1:
+                    self._validation_core_index += 1
+                case 2:
+                    # Stage 2 passed — advance to stage 3
+                    self._validation_stage = 3
+                    self._validation_half_index = 0
+                    self.log_message.emit(
+                        "Validation stage 2 passed — "
+                        "stage 3: alternating half-core load"
+                    )
+                case 3:
+                    self._validation_half_index += 1
+            # Use QTimer to break the call stack (this is called from _on_test_finished)
+            QTimer.singleShot(0, self._run_validation_next)
+            return
+
+        # Validation failure — back off and restart
+        target: int | None = None
+        match self._validation_stage:
+            case 1:
+                # Stage 1: the tested core failed — back it off
+                target = core_id
+            case 2 | 3:
+                # Stage 2/3: multi-core failure — back off most aggressive core
+                target = self._find_most_aggressive_core()
+
+        if target is None or not self._backoff_core(target):
+            # Nothing to back off — finalize with what we have
+            self.log_message.emit(
+                "Validation failed but no core can be backed off further — finalizing"
+            )
+            profile = {
+                cs.core_id: cs.best_offset
+                for cs in self._core_states.values()
+                if cs.best_offset is not None
+            }
+            self._finalize_session(profile)
+            return
+
+        self.log_message.emit(
+            f"Validation stage {self._validation_stage} failed — "
+            f"backed off core {target}, restarting stage 1"
+        )
+
+        # Restart from stage 1
+        self._validation_stage = 1
+        self._validation_core_index = 0
+        self._validation_half_index = 0
+        self.log_message.emit("Validation stage 1: per-core with all offsets live (retry)")
+        QTimer.singleShot(0, self._run_validation_next)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -939,6 +1311,9 @@ class TunerEngine(QObject):
         Unlike isolation mode, non-tested cores keep their confirmed (best)
         offsets instead of reverting to baseline. This catches power delivery
         issues that only appear when multiple cores run aggressive offsets.
+
+        On failure, reverts all cores to baseline to leave SMU in a known
+        state, then pauses the tuner.
         """
         for core_id, cs in self._core_states.items():
             if core_id == test_core_id:
@@ -951,13 +1326,19 @@ class TunerEngine(QObject):
                 success = self._smu.set_co_offset(core_id, target)
             except Exception as e:
                 self.log_message.emit(
-                    f"Failed to apply validated offset for core {core_id}: {e}"
+                    f"Failed to apply validated offset for core {core_id}: {e}. "
+                    f"Reverting to baselines and pausing."
                 )
+                self._revert_all_to_baseline()
+                self.pause()
                 return False
             if not success:
                 self.log_message.emit(
-                    f"Validation offset write failed for core {core_id} at {target}"
+                    f"Validation offset write failed for core {core_id} at {target}. "
+                    f"Reverting to baselines and pausing."
                 )
+                self._revert_all_to_baseline()
+                self.pause()
                 return False
             self._co_applied[core_id] = target
 
@@ -965,12 +1346,20 @@ class TunerEngine(QObject):
         try:
             success = self._smu.set_co_offset(test_core_id, test_offset)
         except Exception as e:
-            self.log_message.emit(f"Failed to set CO for core {test_core_id}: {e}")
+            self.log_message.emit(
+                f"Failed to set CO for core {test_core_id}: {e}. "
+                f"Reverting to baselines and pausing."
+            )
+            self._revert_all_to_baseline()
+            self.pause()
             return False
         if not success:
             self.log_message.emit(
-                f"CO write failed for core {test_core_id} at {test_offset}"
+                f"CO write failed for core {test_core_id} at {test_offset}. "
+                f"Reverting to baselines and pausing."
             )
+            self._revert_all_to_baseline()
+            self.pause()
             return False
         self._co_applied[test_core_id] = test_offset
         return True
@@ -1049,6 +1438,20 @@ class TunerEngine(QObject):
                 )
         except Exception as e:
             log.warning("Post-test baseline revert error for core %d: %s", core_id, e)
+
+    def _revert_all_to_baseline(self) -> None:
+        """Best-effort revert of all cores to baseline — used after partial CO failure."""
+        if self._smu is None:
+            return
+        for core_id, cs in self._core_states.items():
+            if self._co_applied.get(core_id) == cs.baseline_offset:
+                continue
+            try:
+                success = self._smu.set_co_offset(core_id, cs.baseline_offset)
+                if success:
+                    self._co_applied[core_id] = cs.baseline_offset
+            except Exception:
+                pass  # best-effort — log is noisy enough from the caller
 
     def _get_stress_mode(self):
         from engine.backends.base import StressMode

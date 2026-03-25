@@ -12,12 +12,16 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QSpinBox,
@@ -250,6 +254,18 @@ class TunerTab(QWidget):
         )
         search_layout.addRow("", self._inherit_current_check)
 
+        self._auto_validate_check = QCheckBox("Auto-validate after all cores confirmed")
+        self._auto_validate_check.setChecked(True)
+        self._auto_validate_check.setToolTip(
+            "After all cores are individually confirmed, automatically run\n"
+            "3-stage multi-core validation:\n"
+            "  1. Per-core with all offsets live (catches power delivery interactions)\n"
+            "  2. All-core simultaneous stress (full power draw worst case)\n"
+            "  3. Alternating half-core load (catches boost ramp voltage transients)\n"
+            "Failed cores are backed off and retested automatically."
+        )
+        search_layout.addRow("", self._auto_validate_check)
+
         self._coarse_step_spin = QSpinBox()
         self._coarse_step_spin.setRange(1, 15)
         self._coarse_step_spin.setValue(5)
@@ -370,6 +386,15 @@ class TunerTab(QWidget):
         )
         timing_layout.addRow("Confirm duration:", self._confirm_dur_spin)
 
+        self._validate_dur_spin = QSpinBox()
+        self._validate_dur_spin.setRange(30, 3600)
+        self._validate_dur_spin.setValue(300)
+        self._validate_dur_spin.setSuffix("s")
+        self._validate_dur_spin.setToolTip(
+            "Seconds per test during multi-core validation stages"
+        )
+        timing_layout.addRow("Validate duration:", self._validate_dur_spin)
+
         right_col.addWidget(timing_group)
 
         columns.addLayout(right_col)
@@ -391,9 +416,11 @@ class TunerTab(QWidget):
             max_offset=self._max_offset_spin.value(),
             search_duration_seconds=self._search_dur_spin.value(),
             confirm_duration_seconds=self._confirm_dur_spin.value(),
+            validate_duration_seconds=self._validate_dur_spin.value(),
             max_confirm_retries=self._max_retries_spin.value(),
             stretch_threshold_pct=self._stretch_threshold_spin.value(),
             inherit_current=self._inherit_current_check.isChecked(),
+            auto_validate=self._auto_validate_check.isChecked(),
             test_order=self._order_combo.currentText(),
             backend=self._backend_combo.currentText(),
             stress_mode=self._mode_combo.currentText(),
@@ -410,7 +437,9 @@ class TunerTab(QWidget):
         self._confirm_dur_spin.setValue(cfg.confirm_duration_seconds)
         self._max_retries_spin.setValue(cfg.max_confirm_retries)
         self._stretch_threshold_spin.setValue(cfg.stretch_threshold_pct)
+        self._validate_dur_spin.setValue(cfg.validate_duration_seconds)
         self._inherit_current_check.setChecked(cfg.inherit_current)
+        self._auto_validate_check.setChecked(cfg.auto_validate)
         self._order_combo.setCurrentText(cfg.test_order)
         self._backend_combo.setCurrentText(cfg.backend)
         self._mode_combo.setCurrentText(cfg.stress_mode)
@@ -463,17 +492,65 @@ class TunerTab(QWidget):
             self._resume_btn.setEnabled(True)
 
     def _on_resume(self) -> None:
-        # Determine which session to resume
-        resume_id = None
-        if self._engine and self._engine.session_id:
-            resume_id = self._engine.session_id
-        elif self._pending_resume_id is not None:
-            resume_id = self._pending_resume_id
-
-        if resume_id is None:
+        # If we have an active paused engine, resume it directly
+        if self._engine and self._engine.session_id and self._engine.status == "paused":
+            self._resume_session(self._engine.session_id)
             return
 
-        # Validate dependencies are still available
+        # Otherwise show session picker from DB
+        if not self._db:
+            return
+        sessions = self._db.list_resumable_tuner_sessions()
+        if not sessions:
+            QMessageBox.information(self, "No Sessions", "No resumable tuner sessions found.")
+            return
+        if len(sessions) == 1:
+            # Only one — resume it directly
+            self._resume_session(sessions[0].id)
+            return
+
+        # Multiple sessions — show picker dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Resume Tuner Session")
+        dialog.setMinimumWidth(500)
+        dlg_layout = QVBoxLayout(dialog)
+        dlg_layout.addWidget(QLabel("Select a session to resume:"))
+
+        session_list = QListWidget()
+        for sess in sessions:
+            core_states = tp.load_core_states(self._db, sess.id)
+            total = len(core_states)
+            confirmed = sum(1 for cs in core_states.values() if cs.phase == "confirmed")
+            date_str = sess.created_at[:19].replace("T", " ") if sess.created_at else "?"
+            label = (
+                f"#{sess.id}  {date_str}  "
+                f"[{sess.status}]  "
+                f"{confirmed}/{total} cores confirmed  "
+                f"({sess.cpu_model[:30] if sess.cpu_model else '?'})"
+            )
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, sess.id)
+            session_list.addItem(item)
+        session_list.setCurrentRow(0)
+        dlg_layout.addWidget(session_list)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        dlg_layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected = session_list.currentItem()
+        if selected is None:
+            return
+        session_id = selected.data(Qt.ItemDataRole.UserRole)
+        self._resume_session(session_id)
+
+    def _resume_session(self, session_id: int) -> None:
+        """Resume a specific tuner session by ID."""
         if not self._smu or not self._smu.is_available():
             QMessageBox.warning(
                 self,
@@ -502,7 +579,7 @@ class TunerTab(QWidget):
 
         self._pending_resume_id = None
         self._set_running_state(True)
-        self._engine.resume(resume_id)
+        self._engine.resume(session_id)
 
         # Initialize table with all cores
         for core_id in self._engine.core_states:
@@ -512,6 +589,13 @@ class TunerTab(QWidget):
         if self._engine:
             self._engine.abort()
             self._set_running_state(False)
+            # Reset all core sidebar states — abort doesn't emit core_state_changed
+            for core_id in self._engine.core_states:
+                self.tuner_core_testing.emit(core_id, "pending")
+                self.tuner_core_info.emit(core_id, 0, "")
+            # Stop elapsed timer
+            self._active_test_core = None
+            self._tuner_timer.stop()
 
     def _on_validate(self) -> None:
         if not self._engine or not self._engine.session_id:
@@ -550,6 +634,7 @@ class TunerTab(QWidget):
         self._engine.progress_updated.connect(self._on_progress_updated)
         self._engine.log_message.connect(self._on_log_message)
         self._engine.co_drift_detected.connect(self._on_co_drift)
+        self._engine.validation_progress.connect(self._on_validation_progress)
 
     @Slot(str)
     def _on_co_drift(self, drift_json: str) -> None:
@@ -609,7 +694,20 @@ class TunerTab(QWidget):
 
     @Slot(str)
     def _on_status_changed(self, status: str) -> None:
-        self._status_label.setText(f"Status: {status.upper()}")
+        if status == "validating":
+            self._status_label.setText("Status: VALIDATING")
+        else:
+            self._status_label.setText(f"Status: {status.upper()}")
+            # Clear validation progress when leaving validation
+            self._progress_label.setText("")
+
+    @Slot(int, int, int)
+    def _on_validation_progress(self, stage: int, current: int, total: int) -> None:
+        """Update status and progress labels during multi-core validation."""
+        stage_names = {1: "per-core", 2: "all-core", 3: "half-core"}
+        stage_name = stage_names.get(stage, f"stage {stage}")
+        self._status_label.setText(f"Status: VALIDATING S{stage} ({stage_name})")
+        self._progress_label.setText(f"S{stage}: {current}/{total}")
 
     @Slot(int, int)
     def _on_progress_updated(self, done: int, total: int) -> None:
@@ -840,13 +938,18 @@ class TunerTab(QWidget):
         """Check for active tuner sessions on startup."""
         if not self._db:
             return
-        active = tp.get_active_session(self._db)
-        if active:
-            self._status_label.setText(
-                f"Status: RECOVERABLE SESSION #{active.id} — click Resume to continue"
-            )
+        sessions = self._db.list_resumable_tuner_sessions()
+        if sessions:
+            if len(sessions) == 1:
+                self._status_label.setText(
+                    f"Status: RECOVERABLE SESSION #{sessions[0].id} \u2014 click Resume to continue"
+                )
+            else:
+                self._status_label.setText(
+                    f"Status: {len(sessions)} RECOVERABLE SESSIONS \u2014 click Resume to pick one"
+                )
             self._resume_btn.setEnabled(True)
-            self._pending_resume_id = active.id
+            self._pending_resume_id = sessions[0].id
 
     def set_test_running(self, running: bool) -> None:
         """Called by MainWindow to disable tuner Start when manual test is active."""
