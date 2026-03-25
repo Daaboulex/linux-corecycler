@@ -176,7 +176,7 @@ class TunerEngine(QObject):
         self._smu = smu
         self._backend = backend
         self._config = config or TunerConfig()
-        self._work_dir = work_dir or Path("/tmp/corecyclerlx/tuner")
+        self._work_dir = work_dir or Path("/tmp/corecycler/tuner")
 
         self._msr = MSRReader()
 
@@ -189,6 +189,7 @@ class TunerEngine(QObject):
         self._worker: _TunerWorker | None = None
         self._last_tested_core: int | None = None
         self._ccd_last_tested: dict[int, int | None] = {}  # CCD index → last core_id tested in that CCD
+        self._co_applied: dict[int, int | None] = {}  # core_id → last CO value written to SMU (None = unknown)
 
         # Clamp max_offset to CPU generation range
         if smu is not None:
@@ -255,9 +256,10 @@ class TunerEngine(QObject):
 
         for core_id in cores:
             start = current_offsets.get(core_id, self._config.start_offset)
-            cs = CoreState(core_id=core_id, current_offset=start)
+            cs = CoreState(core_id=core_id, current_offset=start, baseline_offset=start)
             self._core_states[core_id] = cs
             tp.save_core_state(self._db, self._session_id, cs)
+            self._co_applied[core_id] = None  # unknown — SMU state not yet managed
 
         self._set_status("running")
         self.log_message.emit(
@@ -304,37 +306,42 @@ class TunerEngine(QObject):
                 )
                 self._advance_core(cs.core_id, passed=False)
 
-        # Step 2: Re-apply CO offsets that are now at safe (backed-off) values.
-        # Skip "not_started" and "confirmed" cores — they don't need CO set.
-        # _run_next() will apply the correct offset when testing resumes.
+        # Step 2: Restore all cores to their baseline offsets.
+        # After a crash and reboot, SMU SRAM is zeroed. Apply the known-stable
+        # baselines (captured from BIOS/inherit_current at session start) so the
+        # CPU runs at its proven-stable config. _run_next() will apply the test
+        # offset only to the core being tested.
         if self._smu is not None:
             failed_cores: list[int] = []
+            baselines: dict[int, int] = {}
             for cs in self._core_states.values():
-                if cs.phase in ("not_started", "confirmed"):
-                    continue
-                # Only re-apply if the core has a non-zero offset to restore
-                if cs.current_offset == 0:
+                baselines[cs.core_id] = cs.baseline_offset
+                if cs.baseline_offset == 0:
+                    self._co_applied[cs.core_id] = 0  # SMU already at 0 after reboot
                     continue
                 try:
-                    success = self._smu.set_co_offset(cs.core_id, cs.current_offset)
-                    if not success:
+                    success = self._smu.set_co_offset(cs.core_id, cs.baseline_offset)
+                    if success:
+                        self._co_applied[cs.core_id] = cs.baseline_offset
+                    else:
                         failed_cores.append(cs.core_id)
                         self.log_message.emit(
-                            f"CO re-apply failed for core {cs.core_id} at offset "
-                            f"{cs.current_offset} — read-back mismatch or SMU rejection"
+                            f"Baseline restore failed for core {cs.core_id} at offset "
+                            f"{cs.baseline_offset} — read-back mismatch or SMU rejection"
                         )
                 except Exception as e:
                     failed_cores.append(cs.core_id)
-                    log.warning("Failed to re-apply CO for core %d: %s", cs.core_id, e)
+                    log.warning("Failed to restore baseline for core %d: %s", cs.core_id, e)
                     self.log_message.emit(
-                        f"CO re-apply error for core {cs.core_id}: {e}"
+                        f"Baseline restore error for core {cs.core_id}: {e}"
                     )
             if failed_cores:
                 self.log_message.emit(
-                    f"WARNING: CO offsets could not be re-applied for cores {failed_cores}. "
-                    f"SMU access may have changed since last session. "
-                    f"These cores will be treated as failures."
+                    f"WARNING: Baselines could not be restored for cores {failed_cores}. "
+                    f"SMU access may have changed since last session."
                 )
+            else:
+                self.log_message.emit(f"Restored baselines: {baselines}")
 
         self._set_status("running")
         tp.update_session_status(self._db, session_id, "running")
@@ -350,9 +357,11 @@ class TunerEngine(QObject):
         self.log_message.emit("Tuner paused — will stop after current test")
 
     def abort(self) -> None:
-        """Stop immediately, save state."""
+        """Stop immediately, revert CO to baseline, save state."""
         self._abort_requested = True
+        tested_core: int | None = None
         if self._worker is not None:
+            tested_core = self._last_tested_core
             # Disconnect signal FIRST to prevent _on_test_finished firing during cleanup
             with contextlib.suppress(RuntimeError):
                 self._worker.finished.disconnect(self._on_test_finished)
@@ -366,6 +375,11 @@ class TunerEngine(QObject):
                     self._worker.wait(3000)
             self._worker.deleteLater()
             self._worker = None
+        # Revert the tested core to baseline so no aggressive offset lingers
+        # in SMU after abort (prevents stale values if a new session starts
+        # without rebooting)
+        if tested_core is not None:
+            self._revert_core_to_baseline(tested_core)
         self._set_status("idle")
         if self._session_id:
             tp.update_session_status(self._db, self._session_id, "aborted")
@@ -390,6 +404,8 @@ class TunerEngine(QObject):
 
         # Reset confirmed cores to "confirming" for re-validation
         self._core_states = tp.load_core_states(self._db, session_id)
+        # Reset CO tracking — SMU state is unknown, force fresh writes
+        self._co_applied = {core_id: None for core_id in self._core_states}
         for core_id, offset in profile.items():
             if core_id in self._core_states:
                 cs = self._core_states[core_id]
@@ -695,25 +711,18 @@ class TunerEngine(QObject):
             f"(phase: {cs.phase})"
         )
 
-        # Apply CO offset via SMU — verify it actually took effect
+        # CO offset application — two modes:
+        # 1. During validation: apply ALL confirmed offsets (testing interactions)
+        # 2. During search: isolate tested core (only it has non-baseline offset)
         if self._smu is not None:
-            try:
-                success = self._smu.set_co_offset(core_id, cs.current_offset)
-            except Exception as e:
-                self.log_message.emit(
-                    f"Failed to set CO for core {core_id}: {e}"
-                )
-                self._on_test_finished(core_id, False, str(e), "", 0.0, 0.0)
-                return
-
-            if not success:
-                msg = (
-                    f"CO write failed or read-back mismatch for core {core_id} "
-                    f"at offset {cs.current_offset} — SMU did not apply the value"
-                )
-                self.log_message.emit(msg)
-                self._on_test_finished(core_id, False, msg, "co_write_failed", 0.0, 0.0)
-                return
+            if self._status == "validating":
+                # Validation mode: apply all confirmed offsets to test interactions
+                if not self._apply_validation_offsets(core_id, cs.current_offset):
+                    return
+            else:
+                # Search mode: isolate to prevent false blame on crash
+                if not self._apply_co_isolation(core_id, cs.current_offset):
+                    return
 
         # Determine test duration based on phase
         if cs.phase == "confirming":
@@ -832,6 +841,11 @@ class TunerEngine(QObject):
         )
         self.test_completed.emit(core_id, cs.current_offset, passed)
 
+        # Revert tested core to baseline — no aggressive offset should linger.
+        # Skip during validation: we want all confirmed offsets to stay applied.
+        if self._status != "validating":
+            self._revert_core_to_baseline(core_id)
+
         # Reset consecutive failure counter on any pass
         if passed:
             self._consecutive_start_failures = 0
@@ -843,11 +857,33 @@ class TunerEngine(QObject):
         self._run_next()
 
     def _complete_session(self) -> None:
-        """All cores done — finalize session."""
+        """All cores done — finalize session and apply confirmed profile."""
         profile = {}
         for cs in self._core_states.values():
             if cs.best_offset is not None:
                 profile[cs.core_id] = cs.best_offset
+
+        # Apply the full confirmed profile to SMU so the user gets tuned
+        # values immediately. During testing all cores are at baseline;
+        # now that everything is confirmed, apply the real offsets.
+        if self._smu is not None and profile:
+            failed: list[int] = []
+            for core_id, offset in profile.items():
+                try:
+                    success = self._smu.set_co_offset(core_id, offset)
+                    if success:
+                        self._co_applied[core_id] = offset
+                    else:
+                        failed.append(core_id)
+                except Exception as e:
+                    log.warning("Failed to apply confirmed offset for core %d: %s", core_id, e)
+                    failed.append(core_id)
+            if failed:
+                self.log_message.emit(
+                    f"WARNING: Could not apply confirmed offsets for cores {failed}"
+                )
+            else:
+                self.log_message.emit("Applied confirmed CO profile to SMU")
 
         if self._session_id:
             tp.update_session_status(self._db, self._session_id, "completed")
@@ -877,6 +913,123 @@ class TunerEngine(QObject):
         done = sum(1 for cs in self._core_states.values() if cs.phase == "confirmed")
         total = len(self._core_states)
         self.progress_updated.emit(done, total)
+
+    def _apply_validation_offsets(self, test_core_id: int, test_offset: int) -> bool:
+        """Apply ALL confirmed offsets during validation — testing interactions.
+
+        Unlike isolation mode, non-tested cores keep their confirmed (best)
+        offsets instead of reverting to baseline. This catches power delivery
+        issues that only appear when multiple cores run aggressive offsets.
+        """
+        for core_id, cs in self._core_states.items():
+            if core_id == test_core_id:
+                continue
+            # Use best_offset (confirmed value) if available, else baseline
+            target = cs.best_offset if cs.best_offset is not None else cs.baseline_offset
+            if self._co_applied.get(core_id) == target:
+                continue
+            try:
+                success = self._smu.set_co_offset(core_id, target)
+            except Exception as e:
+                self.log_message.emit(
+                    f"Failed to apply validated offset for core {core_id}: {e}"
+                )
+                return False
+            if not success:
+                self.log_message.emit(
+                    f"Validation offset write failed for core {core_id} at {target}"
+                )
+                return False
+            self._co_applied[core_id] = target
+
+        # Apply test offset to target core
+        try:
+            success = self._smu.set_co_offset(test_core_id, test_offset)
+        except Exception as e:
+            self.log_message.emit(f"Failed to set CO for core {test_core_id}: {e}")
+            return False
+        if not success:
+            self.log_message.emit(
+                f"CO write failed for core {test_core_id} at {test_offset}"
+            )
+            return False
+        self._co_applied[test_core_id] = test_offset
+        return True
+
+    def _apply_co_isolation(self, test_core_id: int, test_offset: int) -> bool:
+        """Isolate CO for testing: baseline all other cores, apply test offset.
+
+        Returns True if all SMU writes succeeded, False if any failed.
+        On failure, PAUSES the tuner instead of advancing the state machine —
+        the test was never run, so recording a "failure" at this offset would
+        corrupt the binary search.
+        """
+        # Revert non-tested cores to baseline (skip if already there)
+        for core_id, cs in self._core_states.items():
+            if core_id == test_core_id:
+                continue
+            if self._co_applied.get(core_id) == cs.baseline_offset:
+                continue  # already at baseline, skip redundant SMU write
+            try:
+                success = self._smu.set_co_offset(core_id, cs.baseline_offset)
+            except Exception as e:
+                self.log_message.emit(
+                    f"CO isolation failed: core {core_id} baseline revert error — {e}. "
+                    f"Pausing tuner (SMU issue, not a core stability failure)."
+                )
+                self.pause()
+                return False
+            if not success:
+                self.log_message.emit(
+                    f"CO isolation failed: core {core_id} baseline revert to "
+                    f"{cs.baseline_offset} — read-back mismatch. "
+                    f"Pausing tuner (SMU issue, not a core stability failure)."
+                )
+                self.pause()
+                return False
+            self._co_applied[core_id] = cs.baseline_offset
+
+        # Apply test offset to target core
+        try:
+            success = self._smu.set_co_offset(test_core_id, test_offset)
+        except Exception as e:
+            self.log_message.emit(
+                f"Failed to set CO for core {test_core_id}: {e}. "
+                f"Pausing tuner."
+            )
+            self.pause()
+            return False
+        if not success:
+            self.log_message.emit(
+                f"CO write failed or read-back mismatch for core {test_core_id} "
+                f"at offset {test_offset} — SMU did not apply the value. "
+                f"Pausing tuner."
+            )
+            self.pause()
+            return False
+        self._co_applied[test_core_id] = test_offset
+        return True
+
+    def _revert_core_to_baseline(self, core_id: int) -> None:
+        """Revert a single core to its baseline offset after a test."""
+        if self._smu is None:
+            return
+        cs = self._core_states.get(core_id)
+        if cs is None:
+            return
+        if self._co_applied.get(core_id) == cs.baseline_offset:
+            return  # already at baseline
+        try:
+            success = self._smu.set_co_offset(core_id, cs.baseline_offset)
+            if success:
+                self._co_applied[core_id] = cs.baseline_offset
+            else:
+                log.warning(
+                    "Post-test baseline revert failed for core %d (offset %d)",
+                    core_id, cs.baseline_offset,
+                )
+        except Exception as e:
+            log.warning("Post-test baseline revert error for core %d: %s", core_id, e)
 
     def _get_stress_mode(self):
         from engine.backends.base import StressMode

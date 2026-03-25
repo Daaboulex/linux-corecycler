@@ -54,6 +54,7 @@ class HistoryTab(QWidget):
         self._view_mode = self.VIEW_GROUPED
         self._bios_warning: str = ""
         self._tuner_sessions: list[TunerSession] = []
+        self._initial_load = True
         self._setup_ui()
         if db:
             self.refresh()
@@ -353,6 +354,20 @@ class HistoryTab(QWidget):
 
         # Load tuner sessions
         self._tuner_sessions = self._load_tuner_sessions()
+
+        # On first load, auto-select the best view based on available data
+        if self._initial_load:
+            self._initial_load = False
+            if self._tuner_sessions and not self._runs:
+                # Only tuner sessions exist — show them by default
+                self._view_mode = self.VIEW_TUNER
+                self._tuner_toggle.setChecked(True)
+                self._view_toggle.setChecked(False)
+            elif self._tuner_sessions and self._runs:
+                # Both exist — default to tuner sessions (more likely what user wants)
+                self._view_mode = self.VIEW_TUNER
+                self._tuner_toggle.setChecked(True)
+                self._view_toggle.setChecked(False)
 
     def _update_summary(self) -> None:
         counts = self._db.get_status_counts() if self._db else {}
@@ -815,6 +830,10 @@ class HistoryTab(QWidget):
                 elif col == 4 and total > 0 and confirmed == total:
                     cell.setForeground(QColor("#4caf50"))
                 self._runs_table.setItem(row, col, cell)
+
+        # Auto-select latest session so detail is visible immediately
+        if sessions:
+            self._runs_table.selectRow(0)
 
     def _show_tuner_session_detail(self, sess: TunerSession) -> None:
         if not self._db or sess.id is None:

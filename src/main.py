@@ -1,4 +1,4 @@
-"""CoreCyclerLx — Per-core CPU stability tester and PBO Curve Optimizer tuner."""
+"""CoreCycler — Per-core CPU stability tester and PBO Curve Optimizer tuner."""
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ def main() -> int:
     )
 
     app = QApplication(sys.argv)
-    app.setApplicationName("CoreCyclerLx")
-    app.setOrganizationName("corecyclerlx")
+    app.setApplicationName("CoreCycler")
+    app.setOrganizationName("corecycler")
 
     # Locate assets — dev mode (src/../assets) or installed ($out/share/...)
     assets_dir = _find_assets_dir()
@@ -77,13 +77,15 @@ def main() -> int:
 
     atexit.register(_cleanup_on_exit)
 
-    # Handle SIGTERM/SIGINT gracefully
+    # Handle SIGTERM/SIGINT/SIGHUP gracefully — save tuner state on exit
     def _signal_handler(signum, frame):
         _cleanup_on_exit()
         app.quit()
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, _signal_handler)
 
     window.show()
 
@@ -97,8 +99,8 @@ def _find_assets_dir() -> Path:
     if dev_assets.is_dir():
         return dev_assets
     # Nix installed: __file__ is $out/lib/python3.x/site-packages/main.py
-    # so go up 4 levels to $out, then into share/corecyclerlx/assets
-    nix_assets = Path(__file__).resolve().parents[3] / "share" / "corecyclerlx" / "assets"
+    # so go up 4 levels to $out, then into share/corecycler/assets
+    nix_assets = Path(__file__).resolve().parents[3] / "share" / "corecycler" / "assets"
     if nix_assets.is_dir():
         return nix_assets
     return dev_assets  # fallback

@@ -1,15 +1,15 @@
-# NixOS module for CoreCyclerLx — per-core CPU stability tester and
+# NixOS module for CoreCycler — per-core CPU stability tester and
 # PBO Curve Optimizer tuner for AMD Ryzen.
 #
 # Handles all kernel modules needed for monitoring and SMU access:
 #   Out-of-tree: ryzen_smu (AMD SMU), zenpower5 (AMD hwmon), it87 (ITE Super I/O)
 #   In-tree:     msr, nct6775 (Nuvoton Super I/O), coretemp (Intel), cpuid
 #
-# Also handles device access (udev, tmpfiles, group) and the corecyclerlx package.
+# Also handles device access (udev, tmpfiles, group) and the corecycler package.
 #
 # Usage in a consumer flake:
 #   imports = [ inputs.linux-corecycler.nixosModules.default ];
-#   services.corecyclerlx = {
+#   services.corecycler = {
 #     enable = true;
 #     deviceAccessUser = "myuser";
 #   };
@@ -21,7 +21,7 @@
   ...
 }:
 let
-  cfg = config.services.corecyclerlx;
+  cfg = config.services.corecycler;
   inherit (pkgs.stdenv.hostPlatform) system;
   package =
     if cfg.unfreeBackends then self.packages.${system}.full else self.packages.${system}.default;
@@ -38,8 +38,8 @@ in
 {
   _class = "nixos";
 
-  options.services.corecyclerlx = {
-    enable = lib.mkEnableOption "CoreCyclerLx per-core CPU stability tester and PBO Curve Optimizer tuner";
+  options.services.corecycler = {
+    enable = lib.mkEnableOption "CoreCycler per-core CPU stability tester and PBO Curve Optimizer tuner";
 
     unfreeBackends = lib.mkOption {
       type = lib.types.bool;
@@ -116,7 +116,7 @@ in
     assertions = [
       {
         assertion = cfg.deviceAccess -> cfg.deviceAccessUser != "";
-        message = "services.corecyclerlx.deviceAccessUser must be set when deviceAccess is enabled.";
+        message = "services.corecycler.deviceAccessUser must be set when deviceAccess is enabled.";
       }
     ];
 

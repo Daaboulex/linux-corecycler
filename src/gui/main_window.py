@@ -86,7 +86,7 @@ class TestWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("CoreCyclerLx")
+        self.setWindowTitle("CoreCycler")
         self.setMinimumSize(1000, 700)
 
         self._settings = load_settings()

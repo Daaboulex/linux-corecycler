@@ -4,10 +4,10 @@
 This repo follows the **Daaboulex Nix Packaging Standard v1**.
 
 ## Repo Config
-- **Package**: `corecyclerlx`
+- **Package**: `corecycler`
 - **Upstream**: none (own code / no upstream tracking)
 - **Hashes**: none
-- **Verify**: `result/bin/corecyclerlx --help`
+- **Verify**: `result/bin/corecycler --help`
 - **Schedule**: N/A (no upstream tracking)
 
 ## Session Protocol
