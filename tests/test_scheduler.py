@@ -788,7 +788,9 @@ class TestChildAffinityVerification:
                 pid, {0, 16}, "0,16", proc_base=tmp_path / "proc"
             )
 
-        assert result is True
+        all_pinned, drift_count = result
+        assert all_pinned is True
+        assert drift_count == 0
         mock_setaff.assert_not_called()
 
     def test_verify_child_affinity_drifted_tid(self, tmp_path):
@@ -811,8 +813,10 @@ class TestChildAffinityVerification:
                 pid, {0, 16}, "0,16", proc_base=tmp_path / "proc"
             )
 
+        all_pinned, drift_count = result
         # Should have called sched_setaffinity on the drifted TID
         mock_setaff.assert_called_once_with(10001, {0, 16})
+        assert drift_count == 1
 
     def test_verify_child_affinity_proc_unreadable(self):
         """When /proc/pid/task/ is unreadable (OSError), return True (lenient)."""
@@ -820,7 +824,9 @@ class TestChildAffinityVerification:
             result = CoreScheduler._verify_child_affinity(
                 99999, {0, 16}, "0,16", proc_base=Path("/nonexistent")
             )
-        assert result is True
+        all_pinned, drift_count = result
+        assert all_pinned is True
+        assert drift_count == 0
         mock_setaff.assert_not_called()
 
     def test_affinity_check_periodic(self, simple_topo, mock_backend, tmp_path):
@@ -849,7 +855,7 @@ class TestChildAffinityVerification:
 
         def tracking_verify(*args, **kwargs):
             affinity_check_calls.append(True)
-            return True
+            return True, 0
 
         # Simulate 6 seconds of wall time (0.5s per monotonic call)
         time_values = [0.0]
