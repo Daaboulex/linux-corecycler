@@ -38,6 +38,7 @@ CO instability often manifests at idle or during load transitions, not under sus
 - **Dark Qt6 GUI** with modern underline-style tabs, SVG-rendered controls, and CCD-aware core grid showing real-time per-core frequency, temperature, and voltage during testing
 - **Per-core telemetry logging** -- peak frequency, max temperature, and Vcore range recorded for each core's test run; thread drift warnings condensed to 1 summary line per test (instead of per-TID warnings); phase transition logs show context including phase name, attempt counters, and consecutive failure tracking
 - **Test profile save/load** -- export and import test configurations as JSON files
+- **CO profile save/load** -- save and load per-core Curve Optimizer offsets as JSON files from the CO tab ("Save CO Profile" / "Load CO Profile"), the Auto-Tuner ("Export Profile" saves to file), and the History tab ("Load to CO Tab" for past tuner sessions); the JSON format is universal across all three
 - **Safety features** -- thermal limit monitoring (configurable, default 95C), process group cleanup on stop, confirmation dialogs for CO writes, dry-run mode, backup/restore CO values, volatile-only SMU writes (never touches BIOS)
 - **Automated PBO Curve Optimizer tuner** -- coarse-to-fine search algorithm that finds optimal per-core CO values automatically; **smart backoff** with pre-confirm filtering, midpoint jump, and binary search narrows stable offsets efficiently (baseline floor from `inherit_current`, not zero); crash-safe SQLite persistence (WAL mode) resumes exactly where it left off after reboot or crash; configurable search parameters with best-practice defaults; **inherit current CO** option reads existing SMU offsets as starting points for incremental tuning; **CO isolation** ensures only the tested core has a non-baseline offset during search (prevents false blame when a crash occurs); **automatic 3-stage multi-core validation** after all cores are individually confirmed: (1) per-core with all offsets live — catches power delivery interactions, (2) all-core simultaneous stress — full package power worst case, (3) alternating half-core load split by CCD — catches boost ramp voltage transients; failed cores are automatically backed off and validation restarts; session picker dialog for resuming from multiple paused/interrupted sessions; Curve Optimizer tab is locked during tuner operation to prevent SMU conflicts
 - **Five tuner test orderings**: sequential (finish each core), round_robin (cycle one test per core), weakest_first (prioritize cores nearest to settling), **ccd_alternating** (alternate between CCDs for thermal coverage), and **ccd_round_robin** (rotate one test per core across CCDs — gives each core cool-down time between tests, catches cold-boot and thermal transition failures)
@@ -256,16 +257,87 @@ nix run github:Daaboulex/corecycler
 nix run github:Daaboulex/corecycler#full
 ```
 
-### From source (non-Nix)
+### Arch Linux
 
 ```bash
-git clone https://github.com/Daaboulex/corecycler.git
-cd corecycler
-pip install PySide6
-python src/main.py
+# Core dependencies
+sudo pacman -S python python-pyside6 stress-ng stressapptest dmidecode
+
+# mprime (AUR, optional — unfree, best backend for CO tuning)
+yay -S mprime-bin
+
+# ryzen_smu kernel module (required for Curve Optimizer)
+git clone https://github.com/amkillam/ryzen_smu.git
+cd ryzen_smu && make && sudo make install
+sudo modprobe ryzen_smu
+
+# Run
+git clone https://github.com/Daaboulex/linux-corecycler.git
+cd linux-corecycler
+sudo python src/main.py
 ```
 
-When running from source, you must install backends separately (see below).
+### Ubuntu / Debian
+
+```bash
+# Core dependencies
+sudo apt install python3 python3-pip stress-ng stressapptest dmidecode
+
+# PySide6 (Qt6 bindings)
+pip3 install PySide6
+
+# mprime (optional — unfree, manual download)
+wget https://www.mersenne.org/download/software/v30/30.19/p95v3019b20.linux64.tar.gz
+tar xzf p95v3019b20.linux64.tar.gz
+sudo install -m755 mprime /usr/local/bin/mprime
+
+# ryzen_smu kernel module (required for Curve Optimizer)
+sudo apt install build-essential linux-headers-$(uname -r)
+git clone https://github.com/amkillam/ryzen_smu.git
+cd ryzen_smu && make && sudo make install
+sudo modprobe ryzen_smu
+
+# Run
+git clone https://github.com/Daaboulex/linux-corecycler.git
+cd linux-corecycler
+sudo python3 src/main.py
+```
+
+### Fedora
+
+```bash
+# Core dependencies
+sudo dnf install python3 python3-pip stress-ng dmidecode
+
+# PySide6 (Qt6 bindings)
+pip3 install PySide6
+
+# stressapptest (build from source — not in default repos)
+git clone https://github.com/stressapptest/stressapptest.git
+cd stressapptest && ./configure && make && sudo make install
+
+# ryzen_smu kernel module (required for Curve Optimizer)
+sudo dnf install kernel-devel gcc make
+git clone https://github.com/amkillam/ryzen_smu.git
+cd ryzen_smu && make && sudo make install
+sudo modprobe ryzen_smu
+
+# Run
+git clone https://github.com/Daaboulex/linux-corecycler.git
+cd linux-corecycler
+sudo python3 src/main.py
+```
+
+### From source (any distro)
+
+```bash
+git clone https://github.com/Daaboulex/linux-corecycler.git
+cd linux-corecycler
+pip install PySide6
+sudo python src/main.py
+```
+
+When running from source, you must install stress test backends and kernel modules separately (see [Backend Setup](#backend-setup) and [Kernel Module Requirements](#kernel-module-requirements) below).
 
 ### Running as Root
 
@@ -292,6 +364,8 @@ sudo python src/main.py    # from source
 
 When running without root, the status bar displays a warning listing unavailable features. The app adapts gracefully — unavailable data shows "N/A" instead of stale or missing values. Qt/KDE platform warnings (D-Bus portal, window system) that would normally appear under `sudo` are suppressed automatically.
 
+**Non-root access on non-NixOS distros:** The NixOS module sets up udev rules and tmpfiles automatically. On other distros, if you want to avoid running as root, you need to manually set permissions on `/dev/cpu/*/msr` (for MSR access) and `/sys/kernel/ryzen_smu_drv/*` (for SMU access). See the [ryzen_smu section](#ryzen_smu-kernel-module) for an example udev rule. Running as root is the simplest approach.
+
 **Note:** Vcore voltage is read from the CPU hwmon driver (zenpower/zenpower3/zenpower5/k10temp SVI2 registers) when available. On **Zen 5** CPUs, voltage telemetry uses SVI3 which no Linux driver supports yet — the tool automatically falls back to the **Super I/O chip** on the motherboard, which provides an analog Vcore reading from the voltage regulator. Supported Super I/O chips include Nuvoton (nct6775–nct6799, common on ASUS/MSI/ASRock) and ITE (IT8625–IT8772, common on Gigabyte). If neither source is available, Vcore shows "N/A".
 
 ### Dependencies
@@ -307,6 +381,37 @@ When running without root, the status bar displays a warning listing unavailable
 **Optional:**
 - **dmidecode** -- DIMM information (size, type, speed, manufacturer) in the Memory tab. Bundled in the Nix package. Requires root.
 - **ryzen_smu** kernel module ([amkillam fork](https://github.com/amkillam/ryzen_smu)) -- required for reading/writing CO values via SMU. Supports Zen 1 through Zen 5.
+
+### Kernel Module Requirements
+
+CoreCycler uses several kernel modules for hardware access. None are required for basic stress testing, but they unlock monitoring and Curve Optimizer functionality.
+
+| Module | Type | Purpose | Required for |
+|---|---|---|---|
+| **msr** | In-tree | `/dev/cpu/N/msr` access for APERF/MPERF counters and per-core RAPL | Clock stretch detection, per-core power. Usually loaded by default on most distros |
+| **ryzen_smu** | Out-of-tree | SMU sysfs interface for CO read/write, PBO limits, PM table | Curve Optimizer tab, Auto-Tuner. Without it, stress testing works but CO features are unavailable |
+| **zenpower** / **zenpower5** | Out-of-tree | Richer AMD hwmon (SVI2/SVI3 voltage, RAPL power) than k10temp | Better voltage and power monitoring (optional — k10temp works for temps) |
+| **nct6775** | In-tree | Nuvoton Super I/O chip (Vcore, fan speeds, temps) | Motherboard Vcore on Zen 5 (ASUS, MSI, ASRock). Automatic fallback when zenpower has no voltage |
+| **it87** | Out-of-tree | ITE Super I/O chip (38+ models) | Motherboard Vcore on Gigabyte boards |
+| **spd5118** + **i2c_dev** | In-tree | DDR5 DIMM temperature monitoring via SPD hub | Live DIMM temperatures in Memory tab |
+| **coretemp** | In-tree | Intel CPU temperature monitoring | Intel systems only |
+
+**NixOS:** The `services.corecycler` module handles all kernel modules automatically (builds out-of-tree modules against your kernel, loads them, sets permissions). No manual setup needed.
+
+**Other distros:** Load in-tree modules with `sudo modprobe <name>`. Out-of-tree modules must be built from source (see [ryzen_smu](#ryzen_smu-kernel-module) and distro-specific install sections above).
+
+### CPU Support Summary
+
+| Generation | Stress Testing | Curve Optimizer | CO Range |
+|---|---|---|---|
+| Zen 1 / Zen+ | Yes | No (PBO limits/scalar only) | -- |
+| Zen 2 | Yes | No (PBO limits/scalar only) | -- |
+| Zen 3 / 3D | Yes | Full | -30 to +30 |
+| Zen 4 / 4D | Yes | Full | -50 to +30 |
+| Zen 5 / 5D | Yes | Full | -60 to +10 |
+| Intel | Yes | No | -- |
+
+See the [detailed hardware support table](#curve-optimizer-smu-support) for per-generation SMU mailbox details, PBO limits, and boost override support.
 
 ## Backend Setup
 
@@ -523,6 +628,10 @@ The Curve Optimizer tab provides direct SMU access for reading and writing per-c
 - **Backup Current CO**: saves current CO values so they can be restored later in the session
 - **Restore Backup**: reverts CO values to the most recent backup
 - **Dry Run**: when checked, CO writes are logged but not applied to hardware
+- **Save CO Profile**: exports current spinbox CO values to a JSON file
+- **Load CO Profile**: imports CO values from a JSON file into the spinboxes (review before applying)
+
+The JSON format is shared with the Auto-Tuner's Export Profile and the History tab's "Load to CO Tab" -- profiles saved from any of these three locations can be loaded in any other.
 
 For Zen 2 (Matisse, Castle Peak), the tab shows "Connected (no CO support)" because Zen 2 does not have Curve Optimizer. PBO limits and scalar are still accessible.
 
