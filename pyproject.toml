@@ -30,11 +30,6 @@ py-modules = ["main"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-filterwarnings = [
-    # Production classes named Test* (TestProfile, TestState, TestRunLogger)
-    # trigger PytestCollectionWarning on import — suppress them
-    "ignore::pytest.PytestCollectionWarning",
-]
 
 [tool.ruff]
 target-version = "py312"

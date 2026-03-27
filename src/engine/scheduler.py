@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 
 
 class TestState(Enum):
+    __test__ = False  # Not a pytest test class
     IDLE = auto()
     RUNNING = auto()
     STOPPING = auto()
