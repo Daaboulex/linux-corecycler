@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import subprocess
 
@@ -535,4 +536,6 @@ class MemoryTab(QWidget):
         status = "PASS" if passed else "FAIL"
         self._stress_status.setText(f"Result: {status}")
         self.memory_stress_done.emit(passed)
-        QMessageBox.information(self, f"Memory Stress: {status}", output[-500:])
+        # Strip ANSI escape sequences before displaying
+        clean_output = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', output[-500:])
+        QMessageBox.information(self, f"Memory Stress: {status}", clean_output)

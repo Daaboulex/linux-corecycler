@@ -156,6 +156,8 @@ class MainWindow(QMainWindow):
         cpu_label = QLabel(self._topology.model_name if self._topology else "Unknown CPU")
         cpu_label.setFont(QFont("monospace", 11, QFont.Weight.Bold))
         cpu_label.setStyleSheet("padding: 4px 6px;")
+        cpu_label.setMaximumWidth(200)
+        cpu_label.setWordWrap(True)
         left.addWidget(cpu_label)
 
         if self._topology:

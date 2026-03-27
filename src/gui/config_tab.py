@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -219,8 +220,13 @@ class ConfigTab(QWidget):
         cores_layout.addWidget(QLabel("Leave empty to test all cores. Comma-separated core IDs:"))
         self._cores_input = QLineEdit()
         self._cores_input.setPlaceholderText("e.g., 0,1,4,5 (physical core IDs)")
-        self._cores_input.textChanged.connect(self._on_change)
+        self._cores_input.textChanged.connect(self._on_cores_changed)
         cores_layout.addWidget(self._cores_input)
+
+        self._cores_error_label = QLabel("")
+        self._cores_error_label.setStyleSheet("color: #f44336; font-size: 10px; padding: 2px;")
+        self._cores_error_label.setVisible(False)
+        cores_layout.addWidget(self._cores_error_label)
 
         self._retest_failed_btn = QPushButton("Retest Failed Cores Only")
         self._retest_failed_btn.setToolTip(
@@ -289,17 +295,63 @@ class ConfigTab(QWidget):
             self._building = False
         self._on_change()
 
+    def _on_cores_changed(self) -> None:
+        """Validate core IDs against topology and forward to _on_change."""
+        cores_text = self._cores_input.text().strip()
+        if not cores_text:
+            self._cores_error_label.setVisible(False)
+            self._on_change()
+            return
+
+        # Strip trailing commas gracefully
+        cores_text = cores_text.rstrip(",").strip()
+
+        try:
+            cores = [int(c.strip()) for c in cores_text.split(",") if c.strip()]
+        except ValueError:
+            self._cores_error_label.setText("Invalid input — use comma-separated integers")
+            self._cores_error_label.setVisible(True)
+            self._on_change()
+            return
+
+        if self._topology:
+            valid_ids = set(self._topology.cores.keys())
+            invalid = [c for c in cores if c not in valid_ids]
+            if invalid:
+                max_id = max(valid_ids) if valid_ids else 0
+                self._cores_error_label.setText(
+                    f"Core(s) {', '.join(str(c) for c in invalid)} out of range "
+                    f"(valid: 0-{max_id})"
+                )
+                self._cores_error_label.setVisible(True)
+                self._on_change()
+                return
+
+        self._cores_error_label.setVisible(False)
+        self._on_change()
+
     def _on_change(self) -> None:
         if self._building:
             return
+        # Auto-switch to CUSTOM when user changes a preset-controlled parameter
+        if self._mode_combo.currentText() != "CUSTOM":
+            self._building = True
+            self._mode_combo.setCurrentText("CUSTOM")
+            self._mode_desc.setText(TEST_MODE_INFO["CUSTOM"])
+            self._building = False
         self.profile_changed.emit(self.get_profile())
 
     def get_profile(self) -> TestProfile:
-        cores_text = self._cores_input.text().strip()
+        cores_text = self._cores_input.text().strip().rstrip(",").strip()
         cores = None
         if cores_text:
             try:
-                cores = [int(c.strip()) for c in cores_text.split(",") if c.strip()]
+                parsed = [int(c.strip()) for c in cores_text.split(",") if c.strip()]
+                # Validate against topology — exclude out-of-range IDs
+                if self._topology:
+                    valid_ids = set(self._topology.cores.keys())
+                    parsed = [c for c in parsed if c in valid_ids]
+                cores = parsed if parsed else None
             except ValueError:
                 cores = None
 

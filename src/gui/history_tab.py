@@ -715,6 +715,9 @@ class HistoryTab(QWidget):
                     cell.setForeground(QColor(result_color))
                 elif r.passed is False:
                     cell.setForeground(QColor("#f44336"))
+                # Add tooltip on error column so full message is visible on hover
+                if col == 8 and r.error_message:
+                    cell.setToolTip(r.error_message)
                 self._core_results_table.setItem(row, col, cell)
 
         self._auto_size_core_results_table()
@@ -880,7 +883,11 @@ class HistoryTab(QWidget):
             return
 
         self._selected_tuner_session = sess
+        # Only show Load to CO button if the session has confirmed cores
+        core_states = tp.load_core_states(self._db, sess.id)
+        has_confirmed = any(cs.phase == "confirmed" for cs in core_states.values())
         self._tuner_actions_row.setVisible(True)
+        self._load_co_btn.setEnabled(has_confirmed)
         self._expand_detail()
 
         # Info line
@@ -1175,10 +1182,17 @@ class HistoryTab(QWidget):
         if not ctx_ids:
             return
 
+        # Count total associated runs for an explicit warning
+        total_runs = sum(
+            len(self._context_runs.get(cid, []))
+            for cid in ctx_ids
+        )
+
         reply = QMessageBox.question(
             self,
             "Delete Contexts",
-            f"Delete {len(ctx_ids)} context(s) and all associated runs?",
+            f"This will permanently delete {len(ctx_ids)} context(s) and ALL "
+            f"{total_runs} associated test run(s). This cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
