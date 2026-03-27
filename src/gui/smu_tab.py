@@ -336,17 +336,23 @@ class SMUTab(QWidget):
         if not self._confirm_co_write(f"Apply CO offsets to all cores:\n{summary}"):
             return
 
-        failed = []
-        for core_id, spin in self._spinboxes.items():
-            value = spin.value()
-            if not self._smu.set_co_offset(core_id, value):
-                failed.append(core_id)
+        self._apply_all_btn.setEnabled(False)
+        self._reset_btn.setEnabled(False)
+        try:
+            failed = []
+            for core_id, spin in self._spinboxes.items():
+                value = spin.value()
+                if not self._smu.set_co_offset(core_id, value):
+                    failed.append(core_id)
 
-        if failed:
-            QMessageBox.warning(self, "Error", f"Failed to set CO for cores: {failed}")
-        else:
-            self._read_all_co()
-            self._profile_banner.setVisible(False)
+            if failed:
+                QMessageBox.warning(self, "Error", f"Failed to set CO for cores: {failed}")
+            else:
+                self._read_all_co()
+                self._profile_banner.setVisible(False)
+        finally:
+            self._apply_all_btn.setEnabled(True)
+            self._reset_btn.setEnabled(True)
 
     def _reset_all_co(self) -> None:
         if not self._smu:
@@ -355,13 +361,19 @@ class SMUTab(QWidget):
         if not self._confirm_co_write("Reset all Curve Optimizer offsets to 0."):
             return
 
-        if self._smu.reset_all_co():
-            self._read_all_co()
-        else:
-            # manual reset: set each core to 0
-            for core_id in self._spinboxes:
-                self._smu.set_co_offset(core_id, 0)
-            self._read_all_co()
+        self._apply_all_btn.setEnabled(False)
+        self._reset_btn.setEnabled(False)
+        try:
+            if self._smu.reset_all_co():
+                self._read_all_co()
+            else:
+                # manual reset: set each core to 0
+                for core_id in self._spinboxes:
+                    self._smu.set_co_offset(core_id, 0)
+                self._read_all_co()
+        finally:
+            self._apply_all_btn.setEnabled(True)
+            self._reset_btn.setEnabled(True)
 
     # ------------------------------------------------------------------
     # Backup / Restore
