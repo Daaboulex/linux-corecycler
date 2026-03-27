@@ -137,6 +137,9 @@ def _get_free_memory_mb() -> int | None:
 class MemoryTab(QWidget):
     """Memory information tab showing DIMM details and live temperatures."""
 
+    memory_stress_started = Signal()
+    memory_stress_done = Signal(bool)  # passed
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._dimms: list[DIMMInfo] = []
@@ -499,6 +502,7 @@ class MemoryTab(QWidget):
         self._stress_status.setText(f"Running {tool} for {duration}min...")
         self._stress_worker = _StressWorker(tool, duration, parent=self)
         self._stress_worker.done.connect(self._on_stress_done)
+        self.memory_stress_started.emit()
         self._stress_worker.start()
 
     def _stop_memory_stress(self) -> None:
@@ -523,4 +527,5 @@ class MemoryTab(QWidget):
         self._stress_tool.setEnabled(True)
         status = "PASS" if passed else "FAIL"
         self._stress_status.setText(f"Result: {status}")
+        self.memory_stress_done.emit(passed)
         QMessageBox.information(self, f"Memory Stress: {status}", output[-500:])

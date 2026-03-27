@@ -162,6 +162,7 @@ class TunerEngine(QObject):
     log_message = Signal(str)  # human-readable log entry
     co_drift_detected = Signal(str)  # JSON-encoded {core_id: {expected, actual}}
     validation_progress = Signal(int, int, int)  # stage, current_index, total
+    worker_started = Signal(int)  # core_id — emitted when mprime actually starts
 
     def __init__(
         self,
@@ -854,8 +855,10 @@ class TunerEngine(QObject):
                     return
 
         # Determine test duration based on phase
-        if cs.phase == "confirming":
+        if cs.phase in ("confirming", "backoff_confirming"):
             duration = self._config.confirm_duration_seconds
+        elif cs.phase == "backoff_preconfirm":
+            duration = int(self._config.search_duration_seconds * self._config.backoff_preconfirm_multiplier)
         elif self._status == "validating":
             duration = self._config.validate_duration_seconds
         else:
@@ -902,6 +905,7 @@ class TunerEngine(QObject):
             parent=self,
         )
         self._worker.finished.connect(self._on_test_finished)
+        self.worker_started.emit(core_id)
         self._worker.start()
 
     @Slot(int, bool, str, str, float, float)
@@ -952,6 +956,8 @@ class TunerEngine(QObject):
             "coarse_search": "coarse",
             "fine_search": "fine",
             "confirming": "confirm",
+            "backoff_preconfirm": "backoff_preconfirm",
+            "backoff_confirming": "backoff_confirm",
         }
         if self._status == "validating" and self._validation_stage > 0:
             log_phase = f"validate_s{self._validation_stage}"

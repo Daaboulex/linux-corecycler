@@ -10,7 +10,8 @@ class CoreState:
     """Per-core state in the auto-tuner state machine.
 
     Phases: not_started, coarse_search, fine_search, settled,
-    confirming, confirmed, failed_confirm.
+    confirming, confirmed, failed_confirm, backoff_preconfirm,
+    backoff_confirming.
     """
 
     core_id: int

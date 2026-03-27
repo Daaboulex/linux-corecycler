@@ -34,7 +34,7 @@ class TestSchema:
         assert "telemetry_samples" in names
         assert "schema_version" in names
 
-    def test_schema_version(self, db):
+    def test_schema_version_is_current(self, db):
         row = db._execute_raw("SELECT version FROM schema_version").fetchone()
         assert row["version"] == 7
 
@@ -472,7 +472,7 @@ class TestTuningContexts:
 
 
 class TestSchemaV2:
-    def test_schema_version_is_2(self, db):
+    def test_schema_version_is_current(self, db):
         row = db._execute_raw("SELECT version FROM schema_version").fetchone()
         assert row["version"] == 7
 

@@ -205,9 +205,12 @@ class MainWindow(QMainWindow):
         self._history_tab = HistoryTab(self._history_db)
         if getattr(self, "_bios_changed", False):
             self._history_tab.set_bios_warning(self._bios_old, self._bios_current)
+        self._history_tab.load_profile_requested.connect(self._on_load_co_profile)
         self._tabs.addTab(self._history_tab, "History")
 
         self._memory_tab = MemoryTab()
+        self._memory_tab.memory_stress_started.connect(self._on_memory_stress_started)
+        self._memory_tab.memory_stress_done.connect(self._on_memory_stress_done)
         self._tabs.addTab(self._memory_tab, "Memory")
 
         self._tabs.currentChanged.connect(self._on_tab_changed)
@@ -603,6 +606,26 @@ class MainWindow(QMainWindow):
     def _on_tuner_core_info(self, core_id: int, co_offset: int, phase: str) -> None:
         """Pass CO offset and tuner phase to core grid for sidebar display."""
         self._core_grid.update_core_telemetry(core_id, co_offset=co_offset, tuner_phase=phase)
+
+    @Slot()
+    def _on_memory_stress_started(self) -> None:
+        """Set all cores to memory stress state in sidebar."""
+        for core_id in self._core_grid._cells:
+            status = CoreTestStatus(core_id=core_id, state="mem_stress")
+            self._core_grid.update_core_status(core_id, status)
+
+    @Slot(bool)
+    def _on_memory_stress_done(self, passed: bool) -> None:
+        """Reset all cores to pending after memory stress."""
+        for core_id in self._core_grid._cells:
+            status = CoreTestStatus(core_id=core_id, state="pending")
+            self._core_grid.update_core_status(core_id, status)
+
+    @Slot(object)
+    def _on_load_co_profile(self, profile) -> None:
+        """Load CO profile from history into Curve Optimizer tab."""
+        self._smu_tab.set_co_profile(profile)
+        self._tabs.setCurrentWidget(self._smu_tab)
 
     @Slot(int)
     def _on_tab_changed(self, index: int) -> None:

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 class HistoryTab(QWidget):
     """Tab showing historical test runs grouped by tuning context."""
 
+    load_profile_requested = Signal(object)  # dict[int, int]
+
     # View modes
     VIEW_GROUPED = "grouped"
     VIEW_ALL = "all"
@@ -54,6 +56,7 @@ class HistoryTab(QWidget):
         self._view_mode = self.VIEW_GROUPED
         self._bios_warning: str = ""
         self._tuner_sessions: list[TunerSession] = []
+        self._selected_tuner_session: TunerSession | None = None
         self._initial_load = True
         self._setup_ui()
         if db:
@@ -204,6 +207,18 @@ class HistoryTab(QWidget):
         self._detail_info.setFont(QFont("monospace", 9))
         self._detail_info.setStyleSheet("color: #888; padding: 2px;")
         detail_layout.addWidget(self._detail_info)
+
+        # Tuner session action buttons (hidden by default, shown for tuner sessions)
+        self._tuner_actions_row = QWidget()
+        tuner_actions_layout = QHBoxLayout(self._tuner_actions_row)
+        tuner_actions_layout.setContentsMargins(0, 0, 0, 0)
+        self._load_co_btn = QPushButton("Load to CO Tab")
+        self._load_co_btn.setToolTip("Load confirmed CO offsets into the Curve Optimizer tab")
+        self._load_co_btn.clicked.connect(self._on_load_co_profile)
+        tuner_actions_layout.addWidget(self._load_co_btn)
+        tuner_actions_layout.addStretch()
+        self._tuner_actions_row.setVisible(False)
+        detail_layout.addWidget(self._tuner_actions_row)
 
         self._core_results_table = QTableWidget()
         self._core_results_table.setColumnCount(9)
@@ -647,6 +662,8 @@ class HistoryTab(QWidget):
         if not self._db or run.id is None:
             return
 
+        self._selected_tuner_session = None
+        self._tuner_actions_row.setVisible(False)
         self._expand_detail()
 
         # Info line
@@ -862,6 +879,8 @@ class HistoryTab(QWidget):
         if not self._db or sess.id is None:
             return
 
+        self._selected_tuner_session = sess
+        self._tuner_actions_row.setVisible(True)
         self._expand_detail()
 
         # Info line
@@ -982,6 +1001,21 @@ class HistoryTab(QWidget):
 
         self._events_log.setPlainText("\n".join(lines))
 
+    @Slot()
+    def _on_load_co_profile(self) -> None:
+        """Load the selected tuner session's best CO profile into the CO tab."""
+        if not self._db or self._selected_tuner_session is None:
+            return
+        profile = tp.get_best_profile(self._db, self._selected_tuner_session.id)
+        if not profile:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, "No Profile",
+                "This tuner session has no confirmed CO offsets to load."
+            )
+            return
+        self.load_profile_requested.emit(profile)
+
     def _expand_detail(self) -> None:
         """Show the detail section and split space evenly with the top."""
         self._detail_widget.setVisible(True)
@@ -995,6 +1029,8 @@ class HistoryTab(QWidget):
         self._detail_info.setStyleSheet("color: #888; padding: 2px;")
         self._core_results_table.setRowCount(0)
         self._events_log.clear()
+        self._tuner_actions_row.setVisible(False)
+        self._selected_tuner_session = None
         self._detail_widget.setVisible(False)
 
     # ------------------------------------------------------------------
