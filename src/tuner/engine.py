@@ -162,6 +162,7 @@ class TunerEngine(QObject):
     log_message = Signal(str)  # human-readable log entry
     co_drift_detected = Signal(str)  # JSON-encoded {core_id: {expected, actual}}
     validation_progress = Signal(int, int, int)  # stage, current_index, total
+    worker_started = Signal(int)  # core_id — emitted when mprime actually starts
 
     def __init__(
         self,
@@ -909,6 +910,7 @@ class TunerEngine(QObject):
             parent=self,
         )
         self._worker.finished.connect(self._on_test_finished)
+        self.worker_started.emit(core_id)
         self._worker.start()
 
     @Slot(int, bool, str, str, float, float)
