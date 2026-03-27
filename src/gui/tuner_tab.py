@@ -45,6 +45,20 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Map tuner engine phases to core grid visual states.
+# Only the core with active mprime shows "testing" — set via _on_worker_started.
+_PHASE_TO_GRID: dict[str, str] = {
+    "coarse_search": "queued",
+    "fine_search": "queued",
+    "confirming": "queued",
+    "confirmed": "passed",
+    "settled": "pending",
+    "failed_confirm": "backoff",
+    "not_started": "pending",
+    "backoff_preconfirm": "backoff",
+    "backoff_confirming": "backoff",
+}
+
 # Phase colors
 PHASE_COLORS = {
     "not_started": QColor(100, 100, 100),
@@ -628,6 +642,7 @@ class TunerTab(QWidget):
         if not self._engine:
             return
         self._engine.core_state_changed.connect(self._on_core_state_changed)
+        self._engine.worker_started.connect(self._on_worker_started)
         self._engine.test_completed.connect(self._on_test_completed)
         self._engine.session_completed.connect(self._on_session_completed)
         self._engine.status_changed.connect(self._on_status_changed)
@@ -655,29 +670,35 @@ class TunerTab(QWidget):
     @Slot(int, str, int)
     def _on_core_state_changed(self, core_id: int, phase: str, offset: int) -> None:
         self._update_core_row(core_id)
-        # Map tuner phases to core grid visual states
-        phase_to_grid = {
-            "coarse_search": "testing",
-            "fine_search": "testing",
-            "confirming": "testing",
-            "confirmed": "passed",
-            "settled": "pending",
-            "failed_confirm": "failed",
-            "not_started": "pending",
-        }
-        grid_state = phase_to_grid.get(phase, "pending")
+        grid_state = _PHASE_TO_GRID.get(phase, "pending")
+
+        # Override: if this core is actively being tested, show "testing"
+        if core_id == self._active_test_core:
+            grid_state = "testing"
+
         self.tuner_core_testing.emit(core_id, grid_state)
         self.tuner_core_info.emit(core_id, offset, phase)
 
-        # Track active test for elapsed timer
-        if grid_state == "testing":
-            import time
-            self._active_test_core = core_id
-            self._test_start_time = time.monotonic()
-            if not self._tuner_timer.isActive():
-                self._tuner_timer.start(1000)
-        elif core_id == self._active_test_core:
+        # Only clear active core when it transitions to a terminal state
+        if core_id == self._active_test_core and phase in ("confirmed", "not_started"):
             self._active_test_core = None
+
+    @Slot(int)
+    def _on_worker_started(self, core_id: int) -> None:
+        """Mark exactly this core as 'testing' in the sidebar."""
+        # Revert previous active core to its phase-appropriate state
+        if self._active_test_core is not None and self._active_test_core != core_id:
+            prev_cs = self._engine.core_states.get(self._active_test_core) if self._engine else None
+            if prev_cs:
+                prev_state = _PHASE_TO_GRID.get(prev_cs.phase, "pending")
+                self.tuner_core_testing.emit(self._active_test_core, prev_state)
+
+        self._active_test_core = core_id
+        self.tuner_core_testing.emit(core_id, "testing")
+        import time
+        self._test_start_time = time.monotonic()
+        if not self._tuner_timer.isActive():
+            self._tuner_timer.start(1000)
 
     @Slot(int, int, bool)
     def _on_test_completed(self, core_id: int, offset: int, passed: bool) -> None:
