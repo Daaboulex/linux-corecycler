@@ -30,7 +30,8 @@ def mock_smu():
     smu = MagicMock()
     smu.commands = MagicMock()
     smu.commands.co_range = (-60, 10)
-    smu.set_co_offset = MagicMock()
+    smu.set_co_offset = MagicMock(return_value=True)
+    smu.get_co_offset = MagicMock(return_value=0)
     smu.get_all_co_offsets = MagicMock(return_value={0: 0, 1: 0, 2: 0, 3: 0})
     smu.get_pbo_scalar = MagicMock(return_value=1.0)
     smu.get_boost_limit = MagicMock(return_value=5500)
@@ -233,7 +234,7 @@ class TestResumeFromCrash:
         # Core 1 was mid-coarse_search — treated as failure
         assert eng._core_states[1].phase != "coarse_search"
 
-    def test_resume_reapplies_co_offsets(self, db, simple_topology, mock_smu, mock_backend):
+    def test_resume_reapplies_baseline_offsets(self, db, simple_topology, mock_smu, mock_backend):
         cfg = TunerConfig(cores_to_test=[0], search_duration_seconds=1)
         eng = TunerEngine(
             db=db, topology=simple_topology, smu=mock_smu,
@@ -242,14 +243,15 @@ class TestResumeFromCrash:
 
         sid = tp.create_session(db, cfg, "", "")
         tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase="fine_search", current_offset=-12, best_offset=-10,
+            core_id=0, phase="fine_search", current_offset=-12,
+            best_offset=-10, baseline_offset=-5,
         ))
 
         with patch.object(eng, "_run_next"):
             eng.resume(sid)
 
-        # SMU should have been called to re-apply offset
-        mock_smu.set_co_offset.assert_any_call(0, -12)
+        # SMU should restore to baseline (not the interrupted offset)
+        mock_smu.set_co_offset.assert_any_call(0, -5)
 
 
 class TestConfigVariations:
