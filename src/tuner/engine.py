@@ -909,8 +909,8 @@ class TunerEngine(QObject):
             parent=self,
         )
         self._worker.finished.connect(self._on_test_finished)
-        self.worker_started.emit(core_id)
         self._worker.start()
+        self.worker_started.emit(core_id)
 
     @Slot(int, bool, str, str, float, float)
     def _on_test_finished(

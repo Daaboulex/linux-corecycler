@@ -164,7 +164,7 @@ def _detect_ccd_layout(topo: CPUTopology) -> None:
 
     # map L3 groups to CCD indices
     ccd_map: dict[int, int] = {}  # physical_core -> ccd_index
-    for ccd_idx, (_l3_id, core_ids) in enumerate(sorted(l3_groups.items())):
+    for ccd_idx, (_l3_id, core_ids) in enumerate(sorted(l3_groups.items(), key=lambda x: int(x[0]))):
         for cid in core_ids:
             ccd_map[cid] = ccd_idx
 

@@ -556,12 +556,12 @@ def decode_co_arg(core_id: int, response: int, generation: CPUGeneration) -> int
             raise ValueError(f"Unsupported generation: {generation}")
 
 
-def encode_pbo_limit_arg(value_mw_or_ma: int) -> int:
-    """Encode a PBO limit (PPT in mW, TDC/EDC in mA) for SMU.
+def encode_pbo_limit_arg(value_w_or_a: int) -> int:
+    """Encode a PBO power/current limit for SMU.
 
-    ZenStates: arg0 = value * 1000.
+    PPT in watts, TDC/EDC in amps. Converted to milliwatts/milliamps for SMU.
     """
-    return value_mw_or_ma * 1000
+    return value_w_or_a * 1000
 
 
 def encode_pbo_scalar_arg(scalar: float) -> int:

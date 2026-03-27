@@ -326,8 +326,8 @@ class RyzenSMU:
     def set_all_co(self, value: int) -> bool:
         """Set CO offset for ALL cores at once. Returns True on success.
 
-        Uses the SetAllDldoPsmMargin command if available, otherwise
-        falls back to setting each core individually.
+        Uses the SetAllDldoPsmMargin command if available.
+        Returns False if the set-all command is not available for this generation.
         """
         if not self.commands.has_co:
             return False

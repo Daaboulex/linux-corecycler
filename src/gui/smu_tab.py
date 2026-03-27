@@ -438,10 +438,20 @@ class SMUTab(QWidget):
 
         if running:
             self._apply_all_btn.setToolTip("Disabled while auto-tuner is running")
-        elif not smu_ok:
-            self._apply_all_btn.setToolTip("SMU not available")
         else:
-            self._apply_all_btn.setToolTip("")
+            # Tuner stopped — refresh Current CO from hardware
+            if smu_ok:
+                self._read_all_co()
+                self._apply_all_btn.setToolTip("")
+            else:
+                self._apply_all_btn.setToolTip("SMU not available")
+
+    def update_current_co(self, core_id: int, offset: int) -> None:
+        """Update the Current CO display for a core (called by tuner)."""
+        row_map = self._core_row_map()
+        row = row_map.get(core_id)
+        if row is not None:
+            self._table.setItem(row, 2, _item(str(offset)))
 
     # ------------------------------------------------------------------
     # CO Profile save/load

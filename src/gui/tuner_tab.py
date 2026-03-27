@@ -1019,8 +1019,12 @@ class TunerTab(QWidget):
             self._start_btn.setEnabled(False)
             self._start_btn.setToolTip("Manual test is running")
         else:
-            self._start_btn.setEnabled(True)
-            self._start_btn.setToolTip("")
+            has_active = self._engine is not None and self._engine.status in ("paused", "running", "validating")
+            self._start_btn.setEnabled(not has_active)
+            if has_active:
+                self._start_btn.setToolTip("Tuner session is active — resume or abort first")
+            else:
+                self._start_btn.setToolTip("")
 
     def force_stop(self) -> None:
         """Force-stop the tuner engine and its worker — called on app exit."""
