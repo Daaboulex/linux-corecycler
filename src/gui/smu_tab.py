@@ -51,6 +51,15 @@ class SMUTab(QWidget):
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
+        # profile banner (shown when CO offsets are loaded from a tuner session)
+        self._profile_banner = QLabel("")
+        self._profile_banner.setStyleSheet(
+            "background: #1a3a5c; color: #4fc3f7; padding: 8px; "
+            "border-radius: 4px; font: 11px monospace;"
+        )
+        self._profile_banner.setVisible(False)
+        layout.addWidget(self._profile_banner)
+
         # status bar
         status_group = QGroupBox("SMU Status")
         status_layout = QHBoxLayout(status_group)
@@ -320,6 +329,7 @@ class SMUTab(QWidget):
             QMessageBox.warning(self, "Error", f"Failed to set CO for cores: {failed}")
         else:
             self._read_all_co()
+            self._profile_banner.setVisible(False)
 
     def _reset_all_co(self) -> None:
         if not self._smu:

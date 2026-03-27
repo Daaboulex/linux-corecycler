@@ -20,6 +20,10 @@ class CoreState:
     coarse_fail_offset: int | None = None
     confirm_attempts: int = 0
     baseline_offset: int = 0
+    backoff_mode: bool = False
+    consecutive_backoff_fails: int = 0
+    backoff_fail_bound: int | None = None
+    backoff_pass_bound: int | None = None
 
 
 @dataclass(slots=True)

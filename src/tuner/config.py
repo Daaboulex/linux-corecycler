@@ -40,6 +40,9 @@ class TunerConfig:
     # Clock stretch detection
     stretch_threshold_pct: float = 3.0  # treat as failure if stretch > this % during test
 
+    # Backoff algorithm
+    midpoint_jump_threshold: int = 3  # after this many consecutive backoff fails, jump to midpoint
+
     # Safety
     abort_on_consecutive_failures: int = 0  # 0 = disabled
 

@@ -216,4 +216,4 @@ class TestSchemaMigration:
 
     def test_schema_version_is_5(self, db):
         version = db._execute_raw("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 5
+        assert version == 7
