@@ -98,3 +98,34 @@ def save_profile(profile: TestProfile, path: Path) -> None:
     """Save a test profile to a JSON file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(asdict(profile), indent=2))
+
+
+def save_co_profile(
+    offsets: dict[int, int],
+    path: Path,
+    cpu_model: str = "",
+    source: str = "manual",
+) -> None:
+    """Save a CO offset profile to a JSON file."""
+    from datetime import datetime, timezone
+
+    data = {
+        "format": "corecycler-co-profile",
+        "version": 1,
+        "cpu_model": cpu_model,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "offsets": {str(k): v for k, v in sorted(offsets.items())},
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2))
+
+
+def load_co_profile(path: Path) -> dict[int, int]:
+    """Load a CO offset profile from a JSON file.
+
+    Returns {core_id: offset}. Ignores unknown fields for forward compatibility.
+    """
+    data = json.loads(path.read_text())
+    raw = data.get("offsets", data)  # support bare {core: offset} dicts too
+    return {int(k): int(v) for k, v in raw.items() if k.lstrip("-").isdigit()}

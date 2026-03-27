@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -621,6 +623,7 @@ class TunerTab(QWidget):
         self._engine.validate_profile(self._engine.session_id)
 
     def _on_export(self) -> None:
+        """Export confirmed CO profile to a JSON file."""
         if not self._engine or not self._engine.session_id or not self._db:
             return
         profile = tp.get_best_profile(self._db, self._engine.session_id)
@@ -628,11 +631,26 @@ class TunerTab(QWidget):
             QMessageBox.information(self, "Export", "No confirmed cores to export")
             return
 
-        text = json.dumps(profile, indent=2, sort_keys=True)
-        QMessageBox.information(
-            self, "Confirmed CO Profile",
-            f"Copy this profile:\n\n{text}",
+        from config.settings import save_co_profile
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export CO Profile",
+            str(Path.home() / "co-profile-tuner.json"),
+            "JSON (*.json)",
         )
+        if not path:
+            return
+
+        cpu_model = ""
+        if self._topology:
+            cpu_model = self._topology.model_name
+
+        try:
+            save_co_profile(profile, Path(path), cpu_model=cpu_model, source="auto-tuner")
+            QMessageBox.information(self, "Exported", f"CO profile exported to {path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to export: {e}")
 
     # ------------------------------------------------------------------
     # Engine signals

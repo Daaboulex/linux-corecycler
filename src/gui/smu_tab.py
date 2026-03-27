@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -131,6 +133,21 @@ class SMUTab(QWidget):
         safety_layout.addWidget(self._dry_run_cb)
 
         co_layout.addLayout(safety_layout)
+
+        # CO Profile save/load row
+        profile_layout = QHBoxLayout()
+
+        save_co_btn = QPushButton("Save CO Profile")
+        save_co_btn.setToolTip("Save all New CO values to a JSON file")
+        save_co_btn.clicked.connect(self._save_co_profile)
+        profile_layout.addWidget(save_co_btn)
+
+        load_co_btn = QPushButton("Load CO Profile")
+        load_co_btn.setToolTip("Load CO values from a JSON file into the New CO column")
+        load_co_btn.clicked.connect(self._load_co_profile)
+        profile_layout.addWidget(load_co_btn)
+
+        co_layout.addLayout(profile_layout)
 
         # warning
         warn = QLabel(
@@ -413,6 +430,63 @@ class SMUTab(QWidget):
             self._apply_all_btn.setToolTip("SMU not available")
         else:
             self._apply_all_btn.setToolTip("")
+
+    # ------------------------------------------------------------------
+    # CO Profile save/load
+    # ------------------------------------------------------------------
+
+    def _save_co_profile(self) -> None:
+        """Save current New CO spinbox values to a JSON file."""
+        from config.settings import save_co_profile
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save CO Profile",
+            str(Path.home() / "co-profile.json"),
+            "JSON (*.json)",
+        )
+        if not path:
+            return
+
+        offsets = {core_id: spin.value() for core_id, spin in self._spinboxes.items()}
+        cpu_model = ""
+        if self._topology:
+            cpu_model = self._topology.model_name
+
+        try:
+            save_co_profile(offsets, Path(path), cpu_model=cpu_model, source="manual")
+            QMessageBox.information(self, "Saved", f"CO profile saved to {path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to save CO profile: {e}")
+
+    def _load_co_profile(self) -> None:
+        """Load CO values from a JSON file into the spinboxes."""
+        from config.settings import load_co_profile
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load CO Profile",
+            str(Path.home()),
+            "JSON (*.json)",
+        )
+        if not path:
+            return
+
+        try:
+            profile = load_co_profile(Path(path))
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to load CO profile: {e}")
+            return
+
+        if not profile:
+            QMessageBox.warning(self, "Empty", "No CO offsets found in file")
+            return
+
+        self.set_co_profile(profile)
+        filename = Path(path).name
+        self._profile_banner.setText(
+            f"Loaded from {filename} \u2014 click 'Apply All New Values' to write to SMU"
+        )
 
     def set_co_profile(self, profile: dict[int, int]) -> None:
         """Populate CO spinboxes from a profile without applying to hardware."""
