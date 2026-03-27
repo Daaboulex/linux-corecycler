@@ -25,7 +25,7 @@ CO instability often manifests at idle or during load transitions, not under sus
 ## Features
 
 - **Per-core stress test cycling** with configurable time, iterations, and cycle count per core
-- **Four stress test backends**: mprime (Prime95 CLI), stress-ng, y-cruncher, and stressapptest (Google's memory stress tool)
+- **Three per-core stress backends**: mprime (Prime95 CLI), stress-ng, and y-cruncher; plus stressapptest for dedicated memory stress testing (Memory tab only)
 - **Five test mode presets**: Quick (2 min/core), Standard (10 min), Thorough (30 min + 2 cycles), Full Spectrum (multi-pass with variable load and idle tests), and Custom
 - **Variable load testing**: periodically stops and restarts stress to catch load transition errors
 - **Idle stability testing**: monitors for MCE during idle periods between cores to catch C-state transition errors
@@ -594,7 +594,7 @@ KERNEL=="ryzen_smu_drv", SUBSYSTEM=="platform", ATTR{smu_args}="", \
 |---|---|---|---|---|---|
 | Quick | 2 min | 1 | No | No | Fast screening, rough check |
 | Standard | 10 min | 1 | No | No | Initial CO tuning |
-| Thorough | 30 min | 2 | No | 5s between cores | Validation after tuning |
+| Thorough | 30 min | 2 | No | No | Validation after tuning |
 | Full Spectrum | 20 min | 3 | Yes | 60s + 10s between | Comprehensive stability proof |
 | Custom | User-defined | User-defined | Optional | Optional | Fine-tuned testing |
 
@@ -719,7 +719,7 @@ NOT_STARTED → COARSE_SEARCH → FINE_SEARCH → SETTLED → CONFIRMING → CON
 | Validate Duration | 300s | 30-3600s | Test duration per stage during multi-core validation |
 | Max Confirm Retries | 2 | 0-5 | Retries before backing off from a value |
 | Auto Validate | true | true/false | Automatically run 3-stage multi-core validation after all cores are individually confirmed |
-| Backend | mprime | mprime/stress-ng/y-cruncher/stressapptest | Stress test backend |
+| Backend | mprime | mprime/stress-ng/y-cruncher | Stress test backend for per-core testing (stressapptest is Memory tab only) |
 | Mode | SSE | SSE/AVX/AVX2/AVX512 | Stress test instruction set |
 | FFT Preset | SMALL | SMALL/MEDIUM/LARGE/HEAVY/ALL | FFT size preset (mprime) |
 | Test Order | sequential | sequential/round_robin/weakest_first/ccd_alternating/ccd_round_robin | Core testing order (see below) |
@@ -728,6 +728,8 @@ NOT_STARTED → COARSE_SEARCH → FINE_SEARCH → SETTLED → CONFIRMING → CON
 | Stretch Threshold | 3.0% | 0-20% | Clock stretch failure threshold (0 = disabled, requires root) |
 | Abort on Consecutive Failures | 0 | 0-10 | Abort if N cores fail at start_offset (0 = disabled) |
 | Inherit Current CO | false | true/false | Read current SMU offsets as starting points (skip testing values already proven stable) |
+
+Advanced parameters (Backoff Pre-Confirm Multiplier, Midpoint Jump Threshold) use sensible defaults and are not exposed in the UI.
 
 **Test orderings:**
 
