@@ -30,7 +30,8 @@ def mock_smu():
     smu = MagicMock()
     smu.commands = MagicMock()
     smu.commands.co_range = (-60, 10)
-    smu.set_co_offset = MagicMock()
+    smu.set_co_offset = MagicMock(return_value=True)
+    smu.get_co_offset = MagicMock(return_value=0)
     smu.get_all_co_offsets = MagicMock(return_value={0: 0, 1: 0, 2: 0, 3: 0})
     smu.get_pbo_scalar = MagicMock(return_value=1.0)
     smu.get_boost_limit = MagicMock(return_value=5500)
@@ -181,7 +182,7 @@ class TestStateMachineTransitions:
         assert cs.confirm_attempts == 2
         assert cs.phase == "failed_confirm"
 
-    def test_failed_confirm_backs_off_to_fine(self, db, simple_topology, mock_smu, mock_backend):
+    def test_failed_confirm_enters_backoff(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
             core_id=0, phase="failed_confirm", current_offset=-8,
@@ -190,8 +191,9 @@ class TestStateMachineTransitions:
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
         # Back off: best was -8, direction=-1, so back off = -8 - (-1)*1 = -7
-        assert cs.phase == "fine_search"
+        assert cs.phase == "backoff_preconfirm"
         assert cs.best_offset == -7
+        assert cs.backoff_mode is True
         assert cs.confirm_attempts == 0
 
     def test_max_offset_clamp(self, db, simple_topology, mock_smu, mock_backend):
@@ -231,7 +233,7 @@ class TestResumeFromCrash:
         # Core 1 was mid-coarse_search — treated as failure
         assert eng._core_states[1].phase != "coarse_search"
 
-    def test_resume_reapplies_co_offsets(self, db, simple_topology, mock_smu, mock_backend):
+    def test_resume_reapplies_baseline_offsets(self, db, simple_topology, mock_smu, mock_backend):
         cfg = TunerConfig(cores_to_test=[0], search_duration_seconds=1)
         eng = TunerEngine(
             db=db, topology=simple_topology, smu=mock_smu,
@@ -240,14 +242,15 @@ class TestResumeFromCrash:
 
         sid = tp.create_session(db, cfg, "", "")
         tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase="fine_search", current_offset=-12, best_offset=-10,
+            core_id=0, phase="fine_search", current_offset=-12,
+            best_offset=-10, baseline_offset=-5,
         ))
 
         with patch.object(eng, "_run_next"):
             eng.resume(sid)
 
-        # SMU should have been called to re-apply offset
-        mock_smu.set_co_offset.assert_any_call(0, -12)
+        # SMU should restore to baseline (not the interrupted offset)
+        mock_smu.set_co_offset.assert_any_call(0, -5)
 
 
 class TestConfigVariations:
@@ -568,3 +571,216 @@ class TestExceedsMax:
         assert eng._exceeds_max(11) is True
         assert eng._exceeds_max(10) is False
         assert eng._exceeds_max(9) is False
+
+
+class TestBackoffAlgorithm:
+    """Test the backoff/binary-search algorithm after failed confirmation."""
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=5, fine_step=1, max_offset=-30, cores_to_test=[0])
+        defaults.update(cfg_kwargs)
+        cfg = TunerConfig(**defaults)
+        return TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+
+    def test_failed_confirm_enters_backoff_preconfirm(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase="failed_confirm", current_offset=-8,
+            best_offset=-8, confirm_attempts=2,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        assert cs.phase == "backoff_preconfirm"
+        assert cs.best_offset == -7
+        assert cs.backoff_mode is True
+        assert cs.confirm_attempts == 0
+
+    def test_backoff_preconfirm_pass_enters_backoff_confirming(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase="backoff_preconfirm", current_offset=-7,
+            best_offset=-7, backoff_mode=True,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        assert cs.phase == "backoff_confirming"
+        assert cs.backoff_pass_bound == -7
+
+    def test_backoff_preconfirm_fail_backs_off(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase="backoff_preconfirm", current_offset=-7,
+            best_offset=-7, backoff_mode=True,
+            consecutive_backoff_fails=0,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        assert cs.phase == "backoff_preconfirm"
+        assert cs.best_offset == -6  # backed off from -7
+        assert cs.consecutive_backoff_fails == 1
+
+    def test_backoff_confirming_pass_confirms(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase="backoff_confirming", current_offset=-7,
+            best_offset=-7, backoff_mode=True,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        assert cs.phase == "confirmed"
+
+    def test_backoff_confirming_fail_returns_to_preconfirm(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase="backoff_confirming", current_offset=-7,
+            best_offset=-7, backoff_mode=True,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        assert cs.phase == "backoff_preconfirm"
+        assert cs.best_offset == -6  # backed off from -7
+
+    def test_midpoint_jump_after_threshold(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, midpoint_jump_threshold=3)
+        cs = CoreState(
+            core_id=0, phase="backoff_preconfirm", current_offset=-7,
+            best_offset=-7, backoff_mode=True,
+            consecutive_backoff_fails=2,
+            baseline_offset=0,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        # 3rd fail triggers midpoint jump
+        assert cs.backoff_fail_bound == -7
+        assert cs.consecutive_backoff_fails == 0  # reset after jump
+
+    def test_backoff_preconfirm_pass_after_midpoint_sets_bounds(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase="backoff_preconfirm", current_offset=-4,
+            best_offset=-4, backoff_mode=True,
+            backoff_fail_bound=-7,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        assert cs.phase == "backoff_confirming"
+        assert cs.backoff_pass_bound == -4
+
+    def test_convergence_guard_at_baseline(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase="backoff_preconfirm", current_offset=-1,
+            best_offset=-1, backoff_mode=True,
+            consecutive_backoff_fails=0,
+            baseline_offset=0,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        # Back off from -1: -1 - (-1)*1 = 0, which is baseline
+        assert cs.phase == "confirmed"
+        assert cs.best_offset == 0
+
+    def test_binary_search_narrows_on_pass(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase="backoff_confirming", current_offset=-5,
+            best_offset=-5, backoff_mode=True,
+            backoff_fail_bound=-10, backoff_pass_bound=-5,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        # Binary search: midpoint between pass(-5) and fail(-10)
+        # mid = -5 + (-1) * (5 // 2) = -5 + (-1)*2 = -7
+        assert cs.phase == "backoff_preconfirm"
+        assert cs.current_offset == -7
+
+    def test_binary_search_narrows_on_fail(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase="backoff_confirming", current_offset=-7,
+            best_offset=-7, backoff_mode=True,
+            backoff_fail_bound=-10, backoff_pass_bound=-5,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        # Confirm failed — back to preconfirm, back off
+        assert cs.phase == "backoff_preconfirm"
+        assert cs.best_offset == -6  # -7 - (-1)*1 = -6
+
+    def test_binary_search_converges(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase="backoff_confirming", current_offset=-6,
+            best_offset=-6, backoff_mode=True,
+            backoff_fail_bound=-7, backoff_pass_bound=-6,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        # Gap is 1 (== fine_step), so converged
+        assert cs.phase == "confirmed"
+
+    def test_backoff_floor_uses_baseline_not_start(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase="failed_confirm", current_offset=-3,
+            best_offset=-3, confirm_attempts=2,
+            baseline_offset=-2,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        # -3 - (-1)*1 = -2 = baseline, so should settle at baseline
+        assert cs.phase == "confirmed"
+        assert cs.best_offset == -2
+
+    def test_backoff_with_positive_direction(self, db, simple_topology, mock_smu, mock_backend):
+        """Binary search works with direction=+1 (overvolting)."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, direction=1, max_offset=30)
+        cs = CoreState(
+            core_id=0, phase="backoff_preconfirm", current_offset=7,
+            best_offset=7, backoff_mode=True,
+            backoff_fail_bound=10, backoff_pass_bound=4,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        assert cs.backoff_pass_bound == 7
+        # Binary search midpoint: 7 + (10-7)//2 = 7 + 1 = 8
+        assert cs.current_offset == 8
+        assert cs.phase == "backoff_preconfirm"
+
+    def test_midpoint_jump_threshold_1(self, db, simple_topology, mock_smu, mock_backend):
+        """threshold=1 should trigger midpoint jump on first failure."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, midpoint_jump_threshold=1)
+        cs = CoreState(
+            core_id=0, phase="backoff_preconfirm", current_offset=-7,
+            best_offset=-7, backoff_mode=True,
+            consecutive_backoff_fails=0,
+            baseline_offset=-2,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        # Should immediately jump to midpoint (threshold=1, first fail triggers)
+        assert cs.consecutive_backoff_fails == 0  # reset after jump
+        assert cs.backoff_fail_bound == -7
+
+    def test_resume_from_backoff_preconfirm(self, db, simple_topology, mock_smu, mock_backend):
+        """Resuming a session interrupted during backoff_preconfirm should back off."""
+        cfg = TunerConfig(cores_to_test=[0], search_duration_seconds=1)
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        sid = tp.create_session(db, cfg, "", "")
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase="backoff_preconfirm", current_offset=-10,
+            best_offset=-10, backoff_mode=True,
+            consecutive_backoff_fails=1, baseline_offset=-5,
+        ))
+        with patch.object(eng, "_run_next"):
+            eng.resume(sid)
+        # Should have advanced (treated as failure) — backed off from -10
+        cs = eng._core_states[0]
+        assert cs.phase != "backoff_preconfirm" or cs.current_offset != -10
+        assert cs.consecutive_backoff_fails >= 2 or cs.current_offset != -10

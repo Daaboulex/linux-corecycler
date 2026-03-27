@@ -328,7 +328,8 @@ class TunerEngine(QObject):
         # offset is potentially dangerous. Advance the state machine (treating
         # the crash as a test failure) so it backs off to a safe value.
         for cs in list(self._core_states.values()):
-            if cs.phase in ("coarse_search", "fine_search", "confirming"):
+            if cs.phase in ("coarse_search", "fine_search", "confirming",
+                            "backoff_preconfirm", "backoff_confirming"):
                 self.log_message.emit(
                     f"Core {cs.core_id} was interrupted at offset {cs.current_offset} "
                     f"— treating as failure and backing off"
@@ -551,25 +552,100 @@ class TunerEngine(QObject):
                     # else: retry confirmation (stays in "confirming")
 
             case "failed_confirm":
-                # Back off by one fine step and re-enter fine search
+                # Back off by one fine step and enter backoff preconfirm
                 if cs.best_offset is not None:
-                    cs.best_offset = cs.best_offset - direction * cfg.fine_step
-                    if cs.best_offset == cfg.start_offset or (
-                        direction < 0 and cs.best_offset > cfg.start_offset
-                    ) or (
-                        direction > 0 and cs.best_offset < cfg.start_offset
-                    ):
+                    new_best = cs.best_offset - direction * cfg.fine_step
+                    if self._at_or_past_baseline(new_best, cs):
                         # Can't back off further
                         cs.phase = "confirmed"
-                        cs.current_offset = cfg.start_offset
+                        cs.best_offset = cs.baseline_offset
+                        cs.current_offset = cs.baseline_offset
                     else:
-                        cs.phase = "fine_search"
+                        cs.best_offset = new_best
+                        cs.current_offset = new_best
+                        cs.phase = "backoff_preconfirm"
+                        cs.backoff_mode = True
+                        cs.confirm_attempts = 0
+                        cs.consecutive_backoff_fails = 0
+                else:
+                    cs.phase = "confirmed"
+                    cs.best_offset = cs.baseline_offset
+                    cs.current_offset = cs.baseline_offset
+
+            case "backoff_preconfirm":
+                if passed:
+                    had_pass_bound = cs.backoff_pass_bound is not None
+                    cs.backoff_pass_bound = cs.best_offset
+                    if had_pass_bound and cs.backoff_fail_bound is not None:
+                        # Binary search active — jump to midpoint
+                        gap = abs(cs.backoff_fail_bound - cs.backoff_pass_bound)
+                        if gap <= cfg.fine_step:
+                            cs.phase = "confirmed"
+                        else:
+                            mid = cs.backoff_pass_bound + direction * (gap // 2)
+                            cs.best_offset = mid
+                            cs.current_offset = mid
+                            # Stay in backoff_preconfirm for next test
+                    else:
+                        # First pass in backoff — enter confirmation
+                        cs.phase = "backoff_confirming"
                         cs.current_offset = cs.best_offset
                         cs.confirm_attempts = 0
                 else:
-                    cs.phase = "confirmed"
-                    cs.best_offset = cfg.start_offset
-                    cs.current_offset = cfg.start_offset
+                    cs.consecutive_backoff_fails += 1
+                    # Check midpoint jump threshold
+                    if cs.consecutive_backoff_fails >= cfg.midpoint_jump_threshold:
+                        # Jump to midpoint between current and baseline
+                        cs.backoff_fail_bound = cs.best_offset
+                        midpoint = cs.best_offset - direction * (
+                            abs(cs.best_offset - cs.baseline_offset) // 2
+                        )
+                        if self._at_or_past_baseline(midpoint, cs) or midpoint == cs.best_offset:
+                            cs.phase = "confirmed"
+                            cs.best_offset = cs.baseline_offset
+                            cs.current_offset = cs.baseline_offset
+                        else:
+                            cs.best_offset = midpoint
+                            cs.current_offset = midpoint
+                            cs.consecutive_backoff_fails = 0
+                    else:
+                        # Back off one more step
+                        new_offset = cs.best_offset - direction * cfg.fine_step
+                        if self._at_or_past_baseline(new_offset, cs):
+                            cs.phase = "confirmed"
+                            cs.best_offset = cs.baseline_offset
+                            cs.current_offset = cs.baseline_offset
+                        else:
+                            cs.best_offset = new_offset
+                            cs.current_offset = new_offset
+
+            case "backoff_confirming":
+                if passed:
+                    # Confirmed at this offset — check binary search
+                    if cs.backoff_fail_bound is not None and cs.backoff_pass_bound is not None:
+                        # Binary search: try midpoint between pass and fail bounds
+                        gap = abs(cs.backoff_fail_bound - cs.backoff_pass_bound)
+                        if gap <= cfg.fine_step:
+                            # Converged
+                            cs.phase = "confirmed"
+                        else:
+                            mid = cs.backoff_pass_bound + direction * (gap // 2)
+                            cs.best_offset = mid
+                            cs.current_offset = mid
+                            cs.phase = "backoff_preconfirm"
+                    else:
+                        cs.phase = "confirmed"
+                else:
+                    # Confirm failed — back to preconfirm, back off
+                    cs.phase = "backoff_preconfirm"
+                    new_offset = cs.best_offset - direction * cfg.fine_step
+                    if self._at_or_past_baseline(new_offset, cs):
+                        cs.phase = "confirmed"
+                        cs.best_offset = cs.baseline_offset
+                        cs.current_offset = cs.baseline_offset
+                    else:
+                        cs.best_offset = new_offset
+                        cs.current_offset = new_offset
 
         # Persist
         if self._session_id:
@@ -581,6 +657,12 @@ class TunerEngine(QObject):
         if self._config.direction < 0:
             return offset < self._config.max_offset
         return offset > self._config.max_offset
+
+    def _at_or_past_baseline(self, offset: int, cs: CoreState) -> bool:
+        """Check if offset is at or past the core's baseline in the configured direction."""
+        if self._config.direction < 0:
+            return offset >= cs.baseline_offset
+        return offset <= cs.baseline_offset
 
     def _pick_next_core(self) -> int | None:
         """Select next core to test based on test_order config."""
@@ -634,6 +716,7 @@ class TunerEngine(QObject):
                 continue
             score = {
                 "fine_search": 0, "failed_confirm": 0,
+                "backoff_preconfirm": 0, "backoff_confirming": 1,
                 "confirming": 1, "coarse_search": 2,
                 "settled": 3, "not_started": 4,
             }.get(cs.phase, 5)
@@ -1187,13 +1270,12 @@ class TunerEngine(QObject):
     def _find_most_aggressive_core(self) -> int | None:
         """Find the confirmed core with the highest absolute offset that can be backed off.
 
-        Skips cores already at start_offset (nothing to give).
+        Skips cores already at their baseline_offset (nothing to give).
         """
         best_core = None
         best_abs = -1
-        start = self._config.start_offset
         for cs in self._core_states.values():
-            if cs.best_offset is not None and cs.best_offset != start:
+            if cs.best_offset is not None and cs.best_offset != cs.baseline_offset:
                 if abs(cs.best_offset) > best_abs:
                     best_abs = abs(cs.best_offset)
                     best_core = cs.core_id
@@ -1202,23 +1284,21 @@ class TunerEngine(QObject):
     def _backoff_core(self, core_id: int) -> bool:
         """Back off a core's best_offset by one fine_step.
 
-        Returns False if the offset is already at start (can't back off further).
+        Returns False if the offset is already at baseline (can't back off further).
         """
         cs = self._core_states[core_id]
         cfg = self._config
         if cs.best_offset is None:
             return False
-        if cs.best_offset == cfg.start_offset:
-            return False  # already at start — nothing to back off
+        if cs.best_offset == cs.baseline_offset:
+            return False  # already at baseline — nothing to back off
 
         old_offset = cs.best_offset
         new_offset = cs.best_offset - cfg.direction * cfg.fine_step
-        # Clamp to start if we've backed off past it
-        if (cfg.direction < 0 and new_offset >= cfg.start_offset) or (
-            cfg.direction > 0 and new_offset <= cfg.start_offset
-        ):
-            cs.best_offset = cfg.start_offset
-            cs.current_offset = cfg.start_offset
+        # Clamp to baseline if we've backed off past it
+        if self._at_or_past_baseline(new_offset, cs):
+            cs.best_offset = cs.baseline_offset
+            cs.current_offset = cs.baseline_offset
         else:
             cs.best_offset = new_offset
             cs.current_offset = new_offset
