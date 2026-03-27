@@ -94,7 +94,8 @@ class ResultsTab(QWidget):
         self._core_rows: dict[int, int] = {}  # core_id -> row index
 
     def init_cores(self, core_statuses: dict[int, CoreTestStatus]) -> None:
-        """Initialize the table with core entries."""
+        """Initialize the table with core entries — clears previous results."""
+        self._log.clear()
         self._table.setRowCount(len(core_statuses))
         self._core_rows.clear()
 
@@ -173,7 +174,10 @@ class ResultsTab(QWidget):
         secs = int(status.elapsed_seconds % 60)
         self._table.setItem(row, 5, _item(f"{mins}m {secs}s", Qt.AlignmentFlag.AlignCenter))
 
-        self._table.setItem(row, 6, _item(status.last_error or "-"))
+        error_item = _item(status.last_error or "-")
+        if status.last_error:
+            error_item.setToolTip(status.last_error)
+        self._table.setItem(row, 6, error_item)
 
 
 def _item(text: str, alignment: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignLeft) -> QTableWidgetItem:

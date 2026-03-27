@@ -426,7 +426,7 @@ class SMUTab(QWidget):
 
         self._apply_all_btn.setEnabled(write_enabled)
         self._reset_btn.setEnabled(write_enabled)
-        self._restore_btn.setEnabled(write_enabled and bool(getattr(self, "_backup", None)))
+        self._restore_btn.setEnabled(write_enabled and self._smu is not None and self._smu.has_backup())
         # Per-row Apply buttons
         for row in range(self._table.rowCount()):
             btn = self._table.cellWidget(row, 4)

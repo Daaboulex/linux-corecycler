@@ -324,6 +324,24 @@ class TunerTab(QWidget):
             "during a test, mark it as FAIL even if stress test passed.\n"
             "0 = disabled. 3% = recommended. Requires root (MSR access)."
         )
+
+        # Check MSR availability and warn if unavailable
+        import os
+        try:
+            fd = os.open("/dev/cpu/0/msr", os.O_RDONLY)
+            os.close(fd)
+            msr_available = True
+        except (OSError, PermissionError):
+            msr_available = False
+
+        if not msr_available:
+            self._stretch_threshold_spin.setEnabled(False)
+            self._stretch_threshold_spin.setToolTip(
+                "MSR access unavailable — clock stretch detection disabled.\n"
+                "Requires msr kernel module and read permission on /dev/cpu/*/msr."
+            )
+            self._stretch_threshold_spin.setStyleSheet("color: #888;")
+
         search_layout.addRow("Stretch threshold:", self._stretch_threshold_spin)
 
         self._order_combo = QComboBox()

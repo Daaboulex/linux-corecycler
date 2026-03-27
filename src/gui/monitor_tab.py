@@ -332,9 +332,10 @@ class MonitorTab(QWidget):
                     self._per_core_layout.addWidget(bar)
         else:
             # fallback: create bars from current frequency readings
+            # Label as "CPU N" (logical CPU IDs, not physical core IDs)
             freqs = read_core_frequencies()
             for cpu_id in sorted(freqs.keys()):
-                bar = CoreFreqBar(cpu_id, f"C{cpu_id}", max_freq=6000)
+                bar = CoreFreqBar(cpu_id, f"CPU{cpu_id}", max_freq=6000)
                 self._per_core_bars[cpu_id] = bar
                 self._per_core_layout.addWidget(bar)
 
@@ -367,6 +368,12 @@ class MonitorTab(QWidget):
 
         if freqs:
             max_freq = max(freqs.values())
+            # Dynamically update max if a core boosts above expected ceiling
+            current_max = getattr(self, "_max_core_freq", 6000)
+            if max_freq > current_max:
+                self._max_core_freq = max_freq
+                self._max_freq_label.setText(f"Max Boost: {max_freq:.0f}MHz")
+                self._freq_chart.max_val = max_freq * 1.1
             self._freq_chart.add_value(max_freq)
 
         # hwmon
@@ -486,8 +493,9 @@ class MonitorTab(QWidget):
                             eff_max_mhz=eff_max,
                         )
 
-                    if self._max_core_freq:
-                        bar._max_freq = self._max_core_freq * 1.05
+                    mcf = getattr(self, "_max_core_freq", 6000)
+                    if mcf:
+                        bar._max_freq = mcf * 1.05
             else:
                 for cpu_id, bar in self._per_core_bars.items():
                     bar.update_data(
