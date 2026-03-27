@@ -135,37 +135,77 @@ class CoreFreqBar(QWidget):
                     y1 = 3 + (1.0 - min(data[i] / self._max_freq, 1.0)) * (h - 6)
                     painter.drawLine(int(x0), int(y0), int(x1), int(y1))
 
-        # text values on the right
+        # text values on the right — fixed-width columns for stable layout
         text_x = bar_x + bar_w + 4 if bar_w > 0 else label_w
-        painter.setFont(QFont("monospace", 7))
+        mono = QFont("monospace", 7)
+        painter.setFont(mono)
+        fm = painter.fontMetrics()
+        col_gap = fm.horizontalAdvance(" ")
 
-        parts = []
-        parts.append(f"{self._usage_pct:3.0f}%")
-        # Actual freq / boost ceiling
+        # Column definitions: (text, color, fixed_chars)
+        # Usage
+        usage_str = f"{self._usage_pct:3.0f}%"
+        usage_color = QColor("#4caf50") if self._usage_pct > 50 else QColor("#888")
+
+        # Frequency
         if self._freq > 0:
             freq_str = f"{self._freq:.0f}"
         else:
-            freq_str = "--"
+            freq_str = "  --"
         if self._eff_max > 0:
-            parts.append(f"{freq_str}/{self._eff_max:.0f}")
+            freq_str = f"{freq_str}/{self._eff_max:.0f}"
         else:
-            parts.append(f"{freq_str}MHz")
-        # Only show stretch when core is active (>5% usage) — idle C-state noise is meaningless
+            freq_str = f"{freq_str:>4s}MHz"
+        freq_color = QColor("#4fc3f7")
+
+        # Stretch — fixed slot, blank when idle (keeps alignment stable)
         if self._stretch_pct is not None and self._usage_pct > 5:
-            parts.append(f"S:{self._stretch_pct:.1f}%")
-        if self._core_watts is not None:
-            parts.append(f"{self._core_watts:.1f}W")
-        if self._temp > 0:
-            parts.append(f"{self._temp:.0f}C")
-
-        freq_text = "  ".join(parts)
-
-        # Color stretch % red if suspicious (only meaningful when active)
-        if self._stretch_pct is not None and self._stretch_pct > 3.0 and self._usage_pct > 5:
-            painter.setPen(QColor("#ff7043"))
+            stretch_str = f"S:{self._stretch_pct:4.1f}%"
+            if self._stretch_pct > 3.0:
+                stretch_color = QColor("#ff7043")
+            elif self._stretch_pct > 1.0:
+                stretch_color = QColor("#ffb74d")
+            else:
+                stretch_color = QColor("#666")
         else:
-            painter.setPen(QColor("#ccc"))
-        painter.drawText(text_x, 0, w - text_x - 2, h, Qt.AlignmentFlag.AlignVCenter, freq_text)
+            stretch_str = "       "  # 7 chars placeholder
+            stretch_color = QColor("#666")
+
+        # Power
+        if self._core_watts is not None:
+            watts_str = f"{self._core_watts:5.1f}W"
+            watts_color = QColor("#ffb74d")
+        else:
+            watts_str = "      "  # 6 chars placeholder
+            watts_color = QColor("#666")
+
+        # Temperature
+        if self._temp > 0:
+            temp_str = f"{self._temp:3.0f}C"
+            if self._temp >= 85:
+                temp_color = QColor("#ff7043")
+            elif self._temp >= 70:
+                temp_color = QColor("#ffb74d")
+            else:
+                temp_color = QColor("#888")
+        else:
+            temp_str = "    "  # 4 chars placeholder
+            temp_color = QColor("#888")
+
+        # Draw each column at fixed positions
+        cols = [
+            (usage_str, usage_color),
+            (freq_str, freq_color),
+            (stretch_str, stretch_color),
+            (watts_str, watts_color),
+            (temp_str, temp_color),
+        ]
+        cx = text_x
+        for text, color in cols:
+            tw = fm.horizontalAdvance(text)
+            painter.setPen(color)
+            painter.drawText(cx, 0, tw + col_gap, h, Qt.AlignmentFlag.AlignVCenter, text)
+            cx += tw + col_gap
 
         # border — highlighted if active
         border_color = QColor("#4fc3f7") if self._is_active else QColor("#333")
