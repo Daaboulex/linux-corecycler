@@ -37,13 +37,13 @@ class ResultsTab(QWidget):
         summary_group = QGroupBox("Summary")
         summary_layout = QHBoxLayout(summary_group)
 
-        self._total_label = QLabel("Cores: 0")
-        self._passed_label = QLabel("Passed: 0")
+        self._total_label = QLabel("Cores: —")
+        self._passed_label = QLabel("Passed: —")
         self._passed_label.setStyleSheet("color: #4caf50; font-weight: bold;")
-        self._failed_label = QLabel("Failed: 0")
+        self._failed_label = QLabel("Failed: —")
         self._failed_label.setStyleSheet("color: #f44336; font-weight: bold;")
-        self._elapsed_label = QLabel("Elapsed: 0:00:00")
-        self._cycle_label = QLabel("Cycle: 0/0")
+        self._elapsed_label = QLabel("Start a test to see results")
+        self._cycle_label = QLabel("")
 
         summary_widgets = [
             self._total_label, self._passed_label, self._failed_label,

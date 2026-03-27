@@ -290,6 +290,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", "CPU topology not detected")
             return
 
+        # Check if memory stress is running
+        if hasattr(self, '_memory_tab') and self._memory_tab._stress_worker and self._memory_tab._stress_worker.isRunning():
+            QMessageBox.warning(self, "Memory Stress Active",
+                "A memory stress test is running. Stop it before starting a core test.")
+            return
+
         # Warn if an active/paused tuner session exists — running a manual test
         # won't corrupt CO offsets (manual tests don't touch SMU), but the user
         # should be aware their tuner session is waiting.
@@ -389,10 +395,11 @@ class MainWindow(QMainWindow):
                 log.exception("Failed to create history logger")
                 self._logger = None
 
-        # UI state — mutual exclusion with tuner
+        # UI state — mutual exclusion with tuner and memory stress
         self._start_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
         self._tuner_tab.set_test_running(True)
+        self._memory_tab.set_test_running(True)
         self._test_start_time = time.monotonic()
         self._elapsed_timer.start(1000)
         self._tabs.setCurrentWidget(self._results_tab)
@@ -577,6 +584,7 @@ class MainWindow(QMainWindow):
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
         self._tuner_tab.set_test_running(False)
+        self._memory_tab.set_test_running(False)
         self._monitor_tab.set_active_core(None)
         self._elapsed_timer.stop()
         self._core_status_cache.clear()
@@ -589,6 +597,7 @@ class MainWindow(QMainWindow):
         """Mutual exclusion: disable manual test Start and CO writes when tuner is active."""
         self._start_btn.setEnabled(not running)
         self._smu_tab.set_tuner_running(running)
+        self._memory_tab.set_test_running(running)
 
     @Slot(int, str)
     def _on_tuner_core_update(self, core_id: int, state: str) -> None:
@@ -777,8 +786,9 @@ class MainWindow(QMainWindow):
         # Check if ANYTHING is running (manual test OR tuner OR memory stress)
         manual_running = self._worker and self._worker.isRunning()
         tuner_running = self._tuner_tab.is_running
+        memory_running = hasattr(self, '_memory_tab') and self._memory_tab._stress_worker is not None and self._memory_tab._stress_worker.isRunning()
 
-        if manual_running or tuner_running:
+        if manual_running or tuner_running or memory_running:
             reply = QMessageBox.question(
                 self,
                 "Test Running",

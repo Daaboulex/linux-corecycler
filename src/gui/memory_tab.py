@@ -146,6 +146,7 @@ class MemoryTab(QWidget):
         self._spd_reader = SPD5118Reader()
         self._pm_reader = PMTableReader()
         self._stress_worker: _StressWorker | None = None
+        self._external_test_running: bool = False
         self._setup_ui()
         self._load_dimm_info()
         self._update_spd_labels()
@@ -218,7 +219,8 @@ class MemoryTab(QWidget):
         layout.addWidget(self._mc_group)
 
         # SPD Timings group box (DDR5 EEPROM data, cached at startup)
-        self._spd_group = QGroupBox("SPD Timings — JEDEC Spec (DDR5)")
+        self._spd_group = QGroupBox("SPD Timings — JEDEC Base Profile (DDR5)")
+        self._spd_group.setToolTip("JEDEC base profile timings from SPD EEPROM. XMP/EXPO overclocking profiles are not stored in SPD.")
         spd_layout = QVBoxLayout(self._spd_group)
         self._primary_label = QLabel("Primary: --")
         self._primary_label.setFont(QFont("monospace", 10))
@@ -341,7 +343,7 @@ class MemoryTab(QWidget):
                 lbl.deleteLater()
             self._temp_labels.clear()
             for i, temp in enumerate(temps):
-                lbl = QLabel(f"DIMM {i}: {temp:.1f}C")
+                lbl = QLabel(f"DIMM {i + 1}: {temp:.1f}C")
                 lbl.setFont(QFont("monospace", 10))
                 lbl.setStyleSheet("padding: 4px;")
                 temp_layout.addWidget(lbl)
@@ -366,7 +368,7 @@ class MemoryTab(QWidget):
                 "SPD Timings unavailable \u2014 spd5118 eeprom not exposed"
             )
             self._spd_unavailable_label.setVisible(True)
-            self._spd_group.setTitle("SPD Timings — JEDEC Spec (DDR5)")
+            self._spd_group.setTitle("SPD Timings — JEDEC Base Profile (DDR5)")
             return
 
         self._primary_label.setVisible(True)
@@ -374,7 +376,7 @@ class MemoryTab(QWidget):
         self._spd_unavailable_label.setVisible(False)
 
         dimm_num = spd.dimm_index + 1
-        self._spd_group.setTitle(f"SPD Timings — JEDEC Spec (DDR5) (DIMM {dimm_num})")
+        self._spd_group.setTitle(f"SPD Timings — JEDEC Base Profile (DDR5) (DIMM {dimm_num})")
 
         self._primary_label.setText(
             f"Primary: {spd.tCL}-{spd.tRCD}-{spd.tRP}-{spd.tRAS}-{spd.tRC}"
@@ -410,7 +412,7 @@ class MemoryTab(QWidget):
         temps = self._spd_reader.read_temperatures()
         for i, temp in enumerate(temps):
             if i < len(self._temp_labels):
-                self._temp_labels[i].setText(f"DIMM {i}: {temp:.1f}C")
+                self._temp_labels[i].setText(f"DIMM {i + 1}: {temp:.1f}C")
 
     def _update_live_data(self) -> None:
         """Read PM table and DIMM temps in one tick."""
@@ -489,6 +491,11 @@ class MemoryTab(QWidget):
         self._ratio_label.setStyleSheet("color: #888;")
         self._cal_label.setText("")
 
+    def set_test_running(self, running: bool) -> None:
+        """Disable memory stress when another test is active."""
+        self._external_test_running = running
+        self._stress_btn.setEnabled(not running and not (self._stress_worker and self._stress_worker.isRunning()))
+
     def _run_memory_stress(self) -> None:
         tool = self._stress_tool.currentText()
         if tool == "(none installed)":
@@ -521,7 +528,7 @@ class MemoryTab(QWidget):
 
     @Slot(bool, str)
     def _on_stress_done(self, passed: bool, output: str) -> None:
-        self._stress_btn.setEnabled(True)
+        self._stress_btn.setEnabled(not self._external_test_running)
         self._stop_btn.setEnabled(False)
         self._stress_duration.setEnabled(True)
         self._stress_tool.setEnabled(True)

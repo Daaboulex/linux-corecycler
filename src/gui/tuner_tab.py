@@ -595,6 +595,7 @@ class TunerTab(QWidget):
 
         self._pending_resume_id = None
         self._set_running_state(True)
+        log.info("Resuming tuner session %d — using saved session config (UI config panel is ignored)", session_id)
         self._engine.resume(session_id)
 
         # Initialize table with all cores
@@ -832,6 +833,10 @@ class TunerTab(QWidget):
         # If a core is selected, only show entries for that core
         if self._selected_core is not None and core_id != self._selected_core:
             return
+
+        MAX_LOG_ROWS = 2000
+        if self._log_table.rowCount() > MAX_LOG_ROWS:
+            self._log_table.removeRow(0)  # Remove oldest
 
         row = self._log_table.rowCount()
         self._log_table.insertRow(row)
