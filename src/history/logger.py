@@ -39,6 +39,8 @@ class TestRunLogger:
     ``TestWorker`` signals, and discard it in ``_on_worker_finished()``.
     """
 
+    __test__ = False  # Not a pytest test class
+
     def __init__(
         self,
         db: HistoryDB,

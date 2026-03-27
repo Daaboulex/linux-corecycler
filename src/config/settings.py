@@ -14,6 +14,7 @@ DEFAULT_PROFILE = CONFIG_DIR / "default.json"
 
 @dataclass(slots=True)
 class TestProfile:
+    __test__ = False  # Not a pytest test class
     name: str = "Default"
     backend: str = "mprime"
     stress_mode: str = "SSE"
