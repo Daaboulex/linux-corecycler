@@ -214,6 +214,6 @@ class TestSchemaMigration:
         assert "tuner_core_states" in table_names
         assert "tuner_test_log" in table_names
 
-    def test_schema_version_is_5(self, db):
+    def test_schema_version_is_current(self, db):
         version = db._execute_raw("SELECT version FROM schema_version").fetchone()[0]
         assert version == 7

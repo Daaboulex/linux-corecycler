@@ -414,6 +414,17 @@ class SMUTab(QWidget):
         else:
             self._apply_all_btn.setToolTip("")
 
+    def set_co_profile(self, profile: dict[int, int]) -> None:
+        """Populate CO spinboxes from a profile without applying to hardware."""
+        for core_id, offset in profile.items():
+            if core_id in self._spinboxes:
+                self._spinboxes[core_id].setValue(offset)
+        count = len(profile)
+        self._profile_banner.setText(
+            f"Loaded {count} core(s) from tuner session \u2014 click 'Apply All New Values' to write to SMU"
+        )
+        self._profile_banner.setVisible(True)
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------

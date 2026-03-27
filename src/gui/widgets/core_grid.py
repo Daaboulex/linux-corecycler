@@ -21,6 +21,9 @@ STATE_COLORS: dict[str, tuple[str, str, str]] = {
     "skipped": ("#2d2d2d", "#555555", "#444"),
     # passed but had errors in earlier iterations — warning state
     "warned": ("#3a3a1b", "#ffb74d", "#ffb74d"),
+    "queued": ("#2d2d2d", "#aaaaaa", "#555"),
+    "backoff": ("#3a2a1a", "#ffb74d", "#ff9800"),
+    "mem_stress": ("#2a1a2e", "#ce93d8", "#ab47bc"),
 }
 
 CELL_HEIGHT_NORMAL = 22
@@ -149,6 +152,10 @@ class CoreCell(QWidget):
                 self._detail_label.setText(f"CO:{co_offset}  {phase_short}")
             else:
                 self._detail_label.setText("")
+        elif self._state in ("queued", "backoff"):
+            if co_offset is not None:
+                phase_short = (tuner_phase or "").replace("_", " ").title()
+                self._detail_label.setText(f"CO:{co_offset}  {phase_short}")
             # Row 2: all telemetry on the expanded line
             parts = []
             if freq_mhz > 0:
