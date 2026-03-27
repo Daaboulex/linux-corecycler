@@ -328,7 +328,7 @@ class TunerEngine(QObject):
         # offset is potentially dangerous. Advance the state machine (treating
         # the crash as a test failure) so it backs off to a safe value.
         for cs in list(self._core_states.values()):
-            if cs.phase in ("coarse_search", "fine_search", "confirming"):
+            if cs.phase in ("coarse_search", "fine_search", "confirming", "backoff_preconfirm", "backoff_confirming"):
                 self.log_message.emit(
                     f"Core {cs.core_id} was interrupted at offset {cs.current_offset} "
                     f"— treating as failure and backing off"
@@ -551,25 +551,103 @@ class TunerEngine(QObject):
                     # else: retry confirmation (stays in "confirming")
 
             case "failed_confirm":
-                # Back off by one fine step and re-enter fine search
-                if cs.best_offset is not None:
-                    cs.best_offset = cs.best_offset - direction * cfg.fine_step
-                    if cs.best_offset == cfg.start_offset or (
-                        direction < 0 and cs.best_offset > cfg.start_offset
-                    ) or (
-                        direction > 0 and cs.best_offset < cfg.start_offset
-                    ):
-                        # Can't back off further
-                        cs.phase = "confirmed"
-                        cs.current_offset = cfg.start_offset
-                    else:
-                        cs.phase = "fine_search"
-                        cs.current_offset = cs.best_offset
-                        cs.confirm_attempts = 0
-                else:
+                # Enter backoff mode — back off by one fine step
+                backed_off = cs.best_offset - direction * cfg.fine_step if cs.best_offset is not None else None
+                if backed_off is None:
                     cs.phase = "confirmed"
-                    cs.best_offset = cfg.start_offset
-                    cs.current_offset = cfg.start_offset
+                    cs.best_offset = cs.baseline_offset
+                    cs.current_offset = cs.baseline_offset
+                    cs.backoff_mode = False
+                elif self._at_or_past_baseline(backed_off, cs):
+                    cs.phase = "backoff_confirming"
+                    cs.best_offset = cs.baseline_offset
+                    cs.current_offset = cs.baseline_offset
+                    cs.backoff_mode = True
+                    cs.confirm_attempts = 0
+                else:
+                    cs.phase = "backoff_preconfirm"
+                    cs.best_offset = backed_off
+                    cs.current_offset = backed_off
+                    cs.backoff_mode = True
+                    cs.confirm_attempts = 0
+
+            case "backoff_preconfirm":
+                if passed:
+                    cs.consecutive_backoff_fails = 0
+                    if cs.backoff_fail_bound is not None:
+                        cs.backoff_pass_bound = cs.current_offset
+                    # Check if we're in binary search with both bounds set
+                    if cs.backoff_fail_bound is not None and cs.backoff_pass_bound is not None:
+                        if abs(cs.backoff_pass_bound - cs.backoff_fail_bound) <= cfg.fine_step:
+                            # Binary search converged — confirm at pass_bound
+                            cs.best_offset = cs.backoff_pass_bound
+                            cs.current_offset = cs.backoff_pass_bound
+                            cs.phase = "backoff_confirming"
+                        else:
+                            # Continue binary search — test midpoint, stay in backoff_preconfirm
+                            mid = cs.backoff_pass_bound + (cs.backoff_fail_bound - cs.backoff_pass_bound) // 2
+                            cs.best_offset = mid
+                            cs.current_offset = mid
+                            # Stay in backoff_preconfirm
+                    else:
+                        cs.phase = "backoff_confirming"
+                else:
+                    # Check if we're in binary search mode
+                    if cs.backoff_pass_bound is not None and cs.backoff_fail_bound is not None:
+                        # Binary search: narrow from failing side
+                        cs.backoff_fail_bound = cs.current_offset
+                        if abs(cs.backoff_pass_bound - cs.backoff_fail_bound) <= cfg.fine_step:
+                            cs.best_offset = cs.backoff_pass_bound
+                            cs.current_offset = cs.backoff_pass_bound
+                            cs.phase = "backoff_confirming"
+                        else:
+                            mid = cs.backoff_pass_bound + (cs.backoff_fail_bound - cs.backoff_pass_bound) // 2
+                            cs.best_offset = mid
+                            cs.current_offset = mid
+                            # Stay in backoff_preconfirm
+                    else:
+                        # Linear backoff (pre-binary-search)
+                        cs.consecutive_backoff_fails += 1
+                        if cs.consecutive_backoff_fails >= cfg.midpoint_jump_threshold:
+                            fail_at = cs.current_offset
+                            cs.backoff_fail_bound = fail_at
+                            cs.consecutive_backoff_fails = 0
+                            if abs(fail_at - cs.baseline_offset) <= cfg.fine_step:
+                                cs.phase = "backoff_confirming"
+                                cs.best_offset = cs.baseline_offset
+                                cs.current_offset = cs.baseline_offset
+                            else:
+                                mid = cs.baseline_offset + (fail_at - cs.baseline_offset) // 2
+                                cs.best_offset = mid
+                                cs.current_offset = mid
+                        else:
+                            backed_off = cs.current_offset - direction * cfg.fine_step
+                            if self._at_or_past_baseline(backed_off, cs):
+                                cs.phase = "backoff_confirming"
+                                cs.best_offset = cs.baseline_offset
+                                cs.current_offset = cs.baseline_offset
+                            else:
+                                cs.best_offset = backed_off
+                                cs.current_offset = backed_off
+
+            case "backoff_confirming":
+                if passed:
+                    cs.phase = "confirmed"
+                    cs.backoff_mode = False
+                    cs.confirm_attempts = 0
+                    cs.consecutive_backoff_fails = 0
+                else:
+                    cs.consecutive_backoff_fails = 0
+                    backed_off = cs.current_offset - direction * cfg.fine_step
+                    if self._at_or_past_baseline(backed_off, cs):
+                        cs.phase = "confirmed"
+                        cs.best_offset = cs.baseline_offset
+                        cs.current_offset = cs.baseline_offset
+                        cs.backoff_mode = False
+                    else:
+                        cs.phase = "backoff_preconfirm"
+                        cs.best_offset = backed_off
+                        cs.current_offset = backed_off
 
         # Persist
         if self._session_id:
@@ -581,6 +659,12 @@ class TunerEngine(QObject):
         if self._config.direction < 0:
             return offset < self._config.max_offset
         return offset > self._config.max_offset
+
+    def _at_or_past_baseline(self, offset: int, cs: CoreState) -> bool:
+        """Check if offset has reached or passed the baseline (backoff floor)."""
+        if self._config.direction < 0:
+            return offset >= cs.baseline_offset
+        return offset <= cs.baseline_offset
 
     def _pick_next_core(self) -> int | None:
         """Select next core to test based on test_order config."""
@@ -634,6 +718,7 @@ class TunerEngine(QObject):
                 continue
             score = {
                 "fine_search": 0, "failed_confirm": 0,
+                "backoff_preconfirm": 0, "backoff_confirming": 0,
                 "confirming": 1, "coarse_search": 2,
                 "settled": 3, "not_started": 4,
             }.get(cs.phase, 5)
@@ -746,6 +831,9 @@ class TunerEngine(QObject):
         elif cs.phase == "settled":
             self._advance_core(core_id, passed=False)  # → confirming
             cs = self._core_states[core_id]
+        elif cs.phase == "failed_confirm":
+            self._advance_core(core_id, passed=False)  # → backoff_preconfirm
+            cs = self._core_states[core_id]
         self._last_tested_core = core_id
         # Track per-CCD position for ccd_round_robin
         core_info = self._topology.cores.get(core_id)
@@ -771,8 +859,10 @@ class TunerEngine(QObject):
                     return
 
         # Determine test duration based on phase
-        if cs.phase == "confirming":
+        if cs.phase in ("confirming", "backoff_confirming"):
             duration = self._config.confirm_duration_seconds
+        elif cs.phase == "backoff_preconfirm":
+            duration = int(self._config.search_duration_seconds * self._config.backoff_preconfirm_multiplier)
         elif self._status == "validating":
             duration = self._config.validate_duration_seconds
         else:
@@ -869,6 +959,8 @@ class TunerEngine(QObject):
             "coarse_search": "coarse",
             "fine_search": "fine",
             "confirming": "confirm",
+            "backoff_preconfirm": "backoff_preconfirm",
+            "backoff_confirming": "backoff_confirm",
         }
         if self._status == "validating" and self._validation_stage > 0:
             log_phase = f"validate_s{self._validation_stage}"
