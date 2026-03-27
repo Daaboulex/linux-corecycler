@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -50,6 +50,15 @@ class SMUTab(QWidget):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+
+        # Profile-loaded banner (hidden by default, shown when set_co_profile() is called)
+        self._profile_banner = QLabel("")
+        self._profile_banner.setStyleSheet(
+            "background: #1a3a5c; color: #4fc3f7; padding: 8px; "
+            "border-radius: 4px; font: 11px monospace;"
+        )
+        self._profile_banner.setVisible(False)
+        layout.addWidget(self._profile_banner)
 
         # status bar
         status_group = QGroupBox("SMU Status")
@@ -372,6 +381,17 @@ class SMUTab(QWidget):
                 self, "Partial Failure", f"Failed to restore CO for cores: {failed}"
             )
             self._read_all_co()
+
+    def set_co_profile(self, profile: dict[int, int]) -> None:
+        """Populate CO spinboxes from a profile without applying to hardware."""
+        for core_id, offset in profile.items():
+            if core_id in self._spinboxes:
+                self._spinboxes[core_id].setValue(offset)
+        count = len(profile)
+        self._profile_banner.setText(
+            f"Loaded {count} core(s) from tuner session \u2014 click 'Apply All New Values' to write to SMU"
+        )
+        self._profile_banner.setVisible(True)
 
     def set_tuner_running(self, running: bool) -> None:
         """Disable CO write operations while the auto-tuner controls SMU.
