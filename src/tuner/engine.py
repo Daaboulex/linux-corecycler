@@ -72,6 +72,10 @@ class _TunerWorker(QThread):
         self._scheduler = scheduler
         self._msr = msr
 
+    @property
+    def scheduler(self) -> CoreScheduler:
+        return self._scheduler
+
     def run(self) -> None:
         try:
             # Start background stretch sampler (if MSR available)
