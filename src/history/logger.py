@@ -162,11 +162,12 @@ class TestRunLogger:
 
     def on_test_completed(self, results_json: str) -> None:
         results = json.loads(results_json)
-        total = len(results)
+        tested = {k: v for k, v in results.items() if v}  # only cores with results
+        total = len(tested)
         passed = sum(
             1
-            for r_list in results.values()
-            if r_list and all(r["passed"] for r in r_list)
+            for r_list in tested.values()
+            if r_list and all(r.get("passed") for r in r_list)
         )
         failed = total - passed
         elapsed = time.monotonic() - self._start_time
