@@ -568,3 +568,36 @@ class TestExceedsMax:
         assert eng._exceeds_max(11) is True
         assert eng._exceeds_max(10) is False
         assert eng._exceeds_max(9) is False
+
+
+class TestBackoffStateFields:
+    def test_core_state_defaults(self):
+        cs = CoreState(core_id=0)
+        assert cs.backoff_mode is False
+        assert cs.consecutive_backoff_fails == 0
+        assert cs.backoff_fail_bound is None
+        assert cs.backoff_pass_bound is None
+
+    def test_backoff_fields_persist_roundtrip(self, db):
+        cfg = TunerConfig(cores_to_test=[0])
+        sid = tp.create_session(db, cfg, "", "")
+        cs = CoreState(
+            core_id=0, phase="backoff_preconfirm", current_offset=-30,
+            best_offset=-30, backoff_mode=True,
+            consecutive_backoff_fails=2,
+            backoff_fail_bound=-33, backoff_pass_bound=-24,
+        )
+        tp.save_core_state(db, sid, cs)
+        loaded = tp.load_core_states(db, sid)
+        assert loaded[0].backoff_mode is True
+        assert loaded[0].consecutive_backoff_fails == 2
+        assert loaded[0].backoff_fail_bound == -33
+        assert loaded[0].backoff_pass_bound == -24
+
+    def test_config_backoff_fields(self):
+        cfg = TunerConfig()
+        assert cfg.backoff_preconfirm_multiplier == 2.0
+        assert cfg.midpoint_jump_threshold == 3
+        restored = TunerConfig.from_json(cfg.to_json())
+        assert restored.backoff_preconfirm_multiplier == 2.0
+        assert restored.midpoint_jump_threshold == 3

@@ -56,6 +56,10 @@ flake.nix (formatter + checks + devShells + git-hooks)
 - Update `AI-progress.json` at end of session with verified accomplishments only
 - `verifiedBy` required: `nix-flake-check`, `nix-eval`, `build-passed`, `human-tested`
 
+## Design Artifacts
+- Specs and plans live in `.gemini/.superpowers/{specs,plans}/`
+- At session start, check for in-progress specs/plans and offer to continue
+
 ## Commands
 ```bash
 nix develop      # Enter dev shell (installs git hooks)
