@@ -34,9 +34,9 @@ class TestSchema:
         assert "telemetry_samples" in names
         assert "schema_version" in names
 
-    def test_schema_version(self, db):
+    def test_schema_version_is_current(self, db):
         row = db._execute_raw("SELECT version FROM schema_version").fetchone()
-        assert row["version"] == 5
+        assert row["version"] == 7
 
     def test_foreign_keys_enabled(self, db):
         row = db._execute_raw("PRAGMA foreign_keys").fetchone()
@@ -472,9 +472,9 @@ class TestTuningContexts:
 
 
 class TestSchemaV2:
-    def test_schema_version_is_2(self, db):
+    def test_schema_version_is_current(self, db):
         row = db._execute_raw("SELECT version FROM schema_version").fetchone()
-        assert row["version"] == 5
+        assert row["version"] == 7
 
     def test_tuning_contexts_table_exists(self, db):
         tables = db._execute_raw(
@@ -581,7 +581,7 @@ CREATE TABLE telemetry_samples (
 
             # Verify migration
             version = db._execute_raw("SELECT version FROM schema_version").fetchone()[0]
-            assert version == 5
+            assert version == 7
 
             # tuning_contexts table exists
             tables = db._execute_raw(

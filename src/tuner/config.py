@@ -49,6 +49,10 @@ class TunerConfig:
     # Automatically run multi-core validation after all cores are individually confirmed
     auto_validate: bool = True
 
+    # Backoff tuning
+    backoff_preconfirm_multiplier: float = 2.0
+    midpoint_jump_threshold: int = 3
+
     def to_json(self) -> str:
         return json.dumps(asdict(self), separators=(",", ":"))
 
