@@ -285,7 +285,7 @@ class CoreScheduler:
         cpu_list: str,
         *,
         proc_base: Path | None = None,
-    ) -> bool:
+    ) -> tuple[bool, int]:
         """Verify ALL threads of a process are pinned to expected CPUs.
 
         Scans /proc/pid/task/ for child TIDs and checks Cpus_allowed_list.
@@ -297,16 +297,17 @@ class CoreScheduler:
             cpu_list: Comma-separated CPU list string for logging (e.g. "0,16")
             proc_base: Override /proc path for testing
 
-        Returns True if all threads are correctly pinned (or were re-pinned).
-        Returns True (lenient) if /proc is unreadable.
+        Returns (all_pinned, drift_count).
+        Returns (True, 0) (lenient) if /proc is unreadable.
         """
         base = proc_base or Path("/proc")
         try:
             task_dir = base / str(pid) / "task"
             if not task_dir.exists():
-                return True
+                return True, 0
 
             all_pinned = True
+            drift_count = 0
             for tid_dir in task_dir.iterdir():
                 try:
                     tid = int(tid_dir.name)
@@ -327,12 +328,13 @@ class CoreScheduler:
                                 else:
                                     allowed_set.add(int(part))
                             if allowed_set != expected_cpus:
-                                log.warning(
+                                log.debug(
                                     "TID %d drifted to CPUs %s, re-pinning to %s",
                                     tid,
                                     allowed,
                                     cpu_list,
                                 )
+                                drift_count += 1
                                 try:
                                     os.sched_setaffinity(tid, expected_cpus)
                                 except OSError:
@@ -342,9 +344,9 @@ class CoreScheduler:
                 except (OSError, ValueError):
                     continue  # TID may have exited between listing and reading
 
-            return all_pinned
+            return all_pinned, drift_count
         except (OSError, ValueError):
-            return True  # can't read /proc — don't block
+            return True, 0  # can't read /proc — don't block
 
     # ------------------------------------------------------------------
     # Stall detection
@@ -647,6 +649,7 @@ class CoreScheduler:
         error_msg = None
         passed = True
         last_active_time = start_time  # for stall detection
+        total_repins = 0
 
         try:
             self._we_killed_it = False  # reset before each process launch
@@ -723,9 +726,10 @@ class CoreScheduler:
                 if self._process is not None and affinity_due:
                     last_affinity_check = now
                     expected_cpu_set = {int(c) for c in cpu_list.split(",")}
-                    self._verify_child_affinity(
+                    _, drifts = self._verify_child_affinity(
                         self._process.pid, expected_cpu_set, cpu_list
                     )
+                    total_repins += drifts
 
                 # periodic MCE check
                 mce_events = self.detector.check_mce(target_cpu=logical_cpu)
@@ -744,6 +748,9 @@ class CoreScheduler:
                     cb(core_id, status)
 
                 time.sleep(self.config.poll_interval)
+
+            if total_repins > 0:
+                log.info("Core %d: re-pinned %d drifted thread(s) during test", core_id, total_repins)
 
             # kill process if still running (timeout or stop requested)
             self._kill_current()

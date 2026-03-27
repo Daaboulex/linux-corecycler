@@ -983,9 +983,25 @@ class TunerEngine(QObject):
 
         status_str = "PASS" if passed else "FAIL"
         stretch_info = f" stretch:{peak_stretch_pct:.1f}%" if peak_stretch_pct > 0 else ""
+
+        # Structured phase log
+        phase_desc = {
+            "coarse_search": "coarse",
+            "fine_search": "fine",
+            "confirming": "confirm",
+            "backoff_preconfirm": "pre-confirm",
+            "backoff_confirming": "backoff-confirm",
+        }.get(cs.phase, cs.phase)
+
+        attempt_info = ""
+        if cs.phase == "confirming":
+            attempt_info = f" — attempt {cs.confirm_attempts + 1}/{self._config.max_confirm_retries}"
+        elif cs.phase == "backoff_preconfirm" and not passed:
+            attempt_info = f" — consecutive fails: {cs.consecutive_backoff_fails + 1}/{self._config.midpoint_jump_threshold}"
+
         self.log_message.emit(
-            f"Core {core_id} offset {cs.current_offset}: {status_str}{stretch_info}"
-            + (f" ({error_msg})" if error_msg else "")
+            f"Core {core_id}: {phase_desc} {status_str} at {cs.current_offset} ({duration:.0f}s){attempt_info}"
+            + (f" — {error_msg}" if error_msg else "")
         )
         self.test_completed.emit(core_id, cs.current_offset, passed)
 
