@@ -221,6 +221,7 @@ class TestResumeFromCrash:
         ))
         tp.save_core_state(db, sid, CoreState(
             core_id=1, phase="coarse_search", current_offset=-10, best_offset=-5,
+            in_test=True,  # was actively testing when crash happened
         ))
 
         # Patch _run_next to prevent actual test execution
@@ -230,7 +231,7 @@ class TestResumeFromCrash:
         assert eng._session_id == sid
         assert len(eng._core_states) == 2
         assert eng._core_states[0].phase == "confirmed"
-        # Core 1 was mid-coarse_search — treated as failure
+        # Core 1 was actively testing (in_test=True) — treated as failure
         assert eng._core_states[1].phase != "coarse_search"
 
     def test_resume_reapplies_baseline_offsets(self, db, simple_topology, mock_smu, mock_backend):
@@ -244,6 +245,7 @@ class TestResumeFromCrash:
         tp.save_core_state(db, sid, CoreState(
             core_id=0, phase="fine_search", current_offset=-12,
             best_offset=-10, baseline_offset=-5,
+            in_test=True,  # was actively testing when crash happened
         ))
 
         with patch.object(eng, "_run_next"):
@@ -251,6 +253,36 @@ class TestResumeFromCrash:
 
         # SMU should restore to baseline (not the interrupted offset)
         mock_smu.set_co_offset.assert_any_call(0, -5)
+
+
+    def test_resume_does_not_advance_queued_cores(self, db, simple_topology, mock_smu, mock_backend):
+        """Cores queued in active phases (not in_test) should NOT be advanced on resume."""
+        cfg = TunerConfig(cores_to_test=[0, 1], search_duration_seconds=1)
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+
+        sid = tp.create_session(db, cfg, "", "")
+        # Core 0 was actively testing when crash happened
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase="coarse_search", current_offset=-15,
+            best_offset=-12, in_test=True,
+        ))
+        # Core 1 was queued for fine search (not actively testing)
+        tp.save_core_state(db, sid, CoreState(
+            core_id=1, phase="fine_search", current_offset=-10,
+            best_offset=-9, coarse_fail_offset=-12,
+        ))
+
+        with patch.object(eng, "_run_next"):
+            eng.resume(sid)
+
+        # Core 0 was in_test — should be advanced (fail → fine_search)
+        assert eng._core_states[0].phase != "coarse_search"
+        # Core 1 was NOT in_test — should remain in fine_search at -10
+        assert eng._core_states[1].phase == "fine_search"
+        assert eng._core_states[1].current_offset == -10
 
 
 class TestConfigVariations:
@@ -777,6 +809,7 @@ class TestBackoffAlgorithm:
             core_id=0, phase="backoff_preconfirm", current_offset=-10,
             best_offset=-10, backoff_mode=True,
             consecutive_backoff_fails=1, baseline_offset=-5,
+            in_test=True,  # was actively testing when crash happened
         ))
         with patch.object(eng, "_run_next"):
             eng.resume(sid)

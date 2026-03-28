@@ -25,6 +25,7 @@ class CoreState:
     consecutive_backoff_fails: int = 0
     backoff_fail_bound: int | None = None
     backoff_pass_bound: int | None = None
+    in_test: bool = False
 
 
 @dataclass(slots=True)
