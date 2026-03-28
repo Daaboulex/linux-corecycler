@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import struct
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -101,6 +102,7 @@ class RyzenSMU:
         self.commands = commands
         self.sysfs = sysfs_path
         self.dry_run = dry_run
+        self._smu_lock = threading.Lock()
         self._backup: dict[int, int] | None = None
         # Topology-detected CCD map: {physical_core_id: ccd_index}
         # Set via set_topology() to use L3-detected CCD instead of core_id // 8
@@ -194,33 +196,34 @@ class RyzenSMU:
 
     def _send_command(self, cmd: int, args: tuple[int, ...] = (0, 0, 0, 0, 0, 0)) -> SMUResponse:
         """Send an SMU command and read the response."""
-        args_path = self.sysfs / "smu_args"
-        cmd_path = self._get_cmd_path()
+        with self._smu_lock:
+            args_path = self.sysfs / "smu_args"
+            cmd_path = self._get_cmd_path()
 
-        # pack 6 x uint32 arguments
-        if len(args) < 6:
-            args = args + (0,) * (6 - len(args))
-        packed_args = struct.pack("<6I", *args[:6])
+            # pack 6 x uint32 arguments
+            if len(args) < 6:
+                args = args + (0,) * (6 - len(args))
+            packed_args = struct.pack("<6I", *args[:6])
 
-        # write arguments
-        args_path.write_bytes(packed_args)
+            # write arguments
+            args_path.write_bytes(packed_args)
 
-        # write command (triggers SMU execution)
-        cmd_bytes = struct.pack("<I", cmd)
-        cmd_path.write_bytes(cmd_bytes)
+            # write command (triggers SMU execution)
+            cmd_bytes = struct.pack("<I", cmd)
+            cmd_path.write_bytes(cmd_bytes)
 
-        # read response from cmd file (status) and args file (response data)
-        resp_cmd = cmd_path.read_bytes()
-        resp_args_raw = args_path.read_bytes()
+            # read response from cmd file (status) and args file (response data)
+            resp_cmd = cmd_path.read_bytes()
+            resp_args_raw = args_path.read_bytes()
 
-        status = struct.unpack("<I", resp_cmd[:4])[0]
-        resp_args = struct.unpack("<6I", resp_args_raw[:24])
+            status = struct.unpack("<I", resp_cmd[:4])[0]
+            resp_args = struct.unpack("<6I", resp_args_raw[:24])
 
-        return SMUResponse(
-            success=(status == 1),
-            args=resp_args,
-            raw=resp_args_raw,
-        )
+            return SMUResponse(
+                success=(status == 1),
+                args=resp_args,
+                raw=resp_args_raw,
+            )
 
     def _send_rsmu_command(
         self, cmd: int, args: tuple[int, ...] = (0, 0, 0, 0, 0, 0)
@@ -229,23 +232,24 @@ class RyzenSMU:
 
         PBO limit commands use RSMU even on Zen 3 (which defaults to MP1 for CO).
         """
-        args_path = self.sysfs / "smu_args"
-        cmd_path = self.sysfs / "rsmu_cmd"
+        with self._smu_lock:
+            args_path = self.sysfs / "smu_args"
+            cmd_path = self.sysfs / "rsmu_cmd"
 
-        if len(args) < 6:
-            args = args + (0,) * (6 - len(args))
-        packed_args = struct.pack("<6I", *args[:6])
+            if len(args) < 6:
+                args = args + (0,) * (6 - len(args))
+            packed_args = struct.pack("<6I", *args[:6])
 
-        args_path.write_bytes(packed_args)
-        cmd_path.write_bytes(struct.pack("<I", cmd))
+            args_path.write_bytes(packed_args)
+            cmd_path.write_bytes(struct.pack("<I", cmd))
 
-        resp_cmd = cmd_path.read_bytes()
-        resp_args_raw = args_path.read_bytes()
+            resp_cmd = cmd_path.read_bytes()
+            resp_args_raw = args_path.read_bytes()
 
-        status = struct.unpack("<I", resp_cmd[:4])[0]
-        resp_args = struct.unpack("<6I", resp_args_raw[:24])
+            status = struct.unpack("<I", resp_cmd[:4])[0]
+            resp_args = struct.unpack("<6I", resp_args_raw[:24])
 
-        return SMUResponse(success=(status == 1), args=resp_args, raw=resp_args_raw)
+            return SMUResponse(success=(status == 1), args=resp_args, raw=resp_args_raw)
 
     # ------------------------------------------------------------------
     # CO offset read/write
