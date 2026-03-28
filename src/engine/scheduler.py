@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import logging
 import os
 import re
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -88,7 +90,7 @@ class CoreScheduler:
     ) -> None:
         self.topology = topology
         self.backend = backend
-        self.stress_config = stress_config
+        self.stress_config = copy.copy(stress_config)
         self.config = scheduler_config
         self.work_dir = work_dir or Path("/tmp/corecycler")
         self.detector = ErrorDetector()
@@ -97,10 +99,11 @@ class CoreScheduler:
         self.results: dict[int, list[StressResult]] = {}
         self.core_status: dict[int, CoreTestStatus] = {}
         self._process: subprocess.Popen | None = None
+        self._process_lock = threading.Lock()
         self._we_killed_it = False  # track intentional kills vs external (OOM)
         self._current_core: int | None = None
         self._current_cycle: int = 0
-        self._stop_requested = False
+        self._stop_event = threading.Event()
         self._thermal_tripped = False  # hysteresis state for temperature checks
 
         # callbacks for GUI integration
@@ -133,7 +136,7 @@ class CoreScheduler:
     def run(self) -> dict[int, list[StressResult]]:
         """Run the full test cycle. Blocks until complete. Use run_async() for GUI."""
         self.state = TestState.RUNNING
-        self._stop_requested = False
+        self._stop_event.clear()
         self.detector.reset()
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -142,16 +145,16 @@ class CoreScheduler:
         try:
             for cycle in range(self.config.cycle_count):
                 self._current_cycle = cycle
-                if self._stop_requested:
+                if self._stop_event.is_set():
                     break
 
                 for core_id in cores:
-                    if self._stop_requested:
+                    if self._stop_event.is_set():
                         break
                     self._test_core(core_id, cycle)
 
                     # Inter-core idle period (catches C-state transition issues)
-                    if self.config.idle_between_cores > 0 and not self._stop_requested:
+                    if self.config.idle_between_cores > 0 and not self._stop_event.is_set():
                         self._idle_period(
                             core_id, self.config.idle_between_cores, "inter-core idle"
                         )
@@ -168,12 +171,17 @@ class CoreScheduler:
 
     def stop(self) -> None:
         """Stop the test — kills the current stress process immediately."""
-        self._stop_requested = True
+        self._stop_event.set()
         self.state = TestState.STOPPING
         self._kill_current()
 
     # keep force_stop as alias for backward compatibility
     force_stop = stop
+
+    @property
+    def _stop_requested(self) -> bool:
+        """Backward-compatible read access to the stop flag."""
+        return self._stop_event.is_set()
 
     # ------------------------------------------------------------------
     # Temperature monitoring
@@ -409,12 +417,12 @@ class CoreScheduler:
 
         start = time.monotonic()
         while time.monotonic() - start < duration:
-            if self._stop_requested:
+            if self._stop_event.is_set():
                 return
 
             # temperature safety check during idle
             if not self._check_temperature():
-                self._stop_requested = True
+                self._stop_event.set()
                 if status:
                     status.errors += 1
                     status.last_error = (
@@ -432,7 +440,7 @@ class CoreScheduler:
                     status.errors += 1
                     status.last_error = f"MCE during idle: {mce_events[0].message}"
                     if self.config.stop_on_error:
-                        self._stop_requested = True
+                        self._stop_event.set()
                     return  # always stop idle on MCE
 
             time.sleep(min(1.0, duration - (time.monotonic() - start)))
@@ -463,7 +471,7 @@ class CoreScheduler:
         error_msg = None
         load_on = True
 
-        while time.monotonic() < deadline and not self._stop_requested:
+        while time.monotonic() < deadline and not self._stop_event.is_set():
             segment_end = min(time.monotonic() + interval, deadline)
 
             if load_on:
@@ -472,16 +480,17 @@ class CoreScheduler:
                 full_cmd = ["taskset", "-c", cpu_list] + cmd
                 try:
                     self._we_killed_it = False
-                    self._process = subprocess.Popen(
-                        full_cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        cwd=str(core_work_dir),
-                        preexec_fn=self._make_preexec(),
-                    )
+                    with self._process_lock:
+                        self._process = subprocess.Popen(
+                            full_cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                            cwd=str(core_work_dir),
+                            preexec_fn=self._make_preexec(),
+                        )
 
-                    while time.monotonic() < segment_end and not self._stop_requested:
+                    while time.monotonic() < segment_end and not self._stop_event.is_set():
                         if self._process.poll() is not None:
                             break
                         # temperature safety check
@@ -491,14 +500,14 @@ class CoreScheduler:
                                 f"CPU temperature exceeded {self.config.max_temperature} C "
                                 f"safety limit during variable load"
                             )
-                            self._stop_requested = True
+                            self._stop_event.set()
                             break
                         mce_events = self.detector.check_mce(target_cpu=logical_cpu)
                         if mce_events:
                             passed = False
                             error_msg = f"MCE during variable load: {mce_events[0].message}"
                             if self.config.stop_on_error:
-                                self._stop_requested = True
+                                self._stop_event.set()
                             break
                         time.sleep(0.5)
 
@@ -508,25 +517,26 @@ class CoreScheduler:
                     error_msg = f"Failed to start variable load: {e}"
                     break
                 finally:
-                    self._process = None
+                    with self._process_lock:
+                        self._process = None
                     self._reap_zombies()
             else:
                 # Idle period — CPU transitions to boost clocks
-                while time.monotonic() < segment_end and not self._stop_requested:
+                while time.monotonic() < segment_end and not self._stop_event.is_set():
                     if not self._check_temperature():
                         passed = False
                         error_msg = (
                             f"CPU temperature exceeded {self.config.max_temperature} C "
                             f"safety limit during idle transition"
                         )
-                        self._stop_requested = True
+                        self._stop_event.set()
                         break
                     mce_events = self.detector.check_mce(target_cpu=logical_cpu)
                     if mce_events:
                         passed = False
                         error_msg = f"MCE during idle transition: {mce_events[0].message}"
                         if self.config.stop_on_error:
-                            self._stop_requested = True
+                            self._stop_event.set()
                         break
                     time.sleep(0.5)
 
@@ -586,7 +596,7 @@ class CoreScheduler:
             error_msg = phase_error
 
         # --- Phase 2: Variable load test (if enabled) ---
-        if passed and self.config.variable_load and not self._stop_requested:
+        if passed and self.config.variable_load and not self._stop_event.is_set():
             # Use 1/3 of the per-core time for variable load
             var_duration = self.config.seconds_per_core / 3.0
             var_passed, var_error = self._run_variable_load(
@@ -599,7 +609,7 @@ class CoreScheduler:
                 status.last_error = error_msg
 
         # --- Phase 3: Idle stability test (if enabled) ---
-        if passed and self.config.idle_stability_test > 0 and not self._stop_requested:
+        if passed and self.config.idle_stability_test > 0 and not self._stop_event.is_set():
             errors_before = status.errors
             self._idle_period(core_id, self.config.idle_stability_test, "idle stability")
             # Check if new errors occurred during idle phase
@@ -654,21 +664,22 @@ class CoreScheduler:
 
         try:
             self._we_killed_it = False  # reset before each process launch
-            self._process = subprocess.Popen(
-                full_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=str(core_work_dir),
-                preexec_fn=self._make_preexec(),  # own process group + PR_SET_PDEATHSIG
-            )
+            with self._process_lock:
+                self._process = subprocess.Popen(
+                    full_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    cwd=str(core_work_dir),
+                    preexec_fn=self._make_preexec(),  # own process group + PR_SET_PDEATHSIG
+                )
 
             deadline = start_time + self.config.seconds_per_core
             last_affinity_check = 0.0  # time of last TID affinity scan
             _AFFINITY_CHECK_INTERVAL = 2.0
 
             while self._process.poll() is None:
-                if self._stop_requested:
+                if self._stop_event.is_set():
                     break
 
                 now = time.monotonic()
@@ -684,7 +695,7 @@ class CoreScheduler:
                     )
                     status.errors += 1
                     status.last_error = error_msg
-                    self._stop_requested = True
+                    self._stop_event.set()
                     break
 
                 # --- stall watchdog ---
@@ -718,7 +729,7 @@ class CoreScheduler:
                             status.errors += 1
                             status.last_error = error_msg
                             if self.config.stop_on_error:
-                                self._stop_requested = True
+                                self._stop_event.set()
                             break
 
                 # Periodic child-thread affinity verification -- mprime and other
@@ -740,7 +751,7 @@ class CoreScheduler:
                     status.errors += 1
                     status.last_error = error_msg
                     if self.config.stop_on_error:
-                        self._stop_requested = True
+                        self._stop_event.set()
                     break  # always stop this core on MCE
 
                 # update elapsed time
@@ -755,6 +766,10 @@ class CoreScheduler:
 
             # kill process if still running (timeout or stop requested)
             self._kill_current()
+
+            # Drain any MCE events that arrived during the kill to prevent
+            # false attribution to the next core's test
+            self.detector.check_mce()
 
             # Warn if the process exited almost immediately — likely a missing
             # binary, bad path, or misconfigured backend.
@@ -794,7 +809,7 @@ class CoreScheduler:
                     status.errors += 1
                     status.last_error = error_msg
                     if self.config.stop_on_error:
-                        self._stop_requested = True
+                        self._stop_event.set()
                 else:
                     backend_passed, backend_error = self.backend.parse_output(
                         stdout_data, stderr_data, returncode
@@ -805,7 +820,7 @@ class CoreScheduler:
                         status.errors += 1
                         status.last_error = error_msg
                         if self.config.stop_on_error:
-                            self._stop_requested = True
+                            self._stop_event.set()
 
         except (OSError, RuntimeError) as e:
             passed = False
@@ -813,7 +828,8 @@ class CoreScheduler:
             status.errors += 1
             status.last_error = error_msg
         finally:
-            self._process = None
+            with self._process_lock:
+                self._process = None
             # Reap any zombies from this process group
             self._reap_zombies()
 
@@ -838,7 +854,8 @@ class CoreScheduler:
         Uses SIGTERM first, escalates to SIGKILL, and always calls wait()
         to prevent zombie processes.
         """
-        proc = self._process
+        with self._process_lock:
+            proc = self._process
         if proc is None or proc.poll() is not None:
             return
 
