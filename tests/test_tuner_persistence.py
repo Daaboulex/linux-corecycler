@@ -18,7 +18,7 @@ from tuner.persistence import (
     save_core_state,
     update_session_status,
 )
-from tuner.state import CoreState
+from tuner.state import CoreState, TunerPhase
 
 
 @pytest.fixture
@@ -88,33 +88,33 @@ class TestCoreStates:
         cfg = TunerConfig()
         sid = create_session(db, cfg, "", "")
 
-        cs0 = CoreState(core_id=0, phase="coarse_search", current_offset=-5, best_offset=0)
-        cs1 = CoreState(core_id=1, phase="not_started")
+        cs0 = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5, best_offset=0)
+        cs1 = CoreState(core_id=1, phase=TunerPhase.NOT_STARTED)
         save_core_state(db, sid, cs0)
         save_core_state(db, sid, cs1)
 
         loaded = load_core_states(db, sid)
         assert len(loaded) == 2
-        assert loaded[0].phase == "coarse_search"
+        assert loaded[0].phase == TunerPhase.COARSE_SEARCH
         assert loaded[0].current_offset == -5
         assert loaded[0].best_offset == 0
-        assert loaded[1].phase == "not_started"
+        assert loaded[1].phase == TunerPhase.NOT_STARTED
 
     def test_upsert_updates_existing(self, db):
         cfg = TunerConfig()
         sid = create_session(db, cfg, "", "")
 
-        cs = CoreState(core_id=0, phase="coarse_search", current_offset=-5)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5)
         save_core_state(db, sid, cs)
 
-        cs.phase = "fine_search"
+        cs.phase = TunerPhase.FINE_SEARCH
         cs.current_offset = -8
         cs.best_offset = -5
         save_core_state(db, sid, cs)
 
         loaded = load_core_states(db, sid)
         assert len(loaded) == 1
-        assert loaded[0].phase == "fine_search"
+        assert loaded[0].phase == TunerPhase.FINE_SEARCH
         assert loaded[0].current_offset == -8
         assert loaded[0].best_offset == -5
 
@@ -183,13 +183,13 @@ class TestBestProfile:
         sid = create_session(db, cfg, "", "")
 
         save_core_state(db, sid, CoreState(
-            core_id=0, phase="confirmed", current_offset=-30, best_offset=-30,
+            core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-30, best_offset=-30,
         ))
         save_core_state(db, sid, CoreState(
-            core_id=1, phase="confirmed", current_offset=-25, best_offset=-25,
+            core_id=1, phase=TunerPhase.CONFIRMED, current_offset=-25, best_offset=-25,
         ))
         save_core_state(db, sid, CoreState(
-            core_id=2, phase="fine_search", current_offset=-20, best_offset=-15,
+            core_id=2, phase=TunerPhase.FINE_SEARCH, current_offset=-20, best_offset=-15,
         ))
 
         profile = get_best_profile(db, sid)
@@ -198,7 +198,7 @@ class TestBestProfile:
     def test_empty_when_no_confirmed(self, db):
         cfg = TunerConfig()
         sid = create_session(db, cfg, "", "")
-        save_core_state(db, sid, CoreState(core_id=0, phase="coarse_search"))
+        save_core_state(db, sid, CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH))
         profile = get_best_profile(db, sid)
         assert profile == {}
 
@@ -216,4 +216,4 @@ class TestSchemaMigration:
 
     def test_schema_version_is_current(self, db):
         version = db._execute_raw("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 8
+        assert version == HistoryDB.SCHEMA_VERSION

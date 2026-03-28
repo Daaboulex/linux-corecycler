@@ -6,7 +6,7 @@ Command sets are derived from the SMUSettings/*.cs files in ZenStates-Core.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields as dataclass_fields
 from enum import Enum, auto
 
 
@@ -34,6 +34,7 @@ class SMUCommandSet:
     generation: CPUGeneration
     co_range: tuple[int, int]  # (min, max) CO values this generation supports
     mailbox: str  # "rsmu" or "mp1"
+    encoding_scheme: str  # "none" | "zen3" | "zen4_5"
 
     # CO (Curve Optimizer / DldoPsmMargin) commands — None if generation lacks CO
     set_co_cmd: int | None = None
@@ -103,6 +104,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         generation=CPUGeneration.ZEN2_MATISSE,
         co_range=(0, 0),  # no CO support
         mailbox="rsmu",
+        encoding_scheme="none",
         # no CO commands
         set_co_cmd=None,
         set_all_co_cmd=None,
@@ -125,30 +127,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         get_dram_base_cmd=0x06,
         get_table_version_cmd=0x08,
     ),
-    # -----------------------------------------------------------------------
-    # Zen 2 Castle Peak (ThreadRipper 3000) — same commands as Matisse
-    # -----------------------------------------------------------------------
-    CPUGeneration.ZEN2_CASTLE_PEAK: SMUCommandSet(
-        generation=CPUGeneration.ZEN2_CASTLE_PEAK,
-        co_range=(0, 0),  # no CO support
-        mailbox="rsmu",
-        set_ppt_cmd=0x53,
-        set_tdc_cmd=0x54,
-        set_edc_cmd=0x55,
-        set_htc_cmd=0x56,
-        set_pbo_scalar_cmd=0x58,
-        get_pbo_scalar_cmd=0x6C,
-        set_oc_freq_all_cmd=0x5C,
-        set_oc_freq_per_core_cmd=0x5D,
-        enable_oc_cmd=0x5A,
-        disable_oc_cmd=0x5B,
-        is_overclockable_cmd=0x6F,
-        get_fastest_core_cmd=0x59,
-        get_boost_limit_cmd=0x6E,
-        transfer_table_cmd=0x05,
-        get_dram_base_cmd=0x06,
-        get_table_version_cmd=0x08,
-    ),
+    # Castle Peak (Zen 2 TR) — aliased from Matisse after dict definition
     # -----------------------------------------------------------------------
     # Zen 3 Vermeer — first generation with CO (MP1 mailbox)
     # -----------------------------------------------------------------------
@@ -156,6 +135,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         generation=CPUGeneration.ZEN3_VERMEER,
         co_range=(-30, 30),
         mailbox="mp1",
+        encoding_scheme="zen3",
         set_co_cmd=0x35,
         set_all_co_cmd=0x36,
         get_co_cmd=0x48,
@@ -185,6 +165,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         generation=CPUGeneration.ZEN3D_WARHOL,
         co_range=(-30, 30),  # hardware accepts this; V-Cache makes >-25 risky
         mailbox="mp1",
+        encoding_scheme="zen3",
         set_co_cmd=0x35,
         set_all_co_cmd=0x36,
         get_co_cmd=0x48,
@@ -209,6 +190,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         generation=CPUGeneration.ZEN3_CEZANNE,
         co_range=(-30, 30),
         mailbox="mp1",
+        encoding_scheme="zen3",
         set_co_cmd=0x35,
         set_all_co_cmd=0x36,
         get_co_cmd=0x48,
@@ -232,6 +214,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         generation=CPUGeneration.ZEN4_RAPHAEL,
         co_range=(-50, 30),  # -40 confirmed working, allow -50 for headroom
         mailbox="rsmu",
+        encoding_scheme="zen4_5",
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xD5,
@@ -261,6 +244,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         generation=CPUGeneration.ZEN4_PHOENIX,
         co_range=(-50, 30),
         mailbox="rsmu",
+        encoding_scheme="zen4_5",
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xD5,
@@ -284,6 +268,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         generation=CPUGeneration.ZEN4_STORM_PEAK,
         co_range=(-50, 30),
         mailbox="rsmu",
+        encoding_scheme="zen4_5",
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xD5,
@@ -302,35 +287,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         get_dram_base_cmd=0x04,
         get_table_version_cmd=0x05,
     ),
-    # -----------------------------------------------------------------------
-    # Zen 4 Dragon Range (7045 mobile) — same commands as Raphael (same silicon)
-    # -----------------------------------------------------------------------
-    CPUGeneration.ZEN4_DRAGON_RANGE: SMUCommandSet(
-        generation=CPUGeneration.ZEN4_DRAGON_RANGE,
-        co_range=(-50, 30),
-        mailbox="rsmu",
-        set_co_cmd=0x06,
-        set_all_co_cmd=0x07,
-        get_co_cmd=0xD5,
-        set_ppt_cmd=0x56,
-        set_tdc_cmd=0x57,
-        set_edc_cmd=0x58,
-        set_htc_cmd=0x59,
-        set_pbo_scalar_cmd=0x5B,
-        get_pbo_scalar_cmd=0x6D,
-        set_boost_limit_cmd=0x70,
-        get_boost_limit_cmd=0x6E,
-        set_oc_freq_all_cmd=0x5F,
-        set_oc_freq_per_core_cmd=0x60,
-        enable_oc_cmd=0x5D,
-        disable_oc_cmd=0x5E,
-        is_overclockable_cmd=0x6F,
-        get_fastest_core_cmd=0x59,
-        get_ln2_mode_cmd=0xDD,
-        transfer_table_cmd=0x03,
-        get_dram_base_cmd=0x04,
-        get_table_version_cmd=0x05,
-    ),
+    # Dragon Range (Zen 4 mobile) — aliased from Raphael after dict definition
     # -----------------------------------------------------------------------
     # Zen 5 Granite Ridge — same RSMU cmd IDs as Zen 4, wider CO range
     # -----------------------------------------------------------------------
@@ -338,6 +295,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         generation=CPUGeneration.ZEN5_GRANITE_RIDGE,
         co_range=(-60, 10),
         mailbox="rsmu",
+        encoding_scheme="zen4_5",
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xD5,
@@ -367,6 +325,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         generation=CPUGeneration.ZEN5_STRIX_POINT,
         co_range=(-60, 10),
         mailbox="rsmu",
+        encoding_scheme="zen4_5",
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xD5,
@@ -392,6 +351,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         generation=CPUGeneration.ZEN5_SHIMADA_PEAK,
         co_range=(-60, 10),
         mailbox="rsmu",
+        encoding_scheme="zen4_5",
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xA3,  # different from desktop!
@@ -412,6 +372,29 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         get_table_version_cmd=0x05,
     ),
 }
+
+
+def _alias_commands(source: CPUGeneration, target: CPUGeneration) -> SMUCommandSet:
+    """Create a command set for target that shares source's commands.
+
+    All fields are copied from source except ``generation``, which is set to target.
+    Only use when two generations have truly identical SMU commands (same silicon).
+    """
+    base = COMMAND_SETS[source]
+    fields = {f.name: getattr(base, f.name) for f in dataclass_fields(base)}
+    fields["generation"] = target
+    return SMUCommandSet(**fields)
+
+
+# -----------------------------------------------------------------------
+# Aliased command sets — identical SMU commands, different generation enum
+# -----------------------------------------------------------------------
+COMMAND_SETS[CPUGeneration.ZEN2_CASTLE_PEAK] = _alias_commands(
+    CPUGeneration.ZEN2_MATISSE, CPUGeneration.ZEN2_CASTLE_PEAK
+)
+COMMAND_SETS[CPUGeneration.ZEN4_DRAGON_RANGE] = _alias_commands(
+    CPUGeneration.ZEN4_RAPHAEL, CPUGeneration.ZEN4_DRAGON_RANGE
+)
 
 
 def detect_generation(family: int, model: int, model_name: str) -> CPUGeneration:
@@ -499,37 +482,31 @@ def encode_co_arg(
              deriving CCD from ``core_id // 8``. Always prefer passing the
              L3-detected CCD from topology when available.
     """
+    commands = get_commands(generation)
+    if commands is None:
+        raise ValueError(f"Unsupported generation: {generation}")
+    scheme = commands.encoding_scheme
+
     # Encode the CO value: negative values use two's complement in 16 bits.
     # ZenStates uses: offset = 0x100000 if margin < 0 else 0; (offset + margin) & 0xFFFF
     # This is equivalent to standard 16-bit two's complement.
     margin = value & 0xFFFF
 
-    match generation:
-        case CPUGeneration.ZEN2_MATISSE | CPUGeneration.ZEN2_CASTLE_PEAK:
-            raise ValueError(f"Zen 2 ({generation.name}) does not support Curve Optimizer")
+    if scheme == "zen3":
+        # Zen 3: ((core_id & 8) << 5 | core_id & 7) << 20 | margin
+        # This encodes CCD in bit 28 (core_id >= 8 means CCD1)
+        return (((core_id & 8) << 5 | core_id & 7) << 20) | margin
 
-        case CPUGeneration.ZEN3_VERMEER | CPUGeneration.ZEN3D_WARHOL | CPUGeneration.ZEN3_CEZANNE:
-            # Zen 3: ((core_id & 8) << 5 | core_id & 7) << 20 | margin
-            # This encodes CCD in bit 28 (core_id >= 8 means CCD1)
-            return (((core_id & 8) << 5 | core_id & 7) << 20) | margin
+    if scheme == "zen4_5":
+        # Zen 4/5: CCD in bits [31:28], core within CCD in bits [23:20]
+        # Prefer topology-detected CCD; fall back to core_id // 8
+        detected_ccd = ccd if ccd is not None else core_id // 8
+        core_in_ccd = core_id % 8
+        return (detected_ccd << 28) | (core_in_ccd << 20) | margin
 
-        case (
-            CPUGeneration.ZEN4_RAPHAEL
-            | CPUGeneration.ZEN4_PHOENIX
-            | CPUGeneration.ZEN4_STORM_PEAK
-            | CPUGeneration.ZEN5_GRANITE_RIDGE
-            | CPUGeneration.ZEN5_STRIX_POINT
-            | CPUGeneration.ZEN5_STRIX_HALO
-            | CPUGeneration.ZEN5_SHIMADA_PEAK
-        ):
-            # Zen 4/5: CCD in bits [31:28], core within CCD in bits [23:20]
-            # Prefer topology-detected CCD; fall back to core_id // 8
-            detected_ccd = ccd if ccd is not None else core_id // 8
-            core_in_ccd = core_id % 8
-            return (detected_ccd << 28) | (core_in_ccd << 20) | margin
-
-        case _:
-            raise ValueError(f"Unsupported generation: {generation}")
+    raise ValueError(
+        f"Zen 2 ({generation.name}) does not support Curve Optimizer"
+    )
 
 
 def decode_co_arg(core_id: int, response: int, generation: CPUGeneration) -> int:
@@ -537,23 +514,16 @@ def decode_co_arg(core_id: int, response: int, generation: CPUGeneration) -> int
 
     The response contains the CO value in the low 16 bits as two's complement.
     """
-    match generation:
-        case (
-            CPUGeneration.ZEN3_VERMEER
-            | CPUGeneration.ZEN3D_WARHOL
-            | CPUGeneration.ZEN3_CEZANNE
-            | CPUGeneration.ZEN4_RAPHAEL
-            | CPUGeneration.ZEN4_PHOENIX
-            | CPUGeneration.ZEN4_STORM_PEAK
-            | CPUGeneration.ZEN5_GRANITE_RIDGE
-            | CPUGeneration.ZEN5_STRIX_POINT
-            | CPUGeneration.ZEN5_STRIX_HALO
-            | CPUGeneration.ZEN5_SHIMADA_PEAK
-        ):
-            raw = response & 0xFFFF
-            return raw if raw < 0x8000 else raw - 0x10000
-        case _:
-            raise ValueError(f"Unsupported generation: {generation}")
+    commands = get_commands(generation)
+    if commands is None:
+        raise ValueError(f"Unsupported generation: {generation}")
+    scheme = commands.encoding_scheme
+
+    if scheme in ("zen3", "zen4_5"):
+        raw = response & 0xFFFF
+        return raw if raw < 0x8000 else raw - 0x10000
+
+    raise ValueError(f"Unsupported generation: {generation}")
 
 
 def encode_pbo_limit_arg(value_w_or_a: int) -> int:

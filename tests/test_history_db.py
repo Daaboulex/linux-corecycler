@@ -36,7 +36,7 @@ class TestSchema:
 
     def test_schema_version_is_current(self, db):
         row = db._execute_raw("SELECT version FROM schema_version").fetchone()
-        assert row["version"] == 8
+        assert row["version"] == HistoryDB.SCHEMA_VERSION
 
     def test_foreign_keys_enabled(self, db):
         row = db._execute_raw("PRAGMA foreign_keys").fetchone()
@@ -474,7 +474,7 @@ class TestTuningContexts:
 class TestSchemaV2:
     def test_schema_version_is_current(self, db):
         row = db._execute_raw("SELECT version FROM schema_version").fetchone()
-        assert row["version"] == 8
+        assert row["version"] == HistoryDB.SCHEMA_VERSION
 
     def test_tuning_contexts_table_exists(self, db):
         tables = db._execute_raw(
@@ -581,7 +581,7 @@ CREATE TABLE telemetry_samples (
 
             # Verify migration
             version = db._execute_raw("SELECT version FROM schema_version").fetchone()[0]
-            assert version == 8
+            assert version == HistoryDB.SCHEMA_VERSION
 
             # tuning_contexts table exists
             tables = db._execute_raw(

@@ -16,7 +16,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .backends.base import StressConfig, StressResult
+from .backends.base import KILLED_BY_US_CODES, StressConfig, StressResult
 from .detector import ErrorDetector
 
 if TYPE_CHECKING:
@@ -799,7 +799,7 @@ class CoreScheduler:
                 # expected — pass that context to the backend so it doesn't treat
                 # our intentional kill as an OOM or crash.  If we did NOT kill it
                 # and it died to a signal, that's a real crash (OOM killer, etc).
-                if not self._we_killed_it and returncode in (-9, -15, 137, 143):
+                if not self._we_killed_it and returncode in KILLED_BY_US_CODES:
                     # External kill (OOM, admin) — treat as error
                     passed = False
                     error_msg = (

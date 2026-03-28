@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from engine.backends.base import FFTPreset, StressMode
 from tuner.config import TunerConfig
 from tuner.engine import TunerEngine
+from tuner.state import TunerPhase
 from tuner import persistence as tp
 
 if TYPE_CHECKING:
@@ -50,26 +51,26 @@ log = logging.getLogger(__name__)
 # Map tuner engine phases to core grid visual states.
 # Only the core with active mprime shows "testing" — set via _on_worker_started.
 _PHASE_TO_GRID: dict[str, str] = {
-    "coarse_search": "queued",
-    "fine_search": "queued",
-    "confirming": "queued",
-    "confirmed": "passed",
-    "settled": "pending",
-    "failed_confirm": "backoff",
-    "not_started": "pending",
-    "backoff_preconfirm": "backoff",
-    "backoff_confirming": "backoff",
+    TunerPhase.COARSE_SEARCH: "queued",
+    TunerPhase.FINE_SEARCH: "queued",
+    TunerPhase.CONFIRMING: "queued",
+    TunerPhase.CONFIRMED: "passed",
+    TunerPhase.SETTLED: "pending",
+    TunerPhase.FAILED_CONFIRM: "backoff",
+    TunerPhase.NOT_STARTED: "pending",
+    TunerPhase.BACKOFF_PRECONFIRM: "backoff",
+    TunerPhase.BACKOFF_CONFIRMING: "backoff",
 }
 
 # Phase colors
 PHASE_COLORS = {
-    "not_started": QColor(100, 100, 100),
-    "coarse_search": QColor(180, 180, 50),
-    "fine_search": QColor(200, 200, 50),
-    "settled": QColor(200, 150, 50),
-    "confirming": QColor(50, 150, 200),
-    "confirmed": QColor(50, 180, 50),
-    "failed_confirm": QColor(200, 100, 50),
+    TunerPhase.NOT_STARTED: QColor(100, 100, 100),
+    TunerPhase.COARSE_SEARCH: QColor(180, 180, 50),
+    TunerPhase.FINE_SEARCH: QColor(200, 200, 50),
+    TunerPhase.SETTLED: QColor(200, 150, 50),
+    TunerPhase.CONFIRMING: QColor(50, 150, 200),
+    TunerPhase.CONFIRMED: QColor(50, 180, 50),
+    TunerPhase.FAILED_CONFIRM: QColor(200, 100, 50),
 }
 
 
@@ -364,8 +365,10 @@ class TunerTab(QWidget):
         stress_layout = QFormLayout(stress_group)
         stress_layout.setSpacing(6)
 
+        from engine.backends import available_backends
+
         self._backend_combo = QComboBox()
-        self._backend_combo.addItems(["mprime", "stress-ng", "y-cruncher"])
+        self._backend_combo.addItems(available_backends())
         self._backend_combo.setToolTip(
             "mprime: Prime95 CLI — gold standard for CO testing (most sensitive)\n"
             "stress-ng: general-purpose — good fallback\n"
@@ -554,7 +557,7 @@ class TunerTab(QWidget):
         for sess in sessions:
             core_states = tp.load_core_states(self._db, sess.id)
             total = len(core_states)
-            confirmed = sum(1 for cs in core_states.values() if cs.phase == "confirmed")
+            confirmed = sum(1 for cs in core_states.values() if cs.phase == TunerPhase.CONFIRMED)
             date_str = sess.created_at[:19].replace("T", " ") if sess.created_at else "?"
             label = (
                 f"#{sess.id}  {date_str}  "
@@ -978,20 +981,14 @@ class TunerTab(QWidget):
         if self._backend_factory:
             backend = self._backend_factory(self._backend_combo.currentText())
         else:
+            from engine.backends import get_backend
+
             name = self._backend_combo.currentText()
-            match name:
-                case "mprime":
-                    from engine.backends.mprime import MprimeBackend
-                    backend = MprimeBackend()
-                case "stress-ng":
-                    from engine.backends.stress_ng import StressNgBackend
-                    backend = StressNgBackend()
-                case "y-cruncher":
-                    from engine.backends.ycruncher import YCruncherBackend
-                    backend = YCruncherBackend()
-                case _:
-                    QMessageBox.warning(self, "Error", f"Unknown backend: {name}")
-                    return None
+            try:
+                backend = get_backend(name)
+            except KeyError:
+                QMessageBox.warning(self, "Error", f"Unknown backend: {name}")
+                return None
 
         if backend and not backend.is_available():
             QMessageBox.warning(

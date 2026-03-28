@@ -5,12 +5,15 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from .base import StressBackend, StressConfig, StressMode
+from engine.backends import register_backend
+
+from .base import CRASH_SIGNALS, KILLED_BY_US_CODES, StressBackend, StressConfig, StressMode
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
+@register_backend("y-cruncher")
 class YCruncherBackend(StressBackend):
     name = "y-cruncher"
 
@@ -65,13 +68,12 @@ class YCruncherBackend(StressBackend):
             if match:
                 return False, f"y-cruncher error: {match.group(0)}"
 
-        if returncode in (-9, -15, 137, 143, 0):
+        if returncode in KILLED_BY_US_CODES or returncode == 0:
             return True, None
 
         # SIGSEGV/SIGABRT/SIGBUS = likely CO instability crash
-        signal_names = {-11: "SIGSEGV", -6: "SIGABRT", -7: "SIGBUS", -5: "SIGTRAP"}
-        if returncode in signal_names:
-            return False, f"y-cruncher crashed with {signal_names[returncode]} (exit {returncode})"
+        if returncode in CRASH_SIGNALS:
+            return False, f"y-cruncher crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
 
         return False, f"y-cruncher exited with code {returncode}"
 

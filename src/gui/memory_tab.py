@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from config.settings import load_settings
+from engine.backends.base import KILLED_BY_US_CODES
 from monitor.memory import DIMMInfo, SPD5118Reader, SPDTimingData, read_dimm_info
 from smu.pmtable import PMTableReader, compute_fclk_uclk_ratio
 
@@ -82,7 +83,7 @@ class _StressWorker(QThread):
             if self._tool == "stressapptest":
                 passed = "Status: PASS" in stdout
             else:
-                passed = self._process.returncode in (0, -9, -15, 137, 143)
+                passed = self._process.returncode == 0 or self._process.returncode in KILLED_BY_US_CODES
             output = (stdout + stderr)[-500:]
             self.done.emit(passed, output)
         except Exception as e:

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 from history.db import HistoryDB
 from tuner.config import TunerConfig
 from tuner.engine import TunerEngine
-from tuner.state import CoreState
+from tuner.state import CoreState, TunerPhase
 from tuner import persistence as tp
 
 
@@ -73,15 +73,15 @@ class TestStateMachineTransitions:
 
     def test_not_started_enters_coarse(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
-        cs = CoreState(core_id=0, phase="not_started", current_offset=0)
+        cs = CoreState(core_id=0, phase=TunerPhase.NOT_STARTED, current_offset=0)
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
-        assert cs.phase == "coarse_search"
+        assert cs.phase == TunerPhase.COARSE_SEARCH
         assert cs.current_offset == -5  # 0 + (-1)*5
 
     def test_coarse_pass_goes_more_aggressive(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
-        cs = CoreState(core_id=0, phase="coarse_search", current_offset=-5)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5)
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=True)
         assert cs.best_offset == -5
@@ -89,120 +89,120 @@ class TestStateMachineTransitions:
 
     def test_coarse_pass_at_max_settles(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, max_offset=-10)
-        cs = CoreState(core_id=0, phase="coarse_search", current_offset=-10)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10)
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=True)
-        assert cs.phase == "settled"
+        assert cs.phase == TunerPhase.SETTLED
         assert cs.best_offset == -10
 
     def test_coarse_fail_enters_fine_search(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
-        cs = CoreState(core_id=0, phase="coarse_search", current_offset=-10, best_offset=-5)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, best_offset=-5)
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
-        assert cs.phase == "fine_search"
+        assert cs.phase == TunerPhase.FINE_SEARCH
         assert cs.coarse_fail_offset == -10
         assert cs.current_offset == -6  # best(-5) + direction(-1)*fine(1) = -6
 
     def test_coarse_fail_no_best_settles(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
-        cs = CoreState(core_id=0, phase="coarse_search", current_offset=-5, best_offset=None)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5, best_offset=None)
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
-        assert cs.phase == "settled"
+        assert cs.phase == TunerPhase.SETTLED
 
     def test_fine_pass_continues(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="fine_search", current_offset=-6,
+            core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-6,
             best_offset=-5, coarse_fail_offset=-10,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=True)
-        assert cs.phase == "fine_search"
+        assert cs.phase == TunerPhase.FINE_SEARCH
         assert cs.best_offset == -6
         assert cs.current_offset == -7
 
     def test_fine_pass_at_coarse_fail_settles(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="fine_search", current_offset=-9,
+            core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-9,
             best_offset=-8, coarse_fail_offset=-10,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=True)
         # next would be -10 which equals coarse_fail, so settle
-        assert cs.phase == "settled"
+        assert cs.phase == TunerPhase.SETTLED
         assert cs.best_offset == -9
 
     def test_fine_fail_settles(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="fine_search", current_offset=-7,
+            core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-7,
             best_offset=-6, coarse_fail_offset=-10,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
-        assert cs.phase == "settled"
+        assert cs.phase == TunerPhase.SETTLED
 
     def test_settled_triggers_confirm(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
-        cs = CoreState(core_id=0, phase="settled", current_offset=-8, best_offset=-8)
+        cs = CoreState(core_id=0, phase=TunerPhase.SETTLED, current_offset=-8, best_offset=-8)
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)  # passed doesn't matter for settled
-        assert cs.phase == "confirming"
+        assert cs.phase == TunerPhase.CONFIRMING
         assert cs.current_offset == -8
 
     def test_confirm_pass_marks_confirmed(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
-        cs = CoreState(core_id=0, phase="confirming", current_offset=-8, best_offset=-8)
+        cs = CoreState(core_id=0, phase=TunerPhase.CONFIRMING, current_offset=-8, best_offset=-8)
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=True)
-        assert cs.phase == "confirmed"
+        assert cs.phase == TunerPhase.CONFIRMED
 
     def test_confirm_fail_retries(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, max_confirm_retries=3)
         cs = CoreState(
-            core_id=0, phase="confirming", current_offset=-8,
+            core_id=0, phase=TunerPhase.CONFIRMING, current_offset=-8,
             best_offset=-8, confirm_attempts=0,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
-        assert cs.phase == "confirming"  # retry, not failed yet
+        assert cs.phase == TunerPhase.CONFIRMING  # retry, not failed yet
         assert cs.confirm_attempts == 1
 
     def test_confirm_max_retries_backs_off(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, max_confirm_retries=2)
         cs = CoreState(
-            core_id=0, phase="confirming", current_offset=-8,
+            core_id=0, phase=TunerPhase.CONFIRMING, current_offset=-8,
             best_offset=-8, confirm_attempts=1,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
         assert cs.confirm_attempts == 2
-        assert cs.phase == "failed_confirm"
+        assert cs.phase == TunerPhase.FAILED_CONFIRM
 
     def test_failed_confirm_enters_backoff(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="failed_confirm", current_offset=-8,
+            core_id=0, phase=TunerPhase.FAILED_CONFIRM, current_offset=-8,
             best_offset=-8, confirm_attempts=2,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
         # Back off: best was -8, direction=-1, so back off = -8 - (-1)*1 = -7
-        assert cs.phase == "backoff_preconfirm"
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
         assert cs.best_offset == -7
         assert cs.backoff_mode is True
         assert cs.confirm_attempts == 0
 
     def test_max_offset_clamp(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, max_offset=-7)
-        cs = CoreState(core_id=0, phase="coarse_search", current_offset=-5)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5)
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=True)
         # Next would be -10, but max is -7 so it settles
-        assert cs.phase == "settled"
+        assert cs.phase == TunerPhase.SETTLED
         assert cs.best_offset == -5
 
 
@@ -217,10 +217,10 @@ class TestResumeFromCrash:
         # Create a session with saved state
         sid = tp.create_session(db, cfg, "", "")
         tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase="confirmed", current_offset=-20, best_offset=-20,
+            core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-20, best_offset=-20,
         ))
         tp.save_core_state(db, sid, CoreState(
-            core_id=1, phase="coarse_search", current_offset=-10, best_offset=-5,
+            core_id=1, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, best_offset=-5,
             in_test=True,  # was actively testing when crash happened
         ))
 
@@ -230,9 +230,9 @@ class TestResumeFromCrash:
 
         assert eng._session_id == sid
         assert len(eng._core_states) == 2
-        assert eng._core_states[0].phase == "confirmed"
+        assert eng._core_states[0].phase == TunerPhase.CONFIRMED
         # Core 1 was actively testing (in_test=True) — treated as failure
-        assert eng._core_states[1].phase != "coarse_search"
+        assert eng._core_states[1].phase != TunerPhase.COARSE_SEARCH
 
     def test_resume_reapplies_baseline_offsets(self, db, simple_topology, mock_smu, mock_backend):
         cfg = TunerConfig(cores_to_test=[0], search_duration_seconds=1)
@@ -243,7 +243,7 @@ class TestResumeFromCrash:
 
         sid = tp.create_session(db, cfg, "", "")
         tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase="fine_search", current_offset=-12,
+            core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-12,
             best_offset=-10, baseline_offset=-5,
             in_test=True,  # was actively testing when crash happened
         ))
@@ -266,12 +266,12 @@ class TestResumeFromCrash:
         sid = tp.create_session(db, cfg, "", "")
         # Core 0 was actively testing when crash happened
         tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase="coarse_search", current_offset=-15,
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-15,
             best_offset=-12, in_test=True,
         ))
         # Core 1 was queued for fine search (not actively testing)
         tp.save_core_state(db, sid, CoreState(
-            core_id=1, phase="fine_search", current_offset=-10,
+            core_id=1, phase=TunerPhase.FINE_SEARCH, current_offset=-10,
             best_offset=-9, coarse_fail_offset=-12,
         ))
 
@@ -279,9 +279,9 @@ class TestResumeFromCrash:
             eng.resume(sid)
 
         # Core 0 was in_test — should be advanced (fail → fine_search)
-        assert eng._core_states[0].phase != "coarse_search"
+        assert eng._core_states[0].phase != TunerPhase.COARSE_SEARCH
         # Core 1 was NOT in_test — should remain in fine_search at -10
-        assert eng._core_states[1].phase == "fine_search"
+        assert eng._core_states[1].phase == TunerPhase.FINE_SEARCH
         assert eng._core_states[1].current_offset == -10
 
 
@@ -319,9 +319,9 @@ class TestPickNextCore:
         )
         eng._session_id = tp.create_session(db, cfg, "", "")
         eng._core_states = {
-            0: CoreState(core_id=0, phase="confirmed"),
-            1: CoreState(core_id=1, phase="coarse_search", current_offset=-5),
-            2: CoreState(core_id=2, phase="not_started"),
+            0: CoreState(core_id=0, phase=TunerPhase.CONFIRMED),
+            1: CoreState(core_id=1, phase=TunerPhase.COARSE_SEARCH, current_offset=-5),
+            2: CoreState(core_id=2, phase=TunerPhase.NOT_STARTED),
         }
         picked = eng._pick_next_core()
         assert picked == 1
@@ -334,8 +334,8 @@ class TestPickNextCore:
         )
         eng._session_id = tp.create_session(db, cfg, "", "")
         eng._core_states = {
-            0: CoreState(core_id=0, phase="confirmed"),
-            1: CoreState(core_id=1, phase="confirmed"),
+            0: CoreState(core_id=0, phase=TunerPhase.CONFIRMED),
+            1: CoreState(core_id=1, phase=TunerPhase.CONFIRMED),
         }
         picked = eng._pick_next_core()
         assert picked is None
@@ -358,50 +358,50 @@ class TestPickFunctionsPure:
     def test_sequential_does_not_advance_not_started(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, test_order="sequential")
         eng._core_states = {
-            0: CoreState(core_id=0, phase="not_started"),
-            1: CoreState(core_id=1, phase="not_started"),
+            0: CoreState(core_id=0, phase=TunerPhase.NOT_STARTED),
+            1: CoreState(core_id=1, phase=TunerPhase.NOT_STARTED),
         }
         picked = eng._pick_next_core()
         assert picked == 0
-        assert eng._core_states[0].phase == "not_started"
+        assert eng._core_states[0].phase == TunerPhase.NOT_STARTED
 
     def test_sequential_does_not_advance_settled(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, test_order="sequential")
         eng._core_states = {
-            0: CoreState(core_id=0, phase="confirmed"),
-            1: CoreState(core_id=1, phase="settled", current_offset=-8, best_offset=-8),
+            0: CoreState(core_id=0, phase=TunerPhase.CONFIRMED),
+            1: CoreState(core_id=1, phase=TunerPhase.SETTLED, current_offset=-8, best_offset=-8),
         }
         picked = eng._pick_next_core()
         assert picked == 1
-        assert eng._core_states[1].phase == "settled"
+        assert eng._core_states[1].phase == TunerPhase.SETTLED
 
     def test_round_robin_does_not_advance(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, test_order="round_robin")
         eng._core_states = {
-            0: CoreState(core_id=0, phase="not_started"),
-            1: CoreState(core_id=1, phase="settled", current_offset=-8, best_offset=-8),
-            2: CoreState(core_id=2, phase="coarse_search", current_offset=-5),
+            0: CoreState(core_id=0, phase=TunerPhase.NOT_STARTED),
+            1: CoreState(core_id=1, phase=TunerPhase.SETTLED, current_offset=-8, best_offset=-8),
+            2: CoreState(core_id=2, phase=TunerPhase.COARSE_SEARCH, current_offset=-5),
         }
         eng._pick_next_core()
-        assert eng._core_states[0].phase == "not_started"
-        assert eng._core_states[1].phase == "settled"
+        assert eng._core_states[0].phase == TunerPhase.NOT_STARTED
+        assert eng._core_states[1].phase == TunerPhase.SETTLED
 
     def test_weakest_first_does_not_advance(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, test_order="weakest_first")
         eng._core_states = {
-            0: CoreState(core_id=0, phase="not_started"),
-            1: CoreState(core_id=1, phase="fine_search", current_offset=-6, best_offset=-5, coarse_fail_offset=-10),
+            0: CoreState(core_id=0, phase=TunerPhase.NOT_STARTED),
+            1: CoreState(core_id=1, phase=TunerPhase.FINE_SEARCH, current_offset=-6, best_offset=-5, coarse_fail_offset=-10),
         }
         picked = eng._pick_next_core()
         assert picked == 1  # fine_search scores 0, not_started scores 4
-        assert eng._core_states[0].phase == "not_started"
+        assert eng._core_states[0].phase == TunerPhase.NOT_STARTED
 
     def test_round_robin_rotates(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, test_order="round_robin")
         eng._core_states = {
-            0: CoreState(core_id=0, phase="coarse_search", current_offset=-5),
-            1: CoreState(core_id=1, phase="coarse_search", current_offset=-5),
-            2: CoreState(core_id=2, phase="coarse_search", current_offset=-5),
+            0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5),
+            1: CoreState(core_id=1, phase=TunerPhase.COARSE_SEARCH, current_offset=-5),
+            2: CoreState(core_id=2, phase=TunerPhase.COARSE_SEARCH, current_offset=-5),
         }
         # No last tested — should pick first active
         picked = eng._pick_next_core()
@@ -459,7 +459,7 @@ class TestInheritCurrentCO:
         # Core starts at -15 (inherited), first advance should go to -15 + (-1)*5 = -20
         cs = eng._core_states[0]
         eng._advance_core(0, passed=False)  # not_started -> coarse_search
-        assert cs.phase == "coarse_search"
+        assert cs.phase == TunerPhase.COARSE_SEARCH
         assert cs.current_offset == -20  # -15 (inherited base) + -5 (coarse step)
 
     def test_inherit_false_uses_start_offset(self, db, simple_topology, mock_smu, mock_backend):
@@ -493,7 +493,7 @@ class TestCCDAlternatingOrder:
         )
         eng._session_id = tp.create_session(db, cfg, "", "")
         eng._core_states = {
-            i: CoreState(core_id=i, phase="coarse_search", current_offset=-5)
+            i: CoreState(core_id=i, phase=TunerPhase.COARSE_SEARCH, current_offset=-5)
             for i in range(8)
         }
 
@@ -504,7 +504,7 @@ class TestCCDAlternatingOrder:
                 break
             order.append(picked)
             eng._core_states[picked] = CoreState(
-                core_id=picked, phase="confirmed", current_offset=-5, best_offset=-5,
+                core_id=picked, phase=TunerPhase.CONFIRMED, current_offset=-5, best_offset=-5,
             )
 
         # Verify alternation: consecutive picks should be from different CCDs
@@ -530,10 +530,10 @@ class TestCCDAlternatingOrder:
         )
         eng._session_id = tp.create_session(db, cfg, "", "")
         eng._core_states = {
-            0: CoreState(core_id=0, phase="coarse_search", current_offset=-5),
-            1: CoreState(core_id=1, phase="coarse_search", current_offset=-5),
-            4: CoreState(core_id=4, phase="confirmed", current_offset=-10, best_offset=-10),
-            5: CoreState(core_id=5, phase="confirmed", current_offset=-10, best_offset=-10),
+            0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5),
+            1: CoreState(core_id=1, phase=TunerPhase.COARSE_SEARCH, current_offset=-5),
+            4: CoreState(core_id=4, phase=TunerPhase.CONFIRMED, current_offset=-10, best_offset=-10),
+            5: CoreState(core_id=5, phase=TunerPhase.CONFIRMED, current_offset=-10, best_offset=-10),
         }
         picked = eng._pick_next_core()
         assert picked in (0, 1)
@@ -552,7 +552,7 @@ class TestCCDRoundRobinOrder:
         )
         eng._session_id = tp.create_session(db, cfg, "", "")
         eng._core_states = {
-            i: CoreState(core_id=i, phase="coarse_search", current_offset=-5)
+            i: CoreState(core_id=i, phase=TunerPhase.COARSE_SEARCH, current_offset=-5)
             for i in range(8)
         }
 
@@ -568,7 +568,7 @@ class TestCCDRoundRobinOrder:
                 eng._ccd_last_tested[core_info.ccd] = picked
             # Mark as confirmed so it's not picked again
             eng._core_states[picked] = CoreState(
-                core_id=picked, phase="confirmed", current_offset=-5, best_offset=-5,
+                core_id=picked, phase=TunerPhase.CONFIRMED, current_offset=-5, best_offset=-5,
             )
 
         topo = topo_dual_ccd_x3d
@@ -620,12 +620,12 @@ class TestBackoffAlgorithm:
     def test_failed_confirm_enters_backoff_preconfirm(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="failed_confirm", current_offset=-8,
+            core_id=0, phase=TunerPhase.FAILED_CONFIRM, current_offset=-8,
             best_offset=-8, confirm_attempts=2,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
-        assert cs.phase == "backoff_preconfirm"
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
         assert cs.best_offset == -7
         assert cs.backoff_mode is True
         assert cs.confirm_attempts == 0
@@ -633,52 +633,52 @@ class TestBackoffAlgorithm:
     def test_backoff_preconfirm_pass_enters_backoff_confirming(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="backoff_preconfirm", current_offset=-7,
+            core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM, current_offset=-7,
             best_offset=-7, backoff_mode=True,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=True)
-        assert cs.phase == "backoff_confirming"
+        assert cs.phase == TunerPhase.BACKOFF_CONFIRMING
         assert cs.backoff_pass_bound == -7
 
     def test_backoff_preconfirm_fail_backs_off(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="backoff_preconfirm", current_offset=-7,
+            core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM, current_offset=-7,
             best_offset=-7, backoff_mode=True,
             consecutive_backoff_fails=0,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
-        assert cs.phase == "backoff_preconfirm"
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
         assert cs.best_offset == -6  # backed off from -7
         assert cs.consecutive_backoff_fails == 1
 
     def test_backoff_confirming_pass_confirms(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="backoff_confirming", current_offset=-7,
+            core_id=0, phase=TunerPhase.BACKOFF_CONFIRMING, current_offset=-7,
             best_offset=-7, backoff_mode=True,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=True)
-        assert cs.phase == "confirmed"
+        assert cs.phase == TunerPhase.CONFIRMED
 
     def test_backoff_confirming_fail_returns_to_preconfirm(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="backoff_confirming", current_offset=-7,
+            core_id=0, phase=TunerPhase.BACKOFF_CONFIRMING, current_offset=-7,
             best_offset=-7, backoff_mode=True,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
-        assert cs.phase == "backoff_preconfirm"
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
         assert cs.best_offset == -6  # backed off from -7
 
     def test_midpoint_jump_after_threshold(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, midpoint_jump_threshold=3)
         cs = CoreState(
-            core_id=0, phase="backoff_preconfirm", current_offset=-7,
+            core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM, current_offset=-7,
             best_offset=-7, backoff_mode=True,
             consecutive_backoff_fails=2,
             baseline_offset=0,
@@ -692,19 +692,19 @@ class TestBackoffAlgorithm:
     def test_backoff_preconfirm_pass_after_midpoint_sets_bounds(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="backoff_preconfirm", current_offset=-4,
+            core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM, current_offset=-4,
             best_offset=-4, backoff_mode=True,
             backoff_fail_bound=-7,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=True)
-        assert cs.phase == "backoff_confirming"
+        assert cs.phase == TunerPhase.BACKOFF_CONFIRMING
         assert cs.backoff_pass_bound == -4
 
     def test_convergence_guard_at_baseline(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="backoff_preconfirm", current_offset=-1,
+            core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM, current_offset=-1,
             best_offset=-1, backoff_mode=True,
             consecutive_backoff_fails=0,
             baseline_offset=0,
@@ -712,13 +712,13 @@ class TestBackoffAlgorithm:
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
         # Back off from -1: -1 - (-1)*1 = 0, which is baseline
-        assert cs.phase == "confirmed"
+        assert cs.phase == TunerPhase.CONFIRMED
         assert cs.best_offset == 0
 
     def test_binary_search_narrows_on_pass(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="backoff_confirming", current_offset=-5,
+            core_id=0, phase=TunerPhase.BACKOFF_CONFIRMING, current_offset=-5,
             best_offset=-5, backoff_mode=True,
             backoff_fail_bound=-10, backoff_pass_bound=-5,
         )
@@ -726,52 +726,52 @@ class TestBackoffAlgorithm:
         eng._advance_core(0, passed=True)
         # Binary search: midpoint between pass(-5) and fail(-10)
         # mid = -5 + (-1) * (5 // 2) = -5 + (-1)*2 = -7
-        assert cs.phase == "backoff_preconfirm"
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
         assert cs.current_offset == -7
 
     def test_binary_search_narrows_on_fail(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="backoff_confirming", current_offset=-7,
+            core_id=0, phase=TunerPhase.BACKOFF_CONFIRMING, current_offset=-7,
             best_offset=-7, backoff_mode=True,
             backoff_fail_bound=-10, backoff_pass_bound=-5,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
         # Confirm failed — back to preconfirm, back off
-        assert cs.phase == "backoff_preconfirm"
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
         assert cs.best_offset == -6  # -7 - (-1)*1 = -6
 
     def test_binary_search_converges(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="backoff_confirming", current_offset=-6,
+            core_id=0, phase=TunerPhase.BACKOFF_CONFIRMING, current_offset=-6,
             best_offset=-6, backoff_mode=True,
             backoff_fail_bound=-7, backoff_pass_bound=-6,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=True)
         # Gap is 1 (== fine_step), so converged
-        assert cs.phase == "confirmed"
+        assert cs.phase == TunerPhase.CONFIRMED
 
     def test_backoff_floor_uses_baseline_not_start(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
-            core_id=0, phase="failed_confirm", current_offset=-3,
+            core_id=0, phase=TunerPhase.FAILED_CONFIRM, current_offset=-3,
             best_offset=-3, confirm_attempts=2,
             baseline_offset=-2,
         )
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=False)
         # -3 - (-1)*1 = -2 = baseline, so should settle at baseline
-        assert cs.phase == "confirmed"
+        assert cs.phase == TunerPhase.CONFIRMED
         assert cs.best_offset == -2
 
     def test_backoff_with_positive_direction(self, db, simple_topology, mock_smu, mock_backend):
         """Binary search works with direction=+1 (overvolting)."""
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, direction=1, max_offset=30)
         cs = CoreState(
-            core_id=0, phase="backoff_preconfirm", current_offset=7,
+            core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM, current_offset=7,
             best_offset=7, backoff_mode=True,
             backoff_fail_bound=10, backoff_pass_bound=4,
         )
@@ -780,13 +780,13 @@ class TestBackoffAlgorithm:
         assert cs.backoff_pass_bound == 7
         # Binary search midpoint: 7 + (10-7)//2 = 7 + 1 = 8
         assert cs.current_offset == 8
-        assert cs.phase == "backoff_preconfirm"
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
 
     def test_midpoint_jump_threshold_1(self, db, simple_topology, mock_smu, mock_backend):
         """threshold=1 should trigger midpoint jump on first failure."""
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, midpoint_jump_threshold=1)
         cs = CoreState(
-            core_id=0, phase="backoff_preconfirm", current_offset=-7,
+            core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM, current_offset=-7,
             best_offset=-7, backoff_mode=True,
             consecutive_backoff_fails=0,
             baseline_offset=-2,
@@ -806,7 +806,7 @@ class TestBackoffAlgorithm:
         )
         sid = tp.create_session(db, cfg, "", "")
         tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase="backoff_preconfirm", current_offset=-10,
+            core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM, current_offset=-10,
             best_offset=-10, backoff_mode=True,
             consecutive_backoff_fails=1, baseline_offset=-5,
             in_test=True,  # was actively testing when crash happened
@@ -815,5 +815,5 @@ class TestBackoffAlgorithm:
             eng.resume(sid)
         # Should have advanced (treated as failure) — backed off from -10
         cs = eng._core_states[0]
-        assert cs.phase != "backoff_preconfirm" or cs.current_offset != -10
+        assert cs.phase != TunerPhase.BACKOFF_PRECONFIRM or cs.current_offset != -10
         assert cs.consecutive_backoff_fails >= 2 or cs.current_offset != -10

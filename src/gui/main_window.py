@@ -28,10 +28,8 @@ from PySide6.QtWidgets import (
 )
 
 from config.settings import load_settings, save_settings
+from engine.backends import available_backends, get_backend, load_all
 from engine.backends.base import StressConfig, StressResult
-from engine.backends.mprime import MprimeBackend
-from engine.backends.stress_ng import StressNgBackend
-from engine.backends.ycruncher import YCruncherBackend
 from engine.scheduler import CoreScheduler, CoreTestStatus, SchedulerConfig
 from engine.topology import CPUTopology, detect_topology
 from gui.config_tab import ConfigTab
@@ -88,6 +86,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("CoreCycler")
         self.setMinimumSize(1000, 700)
+
+        load_all()
 
         self._settings = load_settings()
         self._topology: CPUTopology | None = None
@@ -457,16 +457,11 @@ class MainWindow(QMainWindow):
         self._worker.scheduler.stop()
 
     def _get_backend(self, name: str):
-        match name:
-            case "mprime":
-                return MprimeBackend()
-            case "stress-ng":
-                return StressNgBackend()
-            case "y-cruncher":
-                return YCruncherBackend()
-            case _:
-                QMessageBox.warning(self, "Error", f"Unknown backend: {name}")
-                return None
+        try:
+            return get_backend(name)
+        except KeyError:
+            QMessageBox.warning(self, "Error", f"Unknown backend: {name}")
+            return None
 
     @Slot(int, int)
     def _on_core_started(self, core_id: int, cycle: int) -> None:
