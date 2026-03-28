@@ -3,6 +3,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
+
+
+class TunerPhase(StrEnum):
+    """Core phase in the auto-tuner state machine.
+
+    Using StrEnum ensures:
+    - Typos caught at import time (not runtime)
+    - match/case works identically (StrEnum values ARE strings)
+    - DB serialization is automatic (str(phase) returns the value)
+    - JSON serialization needs no special handling
+    """
+
+    NOT_STARTED = "not_started"
+    COARSE_SEARCH = "coarse_search"
+    FINE_SEARCH = "fine_search"
+    SETTLED = "settled"
+    CONFIRMING = "confirming"
+    CONFIRMED = "confirmed"
+    FAILED_CONFIRM = "failed_confirm"
+    BACKOFF_PRECONFIRM = "backoff_preconfirm"
+    BACKOFF_CONFIRMING = "backoff_confirming"
 
 
 @dataclass(slots=True)
@@ -15,7 +37,7 @@ class CoreState:
     """
 
     core_id: int
-    phase: str = "not_started"
+    phase: TunerPhase = TunerPhase.NOT_STARTED
     current_offset: int = 0
     best_offset: int | None = None
     coarse_fail_offset: int | None = None

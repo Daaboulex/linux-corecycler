@@ -6,7 +6,9 @@ import re
 import textwrap
 from typing import TYPE_CHECKING
 
-from .base import FFTPreset, StressBackend, StressConfig, StressMode
+from engine.backends import register_backend
+
+from .base import CRASH_SIGNALS, FFTPreset, KILLED_BY_US_CODES, StressBackend, StressConfig, StressMode
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,6 +34,7 @@ MODE_TO_TORTURE: dict[StressMode, int] = {
 }
 
 
+@register_backend("mprime")
 class MprimeBackend(StressBackend):
     name = "mprime"
 
@@ -160,13 +163,12 @@ class MprimeBackend(StressBackend):
             return True, None
 
         # if process was killed (by us, timeout) with no errors, consider it passed
-        if returncode in (-9, -15, 137, 143):
+        if returncode in KILLED_BY_US_CODES:
             return True, None
 
         # SIGSEGV/SIGABRT/SIGBUS = likely CO instability crash
-        signal_names = {-11: "SIGSEGV", -6: "SIGABRT", -7: "SIGBUS", -5: "SIGTRAP"}
-        if returncode in signal_names:
-            return False, f"mprime crashed with {signal_names[returncode]} (exit {returncode})"
+        if returncode in CRASH_SIGNALS:
+            return False, f"mprime crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
 
         # unknown state — check return code
         if returncode != 0:

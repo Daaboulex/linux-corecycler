@@ -439,6 +439,7 @@ def zen3_commands():
         set_all_co_cmd=0x36,
         mailbox="mp1",
         co_range=(-30, 30),
+        encoding_scheme="zen3",
     )
 
 
@@ -451,6 +452,7 @@ def zen5_commands():
         set_all_co_cmd=0x07,
         mailbox="rsmu",
         co_range=(-60, 10),
+        encoding_scheme="zen4_5",
         set_boost_limit_cmd=0x70,
         get_boost_limit_cmd=0x6E,
     )

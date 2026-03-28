@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from tuner import persistence as tp
-from tuner.state import TunerSession
+from tuner.state import TunerPhase, TunerSession
 
 if TYPE_CHECKING:
     from history.db import HistoryDB, RunRecord, TuningContextRecord
@@ -843,7 +843,7 @@ class HistoryTab(QWidget):
             # Count cores
             core_states = tp.load_core_states(self._db, sess.id)
             total = len(core_states)
-            confirmed = sum(1 for cs in core_states.values() if cs.phase == "confirmed")
+            confirmed = sum(1 for cs in core_states.values() if cs.phase == TunerPhase.CONFIRMED)
 
             date_str = sess.created_at[:19].replace("T", " ") if sess.created_at else ""
 
@@ -885,7 +885,7 @@ class HistoryTab(QWidget):
         self._selected_tuner_session = sess
         # Only show Load to CO button if the session has confirmed cores
         core_states = tp.load_core_states(self._db, sess.id)
-        has_confirmed = any(cs.phase == "confirmed" for cs in core_states.values())
+        has_confirmed = any(cs.phase == TunerPhase.CONFIRMED for cs in core_states.values())
         self._tuner_actions_row.setVisible(True)
         self._load_co_btn.setEnabled(has_confirmed)
         self._expand_detail()
@@ -939,13 +939,13 @@ class HistoryTab(QWidget):
         self._core_results_table.setRowCount(len(sorted_cores))
 
         phase_colors = {
-            "not_started": "#666",
-            "coarse_search": "#b4b432",
-            "fine_search": "#c8c832",
-            "settled": "#c89632",
-            "confirming": "#3296c8",
-            "confirmed": "#32b432",
-            "failed_confirm": "#c86432",
+            TunerPhase.NOT_STARTED: "#666",
+            TunerPhase.COARSE_SEARCH: "#b4b432",
+            TunerPhase.FINE_SEARCH: "#c8c832",
+            TunerPhase.SETTLED: "#c89632",
+            TunerPhase.CONFIRMING: "#3296c8",
+            TunerPhase.CONFIRMED: "#32b432",
+            TunerPhase.FAILED_CONFIRM: "#c86432",
         }
 
         for row_idx, core_id in enumerate(sorted_cores):

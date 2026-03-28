@@ -12,6 +12,17 @@ if TYPE_CHECKING:
     from pathlib import Path
     pass
 
+# Return codes indicating the process was intentionally killed by the scheduler
+KILLED_BY_US_CODES: frozenset[int] = frozenset({-9, -15, 137, 143})
+
+# Signal codes indicating CPU instability (CO too aggressive, hardware fault)
+CRASH_SIGNALS: dict[int, str] = {
+    -11: "SIGSEGV",
+    -6: "SIGABRT",
+    -7: "SIGBUS",
+    -5: "SIGTRAP",
+}
+
 
 class StressMode(Enum):
     SSE = auto()
@@ -89,6 +100,22 @@ class StressBackend(ABC):
             preserve_on_error: If True, keep diagnostic files (results, logs)
                 for post-mortem analysis of failures.
         """
+
+    @staticmethod
+    def classify_exit_code(returncode: int) -> str | None:
+        """Classify a process exit code.
+
+        Returns:
+            "killed_by_us" if intentionally terminated by scheduler
+            "crash:<SIGNAL>" if killed by a crash signal (CPU instability)
+            None for normal exit (check stdout/stderr for pass/fail)
+        """
+        if returncode in KILLED_BY_US_CODES:
+            return "killed_by_us"
+        signal_name = CRASH_SIGNALS.get(returncode)
+        if signal_name:
+            return f"crash:{signal_name}"
+        return None
 
     def find_binary(self, name: str) -> str | None:
         """Find a binary on PATH."""

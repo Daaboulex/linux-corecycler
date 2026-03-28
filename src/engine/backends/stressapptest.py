@@ -11,12 +11,15 @@ from __future__ import annotations
 import shutil
 from typing import TYPE_CHECKING
 
-from .base import StressBackend, StressConfig, StressMode
+from engine.backends import register_backend
+
+from .base import KILLED_BY_US_CODES, StressBackend, StressConfig, StressMode
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
+@register_backend("stressapptest")
 class StressapptestBackend(StressBackend):
     name = "stressapptest"
 
@@ -41,7 +44,7 @@ class StressapptestBackend(StressBackend):
             return False, "stressapptest: FAIL — memory errors detected"
         if "Status: PASS" in stdout:
             return True, None
-        if returncode in (-9, -15, 137, 143):
+        if returncode in KILLED_BY_US_CODES:
             return True, None
         if returncode != 0:
             return False, f"stressapptest exited with code {returncode}"

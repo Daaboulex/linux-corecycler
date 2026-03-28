@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.backends.base import FFTPreset, StressBackend, StressConfig, StressMode, StressResult
+from engine.backends.base import CRASH_SIGNALS, FFTPreset, KILLED_BY_US_CODES, StressBackend, StressConfig, StressMode, StressResult
 from engine.backends.mprime import FFT_RANGES, MODE_TO_TORTURE, MprimeBackend
 from engine.backends.stress_ng import StressNgBackend, _mode_to_method
 from engine.backends.ycruncher import YCruncherBackend, _mode_flag
@@ -333,7 +333,7 @@ class TestMprimeBackend:
         assert passed
         assert msg is None
 
-    @pytest.mark.parametrize("code", [-9, -15, 137, 143])
+    @pytest.mark.parametrize("code", sorted(KILLED_BY_US_CODES))
     def test_parse_output_killed_signals(self, code):
         backend = MprimeBackend()
         passed, msg = backend.parse_output("", "", code)
@@ -458,7 +458,7 @@ class TestStressNgBackend:
         passed, msg = backend.parse_output("", "FAILED test", 1)
         assert not passed
 
-    @pytest.mark.parametrize("code", [-9, -15, 137, 143, 0])
+    @pytest.mark.parametrize("code", sorted(KILLED_BY_US_CODES) + [0])
     def test_parse_output_success_codes(self, code):
         backend = StressNgBackend()
         passed, msg = backend.parse_output("completed", "", code)
@@ -565,7 +565,7 @@ class TestYCruncherBackend:
         assert not passed
         assert "y-cruncher error" in msg
 
-    @pytest.mark.parametrize("code", [-9, -15, 137, 143, 0])
+    @pytest.mark.parametrize("code", sorted(KILLED_BY_US_CODES) + [0])
     def test_parse_output_success_codes(self, code):
         backend = YCruncherBackend()
         passed, msg = backend.parse_output("All tests completed", "", code)

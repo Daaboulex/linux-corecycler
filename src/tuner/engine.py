@@ -24,7 +24,7 @@ from monitor.msr import MSRReader
 
 from . import persistence as tp
 from .config import TunerConfig
-from .state import CoreState
+from .state import CoreState, TunerPhase
 
 if TYPE_CHECKING:
     from engine.backends.base import StressBackend
@@ -382,7 +382,7 @@ class TunerEngine(QObject):
 
         # Check if all cores are confirmed — if so, we were paused during
         # validation and should re-enter validation instead of per-core search.
-        all_confirmed = all(cs.phase == "confirmed" for cs in self._core_states.values())
+        all_confirmed = all(cs.phase == TunerPhase.CONFIRMED for cs in self._core_states.values())
         if all_confirmed and self._config.auto_validate and len(self._core_states) > 1:
             profile = {
                 cs.core_id: cs.best_offset
@@ -465,7 +465,7 @@ class TunerEngine(QObject):
         for core_id, offset in profile.items():
             if core_id in self._core_states:
                 cs = self._core_states[core_id]
-                cs.phase = "confirming"
+                cs.phase = TunerPhase.CONFIRMING
                 cs.current_offset = offset
                 cs.best_offset = offset
                 cs.confirm_attempts = 0
@@ -489,22 +489,22 @@ class TunerEngine(QObject):
         direction = cfg.direction  # -1 for undervolting
 
         match cs.phase:
-            case "not_started":
+            case TunerPhase.NOT_STARTED:
                 # First step: enter coarse search
-                cs.phase = "coarse_search"
+                cs.phase = TunerPhase.COARSE_SEARCH
                 # Use inherited offset as base when inherit_current is active
                 base = cs.current_offset if (cfg.inherit_current and cs.current_offset != 0) else cfg.start_offset
                 cs.current_offset = base + direction * cfg.coarse_step
                 if self._exceeds_max(cs.current_offset):
                     cs.current_offset = cfg.max_offset
 
-            case "coarse_search":
+            case TunerPhase.COARSE_SEARCH:
                 if passed:
                     cs.best_offset = cs.current_offset
                     next_offset = cs.current_offset + direction * cfg.coarse_step
                     if self._exceeds_max(next_offset):
                         # Hit the limit — settle here
-                        cs.phase = "settled"
+                        cs.phase = TunerPhase.SETTLED
                     else:
                         cs.current_offset = next_offset
                 else:
@@ -514,13 +514,13 @@ class TunerEngine(QObject):
                         # Never passed — check abort threshold
                         if cs.current_offset == cfg.start_offset + direction * cfg.coarse_step:
                             self._consecutive_start_failures += 1
-                        cs.phase = "settled"  # nothing we can do
+                        cs.phase = TunerPhase.SETTLED  # nothing we can do
                     else:
                         # Fine search between best_offset and coarse_fail
-                        cs.phase = "fine_search"
+                        cs.phase = TunerPhase.FINE_SEARCH
                         cs.current_offset = cs.best_offset + direction * cfg.fine_step
 
-            case "fine_search":
+            case TunerPhase.FINE_SEARCH:
                 if passed:
                     cs.best_offset = cs.current_offset
                     next_offset = cs.current_offset + direction * cfg.fine_step
@@ -529,59 +529,59 @@ class TunerEngine(QObject):
                         (direction < 0 and next_offset <= cs.coarse_fail_offset)
                         or (direction > 0 and next_offset >= cs.coarse_fail_offset)
                     ):
-                        cs.phase = "settled"
+                        cs.phase = TunerPhase.SETTLED
                     elif self._exceeds_max(next_offset):
-                        cs.phase = "settled"
+                        cs.phase = TunerPhase.SETTLED
                     else:
                         cs.current_offset = next_offset
                 else:
                     # Fine search failed — settle at last good value
-                    cs.phase = "settled"
+                    cs.phase = TunerPhase.SETTLED
 
-            case "settled":
+            case TunerPhase.SETTLED:
                 # Move to confirmation
                 if cs.best_offset is not None:
-                    cs.phase = "confirming"
+                    cs.phase = TunerPhase.CONFIRMING
                     cs.current_offset = cs.best_offset
                 else:
                     # No passing value found at all — mark confirmed at start
-                    cs.phase = "confirmed"
+                    cs.phase = TunerPhase.CONFIRMED
                     cs.best_offset = cfg.start_offset
                     cs.current_offset = cfg.start_offset
 
-            case "confirming":
+            case TunerPhase.CONFIRMING:
                 if passed:
-                    cs.phase = "confirmed"
+                    cs.phase = TunerPhase.CONFIRMED
                     cs.confirm_attempts = 0
                 else:
                     cs.confirm_attempts += 1
                     if cs.confirm_attempts >= cfg.max_confirm_retries:
                         # Back off and re-enter fine search
-                        cs.phase = "failed_confirm"
-                    # else: retry confirmation (stays in "confirming")
+                        cs.phase = TunerPhase.FAILED_CONFIRM
+                    # else: retry confirmation (stays in confirming)
 
-            case "failed_confirm":
+            case TunerPhase.FAILED_CONFIRM:
                 # Back off by one fine step and enter backoff preconfirm
                 if cs.best_offset is not None:
                     new_best = cs.best_offset - direction * cfg.fine_step
                     if self._at_or_past_baseline(new_best, cs):
                         # Can't back off further
-                        cs.phase = "confirmed"
+                        cs.phase = TunerPhase.CONFIRMED
                         cs.best_offset = cs.baseline_offset
                         cs.current_offset = cs.baseline_offset
                     else:
                         cs.best_offset = new_best
                         cs.current_offset = new_best
-                        cs.phase = "backoff_preconfirm"
+                        cs.phase = TunerPhase.BACKOFF_PRECONFIRM
                         cs.backoff_mode = True
                         cs.confirm_attempts = 0
                         cs.consecutive_backoff_fails = 0
                 else:
-                    cs.phase = "confirmed"
+                    cs.phase = TunerPhase.CONFIRMED
                     cs.best_offset = cs.baseline_offset
                     cs.current_offset = cs.baseline_offset
 
-            case "backoff_preconfirm":
+            case TunerPhase.BACKOFF_PRECONFIRM:
                 if passed:
                     had_pass_bound = cs.backoff_pass_bound is not None
                     cs.backoff_pass_bound = cs.best_offset
@@ -589,7 +589,7 @@ class TunerEngine(QObject):
                         # Binary search active — jump to midpoint
                         gap = abs(cs.backoff_fail_bound - cs.backoff_pass_bound)
                         if gap <= cfg.fine_step:
-                            cs.phase = "confirmed"
+                            cs.phase = TunerPhase.CONFIRMED
                         else:
                             mid = cs.backoff_pass_bound + direction * (gap // 2)
                             cs.best_offset = mid
@@ -597,7 +597,7 @@ class TunerEngine(QObject):
                             # Stay in backoff_preconfirm for next test
                     else:
                         # First pass in backoff — enter confirmation
-                        cs.phase = "backoff_confirming"
+                        cs.phase = TunerPhase.BACKOFF_CONFIRMING
                         cs.current_offset = cs.best_offset
                         cs.confirm_attempts = 0
                 else:
@@ -610,7 +610,7 @@ class TunerEngine(QObject):
                             abs(cs.best_offset - cs.baseline_offset) // 2
                         )
                         if self._at_or_past_baseline(midpoint, cs) or midpoint == cs.best_offset:
-                            cs.phase = "confirmed"
+                            cs.phase = TunerPhase.CONFIRMED
                             cs.best_offset = cs.baseline_offset
                             cs.current_offset = cs.baseline_offset
                         else:
@@ -621,14 +621,14 @@ class TunerEngine(QObject):
                         # Back off one more step
                         new_offset = cs.best_offset - direction * cfg.fine_step
                         if self._at_or_past_baseline(new_offset, cs):
-                            cs.phase = "confirmed"
+                            cs.phase = TunerPhase.CONFIRMED
                             cs.best_offset = cs.baseline_offset
                             cs.current_offset = cs.baseline_offset
                         else:
                             cs.best_offset = new_offset
                             cs.current_offset = new_offset
 
-            case "backoff_confirming":
+            case TunerPhase.BACKOFF_CONFIRMING:
                 if passed:
                     # Confirmed at this offset — check binary search
                     if cs.backoff_fail_bound is not None and cs.backoff_pass_bound is not None:
@@ -636,20 +636,20 @@ class TunerEngine(QObject):
                         gap = abs(cs.backoff_fail_bound - cs.backoff_pass_bound)
                         if gap <= cfg.fine_step:
                             # Converged
-                            cs.phase = "confirmed"
+                            cs.phase = TunerPhase.CONFIRMED
                         else:
                             mid = cs.backoff_pass_bound + direction * (gap // 2)
                             cs.best_offset = mid
                             cs.current_offset = mid
-                            cs.phase = "backoff_preconfirm"
+                            cs.phase = TunerPhase.BACKOFF_PRECONFIRM
                     else:
-                        cs.phase = "confirmed"
+                        cs.phase = TunerPhase.CONFIRMED
                 else:
                     # Confirm failed — back to preconfirm, back off
-                    cs.phase = "backoff_preconfirm"
+                    cs.phase = TunerPhase.BACKOFF_PRECONFIRM
                     new_offset = cs.best_offset - direction * cfg.fine_step
                     if self._at_or_past_baseline(new_offset, cs):
-                        cs.phase = "confirmed"
+                        cs.phase = TunerPhase.CONFIRMED
                         cs.best_offset = cs.baseline_offset
                         cs.current_offset = cs.baseline_offset
                     else:
@@ -694,12 +694,12 @@ class TunerEngine(QObject):
         # Pass 1: active phases (not confirmed, not settled)
         for core_id in sorted(self._core_states.keys()):
             cs = self._core_states[core_id]
-            if cs.phase not in ("confirmed", "settled"):
+            if cs.phase not in (TunerPhase.CONFIRMED, TunerPhase.SETTLED):
                 return core_id
         # Pass 2: settled cores needing confirmation
         for core_id in sorted(self._core_states.keys()):
             cs = self._core_states[core_id]
-            if cs.phase == "settled":
+            if cs.phase == TunerPhase.SETTLED:
                 return core_id
         return None
 
@@ -707,7 +707,7 @@ class TunerEngine(QObject):
         """Cycle through all cores, one test each per round (pure selector)."""
         active = sorted(
             cid for cid, cs in self._core_states.items()
-            if cs.phase not in ("confirmed",)
+            if cs.phase != TunerPhase.CONFIRMED
         )
         if not active:
             return None
@@ -721,13 +721,13 @@ class TunerEngine(QObject):
         """Prioritize cores closest to settling (pure selector)."""
         candidates = []
         for core_id, cs in self._core_states.items():
-            if cs.phase == "confirmed":
+            if cs.phase == TunerPhase.CONFIRMED:
                 continue
             score = {
-                "fine_search": 0, "failed_confirm": 0,
-                "backoff_preconfirm": 0, "backoff_confirming": 1,
-                "confirming": 1, "coarse_search": 2,
-                "settled": 3, "not_started": 4,
+                TunerPhase.FINE_SEARCH: 0, TunerPhase.FAILED_CONFIRM: 0,
+                TunerPhase.BACKOFF_PRECONFIRM: 0, TunerPhase.BACKOFF_CONFIRMING: 1,
+                TunerPhase.CONFIRMING: 1, TunerPhase.COARSE_SEARCH: 2,
+                TunerPhase.SETTLED: 3, TunerPhase.NOT_STARTED: 4,
             }.get(cs.phase, 5)
             candidates.append((score, core_id))
         if not candidates:
@@ -739,7 +739,7 @@ class TunerEngine(QObject):
         """Alternate between CCDs: picks from the CCD with fewest confirmed cores."""
         ccd_cores: dict[int, list[int]] = {}
         for core_id, cs in self._core_states.items():
-            if cs.phase == "confirmed":
+            if cs.phase == TunerPhase.CONFIRMED:
                 continue
             core_info = self._topology.cores.get(core_id)
             ccd = core_info.ccd if core_info and core_info.ccd is not None else 0
@@ -755,7 +755,7 @@ class TunerEngine(QObject):
         for core_id, cs in self._core_states.items():
             core_info = self._topology.cores.get(core_id)
             ccd = core_info.ccd if core_info and core_info.ccd is not None else 0
-            if cs.phase == "confirmed":
+            if cs.phase == TunerPhase.CONFIRMED:
                 ccd_confirmed[ccd] = ccd_confirmed.get(ccd, 0) + 1
 
         sorted_ccds = sorted(ccd_cores.keys(), key=lambda c: ccd_confirmed.get(c, 0))
@@ -769,7 +769,7 @@ class TunerEngine(QObject):
         """
         ccd_cores: dict[int, list[int]] = {}
         for core_id, cs in self._core_states.items():
-            if cs.phase == "confirmed":
+            if cs.phase == TunerPhase.CONFIRMED:
                 continue
             core_info = self._topology.cores.get(core_id)
             ccd = core_info.ccd if core_info and core_info.ccd is not None else 0
@@ -832,10 +832,10 @@ class TunerEngine(QObject):
             return
 
         cs = self._core_states[core_id]
-        if cs.phase == "not_started":
+        if cs.phase == TunerPhase.NOT_STARTED:
             self._advance_core(core_id, passed=False)  # → coarse_search
             cs = self._core_states[core_id]
-        elif cs.phase == "settled":
+        elif cs.phase == TunerPhase.SETTLED:
             self._advance_core(core_id, passed=False)  # → confirming
             cs = self._core_states[core_id]
         self._last_tested_core = core_id
@@ -865,9 +865,9 @@ class TunerEngine(QObject):
                     return
 
         # Determine test duration based on phase
-        if cs.phase in ("confirming", "backoff_confirming"):
+        if cs.phase in (TunerPhase.CONFIRMING, TunerPhase.BACKOFF_CONFIRMING):
             duration = self._config.confirm_duration_seconds
-        elif cs.phase == "backoff_preconfirm":
+        elif cs.phase == TunerPhase.BACKOFF_PRECONFIRM:
             duration = int(self._config.search_duration_seconds * self._config.backoff_preconfirm_multiplier)
         elif self._status == "validating":
             duration = self._config.validate_duration_seconds
@@ -965,11 +965,11 @@ class TunerEngine(QObject):
 
         # Determine log phase
         phase_map = {
-            "coarse_search": "coarse",
-            "fine_search": "fine",
-            "confirming": "confirm",
-            "backoff_preconfirm": "backoff_preconfirm",
-            "backoff_confirming": "backoff_confirm",
+            TunerPhase.COARSE_SEARCH: "coarse",
+            TunerPhase.FINE_SEARCH: "fine",
+            TunerPhase.CONFIRMING: "confirm",
+            TunerPhase.BACKOFF_PRECONFIRM: "backoff_preconfirm",
+            TunerPhase.BACKOFF_CONFIRMING: "backoff_confirm",
         }
         if self._status == "validating" and self._validation_stage > 0:
             log_phase = f"validate_s{self._validation_stage}"
@@ -1399,7 +1399,7 @@ class TunerEngine(QObject):
         self.status_changed.emit(status)
 
     def _emit_progress(self) -> None:
-        done = sum(1 for cs in self._core_states.values() if cs.phase == "confirmed")
+        done = sum(1 for cs in self._core_states.values() if cs.phase == TunerPhase.CONFIRMED)
         total = len(self._core_states)
         self.progress_updated.emit(done, total)
 

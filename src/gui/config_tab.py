@@ -87,8 +87,10 @@ class ConfigTab(QWidget):
         backend_group = QGroupBox("Stress Test Backend")
         backend_layout = QFormLayout(backend_group)
 
+        from engine.backends import available_backends
+
         self._backend_combo = QComboBox()
-        self._backend_combo.addItems(["mprime", "stress-ng", "y-cruncher"])
+        self._backend_combo.addItems(available_backends())
         self._backend_combo.currentTextChanged.connect(self._on_change)
         backend_layout.addRow("Backend:", self._backend_combo)
 

@@ -17,8 +17,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tuner.state import CoreState, TunerSession
 
-SCHEMA_VERSION = 7
-
 DATA_DIR = Path.home() / ".local" / "share" / "corecycler" / "history"
 DEFAULT_DB_PATH = DATA_DIR / "history.db"
 
@@ -123,6 +121,8 @@ class TelemetrySample:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
+    SCHEMA_VERSION = 8
+
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
         if str(self._db_path) != ":memory:":
@@ -148,57 +148,27 @@ class HistoryDB:
         )
         if cur.fetchone() is None:
             # Fresh database — create everything at current version
-            self.__conn.executescript(self._DDL_V7)
+            self.__conn.executescript(self._DDL_FRESH)
             return
 
         # Existing database — check version and migrate
         version = self.__conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        if version < 2:
-            self.__conn.executescript(self._DDL_MIGRATE_V2)
-            self.__conn.execute("UPDATE schema_version SET version=2")
-            version = 2
-        if version < 3:
-            self.__conn.executescript(self._DDL_MIGRATE_V3)
-            self.__conn.execute("UPDATE schema_version SET version=3")
-            version = 3
-        if version < 4:
-            self.__conn.executescript(self._DDL_MIGRATE_V4)
-            self.__conn.execute("UPDATE schema_version SET version=4")
-            version = 4
-        if version < 5:
-            self.__conn.executescript(self._DDL_MIGRATE_V5)
-            self.__conn.execute("UPDATE schema_version SET version=5")
-            version = 5
-        if version < 6:
-            self.__conn.executescript(self._DDL_MIGRATE_V6)
-            self.__conn.execute("UPDATE schema_version SET version=6")
-            version = 6
-        if version < 7:
-            for col_name, col_def in self._DDL_MIGRATE_V7_COLUMNS:
-                try:
-                    self.__conn.execute(
-                        f"ALTER TABLE tuner_core_states ADD COLUMN {col_name} {col_def}"
-                    )
-                except Exception:
-                    pass  # Column already exists from partial migration
-            self.__conn.execute("UPDATE schema_version SET version=7")
-            version = 7
-        if version < 8:
-            try:
-                self.__conn.execute(
-                    "ALTER TABLE tuner_core_states ADD COLUMN in_test INTEGER NOT NULL DEFAULT 0"
-                )
-            except Exception:
-                pass  # Column already exists
-            self.__conn.execute("UPDATE schema_version SET version=8")
-            version = 8
+        for target_version in range(version + 1, self.SCHEMA_VERSION + 1):
+            migration = self._MIGRATIONS.get(target_version)
+            if migration is None:
+                raise RuntimeError(f"Missing migration for version {target_version}")
+            if callable(migration):
+                migration(self.__conn)
+            else:
+                self.__conn.executescript(migration)
+            self.__conn.execute("UPDATE schema_version SET version=?", (target_version,))
 
-    # Full schema for fresh databases (v8)
-    _DDL_V7 = """\
+    # Full schema for fresh databases (current version)
+    _DDL_FRESH = ("""\
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
-INSERT OR IGNORE INTO schema_version (version) VALUES (8);
+INSERT OR IGNORE INTO schema_version (version) VALUES (__SCHEMA_VERSION__);
 
 CREATE TABLE IF NOT EXISTS tuning_contexts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -331,7 +301,7 @@ CREATE TABLE IF NOT EXISTS tuner_test_log (
     tested_at           TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tuner_log_session ON tuner_test_log(session_id, core_id);
-"""
+""").replace("__SCHEMA_VERSION__", str(SCHEMA_VERSION))
 
     # Migration from v1 to v2
     _DDL_MIGRATE_V2 = """\
@@ -425,6 +395,33 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
         ("backoff_fail_bound", "INTEGER"),
         ("backoff_pass_bound", "INTEGER"),
     ]
+
+    @staticmethod
+    def _migrate_v7(conn: sqlite3.Connection) -> None:
+        for col_name, col_def in HistoryDB._DDL_MIGRATE_V7_COLUMNS:
+            try:
+                conn.execute(f"ALTER TABLE tuner_core_states ADD COLUMN {col_name} {col_def}")
+            except Exception:
+                pass  # Column already exists from partial migration
+
+    @staticmethod
+    def _migrate_v8(conn: sqlite3.Connection) -> None:
+        try:
+            conn.execute(
+                "ALTER TABLE tuner_core_states ADD COLUMN in_test INTEGER NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass  # Column already exists
+
+    _MIGRATIONS: dict[int, str | callable] = {
+        2: _DDL_MIGRATE_V2,
+        3: _DDL_MIGRATE_V3,
+        4: _DDL_MIGRATE_V4,
+        5: _DDL_MIGRATE_V5,
+        6: _DDL_MIGRATE_V6,
+        7: _migrate_v7,
+        8: _migrate_v8,
+    }
 
     # ------------------------------------------------------------------
     # Helpers
@@ -975,7 +972,7 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
         )
 
     def get_tuner_core_states(self, session_id: int) -> dict[int, CoreState]:
-        from tuner.state import CoreState as _CoreState
+        from tuner.state import CoreState as _CoreState, TunerPhase as _TunerPhase
 
         rows = self.__conn.execute(
             "SELECT * FROM tuner_core_states WHERE session_id=? ORDER BY core_id",
@@ -985,7 +982,7 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
         for r in rows:
             result[r["core_id"]] = _CoreState(
                 core_id=r["core_id"],
-                phase=r["phase"],
+                phase=_TunerPhase(r["phase"]),
                 current_offset=r["current_offset"],
                 best_offset=r["best_offset"],
                 coarse_fail_offset=r["coarse_fail_offset"],
