@@ -709,16 +709,15 @@ class TunerTab(QWidget):
         self._update_core_row(core_id)
         grid_state = _PHASE_TO_GRID.get(phase, "pending")
 
-        # Override: if this core is actively being tested, show "testing"
+        # Only override to "testing" if this core is actively being tested.
+        # _active_test_core is cleared in _on_test_completed (which fires
+        # before _advance_core), so post-test state changes won't re-apply
+        # the "testing" highlight to a core that just finished.
         if core_id == self._active_test_core:
             grid_state = "testing"
 
         self.tuner_core_testing.emit(core_id, grid_state)
         self.tuner_core_info.emit(core_id, offset, phase)
-
-        # Only clear active core when it transitions to a terminal state
-        if core_id == self._active_test_core and phase in ("confirmed", "not_started"):
-            self._active_test_core = None
 
     @Slot(int)
     def _on_worker_started(self, core_id: int) -> None:
@@ -739,6 +738,12 @@ class TunerTab(QWidget):
 
     @Slot(int, int, bool)
     def _on_test_completed(self, core_id: int, offset: int, passed: bool) -> None:
+        # Clear active test core BEFORE advance_core emits core_state_changed.
+        # Without this, the state_changed handler still overrides to "testing"
+        # for the just-finished core, causing brief dual-highlight in the sidebar.
+        if self._active_test_core == core_id:
+            self._active_test_core = None
+            self._tuner_timer.stop()
         self._update_core_row(core_id)
         self._add_log_entry(core_id, offset, passed)
 
@@ -746,6 +751,8 @@ class TunerTab(QWidget):
     def _on_session_completed(self, profile_json: str) -> None:
         import json
         profile = json.loads(profile_json) if profile_json else {}
+        self._active_test_core = None
+        self._tuner_timer.stop()
         self._set_running_state(False)
         self._validate_btn.setEnabled(bool(profile))
         self._export_btn.setEnabled(bool(profile))

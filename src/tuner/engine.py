@@ -328,17 +328,19 @@ class TunerEngine(QObject):
                 )
                 self.co_drift_detected.emit(_json.dumps(drift))
 
-        # Step 1: Advance interrupted cores BEFORE touching SMU.
-        # Cores in active test phases crashed at their current_offset — that
-        # offset is potentially dangerous. Advance the state machine (treating
-        # the crash as a test failure) so it backs off to a safe value.
+        # Step 1: Advance ONLY the core that was actively being tested.
+        # The in_test flag is set when a test starts and cleared when it
+        # finishes. If the system crashed, the flag is still True for the
+        # core that was running — that core's offset is dangerous.
+        # Other cores in active phases (queued, not yet tested at their
+        # current_offset) must NOT be advanced — they haven't failed.
         for cs in list(self._core_states.values()):
-            if cs.phase in ("coarse_search", "fine_search", "confirming",
-                            "backoff_preconfirm", "backoff_confirming"):
+            if cs.in_test:
                 self.log_message.emit(
-                    f"Core {cs.core_id} was interrupted at offset {cs.current_offset} "
-                    f"— treating as failure and backing off"
+                    f"Core {cs.core_id} was actively testing at offset {cs.current_offset} "
+                    f"— treating crash as failure and backing off"
                 )
+                cs.in_test = False
                 self._advance_core(cs.core_id, passed=False)
 
         # Step 2: Restore all cores to their baseline offsets.
@@ -425,10 +427,12 @@ class TunerEngine(QObject):
                     self._worker.wait(3000)
             self._worker.deleteLater()
             self._worker = None
-        # Revert the tested core to baseline so no aggressive offset lingers
-        # in SMU after abort (prevents stale values if a new session starts
-        # without rebooting)
+        # Clear in_test flag and revert to baseline so no aggressive offset
+        # lingers in SMU after abort
         if tested_core is not None:
+            cs = self._core_states.get(tested_core)
+            if cs is not None:
+                cs.in_test = False
             self._revert_core_to_baseline(tested_core)
         self._validation_stage = 0
         self._set_status("idle")
@@ -835,6 +839,8 @@ class TunerEngine(QObject):
             self._advance_core(core_id, passed=False)  # → confirming
             cs = self._core_states[core_id]
         self._last_tested_core = core_id
+        cs.in_test = True
+        tp.save_core_state(self._db, self._session_id, cs)
         # Track per-CCD position for ccd_round_robin
         core_info = self._topology.cores.get(core_id)
         if core_info and core_info.ccd is not None:
@@ -942,6 +948,8 @@ class TunerEngine(QObject):
         cs = self._core_states.get(core_id)
         if cs is None:
             return
+
+        cs.in_test = False
 
         # Clock stretch check — if stress test "passed" but core was stretching
         # badly, treat it as a failure (CO too aggressive, voltage drooping)

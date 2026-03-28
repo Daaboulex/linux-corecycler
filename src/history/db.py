@@ -183,13 +183,22 @@ class HistoryDB:
                     pass  # Column already exists from partial migration
             self.__conn.execute("UPDATE schema_version SET version=7")
             version = 7
+        if version < 8:
+            try:
+                self.__conn.execute(
+                    "ALTER TABLE tuner_core_states ADD COLUMN in_test INTEGER NOT NULL DEFAULT 0"
+                )
+            except Exception:
+                pass  # Column already exists
+            self.__conn.execute("UPDATE schema_version SET version=8")
+            version = 8
 
-    # Full schema for fresh databases (v7)
+    # Full schema for fresh databases (v8)
     _DDL_V7 = """\
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
-INSERT OR IGNORE INTO schema_version (version) VALUES (7);
+INSERT OR IGNORE INTO schema_version (version) VALUES (8);
 
 CREATE TABLE IF NOT EXISTS tuning_contexts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -303,6 +312,7 @@ CREATE TABLE IF NOT EXISTS tuner_core_states (
     consecutive_backoff_fails INTEGER NOT NULL DEFAULT 0,
     backoff_fail_bound  INTEGER,
     backoff_pass_bound  INTEGER,
+    in_test             INTEGER NOT NULL DEFAULT 0,
     updated_at          TEXT    NOT NULL,
     UNIQUE(session_id, core_id)
 );
@@ -930,8 +940,8 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
                 (session_id, core_id, phase, current_offset, best_offset,
                  coarse_fail_offset, confirm_attempts, baseline_offset,
                  backoff_mode, consecutive_backoff_fails,
-                 backoff_fail_bound, backoff_pass_bound, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 backoff_fail_bound, backoff_pass_bound, in_test, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(session_id, core_id) DO UPDATE SET
                 phase=excluded.phase,
                 current_offset=excluded.current_offset,
@@ -943,6 +953,7 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
                 consecutive_backoff_fails=excluded.consecutive_backoff_fails,
                 backoff_fail_bound=excluded.backoff_fail_bound,
                 backoff_pass_bound=excluded.backoff_pass_bound,
+                in_test=excluded.in_test,
                 updated_at=excluded.updated_at
             """,
             (
@@ -958,6 +969,7 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
                 cs.consecutive_backoff_fails,
                 cs.backoff_fail_bound,
                 cs.backoff_pass_bound,
+                int(cs.in_test),
                 now,
             ),
         )
@@ -983,6 +995,7 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
                 consecutive_backoff_fails=r["consecutive_backoff_fails"],
                 backoff_fail_bound=r["backoff_fail_bound"],
                 backoff_pass_bound=r["backoff_pass_bound"],
+                in_test=bool(r["in_test"]) if "in_test" in r.keys() else False,
             )
         return result
 
