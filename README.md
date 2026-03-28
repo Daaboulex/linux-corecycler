@@ -25,7 +25,7 @@ CO instability often manifests at idle or during load transitions, not under sus
 ## Features
 
 - **Per-core stress test cycling** with configurable time, iterations, and cycle count per core
-- **Three per-core stress backends**: mprime (Prime95 CLI), stress-ng, and y-cruncher; plus stressapptest for dedicated memory stress testing (Memory tab only)
+- **Four stress backends**: mprime (Prime95 CLI), stress-ng, y-cruncher, and stressapptest — auto-discovered via backend registry
 - **Five test mode presets**: Quick (2 min/core), Standard (10 min), Thorough (30 min + 2 cycles), Full Spectrum (multi-pass with variable load and idle tests), and Custom
 - **Variable load testing**: periodically stops and restarts stress to catch load transition errors
 - **Idle stability testing**: monitors for MCE during idle periods between cores to catch C-state transition errors
@@ -680,7 +680,7 @@ Every state transition is committed to SQLite (WAL mode) before acting. If the s
 
 Resume follows a strict safety order to prevent infinite crash loops:
 
-1. **Advance interrupted cores first** -- any core that was mid-test (coarse search, fine search, or confirming) is treated as a failure and backed off *before* touching the SMU. This ensures the crashing offset is never re-applied.
+1. **Advance the interrupted core first** -- only the core that was actively testing (`in_test` flag persisted to DB) is treated as a failure and backed off *before* touching the SMU. Queued cores keep their exact state. This ensures the crashing offset is never re-applied, and queued cores don't skip untested offsets.
 2. **Restore all baselines** -- after all interrupted cores have been advanced, the tuner restores all cores to their baseline offsets from the database (not from SMU, which resets to zero on reboot). This returns the CPU to its known-stable BIOS configuration.
 3. **Continue with isolation** -- the tuner picks the next core and applies isolation (baseline all others, test offset on target only).
 
@@ -690,7 +690,7 @@ This ordering is critical: if the system crashed because a CO offset was too agg
 
 **Pause during validation:** pausing during validation saves the session as 'paused'. On resume, the tuner detects the all-confirmed state and re-enters validation from stage 1 (validation stage progress is not persisted across pause/resume — stages are fast enough that restarting from S1 is acceptable).
 
-**Per-core state machine:**
+**Per-core state machine** (phases are `TunerPhase` StrEnum — typos caught at import time):
 
 ```
 NOT_STARTED → COARSE_SEARCH → FINE_SEARCH → SETTLED → CONFIRMING → CONFIRMED
@@ -829,12 +829,14 @@ src/
     scheduler.py             # Per-core test cycling, variable load, idle tests, process management
     detector.py              # MCE detection via sysfs machinecheck + dmesg parsing
     backends/
-      base.py                # Abstract backend interface (StressBackend, StressConfig, StressResult)
+      __init__.py            # Backend auto-registry (register_backend decorator, get_backend factory)
+      base.py                # Abstract backend interface, shared constants (KILLED_BY_US_CODES, CRASH_SIGNALS)
       mprime.py              # Prime95 CLI backend (local.txt/prime.txt generation, output parsing)
       stress_ng.py           # stress-ng backend (cpu-method selection, verification)
       ycruncher.py           # y-cruncher backend (component stress mode)
+      stressapptest.py       # stressapptest backend (memory-intensive stress)
   smu/
-    commands.py              # SMU command IDs per CPU generation (14 gens, Zen 1 through Zen 5), CO argument encoding/decoding
+    commands.py              # SMU command IDs per CPU generation (Zen 1–5), encoding_scheme dispatch, command set aliasing
     driver.py                # ryzen_smu sysfs interface (CO, PBO limits, boost, scalar, system state)
     pmtable.py               # Version-aware PM table parsing: FCLK/UCLK/MCLK, voltages, ratio computation (Zen 2–5 offset registry)
   monitor/
@@ -845,7 +847,7 @@ src/
     power.py                 # Package power (RAPL sysfs preferred, hwmon zenpower/zenpower5/k10temp fallback)
     msr.py                   # MSR reader (root): APERF/MPERF clock stretch, per-core RAPL power
   history/
-    db.py                    # SQLite WAL-mode database: schema migrations (v1-v7), run/context/tuner tables
+    db.py                    # SQLite WAL-mode database: migration registry (v1-v8), SCHEMA_VERSION constant, run/context/tuner tables
     context.py               # Tuning context detection (BIOS version + CO snapshot grouping)
     logger.py                # TestRunLogger: connects worker signals to DB writes
     export.py                # JSON/CSV export of test results and tuner sessions
@@ -854,7 +856,7 @@ src/
   tuner/
     __init__.py              # Package re-exports
     config.py                # TunerConfig dataclass (14 search parameters with defaults)
-    state.py                 # CoreState and TunerSession dataclasses
+    state.py                 # TunerPhase StrEnum, CoreState and TunerSession dataclasses
     persistence.py           # SQLite operations: session CRUD, core state upsert, test log
     engine.py                # TunerEngine orchestrator: state machine, core scheduling, crash recovery, 3-stage validation
   gui/
@@ -933,7 +935,13 @@ ruff check src/
 ruff format src/
 ```
 
-When adding a new stress test backend, subclass `StressBackend` from `src/engine/backends/base.py` and implement the required methods (`is_available`, `get_command`, `parse_output`, `get_supported_modes`). Register it in `MainWindow._get_backend()`.
+When adding a new stress test backend:
+
+1. Create `src/engine/backends/<name>.py` — subclass `StressBackend` from `base.py`
+2. Implement `is_available`, `get_command`, `parse_output`, `get_supported_modes`
+3. Add `@register_backend("display-name")` decorator — the GUI discovers it automatically
+
+No GUI files need editing. The backend registry auto-populates combo boxes and factory lookups.
 
 ## Driver and Kernel Module Sources
 
