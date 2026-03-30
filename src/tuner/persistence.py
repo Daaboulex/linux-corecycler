@@ -77,10 +77,14 @@ def log_test_result(
     error_type: str | None = None,
     duration: float | None = None,
     run_id: int | None = None,
+    backend: str | None = None,
+    stress_mode: str | None = None,
+    fft_preset: str | None = None,
 ) -> int:
     return db.insert_tuner_test_log(
         session_id, core_id, offset, phase, passed,
         error_msg, error_type, duration, run_id,
+        backend=backend, stress_mode=stress_mode, fft_preset=fft_preset,
     )
 
 
