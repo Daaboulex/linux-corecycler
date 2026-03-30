@@ -217,3 +217,45 @@ class TestSchemaMigration:
     def test_schema_version_is_current(self, db):
         version = db._execute_raw("SELECT version FROM schema_version").fetchone()[0]
         assert version == HistoryDB.SCHEMA_VERSION
+
+
+class TestSchemaV9:
+    def test_schema_version_is_9(self, tmp_path):
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            row = db._execute_raw("SELECT version FROM schema_version").fetchone()
+            assert row[0] == 9
+        finally:
+            db.close()
+
+    def test_core_state_crash_fields_persist(self, tmp_path):
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            cs = CoreState(core_id=0, crash_count=2, crash_cooldown=1,
+                           cumulative_test_time=3600.5, hardening_tier_index=1)
+            db.upsert_tuner_core_state(sid, cs)
+            states = db.get_tuner_core_states(sid)
+            assert states[0].crash_count == 2
+            assert states[0].crash_cooldown == 1
+            assert abs(states[0].cumulative_test_time - 3600.5) < 0.01
+            assert states[0].hardening_tier_index == 1
+        finally:
+            db.close()
+
+    def test_test_log_has_backend_fields(self, tmp_path):
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            log_id = db.insert_tuner_test_log(
+                sid, core_id=0, offset=-30, phase="hardening_t1",
+                passed=True, error_msg=None, error_type=None,
+                duration=300.0, run_id=None,
+                backend="mprime", stress_mode="AVX2", fft_preset="SMALL",
+            )
+            logs = db.get_tuner_test_log(sid)
+            assert logs[0]["backend"] == "mprime"
+            assert logs[0]["stress_mode"] == "AVX2"
+            assert logs[0]["fft_preset"] == "SMALL"
+        finally:
+            db.close()

@@ -121,7 +121,7 @@ class TelemetrySample:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 8
+    SCHEMA_VERSION = 9
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -283,6 +283,10 @@ CREATE TABLE IF NOT EXISTS tuner_core_states (
     backoff_fail_bound  INTEGER,
     backoff_pass_bound  INTEGER,
     in_test             INTEGER NOT NULL DEFAULT 0,
+    crash_count         INTEGER NOT NULL DEFAULT 0,
+    crash_cooldown      INTEGER NOT NULL DEFAULT 0,
+    cumulative_test_time REAL   NOT NULL DEFAULT 0.0,
+    hardening_tier_index INTEGER NOT NULL DEFAULT 0,
     updated_at          TEXT    NOT NULL,
     UNIQUE(session_id, core_id)
 );
@@ -298,6 +302,9 @@ CREATE TABLE IF NOT EXISTS tuner_test_log (
     error_type          TEXT,
     duration_seconds    REAL,
     run_id              INTEGER REFERENCES runs(id),
+    backend             TEXT,
+    stress_mode         TEXT,
+    fft_preset          TEXT,
     tested_at           TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tuner_log_session ON tuner_test_log(session_id, core_id);
@@ -413,6 +420,16 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
         except Exception:
             pass  # Column already exists
 
+    _DDL_MIGRATE_V9 = """\
+ALTER TABLE tuner_core_states ADD COLUMN crash_count INTEGER DEFAULT 0;
+ALTER TABLE tuner_core_states ADD COLUMN crash_cooldown INTEGER DEFAULT 0;
+ALTER TABLE tuner_core_states ADD COLUMN cumulative_test_time REAL DEFAULT 0.0;
+ALTER TABLE tuner_core_states ADD COLUMN hardening_tier_index INTEGER DEFAULT 0;
+ALTER TABLE tuner_test_log ADD COLUMN backend TEXT;
+ALTER TABLE tuner_test_log ADD COLUMN stress_mode TEXT;
+ALTER TABLE tuner_test_log ADD COLUMN fft_preset TEXT;
+"""
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _DDL_MIGRATE_V2,
         3: _DDL_MIGRATE_V3,
@@ -421,6 +438,7 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
         6: _DDL_MIGRATE_V6,
         7: _migrate_v7,
         8: _migrate_v8,
+        9: _DDL_MIGRATE_V9,
     }
 
     # ------------------------------------------------------------------
@@ -937,8 +955,10 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
                 (session_id, core_id, phase, current_offset, best_offset,
                  coarse_fail_offset, confirm_attempts, baseline_offset,
                  backoff_mode, consecutive_backoff_fails,
-                 backoff_fail_bound, backoff_pass_bound, in_test, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 backoff_fail_bound, backoff_pass_bound, in_test,
+                 crash_count, crash_cooldown, cumulative_test_time,
+                 hardening_tier_index, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(session_id, core_id) DO UPDATE SET
                 phase=excluded.phase,
                 current_offset=excluded.current_offset,
@@ -951,6 +971,10 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
                 backoff_fail_bound=excluded.backoff_fail_bound,
                 backoff_pass_bound=excluded.backoff_pass_bound,
                 in_test=excluded.in_test,
+                crash_count=excluded.crash_count,
+                crash_cooldown=excluded.crash_cooldown,
+                cumulative_test_time=excluded.cumulative_test_time,
+                hardening_tier_index=excluded.hardening_tier_index,
                 updated_at=excluded.updated_at
             """,
             (
@@ -967,6 +991,10 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
                 cs.backoff_fail_bound,
                 cs.backoff_pass_bound,
                 int(cs.in_test),
+                cs.crash_count,
+                cs.crash_cooldown,
+                cs.cumulative_test_time,
+                cs.hardening_tier_index,
                 now,
             ),
         )
@@ -993,6 +1021,10 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
                 backoff_fail_bound=r["backoff_fail_bound"],
                 backoff_pass_bound=r["backoff_pass_bound"],
                 in_test=bool(r["in_test"]) if "in_test" in r.keys() else False,
+                crash_count=r["crash_count"] or 0,
+                crash_cooldown=r["crash_cooldown"] or 0,
+                cumulative_test_time=r["cumulative_test_time"] or 0.0,
+                hardening_tier_index=r["hardening_tier_index"] or 0,
             )
         return result
 
@@ -1007,13 +1039,17 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
         error_type: str | None = None,
         duration: float | None = None,
         run_id: int | None = None,
+        backend: str | None = None,
+        stress_mode: str | None = None,
+        fft_preset: str | None = None,
     ) -> int:
         cur = self.__conn.execute(
             """\
             INSERT INTO tuner_test_log
                 (session_id, core_id, offset_tested, phase, passed,
-                 error_message, error_type, duration_seconds, run_id, tested_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+                 error_message, error_type, duration_seconds, run_id,
+                 backend, stress_mode, fft_preset, tested_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 session_id,
@@ -1025,6 +1061,9 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
                 error_type,
                 duration,
                 run_id,
+                backend,
+                stress_mode,
+                fft_preset,
                 self._now_iso(),
             ),
         )
