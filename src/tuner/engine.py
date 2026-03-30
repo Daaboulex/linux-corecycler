@@ -780,8 +780,27 @@ class TunerEngine(QObject):
             return
         cs.cumulative_test_time += duration
 
+    def _is_core_available(self, cs: CoreState) -> bool:
+        """Check if core is available for testing (not done, not in cooldown)."""
+        if cs.crash_cooldown > 0:
+            return False
+        if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED):
+            return False
+        return True
+
+    def _decrement_cooldowns(self, picked_core: int) -> None:
+        """Decrement crash cooldown for all cores except the one being tested."""
+        for cs in self._core_states.values():
+            if cs.core_id != picked_core and cs.crash_cooldown > 0:
+                cs.crash_cooldown -= 1
+
     def _pick_next_core(self) -> int | None:
-        """Select next core to test based on test_order config."""
+        """Select next core to test based on test_order config.
+
+        Returns None if all cores are done (CONFIRMED/HARDENED) or all remaining
+        active cores are in crash cooldown. Callers must distinguish these cases
+        by checking whether any cooldown cores exist.
+        """
         match self._config.test_order:
             case "sequential":
                 return self._pick_sequential()
@@ -798,15 +817,15 @@ class TunerEngine(QObject):
 
     def _pick_sequential(self) -> int | None:
         """Finish each core completely before moving to next (pure selector)."""
-        # Pass 1: active phases (not confirmed, not settled)
+        # Pass 1: active phases (not confirmed, not settled, not in cooldown)
         for core_id in sorted(self._core_states.keys()):
             cs = self._core_states[core_id]
-            if cs.phase not in (TunerPhase.CONFIRMED, TunerPhase.SETTLED):
+            if cs.phase not in (TunerPhase.CONFIRMED, TunerPhase.HARDENED, TunerPhase.SETTLED) and self._is_core_available(cs):
                 return core_id
-        # Pass 2: settled cores needing confirmation
+        # Pass 2: settled cores needing confirmation (not in cooldown)
         for core_id in sorted(self._core_states.keys()):
             cs = self._core_states[core_id]
-            if cs.phase == TunerPhase.SETTLED:
+            if cs.phase == TunerPhase.SETTLED and self._is_core_available(cs):
                 return core_id
         return None
 
@@ -814,7 +833,7 @@ class TunerEngine(QObject):
         """Cycle through all cores, one test each per round (pure selector)."""
         active = sorted(
             cid for cid, cs in self._core_states.items()
-            if cs.phase != TunerPhase.CONFIRMED
+            if self._is_core_available(cs)
         )
         if not active:
             return None
@@ -825,17 +844,24 @@ class TunerEngine(QObject):
         return active[0]
 
     def _pick_weakest_first(self) -> int | None:
-        """Prioritize cores closest to settling (pure selector)."""
+        """Prioritize cores closest to settling (pure selector).
+
+        Scoring: lower score = higher priority. Crash history adds penalty
+        of crash_count * 2 to deprioritize repeatedly-crashing cores.
+        """
         candidates = []
         for core_id, cs in self._core_states.items():
-            if cs.phase == TunerPhase.CONFIRMED:
+            if not self._is_core_available(cs):
                 continue
-            score = {
+            base_phase_score = {
                 TunerPhase.FINE_SEARCH: 0, TunerPhase.FAILED_CONFIRM: 0,
                 TunerPhase.BACKOFF_PRECONFIRM: 0, TunerPhase.BACKOFF_CONFIRMING: 1,
                 TunerPhase.CONFIRMING: 1, TunerPhase.COARSE_SEARCH: 2,
                 TunerPhase.SETTLED: 3, TunerPhase.NOT_STARTED: 4,
+                TunerPhase.HARDENING_T1: 0,
+                TunerPhase.HARDENING_T2: 0,
             }.get(cs.phase, 5)
+            score = base_phase_score + (cs.crash_count * 2)
             candidates.append((score, core_id))
         if not candidates:
             return None
@@ -846,7 +872,7 @@ class TunerEngine(QObject):
         """Alternate between CCDs: picks from the CCD with fewest confirmed cores."""
         ccd_cores: dict[int, list[int]] = {}
         for core_id, cs in self._core_states.items():
-            if cs.phase == TunerPhase.CONFIRMED:
+            if not self._is_core_available(cs):
                 continue
             core_info = self._topology.cores.get(core_id)
             ccd = core_info.ccd if core_info and core_info.ccd is not None else 0
@@ -862,7 +888,7 @@ class TunerEngine(QObject):
         for core_id, cs in self._core_states.items():
             core_info = self._topology.cores.get(core_id)
             ccd = core_info.ccd if core_info and core_info.ccd is not None else 0
-            if cs.phase == TunerPhase.CONFIRMED:
+            if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED):
                 ccd_confirmed[ccd] = ccd_confirmed.get(ccd, 0) + 1
 
         sorted_ccds = sorted(ccd_cores.keys(), key=lambda c: ccd_confirmed.get(c, 0))
@@ -876,7 +902,7 @@ class TunerEngine(QObject):
         """
         ccd_cores: dict[int, list[int]] = {}
         for core_id, cs in self._core_states.items():
-            if cs.phase == TunerPhase.CONFIRMED:
+            if not self._is_core_available(cs):
                 continue
             core_info = self._topology.cores.get(core_id)
             ccd = core_info.ccd if core_info and core_info.ccd is not None else 0
@@ -935,9 +961,23 @@ class TunerEngine(QObject):
 
         core_id = self._pick_next_core()
         if core_id is None:
+            # Distinguish "all done" from "all active cores in cooldown"
+            in_cooldown = any(
+                cs.crash_cooldown > 0
+                and cs.phase not in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
+                for cs in self._core_states.values()
+            )
+            if in_cooldown:
+                # Decrement all cooldowns by 1 and retry immediately
+                for cs in self._core_states.values():
+                    if cs.crash_cooldown > 0:
+                        cs.crash_cooldown -= 1
+                self._run_next()
+                return
             self._complete_session()
             return
 
+        self._decrement_cooldowns(core_id)
         cs = self._core_states[core_id]
         if cs.phase == TunerPhase.NOT_STARTED:
             self._advance_core(core_id, passed=False)  # → coarse_search

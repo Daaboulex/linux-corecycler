@@ -1196,3 +1196,133 @@ class TestDeathSpiralPrevention:
             assert cs.cumulative_test_time == 60.0, (
                 f"Phase {phase} should accumulate time"
             )
+
+
+class TestCrashAwareScheduling:
+    """Tests for crash cooldown and crash history in core scheduling."""
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=5, fine_step=1, max_offset=-30, cores_to_test=[0, 1, 2])
+        defaults.update(cfg_kwargs)
+        cfg = TunerConfig(**defaults)
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        eng._session_id = tp.create_session(db, cfg, "", "")
+        return eng
+
+    def test_cooldown_skips_core(self, db, simple_topology, mock_smu, mock_backend):
+        """Core with crash_cooldown > 0 is skipped by picker."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                test_order="sequential")
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
+                         crash_cooldown=2),
+            1: CoreState(core_id=1, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
+                         crash_cooldown=0),
+        }
+        picked = eng._pick_next_core()
+        # Core 0 has cooldown, so core 1 should be picked
+        assert picked == 1
+
+    def test_cooldown_decrements(self, db, simple_topology, mock_smu, mock_backend):
+        """Cooldown decrements when another core is tested."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
+                         crash_cooldown=2),
+            1: CoreState(core_id=1, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
+                         crash_cooldown=0),
+        }
+        # Decrement cooldowns for all except core 1 (which is being tested)
+        eng._decrement_cooldowns(picked_core=1)
+        assert eng._core_states[0].crash_cooldown == 1
+        # Core being tested is not decremented
+        assert eng._core_states[1].crash_cooldown == 0
+
+    def test_weakest_first_penalizes_crashed_cores(self, db, simple_topology, mock_smu, mock_backend):
+        """Cores with crash history are scored lower (higher score) in weakest_first."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                test_order="weakest_first")
+        eng._core_states = {
+            # Core 0: fine_search (score 0) but has crash_count=1, so score = 0 + 2 = 2
+            0: CoreState(core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-6,
+                         best_offset=-5, coarse_fail_offset=-10, crash_count=1),
+            # Core 1: coarse_search (score 2), no crashes, so score = 2 + 0 = 2
+            1: CoreState(core_id=1, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
+                         crash_count=0),
+            # Core 2: not_started (score 4), no crashes
+            2: CoreState(core_id=2, phase=TunerPhase.NOT_STARTED, crash_count=0),
+        }
+        picked = eng._pick_next_core()
+        # Core 1 has score 2 (coarse, no crash), core 0 has score 2 (fine + crash penalty)
+        # Both score 2, so lowest core_id (0 vs 1) — but actually core 1 should be preferred
+        # because tie-breaking by core_id: 0 < 1, so core 0 wins unless penalty moves it up.
+        # With crash penalty: core 0 fine_search=0 + crash_count*2=2 → score 2
+        # core 1 coarse_search=2 + 0 = 2. Tie broken by core_id: core 0 picked.
+        # Let's instead verify that a heavily crashed core gets deprioritized vs a fresh core
+        # with the same base phase.
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-6,
+                         best_offset=-5, coarse_fail_offset=-10, crash_count=3),
+            1: CoreState(core_id=1, phase=TunerPhase.FINE_SEARCH, current_offset=-6,
+                         best_offset=-5, coarse_fail_offset=-10, crash_count=0),
+        }
+        picked = eng._pick_next_core()
+        # Core 0: score = 0 (fine) + 3*2 = 6
+        # Core 1: score = 0 (fine) + 0*2 = 0 → core 1 should be picked
+        assert picked == 1
+
+    def test_all_cores_in_cooldown_returns_none(self, db, simple_topology, mock_smu, mock_backend):
+        """If all active cores are in cooldown, _pick_next_core returns None."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                test_order="sequential")
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
+                         crash_cooldown=1),
+            1: CoreState(core_id=1, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
+                         crash_cooldown=2),
+        }
+        picked = eng._pick_next_core()
+        assert picked is None
+
+    def test_cooldown_does_not_skip_confirmed_cores(self, db, simple_topology, mock_smu, mock_backend):
+        """Confirmed cores are already excluded regardless of cooldown."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                test_order="sequential")
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-20,
+                         best_offset=-20, crash_cooldown=0),
+            1: CoreState(core_id=1, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
+                         crash_cooldown=0),
+        }
+        picked = eng._pick_next_core()
+        assert picked == 1
+
+    def test_is_core_available_confirmed_returns_false(self, db, simple_topology, mock_smu, mock_backend):
+        """CONFIRMED phase cores are not available."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-20,
+                       best_offset=-20)
+        assert eng._is_core_available(cs) is False
+
+    def test_is_core_available_hardened_returns_false(self, db, simple_topology, mock_smu, mock_backend):
+        """HARDENED phase cores are not available."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.HARDENED, current_offset=-20)
+        assert eng._is_core_available(cs) is False
+
+    def test_is_core_available_cooldown_returns_false(self, db, simple_topology, mock_smu, mock_backend):
+        """Cores with crash_cooldown > 0 are not available."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
+                       crash_cooldown=1)
+        assert eng._is_core_available(cs) is False
+
+    def test_is_core_available_active_no_cooldown_returns_true(self, db, simple_topology, mock_smu, mock_backend):
+        """Active core with no cooldown is available."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
+                       crash_cooldown=0)
+        assert eng._is_core_available(cs) is True
