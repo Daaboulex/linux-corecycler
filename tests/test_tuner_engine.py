@@ -154,7 +154,7 @@ class TestStateMachineTransitions:
         assert cs.current_offset == -8
 
     def test_confirm_pass_marks_confirmed(self, db, simple_topology, mock_smu, mock_backend):
-        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, hardening_tiers=[])
         cs = CoreState(core_id=0, phase=TunerPhase.CONFIRMING, current_offset=-8, best_offset=-8)
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=True)
@@ -656,7 +656,7 @@ class TestBackoffAlgorithm:
         assert cs.consecutive_backoff_fails == 1
 
     def test_backoff_confirming_pass_confirms(self, db, simple_topology, mock_smu, mock_backend):
-        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, hardening_tiers=[])
         cs = CoreState(
             core_id=0, phase=TunerPhase.BACKOFF_CONFIRMING, current_offset=-7,
             best_offset=-7, backoff_mode=True,
@@ -744,7 +744,7 @@ class TestBackoffAlgorithm:
         assert cs.best_offset == -6  # -7 - (-1)*1 = -6
 
     def test_binary_search_converges(self, db, simple_topology, mock_smu, mock_backend):
-        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, hardening_tiers=[])
         cs = CoreState(
             core_id=0, phase=TunerPhase.BACKOFF_CONFIRMING, current_offset=-6,
             best_offset=-6, backoff_mode=True,
@@ -1326,3 +1326,205 @@ class TestCrashAwareScheduling:
         cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
                        crash_cooldown=0)
         assert eng._is_core_available(cs) is True
+
+
+class TestHardeningTransitions:
+    """Tests for hardening phase state transitions in _advance_core."""
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=5, fine_step=1, max_offset=-30, cores_to_test=[0])
+        defaults.update(cfg_kwargs)
+        cfg = TunerConfig(**defaults)
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        eng._session_id = tp.create_session(db, cfg, "", "")
+        return eng
+
+    def test_confirmed_enters_hardening_t1(self, db, simple_topology, mock_smu, mock_backend):
+        """CONFIRMING pass with hardening_tiers transitions to HARDENING_T1."""
+        tiers = [
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+        ]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                hardening_tiers=tiers)
+        cs = CoreState(core_id=0, phase=TunerPhase.CONFIRMING, current_offset=-8, best_offset=-8)
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        assert cs.phase == TunerPhase.HARDENING_T1
+        assert cs.hardening_tier_index == 0
+
+    def test_confirmed_skips_hardening_when_no_tiers(self, db, simple_topology, mock_smu, mock_backend):
+        """CONFIRMING pass with empty hardening_tiers stays CONFIRMED."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                hardening_tiers=[])
+        cs = CoreState(core_id=0, phase=TunerPhase.CONFIRMING, current_offset=-8, best_offset=-8)
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        assert cs.phase == TunerPhase.CONFIRMED
+
+    def test_hardening_t1_pass_enters_t2(self, db, simple_topology, mock_smu, mock_backend):
+        """HARDENING_T1 pass with 2 tiers transitions to HARDENING_T2."""
+        tiers = [
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "LARGE"},
+        ]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                hardening_tiers=tiers)
+        cs = CoreState(core_id=0, phase=TunerPhase.HARDENING_T1, current_offset=-8,
+                       best_offset=-8, hardening_tier_index=0)
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        assert cs.phase == TunerPhase.HARDENING_T2
+        assert cs.hardening_tier_index == 1
+
+    def test_hardening_t2_pass_becomes_hardened(self, db, simple_topology, mock_smu, mock_backend):
+        """Last hardening tier pass transitions to HARDENED."""
+        tiers = [
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "LARGE"},
+        ]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                hardening_tiers=tiers)
+        cs = CoreState(core_id=0, phase=TunerPhase.HARDENING_T2, current_offset=-8,
+                       best_offset=-8, hardening_tier_index=1)
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        assert cs.phase == TunerPhase.HARDENED
+
+    def test_hardening_t1_fail_backs_off_retries_t1(self, db, simple_topology, mock_smu, mock_backend):
+        """HARDENING_T1 fail backs off by fine_step and retries T1."""
+        tiers = [
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "LARGE"},
+        ]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                fine_step=1, hardening_tiers=tiers)
+        cs = CoreState(core_id=0, phase=TunerPhase.HARDENING_T1, current_offset=-8,
+                       best_offset=-8, baseline_offset=0, hardening_tier_index=0)
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        # Back off: -8 - ((-1)*1) = -7
+        assert cs.phase == TunerPhase.HARDENING_T1
+        assert cs.current_offset == -7
+        assert cs.best_offset == -7
+        assert cs.hardening_tier_index == 0  # stays at T1
+
+    def test_hardening_t2_fail_retries_t2_not_t1(self, db, simple_topology, mock_smu, mock_backend):
+        """HARDENING_T2 fail backs off and retries T2 (T1 carries forward)."""
+        tiers = [
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "LARGE"},
+        ]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                fine_step=1, hardening_tiers=tiers)
+        cs = CoreState(core_id=0, phase=TunerPhase.HARDENING_T2, current_offset=-8,
+                       best_offset=-8, baseline_offset=0, hardening_tier_index=1)
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        # Back off: -8 - ((-1)*1) = -7; stays at T2 (tier_index=1)
+        assert cs.phase == TunerPhase.HARDENING_T2
+        assert cs.current_offset == -7
+        assert cs.best_offset == -7
+        assert cs.hardening_tier_index == 1  # stays at T2
+
+    def test_hardening_backoff_at_baseline_settles(self, db, simple_topology, mock_smu, mock_backend):
+        """Hardening backoff reaching baseline settles core as HARDENED at baseline."""
+        tiers = [
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+        ]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                fine_step=1, hardening_tiers=tiers)
+        cs = CoreState(core_id=0, phase=TunerPhase.HARDENING_T1, current_offset=-1,
+                       best_offset=-1, baseline_offset=0, hardening_tier_index=0)
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        # Back off: -1 - ((-1)*1) = 0 = baseline → settle as HARDENED
+        assert cs.phase == TunerPhase.HARDENED
+        assert cs.current_offset == 0
+        assert cs.best_offset == 0
+
+    def test_get_active_stress_config_returns_tier_during_hardening(
+        self, db, simple_topology, mock_smu, mock_backend
+    ):
+        """During hardening, _get_active_stress_config returns the tier's config."""
+        tiers = [
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "LARGE"},
+        ]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                hardening_tiers=tiers)
+        cs = CoreState(core_id=0, phase=TunerPhase.HARDENING_T2, current_offset=-8,
+                       hardening_tier_index=1)
+        backend, mode, fft = eng._get_active_stress_config(cs)
+        assert backend == "mprime"
+        assert mode == "SSE"
+        assert fft == "LARGE"
+
+    def test_get_active_stress_config_returns_primary_during_search(
+        self, db, simple_topology, mock_smu, mock_backend
+    ):
+        """During search/confirm, _get_active_stress_config returns primary backend config."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                backend="mprime", stress_mode="SSE", fft_preset="SMALL")
+        cs = CoreState(core_id=0, phase=TunerPhase.CONFIRMING, current_offset=-8)
+        backend, mode, fft = eng._get_active_stress_config(cs)
+        assert backend == "mprime"
+        assert mode == "SSE"
+        assert fft == "SMALL"
+
+    def test_backoff_confirming_pass_enters_hardening_when_tiers(
+        self, db, simple_topology, mock_smu, mock_backend
+    ):
+        """BACKOFF_CONFIRMING pass with tiers should enter HARDENING_T1 (not CONFIRMED)."""
+        tiers = [
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+        ]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                hardening_tiers=tiers)
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.BACKOFF_CONFIRMING, current_offset=-7,
+            best_offset=-7, backoff_mode=True,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        assert cs.phase == TunerPhase.HARDENING_T1
+        assert cs.hardening_tier_index == 0
+
+    def test_complete_session_requires_hardened_when_tiers_configured(
+        self, db, simple_topology, mock_smu, mock_backend
+    ):
+        """With hardening_tiers configured, all cores must reach HARDENED to complete."""
+        tiers = [
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+        ]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                hardening_tiers=tiers, cores_to_test=[0, 1])
+        eng._set_status("running")
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.HARDENED, current_offset=-8, best_offset=-8),
+            1: CoreState(core_id=1, phase=TunerPhase.CONFIRMED, current_offset=-6, best_offset=-6),
+        }
+        completed = []
+        eng.session_completed.connect(lambda x: completed.append(x))
+        eng._complete_session()
+        # Core 1 is only CONFIRMED, not HARDENED, so session should NOT complete yet
+        assert len(completed) == 0
+
+    def test_complete_session_no_tiers_confirmed_is_done(
+        self, db, simple_topology, mock_smu, mock_backend
+    ):
+        """Without hardening_tiers, CONFIRMED cores complete the session."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                hardening_tiers=[], cores_to_test=[0, 1],
+                                auto_validate=False)
+        eng._set_status("running")
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-8, best_offset=-8),
+            1: CoreState(core_id=1, phase=TunerPhase.CONFIRMED, current_offset=-6, best_offset=-6),
+        }
+        completed = []
+        eng.session_completed.connect(lambda x: completed.append(x))
+        eng._complete_session()
+        assert len(completed) == 1
