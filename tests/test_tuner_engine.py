@@ -819,6 +819,214 @@ class TestBackoffAlgorithm:
         assert cs.consecutive_backoff_fails >= 2 or cs.current_offset != -10
 
 
+class TestCrashDetection:
+    """Tests for _apply_crash_penalty, _is_more_aggressive, and _detect_and_handle_crashes."""
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=5, fine_step=1, max_offset=-30, cores_to_test=[0, 1])
+        defaults.update(cfg_kwargs)
+        cfg = TunerConfig(**defaults)
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        eng._session_id = tp.create_session(db, cfg, "", "")
+        return eng
+
+    def test_is_more_aggressive_negative_direction(self, db, simple_topology, mock_smu, mock_backend):
+        """For direction=-1, more negative = more aggressive."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, direction=-1)
+        assert eng._is_more_aggressive(-30, -20) is True
+        assert eng._is_more_aggressive(-20, -30) is False
+        assert eng._is_more_aggressive(-20, -20) is False
+
+    def test_is_more_aggressive_positive_direction(self, db, simple_topology, mock_smu, mock_backend):
+        """For direction=+1, more positive = more aggressive."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, direction=1, max_offset=30)
+        assert eng._is_more_aggressive(30, 20) is True
+        assert eng._is_more_aggressive(20, 30) is False
+        assert eng._is_more_aggressive(20, 20) is False
+
+    def test_crash_penalty_backoff(self, db, simple_topology, mock_smu, mock_backend):
+        """After crash, offset backs off by crash_penalty_steps * fine_step."""
+        eng = self._make_engine(
+            db, simple_topology, mock_smu, mock_backend,
+            direction=-1, fine_step=1, crash_penalty_steps=3,
+        )
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH,
+            current_offset=-30, best_offset=-28, in_test=True,
+        )
+        eng._core_states = {0: cs}
+        eng._apply_crash_penalty(cs)
+        # -30 - ((-1) * 3 * 1) = -30 + 3 = -27
+        assert cs.current_offset == -27
+
+    def test_crash_sets_hard_fail_bound(self, db, simple_topology, mock_smu, mock_backend):
+        """Crashed offset becomes hard fail_bound."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH,
+            current_offset=-30, best_offset=-28, in_test=True,
+            backoff_fail_bound=None,
+        )
+        eng._core_states = {0: cs}
+        eng._apply_crash_penalty(cs)
+        assert cs.backoff_fail_bound == -30
+
+    def test_crash_does_not_overwrite_less_aggressive_fail_bound(self, db, simple_topology, mock_smu, mock_backend):
+        """fail_bound is only updated if the crashed offset is MORE aggressive."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH,
+            current_offset=-20, best_offset=-15, in_test=True,
+            backoff_fail_bound=-30,  # existing bound is already more aggressive
+        )
+        eng._core_states = {0: cs}
+        eng._apply_crash_penalty(cs)
+        # -30 is more aggressive than -20, so it stays
+        assert cs.backoff_fail_bound == -30
+
+    def test_crash_increments_count_and_cooldown(self, db, simple_topology, mock_smu, mock_backend):
+        """Crash increments crash_count and sets crash_cooldown=2."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH,
+            current_offset=-30, in_test=True,
+        )
+        eng._core_states = {0: cs}
+        eng._apply_crash_penalty(cs)
+        assert cs.crash_count == 1
+        assert cs.crash_cooldown == 2
+
+    def test_crash_enters_backoff_from_coarse_search(self, db, simple_topology, mock_smu, mock_backend):
+        """Crash during coarse_search enters BACKOFF_PRECONFIRM."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH,
+            current_offset=-10, in_test=True,
+        )
+        eng._core_states = {0: cs}
+        eng._apply_crash_penalty(cs)
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
+        assert cs.backoff_mode is True
+
+    def test_crash_enters_backoff_from_fine_search(self, db, simple_topology, mock_smu, mock_backend):
+        """Crash during fine_search enters BACKOFF_PRECONFIRM."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.FINE_SEARCH,
+            current_offset=-10, in_test=True,
+        )
+        eng._core_states = {0: cs}
+        eng._apply_crash_penalty(cs)
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
+        assert cs.backoff_mode is True
+
+    def test_crash_penalty_clamps_to_baseline(self, db, simple_topology, mock_smu, mock_backend):
+        """Penalty that overshoots past baseline is clamped to baseline."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, crash_penalty_steps=10)
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH,
+            current_offset=-2, baseline_offset=0, in_test=True,
+        )
+        eng._core_states = {0: cs}
+        eng._apply_crash_penalty(cs)
+        # -2 - ((-1) * 10 * 1) = -2 + 10 = 8 → past baseline(0), clamp to 0
+        assert cs.current_offset == 0
+
+    def test_detect_and_handle_crashes_returns_crashed_ids(self, db, simple_topology, mock_smu, mock_backend):
+        """_detect_and_handle_crashes returns list of crashed core IDs."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, in_test=True),
+            1: CoreState(core_id=1, phase=TunerPhase.FINE_SEARCH, current_offset=-8, in_test=False),
+        }
+        crashed = eng._detect_and_handle_crashes(eng._core_states)
+        assert crashed == [0]
+
+    def test_detect_and_handle_crashes_clears_in_test(self, db, simple_topology, mock_smu, mock_backend):
+        """After crash detection, in_test is cleared."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, in_test=True)
+        eng._core_states = {0: cs}
+        eng._detect_and_handle_crashes(eng._core_states)
+        assert cs.in_test is False
+
+    def test_detect_and_handle_crashes_applies_penalty(self, db, simple_topology, mock_smu, mock_backend):
+        """Crash detection applies penalty (not just a plain failure advance)."""
+        eng = self._make_engine(
+            db, simple_topology, mock_smu, mock_backend,
+            crash_penalty_steps=3, fine_step=1,
+        )
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH,
+            current_offset=-15, in_test=True,
+        )
+        eng._core_states = {0: cs}
+        eng._detect_and_handle_crashes(eng._core_states)
+        # Penalty: -15 - ((-1)*3*1) = -15 + 3 = -12
+        assert cs.current_offset == -12
+        assert cs.crash_count == 1
+        assert cs.crash_cooldown == 2
+
+    def test_detect_and_handle_crashes_logs_to_db(self, db, simple_topology, mock_smu, mock_backend):
+        """Crash detection writes a synthetic crash event to the DB."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH,
+            current_offset=-10, in_test=True,
+        )
+        eng._core_states = {0: cs}
+        eng._detect_and_handle_crashes(eng._core_states)
+        log_entries = tp.get_test_log(db, eng._session_id, core_id=0)
+        assert any(e.get("error_type") == "crash" for e in log_entries)
+
+    def test_resume_uses_crash_detection(self, db, simple_topology, mock_smu, mock_backend):
+        """resume() uses crash penalty (not plain advance) for in_test cores."""
+        cfg = TunerConfig(
+            cores_to_test=[0], search_duration_seconds=1,
+            crash_penalty_steps=3, fine_step=1,
+        )
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        sid = tp.create_session(db, cfg, "", "")
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH,
+            current_offset=-15, in_test=True,
+        ))
+        with patch.object(eng, "_run_next"):
+            eng.resume(sid)
+        cs = eng._core_states[0]
+        # Should have been crash-penalized: -15 + 3 = -12
+        assert cs.crash_count == 1
+        assert cs.crash_cooldown == 2
+        assert cs.current_offset == -12
+
+    def test_resume_non_in_test_not_penalized(self, db, simple_topology, mock_smu, mock_backend):
+        """Cores not in_test are not touched by crash detection."""
+        cfg = TunerConfig(cores_to_test=[0, 1], search_duration_seconds=1)
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        sid = tp.create_session(db, cfg, "", "")
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-8, in_test=False,
+        ))
+        tp.save_core_state(db, sid, CoreState(
+            core_id=1, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, in_test=True,
+        ))
+        with patch.object(eng, "_run_next"):
+            eng.resume(sid)
+        # Core 0 not in_test — unchanged
+        assert eng._core_states[0].phase == TunerPhase.FINE_SEARCH
+        assert eng._core_states[0].current_offset == -8
+        assert eng._core_states[0].crash_count == 0
+
+
 class TestHardeningPhases:
     def test_hardening_phases_exist(self):
         assert TunerPhase.HARDENING_T1 == "hardening_t1"
