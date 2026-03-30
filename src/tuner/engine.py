@@ -328,20 +328,21 @@ class TunerEngine(QObject):
                 )
                 self.co_drift_detected.emit(_json.dumps(drift))
 
-        # Step 1: Advance ONLY the core that was actively being tested.
+        # Step 1: Detect cores that were actively testing when the system crashed.
         # The in_test flag is set when a test starts and cleared when it
         # finishes. If the system crashed, the flag is still True for the
-        # core that was running — that core's offset is dangerous.
+        # core that was running — that core's offset caused a hard crash.
+        # Apply crash penalty (larger backoff + hard fail bound + cooldown)
+        # rather than a plain failure advance.
         # Other cores in active phases (queued, not yet tested at their
         # current_offset) must NOT be advanced — they haven't failed.
-        for cs in list(self._core_states.values()):
-            if cs.in_test:
+        crashed = self._detect_and_handle_crashes(self._core_states)
+        if crashed:
+            for core_id in crashed:
                 self.log_message.emit(
-                    f"Core {cs.core_id} was actively testing at offset {cs.current_offset} "
-                    f"— treating crash as failure and backing off"
+                    f"Core {core_id} crash detected — applied penalty backoff"
                 )
-                cs.in_test = False
-                self._advance_core(cs.core_id, passed=False)
+            self._set_status(f"resumed after crash (cores: {crashed})")
 
         # Step 2: Restore all cores to their baseline offsets.
         # After a crash and reboot, SMU SRAM is zeroed. Apply the known-stable
@@ -672,6 +673,80 @@ class TunerEngine(QObject):
         if self._config.direction < 0:
             return offset >= cs.baseline_offset
         return offset <= cs.baseline_offset
+
+    def _is_more_aggressive(self, a: int, b: int) -> bool:
+        """Returns True if offset a is more aggressive than b."""
+        if self._config.direction == -1:
+            return a < b
+        return a > b
+
+    def _apply_crash_penalty(self, cs: CoreState) -> None:
+        """Apply crash penalty: larger backoff + set hard fail bound + cooldown."""
+        crashed_offset = cs.current_offset
+        # Set hard fail bound — never try this offset or more aggressive again
+        if cs.backoff_fail_bound is None or self._is_more_aggressive(
+            crashed_offset, cs.backoff_fail_bound
+        ):
+            cs.backoff_fail_bound = crashed_offset
+        # Back off by crash_penalty_steps
+        penalty = self._config.crash_penalty_steps * self._config.fine_step
+        cs.current_offset = crashed_offset - (self._config.direction * penalty)
+        # Clamp to baseline
+        if self._at_or_past_baseline(cs.current_offset, cs):
+            cs.current_offset = cs.baseline_offset
+        cs.crash_count += 1
+        cs.crash_cooldown = 2
+        # Force into backoff if in search phases
+        if cs.phase in (
+            TunerPhase.COARSE_SEARCH,
+            TunerPhase.FINE_SEARCH,
+            TunerPhase.BACKOFF_PRECONFIRM,
+        ):
+            cs.phase = TunerPhase.BACKOFF_PRECONFIRM
+            cs.backoff_mode = True
+
+    def _detect_and_handle_crashes(
+        self,
+        core_states: dict[int, CoreState],
+    ) -> list[int]:
+        """Detect cores that were testing when the system crashed.
+
+        Returns list of crashed core IDs.
+        """
+        crashed_cores = []
+        for cs in core_states.values():
+            if not cs.in_test:
+                continue
+            crashed_cores.append(cs.core_id)
+            # Log synthetic crash event
+            gap_note = f"System reboot detected. Offset {cs.current_offset} caused hard crash."
+            tp.log_test_result(
+                self._db,
+                self._session_id,
+                cs.core_id,
+                cs.current_offset,
+                cs.phase.value,
+                passed=False,
+                error_msg=gap_note,
+                error_type="crash",
+                duration=None,
+            )
+            self._apply_crash_penalty(cs)
+            cs.in_test = False
+            tp.save_core_state(self._db, self._session_id, cs)
+            logging.warning(
+                "Core %d: crash detected at offset %d — applied penalty, "
+                "new offset %d, crash_count=%d",
+                cs.core_id,
+                cs.current_offset + (
+                    self._config.direction
+                    * self._config.crash_penalty_steps
+                    * self._config.fine_step
+                ),
+                cs.current_offset,
+                cs.crash_count,
+            )
+        return crashed_cores
 
     def _pick_next_core(self) -> int | None:
         """Select next core to test based on test_order config."""
