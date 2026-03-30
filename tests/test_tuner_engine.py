@@ -817,3 +817,23 @@ class TestBackoffAlgorithm:
         cs = eng._core_states[0]
         assert cs.phase != TunerPhase.BACKOFF_PRECONFIRM or cs.current_offset != -10
         assert cs.consecutive_backoff_fails >= 2 or cs.current_offset != -10
+
+
+class TestHardeningPhases:
+    def test_hardening_phases_exist(self):
+        assert TunerPhase.HARDENING_T1 == "hardening_t1"
+        assert TunerPhase.HARDENING_T2 == "hardening_t2"
+        assert TunerPhase.HARDENED == "hardened"
+
+    def test_core_state_has_crash_fields(self):
+        cs = CoreState(core_id=0)
+        assert cs.crash_count == 0
+        assert cs.crash_cooldown == 0
+        assert cs.cumulative_test_time == 0.0
+        assert cs.hardening_tier_index == 0
+
+    def test_phase_ordering_includes_hardening(self):
+        phases = list(TunerPhase)
+        assert TunerPhase.HARDENING_T1 in phases
+        assert TunerPhase.HARDENING_T2 in phases
+        assert TunerPhase.HARDENED in phases

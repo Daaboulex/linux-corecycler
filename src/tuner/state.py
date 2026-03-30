@@ -25,6 +25,9 @@ class TunerPhase(StrEnum):
     FAILED_CONFIRM = "failed_confirm"
     BACKOFF_PRECONFIRM = "backoff_preconfirm"
     BACKOFF_CONFIRMING = "backoff_confirming"
+    HARDENING_T1 = "hardening_t1"
+    HARDENING_T2 = "hardening_t2"
+    HARDENED = "hardened"
 
 
 @dataclass(slots=True)
@@ -48,6 +51,10 @@ class CoreState:
     backoff_fail_bound: int | None = None
     backoff_pass_bound: int | None = None
     in_test: bool = False
+    crash_count: int = 0
+    crash_cooldown: int = 0
+    cumulative_test_time: float = 0.0
+    hardening_tier_index: int = 0
 
 
 @dataclass(slots=True)
