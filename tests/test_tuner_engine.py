@@ -197,13 +197,14 @@ class TestStateMachineTransitions:
         assert cs.confirm_attempts == 0
 
     def test_max_offset_clamp(self, db, simple_topology, mock_smu, mock_backend):
+        # At max_offset itself, next step (even fine_step in ramp zone) exceeds max — settle.
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, max_offset=-7)
-        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-7)
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=True)
-        # Next would be -10, but max is -7 so it settles
+        # distance=0 <= ramp_zone=10, so fine_step=1 used: next=-8 exceeds max(-7) → settle
         assert cs.phase == TunerPhase.SETTLED
-        assert cs.best_offset == -5
+        assert cs.best_offset == -7
 
 
 class TestResumeFromCrash:
@@ -1025,6 +1026,46 @@ class TestCrashDetection:
         assert eng._core_states[0].phase == TunerPhase.FINE_SEARCH
         assert eng._core_states[0].current_offset == -8
         assert eng._core_states[0].crash_count == 0
+
+
+class TestSafetyRamp:
+    """Tests for _get_coarse_step: reduces step size near max_offset."""
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=2, fine_step=1, max_offset=-50, cores_to_test=[0])
+        defaults.update(cfg_kwargs)
+        cfg = TunerConfig(**defaults)
+        return TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+
+    def test_coarse_slows_near_max_offset(self, db, simple_topology, mock_smu, mock_backend):
+        """Within 2*coarse_step of max_offset, step size reduces to fine_step."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        # direction=-1, max_offset=-50, coarse_step=2, ramp_zone=4
+        # At -44: distance to -50 is 6, ramp_zone=4. 6 > 4, so coarse_step
+        cs_far = CoreState(core_id=0, current_offset=-44)
+        assert eng._get_coarse_step(cs_far) == 2
+        # At -46: distance to -50 is 4, ramp_zone=4. 4 <= 4, so fine_step
+        cs_near = CoreState(core_id=0, current_offset=-46)
+        assert eng._get_coarse_step(cs_near) == 1
+
+    def test_coarse_normal_step_far_from_max(self, db, simple_topology, mock_smu, mock_backend):
+        """Far from max_offset, use normal coarse_step."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, current_offset=-10)
+        assert eng._get_coarse_step(cs) == 2
+
+    def test_advance_core_uses_reduced_step_near_max(self, db, simple_topology, mock_smu, mock_backend):
+        """_advance_core uses fine_step (not coarse_step) when near max_offset."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        # At -46 with best_offset=-46: distance to -50 is 4, ramp_zone=4 → fine_step=1
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-46, best_offset=-46)
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        # Should advance by fine_step=1 (not coarse_step=2): -46 + (-1)*1 = -47
+        assert cs.current_offset == -47
 
 
 class TestHardeningPhases:
