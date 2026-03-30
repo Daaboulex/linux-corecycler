@@ -1045,3 +1045,113 @@ class TestHardeningPhases:
         assert TunerPhase.HARDENING_T1 in phases
         assert TunerPhase.HARDENING_T2 in phases
         assert TunerPhase.HARDENED in phases
+
+
+class TestDeathSpiralPrevention:
+    """Unit tests for _check_time_budget and _accumulate_test_time."""
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=5, fine_step=1, max_offset=-30, cores_to_test=[0])
+        defaults.update(cfg_kwargs)
+        cfg = TunerConfig(**defaults)
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        eng._session_id = tp.create_session(db, cfg, "", "")
+        return eng
+
+    def test_time_budget_settles_core(self, db, simple_topology, mock_smu, mock_backend):
+        """Core exceeding time budget settles at best_offset."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                max_core_time_seconds=7200)
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-20,
+            best_offset=-15, baseline_offset=0, cumulative_test_time=7201.0,
+        )
+        eng._core_states = {0: cs}
+
+        settled = eng._check_time_budget(cs)
+
+        assert settled is True
+        assert cs.phase == TunerPhase.CONFIRMED
+        assert cs.current_offset == -15  # settled at best_offset
+        assert cs.backoff_mode is False
+
+    def test_time_budget_no_best_settles_at_baseline(self, db, simple_topology, mock_smu, mock_backend):
+        """Core with no best_offset settles at baseline when budget exceeded."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                max_core_time_seconds=7200)
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
+            best_offset=None, baseline_offset=0, cumulative_test_time=7201.0,
+        )
+        eng._core_states = {0: cs}
+
+        settled = eng._check_time_budget(cs)
+
+        assert settled is True
+        assert cs.phase == TunerPhase.CONFIRMED
+        assert cs.current_offset == 0  # settled at baseline_offset
+
+    def test_time_budget_not_exceeded_returns_false(self, db, simple_topology, mock_smu, mock_backend):
+        """Core under time budget returns False (not settled)."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                max_core_time_seconds=7200)
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-20,
+            best_offset=-15, baseline_offset=0, cumulative_test_time=3600.0,
+        )
+        eng._core_states = {0: cs}
+
+        settled = eng._check_time_budget(cs)
+
+        assert settled is False
+        assert cs.phase == TunerPhase.COARSE_SEARCH  # unchanged
+
+    def test_cumulative_time_tracks_test_duration(self, db, simple_topology, mock_smu, mock_backend):
+        """_accumulate_test_time adds duration for search phases."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10,
+            cumulative_test_time=100.0,
+        )
+        eng._core_states = {0: cs}
+
+        eng._accumulate_test_time(cs, 300.0)
+
+        assert cs.cumulative_test_time == 400.0
+
+    def test_cumulative_time_not_tracked_during_hardening(self, db, simple_topology, mock_smu, mock_backend):
+        """Hardening phases don't count toward the time budget."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        for hardening_phase in (
+            TunerPhase.HARDENING_T1,
+            TunerPhase.HARDENING_T2,
+            TunerPhase.HARDENED,
+        ):
+            cs = CoreState(
+                core_id=0, phase=hardening_phase, current_offset=-10,
+                cumulative_test_time=500.0,
+            )
+            eng._accumulate_test_time(cs, 300.0)
+            assert cs.cumulative_test_time == 500.0, (
+                f"Phase {hardening_phase} should not accumulate time"
+            )
+
+    def test_accumulate_counts_all_search_phases(self, db, simple_topology, mock_smu, mock_backend):
+        """All non-hardening active phases accumulate time."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        search_phases = (
+            TunerPhase.COARSE_SEARCH,
+            TunerPhase.FINE_SEARCH,
+            TunerPhase.CONFIRMING,
+            TunerPhase.BACKOFF_PRECONFIRM,
+            TunerPhase.BACKOFF_CONFIRMING,
+        )
+        for phase in search_phases:
+            cs = CoreState(core_id=0, phase=phase, current_offset=-10, cumulative_test_time=0.0)
+            eng._accumulate_test_time(cs, 60.0)
+            assert cs.cumulative_test_time == 60.0, (
+                f"Phase {phase} should accumulate time"
+            )

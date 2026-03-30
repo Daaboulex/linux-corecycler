@@ -748,6 +748,30 @@ class TunerEngine(QObject):
             )
         return crashed_cores
 
+    def _check_time_budget(self, cs: CoreState) -> bool:
+        """Check if core has exceeded its time budget. Returns True if settled."""
+        if cs.cumulative_test_time <= self._config.max_core_time_seconds:
+            return False
+        settled_offset = cs.best_offset if cs.best_offset is not None else cs.baseline_offset
+        cs.current_offset = settled_offset
+        cs.phase = TunerPhase.CONFIRMED
+        cs.backoff_mode = False
+        logging.warning(
+            "Core %d: time budget exceeded (%.0fs > %ds) — settled at %d",
+            cs.core_id, cs.cumulative_test_time, self._config.max_core_time_seconds,
+            settled_offset,
+        )
+        return True
+
+    def _accumulate_test_time(self, cs: CoreState, duration: float) -> None:
+        """Add test duration to core's cumulative time (search phases only)."""
+        if cs.phase in (
+            TunerPhase.HARDENING_T1, TunerPhase.HARDENING_T2,
+            TunerPhase.HARDENED,
+        ):
+            return
+        cs.cumulative_test_time += duration
+
     def _pick_next_core(self) -> int | None:
         """Select next core to test based on test_order config."""
         match self._config.test_order:
@@ -1085,6 +1109,13 @@ class TunerEngine(QObject):
         # Multi-core validation uses its own flow — don't advance per-core state machine
         if self._validation_stage > 0:
             self._on_validation_test_finished(core_id, passed)
+            return
+
+        cs = self._core_states[core_id]
+        self._accumulate_test_time(cs, duration)
+        if self._check_time_budget(cs):
+            tp.save_core_state(self._db, self._session_id, cs)
+            self._run_next()
             return
 
         # Advance state machine
