@@ -502,7 +502,7 @@ class TunerEngine(QObject):
             case TunerPhase.COARSE_SEARCH:
                 if passed:
                     cs.best_offset = cs.current_offset
-                    next_offset = cs.current_offset + direction * cfg.coarse_step
+                    next_offset = cs.current_offset + direction * self._get_coarse_step(cs)
                     if self._exceeds_max(next_offset):
                         # Hit the limit — settle here
                         cs.phase = TunerPhase.SETTLED
@@ -661,6 +661,14 @@ class TunerEngine(QObject):
         if self._session_id:
             tp.save_core_state(self._db, self._session_id, cs)
         self.core_state_changed.emit(cs.core_id, cs.phase, cs.current_offset)
+
+    def _get_coarse_step(self, cs: CoreState) -> int:
+        """Get coarse step size, reducing near max_offset for safety."""
+        distance = abs(cs.current_offset - self._config.max_offset)
+        ramp_zone = self._config.coarse_step * 2
+        if distance <= ramp_zone:
+            return self._config.fine_step
+        return self._config.coarse_step
 
     def _exceeds_max(self, offset: int) -> bool:
         """Check if offset exceeds max_offset in the configured direction."""
