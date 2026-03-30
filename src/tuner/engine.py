@@ -483,11 +483,45 @@ class TunerEngine(QObject):
     # State machine
     # ------------------------------------------------------------------
 
+    def _get_active_stress_config(self, cs: CoreState) -> tuple[str, str, str]:
+        """Return (backend, stress_mode, fft_preset) for the current core's phase."""
+        if cs.phase in (TunerPhase.HARDENING_T1, TunerPhase.HARDENING_T2):
+            tier = self._config.hardening_tiers[cs.hardening_tier_index]
+            return tier["backend"], tier["stress_mode"], tier["fft_preset"]
+        return self._config.backend, self._config.stress_mode, self._config.fft_preset
+
     def _advance_core(self, core_id: int, passed: bool) -> None:
         """State machine transitions for a single core."""
         cs = self._core_states[core_id]
         cfg = self._config
         direction = cfg.direction  # -1 for undervolting
+
+        # --- Hardening transitions (checked before the main match) ---
+        if cs.phase in (TunerPhase.HARDENING_T1, TunerPhase.HARDENING_T2):
+            if passed:
+                next_tier = cs.hardening_tier_index + 1
+                if next_tier >= len(cfg.hardening_tiers):
+                    cs.phase = TunerPhase.HARDENED
+                else:
+                    cs.hardening_tier_index = next_tier
+                    _TIER_PHASES = {0: TunerPhase.HARDENING_T1, 1: TunerPhase.HARDENING_T2}
+                    cs.phase = _TIER_PHASES.get(next_tier, TunerPhase.HARDENED)
+            else:
+                # Back off linearly by fine_step
+                new_offset = cs.current_offset - (direction * cfg.fine_step)
+                if self._at_or_past_baseline(new_offset, cs):
+                    cs.current_offset = cs.baseline_offset
+                    cs.best_offset = cs.baseline_offset
+                    cs.phase = TunerPhase.HARDENED
+                else:
+                    cs.current_offset = new_offset
+                    cs.best_offset = new_offset
+                    # Stay at current tier (T2 fail retries T2, not T1)
+            # Persist
+            if self._session_id:
+                tp.save_core_state(self._db, self._session_id, cs)
+            self.core_state_changed.emit(cs.core_id, cs.phase, cs.current_offset)
+            return
 
         match cs.phase:
             case TunerPhase.NOT_STARTED:
@@ -552,7 +586,11 @@ class TunerEngine(QObject):
 
             case TunerPhase.CONFIRMING:
                 if passed:
-                    cs.phase = TunerPhase.CONFIRMED
+                    if cfg.hardening_tiers:
+                        cs.phase = TunerPhase.HARDENING_T1
+                        cs.hardening_tier_index = 0
+                    else:
+                        cs.phase = TunerPhase.CONFIRMED
                     cs.confirm_attempts = 0
                 else:
                     cs.confirm_attempts += 1
@@ -636,15 +674,23 @@ class TunerEngine(QObject):
                         # Binary search: try midpoint between pass and fail bounds
                         gap = abs(cs.backoff_fail_bound - cs.backoff_pass_bound)
                         if gap <= cfg.fine_step:
-                            # Converged
-                            cs.phase = TunerPhase.CONFIRMED
+                            # Converged — enter hardening or confirmed
+                            if cfg.hardening_tiers:
+                                cs.phase = TunerPhase.HARDENING_T1
+                                cs.hardening_tier_index = 0
+                            else:
+                                cs.phase = TunerPhase.CONFIRMED
                         else:
                             mid = cs.backoff_pass_bound + direction * (gap // 2)
                             cs.best_offset = mid
                             cs.current_offset = mid
                             cs.phase = TunerPhase.BACKOFF_PRECONFIRM
                     else:
-                        cs.phase = TunerPhase.CONFIRMED
+                        if cfg.hardening_tiers:
+                            cs.phase = TunerPhase.HARDENING_T1
+                            cs.hardening_tier_index = 0
+                        else:
+                            cs.phase = TunerPhase.CONFIRMED
                 else:
                     # Confirm failed — back to preconfirm, back off
                     cs.phase = TunerPhase.BACKOFF_PRECONFIRM
@@ -1012,7 +1058,10 @@ class TunerEngine(QObject):
                     return
 
         # Determine test duration based on phase
-        if cs.phase in (TunerPhase.CONFIRMING, TunerPhase.BACKOFF_CONFIRMING):
+        if cs.phase in (
+            TunerPhase.CONFIRMING, TunerPhase.BACKOFF_CONFIRMING,
+            TunerPhase.HARDENING_T1, TunerPhase.HARDENING_T2,
+        ):
             duration = self._config.confirm_duration_seconds
         elif cs.phase == TunerPhase.BACKOFF_PRECONFIRM:
             duration = int(self._config.search_duration_seconds * self._config.backoff_preconfirm_multiplier)
@@ -1031,9 +1080,25 @@ class TunerEngine(QObject):
             self._on_test_finished(core_id, False, f"Core {core_id} not found", "", 0.0, 0.0)
             return
 
+        cs = self._core_states.get(core_id)
+        _backend_name, stress_mode_str, fft_preset_str = (
+            self._get_active_stress_config(cs)
+            if cs is not None
+            else (self._config.backend, self._config.stress_mode, self._config.fft_preset)
+        )
+        from engine.backends.base import FFTPreset, StressMode
+        try:
+            _stress_mode = StressMode[stress_mode_str.upper()]
+        except KeyError:
+            _stress_mode = StressMode.SSE
+        try:
+            _fft_preset = FFTPreset[fft_preset_str.upper()]
+        except KeyError:
+            _fft_preset = FFTPreset.SMALL
+
         stress_config = StressConfig(
-            mode=self._get_stress_mode(),
-            fft_preset=self._get_fft_preset(),
+            mode=_stress_mode,
+            fft_preset=_fft_preset,
             threads=len(core_info.logical_cpus),
         )
         scheduler_config = SchedulerConfig(
@@ -1125,6 +1190,7 @@ class TunerEngine(QObject):
 
         # Log to DB
         if self._session_id:
+            backend, stress_mode, fft_preset = self._get_active_stress_config(cs)
             tp.log_test_result(
                 self._db,
                 self._session_id,
@@ -1135,6 +1201,9 @@ class TunerEngine(QObject):
                 error_msg=error_msg or None,
                 error_type=error_type or None,
                 duration=duration,
+                backend=backend,
+                stress_mode=stress_mode,
+                fft_preset=fft_preset,
             )
 
         status_str = "PASS" if passed else "FAIL"
@@ -1178,6 +1247,16 @@ class TunerEngine(QObject):
         for cs in self._core_states.values():
             if cs.best_offset is not None:
                 profile[cs.core_id] = cs.best_offset
+
+        # Gate: ensure all cores have reached a terminal phase.
+        # With hardening tiers: cores must be HARDENED (confirmed + hardened stress).
+        # Without tiers: CONFIRMED is terminal; HARDENED also accepted (belt + braces).
+        done_phases = {TunerPhase.CONFIRMED, TunerPhase.HARDENED}
+        if self._config.hardening_tiers:
+            done_phases = {TunerPhase.HARDENED}
+        all_done = all(cs.phase in done_phases for cs in self._core_states.values())
+        if not all_done:
+            return
 
         # If auto_validate is on and we just finished per-core search (not
         # already validating), enter multi-core validation instead of completing.
@@ -1553,7 +1632,10 @@ class TunerEngine(QObject):
         self.status_changed.emit(status)
 
     def _emit_progress(self) -> None:
-        done = sum(1 for cs in self._core_states.values() if cs.phase == TunerPhase.CONFIRMED)
+        done = sum(
+            1 for cs in self._core_states.values()
+            if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
+        )
         total = len(self._core_states)
         self.progress_updated.emit(done, total)
 
