@@ -203,6 +203,76 @@ class TestBestProfile:
         assert profile == {}
 
 
+class TestProfileExportImport:
+    def test_export_tuner_profile(self, tmp_path):
+        from history.export import export_tuner_profile
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            sid = db.create_tuner_session("{}", "2.04", "AMD Ryzen 9 9950X3D")
+            cs0 = CoreState(core_id=0, phase=TunerPhase.CONFIRMED, best_offset=-38)
+            cs1 = CoreState(core_id=1, phase=TunerPhase.HARDENED, best_offset=-33)
+            cs2 = CoreState(core_id=2, phase=TunerPhase.COARSE_SEARCH, best_offset=-20)
+            db.upsert_tuner_core_state(sid, cs0)
+            db.upsert_tuner_core_state(sid, cs1)
+            db.upsert_tuner_core_state(sid, cs2)
+            result = export_tuner_profile(db, sid)
+            import json
+            data = json.loads(result)
+            assert data["bios_version"] == "2.04"
+            assert data["cpu_model"] == "AMD Ryzen 9 9950X3D"
+            assert data["core_count"] == 2
+            assert data["profile"] == {"0": -38, "1": -33}
+            assert "source_session_id" in data
+        finally:
+            db.close()
+
+    def test_export_excludes_unconfirmed(self, tmp_path):
+        from history.export import export_tuner_profile
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            sid = db.create_tuner_session("{}", "2.04", "TestCPU")
+            cs = CoreState(core_id=0, phase=TunerPhase.SETTLED, best_offset=-20)
+            db.upsert_tuner_core_state(sid, cs)
+            result = export_tuner_profile(db, sid)
+            import json
+            data = json.loads(result)
+            assert data["profile"] == {}
+        finally:
+            db.close()
+
+    def test_import_tuner_profile_from_json(self):
+        from history.export import parse_tuner_profile
+        import json
+        data = json.dumps({
+            "cpu_model": "AMD Ryzen 9 9950X3D",
+            "core_count": 2,
+            "bios_version": "2.04",
+            "profile": {"0": -38, "2": -33},
+        })
+        result = parse_tuner_profile(data)
+        assert result["profile"] == {0: -38, 2: -33}
+        assert result["cpu_model"] == "AMD Ryzen 9 9950X3D"
+        assert result["core_count"] == 2
+
+    def test_import_validates_core_count(self):
+        from history.export import validate_tuner_profile_import
+        profile_data = {"profile": {0: -38}, "core_count": 1, "cpu_model": "TestCPU"}
+        errors = validate_tuner_profile_import(profile_data, system_core_count=16, system_cpu_model="TestCPU")
+        assert not any(e["level"] == "error" for e in errors)
+
+    def test_import_blocks_core_count_mismatch(self):
+        from history.export import validate_tuner_profile_import
+        profile_data = {"profile": {0: -38}, "core_count": 8, "cpu_model": "TestCPU"}
+        errors = validate_tuner_profile_import(profile_data, system_core_count=4, system_cpu_model="TestCPU")
+        assert any(e["level"] == "error" and "core" in e["message"].lower() for e in errors)
+
+    def test_import_warns_cpu_model_mismatch(self):
+        from history.export import validate_tuner_profile_import
+        profile_data = {"profile": {0: -38}, "core_count": 16, "cpu_model": "Other CPU"}
+        errors = validate_tuner_profile_import(profile_data, system_core_count=16, system_cpu_model="AMD Ryzen 9 9950X3D")
+        assert any(e["level"] == "warning" and "cpu" in e["message"].lower() for e in errors)
+
+
 class TestSchemaMigration:
     def test_fresh_db_has_tuner_tables(self, db):
         """Fresh v3 database should have all tuner tables."""
