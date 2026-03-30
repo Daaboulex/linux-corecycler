@@ -63,3 +63,47 @@ class TestTunerConfigDefaults:
         cfg = TunerConfig(max_offset=-50, direction=-1)
         cfg.clamp_max_offset((-30, 30))  # Zen 3
         assert cfg.max_offset == -30
+
+
+class TestNewConfigOptions:
+    def test_hardening_tiers_default(self):
+        cfg = TunerConfig()
+        assert cfg.hardening_tiers == [
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "LARGE"},
+        ]
+
+    def test_max_core_time_default(self):
+        cfg = TunerConfig()
+        assert cfg.max_core_time_seconds == 7200
+
+    def test_crash_penalty_steps_default(self):
+        cfg = TunerConfig()
+        assert cfg.crash_penalty_steps == 3
+
+    def test_validate_transitions_default(self):
+        cfg = TunerConfig()
+        assert cfg.validate_transitions is True
+
+    def test_hardening_tiers_json_roundtrip(self):
+        cfg = TunerConfig()
+        restored = TunerConfig.from_json(cfg.to_json())
+        assert restored.hardening_tiers == cfg.hardening_tiers
+        assert restored.max_core_time_seconds == cfg.max_core_time_seconds
+        assert restored.crash_penalty_steps == cfg.crash_penalty_steps
+        assert restored.validate_transitions == cfg.validate_transitions
+
+    def test_empty_hardening_tiers_valid(self):
+        cfg = TunerConfig(hardening_tiers=[])
+        errors = cfg.validate()
+        assert not any("hardening" in e.lower() for e in errors)
+
+    def test_validate_crash_penalty_range(self):
+        cfg = TunerConfig(crash_penalty_steps=0)
+        errors = cfg.validate()
+        assert any("crash_penalty" in e.lower() for e in errors)
+
+    def test_validate_max_core_time_range(self):
+        cfg = TunerConfig(max_core_time_seconds=100)
+        errors = cfg.validate()
+        assert any("max_core_time" in e.lower() for e in errors)

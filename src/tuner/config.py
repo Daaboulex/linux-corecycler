@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from dataclasses import asdict, dataclass
 
@@ -55,6 +56,23 @@ class TunerConfig:
     # Backoff tuning
     backoff_preconfirm_multiplier: float = 2.0
 
+    # Multi-mode hardening tiers (run after confirmation)
+    hardening_tiers: list[dict[str, str]] = dataclasses.field(
+        default_factory=lambda: [
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "LARGE"},
+        ]
+    )
+
+    # Per-core time budget for search phases (seconds)
+    max_core_time_seconds: int = 7200
+
+    # Backoff steps after system crash (multiplied by fine_step direction)
+    crash_penalty_steps: int = 3
+
+    # Enable S4 rapid transition validation
+    validate_transitions: bool = True
+
     def to_json(self) -> str:
         return json.dumps(asdict(self), separators=(",", ":"))
 
@@ -76,6 +94,15 @@ class TunerConfig:
             errors.append("search_duration_seconds must be >= 1")
         if self.confirm_duration_seconds < 1:
             errors.append("confirm_duration_seconds must be >= 1")
+        if not 1 <= self.crash_penalty_steps <= 10:
+            errors.append("crash_penalty_steps must be 1-10")
+        if not 1800 <= self.max_core_time_seconds <= 14400:
+            errors.append("max_core_time_seconds must be 1800-14400")
+        for i, tier in enumerate(self.hardening_tiers):
+            if not isinstance(tier, dict):
+                errors.append(f"hardening_tiers[{i}] must be a dict")
+            elif not all(k in tier for k in ("backend", "stress_mode", "fft_preset")):
+                errors.append(f"hardening_tiers[{i}] missing required keys: backend, stress_mode, fft_preset")
         return errors
 
     def clamp_max_offset(self, co_range: tuple[int, int]) -> None:
