@@ -1596,11 +1596,143 @@ class TestValidationS4:
         engine = make_test_engine(cfg)
         assert engine._get_validation_stage_count() == 3
 
-    def test_run_validation_stage4_is_callable(self):
-        """_run_validation_stage4 exists and is callable."""
+    def test_stage4_dispatched_when_validate_transitions(self):
+        """_run_validation_next dispatches S4 when validate_transitions=True."""
         cfg = TunerConfig(validate_transitions=True, hardening_tiers=[])
         engine = make_test_engine(cfg)
-        assert hasattr(engine, "_run_validation_stage4")
-        assert callable(engine._run_validation_stage4)
-        # Stub should not raise
-        engine._run_validation_stage4()
+        engine._validation_stage = 4
+        engine._validation_core_order = [0, 1]
+        with patch.object(engine, "_run_validation_stage4") as mock_s4:
+            engine._run_validation_next()
+        mock_s4.assert_called_once()
+
+    def test_stage4_skipped_when_no_validate_transitions(self):
+        """_run_validation_next skips S4 and finalizes when validate_transitions=False."""
+        cfg = TunerConfig(validate_transitions=False, hardening_tiers=[])
+        engine = make_test_engine(cfg)
+        engine._validation_stage = 4
+        engine._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.HARDENED, best_offset=-8),
+        }
+        with patch.object(engine, "_finalize_session") as mock_fin:
+            engine._run_validation_next()
+        mock_fin.assert_called_once()
+
+    def test_stage3_complete_advances_to_s4_when_enabled(self):
+        """Stage 3 completion sets stage=4 when validate_transitions=True."""
+        cfg = TunerConfig(validate_transitions=True, hardening_tiers=[])
+        engine = make_test_engine(cfg)
+        engine._validation_stage = 3
+        engine._validation_halves = []  # empty = already done
+        engine._validation_half_index = 0
+        with patch("PySide6.QtCore.QTimer.singleShot"):
+            engine._run_validation_stage3()
+        assert engine._validation_stage == 4
+
+    def test_stage3_complete_skips_s4_when_disabled(self):
+        """Stage 3 completion sets stage=5 (sentinel) when validate_transitions=False."""
+        cfg = TunerConfig(validate_transitions=False, hardening_tiers=[])
+        engine = make_test_engine(cfg)
+        engine._validation_stage = 3
+        engine._validation_halves = []
+        engine._validation_half_index = 0
+        with patch("PySide6.QtCore.QTimer.singleShot"):
+            engine._run_validation_stage3()
+        assert engine._validation_stage == 5
+
+    def test_validation_pass_s4_advances_to_finalize(self):
+        """S4 pass advances to sentinel stage (finalize)."""
+        cfg = TunerConfig(validate_transitions=True, hardening_tiers=[])
+        engine = make_test_engine(cfg)
+        engine._validation_stage = 4
+        with patch("PySide6.QtCore.QTimer.singleShot"):
+            engine._on_validation_test_finished(0, passed=True)
+        assert engine._validation_stage == 5
+
+    def test_validation_fail_s4_backs_off(self):
+        """S4 failure backs off the most aggressive core."""
+        cfg = TunerConfig(validate_transitions=True, hardening_tiers=[])
+        engine = make_test_engine(cfg)
+        engine._validation_stage = 4
+        engine._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.HARDENED, best_offset=-10,
+                         baseline_offset=0, current_offset=-10),
+        }
+        with patch.object(engine, "_find_most_aggressive_core", return_value=0):
+            with patch("PySide6.QtCore.QTimer.singleShot"):
+                engine._on_validation_test_finished(0, passed=False)
+        # Should restart from stage 1
+        assert engine._validation_stage == 1
+
+
+class TestHardeningTierPhaseLabeling:
+    """Tests that 3+ hardening tiers cycle T1/T2 labels correctly."""
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=5, fine_step=1, max_offset=-30, cores_to_test=[0])
+        defaults.update(cfg_kwargs)
+        cfg = TunerConfig(**defaults)
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        eng._session_id = tp.create_session(db, cfg, "", "")
+        return eng
+
+    def test_three_tiers_cycle_phases(self, db, simple_topology, mock_smu, mock_backend):
+        """With 3 tiers: T1(0) → T2(1) → T1(2) → HARDENED."""
+        tiers = [
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "LARGE"},
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "LARGE"},
+        ]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                hardening_tiers=tiers)
+
+        cs = CoreState(core_id=0, phase=TunerPhase.HARDENING_T1, current_offset=-8,
+                       best_offset=-8, hardening_tier_index=0)
+        eng._core_states = {0: cs}
+
+        # Tier 0 pass → T2 (index 1)
+        eng._advance_core(0, passed=True)
+        assert cs.phase == TunerPhase.HARDENING_T2
+        assert cs.hardening_tier_index == 1
+
+        # Tier 1 pass → T1 (index 2, even)
+        eng._advance_core(0, passed=True)
+        assert cs.phase == TunerPhase.HARDENING_T1
+        assert cs.hardening_tier_index == 2
+
+        # Tier 2 pass → HARDENED (all tiers exhausted)
+        eng._advance_core(0, passed=True)
+        assert cs.phase == TunerPhase.HARDENED
+
+
+class TestCooldownDrainLoop:
+    """Tests that cooldown drain uses a loop (not recursion)."""
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=5, fine_step=1, max_offset=-30, cores_to_test=[0, 1])
+        defaults.update(cfg_kwargs)
+        cfg = TunerConfig(**defaults)
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        eng._session_id = tp.create_session(db, cfg, "", "")
+        return eng
+
+    def test_high_cooldown_drains_without_deep_recursion(self, db, simple_topology, mock_smu, mock_backend):
+        """Cooldown of 10 drains iteratively without stack overflow."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH,
+                         current_offset=-5, crash_cooldown=10),
+            1: CoreState(core_id=1, phase=TunerPhase.CONFIRMED,
+                         current_offset=-8, best_offset=-8),
+        }
+        # After draining, core 0 should be picked (cooldown=0)
+        # and its test should start. Mock _start_worker to prevent real work.
+        with patch.object(eng, "_start_worker"):
+            eng._run_next()
+        assert eng._core_states[0].crash_cooldown == 0
