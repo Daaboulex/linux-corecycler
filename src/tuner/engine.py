@@ -504,8 +504,11 @@ class TunerEngine(QObject):
                     cs.phase = TunerPhase.HARDENED
                 else:
                     cs.hardening_tier_index = next_tier
-                    _TIER_PHASES = {0: TunerPhase.HARDENING_T1, 1: TunerPhase.HARDENING_T2}
-                    cs.phase = _TIER_PHASES.get(next_tier, TunerPhase.HARDENED)
+                    # Alternate between T1/T2 labels for any number of tiers
+                    cs.phase = (
+                        TunerPhase.HARDENING_T1 if next_tier % 2 == 0
+                        else TunerPhase.HARDENING_T2
+                    )
             else:
                 # Back off linearly by fine_step
                 new_offset = cs.current_offset - (direction * cfg.fine_step)
@@ -1006,22 +1009,21 @@ class TunerEngine(QObject):
             return
 
         core_id = self._pick_next_core()
-        if core_id is None:
+        while core_id is None:
             # Distinguish "all done" from "all active cores in cooldown"
             in_cooldown = any(
                 cs.crash_cooldown > 0
                 and cs.phase not in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
                 for cs in self._core_states.values()
             )
-            if in_cooldown:
-                # Decrement all cooldowns by 1 and retry immediately
-                for cs in self._core_states.values():
-                    if cs.crash_cooldown > 0:
-                        cs.crash_cooldown -= 1
-                self._run_next()
+            if not in_cooldown:
+                self._complete_session()
                 return
-            self._complete_session()
-            return
+            # Drain all cooldowns by 1 and retry the picker
+            for cs in self._core_states.values():
+                if cs.crash_cooldown > 0:
+                    cs.crash_cooldown -= 1
+            core_id = self._pick_next_core()
 
         self._decrement_cooldowns(core_id)
         cs = self._core_states[core_id]
@@ -1378,10 +1380,57 @@ class TunerEngine(QObject):
     def _run_validation_stage4(self) -> None:
         """S4: Rapid transition stress — all cores, load/idle cycling.
 
-        Will be fully wired in Task 11 (multi-mode validation).
+        Runs rapid load/idle transitions on all confirmed cores using the
+        scheduler's run_rapid_transitions(). This catches instability during
+        idle↔boost transitions that sustained stress tests miss.
         """
-        # Stub — wiring into validation loop is done in Task 11
-        pass
+        cores = self._validation_core_order
+        self.log_message.emit(
+            f"Validation stage 4: rapid load/idle transitions on {len(cores)} cores"
+        )
+        self.validation_progress.emit(4, 0, 1)
+
+        # Apply all confirmed offsets
+        if self._smu is not None:
+            first_core = cores[0]
+            cs = self._core_states[first_core]
+            offset = cs.best_offset if cs.best_offset is not None else cs.baseline_offset
+            if not self._apply_validation_offsets(first_core, offset):
+                return
+
+        # Build scheduler for rapid transitions
+        stress_config = StressConfig(
+            mode=self._get_stress_mode(),
+            fft_preset=self._get_fft_preset(),
+            threads=0,
+        )
+        scheduler_config = SchedulerConfig(
+            seconds_per_core=self._config.validate_duration_seconds,
+            cores_to_test=cores,
+            stop_on_error=True,
+            cycle_count=1,
+        )
+        try:
+            scheduler = CoreScheduler(
+                topology=self._topology,
+                backend=self._backend,
+                stress_config=stress_config,
+                scheduler_config=scheduler_config,
+                work_dir=self._work_dir,
+            )
+        except Exception as e:
+            self._on_test_finished(cores[0], False, str(e), "", 0.0, 0.0)
+            return
+
+        passed, error = scheduler.run_rapid_transitions(
+            cores=cores,
+            total_duration=float(self._config.validate_duration_seconds),
+        )
+        # Route result through the normal validation handler
+        self._last_tested_core = cores[0]
+        self._on_test_finished(
+            cores[0], passed, error or "", "", float(self._config.validate_duration_seconds), 0.0,
+        )
 
     def _run_validation_next(self) -> None:
         """Dispatch the next validation test based on current stage."""
@@ -1395,6 +1444,8 @@ class TunerEngine(QObject):
                 self._run_validation_stage2()
             case 3:
                 self._run_validation_stage3()
+            case 4 if self._config.validate_transitions:
+                self._run_validation_stage4()
             case _:
                 # All stages complete
                 profile = {
@@ -1464,8 +1515,15 @@ class TunerEngine(QObject):
     def _run_validation_stage3(self) -> None:
         """Stage 3: alternating half-core load — catches voltage transients."""
         if self._validation_half_index >= len(self._validation_halves):
-            # Stage 3 complete — all validation passed
-            self._validation_stage = 4  # sentinel → _run_validation_next finalizes
+            # Stage 3 complete — advance to S4 (rapid transitions) or finalize
+            if self._config.validate_transitions:
+                self._validation_stage = 4
+                self.log_message.emit(
+                    "Validation stage 3 passed — "
+                    "stage 4: rapid load/idle transitions"
+                )
+            else:
+                self._validation_stage = 5  # sentinel → _run_validation_next finalizes
             QTimer.singleShot(0, self._run_validation_next)
             return
 
@@ -1594,6 +1652,9 @@ class TunerEngine(QObject):
                     )
                 case 3:
                     self._validation_half_index += 1
+                case 4:
+                    # Stage 4 passed — advance to finalize sentinel
+                    self._validation_stage = 5
             # Use QTimer to break the call stack (this is called from _on_test_finished)
             QTimer.singleShot(0, self._run_validation_next)
             return
@@ -1604,8 +1665,8 @@ class TunerEngine(QObject):
             case 1:
                 # Stage 1: the tested core failed — back it off
                 target = core_id
-            case 2 | 3:
-                # Stage 2/3: multi-core failure — back off most aggressive core
+            case 2 | 3 | 4:
+                # Stage 2/3/4: multi-core failure — back off most aggressive core
                 target = self._find_most_aggressive_core()
 
         if target is None or not self._backoff_core(target):
