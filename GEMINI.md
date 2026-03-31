@@ -14,7 +14,7 @@ This repo follows the **Daaboulex Nix Packaging Standard v1**.
 1. Read `AI-progress.json` and `AI-tasks.json`
 2. Run `nix flake check --no-build`
 3. Pick ONE task, complete it, verify it
-4. Update `AI-progress.json` before ending
+4. Run `/handoff` before ending (saves state automatically)
 
 ## Hard Rules
 - **Verification first**: `nix flake check --no-build` + `nix build` before claiming done
@@ -53,7 +53,7 @@ flake.nix (formatter + checks + devShells + git-hooks)
 
 ## AI Tracking
 - `AI-progress.json` / `AI-tasks.json` — local session tracking (gitignored)
-- Update `AI-progress.json` at end of session with verified accomplishments only
+- Run `/handoff` before ending — saves state and progress automatically
 - `verifiedBy` required: `nix-flake-check`, `nix-eval`, `build-passed`, `human-tested`
 
 ## Design Artifacts

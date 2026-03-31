@@ -987,3 +987,100 @@ class TestCrossThreadSafety:
         assert "_core_status_cache" in text, "MainWindow must define _core_status_cache"
         assert "_core_status_cache: dict" in text or "_core_status_cache =" in text, \
             "MainWindow must initialize _core_status_cache"
+
+
+# ===========================================================================
+# TestRapidTransitions
+# ===========================================================================
+
+
+class TestRapidTransitions:
+    def test_rapid_transitions_method_exists(self, mock_backend, topo_dual_ccd_x3d):
+        """Rapid transition method exists with correct signature."""
+        config = SchedulerConfig(seconds_per_core=30)
+        stress_config = StressConfig(mode=StressMode.SSE)
+        sched = CoreScheduler(topo_dual_ccd_x3d, mock_backend, stress_config, config, Path("/tmp"))
+        assert hasattr(sched, 'run_rapid_transitions')
+        import inspect
+        sig = inspect.signature(sched.run_rapid_transitions)
+        params = list(sig.parameters.keys())
+        assert "cores" in params
+        assert "total_duration" in params
+        assert "load_seconds" in params
+        assert "idle_seconds" in params
+
+    def test_rapid_transitions_returns_tuple(self, mock_backend, topo_dual_ccd_x3d, tmp_path):
+        """run_rapid_transitions returns (bool, str|None)."""
+        config = SchedulerConfig(seconds_per_core=30)
+        stress_config = StressConfig(mode=StressMode.SSE)
+        sched = CoreScheduler(topo_dual_ccd_x3d, mock_backend, stress_config, config, tmp_path)
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        with (
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch.object(sched.detector, "check_mce", return_value=[]),
+            patch("time.sleep"),
+        ):
+            result = sched.run_rapid_transitions(
+                cores=[0],
+                total_duration=0.01,
+                load_seconds=0.005,
+                idle_seconds=0.005,
+            )
+
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        passed, error = result
+        assert isinstance(passed, bool)
+
+    def test_rapid_transitions_stop_requested_exits_early(self, mock_backend, topo_dual_ccd_x3d, tmp_path):
+        """run_rapid_transitions exits immediately when stop is requested."""
+        config = SchedulerConfig(seconds_per_core=30)
+        stress_config = StressConfig(mode=StressMode.SSE)
+        sched = CoreScheduler(topo_dual_ccd_x3d, mock_backend, stress_config, config, tmp_path)
+        sched._stop_event.set()
+
+        result = sched.run_rapid_transitions(
+            cores=[0],
+            total_duration=600.0,
+            load_seconds=10.0,
+            idle_seconds=5.0,
+        )
+        passed, error = result
+        assert passed is True  # stopped early without error
+
+    def test_rapid_transitions_mce_returns_failure(self, mock_backend, topo_dual_ccd_x3d, tmp_path):
+        """MCE during idle phase causes run_rapid_transitions to return failure."""
+        from engine.detector import MCEEvent
+
+        config = SchedulerConfig(seconds_per_core=30)
+        stress_config = StressConfig(mode=StressMode.SSE)
+        sched = CoreScheduler(topo_dual_ccd_x3d, mock_backend, stress_config, config, tmp_path)
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        fake_mce = MCEEvent(timestamp=0.0, cpu=0, bank=0, message="test MCE", corrected=False)
+
+        with (
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch.object(sched.detector, "check_mce", return_value=[fake_mce]),
+            patch("time.sleep"),
+        ):
+            result = sched.run_rapid_transitions(
+                cores=[0],
+                total_duration=1.0,
+                load_seconds=0.1,
+                idle_seconds=0.1,
+            )
+
+        passed, error = result
+        assert passed is False
+        assert error is not None
+        assert "MCE" in error

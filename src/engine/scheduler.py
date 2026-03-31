@@ -16,11 +16,10 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .backends.base import KILLED_BY_US_CODES, StressConfig, StressResult
+from .backends.base import KILLED_BY_US_CODES, StressBackend, StressConfig, StressResult
 from .detector import ErrorDetector
 
 if TYPE_CHECKING:
-    from .backends.base import StressBackend
     from .topology import CPUTopology
 
 log = logging.getLogger(__name__)
@@ -901,6 +900,103 @@ class CoreScheduler:
         except ChildProcessError:
             # No child processes — normal
             pass
+
+    def run_rapid_transitions(
+        self,
+        cores: list[int],
+        total_duration: float = 600.0,
+        load_seconds: float = 10.0,
+        idle_seconds: float = 5.0,
+    ) -> tuple[bool, str | None]:
+        """Run rapid load/idle cycling on specified cores simultaneously.
+
+        Tests instability during idle↔boost transitions by repeatedly starting
+        and stopping stress on all specified cores.  Uses local process variables
+        to avoid interfering with the main scheduler's ``_process`` state.
+
+        Returns (passed, error_message).
+        """
+        elapsed = 0.0
+        cycle = 0
+        core_work_dir = self.work_dir / "rapid_transition"
+        core_work_dir.mkdir(exist_ok=True)
+
+        # Build cpu_list from the first logical CPU of each requested physical core
+        logical_ids = []
+        for c in cores:
+            core_info = self.topology.cores.get(c)
+            if core_info and core_info.logical_cpus:
+                logical_ids.append(core_info.logical_cpus[0])
+        cpu_list = ",".join(str(lid) for lid in logical_ids) if logical_ids else "0"
+
+        while elapsed < total_duration and not self._stop_requested:
+            cycle += 1
+            stress_cfg = StressConfig(
+                mode=self.stress_config.mode,
+                fft_preset=self.stress_config.fft_preset,
+                threads=len(cores),
+            )
+            self.backend.prepare(core_work_dir, stress_cfg)
+            cmd = ["taskset", "-c", cpu_list] + self.backend.get_command(stress_cfg, core_work_dir)
+            proc = None
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    preexec_fn=self._make_preexec(),
+                )
+
+                # Load phase
+                load_time = min(load_seconds, total_duration - elapsed)
+                time.sleep(load_time)
+                elapsed += load_time
+
+                # Kill process to trigger idle transition
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    with contextlib.suppress(OSError, ProcessLookupError):
+                        os.killpg(pgid, signal.SIGTERM)
+                except (OSError, ProcessLookupError):
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        pgid = os.getpgid(proc.pid)
+                        with contextlib.suppress(OSError, ProcessLookupError):
+                            os.killpg(pgid, signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        pass
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        proc.wait(timeout=2)
+
+                # Check for crash signals (but not expected kill codes)
+                exit_class = StressBackend.classify_exit_code(proc.returncode or 0)
+                if exit_class and exit_class.startswith("crash:"):
+                    return False, f"Crash during rapid transition cycle {cycle}: {exit_class}"
+
+            except Exception as e:
+                return False, f"Rapid transition error: {e}"
+            finally:
+                if proc is not None:
+                    for stream in (proc.stdout, proc.stderr):
+                        if stream:
+                            with contextlib.suppress(OSError):
+                                stream.close()
+                self.backend.cleanup(core_work_dir)
+                self._reap_zombies()
+
+            # Idle phase — check MCE during idle
+            if elapsed < total_duration and not self._stop_requested:
+                idle_time = min(idle_seconds, total_duration - elapsed)
+                time.sleep(idle_time)
+                elapsed += idle_time
+                mce_events = self.detector.check_mce()
+                if mce_events:
+                    return False, f"MCE during idle phase of rapid transition cycle {cycle}"
+
+        return True, None
 
     @staticmethod
     def _classify_error(msg: str | None) -> str:

@@ -1368,6 +1368,21 @@ class TunerEngine(QObject):
         # Single CCD — split by index
         return [cores[::2], cores[1::2]]
 
+    def _get_validation_stage_count(self) -> int:
+        """Return the total number of validation stages.
+
+        Returns 4 when S4 rapid transition validation is enabled, 3 otherwise.
+        """
+        return 4 if self._config.validate_transitions else 3
+
+    def _run_validation_stage4(self) -> None:
+        """S4: Rapid transition stress — all cores, load/idle cycling.
+
+        Will be fully wired in Task 11 (multi-mode validation).
+        """
+        # Stub — wiring into validation loop is done in Task 11
+        pass
+
     def _run_validation_next(self) -> None:
         """Dispatch the next validation test based on current stage."""
         if self._abort_requested or self._paused:

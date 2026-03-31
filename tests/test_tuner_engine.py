@@ -1528,3 +1528,79 @@ class TestHardeningTransitions:
         eng.session_completed.connect(lambda x: completed.append(x))
         eng._complete_session()
         assert len(completed) == 1
+
+
+# ===========================================================================
+# Helpers for TestValidationS4
+# ===========================================================================
+
+
+def _make_minimal_topology():
+    """Build a 4-core single CCD topology without sysfs."""
+    from engine.topology import CPUTopology, PhysicalCore
+    topo = CPUTopology()
+    topo.physical_cores = 4
+    topo.smt_enabled = False
+    topo.logical_cpus_count = 4
+    for i in range(4):
+        topo.cores[i] = PhysicalCore(
+            core_id=i,
+            ccd=0,
+            ccx=None,
+            logical_cpus=(i,),
+        )
+    return topo
+
+
+def make_test_engine(cfg: "TunerConfig") -> "TunerEngine":
+    """Build a minimal TunerEngine for unit testing (no Qt event loop needed)."""
+    from history.db import HistoryDB
+    from unittest.mock import MagicMock
+    from engine.backends.base import StressConfig, StressMode
+    from engine.scheduler import SchedulerConfig
+
+    db = HistoryDB(":memory:")
+    topo = _make_minimal_topology()
+    smu = MagicMock()
+    smu.commands = MagicMock()
+    smu.commands.co_range = (-60, 10)
+
+    class _MockBackend:
+        name = "mock"
+        def is_available(self): return True
+        def get_command(self, config, work_dir): return ["echo", "mock"]
+        def parse_output(self, stdout, stderr, returncode): return True, None
+        def get_supported_modes(self): return [StressMode.SSE]
+        def prepare(self, work_dir, config): work_dir.mkdir(parents=True, exist_ok=True)
+        def cleanup(self, work_dir, *, preserve_on_error=False): pass
+
+    backend = _MockBackend()
+    return TunerEngine(db=db, topology=topo, smu=smu, backend=backend, config=cfg)
+
+
+# ===========================================================================
+# TestValidationS4
+# ===========================================================================
+
+
+class TestValidationS4:
+    def test_validation_stage_count_with_transitions(self):
+        """With validate_transitions=True, validation has 4 stages."""
+        cfg = TunerConfig(validate_transitions=True, hardening_tiers=[])
+        engine = make_test_engine(cfg)
+        assert engine._get_validation_stage_count() == 4
+
+    def test_validation_stage_count_without_transitions(self):
+        """With validate_transitions=False, validation has 3 stages."""
+        cfg = TunerConfig(validate_transitions=False, hardening_tiers=[])
+        engine = make_test_engine(cfg)
+        assert engine._get_validation_stage_count() == 3
+
+    def test_run_validation_stage4_is_callable(self):
+        """_run_validation_stage4 exists and is callable."""
+        cfg = TunerConfig(validate_transitions=True, hardening_tiers=[])
+        engine = make_test_engine(cfg)
+        assert hasattr(engine, "_run_validation_stage4")
+        assert callable(engine._run_validation_stage4)
+        # Stub should not raise
+        engine._run_validation_stage4()
