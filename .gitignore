@@ -19,3 +19,14 @@ AI-tasks.json
 .planning/
 .direnv
 .envrc
+
+# AI context (local-only, never track)
+CLAUDE.md
+GEMINI.md
+.claude/
+.gemini/
+AI-progress.json
+AI-tasks.json
+.ai-context/
+.planning/
+.session-handoff.md
