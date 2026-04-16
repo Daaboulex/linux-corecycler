@@ -1,5 +1,7 @@
 # CoreCycler
 
+[![CI](https://github.com/Daaboulex/linux-corecycler/actions/workflows/ci.yml/badge.svg)](https://github.com/Daaboulex/linux-corecycler/actions/workflows/ci.yml)
+
 Per-core CPU stress testing and AMD PBO Curve Optimizer tuning for Linux.
 
 ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue)
