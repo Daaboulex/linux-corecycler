@@ -8,6 +8,6 @@
   "verify": {
     "binary": null,
     "args": null,
-    "check": "elf"
+    "check": "wrapper"
   }
 }
