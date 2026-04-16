@@ -1,6 +1,11 @@
-# CoreCycler
-
 [![CI](https://github.com/Daaboulex/linux-corecycler/actions/workflows/ci.yml/badge.svg)](https://github.com/Daaboulex/linux-corecycler/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/Daaboulex/linux-corecycler)](./LICENSE)
+[![NixOS](https://img.shields.io/badge/NixOS-unstable-78C0E8?logo=nixos&logoColor=white)](https://nixos.org)
+[![Last commit](https://img.shields.io/github/last-commit/Daaboulex/linux-corecycler)](https://github.com/Daaboulex/linux-corecycler/commits)
+[![Stars](https://img.shields.io/github/stars/Daaboulex/linux-corecycler?style=flat)](https://github.com/Daaboulex/linux-corecycler/stargazers)
+[![Issues](https://img.shields.io/github/issues/Daaboulex/linux-corecycler)](https://github.com/Daaboulex/linux-corecycler/issues)
+
+# CoreCycler
 
 Per-core CPU stress testing and AMD PBO Curve Optimizer tuning for Linux.
 
