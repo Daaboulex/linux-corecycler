@@ -13,7 +13,6 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
       - uses: DeterminateSystems/nix-installer-action@d96bc962e61b3049ce8128d03d57a1144fa96539
-      - uses: DeterminateSystems/magic-nix-cache-action@87b14cf437d03d37989d87f0fa5ce4f5dc1a330b  # v8
 
       - name: Eval check
         run: nix flake check --no-build
