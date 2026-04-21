@@ -83,13 +83,21 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9 (node24)
         with:
           script: |
-            // Delete update/* branches older than 30 days
-            const { data: refs } = await github.rest.git.listMatchingRefs({
+            // Delete stale maintenance branches older than 30 days.
+            // Matches: update/*, update_*, upstream-update/*, upstream-update_*
+            // Rationale: different automation tools (Determinate, custom scripts, Dependabot)
+            // use different separators; cleanup must catch all variants.
+            const { data: allRefs } = await github.rest.git.listMatchingRefs({
               owner: context.repo.owner, repo: context.repo.repo,
-              ref: 'heads/update/'
+              ref: 'heads/'
             });
+            const stalePatterns = [
+              /^refs\/heads\/update[\/_]/,
+              /^refs\/heads\/upstream-update[\/_]/,
+            ];
+            const candidates = allRefs.filter(r => stalePatterns.some(p => p.test(r.ref)));
             const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-            for (const ref of refs) {
+            for (const ref of candidates) {
               try {
                 const { data: commit } = await github.rest.git.getCommit({
                   owner: context.repo.owner, repo: context.repo.repo,
