@@ -11,8 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
-      - uses: DeterminateSystems/nix-installer-action@d96bc962e61b3049ce8128d03d57a1144fa96539
-      - uses: DeterminateSystems/magic-nix-cache-action@87b14cf437d03d37989d87f0fa5ce4f5dc1a330b  # v8
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25  # v22 (node24)
+      # magic-nix-cache-action removed 2026-04-16 (FlakeHub-gated, broke CI).
 
       - name: Run update
         id: update
@@ -44,7 +44,7 @@ jobs:
       # Auto-close previous failure issues on success
       - name: Close resolved issues
         if: steps.update.outputs.updated == 'true' && steps.update.outputs.exit_code == '0'
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9 (node24)
         with:
           script: |
             const issues = await github.rest.issues.listForRepo({
@@ -67,7 +67,7 @@ jobs:
       # Diagnostic issue on failure
       - name: Create failure issue
         if: steps.update.outputs.updated == 'true' && steps.update.outputs.exit_code == '1'
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9 (node24)
         with:
           script: |
             const fs = require('fs');
