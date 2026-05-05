@@ -46,14 +46,6 @@ jobs:
 
       - name: Build
         run: |
-          # Skip build when update.json verify.check is "eval" (too heavy for CI)
-          if [ -f .github/update.json ]; then
-            CHECK=$(jq -r '.verify.check // empty' .github/update.json)
-            if [ "$CHECK" = "eval" ]; then
-              echo "verify.check=eval — skipping build (eval-only repo)"
-              exit 0
-            fi
-          fi
           # Skip build for module-only repos (no packages output)
           if nix eval .#packages.x86_64-linux.default --apply 'x: true' 2>/dev/null; then
             nix build --print-build-logs
