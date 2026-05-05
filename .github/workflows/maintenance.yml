@@ -1,0 +1,116 @@
+name: Maintenance
+on:
+  schedule:
+    - cron: '0 4 * * 0'  # Weekly Sunday 4 AM UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  update-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25  # v22 (node24)
+      # magic-nix-cache-action removed 2026-04-16 (FlakeHub-gated, broke CI).
+
+      - name: Update flake.lock
+        run: nix flake update
+
+      - name: Verify build
+        id: build
+        run: |
+          set +e
+          nix build --no-link --print-build-logs 2>&1 | tee /tmp/lock-build.log
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Push if build passes
+        if: steps.build.outputs.exit_code == '0'
+        run: |
+          if git diff --quiet flake.lock; then
+            echo "No changes to flake.lock"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add flake.lock
+          git commit -m "chore: update flake.lock"
+          git push
+
+      - name: Issue if build fails
+        if: steps.build.outputs.exit_code != '0'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9 (node24)
+        with:
+          script: |
+            const fs = require('fs');
+            const log = fs.readFileSync('/tmp/lock-build.log', 'utf8');
+            const lastLines = log.split('\n').slice(-80).join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: 'Maintenance: flake.lock update broke build',
+              labels: ['maintenance'],
+              body: [
+                '## flake.lock update failed to build',
+                '',
+                'The weekly `nix flake update` produced a flake.lock that does not build.',
+                '**flake.lock was NOT pushed.**',
+                '',
+                '<details><summary>Build log (last 80 lines)</summary>',
+                '',
+                '```',
+                lastLines,
+                '```',
+                '</details>',
+                '',
+                '### Recovery',
+                '```bash',
+                'nix flake update',
+                'nix build --no-link  # investigate failure',
+                '```',
+                '',
+                '---',
+                '*Created by [maintenance workflow](.github/workflows/maintenance.yml)*'
+              ].join('\n')
+            });
+
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - name: Cleanup stale branches
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9 (node24)
+        with:
+          script: |
+            // Delete stale maintenance branches older than 30 days.
+            // Matches: update/*, update_*, upstream-update/*, upstream-update_*
+            // Rationale: different automation tools (Determinate, custom scripts, Dependabot)
+            // use different separators; cleanup must catch all variants.
+            const { data: allRefs } = await github.rest.git.listMatchingRefs({
+              owner: context.repo.owner, repo: context.repo.repo,
+              ref: 'heads/'
+            });
+            const stalePatterns = [
+              /^refs\/heads\/update[\/_]/,
+              /^refs\/heads\/upstream-update[\/_]/,
+            ];
+            const candidates = allRefs.filter(r => stalePatterns.some(p => p.test(r.ref)));
+            const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+            for (const ref of candidates) {
+              try {
+                const { data: commit } = await github.rest.git.getCommit({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  commit_sha: ref.object.sha
+                });
+                if (new Date(commit.author.date).getTime() < thirtyDaysAgo) {
+                  console.log(`Deleting stale branch: ${ref.ref}`);
+                  await github.rest.git.deleteRef({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    ref: ref.ref.replace('refs/', '')
+                  });
+                }
+              } catch (e) {
+                console.log(`Skip ${ref.ref}: ${e.message}`);
+              }
+            }

@@ -1,0 +1,93 @@
+"""y-cruncher stress test backend."""
+
+from __future__ import annotations
+
+import re
+from typing import TYPE_CHECKING
+
+from engine.backends import register_backend
+
+from .base import CRASH_SIGNALS, KILLED_BY_US_CODES, StressBackend, StressConfig, StressMode
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+@register_backend("y-cruncher")
+class YCruncherBackend(StressBackend):
+    name = "y-cruncher"
+
+    def __init__(self) -> None:
+        self._binary: str | None = None
+
+    def is_available(self) -> bool:
+        # y-cruncher is typically not on PATH — check common locations
+        for name in ("y-cruncher", "y_cruncher"):
+            self._binary = self.find_binary(name)
+            if self._binary:
+                return True
+        return False
+
+    def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
+        if not self._binary:
+            self.is_available()
+        if not self._binary:
+            raise RuntimeError("y-cruncher binary not found")
+
+        # y-cruncher component stress test mode
+        cmd = [
+            self._binary,
+            "stress",
+            "-M",
+            _mode_flag(config.mode),
+            "-T",
+            str(config.threads),
+        ]
+        return cmd
+
+    def get_supported_modes(self) -> list[StressMode]:
+        return [StressMode.SSE, StressMode.AVX, StressMode.AVX2, StressMode.AVX512]
+
+    def prepare(self, work_dir: Path, config: StressConfig) -> None:
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+    def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
+        combined = stdout + "\n" + stderr
+
+        # y-cruncher error patterns — avoid false positives from benign output
+        # e.g., "Error Checking: Enabled", "Tests Failed: 0"
+        error_patterns = [
+            r"Verification\b.*\bFAIL",  # "Verification ... FAIL"
+            r"Result:\s*FAIL",  # "Result: FAIL"
+            r"Tests?\s+Failed:\s*[1-9]",  # "Tests Failed: N" where N > 0
+            r"\bFAILED\b",  # standalone FAILED
+            r"\berror\b(?![\s:]*(?:checking|rate|count)\b)",  # "error" not followed by "checking/rate/count"
+        ]
+        for pattern in error_patterns:
+            match = re.search(pattern, combined, re.IGNORECASE)
+            if match:
+                return False, f"y-cruncher error: {match.group(0)}"
+
+        if returncode in KILLED_BY_US_CODES or returncode == 0:
+            return True, None
+
+        # SIGSEGV/SIGABRT/SIGBUS = likely CO instability crash
+        if returncode in CRASH_SIGNALS:
+            return False, f"y-cruncher crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
+
+        return False, f"y-cruncher exited with code {returncode}"
+
+    def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
+        pass
+
+
+def _mode_flag(mode: StressMode) -> str:
+    match mode:
+        case StressMode.AVX512:
+            return "AVX512"
+        case StressMode.AVX2:
+            return "AVX2"
+        case StressMode.AVX:
+            return "AVX"
+        case _:
+            return "SSE"

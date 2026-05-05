@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=CoreCycler
+Comment=Per-core CPU stability tester and PBO Curve Optimizer tuner
+Exec=corecycler
+Icon=corecycler
+Terminal=false
+Type=Application
+Categories=System;Monitor;Utility;
+Keywords=cpu;stress;test;curve;optimizer;pbo;ryzen;

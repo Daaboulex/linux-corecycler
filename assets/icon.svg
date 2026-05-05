@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Gear with cycling arrows — slate/green, clean symmetry -->
+
+  <!-- 8 gear teeth: identical rects rotated around center for perfect symmetry -->
+  <g fill="#64748b">
+    <rect x="57" y="4" width="14" height="16" rx="2.5"/>
+    <rect x="57" y="4" width="14" height="16" rx="2.5" transform="rotate(45 64 64)"/>
+    <rect x="57" y="4" width="14" height="16" rx="2.5" transform="rotate(90 64 64)"/>
+    <rect x="57" y="4" width="14" height="16" rx="2.5" transform="rotate(135 64 64)"/>
+    <rect x="57" y="4" width="14" height="16" rx="2.5" transform="rotate(180 64 64)"/>
+    <rect x="57" y="4" width="14" height="16" rx="2.5" transform="rotate(225 64 64)"/>
+    <rect x="57" y="4" width="14" height="16" rx="2.5" transform="rotate(270 64 64)"/>
+    <rect x="57" y="4" width="14" height="16" rx="2.5" transform="rotate(315 64 64)"/>
+  </g>
+
+  <!-- Gear body -->
+  <circle cx="64" cy="64" r="46" fill="#1e293b" stroke="#64748b" stroke-width="2.5"/>
+
+  <!-- Inner circle -->
+  <circle cx="64" cy="64" r="35" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
+
+  <!-- Cycling arc arrows at r=30 (clockwise flow) -->
+  <!-- Arc 1: right side, from 25deg to 155deg -->
+  <path d="M 76.7 36.8 A 30 30 0 0 1 76.7 91.2"
+    fill="none" stroke="#22c55e" stroke-width="3" stroke-linecap="round"/>
+  <polygon points="71.2,93.7 78.4,94.8 75.0,87.6" fill="#22c55e"/>
+
+  <!-- Arc 2: left side, from 205deg to 335deg (perfect mirror) -->
+  <path d="M 51.3 91.2 A 30 30 0 0 1 51.3 36.8"
+    fill="none" stroke="#22c55e" stroke-width="3" stroke-linecap="round"/>
+  <polygon points="56.8,34.3 49.6,33.2 53.0,40.4" fill="#22c55e"/>
+
+  <!-- Core 0 (top) — active, bright green -->
+  <circle cx="64" cy="44" r="6.5" fill="#22c55e" opacity="0.9"/>
+  <text x="64" y="47" font-family="monospace" font-size="8" fill="#fff" text-anchor="middle" font-weight="bold">0</text>
+
+  <!-- Core 1 (right) — next, outlined green -->
+  <circle cx="84" cy="64" r="6.5" fill="#0f172a" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="84" y="67" font-family="monospace" font-size="8" fill="#22c55e" text-anchor="middle">1</text>
+
+  <!-- Core 2 (bottom) — queued, dim -->
+  <circle cx="64" cy="84" r="6.5" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
+  <text x="64" y="87" font-family="monospace" font-size="8" fill="#64748b" text-anchor="middle">2</text>
+
+  <!-- Core 3 (left) — queued, dim -->
+  <circle cx="44" cy="64" r="6.5" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
+  <text x="44" y="67" font-family="monospace" font-size="8" fill="#64748b" text-anchor="middle">3</text>
+
+  <!-- Center hub -->
+  <circle cx="64" cy="64" r="11" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
+  <text x="64" y="59" font-family="monospace" font-size="6" fill="#64748b" text-anchor="middle" dominant-baseline="central">CO</text>
+  <text x="64" y="69" font-family="monospace" font-size="9" fill="#22c55e" text-anchor="middle" dominant-baseline="central" font-weight="bold">-35</text>
+</svg>
