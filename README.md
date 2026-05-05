@@ -7,6 +7,11 @@
 
 # CoreCycler
 
+<!-- BEGIN generated:badges -->
+[![NixOS unstable](https://img.shields.io/badge/NixOS-unstable-78C0E8?logo=nixos&logoColor=white)](https://nixos.org)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](./LICENSE)
+<!-- END generated:badges -->
+
 Per-core CPU stress testing and AMD PBO Curve Optimizer tuning for Linux.
 
 ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue)
@@ -138,6 +143,17 @@ Stress test processes are launched in their own process group (`setsid`) with `P
 
 The hardware monitor continuously reads CPU temperatures from hwmon (k10temp/zenpower/zenpower3/zenpower5/coretemp). The configurable temperature limit (default 95C, adjustable 50-115C in the Configuration tab) controls automatic test pausing when thermal limits are approached.
 
+<!-- BEGIN generated:upstream -->
+## Upstream
+
+| | |
+|---|---|
+| **Project** | Original code (no upstream) |
+| **License** | N/A |
+| **Tracked** | N/A |
+<!-- END generated:upstream -->
+
+<!-- BEGIN generated:installation -->
 ## Installation
 
 ### NixOS (recommended)
@@ -419,6 +435,8 @@ CoreCycler uses several kernel modules for hardware access. None are required fo
 | Intel | Yes | No | -- |
 
 See the [detailed hardware support table](#curve-optimizer-smu-support) for per-generation SMU mailbox details, PBO limits, and boost override support.
+
+<!-- END generated:installation -->
 
 ## Backend Setup
 
@@ -996,6 +1014,15 @@ Super I/O chips provide analog Vcore (in0_input) from the voltage regulator — 
 - [zenpower3](https://github.com/Ta180m/zenpower3) by Ta180m -- Zen 1-4 hwmon driver with SVI2 voltage
 - [ZenStates-Core](https://github.com/irusanov/ZenStates-Core) by irusanov -- reference for SMU command IDs across generations
 
+<!-- BEGIN generated:options -->
+<!-- END generated:options -->
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE) for details.
+
+<!-- BEGIN generated:footer -->
+---
+
+*Maintained as part of the [Daaboulex](https://github.com/Daaboulex) NixOS ecosystem.*
+<!-- END generated:footer -->
