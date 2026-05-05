@@ -1,0 +1,1085 @@
+"""Core cycling scheduler — runs stress tests per-core with error detection."""
+
+from __future__ import annotations
+
+import contextlib
+import copy
+import logging
+import os
+import re
+import signal
+import subprocess
+import threading
+import time
+from dataclasses import dataclass
+from enum import Enum, auto
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from .backends.base import KILLED_BY_US_CODES, StressBackend, StressConfig, StressResult
+from .detector import ErrorDetector
+
+if TYPE_CHECKING:
+    from .topology import CPUTopology
+
+log = logging.getLogger(__name__)
+
+
+class TestState(Enum):
+    __test__ = False  # Not a pytest test class
+    IDLE = auto()
+    RUNNING = auto()
+    STOPPING = auto()
+    FINISHED = auto()
+
+
+class TestMode(Enum):
+    """Pre-configured test thoroughness levels."""
+
+    QUICK = auto()  # 2 min/core, 1 cycle — fast screening
+    STANDARD = auto()  # 10 min/core, 1 cycle — initial CO tuning
+    THOROUGH = auto()  # 30 min/core, 2 cycles — validation
+    FULL_SPECTRUM = auto()  # multi-pass: SSE, AVX2, variable load, idle — comprehensive
+    CUSTOM = auto()  # user-configured
+
+
+@dataclass(slots=True)
+class CoreTestStatus:
+    core_id: int
+    ccd: int | None = None
+    state: str = "pending"  # pending, testing, passed, failed, skipped
+    iterations: int = 0
+    errors: int = 0
+    last_error: str | None = None
+    elapsed_seconds: float = 0.0
+    current_fft: int | None = None
+    current_phase: str = ""  # "SSE small", "AVX2 heavy", "idle", "variable"
+
+
+@dataclass(slots=True)
+class SchedulerConfig:
+    seconds_per_core: int = 360  # 6 minutes default
+    cores_to_test: list[int] | None = None  # None = all physical cores
+    stop_on_error: bool = False
+    cycle_count: int = 1  # how many full cycles through all cores
+    poll_interval: float = 1.0  # seconds between status checks
+    max_temperature: float = 95.0  # celsius — pause/stop if exceeded
+    stall_timeout: float = 30.0  # seconds of near-zero CPU before declaring stall
+    test_mode: TestMode = TestMode.CUSTOM
+    # Full spectrum options
+    variable_load: bool = False  # periodically stop/start stress during test
+    variable_load_interval: float = 15.0  # seconds between load transitions
+    idle_between_cores: float = 0.0  # seconds of idle between core tests
+    idle_stability_test: float = 0.0  # seconds of idle test per core (catches C-state transitions)
+
+
+_STALL_GRACE_SECONDS = 5.0  # skip stall checks during benchmark startup
+
+
+class CoreScheduler:
+    """Orchestrates per-core stress testing with cycling and error detection."""
+
+    def __init__(
+        self,
+        topology: CPUTopology,
+        backend: StressBackend,
+        stress_config: StressConfig,
+        scheduler_config: SchedulerConfig,
+        work_dir: Path | None = None,
+    ) -> None:
+        self.topology = topology
+        self.backend = backend
+        self.stress_config = copy.copy(stress_config)
+        self.config = scheduler_config
+        self.work_dir = work_dir or Path("/tmp/corecycler")
+        self.detector = ErrorDetector()
+
+        self.state = TestState.IDLE
+        self.results: dict[int, list[StressResult]] = {}
+        self.core_status: dict[int, CoreTestStatus] = {}
+        self._process: subprocess.Popen | None = None
+        self._process_lock = threading.Lock()
+        self._we_killed_it = False  # track intentional kills vs external (OOM)
+        self._current_core: int | None = None
+        self._current_cycle: int = 0
+        self._stop_event = threading.Event()
+        self._thermal_tripped = False  # hysteresis state for temperature checks
+
+        # callbacks for GUI integration
+        self.on_core_start: list = []  # (core_id, cycle) -> None
+        self.on_core_finish: list = []  # (core_id, result) -> None
+        self.on_status_update: list = []  # (core_id, status) -> None
+        self.on_cycle_complete: list = []  # (cycle_num) -> None
+        self.on_test_complete: list = []  # (results) -> None
+        self.on_thermal_throttle: list = []  # (temperature) -> None
+        self.on_stall_detected: list = []  # (core_id) -> None
+        self.on_phase_change: list = []  # (core_id, phase_name) -> None
+
+        self._init_core_status()
+
+    def _init_core_status(self) -> None:
+        cores = self._get_test_cores()
+        for core_id in cores:
+            core_info = self.topology.cores.get(core_id)
+            self.core_status[core_id] = CoreTestStatus(
+                core_id=core_id,
+                ccd=core_info.ccd if core_info else None,
+            )
+            self.results[core_id] = []
+
+    def _get_test_cores(self) -> list[int]:
+        if self.config.cores_to_test is not None:
+            return sorted(self.config.cores_to_test)
+        return sorted(self.topology.cores.keys())
+
+    def run(self) -> dict[int, list[StressResult]]:
+        """Run the full test cycle. Blocks until complete. Use run_async() for GUI."""
+        self.state = TestState.RUNNING
+        self._stop_event.clear()
+        self.detector.reset()
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+
+        cores = self._get_test_cores()
+
+        try:
+            for cycle in range(self.config.cycle_count):
+                self._current_cycle = cycle
+                if self._stop_event.is_set():
+                    break
+
+                for core_id in cores:
+                    if self._stop_event.is_set():
+                        break
+                    self._test_core(core_id, cycle)
+
+                    # Inter-core idle period (catches C-state transition issues)
+                    if self.config.idle_between_cores > 0 and not self._stop_event.is_set():
+                        self._idle_period(
+                            core_id, self.config.idle_between_cores, "inter-core idle"
+                        )
+
+                for cb in self.on_cycle_complete:
+                    cb(cycle)
+
+        finally:
+            self.state = TestState.FINISHED
+            for cb in self.on_test_complete:
+                cb(self.results)
+
+        return self.results
+
+    def stop(self) -> None:
+        """Stop the test — kills the current stress process immediately."""
+        self._stop_event.set()
+        self.state = TestState.STOPPING
+        self._kill_current()
+
+    # keep force_stop as alias for backward compatibility
+    force_stop = stop
+
+    @property
+    def _stop_requested(self) -> bool:
+        """Backward-compatible read access to the stop flag."""
+        return self._stop_event.is_set()
+
+    # ------------------------------------------------------------------
+    # Temperature monitoring
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _read_cpu_temperature() -> float | None:
+        """Read CPU temperature from hwmon (Tctl/Tdie for AMD, coretemp for Intel).
+
+        Returns temperature in celsius or None if unavailable.
+        """
+        hwmon_base = Path("/sys/class/hwmon")
+        if not hwmon_base.exists():
+            return None
+
+        try:
+            for hwmon_dir in hwmon_base.iterdir():
+                name_file = hwmon_dir / "name"
+                if not name_file.exists():
+                    continue
+                try:
+                    name = name_file.read_text().strip()
+                except OSError:
+                    continue
+
+                # AMD: k10temp exposes Tctl/Tdie; Intel: coretemp
+                if name not in ("k10temp", "coretemp", "zenpower", "zenpower3"):
+                    continue
+
+                # find highest temp input
+                max_temp = 0.0
+                for temp_input in sorted(hwmon_dir.glob("temp*_input")):
+                    try:
+                        millideg = int(temp_input.read_text().strip())
+                        temp_c = millideg / 1000.0
+                        if temp_c > max_temp:
+                            max_temp = temp_c
+                    except (ValueError, OSError):
+                        continue
+
+                if max_temp > 0:
+                    return max_temp
+        except OSError:
+            pass
+        return None
+
+    def _check_temperature(self) -> bool:
+        """Check CPU temperature against the safety limit with hysteresis.
+
+        Returns True if temperature is safe, False if over limit.
+        When over limit, fires the on_thermal_throttle callback.
+        Uses 5°C hysteresis to avoid rapid start/stop oscillation at boundary.
+        """
+        temp = self._read_cpu_temperature()
+        if temp is None:
+            return True  # can't read -> don't block
+
+        hysteresis = 5.0
+        if temp >= self.config.max_temperature:
+            if not self._thermal_tripped:
+                log.warning(
+                    "CPU temperature %.1f C exceeds safety limit %.1f C — stopping test",
+                    temp,
+                    self.config.max_temperature,
+                )
+                self._thermal_tripped = True
+                for cb in self.on_thermal_throttle:
+                    cb(temp)
+            return False
+
+        if self._thermal_tripped:
+            if temp < self.config.max_temperature - hysteresis:
+                log.info(
+                    "CPU temperature %.1f C dropped below resume threshold %.1f C",
+                    temp,
+                    self.config.max_temperature - hysteresis,
+                )
+                self._thermal_tripped = False
+                return True
+            return False  # still in hysteresis zone
+
+        return True
+
+    # ------------------------------------------------------------------
+    # Affinity verification
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _verify_affinity(pid: int, expected_cpus: str) -> bool:
+        """Verify a process is pinned to the expected CPUs via /proc/pid/status.
+
+        expected_cpus is a comma-separated list like "0,16".
+        Returns True if Cpus_allowed_list matches (order-insensitive).
+        Returns True (lenient) if /proc is unreadable — don't block the test.
+        """
+        try:
+            status_path = Path(f"/proc/{pid}/status")
+            for line in status_path.read_text().splitlines():
+                if line.startswith("Cpus_allowed_list:"):
+                    allowed = line.split(":", 1)[1].strip()
+                    return allowed == expected_cpus
+            return True  # field not found — don't block
+        except (OSError, ValueError):
+            return True  # can't read /proc — don't block
+
+    @staticmethod
+    def _verify_child_affinity(
+        pid: int,
+        expected_cpus: set[int],
+        cpu_list: str,
+        *,
+        proc_base: Path | None = None,
+    ) -> tuple[bool, int]:
+        """Verify ALL threads of a process are pinned to expected CPUs.
+
+        Scans /proc/pid/task/ for child TIDs and checks Cpus_allowed_list.
+        Re-pins any drifted threads with os.sched_setaffinity().
+
+        Args:
+            pid: Parent process ID
+            expected_cpus: Set of allowed logical CPU IDs (e.g. {0, 16})
+            cpu_list: Comma-separated CPU list string for logging (e.g. "0,16")
+            proc_base: Override /proc path for testing
+
+        Returns (all_pinned, drift_count).
+        Returns (True, 0) (lenient) if /proc is unreadable.
+        """
+        base = proc_base or Path("/proc")
+        try:
+            task_dir = base / str(pid) / "task"
+            if not task_dir.exists():
+                return True, 0
+
+            all_pinned = True
+            drift_count = 0
+            for tid_dir in task_dir.iterdir():
+                try:
+                    tid = int(tid_dir.name)
+                except ValueError:
+                    continue
+                status_path = tid_dir / "status"
+                try:
+                    for line in status_path.read_text().splitlines():
+                        if line.startswith("Cpus_allowed_list:"):
+                            allowed = line.split(":", 1)[1].strip()
+                            # Parse the allowed list into a set of CPU IDs
+                            allowed_set: set[int] = set()
+                            for part in allowed.split(","):
+                                part = part.strip()
+                                if "-" in part:
+                                    lo, hi = part.split("-", 1)
+                                    allowed_set.update(range(int(lo), int(hi) + 1))
+                                else:
+                                    allowed_set.add(int(part))
+                            if allowed_set != expected_cpus:
+                                log.debug(
+                                    "TID %d drifted to CPUs %s, re-pinning to %s",
+                                    tid,
+                                    allowed,
+                                    cpu_list,
+                                )
+                                drift_count += 1
+                                try:
+                                    os.sched_setaffinity(tid, expected_cpus)
+                                except OSError:
+                                    log.debug("Failed to re-pin TID %d", tid)
+                                    all_pinned = False
+                            break
+                except (OSError, ValueError):
+                    continue  # TID may have exited between listing and reading
+
+            return all_pinned, drift_count
+        except (OSError, ValueError):
+            return True, 0  # can't read /proc — don't block
+
+    # ------------------------------------------------------------------
+    # Stall detection
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _read_core_usage(logical_cpu: int) -> float | None:
+        """Read instantaneous CPU usage for a logical CPU from /proc/stat.
+
+        Returns a rough busy percentage (0-100) by sampling twice with a
+        short interval, or None on error.
+        """
+        try:
+            def _read_cpu_times(cpu_id: int) -> tuple[int, int] | None:
+                stat = Path("/proc/stat").read_text()
+                prefix = f"cpu{cpu_id} "
+                for line in stat.splitlines():
+                    if line.startswith(prefix):
+                        parts = line.split()
+                        # user nice system idle iowait irq softirq steal
+                        vals = [int(x) for x in parts[1:]]
+                        idle = vals[3] + vals[4]  # idle + iowait
+                        total = sum(vals)
+                        return idle, total
+                return None
+
+            t1 = _read_cpu_times(logical_cpu)
+            if t1 is None:
+                return None
+            time.sleep(0.25)
+            t2 = _read_cpu_times(logical_cpu)
+            if t2 is None:
+                return None
+
+            idle_delta = t2[0] - t1[0]
+            total_delta = t2[1] - t1[1]
+            if total_delta == 0:
+                return 0.0
+            return 100.0 * (1.0 - idle_delta / total_delta)
+        except (OSError, ValueError, IndexError):
+            return None
+
+    # ------------------------------------------------------------------
+    # Idle period (for C-state transition testing)
+    # ------------------------------------------------------------------
+
+    def _idle_period(self, core_id: int, duration: float, phase_name: str) -> None:
+        """Wait for a specified duration while monitoring for MCE.
+
+        CO instability often manifests during idle/light load — the CPU
+        boosts a single core to max clocks with reduced voltage. This
+        catches errors that pure stress testing misses.
+        """
+        status = self.core_status.get(core_id)
+        if status:
+            status.current_phase = phase_name
+        for cb in self.on_phase_change:
+            cb(core_id, phase_name)
+
+        start = time.monotonic()
+        while time.monotonic() - start < duration:
+            if self._stop_event.is_set():
+                return
+
+            # temperature safety check during idle
+            if not self._check_temperature():
+                self._stop_event.set()
+                if status:
+                    status.errors += 1
+                    status.last_error = (
+                        f"CPU temperature exceeded {self.config.max_temperature} C "
+                        f"safety limit during {phase_name}"
+                    )
+                return
+
+            # Check for MCE during idle (the primary purpose of idle testing)
+            core_info = self.topology.cores.get(core_id)
+            if core_info:
+                logical_cpu = core_info.logical_cpus[0]
+                mce_events = self.detector.check_mce(target_cpu=logical_cpu)
+                if mce_events and status:
+                    status.errors += 1
+                    status.last_error = f"MCE during idle: {mce_events[0].message}"
+                    if self.config.stop_on_error:
+                        self._stop_event.set()
+                    return  # always stop idle on MCE
+
+            time.sleep(min(1.0, duration - (time.monotonic() - start)))
+
+    # ------------------------------------------------------------------
+    # Variable load (load transitions stress test)
+    # ------------------------------------------------------------------
+
+    def _run_variable_load(
+        self, core_id: int, logical_cpu: int, cpu_list: str, total_duration: float, core_work_dir: Path
+    ) -> tuple[bool, str | None]:
+        """Run stress test with periodic stop/start to simulate real-world load transitions.
+
+        This catches instability during frequency/voltage transitions that steady
+        load testing misses. The CPU rapidly shifts between idle (high-boost) and
+        loaded states, which is when CO-related errors most commonly occur.
+        """
+        status = self.core_status.get(core_id)
+        if status:
+            status.current_phase = "variable load"
+        for cb in self.on_phase_change:
+            cb(core_id, "variable load")
+
+        start_time = time.monotonic()
+        deadline = start_time + total_duration
+        interval = self.config.variable_load_interval
+        passed = True
+        error_msg = None
+        load_on = True
+
+        while time.monotonic() < deadline and not self._stop_event.is_set():
+            segment_end = min(time.monotonic() + interval, deadline)
+
+            if load_on:
+                # Run stress for one interval
+                cmd = self.backend.get_command(self.stress_config, core_work_dir)
+                full_cmd = ["taskset", "-c", cpu_list] + cmd
+                try:
+                    self._we_killed_it = False
+                    with self._process_lock:
+                        self._process = subprocess.Popen(
+                            full_cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                            cwd=str(core_work_dir),
+                            preexec_fn=self._make_preexec(),
+                        )
+
+                    while time.monotonic() < segment_end and not self._stop_event.is_set():
+                        if self._process.poll() is not None:
+                            break
+                        # temperature safety check
+                        if not self._check_temperature():
+                            passed = False
+                            error_msg = (
+                                f"CPU temperature exceeded {self.config.max_temperature} C "
+                                f"safety limit during variable load"
+                            )
+                            self._stop_event.set()
+                            break
+                        mce_events = self.detector.check_mce(target_cpu=logical_cpu)
+                        if mce_events:
+                            passed = False
+                            error_msg = f"MCE during variable load: {mce_events[0].message}"
+                            if self.config.stop_on_error:
+                                self._stop_event.set()
+                            break
+                        time.sleep(0.5)
+
+                    self._kill_current()
+                except OSError as e:
+                    passed = False
+                    error_msg = f"Failed to start variable load: {e}"
+                    break
+                finally:
+                    with self._process_lock:
+                        self._process = None
+                    self._reap_zombies()
+            else:
+                # Idle period — CPU transitions to boost clocks
+                while time.monotonic() < segment_end and not self._stop_event.is_set():
+                    if not self._check_temperature():
+                        passed = False
+                        error_msg = (
+                            f"CPU temperature exceeded {self.config.max_temperature} C "
+                            f"safety limit during idle transition"
+                        )
+                        self._stop_event.set()
+                        break
+                    mce_events = self.detector.check_mce(target_cpu=logical_cpu)
+                    if mce_events:
+                        passed = False
+                        error_msg = f"MCE during idle transition: {mce_events[0].message}"
+                        if self.config.stop_on_error:
+                            self._stop_event.set()
+                        break
+                    time.sleep(0.5)
+
+            if not passed:
+                break
+
+            load_on = not load_on
+            if status:
+                status.elapsed_seconds = time.monotonic() - start_time
+
+        return passed, error_msg
+
+    # ------------------------------------------------------------------
+    # Core test execution
+    # ------------------------------------------------------------------
+
+    def _test_core(self, core_id: int, cycle: int) -> None:
+        self._current_core = core_id
+        status = self.core_status[core_id]
+        status.state = "testing"
+
+        for cb in self.on_core_start:
+            cb(core_id, cycle)
+
+        core_info = self.topology.cores.get(core_id)
+        if not core_info:
+            status.state = "skipped"
+            return
+
+        # Pin to ALL logical CPUs of this physical core (both SMT siblings)
+        # so the stress test can fully utilize the core's resources.
+        logical_cpus = core_info.logical_cpus
+        logical_cpu = logical_cpus[0]  # primary — used for stall/MCE checks
+        cpu_list = ",".join(str(c) for c in logical_cpus)
+
+        # Tell the backend how many threads to use (= SMT width of this core)
+        self.stress_config.threads = len(logical_cpus)
+
+        # prepare backend work directory for this core
+        core_work_dir = self.work_dir / f"core_{core_id}"
+        self.backend.prepare(core_work_dir, self.stress_config)
+
+        passed = True
+        error_msg = None
+        start_time = time.monotonic()
+
+        # --- Phase 1: Main stress test ---
+        status.current_phase = "stress"
+        for cb in self.on_phase_change:
+            cb(core_id, "stress")
+
+        phase_passed, phase_error = self._run_stress_phase(
+            core_id, logical_cpu, cpu_list, core_work_dir, status
+        )
+        if not phase_passed:
+            passed = False
+            error_msg = phase_error
+
+        # --- Phase 2: Variable load test (if enabled) ---
+        if passed and self.config.variable_load and not self._stop_event.is_set():
+            # Use 1/3 of the per-core time for variable load
+            var_duration = self.config.seconds_per_core / 3.0
+            var_passed, var_error = self._run_variable_load(
+                core_id, logical_cpu, cpu_list, var_duration, core_work_dir
+            )
+            if not var_passed:
+                passed = False
+                error_msg = var_error
+                status.errors += 1
+                status.last_error = error_msg
+
+        # --- Phase 3: Idle stability test (if enabled) ---
+        if passed and self.config.idle_stability_test > 0 and not self._stop_event.is_set():
+            errors_before = status.errors
+            self._idle_period(core_id, self.config.idle_stability_test, "idle stability")
+            # Check if new errors occurred during idle phase
+            if status.errors > errors_before:
+                passed = False
+                error_msg = status.last_error or "Error during idle stability test"
+
+        elapsed = time.monotonic() - start_time
+        status.elapsed_seconds = elapsed
+        status.iterations += 1
+        status.state = "passed" if passed else "failed"
+        status.current_phase = ""
+
+        result = StressResult(
+            core_id=core_id,
+            passed=passed,
+            duration_seconds=elapsed,
+            error_message=error_msg,
+            error_type=self._classify_error(error_msg) if error_msg else None,
+            iterations_completed=status.iterations,
+        )
+        self.results[core_id].append(result)
+
+        for cb in self.on_core_finish:
+            cb(core_id, result)
+
+        self.backend.cleanup(core_work_dir, preserve_on_error=not passed)
+
+    def _run_stress_phase(
+        self,
+        core_id: int,
+        logical_cpu: int,
+        cpu_list: str,
+        core_work_dir: Path,
+        status: CoreTestStatus,
+    ) -> tuple[bool, str | None]:
+        """Run the main stress test phase for a core.
+
+        Returns (passed, error_message).
+        """
+        # build command with taskset for CPU pinning (all SMT siblings)
+        cmd = self.backend.get_command(self.stress_config, core_work_dir)
+        full_cmd = ["taskset", "-c", cpu_list] + cmd
+
+        start_time = time.monotonic()
+        stdout_data = ""
+        stderr_data = ""
+        error_msg = None
+        passed = True
+        last_active_time = start_time  # for stall detection
+        total_repins = 0
+
+        try:
+            self._we_killed_it = False  # reset before each process launch
+            with self._process_lock:
+                self._process = subprocess.Popen(
+                    full_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    cwd=str(core_work_dir),
+                    preexec_fn=self._make_preexec(),  # own process group + PR_SET_PDEATHSIG
+                )
+
+            deadline = start_time + self.config.seconds_per_core
+            last_affinity_check = 0.0  # time of last TID affinity scan
+            _AFFINITY_CHECK_INTERVAL = 2.0
+
+            while self._process.poll() is None:
+                if self._stop_event.is_set():
+                    break
+
+                now = time.monotonic()
+                if now >= deadline:
+                    break
+
+                # --- temperature safety check ---
+                if not self._check_temperature():
+                    passed = False
+                    error_msg = (
+                        f"CPU temperature exceeded {self.config.max_temperature} C "
+                        f"safety limit — test stopped"
+                    )
+                    status.errors += 1
+                    status.last_error = error_msg
+                    self._stop_event.set()
+                    break
+
+                # --- stall watchdog ---
+                # Skip stall checks during startup grace period -- stress processes
+                # need time to initialize before reaching full CPU load
+                if now - start_time >= _STALL_GRACE_SECONDS:
+                    # Reset stall baseline when grace period ends -- don't count
+                    # startup time toward the stall timeout
+                    if last_active_time == start_time:
+                        last_active_time = now
+
+                    usage = self._read_core_usage(logical_cpu)
+                    if usage is not None:
+                        if usage > 5.0:
+                            last_active_time = now
+                        elif now - last_active_time > self.config.stall_timeout:
+                            log.warning(
+                                "Stall detected on core %d (CPU%d): "
+                                "near-zero usage for %.0f s",
+                                core_id,
+                                logical_cpu,
+                                now - last_active_time,
+                            )
+                            for cb in self.on_stall_detected:
+                                cb(core_id)
+                            passed = False
+                            error_msg = (
+                                f"Stress test stalled on core {core_id} "
+                                f"(CPU usage near 0 for {self.config.stall_timeout:.0f}s)"
+                            )
+                            status.errors += 1
+                            status.last_error = error_msg
+                            if self.config.stop_on_error:
+                                self._stop_event.set()
+                            break
+
+                # Periodic child-thread affinity verification -- mprime and other
+                # backends may spawn threads that reset their own CPU affinity
+                affinity_due = (now - last_affinity_check) >= _AFFINITY_CHECK_INTERVAL
+                if self._process is not None and affinity_due:
+                    last_affinity_check = now
+                    expected_cpu_set = {int(c) for c in cpu_list.split(",")}
+                    _, drifts = self._verify_child_affinity(
+                        self._process.pid, expected_cpu_set, cpu_list
+                    )
+                    total_repins += drifts
+
+                # periodic MCE check
+                mce_events = self.detector.check_mce(target_cpu=logical_cpu)
+                if mce_events:
+                    passed = False
+                    error_msg = f"MCE detected on CPU {logical_cpu}: {mce_events[0].message}"
+                    status.errors += 1
+                    status.last_error = error_msg
+                    if self.config.stop_on_error:
+                        self._stop_event.set()
+                    break  # always stop this core on MCE
+
+                # update elapsed time
+                status.elapsed_seconds = now - start_time
+                for cb in self.on_status_update:
+                    cb(core_id, status)
+
+                time.sleep(self.config.poll_interval)
+
+            if total_repins > 0:
+                log.info("Core %d: re-pinned %d drifted thread(s) during test", core_id, total_repins)
+
+            # kill process if still running (timeout or stop requested)
+            self._kill_current()
+
+            # Drain any MCE events that arrived during the kill to prevent
+            # false attribution to the next core's test
+            self.detector.check_mce()
+
+            # Warn if the process exited almost immediately — likely a missing
+            # binary, bad path, or misconfigured backend.
+            if self._process.poll() is not None and (time.monotonic() - start_time) < 2.0:
+                log.warning(
+                    "Stress process for core %d exited in <2s (code %d) — "
+                    "binary may be missing or misconfigured",
+                    core_id, self._process.returncode,
+                )
+
+            # collect output
+            try:
+                stdout_data, stderr_data = self._process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                try:
+                    stdout_data, stderr_data = self._process.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    log.warning("Process did not respond to SIGKILL — output lost")
+                    stdout_data, stderr_data = "", ""
+
+            # parse backend output for errors
+            if passed:  # only check output if no MCE already detected
+                returncode = self._process.returncode or 0
+
+                # If we killed the process (timeout/stop), signal-exit codes are
+                # expected — pass that context to the backend so it doesn't treat
+                # our intentional kill as an OOM or crash.  If we did NOT kill it
+                # and it died to a signal, that's a real crash (OOM killer, etc).
+                if not self._we_killed_it and returncode in KILLED_BY_US_CODES:
+                    # External kill (OOM, admin) — treat as error
+                    passed = False
+                    error_msg = (
+                        f"Stress process killed externally (code {returncode}) — "
+                        f"possible OOM or system issue"
+                    )
+                    status.errors += 1
+                    status.last_error = error_msg
+                    if self.config.stop_on_error:
+                        self._stop_event.set()
+                else:
+                    backend_passed, backend_error = self.backend.parse_output(
+                        stdout_data, stderr_data, returncode
+                    )
+                    if not backend_passed:
+                        passed = False
+                        error_msg = backend_error
+                        status.errors += 1
+                        status.last_error = error_msg
+                        if self.config.stop_on_error:
+                            self._stop_event.set()
+
+        except (OSError, RuntimeError) as e:
+            passed = False
+            error_msg = f"Failed to start stress test: {e}"
+            status.errors += 1
+            status.last_error = error_msg
+        finally:
+            with self._process_lock:
+                self._process = None
+            # Reap any zombies from this process group
+            self._reap_zombies()
+
+        return passed, error_msg
+
+    @staticmethod
+    def _make_preexec():
+        """Create preexec_fn that isolates process group AND ensures child dies with parent."""
+        def _preexec():
+            os.setsid()
+            # PR_SET_PDEATHSIG: kernel sends SIGKILL to this process if parent dies
+            import ctypes
+            import ctypes.util
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+            PR_SET_PDEATHSIG = 1
+            libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+        return _preexec
+
+    def _kill_current(self) -> None:
+        """Kill the current stress test process and all children in its group.
+
+        Uses SIGTERM first, escalates to SIGKILL, and always calls wait()
+        to prevent zombie processes.
+        """
+        with self._process_lock:
+            proc = self._process
+        if proc is None or proc.poll() is not None:
+            return
+
+        pid = proc.pid
+        try:
+            pgid = os.getpgid(pid)
+        except (OSError, ProcessLookupError):
+            # Already gone
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=1)
+            return
+
+        self._we_killed_it = True
+        # SIGTERM the whole process group
+        with contextlib.suppress(OSError, ProcessLookupError):
+            os.killpg(pgid, signal.SIGTERM)
+
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            # Escalate to SIGKILL
+            with contextlib.suppress(OSError, ProcessLookupError):
+                os.killpg(pgid, signal.SIGKILL)
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                log.warning("Process %d did not exit after SIGKILL", pid)
+
+        # Close pipe fds to avoid resource leaks
+        for stream in (proc.stdout, proc.stderr):
+            if stream:
+                with contextlib.suppress(OSError):
+                    stream.close()
+
+    @staticmethod
+    def _reap_zombies() -> None:
+        """Reap any zombie child processes to prevent accumulation."""
+        try:
+            while True:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+                if pid == 0:
+                    break
+        except ChildProcessError:
+            # No child processes — normal
+            pass
+
+    def run_rapid_transitions(
+        self,
+        cores: list[int],
+        total_duration: float = 600.0,
+        load_seconds: float = 10.0,
+        idle_seconds: float = 5.0,
+    ) -> tuple[bool, str | None]:
+        """Run rapid load/idle cycling on specified cores simultaneously.
+
+        Tests instability during idle↔boost transitions by repeatedly starting
+        and stopping stress on all specified cores.  Uses local process variables
+        to avoid interfering with the main scheduler's ``_process`` state.
+
+        Returns (passed, error_message).
+        """
+        elapsed = 0.0
+        cycle = 0
+        core_work_dir = self.work_dir / "rapid_transition"
+        core_work_dir.mkdir(exist_ok=True)
+
+        # Build cpu_list from the first logical CPU of each requested physical core
+        logical_ids = []
+        for c in cores:
+            core_info = self.topology.cores.get(c)
+            if core_info and core_info.logical_cpus:
+                logical_ids.append(core_info.logical_cpus[0])
+        cpu_list = ",".join(str(lid) for lid in logical_ids) if logical_ids else "0"
+
+        while elapsed < total_duration and not self._stop_requested:
+            cycle += 1
+            stress_cfg = StressConfig(
+                mode=self.stress_config.mode,
+                fft_preset=self.stress_config.fft_preset,
+                threads=len(cores),
+            )
+            self.backend.prepare(core_work_dir, stress_cfg)
+            cmd = ["taskset", "-c", cpu_list] + self.backend.get_command(stress_cfg, core_work_dir)
+            proc = None
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    preexec_fn=self._make_preexec(),
+                )
+
+                # Load phase
+                load_time = min(load_seconds, total_duration - elapsed)
+                time.sleep(load_time)
+                elapsed += load_time
+
+                # Kill process to trigger idle transition
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    with contextlib.suppress(OSError, ProcessLookupError):
+                        os.killpg(pgid, signal.SIGTERM)
+                except (OSError, ProcessLookupError):
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        pgid = os.getpgid(proc.pid)
+                        with contextlib.suppress(OSError, ProcessLookupError):
+                            os.killpg(pgid, signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        pass
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        proc.wait(timeout=2)
+
+                # Check for crash signals (but not expected kill codes)
+                exit_class = StressBackend.classify_exit_code(proc.returncode or 0)
+                if exit_class and exit_class.startswith("crash:"):
+                    return False, f"Crash during rapid transition cycle {cycle}: {exit_class}"
+
+            except Exception as e:
+                return False, f"Rapid transition error: {e}"
+            finally:
+                if proc is not None:
+                    for stream in (proc.stdout, proc.stderr):
+                        if stream:
+                            with contextlib.suppress(OSError):
+                                stream.close()
+                self.backend.cleanup(core_work_dir)
+                self._reap_zombies()
+
+            # Idle phase — check MCE during idle
+            if elapsed < total_duration and not self._stop_requested:
+                idle_time = min(idle_seconds, total_duration - elapsed)
+                time.sleep(idle_time)
+                elapsed += idle_time
+                mce_events = self.detector.check_mce()
+                if mce_events:
+                    return False, f"MCE during idle phase of rapid transition cycle {cycle}"
+
+        return True, None
+
+    @staticmethod
+    def _classify_error(msg: str | None) -> str:
+        if not msg:
+            return "unknown"
+        msg_lower = msg.lower()
+        if "mce" in msg_lower or "machine check" in msg_lower:
+            return "mce"
+        if "temperature" in msg_lower or "thermal" in msg_lower:
+            return "thermal"
+        if "stall" in msg_lower:
+            return "stall"
+        if any(w in msg_lower for w in (
+            "rounding", "fatal", "illegal", "sumout", "mismatch",
+            "jacobi", "verification", "computation",
+        )):
+            return "computation"
+        if "timeout" in msg_lower:
+            return "timeout"
+        # detect signal exits: "exited with code -11", "killed by signal"
+        if "crash" in msg_lower or "signal" in msg_lower:
+            return "crash"
+        if re.search(r"exited with code -\d+", msg_lower):
+            return "crash"
+        if "idle" in msg_lower:
+            return "idle_instability"
+        if "variable" in msg_lower or "transition" in msg_lower:
+            return "load_transition"
+        return "unknown"
+
+
+# ===========================================================================
+# Pre-configured test mode factories
+# ===========================================================================
+
+
+def make_quick_config() -> SchedulerConfig:
+    """Quick screening: 2 min/core, 1 cycle. Fast but less sensitive."""
+    return SchedulerConfig(
+        seconds_per_core=120,
+        cycle_count=1,
+        test_mode=TestMode.QUICK,
+    )
+
+
+def make_standard_config() -> SchedulerConfig:
+    """Standard CO tuning: 10 min/core, 1 cycle. Good starting point."""
+    return SchedulerConfig(
+        seconds_per_core=600,
+        cycle_count=1,
+        test_mode=TestMode.STANDARD,
+    )
+
+
+def make_thorough_config() -> SchedulerConfig:
+    """Thorough validation: 30 min/core, 2 cycles. Catches intermittent errors."""
+    return SchedulerConfig(
+        seconds_per_core=1800,
+        cycle_count=2,
+        test_mode=TestMode.THOROUGH,
+    )
+
+
+def make_full_spectrum_config() -> SchedulerConfig:
+    """Full spectrum: stress + variable load + idle stability, 3 cycles.
+
+    Tests the full range of operating conditions:
+    - Sustained maximum load (catches voltage droop errors)
+    - Variable load transitions (catches C-state transition errors)
+    - Idle stability (catches boost-to-idle errors, the #1 cause of
+      CO-related crashes in daily use)
+    - Multiple cycles (catches thermal cycling fatigue)
+
+    This is the most comprehensive test. It takes significantly longer
+    but provides the highest confidence that CO values are stable across
+    all real-world scenarios.
+    """
+    return SchedulerConfig(
+        seconds_per_core=1200,  # 20 min stress per core
+        cycle_count=3,
+        variable_load=True,
+        variable_load_interval=15.0,
+        idle_between_cores=10.0,  # 10s idle between cores
+        idle_stability_test=60.0,  # 60s idle test per core
+        test_mode=TestMode.FULL_SPECTRUM,
+    )
