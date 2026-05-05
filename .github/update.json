@@ -1,12 +1,12 @@
 {
-  "package": "corecyclerlx",
+  "package": "corecycler",
   "upstream": {
     "type": "none"
   },
   "packageFile": "flake.nix",
   "hashes": [],
   "verify": {
-    "binary": "corecyclerlx",
+    "binary": "corecycler",
     "args": "--help"
   }
 }
