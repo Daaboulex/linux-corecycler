@@ -1015,6 +1015,9 @@ Super I/O chips provide analog Vcore (in0_input) from the voltage regulator — 
 - [ZenStates-Core](https://github.com/irusanov/ZenStates-Core) by irusanov -- reference for SMU command IDs across generations
 
 <!-- BEGIN generated:options -->
+## Options
+
+This module declares options under `services.corecycler`. See [`nix/module.nix`](nix/module.nix) for all available options.
 <!-- END generated:options -->
 
 ## License
