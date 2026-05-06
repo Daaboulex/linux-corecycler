@@ -177,7 +177,7 @@ Then import the NixOS module and enable the service:
 }
 ```
 
-The module handles everything: the corecycler package, kernel modules, udev rules for MSR device access, tmpfiles for SMU sysfs permissions, and the `corecycler` group. No manual kernel module configuration needed.
+The module handles everything: the corecycler package, kernel modules, udev rules for MSR device access, a systemd oneshot service for SMU sysfs permissions, and the `corecycler` group. No manual kernel module configuration needed.
 
 **Full example** (AMD Zen 5 desktop with Nuvoton Super I/O):
 
@@ -380,7 +380,7 @@ sudo python src/main.py    # from source
 
 When running without root, the status bar displays a warning listing unavailable features. The app adapts gracefully — unavailable data shows "N/A" instead of stale or missing values. Qt/KDE platform warnings (D-Bus portal, window system) that would normally appear under `sudo` are suppressed automatically.
 
-**Non-root access on non-NixOS distros:** The NixOS module sets up udev rules and tmpfiles automatically. On other distros, if you want to avoid running as root, you need to manually set permissions on `/dev/cpu/*/msr` (for MSR access) and `/sys/kernel/ryzen_smu_drv/*` (for SMU access). See the [ryzen_smu section](#ryzen_smu-kernel-module) for an example udev rule. Running as root is the simplest approach.
+**Non-root access on non-NixOS distros:** The NixOS module sets up udev rules and a systemd permission service automatically. On other distros, if you want to avoid running as root, you need to manually set permissions on `/dev/cpu/*/msr` (for MSR access) and `/sys/kernel/ryzen_smu_drv/*` (for SMU access). See the [ryzen_smu section](#ryzen_smu-kernel-module) for an example udev rule. Running as root is the simplest approach.
 
 **Note:** Vcore voltage is read from the CPU hwmon driver (zenpower/zenpower3/zenpower5/k10temp SVI2 registers) when available. On **Zen 5** CPUs, voltage telemetry uses SVI3 which no Linux driver supports yet — the tool automatically falls back to the **Super I/O chip** on the motherboard, which provides an analog Vcore reading from the voltage regulator. Supported Super I/O chips include Nuvoton (nct6775–nct6799, common on ASUS/MSI/ASRock) and ITE (IT8625–IT8772, common on Gigabyte). If neither source is available, Vcore shows "N/A".
 
@@ -586,7 +586,7 @@ ls /sys/kernel/ryzen_smu_drv/
 # Expected: mp1_smu_cmd  rsmu_cmd  smu_args  version  pm_table
 ```
 
-Reading and writing CO values through sysfs requires root access or appropriate file permissions on `/sys/kernel/ryzen_smu_drv/`. The NixOS module handles this via tmpfiles rules. On other distros, you can use a udev rule to grant access to a specific group:
+Reading and writing CO values through sysfs requires root access or appropriate file permissions on `/sys/kernel/ryzen_smu_drv/`. The NixOS module handles this via a systemd oneshot service. On other distros, you can use a udev rule to grant access to a specific group:
 
 ```bash
 # /etc/udev/rules.d/99-ryzen-smu.rules
