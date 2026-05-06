@@ -527,12 +527,12 @@ class CoreScheduler:
                                 f"possible OOM or system issue"
                             )
                         elif stdout_data or stderr_data:
-                            output_err = self.backend.parse_output(
+                            backend_passed, backend_error = self.backend.parse_output(
                                 stdout_data, stderr_data, returncode
                             )
-                            if output_err:
+                            if not backend_passed:
                                 passed = False
-                                error_msg = output_err
+                                error_msg = backend_error
                 except OSError as e:
                     passed = False
                     error_msg = f"Failed to start variable load: {e}"
@@ -930,11 +930,13 @@ class CoreScheduler:
         """Run rapid load/idle cycling on specified cores simultaneously.
 
         Tests instability during idle↔boost transitions by repeatedly starting
-        and stopping stress on all specified cores.  Uses local process variables
-        to avoid interfering with the main scheduler's ``_process`` state.
+        and stopping stress on all specified cores. The active process is
+        published through ``_process`` so stop() can kill it immediately.
 
         Returns (passed, error_message).
         """
+        self.state = TestState.RUNNING
+        self._stop_event.clear()
         elapsed = 0.0
         cycle = 0
         core_work_dir = self.work_dir / "rapid_transition"
@@ -959,43 +961,35 @@ class CoreScheduler:
             cmd = ["taskset", "-c", cpu_list] + self.backend.get_command(stress_cfg, core_work_dir)
             proc = None
             try:
+                self._we_killed_it = False
                 proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     preexec_fn=self._make_preexec(),
                 )
+                with self._process_lock:
+                    self._process = proc
 
                 # Load phase
                 load_time = min(load_seconds, total_duration - elapsed)
-                time.sleep(load_time)
-                elapsed += load_time
+                segment_start = time.monotonic()
+                stopped = self._stop_event.wait(load_time)
+                elapsed += time.monotonic() - segment_start
 
                 # Kill process to trigger idle transition
-                try:
-                    pgid = os.getpgid(proc.pid)
-                    with contextlib.suppress(OSError, ProcessLookupError):
-                        os.killpg(pgid, signal.SIGTERM)
-                except (OSError, ProcessLookupError):
-                    pass
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    try:
-                        pgid = os.getpgid(proc.pid)
-                        with contextlib.suppress(OSError, ProcessLookupError):
-                            os.killpg(pgid, signal.SIGKILL)
-                    except (OSError, ProcessLookupError):
-                        pass
-                    with contextlib.suppress(subprocess.TimeoutExpired):
-                        proc.wait(timeout=2)
+                self._kill_current()
+                if stopped:
+                    break
 
                 # Check for crash signals (but not expected kill codes)
                 exit_class = StressBackend.classify_exit_code(proc.returncode or 0)
                 if exit_class and exit_class.startswith("crash:"):
+                    self.state = TestState.FINISHED
                     return False, f"Crash during rapid transition cycle {cycle}: {exit_class}"
 
             except Exception as e:
+                self.state = TestState.FINISHED
                 return False, f"Rapid transition error: {e}"
             finally:
                 if proc is not None:
@@ -1003,18 +997,26 @@ class CoreScheduler:
                         if stream:
                             with contextlib.suppress(OSError):
                                 stream.close()
+                    with self._process_lock:
+                        if self._process is proc:
+                            self._process = None
                 self.backend.cleanup(core_work_dir)
                 self._reap_zombies()
 
             # Idle phase — check MCE during idle
             if elapsed < total_duration and not self._stop_requested:
                 idle_time = min(idle_seconds, total_duration - elapsed)
-                time.sleep(idle_time)
-                elapsed += idle_time
+                segment_start = time.monotonic()
+                stopped = self._stop_event.wait(idle_time)
+                elapsed += time.monotonic() - segment_start
+                if stopped:
+                    break
                 mce_events = self.detector.check_mce()
                 if mce_events:
+                    self.state = TestState.FINISHED
                     return False, f"MCE during idle phase of rapid transition cycle {cycle}"
 
+        self.state = TestState.FINISHED
         return True, None
 
     @staticmethod

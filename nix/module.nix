@@ -181,6 +181,7 @@ in
             ];
           in
           pkgs.writeShellScript "corecycler-smu-perms" ''
+            set -euo pipefail
             for f in ${lib.concatStringsSep " " paths}; do
               chgrp corecycler "$f"
               chmod 0660 "$f"
