@@ -34,9 +34,12 @@
       # Overlay — makes pkgs.linux-corecycler and pkgs.linux-corecycler-full available
       overlays.default =
         final: _prev:
-        nixpkgs.lib.optionalAttrs (builtins.elem final.stdenv.hostPlatform.system supportedSystems) {
-          linux-corecycler = self.packages.${final.stdenv.hostPlatform.system}.default;
-          linux-corecycler-full = self.packages.${final.stdenv.hostPlatform.system}.full;
+        let
+          system = _prev.stdenv.hostPlatform.system;
+        in
+        nixpkgs.lib.optionalAttrs (builtins.elem system supportedSystems) {
+          linux-corecycler = self.packages.${system}.default;
+          linux-corecycler-full = self.packages.${system}.full;
         };
 
       formatter = forAllSystems (system: (pkgsFor system).nixfmt);
