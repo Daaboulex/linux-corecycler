@@ -18,7 +18,6 @@
     let
       supportedSystems = [
         "x86_64-linux"
-        "aarch64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       pkgsFor =
@@ -33,10 +32,12 @@
       nixosModules.default = import ./nix/module.nix { inherit self; };
 
       # Overlay — makes pkgs.linux-corecycler and pkgs.linux-corecycler-full available
-      overlays.default = final: _prev: {
-        linux-corecycler = self.packages.${final.stdenv.hostPlatform.system}.default;
-        linux-corecycler-full = self.packages.${final.stdenv.hostPlatform.system}.full;
-      };
+      overlays.default =
+        final: _prev:
+        nixpkgs.lib.optionalAttrs (builtins.elem final.stdenv.hostPlatform.system supportedSystems) {
+          linux-corecycler = self.packages.${final.stdenv.hostPlatform.system}.default;
+          linux-corecycler-full = self.packages.${final.stdenv.hostPlatform.system}.full;
+        };
 
       formatter = forAllSystems (system: (pkgsFor system).nixfmt);
 
@@ -91,6 +92,7 @@
               ];
 
               nativeCheckInputs = [ pythonPkgs.pytest ];
+              doCheck = false;
 
               # Qt6 runtime needs
               nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];

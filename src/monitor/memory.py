@@ -162,8 +162,8 @@ def parse_dmidecode_output(text: str) -> list[DIMMInfo]:
             configured_voltage=_parse_voltage(fields.get("Configured Voltage", "")),
             min_voltage=_parse_voltage(fields.get("Minimum Voltage", "")),
             max_voltage=_parse_voltage(fields.get("Maximum Voltage", "")),
-            data_width=int(fields.get("Data Width", "0").split()[0]) if fields.get("Data Width") else 0,
-            total_width=int(fields.get("Total Width", "0").split()[0]) if fields.get("Total Width") else 0,
+            data_width=int(m.group(1)) if (m := re.match(r"(\d+)", fields.get("Data Width", ""))) else 0,
+            total_width=int(m.group(1)) if (m := re.match(r"(\d+)", fields.get("Total Width", ""))) else 0,
         ))
 
     return dimms

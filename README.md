@@ -1,10 +1,3 @@
-[![CI](https://github.com/Daaboulex/linux-corecycler/actions/workflows/ci.yml/badge.svg)](https://github.com/Daaboulex/linux-corecycler/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/Daaboulex/linux-corecycler)](./LICENSE)
-[![NixOS](https://img.shields.io/badge/NixOS-unstable-78C0E8?logo=nixos&logoColor=white)](https://nixos.org)
-[![Last commit](https://img.shields.io/github/last-commit/Daaboulex/linux-corecycler)](https://github.com/Daaboulex/linux-corecycler/commits)
-[![Stars](https://img.shields.io/github/stars/Daaboulex/linux-corecycler?style=flat)](https://github.com/Daaboulex/linux-corecycler/stargazers)
-[![Issues](https://img.shields.io/github/issues/Daaboulex/linux-corecycler)](https://github.com/Daaboulex/linux-corecycler/issues)
-
 # CoreCycler
 
 <!-- BEGIN generated:badges -->
@@ -163,7 +156,7 @@ Add the flake input to your `flake.nix`:
 ```nix
 {
   inputs = {
-    corecycler.url = "github:Daaboulex/corecycler";
+    corecycler.url = "github:Daaboulex/linux-corecycler";
     # ...
   };
 }
@@ -274,10 +267,10 @@ Run directly without installing:
 
 ```bash
 # FOSS-only
-nix run github:Daaboulex/corecycler
+nix run github:Daaboulex/linux-corecycler
 
 # Full (with mprime)
-nix run github:Daaboulex/corecycler#full
+nix run github:Daaboulex/linux-corecycler#full
 ```
 
 ### Arch Linux

@@ -44,9 +44,12 @@ class PowerMonitor:
             for rapl_dir in sorted(RAPL_BASE.parent.glob("intel-rapl*")):
                 energy = rapl_dir / "energy_uj"
                 name = rapl_dir / "name"
+                try:
+                    name_text = name.read_text().strip().lower() if name.exists() else ""
+                except OSError:
+                    continue
                 if (
-                    name.exists()
-                    and "package" in name.read_text().strip().lower()
+                    "package" in name_text
                     and self._try_read(energy)
                 ):
                     self._package_path = energy

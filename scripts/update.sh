@@ -8,7 +8,11 @@ set -euo pipefail
 OUTPUT_FILE="${GITHUB_OUTPUT:-/tmp/update-outputs.env}"
 : > "$OUTPUT_FILE"
 
-output() { echo "$1=$2" >> "$OUTPUT_FILE"; }
+output() {
+  # Use delimiter syntax to prevent newline injection into GITHUB_OUTPUT
+  local delim="EOF_$(date +%s%N)"
+  printf '%s<<%s\n%s\n%s\n' "$1" "$delim" "$2" "$delim" >> "$OUTPUT_FILE"
+}
 
 log() { echo "==> $*"; }
 warn() { echo "::warning::$*"; }
@@ -47,9 +51,10 @@ log "Current version: $CURRENT_VERSION"
 
 # --- Fetch latest upstream version ---
 fetch_latest() {
+  # Execute command passed as array arguments (no eval)
   local retries=3 delay=2
   for i in $(seq 1 $retries); do
-    if RESULT=$(eval "$1" 2>/dev/null) && [ -n "$RESULT" ]; then
+    if RESULT=$("$@" 2>/dev/null) && [ -n "$RESULT" ]; then
       echo "$RESULT"
       return 0
     fi
@@ -60,12 +65,17 @@ fetch_latest() {
   return 1
 }
 
+# Helper to fetch JSON field from URL
+_fetch_json_field() {
+  curl -sfL "$1" | jq -r "$2"
+}
+
 case "$UPSTREAM_TYPE" in
   github-release)
     OWNER=$(echo "$CONFIG" | jq -r '.upstream.owner')
     REPO=$(echo "$CONFIG" | jq -r '.upstream.repo')
     API_URL="https://api.github.com/repos/$OWNER/$REPO/releases/latest"
-    LATEST_TAG=$(fetch_latest "curl -sfL '$API_URL' | jq -r '.tag_name'") || {
+    LATEST_TAG=$(fetch_latest _fetch_json_field "$API_URL" '.tag_name') || {
       warn "Failed to fetch latest release from $OWNER/$REPO"
       output "updated" "false"
       exit 2
@@ -77,7 +87,7 @@ case "$UPSTREAM_TYPE" in
   github-tag)
     OWNER=$(echo "$CONFIG" | jq -r '.upstream.owner')
     REPO=$(echo "$CONFIG" | jq -r '.upstream.repo')
-    LATEST_TAG=$(fetch_latest "curl -sfL 'https://api.github.com/repos/$OWNER/$REPO/tags?per_page=1' | jq -r '.[0].name'") || {
+    LATEST_TAG=$(fetch_latest _fetch_json_field "https://api.github.com/repos/$OWNER/$REPO/tags?per_page=1" '.[0].name') || {
       warn "Failed to fetch tags from $OWNER/$REPO"
       output "updated" "false"
       exit 2
@@ -90,7 +100,7 @@ case "$UPSTREAM_TYPE" in
     OWNER=$(echo "$CONFIG" | jq -r '.upstream.owner')
     REPO=$(echo "$CONFIG" | jq -r '.upstream.repo')
     BRANCH=$(echo "$CONFIG" | jq -r '.upstream.branch // "main"')
-    LATEST_COMMIT=$(fetch_latest "curl -sfL 'https://api.github.com/repos/$OWNER/$REPO/commits/$BRANCH' | jq -r '.sha'") || {
+    LATEST_COMMIT=$(fetch_latest _fetch_json_field "https://api.github.com/repos/$OWNER/$REPO/commits/$BRANCH" '.sha') || {
       warn "Failed to fetch commits from $OWNER/$REPO"
       output "updated" "false"
       exit 2
@@ -104,7 +114,7 @@ case "$UPSTREAM_TYPE" in
     HOST=$(echo "$CONFIG" | jq -r '.upstream.host // "gitlab.com"')
     PROJECT=$(echo "$CONFIG" | jq -r '.upstream.project')
     ENCODED="${PROJECT//\//%2F}"
-    LATEST_TAG=$(fetch_latest "curl -sfL 'https://$HOST/api/v4/projects/$ENCODED/repository/tags?per_page=1' | jq -r '.[0].name'") || {
+    LATEST_TAG=$(fetch_latest _fetch_json_field "https://$HOST/api/v4/projects/$ENCODED/repository/tags?per_page=1" '.[0].name') || {
       warn "Failed to fetch tags from $PROJECT"
       output "updated" "false"
       exit 2
@@ -118,7 +128,7 @@ case "$UPSTREAM_TYPE" in
     OWNER=$(echo "$CONFIG" | jq -r '.upstream.owner')
     REPO=$(echo "$CONFIG" | jq -r '.upstream.repo')
     BRANCH=$(echo "$CONFIG" | jq -r '.upstream.branch // "main"')
-    LATEST_COMMIT=$(fetch_latest "curl -sfL 'https://$HOST/api/v1/repos/$OWNER/$REPO/branches/$BRANCH' | jq -r '.commit.id'") || {
+    LATEST_COMMIT=$(fetch_latest _fetch_json_field "https://$HOST/api/v1/repos/$OWNER/$REPO/branches/$BRANCH" '.commit.id') || {
       warn "Failed to fetch from Gitea $HOST/$OWNER/$REPO"
       output "updated" "false"
       exit 2
@@ -133,7 +143,7 @@ case "$UPSTREAM_TYPE" in
     PROJECT=$(echo "$CONFIG" | jq -r '.upstream.project')
     ENCODED="${PROJECT//\//%2F}"
     BRANCH=$(echo "$CONFIG" | jq -r '.upstream.branch // "main"')
-    LATEST_COMMIT=$(fetch_latest "curl -sfL 'https://$HOST/api/v4/projects/$ENCODED/repository/branches/$BRANCH' | jq -r '.commit.id'") || {
+    LATEST_COMMIT=$(fetch_latest _fetch_json_field "https://$HOST/api/v4/projects/$ENCODED/repository/branches/$BRANCH" '.commit.id') || {
       warn "Failed to fetch from GitLab $PROJECT"
       output "updated" "false"
       exit 2
@@ -146,7 +156,8 @@ case "$UPSTREAM_TYPE" in
   git-ls-remote)
     URL=$(echo "$CONFIG" | jq -r '.upstream.url')
     BRANCH=$(echo "$CONFIG" | jq -r '.upstream.branch // "main"')
-    LATEST_COMMIT=$(fetch_latest "git ls-remote '$URL' 'refs/heads/$BRANCH' | cut -f1") || {
+    _git_ls_remote_sha() { git ls-remote "$1" "refs/heads/$2" | cut -f1; }
+    LATEST_COMMIT=$(fetch_latest _git_ls_remote_sha "$URL" "$BRANCH") || {
       warn "Failed to ls-remote $URL"
       output "updated" "false"
       exit 2

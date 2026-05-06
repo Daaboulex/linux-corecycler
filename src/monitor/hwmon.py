@@ -50,7 +50,10 @@ class HWMonReader:
         for hwmon_dir in sorted(HWMON_BASE.iterdir()):
             name_file = hwmon_dir / "name"
             if name_file.exists():
-                name = name_file.read_text().strip()
+                try:
+                    name = name_file.read_text().strip()
+                except OSError:
+                    continue
                 if name in self._PREFERRED:
                     self._hwmon_path = hwmon_dir
                 elif name in self._FALLBACK and fallback is None:

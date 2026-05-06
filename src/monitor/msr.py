@@ -76,9 +76,10 @@ class MSRReader:
             return self._available
         try:
             fd = os.open("/dev/cpu/0/msr", os.O_RDONLY)
-            # Verify we can actually read an MSR
-            os.pread(fd, 8, MSR_MPERF)
-            os.close(fd)
+            try:
+                os.pread(fd, 8, MSR_MPERF)
+            finally:
+                os.close(fd)
             self._available = True
         except (OSError, PermissionError):
             self._available = False

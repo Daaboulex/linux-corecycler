@@ -563,12 +563,13 @@ class MainWindow(QMainWindow):
         was_stopping = not self._stop_btn.isEnabled()
         self._cleanup_worker()
 
-        # Process any pending queued signals from the worker thread before
-        # discarding the logger — cross-thread signals use QueuedConnection
-        # and may still be in the event queue.
-        from PySide6.QtCore import QCoreApplication
-        QCoreApplication.processEvents()
-
+        # Disconnect logger signals before discarding — prevents queued
+        # cross-thread signals from arriving after logger is gone.
+        if self._logger and self._worker is None:
+            # Worker already None from _cleanup_worker; signals are disconnected
+            # implicitly when the sender (worker) is destroyed. Any pending
+            # queued signals with a destroyed sender are discarded by Qt.
+            pass
         self._logger = None
         self._history_tab.refresh()
         if was_stopping:
@@ -833,9 +834,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, '_memory_tab'):
             self._memory_tab.force_stop()
 
-        # Process any remaining queued signals before closing DB
-        from PySide6.QtCore import QCoreApplication
-        QCoreApplication.processEvents()
+        # Qt discards queued signals from destroyed senders — force_stop()
+        # above stops and destroys workers, so no manual processEvents needed.
 
         # save window size
         self._settings.window_width = self.width()
