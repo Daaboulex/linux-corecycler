@@ -1,0 +1,4 @@
+[default.extend-words]
+# "uncorrect" appears as a substring match in MCE error detection
+# (checking that "corrected" is not part of "uncorrectable")
+uncorrect = "uncorrect"
