@@ -501,6 +501,22 @@ class TunerTab(QWidget):
             )
             return
 
+        reply = QMessageBox.warning(
+            self,
+            "Start Auto-Tuner",
+            "The Auto-Tuner will iteratively modify per-core Curve Optimizer "
+            "offsets via SMU writes. This may cause system instability or "
+            "crashes.\n\n"
+            "Positive CO offsets increase voltage and can degrade or damage "
+            "hardware (especially V-Cache / X3D processors).\n\n"
+            "Values are volatile and reset on reboot.\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
         backend = self._get_backend()
         if backend is None:
             return

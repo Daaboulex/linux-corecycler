@@ -5,7 +5,7 @@
 #   Out-of-tree: ryzen_smu (AMD SMU), zenpower5 (AMD hwmon), it87 (ITE Super I/O)
 #   In-tree:     msr, nct6775 (Nuvoton Super I/O), coretemp (Intel), cpuid
 #
-# Also handles device access (udev, tmpfiles, group) and the corecycler package.
+# Also handles device access (udev, systemd oneshot, group) and the corecycler package.
 #
 # Usage in a consumer flake:
 #   imports = [ inputs.linux-corecycler.nixosModules.default ];
@@ -124,7 +124,9 @@ in
 
     # --- Device access via dedicated group (no sudo) ---
     users.groups.corecycler = lib.mkIf cfg.deviceAccess { };
-    users.users.${cfg.deviceAccessUser}.extraGroups = lib.mkIf cfg.deviceAccess [ "corecycler" ];
+    users.users = lib.optionalAttrs (cfg.deviceAccess && cfg.deviceAccessUser != "") {
+      ${cfg.deviceAccessUser}.extraGroups = [ "corecycler" ];
+    };
 
     # MSR devices: grant group read access for APERF/MPERF (clock stretch)
     # and RAPL energy counters (per-core + package power)
@@ -149,7 +151,7 @@ in
     ];
 
     # Out-of-tree kernel modules — custom derivations that build with
-    # clang for CachyOS LTO kernels, gcc otherwise
+    # clang/LLVM when kernel makeFlags indicate LLVM build, gcc otherwise
     boot.extraModulePackages =
       lib.optional cfg.ryzenSmu ryzenSmuPkg
       ++ lib.optional cfg.zenpower zenpowerPkg
@@ -158,12 +160,34 @@ in
     # Blacklist k10temp when zenpower is used (they conflict — same PCI device)
     boot.blacklistedKernelModules = lib.mkIf cfg.zenpower [ "k10temp" ];
 
-    # SMU sysfs: grant group read/write for Curve Optimizer access
-    systemd.tmpfiles.rules = lib.mkIf (cfg.deviceAccess && cfg.ryzenSmu) [
-      "z /sys/kernel/ryzen_smu_drv/smu_args 0660 root corecycler - -"
-      "z /sys/kernel/ryzen_smu_drv/mp1_smu_cmd 0660 root corecycler - -"
-      "z /sys/kernel/ryzen_smu_drv/rsmu_cmd 0660 root corecycler - -"
-    ];
+    # SMU sysfs: grant group read/write for Curve Optimizer access.
+    # A systemd oneshot is used because tmpfiles z-rules and udev module events
+    # both race with sysfs creation in module_init(). ConditionPathExists +
+    # After=systemd-modules-load.service guarantees paths exist.
+    systemd.services.corecycler-smu-permissions = lib.mkIf (cfg.deviceAccess && cfg.ryzenSmu) {
+      description = "Set ryzen_smu sysfs permissions for corecycler group";
+      after = [ "systemd-modules-load.service" ];
+      wantedBy = [ "multi-user.target" ];
+      unitConfig.ConditionPathExists = "/sys/kernel/ryzen_smu_drv/smu_args";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart =
+          let
+            paths = [
+              "/sys/kernel/ryzen_smu_drv/smu_args"
+              "/sys/kernel/ryzen_smu_drv/mp1_smu_cmd"
+              "/sys/kernel/ryzen_smu_drv/rsmu_cmd"
+            ];
+          in
+          pkgs.writeShellScript "corecycler-smu-perms" ''
+            for f in ${lib.concatStringsSep " " paths}; do
+              chgrp corecycler "$f"
+              chmod 0660 "$f"
+            done
+          '';
+      };
+    };
 
     # Allow unprivileged dmesg access for MCE error detection
     boot.kernel.sysctl = lib.mkIf cfg.deviceAccess {

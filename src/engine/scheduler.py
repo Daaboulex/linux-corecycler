@@ -510,7 +510,29 @@ class CoreScheduler:
                             break
                         time.sleep(0.5)
 
+                    # Drain output before kill for error detection
+                    try:
+                        stdout_data, stderr_data = self._process.communicate(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        stdout_data, stderr_data = "", ""
                     self._kill_current()
+
+                    # Parse backend output for errors (same as fixed-load path)
+                    if passed and stdout_data:
+                        returncode = self._process.returncode or 0
+                        if not self._we_killed_it and returncode in KILLED_BY_US_CODES:
+                            passed = False
+                            error_msg = (
+                                f"Stress process killed externally (code {returncode}) — "
+                                f"possible OOM or system issue"
+                            )
+                        elif stdout_data or stderr_data:
+                            output_err = self.backend.parse_output(
+                                stdout_data, stderr_data, returncode
+                            )
+                            if output_err:
+                                passed = False
+                                error_msg = output_err
                 except OSError as e:
                     passed = False
                     error_msg = f"Failed to start variable load: {e}"
@@ -763,6 +785,14 @@ class CoreScheduler:
             if total_repins > 0:
                 log.info("Core %d: re-pinned %d drifted thread(s) during test", core_id, total_repins)
 
+            # Drain output BEFORE killing — _kill_current() closes pipes, so
+            # any communicate() after it would return empty strings and lose
+            # error detection data from the backend.
+            try:
+                stdout_data, stderr_data = self._process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                stdout_data, stderr_data = "", ""
+
             # kill process if still running (timeout or stop requested)
             self._kill_current()
 
@@ -772,23 +802,12 @@ class CoreScheduler:
 
             # Warn if the process exited almost immediately — likely a missing
             # binary, bad path, or misconfigured backend.
-            if self._process.poll() is not None and (time.monotonic() - start_time) < 2.0:
+            if self._process.returncode is not None and (time.monotonic() - start_time) < 2.0:
                 log.warning(
                     "Stress process for core %d exited in <2s (code %d) — "
                     "binary may be missing or misconfigured",
                     core_id, self._process.returncode,
                 )
-
-            # collect output
-            try:
-                stdout_data, stderr_data = self._process.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                try:
-                    stdout_data, stderr_data = self._process.communicate(timeout=10)
-                except subprocess.TimeoutExpired:
-                    log.warning("Process did not respond to SIGKILL — output lost")
-                    stdout_data, stderr_data = "", ""
 
             # parse backend output for errors
             if passed:  # only check output if no MCE already detected

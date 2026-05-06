@@ -4,7 +4,7 @@
 # The in-tree it87 driver lags behind on newer chip IDs (IT8686E, IT8689E, etc.).
 # This fork by Frank Crawford adds 12+ additional chips common on Gigabyte AM5/AM4 boards.
 #
-# Supports both GCC (standard kernels) and Clang (CachyOS LTO kernels).
+# Supports both GCC and Clang/LLVM kernels (auto-detected from kernel makeFlags).
 # Source: https://github.com/frankcrawford/it87
 {
   lib,
@@ -14,17 +14,11 @@
   llvmPackages_latest,
 }:
 let
-  kernelNameLower = lib.toLower (kernel.pname or kernel.name or "");
-  kernelVersionLower = lib.toLower (kernel.modDirVersion or "");
-
-  kernelUsesLLVM =
-    (builtins.match ".*cachyos.*" kernelNameLower != null)
-    || (builtins.match ".*cachyos.*" kernelVersionLower != null)
-    || (builtins.any (
-      flag:
-      builtins.match ".*LLVM=1.*" (toString flag) != null
-      || builtins.match ".*CC=clang.*" (toString flag) != null
-    ) (kernel.makeFlags or [ ]));
+  kernelUsesLLVM = builtins.any (
+    flag:
+    builtins.match ".*LLVM=1.*" (toString flag) != null
+    || builtins.match ".*CC=clang.*" (toString flag) != null
+  ) (kernel.makeFlags or [ ]);
 
   buildStdenv = if kernelUsesLLVM then llvmPackages_latest.stdenv else stdenv;
 in
@@ -49,7 +43,6 @@ buildStdenv.mkDerivation {
 
   makeFlags = [
     "KERNEL_BUILD=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
-    "INSTALL_MOD_PATH=${placeholder "out"}"
   ]
   ++ lib.optionals kernelUsesLLVM [
     "LLVM=1"
@@ -59,7 +52,9 @@ buildStdenv.mkDerivation {
   ];
 
   installPhase = ''
+    runHook preInstall
     install -D it87.ko -t "$out/lib/modules/${kernel.modDirVersion}/kernel/drivers/hwmon/"
+    runHook postInstall
   '';
 
   meta = {

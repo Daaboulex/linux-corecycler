@@ -1,7 +1,7 @@
 # ryzen_smu kernel module — exposes AMD SMU interface for Curve Optimizer,
 # PBO limits, boost override, and PM table access.
 #
-# Supports both GCC (standard kernels) and Clang (CachyOS LTO kernels).
+# Supports both GCC and Clang/LLVM kernels (auto-detected from kernel makeFlags).
 # Source: https://github.com/amkillam/ryzen_smu (amkillam fork with Zen 5 support)
 {
   lib,
@@ -11,17 +11,11 @@
   llvmPackages_latest,
 }:
 let
-  kernelNameLower = lib.toLower (kernel.pname or kernel.name or "");
-  kernelVersionLower = lib.toLower (kernel.modDirVersion or "");
-
-  kernelUsesLLVM =
-    (builtins.match ".*cachyos.*" kernelNameLower != null)
-    || (builtins.match ".*cachyos.*" kernelVersionLower != null)
-    || (builtins.any (
-      flag:
-      builtins.match ".*LLVM=1.*" (toString flag) != null
-      || builtins.match ".*CC=clang.*" (toString flag) != null
-    ) (kernel.makeFlags or [ ]));
+  kernelUsesLLVM = builtins.any (
+    flag:
+    builtins.match ".*LLVM=1.*" (toString flag) != null
+    || builtins.match ".*CC=clang.*" (toString flag) != null
+  ) (kernel.makeFlags or [ ]);
 
   buildStdenv = if kernelUsesLLVM then llvmPackages_latest.stdenv else stdenv;
 
