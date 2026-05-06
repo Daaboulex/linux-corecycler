@@ -1462,6 +1462,34 @@ class TestHardeningTransitions:
         assert mode == "SSE"
         assert fft == "LARGE"
 
+    def test_start_worker_uses_tier_backend_during_hardening(
+        self, db, simple_topology, mock_smu, mock_backend
+    ):
+        """Hardening scheduler receives backend instantiated from tier backend name."""
+        tiers = [
+            {"backend": "stress-ng", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+        ]
+        eng = self._make_engine(
+            db, simple_topology, mock_smu, mock_backend,
+            backend="mprime", hardening_tiers=tiers,
+        )
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.HARDENING_T1, current_offset=-8,
+            hardening_tier_index=0,
+        )
+        eng._core_states = {0: cs}
+        tier_backend = MagicMock(name="tier_backend")
+
+        with (
+            patch("tuner.engine.get_backend", return_value=tier_backend) as get_backend_mock,
+            patch("tuner.engine.CoreScheduler") as scheduler_mock,
+            patch("tuner.engine._TunerWorker.start"),
+        ):
+            eng._start_worker(0, 1)
+
+        get_backend_mock.assert_called_once_with("stress-ng")
+        assert scheduler_mock.call_args.kwargs["backend"] is tier_backend
+
     def test_get_active_stress_config_returns_primary_during_search(
         self, db, simple_topology, mock_smu, mock_backend
     ):

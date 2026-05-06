@@ -639,9 +639,10 @@ class MainWindow(QMainWindow):
     def _on_tab_changed(self, index: int) -> None:
         """Refresh data when switching tabs."""
         widget = self._tabs.widget(index)
-        # Auto-refresh CO values when switching to Curve Optimizer tab
+        # Auto-refresh CO values when switching to Curve Optimizer tab (only
+        # when tuner is idle — tuner sends live updates via update_current_co())
         if widget is self._smu_tab and hasattr(self._smu_tab, '_read_all_co'):
-            if self._tuner_tab.is_running:
+            if not self._tuner_tab.is_running:
                 self._smu_tab._read_all_co()
 
     def _update_elapsed(self) -> None:

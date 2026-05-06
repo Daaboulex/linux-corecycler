@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
+from engine.backends import get_backend, load_all
 from engine.backends.base import StressConfig
 from engine.scheduler import CoreScheduler, SchedulerConfig
 from monitor.msr import MSRReader
@@ -142,6 +143,38 @@ class _TunerWorker(QThread):
             reading = readings.get(cpu)
             if reading:
                 samples.append(reading.stretch_pct)
+
+
+class _RapidTransitionWorker(_TunerWorker):
+    """Runs rapid transition validation on a background thread."""
+
+    def __init__(
+        self,
+        core_id: int,
+        logical_cpu: int,
+        scheduler: CoreScheduler,
+        cores: list[int],
+        duration: float,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(core_id, logical_cpu, scheduler, msr=None, parent=parent)
+        self._cores = cores
+        self._duration = duration
+
+    def run(self) -> None:
+        try:
+            start = time.monotonic()
+            passed, error = self.scheduler.run_rapid_transitions(
+                cores=self._cores,
+                total_duration=self._duration,
+            )
+            elapsed = time.monotonic() - start
+            self.finished.emit(
+                self._core_id, passed, error or "", "", elapsed, 0.0
+            )
+        except Exception as e:
+            log.exception("Rapid transition worker crashed for core %d", self._core_id)
+            self.finished.emit(self._core_id, False, str(e), "crash", 0.0, 0.0)
 
 
 # ------------------------------------------------------------------
@@ -489,6 +522,16 @@ class TunerEngine(QObject):
             tier = self._config.hardening_tiers[cs.hardening_tier_index]
             return tier["backend"], tier["stress_mode"], tier["fft_preset"]
         return self._config.backend, self._config.stress_mode, self._config.fft_preset
+
+    def _get_backend_for_name(self, name: str) -> StressBackend:
+        """Return the injected primary backend or instantiate a named tier backend."""
+        if name == self._config.backend:
+            return self._backend
+        try:
+            return get_backend(name)
+        except KeyError:
+            load_all()
+            return get_backend(name)
 
     def _advance_core(self, core_id: int, passed: bool) -> None:
         """State machine transitions for a single core."""
@@ -1083,7 +1126,7 @@ class TunerEngine(QObject):
             return
 
         cs = self._core_states.get(core_id)
-        _backend_name, stress_mode_str, fft_preset_str = (
+        backend_name, stress_mode_str, fft_preset_str = (
             self._get_active_stress_config(cs)
             if cs is not None
             else (self._config.backend, self._config.stress_mode, self._config.fft_preset)
@@ -1111,9 +1154,10 @@ class TunerEngine(QObject):
         )
 
         try:
+            backend = self._get_backend_for_name(backend_name)
             scheduler = CoreScheduler(
                 topology=self._topology,
-                backend=self._backend,
+                backend=backend,
                 stress_config=stress_config,
                 scheduler_config=scheduler_config,
                 work_dir=self._work_dir,
@@ -1422,15 +1466,23 @@ class TunerEngine(QObject):
             self._on_test_finished(cores[0], False, str(e), "", 0.0, 0.0)
             return
 
-        passed, error = scheduler.run_rapid_transitions(
-            cores=cores,
-            total_duration=float(self._config.validate_duration_seconds),
-        )
-        # Route result through the normal validation handler
         self._last_tested_core = cores[0]
-        self._on_test_finished(
-            cores[0], passed, error or "", "", float(self._config.validate_duration_seconds), 0.0,
+        core_info = self._topology.cores.get(cores[0])
+        logical_cpu = (
+            core_info.logical_cpus[0]
+            if core_info and core_info.logical_cpus
+            else cores[0]
         )
+        self._worker = _RapidTransitionWorker(
+            cores[0],
+            logical_cpu,
+            scheduler,
+            cores,
+            float(self._config.validate_duration_seconds),
+            parent=self,
+        )
+        self._worker.finished.connect(self._on_test_finished)
+        self._worker.start()
 
     def _run_validation_next(self) -> None:
         """Dispatch the next validation test based on current stage."""
