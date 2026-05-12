@@ -119,7 +119,7 @@ class HWMonReader:
                 data.vsoc_v = voltage
             elif "vcore" in label or "svi2_vdd" in label:
                 data.vcore_v = voltage
-                
+
         # Fallback: read Vcore from Super I/O chip
         # Needed for Zen 5 which uses SVI3 — not yet supported by CPU drivers
         # Scan labels to find the correct input label for Vcore (e.g. nct6687 uses in4 for Vcore, not in0)
