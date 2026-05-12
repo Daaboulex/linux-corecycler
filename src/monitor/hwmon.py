@@ -10,9 +10,11 @@ from pathlib import Path
 HWMON_BASE = Path("/sys/class/hwmon")
 
 # Super I/O chips that can provide Vcore via analog input (in0 on most boards).
+# Nuvoton NCT66xx: common on modern MSI boards
 # Nuvoton NCT67xx: common on ASUS, MSI, ASRock boards
 # ITE IT868x/IT866x/IT871x: common on Gigabyte boards
 _SUPERIO_CHIPS = (
+    "nct6683", "nct6686", "nct6687"
     "nct6799", "nct6798", "nct6797", "nct6796", "nct6795",
     "nct6793", "nct6792", "nct6791", "nct6779", "nct6776", "nct6775",
     "it8689", "it8688", "it8686", "it8665", "it8628", "it8625",
@@ -117,13 +119,26 @@ class HWMonReader:
                 data.vsoc_v = voltage
             elif "vcore" in label or "svi2_vdd" in label:
                 data.vcore_v = voltage
-
-        # Fallback: read Vcore from Super I/O chip (in0 = Vcore on most boards)
+                
+        # Fallback: read Vcore from Super I/O chip
         # Needed for Zen 5 which uses SVI3 — not yet supported by CPU drivers
+        # Scan labels to find the correct input label for Vcore (e.g. nct6687 uses in4 for Vcore, not in0)
         if data.vcore_v is None and self._superio_path is not None:
-            in0 = self._superio_path / "in0_input"
-            if in0.exists():
+            vcore_input = None
+            for label_file in sorted(self._superio_path.glob("in*_label")):
                 with contextlib.suppress(ValueError, OSError):
-                    data.vcore_v = int(in0.read_text().strip()) / 1000.0
+                    label = label_file.read_text().strip().lower()
+                    if "vcore" in label:
+                        vcore_input = label_file.with_name(
+                            label_file.name.replace("_label", "_input")
+                        )
+                        break
+            # Fallback to in0 if no labels found (legacy chips)
+            if vcore_input is None:
+                vcore_input = self._superio_path / "in0_input"
+            if vcore_input.exists():
+                with contextlib.suppress(ValueError, OSError):
+                    data.vcore_v = int(vcore_input.read_text().strip()) / 1000.0
+
 
         return data
