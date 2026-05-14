@@ -56,7 +56,15 @@ CO instability often manifests at idle or during load transitions, not under sus
 
 ## Screenshots
 
-*Screenshots coming soon — the GUI features a dark theme with CCD-aware core grid, live monitoring charts, per-core results table, and Curve Optimizer SMU interface.*
+![Configuration](assets/screenshots/cc-tab-configuration.png)
+
+![Monitor](assets/screenshots/cc-tab-monitor.png)
+
+![Curve Optimizer](assets/screenshots/cc-tab-curve-optimizer.png)
+
+![Auto-Tuner](assets/screenshots/cc-tab-auto-tuner.png)
+
+![Memory](assets/screenshots/cc-tab-memory.png)
 
 ## Supported Hardware
 
