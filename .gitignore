@@ -44,3 +44,5 @@ handoffs/
 deferred-work.jsonl
 error.txt
 docs/superpowers/
+.hypothesis/
+handoff-archive/

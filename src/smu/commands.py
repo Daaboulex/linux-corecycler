@@ -464,6 +464,7 @@ def encode_co_arg(
     generation: CPUGeneration,
     *,
     ccd: int | None = None,
+    slot: int | None = None,
 ) -> int:
     """Encode core ID and CO value into SMU command argument.
 
@@ -481,6 +482,10 @@ def encode_co_arg(
         ccd: Topology-detected CCD index. If provided, used instead of
              deriving CCD from ``core_id // 8``. Always prefer passing the
              L3-detected CCD from topology when available.
+        slot: Physical slot index (0-7) within the CCD. On harvested chips
+              the kernel renumbers cores contiguously, so ``core_id % 8``
+              targets the wrong SMU slot. When provided, overrides the
+              ``core_id % 8`` fallback.
     """
     commands = get_commands(generation)
     if commands is None:
@@ -500,8 +505,9 @@ def encode_co_arg(
     if scheme == "zen4_5":
         # Zen 4/5: CCD in bits [31:28], core within CCD in bits [23:20]
         # Prefer topology-detected CCD; fall back to core_id // 8
+        # Prefer probed physical slot; fall back to core_id % 8
         detected_ccd = ccd if ccd is not None else core_id // 8
-        core_in_ccd = core_id % 8
+        core_in_ccd = slot if slot is not None else core_id % 8
         return (detected_ccd << 28) | (core_in_ccd << 20) | margin
 
     raise ValueError(

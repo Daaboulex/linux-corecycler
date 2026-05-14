@@ -5,12 +5,69 @@ from __future__ import annotations
 import struct
 import sys
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import MagicMock
 
 import pytest
 
 # add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+# Mock PySide6 if not installed — allows running state machine tests without Qt.
+# TunerEngine inherits QObject and uses Signal/Slot, but the state machine logic
+# (_advance_core, _apply_crash_penalty, etc.) is pure Python and testable without Qt.
+if "PySide6" not in sys.modules:
+    try:
+        import PySide6  # noqa: F401
+    except ImportError:
+        _qt = ModuleType("PySide6")
+        _qtcore = ModuleType("PySide6.QtCore")
+
+        class _FakeSignal:
+            def __init__(self, *args, **kwargs):
+                self._slots = []
+            def emit(self, *args):
+                for slot in self._slots:
+                    slot(*args)
+            def connect(self, slot):
+                self._slots.append(slot)
+            def disconnect(self, slot=None):
+                if slot is None:
+                    self._slots.clear()
+                elif slot in self._slots:
+                    self._slots.remove(slot)
+
+        class _FakeQObject:
+            pass
+
+        class _FakeQThread:
+            def __init__(self, *args, **kwargs):
+                pass
+            def start(self):
+                pass
+            def wait(self, *args):
+                return True
+            def isRunning(self):
+                return False
+            def terminate(self):
+                pass
+            def deleteLater(self):
+                pass
+
+        class _FakeQTimer:
+            @staticmethod
+            def singleShot(ms, func):
+                func()
+
+        _qtcore.QObject = _FakeQObject
+        _qtcore.QThread = _FakeQThread
+        _qtcore.QTimer = _FakeQTimer
+        _qtcore.Signal = _FakeSignal
+        _qtcore.Slot = lambda *a, **k: (lambda f: f)
+        _qt.QtCore = _qtcore
+
+        sys.modules["PySide6"] = _qt
+        sys.modules["PySide6.QtCore"] = _qtcore
 
 from engine.backends.base import StressBackend, StressConfig, StressMode, StressResult
 from engine.topology import CPUTopology, LogicalCPU, PhysicalCore
@@ -279,6 +336,88 @@ stepping\t: 2
 core id\t\t: 1
 physical id\t: 0
 """
+
+
+def _gen_cpuinfo(family: int, model: int, name: str, cores: list[tuple[int, int]]) -> str:
+    """Generate mock /proc/cpuinfo text.
+
+    cores: list of (core_id, physical_id) tuples. Each gets one processor entry.
+    """
+    lines = []
+    for proc_id, (core_id, phys_id) in enumerate(cores):
+        lines.append(
+            f"processor\t: {proc_id}\n"
+            f"vendor_id\t: AuthenticAMD\n"
+            f"cpu family\t: {family}\n"
+            f"model\t\t: {model}\n"
+            f"model name\t: {name}\n"
+            f"stepping\t: 2\n"
+            f"core id\t\t: {core_id}\n"
+            f"physical id\t: {phys_id}\n"
+        )
+    return "\n".join(lines) + "\n"
+
+
+# Zen 1 Summit Ridge (1700) — family 23, model 1, 8 cores single CCD
+CPUINFO_ZEN1_SUMMIT_RIDGE = _gen_cpuinfo(
+    23, 0x01, "AMD Ryzen 7 1700 Eight-Core Processor",
+    [(i, 0) for i in range(8)],
+)
+
+# Zen+ Pinnacle Ridge (2600) — family 23, model 8, 6 cores
+CPUINFO_ZEN_PLUS = _gen_cpuinfo(
+    23, 0x08, "AMD Ryzen 5 2600 Six-Core Processor",
+    [(i, 0) for i in range(6)],
+)
+
+# Zen 3 Cezanne APU (5700G) — family 25, model 0x50, 8 cores single CCD
+CPUINFO_ZEN3_CEZANNE_APU = _gen_cpuinfo(
+    25, 0x50, "AMD Ryzen 7 5700G with Radeon Graphics",
+    [(i, 0) for i in range(8)],
+)
+
+# Zen 4 X3D single-CCD (7800X3D) — family 25, model 0x61, 8 cores
+CPUINFO_ZEN4_7800X3D = _gen_cpuinfo(
+    25, 0x61, "AMD Ryzen 7 7800X3D 8-Core Processor",
+    [(i, 0) for i in range(8)],
+)
+
+# Zen 4 X3D dual-CCD (7950X3D) — family 25, model 0x61, 16 cores (8+8)
+CPUINFO_ZEN4_7950X3D = _gen_cpuinfo(
+    25, 0x61, "AMD Ryzen 9 7950X3D 16-Core Processor",
+    [(i, 0) for i in range(8)] + [(i, 0) for i in range(8)],
+)
+
+# Zen 4 Phoenix APU (7840U) — family 25, model 0x74, 8 cores
+CPUINFO_ZEN4_PHOENIX_APU = _gen_cpuinfo(
+    25, 0x74, "AMD Ryzen 7 7840U w/ Radeon 780M Graphics",
+    [(i, 0) for i in range(8)],
+)
+
+# Zen 4 Storm Peak ThreadRipper (7980X) — family 25, model 0x18, 64 cores (8 CCDs)
+CPUINFO_ZEN4_STORM_PEAK = _gen_cpuinfo(
+    25, 0x18, "AMD Ryzen Threadripper PRO 7980X 64-Core Processor",
+    [(i % 8, 0) for i in range(64)],
+)
+
+# Zen 5 harvested (9900X) — family 26, model 0x44, 12 cores (6+6)
+# Kernel renumbers: CCD0 cores 0-5, CCD1 cores 8-13 (skipping 6,7)
+CPUINFO_ZEN5_9900X_HARVESTED = _gen_cpuinfo(
+    26, 0x44, "AMD Ryzen 9 9900X 12-Core Processor",
+    [(i, 0) for i in range(6)] + [(i, 0) for i in range(8, 14)],
+)
+
+# Zen 5 Strix Point APU — family 26, model 0x24, 12 cores
+CPUINFO_ZEN5_STRIX_POINT = _gen_cpuinfo(
+    26, 0x24, "AMD Ryzen AI 9 HX 370",
+    [(i, 0) for i in range(12)],
+)
+
+# Zen 5 Shimada Peak ThreadRipper — family 26, different SMU cmds
+CPUINFO_ZEN5_SHIMADA_PEAK = _gen_cpuinfo(
+    26, 0x44, "AMD Ryzen Threadripper 9980X 64-Core Processor",
+    [(i % 8, 0) for i in range(64)],
+)
 
 
 # ---------------------------------------------------------------------------

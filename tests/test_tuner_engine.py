@@ -1764,3 +1764,319 @@ class TestCooldownDrainLoop:
         with patch.object(eng, "_start_worker"):
             eng._run_next()
         assert eng._core_states[0].crash_cooldown == 0
+
+
+# ===========================================================================
+# State machine gap tests — 10 identified untested scenarios
+# ===========================================================================
+
+
+class TestStateMachineGaps:
+    """Tests for edge cases not covered by existing systematic tests."""
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=5, fine_step=1, max_offset=-30, cores_to_test=[0])
+        defaults.update(cfg_kwargs)
+        cfg = TunerConfig(**defaults)
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        eng._session_id = tp.create_session(db, cfg, "", "")
+        return eng
+
+    # Gap 1: Crash during HARDENING_T1 enters BACKOFF_PRECONFIRM
+    def test_crash_during_hardening_t1(self, db, simple_topology, mock_smu, mock_backend):
+        """Crash during HARDENING_T1 should enter BACKOFF_PRECONFIRM with penalty."""
+        tiers = [{"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"}]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                hardening_tiers=tiers, crash_penalty_steps=2)
+        cs = CoreState(core_id=0, phase=TunerPhase.HARDENING_T1, current_offset=-15,
+                       best_offset=-15, baseline_offset=0, in_test=True)
+        eng._core_states = {0: cs}
+        eng._apply_crash_penalty(cs)
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
+        assert cs.backoff_mode is True
+        assert cs.backoff_fail_bound == -15
+        assert cs.current_offset == -13  # -15 - ((-1)*2*1) = -13
+
+    # Gap 2: Crash during HARDENING_T2
+    def test_crash_during_hardening_t2(self, db, simple_topology, mock_smu, mock_backend):
+        """Crash during HARDENING_T2 also enters BACKOFF_PRECONFIRM."""
+        tiers = [
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "LARGE"},
+        ]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                hardening_tiers=tiers, crash_penalty_steps=3)
+        cs = CoreState(core_id=0, phase=TunerPhase.HARDENING_T2, current_offset=-20,
+                       best_offset=-20, baseline_offset=0, in_test=True,
+                       hardening_tier_index=1)
+        eng._core_states = {0: cs}
+        eng._apply_crash_penalty(cs)
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
+        assert cs.backoff_fail_bound == -20
+
+    # Gap 3: Resume with in_test=True during CONFIRMING phase
+    def test_resume_crash_during_confirming(self, db, simple_topology, mock_smu, mock_backend):
+        """Crash during CONFIRMING should apply penalty and back off."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                crash_penalty_steps=2)
+        cs = CoreState(core_id=0, phase=TunerPhase.CONFIRMING, current_offset=-10,
+                       best_offset=-10, baseline_offset=0, in_test=True)
+        eng._core_states = {0: cs}
+        crashed = eng._detect_and_handle_crashes(eng._core_states)
+        assert 0 in crashed
+        assert cs.in_test is False
+        assert cs.crash_count == 1
+        assert cs.current_offset > -10  # backed off
+
+    # Gap 4: Time budget expiry during BACKOFF_PRECONFIRM
+    def test_time_budget_during_backoff_preconfirm(self, db, simple_topology, mock_smu, mock_backend):
+        """Time budget exceeded during backoff settles core immediately."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                max_core_time_seconds=100)
+        cs = CoreState(core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM,
+                       current_offset=-8, best_offset=-8, baseline_offset=0,
+                       cumulative_test_time=101.0)
+        eng._core_states = {0: cs}
+        settled = eng._check_time_budget(cs)
+        assert settled is True
+        assert cs.phase == TunerPhase.CONFIRMED
+        assert cs.current_offset == -8  # settled at best_offset
+
+    # Gap 5: Binary search convergence at gap=0
+    def test_binary_search_gap_zero(self, db, simple_topology, mock_smu, mock_backend):
+        """Binary search with gap=0 (bounds meet) should converge."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                hardening_tiers=[])
+        cs = CoreState(core_id=0, phase=TunerPhase.BACKOFF_CONFIRMING,
+                       current_offset=-10, best_offset=-10, baseline_offset=0,
+                       backoff_fail_bound=-10, backoff_pass_bound=-10)
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        assert cs.phase == TunerPhase.CONFIRMED
+
+    # Gap 6: Binary search convergence at gap=1 (equals fine_step)
+    def test_binary_search_gap_one(self, db, simple_topology, mock_smu, mock_backend):
+        """Binary search with gap=fine_step should converge."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                fine_step=1, hardening_tiers=[])
+        cs = CoreState(core_id=0, phase=TunerPhase.BACKOFF_CONFIRMING,
+                       current_offset=-10, best_offset=-10, baseline_offset=0,
+                       backoff_fail_bound=-11, backoff_pass_bound=-10)
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        # gap = abs(-11 - (-10)) = 1 = fine_step → converge
+        assert cs.phase == TunerPhase.CONFIRMED
+
+    # Gap 7: Hardening fail all the way to baseline
+    def test_hardening_fail_converges_to_baseline(self, db, simple_topology, mock_smu, mock_backend):
+        """Repeated hardening failures back off until baseline → HARDENED."""
+        tiers = [{"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"}]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                fine_step=1, hardening_tiers=tiers)
+        cs = CoreState(core_id=0, phase=TunerPhase.HARDENING_T1, current_offset=-3,
+                       best_offset=-3, baseline_offset=0, hardening_tier_index=0)
+        eng._core_states = {0: cs}
+
+        # Fail 3 times: -3 → -2 → -1 → 0 (baseline) → HARDENED
+        eng._advance_core(0, passed=False)
+        assert cs.current_offset == -2
+        eng._advance_core(0, passed=False)
+        assert cs.current_offset == -1
+        eng._advance_core(0, passed=False)
+        assert cs.phase == TunerPhase.HARDENED
+        assert cs.current_offset == 0
+
+    # Gap 8: 3+ hardening tiers (T1→T2→T1 label cycling)
+    def test_three_hardening_tiers(self, db, simple_topology, mock_smu, mock_backend):
+        """With 3 hardening tiers, labels cycle T1→T2→T1."""
+        tiers = [
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL"},
+            {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
+            {"backend": "stress-ng", "stress_mode": "SSE", "fft_preset": "SMALL"},
+        ]
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                hardening_tiers=tiers)
+        cs = CoreState(core_id=0, phase=TunerPhase.HARDENING_T1, current_offset=-8,
+                       best_offset=-8, baseline_offset=0, hardening_tier_index=0)
+        eng._core_states = {0: cs}
+
+        # Tier 0 pass → tier 1 (T2)
+        eng._advance_core(0, passed=True)
+        assert cs.phase == TunerPhase.HARDENING_T2
+        assert cs.hardening_tier_index == 1
+
+        # Tier 1 pass → tier 2 (T1 again, since 2 % 2 == 0)
+        eng._advance_core(0, passed=True)
+        assert cs.phase == TunerPhase.HARDENING_T1
+        assert cs.hardening_tier_index == 2
+
+        # Tier 2 pass → HARDENED (last tier)
+        eng._advance_core(0, passed=True)
+        assert cs.phase == TunerPhase.HARDENED
+
+    # Gap 9: Crash during backoff with existing fail_bound
+    def test_crash_during_backoff_with_existing_fail_bound(self, db, simple_topology, mock_smu, mock_backend):
+        """Second crash at less-aggressive offset should NOT overwrite more-aggressive fail_bound."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM,
+                       current_offset=-12, best_offset=-12, baseline_offset=0,
+                       backoff_fail_bound=-20, in_test=True)
+        eng._core_states = {0: cs}
+        eng._apply_crash_penalty(cs)
+        # -12 is less aggressive than -20, so fail_bound stays -20
+        assert cs.backoff_fail_bound == -20
+
+    # Gap 10: direction=+1 coarse search settles at max
+    def test_positive_direction_coarse_settle_at_max(self, db, simple_topology, mock_smu, mock_backend):
+        """With direction=+1, coarse search hitting max_offset should settle."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend,
+                                direction=1, max_offset=20, coarse_step=5, start_offset=0)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH,
+                       current_offset=20, best_offset=15, baseline_offset=0)
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=True)
+        assert cs.phase == TunerPhase.SETTLED
+        assert cs.best_offset == 20
+
+
+# ===========================================================================
+# Property-based state machine invariant tests (Hypothesis)
+# ===========================================================================
+
+
+try:
+    from hypothesis import given, settings, assume, HealthCheck
+    from hypothesis import strategies as st
+    HAS_HYPOTHESIS = True
+except ImportError:
+    HAS_HYPOTHESIS = False
+
+
+@pytest.mark.skipif(not HAS_HYPOTHESIS, reason="hypothesis not installed")
+class TestStateMachineInvariants:
+    """Property-based tests: assert invariants hold for random pass/fail sequences."""
+
+    TERMINAL_PHASES = {TunerPhase.CONFIRMED, TunerPhase.HARDENED}
+    VALID_PHASES = set(TunerPhase)
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=5, fine_step=1, max_offset=-30, cores_to_test=[0])
+        defaults.update(cfg_kwargs)
+        cfg = TunerConfig(**defaults)
+        eng = TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=cfg,
+        )
+        eng._session_id = tp.create_session(db, cfg, "", "")
+        return eng
+
+    @given(results=st.lists(st.booleans(), min_size=1, max_size=200))
+    @settings(max_examples=500, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    def test_offset_never_exceeds_max(self, results, db, simple_topology, mock_smu, mock_backend):
+        """Offset must never go beyond max_offset in the configured direction."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, max_offset=-30)
+        cs = CoreState(core_id=0, phase=TunerPhase.NOT_STARTED, current_offset=0)
+        eng._core_states = {0: cs}
+
+        eng._advance_core(0, passed=False)  # NOT_STARTED → COARSE_SEARCH
+        for passed in results:
+            if cs.phase in self.TERMINAL_PHASES:
+                break
+            eng._advance_core(0, passed=passed)
+            assert cs.current_offset >= -30, f"offset {cs.current_offset} exceeds max -30"
+
+    @given(results=st.lists(st.booleans(), min_size=1, max_size=200))
+    @settings(max_examples=500, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    def test_offset_never_past_baseline(self, results, db, simple_topology, mock_smu, mock_backend):
+        """Offset must never go past baseline in the opposite direction."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.NOT_STARTED,
+                       current_offset=0, baseline_offset=0)
+        eng._core_states = {0: cs}
+
+        eng._advance_core(0, passed=False)
+        for passed in results:
+            if cs.phase in self.TERMINAL_PHASES:
+                break
+            eng._advance_core(0, passed=passed)
+            # direction=-1: offset should be <= 0 (baseline)
+            assert cs.current_offset <= 0, f"offset {cs.current_offset} past baseline 0"
+
+    @given(results=st.lists(st.booleans(), min_size=1, max_size=200))
+    @settings(max_examples=500, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    def test_phase_always_valid(self, results, db, simple_topology, mock_smu, mock_backend):
+        """Phase must always be a valid TunerPhase value."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.NOT_STARTED, current_offset=0)
+        eng._core_states = {0: cs}
+
+        eng._advance_core(0, passed=False)
+        for passed in results:
+            if cs.phase in self.TERMINAL_PHASES:
+                break
+            eng._advance_core(0, passed=passed)
+            assert cs.phase in self.VALID_PHASES, f"invalid phase {cs.phase}"
+
+    @given(results=st.lists(st.booleans(), min_size=1, max_size=200))
+    @settings(max_examples=500, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    def test_crash_count_only_increases(self, results, db, simple_topology, mock_smu, mock_backend):
+        """crash_count must never decrease."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.NOT_STARTED, current_offset=0)
+        eng._core_states = {0: cs}
+        prev_crash_count = 0
+
+        eng._advance_core(0, passed=False)
+        for passed in results:
+            if cs.phase in self.TERMINAL_PHASES:
+                break
+            eng._advance_core(0, passed=passed)
+            assert cs.crash_count >= prev_crash_count
+            prev_crash_count = cs.crash_count
+
+    @given(results=st.lists(st.booleans(), min_size=1, max_size=300))
+    @settings(max_examples=300, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    def test_always_reaches_terminal_state(self, results, db, simple_topology, mock_smu, mock_backend):
+        """Given enough transitions, every core must reach CONFIRMED or HARDENED."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, max_offset=-10)
+        cs = CoreState(core_id=0, phase=TunerPhase.NOT_STARTED, current_offset=0)
+        eng._core_states = {0: cs}
+
+        eng._advance_core(0, passed=False)
+        for passed in results:
+            if cs.phase in self.TERMINAL_PHASES:
+                break
+            eng._advance_core(0, passed=passed)
+
+        # With max_offset=-10 and fine_step=1, worst case is ~30 transitions
+        # 300 random booleans is more than enough
+        if len(results) >= 100:
+            assert cs.phase in self.TERMINAL_PHASES, (
+                f"core stuck in {cs.phase} after {len(results)} transitions"
+            )
+
+    @given(results=st.lists(st.booleans(), min_size=1, max_size=200))
+    @settings(max_examples=500, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    def test_best_offset_monotonic_during_search(self, results, db, simple_topology, mock_smu, mock_backend):
+        """During coarse/fine search, best_offset only gets more aggressive on pass."""
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.NOT_STARTED, current_offset=0)
+        eng._core_states = {0: cs}
+
+        eng._advance_core(0, passed=False)
+        prev_best = cs.best_offset
+        for passed in results:
+            if cs.phase in self.TERMINAL_PHASES:
+                break
+            phase_before = cs.phase
+            eng._advance_core(0, passed=passed)
+            if phase_before in (TunerPhase.COARSE_SEARCH, TunerPhase.FINE_SEARCH):
+                if passed and cs.best_offset is not None and prev_best is not None:
+                    # direction=-1: more aggressive = more negative
+                    assert cs.best_offset <= prev_best, (
+                        f"best_offset went less aggressive: {prev_best} → {cs.best_offset}"
+                    )
+            prev_best = cs.best_offset

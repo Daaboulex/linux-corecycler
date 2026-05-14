@@ -74,7 +74,13 @@ in
     nct6775 = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Whether to load the in-tree nct6775 module for Nuvoton Super I/O chips. Provides motherboard Vcore (in0), fan speeds, and temperatures. Common on ASUS, MSI, ASRock boards. Needed for Zen 5 Vcore fallback on Nuvoton boards.";
+      description = "Whether to load the in-tree nct6775 module for Nuvoton NCT6775–NCT6799 Super I/O chips. Provides motherboard Vcore, fan speeds, and temperatures. Common on ASUS, MSI, ASRock boards. Needed for Zen 5 Vcore fallback on Nuvoton boards.";
+    };
+
+    nct6683 = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Whether to load the in-tree nct6683 module for Nuvoton NCT6683/NCT6686/NCT6687 Super I/O chips. Common on modern MSI boards (B550, B650, X570, X670). Needed for Zen 5 Vcore fallback when nct6775 does not cover your chip.";
     };
 
     it87 = lib.mkOption {
@@ -143,6 +149,7 @@ in
     ++ lib.optional cfg.zenpower "zenpower"
     ++ lib.optional cfg.coretemp "coretemp"
     ++ lib.optional cfg.nct6775 "nct6775"
+    ++ lib.optional cfg.nct6683 "nct6683"
     ++ lib.optional cfg.it87 "it87"
     ++ lib.optional cfg.cpuid "cpuid"
     ++ lib.optionals cfg.spd5118 [

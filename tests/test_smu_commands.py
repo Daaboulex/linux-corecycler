@@ -264,6 +264,58 @@ class TestEncodeDecodeZen5:
         assert core_in_ccd == 7
 
 
+class TestEncodeDecodeHarvested:
+    """Test slot parameter for harvested Zen 4/5 chips."""
+
+    gen = CPUGeneration.ZEN5_GRANITE_RIDGE
+
+    def test_slot_overrides_core_mod_8(self):
+        """Harvested CCD: core 2 maps to physical slot 4, not slot 2."""
+        encoded = encode_co_arg(2, -10, self.gen, ccd=0, slot=4)
+        core_in_ccd = (encoded >> 20) & 0xF
+        ccd = (encoded >> 28) & 0xF
+        assert core_in_ccd == 4
+        assert ccd == 0
+
+    def test_slot_none_falls_back_to_mod_8(self):
+        encoded_default = encode_co_arg(5, -10, self.gen, ccd=0)
+        encoded_explicit = encode_co_arg(5, -10, self.gen, ccd=0, slot=5)
+        assert encoded_default == encoded_explicit
+
+    def test_9900x_ccd0_mapping(self):
+        """Simulate 9900X CCD0: slots 2,3 harvested → cores 0-5 map to 0,1,4,5,6,7."""
+        slot_map = {0: 0, 1: 1, 2: 4, 3: 5, 4: 6, 5: 7}
+        for kernel_core, phys_slot in slot_map.items():
+            encoded = encode_co_arg(kernel_core, -10, self.gen, ccd=0, slot=phys_slot)
+            assert (encoded >> 20) & 0xF == phys_slot
+            assert (encoded >> 28) & 0xF == 0
+
+    def test_9900x_ccd1_mapping(self):
+        """Simulate 9900X CCD1: slots 4,5 harvested → cores 8-13 map to 0,1,2,3,6,7."""
+        slot_map = {8: 0, 9: 1, 10: 2, 11: 3, 12: 6, 13: 7}
+        for kernel_core, phys_slot in slot_map.items():
+            encoded = encode_co_arg(kernel_core, -10, self.gen, ccd=1, slot=phys_slot)
+            assert (encoded >> 20) & 0xF == phys_slot
+            assert (encoded >> 28) & 0xF == 1
+
+    def test_roundtrip_with_slot(self):
+        for slot in range(8):
+            encoded = encode_co_arg(0, -30, self.gen, ccd=0, slot=slot)
+            decoded = decode_co_arg(0, encoded, self.gen)
+            assert decoded == -30
+
+    def test_slot_ignored_for_zen3(self):
+        gen = CPUGeneration.ZEN3_VERMEER
+        enc_default = encode_co_arg(3, -10, gen)
+        enc_with_slot = encode_co_arg(3, -10, gen, slot=5)
+        assert enc_default == enc_with_slot
+
+    def test_slot_with_zen4(self):
+        gen = CPUGeneration.ZEN4_RAPHAEL
+        encoded = encode_co_arg(2, -10, gen, ccd=0, slot=6)
+        assert (encoded >> 20) & 0xF == 6
+
+
 class TestEncodeDecodeEdgeCases:
     def test_unsupported_generation_encode(self):
         with pytest.raises(ValueError, match="Unsupported generation"):
