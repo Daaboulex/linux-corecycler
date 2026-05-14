@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD013 MD031 MD032 MD040 MD058 -->
+
 # CoreCycler
 
 <!-- BEGIN generated:badges -->
@@ -35,7 +37,7 @@ CO instability often manifests at idle or during load transitions, not under sus
 - **Variable load testing**: periodically stops and restarts stress to catch load transition errors
 - **Idle stability testing**: monitors for MCE during idle periods between cores to catch C-state transition errors
 - **X3D-aware CPU topology detection** -- identifies CCDs, V-Cache CCD (by L3 size comparison), and SMT siblings
-- **Live hardware monitoring** -- CPU temperature (Tctl, Tdie, per-CCD Tccd), core voltage (Vcore, Vsoc), frequency, per-core CPU usage, and power via hwmon (k10temp/zenpower/coretemp) with automatic Super I/O fallback (nct6799/nct6798) for Vcore on Zen 5; with root access, MSR-based clock stretch detection (APERF/MPERF), per-core power (RAPL MSR), and package power. Per-core view shows actual frequency vs boost ceiling (scaling_max_freq), usage %, stretch %, per-core watts, and temperature with active core highlighting during tests.
+- **Live hardware monitoring** -- CPU temperature (Tctl, Tdie, per-CCD Tccd), core voltage (Vcore, Vsoc), frequency, per-core CPU usage, and power via hwmon (k10temp/zenpower/coretemp) with automatic Super I/O fallback for Vcore on Zen 5 (label-aware: scans `in*_label` for "Vcore", falls back to in0 for legacy chips); with root access, MSR-based clock stretch detection (APERF/MPERF), per-core power (RAPL MSR), and package power. Per-core view shows actual frequency vs boost ceiling (scaling_max_freq), usage %, stretch %, per-core watts, and temperature with active core highlighting during tests.
 - **MSR-based clock stretch detection** -- reads APERF/MPERF counters to compute the actual-vs-reference clock ratio per core; values below ~97% under load indicate clock stretching (a sign of CO instability or power limiting). Stretch % is only displayed for active cores (>5% usage) to avoid false readings from C-state sleep noise on idle cores. Requires root.
 - **Comprehensive SMU integration** for runtime Curve Optimizer, PBO limits, boost override, and PBO scalar via the ryzen_smu kernel module
 - **System state detection** -- auto-detects current CO offsets, PBO limits, boost override, PBO scalar, and estimated BCLK before testing
@@ -382,7 +384,7 @@ When running without root, the status bar displays a warning listing unavailable
 
 **Non-root access on non-NixOS distros:** The NixOS module sets up udev rules and a systemd permission service automatically. On other distros, if you want to avoid running as root, you need to manually set permissions on `/dev/cpu/*/msr` (for MSR access) and `/sys/kernel/ryzen_smu_drv/*` (for SMU access). See the [ryzen_smu section](#ryzen_smu-kernel-module) for an example udev rule. Running as root is the simplest approach.
 
-**Note:** Vcore voltage is read from the CPU hwmon driver (zenpower/zenpower3/zenpower5/k10temp SVI2 registers) when available. On **Zen 5** CPUs, voltage telemetry uses SVI3 which no Linux driver supports yet — the tool automatically falls back to the **Super I/O chip** on the motherboard, which provides an analog Vcore reading from the voltage regulator. Supported Super I/O chips include Nuvoton (nct6775–nct6799, common on ASUS/MSI/ASRock) and ITE (IT8625–IT8772, common on Gigabyte). If neither source is available, Vcore shows "N/A".
+**Note:** Vcore voltage is read from the CPU hwmon driver (zenpower/zenpower3/zenpower5/k10temp SVI2 registers) when available. On **Zen 5** CPUs, voltage telemetry uses SVI3 which no Linux driver supports yet — the tool automatically falls back to the **Super I/O chip** on the motherboard, which provides an analog Vcore reading from the voltage regulator. The fallback scans input labels to find the correct Vcore channel (e.g., nct6687 uses in4, not in0), with in0 as a legacy fallback. Supported Super I/O chips include Nuvoton NCT6683/NCT6686/NCT6687 (modern MSI boards: B550, B650, X570, X670), Nuvoton NCT6775–NCT6799 (ASUS, MSI, ASRock), and ITE IT8625–IT8772 (Gigabyte). If neither source is available, Vcore shows "N/A".
 
 ### Dependencies
 
@@ -407,7 +409,8 @@ CoreCycler uses several kernel modules for hardware access. None are required fo
 | **msr** | In-tree | `/dev/cpu/N/msr` access for APERF/MPERF counters and per-core RAPL | Clock stretch detection, per-core power. Usually loaded by default on most distros |
 | **ryzen_smu** | Out-of-tree | SMU sysfs interface for CO read/write, PBO limits, PM table | Curve Optimizer tab, Auto-Tuner. Without it, stress testing works but CO features are unavailable |
 | **zenpower** / **zenpower5** | Out-of-tree | Richer AMD hwmon (SVI2/SVI3 voltage, RAPL power) than k10temp | Better voltage and power monitoring (optional — k10temp works for temps) |
-| **nct6775** | In-tree | Nuvoton Super I/O chip (Vcore, fan speeds, temps) | Motherboard Vcore on Zen 5 (ASUS, MSI, ASRock). Automatic fallback when zenpower has no voltage |
+| **nct6683** | In-tree | Nuvoton NCT6683/6686/6687 Super I/O (Vcore via label scan) | Motherboard Vcore on Zen 5 (modern MSI: B550, B650, X570, X670) |
+| **nct6775** | In-tree | Nuvoton NCT6775–6799 Super I/O (Vcore, fan speeds, temps) | Motherboard Vcore on Zen 5 (ASUS, MSI, ASRock). Automatic fallback when zenpower has no voltage |
 | **it87** | Out-of-tree | ITE Super I/O chip (38+ models) | Motherboard Vcore on Gigabyte boards |
 | **spd5118** + **i2c_dev** | In-tree | DDR5 DIMM temperature monitoring via SPD hub | Live DIMM temperatures in Memory tab |
 | **coretemp** | In-tree | Intel CPU temperature monitoring | Intel systems only |
@@ -854,11 +857,11 @@ src/
       ycruncher.py           # y-cruncher backend (component stress mode)
       stressapptest.py       # stressapptest backend (memory-intensive stress)
   smu/
-    commands.py              # SMU command IDs per CPU generation (Zen 1–5), encoding_scheme dispatch, command set aliasing
-    driver.py                # ryzen_smu sysfs interface (CO, PBO limits, boost, scalar, system state)
+    commands.py              # SMU command IDs per CPU generation (Zen 1–5), encoding_scheme dispatch, command set aliasing, harvested core slot support
+    driver.py                # ryzen_smu sysfs interface (CO, PBO limits, boost, scalar, system state, harvested core slot probing)
     pmtable.py               # Version-aware PM table parsing: FCLK/UCLK/MCLK, voltages, ratio computation (Zen 2–5 offset registry)
   monitor/
-    hwmon.py                 # k10temp/zenpower/zenpower5/coretemp: Tctl, Tdie, Tccd temps, Vcore, Vsoc; Super I/O fallback (Nuvoton/ITE) for Zen 5 Vcore
+    hwmon.py                 # k10temp/zenpower/zenpower5/coretemp: Tctl, Tdie, Tccd temps, Vcore, Vsoc; Super I/O fallback (Nuvoton/ITE) for Zen 5 Vcore with label-aware input scanning
     cpu_usage.py             # Per-logical-CPU usage % from /proc/stat (delta-based)
     frequency.py             # Per-core frequency monitoring (sysfs cpufreq), actual + boost ceiling
     memory.py                # DIMM info (dmidecode), SPD5118 hwmon temps, DDR5 SPD EEPROM timing decode
@@ -986,10 +989,11 @@ CoreCycler integrates with several Linux kernel drivers for hardware monitoring 
 
 | Driver | Source | Supported Chips | Common Boards |
 |---|---|---|---|
+| nct6683 | [kernel.org (in-tree)](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/hwmon/nct6683.c) | NCT6683, NCT6686, NCT6687 | Modern MSI (B550, B650, X570, X670) |
 | nct6775 | [kernel.org (in-tree)](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/hwmon/nct6775-core.c) | NCT6775–NCT6799 | ASUS, MSI, ASRock AM5/AM4 |
 | it87 | [kernel.org (in-tree)](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/hwmon/it87.c) | IT8625–IT8772 | Gigabyte AM5/AM4 |
 
-Super I/O chips provide analog Vcore (in0_input) from the voltage regulator — world-readable, no root needed. Used as automatic fallback on Zen 5 where SVI3 voltage is unsupported.
+Super I/O chips provide analog Vcore from the voltage regulator — world-readable, no root needed. Used as automatic fallback on Zen 5 where SVI3 voltage is unsupported. The tool scans input labels to find the correct Vcore channel (e.g., nct6687 maps Vcore to in4, not in0), falling back to in0 for chips without labels.
 
 ### Related Tools
 
