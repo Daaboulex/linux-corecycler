@@ -1953,6 +1953,18 @@ try:
     HAS_HYPOTHESIS = True
 except ImportError:
     HAS_HYPOTHESIS = False
+    # Stubs so the class body parses without NameError at collection time.
+    # The @skipif decorator prevents actual execution.
+    def given(**kw): return lambda f: f  # noqa: E731
+    def settings(**kw): return lambda f: f  # noqa: E731
+    class HealthCheck:  # noqa: E303
+        function_scoped_fixture = None
+    class _St:
+        @staticmethod
+        def lists(*a, **kw): return None
+        @staticmethod
+        def booleans(): return None
+    st = _St()
 
 
 @pytest.mark.skipif(not HAS_HYPOTHESIS, reason="hypothesis not installed")
