@@ -368,6 +368,107 @@ class TestCheckWritable:
         assert ok is False and "permission" in msg.lower()
 
 
+class TestProbeSlotMap:
+    """Tests for harvested core slot detection via SMU probing."""
+
+    def test_non_harvested_all_slots_active(self, smu_dir, zen5_cmds):
+        """Non-harvested 8-core CCD: all 8 slots active, slot == core_id % 8."""
+        smu = RyzenSMU(zen5_cmds, smu_dir)
+        smu._topology_ccd = {i: 0 for i in range(8)}
+
+        def mock_send(cmd, args=(0, 0, 0, 0, 0, 0)):
+            arg = args[0] if args else 0
+            return SMUResponse(success=True, args=(0,) + (0,) * 5, raw=b"\x00" * 24)
+
+        with patch.object(smu, "_send_command", side_effect=mock_send):
+            slot_map = smu.probe_slot_map()
+
+        assert slot_map is not None
+        for i in range(8):
+            assert slot_map[i] == i
+
+    def test_9900x_harvested(self, smu_dir, zen5_cmds):
+        """9900X: CCD0 slots 2,3 harvested, CCD1 slots 4,5 harvested."""
+        smu = RyzenSMU(zen5_cmds, smu_dir)
+        ccd_map = {}
+        for i in range(6):
+            ccd_map[i] = 0
+        for i in range(8, 14):
+            ccd_map[i] = 1
+        smu._topology_ccd = ccd_map
+
+        harvested = {0: {2, 3}, 1: {4, 5}}
+
+        def mock_send(cmd, args=(0, 0, 0, 0, 0, 0)):
+            arg = args[0] if args else 0
+            ccd = (arg >> 28) & 0xF
+            slot = (arg >> 20) & 0xF
+            if slot in harvested.get(ccd, set()):
+                return SMUResponse(success=True, args=(arg,) + (0,) * 5, raw=b"\x00" * 24)
+            return SMUResponse(success=True, args=(0,) + (0,) * 5, raw=b"\x00" * 24)
+
+        with patch.object(smu, "_send_command", side_effect=mock_send):
+            slot_map = smu.probe_slot_map()
+
+        assert slot_map is not None
+        assert [slot_map[i] for i in range(6)] == [0, 1, 4, 5, 6, 7]
+        assert [slot_map[i] for i in range(8, 14)] == [0, 1, 2, 3, 6, 7]
+
+    def test_ambiguous_slot0_resolved(self, smu_dir, zen5_cmds):
+        """CCD0 slot 0 is ambiguous (arg=0, resp=0) but resolved by counting."""
+        smu = RyzenSMU(zen5_cmds, smu_dir)
+        smu._topology_ccd = {i: 0 for i in range(6)}
+
+        harvested_slots = {2, 3}
+
+        def mock_send(cmd, args=(0, 0, 0, 0, 0, 0)):
+            arg = args[0] if args else 0
+            slot = (arg >> 20) & 0xF
+            if slot in harvested_slots:
+                return SMUResponse(success=True, args=(arg,) + (0,) * 5, raw=b"\x00" * 24)
+            if arg == 0:
+                return SMUResponse(success=True, args=(0,) + (0,) * 5, raw=b"\x00" * 24)
+            return SMUResponse(success=True, args=(0,) + (0,) * 5, raw=b"\x00" * 24)
+
+        with patch.object(smu, "_send_command", side_effect=mock_send):
+            slot_map = smu.probe_slot_map()
+
+        assert slot_map is not None
+        assert slot_map[0] == 0
+        assert len(slot_map) == 6
+
+    def test_zen3_skips_probing(self, smu_dir, zen3_cmds):
+        smu = RyzenSMU(zen3_cmds, smu_dir)
+        smu._topology_ccd = {0: 0, 1: 0}
+        assert smu.probe_slot_map() is None
+
+    def test_no_topology_skips_probing(self, smu_dir, zen5_cmds):
+        smu = RyzenSMU(zen5_cmds, smu_dir)
+        assert smu.probe_slot_map() is None
+
+    def test_set_topology_triggers_probing(self, smu_dir, zen5_cmds):
+        """set_topology() should call probe_slot_map() for zen4_5 chips."""
+        smu = RyzenSMU(zen5_cmds, smu_dir)
+        mock_topo = MagicMock()
+        mock_topo.cores = {
+            0: MagicMock(ccd=0),
+            1: MagicMock(ccd=0),
+        }
+        with patch.object(smu, "probe_slot_map", return_value={0: 0, 1: 1}) as mock_probe:
+            smu.set_topology(mock_topo)
+        mock_probe.assert_called_once()
+        assert smu._slot_map == {0: 0, 1: 1}
+
+    def test_set_topology_dry_run_skips_probing(self, smu_dir, zen5_cmds):
+        """Dry-run mode should not probe SMU."""
+        smu = RyzenSMU(zen5_cmds, smu_dir, dry_run=True)
+        mock_topo = MagicMock()
+        mock_topo.cores = {0: MagicMock(ccd=0)}
+        with patch.object(smu, "probe_slot_map") as mock_probe:
+            smu.set_topology(mock_topo)
+        mock_probe.assert_not_called()
+
+
 class TestBackupRestore:
     def test_backup(self, smu_dir, zen5_cmds):
         smu = RyzenSMU(zen5_cmds, smu_dir)

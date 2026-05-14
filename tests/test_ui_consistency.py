@@ -11,6 +11,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import sys as _sys
+if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
+    pytest.skip("GUI tests require real PySide6", allow_module_level=True)
+
 from engine.topology import PhysicalCore, CPUTopology
 from monitor.hwmon import HWMonData
 

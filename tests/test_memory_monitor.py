@@ -210,6 +210,10 @@ class _MockVisibleLabel(_MockLabel):
         pass
 
 
+_pyside6_real = hasattr(__import__("sys").modules.get("PySide6", None), "__path__")
+_needs_pyside6 = pytest.mark.skipif(not _pyside6_real, reason="GUI tests require real PySide6")
+
+
 def _make_headless_tab():
     """Create a mock MemoryTab-like object with mock labels for headless testing.
 
@@ -249,6 +253,7 @@ def _make_headless_tab():
     return tab
 
 
+@_needs_pyside6
 class TestMemoryTabBehavior:
     def test_update_clock_labels_calibrated_1_to_1(self):
         tab = _make_headless_tab()
@@ -530,6 +535,7 @@ class TestSPDEepromDiscovery:
         assert result2 is result1  # exact same object (cached)
 
 
+@_needs_pyside6
 class TestSPDTimingDisplay:
     """Tests for _update_spd_labels display logic."""
 
@@ -609,6 +615,7 @@ class TestSPDTimingDisplay:
         assert not tab._spd_unavailable_label.isVisible()
 
 
+@_needs_pyside6
 class TestColumnResize:
     """Tests for DIMM table column resize constants."""
 

@@ -44,6 +44,11 @@ jobs:
       - name: Format check
         run: nix fmt -- --check .
 
+      - name: Run tests
+        run: |
+          nix-shell -p python312 python312Packages.pytest python312Packages.pyside6 \
+            --run "python -m pytest tests/ -v --tb=short"
+
       - name: Build
         run: |
           # Skip build for module-only repos (no packages output)

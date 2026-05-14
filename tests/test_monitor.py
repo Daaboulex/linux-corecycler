@@ -250,6 +250,66 @@ class TestHWMonReader:
 
         assert data.vcore_v == 1.25  # from CPU driver, not Super I/O
 
+    def test_superio_labeled_vcore(self, tmp_path):
+        """NCT6687-style chip: Vcore is in4, not in0. Label scanning finds it."""
+        hwmon_base = tmp_path / "hwmon"
+        cpu = hwmon_base / "hwmon0"
+        cpu.mkdir(parents=True)
+        (cpu / "name").write_text("zenpower5")
+        (cpu / "temp1_input").write_text("60000")
+        (cpu / "temp1_label").write_text("Tctl")
+        sio = hwmon_base / "hwmon1"
+        sio.mkdir(parents=True)
+        (sio / "name").write_text("nct6687")
+        (sio / "in0_input").write_text("12340")
+        (sio / "in0_label").write_text("+12V")
+        (sio / "in4_input").write_text("1400")
+        (sio / "in4_label").write_text("CPU Vcore")
+
+        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+            reader = HWMonReader()
+            data = reader.read()
+
+        assert data.vcore_v == 1.4
+
+    def test_superio_no_vcore_label_falls_back_to_in0(self, tmp_path):
+        """Chip with labels but none matching 'vcore' — falls back to in0."""
+        hwmon_base = tmp_path / "hwmon"
+        cpu = hwmon_base / "hwmon0"
+        cpu.mkdir(parents=True)
+        (cpu / "name").write_text("zenpower5")
+        (cpu / "temp1_input").write_text("60000")
+        (cpu / "temp1_label").write_text("Tctl")
+        sio = hwmon_base / "hwmon1"
+        sio.mkdir(parents=True)
+        (sio / "name").write_text("nct6795")
+        (sio / "in0_input").write_text("1300")
+        (sio / "in0_label").write_text("VIN0")
+        (sio / "in1_input").write_text("3300")
+        (sio / "in1_label").write_text("+3.3V")
+
+        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+            reader = HWMonReader()
+            data = reader.read()
+
+        assert data.vcore_v == 1.3
+
+    def test_nct66xx_chip_detection(self, tmp_path):
+        """NCT6683/6686/6687 chips detected as Super I/O devices."""
+        for chip_name in ("nct6683", "nct6686", "nct6687"):
+            hwmon_base = tmp_path / f"hwmon_{chip_name}"
+            cpu = hwmon_base / "hwmon0"
+            cpu.mkdir(parents=True)
+            (cpu / "name").write_text("zenpower5")
+            sio = hwmon_base / "hwmon1"
+            sio.mkdir(parents=True)
+            (sio / "name").write_text(chip_name)
+            (sio / "in0_input").write_text("1350")
+
+            with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+                reader = HWMonReader()
+                assert reader._superio_path is not None, f"{chip_name} not detected"
+
 
 # ===========================================================================
 # Frequency reader tests

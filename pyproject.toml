@@ -18,7 +18,7 @@ dependencies = [
 corecycler = "main:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.8"]
+dev = ["pytest>=8.0", "ruff>=0.8", "hypothesis>=6.100"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -30,6 +30,10 @@ py-modules = ["main"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "slow: tests that take >5s (deselect with -m 'not slow')",
+    "hardware: tests that verify hardware-specific detection behavior",
+]
 
 [tool.ruff]
 target-version = "py312"

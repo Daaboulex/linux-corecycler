@@ -796,11 +796,13 @@ class TunerEngine(QObject):
             cs.current_offset = cs.baseline_offset
         cs.crash_count += 1
         cs.crash_cooldown = 2
-        # Force into backoff if in search phases
+        # Force into backoff if in search or hardening phases
         if cs.phase in (
             TunerPhase.COARSE_SEARCH,
             TunerPhase.FINE_SEARCH,
             TunerPhase.BACKOFF_PRECONFIRM,
+            TunerPhase.HARDENING_T1,
+            TunerPhase.HARDENING_T2,
         ):
             cs.phase = TunerPhase.BACKOFF_PRECONFIRM
             cs.backoff_mode = True
