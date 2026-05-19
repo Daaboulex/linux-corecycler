@@ -235,8 +235,8 @@ fi
 # A version bump invalidates EVERY fixed-output hash at once, so a field
 # cannot be isolated by dummying it alone (the others are stale too, and the
 # build fails unpredictably). Instead: dummy all declared hashes, then build
-# repeatedly — each failed build names one FOD and its correct hash; the drv
-# name maps to a declared field. Repeat until the build stops complaining.
+# repeatedly — each failed build names one fixed-output derivation and its
+# correct hash; the drv name maps to a declared field. Repeat until clean.
 DUMMY_HASH="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 declare -a HF_FIELD=() HF_FILE=()
@@ -282,10 +282,14 @@ if [ "${#HF_FIELD[@]}" -gt 0 ]; then
       output "error_type" "hash-extraction"
       exit 1
     fi
+    # Map the failing derivation's name to a declared hash field. Cargo
+    # vendor derivations vary by nixpkgs version: legacy `*-vendor.tar.gz`
+    # / `*cargo*` and the newer fetchCargoVendor `*-vendor-staging`. Go is
+    # always `*-go-modules`, npm `*-npm-deps`.
     case "$DRV" in
     *go-modules*) WANT="vendorHash" ;;
     *npm-deps* | *-npm-*) WANT="npmDepsHash" ;;
-    *cargo* | *vendor.tar*) WANT="cargoHash" ;;
+    *cargo* | *vendor.tar* | *vendor-staging*) WANT="cargoHash" ;;
     *) WANT="" ;;
     esac
     IDX=-1
@@ -308,11 +312,11 @@ if [ "${#HF_FIELD[@]}" -gt 0 ]; then
       done
     fi
     if [ "$IDX" -lt 0 ]; then
-      err "Could not map FOD '$DRV' to a declared hash field"
+      err "Could not map derivation '$DRV' to a declared hash field"
       output "error_type" "hash-extraction"
       exit 1
     fi
-    log "Hash '${HF_FIELD[$IDX]}' (FOD ${DRV##*/}): sha256-$GOT"
+    log "Hash '${HF_FIELD[$IDX]}' (drv ${DRV##*/}): sha256-$GOT"
     set_hash "${HF_FIELD[$IDX]}" "${HF_FILE[$IDX]}" "sha256-$GOT"
   done
   if echo "$BUILD_OUTPUT" | grep -q 'hash mismatch in fixed-output'; then
