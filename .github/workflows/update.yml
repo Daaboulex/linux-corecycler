@@ -47,6 +47,10 @@ jobs:
       - name: Close resolved issues
         if: steps.update.outputs.updated == 'true' && steps.update.outputs.exit_code == '0'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
+        # Pass outputs via env, never interpolate ${{ }} into the script body
+        # (a value containing a quote/newline would break out of the JS).
+        env:
+          NEW_VERSION: ${{ steps.update.outputs.new_version }}
         with:
           script: |
             const issues = await github.rest.issues.listForRepo({
@@ -62,7 +66,7 @@ jobs:
               await github.rest.issues.createComment({
                 owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: issue.number,
-                body: `Resolved by auto-update to ${{ steps.update.outputs.new_version }}.`
+                body: `Resolved by auto-update to ${process.env.NEW_VERSION}.`
               });
             }
 
@@ -72,16 +76,24 @@ jobs:
       - name: Create failure issue
         if: steps.update.outputs.exit_code == '1'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
+        # Pass outputs via env, never interpolate ${{ }} into the script body
+        # (a value containing a quote/newline would break out of the JS).
+        env:
+          ERROR_TYPE: ${{ steps.update.outputs.error_type }}
+          OLD_VERSION: ${{ steps.update.outputs.old_version }}
+          NEW_VERSION: ${{ steps.update.outputs.new_version }}
+          UPSTREAM_URL: ${{ steps.update.outputs.upstream_url }}
+          PKG: ${{ steps.update.outputs.package_name }}
         with:
           script: |
             const fs = require('fs');
             const log = fs.readFileSync('/tmp/update.log', 'utf8');
             const lastLines = log.split('\n').slice(-100).join('\n');
-            const errorType = '${{ steps.update.outputs.error_type }}' || 'unknown';
-            const oldV = '${{ steps.update.outputs.old_version }}' || '?';
-            const newV = '${{ steps.update.outputs.new_version }}' || '?';
-            const upstream = '${{ steps.update.outputs.upstream_url }}' || '';
-            const pkg = '${{ steps.update.outputs.package_name }}' || context.repo.repo;
+            const errorType = process.env.ERROR_TYPE || 'unknown';
+            const oldV = process.env.OLD_VERSION || '?';
+            const newV = process.env.NEW_VERSION || '?';
+            const upstream = process.env.UPSTREAM_URL || '';
+            const pkg = process.env.PKG || context.repo.repo;
 
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,
