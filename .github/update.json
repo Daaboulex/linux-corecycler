@@ -6,7 +6,8 @@
   "packageFile": "flake.nix",
   "hashes": [],
   "verify": {
-    "binary": "corecycler",
-    "args": "--help"
+    "binary": null,
+    "args": null,
+    "check": "wrapper"
   }
 }
