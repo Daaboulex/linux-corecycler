@@ -19,6 +19,12 @@ log() { echo "==> $*"; }
 warn() { echo "::warning::$*"; }
 err() { echo "::error::$*"; }
 
+# re_esc <str> — backslash-escape every regex metacharacter so a dynamic
+# string (a Nix identifier from update.json) is matched literally in
+# grep -P, sed -E, and plain sed expressions. Nix identifiers only contain
+# [A-Za-z0-9_'-]; escaping is defensive, not strictly required, but cheap.
+re_esc() { printf '%s' "$1" | sed 's/[^[:alnum:]_]/\\&/g'; }
+
 # --- Read config ---------------------------------------------------------
 if [ ! -f .github/update.json ]; then
   log "No .github/update.json — skipping update"
@@ -35,6 +41,11 @@ PACKAGE=$(echo "$CONFIG" | jq -r '.package')
 PACKAGE_FILE=$(echo "$CONFIG" | jq -r '.packageFile // "package.nix"')
 VERSION_FILE=$(echo "$CONFIG" | jq -r --arg d "$PACKAGE_FILE" '.versionFile // $d')
 VERSION_ATTR=$(echo "$CONFIG" | jq -r '.versionAttr // "version"')
+VERSION_ATTR_RE=$(re_esc "$VERSION_ATTR")
+# versionScheme: "literal" (default) writes the upstream string verbatim;
+# "unstable-date" writes "<latest-tag>-unstable-<YYYY-MM-DD>" for
+# commit-tracked repos (nixpkgs VCS-snapshot convention) — see below.
+VERSION_SCHEME=$(echo "$CONFIG" | jq -r '.versionScheme // "literal"')
 
 output "package_name" "$PACKAGE"
 
@@ -57,7 +68,7 @@ fi
 if [ "$VERSION_FILE" = "version.json" ]; then
   CURRENT_VERSION=$(jq -r '.version // .rev' version.json)
 else
-  CURRENT_VERSION=$(grep -oP "(?<![A-Za-z_])${VERSION_ATTR}\s*[?=]\s*\"\K[^\"]+" \
+  CURRENT_VERSION=$(grep -oP "(?<![A-Za-z_])${VERSION_ATTR_RE}\s*[?=]\s*\"\K[^\"]+" \
     "$VERSION_FILE" 2>/dev/null | head -1 || true)
 fi
 if [ -z "$CURRENT_VERSION" ]; then
@@ -187,11 +198,46 @@ git-ls-remote)
   ;;
 esac
 
+# --- versionScheme: unstable-date ---------------------------------------
+# Commit-tracked repos default to a bare 7-char SHA as the version, which
+# is not orderable by builtins.compareVersions. "unstable-date" instead
+# writes "<base>-unstable-<YYYY-MM-DD>" (the nixpkgs VCS-snapshot
+# convention). The base comes from update.json `versionBase`; the rev (the
+# real SHA) still tracks every commit. Comparison switches to the rev,
+# since the date string would otherwise differ every day and loop forever.
+if [ "$VERSION_SCHEME" = "unstable-date" ]; then
+  if [ -z "$FULL_REV" ]; then
+    err "versionScheme 'unstable-date' requires a commit-tracked upstream type"
+    output "updated" "false"
+    output "error_type" "config-error"
+    exit 1
+  fi
+  REV_FILE=$(grep -rlP 'rev\s*=\s*"' --include='*.nix' . 2>/dev/null | head -1 || true)
+  CURRENT_REV=""
+  [ -n "$REV_FILE" ] && CURRENT_REV=$(grep -oP 'rev\s*=\s*"\K[^"]+' "$REV_FILE" 2>/dev/null | head -1 || true)
+  if [ -n "$CURRENT_REV" ] && [ "$CURRENT_REV" = "$FULL_REV" ]; then
+    log "Already up to date (rev $FULL_REV)"
+    output "updated" "false"
+    exit 0
+  fi
+  BASE=$(echo "$CONFIG" | jq -r '.versionBase // empty')
+  [ -z "$BASE" ] && BASE="${CURRENT_VERSION%%-unstable-*}"
+  if [ -z "$BASE" ]; then
+    err "versionScheme 'unstable-date': no versionBase in update.json and current version is empty"
+    output "updated" "false"
+    output "error_type" "config-error"
+    exit 1
+  fi
+  LATEST_VERSION="${BASE}-unstable-$(date -u +%Y-%m-%d)"
+fi
+
 log "Latest version: $LATEST_VERSION"
 output "new_version" "$LATEST_VERSION"
 
 # --- Compare -------------------------------------------------------------
-if [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
+# unstable-date already compared by rev above; the date string can collide
+# (two commits the same day) so it must not gate the write here.
+if [ "$VERSION_SCHEME" != "unstable-date" ] && [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
   log "Already up to date"
   output "updated" "false"
   exit 0
@@ -210,7 +256,7 @@ if [ "$VERSION_FILE" = "version.json" ]; then
 else
   ESC_CUR=$(esc "$CURRENT_VERSION")
   # Preserve the `<attr> = ` / `<attr> ? ` prefix; swap only the quoted value.
-  sed -i -E "s|(${VERSION_ATTR}[[:space:]]*[?=][[:space:]]*)\"${ESC_CUR}\"|\1\"${LATEST_VERSION}\"|" \
+  sed -i -E "s|(${VERSION_ATTR_RE}[[:space:]]*[?=][[:space:]]*)\"${ESC_CUR}\"|\1\"${LATEST_VERSION}\"|" \
     "$VERSION_FILE"
   if ! grep -qF "\"$LATEST_VERSION\"" "$VERSION_FILE"; then
     err "Version write did not take effect in $VERSION_FILE"
@@ -240,11 +286,17 @@ fi
 DUMMY_HASH="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 declare -a HF_FIELD=() HF_FILE=()
+# HF_DONE[idx] — the real hash a field has already been resolved to this
+# run. Used to detect an undeclared fixed-output derivation: if a build
+# mismatch routes to a field already resolved to a *different* hash, the
+# extractor is oscillating — fail clearly instead of looping to the cap.
+declare -A HF_DONE=()
 mapfile -t HASH_ENTRIES < <(echo "$CONFIG" | jq -c '.hashes // [] | .[]')
 for entry in "${HASH_ENTRIES[@]}"; do
   if [ "$(echo "$entry" | jq -r 'type')" = "string" ]; then
     f=$(echo "$entry" | jq -r '.')
-    file=$(grep -rlP "${f}\s*[?=]\s*\"sha256-" --include='*.nix' . 2>/dev/null | head -1 || true)
+    f_re=$(re_esc "$f")
+    file=$(grep -rlP "${f_re}\s*[?=]\s*\"sha256-" --include='*.nix' . 2>/dev/null | head -1 || true)
   else
     f=$(echo "$entry" | jq -r '.field')
     file=$(echo "$entry" | jq -r '.file')
@@ -261,7 +313,9 @@ done
 # set_hash <field> <file> <value> — replaces the field's sha256 value,
 # preserving whichever operator (`=` or `?`) was used.
 set_hash() {
-  sed -i "s|\(${1}[[:space:]]*[?=][[:space:]]*\)\"sha256-[^\"]*\"|\1\"${3}\"|" "$2"
+  local field_re
+  field_re=$(re_esc "$1")
+  sed -i "s|\(${field_re}[[:space:]]*[?=][[:space:]]*\)\"sha256-[^\"]*\"|\1\"${3}\"|" "$2"
 }
 
 if [ "${#HF_FIELD[@]}" -gt 0 ]; then
@@ -312,10 +366,19 @@ if [ "${#HF_FIELD[@]}" -gt 0 ]; then
       done
     fi
     if [ "$IDX" -lt 0 ]; then
-      err "Could not map derivation '$DRV' to a declared hash field"
+      err "undeclared hash for derivation ${DRV##*/}: not a known vendor type and no declared source hash field — add it to .github/update.json hashes[]"
       output "error_type" "hash-extraction"
       exit 1
     fi
+    # Oscillation guard: a mismatch routed to an already-resolved field
+    # means an undeclared FOD is being misrouted onto it — fail clearly.
+    PREV="${HF_DONE[$IDX]:-}"
+    if [ -n "$PREV" ] && [ "$PREV" != "sha256-$GOT" ]; then
+      err "undeclared hash for derivation ${DRV##*/}: routed onto the already-resolved '${HF_FIELD[$IDX]}' field — a fixed-output derivation is missing from .github/update.json hashes[]"
+      output "error_type" "hash-extraction"
+      exit 1
+    fi
+    HF_DONE[$IDX]="sha256-$GOT"
     log "Hash '${HF_FIELD[$IDX]}' (drv ${DRV##*/}): sha256-$GOT"
     set_hash "${HF_FIELD[$IDX]}" "${HF_FILE[$IDX]}" "sha256-$GOT"
   done

@@ -1,0 +1,48 @@
+# Canonical drift-check workflow — Nix Packaging Standard.
+# Source of truth: <nix-repo>/repo-standard/drift-check.yml. Synced into each
+# repos/*-nix clone by repo-standard/sync.sh — do not edit per-repo copies.
+#
+# Fails CI if scripts/update.sh has drifted from the canonical standard, so a
+# per-repo copy can never silently diverge (finding #2). custom-type repos
+# keep a bespoke scripts/update.sh and are skipped.
+name: Drift check
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Verify scripts/update.sh matches the canonical standard
+        run: |
+          TYPE=$(jq -r '.upstream.type // "none"' .github/update.json 2>/dev/null || echo none)
+          if [ "$TYPE" = "custom" ]; then
+            echo "custom-type repo — bespoke scripts/update.sh, drift check skipped"
+            exit 0
+          fi
+          if [ ! -f scripts/update.sh ]; then
+            echo "::error::scripts/update.sh is missing — run repo-standard/sync.sh"
+            exit 1
+          fi
+          CANON_URL="https://raw.githubusercontent.com/Daaboulex/nixos/main/repo-standard/update.sh"
+          if ! curl -sfL "$CANON_URL" -o /tmp/canonical-update.sh; then
+            echo "::error::could not fetch the canonical update.sh from $CANON_URL"
+            exit 1
+          fi
+          LOCAL=$(sha256sum scripts/update.sh | cut -d' ' -f1)
+          CANON=$(sha256sum /tmp/canonical-update.sh | cut -d' ' -f1)
+          if [ "$LOCAL" != "$CANON" ]; then
+            echo "::error::scripts/update.sh has drifted from the canonical standard"
+            echo "  local:     $LOCAL"
+            echo "  canonical: $CANON"
+            echo "  fix: re-run repo-standard/sync.sh from the nix repo, then commit"
+            exit 1
+          fi
+          echo "scripts/update.sh matches the canonical standard ($LOCAL)"
