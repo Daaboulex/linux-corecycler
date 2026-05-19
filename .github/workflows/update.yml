@@ -1,5 +1,10 @@
+# Canonical Update workflow — Nix Packaging Standard.
+# Source of truth: <nix-repo>/repo-standard/update.yml. Synced into each
+# repos/*-nix clone by repo-standard/sync.sh — do not edit per-repo copies.
 name: Update
 on:
+  schedule:
+    - cron: "0 6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -10,19 +15,16 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25  # v22 (node24)
-      # magic-nix-cache-action removed 2026-04-16 (FlakeHub-gated, broke CI).
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22 (node24)
 
       - name: Run update
         id: update
         run: |
           set +e
           bash scripts/update.sh 2>&1 | tee /tmp/update.log
-          EXIT_CODE=$?
-          {
-            echo "exit_code=$EXIT_CODE"
-          } >> "$GITHUB_OUTPUT"
+          EXIT_CODE=${PIPESTATUS[0]}  # update.sh's exit, NOT tee's (always 0)
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           if [ -f /tmp/update-outputs.env ]; then
             cat /tmp/update-outputs.env >> "$GITHUB_OUTPUT"
           fi
@@ -38,13 +40,13 @@ jobs:
           NEWV="${{ steps.update.outputs.new_version }}"
           PKG="${{ steps.update.outputs.package_name }}"
           git diff --cached --quiet && { echo "No changes to commit"; exit 0; }
-          git commit -m "chore: update ${PKG} ${OLDV} → ${NEWV}"
+          git commit -m "chore: update ${PKG} ${OLDV} -> ${NEWV}"
           git push
 
       # Auto-close previous failure issues on success
       - name: Close resolved issues
         if: steps.update.outputs.updated == 'true' && steps.update.outputs.exit_code == '0'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9 (node24)
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
         with:
           script: |
             const issues = await github.rest.issues.listForRepo({
@@ -64,10 +66,12 @@ jobs:
               });
             }
 
-      # Diagnostic issue on failure
+      # Diagnostic issue on failure. Keyed on exit_code==1 alone (not on
+      # `updated`) so config/version-read failures — which never reach the
+      # point of setting `updated` — still surface. exit 2 = network, no issue.
       - name: Create failure issue
-        if: steps.update.outputs.updated == 'true' && steps.update.outputs.exit_code == '1'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9 (node24)
+        if: steps.update.outputs.exit_code == '1'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
         with:
           script: |
             const fs = require('fs');
@@ -79,7 +83,6 @@ jobs:
             const upstream = '${{ steps.update.outputs.upstream_url }}' || '';
             const pkg = '${{ steps.update.outputs.package_name }}' || context.repo.repo;
 
-            // Close previous update-failed issues
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,
               labels: 'update-failed', state: 'open'
@@ -92,7 +95,6 @@ jobs:
               });
             }
 
-            // Push attempted update to branch (best-effort)
             const { execSync } = require('child_process');
             let branchPushed = false;
             try {
@@ -100,7 +102,7 @@ jobs:
               execSync('git config user.email "41898282+github-actions[bot]@users.noreply.github.com"');
               execSync(`git checkout -B update/${pkg}-${newV}`);
               execSync('git add -A \':!AI-*.json\'');
-              execSync(`git commit -m "wip: attempted update ${oldV} → ${newV}" --allow-empty`);
+              execSync(`git commit -m "wip: attempted update ${oldV} -> ${newV}" --allow-empty`);
               execSync(`git push -f origin update/${pkg}-${newV}`);
               branchPushed = true;
             } catch (e) { /* best-effort */ }
@@ -117,10 +119,10 @@ jobs:
 
             await github.rest.issues.create({
               owner: context.repo.owner, repo: context.repo.repo,
-              title: `Update ${pkg} ${oldV} → ${newV}: ${errorType}`,
+              title: `Update ${pkg} ${oldV} -> ${newV}: ${errorType}`,
               labels: ['update-failed'],
               body: [
-                `## Update Failed: ${pkg} ${oldV} → ${newV}`,
+                `## Update Failed: ${pkg} ${oldV} -> ${newV}`,
                 '',
                 `**Failure**: \`${errorType}\``,
                 upstream ? `**Upstream**: ${upstream}` : '',
