@@ -32,13 +32,16 @@ jobs:
       # Silent success: commit + push
       - name: Push update
         if: steps.update.outputs.updated == 'true' && steps.update.outputs.exit_code == '0'
+        # Outputs pass via env, never interpolated into the run-block shell
+        # (an upstream tag with a quote or $(...) would otherwise inject).
+        env:
+          OLDV: ${{ steps.update.outputs.old_version }}
+          NEWV: ${{ steps.update.outputs.new_version }}
+          PKG: ${{ steps.update.outputs.package_name }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A ':!AI-*.json'
-          OLDV="${{ steps.update.outputs.old_version }}"
-          NEWV="${{ steps.update.outputs.new_version }}"
-          PKG="${{ steps.update.outputs.package_name }}"
           git diff --cached --quiet && { echo "No changes to commit"; exit 0; }
           git commit -m "chore: update ${PKG} ${OLDV} -> ${NEWV}"
           git push
@@ -107,15 +110,19 @@ jobs:
               });
             }
 
-            const { execSync } = require('child_process');
+            // execFileSync passes args straight to git — no shell, so a
+            // pkg/version value with shell metacharacters cannot inject.
+            const { execFileSync } = require('child_process');
+            const git = (...args) => execFileSync('git', args, { stdio: 'inherit' });
+            const branch = `update/${pkg}-${newV}`;
             let branchPushed = false;
             try {
-              execSync('git config user.name "github-actions[bot]"');
-              execSync('git config user.email "41898282+github-actions[bot]@users.noreply.github.com"');
-              execSync(`git checkout -B update/${pkg}-${newV}`);
-              execSync('git add -A \':!AI-*.json\'');
-              execSync(`git commit -m "wip: attempted update ${oldV} -> ${newV}" --allow-empty`);
-              execSync(`git push -f origin update/${pkg}-${newV}`);
+              git('config', 'user.name', 'github-actions[bot]');
+              git('config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com');
+              git('checkout', '-B', branch);
+              git('add', '-A', ':!AI-*.json');
+              git('commit', '-m', `wip: attempted update ${oldV} -> ${newV}`, '--allow-empty');
+              git('push', '-f', 'origin', branch);
               branchPushed = true;
             } catch (e) { /* best-effort */ }
 
