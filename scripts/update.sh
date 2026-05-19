@@ -46,6 +46,11 @@ VERSION_ATTR_RE=$(re_esc "$VERSION_ATTR")
 # "unstable-date" writes "<latest-tag>-unstable-<YYYY-MM-DD>" for
 # commit-tracked repos (nixpkgs VCS-snapshot convention) — see below.
 VERSION_SCHEME=$(echo "$CONFIG" | jq -r '.versionScheme // "literal"')
+# revFile: file holding the package's own src `rev` literal (commit-tracked
+# upstreams). Defaults to the version file; set it explicitly when a repo
+# carries several `rev = "..."` literals (e.g. a bundled dependency's rev)
+# so the updater bumps the package src rev and not a dependency's.
+REV_FILE=$(echo "$CONFIG" | jq -r --arg d "$VERSION_FILE" '.revFile // $d')
 
 output "package_name" "$PACKAGE"
 
@@ -212,9 +217,8 @@ if [ "$VERSION_SCHEME" = "unstable-date" ]; then
     output "error_type" "config-error"
     exit 1
   fi
-  REV_FILE=$(grep -rlP 'rev\s*=\s*"' --include='*.nix' . 2>/dev/null | head -1 || true)
   CURRENT_REV=""
-  [ -n "$REV_FILE" ] && CURRENT_REV=$(grep -oP 'rev\s*=\s*"\K[^"]+' "$REV_FILE" 2>/dev/null | head -1 || true)
+  [ -f "$REV_FILE" ] && CURRENT_REV=$(grep -oP 'rev\s*=\s*"\K[^"]+' "$REV_FILE" 2>/dev/null | head -1 || true)
   if [ -n "$CURRENT_REV" ] && [ "$CURRENT_REV" = "$FULL_REV" ]; then
     log "Already up to date (rev $FULL_REV)"
     output "updated" "false"
@@ -256,20 +260,23 @@ if [ "$VERSION_FILE" = "version.json" ]; then
 else
   ESC_CUR=$(esc "$CURRENT_VERSION")
   # Preserve the `<attr> = ` / `<attr> ? ` prefix; swap only the quoted value.
-  sed -i -E "s|(${VERSION_ATTR_RE}[[:space:]]*[?=][[:space:]]*)\"${ESC_CUR}\"|\1\"${LATEST_VERSION}\"|" \
+  # The leading `\b` word boundary mirrors the read-side lookbehind so a
+  # short attr (`version`) cannot match the tail of an identifier
+  # (`myversion`); it must not be a `|` alternation — `|` is the s delimiter.
+  sed -i -E "s|\b(${VERSION_ATTR_RE}[[:space:]]*[?=][[:space:]]*)\"${ESC_CUR}\"|\1\"${LATEST_VERSION}\"|" \
     "$VERSION_FILE"
-  if ! grep -qF "\"$LATEST_VERSION\"" "$VERSION_FILE"; then
-    err "Version write did not take effect in $VERSION_FILE"
+  # Confirm the new value landed on the target attr — not merely somewhere
+  # in the file (a hash or a dependency string could match a bare literal).
+  LATEST_VERSION_RE=$(re_esc "$LATEST_VERSION")
+  if ! grep -qP "(?<![A-Za-z_])${VERSION_ATTR_RE}\s*[?=]\s*\"${LATEST_VERSION_RE}\"" "$VERSION_FILE"; then
+    err "Version write did not take effect on attr '$VERSION_ATTR' in $VERSION_FILE"
     output "error_type" "version-write"
     exit 1
   fi
-  # Commit-tracked repos: also bump the `rev` attr wherever it lives.
-  if [ -n "$FULL_REV" ]; then
-    REV_FILE=$(grep -rlP 'rev\s*=\s*"' --include='*.nix' . 2>/dev/null | head -1 || true)
-    if [ -n "$REV_FILE" ]; then
-      CUR_REV=$(grep -oP 'rev\s*=\s*"\K[^"]+' "$REV_FILE" | head -1 || true)
-      [ -n "$CUR_REV" ] && sed -i "s|rev = \"$CUR_REV\"|rev = \"$FULL_REV\"|" "$REV_FILE"
-    fi
+  # Commit-tracked repos: also bump the `rev` attr in the configured file.
+  if [ -n "$FULL_REV" ] && [ -f "$REV_FILE" ]; then
+    CUR_REV=$(grep -oP 'rev\s*=\s*"\K[^"]+' "$REV_FILE" | head -1 || true)
+    [ -n "$CUR_REV" ] && sed -i "s|rev = \"$CUR_REV\"|rev = \"$FULL_REV\"|" "$REV_FILE"
   fi
 fi
 
@@ -405,13 +412,15 @@ if ! nix build .#default --no-link --print-build-logs 2>&1; then
 fi
 
 VERIFY_BINARY=$(echo "$CONFIG" | jq -r '.verify.binary // empty')
-VERIFY_ARGS=$(echo "$CONFIG" | jq -r '.verify.args // "--version"')
+# Split verify.args on whitespace so a multi-token value ("db --version")
+# is passed as separate argv entries, not one argument.
+read -ra VERIFY_ARGS <<<"$(echo "$CONFIG" | jq -r '.verify.args // "--version"')"
 VERIFY_CHECK=$(echo "$CONFIG" | jq -r '.verify.check // empty')
 
 log "Step 3/3: artifact verification"
 nix build .#default
 if [ -n "$VERIFY_BINARY" ]; then
-  ./result/bin/"$VERIFY_BINARY" "$VERIFY_ARGS" 2>&1 || {
+  ./result/bin/"$VERIFY_BINARY" "${VERIFY_ARGS[@]}" 2>&1 || {
     err "Binary verification failed"
     output "error_type" "verification-error"
     exit 1
