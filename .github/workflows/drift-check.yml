@@ -1,11 +1,11 @@
 # Canonical drift-check workflow — Nix Packaging Standard.
-# Source of truth: <nix-repo>/repo-standard/drift-check.yml. Synced into each
-# repos/*-nix clone by repo-standard/sync.sh — do not edit per-repo copies.
+# Source of truth: github:Daaboulex/nix-packaging-standard. Synced into each
+# packaging repo by sync.sh — do not edit per-repo copies.
 #
-# Fails CI if any synced standard file (scripts/update.sh + the three
-# canonical workflows) has drifted from the canonical standard, so a per-repo
-# copy can never silently diverge (finding #2). custom-type repos keep a
-# bespoke scripts/update.sh and are skipped for that one file only.
+# Fails CI if any synced standard file (scripts/update.sh + the two canonical
+# workflows) has drifted from the canonical, so a per-repo copy can never
+# silently diverge. `custom`-type repos keep a bespoke scripts/update.sh and
+# are skipped for that one file only.
 name: Drift check
 on:
   push:
@@ -24,13 +24,12 @@ jobs:
       - name: Verify synced standard files match the canonical standard
         run: |
           TYPE=$(jq -r '.upstream.type // "none"' .github/update.json 2>/dev/null || echo none)
-          BASE="https://raw.githubusercontent.com/Daaboulex/nixos/main/repo-standard"
-          # canonical file in repo-standard/  ->  path inside this repo
+          BASE="https://raw.githubusercontent.com/Daaboulex/nix-packaging-standard/main"
+          # canonical file in the standard repo  ->  path inside this repo
           declare -A FILES=(
             ["update.sh"]="scripts/update.sh"
             ["update.yml"]=".github/workflows/update.yml"
             ["drift-check.yml"]=".github/workflows/drift-check.yml"
-            ["cachix.yml"]=".github/workflows/cachix.yml"
           )
           fail=0
           for canon in "${!FILES[@]}"; do
@@ -41,7 +40,7 @@ jobs:
               continue
             fi
             if [ ! -f "$dst" ]; then
-              echo "::error::$dst is missing — run repo-standard/sync.sh"
+              echo "::error::$dst is missing — run sync.sh from the standard repo"
               fail=1
               continue
             fi
@@ -62,6 +61,6 @@ jobs:
             echo "ok     $dst matches the canonical standard ($LOCAL)"
           done
           if [ "$fail" -ne 0 ]; then
-            echo "::error::drift detected — re-run repo-standard/sync.sh from the nix repo, then commit"
+            echo "::error::drift detected — re-run sync.sh from the standard repo, then commit"
             exit 1
           fi
