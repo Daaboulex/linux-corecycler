@@ -3,13 +3,14 @@ set -euo pipefail
 
 # Canonical auto-updater — Nix Packaging Standard.
 #
-# Source of truth: <nix-repo>/repo-standard/update.sh. Synced into each
-# repos/*-nix clone by repo-standard/sync.sh. DO NOT edit per-repo copies —
-# edit here and re-sync (CI verifies the copy matches this checksum).
+# Source of truth: github.com/Daaboulex/nix-packaging-standard (update.sh),
+# checked out locally at repos/nix-packaging-standard/. Synced into each
+# packaging repo's scripts/update.sh by sync.sh — DO NOT edit per-repo copies;
+# edit the canonical and re-sync (drift-check CI verifies the copy's checksum).
 #
-# Reads config from .github/update.json (schema: repo-standard/update.schema.json).
-# Contract: exit 0 = success / no update, exit 1 = update failed,
-#           exit 2 = network or API error (retry next run).
+# Reads config from .github/update.json (schema: update.schema.json in the
+# canonical repo). Contract: exit 0 = success / no update, exit 1 = update
+# failed, exit 2 = network or API error (retry next run).
 
 OUTPUT_FILE="${GITHUB_OUTPUT:-/tmp/update-outputs.env}"
 : >"$OUTPUT_FILE"
@@ -51,6 +52,18 @@ VERSION_SCHEME=$(echo "$CONFIG" | jq -r '.versionScheme // "literal"')
 # carries several `rev = "..."` literals (e.g. a bundled dependency's rev)
 # so the updater bumps the package src rev and not a dependency's.
 REV_FILE=$(echo "$CONFIG" | jq -r --arg d "$VERSION_FILE" '.revFile // $d')
+# tagFilter: ERE matched against release/tag names for github-release and
+# github-tag types (default ".*"). Lets a repo whose upstream publishes tags in
+# several namespaces (desktop "2026.2" vs "android/2026.5") pin to the ones it
+# packages — GitHub's "latest" flag can otherwise select a foreign namespace.
+TAG_FILTER=$(echo "$CONFIG" | jq -r '.upstream.tagFilter // ".*"')
+# trackOnly: for hand-mirrored repos with no buildable artifact (the package is
+# a reimplementation, not a fetched source). The updater only DETECTS upstream
+# movement and files a "remirror-needed" reminder; it never writes, builds, or
+# advances a version. trackFile/trackKey locate the recorded upstream marker.
+TRACK_ONLY=$(echo "$CONFIG" | jq -r '.trackOnly // false')
+TRACK_FILE=$(echo "$CONFIG" | jq -r '.trackFile // "upstream-version.json"')
+TRACK_KEY=$(echo "$CONFIG" | jq -r '.trackKey // "commit"')
 
 output "package_name" "$PACKAGE"
 
@@ -67,23 +80,44 @@ if [ "$UPSTREAM_TYPE" = "custom" ]; then
 fi
 
 # --- Get current version -------------------------------------------------
-# Handles both `version = "x"` and parameterized `<attr>Version ? "x"` forms.
-# The negative lookbehind keeps `versionAttr=version` from matching the tail
-# of an identifier like `portmasterVersion`.
-if [ "$VERSION_FILE" = "version.json" ]; then
+# trackOnly repos record the upstream marker (a commit) in trackFile, not a
+# version literal — read it from there. Otherwise handle both `version = "x"`
+# and parameterized `<attr>Version ? "x"` forms; the negative lookbehind keeps
+# `versionAttr=version` from matching the tail of e.g. `portmasterVersion`.
+if [ "$TRACK_ONLY" = "true" ]; then
+  if [ ! -f "$TRACK_FILE" ]; then
+    err "trackOnly: trackFile '$TRACK_FILE' not found"
+    output "updated" "false"
+    output "error_type" "config-error"
+    exit 1
+  fi
+  CURRENT_VERSION=$(jq -r --arg k "$TRACK_KEY" '.[$k] // empty' "$TRACK_FILE" 2>/dev/null || true)
+elif [ "$VERSION_FILE" = "version.json" ]; then
   CURRENT_VERSION=$(jq -r '.version // .rev' version.json)
 else
   CURRENT_VERSION=$(grep -oP "(?<![A-Za-z_])${VERSION_ATTR_RE}\s*[?=]\s*\"\K[^\"]+" \
     "$VERSION_FILE" 2>/dev/null | head -1 || true)
 fi
-if [ -z "$CURRENT_VERSION" ]; then
-  err "Could not read current version (attr '$VERSION_ATTR' in '$VERSION_FILE')"
+# rev-only reads its identity from the rev later, so an empty version literal is
+# tolerable there; every other scheme needs a readable current version.
+if [ -z "$CURRENT_VERSION" ] && [ "$VERSION_SCHEME" != "rev-only" ]; then
+  if [ "$TRACK_ONLY" = "true" ]; then
+    err "trackOnly: could not read marker '$TRACK_KEY' from '$TRACK_FILE'"
+  else
+    err "Could not read current version (attr '$VERSION_ATTR' in '$VERSION_FILE')"
+  fi
   output "updated" "false"
   output "error_type" "version-read"
   exit 1
 fi
-output "old_version" "$CURRENT_VERSION"
-log "Current version: $CURRENT_VERSION ($VERSION_ATTR in $VERSION_FILE)"
+if [ -n "$CURRENT_VERSION" ]; then
+  output "old_version" "$CURRENT_VERSION"
+  if [ "$TRACK_ONLY" = "true" ]; then
+    log "Current marker: $CURRENT_VERSION ($TRACK_KEY in $TRACK_FILE)"
+  else
+    log "Current version: $CURRENT_VERSION ($VERSION_ATTR in $VERSION_FILE)"
+  fi
+fi
 
 # --- Fetch latest upstream version --------------------------------------
 fetch_latest() {
@@ -105,11 +139,23 @@ case "$UPSTREAM_TYPE" in
 github-release)
   OWNER=$(echo "$CONFIG" | jq -r '.upstream.owner')
   REPO=$(echo "$CONFIG" | jq -r '.upstream.repo')
-  LATEST_TAG=$(fetch_latest "curl -sfL 'https://api.github.com/repos/$OWNER/$REPO/releases/latest' | jq -r '.tag_name'") || {
-    warn "Failed to fetch latest release from $OWNER/$REPO"
+  # Pull the release list (newest first) and pick the newest published,
+  # non-draft, non-prerelease tag whose name matches tagFilter. Filtering the
+  # list — not trusting /releases/latest — is what lets a repo ignore a foreign
+  # release namespace; GitHub's "latest" flag can point at any of them.
+  RELEASES=$(fetch_latest "curl -sfL 'https://api.github.com/repos/$OWNER/$REPO/releases?per_page=100'") || {
+    warn "Failed to fetch releases from $OWNER/$REPO"
     output "updated" "false"
     exit 2
   }
+  LATEST_TAG=$(echo "$RELEASES" | jq -r --arg f "$TAG_FILTER" \
+    'map(select((.draft | not) and (.prerelease | not)) | .tag_name | select(test($f)))[0] // empty')
+  if [ -z "$LATEST_TAG" ]; then
+    err "No release tag matched tagFilter '$TAG_FILTER' for $OWNER/$REPO"
+    output "updated" "false"
+    output "error_type" "no-matching-tag"
+    exit 1
+  fi
   LATEST_VERSION="${LATEST_TAG#v}"
   output "upstream_url" "https://github.com/$OWNER/$REPO/releases/tag/$LATEST_TAG"
   ;;
@@ -117,11 +163,19 @@ github-release)
 github-tag)
   OWNER=$(echo "$CONFIG" | jq -r '.upstream.owner')
   REPO=$(echo "$CONFIG" | jq -r '.upstream.repo')
-  LATEST_TAG=$(fetch_latest "curl -sfL 'https://api.github.com/repos/$OWNER/$REPO/tags?per_page=1' | jq -r '.[0].name'") || {
+  TAGS=$(fetch_latest "curl -sfL 'https://api.github.com/repos/$OWNER/$REPO/tags?per_page=100'") || {
     warn "Failed to fetch tags from $OWNER/$REPO"
     output "updated" "false"
     exit 2
   }
+  LATEST_TAG=$(echo "$TAGS" | jq -r --arg f "$TAG_FILTER" \
+    'map(.name | select(test($f)))[0] // empty')
+  if [ -z "$LATEST_TAG" ]; then
+    err "No tag matched tagFilter '$TAG_FILTER' for $OWNER/$REPO"
+    output "updated" "false"
+    output "error_type" "no-matching-tag"
+    exit 1
+  fi
   LATEST_VERSION="${LATEST_TAG#v}"
   output "upstream_url" "https://github.com/$OWNER/$REPO/releases/tag/$LATEST_TAG"
   ;;
@@ -203,6 +257,25 @@ git-ls-remote)
   ;;
 esac
 
+# --- trackOnly: detect upstream movement, never write or build ----------
+# A hand-mirrored repo has no buildable artifact to bump. Compare the recorded
+# marker to the upstream HEAD; if they differ, exit 1 with `remirror-needed` so
+# the workflow files a reminder for a human to re-mirror (and then bump
+# trackFile). The marker is never auto-advanced and nothing is built.
+if [ "$TRACK_ONLY" = "true" ]; then
+  NEW_REF="${FULL_REV:-$LATEST_VERSION}"
+  output "new_version" "${NEW_REF:0:7}"
+  if [ "${CURRENT_VERSION:0:7}" = "${NEW_REF:0:7}" ] || [ "$CURRENT_VERSION" = "$NEW_REF" ]; then
+    log "Already up to date (marker $CURRENT_VERSION)"
+    output "updated" "false"
+    exit 0
+  fi
+  log "Upstream advanced: $CURRENT_VERSION -> ${NEW_REF:0:7} — manual re-mirror needed"
+  output "updated" "false"
+  output "error_type" "remirror-needed"
+  exit 1
+fi
+
 # --- versionScheme: unstable-date ---------------------------------------
 # Commit-tracked repos default to a bare 7-char SHA as the version, which
 # is not orderable by builtins.compareVersions. "unstable-date" instead
@@ -235,13 +308,44 @@ if [ "$VERSION_SCHEME" = "unstable-date" ]; then
   LATEST_VERSION="${BASE}-unstable-$(date -u +%Y-%m-%d)"
 fi
 
+# --- versionScheme: rev-only --------------------------------------------
+# Git-snapshot packages (e.g. mesa-git) keep a human-set marketing `version`
+# (the upstream's self-reported version, bumped manually) alongside a rev+hash
+# that track every commit. "rev-only" bumps rev (and hash + date) and leaves
+# `version` untouched; comparison is by rev so the unchanged version string
+# never gates. WRITE_VERSION drives the writer below.
+WRITE_VERSION=1
+if [ "$VERSION_SCHEME" = "rev-only" ]; then
+  if [ -z "$FULL_REV" ]; then
+    err "versionScheme 'rev-only' requires a commit-tracked upstream type"
+    output "updated" "false"
+    output "error_type" "config-error"
+    exit 1
+  fi
+  WRITE_VERSION=0
+  CURRENT_REV=""
+  if [[ "$REV_FILE" == *.json ]]; then
+    [ -f "$REV_FILE" ] && CURRENT_REV=$(jq -r '.rev // empty' "$REV_FILE" 2>/dev/null || true)
+  else
+    [ -f "$REV_FILE" ] && CURRENT_REV=$(grep -oP 'rev\s*=\s*"\K[^"]+' "$REV_FILE" 2>/dev/null | head -1 || true)
+  fi
+  if [ -n "$CURRENT_REV" ] && [ "$CURRENT_REV" = "$FULL_REV" ]; then
+    log "Already up to date (rev $FULL_REV)"
+    output "updated" "false"
+    exit 0
+  fi
+  # Identity for this scheme is the rev, not the (unchanged) version string.
+  output "old_version" "${CURRENT_REV:0:7}"
+  LATEST_VERSION="${FULL_REV:0:7}"
+fi
+
 log "Latest version: $LATEST_VERSION"
 output "new_version" "$LATEST_VERSION"
 
 # --- Compare -------------------------------------------------------------
 # unstable-date already compared by rev above; the date string can collide
 # (two commits the same day) so it must not gate the write here.
-if [ "$VERSION_SCHEME" != "unstable-date" ] && [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
+if [ "$VERSION_SCHEME" != "unstable-date" ] && [ "$VERSION_SCHEME" != "rev-only" ] && [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
   log "Already up to date"
   output "updated" "false"
   exit 0
@@ -254,24 +358,33 @@ output "updated" "true"
 esc() { printf '%s' "$1" | sed 's/[][\\.^$*/]/\\&/g'; }
 
 if [ "$VERSION_FILE" = "version.json" ]; then
-  jq --arg v "$LATEST_VERSION" --arg r "${FULL_REV:-$LATEST_VERSION}" \
-    '.version = $v | .rev = $r | .date = (now | strftime("%Y-%m-%d"))' \
-    version.json >version.json.tmp && mv version.json.tmp version.json
+  if [ "$WRITE_VERSION" -eq 1 ]; then
+    jq --arg v "$LATEST_VERSION" --arg r "${FULL_REV:-$LATEST_VERSION}" \
+      '.version = $v | .rev = $r | .date = (now | strftime("%Y-%m-%d"))' \
+      version.json >version.json.tmp && mv version.json.tmp version.json
+  else
+    # rev-only: bump rev + date, keep the human-set version string.
+    jq --arg r "${FULL_REV:-$LATEST_VERSION}" \
+      '.rev = $r | .date = (now | strftime("%Y-%m-%d"))' \
+      version.json >version.json.tmp && mv version.json.tmp version.json
+  fi
 else
-  ESC_CUR=$(esc "$CURRENT_VERSION")
-  # Preserve the `<attr> = ` / `<attr> ? ` prefix; swap only the quoted value.
-  # The leading `\b` word boundary mirrors the read-side lookbehind so a
-  # short attr (`version`) cannot match the tail of an identifier
-  # (`myversion`); it must not be a `|` alternation — `|` is the s delimiter.
-  sed -i -E "s|\b(${VERSION_ATTR_RE}[[:space:]]*[?=][[:space:]]*)\"${ESC_CUR}\"|\1\"${LATEST_VERSION}\"|" \
-    "$VERSION_FILE"
-  # Confirm the new value landed on the target attr — not merely somewhere
-  # in the file (a hash or a dependency string could match a bare literal).
-  LATEST_VERSION_RE=$(re_esc "$LATEST_VERSION")
-  if ! grep -qP "(?<![A-Za-z_])${VERSION_ATTR_RE}\s*[?=]\s*\"${LATEST_VERSION_RE}\"" "$VERSION_FILE"; then
-    err "Version write did not take effect on attr '$VERSION_ATTR' in $VERSION_FILE"
-    output "error_type" "version-write"
-    exit 1
+  if [ "$WRITE_VERSION" -eq 1 ]; then
+    ESC_CUR=$(esc "$CURRENT_VERSION")
+    # Preserve the `<attr> = ` / `<attr> ? ` prefix; swap only the quoted value.
+    # The leading `\b` word boundary mirrors the read-side lookbehind so a
+    # short attr (`version`) cannot match the tail of an identifier
+    # (`myversion`); it must not be a `|` alternation — `|` is the s delimiter.
+    sed -i -E "s|\b(${VERSION_ATTR_RE}[[:space:]]*[?=][[:space:]]*)\"${ESC_CUR}\"|\1\"${LATEST_VERSION}\"|" \
+      "$VERSION_FILE"
+    # Confirm the new value landed on the target attr — not merely somewhere
+    # in the file (a hash or a dependency string could match a bare literal).
+    LATEST_VERSION_RE=$(re_esc "$LATEST_VERSION")
+    if ! grep -qP "(?<![A-Za-z_])${VERSION_ATTR_RE}\s*[?=]\s*\"${LATEST_VERSION_RE}\"" "$VERSION_FILE"; then
+      err "Version write did not take effect on attr '$VERSION_ATTR' in $VERSION_FILE"
+      output "error_type" "version-write"
+      exit 1
+    fi
   fi
   # Commit-tracked repos: also bump the `rev` attr in the configured file.
   if [ -n "$FULL_REV" ] && [ -f "$REV_FILE" ]; then
@@ -322,7 +435,13 @@ done
 set_hash() {
   local field_re
   field_re=$(re_esc "$1")
-  sed -i "s|\(${field_re}[[:space:]]*[?=][[:space:]]*\)\"sha256-[^\"]*\"|\1\"${3}\"|" "$2"
+  if [[ "$2" == *.json ]]; then
+    # JSON-resident hash (e.g. version.json `"hash": "sha256-..."`): swap the
+    # value via the `"key":` form, leaving the file's formatting intact.
+    sed -i -E "s|(\"${field_re}\"[[:space:]]*:[[:space:]]*)\"sha256-[^\"]*\"|\1\"${3}\"|" "$2"
+  else
+    sed -i "s|\(${field_re}[[:space:]]*[?=][[:space:]]*\)\"sha256-[^\"]*\"|\1\"${3}\"|" "$2"
+  fi
 }
 
 if [ "${#HF_FIELD[@]}" -gt 0 ]; then

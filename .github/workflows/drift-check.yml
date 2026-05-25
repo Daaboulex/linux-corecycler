@@ -64,3 +64,16 @@ jobs:
             echo "::error::drift detected — re-run sync.sh from the standard repo, then commit"
             exit 1
           fi
+
+      - name: Validate .github/update.json against the canonical schema
+        run: |
+          BASE="https://raw.githubusercontent.com/Daaboulex/nix-packaging-standard/main"
+          if [ ! -f .github/update.json ]; then
+            echo "no update.json — nothing to validate"
+            exit 0
+          fi
+          if ! curl -sfL "$BASE/update.schema.json" -o /tmp/update.schema.json; then
+            echo "::error::could not fetch canonical update.schema.json"
+            exit 1
+          fi
+          pipx run check-jsonschema --schemafile /tmp/update.schema.json .github/update.json

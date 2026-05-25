@@ -306,11 +306,9 @@ sudo python src/main.py
 ### Ubuntu / Debian
 
 ```bash
-# Core dependencies
-sudo apt install python3 python3-pip stress-ng stressapptest dmidecode
-
-# PySide6 (Qt6 bindings)
-pip3 install PySide6
+# Core dependencies (python3-venv — bare `pip3 install` is blocked by PEP 668
+# on Ubuntu 24.04+ / Mint 22+; PySide6 is installed into a venv in the Run step)
+sudo apt install python3 python3-venv stress-ng stressapptest dmidecode
 
 # mprime (optional — unfree, manual download)
 wget https://www.mersenne.org/download/software/v30/30.19/p95v3019b20.linux64.tar.gz
@@ -323,20 +321,19 @@ git clone https://github.com/amkillam/ryzen_smu.git
 cd ryzen_smu && make && sudo make install
 sudo modprobe ryzen_smu
 
-# Run
+# Run — install PySide6 into a venv; sudo must use the venv's python, not system python3
 git clone https://github.com/Daaboulex/linux-corecycler.git
 cd linux-corecycler
-sudo python3 src/main.py
+python3 -m venv .venv
+.venv/bin/pip install PySide6
+sudo .venv/bin/python src/main.py
 ```
 
 ### Fedora
 
 ```bash
-# Core dependencies
-sudo dnf install python3 python3-pip stress-ng dmidecode
-
-# PySide6 (Qt6 bindings)
-pip3 install PySide6
+# Core dependencies (Fedora 41+ also enforces PEP 668; PySide6 goes in a venv below)
+sudo dnf install python3 stress-ng dmidecode
 
 # stressapptest (build from source — not in default repos)
 git clone https://github.com/stressapptest/stressapptest.git
@@ -348,10 +345,12 @@ git clone https://github.com/amkillam/ryzen_smu.git
 cd ryzen_smu && make && sudo make install
 sudo modprobe ryzen_smu
 
-# Run
+# Run — install PySide6 into a venv; sudo must use the venv's python, not system python3
 git clone https://github.com/Daaboulex/linux-corecycler.git
 cd linux-corecycler
-sudo python3 src/main.py
+python3 -m venv .venv
+.venv/bin/pip install PySide6
+sudo .venv/bin/python src/main.py
 ```
 
 ### From source (any distro)
@@ -359,8 +358,9 @@ sudo python3 src/main.py
 ```bash
 git clone https://github.com/Daaboulex/linux-corecycler.git
 cd linux-corecycler
-pip install PySide6
-sudo python src/main.py
+python3 -m venv .venv
+.venv/bin/pip install PySide6
+sudo .venv/bin/python src/main.py
 ```
 
 When running from source, you must install stress test backends and kernel modules separately (see [Backend Setup](#backend-setup) and [Kernel Module Requirements](#kernel-module-requirements) below).
