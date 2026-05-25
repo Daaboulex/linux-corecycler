@@ -116,15 +116,19 @@ jobs:
             const git = (...args) => execFileSync('git', args, { stdio: 'inherit' });
             const branch = `update/${pkg}-${newV}`;
             let branchPushed = false;
-            try {
-              git('config', 'user.name', 'github-actions[bot]');
-              git('config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com');
-              git('checkout', '-B', branch);
-              git('add', '-A', ':!AI-*.json');
-              git('commit', '-m', `wip: attempted update ${oldV} -> ${newV}`, '--allow-empty');
-              git('push', '-f', 'origin', branch);
-              branchPushed = true;
-            } catch (e) { /* best-effort */ }
+            // remirror-needed (trackOnly) makes no file changes — skip the
+            // empty update branch; the issue itself is the notification.
+            if (errorType !== 'remirror-needed') {
+              try {
+                git('config', 'user.name', 'github-actions[bot]');
+                git('config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com');
+                git('checkout', '-B', branch);
+                git('add', '-A', ':!AI-*.json');
+                git('commit', '-m', `wip: attempted update ${oldV} -> ${newV}`, '--allow-empty');
+                git('push', '-f', 'origin', branch);
+                branchPushed = true;
+              } catch (e) { /* best-effort */ }
+            }
 
             const recoveryBlock = branchPushed ? [
               '### Recovery',
