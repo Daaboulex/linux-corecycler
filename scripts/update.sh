@@ -553,12 +553,21 @@ if [ -n "$VERIFY_BINARY" ]; then
     }
   fi
 elif [ "$VERIFY_CHECK" = "elf" ]; then
-  FOUND=$(find result/bin/ result/lib/ -type f 2>/dev/null | while read -r f; do
-    file "$f" 2>/dev/null | grep -q ELF && {
-      echo "$f"
+  # Find any real ELF in the build output. Three robustness points, each a
+  # bug we actually hit:
+  #   - Scan, don't single-pick: `find … | head -1` then require-ELF failed on
+  #     qemu's non-ELF qemu-ga (vfio-stealth-nix #5).
+  #   - if-block, not `grep && …`: a non-match must not make the loop exit
+  #     non-zero, or a no-ELF output aborts under set -e before the handler.
+  #   - process substitution, not `$(find | while)`: keeps FOUND in this shell
+  #     and stops a missing bin/ or lib/ (find exit!=0) from aborting the run.
+  FOUND=""
+  while IFS= read -r f; do
+    if file "$f" 2>/dev/null | grep -q ELF; then
+      FOUND="$f"
       break
-    }
-  done)
+    fi
+  done < <(find result/bin/ result/lib/ -type f 2>/dev/null)
   [ -z "$FOUND" ] && {
     err "No ELF artifact found under result/bin or result/lib"
     output "error_type" "verification-error"
