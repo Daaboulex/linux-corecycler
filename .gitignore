@@ -46,3 +46,6 @@ error.txt
 docs/superpowers/
 .hypothesis/
 handoff-archive/
+
+# local brainstorm — never tracked
+/ideas/
