@@ -76,6 +76,20 @@ class CoreFreqBar(QWidget):
         self._history.append(freq)
         self.update()
 
+    @staticmethod
+    def _freq_text(freq: float, eff_max: float) -> str:
+        """Per-core frequency readout, always unit-labelled.
+
+        An idle core (freq <= 0) shows "-- MHz" with no ceiling, because
+        "--/<max>" reads as a false live maximum. A live core shows its current
+        MHz, with the boost ceiling appended only when it is known.
+        """
+        if freq <= 0:
+            return "  -- MHz"
+        if eff_max > 0:
+            return f"{freq:.0f}/{eff_max:.0f}MHz"
+        return f"{freq:.0f}MHz"
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -147,15 +161,9 @@ class CoreFreqBar(QWidget):
         usage_str = f"{self._usage_pct:3.0f}%"
         usage_color = QColor("#4caf50") if self._usage_pct > 50 else QColor("#888")
 
-        # Frequency
-        if self._freq > 0:
-            freq_str = f"{self._freq:.0f}"
-        else:
-            freq_str = "  --"
-        if self._eff_max > 0:
-            freq_str = f"{freq_str}/{self._eff_max:.0f}"
-        else:
-            freq_str = f"{freq_str:>4s}MHz"
+        # Frequency — always unit-labelled; the boost ceiling shows only for a
+        # live core (the dashed bar marker also shows it).
+        freq_str = self._freq_text(self._freq, self._eff_max)
         freq_color = QColor("#4fc3f7")
 
         # Stretch — fixed slot, blank when idle (keeps alignment stable)
