@@ -422,6 +422,41 @@ class TestPMTableOffsets:
         assert offsets.mclk == 0x13C
         assert offsets.vdd_mem == -1  # not available on this version
 
+    def test_known_version_0x540104_exists(self):
+        """7700X (Zen 4) version 0x540104 exists with community offsets, unverified."""
+        offsets = PM_TABLE_OFFSETS[0x540104]
+        assert offsets.table_size == 0x6A8
+        assert offsets.fclk == 0x118
+        assert offsets.uclk == 0x128
+        assert offsets.mclk == 0x138
+        assert offsets.vddcr_soc == 0xD0
+        assert offsets.cldo_vddp == 0x430
+        assert offsets.vdd_misc == 0xE0
+        assert offsets.vdd_mem == -1
+        assert offsets.cldo_vddg_iod == -1
+        assert offsets.cldo_vddg_ccd == -1
+        assert offsets.verified is False
+
+    def test_verified_defaults_false(self):
+        """An entry that omits ``verified`` is unverified (fail-closed default)."""
+        offsets = PMTableOffsets(
+            table_size=0x6A8,
+            fclk=0x118,
+            uclk=0x128,
+            mclk=0x138,
+            vddcr_soc=0xD0,
+            cldo_vddp=0x430,
+            cldo_vddg_iod=-1,
+            cldo_vddg_ccd=-1,
+            vdd_misc=0xE0,
+            vdd_mem=-1,
+        )
+        assert offsets.verified is False
+
+    def test_zen5_baseline_is_verified(self):
+        """The empirically-confirmed 9950X3D version is marked verified."""
+        assert PM_TABLE_OFFSETS[0x620205].verified is True
+
 
 # ===========================================================================
 # PMTableData new fields tests
@@ -439,6 +474,10 @@ class TestPMTableDataNewFields:
         assert data.vdd_mem_v == 0.0
         assert data.pm_table_version == 0
         assert data.is_calibrated is False
+
+    def test_is_verified_defaults_false(self):
+        """PMTableData.is_verified is False until a verified version sets it."""
+        assert PMTableData().is_verified is False
 
 
 # ===========================================================================
@@ -469,6 +508,69 @@ class TestVersionDispatch:
         assert result.mclk_mhz == pytest.approx(3000.0)
         assert result.vddcr_soc_v == pytest.approx(1.25)
         assert result.vdd_mem_v == pytest.approx(1.395)
+        assert result.is_verified is True
+
+    def test_zen4_7700x_dispatch_unverified(self, tmp_path):
+        """0x540104 with plausible values calibrates but is not verified."""
+        raw = _build_versioned_pm_table(
+            0x540104,
+            fclk=2000.0,
+            uclk=2400.0,
+            mclk=2400.0,
+            vddcr_soc=1.10,
+        )
+        smu_dir = _make_smu_dir(tmp_path, version_int=0x00540104, raw_bytes=raw)
+        result = PMTableReader(sysfs_path=smu_dir).read()
+
+        assert result is not None
+        assert result.is_calibrated is True
+        assert result.is_verified is False
+        assert result.fclk_mhz == pytest.approx(2000.0)
+        assert result.uclk_mhz == pytest.approx(2400.0)
+        assert result.mclk_mhz == pytest.approx(2400.0)
+        assert result.vddcr_soc_v == pytest.approx(1.10)
+
+    @pytest.mark.parametrize(
+        "bad", [float("inf"), float("-inf"), float("nan"), 1e30, 50.0]
+    )
+    def test_implausible_clock_fails_closed(self, tmp_path, bad):
+        """A garbage FCLK (wrong offset) downgrades the table to uncalibrated."""
+        raw = _build_versioned_pm_table(
+            0x540104, fclk=bad, uclk=2400.0, mclk=2400.0, vddcr_soc=1.10
+        )
+        smu_dir = _make_smu_dir(tmp_path, version_int=0x00540104, raw_bytes=raw)
+        result = PMTableReader(sysfs_path=smu_dir).read()
+
+        assert result is not None
+        assert result.is_calibrated is False
+        assert result.is_verified is False
+        assert result.fclk_mhz == 0.0  # blanked, not shown as nonsense
+
+    def test_implausible_voltage_fails_closed(self, tmp_path):
+        """A garbage VDDCR_SOC also fails closed."""
+        raw = _build_versioned_pm_table(
+            0x540104, fclk=2000.0, uclk=2400.0, mclk=2400.0, vddcr_soc=9.99e9
+        )
+        smu_dir = _make_smu_dir(tmp_path, version_int=0x00540104, raw_bytes=raw)
+        result = PMTableReader(sysfs_path=smu_dir).read()
+        assert result.is_calibrated is False
+
+    def test_verified_version_also_gated(self, tmp_path):
+        """The plausibility gate protects verified entries too (defense in depth)."""
+        raw = _build_versioned_pm_table(
+            0x620205, fclk=1e30, uclk=3000.0, mclk=3000.0, vddcr_soc=1.25
+        )
+        smu_dir = _make_smu_dir(tmp_path, version_int=0x00620205, raw_bytes=raw)
+        result = PMTableReader(sysfs_path=smu_dir).read()
+        assert result.is_calibrated is False
+
+    def test_all_zero_stays_calibrated(self, tmp_path):
+        """All-zero memory fields (absent) remain calibrated — zero is plausible."""
+        raw = _build_versioned_pm_table(0x540104)  # all defaults 0.0
+        smu_dir = _make_smu_dir(tmp_path, version_int=0x00540104, raw_bytes=raw)
+        result = PMTableReader(sysfs_path=smu_dir).read()
+        assert result.is_calibrated is True
+        assert result.fclk_mhz == 0.0
 
     def test_unknown_version_uncalibrated(self, tmp_path):
         """read() with unknown version produces is_calibrated=False."""

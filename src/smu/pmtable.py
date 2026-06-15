@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+import math
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 SYSFS_BASE = Path("/sys/kernel/ryzen_smu_drv")
 
@@ -19,7 +23,10 @@ class PMTableOffsets:
     """Named byte offsets for a specific PM table version.
 
     Offsets are in bytes (not float indices). A value of -1 means the
-    field is not available for this version.
+    field is not available for this version. ``verified`` is True only for
+    offsets confirmed against real silicon; it defaults to False so an
+    unconfirmed entry fails closed (surfaced as community-sourced, never as
+    Verified).
     """
 
     table_size: int
@@ -32,11 +39,16 @@ class PMTableOffsets:
     cldo_vddg_ccd: int  # -1 if not available
     vdd_misc: int
     vdd_mem: int  # -1 if not calibrated
+    verified: bool = False  # True only if confirmed on real hardware
 
 
-# Exact version match first, then prefix fallback.
-# Source: ZenStates-Core PowerTable.cs + empirical verification on 9950X3D.
-# VDD_MEM at 0x0A8: stable 1.397V (EXPO), verified idle+load on DDR5-6000.
+# Exact version match only. No Zen 4 prefix fallback: version 0x540208 uses a
+# +4-byte-shifted layout, so guessing by the 0x54 family would misread every
+# field. Source: ZenStates-Core PowerTable.cs. ``verified`` marks offsets
+# confirmed on real silicon; an unverified entry still parses but is gated by
+# the runtime plausibility check in PMTableReader.read() and never labelled
+# "Verified".
+# VDD_MEM at 0x0A8: stable 1.397V (EXPO), verified idle+load on DDR5-6000 (9950X3D).
 # VDDQ at 0x0E8: stable 1.100V (JEDEC default), per-channel pair at 0x0E8/0x0EC.
 PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
     0x620205: PMTableOffsets(
@@ -50,6 +62,7 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         cldo_vddg_ccd=0x414,
         vdd_misc=0xE8,
         vdd_mem=0x0A8,
+        verified=True,
     ),
     0x621102: PMTableOffsets(
         table_size=0x724,
@@ -62,6 +75,7 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         cldo_vddg_ccd=0x414,
         vdd_misc=0xE8,
         vdd_mem=-1,
+        verified=True,
     ),
     0x621202: PMTableOffsets(
         table_size=0x994,
@@ -74,6 +88,7 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         cldo_vddg_ccd=0x414,
         vdd_misc=0xE8,
         vdd_mem=0x0A8,
+        verified=True,
     ),
     0x620105: PMTableOffsets(
         table_size=0x724,
@@ -86,6 +101,25 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         cldo_vddg_ccd=0x414,
         vdd_misc=0xE8,
         vdd_mem=-1,
+        verified=True,
+    ),
+    # Zen 4 (Raphael, e.g. 7700X). Offsets from ZenStates-Core PowerTable.cs,
+    # whose Zen4 block is commented "offsets are not verified yet" — a single
+    # source with no independent corroboration (ryzen_smu / ryzen_monitor /
+    # RyzenAdj do not implement Raphael desktop). Shipped unverified; read()'s
+    # plausibility gate fails closed if these offsets decode nonsensical values.
+    0x540104: PMTableOffsets(
+        table_size=0x6A8,
+        fclk=0x118,
+        uclk=0x128,
+        mclk=0x138,
+        vddcr_soc=0xD0,
+        cldo_vddp=0x430,
+        cldo_vddg_iod=-1,
+        cldo_vddg_ccd=-1,
+        vdd_misc=0xE0,
+        vdd_mem=-1,
+        verified=False,
     ),
 }
 
@@ -93,7 +127,7 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
 _ZEN5_PREFIX = 0x62
 
 # Generic Zen 5 offsets used when exact version is not in PM_TABLE_OFFSETS
-# but the version prefix matches Zen 5. Conservative: vdd_mem=-1.
+# but the version prefix matches Zen 5. A family guess, so verified=False.
 _ZEN5_GENERIC = PMTableOffsets(
     table_size=0x994,
     fclk=0x11C,
@@ -105,7 +139,23 @@ _ZEN5_GENERIC = PMTableOffsets(
     cldo_vddg_ccd=0x414,
     vdd_misc=0xE8,
     vdd_mem=-1,
+    verified=False,
 )
+
+# Generous physical bounds for the runtime plausibility gate. A field is
+# accepted when it is zero (absent for this version/state) or finite and within
+# range; anything else means the offset map decoded non-telemetry bytes.
+_CLOCK_MIN_MHZ = 200.0
+_CLOCK_MAX_MHZ = 6000.0
+_VOLT_MIN_V = 0.3
+_VOLT_MAX_V = 2.0
+
+
+def _plausible(value: float, lo: float, hi: float) -> bool:
+    """True if value is exactly 0.0 (absent) or finite and within [lo, hi]."""
+    if value == 0.0:
+        return True
+    return math.isfinite(value) and lo <= value <= hi
 
 
 def _find_prefix_offsets(version: int) -> PMTableOffsets | None:
@@ -168,6 +218,7 @@ class PMTableData:
     vddq_v: float = 0.0
     pm_table_version: int = 0
     is_calibrated: bool = False
+    is_verified: bool = False  # offsets confirmed on real silicon (not just sourced)
 
     raw_floats: list[float] = field(default_factory=list)
 
@@ -251,7 +302,24 @@ class PMTableReader:
                 offsets = _find_prefix_offsets(version)
             if offsets is not None:
                 self._parse_versioned(data, raw, offsets)
-                data.is_calibrated = True
+                if self._memory_values_plausible(data):
+                    data.is_calibrated = True
+                    data.is_verified = offsets.verified
+                else:
+                    # Fail closed: a wrong offset map decoded garbage. Don't
+                    # present it as calibrated; blank the suspect fields so the
+                    # GUI shows "--" rather than nonsense.
+                    log.warning(
+                        "PM table v%#010x decoded implausible memory values "
+                        "(fclk=%.1f uclk=%.1f mclk=%.1f vddcr_soc=%.3f) — "
+                        "treating as uncalibrated",
+                        version,
+                        data.fclk_mhz,
+                        data.uclk_mhz,
+                        data.mclk_mhz,
+                        data.vddcr_soc_v,
+                    )
+                    self._blank_memory_values(data)
             # else: unknown version, is_calibrated stays False
 
         # Always parse legacy core-level data (per-core freq/voltage/temp/power)
@@ -285,6 +353,36 @@ class PMTableReader:
             data.vdd_mem_v = _read_float(raw, offsets.vdd_mem)
         if offsets.vdd_misc >= 0:
             data.vddq_v = _read_float(raw, offsets.vdd_misc)
+
+    @staticmethod
+    def _memory_values_plausible(data: PMTableData) -> bool:
+        """Sanity-gate decoded memory-controller values (fail closed on garbage).
+
+        A wrong offset map decodes arbitrary bytes as floats, typically NaN/inf
+        or absurd magnitudes. Accept a field only if it is zero (absent) or
+        finite and within generous physical bounds. This protects every version
+        and lets unverified community offsets ship safely: if they are wrong,
+        the values are implausible and the table is downgraded to uncalibrated.
+        """
+        for mhz in (data.fclk_mhz, data.uclk_mhz, data.mclk_mhz):
+            if not _plausible(mhz, _CLOCK_MIN_MHZ, _CLOCK_MAX_MHZ):
+                return False
+        for volt in (data.vddcr_soc_v, data.vdd_mem_v, data.vddq_v):
+            if not _plausible(volt, _VOLT_MIN_V, _VOLT_MAX_V):
+                return False
+        return True
+
+    @staticmethod
+    def _blank_memory_values(data: PMTableData) -> None:
+        """Reset memory-controller fields and clear calibration (fail-closed)."""
+        data.fclk_mhz = 0.0
+        data.uclk_mhz = 0.0
+        data.mclk_mhz = 0.0
+        data.vddcr_soc_v = 0.0
+        data.vdd_mem_v = 0.0
+        data.vddq_v = 0.0
+        data.is_calibrated = False
+        data.is_verified = False
 
     def _parse_granite_ridge(self, data: PMTableData, floats: list[float]) -> None:
         """Parse PM table with Granite Ridge (Zen 5) approximate offsets."""

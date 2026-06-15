@@ -424,9 +424,15 @@ class MemoryTab(QWidget):
             if pm_data is not None and pm_data.is_calibrated:
                 self._update_clock_labels(pm_data)
                 self._update_voltage_labels(pm_data)
-                self._cal_label.setText(
-                    f"PM Table v{pm_data.pm_table_version:#010x} \u2014 Verified"
-                )
+                if pm_data.is_verified:
+                    self._cal_label.setText(
+                        f"PM Table v{pm_data.pm_table_version:#010x} \u2014 Verified"
+                    )
+                else:
+                    self._cal_label.setText(
+                        f"PM Table v{pm_data.pm_table_version:#010x} "
+                        "\u2014 Calibrated (community-sourced, unverified)"
+                    )
             elif pm_data is not None:
                 self._show_uncalibrated(pm_data)
             else:
