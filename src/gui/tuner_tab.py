@@ -853,11 +853,20 @@ class TunerTab(QWidget):
                 return row
         return -1
 
+    @staticmethod
+    def _real_test_count(entries: list[dict]) -> int:
+        """Count real stress tests, excluding synthetic crash-on-resume rows.
+
+        A crash recovered on resume is logged with duration=None (it records a
+        reboot, not a stress run); counting it inflates "Tests Run".
+        """
+        return sum(1 for e in entries if e.get("duration_seconds") is not None)
+
     def _count_tests(self, core_id: int) -> int:
         if not self._db or not self._engine or not self._engine.session_id:
             return 0
         entries = tp.get_test_log(self._db, self._engine.session_id, core_id=core_id)
-        return len(entries)
+        return self._real_test_count(entries)
 
     def _last_result(self, core_id: int) -> str:
         if not self._db or not self._engine or not self._engine.session_id:
