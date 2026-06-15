@@ -122,6 +122,7 @@ class TestThermalTunerConfig:
         assert c.over_temp_grace_seconds == 3.0
         assert c.over_temp_hard_margin_c == 8.0
         assert c.max_thermal_retries == 3
+        assert c.thermal_cooldown_seconds == 5.0
 
     def test_out_of_range_temperature_rejected(self):
         assert any("max_temperature_c" in e for e in TunerConfig(max_temperature_c=200).validate())
@@ -129,6 +130,12 @@ class TestThermalTunerConfig:
 
     def test_negative_retries_rejected(self):
         assert any("max_thermal_retries" in e for e in TunerConfig(max_thermal_retries=-1).validate())
+
+    def test_negative_cooldown_rejected(self):
+        assert any(
+            "thermal_cooldown_seconds" in e
+            for e in TunerConfig(thermal_cooldown_seconds=-1).validate()
+        )
 
     def test_valid_thermal_config_has_no_errors(self):
         cfg = TunerConfig(
