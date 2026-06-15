@@ -39,25 +39,25 @@ def test_empty_input_returns_empty():
 
 def test_utc_aware_converts_to_local_tokyo(fixed_tz):
     # 2026-06-15T00:30:00Z -> 09:30:00 in Tokyo (UTC+9, no DST).
-    fixed_tz("Asia/Tokyo")
+    fixed_tz("JST-9")
     assert format_local("2026-06-15T00:30:00+00:00") == "2026-06-15 09:30:00"
 
 
-def test_utc_aware_crosses_date_boundary(fixed_tz):
-    # 23:30Z in New York (UTC-4 in June, DST) -> previous local day 19:30.
-    fixed_tz("America/New_York")
+def test_utc_aware_negative_offset(fixed_tz):
+    # 23:30Z at UTC-4 (POSIX EST4) -> 19:30 local, same day.
+    fixed_tz("EST4")
     assert format_local("2026-06-15T23:30:00+00:00") == "2026-06-15 19:30:00"
 
 
 def test_date_only(fixed_tz):
-    fixed_tz("Asia/Tokyo")
-    # 22:00Z -> 07:00 next local day in Tokyo; date_only must reflect local date.
+    fixed_tz("JST-9")
+    # 22:00Z at UTC+9 -> 07:00 next local day; date_only must reflect that date.
     assert format_local("2026-06-15T22:00:00+00:00", date_only=True) == "2026-06-16"
 
 
 def test_naive_string_assumed_utc(fixed_tz):
     # A legacy naive string (no offset) must be treated as UTC, not local.
-    fixed_tz("Asia/Tokyo")
+    fixed_tz("JST-9")
     assert format_local("2026-06-15T00:30:00") == "2026-06-15 09:30:00"
 
 
@@ -68,7 +68,7 @@ def test_unparsable_falls_back_to_slice():
 
 def test_roundtrips_to_same_instant(fixed_tz):
     # Property: the localized display denotes the same instant as the input.
-    fixed_tz("America/New_York")
+    fixed_tz("EST4")
     iso = "2026-12-15T18:45:00+00:00"
     shown = format_local(iso)
     local = datetime.strptime(shown, "%Y-%m-%d %H:%M:%S").astimezone()
