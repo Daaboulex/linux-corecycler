@@ -118,6 +118,18 @@ class TestCoreStates:
         assert loaded[0].current_offset == -8
         assert loaded[0].best_offset == -5
 
+    def test_thermal_aborts_round_trips(self, db):
+        # The thermal retry cap must survive pause/resume/reboot, otherwise the
+        # "cooling cannot sustain testing" abort silently never fires.
+        cfg = TunerConfig()
+        sid = create_session(db, cfg, "", "")
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, thermal_aborts=2
+        )
+        save_core_state(db, sid, cs)
+        loaded = load_core_states(db, sid)
+        assert loaded[0].thermal_aborts == 2
+
     def test_load_empty(self, db):
         cfg = TunerConfig()
         sid = create_session(db, cfg, "", "")
@@ -289,12 +301,12 @@ class TestSchemaMigration:
         assert version == HistoryDB.SCHEMA_VERSION
 
 
-class TestSchemaV9:
-    def test_schema_version_is_9(self, tmp_path):
+class TestSchemaV10:
+    def test_schema_version_is_10(self, tmp_path):
         db = HistoryDB(tmp_path / "test.db")
         try:
             row = db._execute_raw("SELECT version FROM schema_version").fetchone()
-            assert row[0] == 9
+            assert row[0] == 10
         finally:
             db.close()
 
@@ -303,11 +315,13 @@ class TestSchemaV9:
         try:
             sid = db.create_tuner_session("{}", "1.0", "TestCPU")
             cs = CoreState(core_id=0, crash_count=2, crash_cooldown=1,
+                           thermal_aborts=3,
                            cumulative_test_time=3600.5, hardening_tier_index=1)
             db.upsert_tuner_core_state(sid, cs)
             states = db.get_tuner_core_states(sid)
             assert states[0].crash_count == 2
             assert states[0].crash_cooldown == 1
+            assert states[0].thermal_aborts == 3
             assert abs(states[0].cumulative_test_time - 3600.5) < 0.01
             assert states[0].hardening_tier_index == 1
         finally:

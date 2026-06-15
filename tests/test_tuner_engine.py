@@ -2105,25 +2105,44 @@ class TestThermalAbort:
             backend=mock_backend, config=TunerConfig(**defaults),
         )
 
-    def test_retries_same_offset_without_advancing(self, db, simple_topology, mock_smu, mock_backend):
-        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, max_thermal_retries=3)
+    def test_retries_same_offset_after_real_cooldown(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(
+            db, simple_topology, mock_smu, mock_backend,
+            max_thermal_retries=3, thermal_cooldown_seconds=5.0,
+        )
         cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, best_offset=-5)
         eng._core_states = {0: cs}
         with (
-            patch.object(eng, "_run_next") as run_next,
+            patch("tuner.engine.QTimer") as qtimer,
             patch.object(eng, "_revert_core_to_baseline") as revert,
             patch.object(eng, "abort") as abort_,
             patch.object(tp, "save_core_state"),
         ):
-            eng._handle_thermal_abort(0, cs)
+            eng._handle_thermal_abort(0, cs, duration=42.0)
         assert cs.thermal_aborts == 1
         assert cs.phase == TunerPhase.COARSE_SEARCH  # NOT advanced
         assert cs.current_offset == -10  # SAME offset retried
         assert cs.best_offset == -5  # not walked back toward baseline
-        assert cs.crash_cooldown >= 2  # deferred so it can cool down
+        assert cs.crash_cooldown >= 2  # deferred so other cores test meanwhile
         revert.assert_called_once_with(0)
-        run_next.assert_called_once()
         abort_.assert_not_called()
+        # retry is scheduled after a REAL wall-clock delay, not run synchronously
+        qtimer.singleShot.assert_called_once()
+        delay_ms, callback = qtimer.singleShot.call_args[0]
+        assert delay_ms == 5000  # 5.0 s
+        assert callback == eng._run_next
+
+    def test_thermal_abort_accumulates_time(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10)
+        eng._core_states = {0: cs}
+        with (
+            patch("tuner.engine.QTimer"),
+            patch.object(eng, "_revert_core_to_baseline"),
+            patch.object(tp, "save_core_state"),
+        ):
+            eng._handle_thermal_abort(0, cs, duration=30.0)
+        assert cs.cumulative_test_time == pytest.approx(30.0)
 
     def test_aborts_after_retry_cap(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, max_thermal_retries=3)
@@ -2132,23 +2151,37 @@ class TestThermalAbort:
         )
         eng._core_states = {0: cs}
         with (
-            patch.object(eng, "_run_next") as run_next,
+            patch("tuner.engine.QTimer") as qtimer,
             patch.object(eng, "_revert_core_to_baseline"),
             patch.object(eng, "abort") as abort_,
             patch.object(tp, "save_core_state"),
         ):
-            eng._handle_thermal_abort(0, cs)
+            eng._handle_thermal_abort(0, cs, duration=1.0)
         assert cs.thermal_aborts == 4
         abort_.assert_called_once()
-        run_next.assert_not_called()
+        qtimer.singleShot.assert_not_called()  # no retry scheduled once aborting
+
+    def test_thermal_aborts_reset_on_non_thermal_result(self, db, simple_topology, mock_smu, mock_backend):
+        # A non-thermal outcome breaks the streak, so transient thermals at
+        # different offsets don't accumulate into a spurious whole-tune abort.
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, thermal_aborts=2)
+        eng._core_states = {0: cs}
+        with (
+            patch.object(eng, "_advance_core"),
+            patch.object(eng, "_run_next"),
+            patch.object(eng, "_revert_core_to_baseline"),
+        ):
+            eng._on_test_finished(0, True, "", "", 60.0, 0.0)
+        assert cs.thermal_aborts == 0
 
     def test_on_test_finished_routes_thermal_to_handler(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10)
         eng._core_states = {0: cs}
         with patch.object(eng, "_handle_thermal_abort") as handler:
-            eng._on_test_finished(0, False, "CPU temperature exceeded 95 C", "thermal", 1.0, 0.0)
-        handler.assert_called_once_with(0, cs)
+            eng._on_test_finished(0, False, "CPU temperature exceeded 95 C", "thermal", 7.0, 0.0)
+        handler.assert_called_once_with(0, cs, 7.0)
 
     def test_stability_fail_is_not_treated_as_thermal(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)

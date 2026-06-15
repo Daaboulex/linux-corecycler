@@ -1217,10 +1217,15 @@ class TunerEngine(QObject):
         # A thermal stop is not a stability verdict — advancing the state machine
         # or logging a fail here would push the offset the wrong way on a thermal
         # transient (the reported bug). Cool down and retry the same offset.
-        # Scoped to the search/confirm flow; validation has its own handling.
+        # Scoped to the search/confirm flow.
         if not passed and error_type == "thermal" and self._validation_stage == 0:
-            self._handle_thermal_abort(core_id, cs)
+            self._handle_thermal_abort(core_id, cs, duration)
             return
+
+        # Reached only on a non-thermal outcome → the thermal-retry streak for
+        # this core is broken; reset so the cap counts CONSECUTIVE thermal stops
+        # at one offset, not lifetime thermals across the whole search.
+        cs.thermal_aborts = 0
 
         # Clock stretch check — if stress test "passed" but core was stretching
         # badly, treat it as a failure (CO too aggressive, voltage drooping)
@@ -1300,7 +1305,7 @@ class TunerEngine(QObject):
         # Continue with next test
         self._run_next()
 
-    def _handle_thermal_abort(self, core_id: int, cs: CoreState) -> None:
+    def _handle_thermal_abort(self, core_id: int, cs: CoreState, duration: float) -> None:
         """Handle a test stopped by the thermal safety limit (not instability).
 
         Stopping on temperature says nothing about CO stability, so advancing the
@@ -1312,6 +1317,9 @@ class TunerEngine(QObject):
         """
         cs.thermal_aborts += 1
         self._revert_core_to_baseline(core_id)
+        # The partial test still ran real seconds — count them so a thermal loop
+        # is bounded by the per-core time budget too, not only the retry cap.
+        self._accumulate_test_time(cs, duration)
 
         if cs.thermal_aborts > self._config.max_thermal_retries:
             self.log_message.emit(
@@ -1328,14 +1336,19 @@ class TunerEngine(QObject):
             self.abort()
             return
 
-        cs.crash_cooldown = max(cs.crash_cooldown, 2)  # defer; test other cores first
+        cs.crash_cooldown = max(cs.crash_cooldown, 2)  # prefer other cores meanwhile
         self.log_message.emit(
             f"Core {core_id} offset {cs.current_offset}: thermal abort "
             f"({cs.thermal_aborts}/{self._config.max_thermal_retries}) — cooling "
             f"down, will retry same offset"
         )
         tp.save_core_state(self._db, self._session_id, cs)
-        self._run_next()
+        # Real wall-clock cooldown before retrying the same offset: crash_cooldown
+        # is only a pick-counter and gives no cooling when this is the last active
+        # core. QTimer also breaks the _on_test_finished call stack (re-entrancy).
+        QTimer.singleShot(
+            int(self._config.thermal_cooldown_seconds * 1000), self._run_next
+        )
 
     def _complete_session(self) -> None:
         """All cores done — enter auto-validation or finalize session."""

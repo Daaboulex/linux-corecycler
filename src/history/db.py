@@ -121,7 +121,7 @@ class TelemetrySample:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 9
+    SCHEMA_VERSION = 10
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -285,6 +285,7 @@ CREATE TABLE IF NOT EXISTS tuner_core_states (
     in_test             INTEGER NOT NULL DEFAULT 0,
     crash_count         INTEGER NOT NULL DEFAULT 0,
     crash_cooldown      INTEGER NOT NULL DEFAULT 0,
+    thermal_aborts      INTEGER NOT NULL DEFAULT 0,
     cumulative_test_time REAL   NOT NULL DEFAULT 0.0,
     hardening_tier_index INTEGER NOT NULL DEFAULT 0,
     updated_at          TEXT    NOT NULL,
@@ -430,6 +431,10 @@ ALTER TABLE tuner_test_log ADD COLUMN stress_mode TEXT;
 ALTER TABLE tuner_test_log ADD COLUMN fft_preset TEXT;
 """
 
+    _DDL_MIGRATE_V10 = """\
+ALTER TABLE tuner_core_states ADD COLUMN thermal_aborts INTEGER DEFAULT 0;
+"""
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _DDL_MIGRATE_V2,
         3: _DDL_MIGRATE_V3,
@@ -439,6 +444,7 @@ ALTER TABLE tuner_test_log ADD COLUMN fft_preset TEXT;
         7: _migrate_v7,
         8: _migrate_v8,
         9: _DDL_MIGRATE_V9,
+        10: _DDL_MIGRATE_V10,
     }
 
     # ------------------------------------------------------------------
@@ -956,9 +962,10 @@ ALTER TABLE tuner_test_log ADD COLUMN fft_preset TEXT;
                  coarse_fail_offset, confirm_attempts, baseline_offset,
                  backoff_mode, consecutive_backoff_fails,
                  backoff_fail_bound, backoff_pass_bound, in_test,
-                 crash_count, crash_cooldown, cumulative_test_time,
+                 crash_count, crash_cooldown, thermal_aborts,
+                 cumulative_test_time,
                  hardening_tier_index, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(session_id, core_id) DO UPDATE SET
                 phase=excluded.phase,
                 current_offset=excluded.current_offset,
@@ -973,6 +980,7 @@ ALTER TABLE tuner_test_log ADD COLUMN fft_preset TEXT;
                 in_test=excluded.in_test,
                 crash_count=excluded.crash_count,
                 crash_cooldown=excluded.crash_cooldown,
+                thermal_aborts=excluded.thermal_aborts,
                 cumulative_test_time=excluded.cumulative_test_time,
                 hardening_tier_index=excluded.hardening_tier_index,
                 updated_at=excluded.updated_at
@@ -993,6 +1001,7 @@ ALTER TABLE tuner_test_log ADD COLUMN fft_preset TEXT;
                 int(cs.in_test),
                 cs.crash_count,
                 cs.crash_cooldown,
+                cs.thermal_aborts,
                 cs.cumulative_test_time,
                 cs.hardening_tier_index,
                 now,
@@ -1023,6 +1032,7 @@ ALTER TABLE tuner_test_log ADD COLUMN fft_preset TEXT;
                 in_test=bool(r["in_test"]) if "in_test" in r.keys() else False,
                 crash_count=r["crash_count"] or 0,
                 crash_cooldown=r["crash_cooldown"] or 0,
+                thermal_aborts=r["thermal_aborts"] or 0 if "thermal_aborts" in r.keys() else 0,
                 cumulative_test_time=r["cumulative_test_time"] or 0.0,
                 hardening_tier_index=r["hardening_tier_index"] or 0,
             )
