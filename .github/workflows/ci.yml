@@ -45,9 +45,10 @@ jobs:
         run: nix fmt -- --check .
 
       - name: Run tests
-        run: |
-          nix-shell -p python312 python312Packages.pytest python312Packages.pyside6 \
-            --run "python -m pytest tests/ -v --tb=short"
+        # The .#ci devShell pins the flake's nixpkgs rev and the default python3
+        # (the interpreter Hydra caches pyside6 for), so the test env is a
+        # cache.nixos.org fetch instead of a ~50-min from-source pyside6 build.
+        run: nix develop .#ci --command python -m pytest tests/ -v --tb=short
 
       - name: Build
         run: |
