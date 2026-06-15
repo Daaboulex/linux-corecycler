@@ -323,11 +323,30 @@ class TestMemoryTabBehavior:
             vdd_mem_v=1.395,
             pm_table_version=0x620205,
             is_calibrated=True,
+            is_verified=True,
         )
         tab._pm_reader.read.return_value = pm_data
         tab._update_live_data()
         assert "2000" in tab._fclk_label.text()
         assert "Verified" in tab._cal_label.text()
+
+    def test_update_live_data_community_sourced_path(self):
+        """Calibrated-but-unverified PM data renders values but labels them honestly."""
+        tab = _make_headless_tab()
+        pm_data = PMTableData(
+            fclk_mhz=2000.0,
+            uclk_mhz=2400.0,
+            mclk_mhz=2400.0,
+            vddcr_soc_v=1.10,
+            pm_table_version=0x540104,
+            is_calibrated=True,
+            is_verified=False,
+        )
+        tab._pm_reader.read.return_value = pm_data
+        tab._update_live_data()
+        assert "2000" in tab._fclk_label.text()
+        assert "community-sourced" in tab._cal_label.text()
+        assert "Verified" not in tab._cal_label.text()
 
     def test_update_live_data_uncalibrated_path(self):
         """Uncalibrated PM data shows dashes and uncalibrated label."""
@@ -366,6 +385,7 @@ class TestMemoryTabBehavior:
             vdd_mem_v=1.395,
             pm_table_version=0x620205,
             is_calibrated=True,
+            is_verified=True,
         )
         tab._pm_reader.read.return_value = pm_data
         tab._update_live_data()
