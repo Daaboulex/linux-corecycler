@@ -233,6 +233,7 @@ class TunerEngine(QObject):
 
         # Multi-core validation state
         self._validation_stage: int = 0  # 0 = not validating, 1/2/3 = stage
+        self._validation_thermal_aborts: int = 0  # consecutive thermal stops in validation
         self._validation_core_index: int = 0  # index into _validation_core_order for stage 1
         self._validation_core_order: list[int] = []  # cores to cycle through in stage 1
         self._validation_half_index: int = 0  # which half to test in stage 3
@@ -600,6 +601,16 @@ class TunerEngine(QObject):
                         # Fine search between best_offset and coarse_fail
                         cs.phase = TunerPhase.FINE_SEARCH
                         cs.current_offset = cs.best_offset + direction * cfg.fine_step
+                        # Never start the first fine test past the safety cap.
+                        if self._exceeds_max(cs.current_offset):
+                            cs.current_offset = cfg.max_offset
+                        # Don't re-test the known coarse-fail offset (guaranteed
+                        # fail) — settle at the last good value instead.
+                        if cs.coarse_fail_offset is not None and (
+                            (direction < 0 and cs.current_offset <= cs.coarse_fail_offset)
+                            or (direction > 0 and cs.current_offset >= cs.coarse_fail_offset)
+                        ):
+                            cs.phase = TunerPhase.SETTLED
 
             case TunerPhase.FINE_SEARCH:
                 if passed:
@@ -694,7 +705,12 @@ class TunerEngine(QObject):
                         midpoint = cs.best_offset - direction * (
                             abs(cs.best_offset - cs.baseline_offset) // 2
                         )
-                        if self._at_or_past_baseline(midpoint, cs) or midpoint == cs.best_offset:
+                        floor = self._backoff_floor(cs, midpoint)
+                        if floor is not None:
+                            cs.phase = TunerPhase.CONFIRMED
+                            cs.best_offset = floor
+                            cs.current_offset = floor
+                        elif self._at_or_past_baseline(midpoint, cs) or midpoint == cs.best_offset:
                             cs.phase = TunerPhase.CONFIRMED
                             cs.best_offset = cs.baseline_offset
                             cs.current_offset = cs.baseline_offset
@@ -705,7 +721,12 @@ class TunerEngine(QObject):
                     else:
                         # Back off one more step
                         new_offset = cs.best_offset - direction * cfg.fine_step
-                        if self._at_or_past_baseline(new_offset, cs):
+                        floor = self._backoff_floor(cs, new_offset)
+                        if floor is not None:
+                            cs.phase = TunerPhase.CONFIRMED
+                            cs.best_offset = floor
+                            cs.current_offset = floor
+                        elif self._at_or_past_baseline(new_offset, cs):
                             cs.phase = TunerPhase.CONFIRMED
                             cs.best_offset = cs.baseline_offset
                             cs.current_offset = cs.baseline_offset
@@ -741,7 +762,12 @@ class TunerEngine(QObject):
                     # Confirm failed — back to preconfirm, back off
                     cs.phase = TunerPhase.BACKOFF_PRECONFIRM
                     new_offset = cs.best_offset - direction * cfg.fine_step
-                    if self._at_or_past_baseline(new_offset, cs):
+                    floor = self._backoff_floor(cs, new_offset)
+                    if floor is not None:
+                        cs.phase = TunerPhase.CONFIRMED
+                        cs.best_offset = floor
+                        cs.current_offset = floor
+                    elif self._at_or_past_baseline(new_offset, cs):
                         cs.phase = TunerPhase.CONFIRMED
                         cs.best_offset = cs.baseline_offset
                         cs.current_offset = cs.baseline_offset
@@ -779,6 +805,18 @@ class TunerEngine(QObject):
         if self._config.direction == -1:
             return a < b
         return a > b
+
+    def _backoff_floor(self, cs: CoreState, new_offset: int) -> int | None:
+        """A confirmed backoff pass_bound is a hard floor for the fail paths.
+
+        Returns the pass_bound to settle at when ``new_offset`` would be less
+        aggressive than it — a fully-confirmed offset must never be abandoned
+        for a weaker one — else None (the new offset is safe to use).
+        """
+        pb = cs.backoff_pass_bound
+        if pb is not None and self._is_more_aggressive(pb, new_offset):
+            return pb
+        return None
 
     def _apply_crash_penalty(self, cs: CoreState) -> None:
         """Apply crash penalty: larger backoff + set hard fail bound + cooldown."""
@@ -1216,10 +1254,13 @@ class TunerEngine(QObject):
 
         # A thermal stop is not a stability verdict — advancing the state machine
         # or logging a fail here would push the offset the wrong way on a thermal
-        # transient (the reported bug). Cool down and retry the same offset.
-        # Scoped to the search/confirm flow.
-        if not passed and error_type == "thermal" and self._validation_stage == 0:
-            self._handle_thermal_abort(core_id, cs, duration)
+        # transient (the reported bug). Cool down and retry. Handled for both the
+        # search flow and validation, so a thermal stop is never logged as a fail.
+        if not passed and error_type == "thermal":
+            if self._validation_stage == 0:
+                self._handle_thermal_abort(core_id, cs, duration)
+            else:
+                self._handle_validation_thermal_abort(core_id)
             return
 
         # Reached only on a non-thermal outcome → the thermal-retry streak for
@@ -1350,6 +1391,35 @@ class TunerEngine(QObject):
             int(self._config.thermal_cooldown_seconds * 1000), self._run_next
         )
 
+    def _handle_validation_thermal_abort(self, core_id: int) -> None:
+        """A thermal stop during validation is not a stability verdict.
+
+        Backing off a confirmed core and restarting validation (the default
+        fail path) on a thermal transient would degrade the tune. Instead: cool
+        down and re-run the same validation stage. If the limit keeps tripping,
+        cooling cannot sustain the test — abort with a clear message.
+        """
+        self._validation_thermal_aborts += 1
+        if self._validation_thermal_aborts > self._config.max_thermal_retries:
+            self.log_message.emit(
+                "Validation: thermal limit hit repeatedly — cooling cannot "
+                "sustain testing. Lower load/ambient or improve cooling, then resume."
+            )
+            log.warning(
+                "Aborting validation: thermal limit hit %d times",
+                self._validation_thermal_aborts,
+            )
+            self.abort()
+            return
+        self.log_message.emit(
+            f"Validation: core {core_id} thermal abort "
+            f"({self._validation_thermal_aborts}/{self._config.max_thermal_retries}) "
+            f"— cooling down, re-running the same stage"
+        )
+        QTimer.singleShot(
+            int(self._config.thermal_cooldown_seconds * 1000), self._run_validation_next
+        )
+
     def _complete_session(self) -> None:
         """All cores done — enter auto-validation or finalize session."""
         profile = {}
@@ -1444,6 +1514,7 @@ class TunerEngine(QObject):
         self._validation_half_index = 0
 
         self._validation_stage = 1
+        self._validation_thermal_aborts = 0
         self.log_message.emit("Validation stage 1: per-core with all offsets live")
         self.validation_progress.emit(1, 0, len(self._validation_core_order))
         self._run_validation_next()
@@ -1754,6 +1825,7 @@ class TunerEngine(QObject):
     def _on_validation_test_finished(self, core_id: int, passed: bool) -> None:
         """Handle test result during multi-core validation stages."""
         if passed:
+            self._validation_thermal_aborts = 0  # streak broken by a clean pass
             match self._validation_stage:
                 case 1:
                     self._validation_core_index += 1
@@ -1975,8 +2047,10 @@ class TunerEngine(QObject):
                 success = self._smu.set_co_offset(core_id, cs.baseline_offset)
                 if success:
                     self._co_applied[core_id] = cs.baseline_offset
+                else:
+                    log.warning("Revert-to-baseline rejected for core %d", core_id)
             except Exception:
-                pass  # best-effort — log is noisy enough from the caller
+                log.warning("Revert-to-baseline failed for core %d", core_id, exc_info=True)
 
     def _get_stress_mode(self):
         from engine.backends.base import StressMode

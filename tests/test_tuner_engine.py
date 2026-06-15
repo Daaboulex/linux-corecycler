@@ -2198,3 +2198,124 @@ class TestThermalAbort:
             eng._on_test_finished(0, False, "miscompare detected", "computation", 1.0, 0.0)
         handler.assert_not_called()
         advance.assert_called_once_with(0, False)
+
+
+class TestSearchBoundsAndBackoffFloor:
+    """Offset bounds + backoff monotonicity floor (Batch B correctness fixes)."""
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=5, fine_step=1, max_offset=-50, cores_to_test=[0])
+        defaults.update(cfg_kwargs)
+        return TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=TunerConfig(**defaults),
+        )
+
+    def test_fine_entry_never_exceeds_max_offset(self, db, simple_topology, mock_smu, mock_backend):
+        # best -29 + dir*fine(2) = -31 would pass the -30 safety cap; must clamp.
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, max_offset=-30, fine_step=2)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-31, best_offset=-29)
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        assert not eng._exceeds_max(cs.current_offset)
+        assert cs.current_offset == -30
+
+    def test_fine_entry_at_coarse_fail_settles(self, db, simple_topology, mock_smu, mock_backend):
+        # best -10 + dir*fine(2) = -12 == coarse_fail (known fail) → skip + settle.
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, fine_step=2)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-12, best_offset=-10)
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        assert cs.phase == TunerPhase.SETTLED
+
+    def test_backoff_never_settles_below_confirmed_pass_bound(self, db, simple_topology, mock_smu, mock_backend):
+        # pass_bound -20 is fully confirmed; backing off from a more-aggressive
+        # probe must never settle weaker than -20.
+        eng = self._make_engine(
+            db, simple_topology, mock_smu, mock_backend,
+            fine_step=1, midpoint_jump_threshold=3,
+        )
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM, current_offset=-22, best_offset=-22,
+            backoff_pass_bound=-20, backoff_fail_bound=-25, baseline_offset=0, backoff_mode=True,
+        )
+        eng._core_states = {0: cs}
+        for _ in range(6):
+            if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED):
+                break
+            eng._advance_core(0, passed=False)
+            assert cs.best_offset == -20 or eng._is_more_aggressive(cs.best_offset, -20)
+        assert cs.phase == TunerPhase.CONFIRMED
+        assert cs.best_offset == -20  # settled at the proven floor, not weaker
+
+    def test_backoff_confirming_fail_respects_floor(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, fine_step=1)
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.BACKOFF_CONFIRMING, current_offset=-20, best_offset=-20,
+            backoff_pass_bound=-20, baseline_offset=0, backoff_mode=True,
+        )
+        eng._core_states = {0: cs}
+        eng._advance_core(0, passed=False)
+        # backing off from -20 → -19 is below the -20 floor → settle at -20
+        assert cs.phase == TunerPhase.CONFIRMED
+        assert cs.best_offset == -20
+
+
+class TestValidationThermal:
+    """A thermal stop during validation must cool down and re-run, never back
+    off a confirmed core or restart validation (that degrades the tune)."""
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=5, fine_step=1, max_offset=-30, cores_to_test=[0])
+        defaults.update(cfg_kwargs)
+        return TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=TunerConfig(**defaults),
+        )
+
+    def test_validation_thermal_routes_to_validation_handler(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.CONFIRMING, current_offset=-20)
+        eng._core_states = {0: cs}
+        eng._validation_stage = 1
+        with (
+            patch.object(eng, "_handle_validation_thermal_abort") as vhandler,
+            patch.object(eng, "_handle_thermal_abort") as shandler,
+            patch.object(eng, "_on_validation_test_finished") as vfin,
+        ):
+            eng._on_test_finished(0, False, "CPU temperature exceeded 95 C", "thermal", 5.0, 0.0)
+        vhandler.assert_called_once_with(0)
+        shandler.assert_not_called()
+        vfin.assert_not_called()  # NOT treated as a validation failure
+
+    def test_validation_thermal_reruns_same_stage(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(
+            db, simple_topology, mock_smu, mock_backend,
+            max_thermal_retries=3, thermal_cooldown_seconds=4.0,
+        )
+        eng._validation_stage = 2
+        eng._validation_thermal_aborts = 0
+        with (
+            patch("tuner.engine.QTimer") as qtimer,
+            patch.object(eng, "abort") as abort_,
+        ):
+            eng._handle_validation_thermal_abort(0)
+        assert eng._validation_thermal_aborts == 1
+        abort_.assert_not_called()
+        qtimer.singleShot.assert_called_once()
+        delay_ms, callback = qtimer.singleShot.call_args[0]
+        assert delay_ms == 4000
+        assert callback == eng._run_validation_next
+
+    def test_validation_thermal_aborts_after_cap(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, max_thermal_retries=3)
+        eng._validation_stage = 2
+        eng._validation_thermal_aborts = 3
+        with (
+            patch("tuner.engine.QTimer") as qtimer,
+            patch.object(eng, "abort") as abort_,
+        ):
+            eng._handle_validation_thermal_abort(0)
+        assert eng._validation_thermal_aborts == 4
+        abort_.assert_called_once()
+        qtimer.singleShot.assert_not_called()
