@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from history.timefmt import format_local
 from tuner import persistence as tp
 from tuner.state import TunerPhase, TunerSession
 
@@ -618,7 +619,7 @@ class HistoryTab(QWidget):
 
         self._runs_table.setRowCount(len(runs))
         for row, run in enumerate(runs):
-            date_str = run.started_at[:19].replace("T", " ") if run.started_at else ""
+            date_str = format_local(run.started_at)
             result_str = f"{run.cores_passed}P/{run.cores_failed}F" if run.status == "completed" else ""
             duration_str = _format_duration(run.total_seconds) if run.total_seconds > 0 else ""
             cores_str = str(run.total_cores) if run.total_cores else ""
@@ -771,7 +772,7 @@ class HistoryTab(QWidget):
         if events:
             lines.append("── Events ──")
             for e in events:
-                ts = e.timestamp[:19].replace("T", " ") if e.timestamp else ""
+                ts = format_local(e.timestamp)
                 core_str = f" [core {e.core_id}]" if e.core_id is not None else ""
                 lines.append(f"{ts}{core_str} [{e.event_type}] {e.message}")
 
@@ -862,7 +863,7 @@ class HistoryTab(QWidget):
             total = len(core_states)
             confirmed = sum(1 for cs in core_states.values() if cs.phase == TunerPhase.CONFIRMED)
 
-            date_str = sess.created_at[:19].replace("T", " ") if sess.created_at else ""
+            date_str = format_local(sess.created_at)
 
             items = [
                 (date_str, Qt.AlignmentFlag.AlignLeft),
@@ -996,7 +997,7 @@ class HistoryTab(QWidget):
         if test_log:
             lines.append("── Test Log ──")
             for entry in test_log:
-                ts = entry.get("tested_at", "")[:19].replace("T", " ")
+                ts = format_local(entry.get("tested_at", ""))
                 result = "PASS" if entry["passed"] else "FAIL"
                 dur = f"{entry.get('duration_seconds', 0):.1f}s" if entry.get("duration_seconds") else "-"
                 err = entry.get("error_message", "")
@@ -1273,7 +1274,7 @@ class HistoryTab(QWidget):
 
         col_headers = ["Core"]
         for run, _ in run_data:
-            label = run.started_at[:10] if run.started_at else f"Run {run.id}"
+            label = format_local(run.started_at, date_only=True) if run.started_at else f"Run {run.id}"
             col_headers.extend([f"{label} Result", f"{label} Duration"])
 
         self._core_results_table.setColumnCount(len(col_headers))
@@ -1309,7 +1310,7 @@ class HistoryTab(QWidget):
 
         lines = ["── Run Comparison ──"]
         for run, results in run_data:
-            label = run.started_at[:19].replace("T", " ") if run.started_at else f"Run {run.id}"
+            label = format_local(run.started_at) if run.started_at else f"Run {run.id}"
             passed = sum(1 for r in results if r.passed)
             failed = sum(1 for r in results if r.passed is False)
             lines.append(f"  {label}:  {run.backend}/{run.stress_mode}  {passed}P/{failed}F  {_format_duration(run.total_seconds)}")
