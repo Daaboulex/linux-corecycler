@@ -1158,11 +1158,21 @@ class TunerEngine(QObject):
         # Run single-core test on a worker thread
         self._start_worker(core_id, duration)
 
+    def _fail_test_async(self, core_id: int, message: str) -> None:
+        """Deliver a start-time failure on a fresh event-loop stack, like the
+        worker's queued finished signal — never re-enter _on_test_finished
+        synchronously (which would recurse through _run_next on a core that
+        always fails to start).
+        """
+        QTimer.singleShot(
+            0, lambda: self._on_test_finished(core_id, False, message, "", 0.0, 0.0)
+        )
+
     def _start_worker(self, core_id: int, duration: int) -> None:
         """Launch a _TunerWorker thread for the given core."""
         core_info = self._topology.cores.get(core_id)
         if not core_info:
-            self._on_test_finished(core_id, False, f"Core {core_id} not found", "", 0.0, 0.0)
+            self._fail_test_async(core_id, f"Core {core_id} not found")
             return
 
         cs = self._core_states.get(core_id)
@@ -1206,7 +1216,7 @@ class TunerEngine(QObject):
                 work_dir=self._work_dir,
             )
         except Exception as e:
-            self._on_test_finished(core_id, False, str(e), "", 0.0, 0.0)
+            self._fail_test_async(core_id, str(e))
             return
 
         logical_cpu = core_info.logical_cpus[0] if core_info.logical_cpus else core_id
@@ -1337,14 +1347,16 @@ class TunerEngine(QObject):
         self._accumulate_test_time(cs, duration)
         if self._check_time_budget(cs):
             tp.save_core_state(self._db, self._session_id, cs)
-            self._run_next()
+            QTimer.singleShot(0, self._run_next)
             return
 
         # Advance state machine
         self._advance_core(core_id, passed)
 
-        # Continue with next test
-        self._run_next()
+        # Continue with the next test on a fresh event-loop stack (matches the
+        # validation path) so a synchronous start failure cannot recurse back
+        # into _on_test_finished.
+        QTimer.singleShot(0, self._run_next)
 
     def _handle_thermal_abort(self, core_id: int, cs: CoreState, duration: float) -> None:
         """Handle a test stopped by the thermal safety limit (not instability).

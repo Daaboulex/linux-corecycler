@@ -2319,3 +2319,40 @@ class TestValidationThermal:
         assert eng._validation_thermal_aborts == 4
         abort_.assert_called_once()
         qtimer.singleShot.assert_not_called()
+
+
+class TestEventLoopDeferral:
+    """Search-loop continuations and start failures go through the event loop,
+    so a synchronous start failure cannot recurse back into _on_test_finished."""
+
+    def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
+        defaults = dict(coarse_step=5, fine_step=1, max_offset=-30, cores_to_test=[0])
+        defaults.update(cfg_kwargs)
+        return TunerEngine(
+            db=db, topology=simple_topology, smu=mock_smu,
+            backend=mock_backend, config=TunerConfig(**defaults),
+        )
+
+    def test_continuation_is_deferred_not_synchronous(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5, best_offset=0)
+        eng._core_states = {0: cs}
+        with (
+            patch("tuner.engine.QTimer") as qtimer,
+            patch.object(eng, "_advance_core"),
+            patch.object(eng, "_revert_core_to_baseline"),
+            patch.object(eng, "_run_next") as run_next,
+        ):
+            eng._on_test_finished(0, True, "", "", 60.0, 0.0)
+        run_next.assert_not_called()  # next test scheduled, not run inline
+        qtimer.singleShot.assert_called_once_with(0, run_next)
+
+    def test_start_failure_delivered_async(self, db, simple_topology, mock_smu, mock_backend):
+        eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
+        with (
+            patch("tuner.engine.QTimer") as qtimer,
+            patch.object(eng, "_on_test_finished") as otf,
+        ):
+            eng._start_worker(99, 60)  # core 99 does not exist → start failure
+        otf.assert_not_called()  # NOT re-entered synchronously
+        qtimer.singleShot.assert_called_once()
