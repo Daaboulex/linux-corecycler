@@ -43,6 +43,7 @@ from gui.widgets.core_grid import CoreGridWidget
 from history.context import detect_bios_change
 from history.db import HistoryDB
 from history.logger import TestRunLogger
+from history.timefmt import format_local
 from monitor.frequency import read_core_frequencies
 from monitor.hwmon import HWMonReader
 from monitor.msr import MSRReader
@@ -307,7 +308,7 @@ class MainWindow(QMainWindow):
             if active:
                 reply = QMessageBox.question(
                     self, "Active Tuner Session",
-                    f"A tuner session is {active.status} (started {active.created_at[:10]}).\n\n"
+                    f"A tuner session is {active.status} (started {format_local(active.created_at, date_only=True)}).\n\n"
                     "Manual stress tests don't modify CO offsets, but you may want to "
                     "resume or abort the tuner session first.\n\n"
                     "Continue with manual test anyway?",

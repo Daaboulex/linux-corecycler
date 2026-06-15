@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from engine.backends.base import FFTPreset, StressMode
+from history.timefmt import format_local
 from tuner.config import TunerConfig
 from tuner.engine import TunerEngine
 from tuner.state import TunerPhase
@@ -574,7 +575,7 @@ class TunerTab(QWidget):
             core_states = tp.load_core_states(self._db, sess.id)
             total = len(core_states)
             confirmed = sum(1 for cs in core_states.values() if cs.phase == TunerPhase.CONFIRMED)
-            date_str = sess.created_at[:19].replace("T", " ") if sess.created_at else "?"
+            date_str = format_local(sess.created_at) if sess.created_at else "?"
             label = (
                 f"#{sess.id}  {date_str}  "
                 f"[{sess.status}]  "
@@ -885,7 +886,7 @@ class TunerTab(QWidget):
         row = self._log_table.rowCount()
         self._log_table.insertRow(row)
         items = [
-            entry.get("tested_at", "")[:19],
+            format_local(entry.get("tested_at", "")),
             str(core_id),
             str(offset),
             entry.get("phase", ""),
@@ -929,7 +930,7 @@ class TunerTab(QWidget):
             self._log_table.insertRow(row)
             passed = bool(entry["passed"])
             items = [
-                entry.get("tested_at", "")[:19],
+                format_local(entry.get("tested_at", "")),
                 str(entry["core_id"]),
                 str(entry["offset_tested"]),
                 entry.get("phase", ""),

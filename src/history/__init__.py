@@ -25,6 +25,7 @@ from history.export import (
     export_runs_bulk_csv_file,
 )
 from history.logger import TestRunLogger
+from history.timefmt import format_local
 
 __all__ = [
     "CoreResultRecord",
@@ -45,5 +46,6 @@ __all__ = [
     "export_runs_bulk_csv",
     "export_runs_bulk_csv_file",
     "find_or_create_context",
+    "format_local",
     "read_bios_version",
 ]
