@@ -53,6 +53,7 @@ class CoreState:
     in_test: bool = False
     crash_count: int = 0
     crash_cooldown: int = 0
+    thermal_aborts: int = 0
     cumulative_test_time: float = 0.0
     hardening_tier_index: int = 0
 

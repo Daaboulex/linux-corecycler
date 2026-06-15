@@ -47,6 +47,14 @@ class TunerConfig:
     # Safety
     abort_on_consecutive_failures: int = 0  # 0 = disabled
 
+    # Thermal safety (plumbed into the per-core scheduler). A thermal stop is
+    # not a stability verdict: the tuner retries the same offset rather than
+    # recording a failure, up to max_thermal_retries, then aborts.
+    max_temperature_c: float = 95.0  # stop a test if CPU exceeds this
+    over_temp_grace_seconds: float = 3.0  # sustained over-limit time before stopping
+    over_temp_hard_margin_c: float = 8.0  # instant stop at max + this (runaway)
+    max_thermal_retries: int = 3  # retry same offset this many times before aborting
+
     # Inherit current CO offsets from SMU as starting point
     inherit_current: bool = False
 
@@ -103,6 +111,14 @@ class TunerConfig:
                 errors.append(f"hardening_tiers[{i}] must be a dict")
             elif not all(k in tier for k in ("backend", "stress_mode", "fft_preset")):
                 errors.append(f"hardening_tiers[{i}] missing required keys: backend, stress_mode, fft_preset")
+        if not 60 <= self.max_temperature_c <= 110:
+            errors.append(f"max_temperature_c must be 60-110, got {self.max_temperature_c}")
+        if self.over_temp_grace_seconds < 0:
+            errors.append("over_temp_grace_seconds must be >= 0")
+        if self.over_temp_hard_margin_c < 0:
+            errors.append("over_temp_hard_margin_c must be >= 0")
+        if self.max_thermal_retries < 0:
+            errors.append("max_thermal_retries must be >= 0")
         return errors
 
     def clamp_max_offset(self, co_range: tuple[int, int]) -> None:

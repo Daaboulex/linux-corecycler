@@ -64,6 +64,8 @@ class SchedulerConfig:
     cycle_count: int = 1  # how many full cycles through all cores
     poll_interval: float = 1.0  # seconds between status checks
     max_temperature: float = 95.0  # celsius — pause/stop if exceeded
+    over_temp_grace_seconds: float = 3.0  # sustained over-limit time before stopping
+    over_temp_hard_margin: float = 8.0  # instant stop if temp >= max + this (runaway)
     stall_timeout: float = 30.0  # seconds of near-zero CPU before declaring stall
     test_mode: TestMode = TestMode.CUSTOM
     # Full spectrum options
@@ -104,6 +106,7 @@ class CoreScheduler:
         self._current_cycle: int = 0
         self._stop_event = threading.Event()
         self._thermal_tripped = False  # hysteresis state for temperature checks
+        self._thermal_over_since: float | None = None  # monotonic time over-limit began
 
         # callbacks for GUI integration
         self.on_core_start: list = []  # (core_id, cycle) -> None
@@ -227,36 +230,61 @@ class CoreScheduler:
             pass
         return None
 
-    def _check_temperature(self) -> bool:
-        """Check CPU temperature against the safety limit with hysteresis.
+    def _trip_thermal(self, temp: float) -> None:
+        """Latch the thermal trip and fire the throttle callback once."""
+        if not self._thermal_tripped:
+            log.warning(
+                "CPU temperature %.1f C exceeds safety limit %.1f C — stopping test",
+                temp,
+                self.config.max_temperature,
+            )
+            self._thermal_tripped = True
+            for cb in self.on_thermal_throttle:
+                cb(temp)
 
-        Returns True if temperature is safe, False if over limit.
-        When over limit, fires the on_thermal_throttle callback.
-        Uses 5°C hysteresis to avoid rapid start/stop oscillation at boundary.
+    def _check_temperature(self) -> bool:
+        """Check CPU temperature against the safety limit, debounced.
+
+        Returns True if temperature is safe, False if over limit. A brief load-
+        ramp spike must NOT stop the test (that read as a core failure during
+        auto-tuning): the soft limit only trips after the temperature has stayed
+        over it for ``over_temp_grace_seconds``. A hard ceiling
+        (``max + over_temp_hard_margin``) still trips instantly so a genuine
+        runaway is stopped immediately — fail-closed safety is preserved. Once
+        tripped, a 5°C hysteresis governs resume.
         """
         temp = self._read_cpu_temperature()
         if temp is None:
             return True  # can't read -> don't block
 
         hysteresis = 5.0
-        if temp >= self.config.max_temperature:
-            if not self._thermal_tripped:
-                log.warning(
-                    "CPU temperature %.1f C exceeds safety limit %.1f C — stopping test",
-                    temp,
-                    self.config.max_temperature,
-                )
-                self._thermal_tripped = True
-                for cb in self.on_thermal_throttle:
-                    cb(temp)
-            return False
+        limit = self.config.max_temperature
+        hard_limit = limit + self.config.over_temp_hard_margin
 
+        if temp >= limit:
+            # Runaway: over the hard ceiling, stop now regardless of debounce.
+            if temp >= hard_limit:
+                self._trip_thermal(temp)
+                return False
+            if self._thermal_tripped:
+                return False  # stay tripped until hysteresis resume below
+            # Soft limit: require sustained over-temp before stopping.
+            now = time.monotonic()
+            if self._thermal_over_since is None:
+                self._thermal_over_since = now
+            if now - self._thermal_over_since >= self.config.over_temp_grace_seconds:
+                self._trip_thermal(temp)
+                return False
+            return True  # transient spike within grace — keep running
+
+        # Back under the limit: reset the sustained-over-temp window.
+        self._thermal_over_since = None
         if self._thermal_tripped:
-            if temp < self.config.max_temperature - hysteresis:
+            if temp < limit - hysteresis:
                 log.info(
                     "CPU temperature %.1f C dropped below resume threshold %.1f C",
                     temp,
-                    self.config.max_temperature - hysteresis,
+                    limit - hysteresis,
                 )
                 self._thermal_tripped = False
                 return True
