@@ -1153,6 +1153,9 @@ class TunerEngine(QObject):
             cores_to_test=[core_id],
             stop_on_error=True,
             cycle_count=1,
+            max_temperature=self._config.max_temperature_c,
+            over_temp_grace_seconds=self._config.over_temp_grace_seconds,
+            over_temp_hard_margin=self._config.over_temp_hard_margin_c,
         )
 
         try:
@@ -1210,6 +1213,14 @@ class TunerEngine(QObject):
             return
 
         cs.in_test = False
+
+        # A thermal stop is not a stability verdict — advancing the state machine
+        # or logging a fail here would push the offset the wrong way on a thermal
+        # transient (the reported bug). Cool down and retry the same offset.
+        # Scoped to the search/confirm flow; validation has its own handling.
+        if not passed and error_type == "thermal" and self._validation_stage == 0:
+            self._handle_thermal_abort(core_id, cs)
+            return
 
         # Clock stretch check — if stress test "passed" but core was stretching
         # badly, treat it as a failure (CO too aggressive, voltage drooping)
@@ -1287,6 +1298,43 @@ class TunerEngine(QObject):
         self._advance_core(core_id, passed)
 
         # Continue with next test
+        self._run_next()
+
+    def _handle_thermal_abort(self, core_id: int, cs: CoreState) -> None:
+        """Handle a test stopped by the thermal safety limit (not instability).
+
+        Stopping on temperature says nothing about CO stability, so advancing the
+        state machine or logging a fail would push the offset the wrong way on a
+        thermal transient. Instead: revert the core, defer it (cool down while
+        other cores test), and retry the SAME offset. If a core keeps hitting the
+        limit, cooling cannot sustain the test — abort with a clear message rather
+        than silently producing a bad tune.
+        """
+        cs.thermal_aborts += 1
+        self._revert_core_to_baseline(core_id)
+
+        if cs.thermal_aborts > self._config.max_thermal_retries:
+            self.log_message.emit(
+                f"Core {core_id}: thermal limit hit {cs.thermal_aborts} times at "
+                f"offset {cs.current_offset} — cooling cannot sustain testing. "
+                f"Lower load/ambient or improve cooling, then resume."
+            )
+            log.warning(
+                "Aborting tune: core %d hit thermal limit %d times (max_thermal_retries=%d)",
+                core_id,
+                cs.thermal_aborts,
+                self._config.max_thermal_retries,
+            )
+            self.abort()
+            return
+
+        cs.crash_cooldown = max(cs.crash_cooldown, 2)  # defer; test other cores first
+        self.log_message.emit(
+            f"Core {core_id} offset {cs.current_offset}: thermal abort "
+            f"({cs.thermal_aborts}/{self._config.max_thermal_retries}) — cooling "
+            f"down, will retry same offset"
+        )
+        tp.save_core_state(self._db, self._session_id, cs)
         self._run_next()
 
     def _complete_session(self) -> None:
