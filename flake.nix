@@ -66,7 +66,12 @@
         system:
         let
           pkgs = pkgsFor system;
-          python = pkgs.python312;
+          # Default python3 (not a pinned minor): Hydra only builds/caches
+          # pyside6 for the default interpreter, so pinning python312 forced a
+          # ~50-min from-source pyside6 build on every CI run. python3 keeps
+          # the heavy Qt bindings a cache.nixos.org hit. requires-python in
+          # pyproject.toml still allows >=3.12 for downstream users.
+          python = pkgs.python3;
           pythonPkgs = python.pkgs;
 
           # Shared build function — backends list is the only difference
@@ -155,7 +160,7 @@
         system:
         let
           pkgs = pkgsFor system;
-          python = pkgs.python312;
+          python = pkgs.python3; # matches packages: cached pyside6, see note above
         in
         {
           default = pkgs.mkShell {
@@ -185,6 +190,20 @@
               echo "  Run:  python src/main.py"
               echo "  Test: pytest tests/"
             '';
+          };
+
+          # Minimal environment for CI: just the Python test deps, no
+          # mprime/stress-ng/nil/pre-commit. Keeps the test job's closure a
+          # pure cache.nixos.org fetch (no unfree mprime build, no shellHook).
+          ci = pkgs.mkShell {
+            packages = [
+              (python.withPackages (
+                ps: with ps; [
+                  pyside6
+                  pytest
+                ]
+              ))
+            ];
           };
         }
       );
