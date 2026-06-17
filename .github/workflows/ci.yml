@@ -52,6 +52,18 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22 (node24)
 
+      # Large source builds (mesa, portmaster, scx) can exhaust the runner's
+      # ~14 GB default disk mid-build ("No space left on device"). Drop
+      # preinstalled toolchains nix never uses to reclaim ~20 GB. Best-effort:
+      # `|| true` so it never fails the job, and paths absent on a given runner
+      # (e.g. the arm image) are simply skipped.
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/.ghcup || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
       - name: Build + check every output declared for this system
         run: |
           SYS=$(nix eval --impure --raw --expr 'builtins.currentSystem')
