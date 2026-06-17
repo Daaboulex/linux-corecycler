@@ -1,7 +1,13 @@
+# Canonical Maintenance workflow — Nix Packaging Standard.
+# Source of truth: github:Daaboulex/nix-packaging-standard. Synced into each
+# packaging repo by sync.sh; byte-identity enforced by the `std-conformance`
+# flake check. flake.lock refresh: rebuild, push only if green, else open a
+# labeled issue; plus stale-branch cleanup. Cadence is per-repo via the
+# MAINTENANCE_CADENCE repo variable (daily | biweekly | weekly); unset = weekly.
 name: Maintenance
 on:
   schedule:
-    - cron: '0 4 * * 0'  # Weekly Sunday 4 AM UTC
+    - cron: '0 4 * * *' # Daily 4 AM UTC; the gate job applies the per-repo cadence
   workflow_dispatch:
 
 permissions:
@@ -9,12 +15,38 @@ permissions:
   issues: write
 
 jobs:
+  # Per-repo cadence gate. Set the MAINTENANCE_CADENCE repo variable to
+  # `daily` or `biweekly` (Wed+Sun) for fast-moving / closure-heavy repos;
+  # unset or any other value means `weekly` (Sun) — identical to the old
+  # Sunday-only schedule. workflow_dispatch always runs.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.c.outputs.run }}
+    steps:
+      - id: c
+        env:
+          CADENCE: ${{ vars.MAINTENANCE_CADENCE || 'weekly' }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          dow=$(date -u +%u) # 1=Mon .. 7=Sun
+          run=no
+          case "$CADENCE" in
+          daily) run=yes ;;
+          biweekly) if [ "$dow" = 3 ] || [ "$dow" = 7 ]; then run=yes; fi ;;
+          *) if [ "$dow" = 7 ]; then run=yes; fi ;; # weekly (default)
+          esac
+          if [ "$EVENT" = workflow_dispatch ]; then run=yes; fi
+          echo "cadence=$CADENCE dow=$dow event=$EVENT -> run=$run"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
   update-lock:
+    needs: gate
+    if: needs.gate.outputs.run == 'yes'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25  # v22 (node24)
-      # magic-nix-cache-action removed 2026-04-16 (FlakeHub-gated, broke CI).
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22 (node24)
 
       - name: Update flake.lock
         run: nix flake update
@@ -23,8 +55,33 @@ jobs:
         id: build
         run: |
           set +e
-          nix build --no-link --print-build-logs 2>&1 | tee /tmp/lock-build.log
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          SYS=$(nix eval --impure --raw --expr 'builtins.currentSystem')
+          # Build every output the flake declares for this system — the SAME
+          # target ci.yml uses (.#checks aliases each package plus the std
+          # checks). Bare `nix build` assumes .#default, which module-only repos
+          # (a NixOS/HM module, no package) do not have — that mismatch filed
+          # spurious "broke build" maintenance issues on every run.
+          if ! nix eval ".#checks.$SYS" --apply 'x: builtins.attrNames x != [ ]' 2>/dev/null | grep -qx true; then
+            echo "Flake declares no checks for $SYS — lock bump verified by eval only."
+            echo "exit_code=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          build() {
+            nix run nixpkgs#nix-fast-build -- --skip-cached --no-nom --flake ".#checks.$SYS" 2>&1 | tee /tmp/lock-build.log
+            return "${PIPESTATUS[0]}" # nix-fast-build's real exit, NOT tee's (always 0).
+          }
+          build
+          code=$?
+          # Retry once on a transient external-fetch failure (crates.io rate-limit,
+          # registry/CDN blip) so maintenance doesn't open a spurious "broke build"
+          # issue for an infra hiccup that has nothing to do with the lock bump.
+          if [ "$code" -ne 0 ] && grep -qiE 'crates\.io|error: cannot download|status code: (403|429)|curl: \(|couldn.t resolve host|connection reset by peer|temporary failure in name resolution|operation timed out' /tmp/lock-build.log; then
+            echo "::warning::Transient external-fetch failure during maintenance build; retrying once in 60s."
+            sleep 60
+            build
+            code=$?
+          fi
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
       - name: Push if build passes
         if: steps.build.outputs.exit_code == '0'
@@ -41,7 +98,7 @@ jobs:
 
       - name: Issue if build fails
         if: steps.build.outputs.exit_code != '0'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9 (node24)
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
         with:
           script: |
             const fs = require('fs');
@@ -54,7 +111,7 @@ jobs:
               body: [
                 '## flake.lock update failed to build',
                 '',
-                'The weekly `nix flake update` produced a flake.lock that does not build.',
+                'The scheduled `nix flake update` produced a flake.lock that does not build.',
                 '**flake.lock was NOT pushed.**',
                 '',
                 '<details><summary>Build log (last 80 lines)</summary>',
@@ -76,17 +133,17 @@ jobs:
             });
 
   cleanup:
+    needs: gate
+    if: needs.gate.outputs.run == 'yes'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Cleanup stale branches
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9 (node24)
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
         with:
           script: |
             // Delete stale maintenance branches older than 30 days.
-            // Matches: update/*, update_*, upstream-update/*, upstream-update_*
-            // Rationale: different automation tools (Determinate, custom scripts, Dependabot)
-            // use different separators; cleanup must catch all variants.
+            // Matches update/* and upstream-update/* (both _ and / separators).
             const { data: allRefs } = await github.rest.git.listMatchingRefs({
               owner: context.repo.owner, repo: context.repo.repo,
               ref: 'heads/'

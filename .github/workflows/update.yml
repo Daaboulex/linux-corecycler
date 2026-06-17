@@ -1,6 +1,7 @@
 # Canonical Update workflow — Nix Packaging Standard.
-# Source of truth: <nix-repo>/repo-standard/update.yml. Synced into each
-# repos/*-nix clone by repo-standard/sync.sh — do not edit per-repo copies.
+# Source of truth: github:Daaboulex/nix-packaging-standard. Bootstrapped into
+# each packaging repo by sync.sh; byte-identity enforced by the std-conformance
+# flake check (flakeModules.base) — do not edit per-repo copies.
 name: Update
 on:
   schedule:
