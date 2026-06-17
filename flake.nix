@@ -9,7 +9,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     std = {
-      url = "github:Daaboulex/nix-packaging-standard?ref=v2.5.0";
+      url = "github:Daaboulex/nix-packaging-standard?ref=v2.6.1";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.git-hooks.follows = "git-hooks";
     };
@@ -115,15 +115,24 @@
             inherit pkgs;
             # FOSS-only: stress-ng + stressapptest (no unfree software).
             default = mkCoreCycler { };
-            # Full: includes mprime (unfree, fetched from a flaky external mirror).
-            full = mkCoreCycler {
-              backends = [
-                pkgs.mprime
-                pkgs.stress-ng
-                pkgs.stressapptest
-              ];
-              pnameSuffix = "-full";
-            };
+            # Full: includes mprime (unfree, fetched from a flaky external mirror,
+            # x86_64-only). meta.platforms reflects that so the standard's
+            # drvEvalCheck skips `full` on aarch64 (mprime has no aarch64 build),
+            # while the FOSS `default` still builds on both arches.
+            full =
+              (mkCoreCycler {
+                backends = [
+                  pkgs.mprime
+                  pkgs.stress-ng
+                  pkgs.stressapptest
+                ];
+                pnameSuffix = "-full";
+              }).overrideAttrs
+                (o: {
+                  meta = o.meta // {
+                    platforms = [ "x86_64-linux" ];
+                  };
+                });
           };
       in
       {
