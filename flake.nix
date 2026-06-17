@@ -17,140 +17,180 @@
 
   outputs =
     inputs@{ flake-parts, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [ "x86_64-linux" ];
-      imports = [ inputs.std.flakeModules.base ];
+    flake-parts.lib.mkFlake { inherit inputs; } (
+      let
+        systems = [ "x86_64-linux" ];
 
-      flake = {
-        # NixOS module - kernel modules, device access, udev rules, package
-        nixosModules.default = import ./nix/module.nix { self = inputs.self; };
-
-        # Overlay - makes pkgs.linux-corecycler and pkgs.linux-corecycler-full available
-        overlays.default = final: _prev: {
-          linux-corecycler = inputs.self.packages.${final.stdenv.hostPlatform.system}.default;
-          linux-corecycler-full = inputs.self.packages.${final.stdenv.hostPlatform.system}.full;
-        };
-      };
-
-      perSystem =
-        { system, ... }:
-        let
-          # mprime (the "full" backend) is unfree.
-          pkgs = import inputs.nixpkgs {
-            inherit system;
-            config.allowUnfree = true;
-          };
-
-          # Default python3 (not a pinned minor): Hydra only builds/caches
-          # pyside6 for the default interpreter, so pinning python312 forced a
-          # ~50-min from-source pyside6 build on every CI run. python3 keeps
-          # the heavy Qt bindings a cache.nixos.org hit. requires-python in
-          # pyproject.toml still allows >=3.12 for downstream users.
-          python = pkgs.python3;
-          pythonPkgs = python.pkgs;
-
-          # Shared build function - backends list is the only difference
-          mkCoreCycler =
-            {
-              backends ? [
-                pkgs.stress-ng
-                pkgs.stressapptest
-              ],
-              pnameSuffix ? "",
-            }:
-            pythonPkgs.buildPythonApplication {
-              pname = "corecycler${pnameSuffix}";
-              version = "0.0.1";
-              pyproject = true;
-
-              src = ./.;
-
-              build-system = [
-                pythonPkgs.setuptools
-                pythonPkgs.setuptools-scm
-              ];
-
-              dependencies = [
-                pythonPkgs.pyside6
-              ];
-
-              nativeCheckInputs = [ pythonPkgs.pytest ];
-              doCheck = false;
-
-              # Qt6 runtime needs
-              nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];
-              buildInputs = [ pkgs.qt6.qtbase ];
-
-              dontWrapQtApps = true;
-              preFixup = ''
-                makeWrapperArgs+=("''${qtWrapperArgs[@]}")
-              '';
-
-              # Install icon, desktop file, and asset SVGs
-              postInstall = ''
-                install -Dm644 assets/icon.svg $out/share/icons/hicolor/scalable/apps/corecycler.svg
-                install -Dm644 assets/corecycler.desktop $out/share/applications/corecycler.desktop
-                install -d $out/share/corecycler/assets
-                install -Dm644 assets/*.svg $out/share/corecycler/assets/
-              '';
-
-              # Make stress test backends available on PATH at runtime
-              postFixup = ''
-                wrapProgram $out/bin/corecycler \
-                  --prefix PATH : ${
-                    pkgs.lib.makeBinPath (
-                      backends
-                      ++ [
-                        pkgs.util-linux # for taskset
-                        pkgs.dmidecode # for DIMM info in Memory tab
-                      ]
-                    )
-                  }
-              '';
-
-              meta = {
-                description = "Per-core CPU stability tester and PBO Curve Optimizer tuner for AMD Ryzen";
-                license = pkgs.lib.licenses.gpl3Plus;
-                mainProgram = "corecycler";
-                platforms = pkgs.lib.platforms.linux;
-              };
+        # Shared builder for a system: the FOSS `default` and the `full` (mprime,
+        # unfree) variants from one mkCoreCycler. Used by both perSystem (default
+        # -> a built check) and flake.packages (full -> an off-CI eval gate).
+        buildFor =
+          system:
+          let
+            # mprime (the "full" backend) is unfree.
+            pkgs = import inputs.nixpkgs {
+              inherit system;
+              config.allowUnfree = true;
             };
-        in
-        {
-          packages = {
-            # FOSS-only: stress-ng only (no unfree software)
-            default = mkCoreCycler { };
 
-            # Full: includes mprime (unfree)
+            # Default python3 (not a pinned minor): Hydra only builds/caches
+            # pyside6 for the default interpreter, so pinning python312 forced a
+            # ~50-min from-source pyside6 build on every CI run. python3 keeps
+            # the heavy Qt bindings a cache.nixos.org hit. requires-python in
+            # pyproject.toml still allows >=3.12 for downstream users.
+            python = pkgs.python3;
+            pythonPkgs = python.pkgs;
+
+            # Shared build function - backends list is the only difference
+            mkCoreCycler =
+              {
+                backends ? [
+                  pkgs.stress-ng
+                  pkgs.stressapptest
+                ],
+                pnameSuffix ? "",
+              }:
+              pythonPkgs.buildPythonApplication {
+                pname = "corecycler${pnameSuffix}";
+                version = "0.0.1";
+                pyproject = true;
+
+                src = ./.;
+
+                build-system = [
+                  pythonPkgs.setuptools
+                  pythonPkgs.setuptools-scm
+                ];
+
+                dependencies = [
+                  pythonPkgs.pyside6
+                ];
+
+                nativeCheckInputs = [ pythonPkgs.pytest ];
+                doCheck = false;
+
+                # Qt6 runtime needs
+                nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];
+                buildInputs = [ pkgs.qt6.qtbase ];
+
+                dontWrapQtApps = true;
+                preFixup = ''
+                  makeWrapperArgs+=("''${qtWrapperArgs[@]}")
+                '';
+
+                # Install icon, desktop file, and asset SVGs
+                postInstall = ''
+                  install -Dm644 assets/icon.svg $out/share/icons/hicolor/scalable/apps/corecycler.svg
+                  install -Dm644 assets/corecycler.desktop $out/share/applications/corecycler.desktop
+                  install -d $out/share/corecycler/assets
+                  install -Dm644 assets/*.svg $out/share/corecycler/assets/
+                '';
+
+                # Make stress test backends available on PATH at runtime
+                postFixup = ''
+                  wrapProgram $out/bin/corecycler \
+                    --prefix PATH : ${
+                      pkgs.lib.makeBinPath (
+                        backends
+                        ++ [
+                          pkgs.util-linux # for taskset
+                          pkgs.dmidecode # for DIMM info in Memory tab
+                        ]
+                      )
+                    }
+                '';
+
+                meta = {
+                  description = "Per-core CPU stability tester and PBO Curve Optimizer tuner for AMD Ryzen";
+                  license = pkgs.lib.licenses.gpl3Plus;
+                  mainProgram = "corecycler";
+                  platforms = pkgs.lib.platforms.linux;
+                };
+              };
+          in
+          {
+            inherit pkgs;
+            # FOSS-only: stress-ng + stressapptest (no unfree software).
+            default = mkCoreCycler { };
+            # Full: includes mprime (unfree, fetched from a flaky external mirror).
             full = mkCoreCycler {
               backends = [
                 pkgs.mprime
                 pkgs.stress-ng
                 pkgs.stressapptest
               ];
+              pnameSuffix = "-full";
             };
+          };
+      in
+      {
+        inherit systems;
+
+        imports = [ inputs.std.flakeModules.base ];
+
+        flake = {
+          # NixOS module - kernel modules, device access, udev rules, package
+          nixosModules.default = import ./nix/module.nix { self = inputs.self; };
+
+          # Overlay - pkgs.linux-corecycler (FOSS) and pkgs.linux-corecycler-full
+          overlays.default = final: _prev: {
+            linux-corecycler = inputs.self.packages.${final.stdenv.hostPlatform.system}.default;
+            linux-corecycler-full = inputs.self.packages.${final.stdenv.hostPlatform.system}.full;
           };
 
-          # Force full evaluation of the NixOS module (options + assertions +
-          # every mkIf path) without building the closure.
-          checks.module-eval-nixos = inputs.std.lib.nixosModuleCheck {
-            inherit (inputs) nixpkgs;
-            inherit system;
-            module = import ./nix/module.nix { self = inputs.self; };
-            config = {
-              nixpkgs.config.allowUnfree = true; # mprime backend is unfree
-              services.corecycler = {
-                enable = true;
-                deviceAccessUser = "corecycler-test";
+          # OFF-CI exception (standard README "declared == built"): `full` pulls
+          # mprime -- unfree, and fetched from an external mirror that does not
+          # build reliably on a free runner. Expose it as a real `nix build .#full`
+          # target via flake.packages (NOT perSystem.packages, which base aliases
+          # into BUILT checks); CI eval-gates it with drvEvalCheck below instead of
+          # realizing the unfree mprime closure.
+          packages = builtins.listToAttrs (
+            map (system: {
+              name = system;
+              value.full = (buildFor system).full;
+            }) systems
+          );
+        };
+
+        perSystem =
+          { system, ... }:
+          let
+            b = buildFor system;
+          in
+          {
+            # The FOSS default builds on CI (stress-ng/stressapptest are cached).
+            packages.default = b.default;
+
+            # Eval-only gate for the off-CI `full`: force its full build graph to
+            # EVALUATE (catching dep/version/unfree breakage) without realizing the
+            # uncached, unfree mprime closure. The real build happens off-CI.
+            checks.full-eval = inputs.std.lib.drvEvalCheck {
+              pkgs = inputs.nixpkgs.legacyPackages.${system};
+              name = "corecycler-full-eval";
+              drv = b.full;
+            };
+
+            # Force full evaluation of the NixOS module (options + assertions +
+            # every mkIf path) without building the closure.
+            checks.module-eval-nixos = inputs.std.lib.nixosModuleCheck {
+              inherit (inputs) nixpkgs;
+              inherit system;
+              module = import ./nix/module.nix { self = inputs.self; };
+              config = {
+                nixpkgs.config.allowUnfree = true; # mprime backend is unfree
+                services.corecycler = {
+                  enable = true;
+                  deviceAccessUser = "corecycler-test";
+                };
+                # the eval fixture must declare the user the module grants access to
+                users.users.corecycler-test = {
+                  isSystemUser = true;
+                  group = "corecycler-test";
+                };
+                users.groups.corecycler-test = { };
               };
-              # the eval fixture must declare the user the module grants access to
-              users.users.corecycler-test = {
-                isSystemUser = true;
-                group = "corecycler-test";
-              };
-              users.groups.corecycler-test = { };
             };
           };
-        };
-    };
+      }
+    );
 }
