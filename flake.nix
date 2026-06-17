@@ -19,7 +19,10 @@
     inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } (
       let
-        systems = [ "x86_64-linux" ];
+        systems = [
+          "x86_64-linux"
+          "aarch64-linux"
+        ];
 
         # Shared builder for a system: the FOSS `default` and the `full` (mprime,
         # unfree) variants from one mkCoreCycler. Used by both perSystem (default
