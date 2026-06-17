@@ -1,7 +1,9 @@
 {
   "package": "corecycler",
   "upstream": {
-    "type": "none"
+    "type": "none",
+    "owner": "Daaboulex",
+    "repo": "linux-corecycler"
   },
   "packageFile": "flake.nix",
   "hashes": [],
@@ -9,5 +11,18 @@
     "binary": null,
     "args": null,
     "check": "wrapper"
-  }
+  },
+  "description": "CoreCycler packaged for NixOS - per-core CPU stability tester and AMD PBO Curve Optimizer tuner for Linux",
+  "topics": [
+    "nix",
+    "nixos",
+    "flake",
+    "nixos-module",
+    "corecycler",
+    "amd-ryzen",
+    "curve-optimizer",
+    "pbo",
+    "cpu-stress-test",
+    "overclocking"
+  ]
 }

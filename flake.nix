@@ -3,69 +3,44 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-parts.url = "github:hercules-ci/flake-parts";
     git-hooks = {
       url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    std = {
+      url = "github:Daaboulex/nix-packaging-standard?ref=v2.5.0";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.git-hooks.follows = "git-hooks";
+    };
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      git-hooks,
-    }:
-    let
-      supportedSystems = [
-        "x86_64-linux"
-      ];
-      forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
-      pkgsFor =
-        system:
-        import nixpkgs {
-          localSystem.system = system;
-          config.allowUnfree = true;
-        };
-    in
-    {
-      # NixOS module — kernel modules, device access, udev rules, package
-      nixosModules.default = import ./nix/module.nix { inherit self; };
+    inputs@{ flake-parts, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = [ "x86_64-linux" ];
+      imports = [ inputs.std.flakeModules.base ];
 
-      # Overlay — makes pkgs.linux-corecycler and pkgs.linux-corecycler-full available
-      overlays.default =
-        final: _prev:
+      flake = {
+        # NixOS module - kernel modules, device access, udev rules, package
+        nixosModules.default = import ./nix/module.nix { self = inputs.self; };
+
+        # Overlay - makes pkgs.linux-corecycler and pkgs.linux-corecycler-full available
+        overlays.default = final: _prev: {
+          linux-corecycler = inputs.self.packages.${final.stdenv.hostPlatform.system}.default;
+          linux-corecycler-full = inputs.self.packages.${final.stdenv.hostPlatform.system}.full;
+        };
+      };
+
+      perSystem =
+        { system, ... }:
         let
-          system = _prev.stdenv.hostPlatform.system;
-        in
-        nixpkgs.lib.optionalAttrs (builtins.elem system supportedSystems) {
-          linux-corecycler = self.packages.${system}.default;
-          linux-corecycler-full = self.packages.${system}.full;
-        };
-
-      formatter = forAllSystems (system: (pkgsFor system).nixfmt);
-
-      checks = forAllSystems (system: {
-        pre-commit = git-hooks.lib.${system}.run {
-          src = ./.;
-          hooks = {
-            nixfmt-rfc-style.enable = true;
-            typos.enable = true;
-            rumdl.enable = true;
-            check-readme-sections = {
-              enable = true;
-              name = "check-readme-sections";
-              entry = "bash scripts/check-readme-sections.sh";
-              files = "README\\.md$";
-              language = "system";
-            };
+          # mprime (the "full" backend) is unfree.
+          pkgs = import inputs.nixpkgs {
+            inherit system;
+            config.allowUnfree = true;
           };
-        };
-      });
 
-      packages = forAllSystems (
-        system:
-        let
-          pkgs = pkgsFor system;
           # Default python3 (not a pinned minor): Hydra only builds/caches
           # pyside6 for the default interpreter, so pinning python312 forced a
           # ~50-min from-source pyside6 build on every CI run. python3 keeps
@@ -74,7 +49,7 @@
           python = pkgs.python3;
           pythonPkgs = python.pkgs;
 
-          # Shared build function — backends list is the only difference
+          # Shared build function - backends list is the only difference
           mkCoreCycler =
             {
               backends ? [
@@ -142,70 +117,40 @@
             };
         in
         {
-          # FOSS-only: stress-ng only (no unfree software)
-          default = mkCoreCycler { };
+          packages = {
+            # FOSS-only: stress-ng only (no unfree software)
+            default = mkCoreCycler { };
 
-          # Full: includes mprime (unfree)
-          full = mkCoreCycler {
-            backends = [
-              pkgs.mprime
-              pkgs.stress-ng
-              pkgs.stressapptest
-            ];
-          };
-        }
-      );
-
-      devShells = forAllSystems (
-        system:
-        let
-          pkgs = pkgsFor system;
-          python = pkgs.python3; # matches packages: cached pyside6, see note above
-        in
-        {
-          default = pkgs.mkShell {
-            packages = [
-              (python.withPackages (
-                ps: with ps; [
-                  pyside6
-                  pytest
-                  ruff
-                ]
-              ))
-              pkgs.qt6.qtbase
-              pkgs.mprime
-              pkgs.stress-ng
-              pkgs.stressapptest
-              pkgs.util-linux # taskset
-              pkgs.nil
-            ];
-
-            inputsFrom = [ self.checks.${system}.pre-commit ];
-
-            env.QT_QPA_PLATFORM_PLUGIN_PATH = "${pkgs.qt6.qtbase}/lib/qt-6/plugins/platforms";
-
-            shellHook = ''
-              ${self.checks.${system}.pre-commit.shellHook}
-              echo "corecycler dev shell"
-              echo "  Run:  python src/main.py"
-              echo "  Test: pytest tests/"
-            '';
+            # Full: includes mprime (unfree)
+            full = mkCoreCycler {
+              backends = [
+                pkgs.mprime
+                pkgs.stress-ng
+                pkgs.stressapptest
+              ];
+            };
           };
 
-          # Minimal environment for CI: just the Python test deps, no
-          # mprime/stress-ng/nil/pre-commit. Keeps the test job's closure a
-          # pure cache.nixos.org fetch (no unfree mprime build, no shellHook).
-          ci = pkgs.mkShell {
-            packages = [
-              (python.withPackages (
-                ps: with ps; [
-                  pyside6
-                  pytest
-                ]
-              ))
-            ];
+          # Force full evaluation of the NixOS module (options + assertions +
+          # every mkIf path) without building the closure.
+          checks.module-eval-nixos = inputs.std.lib.nixosModuleCheck {
+            inherit (inputs) nixpkgs;
+            inherit system;
+            module = import ./nix/module.nix { self = inputs.self; };
+            config = {
+              nixpkgs.config.allowUnfree = true; # mprime backend is unfree
+              services.corecycler = {
+                enable = true;
+                deviceAccessUser = "corecycler-test";
+              };
+              # the eval fixture must declare the user the module grants access to
+              users.users.corecycler-test = {
+                isSystemUser = true;
+                group = "corecycler-test";
+              };
+              users.groups.corecycler-test = { };
+            };
           };
-        }
-      );
+        };
     };
 }
