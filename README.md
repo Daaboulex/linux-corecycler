@@ -269,6 +269,8 @@ environment.systemPackages = [
 | `packages.default` | stress-ng, stressapptest | No |
 | `packages.full` | stress-ng, stressapptest, mprime | Yes (mprime) |
 
+`packages.full` is built **off-CI**: mprime is unfree and not on `cache.nixos.org`, so CI only eval-gates it (proving it evaluates) while the FOSS `packages.default` is fully built. Build `full` yourself with `allowUnfree` (`nix build .#full`).
+
 Both variants include taskset (util-linux) for CPU core pinning. Flake inputs are auto-updated weekly via GitHub Actions, keeping all bundled backends at their latest nixpkgs versions.
 
 ### Nix (any distro)
