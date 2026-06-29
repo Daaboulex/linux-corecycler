@@ -104,9 +104,27 @@ jobs:
             const fs = require('fs');
             const log = fs.readFileSync('/tmp/lock-build.log', 'utf8');
             const lastLines = log.split('\n').slice(-80).join('\n');
+            const title = 'Maintenance: flake.lock update broke build';
+
+            // Close any prior open report of the same failure before filing a
+            // fresh one, so a recurring lock-build break does not pile up
+            // duplicate issues (mirrors update.yml's update-failed dedup).
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: 'maintenance', state: 'open'
+            });
+            for (const issue of existing.data) {
+              if (issue.title !== title) continue;
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, state: 'closed',
+                state_reason: 'not_planned'
+              });
+            }
+
             await github.rest.issues.create({
               owner: context.repo.owner, repo: context.repo.repo,
-              title: 'Maintenance: flake.lock update broke build',
+              title,
               labels: ['maintenance'],
               body: [
                 '## flake.lock update failed to build',
