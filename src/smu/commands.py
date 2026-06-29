@@ -395,6 +395,13 @@ COMMAND_SETS[CPUGeneration.ZEN2_CASTLE_PEAK] = _alias_commands(
 COMMAND_SETS[CPUGeneration.ZEN4_DRAGON_RANGE] = _alias_commands(
     CPUGeneration.ZEN4_RAPHAEL, CPUGeneration.ZEN4_DRAGON_RANGE
 )
+# Strix Halo is a Zen 5 APU sharing Strix Point's SMU interface. Without this it
+# had no command set, so any future routing of model 0x70 to ZEN5_STRIX_HALO (it
+# currently resolves to ZEN5_STRIX_POINT) would build RyzenSMU(commands=None) and
+# crash. The completeness test below pins "every known generation has a set".
+COMMAND_SETS[CPUGeneration.ZEN5_STRIX_HALO] = _alias_commands(
+    CPUGeneration.ZEN5_STRIX_POINT, CPUGeneration.ZEN5_STRIX_HALO
+)
 
 
 def detect_generation(family: int, model: int, model_name: str) -> CPUGeneration:
@@ -497,15 +504,16 @@ def encode_co_arg(
     # This is equivalent to standard 16-bit two's complement.
     margin = value & 0xFFFF
 
-    if scheme == "zen3":
-        # Zen 3: ((core_id & 8) << 5 | core_id & 7) << 20 | margin
-        # This encodes CCD in bit 28 (core_id >= 8 means CCD1)
-        return (((core_id & 8) << 5 | core_id & 7) << 20) | margin
-
-    if scheme == "zen4_5":
-        # Zen 4/5: CCD in bits [31:28], core within CCD in bits [23:20]
-        # Prefer topology-detected CCD; fall back to core_id // 8
-        # Prefer probed physical slot; fall back to core_id % 8
+    if scheme in ("zen3", "zen4_5"):
+        # Zen 3/4/5 share the per-core layout: CCD in bits [31:28], core within
+        # CCD in bits [23:20]. Prefer the topology-detected CCD and the probed
+        # physical slot; harvested / multi-CCD parts (5900X, 5600X, 9900X, ...)
+        # renumber kernel core-ids contiguously, so deriving the slot from
+        # core_id alone targets the WRONG SMU slot — and that write is silent,
+        # because read-back hits the same wrong slot. Fall back to core_id only
+        # when topology did not supply the CCD/slot.
+        #   Zen 3 once used (((core_id&8)<<5 | core_id&7)<<20), which is bit-identical
+        #   to this for the core_id-derived case but discarded the ccd/slot args.
         detected_ccd = ccd if ccd is not None else core_id // 8
         core_in_ccd = slot if slot is not None else core_id % 8
         return (detected_ccd << 28) | (core_in_ccd << 20) | margin

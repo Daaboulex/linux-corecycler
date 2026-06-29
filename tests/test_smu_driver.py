@@ -437,10 +437,25 @@ class TestProbeSlotMap:
         assert slot_map[0] == 0
         assert len(slot_map) == 6
 
-    def test_zen3_skips_probing(self, smu_dir, zen3_cmds):
+    def test_zen3_probes_harvested_slots(self, smu_dir, zen3_cmds):
+        """Zen 3 now probes too (it used to skip — the bug): a harvested 5600X
+        (6-of-8 cores on one CCD) maps kernel cores to physical slots so the SMU
+        write lands on the right core."""
         smu = RyzenSMU(zen3_cmds, smu_dir)
-        smu._topology_ccd = {0: 0, 1: 0}
-        assert smu.probe_slot_map() is None
+        smu._topology_ccd = {i: 0 for i in range(6)}
+        harvested = {2, 3}
+
+        def mock_send(cmd, args=(0, 0, 0, 0, 0, 0)):
+            arg = args[0] if args else 0
+            slot = (arg >> 20) & 0xF
+            if slot in harvested:  # harvested slots echo the arg
+                return SMUResponse(success=True, args=(arg,) + (0,) * 5, raw=b"\x00" * 24)
+            return SMUResponse(success=True, args=(0,) + (0,) * 5, raw=b"\x00" * 24)
+
+        with patch.object(smu, "_send_command", side_effect=mock_send):
+            slot_map = smu.probe_slot_map()
+        assert slot_map is not None
+        assert [slot_map[i] for i in range(6)] == [0, 1, 4, 5, 6, 7]
 
     def test_no_topology_skips_probing(self, smu_dir, zen5_cmds):
         smu = RyzenSMU(zen5_cmds, smu_dir)
