@@ -712,16 +712,24 @@ class TunerEngine(QObject):
 
             case TunerPhase.BACKOFF_PRECONFIRM:
                 if passed:
+                    # The value that just passed IS the proven best (handles the
+                    # crash-before-any-pass case where best_offset was None).
+                    cs.best_offset = cs.current_offset
                     had_pass_bound = cs.backoff_pass_bound is not None
                     cs.backoff_pass_bound = cs.best_offset
                     if had_pass_bound and cs.backoff_fail_bound is not None:
                         # Binary search active — jump to midpoint
                         gap = abs(cs.backoff_fail_bound - cs.backoff_pass_bound)
                         if gap <= cfg.fine_step:
+                            # Converged: settle at the PROVEN pass bound, never an
+                            # untested midpoint.
+                            cs.best_offset = cs.backoff_pass_bound
+                            cs.current_offset = cs.backoff_pass_bound
                             cs.phase = TunerPhase.CONFIRMED
                         else:
+                            # Probe the midpoint as current ONLY; best stays at the
+                            # proven pass bound until the midpoint itself passes.
                             mid = cs.backoff_pass_bound + direction * (gap // 2)
-                            cs.best_offset = mid
                             cs.current_offset = mid
                             # Stay in backoff_preconfirm for next test
                     else:
@@ -769,20 +777,25 @@ class TunerEngine(QObject):
 
             case TunerPhase.BACKOFF_CONFIRMING:
                 if passed:
-                    # Confirmed at this offset — check binary search
-                    if cs.backoff_fail_bound is not None and cs.backoff_pass_bound is not None:
+                    # The confirmed value is proven — record it as best and pass bound.
+                    cs.best_offset = cs.current_offset
+                    cs.backoff_pass_bound = cs.current_offset
+                    if cs.backoff_fail_bound is not None:
                         # Binary search: try midpoint between pass and fail bounds
                         gap = abs(cs.backoff_fail_bound - cs.backoff_pass_bound)
                         if gap <= cfg.fine_step:
-                            # Converged — enter hardening or confirmed
+                            # Converged: settle at the proven pass bound, then harden.
+                            cs.best_offset = cs.backoff_pass_bound
+                            cs.current_offset = cs.backoff_pass_bound
                             if cfg.hardening_tiers:
                                 cs.phase = TunerPhase.HARDENING_T1
                                 cs.hardening_tier_index = 0
                             else:
                                 cs.phase = TunerPhase.CONFIRMED
                         else:
+                            # Probe the midpoint as current ONLY (never recorded as
+                            # best until it passes).
                             mid = cs.backoff_pass_bound + direction * (gap // 2)
-                            cs.best_offset = mid
                             cs.current_offset = mid
                             cs.phase = TunerPhase.BACKOFF_PRECONFIRM
                     else:
@@ -854,8 +867,12 @@ class TunerEngine(QObject):
     def _apply_crash_penalty(self, cs: CoreState) -> None:
         """Apply crash penalty: larger backoff + set hard fail bound + cooldown."""
         crashed_offset = cs.current_offset
-        # Set hard fail bound — never try this offset or more aggressive again
-        if cs.backoff_fail_bound is None or self._is_more_aggressive(
+        # fail_bound tracks the LEAST aggressive offset known to fail. Stability is
+        # monotonic (anything more aggressive than a failing offset also fails), so
+        # this is the tightest SAFE bound, and it lets the backoff binary search
+        # converge: a crash at a midpoint less aggressive than the old bound must
+        # TIGHTEN it, otherwise the search oscillates forever (found by the fuzzer).
+        if cs.backoff_fail_bound is None or not self._is_more_aggressive(
             crashed_offset, cs.backoff_fail_bound
         ):
             cs.backoff_fail_bound = crashed_offset
@@ -882,6 +899,11 @@ class TunerEngine(QObject):
             cs.current_offset = new_offset
         cs.crash_count += 1
         cs.crash_cooldown = 2
+        # A core that crashed before ever passing has no proven-safe best yet; the
+        # only known-safe value is its baseline. Seed it so the backoff math (which
+        # assumes best_offset is set) never produces a None offset (found by fuzz).
+        if cs.best_offset is None:
+            cs.best_offset = cs.baseline_offset
         # Force into backoff if in search or hardening phases
         if cs.phase in (
             TunerPhase.COARSE_SEARCH,
