@@ -104,6 +104,10 @@ class TunerConfig:
         errors = []
         if self.direction not in (-1, 1):
             errors.append(f"direction must be -1 or 1, got {self.direction}")
+        if self.coarse_step < 1:
+            errors.append(f"coarse_step must be >= 1, got {self.coarse_step}")
+        if self.fine_step < 1:
+            errors.append(f"fine_step must be >= 1, got {self.fine_step}")
         if self.fine_step > self.coarse_step:
             errors.append(f"fine_step ({self.fine_step}) must be <= coarse_step ({self.coarse_step})")
         if self.cores_to_test is not None and len(self.cores_to_test) == 0:
@@ -133,6 +137,18 @@ class TunerConfig:
             errors.append("max_thermal_retries must be >= 0")
         if self.thermal_cooldown_seconds < 0:
             errors.append("thermal_cooldown_seconds must be >= 0")
+        if self.validate_duration_seconds < 1:
+            errors.append("validate_duration_seconds must be >= 1")
+        if self.max_confirm_retries < 0:
+            errors.append("max_confirm_retries must be >= 0")
+        if self.midpoint_jump_threshold < 1:
+            errors.append("midpoint_jump_threshold must be >= 1")
+        if self.abort_on_consecutive_failures < 0:
+            errors.append("abort_on_consecutive_failures must be >= 0")
+        if self.backoff_preconfirm_multiplier <= 0:
+            errors.append("backoff_preconfirm_multiplier must be > 0")
+        if self.stretch_threshold_pct < 0:
+            errors.append("stretch_threshold_pct must be >= 0")
         return errors
 
     def clamp_max_offset(self, co_range: tuple[int, int]) -> None:
