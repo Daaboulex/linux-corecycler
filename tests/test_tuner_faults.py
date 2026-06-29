@@ -296,6 +296,71 @@ def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000,
     return holder["eng"], steps, crashes, sid
 
 
+def drive_intermittent(db, topo, backend, cliffs, flaky, cfg_kw, baseline=0, cap=8000):
+    """Like drive_closed_loop, but instability is INTERMITTENT, not a deterministic
+    cliff. The deterministic sim proves safety only for a monotonic cliff; real CO
+    instability often passes a short search test and crashes a later confirm/harden.
+
+    Per core: offset >= stable always passes; offset <= hard always hard-crashes; an
+    offset in the marginal band (hard < offset < stable) PASSES (looks stable) until
+    the flaky[core]-th time THAT offset is tested, then hard-crashes -- the "passed
+    search, failed confirm" case. Every offset that actually hard-crashed is recorded
+    in crashed_at. Returns (engine, steps, crashes, crashed_at, sid).
+    """
+    sid = tp.create_session(db, TunerConfig(**cfg_kw), "", "")
+    pending: list[int] = []
+    visits: dict[tuple[int, int], int] = {}
+    crashed_at: dict[int, set[int]] = {c: set() for c in cliffs}
+
+    def patched(core_id, duration):
+        pending.append(core_id)
+
+    def fresh():
+        e = make_engine(db, topo, FaultSMU(), backend, **cfg_kw)
+        e._start_worker = patched
+        e._session_id = sid
+        return e
+
+    eng = fresh()
+    eng._core_states = {c: CoreState(core_id=c, baseline_offset=baseline) for c in cliffs}
+    for cs in eng._core_states.values():
+        tp.save_core_state(db, sid, cs)
+    eng._set_status("running")
+    holder = {"eng": eng}
+    holder["eng"]._run_next()
+
+    steps = crashes = 0
+
+    def do_crash(core, off):
+        nonlocal crashes
+        crashes += 1
+        crashed_at[core].add(off)
+        holder["eng"] = fresh()
+        holder["eng"].resume(sid)
+
+    while pending and steps < cap:
+        steps += 1
+        core = pending.pop(0)
+        e = holder["eng"]
+        cs = e._core_states.get(core)
+        if cs is None:
+            continue
+        offset = cs.current_offset
+        stable, hard = cliffs[core]
+
+        if offset >= stable:                       # always stable
+            e._on_test_finished(core, True, "", "", 1.0, 0.0)
+        elif offset <= hard:                       # always a hard crash
+            do_crash(core, offset)
+        else:                                      # marginal: flaky
+            visits[(core, offset)] = visits.get((core, offset), 0) + 1
+            if visits[(core, offset)] >= flaky[core]:
+                do_crash(core, offset)             # crashed on a re-test
+            else:
+                e._on_test_finished(core, True, "", "", 1.0, 0.0)  # looked stable
+    return holder["eng"], steps, crashes, crashed_at, sid
+
+
 # ---------------------------------------------------------------------------
 # T1: a hard crash with NO in_test flag is caught by the journal
 # ---------------------------------------------------------------------------
@@ -661,6 +726,87 @@ class TestClosedLoopSimulation:
             assert not (r == crash or r < crash), (
                 f"[{order}] core {c} left resident at {r}, crashes at {crash}"
             )
+
+
+# ---------------------------------------------------------------------------
+# T9b: intermittent instability — safety holds when a value passes then crashes
+# ---------------------------------------------------------------------------
+
+
+class TestIntermittentInstability:
+    """The deterministic closed-loop sim proves safety only for a monotonic cliff;
+    the audit flagged that real CO instability is intermittent -- an offset passes a
+    short search test and crashes a later confirm/harden. These drive the REAL loop
+    against an intermittent oracle and assert the generalized safety invariant: after
+    termination, each core's resident CO is strictly LESS aggressive than every offset
+    that actually hard-crashed during the run (resident > max(crashed offsets))."""
+
+    def test_offset_that_passes_then_crashes_is_backed_off(self, db, topo, mock_backend):
+        # Core 0: >= -8 always stable; <= -20 always hard-crashes; a marginal offset
+        # passes its FIRST test then hard-crashes on the SECOND -- "passed search,
+        # failed confirm/harden". Deterministic regression for the intermittent path.
+        cliffs = {0: (-8, -20)}
+        flaky = {0: 2}
+        eng, steps, crashes, crashed_at, sid = drive_intermittent(
+            db, topo, mock_backend, cliffs, flaky,
+            dict(cores_to_test=[0], coarse_step=4, fine_step=1, max_offset=-40,
+                 crash_penalty_steps=3, auto_validate=False,
+                 resume_crash_quarantine_threshold=50,
+                 search_duration_seconds=1, confirm_duration_seconds=1),
+        )
+        assert steps < 8000
+        assert crashes >= 1, "the intermittent crash never fired -- the test is vacuous"
+        assert eng.status in ("idle", "quarantined")
+        resident = eng._smu.applied.get(0, 0)
+        assert crashed_at[0], "no crash recorded -- vacuous"
+        worst = max(crashed_at[0])  # least-aggressive offset that hard-crashed
+        assert resident > worst, f"left resident at {resident}, it hard-crashed at {worst}"
+
+    @settings(max_examples=250, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+    @given(data=st.data())
+    def test_safe_under_random_intermittent_instability(self, data):
+        n_cores = data.draw(st.integers(min_value=1, max_value=4), label="n_cores")
+        n_ccds = data.draw(st.sampled_from([1, 2]), label="n_ccds")
+        order = data.draw(st.sampled_from(
+            ["sequential", "round_robin", "ccd_round_robin"]), label="order")
+        coarse = data.draw(st.integers(min_value=2, max_value=6), label="coarse")
+        fine = data.draw(st.integers(min_value=1, max_value=min(coarse, 3)), label="fine")
+        cliffs: dict[int, tuple[int, int]] = {}
+        flaky: dict[int, int] = {}
+        for c in range(n_cores):
+            stable = data.draw(st.integers(min_value=-30, max_value=-3), label=f"stable{c}")
+            gap = data.draw(st.integers(min_value=2, max_value=15), label=f"gap{c}")
+            cliffs[c] = (stable, stable - gap)
+            flaky[c] = data.draw(st.integers(min_value=2, max_value=4), label=f"flaky{c}")
+
+        db = HistoryDB(":memory:")
+        try:
+            topo = _make_topo(n_cores, n_ccds)
+            cfg_kw = dict(
+                cores_to_test=list(range(n_cores)), test_order=order,
+                coarse_step=coarse, fine_step=fine, max_offset=-50,
+                crash_penalty_steps=data.draw(st.integers(min_value=1, max_value=5),
+                                              label="penalty"),
+                auto_validate=False, resume_crash_quarantine_threshold=50,
+                search_duration_seconds=1, confirm_duration_seconds=1,
+            )
+            eng, steps, crashes, crashed_at, sid = drive_intermittent(
+                db, topo, _StubBackend(), cliffs, flaky, cfg_kw)
+
+            assert steps < 8000, f"no convergence: cliffs={cliffs} flaky={flaky}"
+            assert eng.status in ("idle", "quarantined"), (
+                f"stuck in {eng.status}: cliffs={cliffs} flaky={flaky}")
+            resident = eng._smu.applied
+            for c in cliffs:
+                if not crashed_at[c]:
+                    continue
+                r = resident.get(c, 0)
+                worst = max(crashed_at[c])  # least-aggressive offset that crashed
+                assert r > worst, (
+                    f"core {c} resident {r} <= hard-crash offset {worst}: "
+                    f"cliffs={cliffs} flaky={flaky}")
+        finally:
+            db.close()
 
 
 # ---------------------------------------------------------------------------
