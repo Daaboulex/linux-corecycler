@@ -456,6 +456,96 @@ class TestResumeCrashCircuitBreaker:
         assert db.get_resume_crash_streak(sid) == 0
 
 
+class TestValidationCrashArmsBreaker:
+    """A hard crash DURING multi-core validation must arm the circuit breaker.
+
+    Validation re-applies each core's confirmed offset, which `_apply_co` journals
+    survived=1, so the CO-journal crash detector is blind to it. Only the in_test
+    flag can attribute a multi-core power-interaction crash (the failure mode
+    validation exists to find). Before the fix the validation workers never set
+    in_test, so such a crash left `crashed` empty -> streak reset to 0 -> the same
+    profile was re-applied into the same crash forever.
+    """
+
+    def _seed_validating_at_stage2(self, db, smu, topo, backend, cliffs, **cfg):
+        """Seed a confirmed profile and run the REAL stage-2 (all-core) launch,
+        capturing the stressed set without starting a worker."""
+        sid = tp.create_session(
+            db, TunerConfig(cores_to_test=list(cliffs), **cfg), "", ""
+        )
+        eng = make_engine(db, topo, smu, backend, cores_to_test=list(cliffs), **cfg)
+        launched: list[list[int]] = []
+        eng._start_multi_core_worker = lambda cores, duration: launched.append(list(cores))
+        eng._session_id = sid
+        eng._core_states = {
+            c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=v,
+                         best_offset=v, baseline_offset=0)
+            for c, v in cliffs.items()
+        }
+        # By the time validation runs, each core's confirmed offset is in the
+        # proven-safe envelope, so _apply_co journals it survived=1 — which is
+        # exactly why the journal detector is blind and only in_test can catch a
+        # validation crash. Seed it so the test reproduces that real state.
+        eng._co_survived = dict(cliffs)
+        for cs in eng._core_states.values():
+            tp.save_core_state(db, sid, cs)
+        eng._set_status("validating")
+        eng._validation_stage = 2
+        eng._validation_core_order = sorted(cliffs)
+        eng._run_validation_stage2()
+        return eng, sid, launched
+
+    def test_validation_stage_flags_all_stressed_cores_in_test(
+        self, db, topo, smu, mock_backend
+    ):
+        """The fix: a multi-core validation stage flags EVERY stressed core in_test
+        and PERSISTS it before the worker — and the CO journal is blind here
+        (confirmed offsets journal survived=1), so in_test is the only signal that
+        can attribute a validation crash."""
+        cliffs = {0: -10, 1: -12, 2: -8, 3: -15}
+        _eng, sid, launched = self._seed_validating_at_stage2(
+            db, smu, topo, mock_backend, cliffs,
+        )
+        assert launched == [sorted(cliffs)]               # all cores stressed together
+        persisted = db.get_tuner_core_states(sid)
+        assert all(persisted[c].in_test for c in cliffs)  # all flagged + persisted
+        assert tp.journal_suspects(db, sid) == []         # journal cannot catch it
+
+    def test_in_test_validation_cores_are_attributed_as_crashes(
+        self, db, topo, smu, mock_backend
+    ):
+        """The detection half of the fix: a confirmed core left in_test by a crashing
+        validation worker is attributed as a crash and penalized on the resume path —
+        phase is irrelevant, only the in_test flag matters, and the journal cannot see
+        it. The streak/quarantine half (a non-empty crashed set -> breaker) is the
+        same code TestResumeCrashCircuitBreaker covers; the two compose to the full
+        guarantee. (resume()'s drift/status Qt signal emissions abort under
+        pytest+PySide6, but _detect_and_handle_crashes is the load-bearing logic and
+        the end-to-end path is verified out-of-harness.)"""
+        cliffs = {0: -10, 1: -12}
+        eng, sid, _ = self._seed_validating_at_stage2(
+            db, smu, topo, mock_backend, cliffs, crash_penalty_steps=1, fine_step=1,
+        )
+        assert tp.journal_suspects(db, sid) == []  # journal is blind to validation
+        crashed = eng._detect_and_handle_crashes(eng._core_states)
+        assert sorted(crashed) == sorted(cliffs)   # every in_test core attributed
+        assert all(eng._core_states[c].crash_count >= 1 for c in cliffs)  # all penalized
+        assert all(not eng._core_states[c].in_test for c in cliffs)       # flag cleared
+
+    def test_normal_validation_completion_clears_in_test(self, db, topo, smu, mock_backend):
+        """A surviving validation test must leave NO stale in_test on any stressed
+        core, or a later resume would wrongly fire the breaker on a clean session."""
+        cliffs = {0: -10, 1: -12}
+        eng, sid, _ = self._seed_validating_at_stage2(
+            db, smu, topo, mock_backend, cliffs,
+        )
+        assert all(db.get_tuner_core_states(sid)[c].in_test for c in cliffs)
+        with patch.object(eng, "_run_next"), patch.object(eng, "_run_validation_next"):
+            eng._on_test_finished(sorted(cliffs)[0], True, "", "", 1.0, 0.0)
+        assert eng._cores_under_stress == []
+        assert all(not db.get_tuner_core_states(sid)[c].in_test for c in cliffs)
+
+
 # ---------------------------------------------------------------------------
 # T4: SMU write failure pauses without corrupting state
 # ---------------------------------------------------------------------------
