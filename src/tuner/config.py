@@ -7,6 +7,25 @@ import json
 from dataclasses import asdict, dataclass
 
 
+def _json_value_ok(default: object, value: object) -> bool:
+    """True when a JSON-decoded value is type-compatible with a config field's
+    default. ``from_json`` uses this to DROP a wrong-typed field and fall back to
+    the safe default (fail closed), so a corrupted or hand-edited config_json can
+    never smuggle a None/str/int into a field the engine treats as an int/list/bool
+    -- which crashed both start() (via validate()) and resume() (which skips it)."""
+    if isinstance(default, bool):
+        return isinstance(value, bool)
+    if isinstance(default, (int, float)):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if isinstance(default, str):
+        return isinstance(value, str)
+    if isinstance(default, list):
+        return isinstance(value, list)
+    if default is None:  # the optional list field (cores_to_test)
+        return value is None or isinstance(value, list)
+    return True
+
+
 @dataclass(slots=True)
 class TunerConfig:
     """Configuration for the automated PBO Curve Optimizer tuner.
@@ -96,16 +115,23 @@ class TunerConfig:
 
     @classmethod
     def from_json(cls, data: str) -> TunerConfig:
-        """Parse a config from JSON. Fails closed: malformed JSON or a non-object
-        payload (e.g. a corrupted or hand-edited DB row) yields defaults rather than
-        raising, so resume/abort never breaks on a bad config_json."""
+        """Parse a config from JSON. Fails closed: malformed JSON, a non-object
+        payload, or any wrong-typed field (e.g. a corrupted or hand-edited DB row)
+        falls back to the safe default rather than raising, so start/resume/abort
+        never break on a bad config_json -- a None hardening_tiers or a str step no
+        longer crashes validate()/the engine; it reverts to the default."""
         try:
             d = json.loads(data)
         except (json.JSONDecodeError, TypeError):
             return cls()
         if not isinstance(d, dict):
             return cls()
-        return cls(**{k: v for k, v in d.items() if k in cls.__slots__})
+        defaults = cls()
+        clean = {
+            k: v for k, v in d.items()
+            if k in cls.__slots__ and _json_value_ok(getattr(defaults, k), v)
+        }
+        return cls(**clean)
 
     def validate(self) -> list[str]:
         """Return list of validation errors, empty if config is valid."""
