@@ -237,8 +237,11 @@ def compute_fclk_uclk_ratio(
     - 1:1 — FCLK=UCLK (coupled, optimal latency)
     - 2:3 — FCLK=2000, UCLK=3000 (DDR5-6000 with FCLK capped at ~2000)
     - 1:2 — FCLK=UCLK/2 (decoupled)
-    Returns None only if values are zero/negative.
+    Returns None if values are zero/negative or non-finite (NaN/inf would crash
+    round()).
     """
+    if not (math.isfinite(fclk_mhz) and math.isfinite(uclk_mhz)):
+        return None
     if fclk_mhz <= 0 or uclk_mhz <= 0:
         return None
     from math import gcd
