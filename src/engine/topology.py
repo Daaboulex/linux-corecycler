@@ -53,6 +53,21 @@ def detect_topology() -> CPUTopology:
     return topo
 
 
+def _field_int(line: str) -> int | None:
+    """Extract the integer after the colon in a "key: value" line.
+
+    Returns None for a missing colon or a non-numeric value, so a malformed or
+    non-x86 /proc/cpuinfo line is skipped rather than crashing topology detection.
+    """
+    parts = line.split(":", 1)
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[1].strip())
+    except ValueError:
+        return None
+
+
 def _parse_cpuinfo(topo: CPUTopology) -> None:
     if not CPUINFO.exists():
         return
@@ -65,21 +80,27 @@ def _parse_cpuinfo(topo: CPUTopology) -> None:
 
     for line in text.splitlines():
         if line.startswith("processor"):
-            current_proc = int(line.split(":")[1].strip())
+            v = _field_int(line)
+            if v is not None:
+                current_proc = v
         elif line.startswith("core id"):
-            current_core = int(line.split(":")[1].strip())
+            v = _field_int(line)
+            if v is not None:
+                current_core = v
         elif line.startswith("physical id"):
-            current_pkg = int(line.split(":")[1].strip())
+            v = _field_int(line)
+            if v is not None:
+                current_pkg = v
         elif line.startswith("model name") and not topo.model_name:
             topo.model_name = line.split(":", 1)[1].strip()
         elif line.startswith("vendor_id") and not topo.vendor:
-            topo.vendor = line.split(":")[1].strip()
+            topo.vendor = line.split(":", 1)[1].strip()
         elif line.startswith("cpu family") and topo.family == 0:
-            topo.family = int(line.split(":")[1].strip())
+            topo.family = _field_int(line) or 0
         elif line.startswith("model\t") and topo.model == 0:
-            topo.model = int(line.split(":")[1].strip())
+            topo.model = _field_int(line) or 0
         elif line.startswith("stepping") and topo.stepping == 0:
-            topo.stepping = int(line.split(":")[1].strip())
+            topo.stepping = _field_int(line) or 0
         elif line == "":
             if current_proc >= 0 and current_core >= 0:
                 cores_seen.setdefault(current_core, []).append(current_proc)
@@ -125,15 +146,19 @@ def _parse_sysfs(topo: CPUTopology) -> None:
     online_path = SYSFS_CPU / "online"
     if online_path.exists():
         text = online_path.read_text().strip()
-        # format: "0-31" or "0-15,32-47"
+        # format: "0-31" or "0-15,32-47" — tolerate a malformed range without crashing.
         total = 0
         for part in text.split(","):
-            if "-" in part:
-                lo, hi = part.split("-")
-                total += int(hi) - int(lo) + 1
-            else:
-                total += 1
-        if topo.logical_cpus_count == 0:
+            try:
+                if "-" in part:
+                    lo, hi = part.split("-", 1)
+                    total += int(hi) - int(lo) + 1
+                elif part:
+                    int(part)  # validate it is a single CPU id
+                    total += 1
+            except ValueError:
+                continue
+        if topo.logical_cpus_count == 0 and total > 0:
             topo.logical_cpus_count = total
 
 
