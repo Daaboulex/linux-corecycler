@@ -74,99 +74,82 @@ class TestErrorState:
 
 
 class TestSysfsMCE:
-    def test_no_machinecheck_dir(self, tmp_path):
-        """Should return empty list if /sys/devices/system/machinecheck doesn't exist."""
-        det = ErrorDetector()
-        with patch("engine.detector.Path") as mock_path_cls:
-            # We need to patch the Path constructor inside _check_sysfs_mce
-            # Actually, let's patch at the point of use
-            pass
+    """Drive the REAL _check_sysfs_mce against a temp sysfs tree (injected via
+    _mce_base). These previously reimplemented the loop in the test body and so
+    passed even when the production method was replaced with a raise — the
+    baseline-delta and target-cpu filter were entirely unexercised."""
 
-        # Use direct approach: call _check_sysfs_mce with mocked Path
-        events = det._check_sysfs_mce(target_cpu=None)
-        # On a system without MCE dir, this returns empty (safe fallback)
-
-    def test_machinecheck_with_errors(self, tmp_path):
-        """Detect errors in sysfs machinecheck banks."""
-        mce_base = tmp_path / "machinecheck"
-        mce_dir = mce_base / "machinecheck0"
-        mce_dir.mkdir(parents=True)
-        (mce_dir / "bank0").write_text("0")
-        (mce_dir / "bank1").write_text("5")  # 5 errors
-        (mce_dir / "bank2").write_text("0")
-
-        det = ErrorDetector()
-        with patch("engine.detector.Path", return_value=mce_base):
-            # Patch the specific path construction
-            events = []
-            for mce_d in sorted(mce_base.iterdir()):
-                if not mce_d.name.startswith("machinecheck"):
-                    continue
-                cpu_num = int(mce_d.name.removeprefix("machinecheck"))
-                for bank_file in sorted(mce_d.glob("bank*")):
-                    count = int(bank_file.read_text().strip())
-                    if count > 0:
-                        events.append(
-                            MCEEvent(
-                                timestamp=time.time(),
-                                cpu=cpu_num,
-                                bank=1,
-                                message=f"MCE bank 1 error count: {count}",
-                                corrected=True,
-                            )
-                        )
-            assert len(events) == 1
-            assert events[0].cpu == 0
-            assert "count: 5" in events[0].message
-
-    def test_filter_by_cpu(self, tmp_path):
-        """Target CPU filtering should only return events for that CPU."""
-        mce_base = tmp_path / "machinecheck"
-        for cpu in [0, 1, 2]:
-            d = mce_base / f"machinecheck{cpu}"
+    @staticmethod
+    def _tree(tmp_path, banks: dict[int, dict[int, int]]):
+        """Build machinecheck<cpu>/bank<n> = count and return the base dir.
+        banks = {cpu: {bank: count}}."""
+        base = tmp_path / "machinecheck"
+        for cpu, bank_counts in banks.items():
+            d = base / f"machinecheck{cpu}"
             d.mkdir(parents=True)
-            (d / "bank0").write_text("3")
+            for bank, count in bank_counts.items():
+                (d / f"bank{bank}").write_text(str(count))
+        return base
 
+    def _detector(self, base):
         det = ErrorDetector()
+        det._mce_base = base
+        return det
 
-        # Manually test the filtering logic
-        events = []
-        target_cpu = 1
-        for mce_d in sorted(mce_base.iterdir()):
-            if not mce_d.name.startswith("machinecheck"):
-                continue
-            cpu_num = int(mce_d.name.removeprefix("machinecheck"))
-            if target_cpu is not None and cpu_num != target_cpu:
-                continue
-            for bank_file in sorted(mce_d.glob("bank*")):
-                count = int(bank_file.read_text().strip())
-                if count > 0:
-                    events.append(cpu_num)
+    def test_no_machinecheck_dir_returns_empty(self, tmp_path):
+        det = self._detector(tmp_path / "does_not_exist")
+        assert det._check_sysfs_mce(target_cpu=None) == []
 
-        assert events == [1]
+    def test_new_bank_error_above_baseline_is_reported(self, tmp_path):
+        base = self._tree(tmp_path, {0: {0: 0, 1: 0, 2: 0}})
+        det = self._detector(base)
+        det.reset()  # baseline: all banks 0
+        (base / "machinecheck0" / "bank1").write_text("5")  # 5 new errors appear
 
-    def test_invalid_bank_content(self, tmp_path):
-        """Non-integer bank content should be silently skipped."""
-        mce_base = tmp_path / "machinecheck"
-        d = mce_base / "machinecheck0"
-        d.mkdir(parents=True)
-        (d / "bank0").write_text("not_a_number")
+        events = det._check_sysfs_mce(target_cpu=None)
+        assert len(events) == 1
+        assert events[0].cpu == 0
+        assert events[0].bank == 1
+        assert "+5" in events[0].message
 
-        det = ErrorDetector()
-        # Should not crash — the real code has try/except
-        try:
-            int("not_a_number")
-        except ValueError:
-            pass  # expected
+    def test_preexisting_count_is_not_reported_as_new(self, tmp_path):
+        """The baseline-delta: a bank already at 5 at reset must not read as new;
+        only the increase above the baseline counts."""
+        base = self._tree(tmp_path, {0: {1: 5}})
+        det = self._detector(base)
+        det.reset()  # baseline: bank1 = 5
+        assert det._check_sysfs_mce(target_cpu=None) == []  # unchanged -> no event
 
-    def test_empty_machinecheck_dir(self, tmp_path):
-        """Dir exists but has no bank files."""
-        mce_base = tmp_path / "machinecheck"
-        d = mce_base / "machinecheck0"
-        d.mkdir(parents=True)
-        # no bank files
-        events = list(d.glob("bank*"))
-        assert events == []
+        (base / "machinecheck0" / "bank1").write_text("7")  # +2 since baseline
+        events = det._check_sysfs_mce(target_cpu=None)
+        assert len(events) == 1
+        assert events[0].bank == 1
+        assert "+2" in events[0].message
+
+    def test_target_cpu_filters_other_cpus(self, tmp_path):
+        base = self._tree(tmp_path, {0: {0: 0}, 1: {0: 0}, 2: {0: 0}})
+        det = self._detector(base)
+        det.reset()
+        for cpu in (0, 1, 2):
+            (base / f"machinecheck{cpu}" / "bank0").write_text("3")
+
+        only_cpu1 = det._check_sysfs_mce(target_cpu=1)
+        assert [e.cpu for e in only_cpu1] == [1]
+        assert {e.cpu for e in det._check_sysfs_mce(target_cpu=None)} == {0, 1, 2}
+
+    def test_invalid_bank_content_is_skipped_without_crashing(self, tmp_path):
+        base = self._tree(tmp_path, {0: {0: 0}})
+        det = self._detector(base)
+        det.reset()
+        (base / "machinecheck0" / "bank0").write_text("not_a_number")
+        assert det._check_sysfs_mce(target_cpu=None) == []  # skipped, no raise
+
+    def test_empty_machinecheck_dir_yields_no_events(self, tmp_path):
+        base = tmp_path / "machinecheck"
+        (base / "machinecheck0").mkdir(parents=True)  # no bank files
+        det = self._detector(base)
+        det.reset()
+        assert det._check_sysfs_mce(target_cpu=None) == []
 
 
 # ===========================================================================
