@@ -21,6 +21,28 @@ from smu.commands import (
 
 
 # ===========================================================================
+# Command-set completeness
+# ===========================================================================
+
+
+class TestCommandSetCompleteness:
+    """Every known CPU generation must have an SMU command set. A generation in the
+    enum but absent from COMMAND_SETS makes get_commands() return None, and
+    RyzenSMU(commands=None) then crashes — this pins the invariant so a newly added
+    generation (or routing model 0x70 to ZEN5_STRIX_HALO) can't ship that gap."""
+
+    def test_every_non_unknown_generation_has_a_command_set(self):
+        missing = [
+            g.name for g in CPUGeneration
+            if g is not CPUGeneration.UNKNOWN and get_commands(g) is None
+        ]
+        assert missing == [], f"generations with no SMU command set: {missing}"
+
+    def test_unknown_has_no_command_set(self):
+        assert get_commands(CPUGeneration.UNKNOWN) is None
+
+
+# ===========================================================================
 # Generation detection
 # ===========================================================================
 
@@ -182,13 +204,28 @@ class TestEncodeDecodeZen3:
         assert lower_16 == 0xFFFF
 
     def test_core_id_above_7_encoding(self):
-        """Zen 3 encoding uses (core_id & 8) << 5 for cores >= 8."""
+        """Cores >= 8 derive CCD1 from core_id when topology is not supplied."""
         encoded_0 = encode_co_arg(0, 0, self.gen)
         encoded_8 = encode_co_arg(8, 0, self.gen)
-        # core 8: ((8 & 8) << 5 | 8 & 7) << 20 = (256 | 0) << 20
         assert encoded_8 != encoded_0
-        # core 8 has bit pattern 0x100 << 20 in the upper bits
-        assert (encoded_8 >> 20) == 0x100
+        # core 8 -> CCD 1 (bits [31:28]), core_in_ccd 0 (bits [23:20])
+        assert (encoded_8 >> 28) & 0xF == 1
+        assert (encoded_8 >> 20) & 0xF == 0
+
+    def test_harvested_slot_and_ccd_override_core_id(self):
+        """Zen 3 must honor the topology-detected CCD and probed slot, not derive
+        them from core_id. On a harvested/2-CCD part (5900X 6+6, 5600X 6-of-8) the
+        kernel renumbers cores contiguously, so deriving the slot from core_id alone
+        targets the WRONG physical SMU slot — a silent wrong-core write. Regression
+        for the blind-audit finding that the Zen 3 branch discarded ccd/slot."""
+        # Logical core 6 is physically CCD1, slot 0 (5900X). Must encode CCD1/slot0,
+        # NOT the core_id-derived CCD0/slot6.
+        encoded = encode_co_arg(6, -30, self.gen, ccd=1, slot=0)
+        assert (encoded >> 28) & 0xF == 1   # CCD1, not CCD0
+        assert (encoded >> 20) & 0xF == 0   # slot 0, not slot 6
+        assert (encoded & 0xFFFF) == (-30 & 0xFFFF)
+        # And it must match the Zen 4/5 encoding for the same authoritative topology.
+        assert encoded == encode_co_arg(6, -30, CPUGeneration.ZEN4_RAPHAEL, ccd=1, slot=0)
 
 
 class TestEncodeDecodeZen3D:
@@ -304,11 +341,14 @@ class TestEncodeDecodeHarvested:
             decoded = decode_co_arg(0, encoded, self.gen)
             assert decoded == -30
 
-    def test_slot_ignored_for_zen3(self):
+    def test_slot_honored_for_zen3(self):
+        """Zen 3 honors the probed physical slot (was a bug: it ignored it, so a
+        harvested 5600X/5900X wrote the wrong core)."""
         gen = CPUGeneration.ZEN3_VERMEER
         enc_default = encode_co_arg(3, -10, gen)
         enc_with_slot = encode_co_arg(3, -10, gen, slot=5)
-        assert enc_default == enc_with_slot
+        assert enc_default != enc_with_slot
+        assert (enc_with_slot >> 20) & 0xF == 5
 
     def test_slot_with_zen4(self):
         gen = CPUGeneration.ZEN4_RAPHAEL

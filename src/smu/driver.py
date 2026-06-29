@@ -63,9 +63,6 @@ class SystemPBOState:
     # Max observed frequency from cpufreq (accounts for boost override + BCLK)
     max_freq_mhz: float | None = None
 
-    # Estimated BCLK from cpufreq bios_limit vs expected multiplier
-    estimated_bclk_mhz: float | None = None
-
     # Whether OC mode is enabled
     oc_mode: bool | None = None
 
@@ -118,17 +115,17 @@ class RyzenSMU:
         Without this, CCD is derived from ``core_id // 8`` which is correct
         for standard AMD desktop layouts but may break on non-standard configs.
 
-        For Zen 4/5 chips, also probes the SMU to detect harvested core slots.
-        On harvested chips (9900X, 9700X, 7900X, etc.) the kernel renumbers
-        cores contiguously but the SMU uses physical slot indices — probing
-        builds the correct mapping.
+        For Zen 3/4/5 chips, also probes the SMU to detect harvested core slots.
+        On harvested / multi-CCD chips (9900X, 9700X, 7900X, 5900X, 5600X, etc.)
+        the kernel renumbers cores contiguously but the SMU uses physical slot
+        indices — probing builds the correct mapping.
         """
         self._topology_ccd = {}
         for core_id, core_info in topology.cores.items():
             if core_info.ccd is not None:
                 self._topology_ccd[core_id] = core_info.ccd
 
-        if self.commands.encoding_scheme == "zen4_5" and not self.dry_run:
+        if self.commands.encoding_scheme in ("zen3", "zen4_5") and not self.dry_run:
             try:
                 self._slot_map = self.probe_slot_map()
             except Exception as e:
@@ -138,15 +135,21 @@ class RyzenSMU:
     def probe_slot_map(self) -> dict[int, int] | None:
         """Probe SMU to discover the physical slot for each core within its CCD.
 
-        On harvested Zen 4/5 chips the kernel renumbers cores contiguously
+        On harvested Zen 3/4/5 chips the kernel renumbers cores contiguously
         but the SMU addresses physical slots (0-7) including gaps from
         disabled cores. Probes all 8 slots per CCD using GET_CO: harvested
         slots echo the argument, active slots return the actual CO value.
 
+        HARDWARE-UNVERIFIED: the echo-vs-value discrimination has not been
+        confirmed on real harvested silicon (9900X/9700X/5600X). If a chip
+        returns the CO value in a different field/format, the probe could map
+        to the wrong slot; the count-based fallback (active_slots !=
+        expected_count -> core_id %% 8) bounds the damage but does not prove it.
+
         Returns the slot map {core_id: physical_slot}, or None if probing
         is not needed or fails.
         """
-        if self.commands.encoding_scheme != "zen4_5":
+        if self.commands.encoding_scheme not in ("zen3", "zen4_5"):
             return None
         if not self.commands.has_co or self.commands.get_co_cmd is None:
             return None
@@ -606,9 +609,6 @@ class RyzenSMU:
         # Read max frequency from cpufreq sysfs (accounts for boost override + BCLK)
         state.max_freq_mhz = _read_max_freq_sysfs()
 
-        # Estimate BCLK from cpufreq bios_limit
-        state.estimated_bclk_mhz = _estimate_bclk(state.max_freq_mhz)
-
         return state
 
     # ------------------------------------------------------------------
@@ -646,29 +646,3 @@ def _read_max_freq_sysfs() -> float | None:
     return None
 
 
-def _estimate_bclk(max_freq_mhz: float | None) -> float | None:
-    """Estimate BCLK from the max frequency and a known multiplier.
-
-    This is a rough heuristic. BCLK cannot be read directly from the SMU.
-    If max_freq is close to a known stock boost (e.g., 5700 for 9950X),
-    BCLK is likely 100 MHz. If it's higher, BCLK may be elevated.
-
-    Returns estimated BCLK in MHz, or None if we can't determine it.
-    """
-    if max_freq_mhz is None:
-        return None
-
-    # Read bios_limit which may reveal BCLK effects
-    path = Path("/sys/devices/system/cpu/cpu0/cpufreq/bios_limit")
-    try:
-        if path.exists():
-            bios_limit_mhz = int(path.read_text().strip()) / 1000.0
-            # If bios_limit is significantly different from max_freq,
-            # BCLK may be elevated. Common pattern: bios_limit stays at
-            # stock while cpuinfo_max_freq scales with BCLK.
-            if bios_limit_mhz > 0:
-                return None  # can't reliably determine BCLK from this alone
-    except (ValueError, OSError):
-        pass
-
-    return None  # no reliable way to determine BCLK
