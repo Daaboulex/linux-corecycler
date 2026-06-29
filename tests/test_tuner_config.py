@@ -107,3 +107,36 @@ class TestNewConfigOptions:
         cfg = TunerConfig(max_core_time_seconds=100)
         errors = cfg.validate()
         assert any("max_core_time" in e.lower() for e in errors)
+
+
+class TestConfigValidationFailsClosed:
+    """Invalid configs must be rejected (fail closed). A step size < 1 would make
+    the search advance by 0 and loop forever, so it must never validate."""
+
+    def _cfg(self, **kw):
+        return TunerConfig(cores_to_test=[0], **kw)
+
+    def test_default_config_is_valid(self):
+        assert self._cfg().validate() == []
+
+    def test_zero_coarse_step_rejected(self):
+        errors = self._cfg(coarse_step=0, fine_step=0).validate()
+        assert any("coarse_step" in e for e in errors)
+
+    def test_zero_fine_step_rejected(self):
+        errors = self._cfg(fine_step=0).validate()
+        assert any("fine_step" in e for e in errors)
+
+    def test_each_invalid_numeric_field_is_rejected(self):
+        cases = {
+            "validate_duration_seconds": 0,
+            "max_confirm_retries": -1,
+            "midpoint_jump_threshold": 0,
+            "abort_on_consecutive_failures": -1,
+            "backoff_preconfirm_multiplier": 0.0,
+            "stretch_threshold_pct": -1.0,
+            "resume_crash_quarantine_threshold": 0,
+        }
+        for field, bad in cases.items():
+            errors = self._cfg(**{field: bad}).validate()
+            assert any(field in e for e in errors), f"{field}={bad} not rejected: {errors}"
