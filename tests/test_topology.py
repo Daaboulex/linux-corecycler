@@ -16,6 +16,7 @@ from engine.topology import (
     PhysicalCore,
     _detect_ccd_layout,
     _detect_x3d,
+    _l3_id_sort_key,
     _parse_cpuinfo,
     _parse_sysfs,
     detect_topology,
@@ -250,6 +251,28 @@ class TestDetectCCDLayout:
         with patch("engine.topology.SYSFS_CPU", cpu_dir):
             _detect_ccd_layout(topo)
         assert topo.ccds == 1
+
+    @pytest.mark.parametrize("bad_id", ["0x0", "", "  ", "abc"])
+    def test_malformed_l3_id_does_not_crash(self, tmp_path, bad_id):
+        """A non-decimal sysfs L3 cache `id` (transient zero-byte read, a hex id)
+        must not crash detection with ValueError on int() — blind audit found this."""
+        topo = parse_cpuinfo_from_text(CPUINFO_SINGLE_CCD_NO_SMT)
+        cpu_dir = tmp_path / "cpu"
+        for i in range(4):
+            cache_dir = cpu_dir / f"cpu{i}" / "cache" / "index3"
+            cache_dir.mkdir(parents=True)
+            (cache_dir / "level").write_text("3")
+            (cache_dir / "id").write_text(bad_id)
+        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+            _detect_ccd_layout(topo)  # must not raise
+        assert topo.ccds >= 1
+
+    def test_l3_id_sort_key_orders_numeric_then_malformed(self):
+        """Numeric ids sort by value; malformed ids sort last, deterministically."""
+        groups = {"2": [0], "0x0": [1], "0": [2], "": [3], "10": [4]}
+        ordered = [k for k, _ in sorted(groups.items(), key=_l3_id_sort_key)]
+        assert ordered[:3] == ["0", "2", "10"]  # numerics by value, not lexically
+        assert set(ordered[3:]) == {"0x0", ""}  # malformed pushed to the end
 
 
 # ---------------------------------------------------------------------------
