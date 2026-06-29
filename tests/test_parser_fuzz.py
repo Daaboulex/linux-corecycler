@@ -61,6 +61,19 @@ class TestCpuinfoParserRobust:
         finally:
             topo_mod.CPUINFO = orig
 
+    def test_colon_less_field_lines_do_not_crash(self):
+        """A field line with no colon -- 'model name', 'vendor_id', 'processor' (a
+        truncated read or other arch) -- must not crash. Fuzz found this; pin it."""
+        mock = MagicMock()
+        mock.exists.return_value = True
+        mock.read_text.return_value = "model name\nvendor_id\nprocessor\ncore id\n\n"
+        orig = topo_mod.CPUINFO
+        topo_mod.CPUINFO = mock
+        try:
+            _parse_cpuinfo(CPUTopology())  # must not raise IndexError
+        finally:
+            topo_mod.CPUINFO = orig
+
 
 class TestPmTableParserRobust:
     @settings(max_examples=300, deadline=None,

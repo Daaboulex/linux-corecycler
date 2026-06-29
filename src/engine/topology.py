@@ -92,9 +92,13 @@ def _parse_cpuinfo(topo: CPUTopology) -> None:
             if v is not None:
                 current_pkg = v
         elif line.startswith("model name") and not topo.model_name:
-            topo.model_name = line.split(":", 1)[1].strip()
+            parts = line.split(":", 1)
+            if len(parts) > 1:
+                topo.model_name = parts[1].strip()
         elif line.startswith("vendor_id") and not topo.vendor:
-            topo.vendor = line.split(":", 1)[1].strip()
+            parts = line.split(":", 1)
+            if len(parts) > 1:
+                topo.vendor = parts[1].strip()
         elif line.startswith("cpu family") and topo.family == 0:
             topo.family = _field_int(line) or 0
         elif line.startswith("model\t") and topo.model == 0:
