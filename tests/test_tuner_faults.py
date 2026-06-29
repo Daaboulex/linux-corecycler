@@ -180,6 +180,51 @@ def _make_topo(n_cores: int, n_ccds: int):
     return topo
 
 
+def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=4000):
+    """Drive the REAL multi-core validation flow (stages 1/2/3) to termination.
+
+    Cores are seeded CONFIRMED at their individual stable limit, then validation
+    runs. The aggregate model: a set passes only if EVERY member's offset is at
+    least ``agg_margin`` less aggressive than its individual stable limit (power
+    delivery makes the aggregate tougher than a core alone). A validation failure
+    backs off the most aggressive core and restarts. Returns (final_engine, steps).
+    """
+    sid = tp.create_session(db, TunerConfig(**cfg_kw), "", "")
+    pending: list[tuple[int, list[int] | None]] = []
+
+    def patched_single(core_id, duration):
+        pending.append((core_id, None))
+
+    def patched_multi(cores, duration):
+        pending.append((cores[0], list(cores)))
+
+    eng = make_engine(db, topo, FaultSMU(), backend, **cfg_kw)
+    eng._start_worker = patched_single
+    eng._start_multi_core_worker = patched_multi
+    eng._session_id = sid
+    eng._core_states = {
+        c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=stable,
+                     best_offset=stable, baseline_offset=0)
+        for c, (stable, _crash) in cliffs.items()
+    }
+    for cs in eng._core_states.values():
+        tp.save_core_state(db, sid, cs)
+    profile = {c: stable for c, (stable, _crash) in cliffs.items()}
+    eng._enter_auto_validation(profile)
+
+    steps = 0
+    while pending and steps < cap:
+        steps += 1
+        core, cset = pending.pop(0)
+        members = cset if cset is not None else [core]
+        ok = all(
+            eng._core_states[m].best_offset >= cliffs[m][0] + agg_margin
+            for m in members
+        )
+        eng._on_test_finished(core, ok, "", "" if ok else "agg", 1.0, 0.0)
+    return eng, steps
+
+
 def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000):
     """Drive the REAL tuner loop against a simulated CPU.
 
@@ -752,3 +797,57 @@ class TestForwardCrashWriteAhead:
         finally:
             db2.close()
             db1.close()
+
+
+# ---------------------------------------------------------------------------
+# T12: property-based fuzz of the multi-core VALIDATION flow
+# ---------------------------------------------------------------------------
+
+
+class TestValidationFuzz:
+    """Hypothesis drives the REAL multi-core validation (stages 1/2/3) over random
+    confirmed profiles and aggregate-instability margins. The backoff-and-restart
+    loop must always terminate and finalize, leaving every core validation-stable
+    or backed off to baseline — never stuck looping."""
+
+    @settings(max_examples=200, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(data=st.data())
+    def test_validation_terminates_and_settles_safely(self, data):
+        n_cores = data.draw(st.integers(min_value=2, max_value=6), label="n_cores")
+        n_ccds = data.draw(st.sampled_from([1, 2]), label="n_ccds")
+        agg_margin = data.draw(st.integers(min_value=0, max_value=5), label="agg_margin")
+        order = data.draw(st.sampled_from(["sequential", "ccd_round_robin"]), label="order")
+        # stable in [-30, -8] keeps the aggregate threshold (stable + margin, with
+        # margin <= 5) at or below -3, i.e. achievable by undervolting less (a real
+        # CPU never needs a positive offset for aggregate stability). Crash is 5 below.
+        cliffs = {}
+        for c in range(n_cores):
+            stable = data.draw(st.integers(min_value=-30, max_value=-8), label=f"stable{c}")
+            cliffs[c] = (stable, stable - 5)
+
+        db = HistoryDB(":memory:")
+        try:
+            topo = _make_topo(n_cores, n_ccds)
+            cfg_kw = dict(
+                cores_to_test=list(range(n_cores)), test_order=order,
+                auto_validate=True, validate_transitions=False, hardening_tiers=[],
+                fine_step=1, validate_duration_seconds=1,
+                search_duration_seconds=1, confirm_duration_seconds=1,
+            )
+            eng, steps = drive_validation(db, topo, _StubBackend(), cliffs, agg_margin, cfg_kw)
+
+            assert steps < 4000, f"validation did not converge: cliffs={cliffs} margin={agg_margin}"
+            assert eng.status == "idle", f"validation stuck in {eng.status}"
+            for c, (stable, crash) in cliffs.items():
+                best = eng._core_states[c].best_offset
+                assert best is not None
+                # Validation only backs OFF (less aggressive) and never settles on a
+                # crashing offset; with an achievable aggregate it reaches the margin.
+                assert stable <= best <= 0, f"core {c} at {best}, outside [{stable}, 0]"
+                assert best > crash
+                assert best >= stable + agg_margin, (
+                    f"core {c} at {best} below aggregate threshold {stable + agg_margin}"
+                )
+        finally:
+            db.close()
