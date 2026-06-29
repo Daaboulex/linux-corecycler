@@ -96,7 +96,15 @@ class TunerConfig:
 
     @classmethod
     def from_json(cls, data: str) -> TunerConfig:
-        d = json.loads(data)
+        """Parse a config from JSON. Fails closed: malformed JSON or a non-object
+        payload (e.g. a corrupted or hand-edited DB row) yields defaults rather than
+        raising, so resume/abort never breaks on a bad config_json."""
+        try:
+            d = json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            return cls()
+        if not isinstance(d, dict):
+            return cls()
         return cls(**{k: v for k, v in d.items() if k in cls.__slots__})
 
     def validate(self) -> list[str]:
