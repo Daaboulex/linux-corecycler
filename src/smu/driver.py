@@ -30,6 +30,23 @@ log = logging.getLogger(__name__)
 
 SYSFS_BASE = Path("/sys/kernel/ryzen_smu_drv")
 
+# Sane bounds for PBO power/current limits (PPT watts, TDC/EDC amps). The firmware
+# enforces the true per-chip cap; this only rejects the unambiguously malformed:
+# non-positive (a negative wraps to a huge unsigned limit once encoded as value*1000,
+# effectively removing the cap) or absurdly large (a caller/UI bug). No real or
+# near-future AMD CPU approaches 2000 W / 2000 A.
+_PBO_LIMIT_MIN: int = 1
+_PBO_LIMIT_MAX: int = 2000
+
+
+def _check_pbo_limit(name: str, value: int) -> None:
+    """Fail closed on a malformed PBO limit before it is encoded and written."""
+    if not _PBO_LIMIT_MIN <= value <= _PBO_LIMIT_MAX:
+        raise ValueError(
+            f"{name} limit {value} out of sane range "
+            f"[{_PBO_LIMIT_MIN}, {_PBO_LIMIT_MAX}]"
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class SMUResponse:
@@ -513,10 +530,14 @@ class RyzenSMU:
     # ------------------------------------------------------------------
 
     def set_ppt_limit(self, watts: int) -> bool:
-        """Set PPT (Package Power Tracking) limit in watts. VOLATILE."""
+        """Set PPT (Package Power Tracking) limit in watts. VOLATILE.
+
+        Range-checked and raises ValueError on a malformed value before any write.
+        """
         cmd = self.commands.set_ppt_cmd
         if cmd is None:
             return False
+        _check_pbo_limit("PPT", watts)
         if self.dry_run:
             log.info("[DRY RUN] Would set PPT limit to %d W", watts)
             return True
@@ -524,10 +545,14 @@ class RyzenSMU:
         return resp.success
 
     def set_tdc_limit(self, amps: int) -> bool:
-        """Set TDC (Thermal Design Current) limit in amps. VOLATILE."""
+        """Set TDC (Thermal Design Current) limit in amps. VOLATILE.
+
+        Range-checked and raises ValueError on a malformed value before any write.
+        """
         cmd = self.commands.set_tdc_cmd
         if cmd is None:
             return False
+        _check_pbo_limit("TDC", amps)
         if self.dry_run:
             log.info("[DRY RUN] Would set TDC limit to %d A", amps)
             return True
@@ -535,10 +560,14 @@ class RyzenSMU:
         return resp.success
 
     def set_edc_limit(self, amps: int) -> bool:
-        """Set EDC (Electrical Design Current) limit in amps. VOLATILE."""
+        """Set EDC (Electrical Design Current) limit in amps. VOLATILE.
+
+        Range-checked and raises ValueError on a malformed value before any write.
+        """
         cmd = self.commands.set_edc_cmd
         if cmd is None:
             return False
+        _check_pbo_limit("EDC", amps)
         if self.dry_run:
             log.info("[DRY RUN] Would set EDC limit to %d A", amps)
             return True
@@ -582,7 +611,7 @@ class RyzenSMU:
         """Read the current PBO/CO state from SMU and sysfs.
 
         This provides a snapshot of the system's current configuration,
-        including CO offsets, PBO limits, boost override, and estimated BCLK.
+        including CO offsets, PBO limits, boost override, and max frequency.
         Call this before starting a test to understand the baseline.
         """
         state = SystemPBOState(
