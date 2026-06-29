@@ -161,13 +161,21 @@ class TestRunLogger:
         )
 
     def on_test_completed(self, results_json: str) -> None:
-        results = json.loads(results_json)
+        # Fail closed: a logging slot must never crash the GUI on a malformed or
+        # unexpectedly-shaped results payload.
+        try:
+            results = json.loads(results_json)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(results, dict):
+            return
         tested = {k: v for k, v in results.items() if v}  # only cores with results
         total = len(tested)
         passed = sum(
             1
             for r_list in tested.values()
-            if r_list and all(r.get("passed") for r in r_list)
+            if isinstance(r_list, list) and r_list
+            and all(isinstance(r, dict) and r.get("passed") for r in r_list)
         )
         failed = total - passed
         elapsed = time.monotonic() - self._start_time
