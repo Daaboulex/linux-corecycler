@@ -121,7 +121,7 @@ class TelemetrySample:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 10
+    SCHEMA_VERSION = 11
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -265,6 +265,7 @@ CREATE TABLE IF NOT EXISTS tuner_sessions (
     cpu_model           TEXT    NOT NULL DEFAULT '',
     config_json         TEXT    NOT NULL DEFAULT '{}',
     context_id          INTEGER REFERENCES tuning_contexts(id),
+    resume_crash_streak INTEGER NOT NULL DEFAULT 0,
     notes               TEXT    NOT NULL DEFAULT ''
 );
 
@@ -309,6 +310,15 @@ CREATE TABLE IF NOT EXISTS tuner_test_log (
     tested_at           TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tuner_log_session ON tuner_test_log(session_id, core_id);
+
+CREATE TABLE IF NOT EXISTS tuner_co_journal (
+    session_id  INTEGER NOT NULL REFERENCES tuner_sessions(id) ON DELETE CASCADE,
+    core_id     INTEGER NOT NULL,
+    value       INTEGER NOT NULL,
+    survived    INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT    NOT NULL,
+    UNIQUE(session_id, core_id)
+);
 """).replace("__SCHEMA_VERSION__", str(SCHEMA_VERSION))
 
     # Migration from v1 to v2
@@ -435,6 +445,31 @@ ALTER TABLE tuner_test_log ADD COLUMN fft_preset TEXT;
 ALTER TABLE tuner_core_states ADD COLUMN thermal_aborts INTEGER DEFAULT 0;
 """
 
+    # v10 -> v11: CO write-ahead journal (crash-attributable SMU writes) +
+    # resume-crash circuit-breaker counter on the session. The ADD COLUMN is
+    # wrapped (like v7/v8) so a re-run or partial migration cannot fail.
+    @staticmethod
+    def _migrate_v11(conn: sqlite3.Connection) -> None:
+        try:
+            conn.execute(
+                "ALTER TABLE tuner_sessions "
+                "ADD COLUMN resume_crash_streak INTEGER NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass  # column already exists from a partial migration
+        conn.executescript(
+            """\
+CREATE TABLE IF NOT EXISTS tuner_co_journal (
+    session_id  INTEGER NOT NULL REFERENCES tuner_sessions(id) ON DELETE CASCADE,
+    core_id     INTEGER NOT NULL,
+    value       INTEGER NOT NULL,
+    survived    INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT    NOT NULL,
+    UNIQUE(session_id, core_id)
+);
+"""
+        )
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _DDL_MIGRATE_V2,
         3: _DDL_MIGRATE_V3,
@@ -445,6 +480,7 @@ ALTER TABLE tuner_core_states ADD COLUMN thermal_aborts INTEGER DEFAULT 0;
         8: _migrate_v8,
         9: _DDL_MIGRATE_V9,
         10: _DDL_MIGRATE_V10,
+        11: _migrate_v11,
     }
 
     # ------------------------------------------------------------------
@@ -953,6 +989,82 @@ ALTER TABLE tuner_core_states ADD COLUMN thermal_aborts INTEGER DEFAULT 0;
         ).fetchall()
         return [self._row_to_tuner_session(r) for r in rows]
 
+    # ------------------------------------------------------------------
+    # CO write-ahead journal + resume-crash circuit breaker
+    # ------------------------------------------------------------------
+
+    def journal_co_intent(
+        self, session_id: int, core_id: int, value: int, survived: bool
+    ) -> None:
+        """Record the CO value about to be made resident in the SMU, durably.
+
+        Written BEFORE the hardware write so any hard crash (idle, baseline
+        restore, post-test revert, validation, or search) is attributable to the
+        exact (core, value) that was live at crash time. ``survived`` is True only
+        when ``value`` is within the core's already-proven-safe envelope (0 is
+        always safe); a value in new, more-aggressive territory is journaled
+        un-survived until a test completes with it resident. A WAL checkpoint
+        forces the record to durable storage before the caller touches hardware.
+        """
+        now = self._now_iso()
+        self.__conn.execute(
+            """\
+            INSERT INTO tuner_co_journal (session_id, core_id, value, survived, updated_at)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(session_id, core_id) DO UPDATE SET
+                value=excluded.value,
+                survived=excluded.survived,
+                updated_at=excluded.updated_at
+            """,
+            (session_id, core_id, value, int(survived), now),
+        )
+        # Force the intent to disk before the caller writes the value to hardware.
+        self.__conn.execute("PRAGMA wal_checkpoint(FULL)")
+
+    def journal_mark_survived(self, session_id: int) -> None:
+        """Mark every resident CO value for the session as survived.
+
+        Called after a test completes without a hard crash: the machine
+        demonstrably ran with the whole resident offset vector and lived.
+        """
+        self.__conn.execute(
+            "UPDATE tuner_co_journal SET survived=1, updated_at=? WHERE session_id=?",
+            (self._now_iso(), session_id),
+        )
+
+    def journal_suspects(self, session_id: int) -> list[tuple[int, int]]:
+        """Return ``[(core_id, value)]`` for non-zero offsets that were resident
+        but never proven survivable — i.e. live when the machine died."""
+        rows = self.__conn.execute(
+            "SELECT core_id, value FROM tuner_co_journal "
+            "WHERE session_id=? AND survived=0 AND value<>0 ORDER BY core_id",
+            (session_id,),
+        ).fetchall()
+        return [(r["core_id"], r["value"]) for r in rows]
+
+    def journal_survived_values(self, session_id: int) -> dict[int, int]:
+        """Return ``{core_id: value}`` for offsets proven survivable this session."""
+        rows = self.__conn.execute(
+            "SELECT core_id, value FROM tuner_co_journal "
+            "WHERE session_id=? AND survived=1",
+            (session_id,),
+        ).fetchall()
+        return {r["core_id"]: r["value"] for r in rows}
+
+    def get_resume_crash_streak(self, session_id: int) -> int:
+        row = self.__conn.execute(
+            "SELECT resume_crash_streak FROM tuner_sessions WHERE id=?", (session_id,)
+        ).fetchone()
+        if row is None:
+            return 0
+        return row["resume_crash_streak"] or 0
+
+    def set_resume_crash_streak(self, session_id: int, value: int) -> None:
+        self.__conn.execute(
+            "UPDATE tuner_sessions SET resume_crash_streak=?, updated_at=? WHERE id=?",
+            (value, self._now_iso(), session_id),
+        )
+
     def upsert_tuner_core_state(self, session_id: int, cs: CoreState) -> None:
         now = self._now_iso()
         self.__conn.execute(
@@ -1127,6 +1239,9 @@ ALTER TABLE tuner_core_states ADD COLUMN thermal_aborts INTEGER DEFAULT 0;
             cpu_model=row["cpu_model"],
             config_json=row["config_json"],
             context_id=row["context_id"],
+            resume_crash_streak=(
+                row["resume_crash_streak"] if "resume_crash_streak" in row.keys() else 0
+            ),
             notes=row["notes"],
         )
 

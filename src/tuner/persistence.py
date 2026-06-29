@@ -62,6 +62,41 @@ def load_core_states(db: HistoryDB, session_id: int) -> dict[int, CoreState]:
 
 
 # ---------------------------------------------------------------------------
+# CO write-ahead journal + resume-crash circuit breaker
+# ---------------------------------------------------------------------------
+
+
+def journal_co_intent(
+    db: HistoryDB, session_id: int, core_id: int, value: int, survived: bool
+) -> None:
+    """Durably record a CO value before it is written to the SMU."""
+    db.journal_co_intent(session_id, core_id, value, survived)
+
+
+def journal_mark_survived(db: HistoryDB, session_id: int) -> None:
+    """Mark all resident CO values survived after a test completes without a crash."""
+    db.journal_mark_survived(session_id)
+
+
+def journal_suspects(db: HistoryDB, session_id: int) -> list[tuple[int, int]]:
+    """Return (core_id, value) offsets that were resident when the machine died."""
+    return db.journal_suspects(session_id)
+
+
+def journal_survived_values(db: HistoryDB, session_id: int) -> dict[int, int]:
+    """Return {core_id: value} offsets proven survivable this session."""
+    return db.journal_survived_values(session_id)
+
+
+def get_resume_crash_streak(db: HistoryDB, session_id: int) -> int:
+    return db.get_resume_crash_streak(session_id)
+
+
+def set_resume_crash_streak(db: HistoryDB, session_id: int, value: int) -> None:
+    db.set_resume_crash_streak(session_id, value)
+
+
+# ---------------------------------------------------------------------------
 # Test log
 # ---------------------------------------------------------------------------
 

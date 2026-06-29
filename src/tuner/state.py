@@ -65,9 +65,10 @@ class TunerSession:
     id: int | None = None
     created_at: str = ""
     updated_at: str = ""
-    status: str = "running"  # running, paused, completed, validating, aborted
+    status: str = "running"  # running, paused, completed, validating, aborted, quarantined
     bios_version: str = ""
     cpu_model: str = ""
     config_json: str = "{}"
     context_id: int | None = None
+    resume_crash_streak: int = 0
     notes: str = ""

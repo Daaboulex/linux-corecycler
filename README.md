@@ -685,7 +685,7 @@ The tuner uses a coarse-to-fine search for each core:
    - **Pre-confirm filter** -- before a full confirmation test, a shorter pre-confirm test runs (`search_duration` * `backoff_preconfirm_multiplier`, default 2x). This quickly filters unstable offsets during backoff without spending the full confirm duration on values that will fail anyway.
    - **Midpoint jump** -- after `midpoint_jump_threshold` (default 3) consecutive pre-confirm failures, the tuner jumps to the midpoint between the failing offset and the baseline instead of continuing linear backoff. This avoids wasting time stepping through a range that is likely all unstable.
    - **Binary search** -- after a midpoint pass, the tuner narrows the exact stable boundary with logarithmic efficiency, converging on the best offset faster than linear backoff.
-   - **Baseline floor** -- backoff stops at the BIOS baseline (from `inherit_current`), not at zero. If you started with -20 in BIOS, the tuner will not back off past -20.
+   - **Baseline floor** -- normal backoff stops at the BIOS baseline (from `inherit_current`), not at zero: if you started with -20 in BIOS, the tuner will not back off past -20 while that baseline keeps passing. The one exception is safety: if the baseline value *itself* hard-crashes the machine, it is not a safe floor, so crash backoff descends it toward CO=0 (stock) instead — the only axiomatically safe state. See **Crash safety** below.
 
 4. **Multi-core validation** (automatic, `auto_validate` enabled by default) -- after all cores are individually confirmed, the tuner automatically enters a 3-stage validation sequence that catches failures invisible to per-core testing:
 
@@ -707,15 +707,15 @@ During multi-core validation (after all cores are individually confirmed), CO is
 
 **Crash safety:**
 
-Every state transition is committed to SQLite (WAL mode) before acting. If the system crashes or reboots mid-test (which is expected during CO tuning -- that's how you find the limit), the tuner detects the interrupted session on next launch and offers to resume.
+Hard system crashes are expected during CO tuning -- that is how you find each core's limit. The tuner is built so that no sequence of crashes, reboots, SMU faults, or resumes can ever leave it re-applying a configuration that crashes the machine. Three mechanisms enforce this:
 
-Resume follows a strict safety order to prevent infinite crash loops:
+1. **CO write-ahead journal.** Every Curve Optimizer value is recorded durably in SQLite *before* it is written to the SMU, and marked "survived" only after a test completes with it resident. So when the machine dies, the exact `(core, value)` that was live at crash time is known on next launch -- whether or not a test was running. On resume, every un-survived offset is treated as a hard crash: a hard fail bound is set at that value and the core is backed off past it. This catches crashes the old `in_test`-only detection missed entirely (idle instability, baseline restore, post-test revert, validation).
 
-1. **Advance the interrupted core first** -- only the core that was actively testing (`in_test` flag persisted to DB) is treated as a failure and backed off *before* touching the SMU. Queued cores keep their exact state. This ensures the crashing offset is never re-applied, and queued cores don't skip untested offsets.
-2. **Restore all baselines** -- after all interrupted cores have been advanced, the tuner restores all cores to their baseline offsets from the database (not from SMU, which resets to zero on reboot). This returns the CPU to its known-stable BIOS configuration.
-3. **Continue with isolation** -- the tuner picks the next core and applies isolation (baseline all others, test offset on target only).
+2. **CO=0 is the only safe floor.** The single state guaranteed stable is CO=0 (stock voltage -- you cannot crash from too little undervolt). Crash backoff never settles past it, and if a core's *baseline* value is what crashed, the baseline is descended toward 0 rather than re-applied. This is what makes an unstable inherited baseline escapable instead of an infinite loop.
 
-This ordering is critical: if the system crashed because a CO offset was too aggressive, naively re-applying saved offsets on resume would re-apply that same crashing value, causing another crash on every boot attempt. By advancing first and restoring baselines, the tuner always moves past the dangerous value before re-engaging the hardware.
+3. **Resume-crash circuit breaker.** Consecutive crash-resumes with no surviving test in between are counted (and reset whenever any test completes). After `resume_crash_quarantine_threshold` (default 3) such crashes, the tuner stops trying to be clever: it forces every core to CO=0, marks the session `quarantined` (excluded from the resume picker, never silently re-applied), and surfaces an honest "this profile is unsafe on this machine" message. A machine that keeps dying on resume is bounded, not looped.
+
+The interrupted session is detected on next launch and offered for resume; resume re-applies only journaled-safe baselines and re-engages one core at a time under the write-ahead discipline.
 
 **Crash during validation:** if the system crashes during multi-core validation, the session is recoverable. On resume, the tuner detects that all cores are confirmed and re-enters validation from stage 1. Sessions in 'validating' status are included in the resume session picker alongside 'running' and 'paused' sessions.
 
@@ -758,6 +758,8 @@ NOT_STARTED → COARSE_SEARCH → FINE_SEARCH → SETTLED → CONFIRMING → CON
 | Midpoint Jump Threshold | 3 | 1-10 | Consecutive pre-confirm failures before jumping to midpoint between failing offset and baseline |
 | Stretch Threshold | 3.0% | 0-20% | Clock stretch failure threshold (0 = disabled, requires root) |
 | Abort on Consecutive Failures | 0 | 0-10 | Abort if N cores fail at start_offset (0 = disabled) |
+| Resume Crash Quarantine Threshold | 3 | 1-20 | Consecutive crash-resumes (with no surviving test between) before forcing all cores to CO=0 and quarantining the session instead of looping |
+| Allow Missing Thermal Sensor | false | true/false | Permit testing with no readable CPU temperature sensor (false = fail closed: refuse to run without thermal protection) |
 | Inherit Current CO | false | true/false | Read current SMU offsets as starting points (skip testing values already proven stable) |
 
 Advanced parameters (Backoff Pre-Confirm Multiplier, Midpoint Jump Threshold) use sensible defaults and are not exposed in the UI.
