@@ -10,6 +10,11 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+# sysfs root for per-CPU machine-check bank counters. An instance attribute on
+# ErrorDetector so a test can point it at a temp tree and exercise the real
+# baseline-delta and target-cpu logic (not a copy of it in the test body).
+MACHINECHECK_BASE = Path("/sys/devices/system/machinecheck")
+
 
 @dataclass(slots=True)
 class MCEEvent:
@@ -43,6 +48,7 @@ class ErrorDetector:
         self._dmesg_baseline_ts: float = 0.0  # raw monotonic timestamp
         self._last_dmesg_time: float = 0.0
         self._last_dmesg_events: list[MCEEvent] = []
+        self._mce_base: Path = MACHINECHECK_BASE  # injectable for tests
 
     def reset(self) -> None:
         """Reset error tracking — call before starting a new test run."""
@@ -71,7 +77,7 @@ class ErrorDetector:
         or transient I/O error never crashes the detector.
         """
         events: list[MCEEvent] = []
-        mce_base = Path("/sys/devices/system/machinecheck")
+        mce_base = self._mce_base
 
         try:
             if not mce_base.exists():
@@ -225,7 +231,7 @@ class ErrorDetector:
     def _snapshot_mce_banks(self) -> dict[str, int]:
         """Capture per-CPU per-bank MCE counts as a baseline snapshot."""
         snapshot: dict[str, int] = {}
-        mce_base = Path("/sys/devices/system/machinecheck")
+        mce_base = self._mce_base
         try:
             if not mce_base.exists():
                 return snapshot
@@ -264,7 +270,7 @@ class ErrorDetector:
         Gracefully handles permission denied and I/O errors.
         """
         total = 0
-        mce_base = Path("/sys/devices/system/machinecheck")
+        mce_base = self._mce_base
         try:
             if not mce_base.exists():
                 return 0
