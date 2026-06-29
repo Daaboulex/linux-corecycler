@@ -961,17 +961,22 @@ class TestCrashDetection:
         assert cs.backoff_fail_bound == -30
 
     def test_crash_does_not_overwrite_less_aggressive_fail_bound(self, db, simple_topology, mock_smu, mock_backend):
-        """fail_bound is only updated if the crashed offset is MORE aggressive."""
+        """fail_bound tightens to the LEAST aggressive failing offset.
+
+        Stability is monotonic, so a crash at -20 means everything more aggressive
+        (incl. the old -30) also fails; tracking the least-aggressive fail is the
+        tightest safe bound AND lets the binary search converge (a fuzzer-found
+        bug: keeping -30 made the midpoint search oscillate forever).
+        """
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(
             core_id=0, phase=TunerPhase.COARSE_SEARCH,
             current_offset=-20, best_offset=-15, in_test=True,
-            backoff_fail_bound=-30,  # existing bound is already more aggressive
+            backoff_fail_bound=-30,
         )
         eng._core_states = {0: cs}
         eng._apply_crash_penalty(cs)
-        # -30 is more aggressive than -20, so it stays
-        assert cs.backoff_fail_bound == -30
+        assert cs.backoff_fail_bound == -20
 
     def test_crash_increments_count_and_cooldown(self, db, simple_topology, mock_smu, mock_backend):
         """Crash increments crash_count and sets crash_cooldown=2."""
@@ -2006,17 +2011,18 @@ class TestStateMachineGaps:
         eng._advance_core(0, passed=True)
         assert cs.phase == TunerPhase.HARDENED
 
-    # Gap 9: Crash during backoff with existing fail_bound
+    # Gap 9: Crash during backoff tightens the fail bound toward the pass region
     def test_crash_during_backoff_with_existing_fail_bound(self, db, simple_topology, mock_smu, mock_backend):
-        """Second crash at less-aggressive offset should NOT overwrite more-aggressive fail_bound."""
+        """A second crash at a less-aggressive offset TIGHTENS fail_bound to it, so
+        the binary search converges (monotonic: -20 still fails as it's more
+        aggressive than -12)."""
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM,
                        current_offset=-12, best_offset=-12, baseline_offset=0,
                        backoff_fail_bound=-20, in_test=True)
         eng._core_states = {0: cs}
         eng._apply_crash_penalty(cs)
-        # -12 is less aggressive than -20, so fail_bound stays -20
-        assert cs.backoff_fail_bound == -20
+        assert cs.backoff_fail_bound == -12
 
     # Gap 10: direction=+1 coarse search settles at max
     def test_positive_direction_coarse_settle_at_max(self, db, simple_topology, mock_smu, mock_backend):

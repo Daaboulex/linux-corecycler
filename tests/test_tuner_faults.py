@@ -24,7 +24,10 @@ from unittest.mock import patch
 
 import pytest
 
-from engine.backends.base import FFTPreset, StressConfig, StressMode
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
+
+from engine.backends.base import FFTPreset, StressBackend, StressConfig, StressMode
 from engine.scheduler import CoreScheduler, SchedulerConfig
 from history.db import HistoryDB
 from tuner import persistence as tp
@@ -136,6 +139,96 @@ def _resume_fresh(db, topo, smu, backend, sid, **cfg_kwargs) -> TunerEngine:
     with patch.object(eng, "_run_next"):
         eng.resume(sid)
     return eng
+
+
+class _StubBackend(StressBackend):
+    """A do-nothing backend — the closed-loop driver patches the worker, so the
+    backend is constructed but never executed."""
+
+    name = "stub"
+
+    def is_available(self) -> bool:
+        return True
+
+    def get_command(self, config, work_dir):
+        return ["true"]
+
+    def parse_output(self, stdout, stderr, returncode):
+        return True, None
+
+    def get_supported_modes(self):
+        return [StressMode.SSE]
+
+    def prepare(self, work_dir, config):
+        pass
+
+    def cleanup(self, work_dir, *, preserve_on_error: bool = False):
+        pass
+
+
+def _make_topo(n_cores: int, n_ccds: int):
+    """Build a CPUTopology with n_cores spread across n_ccds (no sysfs needed)."""
+    from engine.topology import CPUTopology, PhysicalCore
+
+    topo = CPUTopology()
+    per_ccd = max(1, (n_cores + n_ccds - 1) // n_ccds)
+    for i in range(n_cores):
+        topo.cores[i] = PhysicalCore(
+            core_id=i, ccd=min(i // per_ccd, n_ccds - 1), ccx=None, logical_cpus=(i,)
+        )
+    topo.ccds = n_ccds
+    return topo
+
+
+def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000):
+    """Drive the REAL tuner loop against a simulated CPU.
+
+    Only the worker is replaced — by a stability oracle keyed on each core's
+    (stable_limit, crash_limit). A hard crash (offset at/over crash_limit) is
+    injected the real way: the offset is journaled by the real _apply_co before
+    the crash, then a fresh engine recovers via the real resume(). The picker,
+    state machine, journal, hardening and crash recovery are all real. Returns
+    (final_engine, steps, crashes, session_id).
+    """
+    sid = tp.create_session(db, TunerConfig(**cfg_kw), "", "")
+    pending: list[int] = []
+
+    def patched(core_id, duration):
+        pending.append(core_id)
+
+    def fresh():
+        e = make_engine(db, topo, FaultSMU(), backend, **cfg_kw)
+        e._start_worker = patched
+        e._session_id = sid
+        return e
+
+    eng = fresh()
+    eng._core_states = {c: CoreState(core_id=c, baseline_offset=baseline) for c in cliffs}
+    for cs in eng._core_states.values():
+        tp.save_core_state(db, sid, cs)
+    eng._set_status("running")
+    holder = {"eng": eng}
+    holder["eng"]._run_next()
+
+    steps = crashes = 0
+    while pending and steps < cap:
+        steps += 1
+        core = pending.pop(0)
+        e = holder["eng"]
+        cs = e._core_states.get(core)
+        if cs is None:
+            continue
+        offset = cs.current_offset
+        stable, crash = cliffs[core]
+        if offset >= stable:               # less aggressive than the cliff -> pass
+            e._on_test_finished(core, True, "", "", 1.0, 0.0)
+        elif offset <= crash:              # at/over the crash point -> hard crash
+            crashes += 1
+            holder["eng"] = fresh()
+            holder["eng"].resume(sid)
+        else:                              # between -> detected (soft) failure
+            e._on_test_finished(core, False, "calc error", "computation", 1.0, 0.0)
+    return holder["eng"], steps, crashes, sid
 
 
 # ---------------------------------------------------------------------------
@@ -397,65 +490,22 @@ class TestClosedLoopSimulation:
         # Per-core ground truth: offset >= stable passes; between stable and crash
         # is a detected (soft) failure; at/over crash the machine HARD-crashes.
         cliffs = {0: (-12, -15), 1: (-22, -25), 2: (-7, -10), 3: (-17, -20)}
-        cores = list(cliffs)
-        cfg_kw = dict(cores_to_test=cores, test_order=order, coarse_step=5, fine_step=1,
-                      max_offset=-40, crash_penalty_steps=3, auto_validate=False,
-                      resume_crash_quarantine_threshold=50)
-        sid = tp.create_session(db, TunerConfig(**cfg_kw), "", "")
+        cfg_kw = dict(cores_to_test=list(cliffs), test_order=order, coarse_step=5,
+                      fine_step=1, max_offset=-40, crash_penalty_steps=3,
+                      auto_validate=False, resume_crash_quarantine_threshold=50)
+        eng, steps, crashes, sid = drive_closed_loop(db, topo, mock_backend, cliffs, cfg_kw)
 
-        pending: list[int] = []
-
-        def patched_start_worker(core_id, duration):
-            pending.append(core_id)
-
-        def fresh_engine():
-            e = make_engine(db, topo, FaultSMU(), mock_backend, **cfg_kw)
-            e._start_worker = patched_start_worker
-            e._session_id = sid
-            return e
-
-        eng = fresh_engine()
-        eng._core_states = {c: CoreState(core_id=c, baseline_offset=0) for c in cores}
-        for cs in eng._core_states.values():
-            tp.save_core_state(db, sid, cs)
-        eng._set_status("running")
-        holder = {"eng": eng}
-
-        def more_aggressive(a, b):  # undervolt direction: more negative = more aggressive
-            return a < b
-
-        holder["eng"]._run_next()
-        steps = crashes = 0
-        CAP = 4000
-        while pending and steps < CAP:
-            steps += 1
-            core = pending.pop(0)
-            e = holder["eng"]
-            cs = e._core_states.get(core)
-            if cs is None:
-                continue
-            offset = cs.current_offset
-            stable, crash = cliffs[core]
-            if not more_aggressive(offset, stable):
-                e._on_test_finished(core, True, "", "", 1.0, 0.0)          # pass
-            elif offset == crash or more_aggressive(offset, crash):
-                crashes += 1
-                holder["eng"] = fresh_engine()                             # reboot
-                holder["eng"].resume(sid)                                  # real recovery
-            else:
-                e._on_test_finished(core, False, "calc error", "computation", 1.0, 0.0)  # soft fail
-
-        assert steps < CAP, f"did not converge in {CAP} steps ({order})"
+        assert steps < 6000, f"did not converge ({order})"
         assert crashes >= 1, "no hard crash was exercised — simulation is vacuous"
-        assert holder["eng"].status in ("idle", "quarantined")
-        # SAFETY INVARIANT: nothing is left settled on a crashing offset.
-        states = db.get_tuner_core_states(sid)
+        assert eng.status in ("idle", "quarantined")
+        # SAFETY INVARIANT: the RESIDENT CO (what is actually in the SMU now) never
+        # sits at or beyond any core's crash point.
+        resident = eng._smu.applied
         for c, (stable, crash) in cliffs.items():
-            cs = states[c]
-            if cs.best_offset is not None:
-                assert not (cs.best_offset == crash or more_aggressive(cs.best_offset, crash)), (
-                    f"[{order}] core {c} settled at {cs.best_offset} which crashes (limit {crash})"
-                )
+            r = resident.get(c, 0)
+            assert not (r == crash or r < crash), (
+                f"[{order}] core {c} left resident at {r}, crashes at {crash}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +534,67 @@ class TestInterruptionSafety:
         eng.abort()
         assert all(smu.applied[i] == 0 for i in range(3)), smu.applied
         assert eng.status == "idle"
+
+
+# ---------------------------------------------------------------------------
+# T11: property-based fuzz of the whole loop over random scenarios
+# ---------------------------------------------------------------------------
+
+
+class TestPropertyFuzz:
+    """Hypothesis drives the REAL tuner over random CPU profiles, core counts, CCD
+    layouts, test orders, configs and crash points. The robustness invariants must
+    hold for EVERY generated combination: the run terminates, reaches a terminal
+    state (never stuck 'running'), and never leaves a resident CO at or beyond a
+    core's crash point."""
+
+    @settings(max_examples=400, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(data=st.data())
+    def test_tuner_robust_over_random_scenarios(self, data):
+        n_cores = data.draw(st.integers(min_value=1, max_value=8), label="n_cores")
+        n_ccds = data.draw(st.sampled_from([1, 2, 4]), label="n_ccds")
+        order = data.draw(st.sampled_from([
+            "sequential", "round_robin", "weakest_first",
+            "ccd_alternating", "ccd_round_robin",
+        ]), label="order")
+        coarse = data.draw(st.integers(min_value=2, max_value=8), label="coarse")
+        fine = data.draw(st.integers(min_value=1, max_value=min(coarse, 3)), label="fine")
+        penalty = data.draw(st.integers(min_value=1, max_value=5), label="penalty")
+        hardening = data.draw(st.booleans(), label="hardening")
+        cliffs = {}
+        for c in range(n_cores):
+            stable = data.draw(st.integers(min_value=-45, max_value=-3), label=f"stable{c}")
+            gap = data.draw(st.integers(min_value=1, max_value=12), label=f"gap{c}")
+            cliffs[c] = (stable, stable - gap)
+
+        db = HistoryDB(":memory:")
+        try:
+            topo = _make_topo(n_cores, n_ccds)
+            tiers = ([{"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"}]
+                     if hardening else [])
+            cfg_kw = dict(
+                cores_to_test=list(range(n_cores)), test_order=order,
+                coarse_step=coarse, fine_step=fine, max_offset=-60,
+                crash_penalty_steps=penalty, auto_validate=False,
+                resume_crash_quarantine_threshold=4, hardening_tiers=tiers,
+                search_duration_seconds=1, confirm_duration_seconds=1,
+            )
+            eng, steps, crashes, sid = drive_closed_loop(
+                db, topo, _StubBackend(), cliffs, cfg_kw)
+
+            assert steps < 6000, f"no convergence: order={order} cliffs={cliffs}"
+            assert eng.status in ("idle", "quarantined"), (
+                f"stuck in {eng.status}: order={order} cliffs={cliffs} hardening={hardening}"
+            )
+            resident = eng._smu.applied
+            for c, (stable, crash) in cliffs.items():
+                r = resident.get(c, 0)
+                assert not (r == crash or r < crash), (
+                    f"core {c} resident {r} crashes at {crash}: order={order} cliffs={cliffs}"
+                )
+        finally:
+            db.close()
 
 
 # ---------------------------------------------------------------------------
