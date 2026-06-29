@@ -15,12 +15,16 @@ if TYPE_CHECKING:
 # Return codes indicating the process was intentionally killed by the scheduler
 KILLED_BY_US_CODES: frozenset[int] = frozenset({-9, -15, 137, 143})
 
-# Signal codes indicating CPU instability (CO too aggressive, hardware fault)
+# Signal codes indicating CPU instability (CO too aggressive, hardware fault).
+# SIGILL/SIGFPE are included: aggressive undervolting corrupts instruction decode
+# and FPU results, so a worker dying with -4/-8 is instability, not a clean exit.
 CRASH_SIGNALS: dict[int, str] = {
-    -11: "SIGSEGV",
+    -4: "SIGILL",
+    -5: "SIGTRAP",
     -6: "SIGABRT",
     -7: "SIGBUS",
-    -5: "SIGTRAP",
+    -8: "SIGFPE",
+    -11: "SIGSEGV",
 }
 
 

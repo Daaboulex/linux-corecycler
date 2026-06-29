@@ -48,12 +48,15 @@ class StressapptestBackend(StressBackend):
         for signature in ("miscompare", "hardware error", "hardware incident", "status: fail"):
             if signature in lowered:
                 return False, f"stressapptest: '{signature}' — memory errors detected"
+        # A crash signal always wins, even over a final "Status: PASS": a clean run
+        # exits 0 or is killed by the scheduler, never with a crash code, so a crash
+        # exit is unambiguous instability and must never be masked by a printed PASS.
+        if returncode in CRASH_SIGNALS:
+            return False, f"stressapptest crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
         if "Status: PASS" in stdout:
             return True, None
         if returncode in KILLED_BY_US_CODES:
             return True, None
-        if returncode in CRASH_SIGNALS:
-            return False, f"stressapptest crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
         if returncode != 0:
             return False, f"stressapptest exited with code {returncode}"
         return True, None

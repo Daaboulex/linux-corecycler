@@ -14,6 +14,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -65,11 +66,26 @@ class TestBackendParseRobust:
         passed, _ = b.parse_output(out, "", rc)
         assert passed is False
 
-    def test_mprime_crash_after_passing_iteration_is_not_passed(self):
-        """A crash signal must override an earlier 'Self-test N passed' line --
-        the random-output fuzz won't reproduce this exact trigger, so assert it
-        explicitly (truthful regression for the ordering bug)."""
+    @pytest.mark.parametrize("sig", sorted(CRASH_SIGNALS))
+    def test_mprime_crash_after_passing_iteration_is_not_passed(self, sig):
+        """EVERY crash signal (incl. SIGILL/SIGFPE) must override an earlier
+        'Self-test N passed' line. Random-output fuzz won't reproduce this exact
+        trigger, so assert it explicitly per signal (blind-audit-found gap: SIGILL
+        and SIGFPE were missing from CRASH_SIGNALS)."""
         b = MprimeBackend()
         out = "Self-test 5 passed\nSelf-test 6 passed\n"
-        passed, _ = b.parse_output(out, "", -11)  # SIGSEGV after passing iterations
-        assert passed is False
+        passed, _ = b.parse_output(out, "", sig)
+        assert passed is False, (
+            f"mprime passed a {CRASH_SIGNALS[sig]} crash after a passing iteration"
+        )
+
+    @pytest.mark.parametrize("sig", sorted(CRASH_SIGNALS))
+    def test_stressapptest_crash_overrides_status_pass(self, sig):
+        """A crash signal must override a printed 'Status: PASS' — a clean
+        stressapptest run exits 0 or is killed by us, never with a crash code, so a
+        PASS line followed by a crash-on-teardown is still instability, not a pass."""
+        b = StressapptestBackend()
+        passed, _ = b.parse_output("Status: PASS\n", "", sig)
+        assert passed is False, (
+            f"stressapptest passed a {CRASH_SIGNALS[sig]} crash despite Status: PASS"
+        )
