@@ -64,3 +64,12 @@ class TestBackendParseRobust:
         out = f"{prefix}\nHardware Error: miscompare on CPU 3\n{suffix}"
         passed, _ = b.parse_output(out, "", rc)
         assert passed is False
+
+    def test_mprime_crash_after_passing_iteration_is_not_passed(self):
+        """A crash signal must override an earlier 'Self-test N passed' line --
+        the random-output fuzz won't reproduce this exact trigger, so assert it
+        explicitly (truthful regression for the ordering bug)."""
+        b = MprimeBackend()
+        out = "Self-test 5 passed\nSelf-test 6 passed\n"
+        passed, _ = b.parse_output(out, "", -11)  # SIGSEGV after passing iterations
+        assert passed is False
