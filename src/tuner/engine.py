@@ -493,13 +493,15 @@ class TunerEngine(QObject):
                     self._worker.wait(3000)
             self._worker.deleteLater()
             self._worker = None
-        # Clear in_test flag and revert to baseline so no aggressive offset
-        # lingers in SMU after abort
+        # Clear the in-flight flag and revert EVERY core to baseline so no
+        # aggressive offset lingers in the SMU after abort. Reverting only the
+        # tested core is wrong during validation, where all confirmed cores are
+        # applied at once — the others would be left at aggressive CO.
         if tested_core is not None:
             cs = self._core_states.get(tested_core)
             if cs is not None:
                 cs.in_test = False
-            self._revert_core_to_baseline(tested_core)
+        self._revert_all_to_baseline()
         self._validation_stage = 0
         self._set_status("idle")
         if self._session_id:
