@@ -379,6 +379,86 @@ class TestWriteAheadJournal:
 
 
 # ---------------------------------------------------------------------------
+# T9: closed-loop end-to-end simulation — true injection through the real loop
+# ---------------------------------------------------------------------------
+
+
+class TestClosedLoopSimulation:
+    """Drive the REAL tuner loop (_run_next -> _apply_co [journals] -> worker ->
+    _on_test_finished -> _advance_core) against a simulated CPU. Only the worker is
+    replaced — by a stability oracle. Hard crashes are injected the real way: the
+    offset is journaled by the real _apply_co before the crash, then a fresh engine
+    recovers via the real resume(). Nothing is hand-fed. Proves the whole machine
+    (picker + state machine + journal + crash recovery) terminates and never leaves
+    a core settled on an offset that hard-crashes the box."""
+
+    @pytest.mark.parametrize("order", ["sequential", "round_robin", "ccd_round_robin"])
+    def test_converges_safely_under_injected_crashes(self, db, topo, mock_backend, order):
+        # Per-core ground truth: offset >= stable passes; between stable and crash
+        # is a detected (soft) failure; at/over crash the machine HARD-crashes.
+        cliffs = {0: (-12, -15), 1: (-22, -25), 2: (-7, -10), 3: (-17, -20)}
+        cores = list(cliffs)
+        cfg_kw = dict(cores_to_test=cores, test_order=order, coarse_step=5, fine_step=1,
+                      max_offset=-40, crash_penalty_steps=3, auto_validate=False,
+                      resume_crash_quarantine_threshold=50)
+        sid = tp.create_session(db, TunerConfig(**cfg_kw), "", "")
+
+        pending: list[int] = []
+
+        def patched_start_worker(core_id, duration):
+            pending.append(core_id)
+
+        def fresh_engine():
+            e = make_engine(db, topo, FaultSMU(), mock_backend, **cfg_kw)
+            e._start_worker = patched_start_worker
+            e._session_id = sid
+            return e
+
+        eng = fresh_engine()
+        eng._core_states = {c: CoreState(core_id=c, baseline_offset=0) for c in cores}
+        for cs in eng._core_states.values():
+            tp.save_core_state(db, sid, cs)
+        eng._set_status("running")
+        holder = {"eng": eng}
+
+        def more_aggressive(a, b):  # undervolt direction: more negative = more aggressive
+            return a < b
+
+        holder["eng"]._run_next()
+        steps = crashes = 0
+        CAP = 4000
+        while pending and steps < CAP:
+            steps += 1
+            core = pending.pop(0)
+            e = holder["eng"]
+            cs = e._core_states.get(core)
+            if cs is None:
+                continue
+            offset = cs.current_offset
+            stable, crash = cliffs[core]
+            if not more_aggressive(offset, stable):
+                e._on_test_finished(core, True, "", "", 1.0, 0.0)          # pass
+            elif offset == crash or more_aggressive(offset, crash):
+                crashes += 1
+                holder["eng"] = fresh_engine()                             # reboot
+                holder["eng"].resume(sid)                                  # real recovery
+            else:
+                e._on_test_finished(core, False, "calc error", "computation", 1.0, 0.0)  # soft fail
+
+        assert steps < CAP, f"did not converge in {CAP} steps ({order})"
+        assert crashes >= 1, "no hard crash was exercised — simulation is vacuous"
+        assert holder["eng"].status in ("idle", "quarantined")
+        # SAFETY INVARIANT: nothing is left settled on a crashing offset.
+        states = db.get_tuner_core_states(sid)
+        for c, (stable, crash) in cliffs.items():
+            cs = states[c]
+            if cs.best_offset is not None:
+                assert not (cs.best_offset == crash or more_aggressive(cs.best_offset, crash)), (
+                    f"[{order}] core {c} settled at {cs.best_offset} which crashes (limit {crash})"
+                )
+
+
+# ---------------------------------------------------------------------------
 # T6: thermal protection fails closed when no sensor is readable
 # ---------------------------------------------------------------------------
 
