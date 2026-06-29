@@ -74,6 +74,30 @@ class FaultSMU:
         return 5500
 
 
+class _HardCrash(Exception):
+    """Simulates the machine dying DURING the SMU hardware write (power loss /
+    instant hard crash) — the process never returns from set_co_offset."""
+
+
+class CrashDuringWriteSMU(FaultSMU):
+    """Fake SMU that hard-crashes the machine while writing a specific value.
+
+    Models reality faithfully: the crash happens *inside* the hardware write, so
+    recovery is only possible if the value was journaled BEFORE the write call.
+    """
+
+    def __init__(self, crash_at: tuple[int, int] | None) -> None:
+        super().__init__()
+        self._crash_at = crash_at
+
+    def set_co_offset(self, core_id: int, value: int) -> bool:
+        self.writes.append((core_id, value))
+        if self._crash_at is not None and (core_id, value) == self._crash_at:
+            raise _HardCrash(f"machine died writing core {core_id} = {value}")
+        self.applied[core_id] = value
+        return True
+
+
 @pytest.fixture
 def db():
     d = HistoryDB(":memory:")
@@ -140,6 +164,10 @@ class TestJournalCatchesUnflaggedCrash:
         assert cs.backoff_fail_bound == -12             # hard fail bound at the crashing value
         assert cs.current_offset == -9                  # -12 backed off toward 0 by 3
         assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
+        assert cs.in_test is False                      # the suspect's in_test flag is cleared
+        # The journal-detected recovery is logged as a real crash (passed=False).
+        logs = tp.get_test_log(db, sid, core_id=0)
+        assert any(e.get("error_type") == "crash" and not e.get("passed") for e in logs)
 
     def test_zero_value_is_never_a_suspect(self, db, topo, smu, mock_backend):
         """CO=0 (stock) is axiomatically safe and must never be treated as a crash."""
@@ -239,6 +267,9 @@ class TestResumeCrashCircuitBreaker:
         assert smu.applied.get(0) == 0                     # forced to stock
         # A quarantined session is not offered for resume (fail closed).
         assert sid not in [s.id for s in db.list_resumable_tuner_sessions()]
+        # in_test is cleared in memory AND persisted for every core.
+        assert all(not cs.in_test for cs in eng._core_states.values())
+        assert all(not c.in_test for c in db.get_tuner_core_states(sid).values())
 
     def test_clean_resume_does_not_increment_breaker(self, db, topo, smu, mock_backend):
         """A normal pause/resume with no crash never moves toward quarantine."""
@@ -326,6 +357,26 @@ class TestWriteAheadJournal:
         assert db.journal_suspects(eng._session_id) == []
         assert db.journal_survived_values(eng._session_id).get(0) == 0
 
+    def test_resume_rebuilds_proven_safe_envelope_from_journal(self, db, topo, smu, mock_backend):
+        """Resume must rebuild the proven-safe envelope from the journal so a value
+        the machine already survived is not re-flagged as a suspect."""
+        cfg = TunerConfig(cores_to_test=[0])
+        sid = tp.create_session(db, cfg, "", "")
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10,
+        ))
+        db.journal_co_intent(sid, 0, -30, survived=True)  # -30 proven safe a prior boot
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
+        with patch.object(eng, "_run_next"):
+            eng.resume(sid)
+        assert eng._co_survived.get(0) == -30
+
+    def test_apply_co_without_smu_returns_false(self, db, topo, mock_backend):
+        """With no SMU, _apply_co performs no write and reports failure (fail closed)."""
+        eng = make_engine(db, topo, None, mock_backend, cores_to_test=[0])
+        eng._session_id = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        assert eng._apply_co(0, -10) is False
+
 
 # ---------------------------------------------------------------------------
 # T6: thermal protection fails closed when no sensor is readable
@@ -354,6 +405,31 @@ class TestThermalFailClosed:
         """The tuner drives the scheduler with the sensor required by default."""
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
         assert eng._config.allow_missing_thermal_sensor is False
+
+    @pytest.mark.parametrize("allow_missing, expect_required", [(False, True), (True, False)])
+    def test_sensor_requirement_propagates_into_scheduler(
+        self, db, topo, smu, mock_backend, allow_missing, expect_required
+    ):
+        """The fail-closed flag must actually reach the scheduler — not just sit in
+        config. Capture the SchedulerConfig built in _start_worker and assert
+        require_thermal_sensor is wired = not allow_missing_thermal_sensor."""
+        import tuner.engine as te
+
+        captured = {}
+
+        class _CapScheduler:
+            def __init__(self, *, topology, backend, stress_config, scheduler_config, work_dir):
+                captured["cfg"] = scheduler_config
+
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0],
+                          allow_missing_thermal_sensor=allow_missing)
+        eng._session_id = tp.create_session(db, eng._config, "", "")
+        eng._core_states = {0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH,
+                                         current_offset=-5)}
+        with patch.object(te, "CoreScheduler", _CapScheduler), \
+             patch.object(te, "_TunerWorker"):
+            eng._start_worker(0, 5)
+        assert captured["cfg"].require_thermal_sensor is expect_required
 
 
 # ---------------------------------------------------------------------------
@@ -395,3 +471,65 @@ class TestEveryStyleRecoversCrash:
         assert eng._is_more_aggressive(-20, cs0.current_offset) or cs0.current_offset == 0
         # The untouched core is not penalized.
         assert eng._core_states[1].crash_count == 0
+
+
+# ---------------------------------------------------------------------------
+# T8: faithful forward-path crash (write-ahead ordering, not a hand-fed journal)
+# ---------------------------------------------------------------------------
+
+
+class TestForwardCrashWriteAhead:
+    """The recovery tests above hand-write the journal row, so they prove the
+    recovery logic but not that the LIVE forward path journals before the SMU
+    write. These drive the real write path (_apply_co) and crash inside the
+    hardware write, so they pass only if the journal is durable and written
+    write-ahead. Ablation confirms it: with journaling removed, these go red."""
+
+    def test_crash_during_real_write_is_recovered(self, db, topo, mock_backend):
+        smu = CrashDuringWriteSMU(crash_at=(0, -28))
+        cfg = TunerConfig(cores_to_test=[0], crash_penalty_steps=3, fine_step=1)
+        sid = tp.create_session(db, cfg, "", "")
+        # in_test=False on purpose: ONLY the journal can recover this, not the flag.
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-28,
+            baseline_offset=0, in_test=False,
+        ))
+
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
+        eng._session_id = sid
+        # Real forward write that dies mid-write — no hand-written journal row.
+        with pytest.raises(_HardCrash):
+            eng._apply_co(0, -28)
+
+        # Write-ahead proof: the value is already journaled (and durable) at the
+        # instant the machine died — before set_co_offset returned.
+        assert (0, -28) in db.journal_suspects(sid)
+
+        # A fresh engine (new process) recovers using ONLY the persisted journal.
+        del eng
+        eng2 = make_engine(db, topo, CrashDuringWriteSMU(crash_at=None),
+                           mock_backend, cores_to_test=[0])
+        with patch.object(eng2, "_run_next"):
+            eng2.resume(sid)
+        cs = eng2._core_states[0]
+        assert cs.crash_count == 1            # the dying write was recovered as a crash
+        assert cs.backoff_fail_bound == -28   # and bounded as never-retry
+
+    def test_journal_is_durable_to_a_fresh_connection(self, tmp_path, topo, mock_backend):
+        """The journal must be readable by a NEW connection (a fresh process after
+        reboot), i.e. committed to the file — not just cached in the writer's
+        connection. db1 is deliberately not closed before db2 opens, modelling a
+        crash where the writer never closed cleanly."""
+        path = tmp_path / "durable.db"
+        db1 = HistoryDB(path)
+        smu = FaultSMU()
+        eng = make_engine(db1, topo, smu, mock_backend, cores_to_test=[0])
+        eng._session_id = tp.create_session(db1, TunerConfig(cores_to_test=[0]), "", "")
+        eng._apply_co(0, -30)
+
+        db2 = HistoryDB(path)  # separate connection = the recovering process
+        try:
+            assert (0, -30) in db2.journal_suspects(eng._session_id)
+        finally:
+            db2.close()
+            db1.close()
