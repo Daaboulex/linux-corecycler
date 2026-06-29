@@ -67,6 +67,7 @@ class SchedulerConfig:
     over_temp_grace_seconds: float = 3.0  # sustained over-limit time before stopping
     over_temp_hard_margin: float = 8.0  # instant stop if temp >= max + this (runaway)
     stall_timeout: float = 30.0  # seconds of near-zero CPU before declaring stall
+    require_thermal_sensor: bool = False  # fail closed if CPU temperature is unreadable
     test_mode: TestMode = TestMode.CUSTOM
     # Full spectrum options
     variable_load: bool = False  # periodically stop/start stress during test
@@ -255,7 +256,12 @@ class CoreScheduler:
         """
         temp = self._read_cpu_temperature()
         if temp is None:
-            return True  # can't read -> don't block
+            # No readable CPU temperature means no thermal protection. Fail closed
+            # when a sensor is required (the tuner's default) so an aggressive
+            # undervolt is never driven blind; stay lenient only when the caller
+            # explicitly opted out (require_thermal_sensor=False, the dataclass
+            # default, which preserves behavior for callers that don't set it).
+            return not self.config.require_thermal_sensor
 
         hysteresis = 5.0
         limit = self.config.max_temperature

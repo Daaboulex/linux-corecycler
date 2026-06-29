@@ -47,6 +47,15 @@ class TunerConfig:
     # Safety
     abort_on_consecutive_failures: int = 0  # 0 = disabled
 
+    # Resume-crash circuit breaker. After this many consecutive crash-resumes with
+    # no surviving test in between, force every core to CO=0 (stock) and quarantine
+    # the session instead of re-applying a profile that keeps crashing the machine.
+    resume_crash_quarantine_threshold: int = 3
+
+    # Fail closed when no CPU temperature sensor is readable: refuse to drive a
+    # stress test with zero thermal protection unless the user explicitly opts in.
+    allow_missing_thermal_sensor: bool = False
+
     # Thermal safety (plumbed into the per-core scheduler). A thermal stop is
     # not a stability verdict: the tuner retries the same offset rather than
     # recording a failure, up to max_thermal_retries, then aborts.
@@ -105,6 +114,8 @@ class TunerConfig:
             errors.append("confirm_duration_seconds must be >= 1")
         if not 1 <= self.crash_penalty_steps <= 10:
             errors.append("crash_penalty_steps must be 1-10")
+        if not 1 <= self.resume_crash_quarantine_threshold <= 20:
+            errors.append("resume_crash_quarantine_threshold must be 1-20")
         if not 1800 <= self.max_core_time_seconds <= 14400:
             errors.append("max_core_time_seconds must be 1800-14400")
         for i, tier in enumerate(self.hardening_tiers):

@@ -230,6 +230,11 @@ class TunerEngine(QObject):
         self._last_tested_core: int | None = None
         self._ccd_last_tested: dict[int, int | None] = {}  # CCD index → last core_id tested in that CCD
         self._co_applied: dict[int, int | None] = {}  # core_id → last CO value written to SMU (None = unknown)
+        # core_id → most-aggressive CO value proven survivable this session (the
+        # machine lived a test with it resident). Seeds at 0 (stock is always
+        # safe); rebuilt from the CO journal on resume. Baselines are NOT seeded
+        # here — a baseline must earn "survived" like any other value.
+        self._co_survived: dict[int, int] = {}
 
         # Multi-core validation state
         self._validation_stage: int = 0  # 0 = not validating, 1/2/3 = stage
@@ -344,6 +349,14 @@ class TunerEngine(QObject):
 
         self._core_states = tp.load_core_states(self._db, session_id)
 
+        # Rebuild the proven-safe envelope from the CO journal: a value the machine
+        # survived in a prior boot of this session is still safe (silicon stability
+        # does not vanish across a reboot). Cores with no survived row stay at the
+        # CO=0 default — baselines are never assumed safe without proof.
+        if self._session_id is not None:
+            for c, v in tp.journal_survived_values(self._db, self._session_id).items():
+                self._co_survived[c] = v
+
         # Check for CO drift — warn if SMU values don't match expected baselines.
         # This catches cases where the user manually changed CO (via Curve Optimizer
         # tab) or ran other tools between pause and resume.
@@ -362,21 +375,35 @@ class TunerEngine(QObject):
                 )
                 self.co_drift_detected.emit(_json.dumps(drift))
 
-        # Step 1: Detect cores that were actively testing when the system crashed.
-        # The in_test flag is set when a test starts and cleared when it
-        # finishes. If the system crashed, the flag is still True for the
-        # core that was running — that core's offset caused a hard crash.
-        # Apply crash penalty (larger backoff + hard fail bound + cooldown)
-        # rather than a plain failure advance.
-        # Other cores in active phases (queued, not yet tested at their
-        # current_offset) must NOT be advanced — they haven't failed.
-        crashed = self._detect_and_handle_crashes(self._core_states)
+        # Step 1: Detect every offset that was resident when the machine died.
+        # Two signals, unified: the in_test flag (a core mid-test) AND the CO
+        # write-ahead journal (any value made resident — idle, baseline restore,
+        # post-test revert, validation — even with no in_test set, which the old
+        # in_test-only detection missed entirely). Each distinct suspect gets a
+        # crash penalty (hard fail bound + backoff toward 0 + cooldown), never a
+        # silent re-apply of the value that just crashed the box.
+        crashed_in_test = self._detect_and_handle_crashes(self._core_states)
+        journal_crashed = self._handle_journal_suspects(set(crashed_in_test))
+        crashed = sorted(set(crashed_in_test) | set(journal_crashed))
         if crashed:
             for core_id in crashed:
                 self.log_message.emit(
                     f"Core {core_id} crash detected — applied penalty backoff"
                 )
             self._set_status(f"resumed after crash (cores: {crashed})")
+            # Circuit breaker: a resume that finds a fresh crash means the machine
+            # died again on re-engage. Count consecutive crash-resumes (reset to 0
+            # whenever a test completes — see _on_test_finished). After the
+            # configured threshold, stop trying: force every core to stock (CO=0),
+            # quarantine the session, and surface an honest unsafe verdict rather
+            # than re-applying a profile that keeps crashing on every boot.
+            streak = tp.get_resume_crash_streak(self._db, session_id) + 1
+            tp.set_resume_crash_streak(self._db, session_id, streak)
+            if streak >= self._config.resume_crash_quarantine_threshold:
+                self._quarantine_session(streak)
+                return
+        else:
+            tp.set_resume_crash_streak(self._db, session_id, 0)
 
         # Step 2: Restore all cores to their baseline offsets.
         # After a crash and reboot, SMU SRAM is zeroed. Apply the known-stable
@@ -392,7 +419,7 @@ class TunerEngine(QObject):
                     self._co_applied[cs.core_id] = 0  # SMU already at 0 after reboot
                     continue
                 try:
-                    success = self._smu.set_co_offset(cs.core_id, cs.baseline_offset)
+                    success = self._apply_co(cs.core_id, cs.baseline_offset)
                     if success:
                         self._co_applied[cs.core_id] = cs.baseline_offset
                     else:
@@ -828,10 +855,25 @@ class TunerEngine(QObject):
             cs.backoff_fail_bound = crashed_offset
         # Back off by crash_penalty_steps
         penalty = self._config.crash_penalty_steps * self._config.fine_step
-        cs.current_offset = crashed_offset - (self._config.direction * penalty)
-        # Clamp to baseline
-        if self._at_or_past_baseline(cs.current_offset, cs):
+        new_offset = crashed_offset - (self._config.direction * penalty)
+        # CO=0 (stock voltage) is the only axiomatically safe state. Never let a
+        # backoff overshoot past 0 to the opposite, more-aggressive side.
+        if self._is_more_aggressive(0, new_offset):
+            new_offset = 0
+        if self._at_or_past_baseline(crashed_offset, cs):
+            # The crash happened at or below the baseline's aggressiveness, so the
+            # baseline itself is unstable — it is NOT a safe floor. Descend the
+            # baseline toward 0 so the search can never again settle on the value
+            # that just crashed the machine. This is what breaks the resume loop
+            # where an unstable baseline is re-applied on every boot.
+            cs.baseline_offset = new_offset
+            cs.current_offset = new_offset
+        elif self._at_or_past_baseline(new_offset, cs):
+            # Normal search crash (more aggressive than baseline): stop at the
+            # proven-stable baseline.
             cs.current_offset = cs.baseline_offset
+        else:
+            cs.current_offset = new_offset
         cs.crash_count += 1
         cs.crash_cooldown = 2
         # Force into backoff if in search or hardening phases
@@ -887,6 +929,75 @@ class TunerEngine(QObject):
                 cs.crash_count,
             )
         return crashed_cores
+
+    def _handle_journal_suspects(self, already: set[int]) -> list[int]:
+        """Penalize cores whose CO value was resident, un-survived, when the box died.
+
+        The CO write-ahead journal records every value made resident in the SMU
+        before the hardware write, so a hard crash with no in_test flag (idle,
+        baseline restore, post-test revert, validation) is still caught here.
+        ``already`` holds cores handled by in_test detection — skipped to avoid a
+        double penalty. Returns the list of core ids penalized.
+        """
+        if self._session_id is None:
+            return []
+        handled: list[int] = []
+        for core_id, value in tp.journal_suspects(self._db, self._session_id):
+            if core_id in already:
+                continue
+            cs = self._core_states.get(core_id)
+            if cs is None:
+                continue
+            # Anchor the penalty at the value that was actually resident at crash
+            # time (the journal), which may differ from the persisted offset.
+            cs.current_offset = value
+            tp.log_test_result(
+                self._db, self._session_id, core_id, value, cs.phase.value,
+                passed=False,
+                error_msg=(
+                    f"Reboot detected. Offset {value} was resident (CO journal) "
+                    f"and not proven survivable — treated as a hard crash."
+                ),
+                error_type="crash", duration=None,
+            )
+            self._apply_crash_penalty(cs)
+            cs.in_test = False
+            tp.save_core_state(self._db, self._session_id, cs)
+            handled.append(core_id)
+            logging.warning(
+                "Core %d: CO-journal crash suspect at offset %d — penalty applied, "
+                "new offset %d", core_id, value, cs.current_offset,
+            )
+        return handled
+
+    def _quarantine_session(self, streak: int) -> None:
+        """Force every core to stock (CO=0) and quarantine the session.
+
+        Reached when the machine has hard-crashed on resume the configured number
+        of consecutive times with no surviving test in between — no offset profile
+        we can re-apply is safe. Fail closed: drive the SMU to CO=0 (always safe),
+        mark the session 'quarantined' so it is neither silently re-applied nor
+        offered for resume, and surface an honest unsafe verdict to the user.
+        """
+        for core_id, cs in self._core_states.items():
+            cs.in_test = False
+            try:
+                if self._apply_co(core_id, 0):
+                    self._co_applied[core_id] = 0
+            except Exception as e:
+                log.warning("Quarantine: failed to force core %d to CO=0: %s", core_id, e)
+            if self._session_id is not None:
+                tp.save_core_state(self._db, self._session_id, cs)
+        if self._session_id is not None:
+            tp.update_session_status(self._db, self._session_id, "quarantined")
+        self._set_status("quarantined")
+        self._emit_progress()
+        self.log_message.emit(
+            f"QUARANTINED after {streak} consecutive crash-resumes: no re-applied "
+            f"CO profile stays stable. All cores forced to stock (CO=0). The last "
+            f"offsets are unsafe on this machine — lower max_offset, improve "
+            f"cooling, or check BIOS PBO before tuning again."
+        )
 
     def _check_time_budget(self, cs: CoreState) -> bool:
         """Check if core has exceeded its time budget. Returns True if settled."""
@@ -1204,6 +1315,7 @@ class TunerEngine(QObject):
             max_temperature=self._config.max_temperature_c,
             over_temp_grace_seconds=self._config.over_temp_grace_seconds,
             over_temp_hard_margin=self._config.over_temp_hard_margin_c,
+            require_thermal_sensor=not self._config.allow_missing_thermal_sensor,
         )
 
         try:
@@ -1261,6 +1373,21 @@ class TunerEngine(QObject):
             return
 
         cs.in_test = False
+
+        # Reaching this handler proves the machine survived the test — a hard
+        # system crash would have killed the process before the worker's finished
+        # signal could be delivered. So every CO value resident during this test
+        # is now proven not-a-hard-crash: mark the journal survived, widen the
+        # proven-safe envelope, and reset the resume-crash circuit breaker because
+        # forward progress was made. (Holds for thermal stops and detected stress
+        # failures too — both mean the box lived.)
+        if self._session_id is not None:
+            tp.journal_mark_survived(self._db, self._session_id)
+            for c, v in tp.journal_survived_values(self._db, self._session_id).items():
+                if self._is_more_aggressive(v, self._co_survived.get(c, 0)):
+                    self._co_survived[c] = v
+            if tp.get_resume_crash_streak(self._db, self._session_id) != 0:
+                tp.set_resume_crash_streak(self._db, self._session_id, 0)
 
         # A thermal stop is not a stability verdict — advancing the state machine
         # or logging a fail here would push the offset the wrong way on a thermal
@@ -1470,7 +1597,7 @@ class TunerEngine(QObject):
             failed: list[int] = []
             for core_id, offset in profile.items():
                 try:
-                    success = self._smu.set_co_offset(core_id, offset)
+                    success = self._apply_co(core_id, offset)
                     if success:
                         self._co_applied[core_id] = offset
                     else:
@@ -1914,6 +2041,24 @@ class TunerEngine(QObject):
         total = len(self._core_states)
         self.progress_updated.emit(done, total)
 
+    def _apply_co(self, core_id: int, value: int) -> bool:
+        """Apply a CO offset through the write-ahead journal.
+
+        Records the intended (core, value) durably BEFORE the hardware write so a
+        hard crash is always attributable to the exact value that was resident.
+        A value within the core's proven-safe envelope (0 is always safe) is
+        journaled survived; a more-aggressive value is journaled un-survived until
+        a test completes with it resident. Returns the SMU write result; raised
+        SMU exceptions propagate to the caller's existing handling (the intent is
+        already journaled, so the value is treated as suspect on the next resume).
+        """
+        if self._smu is None:
+            return False
+        survived = not self._is_more_aggressive(value, self._co_survived.get(core_id, 0))
+        if self._session_id is not None:
+            tp.journal_co_intent(self._db, self._session_id, core_id, value, survived)
+        return self._smu.set_co_offset(core_id, value)
+
     def _apply_validation_offsets(self, test_core_id: int, test_offset: int) -> bool:
         """Apply ALL confirmed offsets during validation — testing interactions.
 
@@ -1932,7 +2077,7 @@ class TunerEngine(QObject):
             if self._co_applied.get(core_id) == target:
                 continue
             try:
-                success = self._smu.set_co_offset(core_id, target)
+                success = self._apply_co(core_id, target)
             except Exception as e:
                 self.log_message.emit(
                     f"Failed to apply validated offset for core {core_id}: {e}. "
@@ -1953,7 +2098,7 @@ class TunerEngine(QObject):
 
         # Apply test offset to target core
         try:
-            success = self._smu.set_co_offset(test_core_id, test_offset)
+            success = self._apply_co(test_core_id, test_offset)
         except Exception as e:
             self.log_message.emit(
                 f"Failed to set CO for core {test_core_id}: {e}. "
@@ -1988,7 +2133,7 @@ class TunerEngine(QObject):
             if self._co_applied.get(core_id) == cs.baseline_offset:
                 continue  # already at baseline, skip redundant SMU write
             try:
-                success = self._smu.set_co_offset(core_id, cs.baseline_offset)
+                success = self._apply_co(core_id, cs.baseline_offset)
             except Exception as e:
                 self.log_message.emit(
                     f"CO isolation failed: core {core_id} baseline revert error — {e}. "
@@ -2008,7 +2153,7 @@ class TunerEngine(QObject):
 
         # Apply test offset to target core
         try:
-            success = self._smu.set_co_offset(test_core_id, test_offset)
+            success = self._apply_co(test_core_id, test_offset)
         except Exception as e:
             self.log_message.emit(
                 f"Failed to set CO for core {test_core_id}: {e}. "
@@ -2037,7 +2182,7 @@ class TunerEngine(QObject):
         if self._co_applied.get(core_id) == cs.baseline_offset:
             return  # already at baseline
         try:
-            success = self._smu.set_co_offset(core_id, cs.baseline_offset)
+            success = self._apply_co(core_id, cs.baseline_offset)
             if success:
                 self._co_applied[core_id] = cs.baseline_offset
             else:
@@ -2056,7 +2201,7 @@ class TunerEngine(QObject):
             if self._co_applied.get(core_id) == cs.baseline_offset:
                 continue
             try:
-                success = self._smu.set_co_offset(core_id, cs.baseline_offset)
+                success = self._apply_co(core_id, cs.baseline_offset)
                 if success:
                     self._co_applied[core_id] = cs.baseline_offset
                 else:

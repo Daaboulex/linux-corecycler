@@ -301,14 +301,60 @@ class TestSchemaMigration:
         assert version == HistoryDB.SCHEMA_VERSION
 
 
-class TestSchemaV10:
-    def test_schema_version_is_10(self, tmp_path):
+class TestSchemaV11:
+    def test_schema_version_is_11(self, tmp_path):
         db = HistoryDB(tmp_path / "test.db")
         try:
             row = db._execute_raw("SELECT version FROM schema_version").fetchone()
-            assert row[0] == 10
+            assert row[0] == 11
         finally:
             db.close()
+
+    def test_co_journal_and_breaker_round_trip(self, tmp_path):
+        """The CO write-ahead journal and resume-crash-streak column work on a
+        fresh database (exercises _DDL_FRESH + the new accessors)."""
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            # New sessions start with a zeroed circuit breaker.
+            assert db.get_resume_crash_streak(sid) == 0
+            # Aggressive value -> suspect; 0 -> survived.
+            db.journal_co_intent(sid, 0, -30, survived=False)
+            db.journal_co_intent(sid, 1, 0, survived=True)
+            assert db.journal_suspects(sid) == [(0, -30)]
+            # Marking survived clears suspects.
+            db.journal_mark_survived(sid)
+            assert db.journal_suspects(sid) == []
+            assert db.journal_survived_values(sid) == {0: -30, 1: 0}
+            # Breaker is read/write.
+            db.set_resume_crash_streak(sid, 3)
+            assert db.get_resume_crash_streak(sid) == 3
+        finally:
+            db.close()
+
+    def test_v10_database_migrates_to_v11(self, tmp_path):
+        """An older (v10) on-disk database gains the CO journal table and the
+        resume-crash-streak column when re-opened — the migration path, not just
+        the fresh-schema path."""
+        path = tmp_path / "mig.db"
+        db = HistoryDB(path)
+        sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+        # Emulate a v10 database: roll the version back and drop the v11 table.
+        db._execute_raw("UPDATE schema_version SET version=10")
+        db._execute_raw("DROP TABLE tuner_co_journal")
+        db.close()
+
+        db2 = HistoryDB(path)  # re-open triggers the v11 migration
+        try:
+            assert db2._execute_raw(
+                "SELECT version FROM schema_version"
+            ).fetchone()[0] == 11
+            db2.journal_co_intent(sid, 0, -25, survived=False)
+            assert (0, -25) in db2.journal_suspects(sid)
+            db2.set_resume_crash_streak(sid, 2)
+            assert db2.get_resume_crash_streak(sid) == 2
+        finally:
+            db2.close()
 
     def test_core_state_crash_fields_persist(self, tmp_path):
         db = HistoryDB(tmp_path / "test.db")
