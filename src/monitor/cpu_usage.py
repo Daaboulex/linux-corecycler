@@ -27,11 +27,15 @@ class CPUUsageReader:
             if not line.startswith("cpu") or line.startswith("cpu "):
                 continue
             parts = line.split()
-            # cpuN user nice system idle iowait irq softirq steal
-            cpu_id = int(parts[0][3:])
-            vals = [int(v) for v in parts[1:8]]
-            idle = vals[3] + vals[4]  # idle + iowait
-            total = sum(vals)
+            # cpuN user nice system idle iowait irq softirq steal — skip a malformed
+            # line (non-numeric id/values, too few fields) rather than crashing.
+            try:
+                cpu_id = int(parts[0][3:])
+                vals = [int(v) for v in parts[1:8]]
+                idle = vals[3] + vals[4]  # idle + iowait
+                total = sum(vals)
+            except (ValueError, IndexError):
+                continue
             busy = total - idle
 
             prev = self._prev.get(cpu_id)

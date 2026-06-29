@@ -54,7 +54,10 @@ def _read_from_proc() -> dict[int, float]:
     current_cpu = -1
     for line in proc_cpuinfo.read_text().splitlines():
         if line.startswith("processor"):
-            current_cpu = int(line.split(":")[1].strip())
+            try:
+                current_cpu = int(line.split(":", 1)[1].strip())
+            except (ValueError, IndexError):
+                current_cpu = -1
         elif line.startswith("cpu MHz") and current_cpu >= 0:
             with contextlib.suppress(ValueError):
                 freqs[current_cpu] = float(line.split(":")[1].strip())
