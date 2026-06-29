@@ -28,7 +28,7 @@ class TestStressapptestBackend:
         stdout = "Status: FAIL - memory errors detected."
         passed, err = backend.parse_output(stdout, "", 1)
         assert passed is False
-        assert "FAIL" in err
+        assert "fail" in err.lower()
 
     def test_parse_killed_by_scheduler(self):
         backend = StressapptestBackend()

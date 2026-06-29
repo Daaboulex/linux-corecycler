@@ -156,19 +156,22 @@ class MprimeBackend(StressBackend):
             if match:
                 return False, f"mprime error: {match.group(0)}"
 
-        # check for successful iterations
-        if re.search(r"Self-test \d+ passed", combined):
-            return True, None
-        if re.search(r"torture test passed", combined, re.IGNORECASE):
-            return True, None
+        # A crash signal means the worker died from instability — this OVERRIDES any
+        # earlier "Self-test N passed" line in the output (the process passed some
+        # iterations and then crashed, which is still a failure). Checked before the
+        # success patterns so a crash is never masked by a prior pass.
+        if returncode in CRASH_SIGNALS:
+            return False, f"mprime crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
 
         # if process was killed (by us, timeout) with no errors, consider it passed
         if returncode in KILLED_BY_US_CODES:
             return True, None
 
-        # SIGSEGV/SIGABRT/SIGBUS = likely CO instability crash
-        if returncode in CRASH_SIGNALS:
-            return False, f"mprime crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
+        # check for successful iterations
+        if re.search(r"Self-test \d+ passed", combined):
+            return True, None
+        if re.search(r"torture test passed", combined, re.IGNORECASE):
+            return True, None
 
         # unknown state — check return code
         if returncode != 0:
