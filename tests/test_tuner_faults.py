@@ -225,15 +225,17 @@ def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=4000):
     return eng, steps
 
 
-def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000):
+def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000,
+                      reboot_interval=0):
     """Drive the REAL tuner loop against a simulated CPU.
 
     Only the worker is replaced — by a stability oracle keyed on each core's
     (stable_limit, crash_limit). A hard crash (offset at/over crash_limit) is
     injected the real way: the offset is journaled by the real _apply_co before
-    the crash, then a fresh engine recovers via the real resume(). The picker,
-    state machine, journal, hardening and crash recovery are all real. Returns
-    (final_engine, steps, crashes, session_id).
+    the crash, then a fresh engine recovers via the real resume(). When
+    ``reboot_interval`` > 0, an unrelated power-loss reboot is also injected every
+    that-many steps (the in-flight offset is journaled but did not itself crash),
+    testing resume at arbitrary points. Returns (final_engine, steps, crashes, sid).
     """
     sid = tp.create_session(db, TunerConfig(**cfg_kw), "", "")
     pending: list[int] = []
@@ -258,6 +260,13 @@ def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000):
     steps = crashes = 0
     while pending and steps < cap:
         steps += 1
+        if reboot_interval and steps % reboot_interval == 0 and holder["eng"].status == "running":
+            # Power-loss reboot unrelated to the test: discard the engine; the
+            # in-flight offset is journaled, so a fresh engine recovers it.
+            pending.clear()
+            holder["eng"] = fresh()
+            holder["eng"].resume(sid)
+            continue
         core = pending.pop(0)
         e = holder["eng"]
         cs = e._core_states.get(core)
@@ -607,6 +616,8 @@ class TestPropertyFuzz:
         fine = data.draw(st.integers(min_value=1, max_value=min(coarse, 3)), label="fine")
         penalty = data.draw(st.integers(min_value=1, max_value=5), label="penalty")
         hardening = data.draw(st.booleans(), label="hardening")
+        # 0 = no spurious reboots; else inject a power-loss reboot every N steps.
+        reboot_interval = data.draw(st.sampled_from([0, 0, 5, 11, 19]), label="reboot_interval")
         cliffs = {}
         for c in range(n_cores):
             stable = data.draw(st.integers(min_value=-45, max_value=-3), label=f"stable{c}")
@@ -626,11 +637,14 @@ class TestPropertyFuzz:
                 search_duration_seconds=1, confirm_duration_seconds=1,
             )
             eng, steps, crashes, sid = drive_closed_loop(
-                db, topo, _StubBackend(), cliffs, cfg_kw)
+                db, topo, _StubBackend(), cliffs, cfg_kw, reboot_interval=reboot_interval)
 
-            assert steps < 6000, f"no convergence: order={order} cliffs={cliffs}"
+            assert steps < 6000, (
+                f"no convergence: order={order} cliffs={cliffs} reboot={reboot_interval}"
+            )
             assert eng.status in ("idle", "quarantined"), (
-                f"stuck in {eng.status}: order={order} cliffs={cliffs} hardening={hardening}"
+                f"stuck in {eng.status}: order={order} cliffs={cliffs} "
+                f"hardening={hardening} reboot={reboot_interval}"
             )
             resident = eng._smu.applied
             for c, (stable, crash) in cliffs.items():
