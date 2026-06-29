@@ -475,6 +475,13 @@ def encode_co_arg(
 ) -> int:
     """Encode core ID and CO value into SMU command argument.
 
+    Pure bit-packer: ``value`` is encoded as-is into the low 16 bits (two's
+    complement) with NO range check -- that is deliberate so the encoder can be
+    round-trip-tested over the full int16 range. Enforcing the generation's valid
+    CO range is the WRITER's job: every real write goes through
+    ``RyzenSMU.set_co_offset`` / ``set_all_co``, which range-check against
+    ``co_range`` and raise before calling this. A direct caller must do the same.
+
     Bit layout (Zen 3+ per-core set):
       [31:28] = CCD index
       [27:24] = CCX index (always 0 for Zen 3+, each CCD has 1 CCX)
