@@ -286,21 +286,20 @@ class RyzenSMU:
             # pack 6 x uint32 arguments
             if len(args) < 6:
                 args = args + (0,) * (6 - len(args))
-            packed_args = struct.pack("<6I", *args[:6])
-
-            # write arguments
-            args_path.write_bytes(packed_args)
-
-            # write command (triggers SMU execution)
-            cmd_bytes = struct.pack("<I", cmd)
-            cmd_path.write_bytes(cmd_bytes)
-
-            # read response from cmd file (status) and args file (response data)
-            resp_cmd = cmd_path.read_bytes()
-            resp_args_raw = args_path.read_bytes()
-
-            status = struct.unpack("<I", resp_cmd[:4])[0]
-            resp_args = struct.unpack("<6I", resp_args_raw[:24])
+            # Fail closed: an out-of-range arg, a permission error, or a truncated
+            # sysfs response must return a failed SMUResponse, never raise or write a
+            # coerced wrong value. A failed pack means we never write at all.
+            try:
+                packed_args = struct.pack("<6I", *args[:6])
+                args_path.write_bytes(packed_args)
+                cmd_path.write_bytes(struct.pack("<I", cmd))
+                resp_cmd = cmd_path.read_bytes()
+                resp_args_raw = args_path.read_bytes()
+                status = struct.unpack("<I", resp_cmd[:4])[0]
+                resp_args = struct.unpack("<6I", resp_args_raw[:24])
+            except (OSError, struct.error) as exc:
+                log.debug("SMU command %#x failed: %s", cmd, exc)
+                return SMUResponse(success=False, args=(0,) * 6, raw=b"")
 
             return SMUResponse(
                 success=(status == 1),
@@ -321,16 +320,18 @@ class RyzenSMU:
 
             if len(args) < 6:
                 args = args + (0,) * (6 - len(args))
-            packed_args = struct.pack("<6I", *args[:6])
-
-            args_path.write_bytes(packed_args)
-            cmd_path.write_bytes(struct.pack("<I", cmd))
-
-            resp_cmd = cmd_path.read_bytes()
-            resp_args_raw = args_path.read_bytes()
-
-            status = struct.unpack("<I", resp_cmd[:4])[0]
-            resp_args = struct.unpack("<6I", resp_args_raw[:24])
+            # Fail closed on a bad arg / permission error / truncated response.
+            try:
+                packed_args = struct.pack("<6I", *args[:6])
+                args_path.write_bytes(packed_args)
+                cmd_path.write_bytes(struct.pack("<I", cmd))
+                resp_cmd = cmd_path.read_bytes()
+                resp_args_raw = args_path.read_bytes()
+                status = struct.unpack("<I", resp_cmd[:4])[0]
+                resp_args = struct.unpack("<6I", resp_args_raw[:24])
+            except (OSError, struct.error) as exc:
+                log.debug("RSMU command %#x failed: %s", cmd, exc)
+                return SMUResponse(success=False, args=(0,) * 6, raw=b"")
 
             return SMUResponse(success=(status == 1), args=resp_args, raw=resp_args_raw)
 
