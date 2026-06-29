@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from engine.backends import register_backend
 
-from .base import KILLED_BY_US_CODES, StressBackend, StressConfig, StressMode
+from .base import CRASH_SIGNALS, KILLED_BY_US_CODES, StressBackend, StressConfig, StressMode
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -40,12 +40,20 @@ class StressapptestBackend(StressBackend):
     def parse_output(
         self, stdout: str, stderr: str, returncode: int
     ) -> tuple[bool, str | None]:
-        if "Status: FAIL" in stdout:
-            return False, "stressapptest: FAIL — memory errors detected"
+        # The scheduler kills stressapptest (a 24h run) before its final
+        # "Status: PASS/FAIL" summary line, so detect the memory-error signatures it
+        # logs DURING the run. Checking only the final summary meant a killed run
+        # that had already found memory errors was reported as passed (false stable).
+        lowered = (stdout + "\n" + stderr).lower()
+        for signature in ("miscompare", "hardware error", "hardware incident", "status: fail"):
+            if signature in lowered:
+                return False, f"stressapptest: '{signature}' — memory errors detected"
         if "Status: PASS" in stdout:
             return True, None
         if returncode in KILLED_BY_US_CODES:
             return True, None
+        if returncode in CRASH_SIGNALS:
+            return False, f"stressapptest crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
         if returncode != 0:
             return False, f"stressapptest exited with code {returncode}"
         return True, None
