@@ -41,6 +41,17 @@ from tuner.state import CoreState, TunerPhase
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _synchronous_qtimer():
+    """Force QTimer.singleShot to run its callback synchronously for every test in
+    this file. The closed-loop driver relies on the engine's QTimer continuations
+    firing inline; the conftest Qt mock already does this, but a REAL PySide6 env
+    (a developer's machine) would queue them on an idle event loop and the driver
+    would stall. This makes the fault tests env-independent."""
+    with patch("tuner.engine.QTimer.singleShot", new=lambda _ms, fn: fn()):
+        yield
+
+
 class FaultSMU:
     """Controllable fake RyzenSMU for fault injection.
 

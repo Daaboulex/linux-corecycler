@@ -67,6 +67,24 @@ class TestUpdateElapsedNoNameError:
         feed_mock.assert_called_once()
 
 
+class TestOnTestCompletedFailsClosed:
+    def test_malformed_results_payload_does_not_crash(self):
+        """The _on_test_completed slot must fail closed on malformed/odd payloads."""
+        import time
+
+        from gui.main_window import MainWindow
+
+        ns = types.SimpleNamespace()
+        ns._test_start_time = time.monotonic()
+        ns._config_tab = MagicMock()
+        ns._config_tab.get_profile.return_value = MagicMock(cycle_count=1)
+        ns._results_tab = MagicMock()
+        ns._on_test_completed = types.MethodType(MainWindow._on_test_completed, ns)
+        for bad in ("", "not json", "[1,2,3]", "null", "42",
+                    '{"0": "x"}', '{"0": [42]}', '{"0": [{"no_passed": 1}]}'):
+            ns._on_test_completed(bad)  # must not raise
+
+
 class TestCoreGridTelemetryFed:
     @patch("gui.main_window.read_core_frequencies", return_value={0: 5500.0})
     def test_core_grid_telemetry_fed(self, mock_freqs):

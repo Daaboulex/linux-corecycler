@@ -163,6 +163,12 @@ class TestTestCompletion:
         assert run.total_cores == 3
         assert run.finished_at is not None
 
+    def test_on_test_completed_malformed_payload_is_safe(self, db, logger):
+        # Fail closed: a malformed or wrongly-shaped payload must not crash the slot.
+        for bad in ("", "not json", "[1,2,3]", "null", "42",
+                    '{"0": "x"}', '{"0": [42]}', '{"0": [{"no_passed": 1}]}'):
+            logger.on_test_completed(bad)  # must not raise
+
     def test_on_test_stopped(self, db, logger):
         logger.on_test_stopped()
 
