@@ -459,6 +459,34 @@ class TestClosedLoopSimulation:
 
 
 # ---------------------------------------------------------------------------
+# T10: interruption safety — abort/pause must leave the SMU at a safe state
+# ---------------------------------------------------------------------------
+
+
+class TestInterruptionSafety:
+    def test_abort_reverts_all_cores_not_just_the_tested_one(
+        self, db, topo, smu, mock_backend
+    ):
+        """abort() must revert EVERY core to baseline, so aborting during validation
+        (where all confirmed cores are applied at once) never leaves the others at
+        aggressive CO resident in the SMU."""
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0, 1, 2])
+        eng._session_id = tp.create_session(db, TunerConfig(cores_to_test=[0, 1, 2]), "", "")
+        eng._core_states = {
+            i: CoreState(core_id=i, phase=TunerPhase.CONFIRMED, current_offset=-20,
+                         best_offset=-20, baseline_offset=0)
+            for i in range(3)
+        }
+        for i in range(3):  # all three resident at an aggressive offset
+            smu.applied[i] = -20
+            eng._co_applied[i] = -20
+        eng._set_status("validating")
+        eng.abort()
+        assert all(smu.applied[i] == 0 for i in range(3)), smu.applied
+        assert eng.status == "idle"
+
+
+# ---------------------------------------------------------------------------
 # T6: thermal protection fails closed when no sensor is readable
 # ---------------------------------------------------------------------------
 
