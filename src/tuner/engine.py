@@ -243,6 +243,11 @@ class TunerEngine(QObject):
         self._validation_core_order: list[int] = []  # cores to cycle through in stage 1
         self._validation_half_index: int = 0  # which half to test in stage 3
         self._validation_halves: list[list[int]] = []  # [half_a, half_b] for stage 3
+        # Cores flagged in_test for the validation worker currently running, so a
+        # hard crash during validation is attributed on resume (the confirmed
+        # offsets it re-applies are journaled survived, so only in_test arms the
+        # circuit breaker for a multi-core power-interaction crash).
+        self._cores_under_stress: list[int] = []
 
         # Clamp max_offset to CPU generation range
         if smu is not None:
@@ -501,6 +506,7 @@ class TunerEngine(QObject):
             cs = self._core_states.get(tested_core)
             if cs is not None:
                 cs.in_test = False
+        self._clear_cores_under_stress()
         self._revert_all_to_baseline()
         self._validation_stage = 0
         self._set_status("idle")
@@ -1444,6 +1450,10 @@ class TunerEngine(QObject):
             return
 
         cs.in_test = False
+        # A validation worker marks its whole stressed set in_test; the box
+        # survived this result, so clear and persist all of them (not just the
+        # reported core) before advancing.
+        self._clear_cores_under_stress()
 
         # Reaching this handler proves the machine survived the test — a hard
         # system crash would have killed the process before the worker's finished
@@ -1837,6 +1847,7 @@ class TunerEngine(QObject):
             return
 
         self._last_tested_core = cores[0]
+        self._mark_cores_under_stress(cores)
         core_info = self._topology.cores.get(cores[0])
         logical_cpu = (
             core_info.logical_cpus[0]
@@ -1908,6 +1919,7 @@ class TunerEngine(QObject):
                 return
 
         self._last_tested_core = core_id
+        self._mark_cores_under_stress([core_id])
         self._start_worker(core_id, self._config.validate_duration_seconds)
 
     def _run_validation_stage2(self) -> None:
@@ -1932,6 +1944,7 @@ class TunerEngine(QObject):
                 return
 
         self._last_tested_core = cores[0]
+        self._mark_cores_under_stress(cores)
         self._start_multi_core_worker(cores, self._config.validate_duration_seconds)
 
     def _run_validation_stage3(self) -> None:
@@ -1968,6 +1981,7 @@ class TunerEngine(QObject):
                 return
 
         self._last_tested_core = half[0]
+        self._mark_cores_under_stress(half)
         self._start_multi_core_worker(half, self._config.validate_duration_seconds)
 
     def _start_multi_core_worker(self, cores: list[int], duration: int) -> None:
@@ -2012,6 +2026,46 @@ class TunerEngine(QObject):
         )
         self._worker.finished.connect(self._on_test_finished)
         self._worker.start()
+
+    def _mark_cores_under_stress(self, cores: list[int]) -> None:
+        """Flag every core a validation worker is about to stress as in_test and
+        persist it BEFORE the worker starts.
+
+        A hard crash during validation completes no test, and the confirmed offsets
+        validation re-applies are journaled ``survived`` — so neither resume crash
+        detector would see it and the quarantine breaker would never engage,
+        re-applying the same profile into the same crash forever. The in_test flag
+        is the one signal that attributes such a crash, so set it on the full
+        stressed set (a multi-core stage reports only its first core).
+        """
+        self._cores_under_stress = list(cores)
+        for core_id in cores:
+            cs = self._core_states.get(core_id)
+            if cs is None:
+                continue
+            cs.in_test = True
+            if self._session_id is not None:
+                tp.save_core_state(self._db, self._session_id, cs)
+
+    def _clear_cores_under_stress(self) -> None:
+        """Clear and persist in_test for every core marked under validation stress.
+
+        Reaching a test result (or an abort) proves the box survived, so the whole
+        stressed set must be cleared — not just the reported core (_on_test_finished
+        clears that one) — or a normal completion leaves a stale in_test that would
+        wrongly fire the breaker on a later resume.
+        """
+        for core_id in self._cores_under_stress:
+            cs = self._core_states.get(core_id)
+            if cs is None:
+                continue
+            # Persist unconditionally: _on_test_finished clears the reported core's
+            # flag in memory before calling this, so a guard on cs.in_test would skip
+            # persisting that core and leave its DB row in_test=True.
+            cs.in_test = False
+            if self._session_id is not None:
+                tp.save_core_state(self._db, self._session_id, cs)
+        self._cores_under_stress = []
 
     def _find_most_aggressive_core(self) -> int | None:
         """Find the confirmed core with the highest absolute offset that can be backed off.
