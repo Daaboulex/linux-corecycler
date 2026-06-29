@@ -97,3 +97,28 @@ class TestCoreStateRoundTrip:
             assert db.get_tuner_core_states(sid)[cs.core_id] == cs
         finally:
             db.close()
+
+
+class TestProfileImportFailsClosed:
+    """parse_tuner_profile reads an untrusted user-provided file; it must reject a
+    malformed one with a single ValueError, never an opaque crash."""
+
+    @settings(max_examples=400, deadline=None)
+    @given(s=st.text(max_size=300))
+    def test_parse_only_raises_valueerror_or_succeeds(self, s):
+        from history.export import parse_tuner_profile
+        try:
+            result = parse_tuner_profile(s)
+        except ValueError:
+            return  # acceptable fail-closed outcome
+        assert isinstance(result, dict) and "profile" in result
+        # any OTHER exception propagates and fails the test (an opaque crash)
+
+    @settings(max_examples=200, deadline=None)
+    @given(profile=st.dictionaries(st.integers(0, 63), st.integers(-60, 30), max_size=8))
+    def test_valid_profile_round_trips(self, profile):
+        import json
+
+        from history.export import parse_tuner_profile
+        blob = json.dumps({"profile": {str(k): v for k, v in profile.items()}})
+        assert parse_tuner_profile(blob)["profile"] == profile

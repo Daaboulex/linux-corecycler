@@ -205,9 +205,18 @@ def export_tuner_profile(db: HistoryDB, session_id: int) -> str:
         for cs in states.values()
         if cs.phase in _IMPORTABLE_PHASES and cs.best_offset is not None
     }
-    config = json.loads(session.config_json) if session.config_json else {}
+    try:
+        config = json.loads(session.config_json) if session.config_json else {}
+    except (json.JSONDecodeError, TypeError):
+        config = {}
+    if not isinstance(config, dict):
+        config = {}
     hardening_tiers = config.get("hardening_tiers", [])
-    tiers_passed = [f"{t['stress_mode']}:{t['fft_preset']}" for t in hardening_tiers]
+    tiers_passed = [
+        f"{t['stress_mode']}:{t['fft_preset']}"
+        for t in hardening_tiers
+        if isinstance(t, dict) and "stress_mode" in t and "fft_preset" in t
+    ]
     has_hardened = any(cs.phase == TunerPhase.HARDENED for cs in states.values())
     data = {
         "cpu_model": session.cpu_model,
@@ -226,9 +235,25 @@ def export_tuner_profile(db: HistoryDB, session_id: int) -> str:
 
 
 def parse_tuner_profile(json_str: str) -> dict:
-    """Parse a tuner profile JSON string into a dict with int core keys."""
-    data = json.loads(json_str)
-    profile = {int(k): int(v) for k, v in data.get("profile", {}).items()}
+    """Parse a tuner profile JSON string into a dict with int core keys.
+
+    Fails closed on a malformed import file: raises a single ValueError (never an
+    opaque JSONDecodeError/TypeError/AttributeError) so the caller can reject an
+    invalid profile cleanly instead of crashing.
+    """
+    try:
+        data = json.loads(json_str)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise ValueError(f"invalid profile JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError("profile JSON must be a JSON object")
+    raw_profile = data.get("profile", {})
+    if not isinstance(raw_profile, dict):
+        raise ValueError("'profile' must be a JSON object of core:offset pairs")
+    try:
+        profile = {int(k): int(v) for k, v in raw_profile.items()}
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"profile entries must be integer core:offset pairs: {e}") from e
     return {
         "profile": profile,
         "cpu_model": data.get("cpu_model", ""),
