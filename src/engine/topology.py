@@ -68,6 +68,19 @@ def _field_int(line: str) -> int | None:
         return None
 
 
+def _l3_id_sort_key(item: tuple[str, list[int]]) -> tuple[int, int, str]:
+    """Order L3 groups by the numeric id from the sysfs cache `id` file.
+
+    A plain integer sorts by value (the normal case). A malformed, empty, or
+    non-decimal id (a transient zero-byte read, a hex string) sorts last by its
+    string form instead of crashing CCD detection with ValueError on int().
+    """
+    l3_id = item[0]
+    if l3_id.lstrip("-").isdigit():
+        return (0, int(l3_id), "")
+    return (1, 0, l3_id)
+
+
 def _parse_cpuinfo(topo: CPUTopology) -> None:
     if not CPUINFO.exists():
         return
@@ -193,7 +206,7 @@ def _detect_ccd_layout(topo: CPUTopology) -> None:
 
     # map L3 groups to CCD indices
     ccd_map: dict[int, int] = {}  # physical_core -> ccd_index
-    for ccd_idx, (_l3_id, core_ids) in enumerate(sorted(l3_groups.items(), key=lambda x: int(x[0]))):
+    for ccd_idx, (_l3_id, core_ids) in enumerate(sorted(l3_groups.items(), key=_l3_id_sort_key)):
         for cid in core_ids:
             ccd_map[cid] = ccd_idx
 
