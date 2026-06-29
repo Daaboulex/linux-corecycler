@@ -498,26 +498,23 @@ class TestCCDAlternatingOrder:
             for i in range(8)
         }
 
-        order = []
-        for _ in range(8):
-            picked = eng._pick_next_core()
-            if picked is None:
-                break
-            order.append(picked)
-            eng._core_states[picked] = CoreState(
-                core_id=picked, phase=TunerPhase.CONFIRMED, current_offset=-5, best_offset=-5,
-            )
-
-        # Verify alternation: consecutive picks should be from different CCDs
+        # Drive it the way _run_next does in REAL operation: advance the cursor
+        # after each pick and leave cores ACTIVE (a core takes many tests before it
+        # confirms, so confirmed-counts barely move). The old fewest-confirmed-only
+        # picker drained CCD0 entirely here; genuine alternation must hold.
         topo = topo_dual_ccd_x3d
-        for i in range(1, len(order)):
-            ccd_prev = topo.cores[order[i - 1]].ccd
-            ccd_curr = topo.cores[order[i]].ccd
-            if i < len(order) - 1:
-                assert ccd_prev != ccd_curr, (
-                    f"Picks {i-1} and {i} ({order[i-1]}, {order[i]}) "
-                    f"are both on CCD {ccd_curr}"
-                )
+        order = []
+        for _ in range(6):
+            picked = eng._pick_next_core()
+            assert picked is not None
+            order.append(picked)
+            eng._last_tested_core = picked  # cores stay in COARSE_SEARCH
+
+        ccds = [topo.cores[c].ccd for c in order]
+        for i in range(1, len(ccds)):
+            assert ccds[i] != ccds[i - 1], (
+                f"no CCD alternation in real cycling: order {order} -> CCDs {ccds}"
+            )
 
     def test_falls_back_when_one_ccd_exhausted(self, db, topo_dual_ccd_x3d, mock_smu, mock_backend):
         """When one CCD is all confirmed, pick remaining from the other."""
@@ -581,6 +578,94 @@ class TestCCDRoundRobinOrder:
 
         # Verify all 8 cores were picked (rotation worked)
         assert sorted(picks) == [0, 1, 2, 3, 4, 5, 6, 7]
+
+
+class TestCoreCyclingIntent:
+    """Each cycling style must follow its DOCUMENTED intent under realistic drive —
+    cores stay in active phases across picks and the cursor advances like _run_next,
+    instead of an instant-confirm scenario that can mask the real ordering."""
+
+    def _engine(self, db, topo, mock_smu, mock_backend, order, cores):
+        cfg = TunerConfig(cores_to_test=cores, test_order=order)
+        eng = TunerEngine(db=db, topology=topo, smu=mock_smu, backend=mock_backend, config=cfg)
+        eng._session_id = tp.create_session(db, cfg, "", "")
+        return eng
+
+    def test_sequential_finishes_a_core_before_the_next(
+        self, db, simple_topology, mock_smu, mock_backend
+    ):
+        """Sequential keeps returning core 0 through EVERY active phase — including
+        SETTLED — and only moves to core 1 once core 0 is done. (The old two-pass
+        picker jumped to core 1 while core 0 sat in SETTLED.)"""
+        eng = self._engine(db, simple_topology, mock_smu, mock_backend, "sequential", [0, 1])
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.NOT_STARTED),
+            1: CoreState(core_id=1, phase=TunerPhase.NOT_STARTED),
+        }
+        for phase in (TunerPhase.COARSE_SEARCH, TunerPhase.FINE_SEARCH, TunerPhase.SETTLED,
+                      TunerPhase.CONFIRMING, TunerPhase.BACKOFF_PRECONFIRM):
+            eng._core_states[0].phase = phase
+            assert eng._pick_next_core() == 0, f"jumped off core 0 while it was {phase}"
+        eng._core_states[0].phase = TunerPhase.CONFIRMED
+        assert eng._pick_next_core() == 1
+
+    def test_round_robin_rotates_while_cores_stay_active(
+        self, db, simple_topology, mock_smu, mock_backend
+    ):
+        eng = self._engine(db, simple_topology, mock_smu, mock_backend, "round_robin", [0, 1, 2])
+        eng._core_states = {
+            i: CoreState(core_id=i, phase=TunerPhase.COARSE_SEARCH, current_offset=-5)
+            for i in range(3)
+        }
+        order = []
+        for _ in range(6):
+            p = eng._pick_next_core()
+            order.append(p)
+            eng._last_tested_core = p
+        assert order == [0, 1, 2, 0, 1, 2]
+
+    def test_ccd_round_robin_interleaves_while_cores_stay_active(
+        self, db, topo_dual_ccd_x3d, mock_smu, mock_backend
+    ):
+        """Even with no core ever confirming, ccd_round_robin alternates CCDs."""
+        eng = self._engine(db, topo_dual_ccd_x3d, mock_smu, mock_backend,
+                           "ccd_round_robin", list(range(8)))
+        eng._core_states = {
+            i: CoreState(core_id=i, phase=TunerPhase.COARSE_SEARCH, current_offset=-5)
+            for i in range(8)
+        }
+        topo = topo_dual_ccd_x3d
+        ccds = []
+        for _ in range(6):
+            p = eng._pick_next_core()
+            ccds.append(topo.cores[p].ccd)
+            eng._last_tested_core = p
+            info = topo.cores.get(p)
+            if info and info.ccd is not None:
+                eng._ccd_last_tested[info.ccd] = p
+        for i in range(1, len(ccds)):
+            assert ccds[i] != ccds[i - 1], f"ccd_round_robin did not alternate: {ccds}"
+
+    def test_resume_reconstructs_cycling_position_from_log(
+        self, db, simple_topology, mock_smu, mock_backend
+    ):
+        """The cycling cursor is rebuilt from the test log (its source of truth) on
+        resume, so round-robin/CCD ordering continues instead of restarting. The
+        synthetic crash-recovery row (NULL duration) must not move the cursor."""
+        cfg = TunerConfig(cores_to_test=[0, 1, 2], test_order="round_robin")
+        sid = tp.create_session(db, cfg, "", "")
+        for i in range(3):
+            tp.save_core_state(db, sid, CoreState(
+                core_id=i, phase=TunerPhase.COARSE_SEARCH, current_offset=-5))
+        tp.log_test_result(db, sid, 0, -5, "coarse", True, duration=1.0)
+        tp.log_test_result(db, sid, 1, -5, "coarse", True, duration=1.0)   # last REAL test
+        tp.log_test_result(db, sid, 2, -30, "coarse", False,
+                           error_type="crash", duration=None)              # synthetic, ignored
+        eng = TunerEngine(db=db, topology=simple_topology, smu=mock_smu,
+                          backend=mock_backend, config=cfg)
+        with patch.object(eng, "_run_next"):
+            eng.resume(sid)
+        assert eng._last_tested_core == 1
 
 
 class TestExceedsMax:
@@ -1536,9 +1621,13 @@ class TestHardeningTransitions:
         }
         completed = []
         eng.session_completed.connect(lambda x: completed.append(x))
-        eng._complete_session()
-        # Core 1 is only CONFIRMED, not HARDENED, so session should NOT complete yet
+        with patch.object(eng, "_run_next"):
+            eng._complete_session()
+        # Core 1 is only CONFIRMED, not HARDENED, so the session must NOT complete;
+        # instead it is promoted into hardening so the run never stalls in "running".
         assert len(completed) == 0
+        assert eng._core_states[1].phase == TunerPhase.HARDENING_T1
+        assert eng._core_states[0].phase == TunerPhase.HARDENED  # already-hardened core untouched
 
     def test_complete_session_no_tiers_confirmed_is_done(
         self, db, simple_topology, mock_smu, mock_backend

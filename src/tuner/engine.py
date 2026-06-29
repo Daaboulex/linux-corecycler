@@ -442,6 +442,10 @@ class TunerEngine(QObject):
             else:
                 self.log_message.emit(f"Restored baselines: {baselines}")
 
+        # Restore the round-robin / CCD cycling cursor from the test log so the
+        # cycling order continues across the reboot instead of restarting.
+        self._reconstruct_scheduling_position()
+
         # Check if all cores are confirmed — if so, we were paused during
         # validation and should re-enter validation instead of per-core search.
         all_confirmed = all(cs.phase == TunerPhase.CONFIRMED for cs in self._core_states.values())
@@ -1059,16 +1063,17 @@ class TunerEngine(QObject):
                 return self._pick_sequential()
 
     def _pick_sequential(self) -> int | None:
-        """Finish each core completely before moving to next (pure selector)."""
-        # Pass 1: active phases (not confirmed, not settled, not in cooldown)
+        """Finish each core completely before moving to the next (pure selector).
+
+        The lowest-id core that is neither done (CONFIRMED/HARDENED) nor in
+        cooldown is driven all the way through — including its SETTLED -> CONFIRMING
+        step. SETTLED is NOT deferred behind every other core's search (that would
+        settle all cores first and confirm them all at the end, which is not
+        "finish each core completely").
+        """
         for core_id in sorted(self._core_states.keys()):
             cs = self._core_states[core_id]
-            if cs.phase not in (TunerPhase.CONFIRMED, TunerPhase.HARDENED, TunerPhase.SETTLED) and self._is_core_available(cs):
-                return core_id
-        # Pass 2: settled cores needing confirmation (not in cooldown)
-        for core_id in sorted(self._core_states.keys()):
-            cs = self._core_states[core_id]
-            if cs.phase == TunerPhase.SETTLED and self._is_core_available(cs):
+            if cs.phase not in (TunerPhase.CONFIRMED, TunerPhase.HARDENED) and self._is_core_available(cs):
                 return core_id
         return None
 
@@ -1112,7 +1117,16 @@ class TunerEngine(QObject):
         return candidates[0][1]
 
     def _pick_ccd_alternating(self) -> int | None:
-        """Alternate between CCDs: picks from the CCD with fewest confirmed cores."""
+        """Alternate between CCDs for cross-CCD thermal balance.
+
+        Primary rule is genuine alternation: prefer a CCD different from the one
+        just tested so the previously-loaded CCD cools while the other works. This
+        must hold during real operation, where a core stays in an active phase
+        across many tests (so confirmed-counts barely move) — the earlier
+        fewest-confirmed-only rule silently failed there, draining one CCD before
+        touching the other. Fewest-confirmed (then lowest index) is the tie-break
+        among the alternation candidates, keeping the CCDs balanced over the run.
+        """
         ccd_cores: dict[int, list[int]] = {}
         for core_id, cs in self._core_states.items():
             if not self._is_core_available(cs):
@@ -1134,8 +1148,17 @@ class TunerEngine(QObject):
             if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED):
                 ccd_confirmed[ccd] = ccd_confirmed.get(ccd, 0) + 1
 
-        sorted_ccds = sorted(ccd_cores.keys(), key=lambda c: ccd_confirmed.get(c, 0))
-        return ccd_cores[sorted_ccds[0]][0]
+        candidate_ccds = sorted(ccd_cores.keys())
+        # Alternate away from the last-tested CCD when another CCD still has work.
+        if self._last_tested_core is not None:
+            last_info = self._topology.cores.get(self._last_tested_core)
+            last_ccd = last_info.ccd if last_info and last_info.ccd is not None else 0
+            others = [c for c in candidate_ccds if c != last_ccd]
+            if others:
+                candidate_ccds = others
+
+        target_ccd = min(candidate_ccds, key=lambda c: (ccd_confirmed.get(c, 0), c))
+        return ccd_cores[target_ccd][0]
 
     def _pick_ccd_round_robin(self) -> int | None:
         """Round-robin with CCD interleaving — one test per core, alternating CCDs.
@@ -1180,6 +1203,30 @@ class TunerEngine(QObject):
             rotated = cores[idx + 1:] + cores[:idx + 1]
             return rotated[0]
         return cores[0]
+
+    def _reconstruct_scheduling_position(self) -> None:
+        """Re-derive the round-robin / CCD cycling position from the test log.
+
+        ``_last_tested_core`` and ``_ccd_last_tested`` are in-memory cursors, not
+        persisted state — the test log is their source of truth. Rebuilding them on
+        resume keeps the cycling order (and its cross-CCD cool-down) continuous
+        across a reboot instead of silently restarting from core 0. Synthetic
+        crash-recovery rows (duration is NULL) are skipped — they are not real
+        tests and must not move the cursor.
+        """
+        if self._session_id is None:
+            return
+        real = [
+            e for e in tp.get_test_log(self._db, self._session_id)
+            if e.get("duration_seconds") is not None
+        ]
+        if not real:
+            return
+        self._last_tested_core = real[-1]["core_id"]
+        for entry in real:  # ascending by id: the last write per CCD wins
+            core_info = self._topology.cores.get(entry["core_id"])
+            if core_info and core_info.ccd is not None:
+                self._ccd_last_tested[core_info.ccd] = entry["core_id"]
 
     # ------------------------------------------------------------------
     # Test execution
@@ -1561,6 +1608,32 @@ class TunerEngine(QObject):
 
     def _complete_session(self) -> None:
         """All cores done — enter auto-validation or finalize session."""
+        # With hardening configured, a core can reach CONFIRMED via a settling path
+        # that skips the hardening entry — the smart-backoff convergence, the
+        # crash-penalty backoff, or the time-budget cutoff all set CONFIRMED
+        # directly (unlike the normal CONFIRMING -> HARDENING_T1 transition). Left
+        # as-is, such a core is never picked again (CONFIRMED is unavailable) yet
+        # never HARDENED, so the all-hardened gate below never opens and the tuner
+        # stalls in "running" forever with no worker scheduled. Promote any
+        # confirmed-but-not-hardened core into hardening and keep going. Hardening
+        # only ever exits to HARDENED (never back to CONFIRMED), so this converges.
+        if self._config.hardening_tiers:
+            promoted = [
+                cs for cs in self._core_states.values()
+                if cs.phase == TunerPhase.CONFIRMED
+            ]
+            for cs in promoted:
+                cs.phase = TunerPhase.HARDENING_T1
+                cs.hardening_tier_index = 0
+                if self._session_id is not None:
+                    tp.save_core_state(self._db, self._session_id, cs)
+            if promoted:
+                self.log_message.emit(
+                    f"Promoting {len(promoted)} confirmed core(s) to hardening"
+                )
+                QTimer.singleShot(0, self._run_next)
+                return
+
         profile = {}
         for cs in self._core_states.values():
             if cs.best_offset is not None:
