@@ -531,14 +531,24 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_test_completed(self, results_json: str) -> None:
-        results = json.loads(results_json)
+        # Fail closed: a display slot must never crash the GUI on a malformed or
+        # unexpectedly-shaped results payload.
+        try:
+            results = json.loads(results_json)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(results, dict):
+            return
+
+        def _all_passed(r_list) -> bool:
+            return (
+                isinstance(r_list, list) and bool(r_list)
+                and all(isinstance(r, dict) and r.get("passed") for r in r_list)
+            )
+
         # Keys are stringified core_ids, values are lists of result dicts
         total = len(results)
-        passed = sum(
-            1
-            for r_list in results.values()
-            if r_list and all(r["passed"] for r in r_list)
-        )
+        passed = sum(1 for r_list in results.values() if _all_passed(r_list))
         failed = total - passed
         elapsed = time.monotonic() - self._test_start_time
 
@@ -553,11 +563,13 @@ class MainWindow(QMainWindow):
         )
 
         # enable "Retest Failed" button with the list of failed cores
-        failed_cores = [
-            int(cid)
-            for cid, r_list in results.items()
-            if r_list and not all(r["passed"] for r in r_list)
-        ]
+        failed_cores = []
+        for cid, r_list in results.items():
+            if isinstance(r_list, list) and r_list and not _all_passed(r_list):
+                try:
+                    failed_cores.append(int(cid))
+                except (ValueError, TypeError):
+                    continue
         self._config_tab.set_failed_cores(failed_cores)
 
     def _on_worker_finished(self) -> None:
