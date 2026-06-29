@@ -970,7 +970,11 @@ class CoreScheduler:
         Returns (passed, error_message).
         """
         self.state = TestState.RUNNING
-        self._stop_event.clear()
+        # Honor a stop requested just before this call: clearing it unconditionally
+        # discarded the abort and ran the full duration (it never exited early).
+        if self._stop_event.is_set():
+            self.state = TestState.FINISHED
+            return True, None
         elapsed = 0.0
         cycle = 0
         core_work_dir = self.work_dir / "rapid_transition"
