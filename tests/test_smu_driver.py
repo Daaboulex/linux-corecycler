@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from smu.commands import CPUGeneration, SMUCommandSet, encode_co_arg
+from smu.commands import CPUGeneration, SMUCommandSet, encode_co_arg, get_commands
 from smu.driver import SYSFS_BASE, RyzenSMU, SMUResponse
 
 
@@ -482,6 +482,46 @@ class TestProbeSlotMap:
         with patch.object(smu, "probe_slot_map") as mock_probe:
             smu.set_topology(mock_topo)
         mock_probe.assert_not_called()
+
+
+class TestPBOLimitValidation:
+    """PBO power/current limit setters fail closed on a malformed value BEFORE any
+    SMU write -- a negative would otherwise wrap to a huge unsigned limit once
+    encoded (value*1000), effectively removing the cap. set_pbo_scalar is covered
+    here too (its 0.0-10.0 guard existed but was untested)."""
+
+    @pytest.fixture
+    def smu(self, smu_dir):
+        # Real Granite Ridge set has the PBO command ids; dry_run so a valid value
+        # is accepted without touching hardware (the guard runs before dry_run).
+        return RyzenSMU(
+            get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE), smu_dir, dry_run=True
+        )
+
+    @pytest.mark.parametrize("setter", ["set_ppt_limit", "set_tdc_limit", "set_edc_limit"])
+    def test_in_range_limit_accepted(self, smu, setter):
+        assert getattr(smu, setter)(150) is True  # in range, dry-run
+
+    @pytest.mark.parametrize("setter", ["set_ppt_limit", "set_tdc_limit", "set_edc_limit"])
+    @pytest.mark.parametrize("bad", [0, -1, -50, 2001, 999999])
+    def test_malformed_limit_raises_before_write(self, smu, setter, bad):
+        with pytest.raises(ValueError):
+            getattr(smu, setter)(bad)
+
+    @pytest.mark.parametrize("scalar", [-0.1, 10.1, 100.0])
+    def test_pbo_scalar_out_of_range_raises(self, smu, scalar):
+        with pytest.raises(ValueError):
+            smu.set_pbo_scalar(scalar)
+
+    def test_pbo_scalar_in_range_accepted(self, smu):
+        assert smu.set_pbo_scalar(3.0) is True  # in range, dry-run
+
+    def test_unsupported_generation_returns_false_not_raises(self, smu_dir, zen3_cmds):
+        """A generation without the PBO command returns False (capability check)
+        before validation -- never raises on a missing command."""
+        smu = RyzenSMU(zen3_cmds, smu_dir, dry_run=True)  # zen3_cmds has no PBO cmds
+        assert smu.set_ppt_limit(150) is False
+        assert smu.set_ppt_limit(-999) is False  # no cmd -> False, not ValueError
 
 
 class TestBackupRestore:
