@@ -1112,3 +1112,55 @@ class TestValidationFuzz:
                 )
         finally:
             db.close()
+
+
+class TestResumePathsValidateConfig:
+    """resume() and validate_profile() re-validate the loaded config_json and fail
+    closed, not only start(). from_json rejects wrong TYPES but passes a well-typed
+    out-of-range value (e.g. coarse_step=0, a non-convergent search), so a corrupted
+    or hand-edited DB row would otherwise revive on resume the exact 'looped forever'
+    class start() rejects. A resident CO is never unsafe here (every SMU write is
+    range-checked), but the tune must refuse rather than spin."""
+
+    def test_resume_fails_closed_on_out_of_range_config(self, db, topo, smu, mock_backend):
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0], coarse_step=0), "", "")
+        eng = make_engine(db, topo, smu, mock_backend)
+        logs: list[str] = []
+        eng.log_message.connect(logs.append)
+        with patch.object(eng, "_run_next") as run_next:
+            eng.resume(sid)
+        assert run_next.call_count == 0, "resume proceeded on an invalid config"
+        assert any("Invalid tuner config" in m for m in logs)
+
+    def test_validate_profile_fails_closed_on_out_of_range_config(
+        self, db, topo, smu, mock_backend
+    ):
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0], coarse_step=0), "", "")
+        # A CONFIRMED core so validate_profile clears its empty-profile guard and
+        # reaches the config load/validate.
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase=TunerPhase.CONFIRMED,
+            current_offset=-10, best_offset=-10, baseline_offset=0,
+        ))
+        eng = make_engine(db, topo, smu, mock_backend)
+        logs: list[str] = []
+        eng.log_message.connect(logs.append)
+        with patch.object(eng, "_run_next") as run_next:
+            eng.validate_profile(sid)
+        assert run_next.call_count == 0, "validate_profile proceeded on an invalid config"
+        assert any("Invalid tuner config" in m for m in logs)
+
+    def test_resume_still_proceeds_on_a_valid_config(self, db, topo, smu, mock_backend):
+        """The guard is not over-eager: a valid config_json resumes normally."""
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase=TunerPhase.FINE_SEARCH,
+            current_offset=-10, best_offset=-8, baseline_offset=0, in_test=False,
+        ))
+        eng = make_engine(db, topo, smu, mock_backend)
+        logs: list[str] = []
+        eng.log_message.connect(logs.append)
+        with patch.object(eng, "_run_next") as run_next:
+            eng.resume(sid)
+        assert run_next.called, "resume bailed on a valid config"
+        assert not any("Invalid tuner config" in m for m in logs)

@@ -352,6 +352,15 @@ class TunerEngine(QObject):
         if self._smu is not None:
             self._config.clamp_max_offset(self._smu.commands.co_range)
 
+        # Fail closed on a corrupted/hand-edited config_json: from_json only
+        # rejects wrong TYPES, so a well-typed but out-of-range value (e.g.
+        # coarse_step=0, which makes the search non-convergent) survives it.
+        # start() rejects those; resume must too, or the bug returns on this path.
+        errors = self._config.validate()
+        if errors:
+            self.log_message.emit(f"Invalid tuner config: {'; '.join(errors)}")
+            return
+
         self._core_states = tp.load_core_states(self._db, session_id)
 
         # Rebuild the proven-safe envelope from the CO journal: a value the machine
@@ -531,6 +540,11 @@ class TunerEngine(QObject):
             self._config = TunerConfig.from_json(session.config_json)
             if self._smu is not None:
                 self._config.clamp_max_offset(self._smu.commands.co_range)
+            # Fail closed on a corrupted config_json, exactly as resume()/start().
+            errors = self._config.validate()
+            if errors:
+                self.log_message.emit(f"Invalid tuner config: {'; '.join(errors)}")
+                return
 
         # Reset confirmed cores to "confirming" for re-validation
         self._core_states = tp.load_core_states(self._db, session_id)
