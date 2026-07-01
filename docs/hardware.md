@@ -29,10 +29,13 @@ AMD-specific.
 | Zen 5 (Strix Halo) | Ryzen AI Max | -60 to +10 | RSMU | PPT/TDC/EDC | -- | APU, uses Strix Point commands |
 | Zen 5 (Shimada Peak) | Zen 5 Threadripper | -60 to +10 | RSMU | PPT/TDC/EDC | Read/Write | Different SMU addresses (`get_co=0xA3`) |
 
-On harvested or multi-CCD parts (5900X 6+6, 5600X 6-of-8, 9900X, ...) the kernel
-renumbers cores contiguously while the SMU addresses physical slots; the driver probes
-the SMU to build the correct kernel-core to physical-slot mapping so a CO write always
-lands on the intended core.
+On harvested or multi-CCD parts (5900X 6+6, 5600X 6-of-8, 9900X, ...) the SMU
+addresses physical core slots, with gaps where cores are fused off. On Linux the
+kernel exposes each core's physical, gap-preserving `core id` (decoded from the APIC
+ID via CPUID `Fn8000_001E`), so the driver derives the physical slot directly as
+`core id % 8` and the CCD from L3 topology -- a CO write always lands on the intended
+core, with no SMU slot-probing. (Windows tools read the SMN core-disable fuse for the
+same result because Windows enumerates cores contiguously; Linux gives it to us.)
 
 All generations support PBO scalar read/write (1.0x to 10.0x) and OC mode
 enable/disable. SMU features require the

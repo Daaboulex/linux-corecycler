@@ -40,8 +40,11 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
   a hard crash there was previously invisible to both crash detectors, so a profile
   that crashes only under combined load could be re-applied into the same crash on
   every resume.
-- Zen 3 Curve Optimizer writes now honor the topology-probed physical core slot, so
-  a harvested or 2-CCD Zen 3 part (5900X, 5600X) no longer writes the wrong core.
+- Per-core Curve Optimizer writes address the correct physical core on harvested and
+  multi-CCD parts (5900X, 7900X, 9900X, 5600X, ...) by using the physical,
+  gap-preserving core id Linux exposes (the kernel's own APIC-ID decode); the earlier
+  SMU slot-probe heuristic was removed as unnecessary on Linux and unreliable
+  (it depended on undocumented GET-on-disabled-slot firmware behavior).
 - Backend pass/fail parsing treats a crash signal (including SIGILL and SIGFPE) as
   instability even after an earlier "passed" line, so an unstable offset is never
   reported as stable.

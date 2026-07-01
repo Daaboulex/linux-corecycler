@@ -368,120 +368,98 @@ class TestCheckWritable:
         assert ok is False and "permission" in msg.lower()
 
 
-class TestProbeSlotMap:
-    """Tests for harvested core slot detection via SMU probing."""
+def _stateful_smu(smu, commands):
+    """Wire smu to a fake SMU that stores CO per physical (ccd, slot) on SET and
+    returns it on GET (so read-back verification passes). Returns the (writes,
+    store) it records. Only the sysfs byte boundary is faked; encode/addressing
+    is the real code."""
+    store: dict[tuple[int, int], int] = {}
+    writes: list[tuple[int, int, int]] = []
 
-    def test_non_harvested_all_slots_active(self, smu_dir, zen5_cmds):
-        """Non-harvested 8-core CCD: all 8 slots active, slot == core_id % 8."""
+    def send(cmd, args=(0,) * 6):
+        arg = args[0] if args else 0
+        ccd = (arg >> 28) & 0xF
+        slot = (arg >> 20) & 0xF
+        low = arg & 0xFFFF
+        if cmd == commands.set_co_cmd:
+            val = low - 0x10000 if low >= 0x8000 else low
+            store[(ccd, slot)] = val
+            writes.append((ccd, slot, val))
+            return SMUResponse(success=True, args=(arg,) + (0,) * 5, raw=b"")
+        if cmd == commands.get_co_cmd:
+            return SMUResponse(success=True, args=(store.get((ccd, slot), 0) & 0xFFFF,) + (0,) * 5, raw=b"")
+        return SMUResponse(success=True, args=(0,) * 6, raw=b"")
+
+    smu._send_command = send
+    smu.check_writable = lambda: (True, "OK")
+    return writes, store
+
+
+class TestDeterministicSlotMapping:
+    """The SMU physical slot is derived deterministically from the Linux physical
+    (gap-preserving) core_id -- no probe. These drive the REAL encode + write +
+    read-back path and confirm a CO write lands on the true physical (ccd, slot)
+    on harvested parts, where core_id carries the gaps."""
+
+    def test_set_topology_does_not_probe(self, smu_dir, zen5_cmds):
+        """set_topology must issue NO SMU command -- the echo-probe is gone."""
         smu = RyzenSMU(zen5_cmds, smu_dir)
-        smu._topology_ccd = {i: 0 for i in range(8)}
+        topo = MagicMock()
+        topo.cores = {0: MagicMock(ccd=0), 1: MagicMock(ccd=0)}
+        calls: list[int] = []
+        smu._send_command = lambda cmd, args=(0,) * 6: (
+            calls.append(cmd) or SMUResponse(success=True, args=(0,) * 6, raw=b"")
+        )
+        smu.set_topology(topo)
+        assert calls == [], "set_topology issued an SMU command (probe not removed)"
+        assert smu._topology_ccd == {0: 0, 1: 0}
 
-        def mock_send(cmd, args=(0, 0, 0, 0, 0, 0)):
-            arg = args[0] if args else 0
-            return SMUResponse(success=True, args=(0,) + (0,) * 5, raw=b"\x00" * 24)
-
-        with patch.object(smu, "_send_command", side_effect=mock_send):
-            slot_map = smu.probe_slot_map()
-
-        assert slot_map is not None
-        for i in range(8):
-            assert slot_map[i] == i
-
-    def test_9900x_harvested(self, smu_dir, zen5_cmds):
-        """9900X: CCD0 slots 2,3 harvested, CCD1 slots 4,5 harvested."""
+    def test_harvested_1ccd_writes_land_on_physical_slot(self, smu_dir, zen5_cmds):
+        """5600X/7600X/9600X-style: 6 of 8 on one CCD. Linux core_id is physical
+        with holes at the fused slots (2,3), so core_id % 8 addresses the right
+        slot and the fused slots are never written."""
         smu = RyzenSMU(zen5_cmds, smu_dir)
-        ccd_map = {}
-        for i in range(6):
-            ccd_map[i] = 0
-        for i in range(8, 14):
-            ccd_map[i] = 1
-        smu._topology_ccd = ccd_map
+        topo = MagicMock()
+        topo.cores = {c: MagicMock(ccd=0) for c in (0, 1, 4, 5, 6, 7)}
+        smu.set_topology(topo)
+        writes, store = _stateful_smu(smu, zen5_cmds)
+        for c in (0, 1, 4, 5, 6, 7):
+            assert smu.set_co_offset(c, -20) is True
+            assert store[(0, c % 8)] == -20  # landed on physical slot core_id % 8
+        assert all(slot not in (2, 3) for _ccd, slot, _v in writes), "wrote a fused slot"
 
-        harvested = {0: {2, 3}, 1: {4, 5}}
-
-        def mock_send(cmd, args=(0, 0, 0, 0, 0, 0)):
-            arg = args[0] if args else 0
-            ccd = (arg >> 28) & 0xF
-            slot = (arg >> 20) & 0xF
-            if slot in harvested.get(ccd, set()):
-                return SMUResponse(success=True, args=(arg,) + (0,) * 5, raw=b"\x00" * 24)
-            return SMUResponse(success=True, args=(0,) + (0,) * 5, raw=b"\x00" * 24)
-
-        with patch.object(smu, "_send_command", side_effect=mock_send):
-            slot_map = smu.probe_slot_map()
-
-        assert slot_map is not None
-        assert [slot_map[i] for i in range(6)] == [0, 1, 4, 5, 6, 7]
-        assert [slot_map[i] for i in range(8, 14)] == [0, 1, 2, 3, 6, 7]
-
-    def test_ambiguous_slot0_resolved(self, smu_dir, zen5_cmds):
-        """CCD0 slot 0 is ambiguous (arg=0, resp=0) but resolved by counting."""
+    def test_harvested_2ccd_writes_land_on_physical_slot(self, smu_dir, zen5_cmds):
+        """9900X-style 6+6: CCD0 physical cores 0,1,4,5,6,7; CCD1 physical cores
+        8,9,10,11,14,15 (slots 0,1,2,3,6,7). Each write must hit (ccd, core_id % 8)."""
         smu = RyzenSMU(zen5_cmds, smu_dir)
-        smu._topology_ccd = {i: 0 for i in range(6)}
+        ccd0 = (0, 1, 4, 5, 6, 7)
+        ccd1 = (8, 9, 10, 11, 14, 15)
+        topo = MagicMock()
+        topo.cores = {**{c: MagicMock(ccd=0) for c in ccd0},
+                      **{c: MagicMock(ccd=1) for c in ccd1}}
+        smu.set_topology(topo)
+        writes, store = _stateful_smu(smu, zen5_cmds)
+        for c in ccd0 + ccd1:
+            assert smu.set_co_offset(c, -15) is True
+        for c in ccd0:
+            assert store[(0, c % 8)] == -15
+        for c in ccd1:
+            assert store[(1, c % 8)] == -15
+        # no cross-CCD or fused-slot bleed
+        assert {(ccd, slot) for ccd, slot, _v in writes} == (
+            {(0, c % 8) for c in ccd0} | {(1, c % 8) for c in ccd1}
+        )
 
-        harvested_slots = {2, 3}
-
-        def mock_send(cmd, args=(0, 0, 0, 0, 0, 0)):
-            arg = args[0] if args else 0
-            slot = (arg >> 20) & 0xF
-            if slot in harvested_slots:
-                return SMUResponse(success=True, args=(arg,) + (0,) * 5, raw=b"\x00" * 24)
-            if arg == 0:
-                return SMUResponse(success=True, args=(0,) + (0,) * 5, raw=b"\x00" * 24)
-            return SMUResponse(success=True, args=(0,) + (0,) * 5, raw=b"\x00" * 24)
-
-        with patch.object(smu, "_send_command", side_effect=mock_send):
-            slot_map = smu.probe_slot_map()
-
-        assert slot_map is not None
-        assert slot_map[0] == 0
-        assert len(slot_map) == 6
-
-    def test_zen3_probes_harvested_slots(self, smu_dir, zen3_cmds):
-        """Zen 3 now probes too (it used to skip — the bug): a harvested 5600X
-        (6-of-8 cores on one CCD) maps kernel cores to physical slots so the SMU
-        write lands on the right core."""
-        smu = RyzenSMU(zen3_cmds, smu_dir)
-        smu._topology_ccd = {i: 0 for i in range(6)}
-        harvested = {2, 3}
-
-        def mock_send(cmd, args=(0, 0, 0, 0, 0, 0)):
-            arg = args[0] if args else 0
-            slot = (arg >> 20) & 0xF
-            if slot in harvested:  # harvested slots echo the arg
-                return SMUResponse(success=True, args=(arg,) + (0,) * 5, raw=b"\x00" * 24)
-            return SMUResponse(success=True, args=(0,) + (0,) * 5, raw=b"\x00" * 24)
-
-        with patch.object(smu, "_send_command", side_effect=mock_send):
-            slot_map = smu.probe_slot_map()
-        assert slot_map is not None
-        assert [slot_map[i] for i in range(6)] == [0, 1, 4, 5, 6, 7]
-
-    def test_no_topology_skips_probing(self, smu_dir, zen5_cmds):
+    def test_readback_of_written_core_matches(self, smu_dir, zen5_cmds):
+        """get_co_offset re-derives the same physical slot, so a written value reads
+        back on a harvested part."""
         smu = RyzenSMU(zen5_cmds, smu_dir)
-        assert smu.probe_slot_map() is None
-
-    def test_set_topology_triggers_probing(self, smu_dir, zen5_cmds):
-        """set_topology() should call probe_slot_map() for zen4_5 chips."""
-        smu = RyzenSMU(zen5_cmds, smu_dir)
-        mock_topo = MagicMock()
-        mock_topo.cores = {
-            0: MagicMock(ccd=0),
-            1: MagicMock(ccd=0),
-        }
-        with patch.object(smu, "probe_slot_map", return_value={0: 0, 1: 1}) as mock_probe:
-            smu.set_topology(mock_topo)
-        mock_probe.assert_called_once()
-        assert smu._slot_map == {0: 0, 1: 1}
-
-    def test_set_topology_dry_run_skips_probing(self, smu_dir, zen5_cmds):
-        """Dry-run mode should not probe SMU."""
-        smu = RyzenSMU(zen5_cmds, smu_dir, dry_run=True)
-        mock_topo = MagicMock()
-        mock_topo.cores = {0: MagicMock(ccd=0)}
-        with patch.object(smu, "probe_slot_map") as mock_probe:
-            smu.set_topology(mock_topo)
-        mock_probe.assert_not_called()
+        topo = MagicMock()
+        topo.cores = {c: MagicMock(ccd=0) for c in (0, 1, 4, 5, 6, 7)}
+        smu.set_topology(topo)
+        _writes, _store = _stateful_smu(smu, zen5_cmds)
+        smu.set_co_offset(5, -30)
+        assert smu.get_co_offset(5) == -30
 
 
 class TestPBOLimitValidation:
