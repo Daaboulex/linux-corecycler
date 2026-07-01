@@ -496,10 +496,12 @@ def encode_co_arg(
         ccd: Topology-detected CCD index. If provided, used instead of
              deriving CCD from ``core_id // 8``. Always prefer passing the
              L3-detected CCD from topology when available.
-        slot: Physical slot index (0-7) within the CCD. On harvested chips
-              the kernel renumbers cores contiguously, so ``core_id % 8``
-              targets the wrong SMU slot. When provided, overrides the
-              ``core_id % 8`` fallback.
+        slot: Physical slot index (0-7) within the CCD, overriding the default
+              ``core_id % 8``. On Linux ``core_id`` is already the physical,
+              gap-preserving core index (the kernel's own APIC-ID decode), so the
+              default is exact even on harvested parts; this override exists only
+              for a caller with a different authoritative source (e.g. an SMN
+              core-disable fuse map, as the Windows tools use).
     """
     commands = get_commands(generation)
     if commands is None:
@@ -512,15 +514,14 @@ def encode_co_arg(
     margin = value & 0xFFFF
 
     if scheme in ("zen3", "zen4_5"):
-        # Zen 3/4/5 share the per-core layout: CCD in bits [31:28], core within
-        # CCD in bits [23:20]. Prefer the topology-detected CCD and the probed
-        # physical slot; harvested / multi-CCD parts (5900X, 5600X, 9900X, ...)
-        # renumber kernel core-ids contiguously, so deriving the slot from
-        # core_id alone targets the WRONG SMU slot — and that write is silent,
-        # because read-back hits the same wrong slot. Fall back to core_id only
-        # when topology did not supply the CCD/slot.
-        #   Zen 3 once used (((core_id&8)<<5 | core_id&7)<<20), which is bit-identical
-        #   to this for the core_id-derived case but discarded the ccd/slot args.
+        # Zen 3/4/5 per-core layout: CCD in bits [31:28], physical core-in-CCD in
+        # bits [23:20]. On Linux core_id is the kernel's APIC-ID-derived PHYSICAL
+        # core index and is gap-preserving on harvested parts (a fused-off core
+        # leaves a hole, not a renumber), so core_id % 8 IS the physical slot and
+        # core_id // 8 the CCD. The ccd/slot keyword overrides let a caller supply a
+        # more authoritative source: the L3-detected CCD (RyzenSMU.set_topology), or
+        # a slot from an SMN core-disable fuse map on a platform where core_id is not
+        # already physical.
         detected_ccd = ccd if ccd is not None else core_id // 8
         core_in_ccd = slot if slot is not None else core_id % 8
         return (detected_ccd << 28) | (core_in_ccd << 20) | margin

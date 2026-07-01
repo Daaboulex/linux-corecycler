@@ -118,109 +118,33 @@ class RyzenSMU:
         self.dry_run = dry_run
         self._smu_lock = threading.Lock()
         self._backup: dict[int, int] | None = None
-        # Topology-detected CCD map: {physical_core_id: ccd_index}
-        # Set via set_topology() to use L3-detected CCD instead of core_id // 8
+        # Topology-detected CCD map: {physical_core_id: ccd_index}. Set via
+        # set_topology() to pin the SMU CCD field from L3 topology instead of
+        # core_id // 8. The physical SLOT is not stored: it is core_id % 8 (see
+        # set_topology / encode_co_arg for why that is exact on Linux).
         self._topology_ccd: dict[int, int] | None = None
-        # Harvested core slot map: {physical_core_id: physical_slot_in_ccd}
-        # Populated by probe_slot_map() for zen4_5 chips with harvested cores.
-        # When None, encode_co_arg falls back to core_id % 8.
-        self._slot_map: dict[int, int] | None = None
 
     def set_topology(self, topology) -> None:
-        """Load CCD mapping from CPU topology for accurate SMU encoding.
+        """Load the L3-detected CCD map so the SMU CCD field is exact.
 
-        Without this, CCD is derived from ``core_id // 8`` which is correct
-        for standard AMD desktop layouts but may break on non-standard configs.
+        The physical slot within a CCD is NOT probed. On Linux the kernel decodes
+        each core's APIC ID (CPUID Fn8000_001E) with the hardware's own field
+        widths and exposes the result as the physical, gap-preserving /proc/cpuinfo
+        "core id" -- so ``core_id % 8`` IS the physical SMU slot, including on
+        harvested / multi-CCD parts (5900X, 7900X, 9900X, 5600X, ...), where a
+        fused-off core leaves a hole in the numbering rather than renumbering the
+        rest. (This is the Linux-vs-Windows difference: Windows enumerates cores
+        contiguously, which is why the Windows tools read the SMN core-disable fuse
+        to rebuild the physical slot; Linux hands us the physical slot directly.)
 
-        For Zen 3/4/5 chips, also probes the SMU to detect harvested core slots.
-        On harvested / multi-CCD chips (9900X, 9700X, 7900X, 5900X, 5600X, etc.)
-        the kernel renumbers cores contiguously but the SMU uses physical slot
-        indices — probing builds the correct mapping.
+        encode_co_arg derives the slot from core_id; this method only supplies the
+        CCD index, which L3 topology pins more robustly than core_id // 8 on
+        non-standard layouts.
         """
         self._topology_ccd = {}
         for core_id, core_info in topology.cores.items():
             if core_info.ccd is not None:
                 self._topology_ccd[core_id] = core_info.ccd
-
-        if self.commands.encoding_scheme in ("zen3", "zen4_5") and not self.dry_run:
-            try:
-                self._slot_map = self.probe_slot_map()
-            except Exception as e:
-                log.warning("Slot probing failed, using core_id %% 8 fallback: %s", e)
-                self._slot_map = None
-
-    def probe_slot_map(self) -> dict[int, int] | None:
-        """Probe SMU to discover the physical slot for each core within its CCD.
-
-        On harvested Zen 3/4/5 chips the kernel renumbers cores contiguously
-        but the SMU addresses physical slots (0-7) including gaps from
-        disabled cores. Probes all 8 slots per CCD using GET_CO: harvested
-        slots echo the argument, active slots return the actual CO value.
-
-        HARDWARE-UNVERIFIED: the echo-vs-value discrimination has not been
-        confirmed on real harvested silicon (9900X/9700X/5600X). If a chip
-        returns the CO value in a different field/format, the probe could map
-        to the wrong slot; the count-based fallback (active_slots !=
-        expected_count -> core_id %% 8) bounds the damage but does not prove it.
-
-        Returns the slot map {core_id: physical_slot}, or None if probing
-        is not needed or fails.
-        """
-        if self.commands.encoding_scheme not in ("zen3", "zen4_5"):
-            return None
-        if not self.commands.has_co or self.commands.get_co_cmd is None:
-            return None
-        if self._topology_ccd is None:
-            return None
-
-        ccd_cores: dict[int, list[int]] = {}
-        for core_id, ccd_idx in self._topology_ccd.items():
-            ccd_cores.setdefault(ccd_idx, []).append(core_id)
-
-        slot_map: dict[int, int] = {}
-
-        for ccd_idx, core_ids in sorted(ccd_cores.items()):
-            expected_count = len(core_ids)
-            active_slots: list[int] = []
-            ambiguous_slot: int | None = None
-
-            for phys_slot in range(8):
-                arg = (ccd_idx << 28) | (phys_slot << 20)
-                resp = self._send_command(self.commands.get_co_cmd, (arg,))
-                if not resp.success:
-                    log.warning(
-                        "Slot probe failed for CCD %d slot %d — SMU error",
-                        ccd_idx, phys_slot,
-                    )
-                    continue
-
-                if arg == 0:
-                    ambiguous_slot = phys_slot
-                    continue
-
-                if resp.args[0] != arg:
-                    active_slots.append(phys_slot)
-
-            if ambiguous_slot is not None and len(active_slots) < expected_count:
-                active_slots.insert(0, ambiguous_slot)
-
-            active_slots.sort()
-
-            if len(active_slots) != expected_count:
-                log.warning(
-                    "Slot probe mismatch on CCD %d: found %d active slots %s "
-                    "but topology has %d cores — falling back to core_id %% 8",
-                    ccd_idx, len(active_slots), active_slots, expected_count,
-                )
-                for core_id in sorted(core_ids):
-                    slot_map[core_id] = core_id % 8
-                continue
-
-            for core_id, phys_slot in zip(sorted(core_ids), active_slots, strict=True):
-                slot_map[core_id] = phys_slot
-
-        log.info("Slot map probed: %s", slot_map)
-        return slot_map
 
     @staticmethod
     def is_available(sysfs_path: Path = SYSFS_BASE) -> bool:
@@ -367,8 +291,7 @@ class RyzenSMU:
         if not self.commands.has_co:
             return None
         ccd = self._topology_ccd.get(core_id) if self._topology_ccd else None
-        slot = self._slot_map.get(core_id) if self._slot_map else None
-        arg = encode_co_arg(core_id, 0, self.commands.generation, ccd=ccd, slot=slot)
+        arg = encode_co_arg(core_id, 0, self.commands.generation, ccd=ccd)
         resp = self._send_command(self.commands.get_co_cmd, (arg,))
         if not resp.success:
             return None
@@ -412,8 +335,7 @@ class RyzenSMU:
             return False
 
         ccd = self._topology_ccd.get(core_id) if self._topology_ccd else None
-        slot = self._slot_map.get(core_id) if self._slot_map else None
-        arg = encode_co_arg(core_id, value, self.commands.generation, ccd=ccd, slot=slot)
+        arg = encode_co_arg(core_id, value, self.commands.generation, ccd=ccd)
         resp = self._send_command(self.commands.set_co_cmd, (arg,))
         if not resp.success:
             log.error("SMU rejected CO write for core %d value %d", core_id, value)
