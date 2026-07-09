@@ -102,6 +102,12 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 - Corrupt `settings.json` is preserved as `settings.json.corrupt` with a
   logged reason instead of being silently replaced by defaults; and
   `TunerConfig.from_json` logs which invalid/unknown fields it dropped.
+- No-reboot resume no longer assumes zero baselines are resident: without a
+  reboot the SMU still holds whatever was live at app exit (e.g. a mid-test
+  offset), so the baseline is now written back explicitly; the reboot verdict
+  is computed once and drives the drift check, crash detection, and baseline
+  restore consistently. The display preflight respects an explicit
+  `QT_QPA_PLATFORM` (offscreen/vnc/linuxfb need no display server).
 
 ### Added (2026-07-09)
 
