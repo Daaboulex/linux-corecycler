@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import UTC
 from typing import TYPE_CHECKING
@@ -13,6 +15,8 @@ from .paths import fix_sudo_ownership, user_home
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 CONFIG_DIR = user_home() / ".config" / "corecycler"
 DEFAULT_PROFILE = CONFIG_DIR / "default.json"
@@ -91,7 +95,14 @@ def load_settings() -> AppSettings:
         data = json.loads(settings_file.read_text())
         profiles = [TestProfile(**p) for p in data.pop("profiles", [TestProfile()])]
         return AppSettings(**data, profiles=profiles)
-    except (json.JSONDecodeError, TypeError, KeyError):
+    except (json.JSONDecodeError, TypeError, KeyError) as e:
+        # Never silently reset: preserve the bad file for diagnosis and say why.
+        corrupt = settings_file.with_suffix(".json.corrupt")
+        log.warning(
+            "Settings file unreadable (%s) — moved to %s, using defaults", e, corrupt
+        )
+        with contextlib.suppress(OSError):
+            settings_file.replace(corrupt)
         return AppSettings()
 
 

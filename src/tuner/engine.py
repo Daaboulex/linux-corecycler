@@ -496,12 +496,17 @@ class TunerEngine(QObject):
                         f"Baseline restore error for core {cs.core_id}: {e}"
                     )
             if failed_cores:
+                # Fail closed: continuing to test on a machine whose SMU cannot
+                # even restore proven baselines would produce garbage verdicts
+                # and leave unknown offsets resident.
                 self.log_message.emit(
-                    f"WARNING: Baselines could not be restored for cores {failed_cores}. "
-                    f"SMU access may have changed since last session."
+                    f"Baselines could not be restored for cores {failed_cores} — "
+                    f"SMU access is broken or changed since last session. Pausing; "
+                    f"fix SMU access (ryzen_smu module, permissions), then Resume."
                 )
-            else:
-                self.log_message.emit(f"Restored baselines: {baselines}")
+                self.pause()
+                return
+            self.log_message.emit(f"Restored baselines: {baselines}")
 
         # Restore the round-robin / CCD cycling cursor from the test log so the
         # cycling order continues across the reboot instead of restarting.
@@ -990,6 +995,68 @@ class TunerEngine(QObject):
         ):
             cs.phase = TunerPhase.BACKOFF_PRECONFIRM
             cs.backoff_mode = True
+
+    def _apparatus_suspect(self, core_id: int) -> bool:
+        """Trip on a physically implausible fail streak and recover from evidence.
+
+        Every post-fail step moves the offset toward baseline (more voltage)
+        and the midpoint jumps converge exponentially, so a healthy test
+        apparatus cannot produce ``apparatus_failure_streak`` consecutive
+        FAILs on one core. The live case: a stale mprime results.txt turned
+        every verdict into the same phantom FAIL and marched three cores from
+        -49 back to baseline before anything objected. The breaker bounds the
+        whole class (broken backend, corrupt work dir, dying disk): roll the
+        core back to its most aggressive PROVEN pass (passes cannot be faked
+        by a stale error file), clear the poisoned backoff bounds, and pause
+        loudly so the root cause gets fixed instead of absorbed. Synthetic
+        crash rows (duration NULL) are reboots, not apparatus verdicts, and
+        do not count toward the streak.
+
+        Returns True when tripped (the caller must stop this flow).
+        """
+        threshold = self._config.apparatus_failure_streak
+        if threshold <= 0 or self._session_id is None:
+            return False
+        rows = [
+            r for r in tp.get_test_log(self._db, self._session_id, core_id=core_id)
+            if r.get("duration_seconds") is not None
+        ]
+        streak = 0
+        for r in reversed(rows):
+            if r["passed"]:
+                break
+            streak += 1
+        if streak < threshold:
+            return False
+
+        cs = self._core_states[core_id]
+        best_pass: int | None = None
+        for r in rows:
+            if r["passed"] and (
+                best_pass is None
+                or self._is_more_aggressive(r["offset_tested"], best_pass)
+            ):
+                best_pass = r["offset_tested"]
+        rollback = best_pass if best_pass is not None else cs.baseline_offset
+        cs.current_offset = rollback
+        cs.best_offset = rollback
+        cs.phase = TunerPhase.CONFIRMING  # evidence-backed, but must re-earn
+        cs.confirm_attempts = 0
+        cs.backoff_mode = False
+        cs.consecutive_backoff_fails = 0
+        cs.backoff_fail_bound = None
+        cs.backoff_pass_bound = None
+        tp.save_core_state(self._db, self._session_id, cs)
+        self.core_state_changed.emit(cs.core_id, cs.phase, cs.current_offset)
+        self.log_message.emit(
+            f"APPARATUS SUSPECT: core {core_id} failed {streak} consecutive tests "
+            f"while every step ADDED voltage — implausible for healthy tooling. "
+            f"Rolled back to the most aggressive proven pass ({rollback}); backoff "
+            f"bounds cleared; the core must re-confirm. Check the stress backend, "
+            f"work directory and log, fix the cause, then Resume."
+        )
+        self.pause()
+        return True
 
     def _detect_and_handle_crashes(
         self,
@@ -1645,12 +1712,23 @@ class TunerEngine(QObject):
 
         # Revert tested core to baseline — no aggressive offset should linger.
         # Skip during validation: we want all confirmed offsets to stay applied.
-        if self._status != "validating":
-            self._revert_core_to_baseline(core_id)
+        if self._status != "validating" and not self._revert_core_to_baseline(core_id):
+            self.log_message.emit(
+                f"Core {core_id}: test offset is still resident because the SMU "
+                f"revert failed. Pausing (hardware-state fault, not a verdict)."
+            )
+            self.pause()
+            return
 
         # Reset consecutive failure counter on any pass
         if passed:
             self._consecutive_start_failures = 0
+
+        # Physically implausible fail streaks mean the APPARATUS is lying,
+        # not the silicon — recover from evidence and stop before the state
+        # machine walks proven offsets away (the stale-results.txt class).
+        if not passed and self._apparatus_suspect(core_id):
+            return
 
         # Multi-core validation uses its own flow — don't advance per-core state machine
         if self._validation_stage > 0:
@@ -1683,7 +1761,13 @@ class TunerEngine(QObject):
         than silently producing a bad tune.
         """
         cs.thermal_aborts += 1
-        self._revert_core_to_baseline(core_id)
+        if not self._revert_core_to_baseline(core_id):
+            self.log_message.emit(
+                f"Core {core_id}: SMU revert failed during thermal handling. "
+                f"Pausing (hardware-state fault)."
+            )
+            self.pause()
+            return
         # The partial test still ran real seconds — count them so a thermal loop
         # is bounded by the per-core time budget too, not only the retry cap.
         self._accumulate_test_time(cs, duration)
@@ -2431,26 +2515,36 @@ class TunerEngine(QObject):
         self._co_applied[test_core_id] = test_offset
         return True
 
-    def _revert_core_to_baseline(self, core_id: int) -> None:
-        """Revert a single core to its baseline offset after a test."""
+    def _revert_core_to_baseline(self, core_id: int) -> bool:
+        """Revert a single core to its baseline offset after a test.
+
+        Returns False when the SMU write failed: the tested (aggressive)
+        offset is then still RESIDENT, so the caller must stop the flow —
+        silently marching on with poisoned hardware state is how a bad
+        session gets written.
+        """
         if self._smu is None:
-            return
+            return True
         cs = self._core_states.get(core_id)
         if cs is None:
-            return
+            return True
         if self._co_applied.get(core_id) == cs.baseline_offset:
-            return  # already at baseline
+            return True  # already at baseline
         try:
             success = self._apply_co(core_id, cs.baseline_offset)
-            if success:
-                self._co_applied[core_id] = cs.baseline_offset
-            else:
-                log.warning(
-                    "Post-test baseline revert failed for core %d (offset %d)",
-                    core_id, cs.baseline_offset,
-                )
         except Exception as e:
-            log.warning("Post-test baseline revert error for core %d: %s", core_id, e)
+            self.log_message.emit(
+                f"Post-test baseline revert error for core {core_id}: {e}"
+            )
+            return False
+        if success:
+            self._co_applied[core_id] = cs.baseline_offset
+            return True
+        self.log_message.emit(
+            f"Post-test baseline revert failed for core {core_id} "
+            f"(offset {cs.baseline_offset}) — read-back mismatch"
+        )
+        return False
 
     def _revert_all_to_baseline(self) -> None:
         """Best-effort revert of all cores to baseline — used after partial CO failure."""

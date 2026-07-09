@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from dataclasses import asdict, dataclass
 
 
@@ -65,6 +66,11 @@ class TunerConfig:
 
     # Safety
     abort_on_consecutive_failures: int = 0  # 0 = disabled
+
+    # Apparatus circuit breaker: this many consecutive FAILs on one core (each
+    # backoff step ADDS voltage, so a healthy apparatus cannot do this) rolls
+    # the core back to its most aggressive proven pass and pauses. 0 disables.
+    apparatus_failure_streak: int = 12
 
     # Resume-crash circuit breaker. After this many consecutive crash-resumes with
     # no surviving test in between, force every core to CO=0 (stock) and quarantine
@@ -131,6 +137,13 @@ class TunerConfig:
             k: v for k, v in d.items()
             if k in cls.__slots__ and _json_value_ok(getattr(defaults, k), v)
         }
+        dropped = sorted(set(d) - set(clean))
+        if dropped:
+            # Falling back silently would hide a corrupt config — name it.
+            logging.getLogger(__name__).warning(
+                "TunerConfig.from_json dropped unknown/invalid fields "
+                "(defaults used instead): %s", dropped,
+            )
         return cls(**clean)
 
     def validate(self) -> list[str]:
@@ -154,6 +167,13 @@ class TunerConfig:
             errors.append("crash_penalty_steps must be 1-10")
         if not 1 <= self.resume_crash_quarantine_threshold <= 20:
             errors.append("resume_crash_quarantine_threshold must be 1-20")
+        if not 0 <= self.apparatus_failure_streak <= 100:
+            errors.append("apparatus_failure_streak must be 0-100 (0 disables)")
+        if 0 < self.apparatus_failure_streak <= self.max_confirm_retries:
+            errors.append(
+                "apparatus_failure_streak must exceed max_confirm_retries "
+                "(legitimate confirm retries would trip it)"
+            )
         if not 1800 <= self.max_core_time_seconds <= 14400:
             errors.append("max_core_time_seconds must be 1800-14400")
         for i, tier in enumerate(self.hardening_tiers):

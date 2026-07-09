@@ -44,8 +44,68 @@ def _bootstrap_sudo_display() -> None:
             os.environ["XAUTHORITY"] = str(xauth)
 
 
+def _install_exception_hooks(window) -> None:
+    """Uncaught exceptions must SURFACE, never vanish: log the full traceback,
+    make the hardware safe (stop the tuner, which reverts CO toward baselines),
+    and tell the user. Silently continuing in an unknown state is how a
+    poisoned session gets written; this is the top of the fail-closed chain.
+    """
+    import logging
+    import threading
+    import traceback
+
+    hook_log = logging.getLogger("corecycler.excepthook")
+
+    def _handle(exc_type, exc, tb) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        hook_log.critical("UNCAUGHT EXCEPTION", exc_info=(exc_type, exc, tb))
+        try:
+            if window._tuner_tab.is_running:
+                window._tuner_tab.force_stop()
+        except Exception:
+            hook_log.critical("Emergency tuner stop failed", exc_info=True)
+        try:
+            from PySide6.QtWidgets import QMessageBox
+
+            detail = "".join(traceback.format_exception_only(exc_type, exc)).strip()
+            QMessageBox.critical(
+                window,
+                "Internal Error",
+                f"An internal error occurred:\n\n{detail}\n\n"
+                "The auto-tuner was stopped (CO offsets reverted toward "
+                "baseline). The full traceback is in the terminal/journal "
+                "log. This is a bug to report, not a tuning result.",
+            )
+        except Exception:
+            hook_log.critical("Could not display the error dialog", exc_info=True)
+
+    def _thread_handle(args) -> None:
+        # Non-GUI thread: no dialog (Qt forbids it off the main thread) — the
+        # traceback still lands in the log instead of dying silently.
+        hook_log.critical(
+            "UNCAUGHT EXCEPTION in thread %s",
+            getattr(args.thread, "name", "?"),
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    sys.excepthook = _handle
+    threading.excepthook = _thread_handle
+
+
 def main() -> int:
+    import logging
     import os
+
+    # Root logging config: INFO to stderr (journald captures it for the
+    # systemd service). Without this, every log.warning/info breadcrumb the
+    # engine emits about root causes went nowhere.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
 
     # Suppress Qt/KDE warnings when running under sudo (no D-Bus session)
     os.environ.setdefault(
@@ -131,6 +191,8 @@ def main() -> int:
     signal.signal(signal.SIGINT, _signal_handler)
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, _signal_handler)
+
+    _install_exception_hooks(window)
 
     window.show()
 

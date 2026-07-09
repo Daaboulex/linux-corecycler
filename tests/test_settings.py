@@ -374,3 +374,17 @@ class TestJSONEdgeCases:
         loaded = load_settings()
         assert loaded.window_width == 99999
         assert loaded.profiles[0].seconds_per_core == 999999
+
+
+class TestCorruptSettingsPreserved:
+    def test_corrupt_settings_moved_aside_not_silently_reset(self, tmp_path, monkeypatch):
+        import config.settings as settings_mod
+
+        monkeypatch.setattr(settings_mod, "CONFIG_DIR", tmp_path)
+        bad = tmp_path / "settings.json"
+        bad.write_text("{not valid json")
+
+        loaded = settings_mod.load_settings()
+        assert loaded.work_dir == settings_mod.AppSettings().work_dir  # defaults
+        assert not bad.exists()                                        # moved, not deleted
+        assert (tmp_path / "settings.json.corrupt").read_text() == "{not valid json"

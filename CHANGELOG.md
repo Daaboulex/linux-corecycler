@@ -69,6 +69,40 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
   fresh-equals-migrated schema test; plus WAL `busy_timeout` for concurrent
   access and an integrity `quick_check` on open that fails closed.
 
+### Fixed (2026-07-09, poisoned-state prevention and exception honesty)
+
+- Apparatus circuit breaker (`apparatus_failure_streak`, default 12): N
+  consecutive FAILs on one core is physically implausible — every backoff step
+  ADDS voltage and the midpoint jumps converge exponentially — so it means the
+  test apparatus is lying, not the silicon (the stale-results.txt class:
+  broken backend, corrupt work dir, dying disk). On trip the core rolls back
+  to its most aggressive PROVEN pass (passes cannot be faked by a stale error
+  file), poisoned backoff bounds are cleared, the core must re-confirm, and
+  the tuner pauses loudly naming the suspicion.
+- SMU revert failures now fail closed instead of being logged-and-forgotten:
+  a failed post-test baseline revert leaves the aggressive offset RESIDENT,
+  so the tuner pauses (search, thermal, and resume baseline-restore paths all
+  covered) rather than marching on with poisoned hardware state.
+- Unreadable `results.txt` is an apparatus fault, not a pass: parse_output
+  previously swallowed the OSError and could silently pass a failing run; it
+  now returns a "verdict unavailable" failure that the engine classifies as
+  environment (pause), never as a stability verdict. Rapid-transition harness
+  exceptions are classified the same way instead of as core instability.
+- Global exception hooks (`sys.excepthook` + `threading.excepthook`): an
+  uncaught exception logs the full traceback, force-stops the tuner (reverting
+  CO toward baselines), and shows an error dialog — nothing can die silently
+  mid-session anymore. Root logging is now actually configured (INFO to
+  stderr; journald captures it), so the engine's root-cause breadcrumbs land
+  somewhere instead of nowhere.
+- Migration ALTERs no longer suppress all exceptions: the known
+  partial-migration case is detected by an explicit column-existence check;
+  any other failure raises instead of leaving a half-migrated schema marked
+  as migrated. The impossible `create_context` fallback now raises a
+  database-inconsistent error instead of returning a bogus id.
+- Corrupt `settings.json` is preserved as `settings.json.corrupt` with a
+  logged reason instead of being silently replaced by defaults; and
+  `TunerConfig.from_json` logs which invalid/unknown fields it dropped.
+
 ### Added (2026-07-09)
 
 - `docs/test-order-spec.md`: control-system spec chart for all five test
