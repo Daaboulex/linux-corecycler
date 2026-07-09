@@ -168,6 +168,16 @@ values. On non-NixOS distros, grant non-root access by setting permissions on
 `/dev/cpu/*/msr` and `/sys/kernel/ryzen_smu_drv/*` (see the [udev rule](#ryzen_smu-kernel-module)),
 or just run as root.
 
+Running as root is first-class: all persistent state (the history database at
+`~/.local/share/corecycler/history/history.db` and settings at
+`~/.config/corecycler/`) always resolves to the INVOKING user, so root and
+non-root runs share one database, and files a root run creates are handed back
+to the user. History that an older version wrote to `/root` is adopted into
+the user database once at startup (the source is renamed `*.adopted`). The
+graphical session handshake (Wayland socket / X11 authority) is derived from
+the invoking user's session automatically; when no display is reachable the
+app exits with an actionable message instead of aborting.
+
 On Zen 5, Vcore telemetry uses SVI3, which no Linux driver supports yet; the tool falls
 back to the motherboard Super I/O chip (Nuvoton NCT668x/NCT677x-NCT679x, ITE
 IT862x-IT877x), scanning input labels for the Vcore channel. If neither source is

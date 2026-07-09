@@ -1408,3 +1408,40 @@ class TestRevertFailureFailsClosed:
         smu.reject_set = True            # every SMU write rejected
         eng = _resume_fresh(db, topo, smu, mock_backend, sid)
         assert eng._status == "paused"   # not "running" on a broken SMU
+
+
+class TestNoRebootResidentOffset:
+    def test_no_reboot_writes_zero_baseline_instead_of_assuming_it(
+        self, db, topo, smu, mock_backend, monkeypatch
+    ):
+        """Without a reboot the SMU is NOT zeroed: a core with baseline 0 that
+        died mid-test still holds its test offset. Resume must WRITE the
+        baseline back, never assume it (the stale-resident-offset hole)."""
+        import tuner.engine as engine_mod
+        monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: False)
+
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-30,
+            baseline_offset=0, in_test=True,
+        ))
+        smu.applied[0] = -30  # what the dying app left resident in the SMU
+
+        eng = _resume_fresh(db, topo, smu, mock_backend, sid)
+
+        assert (0, 0) in smu.writes          # baseline explicitly written
+        assert smu.applied[0] == 0           # aggressive offset no longer resident
+        assert eng._co_applied[0] == 0
+
+    def test_rebooted_zero_baseline_is_not_rewritten(self, db, topo, smu, mock_backend):
+        """After a real reboot SMU SRAM is zeroed — writing 0 again would be a
+        pointless hardware write (and journal churn)."""
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-30,
+            baseline_offset=0,
+        ))
+        # autouse fixture patches _rebooted_since -> True (reboot world)
+        eng = _resume_fresh(db, topo, smu, mock_backend, sid)
+        assert (0, 0) not in smu.writes
+        assert eng._co_applied[0] == 0

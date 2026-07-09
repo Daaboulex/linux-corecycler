@@ -401,6 +401,10 @@ class TunerEngine(QObject):
             for c, v in tp.journal_survived_values(self._db, self._session_id).items():
                 self._co_survived[c] = v
 
+        # One reboot verdict drives the drift check, crash detection, and the
+        # baseline restore below — they must agree on what world they are in.
+        rebooted = _rebooted_since(self._db.latest_session_activity(session_id))
+
         # Check for CO drift — warn if SMU values don't match expected baselines.
         # This catches cases where the user manually changed CO (via Curve Optimizer
         # tab) or ran other tools between pause and resume.
@@ -409,12 +413,15 @@ class TunerEngine(QObject):
             drift: dict[int, dict[str, int]] = {}
             for cs in self._core_states.values():
                 actual = self._smu.get_co_offset(cs.core_id)
-                # actual == 0 is the EXPECTED post-reboot state (SMU SRAM is
+                # After a reboot, actual == 0 is the EXPECTED state (SMU SRAM is
                 # zeroed), not drift — warning on it made every resume-after-
-                # reboot cry wolf. Only a third value (neither baseline nor
-                # stock) means another tool touched CO since we last ran.
-                if actual is not None and actual != cs.baseline_offset and actual != 0:
-                    drift[cs.core_id] = {"expected": cs.baseline_offset, "actual": actual}
+                # reboot cry wolf. Without a reboot there is no such excuse:
+                # any value that differs from the baseline is worth naming.
+                if actual is None or actual == cs.baseline_offset:
+                    continue
+                if rebooted and actual == 0:
+                    continue
+                drift[cs.core_id] = {"expected": cs.baseline_offset, "actual": actual}
             if drift:
                 self.log_message.emit(
                     f"CO drift detected on {len(drift)} core(s) — "
@@ -436,7 +443,7 @@ class TunerEngine(QObject):
         # un-survived journal row with no reboot in between is a plain app exit
         # (window closed, SIGKILL mid-test) — penalizing it would walk good
         # offsets away on every restart.
-        if _rebooted_since(self._db.latest_session_activity(session_id)):
+        if rebooted:
             crashed_in_test = self._detect_and_handle_crashes(self._core_states)
             journal_crashed = self._handle_journal_suspects(set(crashed_in_test))
             crashed = sorted(set(crashed_in_test) | set(journal_crashed))
@@ -476,8 +483,12 @@ class TunerEngine(QObject):
             baselines: dict[int, int] = {}
             for cs in self._core_states.values():
                 baselines[cs.core_id] = cs.baseline_offset
-                if cs.baseline_offset == 0:
-                    self._co_applied[cs.core_id] = 0  # SMU already at 0 after reboot
+                if cs.baseline_offset == 0 and rebooted:
+                    # Reboot zeroes SMU SRAM, so 0 is already resident. Without
+                    # a reboot the SMU holds whatever was live at app exit (a
+                    # mid-test offset, e.g.) — it must be written back like any
+                    # other baseline, never assumed.
+                    self._co_applied[cs.core_id] = 0
                     continue
                 try:
                     success = self._apply_co(cs.core_id, cs.baseline_offset)
