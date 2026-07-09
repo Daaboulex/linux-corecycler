@@ -46,3 +46,28 @@ class TestTunerTabCreation:
         assert "tuner_sessions" in names
         assert "tuner_core_states" in names
         assert "tuner_test_log" in names
+
+
+class TestSelfPauseRecoverable:
+    """Every engine self-pause says 'fix the cause, then Resume' — the buttons
+    must follow the engine status or the GUI is a dead end (Resume greyed out
+    after an apparatus/SMU/startup pause)."""
+
+    def test_status_paused_enables_resume(self):
+        from PySide6.QtWidgets import QApplication
+
+        from gui.tuner_tab import TunerTab
+
+        app = QApplication.instance() or QApplication([])
+        assert app is not None
+        tab = TunerTab(db=None, topology=None, smu=None)
+        tab._set_running_state(True)          # engine started: Resume disabled
+        assert not tab._resume_btn.isEnabled()
+
+        tab._on_status_changed("paused")      # engine paused ITSELF
+        assert tab._resume_btn.isEnabled()
+        assert not tab._pause_btn.isEnabled()
+
+        tab._on_status_changed("running")     # resumed again
+        assert not tab._resume_btn.isEnabled()
+        assert tab._pause_btn.isEnabled()

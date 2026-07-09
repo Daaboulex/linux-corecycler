@@ -186,6 +186,7 @@ class HistoryDB:
             # A sudo run must not leave the shared DB (or its WAL sidecars)
             # root-owned, or the next non-sudo run cannot write it.
             fix_sudo_ownership(
+                self._db_path.parent.parent,  # .../corecycler (mkdir -p may create it as root)
                 self._db_path.parent,
                 self._db_path,
                 self._db_path.with_name(self._db_path.name + "-wal"),
@@ -531,6 +532,7 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
     # NULLs the code papers over with `or 0`). One canonical schema everywhere;
     # tests/test_history_db.py::TestFreshEqualsMigrated enforces it stays that way.
     _DDL_MIGRATE_V12 = """\
+BEGIN IMMEDIATE;
 CREATE TABLE tuner_core_states_v12 (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id          INTEGER NOT NULL REFERENCES tuner_sessions(id) ON DELETE CASCADE,
@@ -572,6 +574,7 @@ SELECT
 FROM tuner_core_states;
 DROP TABLE tuner_core_states;
 ALTER TABLE tuner_core_states_v12 RENAME TO tuner_core_states;
+COMMIT;
 """
 
     _MIGRATIONS: dict[int, str | callable] = {
@@ -1193,7 +1196,43 @@ ALTER TABLE tuner_core_states_v12 RENAME TO tuner_core_states;
             (value, self._now_iso(), session_id),
         )
 
+    # Hard silicon bounds for any Curve Optimizer offset (Zen generations use
+    # at most [-60, +30]; anything outside is corruption, not a tuning value).
+    _CO_SANE_RANGE = (-100, 100)
+
+    @classmethod
+    def _check_core_state_sane(cls, cs: CoreState) -> None:
+        """Guard condition on the persistence boundary, both directions.
+
+        Insane values (bit corruption, a hand-edited row, an arithmetic bug
+        upstream) must RAISE at the boundary — once written they become
+        indistinguishable from truth and every later decision trusts them.
+        """
+        lo, hi = cls._CO_SANE_RANGE
+        for name in ("current_offset", "best_offset", "coarse_fail_offset",
+                     "baseline_offset", "backoff_fail_bound", "backoff_pass_bound"):
+            v = getattr(cs, name)
+            if v is not None and not lo <= v <= hi:
+                raise ValueError(
+                    f"core {cs.core_id}: {name}={v} outside sane CO range "
+                    f"[{lo}, {hi}] — refusing to persist/load corrupted state"
+                )
+        for name in ("confirm_attempts", "consecutive_backoff_fails", "crash_count",
+                     "crash_cooldown", "thermal_aborts", "hardening_tier_index"):
+            v = getattr(cs, name)
+            if v < 0:
+                raise ValueError(
+                    f"core {cs.core_id}: {name}={v} negative — refusing "
+                    f"to persist/load corrupted state"
+                )
+        if cs.cumulative_test_time < 0:
+            raise ValueError(
+                f"core {cs.core_id}: cumulative_test_time={cs.cumulative_test_time} "
+                f"negative — refusing to persist/load corrupted state"
+            )
+
     def upsert_tuner_core_state(self, session_id: int, cs: CoreState) -> None:
+        self._check_core_state_sane(cs)
         now = self._now_iso()
         self.__conn.execute(
             """\
@@ -1258,7 +1297,7 @@ ALTER TABLE tuner_core_states_v12 RENAME TO tuner_core_states;
         ).fetchall()
         result: dict[int, _CoreState] = {}
         for r in rows:
-            result[r["core_id"]] = _CoreState(
+            loaded = _CoreState(
                 core_id=r["core_id"],
                 phase=_TunerPhase(r["phase"]),
                 current_offset=r["current_offset"],
@@ -1277,6 +1316,8 @@ ALTER TABLE tuner_core_states_v12 RENAME TO tuner_core_states;
                 cumulative_test_time=r["cumulative_test_time"] or 0.0,
                 hardening_tier_index=r["hardening_tier_index"] or 0,
             )
+            self._check_core_state_sane(loaded)  # fail closed on a corrupted row
+            result[loaded.core_id] = loaded
         return result
 
     def insert_tuner_test_log(

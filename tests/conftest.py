@@ -490,9 +490,7 @@ def build_topology(
             core_lcpus[pc] = lcpu.core_cpus
 
     sorted_cores = sorted(core_lcpus.keys())
-    cores_per_ccd = max(1, len(sorted_cores) // num_ccds) if num_ccds > 1 else len(sorted_cores)
-    for idx, pc in enumerate(sorted_cores):
-        min(idx // cores_per_ccd, num_ccds - 1) if num_ccds > 1 else 0
+    for pc in sorted_cores:
         topo.cores[pc] = PhysicalCore(
             core_id=pc,
             ccd=None,
