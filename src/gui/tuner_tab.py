@@ -780,6 +780,16 @@ class TunerTab(QWidget):
             self._status_label.setText(f"Status: {status.upper()}")
             # Clear validation progress when leaving validation
             self._progress_label.setText("")
+        # The engine pauses ITSELF on apparatus/SMU/startup faults ("fix the
+        # cause, then Resume") — the buttons must follow the engine's status,
+        # or every self-pause is a dead end with Resume greyed out.
+        if status == "paused":
+            self._pause_btn.setEnabled(False)
+            self._resume_btn.setEnabled(True)
+        elif status in ("running", "validating"):
+            self._pause_btn.setEnabled(True)
+            self._resume_btn.setEnabled(False)
+            self._abort_btn.setEnabled(True)
 
     @Slot(int, int, int)
     def _on_validation_progress(self, stage: int, current: int, total: int) -> None:

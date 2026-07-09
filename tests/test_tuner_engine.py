@@ -216,8 +216,10 @@ class TestResumeFromCrash:
             backend=mock_backend, config=cfg,
         )
 
-        # Create a session with saved state
+        # Create a session with saved state. A CONFIRMED claim must be backed
+        # by a logged pass (resume reconciliation demotes evidence-free claims).
         sid = tp.create_session(db, cfg, "", "")
+        tp.log_test_result(db, sid, 0, -20, "confirm", True, duration=300.0)
         tp.save_core_state(db, sid, CoreState(
             core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-20, best_offset=-20,
         ))
@@ -1953,7 +1955,11 @@ class TestStateMachineGaps:
                        backoff_fail_bound=-10, backoff_pass_bound=-10)
         eng._core_states = {0: cs}
         eng._advance_core(0, passed=True)
-        assert cs.phase == TunerPhase.CONFIRMED
+        # gap-zero here means CONTRADICTORY bounds (-10 both passed and failed).
+        # Failures outrank passes: never settle ON the marginal value — step
+        # back just inside the fail bound and re-prove from there.
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
+        assert cs.current_offset == -9
 
     # Gap 6: Binary search convergence at gap=1 (equals fine_step)
     def test_binary_search_gap_one(self, db, simple_topology, mock_smu, mock_backend):

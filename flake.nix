@@ -69,8 +69,20 @@
                   pythonPkgs.pyside6
                 ];
 
-                nativeCheckInputs = [ pythonPkgs.pytest ];
-                doCheck = false;
+                # The full unit/property suite gates the BUILD (offscreen Qt,
+                # HOME in the sandbox tmpdir). The e2e subprocess replays
+                # ("slow") stay outside the sandbox: they exercise taskset +
+                # wall-clock polling and belong to the dev loop, not the gate.
+                nativeCheckInputs = [
+                  pythonPkgs.pytestCheckHook
+                  pythonPkgs.hypothesis
+                ];
+                doCheck = true;
+                preCheck = ''
+                  export QT_QPA_PLATFORM=offscreen
+                  export HOME=$TMPDIR
+                '';
+                disabledTestMarks = [ "slow" ];
 
                 # Qt6 runtime needs
                 nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];

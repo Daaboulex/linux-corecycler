@@ -1168,7 +1168,6 @@ class HistoryTab(QWidget):
             return
 
         displayed = getattr(self, "_displayed_runs", self._runs)
-        len(rows)
         # Build description of what we're deleting
         run_ids = []
         for row in rows:

@@ -109,6 +109,54 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
   restore consistently. The display preflight respects an explicit
   `QT_QPA_PLATFORM` (offscreen/vnc/linuxfb need no display server).
 
+### Fixed (2026-07-09, adversarial review + exhaustive state sweep)
+
+- Startup/environment failures now revert the never-tested offset, persist
+  the cleared in_test flag, and are handled BEFORE the journal is marked
+  survived — previously the aggressive offset stayed resident during the
+  pause, a later reboot+resume fabricated a crash verdict for a core that
+  only had a missing binary, and the untested offset was journaled survived.
+- Validation-stage scheduler failures route through the startup path instead
+  of being logged as validate FAILs that backed off a healthy core.
+- Engine self-pauses (apparatus breaker, SMU faults, startup) now enable the
+  Resume button — previously every self-pause was a GUI dead end.
+- resume()/validate_profile() refuse while a worker is still in flight —
+  resuming under a live stress test rewrote SMU baselines beneath it (false
+  PASS at an untested offset) and orphaned the worker thread.
+- The apparatus breaker judges the search flow only: validation failures are
+  legitimate consecutive backoffs, and isolation passes are not valid
+  rollback evidence for the all-offsets-live context.
+- Migration v12 runs in one transaction (an interrupted upgrade rolls back
+  instead of bricking the DB), and the first sudo run no longer leaves the
+  parent state directory root-owned.
+- Exhaustive state-machine sweep (docs/tuner-state-spec.md, executed by
+  tests/test_state_transition_spec.py: every phase x outcome x offset
+  scenario through the real transitions) found and forced two fixes: a PASS
+  at/beyond the recorded fail bound inverted the bounds and made the backoff
+  binary search DIVERGE toward more aggressive values (failures now outrank
+  passes — the search steps back inside the fail bound); and a persisted
+  backoff row with best_offset NULL raised TypeError instead of failing
+  closed to baseline.
+- Evidence reconciliation on resume: a core claiming CONFIRMED/HARDENED at a
+  non-baseline best with no logged pass to back it is demoted to re-confirm
+  from its most aggressive proven pass (corruption or hand-edits cannot
+  masquerade as proven results).
+- Core-state sanity guard on the persistence boundary, both directions:
+  offsets outside the sane CO range or negative counters raise instead of
+  being written or loaded as truth.
+
+### Added (2026-07-09, robustness infrastructure)
+
+- The full unit/property suite now runs inside the nix package build
+  (doCheck; offscreen Qt) — CI gates the artifact, not just packaging. The
+  e2e subprocess replays stay in the dev loop (marked slow).
+- `Path.home()`/`os.path.expanduser` are banned by lint outside
+  `config/paths.py` (ruff TID251) — the split-database bug class is now
+  unwritable.
+- The closed-loop property fuzz additionally injects no-reboot APP EXITS
+  (window closed/SIGKILL) at random points, exercising the no-penalty resume
+  world alongside power-loss reboots.
+
 ### Added (2026-07-09)
 
 - `docs/test-order-spec.md`: control-system spec chart for all five test

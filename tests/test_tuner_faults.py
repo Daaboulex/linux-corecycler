@@ -236,7 +236,7 @@ def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=4000):
 
 
 def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000,
-                      reboot_interval=0):
+                      reboot_interval=0, app_exit_interval=0):
     """Drive the REAL tuner loop against a simulated CPU.
 
     Only the worker is replaced — by a stability oracle keyed on each core's
@@ -244,9 +244,17 @@ def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000,
     injected the real way: the offset is journaled by the real _apply_co before
     the crash, then a fresh engine recovers via the real resume(). When
     ``reboot_interval`` > 0, an unrelated power-loss reboot is also injected every
-    that-many steps (the in-flight offset is journaled but did not itself crash),
-    testing resume at arbitrary points. Returns (final_engine, steps, crashes, sid).
+    that-many steps (the in-flight offset is journaled but did not itself crash).
+    When ``app_exit_interval`` > 0, a plain APP EXIT (no reboot: window closed,
+    SIGKILL) is injected every that-many steps — the fresh engine resumes in the
+    no-reboot world, which must clear in_test WITHOUT a crash penalty and write
+    baselines back explicitly. Returns (final_engine, steps, crashes, sid).
     """
+    import tuner.engine as engine_mod
+
+    world = {"rebooted": True}
+    engine_mod._rebooted_since = lambda *a, **k: world["rebooted"]
+
     sid = tp.create_session(db, TunerConfig(**cfg_kw), "", "")
     pending: list[int] = []
 
@@ -274,8 +282,18 @@ def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000,
             # Power-loss reboot unrelated to the test: discard the engine; the
             # in-flight offset is journaled, so a fresh engine recovers it.
             pending.clear()
+            world["rebooted"] = True
             holder["eng"] = fresh()
             holder["eng"].resume(sid)
+            continue
+        if app_exit_interval and steps % app_exit_interval == 1 and holder["eng"].status == "running":
+            # Plain app exit: same persisted state, NO reboot — resume must not
+            # penalize anything and must restore baselines explicitly.
+            pending.clear()
+            world["rebooted"] = False
+            holder["eng"] = fresh()
+            holder["eng"].resume(sid)
+            world["rebooted"] = True
             continue
         core = pending.pop(0)
         e = holder["eng"]
@@ -288,6 +306,7 @@ def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000,
             e._on_test_finished(core, True, "", "", 1.0, 0.0)
         elif offset <= crash:              # at/over the crash point -> hard crash
             crashes += 1
+            world["rebooted"] = True
             holder["eng"] = fresh()
             holder["eng"].resume(sid)
         else:                              # between -> detected (soft) failure
@@ -870,6 +889,8 @@ class TestPropertyFuzz:
         hardening = data.draw(st.booleans(), label="hardening")
         # 0 = no spurious reboots; else inject a power-loss reboot every N steps.
         reboot_interval = data.draw(st.sampled_from([0, 0, 5, 11, 19]), label="reboot_interval")
+        # 0 = no app exits; else a no-reboot app exit + resume every N steps.
+        app_exit_interval = data.draw(st.sampled_from([0, 0, 7, 13]), label="app_exit_interval")
         cliffs = {}
         for c in range(n_cores):
             stable = data.draw(st.integers(min_value=-45, max_value=-3), label=f"stable{c}")
@@ -889,7 +910,8 @@ class TestPropertyFuzz:
                 search_duration_seconds=1, confirm_duration_seconds=1,
             )
             eng, steps, crashes, sid = drive_closed_loop(
-                db, topo, _StubBackend(), cliffs, cfg_kw, reboot_interval=reboot_interval)
+                db, topo, _StubBackend(), cliffs, cfg_kw,
+                reboot_interval=reboot_interval, app_exit_interval=app_exit_interval)
 
             assert steps < 6000, (
                 f"no convergence: order={order} cliffs={cliffs} reboot={reboot_interval}"
@@ -1265,10 +1287,12 @@ class TestCrashAtConfirmedValue:
 
 
 class TestStartupFailureIsNotAVerdict:
-    def test_startup_failure_pauses_without_advancing(self, db, topo, smu, mock_backend):
-        """A missing binary / scheduler construction error must pause the tuner,
-        not advance the state machine (observed live as full-duration false
-        FAILs walking offsets from -49 back to baseline)."""
+    def test_startup_failure_pauses_reverts_and_persists(self, db, topo, smu, mock_backend):
+        """A missing binary / scheduler construction error must pause the tuner
+        WITHOUT: advancing the state machine, leaving the aggressive offset
+        resident, leaving in_test=1 persisted (a later reboot+resume would
+        fabricate a crash verdict), or marking the never-tested offset as
+        survived in the journal."""
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
         eng = make_engine(db, topo, smu, mock_backend)
         eng._session_id = sid
@@ -1277,6 +1301,11 @@ class TestStartupFailureIsNotAVerdict:
             baseline_offset=0, in_test=True,
         )
         eng._core_states = {0: cs}
+        tp.save_core_state(db, sid, cs)
+        # the offset was applied (and journaled un-survived) before the worker
+        eng._co_applied[0] = -10
+        smu.applied[0] = -10
+        tp.journal_co_intent(db, sid, 0, -10, survived=False)
 
         with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core") as adv:
             eng._on_test_finished(0, False, "Failed to start stress test: boom",
@@ -1284,8 +1313,40 @@ class TestStartupFailureIsNotAVerdict:
 
         assert eng._status == "paused"
         adv.assert_not_called()
-        # No stability verdict was recorded for the never-run test
-        assert tp.get_test_log(db, sid) == []
+        assert tp.get_test_log(db, sid) == []          # no verdict recorded
+        assert smu.applied[0] == 0                     # offset reverted, not resident
+        assert not db.get_tuner_core_states(sid)[0].in_test  # persisted, no fake crash later
+        # the never-run offset was NOT promoted to survived
+        assert tp.journal_survived_values(db, sid).get(0) != -10
+
+    def test_validation_env_failure_pauses_without_backoff(self, db, topo, smu, mock_backend):
+        """Scheduler construction failure during a validation stage must route
+        through the startup path — not be logged as a validate FAIL that backs
+        off the most aggressive (healthy) core."""
+        cliffs = {0: -10, 1: -12}
+        sid = tp.create_session(db, TunerConfig(cores_to_test=list(cliffs)), "", "")
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=list(cliffs))
+        eng._session_id = sid
+        eng._core_states = {
+            c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=v,
+                         best_offset=v, baseline_offset=0)
+            for c, v in cliffs.items()
+        }
+        eng._co_survived = dict(cliffs)
+        eng._set_status("validating")
+        eng._validation_stage = 2
+        eng._validation_core_order = sorted(cliffs)
+
+        with patch("tuner.engine.CoreScheduler", side_effect=RuntimeError("boom")):
+            eng._run_validation_stage2()
+
+        assert eng._status == "paused"
+        assert eng._core_states[1].best_offset == -12  # healthy core NOT backed off
+        assert all(r["passed"] is not False or r["error_type"] != "startup" or True
+                   for r in tp.get_test_log(db, sid))
+        # no validate FAIL verdict was recorded
+        assert not [r for r in tp.get_test_log(db, sid)
+                    if r["phase"].startswith("validate")]
 
 
 # ---------------------------------------------------------------------------

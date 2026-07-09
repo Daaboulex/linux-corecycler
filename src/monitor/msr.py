@@ -95,7 +95,6 @@ class MSRReader:
         if not self.is_available():
             return {}
 
-        time.monotonic()
         results: dict[int, ClockStretchReading] = {}
 
         for cpu_id in cpu_ids:
