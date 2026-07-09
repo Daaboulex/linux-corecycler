@@ -52,7 +52,7 @@ class TestTunerSessions:
 
     def test_get_latest_session(self, db):
         cfg = TunerConfig()
-        sid1 = create_session(db, cfg, "", "CPU1")
+        create_session(db, cfg, "", "CPU1")
         sid2 = create_session(db, cfg, "", "CPU2")
         latest = get_latest_session(db)
         assert latest.id == sid2
@@ -253,8 +253,9 @@ class TestProfileExportImport:
             db.close()
 
     def test_import_tuner_profile_from_json(self):
-        from history.export import parse_tuner_profile
         import json
+
+        from history.export import parse_tuner_profile
         data = json.dumps({
             "cpu_model": "AMD Ryzen 9 9950X3D",
             "core_count": 2,
@@ -281,7 +282,9 @@ class TestProfileExportImport:
     def test_import_warns_cpu_model_mismatch(self):
         from history.export import validate_tuner_profile_import
         profile_data = {"profile": {0: -38}, "core_count": 16, "cpu_model": "Other CPU"}
-        errors = validate_tuner_profile_import(profile_data, system_core_count=16, system_cpu_model="AMD Ryzen 9 9950X3D")
+        errors = validate_tuner_profile_import(
+            profile_data, system_core_count=16, system_cpu_model="AMD Ryzen 9 9950X3D"
+        )
         assert any(e["level"] == "warning" and "cpu" in e["message"].lower() for e in errors)
 
 
@@ -302,11 +305,11 @@ class TestSchemaMigration:
 
 
 class TestSchemaV11:
-    def test_schema_version_is_11(self, tmp_path):
+    def test_schema_version_is_current(self, tmp_path):
         db = HistoryDB(tmp_path / "test.db")
         try:
             row = db._execute_raw("SELECT version FROM schema_version").fetchone()
-            assert row[0] == 11
+            assert row[0] == HistoryDB.SCHEMA_VERSION
         finally:
             db.close()
 
@@ -348,7 +351,7 @@ class TestSchemaV11:
         try:
             assert db2._execute_raw(
                 "SELECT version FROM schema_version"
-            ).fetchone()[0] == 11
+            ).fetchone()[0] == HistoryDB.SCHEMA_VERSION
             db2.journal_co_intent(sid, 0, -25, survived=False)
             assert (0, -25) in db2.journal_suspects(sid)
             db2.set_resume_crash_streak(sid, 2)
@@ -377,7 +380,7 @@ class TestSchemaV11:
         db = HistoryDB(tmp_path / "test.db")
         try:
             sid = db.create_tuner_session("{}", "1.0", "TestCPU")
-            log_id = db.insert_tuner_test_log(
+            db.insert_tuner_test_log(
                 sid, core_id=0, offset=-30, phase="hardening_t1",
                 passed=True, error_msg=None, error_type=None,
                 duration=300.0, run_id=None,

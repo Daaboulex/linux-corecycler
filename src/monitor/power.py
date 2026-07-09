@@ -71,11 +71,10 @@ class PowerMonitor:
                     if label_file.exists():
                         with contextlib.suppress(OSError):
                             label = label_file.read_text().strip().lower()
-                    if "rapl" in label or "package" in label or not label:
-                        if self._try_read(pf):
-                            self._hwmon_power_path = pf
-                            log.info("Using hwmon %s for package power (no root needed)", name)
-                            return
+                    if ("rapl" in label or "package" in label or not label) and self._try_read(pf):
+                        self._hwmon_power_path = pf
+                        log.info("Using hwmon %s for package power (no root needed)", name)
+                        return
 
         if pkg0.exists():
             log.info("RAPL energy_uj exists but is not readable (needs root)")

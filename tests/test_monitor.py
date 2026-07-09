@@ -17,9 +17,8 @@ from monitor.frequency import (
     read_max_frequency,
     read_min_frequency,
 )
-from monitor.hwmon import HWMON_BASE, HWMonData, HWMonReader
-from monitor.power import RAPL_BASE, PowerMonitor
-
+from monitor.hwmon import HWMonData, HWMonReader
+from monitor.power import PowerMonitor
 
 # ===========================================================================
 # HWMonData tests

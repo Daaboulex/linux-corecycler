@@ -36,5 +36,5 @@ def load_all() -> None:
     """Import all backend modules to trigger registration."""
     import engine.backends.mprime  # noqa: F401
     import engine.backends.stress_ng  # noqa: F401
-    import engine.backends.ycruncher  # noqa: F401
     import engine.backends.stressapptest  # noqa: F401
+    import engine.backends.ycruncher  # noqa: F401

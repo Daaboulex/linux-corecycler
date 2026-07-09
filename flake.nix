@@ -173,6 +173,9 @@
             # The FOSS default builds on CI (stress-ng/stressapptest are cached).
             packages.default = b.default;
 
+            # Python lint gate — same config as pyproject [tool.ruff].
+            pre-commit.settings.hooks.ruff.enable = true;
+
             # Eval-only gate for the off-CI `full`: force its full build graph to
             # EVALUATE (catching dep/version/unfree breakage) without realizing the
             # uncached, unfree mprime closure. The real build happens off-CI.

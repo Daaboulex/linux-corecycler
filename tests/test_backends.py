@@ -10,11 +10,17 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.backends.base import CRASH_SIGNALS, FFTPreset, KILLED_BY_US_CODES, StressBackend, StressConfig, StressMode, StressResult
+from engine.backends.base import (
+    KILLED_BY_US_CODES,
+    FFTPreset,
+    StressBackend,
+    StressConfig,
+    StressMode,
+    StressResult,
+)
 from engine.backends.mprime import FFT_RANGES, MODE_TO_TORTURE, MprimeBackend
 from engine.backends.stress_ng import StressNgBackend, _mode_to_method
 from engine.backends.ycruncher import YCruncherBackend, _mode_flag
-
 
 # ===========================================================================
 # Base class tests
@@ -182,9 +188,11 @@ class TestMprimeBackend:
     def test_get_command_no_binary_triggers_search(self, tmp_path):
         backend = MprimeBackend()
         backend._binary = None
-        with patch.object(backend, "find_binary", return_value=None):
-            with pytest.raises(RuntimeError, match="mprime binary not found"):
-                backend.get_command(StressConfig(), tmp_path)
+        with (
+            patch.object(backend, "find_binary", return_value=None),
+            pytest.raises(RuntimeError, match="mprime binary not found"),
+        ):
+            backend.get_command(StressConfig(), tmp_path)
 
     def test_get_supported_modes(self):
         backend = MprimeBackend()
@@ -286,8 +294,10 @@ class TestMprimeBackend:
         assert "MinTortureFFT=36" in content
         assert "TortureThreads=2" in content
         assert "TortureWeak=2" in content
-        assert "ResultsFile=results.txt" in content
-        assert "LogFile=prime.log" in content
+        # ResultsFile=/LogFile= were never real Prime95 keys — output stays at
+        # the defaults (results.txt / prime.log in the work dir)
+        assert "ResultsFile" not in content
+        assert "LogFile" not in content
 
     def test_prepare_creates_work_dir(self, tmp_path):
         backend = MprimeBackend()
@@ -300,13 +310,17 @@ class TestMprimeBackend:
     @pytest.mark.parametrize(
         "output",
         [
-            "FATAL ERROR: something went wrong",
-            "Rounding was 0.5 expected less than 0.4",
-            "Hardware failure detected running test",
-            "Possible hardware failure during test",
-            "ILLEGAL SUMOUT detected",
-            "SUM(INPUTS) != SUM(OUTPUTS)",
-            "ERROR: ILLEGAL operation",
+            "FATAL ERROR: Rounding was 0.5, expected less than 0.4",
+            "FATAL ERROR: Final result was 0000ABCD, expected: 0000EF01.",
+            "ERROR: ILLEGAL SUMOUT",
+            "Possible hardware failure, consult readme.txt file, restarting test.",
+            "Hardware failure detected running 288K FFT size, consult stress.txt file.",
+            "Maximum number of warnings exceeded.",
+            "TORTURE TEST FAILED on worker #2.",
+            "Torture Test completed 20 tests in 2 hours, 15 minutes - 1 errors, 0 warnings.",
+            "ERROR: SUM(INPUTS) != SUM(OUTPUTS), 1.5 != 1.6",
+            "ERROR: Jacobi error check failed!",
+            "Warning: SUMOUT MISMATCH",
         ],
     )
     def test_parse_output_fatal_errors(self, output):
@@ -321,15 +335,36 @@ class TestMprimeBackend:
         passed, msg = backend.parse_output("", "FATAL ERROR: test", 1)
         assert not passed
 
-    def test_parse_output_self_test_passed(self):
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "[Worker #1] Self-test 240K passed!",       # K-suffixed FFT (usual)
+            "Self-test 42 passed!",                     # sub-1K FFT
+            "Self-test 4K (thread 2 of 2) passed!",     # hyperthreaded variant
+        ],
+    )
+    def test_parse_output_self_test_passed(self, line):
         backend = MprimeBackend()
-        passed, msg = backend.parse_output("Self-test 42 passed\n", "", 0)
+        passed, msg = backend.parse_output(line + "\n", "", 0)
         assert passed
         assert msg is None
 
-    def test_parse_output_torture_passed(self):
+    def test_parse_output_torture_summary_clean(self):
         backend = MprimeBackend()
-        passed, msg = backend.parse_output("Torture test passed!", "", 0)
+        passed, msg = backend.parse_output(
+            "Torture Test completed 20 tests in 15 minutes - 0 errors, 0 warnings.", "", 0
+        )
+        assert passed
+        assert msg is None
+
+    def test_parse_output_benign_worker_stop_is_not_an_error(self):
+        """"Worker stopped." is Prime95's graceful-stop line (commonb.c:3143) —
+        the old pattern list treated it as fatal, a false-positive on any
+        intentional stop."""
+        backend = MprimeBackend()
+        passed, msg = backend.parse_output(
+            "[Worker #1] Self-test 240K passed!\n[Worker #1] Worker stopped.\n", "", -15
+        )
         assert passed
         assert msg is None
 
@@ -371,6 +406,54 @@ class TestMprimeBackend:
         (tmp_path / "important.dat").write_text("keep me")
         backend.cleanup(tmp_path)
         assert (tmp_path / "important.dat").exists()
+
+    def test_cleanup_on_error_renames_postmortem_files(self, tmp_path):
+        """A preserved results.txt must be RENAMED, never left in place: mprime
+        appends to results.txt, so a stale FATAL ERROR would be re-parsed by
+        every later run in this work dir as its own failure (observed live:
+        offsets marched from -49 back to baseline on phantom full-duration
+        FAILs)."""
+        backend = MprimeBackend()
+        (tmp_path / "results.txt").write_text("FATAL ERROR: Rounding was 0.5")
+        (tmp_path / "prime.log").write_text("log")
+        backend.cleanup(tmp_path, preserve_on_error=True)
+        assert not (tmp_path / "results.txt").exists()
+        assert not (tmp_path / "prime.log").exists()
+        assert "FATAL ERROR" in (tmp_path / "failed-results.txt").read_text()
+        assert (tmp_path / "failed-prime.log").read_text() == "log"
+
+    def test_prepare_removes_stale_run_files(self, tmp_path):
+        """prepare() must clean leftovers (abort/hard crash skips cleanup) so a
+        new run never inherits the previous run's errors or savefile."""
+        backend = MprimeBackend()
+        for f in ("results.txt", "prime.log", "prime.spl"):
+            (tmp_path / f).write_text("stale")
+        backend.prepare(tmp_path, StressConfig())
+        for f in ("results.txt", "prime.log", "prime.spl"):
+            assert not (tmp_path / f).exists()
+        # the failed-* post-mortem copies are kept
+        (tmp_path / "failed-results.txt").write_text("post-mortem")
+        backend.prepare(tmp_path, StressConfig())
+        assert (tmp_path / "failed-results.txt").exists()
+
+    # --- live error polling ---
+
+    def test_poll_errors_detects_fatal(self, tmp_path):
+        backend = MprimeBackend()
+        (tmp_path / "results.txt").write_text(
+            "[Worker #1] Self-test 240K passed!\n"
+            "FATAL ERROR: Rounding was 0.4999, expected less than 0.4\n"
+        )
+        msg = backend.poll_errors(tmp_path)
+        assert msg is not None and "FATAL ERROR" in msg
+
+    def test_poll_errors_clean_run(self, tmp_path):
+        backend = MprimeBackend()
+        (tmp_path / "results.txt").write_text("[Worker #1] Self-test 240K passed!\n")
+        assert backend.poll_errors(tmp_path) is None
+
+    def test_poll_errors_no_file(self, tmp_path):
+        assert MprimeBackend().poll_errors(tmp_path) is None
 
 
 # ===========================================================================
@@ -418,9 +501,11 @@ class TestStressNgBackend:
     def test_get_command_no_binary_raises(self, tmp_path):
         backend = StressNgBackend()
         backend._binary = None
-        with patch.object(backend, "find_binary", return_value=None):
-            with pytest.raises(RuntimeError, match="stress-ng binary not found"):
-                backend.get_command(StressConfig(), tmp_path)
+        with (
+            patch.object(backend, "find_binary", return_value=None),
+            pytest.raises(RuntimeError, match="stress-ng binary not found"),
+        ):
+            backend.get_command(StressConfig(), tmp_path)
 
     def test_get_supported_modes(self):
         backend = StressNgBackend()
@@ -535,9 +620,11 @@ class TestYCruncherBackend:
     def test_get_command_no_binary_raises(self, tmp_path):
         backend = YCruncherBackend()
         backend._binary = None
-        with patch.object(backend, "find_binary", return_value=None):
-            with pytest.raises(RuntimeError, match="y-cruncher binary not found"):
-                backend.get_command(StressConfig(), tmp_path)
+        with (
+            patch.object(backend, "find_binary", return_value=None),
+            pytest.raises(RuntimeError, match="y-cruncher binary not found"),
+        ):
+            backend.get_command(StressConfig(), tmp_path)
 
     def test_get_supported_modes(self):
         backend = YCruncherBackend()

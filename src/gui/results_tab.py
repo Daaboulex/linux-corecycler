@@ -14,10 +14,11 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QSplitter,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+
+from gui.widgets import table_item as _item
 
 if TYPE_CHECKING:
     from engine.scheduler import CoreTestStatus
@@ -178,9 +179,3 @@ class ResultsTab(QWidget):
         if status.last_error:
             error_item.setToolTip(status.last_error)
         self._table.setItem(row, 6, error_item)
-
-
-def _item(text: str, alignment: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignLeft) -> QTableWidgetItem:
-    item = QTableWidgetItem(text)
-    item.setTextAlignment(alignment)
-    return item

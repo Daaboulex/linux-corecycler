@@ -6,6 +6,7 @@ ALL operations are strictly read-only. No MSR writes are ever performed.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import struct
 import time
@@ -94,7 +95,7 @@ class MSRReader:
         if not self.is_available():
             return {}
 
-        now = time.monotonic()
+        time.monotonic()
         results: dict[int, ClockStretchReading] = {}
 
         for cpu_id in cpu_ids:
@@ -205,10 +206,8 @@ class MSRReader:
     def close(self) -> None:
         """Close all cached file descriptors."""
         for fd in self._fds.values():
-            try:
+            with contextlib.suppress(OSError):
                 os.close(fd)
-            except OSError:
-                pass
         self._fds.clear()
         self._perf_prev.clear()
         self._energy_prev.clear()

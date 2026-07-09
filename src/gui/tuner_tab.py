@@ -35,11 +35,12 @@ from PySide6.QtWidgets import (
 )
 
 from engine.backends.base import FFTPreset, StressMode
+from gui.phase_style import PHASE_COLORS, PHASE_TO_GRID
 from history.timefmt import format_local
+from tuner import persistence as tp
 from tuner.config import TunerConfig
 from tuner.engine import TunerEngine
 from tuner.state import TunerPhase
-from tuner import persistence as tp
 
 if TYPE_CHECKING:
     from engine.backends.base import StressBackend
@@ -49,30 +50,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Map tuner engine phases to core grid visual states.
-# Only the core with active mprime shows "testing" — set via _on_worker_started.
-_PHASE_TO_GRID: dict[str, str] = {
-    TunerPhase.COARSE_SEARCH: "queued",
-    TunerPhase.FINE_SEARCH: "queued",
-    TunerPhase.CONFIRMING: "queued",
-    TunerPhase.CONFIRMED: "passed",
-    TunerPhase.SETTLED: "pending",
-    TunerPhase.FAILED_CONFIRM: "backoff",
-    TunerPhase.NOT_STARTED: "pending",
-    TunerPhase.BACKOFF_PRECONFIRM: "backoff",
-    TunerPhase.BACKOFF_CONFIRMING: "backoff",
-}
-
-# Phase colors
-PHASE_COLORS = {
-    TunerPhase.NOT_STARTED: QColor(100, 100, 100),
-    TunerPhase.COARSE_SEARCH: QColor(180, 180, 50),
-    TunerPhase.FINE_SEARCH: QColor(200, 200, 50),
-    TunerPhase.SETTLED: QColor(200, 150, 50),
-    TunerPhase.CONFIRMING: QColor(50, 150, 200),
-    TunerPhase.CONFIRMED: QColor(50, 180, 50),
-    TunerPhase.FAILED_CONFIRM: QColor(200, 100, 50),
-}
+# Phase -> grid state / color: single source of truth in gui.phase_style,
+# exhaustive over TunerPhase (enforced at its import). Only the core with an
+# active worker shows "testing" — set via _on_worker_started.
+_PHASE_TO_GRID = PHASE_TO_GRID
 
 
 class TunerTab(QWidget):
@@ -466,7 +447,15 @@ class TunerTab(QWidget):
         )
 
     def _load_defaults(self) -> None:
-        cfg = TunerConfig()
+        self._apply_config_to_ui(TunerConfig())
+
+    def _apply_config_to_ui(self, cfg: TunerConfig) -> None:
+        """Reflect a TunerConfig in the config panel widgets.
+
+        Used for defaults AND on resume: a resumed session runs its SAVED
+        config, so the panel must show those values — not whatever was left
+        in the boxes from before.
+        """
         self._start_offset_spin.setValue(cfg.start_offset)
         self._coarse_step_spin.setValue(cfg.coarse_step)
         self._fine_step_spin.setValue(cfg.fine_step)
@@ -632,8 +621,13 @@ class TunerTab(QWidget):
             self._wire_engine()
 
         self._pending_resume_id = None
+        # The engine runs the session's SAVED config — mirror it into the
+        # config panel so the boxes show what is actually being executed.
+        session = tp.get_session(self._db, session_id) if self._db else None
+        if session is not None:
+            self._apply_config_to_ui(TunerConfig.from_json(session.config_json))
         self._set_running_state(True)
-        log.info("Resuming tuner session %d — using saved session config (UI config panel is ignored)", session_id)
+        log.info("Resuming tuner session %d with its saved config", session_id)
         self._engine.resume(session_id)
 
         # Initialize table with all cores
@@ -644,10 +638,12 @@ class TunerTab(QWidget):
         if self._engine:
             self._engine.abort()
             self._set_running_state(False)
-            # Reset all core sidebar states — abort doesn't emit core_state_changed
-            for core_id in self._engine.core_states:
-                self.tuner_core_testing.emit(core_id, "pending")
-                self.tuner_core_info.emit(core_id, 0, "")
+            # Reset core sidebar states to each core's actual phase — abort
+            # doesn't emit core_state_changed, and a blanket "pending" lied
+            # about confirmed/hardened cores.
+            for core_id, cs in self._engine.core_states.items():
+                self.tuner_core_testing.emit(core_id, _PHASE_TO_GRID[cs.phase])
+                self.tuner_core_info.emit(core_id, cs.current_offset, cs.phase)
             # Stop elapsed timer
             self._active_test_core = None
             self._tuner_timer.stop()
@@ -670,12 +666,13 @@ class TunerTab(QWidget):
             QMessageBox.information(self, "Export", "No confirmed cores to export")
             return
 
+        from config.paths import user_home
         from config.settings import save_co_profile
 
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Export CO Profile",
-            str(Path.home() / "co-profile-tuner.json"),
+            str(user_home() / "co-profile-tuner.json"),
             "JSON (*.json)",
         )
         if not path:
@@ -711,7 +708,6 @@ class TunerTab(QWidget):
     @Slot(str)
     def _on_co_drift(self, drift_json: str) -> None:
         """Warn user that SMU CO values differ from session baselines."""
-        import json
         drift = json.loads(drift_json)
         lines = [f"Core {cid}: expected {v['expected']}, found {v['actual']}"
                  for cid, v in sorted(drift.items(), key=lambda x: int(x[0]))]
@@ -769,7 +765,6 @@ class TunerTab(QWidget):
 
     @Slot(str)
     def _on_session_completed(self, profile_json: str) -> None:
-        import json
         profile = json.loads(profile_json) if profile_json else {}
         self._active_test_core = None
         self._tuner_timer.stop()
@@ -840,7 +835,7 @@ class TunerTab(QWidget):
             self._last_result(core_id),
         ]
 
-        color = PHASE_COLORS.get(cs.phase, QColor(100, 100, 100))
+        color = QColor(PHASE_COLORS[cs.phase])
         for col, text in enumerate(items):
             item = QTableWidgetItem(text)
             item.setForeground(color)

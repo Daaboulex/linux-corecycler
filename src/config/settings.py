@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from datetime import UTC
+from typing import TYPE_CHECKING
 
 from engine.backends.base import FFTPreset, StressMode
 
-CONFIG_DIR = Path.home() / ".config" / "corecycler"
+from .paths import fix_sudo_ownership, user_home
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+CONFIG_DIR = user_home() / ".config" / "corecycler"
 DEFAULT_PROFILE = CONFIG_DIR / "default.json"
 
 
@@ -17,6 +23,8 @@ def _atomic_write(path: Path, content: str) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(content, encoding="utf-8")
     tmp.replace(path)
+    # A sudo run must not leave user-visible config root-owned.
+    fix_sudo_ownership(path.parent, path)
 
 
 @dataclass(slots=True)
@@ -115,13 +123,13 @@ def save_co_profile(
     source: str = "manual",
 ) -> None:
     """Save a CO offset profile to a JSON file."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     data = {
         "format": "corecycler-co-profile",
         "version": 1,
         "cpu_model": cpu_model,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "source": source,
         "offsets": {str(k): v for k, v in sorted(offsets.items())},
     }

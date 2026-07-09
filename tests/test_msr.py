@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import struct
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 from monitor.msr import (
     MSR_APERF,
-    MSR_CORE_ENERGY,
     MSR_MPERF,
-    MSR_PWR_UNIT,
-    ClockStretchReading,
-    CorePowerReading,
     MSRReader,
     _EnergySnapshot,
     _PerfSnapshot,
@@ -181,7 +174,7 @@ class TestCorePower:
 
         # Read clock stretch — should NOT touch energy state
         with patch.object(reader, "_read_msr", side_effect=[2000, 2000]):
-            stretch = reader.read_clock_stretch([0])
+            reader.read_clock_stretch([0])
 
         # Energy snapshot should be untouched
         assert reader._energy_prev[0].energy_raw == 1000000

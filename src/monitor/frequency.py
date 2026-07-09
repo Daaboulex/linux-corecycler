@@ -109,10 +109,8 @@ def read_core_frequencies_dual() -> dict[int, CoreFreqReading]:
         eff_max = None
         max_file = cpufreq / "scaling_max_freq"
         if max_file.exists():
-            try:
+            with contextlib.suppress(ValueError, OSError):
                 eff_max = int(max_file.read_text().strip()) / 1000.0
-            except (ValueError, OSError):
-                pass
 
         if actual is not None and eff_max is not None:
             result[cpu_id] = CoreFreqReading(actual_mhz=actual, effective_max_mhz=eff_max)

@@ -8,7 +8,7 @@ routed through here.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 _DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
 _DATE_FMT = "%Y-%m-%d"
@@ -31,6 +31,6 @@ def format_local(iso: str, *, date_only: bool = False) -> str:
     except (ValueError, TypeError):
         return iso[:10] if date_only else iso[:19].replace("T", " ")
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     local = dt.astimezone()
     return local.strftime(_DATE_FMT if date_only else _DATETIME_FMT)

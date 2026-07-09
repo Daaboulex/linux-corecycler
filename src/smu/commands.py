@@ -6,7 +6,8 @@ Command sets are derived from the SMUSettings/*.cs files in ZenStates-Core.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields as dataclass_fields
+from dataclasses import dataclass
+from dataclasses import fields as dataclass_fields
 from enum import Enum, auto
 
 
