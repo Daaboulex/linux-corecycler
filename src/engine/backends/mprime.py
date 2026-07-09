@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import re
 import textwrap
 from typing import TYPE_CHECKING
@@ -168,8 +167,14 @@ class MprimeBackend(StressBackend):
         if self._last_work_dir:
             results_file = self._last_work_dir / "results.txt"
             if results_file.exists():
-                with contextlib.suppress(OSError):
+                try:
                     combined += "\n" + results_file.read_text()
+                except OSError as e:
+                    # Fail closed: without results.txt a real error could pass
+                    # unseen. This is an apparatus fault, not a verdict — the
+                    # engine pauses on it instead of advancing the search.
+                    return False, f"Failed to read results.txt ({e}) — verdict unavailable"
+
 
         for pattern in FATAL_PATTERNS:
             match = re.search(pattern, combined, re.IGNORECASE)

@@ -6,7 +6,6 @@ process-crash safety with good performance — data survives kill -9 and OOM.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import sqlite3
@@ -470,14 +469,20 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
     ]
 
     @staticmethod
+    def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+        return any(r[1] == column for r in conn.execute(f"PRAGMA table_info({table})"))
+
+    @staticmethod
     def _migrate_v7(conn: sqlite3.Connection) -> None:
         for col_name, col_def in HistoryDB._DDL_MIGRATE_V7_COLUMNS:
-            with contextlib.suppress(Exception):  # column may exist from a partial migration
+            # Skip ONLY the known partial-migration case (column present);
+            # any other ALTER failure must raise, not hide a broken schema.
+            if not HistoryDB._column_exists(conn, "tuner_core_states", col_name):
                 conn.execute(f"ALTER TABLE tuner_core_states ADD COLUMN {col_name} {col_def}")
 
     @staticmethod
     def _migrate_v8(conn: sqlite3.Connection) -> None:
-        with contextlib.suppress(Exception):  # column may already exist
+        if not HistoryDB._column_exists(conn, "tuner_core_states", "in_test"):
             conn.execute(
                 "ALTER TABLE tuner_core_states ADD COLUMN in_test INTEGER NOT NULL DEFAULT 0"
             )
@@ -501,7 +506,7 @@ ALTER TABLE tuner_core_states ADD COLUMN thermal_aborts INTEGER DEFAULT 0;
     # wrapped (like v7/v8) so a re-run or partial migration cannot fail.
     @staticmethod
     def _migrate_v11(conn: sqlite3.Connection) -> None:
-        with contextlib.suppress(Exception):  # column may exist from a partial migration
+        if not HistoryDB._column_exists(conn, "tuner_sessions", "resume_crash_streak"):
             conn.execute(
                 "ALTER TABLE tuner_sessions "
                 "ADD COLUMN resume_crash_streak INTEGER NOT NULL DEFAULT 0"
@@ -973,8 +978,10 @@ ALTER TABLE tuner_core_states_v12 RENAME TO tuner_core_states;
         if existing:
             ctx.id = existing.id
             return existing.id
-        # Fallback (should not happen)
-        return cur.lastrowid
+        raise RuntimeError(
+            f"tuning_contexts insert was ignored but no row matches "
+            f"(co_hash={ctx.co_hash!r}, bios={ctx.bios_version!r}) — database inconsistent"
+        )
 
     def get_context(self, context_id: int) -> TuningContextRecord | None:
         row = self.__conn.execute(

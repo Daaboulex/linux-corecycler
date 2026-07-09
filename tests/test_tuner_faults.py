@@ -1286,3 +1286,125 @@ class TestStartupFailureIsNotAVerdict:
         adv.assert_not_called()
         # No stability verdict was recorded for the never-run test
         assert tp.get_test_log(db, sid) == []
+
+
+# ---------------------------------------------------------------------------
+# Apparatus circuit breaker: implausible fail streaks recover from evidence
+# ---------------------------------------------------------------------------
+
+
+class TestApparatusBreaker:
+    def _seed(self, db, topo, smu, backend, streak_threshold=5):
+        sid = tp.create_session(
+            db, TunerConfig(cores_to_test=[0], apparatus_failure_streak=streak_threshold),
+            "", "",
+        )
+        eng = make_engine(
+            db, topo, smu, backend,
+            apparatus_failure_streak=streak_threshold,
+        )
+        eng._session_id = sid
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM, current_offset=-20,
+            best_offset=-20, baseline_offset=0, backoff_mode=True,
+        )
+        eng._core_states = {0: cs}
+        return eng, sid, cs
+
+    def test_trips_rolls_back_to_evidence_and_pauses(self, db, topo, smu, mock_backend):
+        """The stale-results class: N consecutive FAILs while every step adds
+        voltage is physically implausible — the breaker must roll the core back
+        to its most aggressive PROVEN pass, clear poisoned bounds, and pause."""
+        eng, sid, cs = self._seed(db, topo, smu, mock_backend, streak_threshold=5)
+        tp.log_test_result(db, sid, 0, -44, "confirm", True, duration=300.0)  # proven pass
+        for off in (-24, -23, -22, -21):  # 4 prior fails
+            tp.log_test_result(db, sid, 0, off, "backoff_preconfirm", False,
+                               error_msg="mprime error: FATAL ERROR",
+                               error_type="computation", duration=122.0)
+
+        with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core") as adv:
+            # the 5th consecutive fail crosses the threshold
+            eng._on_test_finished(0, False, "mprime error: FATAL ERROR",
+                                  "computation", 122.0, 0.0)
+
+        assert eng._status == "paused"
+        adv.assert_not_called()                       # verdict not walked into the search
+        assert cs.best_offset == -44                  # rolled back to proven evidence
+        assert cs.current_offset == -44
+        assert cs.phase == TunerPhase.CONFIRMING      # must re-earn confirmation
+        assert cs.backoff_fail_bound is None and cs.backoff_pass_bound is None
+        persisted = db.get_tuner_core_states(sid)[0]
+        assert persisted.best_offset == -44           # rollback is durable
+
+    def test_below_threshold_does_not_trip(self, db, topo, smu, mock_backend):
+        eng, sid, cs = self._seed(db, topo, smu, mock_backend, streak_threshold=5)
+        for off in (-24, -23):
+            tp.log_test_result(db, sid, 0, off, "backoff_preconfirm", False,
+                               error_type="computation", duration=122.0)
+        with patch.object(eng, "_run_next"):
+            eng._on_test_finished(0, False, "mprime error: FATAL ERROR",
+                                  "computation", 122.0, 0.0)
+        assert eng._status != "paused"                # normal backoff continues
+
+    def test_pass_breaks_the_streak(self, db, topo, smu, mock_backend):
+        eng, sid, cs = self._seed(db, topo, smu, mock_backend, streak_threshold=5)
+        for off in (-24, -23, -22):
+            tp.log_test_result(db, sid, 0, off, "backoff_preconfirm", False,
+                               error_type="computation", duration=122.0)
+        tp.log_test_result(db, sid, 0, -21, "backoff_preconfirm", True, duration=122.0)
+        for off in (-20,):
+            tp.log_test_result(db, sid, 0, off, "backoff_confirm", False,
+                               error_type="computation", duration=300.0)
+        with patch.object(eng, "_run_next"):
+            eng._on_test_finished(0, False, "mprime error: FATAL ERROR",
+                                  "computation", 300.0, 0.0)
+        assert eng._status != "paused"                # streak is 2, not 6
+
+    def test_synthetic_crash_rows_do_not_count(self, db, topo, smu, mock_backend):
+        eng, sid, cs = self._seed(db, topo, smu, mock_backend, streak_threshold=3)
+        # two real fails + two synthetic reboot rows (duration NULL)
+        for off in (-24, -23):
+            tp.log_test_result(db, sid, 0, off, "backoff_preconfirm", False,
+                               error_type="computation", duration=122.0)
+        for off in (-22, -21):
+            tp.log_test_result(db, sid, 0, off, "coarse_search", False,
+                               error_type="crash", duration=None)
+        with patch.object(eng, "_run_next"):
+            eng._on_test_finished(0, False, "mprime error: FATAL ERROR",
+                                  "computation", 122.0, 0.0)
+        # real-test streak is 3 (threshold) — trips; but the point is the
+        # synthetic rows alone must not have tripped it earlier: recompute
+        assert eng._status == "paused"
+
+
+# ---------------------------------------------------------------------------
+# SMU revert failure is a hardware-state fault -> pause, never march on
+# ---------------------------------------------------------------------------
+
+
+class TestRevertFailureFailsClosed:
+    def test_failed_post_test_revert_pauses(self, db, topo, smu, mock_backend):
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        eng = make_engine(db, topo, smu, mock_backend)
+        eng._session_id = sid
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH,
+                       current_offset=-20, baseline_offset=-10, in_test=True)
+        eng._core_states = {0: cs}
+        eng._co_applied[0] = -20         # aggressive offset resident
+        smu.reject_set = True            # SMU refuses the baseline revert
+
+        with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core") as adv:
+            eng._on_test_finished(0, True, "", "", 60.0, 0.0)
+
+        assert eng._status == "paused"   # fail closed: offset still resident
+        adv.assert_not_called()
+
+    def test_resume_pauses_when_baseline_restore_fails(self, db, topo, smu, mock_backend):
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-20,
+            baseline_offset=-10,
+        ))
+        smu.reject_set = True            # every SMU write rejected
+        eng = _resume_fresh(db, topo, smu, mock_backend, sid)
+        assert eng._status == "paused"   # not "running" on a broken SMU

@@ -716,3 +716,23 @@ class TestMprimeConstants:
         assert MODE_TO_TORTURE[StressMode.AVX] == 1
         assert MODE_TO_TORTURE[StressMode.AVX2] == 2
         assert MODE_TO_TORTURE[StressMode.AVX512] == 3
+
+
+class TestFailClosedResultsRead:
+    def test_unreadable_results_txt_is_not_a_pass(self, tmp_path):
+        """Without results.txt a real error could pass unseen — an unreadable
+        file must produce an apparatus-fault verdict (engine pauses on it),
+        never a silent pass."""
+        import os
+
+        backend = MprimeBackend()
+        backend._last_work_dir = tmp_path
+        results = tmp_path / "results.txt"
+        results.write_text("FATAL ERROR: Rounding was 0.5, expected less than 0.4")
+        os.chmod(results, 0o000)
+        try:
+            passed, msg = backend.parse_output("", "", -15)
+            assert passed is False
+            assert "verdict unavailable" in msg
+        finally:
+            os.chmod(results, 0o644)  # let tmp_path cleanup succeed

@@ -1046,7 +1046,8 @@ class CoreScheduler:
 
             except Exception as e:
                 self.state = TestState.FINISHED
-                return False, f"Rapid transition error: {e}"
+                # A Python exception in the harness is never a CPU verdict.
+                return False, f"Rapid transition harness error: {e}"
             finally:
                 if proc is not None:
                     for stream in (proc.stdout, proc.stderr):
@@ -1082,7 +1083,11 @@ class CoreScheduler:
         msg_lower = msg.lower()
         # Environment fault, not a stability verdict — the tuner pauses on these
         # instead of advancing the search (a missing binary is not a weak core).
-        if "failed to start" in msg_lower:
+        if (
+            "failed to start" in msg_lower
+            or "verdict unavailable" in msg_lower
+            or "harness error" in msg_lower
+        ):
             return "startup"
         if "mce" in msg_lower or "machine check" in msg_lower:
             return "mce"
