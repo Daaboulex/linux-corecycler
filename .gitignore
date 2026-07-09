@@ -49,3 +49,4 @@ handoff-archive/
 
 # local brainstorm — never tracked
 /ideas/
+tests/.e2e-bin-*/

@@ -116,8 +116,14 @@ def main() -> int:
     _bootstrap_sudo_display()
 
     # Preflight: with no display reachable Qt aborts the whole process
-    # (SIGABRT) — fail closed with an actionable message instead.
-    if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+    # (SIGABRT) — fail closed with an actionable message instead. Skipped when
+    # the user explicitly chose a Qt platform (offscreen/vnc/linuxfb/eglfs
+    # need no display server at all).
+    if (
+        not os.environ.get("QT_QPA_PLATFORM")
+        and not os.environ.get("DISPLAY")
+        and not os.environ.get("WAYLAND_DISPLAY")
+    ):
         print(
             "corecycler: no display found (DISPLAY and WAYLAND_DISPLAY are both "
             "unset).\nRun it from a graphical session. Under sudo, the invoking "
