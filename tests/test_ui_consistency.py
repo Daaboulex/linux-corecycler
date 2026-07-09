@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys as _sys
 import time
 import types
 from pathlib import Path
@@ -11,11 +12,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import sys as _sys
 if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
-from engine.topology import PhysicalCore, CPUTopology
+from engine.topology import CPUTopology, PhysicalCore
 from monitor.hwmon import HWMonData
 
 
@@ -25,7 +25,6 @@ def _make_mock_mainwindow(**overrides):
     Uses the headless testing pattern from test_memory_monitor.py:
     SimpleNamespace + MethodType binding to avoid QApplication dependency.
     """
-    from gui.main_window import MainWindow
 
     ns = types.SimpleNamespace()
     ns._worker = overrides.get("_worker", MagicMock(isRunning=MagicMock(return_value=True)))
@@ -35,14 +34,14 @@ def _make_mock_mainwindow(**overrides):
     ns._results_tab = overrides.get("_results_tab", MagicMock())
     ns._config_tab = overrides.get("_config_tab", MagicMock())
     ns._config_tab.get_profile.return_value = MagicMock(cycle_count=1)
-    ns._active_test_core = overrides.get("_active_test_core", None)
-    ns._topology = overrides.get("_topology", None)
+    ns._active_test_core = overrides.get("_active_test_core")
+    ns._topology = overrides.get("_topology")
     ns._hwmon = overrides.get("_hwmon", MagicMock())
     ns._msr = overrides.get("_msr", MagicMock())
     ns._core_grid = overrides.get("_core_grid", MagicMock())
     ns._core_telemetry = overrides.get("_core_telemetry", {})
     ns._settings = overrides.get("_settings", MagicMock(record_telemetry=False))
-    ns._logger = overrides.get("_logger", None)
+    ns._logger = overrides.get("_logger")
     ns._status_msg = overrides.get("_status_msg", MagicMock())
     ns._monitor_tab = overrides.get("_monitor_tab", MagicMock())
     return ns

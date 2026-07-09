@@ -36,6 +36,32 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def _rebooted_since(iso_ts: str | None, stat_path: str = "/proc/stat") -> bool:
+    """True when the machine booted AFTER the given ISO timestamp.
+
+    Resume uses this to tell a hard crash (reboot happened — penalize the
+    resident offsets) from a plain app exit mid-test (no reboot — penalizing
+    would walk proven-good offsets away). Fail closed: if either side cannot
+    be determined, assume a reboot so the crash detectors still run.
+    """
+    if not iso_ts:
+        return True
+    try:
+        from datetime import datetime
+
+        last_write = datetime.fromisoformat(iso_ts).timestamp()
+    except ValueError:
+        return True
+    try:
+        with open(stat_path) as f:
+            for line in f:
+                if line.startswith("btime "):
+                    return float(line.split()[1]) > last_write
+    except (OSError, ValueError, IndexError):
+        pass
+    return True
+
+
 # ------------------------------------------------------------------
 # Worker thread — runs a single core test without blocking the GUI
 # ------------------------------------------------------------------
@@ -108,13 +134,17 @@ class _TunerWorker(QThread):
                     peak_stretch,
                 )
             else:
+                # The scheduler produced no verdict for this core (stopped early,
+                # environment problem) — that is NOT a stability failure.
                 self.finished.emit(
-                    self._core_id, False, "No result returned", "", elapsed,
+                    self._core_id, False, "No result returned", "startup", elapsed,
                     peak_stretch,
                 )
         except Exception as e:
+            # A Python exception in the harness is an app/environment fault,
+            # not CPU instability — must not advance the search state machine.
             log.exception("Tuner worker crashed for core %d", self._core_id)
-            self.finished.emit(self._core_id, False, str(e), "crash", 0.0, 0.0)
+            self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0)
 
     def _stretch_sampler(
         self, samples: list[float], stop: threading.Event
@@ -379,7 +409,11 @@ class TunerEngine(QObject):
             drift: dict[int, dict[str, int]] = {}
             for cs in self._core_states.values():
                 actual = self._smu.get_co_offset(cs.core_id)
-                if actual is not None and actual != cs.baseline_offset:
+                # actual == 0 is the EXPECTED post-reboot state (SMU SRAM is
+                # zeroed), not drift — warning on it made every resume-after-
+                # reboot cry wolf. Only a third value (neither baseline nor
+                # stock) means another tool touched CO since we last ran.
+                if actual is not None and actual != cs.baseline_offset and actual != 0:
                     drift[cs.core_id] = {"expected": cs.baseline_offset, "actual": actual}
             if drift:
                 self.log_message.emit(
@@ -396,9 +430,22 @@ class TunerEngine(QObject):
         # in_test-only detection missed entirely). Each distinct suspect gets a
         # crash penalty (hard fail bound + backoff toward 0 + cooldown), never a
         # silent re-apply of the value that just crashed the box.
-        crashed_in_test = self._detect_and_handle_crashes(self._core_states)
-        journal_crashed = self._handle_journal_suspects(set(crashed_in_test))
-        crashed = sorted(set(crashed_in_test) | set(journal_crashed))
+        #
+        # Gate: crash detection only applies when the machine actually REBOOTED
+        # since the session's last persisted write. A leftover in_test flag or
+        # un-survived journal row with no reboot in between is a plain app exit
+        # (window closed, SIGKILL mid-test) — penalizing it would walk good
+        # offsets away on every restart.
+        if _rebooted_since(self._db.latest_session_activity(session_id)):
+            crashed_in_test = self._detect_and_handle_crashes(self._core_states)
+            journal_crashed = self._handle_journal_suspects(set(crashed_in_test))
+            crashed = sorted(set(crashed_in_test) | set(journal_crashed))
+        else:
+            crashed = []
+            for cs in self._core_states.values():
+                if cs.in_test:
+                    cs.in_test = False
+                    tp.save_core_state(self._db, session_id, cs)
         if crashed:
             for core_id in crashed:
                 self.log_message.emit(
@@ -673,9 +720,7 @@ class TunerEngine(QObject):
                     if cs.coarse_fail_offset is not None and (
                         (direction < 0 and next_offset <= cs.coarse_fail_offset)
                         or (direction > 0 and next_offset >= cs.coarse_fail_offset)
-                    ):
-                        cs.phase = TunerPhase.SETTLED
-                    elif self._exceeds_max(next_offset):
+                    ) or self._exceeds_max(next_offset):
                         cs.phase = TunerPhase.SETTLED
                     else:
                         cs.current_offset = next_offset
@@ -924,13 +969,24 @@ class TunerEngine(QObject):
         # assumes best_offset is set) never produces a None offset (found by fuzz).
         if cs.best_offset is None:
             cs.best_offset = cs.baseline_offset
-        # Force into backoff if in search or hardening phases
+        # A value resident at a hard crash can never remain "best": validation and
+        # finalize re-apply best_offset, so leaving it would re-crash the box on
+        # every resume. Demote it to the penalized offset (backoff-candidate
+        # semantics — it must still pass a test before being confirmed again).
+        elif self._is_more_aggressive(cs.best_offset, cs.current_offset):
+            cs.best_offset = cs.current_offset
+        # Force into backoff — including CONFIRMING/CONFIRMED/HARDENED: a hard
+        # crash at a confirmed value invalidates the confirmation, and the core
+        # must re-earn it (otherwise validation re-applies the crashed value).
         if cs.phase in (
             TunerPhase.COARSE_SEARCH,
             TunerPhase.FINE_SEARCH,
+            TunerPhase.CONFIRMING,
+            TunerPhase.CONFIRMED,
             TunerPhase.BACKOFF_PRECONFIRM,
             TunerPhase.HARDENING_T1,
             TunerPhase.HARDENING_T2,
+            TunerPhase.HARDENED,
         ):
             cs.phase = TunerPhase.BACKOFF_PRECONFIRM
             cs.backoff_mode = True
@@ -941,38 +997,58 @@ class TunerEngine(QObject):
     ) -> list[int]:
         """Detect cores that were testing when the system crashed.
 
-        Returns list of crashed core IDs.
+        A single in_test core (search flow) is penalized directly. A multi-core
+        in_test set (a validation stage was stressing several cores at once)
+        cannot attribute the crash — penalizing every member would demolish the
+        whole profile on one event, so penalize only the most aggressive
+        resident offset (the same policy the soft-fail validation path uses);
+        the resume-crash circuit breaker bounds repeated wrong guesses.
+
+        Returns list of penalized core IDs.
         """
+        in_test = [cs for cs in core_states.values() if cs.in_test]
+        if not in_test:
+            return []
+        if len(in_test) > 1:
+            targets = [max(
+                in_test, key=lambda cs: self._config.direction * cs.current_offset
+            )]
+            self.log_message.emit(
+                f"Crash during multi-core validation ({[c.core_id for c in in_test]} "
+                f"under stress) — penalizing most aggressive core "
+                f"{targets[0].core_id} at {targets[0].current_offset}"
+            )
+        else:
+            targets = in_test
+        # The box demonstrably died: clear the flag on the whole stressed set
+        # (only the penalized core is re-saved below with its new offsets).
+        for cs in in_test:
+            cs.in_test = False
+            if cs not in targets:
+                tp.save_core_state(self._db, self._session_id, cs)
+
         crashed_cores = []
-        for cs in core_states.values():
-            if not cs.in_test:
-                continue
+        for cs in targets:
             crashed_cores.append(cs.core_id)
-            # Log synthetic crash event
-            gap_note = f"System reboot detected. Offset {cs.current_offset} caused hard crash."
+            crashed_offset = cs.current_offset
             tp.log_test_result(
                 self._db,
                 self._session_id,
                 cs.core_id,
-                cs.current_offset,
+                crashed_offset,
                 cs.phase.value,
                 passed=False,
-                error_msg=gap_note,
+                error_msg=f"System reboot detected. Offset {crashed_offset} caused hard crash.",
                 error_type="crash",
                 duration=None,
             )
             self._apply_crash_penalty(cs)
-            cs.in_test = False
             tp.save_core_state(self._db, self._session_id, cs)
             logging.warning(
                 "Core %d: crash detected at offset %d — applied penalty, "
                 "new offset %d, crash_count=%d",
                 cs.core_id,
-                cs.current_offset + (
-                    self._config.direction
-                    * self._config.crash_penalty_steps
-                    * self._config.fine_step
-                ),
+                crashed_offset,
                 cs.current_offset,
                 cs.crash_count,
             )
@@ -1075,9 +1151,7 @@ class TunerEngine(QObject):
         """Check if core is available for testing (not done, not in cooldown)."""
         if cs.crash_cooldown > 0:
             return False
-        if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED):
-            return False
-        return True
+        return cs.phase not in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
 
     def _decrement_cooldowns(self, picked_core: int) -> None:
         """Decrement crash cooldown for all cores except the one being tested."""
@@ -1122,17 +1196,23 @@ class TunerEngine(QObject):
         return None
 
     def _pick_round_robin(self) -> int | None:
-        """Cycle through all cores, one test each per round (pure selector)."""
+        """Cycle through all cores, one test each per round (pure selector).
+
+        Rotation is by POSITION, not membership: when the cursor core itself
+        just went terminal (or into cooldown), the cycle continues at the next
+        higher id instead of snapping back to core 0 — otherwise every
+        confirmation would restart the round and starve the high-id cores'
+        cool-down fairness.
+        """
         active = sorted(
             cid for cid, cs in self._core_states.items()
             if self._is_core_available(cs)
         )
         if not active:
             return None
-        if self._last_tested_core is not None and self._last_tested_core in active:
-            idx = active.index(self._last_tested_core)
-            rotated = active[idx + 1:] + active[:idx + 1]
-            return rotated[0]
+        if self._last_tested_core is not None:
+            after = [c for c in active if c > self._last_tested_core]
+            return after[0] if after else active[0]
         return active[0]
 
     def _pick_weakest_first(self) -> int | None:
@@ -1240,12 +1320,12 @@ class TunerEngine(QObject):
 
         cores = ccd_cores[target_ccd]
 
-        # Within this CCD, rotate from last tested position
+        # Within this CCD, rotate from the last tested POSITION (the cursor
+        # core may itself have gone terminal — same rationale as round_robin).
         last_in_ccd = self._ccd_last_tested.get(target_ccd)
-        if last_in_ccd is not None and last_in_ccd in cores:
-            idx = cores.index(last_in_ccd)
-            rotated = cores[idx + 1:] + cores[:idx + 1]
-            return rotated[0]
+        if last_in_ccd is not None:
+            after = [c for c in cores if c > last_in_ccd]
+            return after[0] if after else cores[0]
         return cores[0]
 
     def _reconstruct_scheduling_position(self) -> None:
@@ -1367,7 +1447,7 @@ class TunerEngine(QObject):
         always fails to start).
         """
         QTimer.singleShot(
-            0, lambda: self._on_test_finished(core_id, False, message, "", 0.0, 0.0)
+            0, lambda: self._on_test_finished(core_id, False, message, "startup", 0.0, 0.0)
         )
 
     def _start_worker(self, core_id: int, duration: int) -> None:
@@ -1493,6 +1573,18 @@ class TunerEngine(QObject):
                 self._handle_thermal_abort(core_id, cs, duration)
             else:
                 self._handle_validation_thermal_abort(core_id)
+            return
+
+        # A start-time/environment failure (missing binary, scheduler
+        # construction error, harness exception) is not a stability verdict —
+        # advancing the state machine on it walks good offsets away, and during
+        # validation it would back off a healthy core. Pause and tell the user.
+        if not passed and error_type == "startup":
+            self.log_message.emit(
+                f"Core {core_id}: test could not run — {error_msg}. "
+                f"Pausing (environment issue, not a stability verdict)."
+            )
+            self.pause()
             return
 
         # Reached only on a non-thermal outcome → the thermal-retry streak for
@@ -1928,9 +2020,8 @@ class TunerEngine(QObject):
         )
 
         # Apply all confirmed offsets
-        if self._smu is not None:
-            if not self._apply_validation_offsets(core_id, offset):
-                return
+        if self._smu is not None and not self._apply_validation_offsets(core_id, offset):
+            return
 
         self._last_tested_core = core_id
         self._mark_cores_under_stress([core_id])
@@ -2089,10 +2180,13 @@ class TunerEngine(QObject):
         best_core = None
         best_abs = -1
         for cs in self._core_states.values():
-            if cs.best_offset is not None and cs.best_offset != cs.baseline_offset:
-                if abs(cs.best_offset) > best_abs:
-                    best_abs = abs(cs.best_offset)
-                    best_core = cs.core_id
+            if (
+                cs.best_offset is not None
+                and cs.best_offset != cs.baseline_offset
+                and abs(cs.best_offset) > best_abs
+            ):
+                best_abs = abs(cs.best_offset)
+                best_core = cs.core_id
         return best_core
 
     def _backoff_core(self, core_id: int) -> bool:

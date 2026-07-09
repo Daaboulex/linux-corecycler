@@ -19,11 +19,11 @@ the tuner suite).
 
 from __future__ import annotations
 
+from datetime import UTC
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
@@ -34,7 +34,6 @@ from tuner import persistence as tp
 from tuner.config import TunerConfig
 from tuner.engine import TunerEngine
 from tuner.state import CoreState, TunerPhase
-
 
 # ---------------------------------------------------------------------------
 # Fault-injectable fake SMU
@@ -593,9 +592,15 @@ class TestValidationCrashArmsBreaker:
         )
         assert tp.journal_suspects(db, sid) == []  # journal is blind to validation
         crashed = eng._detect_and_handle_crashes(eng._core_states)
-        assert sorted(crashed) == sorted(cliffs)   # every in_test core attributed
-        assert all(eng._core_states[c].crash_count >= 1 for c in cliffs)  # all penalized
-        assert all(not eng._core_states[c].in_test for c in cliffs)       # flag cleared
+        # Attribution policy: a multi-core stress set cannot identify the guilty
+        # core; penalizing every member would demolish the whole profile on one
+        # event. Only the MOST AGGRESSIVE resident offset is penalized (the same
+        # policy the soft-fail validation path uses) — the breaker still arms
+        # (crashed is non-empty), and repeated wrong guesses are bounded by it.
+        assert crashed == [1]                            # -12 is most aggressive
+        assert eng._core_states[1].crash_count == 1      # penalized
+        assert eng._core_states[0].crash_count == 0      # spared
+        assert all(not eng._core_states[c].in_test for c in cliffs)  # flags cleared
 
     def test_normal_validation_completion_clears_in_test(self, db, topo, smu, mock_backend):
         """A surviving validation test must leave NO stale in_test on any stressed
@@ -721,7 +726,7 @@ class TestClosedLoopSimulation:
         # SAFETY INVARIANT: the RESIDENT CO (what is actually in the SMU now) never
         # sits at or beyond any core's crash point.
         resident = eng._smu.applied
-        for c, (stable, crash) in cliffs.items():
+        for c, (_stable, crash) in cliffs.items():
             r = resident.get(c, 0)
             assert not (r == crash or r < crash), (
                 f"[{order}] core {c} left resident at {r}, crashes at {crash}"
@@ -894,7 +899,7 @@ class TestPropertyFuzz:
                 f"hardening={hardening} reboot={reboot_interval}"
             )
             resident = eng._smu.applied
-            for c, (stable, crash) in cliffs.items():
+            for c, (_stable, crash) in cliffs.items():
                 r = resident.get(c, 0)
                 assert not (r == crash or r < crash), (
                     f"core {c} resident {r} crashes at {crash}: order={order} cliffs={cliffs}"
@@ -1164,3 +1169,120 @@ class TestResumePathsValidateConfig:
             eng.resume(sid)
         assert run_next.called, "resume bailed on a valid config"
         assert not any("Invalid tuner config" in m for m in logs)
+
+
+# ---------------------------------------------------------------------------
+# Reboot gate: crash penalties require an actual reboot
+# ---------------------------------------------------------------------------
+
+
+class TestRebootGate:
+    """Resume-time crash detection fires ONLY when the machine rebooted since
+    the session's last persisted write. A leftover in_test flag or un-survived
+    journal row without a reboot is a plain app exit (window closed, SIGKILL
+    mid-test) — penalizing it would walk proven-good offsets away on every
+    restart of the app."""
+
+    def test_no_reboot_clears_in_test_without_penalty(
+        self, db, topo, smu, mock_backend, monkeypatch
+    ):
+        import tuner.engine as engine_mod
+        monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: False)
+
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-30,
+            baseline_offset=0, in_test=True,
+        ))
+        tp.journal_co_intent(db, sid, 0, -30, survived=False)
+
+        eng = _resume_fresh(db, topo, smu, mock_backend, sid)
+        cs = eng._core_states[0]
+        assert cs.crash_count == 0            # no penalty
+        assert cs.current_offset == -30       # offset untouched
+        assert cs.phase == TunerPhase.COARSE_SEARCH
+        assert not cs.in_test                 # stale flag cleared...
+        assert not db.get_tuner_core_states(sid)[0].in_test  # ...and persisted
+
+    def test_rebooted_since_reads_btime(self, tmp_path, assume_rebooted):
+        from datetime import datetime, timedelta
+
+        _rebooted_since = assume_rebooted  # the real function (autouse patch stashes it)
+        now = datetime.now(UTC)
+        stat = tmp_path / "stat"
+        boot_epoch = int(now.timestamp())
+        stat.write_text(f"cpu  1 2 3 4\nbtime {boot_epoch}\nprocesses 5\n")
+
+        before_boot = (now - timedelta(hours=1)).isoformat()
+        after_boot = (now + timedelta(hours=1)).isoformat()
+        assert _rebooted_since(before_boot, stat_path=str(stat)) is True
+        assert _rebooted_since(after_boot, stat_path=str(stat)) is False
+
+    def test_rebooted_since_fails_closed(self, tmp_path, assume_rebooted):
+        _rebooted_since = assume_rebooted  # the real function
+        # No timestamp, unparsable timestamp, missing/garbled stat file:
+        # all must assume "rebooted" so crash detection still runs.
+        assert _rebooted_since(None) is True
+        assert _rebooted_since("not-a-timestamp") is True
+        assert _rebooted_since(
+            "2026-01-01T00:00:00+00:00", stat_path=str(tmp_path / "missing")
+        ) is True
+        garbled = tmp_path / "garbled"
+        garbled.write_text("btime notanumber\n")
+        assert _rebooted_since("2026-01-01T00:00:00+00:00", stat_path=str(garbled)) is True
+
+
+# ---------------------------------------------------------------------------
+# A hard crash at a CONFIRMED/HARDENED value invalidates the confirmation
+# ---------------------------------------------------------------------------
+
+
+class TestCrashAtConfirmedValue:
+    def test_crash_demotes_best_and_reenters_backoff(self, db, topo, smu, mock_backend):
+        """Validation and finalize re-apply best_offset — leaving a value that
+        hard-crashed the box as "best" re-crashes it on every resume (observed
+        live: core 1 at -42, phase hardened, crash, resume, re-validate at -42)."""
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        eng = make_engine(db, topo, smu, mock_backend, crash_penalty_steps=3, fine_step=1)
+        eng._session_id = sid
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.HARDENED, current_offset=-42,
+            best_offset=-42, baseline_offset=-15, in_test=True,
+        )
+        eng._core_states = {0: cs}
+
+        crashed = eng._detect_and_handle_crashes(eng._core_states)
+        assert crashed == [0]
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM  # must re-earn confirmation
+        assert cs.current_offset == -39                   # penalized by 3 steps
+        assert cs.best_offset == -39                      # crashed -42 cannot stay best
+        assert cs.backoff_fail_bound == -42               # crashed value is a hard bound
+
+
+# ---------------------------------------------------------------------------
+# Startup/environment failures are not stability verdicts
+# ---------------------------------------------------------------------------
+
+
+class TestStartupFailureIsNotAVerdict:
+    def test_startup_failure_pauses_without_advancing(self, db, topo, smu, mock_backend):
+        """A missing binary / scheduler construction error must pause the tuner,
+        not advance the state machine (observed live as full-duration false
+        FAILs walking offsets from -49 back to baseline)."""
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        eng = make_engine(db, topo, smu, mock_backend)
+        eng._session_id = sid
+        cs = CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10,
+            baseline_offset=0, in_test=True,
+        )
+        eng._core_states = {0: cs}
+
+        with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core") as adv:
+            eng._on_test_finished(0, False, "Failed to start stress test: boom",
+                                  "startup", 0.0, 0.0)
+
+        assert eng._status == "paused"
+        adv.assert_not_called()
+        # No stability verdict was recorded for the never-run test
+        assert tp.get_test_log(db, sid) == []

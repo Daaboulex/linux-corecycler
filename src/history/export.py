@@ -6,13 +6,14 @@ import csv
 import io
 import json
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from tuner.state import TunerPhase
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from history.db import HistoryDB
 
 
@@ -223,7 +224,7 @@ def export_tuner_profile(db: HistoryDB, session_id: int) -> str:
         "core_count": len(profile),
         "bios_version": session.bios_version,
         "source_session_id": session_id,
-        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "exported_at": datetime.now(UTC).isoformat(),
         "primary_backend": config.get("backend", "mprime"),
         "primary_mode": config.get("stress_mode", "SSE"),
         "primary_fft": config.get("fft_preset", "SMALL"),

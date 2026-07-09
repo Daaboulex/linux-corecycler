@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -72,4 +72,4 @@ def test_roundtrips_to_same_instant(fixed_tz):
     iso = "2026-12-15T18:45:00+00:00"
     shown = format_local(iso)
     local = datetime.strptime(shown, "%Y-%m-%d %H:%M:%S").astimezone()
-    assert local.astimezone(timezone.utc) == datetime.fromisoformat(iso)
+    assert local.astimezone(UTC) == datetime.fromisoformat(iso)

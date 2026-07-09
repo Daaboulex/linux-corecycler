@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,10 +12,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.backends.base import StressConfig, StressMode, StressResult
-from engine.scheduler import CoreScheduler, CoreTestStatus, SchedulerConfig, TestState, _STALL_GRACE_SECONDS
+from engine.backends.base import StressConfig, StressMode
+from engine.scheduler import _STALL_GRACE_SECONDS, CoreScheduler, CoreTestStatus, SchedulerConfig, TestState
 from engine.topology import CPUTopology, PhysicalCore
-
 
 # ===========================================================================
 # Fixtures
@@ -738,7 +735,6 @@ class TestStallGracePeriod:
         # _read_core_usage always returns 0.0 (no CPU activity)
         time_values = [0.0]  # mutable container for monotonic mock
 
-        original_monotonic = time.monotonic
 
         def mock_monotonic():
             # Advance time by 0.5s each call to speed through grace+stall
@@ -874,7 +870,7 @@ class TestChildAffinityVerification:
             patch("time.monotonic", side_effect=mock_monotonic),
             patch("time.sleep"),
         ):
-            results = sched.run()
+            sched.run()
 
         # With 6+ seconds and 2s interval, should have at least 2 affinity checks
         assert len(affinity_check_calls) >= 2, (

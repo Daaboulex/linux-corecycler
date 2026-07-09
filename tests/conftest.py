@@ -69,8 +69,8 @@ if "PySide6" not in sys.modules:
         sys.modules["PySide6"] = _qt
         sys.modules["PySide6.QtCore"] = _qtcore
 
-from engine.backends.base import StressBackend, StressConfig, StressMode, StressResult
-from engine.topology import CPUTopology, LogicalCPU, PhysicalCore
+from engine.backends.base import StressBackend, StressConfig, StressMode
+from engine.topology import CPUTopology, PhysicalCore
 from smu.commands import CPUGeneration, SMUCommandSet
 
 # ---------------------------------------------------------------------------
@@ -466,8 +466,7 @@ def build_topology(
 
     topo = CPUTopology()
 
-    from unittest.mock import patch, PropertyMock
-    from io import StringIO
+    from unittest.mock import patch
 
     with patch("engine.topology.CPUINFO", new_callable=lambda: MagicMock()):
         import engine.topology as tmod
@@ -493,7 +492,7 @@ def build_topology(
     sorted_cores = sorted(core_lcpus.keys())
     cores_per_ccd = max(1, len(sorted_cores) // num_ccds) if num_ccds > 1 else len(sorted_cores)
     for idx, pc in enumerate(sorted_cores):
-        ccd = min(idx // cores_per_ccd, num_ccds - 1) if num_ccds > 1 else 0
+        min(idx // cores_per_ccd, num_ccds - 1) if num_ccds > 1 else 0
         topo.cores[pc] = PhysicalCore(
             core_id=pc,
             ccd=None,
@@ -611,3 +610,18 @@ def mock_ryzen_smu_sysfs(tmp_path):
     (smu_dir / "pm_table").write_bytes(b"")
 
     return smu_dir
+
+
+@pytest.fixture(autouse=True)
+def assume_rebooted(monkeypatch):
+    """Resume-time crash detection is gated on an actual reboot since the
+    session's last write (tuner.engine._rebooted_since). The crash-recovery
+    tests were written under the old always-on semantics and a test process
+    obviously never rebooted, so default the gate to "rebooted" here; tests
+    covering the no-reboot path override it explicitly.
+    """
+    import tuner.engine as engine_mod
+
+    real = engine_mod._rebooted_since
+    monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: True)
+    return real

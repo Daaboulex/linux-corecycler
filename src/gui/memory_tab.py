@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from config.settings import load_settings
 from engine.backends.base import KILLED_BY_US_CODES
-from monitor.memory import DIMMInfo, SPD5118Reader, SPDTimingData, read_dimm_info
+from monitor.memory import DIMMInfo, SPD5118Reader, read_dimm_info
 from smu.pmtable import PMTableReader, compute_fclk_uclk_ratio
 
 log = logging.getLogger(__name__)
@@ -222,7 +222,10 @@ class MemoryTab(QWidget):
 
         # SPD Timings group box (DDR5 EEPROM data, cached at startup)
         self._spd_group = QGroupBox("SPD Timings — JEDEC Base Profile (DDR5)")
-        self._spd_group.setToolTip("JEDEC base profile timings from SPD EEPROM. XMP/EXPO overclocking profiles are not stored in SPD.")
+        self._spd_group.setToolTip(
+            "JEDEC base profile timings from SPD EEPROM. "
+            "XMP/EXPO overclocking profiles are not stored in SPD."
+        )
         spd_layout = QVBoxLayout(self._spd_group)
         self._primary_label = QLabel("Primary: --")
         self._primary_label.setFont(QFont("monospace", 10))
@@ -246,7 +249,7 @@ class MemoryTab(QWidget):
         layout.addWidget(self._deps_label)
 
         self._temp_group = QGroupBox("DIMM Temperatures (SPD5118)")
-        temp_layout = QHBoxLayout(self._temp_group)
+        QHBoxLayout(self._temp_group)
         self._temp_labels: list[QLabel] = []
         self._temp_group.setVisible(False)
         layout.addWidget(self._temp_group)
@@ -507,7 +510,10 @@ class MemoryTab(QWidget):
     def _run_memory_stress(self) -> None:
         tool = self._stress_tool.currentText()
         if tool == "(none installed)":
-            QMessageBox.warning(self, "Not Found", "No memory stress tools installed.\nInstall stressapptest or stress-ng.")
+            QMessageBox.warning(
+                self, "Not Found",
+                "No memory stress tools installed.\nInstall stressapptest or stress-ng.",
+            )
             return
         duration = self._stress_duration.value()
         self._stress_btn.setEnabled(False)

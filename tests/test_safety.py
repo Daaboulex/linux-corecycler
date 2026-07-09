@@ -11,8 +11,6 @@ These tests verify that:
 
 from __future__ import annotations
 
-import json
-import os
 import signal
 import struct
 import subprocess
@@ -24,16 +22,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.backends.base import FFTPreset, StressConfig, StressMode
+from engine.backends.base import StressConfig
 from engine.backends.mprime import MprimeBackend
 from engine.backends.stress_ng import StressNgBackend
 from engine.backends.ycruncher import YCruncherBackend
 from engine.detector import ErrorDetector
 from engine.scheduler import CoreScheduler, SchedulerConfig, TestState
 from engine.topology import CPUTopology, PhysicalCore
-from smu.commands import COMMAND_SETS, CPUGeneration, encode_co_arg, get_commands
+from smu.commands import CPUGeneration, encode_co_arg, get_commands
 from smu.driver import RyzenSMU
-
 
 # ===========================================================================
 # SMU driver safety — graceful handling of missing driver
@@ -302,7 +299,7 @@ class TestSettingsSafety:
 
     def test_settings_no_path_traversal(self, tmp_path, monkeypatch):
         """Settings with path traversal in work_dir should be stored as-is."""
-        from config.settings import AppSettings, save_settings, load_settings
+        from config.settings import AppSettings, load_settings, save_settings
 
         config_dir = tmp_path / "config"
         monkeypatch.setattr("config.settings.CONFIG_DIR", config_dir)

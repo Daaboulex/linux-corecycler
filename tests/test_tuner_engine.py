@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from history.db import HistoryDB
+from tuner import persistence as tp
 from tuner.config import TunerConfig
 from tuner.engine import TunerEngine
 from tuner.state import CoreState, TunerPhase
-from tuner import persistence as tp
 
 
 @pytest.fixture
@@ -391,7 +392,8 @@ class TestPickFunctionsPure:
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend, test_order="weakest_first")
         eng._core_states = {
             0: CoreState(core_id=0, phase=TunerPhase.NOT_STARTED),
-            1: CoreState(core_id=1, phase=TunerPhase.FINE_SEARCH, current_offset=-6, best_offset=-5, coarse_fail_offset=-10),
+            1: CoreState(core_id=1, phase=TunerPhase.FINE_SEARCH,
+                         current_offset=-6, best_offset=-5, coarse_fail_offset=-10),
         }
         picked = eng._pick_next_core()
         assert picked == 1  # fine_search scores 0, not_started scores 4
@@ -1674,12 +1676,12 @@ def _make_minimal_topology():
     return topo
 
 
-def make_test_engine(cfg: "TunerConfig") -> "TunerEngine":
+def make_test_engine(cfg: TunerConfig) -> TunerEngine:
     """Build a minimal TunerEngine for unit testing (no Qt event loop needed)."""
-    from history.db import HistoryDB
     from unittest.mock import MagicMock
-    from engine.backends.base import StressConfig, StressMode
-    from engine.scheduler import SchedulerConfig
+
+    from engine.backends.base import StressMode
+    from history.db import HistoryDB
 
     db = HistoryDB(":memory:")
     topo = _make_minimal_topology()
@@ -1780,9 +1782,11 @@ class TestValidationS4:
             0: CoreState(core_id=0, phase=TunerPhase.HARDENED, best_offset=-10,
                          baseline_offset=0, current_offset=-10),
         }
-        with patch.object(engine, "_find_most_aggressive_core", return_value=0):
-            with patch("PySide6.QtCore.QTimer.singleShot"):
-                engine._on_validation_test_finished(0, passed=False)
+        with (
+            patch.object(engine, "_find_most_aggressive_core", return_value=0),
+            patch("PySide6.QtCore.QTimer.singleShot"),
+        ):
+            engine._on_validation_test_finished(0, passed=False)
         # Should restart from stage 1
         assert engine._validation_stage == 1
 
@@ -2043,7 +2047,7 @@ class TestStateMachineGaps:
 
 
 try:
-    from hypothesis import given, settings, assume, HealthCheck
+    from hypothesis import HealthCheck, given, settings
     from hypothesis import strategies as st
     HAS_HYPOTHESIS = True
 except ImportError:
@@ -2180,7 +2184,7 @@ class TestStateMachineInvariants:
                 break
             phase_before = cs.phase
             eng._advance_core(0, passed=passed)
-            if phase_before in (TunerPhase.COARSE_SEARCH, TunerPhase.FINE_SEARCH):
+            if phase_before in (TunerPhase.COARSE_SEARCH, TunerPhase.FINE_SEARCH):  # noqa: SIM102
                 if passed and cs.best_offset is not None and prev_best is not None:
                     # direction=-1: more aggressive = more negative
                     assert cs.best_offset <= prev_best, (

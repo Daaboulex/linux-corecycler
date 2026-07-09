@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -9,6 +10,38 @@ from pathlib import Path
 src_dir = Path(__file__).parent
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
+
+
+def _bootstrap_sudo_display() -> None:
+    """Derive a usable display handshake for root under ``sudo``.
+
+    sudo strips XDG_RUNTIME_DIR/XAUTHORITY (and often WAYLAND_DISPLAY), so Qt
+    can neither reach the user's Wayland socket nor authenticate to X11 — it
+    then qFatal-aborts (SIGABRT) at QApplication construction. Point the
+    handshake at the INVOKING user's session; root's uid bypasses the socket
+    permissions, so this is sufficient on both Wayland and X11.
+    """
+    import os
+
+    if os.geteuid() != 0:
+        return
+    sudo_uid = os.environ.get("SUDO_UID", "")
+    if not sudo_uid.isdigit():
+        return
+    run_dir = Path(f"/run/user/{sudo_uid}")
+    if run_dir.is_dir():
+        os.environ.setdefault("XDG_RUNTIME_DIR", str(run_dir))
+        if "WAYLAND_DISPLAY" not in os.environ:
+            for sock in sorted(run_dir.glob("wayland-*")):
+                if sock.is_socket():
+                    os.environ["WAYLAND_DISPLAY"] = sock.name
+                    break
+    if "XAUTHORITY" not in os.environ:
+        from config.paths import user_home
+
+        xauth = user_home() / ".Xauthority"
+        if xauth.exists():
+            os.environ["XAUTHORITY"] = str(xauth)
 
 
 def main() -> int:
@@ -19,6 +52,20 @@ def main() -> int:
         "QT_LOGGING_RULES",
         "qt.qpa.services.warning=false;kf.windowsystem.warning=false",
     )
+
+    _bootstrap_sudo_display()
+
+    # Preflight: with no display reachable Qt aborts the whole process
+    # (SIGABRT) — fail closed with an actionable message instead.
+    if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        print(
+            "corecycler: no display found (DISPLAY and WAYLAND_DISPLAY are both "
+            "unset).\nRun it from a graphical session. Under sudo, the invoking "
+            "user's session env is derived automatically; if that failed, try "
+            "'sudo -E corecycler'.",
+            file=sys.stderr,
+        )
+        return 1
 
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
@@ -70,10 +117,8 @@ def main() -> int:
         except Exception:
             pass
 
-        try:
+        with contextlib.suppress(Exception):
             window._memory_tab.force_stop()
-        except Exception:
-            pass
 
     atexit.register(_cleanup_on_exit)
 

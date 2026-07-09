@@ -11,13 +11,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from smu.pmtable import (
+    PM_TABLE_OFFSETS,
     PMTableData,
     PMTableOffsets,
     PMTableReader,
-    PM_TABLE_OFFSETS,
     compute_fclk_uclk_ratio,
 )
-
 
 # ===========================================================================
 # PMTableData tests
@@ -351,11 +350,8 @@ def _build_versioned_pm_table(
     legacy _parse_granite_ridge (200+ floats).
     """
     offsets = PM_TABLE_OFFSETS.get(version)
-    if offsets is None:
-        # Use a generic size for unknown versions
-        table_size = 0x994
-    else:
-        table_size = offsets.table_size
+    # 0x994 is a generic size for unknown versions
+    table_size = 0x994 if offsets is None else offsets.table_size
 
     # Ensure table is large enough for legacy parsing (>= 200 floats = 800 bytes)
     table_size = max(table_size, 800)

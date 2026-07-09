@@ -25,11 +25,12 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from gui.phase_style import PHASE_COLORS
+from gui.widgets import table_item as _item
 from history.timefmt import format_local
 from tuner import persistence as tp
 from tuner.state import TunerPhase, TunerSession
@@ -283,6 +284,10 @@ class HistoryTab(QWidget):
 
         self._splitter = splitter
         splitter.setChildrenCollapsible(False)
+        # Both panes absorb free space equally on resize; the runs table can
+        # never be squeezed out by a degenerate saved/initial splitter state.
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter)
 
     # ------------------------------------------------------------------
@@ -337,6 +342,11 @@ class HistoryTab(QWidget):
         if self._view_mode == self.VIEW_TUNER:
             self._context_table.setVisible(False)
             self._populate_tuner_sessions()
+            if self._tuner_sessions:
+                # _populate_tuner_sessions selected row 0 and opened its
+                # detail — clearing here would hide it again (the "History tab
+                # never expands until I click the top buttons" bug).
+                return
         elif self._view_mode == self.VIEW_ALL:
             self._context_table.setVisible(False)
             self._populate_runs_table(self._runs)
@@ -803,7 +813,10 @@ class HistoryTab(QWidget):
                         min_freq = min(freqs)
                         stretch_pct = (1.0 - min_freq / eff_max) * 100.0
                         if stretch_pct > 5.0:
-                            parts.append(f"    Clock stretch: {stretch_pct:.1f}% (min {min_freq:.0f} vs max {eff_max:.0f})")
+                            parts.append(
+                                f"    Clock stretch: {stretch_pct:.1f}% "
+                                f"(min {min_freq:.0f} vs max {eff_max:.0f})"
+                            )
                         else:
                             parts.append(f"    Clock stretch: none ({stretch_pct:.1f}%)")
                 if temps:
@@ -884,9 +897,13 @@ class HistoryTab(QWidget):
                     cell.setForeground(QColor(_COLOR_PASS))
                 self._runs_table.setItem(row, col, cell)
 
-        # Auto-select latest session so detail is visible immediately
+        # Auto-select latest session so detail is visible immediately.
+        # selectRow alone is not enough: when row 0 is already selected the
+        # selectionChanged signal never fires, so show the detail explicitly
+        # (idempotent) instead of depending on the signal path.
         if sessions:
             self._runs_table.selectRow(0)
+            self._show_tuner_session_detail(sessions[0])
 
     def _show_tuner_session_detail(self, sess: TunerSession) -> None:
         if not self._db or sess.id is None:
@@ -948,16 +965,6 @@ class HistoryTab(QWidget):
         sorted_cores = sorted(core_states.keys())
         self._core_results_table.setRowCount(len(sorted_cores))
 
-        phase_colors = {
-            TunerPhase.NOT_STARTED: "#666",
-            TunerPhase.COARSE_SEARCH: "#b4b432",
-            TunerPhase.FINE_SEARCH: "#c8c832",
-            TunerPhase.SETTLED: "#c89632",
-            TunerPhase.CONFIRMING: "#3296c8",
-            TunerPhase.CONFIRMED: "#32b432",
-            TunerPhase.FAILED_CONFIRM: "#c86432",
-        }
-
         for row_idx, core_id in enumerate(sorted_cores):
             cs = core_states[core_id]
             num_tests = tests_per_core.get(core_id, 0)
@@ -974,7 +981,7 @@ class HistoryTab(QWidget):
                 (str(cs.confirm_attempts), Qt.AlignmentFlag.AlignCenter),
             ]
 
-            color = phase_colors.get(cs.phase, _COLOR_MUTED)
+            color = PHASE_COLORS[cs.phase]
             for col, (text, align) in enumerate(row_items):
                 cell = _item(text, align)
                 if col == 1:
@@ -1034,12 +1041,21 @@ class HistoryTab(QWidget):
         self.load_profile_requested.emit(profile)
 
     def _expand_detail(self) -> None:
-        """Show the detail section and split space evenly with the top."""
+        """Show the detail section and split space evenly with the top.
+
+        Only forces the 50/50 split when the pane was hidden — re-splitting on
+        every selection would stomp the user's manual splitter adjustment.
+        """
+        if self._detail_widget.isVisible():
+            return
         self._detail_widget.setVisible(True)
-        # Give top 50%, bottom 50%
         total = sum(self._splitter.sizes())
-        if total > 0:
-            self._splitter.setSizes([total // 2, total - total // 2])
+        if total <= 0:
+            # Not laid out yet (first tab entry): derive from the widget, with
+            # a floor so the split can never be zero-sized. Qt rescales these
+            # proportionally at the real layout pass.
+            total = max(self._splitter.height(), self.height(), 400)
+        self._splitter.setSizes([total // 2, total - total // 2])
 
     def _clear_detail(self) -> None:
         self._detail_info.setText("Select a run to view details")
@@ -1152,7 +1168,7 @@ class HistoryTab(QWidget):
             return
 
         displayed = getattr(self, "_displayed_runs", self._runs)
-        count = len(rows)
+        len(rows)
         # Build description of what we're deleting
         run_ids = []
         for row in rows:
@@ -1291,16 +1307,24 @@ class HistoryTab(QWidget):
                 row_idx, 0, _item(str(core_id), Qt.AlignmentFlag.AlignCenter)
             )
 
-            for run_idx, (run, results) in enumerate(run_data):
+            for run_idx, (_run, results) in enumerate(run_data):
                 core_result = next((r for r in results if r.core_id == core_id), None)
                 col_base = 1 + run_idx * 2
 
                 if core_result:
-                    result_text = "PASS" if core_result.passed else ("FAIL" if core_result.passed is not None else "...")
+                    result_text = (
+                        "PASS" if core_result.passed
+                        else ("FAIL" if core_result.passed is not None else "...")
+                    )
                     result_item = _item(result_text, Qt.AlignmentFlag.AlignCenter)
-                    color = _COLOR_PASS if core_result.passed else (_COLOR_FAIL if core_result.passed is not None else _COLOR_ACTIVE)
+                    color = (
+                        _COLOR_PASS if core_result.passed
+                        else (_COLOR_FAIL if core_result.passed is not None else _COLOR_ACTIVE)
+                    )
                     result_item.setForeground(QColor(color))
-                    dur_item = _item(_format_duration(core_result.elapsed_seconds), Qt.AlignmentFlag.AlignCenter)
+                    dur_item = _item(
+                        _format_duration(core_result.elapsed_seconds), Qt.AlignmentFlag.AlignCenter
+                    )
                 else:
                     result_item = _item("-", Qt.AlignmentFlag.AlignCenter)
                     dur_item = _item("-", Qt.AlignmentFlag.AlignCenter)
@@ -1313,7 +1337,10 @@ class HistoryTab(QWidget):
             label = format_local(run.started_at) if run.started_at else f"Run {run.id}"
             passed = sum(1 for r in results if r.passed)
             failed = sum(1 for r in results if r.passed is False)
-            lines.append(f"  {label}:  {run.backend}/{run.stress_mode}  {passed}P/{failed}F  {_format_duration(run.total_seconds)}")
+            lines.append(
+                f"  {label}:  {run.backend}/{run.stress_mode}  "
+                f"{passed}P/{failed}F  {_format_duration(run.total_seconds)}"
+            )
         self._events_log.setPlainText("\n".join(lines))
 
 
@@ -1360,12 +1387,6 @@ class _ExportOptionsDialog(QDialog):
 # ---------------------------------------------------------------------------
 
 
-def _item(text: str, alignment: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignLeft) -> QTableWidgetItem:
-    item = QTableWidgetItem(text)
-    item.setTextAlignment(alignment)
-    return item
-
-
 def _format_duration(seconds: float) -> str:
     if seconds <= 0:
         return ""
@@ -1378,7 +1399,7 @@ def _format_duration(seconds: float) -> str:
 
 def _format_duration_from_timestamps(start: str, end: str) -> str:
     """Calculate duration from ISO timestamp strings."""
-    from datetime import datetime, timezone
+    from datetime import datetime
     try:
         t_start = datetime.fromisoformat(start)
         t_end = datetime.fromisoformat(end)

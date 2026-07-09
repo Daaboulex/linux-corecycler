@@ -7,11 +7,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .state import CoreState, TunerSession
-
 if TYPE_CHECKING:
     from history.db import HistoryDB
+
     from .config import TunerConfig
+    from .state import CoreState, TunerSession
 
 
 # ---------------------------------------------------------------------------

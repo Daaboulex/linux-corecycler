@@ -8,7 +8,7 @@ import logging
 import os
 import time
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import QThread, QTimer, Signal, Slot
@@ -27,21 +27,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from config.paths import user_home
 from config.settings import load_settings, save_settings
-from engine.backends import available_backends, get_backend, load_all
+from engine.backends import get_backend, load_all
 from engine.backends.base import StressConfig, StressResult
 from engine.scheduler import CoreScheduler, CoreTestStatus, SchedulerConfig
 from engine.topology import CPUTopology, detect_topology
 from gui.config_tab import ConfigTab
 from gui.history_tab import HistoryTab
+from gui.memory_tab import MemoryTab
 from gui.monitor_tab import MonitorTab
 from gui.results_tab import ResultsTab
 from gui.smu_tab import SMUTab
 from gui.tuner_tab import TunerTab
-from gui.memory_tab import MemoryTab
 from gui.widgets.core_grid import CoreGridWidget
 from history.context import detect_bios_change
-from history.db import HistoryDB
+from history.db import HistoryDB, adopt_legacy_root_db
 from history.logger import TestRunLogger
 from history.timefmt import format_local
 from monitor.frequency import read_core_frequencies
@@ -107,13 +108,21 @@ class MainWindow(QMainWindow):
         if self._settings.record_history:
             try:
                 self._history_db = HistoryDB()
+                # One-database guarantee: under sudo, merge any history the old
+                # split-database bug left in /root into the user's database.
+                try:
+                    adopted = adopt_legacy_root_db(self._history_db)
+                    if adopted:
+                        log.info("Adopted legacy root history: %s", adopted)
+                except Exception:
+                    log.exception("Legacy root history adoption failed — continuing")
                 recovered = self._history_db.recover_incomplete_runs()
                 if recovered:
                     for run_id, started_at in recovered:
                         log.info("Recovered stale session id=%d started_at=%s, marked as crashed", run_id, started_at)
                 # Purge old runs
                 if self._settings.history_retention_days > 0:
-                    cutoff = datetime.now(timezone.utc) - timedelta(
+                    cutoff = datetime.now(UTC) - timedelta(
                         days=self._settings.history_retention_days
                     )
                     self._history_db.purge_before(cutoff.isoformat())
@@ -294,7 +303,11 @@ class MainWindow(QMainWindow):
             return
 
         # Check if memory stress is running
-        if hasattr(self, '_memory_tab') and self._memory_tab._stress_worker and self._memory_tab._stress_worker.isRunning():
+        if (
+            hasattr(self, '_memory_tab')
+            and self._memory_tab._stress_worker
+            and self._memory_tab._stress_worker.isRunning()
+        ):
             QMessageBox.warning(self, "Memory Stress Active",
                 "A memory stress test is running. Stop it before starting a core test.")
             return
@@ -308,7 +321,8 @@ class MainWindow(QMainWindow):
             if active:
                 reply = QMessageBox.question(
                     self, "Active Tuner Session",
-                    f"A tuner session is {active.status} (started {format_local(active.created_at, date_only=True)}).\n\n"
+                    f"A tuner session is {active.status} "
+                    f"(started {format_local(active.created_at, date_only=True)}).\n\n"
                     "Manual stress tests don't modify CO offsets, but you may want to "
                     "resume or abort the tuner session first.\n\n"
                     "Continue with manual test anyway?",
@@ -436,7 +450,7 @@ class MainWindow(QMainWindow):
             # Save any accumulated peak telemetry before stopping
             for core_id, t in self._core_telemetry.items():
                 if t["max_freq"] > 0:
-                    try:
+                    with contextlib.suppress(Exception):
                         self._logger.update_core_telemetry_peaks(
                             core_id,
                             peak_freq_mhz=t["max_freq"],
@@ -444,8 +458,6 @@ class MainWindow(QMainWindow):
                             min_vcore_v=t["min_vcore"],
                             max_vcore_v=t["max_vcore"],
                         )
-                    except Exception:
-                        pass
             try:
                 self._logger.on_test_stopped()
             except Exception:
@@ -654,9 +666,12 @@ class MainWindow(QMainWindow):
         widget = self._tabs.widget(index)
         # Auto-refresh CO values when switching to Curve Optimizer tab (only
         # when tuner is idle — tuner sends live updates via update_current_co())
-        if widget is self._smu_tab and hasattr(self._smu_tab, '_read_all_co'):
-            if not self._tuner_tab.is_running:
-                self._smu_tab._read_all_co()
+        if (
+            widget is self._smu_tab
+            and hasattr(self._smu_tab, '_read_all_co')
+            and not self._tuner_tab.is_running
+        ):
+            self._smu_tab._read_all_co()
 
     def _update_elapsed(self) -> None:
         if not self._worker:
@@ -735,12 +750,10 @@ class MainWindow(QMainWindow):
 
         # Record telemetry sample in history
         if self._logger and self._settings.record_telemetry:
-            try:
+            with contextlib.suppress(Exception):  # don't spam logs every second
                 self._logger.record_telemetry_sample(
                     current_core, freq, temp, vcore, effective_max_mhz=None,
                 )
-            except Exception:
-                pass  # don't spam logs every second
 
         # track peak telemetry per core for the log
         if current_core not in self._core_telemetry:
@@ -773,7 +786,7 @@ class MainWindow(QMainWindow):
         from config.settings import save_profile
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Profile", str(Path.home()), "JSON (*.json)"
+            self, "Save Profile", str(user_home()), "JSON (*.json)"
         )
         if path:
             try:
@@ -786,7 +799,7 @@ class MainWindow(QMainWindow):
         from config.settings import load_profile
 
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Profile", str(Path.home()), "JSON (*.json)"
+            self, "Load Profile", str(user_home()), "JSON (*.json)"
         )
         if path:
             try:
@@ -799,7 +812,11 @@ class MainWindow(QMainWindow):
         # Check if ANYTHING is running (manual test OR tuner OR memory stress)
         manual_running = self._worker and self._worker.isRunning()
         tuner_running = self._tuner_tab.is_running
-        memory_running = hasattr(self, '_memory_tab') and self._memory_tab._stress_worker is not None and self._memory_tab._stress_worker.isRunning()
+        memory_running = (
+            hasattr(self, '_memory_tab')
+            and self._memory_tab._stress_worker is not None
+            and self._memory_tab._stress_worker.isRunning()
+        )
 
         if manual_running or tuner_running or memory_running:
             reply = QMessageBox.question(
@@ -824,10 +841,8 @@ class MainWindow(QMainWindow):
                     self._worker.cycle_completed.disconnect(self._logger.on_cycle_completed)
                     self._worker.test_completed.disconnect(self._logger.on_test_completed)
                 # Mark the run as stopped before closing DB
-                try:
+                with contextlib.suppress(Exception):
                     self._logger.on_test_stopped()
-                except Exception:
-                    pass
                 self._logger = None
 
             # Disconnect thread-safety cache signals

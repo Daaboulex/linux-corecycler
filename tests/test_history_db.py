@@ -260,7 +260,7 @@ class TestMaintenance:
         assert r1 in recovered_ids
         assert r2 in recovered_ids
         # Each tuple has (id, started_at)
-        for rid, started_at in recovered:
+        for _rid, started_at in recovered:
             assert isinstance(started_at, str)
             assert len(started_at) > 0
 
@@ -365,7 +365,7 @@ class TestBooleanConversion:
 
     def test_core_result_passed_none(self, db):
         run_id = db.create_run(RunRecord(cpu_model="test"))
-        rid = db.insert_core_result(CoreResultRecord(run_id=run_id, core_id=0))
+        db.insert_core_result(CoreResultRecord(run_id=run_id, core_id=0))
         results = db.get_core_results(run_id)
         assert results[0].passed is None
 
@@ -484,27 +484,7 @@ class TestSchemaV2:
         assert "tuning_contexts" in names
 
 
-class TestMigrationV1ToV2:
-    def test_migration(self):
-        """Create a v1 database, then open with v2 code — migration should run."""
-        import sqlite3
-
-        db_path = ":memory:"
-        # We can't use :memory: across connections, so use a temp file
-        import tempfile
-        import os
-
-        fd, db_path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-
-        try:
-            # Create v1 schema manually
-            conn = sqlite3.connect(db_path, isolation_level=None)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.executescript("""\
+_V1_SCHEMA = """\
 CREATE TABLE schema_version (version INTEGER NOT NULL);
 INSERT INTO schema_version (version) VALUES (1);
 CREATE TABLE runs (
@@ -568,7 +548,30 @@ CREATE TABLE telemetry_samples (
     temp_c REAL,
     vcore_v REAL
 );
-""")
+"""
+
+
+class TestMigrationV1ToV2:
+    def test_migration(self):
+        """Create a v1 database, then open with v2 code — migration should run."""
+        import sqlite3
+
+        db_path = ":memory:"
+        # We can't use :memory: across connections, so use a temp file
+        import os
+        import tempfile
+
+        fd, db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+
+        try:
+            # Create v1 schema manually
+            conn = sqlite3.connect(db_path, isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.executescript(_V1_SCHEMA)
             # Insert a v1 run
             conn.execute(
                 "INSERT INTO runs (started_at, cpu_model, backend) VALUES (?, ?, ?)",
@@ -607,3 +610,113 @@ CREATE TABLE telemetry_samples (
             db.close()
         finally:
             os.unlink(db_path)
+
+
+class TestFreshEqualsMigrated:
+    """Future-proofing invariant: a database created fresh at the current
+    schema version must be COLUMN-IDENTICAL to a v1 database walked through
+    every migration. If a schema change touches _DDL_FRESH but not a
+    migration (or vice versa), sudo/non-sudo or old/new installs would
+    diverge structurally — this test makes that impossible to ship."""
+
+    @staticmethod
+    def _schema_map(db) -> dict[str, list[tuple]]:
+        tables = db._execute_raw(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+        out = {}
+        for t in tables:
+            cols = db._execute_raw(f"PRAGMA table_info({t['name']})").fetchall()
+            out[t["name"]] = sorted(
+                (c["name"], c["type"].upper(), c["notnull"]) for c in cols
+            )
+        return out
+
+    def test_fresh_schema_equals_v1_plus_migrations(self, tmp_path):
+        import sqlite3
+
+        migrated_path = tmp_path / "migrated.db"
+        conn = sqlite3.connect(str(migrated_path), isolation_level=None)
+        conn.executescript(_V1_SCHEMA)
+        conn.close()
+
+        migrated = HistoryDB(migrated_path)
+        fresh = HistoryDB(tmp_path / "fresh.db")
+        try:
+            assert self._schema_map(fresh) == self._schema_map(migrated)
+        finally:
+            fresh.close()
+            migrated.close()
+
+
+class TestMergeFrom:
+    """merge_from is the one-database guarantee: it must import EVERYTHING,
+    remap every reference, deduplicate contexts, and never modify source rows."""
+
+    def test_merge_remaps_ids_and_dedups_contexts(self, tmp_path):
+        src = HistoryDB(tmp_path / "src.db")
+        dst = HistoryDB(tmp_path / "dst.db")
+
+        # identical context on both sides -> must deduplicate on merge
+        src_ctx = src.create_context(TuningContextRecord(bios_version="2401", co_hash="h1"))
+        dst_ctx = dst.create_context(TuningContextRecord(bios_version="2401", co_hash="h1"))
+        # a run with children in the source
+        rid = src.create_run(RunRecord(
+            started_at="2026-07-07T09:00:00+00:00", status="completed",
+            cpu_model="9950X3D", backend="mprime", context_id=src_ctx,
+            bios_version="2401",
+        ))
+        src.insert_core_result(CoreResultRecord(run_id=rid, core_id=3, passed=True))
+        src.insert_event(EventRecord(run_id=rid, event_type="core_start", core_id=3))
+        src.insert_telemetry_batch([TelemetrySample(run_id=rid, core_id=3, freq_mhz=5300.0)])
+        # a tuner session with state, log, and journal
+        sid = src.create_tuner_session("{}", "2401", "9950X3D", context_id=src_ctx)
+        from tuner.state import CoreState, TunerPhase
+        src.upsert_tuner_core_state(sid, CoreState(
+            core_id=3, phase=TunerPhase.CONFIRMED, current_offset=-30, best_offset=-30))
+        src.insert_tuner_test_log(sid, 3, -30, "confirm", True, duration=300.0, run_id=rid)
+        src.journal_co_intent(sid, 3, -30, survived=True)
+        src.close()
+
+        counts = dst.merge_from(tmp_path / "src.db")
+        assert counts == {"contexts": 0, "runs": 1, "tuner_sessions": 1}
+
+        runs = dst.list_runs()
+        assert len(runs) == 1
+        merged_run = runs[0]
+        assert merged_run.cpu_model == "9950X3D"
+        assert merged_run.context_id == dst_ctx          # deduped to existing
+        results = dst.get_core_results(merged_run.id)
+        assert [r.core_id for r in results] == [3]       # child followed the remap
+        assert [e.event_type for e in dst.get_events(merged_run.id)] == ["core_start"]
+        assert len(dst.get_telemetry(merged_run.id)) == 1
+
+        sess = dst.get_latest_tuner_session()
+        assert sess.bios_version == "2401"
+        assert sess.context_id == dst_ctx
+        states = dst.get_tuner_core_states(sess.id)
+        assert states[3].best_offset == -30
+        log_rows = dst.get_tuner_test_log(sess.id)
+        assert len(log_rows) == 1
+        assert log_rows[0]["run_id"] == merged_run.id    # cross-reference remapped
+        assert dst.journal_survived_values(sess.id) == {3: -30}
+        dst.close()
+
+    def test_merge_migrates_old_schema_source_first(self, tmp_path):
+        import sqlite3
+
+        src_path = tmp_path / "old.db"
+        conn = sqlite3.connect(str(src_path), isolation_level=None)
+        conn.executescript(_V1_SCHEMA)
+        conn.execute(
+            "INSERT INTO runs (started_at, cpu_model, backend, status) VALUES (?,?,?,?)",
+            ("2025-01-01T00:00:00+00:00", "old-cpu", "mprime", "completed"),
+        )
+        conn.close()
+
+        dst = HistoryDB(tmp_path / "dst.db")
+        counts = dst.merge_from(src_path)
+        assert counts["runs"] == 1
+        assert dst.list_runs()[0].cpu_model == "old-cpu"
+        dst.close()

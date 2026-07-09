@@ -20,7 +20,6 @@ from config.settings import (
 )
 from engine.backends.base import FFTPreset, StressMode
 
-
 # ===========================================================================
 # TestProfile tests
 # ===========================================================================

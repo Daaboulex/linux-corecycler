@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections import deque
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from config.settings import load_settings
 from gui.widgets.charts import LiveChart
 from monitor.cpu_usage import CPUUsageReader
 from monitor.frequency import (
@@ -27,7 +29,6 @@ from monitor.frequency import (
 )
 from monitor.hwmon import HWMonReader
 from monitor.msr import MSRReader
-from config.settings import load_settings
 from monitor.power import PowerMonitor
 
 MAX_FREQ_HISTORY = 60  # 1 minute at 1s
@@ -394,10 +395,9 @@ class MonitorTab(QWidget):
         self._toggle_btn.setText("Package View" if checked else "Per-Core View")
 
     def _update(self) -> None:
-        try:
+        # legitimate sysfs/procfs read failures are dropped
+        with contextlib.suppress(OSError, ValueError, PermissionError):
             self._do_update()
-        except (OSError, ValueError, PermissionError):
-            pass  # legitimate sysfs/procfs read failures
 
     def _do_update(self) -> None:
         # frequencies — read both actual and boost ceiling per-core

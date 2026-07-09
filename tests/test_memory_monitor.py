@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import struct
+from unittest.mock import MagicMock
 
 import pytest
 
-from monitor.memory import DIMMInfo, parse_dmidecode_output, SPD5118Reader, SPDTimingData, decode_spd_timings
+from monitor.memory import SPD5118Reader, SPDTimingData, decode_spd_timings, parse_dmidecode_output
 from smu.pmtable import PMTableData, compute_fclk_uclk_ratio
 
 SAMPLE_DMIDECODE = """\
@@ -393,9 +394,6 @@ class TestMemoryTabBehavior:
         assert "Verified" in tab._cal_label.text()
 
 
-import struct
-
-
 def _make_ddr5_4800_eeprom() -> bytes:
     """Build a synthetic 48-byte DDR5-4800 EEPROM for testing."""
     data = bytearray(48)
@@ -563,7 +561,7 @@ class TestSPDTimingDisplay:
         """Create a headless tab with mock SPD reader returning given data."""
         import types
 
-        from gui.memory_tab import MemoryTab, PART_NUMBER_COL
+        from gui.memory_tab import MemoryTab
 
         tab = types.SimpleNamespace()
         tab._primary_label = _MockVisibleLabel("Primary: --")

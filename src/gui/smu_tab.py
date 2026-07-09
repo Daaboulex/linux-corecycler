@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from config.paths import user_home
 from smu.commands import SMUCommandSet, detect_generation, get_commands
 from smu.driver import RyzenSMU
 
@@ -464,7 +465,7 @@ class SMUTab(QWidget):
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save CO Profile",
-            str(Path.home() / "co-profile.json"),
+            str(user_home() / "co-profile.json"),
             "JSON (*.json)",
         )
         if not path:
@@ -488,7 +489,7 @@ class SMUTab(QWidget):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Load CO Profile",
-            str(Path.home()),
+            str(user_home()),
             "JSON (*.json)",
         )
         if not path:

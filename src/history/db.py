@@ -6,19 +6,55 @@ process-crash safety with good performance — data survives kill -9 and OOM.
 
 from __future__ import annotations
 
-import json
+import contextlib
+import logging
+import os
 import sqlite3
-import time
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from config.paths import fix_sudo_ownership, user_home
 
 if TYPE_CHECKING:
     from tuner.state import CoreState, TunerSession
 
-DATA_DIR = Path.home() / ".local" / "share" / "corecycler" / "history"
+DATA_DIR = user_home() / ".local" / "share" / "corecycler" / "history"
 DEFAULT_DB_PATH = DATA_DIR / "history.db"
+
+# Where the old sudo-splits-the-database bug left root's data.
+LEGACY_ROOT_DB = Path("/root/.local/share/corecycler/history/history.db")
+
+log = logging.getLogger(__name__)
+
+
+def adopt_legacy_root_db(db: HistoryDB, root_db: Path = LEGACY_ROOT_DB) -> dict[str, int] | None:
+    """One-time adoption of a root-owned history database.
+
+    The old bug wrote sudo runs to /root; this merges that data into the
+    user's (single) database and renames the source ``*.adopted`` so it can
+    never be merged twice or silently diverge again. Only possible when
+    running as root — the file is unreadable otherwise. Returns the merge
+    counts, or None when there was nothing to adopt.
+    """
+    if os.geteuid() != 0:
+        return None
+    try:
+        if not root_db.exists():
+            return None
+        if root_db.resolve() == db._db_path.resolve():
+            return None  # HOME really is /root (no SUDO_USER) — same file
+    except OSError:
+        return None
+    counts = db.merge_from(root_db)
+    root_db.replace(root_db.with_name(root_db.name + ".adopted"))
+    for sidecar in ("-wal", "-shm"):
+        leftover = root_db.with_name(root_db.name + sidecar)
+        if leftover.exists():
+            leftover.unlink()
+    log.info("Adopted legacy root history database %s: %s", root_db, counts)
+    return counts
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +157,7 @@ class TelemetrySample:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 11
+    SCHEMA_VERSION = 12
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -136,7 +172,26 @@ class HistoryDB:
         self.__conn.execute("PRAGMA journal_mode=WAL")
         self.__conn.execute("PRAGMA synchronous=NORMAL")
         self.__conn.execute("PRAGMA foreign_keys=ON")
+        # Sudo and non-sudo runs share ONE database; a second writer must wait
+        # for the WAL lock instead of failing with "database is locked".
+        self.__conn.execute("PRAGMA busy_timeout=5000")
+        # Fail closed on a corrupted file BEFORE migrations touch it.
+        check = self.__conn.execute("PRAGMA quick_check").fetchone()[0]
+        if check != "ok":
+            raise RuntimeError(
+                f"History database failed integrity check ({check}): {self._db_path}. "
+                f"Move the file aside and restart to rebuild."
+            )
         self._create_schema()
+        if str(self._db_path) != ":memory:":
+            # A sudo run must not leave the shared DB (or its WAL sidecars)
+            # root-owned, or the next non-sudo run cannot write it.
+            fix_sudo_ownership(
+                self._db_path.parent,
+                self._db_path,
+                self._db_path.with_name(self._db_path.name + "-wal"),
+                self._db_path.with_name(self._db_path.name + "-shm"),
+            )
 
     # ------------------------------------------------------------------
     # Schema
@@ -417,19 +472,15 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
     @staticmethod
     def _migrate_v7(conn: sqlite3.Connection) -> None:
         for col_name, col_def in HistoryDB._DDL_MIGRATE_V7_COLUMNS:
-            try:
+            with contextlib.suppress(Exception):  # column may exist from a partial migration
                 conn.execute(f"ALTER TABLE tuner_core_states ADD COLUMN {col_name} {col_def}")
-            except Exception:
-                pass  # Column already exists from partial migration
 
     @staticmethod
     def _migrate_v8(conn: sqlite3.Connection) -> None:
-        try:
+        with contextlib.suppress(Exception):  # column may already exist
             conn.execute(
                 "ALTER TABLE tuner_core_states ADD COLUMN in_test INTEGER NOT NULL DEFAULT 0"
             )
-        except Exception:
-            pass  # Column already exists
 
     _DDL_MIGRATE_V9 = """\
 ALTER TABLE tuner_core_states ADD COLUMN crash_count INTEGER DEFAULT 0;
@@ -450,13 +501,11 @@ ALTER TABLE tuner_core_states ADD COLUMN thermal_aborts INTEGER DEFAULT 0;
     # wrapped (like v7/v8) so a re-run or partial migration cannot fail.
     @staticmethod
     def _migrate_v11(conn: sqlite3.Connection) -> None:
-        try:
+        with contextlib.suppress(Exception):  # column may exist from a partial migration
             conn.execute(
                 "ALTER TABLE tuner_sessions "
                 "ADD COLUMN resume_crash_streak INTEGER NOT NULL DEFAULT 0"
             )
-        except Exception:
-            pass  # column already exists from a partial migration
         conn.executescript(
             """\
 CREATE TABLE IF NOT EXISTS tuner_co_journal (
@@ -470,6 +519,56 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
 """
         )
 
+    # v11 -> v12: rebuild tuner_core_states into the canonical (fresh-DDL)
+    # shape. The v9/v10 ALTERs added crash_count/crash_cooldown/thermal_aborts/
+    # cumulative_test_time/hardening_tier_index as NULLABLE, so a migrated
+    # database was structurally different from a fresh one (and could hold
+    # NULLs the code papers over with `or 0`). One canonical schema everywhere;
+    # tests/test_history_db.py::TestFreshEqualsMigrated enforces it stays that way.
+    _DDL_MIGRATE_V12 = """\
+CREATE TABLE tuner_core_states_v12 (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id          INTEGER NOT NULL REFERENCES tuner_sessions(id) ON DELETE CASCADE,
+    core_id             INTEGER NOT NULL,
+    phase               TEXT    NOT NULL DEFAULT 'not_started',
+    current_offset      INTEGER NOT NULL DEFAULT 0,
+    best_offset         INTEGER,
+    coarse_fail_offset  INTEGER,
+    confirm_attempts    INTEGER NOT NULL DEFAULT 0,
+    baseline_offset     INTEGER NOT NULL DEFAULT 0,
+    backoff_mode        INTEGER NOT NULL DEFAULT 0,
+    consecutive_backoff_fails INTEGER NOT NULL DEFAULT 0,
+    backoff_fail_bound  INTEGER,
+    backoff_pass_bound  INTEGER,
+    in_test             INTEGER NOT NULL DEFAULT 0,
+    crash_count         INTEGER NOT NULL DEFAULT 0,
+    crash_cooldown      INTEGER NOT NULL DEFAULT 0,
+    thermal_aborts      INTEGER NOT NULL DEFAULT 0,
+    cumulative_test_time REAL   NOT NULL DEFAULT 0.0,
+    hardening_tier_index INTEGER NOT NULL DEFAULT 0,
+    updated_at          TEXT    NOT NULL,
+    UNIQUE(session_id, core_id)
+);
+INSERT INTO tuner_core_states_v12 (
+    id, session_id, core_id, phase, current_offset, best_offset,
+    coarse_fail_offset, confirm_attempts, baseline_offset, backoff_mode,
+    consecutive_backoff_fails, backoff_fail_bound, backoff_pass_bound,
+    in_test, crash_count, crash_cooldown, thermal_aborts,
+    cumulative_test_time, hardening_tier_index, updated_at
+)
+SELECT
+    id, session_id, core_id, phase, current_offset, best_offset,
+    coarse_fail_offset, confirm_attempts, baseline_offset,
+    COALESCE(backoff_mode, 0), COALESCE(consecutive_backoff_fails, 0),
+    backoff_fail_bound, backoff_pass_bound, COALESCE(in_test, 0),
+    COALESCE(crash_count, 0), COALESCE(crash_cooldown, 0),
+    COALESCE(thermal_aborts, 0), COALESCE(cumulative_test_time, 0.0),
+    COALESCE(hardening_tier_index, 0), updated_at
+FROM tuner_core_states;
+DROP TABLE tuner_core_states;
+ALTER TABLE tuner_core_states_v12 RENAME TO tuner_core_states;
+"""
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _DDL_MIGRATE_V2,
         3: _DDL_MIGRATE_V3,
@@ -481,6 +580,7 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
         9: _DDL_MIGRATE_V9,
         10: _DDL_MIGRATE_V10,
         11: _migrate_v11,
+        12: _DDL_MIGRATE_V12,
     }
 
     # ------------------------------------------------------------------
@@ -489,7 +589,7 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
 
     @staticmethod
     def _now_iso() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()
 
     # ------------------------------------------------------------------
     # Runs
@@ -803,7 +903,8 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
             VALUES (?,?,?,?,?,?,?)
             """,
             [
-                (s.run_id, s.core_id, s.timestamp or self._now_iso(), s.freq_mhz, s.effective_max_mhz, s.temp_c, s.vcore_v)
+                (s.run_id, s.core_id, s.timestamp or self._now_iso(),
+                 s.freq_mhz, s.effective_max_mhz, s.temp_c, s.vcore_v)
                 for s in samples
             ],
         )
@@ -1051,6 +1152,26 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
         ).fetchall()
         return {r["core_id"]: r["value"] for r in rows}
 
+    def latest_session_activity(self, session_id: int) -> str | None:
+        """Most recent write timestamp across all of a session's state.
+
+        Used on resume to decide whether the machine rebooted since the session
+        last ran — the difference between a hard crash (penalize the resident
+        offsets) and a plain app exit (penalizing would corrupt the search).
+        """
+        row = self.__conn.execute(
+            """\
+            SELECT MAX(ts) FROM (
+                SELECT updated_at AS ts FROM tuner_sessions WHERE id=?
+                UNION ALL SELECT updated_at FROM tuner_core_states WHERE session_id=?
+                UNION ALL SELECT updated_at FROM tuner_co_journal WHERE session_id=?
+                UNION ALL SELECT tested_at FROM tuner_test_log WHERE session_id=?
+            )
+            """,
+            (session_id, session_id, session_id, session_id),
+        ).fetchone()
+        return row[0] if row else None
+
     def get_resume_crash_streak(self, session_id: int) -> int:
         row = self.__conn.execute(
             "SELECT resume_crash_streak FROM tuner_sessions WHERE id=?", (session_id,)
@@ -1121,7 +1242,8 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
         )
 
     def get_tuner_core_states(self, session_id: int) -> dict[int, CoreState]:
-        from tuner.state import CoreState as _CoreState, TunerPhase as _TunerPhase
+        from tuner.state import CoreState as _CoreState
+        from tuner.state import TunerPhase as _TunerPhase
 
         rows = self.__conn.execute(
             "SELECT * FROM tuner_core_states WHERE session_id=? ORDER BY core_id",
@@ -1141,10 +1263,10 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
                 consecutive_backoff_fails=r["consecutive_backoff_fails"],
                 backoff_fail_bound=r["backoff_fail_bound"],
                 backoff_pass_bound=r["backoff_pass_bound"],
-                in_test=bool(r["in_test"]) if "in_test" in r.keys() else False,
+                in_test=bool(r["in_test"]),
                 crash_count=r["crash_count"] or 0,
                 crash_cooldown=r["crash_cooldown"] or 0,
-                thermal_aborts=r["thermal_aborts"] or 0 if "thermal_aborts" in r.keys() else 0,
+                thermal_aborts=r["thermal_aborts"],
                 cumulative_test_time=r["cumulative_test_time"] or 0.0,
                 hardening_tier_index=r["hardening_tier_index"] or 0,
             )
@@ -1239,9 +1361,7 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
             cpu_model=row["cpu_model"],
             config_json=row["config_json"],
             context_id=row["context_id"],
-            resume_crash_streak=(
-                row["resume_crash_streak"] if "resume_crash_streak" in row.keys() else 0
-            ),
+            resume_crash_streak=row["resume_crash_streak"],
             notes=row["notes"],
         )
 
@@ -1252,6 +1372,161 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
     # ------------------------------------------------------------------
     # Maintenance
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Merging another history database (one-database guarantee)
+    # ------------------------------------------------------------------
+
+    # Per-table copy columns (id excluded) and which columns remap to new ids.
+    _MERGE_TABLES: tuple[tuple[str, tuple[str, ...], dict[str, str]], ...] = (
+        ("core_results",
+         ("run_id", "core_id", "ccd", "cycle", "started_at", "finished_at",
+          "passed", "error_message", "error_type", "elapsed_seconds",
+          "iterations_completed", "peak_freq_mhz", "max_temp_c",
+          "min_vcore_v", "max_vcore_v"),
+         {"run_id": "runs"}),
+        ("events",
+         ("run_id", "timestamp", "event_type", "core_id", "message", "details_json"),
+         {"run_id": "runs"}),
+        ("telemetry_samples",
+         ("run_id", "core_id", "timestamp", "freq_mhz", "effective_max_mhz",
+          "temp_c", "vcore_v"),
+         {"run_id": "runs"}),
+        ("tuner_core_states",
+         ("session_id", "core_id", "phase", "current_offset", "best_offset",
+          "coarse_fail_offset", "confirm_attempts", "baseline_offset",
+          "backoff_mode", "consecutive_backoff_fails", "backoff_fail_bound",
+          "backoff_pass_bound", "in_test", "crash_count", "crash_cooldown",
+          "thermal_aborts", "cumulative_test_time", "hardening_tier_index",
+          "updated_at"),
+         {"session_id": "tuner_sessions"}),
+        ("tuner_test_log",
+         ("session_id", "core_id", "offset_tested", "phase", "passed",
+          "error_message", "error_type", "duration_seconds", "run_id",
+          "backend", "stress_mode", "fft_preset", "tested_at"),
+         {"session_id": "tuner_sessions", "run_id": "runs"}),
+    )
+
+    def merge_from(self, other_path: str | Path) -> dict[str, int]:
+        """Adopt every record from another corecycler history database.
+
+        Ends the old sudo-splits-the-database situation without losing data:
+        the source is first opened through HistoryDB (migrating it to the
+        current schema, however old it is), then every run, tuning context and
+        tuner session is copied in with fresh ids and remapped references.
+        Tuning contexts deduplicate by (co_hash, bios_version). The source
+        file is not modified beyond its schema migration. All-or-nothing:
+        one transaction, rolled back on any error.
+        """
+        other_path = Path(other_path)
+        HistoryDB(other_path).close()  # migrate source to the current schema
+        conn = self.__conn
+        conn.execute("ATTACH DATABASE ? AS src", (str(other_path),))
+        counts = {"contexts": 0, "runs": 0, "tuner_sessions": 0}
+        try:
+            conn.execute("BEGIN")
+            maps: dict[str, dict[int, int]] = {}
+
+            ctx_map: dict[int, int] = {}
+            for row in conn.execute("SELECT * FROM src.tuning_contexts ORDER BY id").fetchall():
+                cur = conn.execute(
+                    """\
+                    INSERT OR IGNORE INTO tuning_contexts
+                        (created_at, bios_version, co_offsets_json, co_hash,
+                         pbo_scalar, boost_limit_mhz, notes)
+                    VALUES (?,?,?,?,?,?,?)
+                    """,
+                    (row["created_at"], row["bios_version"], row["co_offsets_json"],
+                     row["co_hash"], row["pbo_scalar"], row["boost_limit_mhz"],
+                     row["notes"]),
+                )
+                if cur.rowcount > 0:
+                    ctx_map[row["id"]] = cur.lastrowid
+                    counts["contexts"] += 1
+                else:  # already present — dedup to the existing context
+                    existing = conn.execute(
+                        "SELECT id FROM tuning_contexts WHERE co_hash=? AND bios_version=?",
+                        (row["co_hash"], row["bios_version"]),
+                    ).fetchone()
+                    ctx_map[row["id"]] = existing["id"]
+            maps["tuning_contexts"] = ctx_map
+
+            def copy_parent(table: str, cols: tuple[str, ...]) -> dict[int, int]:
+                id_map: dict[int, int] = {}
+                for row in conn.execute(f"SELECT * FROM src.{table} ORDER BY id").fetchall():
+                    vals = []
+                    for c in cols:
+                        v = row[c]
+                        if c == "context_id" and v is not None:
+                            v = ctx_map.get(v)  # orphan context -> ungrouped
+                        vals.append(v)
+                    placeholders = ",".join("?" * len(cols))
+                    cur = conn.execute(
+                        f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
+                        vals,
+                    )
+                    id_map[row["id"]] = cur.lastrowid
+                return id_map
+
+            maps["runs"] = copy_parent("runs", (
+                "started_at", "finished_at", "status", "cpu_model",
+                "physical_cores", "logical_cpus", "ccds", "is_x3d", "backend",
+                "stress_mode", "fft_preset", "seconds_per_core", "cycle_count",
+                "stop_on_error", "variable_load", "idle_stability_test",
+                "max_temperature", "settings_json", "context_id",
+                "bios_version", "total_cores", "cores_passed", "cores_failed",
+                "total_seconds",
+            ))
+            counts["runs"] = len(maps["runs"])
+
+            maps["tuner_sessions"] = copy_parent("tuner_sessions", (
+                "created_at", "updated_at", "status", "bios_version",
+                "cpu_model", "config_json", "context_id",
+                "resume_crash_streak", "notes",
+            ))
+            counts["tuner_sessions"] = len(maps["tuner_sessions"])
+
+            for table, cols, remaps in self._MERGE_TABLES:
+                for row in conn.execute(f"SELECT * FROM src.{table} ORDER BY id").fetchall():
+                    vals = []
+                    skip = False
+                    for c in cols:
+                        v = row[c]
+                        if c in remaps and v is not None:
+                            v = maps[remaps[c]].get(v)
+                            if v is None and c != "run_id":
+                                skip = True  # orphaned child of a missing parent
+                                break
+                        vals.append(v)
+                    if skip:
+                        continue
+                    placeholders = ",".join("?" * len(cols))
+                    conn.execute(
+                        f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
+                        vals,
+                    )
+
+            # journal has no id column — copy keyed rows directly
+            for row in conn.execute(
+                "SELECT * FROM src.tuner_co_journal ORDER BY session_id, core_id"
+            ).fetchall():
+                new_sid = maps["tuner_sessions"].get(row["session_id"])
+                if new_sid is None:
+                    continue
+                conn.execute(
+                    "INSERT INTO tuner_co_journal (session_id, core_id, value, survived, updated_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (new_sid, row["core_id"], row["value"], row["survived"],
+                     row["updated_at"]),
+                )
+
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.execute("DETACH DATABASE src")
+        return counts
 
     def delete_orphaned_contexts(self) -> int:
         """Delete tuning contexts that have no associated runs or tuner sessions."""
@@ -1293,3 +1568,10 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
 
     def close(self) -> None:
         self.__conn.close()
+        if str(self._db_path) != ":memory:":
+            # WAL sidecars may have been recreated (root-owned) during the run.
+            fix_sudo_ownership(
+                self._db_path,
+                self._db_path.with_name(self._db_path.name + "-wal"),
+                self._db_path.with_name(self._db_path.name + "-shm"),
+            )

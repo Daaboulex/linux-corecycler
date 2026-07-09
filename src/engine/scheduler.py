@@ -732,6 +732,8 @@ class CoreScheduler:
             deadline = start_time + self.config.seconds_per_core
             last_affinity_check = 0.0  # time of last TID affinity scan
             _AFFINITY_CHECK_INTERVAL = 2.0
+            last_error_poll = start_time  # time of last backend results-file scan
+            _ERROR_POLL_INTERVAL = 5.0
 
             while self._process.poll() is None:
                 if self._stop_event.is_set():
@@ -797,6 +799,22 @@ class CoreScheduler:
                         self._process.pid, expected_cpu_set, cpu_list
                     )
                     total_repins += drifts
+
+                # periodic backend error poll — mprime keeps running after a
+                # computation error (it lands only in results.txt), so without
+                # this a soft failure burns the full test duration before the
+                # end-of-test parse finds it.
+                if now - last_error_poll >= _ERROR_POLL_INTERVAL:
+                    last_error_poll = now
+                    live_error = self.backend.poll_errors(core_work_dir)
+                    if live_error:
+                        passed = False
+                        error_msg = live_error
+                        status.errors += 1
+                        status.last_error = error_msg
+                        if self.config.stop_on_error:
+                            self._stop_event.set()
+                        break
 
                 # periodic MCE check
                 mce_events = self.detector.check_mce(target_cpu=logical_cpu)
@@ -1062,6 +1080,10 @@ class CoreScheduler:
         if not msg:
             return "unknown"
         msg_lower = msg.lower()
+        # Environment fault, not a stability verdict — the tuner pauses on these
+        # instead of advancing the search (a missing binary is not a weak core).
+        if "failed to start" in msg_lower:
+            return "startup"
         if "mce" in msg_lower or "machine check" in msg_lower:
             return "mce"
         if "temperature" in msg_lower or "thermal" in msg_lower:

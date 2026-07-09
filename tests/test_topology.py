@@ -30,9 +30,7 @@ from conftest import (
     CPUINFO_INTEL_10CORE_SMT,
     CPUINFO_SINGLE_CCD_NO_SMT,
     CPUINFO_X3D_SINGLE_CCD,
-    build_topology,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper to run _parse_cpuinfo with fake data
@@ -125,7 +123,11 @@ class TestParseCpuinfo:
 
     def test_no_trailing_blank_line(self):
         """Last entry without trailing blank should still be parsed."""
-        text = "processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 25\nmodel\t\t: 33\nmodel name\t: Test\nstepping\t: 1\ncore id\t\t: 0\nphysical id\t: 0"
+        text = (
+            "processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 25\n"
+            "model\t\t: 33\nmodel name\t: Test\nstepping\t: 1\n"
+            "core id\t\t: 0\nphysical id\t: 0"
+        )
         topo = parse_cpuinfo_from_text(text)
         assert topo.physical_cores == 1
         assert 0 in topo.logical_map

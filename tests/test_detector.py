@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from engine.detector import ErrorDetector, ErrorState, MCEEvent, _get_dmesg_raw_timestamp, _is_mce_error_line
 
-
 # ===========================================================================
 # MCEEvent tests
 # ===========================================================================
@@ -429,7 +428,7 @@ class TestCountMCEEvents:
         d1.mkdir(parents=True)
         (d1 / "bank0").write_text("1")
 
-        det = ErrorDetector()
+        ErrorDetector()
         with patch("engine.detector.Path", return_value=mce_base):
             # Direct test of counting logic
             total = 0

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import struct
 import sys
 from pathlib import Path
@@ -12,9 +11,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from smu.commands import CPUGeneration, SMUCommandSet, encode_co_arg, get_commands
+from smu.commands import CPUGeneration, SMUCommandSet, get_commands
 from smu.driver import SYSFS_BASE, RyzenSMU, SMUResponse
-
 
 # ===========================================================================
 # Fixtures
@@ -88,7 +86,7 @@ class TestIsAvailable:
         assert RyzenSMU.is_available(d) is False
 
     def test_default_path(self):
-        assert SYSFS_BASE == Path("/sys/kernel/ryzen_smu_drv")
+        assert Path("/sys/kernel/ryzen_smu_drv") == SYSFS_BASE
 
 
 class TestGetCmdPath:
