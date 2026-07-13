@@ -189,3 +189,83 @@ jobs:
                 console.log(`Skip ${ref.ref}: ${e.message}`);
               }
             }
+
+  # Temporary-overlay heal: overlays/<name>.nix fixes (see scripts/
+  # heal-overlays.sh) are probed against un-fixed nixpkgs; a healed fix is
+  # removed, the full check suite verifies the removal, and only a green tree
+  # is pushed. A removal that fails verification is restored and reported.
+  # Runs after update-lock so the two jobs never race a push.
+  heal-overlays:
+    needs: [gate, update-lock]
+    if: needs.gate.outputs.run == 'yes'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22 (node24)
+
+      - name: Probe and heal
+        id: heal
+        run: bash scripts/heal-overlays.sh
+
+      - name: Push healed removal
+        if: steps.heal.outputs.healed != '' && steps.heal.outputs.verify_exit == '0'
+        # Names pass via env, never interpolated into the run-block shell.
+        env:
+          HEALED: ${{ steps.heal.outputs.healed }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: drop healed overlay fix(es): ${HEALED} (nixpkgs works again)"
+          git push
+
+      - name: Issue if heal verification failed
+        if: steps.heal.outputs.healed != '' && steps.heal.outputs.verify_exit != '0'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
+        env:
+          HEALED: ${{ steps.heal.outputs.healed }}
+        with:
+          script: |
+            const fs = require('fs');
+            let log = '';
+            try { log = fs.readFileSync('/tmp/heal-verify.log', 'utf8'); } catch (e) {}
+            const lastLines = log.split('\n').slice(-80).join('\n');
+            const title = 'Maintenance: healed overlay removal failed verification';
+
+            // Close any prior open report before filing fresh (dedup, same
+            // pattern as the lock-update issue above).
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: 'maintenance', state: 'open'
+            });
+            for (const issue of existing.data) {
+              if (issue.title !== title) continue;
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, state: 'closed',
+                state_reason: 'not_planned'
+              });
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title,
+              labels: ['maintenance'],
+              body: [
+                '## Healed overlay removal failed verification',
+                '',
+                `The dropWhen probe fired for: \`${process.env.HEALED}\` — nixpkgs provides`,
+                'the fixed behavior again — but the full check suite failed WITHOUT the',
+                'fix, so the removal was restored and NOT pushed. Re-verify upstream,',
+                'then delete the fix by hand or correct its dropWhen predicate.',
+                '',
+                '<details><summary>Verification log (last 80 lines)</summary>',
+                '',
+                '```',
+                lastLines,
+                '```',
+                '</details>',
+                '',
+                '---',
+                '*Created by [maintenance workflow](.github/workflows/maintenance.yml)*'
+              ].join('\n')
+            });
