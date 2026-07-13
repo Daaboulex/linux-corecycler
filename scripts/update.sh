@@ -515,6 +515,54 @@ if [ "${#HF_FIELD[@]}" -gt 0 ]; then
   fi
 fi
 
+# --- Python requirements auto-add (env+source python apps) ---------------
+# An app packaged as python.withPackages + upstream source carries no wheel
+# metadata, so pythonRuntimeDepsCheckHook never runs -- a NEW upstream
+# requirement would ship silently and fail only at the user's runtime import.
+# When update.json sets pythonRequirements, fetch the new tag's requirements
+# file and, for each requirement whose PEP503-normalized name resolves to a
+# python3Packages attr and is absent from the env list, insert it above the
+# '# std:requirements-auto-add' marker. lib.requirementsCoveredCheck then
+# proves REAL coverage during the verification build below, so an unmappable
+# name (pypi name != nixpkgs attr) fails the run naming the requirement.
+PYREQ_FILE=$(echo "$CONFIG" | jq -r '.pythonRequirements.file // empty')
+if [ -n "$PYREQ_FILE" ]; then
+  PYREQ_ENV=$(echo "$CONFIG" | jq -r '.pythonRequirements.envFile // "package.nix"')
+  MARKER="# std:requirements-auto-add"
+  if ! grep -qF "$MARKER" "$PYREQ_ENV"; then
+    err "pythonRequirements set but $PYREQ_ENV has no '$MARKER' marker"
+    output "error_type" "config-error"
+    exit 1
+  fi
+  if [ -z "${LATEST_TAG:-}" ]; then
+    warn "pythonRequirements: no upstream tag resolved (non-tag upstream); skipping auto-add -- the coverage check still gates the build"
+  else
+    REQS=$(curl -sfL "https://raw.githubusercontent.com/$OWNER/$REPO/$LATEST_TAG/$PYREQ_FILE" || true)
+    if [ -z "$REQS" ]; then
+      warn "pythonRequirements: could not fetch $PYREQ_FILE at $LATEST_TAG; skipping auto-add -- the coverage check still gates the build"
+    else
+      PYREQ_IGNORE=" $(echo "$CONFIG" | jq -r '(.pythonRequirements.ignore // []) | join(" ")' | tr '[:upper:]' '[:lower:]') "
+      AUTO_ADDED=""
+      while IFS= read -r reqline; do
+        req=$(printf '%s' "$reqline" | sed 's/#.*//; s/;.*//' | sed -E 's/[[<>=!~ ].*//' | tr -d '[:space:]')
+        [ -n "$req" ] || continue
+        attr=$(printf '%s' "$req" | tr '[:upper:]' '[:lower:]' | sed -E 's/[._]+/-/g')
+        case "$PYREQ_IGNORE" in *" $attr "*) continue ;; esac
+        grep -qE "(^|[^A-Za-z0-9_-])${attr}([^A-Za-z0-9_-]|$)" "$PYREQ_ENV" && continue
+        exists=$(nix eval --impure --expr "let f = builtins.getFlake (toString ./.); p = import f.inputs.nixpkgs { system = builtins.currentSystem; }; in p.python3Packages ? \"$attr\"" 2>/dev/null || echo false)
+        [ "$exists" = "true" ] || {
+          log "pythonRequirements: '$req' has no python3Packages.$attr -- left for the coverage check"
+          continue
+        }
+        sed -i "s|^\([[:space:]]*\)$MARKER|\1$attr\n\1$MARKER|" "$PYREQ_ENV"
+        AUTO_ADDED="$AUTO_ADDED $attr"
+        log "pythonRequirements: added '$attr' (new upstream requirement '$req')"
+      done <<<"$REQS"
+      output "auto_added" "${AUTO_ADDED# }"
+    fi
+  fi
+fi
+
 # --- Verification chain --------------------------------------------------
 log "Step 1/3: nix flake check --no-build"
 if ! nix flake check --no-build 2>&1; then

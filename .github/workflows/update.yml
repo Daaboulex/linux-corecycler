@@ -39,12 +39,18 @@ jobs:
           OLDV: ${{ steps.update.outputs.old_version }}
           NEWV: ${{ steps.update.outputs.new_version }}
           PKG: ${{ steps.update.outputs.package_name }}
+          AUTO_ADDED: ${{ steps.update.outputs.auto_added }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A ':!AI-*.json'
           git diff --cached --quiet && { echo "No changes to commit"; exit 0; }
-          git commit -m "chore: update ${PKG} ${OLDV} -> ${NEWV}"
+          if [ -n "${AUTO_ADDED}" ]; then
+            git commit -m "chore: update ${PKG} ${OLDV} -> ${NEWV}" \
+              -m "New upstream python requirement(s) added to the env: ${AUTO_ADDED}."
+          else
+            git commit -m "chore: update ${PKG} ${OLDV} -> ${NEWV}"
+          fi
           git push
 
       # Auto-close previous failure issues on success
