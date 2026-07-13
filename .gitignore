@@ -11,6 +11,7 @@ build/
 result
 result-*
 .direnv/
+.devshell/
 .pre-commit-config.yaml
 
 # AI tracking (local only)
@@ -18,7 +19,6 @@ AI-progress.json
 AI-tasks.json
 .planning/
 .direnv
-.envrc
 
 # AI context (local-only, never track)
 CLAUDE.md
@@ -50,3 +50,11 @@ handoff-archive/
 # local brainstorm — never tracked
 /ideas/
 tests/.e2e-bin-*/
+.coverage
+.coverage.*
+htmlcov/
+coverage/
+target/
+node_modules/
+.venv/
+venv/
