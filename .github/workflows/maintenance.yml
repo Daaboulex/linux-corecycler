@@ -96,25 +96,36 @@ jobs:
           git commit -m "chore: update flake.lock"
           git push
 
+      - name: Classify failure
+        if: steps.build.outputs.exit_code != '0'
+        id: classify
+        run: bash scripts/classify-build-failure.sh /tmp/lock-build.log
+
       - name: Issue if build fails
         if: steps.build.outputs.exit_code != '0'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
+        env:
+          FAIL_CLASS: ${{ steps.classify.outputs.class }}
+          FAIL_ATTRS: ${{ steps.classify.outputs.failed_attrs }}
+          FAIL_DRVS: ${{ steps.classify.outputs.failed_drvs }}
         with:
           script: |
             const fs = require('fs');
             const log = fs.readFileSync('/tmp/lock-build.log', 'utf8');
             const lastLines = log.split('\n').slice(-80).join('\n');
-            const title = 'Maintenance: flake.lock update broke build';
+            const titleBase = 'Maintenance: flake.lock update broke build';
+            const title = `${titleBase} (${process.env.FAIL_CLASS})`;
 
             // Close any prior open report of the same failure before filing a
             // fresh one, so a recurring lock-build break does not pile up
             // duplicate issues (mirrors update.yml's update-failed dedup).
+            // Prefix match: the class suffix varies between rounds.
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,
               labels: 'maintenance', state: 'open'
             });
             for (const issue of existing.data) {
-              if (issue.title !== title) continue;
+              if (!issue.title.startsWith(titleBase)) continue;
               await github.rest.issues.update({
                 owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: issue.number, state: 'closed',
@@ -131,6 +142,13 @@ jobs:
                 '',
                 'The scheduled `nix flake update` produced a flake.lock that does not build.',
                 '**flake.lock was NOT pushed.**',
+                '',
+                `**Class**: \`${process.env.FAIL_CLASS}\``,
+                `**Failed attributes**: ${process.env.FAIL_ATTRS || '(none reported)'}`,
+                `**Failed derivations**: ${process.env.FAIL_DRVS || '(none parsed)'}`,
+                '',
+                'Builds run with --keep-going, so the list above is the COMPLETE',
+                'failure set for this lock -- fix them together, not one per round.',
                 '',
                 '<details><summary>Build log (last 80 lines)</summary>',
                 '',

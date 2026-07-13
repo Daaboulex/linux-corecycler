@@ -572,7 +572,10 @@ if ! nix flake check --no-build 2>&1; then
 fi
 
 log "Step 2/3: nix build (clean)"
-if ! nix build .#default --no-link --print-build-logs 2>&1; then
+# --keep-going: enumerate EVERY failing dependency in one run instead of
+# fail-fast one-at-a-time (a rolling nixpkgs can break several deps at once;
+# serial discovery costs one full round-trip per dep).
+if ! nix build .#default --no-link --print-build-logs --keep-going 2>&1; then
   err "Build failed"
   output "error_type" "build-error"
   exit 1
