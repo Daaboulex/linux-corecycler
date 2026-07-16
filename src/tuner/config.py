@@ -109,10 +109,14 @@ class TunerConfig:
     backoff_preconfirm_multiplier: float = 2.0
 
     # Multi-mode hardening tiers (run after confirmation)
+    # profile "spectrum" runs the tier as light-load coverage (bursts,
+    # transitions, idle watch) instead of sustained stress.
     hardening_tiers: list[dict[str, str]] = dataclasses.field(
         default_factory=lambda: [
             {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
             {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "LARGE"},
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL",
+             "profile": "spectrum"},
         ]
     )
 
@@ -124,6 +128,18 @@ class TunerConfig:
 
     # Enable S4 rapid transition validation
     validate_transitions: bool = True
+
+    # S5 per-core light-load spectrum slots (all offsets live): max-boost
+    # bursts, load transitions and idle watch — the load class that exposes
+    # marginality sustained stress cannot reach.
+    validate_spectrum: bool = True
+    spectrum_slot_seconds: int = 60
+
+    # S6 real-world soak: after a clean validation pass, watch the kernel
+    # error stream for this long with NO synthetic load while the machine is
+    # used normally. Zero events = DONE.
+    validate_soak: bool = True
+    soak_duration_seconds: int = 1800
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), separators=(",", ":"))
@@ -178,6 +194,10 @@ class TunerConfig:
             errors.append("resume_crash_quarantine_threshold must be 1-20")
         if not 30 <= self.hunt_slot_seconds <= 600:
             errors.append("hunt_slot_seconds must be 30-600")
+        if not 30 <= self.spectrum_slot_seconds <= 600:
+            errors.append("spectrum_slot_seconds must be 30-600")
+        if not 60 <= self.soak_duration_seconds <= 14400:
+            errors.append("soak_duration_seconds must be 60-14400")
         if not 1 <= self.max_unattributed_crash_hunts <= 10:
             errors.append("max_unattributed_crash_hunts must be 1-10")
         if not 0 <= self.apparatus_failure_streak <= 100:
@@ -194,6 +214,8 @@ class TunerConfig:
                 errors.append(f"hardening_tiers[{i}] must be a dict")
             elif not all(k in tier for k in ("backend", "stress_mode", "fft_preset")):
                 errors.append(f"hardening_tiers[{i}] missing required keys: backend, stress_mode, fft_preset")
+            elif tier.get("profile") not in (None, "sustained", "spectrum"):
+                errors.append(f"hardening_tiers[{i}] profile must be sustained or spectrum")
         if not 60 <= self.max_temperature_c <= 110:
             errors.append(f"max_temperature_c must be 60-110, got {self.max_temperature_c}")
         if self.over_temp_grace_seconds < 0:

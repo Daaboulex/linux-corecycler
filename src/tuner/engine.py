@@ -21,7 +21,7 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
 from engine.backends import get_backend, load_all
 from engine.backends.base import StressConfig
-from engine.detector import MCEEvent, harvest_kernel_mce
+from engine.detector import ErrorDetector, MCEEvent, harvest_kernel_mce
 from engine.parallel import ParallelStress
 from engine.scheduler import CoreScheduler, SchedulerConfig
 from monitor.msr import MSRReader
@@ -327,6 +327,48 @@ class _ParallelWorker(_TunerWorker):
             self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0, "", "")
 
 
+
+class _SoakWorker(QThread):
+    """Watches the kernel error stream with no load; any event ends the soak."""
+
+    finished = Signal(int, bool, str, str, float, float, str, str)
+
+    def __init__(self, core_id: int, duration: int, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._core_id = core_id
+        self._duration = float(duration)
+        self._stop = threading.Event()
+        self.detector = ErrorDetector()
+        self.scheduler = self  # abort() drives workers via scheduler.force_stop
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    force_stop = stop
+
+    def run(self) -> None:
+        try:
+            self.detector.reset()
+            start = time.monotonic()
+            events: list[MCEEvent] = []
+            while time.monotonic() - start < self._duration and not self._stop.is_set():
+                events.extend(self.detector.check_mce())
+                if events:
+                    break
+                self._stop.wait(5.0)
+            elapsed = time.monotonic() - start
+            if events:
+                self.finished.emit(
+                    self._core_id, False,
+                    f"kernel error during soak: {events[0].message}", "mce",
+                    elapsed, 0.0, _serialize_mce(events), "",
+                )
+            else:
+                self.finished.emit(self._core_id, True, "", "", elapsed, 0.0, "", "")
+        except Exception as e:
+            log.exception("Soak worker crashed")
+            self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0, "", "")
+
 # ------------------------------------------------------------------
 # Engine
 # ------------------------------------------------------------------
@@ -410,6 +452,7 @@ class TunerEngine(QObject):
         # engine runs isolated per-core hunt slots instead of guessing.
         self._hunting = False
         self._hunt_queue: list[int] = []
+        self._soaking = False
         # Post-reboot kernel-journal harvest, injectable for tests.
         self._forensics = harvest_kernel_mce
 
@@ -446,6 +489,7 @@ class TunerEngine(QObject):
         self._in_requeue = False
         self._hunting = False
         self._hunt_queue = []
+        self._soaking = False
 
         # Validate config
         errors = self._config.validate()
@@ -533,6 +577,7 @@ class TunerEngine(QObject):
         self._in_requeue = False
         self._hunting = False
         self._hunt_queue = []
+        self._soaking = False
         self._session_id = session_id
 
         session = tp.get_session(self._db, session_id)
@@ -764,6 +809,7 @@ class TunerEngine(QObject):
         self._revert_all_to_baseline()
         self._validation_stage = 0
         self._in_requeue = False
+        self._soaking = False
         if self._hunting:
             self._hunting = False
             self._hunt_queue = []
@@ -789,6 +835,7 @@ class TunerEngine(QObject):
         self._in_requeue = False
         self._hunting = False
         self._hunt_queue = []
+        self._soaking = False
         self._session_id = session_id
 
         profile = tp.get_best_profile(self._db, session_id)
@@ -1764,7 +1811,7 @@ class TunerEngine(QObject):
         self.log_message.emit(
             f"Hunt slot: core {core_id} at {target}, all other cores at stock"
         )
-        self._start_worker(core_id, self._config.hunt_slot_seconds, hunt=True)
+        self._start_worker(core_id, self._config.hunt_slot_seconds, spectrum=True)
 
     def _end_hunt_fruitless(self) -> None:
         """Every hunt slot passed — the crash stays honestly unattributed."""
@@ -2170,8 +2217,13 @@ class TunerEngine(QObject):
         else:
             duration = self._config.search_duration_seconds
 
-        # Run single-core test on a worker thread
-        self._start_worker(core_id, duration)
+        # Run single-core test on a worker thread; a spectrum hardening tier
+        # runs the light-load profile instead of sustained stress.
+        spectrum = False
+        if cs.phase in (TunerPhase.HARDENING_T1, TunerPhase.HARDENING_T2):
+            tier = self._config.hardening_tiers[cs.hardening_tier_index]
+            spectrum = tier.get("profile") == "spectrum"
+        self._start_worker(core_id, duration, spectrum=spectrum)
 
     def _fail_test_async(self, core_id: int, message: str) -> None:
         """Deliver a start-time failure on a fresh event-loop stack, like the
@@ -2183,10 +2235,10 @@ class TunerEngine(QObject):
             0, lambda: self._on_test_finished(core_id, False, message, "startup", 0.0, 0.0, "", "")
         )
 
-    def _start_worker(self, core_id: int, duration: int, *, hunt: bool = False) -> None:
+    def _start_worker(self, core_id: int, duration: int, *, spectrum: bool = False) -> None:
         """Launch a _TunerWorker thread for the given core.
 
-        ``hunt`` adds the light-load spectrum to the slot (load transitions +
+        ``spectrum`` adds the light-load spectrum to the slot (load transitions +
         idle watch) — the load class that exposes max-boost marginality, which
         sustained stress alone cannot reach.
         """
@@ -2225,9 +2277,9 @@ class TunerEngine(QObject):
             over_temp_grace_seconds=self._config.over_temp_grace_seconds,
             over_temp_hard_margin=self._config.over_temp_hard_margin_c,
             require_thermal_sensor=not self._config.allow_missing_thermal_sensor,
-            variable_load=hunt,
-            variable_load_interval=5.0 if hunt else 15.0,
-            idle_stability_test=15.0 if hunt else 0.0,
+            variable_load=spectrum,
+            variable_load_interval=5.0 if spectrum else 15.0,
+            idle_stability_test=15.0 if spectrum else 0.0,
         )
 
         try:
@@ -2294,7 +2346,9 @@ class TunerEngine(QObject):
 
         # Kernel events observed during the test that name OTHER cores are
         # evidence about those cores, independent of this test's verdict.
-        foreign = self._foreign_mce_by_core(core_id, mce_json)
+        foreign = self._foreign_mce_by_core(
+            -1 if self._soaking else core_id, mce_json
+        )
 
         # A start-time/environment failure (missing binary, scheduler
         # construction error, harness exception) is not a stability verdict —
@@ -2398,8 +2452,9 @@ class TunerEngine(QObject):
         else:
             log_phase = phase_map.get(cs.phase, "validate" if self._status == "validating" else cs.phase)
 
-        # Log to DB
-        if self._session_id:
+        # Log to DB (soak is a session-level watch, not one core's test — its
+        # record is the narrative plus any mce_evidence rows)
+        if self._session_id and not self._soaking:
             backend, stress_mode, fft_preset = self._get_active_stress_config(cs)
             tp.log_test_result(
                 self._db,
@@ -2461,6 +2516,27 @@ class TunerEngine(QObject):
         # Hunt slots have their own flow — a fail here is a FOUND CULPRIT.
         if self._hunting:
             self._on_hunt_slot_finished(core_id, passed, error_type, foreign)
+            return
+
+        if self._soaking:
+            self._soaking = False
+            if foreign:
+                self._apply_foreign_evidence(foreign)
+                self._validation_dirty = True
+                self._save_validation_pos()
+                self.log_message.emit(
+                    "Soak found hardware evidence — leaving validation; the "
+                    "named core(s) re-earn confirmation first."
+                )
+                self._validation_stage_exit_to_search()
+                return
+            if passed:
+                self.log_message.emit("Real-world soak passed — no kernel events")
+                self._validation_stage = 7
+                self._save_validation_pos()
+                QTimer.singleShot(0, self._run_validation_next)
+                return
+            QTimer.singleShot(0, self._run_validation_next)
             return
 
         # Hardware evidence about OTHER cores outranks the normal flow: demote
@@ -2881,11 +2957,13 @@ class TunerEngine(QObject):
         return [cores[::2], cores[1::2]]
 
     def _get_validation_stage_count(self) -> int:
-        """Return the total number of validation stages.
-
-        Returns 4 when S4 rapid transition validation is enabled, 3 otherwise.
-        """
-        return 4 if self._config.validate_transitions else 3
+        """Total enabled validation stages (3 base + transitions/spectrum/soak)."""
+        return (
+            3
+            + int(self._config.validate_transitions)
+            + int(self._config.validate_spectrum)
+            + int(self._config.validate_soak)
+        )
 
     def _run_validation_stage4(self) -> None:
         """S4: Rapid transition stress — all cores, load/idle cycling.
@@ -2963,8 +3041,28 @@ class TunerEngine(QObject):
                 self._run_validation_stage2()
             case 3:
                 self._run_validation_stage3()
-            case 4 if self._config.validate_transitions:
-                self._run_validation_stage4()
+            case 4:
+                if self._config.validate_transitions:
+                    self._run_validation_stage4()
+                else:
+                    self._validation_stage = 5
+                    self._save_validation_pos()
+                    QTimer.singleShot(0, self._run_validation_next)
+            case 5:
+                if self._config.validate_spectrum:
+                    self._run_validation_stage5()
+                else:
+                    self._validation_stage = 6
+                    self._save_validation_pos()
+                    QTimer.singleShot(0, self._run_validation_next)
+            case 6:
+                # A dirty pass skips the soak; the final clean pass earns it.
+                if self._config.validate_soak and not self._validation_dirty:
+                    self._run_validation_soak()
+                else:
+                    self._validation_stage = 7
+                    self._save_validation_pos()
+                    QTimer.singleShot(0, self._run_validation_next)
             case _:
                 # All stages complete. If any back-off happened along the way,
                 # the profile changed mid-pass — run ONE final complete pass
@@ -3054,14 +3152,9 @@ class TunerEngine(QObject):
         """Stage 3: alternating half-core load — catches voltage transients."""
         if self._validation_half_index >= len(self._validation_halves):
             # Stage 3 complete — advance to S4 (rapid transitions) or finalize
-            if self._config.validate_transitions:
-                self._validation_stage = 4
-                self.log_message.emit(
-                    "Validation stage 3 passed — "
-                    "stage 4: rapid load/idle transitions"
-                )
-            else:
-                self._validation_stage = 5  # sentinel → _run_validation_next finalizes
+            self._validation_stage = 4
+            self._save_validation_pos()
+            self.log_message.emit("Validation stage 3 passed")
             QTimer.singleShot(0, self._run_validation_next)
             return
 
@@ -3086,6 +3179,56 @@ class TunerEngine(QObject):
         self._last_tested_core = half[0]
         self._mark_cores_under_stress(half)
         self._start_multi_core_worker(half, self._config.validate_duration_seconds)
+
+    def _run_validation_stage5(self) -> None:
+        """Stage 5: per-core light-load spectrum with all offsets live —
+        max-boost bursts, load transitions and idle watch."""
+        order = self._validation_core_order
+        if self._validation_core_index >= len(order):
+            self._validation_stage = 6
+            self._validation_core_index = 0
+            self._save_validation_pos()
+            self.log_message.emit("Validation stage 5 passed")
+            QTimer.singleShot(0, self._run_validation_next)
+            return
+        core_id = order[self._validation_core_index]
+        cs = self._core_states[core_id]
+        offset = cs.best_offset if cs.best_offset is not None else cs.baseline_offset
+        self.log_message.emit(
+            f"Validation 5/{len(order)}: core {core_id} spectrum at {offset} "
+            f"(bursts + transitions + idle, all offsets live)"
+        )
+        self.validation_progress.emit(5, self._validation_core_index, len(order))
+        if self._smu is not None and not self._apply_validation_offsets(core_id, offset):
+            return
+        self._last_tested_core = core_id
+        self._mark_cores_under_stress([core_id])
+        self._start_worker(core_id, self._config.spectrum_slot_seconds, spectrum=True)
+
+    def _run_validation_soak(self) -> None:
+        """Stage 6: no synthetic load — watch the kernel error stream while
+        the machine is used normally. Zero events proves the profile."""
+        cores = self._validation_core_order
+        self.log_message.emit(
+            f"Validation stage 6: real-world soak — watching the kernel error "
+            f"stream for {self._config.soak_duration_seconds}s with no synthetic "
+            f"load. Use the machine normally; any hardware whisper fails it."
+        )
+        self.validation_progress.emit(6, 0, 1)
+        if self._smu is not None and cores:
+            first = cores[0]
+            cs = self._core_states[first]
+            offset = cs.best_offset if cs.best_offset is not None else cs.baseline_offset
+            if not self._apply_validation_offsets(first, offset):
+                return
+        self._soaking = True
+        self._mark_cores_under_stress(cores)
+        self._last_tested_core = cores[0] if cores else None
+        self._worker = _SoakWorker(
+            cores[0] if cores else 0, self._config.soak_duration_seconds, parent=self
+        )
+        self._worker.finished.connect(self._on_test_finished)
+        self._worker.start()
 
     def _start_multi_core_worker(self, cores: list[int], duration: int) -> None:
         """Launch every core's stress process simultaneously (one pinned
@@ -3258,8 +3401,10 @@ class TunerEngine(QObject):
                 case 3:
                     self._validation_half_index += 1
                 case 4:
-                    # Stage 4 passed — advance to finalize sentinel
                     self._validation_stage = 5
+                    self._validation_core_index = 0
+                case 5:
+                    self._validation_core_index += 1
             self._save_validation_pos()
             # Use QTimer to break the call stack (this is called from _on_test_finished)
             QTimer.singleShot(0, self._run_validation_next)
@@ -3271,7 +3416,7 @@ class TunerEngine(QObject):
         # aggressive offset there.
         target: int | None = None
         match self._validation_stage:
-            case 1 | 2 | 3:
+            case 1 | 2 | 3 | 5:
                 target = core_id
             case 4:
                 target = self._find_most_aggressive_core()
@@ -3281,12 +3426,12 @@ class TunerEngine(QObject):
             return
 
         self._validation_dirty = True
-        if self._validation_stage == 1:
+        if self._validation_stage in (1, 5):
             # The failed slot simply retries at the new offset — the cursor
             # has not advanced, and nobody else's coverage changed.
             self.log_message.emit(
-                f"Validation stage 1: core {target} backed off — retrying its "
-                f"slot (position kept)"
+                f"Validation stage {self._validation_stage}: core {target} backed "
+                f"off — retrying its slot (position kept)"
             )
             self._save_validation_pos()
             QTimer.singleShot(0, self._run_validation_next)
@@ -3299,6 +3444,13 @@ class TunerEngine(QObject):
         )
         self._save_validation_pos()
         QTimer.singleShot(0, self._run_validation_requeue)
+
+    def _validation_stage_exit_to_search(self) -> None:
+        """Leave validation so demoted cores re-earn; the cursor stays put."""
+        self._set_status("running")
+        if self._session_id:
+            tp.update_session_status(self._db, self._session_id, "running")
+        QTimer.singleShot(0, self._run_next)
 
     def _finalize_exhausted(self) -> None:
         """A core hit baseline with nothing left to give — finalize honestly."""

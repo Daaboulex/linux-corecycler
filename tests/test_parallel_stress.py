@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 import time
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -12,6 +15,11 @@ from engine.backends.base import StressBackend, StressConfig, StressMode
 from engine.detector import MCEEvent
 from engine.parallel import ParallelStress
 from engine.scheduler import SchedulerConfig
+
+# These lanes exec real pinned processes; the nix build sandbox has no taskset.
+pytestmark = pytest.mark.skipif(
+    shutil.which("taskset") is None, reason="taskset not available"
+)
 
 SLEEP_CMD = [sys.executable, "-c", "import time; time.sleep(30)"]
 BUSY_CMD = [

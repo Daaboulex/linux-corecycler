@@ -1714,13 +1714,13 @@ class TestValidationS4:
         """With validate_transitions=True, validation has 4 stages."""
         cfg = TunerConfig(validate_transitions=True, hardening_tiers=[])
         engine = make_test_engine(cfg)
-        assert engine._get_validation_stage_count() == 4
+        assert engine._get_validation_stage_count() == 6
 
     def test_validation_stage_count_without_transitions(self):
         """With validate_transitions=False, validation has 3 stages."""
         cfg = TunerConfig(validate_transitions=False, hardening_tiers=[])
         engine = make_test_engine(cfg)
-        assert engine._get_validation_stage_count() == 3
+        assert engine._get_validation_stage_count() == 5
 
     def test_stage4_dispatched_when_validate_transitions(self):
         """_run_validation_next dispatches S4 when validate_transitions=True."""
@@ -1733,15 +1733,21 @@ class TestValidationS4:
         mock_s4.assert_called_once()
 
     def test_stage4_skipped_when_no_validate_transitions(self):
-        """_run_validation_next skips S4 and finalizes when validate_transitions=False."""
-        cfg = TunerConfig(validate_transitions=False, hardening_tiers=[])
+        """The skip-chain advances past S4 when validate_transitions=False."""
+        cfg = TunerConfig(
+            validate_transitions=False, validate_spectrum=False,
+            validate_soak=False, hardening_tiers=[],
+        )
         engine = make_test_engine(cfg)
         engine._validation_stage = 4
         engine._core_states = {
             0: CoreState(core_id=0, phase=TunerPhase.HARDENED, best_offset=-8),
         }
         with patch.object(engine, "_finalize_session") as mock_fin:
-            engine._run_validation_next()
+            for _ in range(4):
+                if mock_fin.called:
+                    break
+                engine._run_validation_next()
         mock_fin.assert_called_once()
 
     def test_stage3_complete_advances_to_s4_when_enabled(self):
@@ -1756,7 +1762,7 @@ class TestValidationS4:
         assert engine._validation_stage == 4
 
     def test_stage3_complete_skips_s4_when_disabled(self):
-        """Stage 3 completion sets stage=5 (sentinel) when validate_transitions=False."""
+        """Stage 3 completion always advances to 4; the dispatch chain skips."""
         cfg = TunerConfig(validate_transitions=False, hardening_tiers=[])
         engine = make_test_engine(cfg)
         engine._validation_stage = 3
@@ -1764,7 +1770,7 @@ class TestValidationS4:
         engine._validation_half_index = 0
         with patch("PySide6.QtCore.QTimer.singleShot"):
             engine._run_validation_stage3()
-        assert engine._validation_stage == 5
+        assert engine._validation_stage == 4
 
     def test_validation_pass_s4_advances_to_finalize(self):
         """S4 pass advances to sentinel stage (finalize)."""

@@ -202,10 +202,10 @@ def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=4000):
     sid = tp.create_session(db, TunerConfig(**cfg_kw), "", "")
     pending: list[tuple[int, list[int] | None]] = []
 
-    def patched_single(core_id, duration):
+    def patched_single(core_id, duration, **kw):
         pending.append((core_id, None))
 
-    def patched_multi(cores, duration):
+    def patched_multi(cores, duration, **kw):
         pending.append((cores[0], list(cores)))
 
     eng = make_engine(db, topo, FaultSMU(), backend, **cfg_kw)
@@ -258,7 +258,7 @@ def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000,
     sid = tp.create_session(db, TunerConfig(**cfg_kw), "", "")
     pending: list[int] = []
 
-    def patched(core_id, duration):
+    def patched(core_id, duration, **kw):
         pending.append(core_id)
 
     def fresh():
@@ -330,7 +330,7 @@ def drive_intermittent(db, topo, backend, cliffs, flaky, cfg_kw, baseline=0, cap
     visits: dict[tuple[int, int], int] = {}
     crashed_at: dict[int, set[int]] = {c: set() for c in cliffs}
 
-    def patched(core_id, duration):
+    def patched(core_id, duration, **kw):
         pending.append(core_id)
 
     def fresh():
@@ -1113,6 +1113,7 @@ class TestValidationFuzz:
             cfg_kw = dict(
                 cores_to_test=list(range(n_cores)), test_order=order,
                 auto_validate=True, validate_transitions=False, hardening_tiers=[],
+                validate_spectrum=False, validate_soak=False,
                 fine_step=1, validate_duration_seconds=1,
                 search_duration_seconds=1, confirm_duration_seconds=1,
             )
