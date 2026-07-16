@@ -223,6 +223,40 @@ class PMTableData:
     raw_floats: list[float] = field(default_factory=list)
 
 
+# Physical bounds for PBO limit plausibility (fail closed to None on garbage).
+_PPT_MIN_W, _PPT_MAX_W = 30.0, 1000.0
+_AMP_MIN_A, _AMP_MAX_A = 30.0, 2000.0
+
+
+def read_power_limits(
+    num_cores: int = 16, sysfs_path: Path | None = None
+) -> tuple[float | None, float | None, float | None]:
+    """Read the live PBO power limits (PPT W, TDC A, EDC A) from the PM table.
+
+    Fails closed: unsupported generation, unreadable table, or an implausible
+    decoded value yields None for that field — a wrong number stored as a
+    limit would poison every context comparison built on it.
+    """
+    reader = (
+        PMTableReader(num_cores, sysfs_path) if sysfs_path is not None
+        else PMTableReader(num_cores)
+    )
+    data = reader.read()
+    if data is None:
+        return None, None, None
+
+    def _gate(value: float, lo: float, hi: float) -> float | None:
+        if not math.isfinite(value) or not lo <= value <= hi:
+            return None
+        return value
+
+    return (
+        _gate(data.ppt_limit_w, _PPT_MIN_W, _PPT_MAX_W),
+        _gate(data.tdc_limit_a, _AMP_MIN_A, _AMP_MAX_A),
+        _gate(data.edc_limit_a, _AMP_MIN_A, _AMP_MAX_A),
+    )
+
+
 # ===========================================================================
 # FCLK:UCLK ratio computation
 # ===========================================================================
@@ -388,24 +422,36 @@ class PMTableReader:
         data.is_verified = False
 
     def _parse_granite_ridge(self, data: PMTableData, floats: list[float]) -> None:
-        """Parse PM table with Granite Ridge (Zen 5) approximate offsets."""
+        """Parse PM table core arrays plus the Zen 5 power/thermal header.
+
+        Header layout (0x62xxxx family only): no open-source project publishes
+        an authoritative label map — ZenStates-Core's PowerTable.cs carries NO
+        power fields for any generation. These indices are evidence-based,
+        cross-checked on two machines/table versions (9950X3D 0x620205 live,
+        9800X3D 0x620105 dump): [0..1]=0, [2]=PPT limit W (static; matches the
+        9800X3D's exact stock PPT), [3]=package power W (moves with load),
+        [4..7]=0, [8]=TDC limit A, [9]=TDC current A (moves with load, amp
+        magnitudes), [10]=thermal throttle limit C (static), [11]=hotspot
+        temperature C (moves). [63]=EDC limit A is a single-source candidate.
+        The old [0..5]=PPT/TDC/EDC-pairs guess decoded zeros and mislabeled
+        every field on real Zen 5 silicon.
+        """
         if len(floats) < 200:
             return
 
-        # package telemetry (approximate offsets)
         try:
-            data.ppt_limit_w = floats[0]
-            data.ppt_value_w = floats[1]
-            data.tdc_limit_a = floats[2]
-            data.tdc_value_a = floats[3]
-            data.edc_limit_a = floats[4]
-            data.edc_value_a = floats[5]
-
-            data.tctl_c = floats[10] if len(floats) > 10 else 0.0
-            data.tdie_c = floats[11] if len(floats) > 11 else 0.0
-
-            data.package_power_w = floats[26] if len(floats) > 26 else 0.0
-            data.soc_power_w = floats[28] if len(floats) > 28 else 0.0
+            if (data.pm_table_version >> 16) & 0xFF == _ZEN5_PREFIX:
+                data.ppt_limit_w = floats[2]
+                data.ppt_value_w = floats[3]
+                data.tdc_limit_a = floats[8]
+                data.tdc_value_a = floats[9]
+                data.edc_limit_a = floats[63] if len(floats) > 63 else 0.0
+                data.edc_value_a = 0.0  # value slot not located — absent, not a guess
+                data.tctl_c = floats[11] if len(floats) > 11 else 0.0
+                data.tdie_c = 0.0  # not located — absent, not a guess
+                # PPT value IS the package power the limit governs.
+                data.package_power_w = floats[3]
+                data.soc_power_w = 0.0  # not located — absent, not a guess
 
             # per-core data typically starts around offset 100+
             # each core has ~10 float fields (freq, voltage, power, temp, residency, ...)

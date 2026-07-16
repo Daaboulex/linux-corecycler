@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import MagicMock
+
 import pytest
 
 from history.context import (
@@ -173,3 +176,53 @@ class TestDetectBiosChange:
         assert changed is True
         assert old == "2101"
         assert current == "2201"
+
+
+class TestPowerLimitsInContext:
+    """PBO power limits are part of the stability environment: the same CO
+    profile can be stable at PPT 200 W and unstable at 230 W, so they join
+    the context identity."""
+
+    def test_hash_without_limits_is_legacy_identical(self):
+        from history.context import compute_co_hash
+
+        offsets = {0: -30, 1: -20}
+        assert compute_co_hash(offsets) == compute_co_hash(offsets, None)
+        assert compute_co_hash(offsets) == compute_co_hash(offsets, (None, None, None))
+
+    def test_limits_change_the_identity(self):
+        from history.context import compute_co_hash
+
+        offsets = {0: -30, 1: -20}
+        base = compute_co_hash(offsets)
+        with_limits = compute_co_hash(offsets, (225.0, 190.0, 230.0))
+        other_limits = compute_co_hash(offsets, (200.0, 160.0, 225.0))
+        assert with_limits != base
+        assert with_limits != other_limits
+
+    def test_limits_hash_is_order_independent_and_rounded(self):
+        from history.context import compute_co_hash
+
+        a = compute_co_hash({0: -30, 1: -20}, (225.04, 190.0, None))
+        b = compute_co_hash({1: -20, 0: -30}, (225.0, 190.01, None))
+        assert a == b
+
+    def test_capture_records_limits(self, monkeypatch):
+        import smu.pmtable as pmtable_mod
+        from history.context import capture_system_context
+
+        monkeypatch.setattr(
+            pmtable_mod, "read_power_limits", lambda n: (225.0, 190.0, 230.0)
+        )
+        smu = MagicMock()
+        smu.get_all_co_offsets.return_value = {0: -30}
+        smu.get_pbo_scalar.return_value = 1.0
+        smu.get_boost_limit.return_value = None
+        ctx = capture_system_context(smu=smu, num_cores=1, bios_path=Path("/nonexistent"))
+        assert ctx.ppt_limit_w == 225.0
+        assert ctx.tdc_limit_a == 190.0
+        assert ctx.edc_limit_a == 230.0
+        # And the identity reflects them.
+        from history.context import compute_co_hash
+
+        assert ctx.co_hash == compute_co_hash({0: -30}, (225.0, 190.0, 230.0))

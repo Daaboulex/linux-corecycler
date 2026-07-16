@@ -1,19 +1,22 @@
-"""Error detection — MCE (Machine Check Exceptions), stress output, dmesg."""
+"""Error detection — MCE (Machine Check Exceptions) and kernel crash lines.
+
+The kernel log is the single source of truth. The legacy sysfs
+/sys/devices/system/machinecheck/*/bank* files are MCA control registers
+(constant enable masks), not error counters — they never change when an
+error is logged, so counting them cannot detect anything (verified live
+on Zen 5: every bank file reads ffffffffffffffff).
+"""
 
 from __future__ import annotations
 
 import logging
 import re
+import subprocess
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
+from datetime import UTC, datetime
 
 log = logging.getLogger(__name__)
-
-# sysfs root for per-CPU machine-check bank counters. An instance attribute on
-# ErrorDetector so a test can point it at a temp tree and exercise the real
-# baseline-delta and target-cpu logic (not a copy of it in the test body).
-MACHINECHECK_BASE = Path("/sys/devices/system/machinecheck")
 
 
 @dataclass(slots=True)
@@ -23,6 +26,7 @@ class MCEEvent:
     bank: int
     message: str
     corrected: bool
+    raw_ts: float = 0.0  # kernel/journal timestamp of the source line
 
 
 @dataclass(slots=True)
@@ -36,131 +40,102 @@ class ErrorState:
         return bool(self.mce_events or self.computation_errors)
 
 
+# AMD Zen decoded MCA block: exactly one line carries CPU, bank and severity
+# flags together — "[Hardware Error]: CPU:9 (1a:44:0) MC0_STATUS[Over|CE|...]".
+# Only that line produces an event; the block's header ("Machine check events
+# logged") and detail lines (Corrected error/Error Addr/IPID/Syndrome/unit)
+# describe the same event and must not double-count it.
+_AMD_STATUS_RE = re.compile(r"cpu[:\s]+(\d+).*?\bmc(\d+)_status\[([^\]]*)\]", re.IGNORECASE)
+_CPU_RE = re.compile(r"\bcpu[:\s]+(\d+)", re.IGNORECASE)
+_BANK_RE = re.compile(r"\bbank[:\s]+(\d+)", re.IGNORECASE)
+
+
+def classify_mce_line(body: str) -> MCEEvent | None:
+    """Classify one kernel message body (no timestamp prefix) into an event.
+
+    Returns None for non-error lines, informational MCE lines, and the
+    continuation lines of an AMD decoded block.
+    """
+    lower = body.lower()
+
+    m = _AMD_STATUS_RE.search(lower)
+    if m:
+        flags = {t.strip() for t in m.group(3).split("|")}
+        corrected = "ce" in flags and "ue" not in flags
+        return MCEEvent(
+            timestamp=time.time(),
+            cpu=int(m.group(1)),
+            bank=int(m.group(2)),
+            message=body.strip(),
+            corrected=corrected,
+        )
+
+    if _is_mce_error_line(lower):
+        cpu_m = _CPU_RE.search(lower)
+        bank_m = _BANK_RE.search(lower)
+        corrected = bool(re.search(r"\bcorrected\b", lower)) and "uncorrect" not in lower
+        return MCEEvent(
+            timestamp=time.time(),
+            cpu=int(cpu_m.group(1)) if cpu_m else -1,
+            bank=int(bank_m.group(1)) if bank_m else -1,
+            message=body.strip(),
+            corrected=corrected,
+        )
+
+    if _is_kernel_error_line(lower):
+        return MCEEvent(
+            timestamp=time.time(),
+            cpu=-1,
+            bank=-1,
+            message=body.strip(),
+            corrected=False,
+        )
+
+    return None
+
+
 class ErrorDetector:
-    """Monitors for hardware errors (MCE) and computation errors during stress tests."""
+    """Watches the kernel log for hardware errors during stress tests.
+
+    ``check_mce()`` returns every NEW event since ``reset()`` exactly once
+    (consume semantics) so callers can both fail the current test on the
+    tested core's events and record other cores' events as evidence without
+    re-processing duplicates on each poll.
+    """
 
     # Minimum interval between dmesg subprocess calls (seconds).
     DMESG_MIN_INTERVAL: float = 5.0
 
     def __init__(self) -> None:
-        self._mce_baseline: int = 0
-        self._mce_bank_baseline: dict[str, int] = {}  # "cpu:bank" -> count
         self._dmesg_baseline_ts: float = 0.0  # raw monotonic timestamp
         self._last_dmesg_time: float = 0.0
-        self._last_dmesg_events: list[MCEEvent] = []
-        self._mce_base: Path = MACHINECHECK_BASE  # injectable for tests
+        self._seen: set[tuple[float, int, int]] = set()
 
     def reset(self) -> None:
-        """Reset error tracking — call before starting a new test run."""
-        self._mce_baseline = self._count_mce_events()
-        self._mce_bank_baseline = self._snapshot_mce_banks()
+        """Start a new observation window — only lines newer than now count."""
         self._dmesg_baseline_ts = _get_dmesg_raw_timestamp()
         self._last_dmesg_time = 0.0
-        self._last_dmesg_events = []
+        self._seen.clear()
 
-    def check_mce(self, target_cpu: int | None = None) -> list[MCEEvent]:
-        """Check for new MCE events since last reset, optionally filtered by CPU."""
-        events: list[MCEEvent] = []
+    def check_mce(self) -> list[MCEEvent]:
+        """Return new MCE/kernel-error events since reset(), each exactly once.
 
-        # method 1: check sysfs machinecheck counters
-        events.extend(self._check_sysfs_mce(target_cpu))
-
-        # method 2: check dmesg for MCE messages (rate-limited)
-        events.extend(self._check_dmesg_mce(target_cpu))
-
-        return events
-
-    def _check_sysfs_mce(self, target_cpu: int | None) -> list[MCEEvent]:
-        """Check /sys/devices/system/machinecheck/ for new events.
-
-        All sysfs reads are wrapped in try/except so a PermissionError
-        or transient I/O error never crashes the detector.
-        """
-        events: list[MCEEvent] = []
-        mce_base = self._mce_base
-
-        try:
-            if not mce_base.exists():
-                return events
-        except OSError:
-            return events
-
-        try:
-            mce_dirs = sorted(mce_base.iterdir())
-        except (OSError, PermissionError) as exc:
-            log.debug("Cannot list %s: %s", mce_base, exc)
-            return events
-
-        for mce_dir in mce_dirs:
-            if not mce_dir.name.startswith("machinecheck"):
-                continue
-
-            try:
-                cpu_num = int(mce_dir.name.removeprefix("machinecheck"))
-            except ValueError:
-                continue
-
-            if target_cpu is not None and cpu_num != target_cpu:
-                continue
-
-            # check bank error counts
-            try:
-                bank_files = sorted(mce_dir.glob("bank*"))
-            except (OSError, PermissionError) as exc:
-                log.debug("Cannot list bank files in %s: %s", mce_dir, exc)
-                continue
-
-            for bank_file in bank_files:
-                try:
-                    count = int(bank_file.read_text().strip())
-                    match = re.search(r"\d+", bank_file.name)
-                    bank_num = int(match.group()) if match else -1
-                    # compare against baseline — only report NEW events
-                    baseline_key = f"{cpu_num}:{bank_num}"
-                    baseline_count = self._mce_bank_baseline.get(baseline_key, 0)
-                    new_count = count - baseline_count
-                    if new_count > 0:
-                        events.append(
-                            MCEEvent(
-                                timestamp=time.time(),
-                                cpu=cpu_num,
-                                bank=bank_num,
-                                message=(
-                                    f"MCE bank {bank_num} error count: {count} "
-                                    f"(+{new_count} since test start)"
-                                ),
-                                corrected=True,  # sysfs only shows corrected
-                            )
-                        )
-                except PermissionError:
-                    log.debug("Permission denied reading %s", bank_file)
-                    continue
-                except (ValueError, OSError, AttributeError):
-                    continue
-
-        return events
-
-    def _check_dmesg_mce(self, target_cpu: int | None) -> list[MCEEvent]:
-        """Parse dmesg for MCE messages since baseline.
-
-        Rate-limited to at most one subprocess call per ``DMESG_MIN_INTERVAL``
-        seconds to avoid spamming ``dmesg`` during tight poll loops.  Between
-        calls the previous result set is returned.
+        Rate-limited: within DMESG_MIN_INTERVAL of the previous subprocess
+        call it returns [] instead of re-running dmesg; the event is delivered
+        on the first poll after the interval elapses.
         """
         now = time.monotonic()
         if now - self._last_dmesg_time < self.DMESG_MIN_INTERVAL:
-            # Return cached results (already filtered for target_cpu at call time,
-            # so we need to re-filter if the caller changed target).
-            if target_cpu is None:
-                return list(self._last_dmesg_events)
-            return [e for e in self._last_dmesg_events if e.cpu == target_cpu or e.cpu == -1]
-
+            return []
         self._last_dmesg_time = now
+
+        # No baseline means old and new lines are indistinguishable — treating
+        # boot-time history as fresh errors would fail every first test.
+        if self._dmesg_baseline_ts <= 0:
+            return []
+
         events: list[MCEEvent] = []
-
         try:
-            import subprocess
-
             result = subprocess.run(
                 ["dmesg", "--time-format=raw", "--level=err,warn"],
                 capture_output=True,
@@ -168,132 +143,93 @@ class ErrorDetector:
                 timeout=5,
             )
             if result.returncode != 0:
-                self._last_dmesg_events = []
-                return events
-
-            # If we have no baseline timestamp, we can't distinguish old from
-            # new dmesg messages — skip entirely to avoid false positives.
-            if self._dmesg_baseline_ts <= 0:
-                self._last_dmesg_events = []
-                return events
-
+                return []
             for line in result.stdout.splitlines():
-                # Match MCE error lines and kernel oops/panic/BUG lines —
-                # CO instability can cause kernel crashes that don't generate MCE
-                lower = line.lower()
-                if not _is_mce_error_line(lower) and not _is_kernel_error_line(lower):
+                ts_match = re.match(r"\s*\[?\s*([\d.]+)\]?\s?", line)
+                if not ts_match:
                     continue
-
-                # filter by baseline timestamp — only report NEW messages
-                ts_match = re.match(r"\s*([\d.]+)", line)
-                if ts_match:
-                    try:
-                        msg_ts = float(ts_match.group(1))
-                        if msg_ts <= self._dmesg_baseline_ts:
-                            continue  # pre-existing message, skip
-                    except ValueError:
-                        pass
-                else:
-                    continue  # no timestamp — can't verify it's new, skip
-
-                # extract CPU number from MCE message
-                cpu_match = re.search(r"CPU (\d+)", line)
-                cpu_num = int(cpu_match.group(1)) if cpu_match else -1
-
-                bank_match = re.search(r"Bank (\d+)", line)
-                bank_num = int(bank_match.group(1)) if bank_match else -1
-
-                corrected = (
-                    bool(re.search(r"\bcorrected\b", lower))
-                    and "uncorrect" not in lower
-                )
-
-                events.append(
-                    MCEEvent(
-                        timestamp=time.time(),
-                        cpu=cpu_num,
-                        bank=bank_num,
-                        message=line.strip(),
-                        corrected=corrected,
-                    )
-                )
+                try:
+                    raw_ts = float(ts_match.group(1))
+                except ValueError:
+                    continue
+                if raw_ts <= self._dmesg_baseline_ts:
+                    continue
+                event = classify_mce_line(line[ts_match.end():])
+                if event is None:
+                    continue
+                event.raw_ts = raw_ts
+                key = (raw_ts, event.cpu, event.bank)
+                if key in self._seen:
+                    continue
+                self._seen.add(key)
+                events.append(event)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError) as exc:
             log.debug("dmesg check failed: %s", exc)
+        return events
 
-        # Cache the full (unfiltered) result set
-        self._last_dmesg_events = events
 
-        # Return filtered for the requested CPU
-        if target_cpu is None:
-            return events
-        return [e for e in events if e.cpu == target_cpu or e.cpu == -1]
+def harvest_kernel_mce(
+    since_utc_iso: str, timeout: float = 15.0
+) -> tuple[list[MCEEvent], bool]:
+    """Read MCE/kernel-error events from the systemd journal since a UTC ISO
+    timestamp — across reboots, so it covers the boot(s) a hard crash killed.
 
-    def _snapshot_mce_banks(self) -> dict[str, int]:
-        """Capture per-CPU per-bank MCE counts as a baseline snapshot."""
-        snapshot: dict[str, int] = {}
-        mce_base = self._mce_base
+    Returns (events, harvest_ok). harvest_ok False means the journal could
+    not be read at all (journalctl missing, unreadable, bad timestamp) — the
+    caller must treat the crash as unattributed, never as a clean bill.
+    """
+    since = _iso_to_journal_since(since_utc_iso)
+    if since is None:
+        return [], False
+    try:
+        result = subprocess.run(
+            ["journalctl", "-k", "-q", "--no-pager", "-o", "short-unix", "--since", since],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError) as exc:
+        log.warning("kernel-journal harvest failed: %s", exc)
+        return [], False
+    if result.returncode != 0:
+        log.warning(
+            "journalctl exited %d during harvest: %s",
+            result.returncode,
+            result.stderr.strip()[:200],
+        )
+        return [], False
+
+    events: list[MCEEvent] = []
+    seen: set[tuple[float, int, int]] = set()
+    for line in result.stdout.splitlines():
+        # short-unix format: "1626382113.123456 host kernel: <message>"
+        m = re.match(r"\s*([\d.]+)\s+\S+\s+kernel:\s?(.*)$", line)
+        if not m:
+            continue
+        event = classify_mce_line(m.group(2))
+        if event is None:
+            continue
         try:
-            if not mce_base.exists():
-                return snapshot
-        except OSError:
-            return snapshot
+            event.raw_ts = float(m.group(1))
+        except ValueError:
+            event.raw_ts = 0.0
+        key = (event.raw_ts, event.cpu, event.bank)
+        if key in seen:
+            continue
+        seen.add(key)
+        events.append(event)
+    return events, True
 
-        try:
-            mce_dirs = list(mce_base.iterdir())
-        except (OSError, PermissionError):
-            return snapshot
 
-        for mce_dir in mce_dirs:
-            if not mce_dir.name.startswith("machinecheck"):
-                continue
-            try:
-                cpu_num = int(mce_dir.name.removeprefix("machinecheck"))
-            except ValueError:
-                continue
-            try:
-                bank_files = list(mce_dir.glob("bank*"))
-            except (OSError, PermissionError):
-                continue
-            for bank_file in bank_files:
-                try:
-                    count = int(bank_file.read_text().strip())
-                    match = re.search(r"\d+", bank_file.name)
-                    bank_num = int(match.group()) if match else -1
-                    snapshot[f"{cpu_num}:{bank_num}"] = count
-                except (ValueError, OSError, PermissionError, AttributeError):
-                    continue
-        return snapshot
-
-    def _count_mce_events(self) -> int:
-        """Count total MCE events across all CPUs.
-
-        Gracefully handles permission denied and I/O errors.
-        """
-        total = 0
-        mce_base = self._mce_base
-        try:
-            if not mce_base.exists():
-                return 0
-        except OSError:
-            return 0
-
-        try:
-            mce_dirs = list(mce_base.iterdir())
-        except (OSError, PermissionError) as exc:
-            log.debug("Cannot list %s: %s", mce_base, exc)
-            return 0
-
-        for mce_dir in mce_dirs:
-            try:
-                bank_files = list(mce_dir.glob("bank*"))
-            except (OSError, PermissionError):
-                continue
-            for bank_file in bank_files:
-                try:
-                    total += int(bank_file.read_text().strip())
-                except (ValueError, OSError, PermissionError):
-                    continue
-        return total
+def _iso_to_journal_since(iso_ts: str) -> str | None:
+    """Convert an ISO-8601 timestamp to systemd's --since form, in UTC."""
+    try:
+        dt = datetime.fromisoformat(iso_ts)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def _is_mce_error_line(line_lower: str) -> bool:
@@ -301,7 +237,8 @@ def _is_mce_error_line(line_lower: str) -> bool:
 
     Excludes boot/info messages like:
     - "mce: CPU supports N MCE banks"
-    - "Machine check events logged"
+    - "Machine check events logged" (the AMD block header — the event itself
+      is counted from the MCx_STATUS line of the same block)
     - "mce_cpu_quirks"
     - "mce: [Hardware Error]:" informational lines about MCE configuration
     """
@@ -366,8 +303,6 @@ def _is_kernel_error_line(line_lower: str) -> bool:
 def _get_dmesg_raw_timestamp() -> float:
     """Get the latest dmesg raw monotonic timestamp for baseline filtering."""
     try:
-        import subprocess
-
         result = subprocess.run(
             ["dmesg", "--time-format=raw"],
             capture_output=True,
@@ -378,7 +313,7 @@ def _get_dmesg_raw_timestamp() -> float:
         if lines:
             ts_str = lines[-1].split()[0] if lines[-1] else ""
             try:
-                return float(ts_str)
+                return float(ts_str.strip("[]"))
             except ValueError:
                 return 0.0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError):

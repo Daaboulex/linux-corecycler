@@ -910,7 +910,7 @@ class TestBackoffAlgorithm:
 
 
 class TestCrashDetection:
-    """Tests for _apply_crash_penalty, _is_more_aggressive, and _detect_and_handle_crashes."""
+    """Tests for _apply_crash_penalty, _is_more_aggressive, and reboot crash attribution."""
 
     def _make_engine(self, db, simple_topology, mock_smu, mock_backend, **cfg_kwargs):
         defaults = dict(coarse_step=5, fine_step=1, max_offset=-30, cores_to_test=[0, 1])
@@ -1037,15 +1037,17 @@ class TestCrashDetection:
             0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, in_test=True),
             1: CoreState(core_id=1, phase=TunerPhase.FINE_SEARCH, current_offset=-8, in_test=False),
         }
-        crashed = eng._detect_and_handle_crashes(eng._core_states)
+        session = tp.get_session(db, eng._session_id)
+        crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
         assert crashed == [0]
+        assert pending_hunt is False
 
     def test_detect_and_handle_crashes_clears_in_test(self, db, simple_topology, mock_smu, mock_backend):
         """After crash detection, in_test is cleared."""
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, in_test=True)
         eng._core_states = {0: cs}
-        eng._detect_and_handle_crashes(eng._core_states)
+        eng._attribute_crash_after_reboot(tp.get_session(db, eng._session_id))
         assert cs.in_test is False
 
     def test_detect_and_handle_crashes_applies_penalty(self, db, simple_topology, mock_smu, mock_backend):
@@ -1059,7 +1061,7 @@ class TestCrashDetection:
             current_offset=-15, in_test=True,
         )
         eng._core_states = {0: cs}
-        eng._detect_and_handle_crashes(eng._core_states)
+        eng._attribute_crash_after_reboot(tp.get_session(db, eng._session_id))
         # Penalty: -15 - ((-1)*3*1) = -15 + 3 = -12
         assert cs.current_offset == -12
         assert cs.crash_count == 1
@@ -1073,7 +1075,7 @@ class TestCrashDetection:
             current_offset=-10, in_test=True,
         )
         eng._core_states = {0: cs}
-        eng._detect_and_handle_crashes(eng._core_states)
+        eng._attribute_crash_after_reboot(tp.get_session(db, eng._session_id))
         log_entries = tp.get_test_log(db, eng._session_id, core_id=0)
         assert any(e.get("error_type") == "crash" for e in log_entries)
 
@@ -1925,7 +1927,7 @@ class TestStateMachineGaps:
         cs = CoreState(core_id=0, phase=TunerPhase.CONFIRMING, current_offset=-10,
                        best_offset=-10, baseline_offset=0, in_test=True)
         eng._core_states = {0: cs}
-        crashed = eng._detect_and_handle_crashes(eng._core_states)
+        crashed, _ = eng._attribute_crash_after_reboot(tp.get_session(db, eng._session_id))
         assert 0 in crashed
         assert cs.in_test is False
         assert cs.crash_count == 1

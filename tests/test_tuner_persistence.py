@@ -342,9 +342,20 @@ class TestSchemaV11:
         path = tmp_path / "mig.db"
         db = HistoryDB(path)
         sid = db.create_tuner_session("{}", "1.0", "TestCPU")
-        # Emulate a v10 database: roll the version back and drop the v11 table.
+        # Emulate a v10 database: roll the version back, drop the v11 table,
+        # and drop every column later migrations add (a fresh DB already has
+        # them; leaving them would collide with the v13 ALTERs on re-open).
         db._execute_raw("UPDATE schema_version SET version=10")
         db._execute_raw("DROP TABLE tuner_co_journal")
+        for table, column in (
+            ("tuning_contexts", "ppt_limit_w"),
+            ("tuning_contexts", "tdc_limit_a"),
+            ("tuning_contexts", "edc_limit_a"),
+            ("tuner_sessions", "unattributed_crashes"),
+            ("tuner_sessions", "hunting_core"),
+            ("tuner_test_log", "peak_stretch_pct"),
+        ):
+            db._execute_raw(f"ALTER TABLE {table} DROP COLUMN {column}")
         db.close()
 
         db2 = HistoryDB(path)  # re-open triggers the v11 migration
@@ -390,5 +401,89 @@ class TestSchemaV11:
             assert logs[0]["backend"] == "mprime"
             assert logs[0]["stress_mode"] == "AVX2"
             assert logs[0]["fft_preset"] == "SMALL"
+        finally:
+            db.close()
+
+
+class TestSchemaV13:
+    def test_peak_stretch_round_trips(self, tmp_path):
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            db.insert_tuner_test_log(
+                sid, 0, -20, "confirm", True, peak_stretch_pct=1.7,
+            )
+            db.insert_tuner_test_log(sid, 1, -20, "confirm", True)
+            logs = db.get_tuner_test_log(sid)
+            assert logs[0]["peak_stretch_pct"] == pytest.approx(1.7)
+            assert logs[1]["peak_stretch_pct"] is None
+        finally:
+            db.close()
+
+    def test_unattributed_crash_counter_round_trips(self, tmp_path):
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            assert db.get_unattributed_crashes(sid) == 0
+            db.set_unattributed_crashes(sid, 2)
+            assert db.get_unattributed_crashes(sid) == 2
+            assert db.get_tuner_session(sid).unattributed_crashes == 2
+        finally:
+            db.close()
+
+    def test_hunting_core_round_trips_and_clears(self, tmp_path):
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            assert db.get_tuner_session(sid).hunting_core is None
+            db.set_hunting_core(sid, 5)
+            assert db.get_tuner_session(sid).hunting_core == 5
+            db.set_hunting_core(sid, None)
+            assert db.get_tuner_session(sid).hunting_core is None
+        finally:
+            db.close()
+
+    def test_journal_values_returns_last_write_survived_or_not(self, tmp_path):
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            db.journal_co_intent(sid, 0, -41, survived=True)
+            db.journal_co_intent(sid, 1, -30, survived=False)
+            assert db.journal_values(sid) == {0: -41, 1: -30}
+        finally:
+            db.close()
+
+    def test_context_power_limits_round_trip(self, tmp_path):
+        from history.db import TuningContextRecord
+
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            ctx = TuningContextRecord(
+                bios_version="2101", co_hash="abc",
+                ppt_limit_w=225.0, tdc_limit_a=190.0, edc_limit_a=None,
+            )
+            cid = db.create_context(ctx)
+            loaded = db.get_context(cid)
+            assert loaded.ppt_limit_w == pytest.approx(225.0)
+            assert loaded.tdc_limit_a == pytest.approx(190.0)
+            assert loaded.edc_limit_a is None
+        finally:
+            db.close()
+
+    def test_best_profile_includes_hardened(self, tmp_path):
+        """HARDENED is confirmed-plus-extra-stress; excluding it made Export/
+        Validate report 'no confirmed cores' on a fully hardened session."""
+        from tuner.state import CoreState, TunerPhase
+
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            db.upsert_tuner_core_state(
+                sid, CoreState(core_id=0, phase=TunerPhase.HARDENED, best_offset=-41)
+            )
+            db.upsert_tuner_core_state(
+                sid, CoreState(core_id=1, phase=TunerPhase.CONFIRMED, best_offset=-30)
+            )
+            assert db.get_tuner_best_profile(sid) == {0: -41, 1: -30}
         finally:
             db.close()

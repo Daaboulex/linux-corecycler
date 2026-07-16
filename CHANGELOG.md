@@ -9,6 +9,71 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-07-16 truth-and-attribution session, ryzen-9950x3d forensics)
+
+Field incident driving all of this: three freezes in one day during
+validation while the kernel logged corrected Load-Store MCEs naming cores 9
+and 12 — and the engine saw none of it, then stood ready to crash-penalize
+core 7 (the deepest, most-proven offset) on the next resume.
+
+- MCE detection had never fired: the sysfs machinecheck bankN files it
+  counted are MCA control registers (constant `ffffffffffffffff`), not error
+  counters, and the dmesg parser rejected the real AMD Zen decoded format
+  (header killed by an info-pattern, `[Hardware Error]:` detail lines failing
+  the token gate, `CPU:9` colon form never matching `CPU (\d+)`). The sysfs
+  path is deleted; dmesg parsing is rewritten against the captured kernel
+  lines from the incident (now regression fixtures); events carry CPU, bank,
+  and CE/UE severity; both SMT siblings map to their physical core.
+- Crash blame is now evidence first, never a guess: on resume after a reboot
+  the engine harvests the kernel journal since the session's last activity
+  (`journalctl -k`, cross-boot) and penalizes exactly the cores the kernel
+  named. With no forensics, a persisted isolated hunt slot convicts its core;
+  a single in-test core in the search flow keeps direct blame; anything
+  ambiguous (multi-core set, or any crash under validation) triggers the
+  isolated crash hunt — each suspect alone at its tuned value, every other
+  core at stock, under stress + load transitions + idle watch, most suspect
+  first. Two fruitless hunts pause the session for the owner instead of
+  guessing. The old "penalize the most aggressive in-test core" rule is gone.
+- Cross-core MCE evidence acts immediately: a corrected error on ANY core
+  during ANY test backs that core off one step and demotes it to re-earn
+  confirmation (uncorrected: full crash-grade penalty); its journal entry is
+  kept un-survived. An error at stock (CO=0) is surfaced loudly as a non-CO
+  problem instead of walking a zero offset.
+- Multi-core stage verdicts no longer read only the first core: a detected
+  failure on any core in a batch is reported for THAT core instead of
+  vanishing behind core 0's pass (stage 2/3 pass verdicts were fictional).
+- The CO drift warning compared live SMU values against session baselines,
+  so reopening the app mid-validation reported the tuner's own confirmed
+  offsets as foreign "drift" and promised to "restore baselines" — false on
+  both counts. Drift now compares against the tuner's last journaled write
+  and only fires when something outside the tuner changed the hardware.
+- Clock-stretch sampling discards windows without sustained load (>= 90 %
+  busy) instead of reporting boost/idle artifacts as stretch; the peak is now
+  persisted per test (`peak_stretch_pct`) instead of living only in fail text.
+- Stage 2/3 log lines claimed "simultaneous"/"half loaded" while
+  CoreScheduler cycles cores one at a time — reworded to what actually runs
+  (true parallel load is the validation-restructure work).
+- Export/Validate read only `phase='confirmed'` and reported "no confirmed
+  cores" on a fully HARDENED session; hardened cores are included now.
+
+### Added (2026-07-16)
+
+- PBO power limits (PPT W / TDC A / EDC A) captured into every tuning
+  context (schema v13) and folded into the context identity — the same CO
+  profile can be stable at PPT 200 W and unstable at 230 W. Read from the PM
+  table with evidence-based Zen 5 header indices (live-verified on a
+  9950X3D 0x620205: [2]=PPT limit, [3]=package power, [8]=TDC limit,
+  [9]=TDC value, [63]=EDC-limit candidate); the old guessed [0..5] pair
+  block decoded zeros and mislabeled every field on real Zen 5 silicon.
+  Unknown table generations fail closed to "unknown" rather than store a
+  mislabeled number.
+- Schema v13: `tuning_contexts.ppt_limit_w/tdc_limit_a/edc_limit_a`,
+  `tuner_sessions.unattributed_crashes/hunting_core`,
+  `tuner_test_log.peak_stretch_pct`; fresh and migrated shapes stay
+  identical; the DB-merge path carries the new columns.
+- Tuner config: `hunt_slot_seconds` (default 60) and
+  `max_unattributed_crash_hunts` (default 2), both validated.
+
 ### Fixed (2026-07-09 field-debug session, ryzen-9950x3d logs)
 
 - mprime stale-results false-failure cascade: `cleanup(preserve_on_error=True)`

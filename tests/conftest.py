@@ -623,3 +623,17 @@ def assume_rebooted(monkeypatch):
     real = engine_mod._rebooted_since
     monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: True)
     return real
+
+
+@pytest.fixture(autouse=True)
+def no_real_forensics(monkeypatch):
+    """Resume runs a kernel-journal harvest (journalctl) on the host. Tests
+    must stay hermetic: a dev machine's real journal could contain real MCE
+    lines and nondeterministically penalize cores mid-test. Default to a
+    clean, available harvest; forensics tests set engine._forensics directly.
+    """
+    import tuner.engine as engine_mod
+
+    monkeypatch.setattr(
+        engine_mod, "harvest_kernel_mce", lambda since, timeout=15.0: ([], True)
+    )

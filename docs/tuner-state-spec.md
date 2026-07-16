@@ -61,3 +61,27 @@ penalty never overshoots past stock (CO=0).
   pause. Never logged as a verdict, never marks the journal survived.
 - Apparatus-breaker trips (implausible fail streaks, search flow only) —
   roll back to the most aggressive proven pass, re-enter CONFIRMING, pause.
+
+## Crash attribution on resume (`_attribute_crash_after_reboot`)
+
+Evidence outranks policy; a guess is never written. Priority order:
+
+1. Kernel-journal forensics (`journalctl -k` since the session's last
+   activity, cross-boot): penalize exactly the cores the kernel's MCE lines
+   name, anchored at their journaled resident values.
+2. A persisted hunt slot (`tuner_sessions.hunting_core`): the box died while
+   one core was stressed alone with every other core at stock — proof by
+   isolation.
+3. A single in-test core in the SEARCH flow (isolation mode): direct blame.
+4. The CO journal's un-survived residents.
+5. Anything ambiguous (multi-core in-test set, or any crash under
+   validation): penalize NOBODY; run the isolated crash hunt — per-core
+   slots at the tuned value with all other cores at stock, most suspect
+   first (prior MCE rows, crash history, deepest undervolt). A slot failure
+   convicts its core. After `max_unattributed_crash_hunts` fruitless hunts
+   in a row the session pauses for the owner.
+
+Cross-core MCE evidence during a live test uses `_apply_crash_penalty` with
+`steps=1, count_crash=False` for corrected errors (one-step backoff, re-earn
+confirmation, journal kept un-survived) and the full penalty for uncorrected
+ones — the same declared transition relation, so the chart above holds.
