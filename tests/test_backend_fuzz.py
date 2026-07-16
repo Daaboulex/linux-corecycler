@@ -1,12 +1,8 @@
 """Property-based fuzzing of the backend output parsers.
 
 parse_output decides "is this offset stable?" from raw stress-tool output. A
-false STABLE (reporting pass when the run actually failed/crashed) is a safety bug:
-the tuner would confirm a crashing offset. Two such bugs were found and fixed by
-this fuzzing:
-  - mprime masked a crash signal behind an earlier "Self-test N passed" line.
-  - stressapptest (always killed before its final Status line) ignored the
-    memory-error signatures it logs mid-run.
+false STABLE (reporting pass when the run actually failed/crashed) is a safety
+bug: the tuner would confirm a crashing offset.
 """
 
 from __future__ import annotations
@@ -70,8 +66,7 @@ class TestBackendParseRobust:
     def test_mprime_crash_after_passing_iteration_is_not_passed(self, sig):
         """EVERY crash signal (incl. SIGILL/SIGFPE) must override an earlier
         'Self-test N passed' line. Random-output fuzz won't reproduce this exact
-        trigger, so assert it explicitly per signal (blind-audit-found gap: SIGILL
-        and SIGFPE were missing from CRASH_SIGNALS)."""
+        trigger, so assert it explicitly per signal."""
         b = MprimeBackend()
         out = "Self-test 5 passed\nSelf-test 6 passed\n"
         passed, _ = b.parse_output(out, "", sig)

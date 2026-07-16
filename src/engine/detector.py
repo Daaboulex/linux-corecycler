@@ -3,8 +3,7 @@
 The kernel log is the single source of truth. The legacy sysfs
 /sys/devices/system/machinecheck/*/bank* files are MCA control registers
 (constant enable masks), not error counters — they never change when an
-error is logged, so counting them cannot detect anything (verified live
-on Zen 5: every bank file reads ffffffffffffffff).
+error is logged, so counting them cannot detect anything.
 """
 
 from __future__ import annotations
@@ -136,8 +135,11 @@ class ErrorDetector:
 
         events: list[MCEEvent] = []
         try:
+            # No --level filter: AMD decoded corrected-error lines are logged
+            # below err/warn and a level filter silently hides them; the line
+            # classifier is the filter.
             result = subprocess.run(
-                ["dmesg", "--time-format=raw", "--level=err,warn"],
+                ["dmesg", "--time-format=raw"],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -165,6 +167,9 @@ class ErrorDetector:
                 events.append(event)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError) as exc:
             log.debug("dmesg check failed: %s", exc)
+            return events
+        log.debug("dmesg poll: %d new event(s)%s", len(events),
+                  "".join(f" [cpu={e.cpu} bank={e.bank} ce={e.corrected}]" for e in events))
         return events
 
 
@@ -184,7 +189,7 @@ def harvest_kernel_mce(
     try:
         # _TRANSPORT=kernel, NOT -k: -k implies --boot (current boot only),
         # which silently hides the crashed boot's MCE lines — the entire
-        # point of this harvest (proven empty on the live incident journal).
+        # point of this harvest.
         result = subprocess.run(
             [
                 "journalctl", "-q", "--no-pager", "-o", "short-unix",

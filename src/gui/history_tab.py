@@ -344,8 +344,7 @@ class HistoryTab(QWidget):
             self._populate_tuner_sessions()
             if self._tuner_sessions:
                 # _populate_tuner_sessions selected row 0 and opened its
-                # detail — clearing here would hide it again (the "History tab
-                # never expands until I click the top buttons" bug).
+                # detail — clearing here would hide it again.
                 return
         elif self._view_mode == self.VIEW_ALL:
             self._context_table.setVisible(False)

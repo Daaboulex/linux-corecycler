@@ -46,14 +46,12 @@ class TestTunerConfigDefaults:
 
     def test_from_json_fails_closed_on_wrong_typed_fields(self):
         """A corrupted/hand-edited config_json with wrong-typed fields must fall
-        back to defaults, not raise later in validate()/the engine. Blind audit
-        found from_json passed None/str/int straight into the dataclass, then
-        validate() crashed with TypeError (and resume() never validates)."""
+        back to defaults, not raise later in validate()/the engine."""
         defaults = TunerConfig()
         cases = {
-            "hardening_tiers": None,      # was: TypeError 'NoneType' not iterable
-            "cores_to_test": 42,          # was: TypeError int has no len()
-            "coarse_step": "abc",         # was: TypeError str < int
+            "hardening_tiers": None,      # unguarded: TypeError 'NoneType' not iterable
+            "cores_to_test": 42,          # unguarded: TypeError int has no len()
+            "coarse_step": "abc",         # unguarded: TypeError str < int
             "auto_validate": 1,           # int for a bool field
             "max_temperature_c": "hot",   # str for a float field
         }

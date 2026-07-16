@@ -48,8 +48,7 @@ class PMTableOffsets:
 # confirmed on real silicon; an unverified entry still parses but is gated by
 # the runtime plausibility check in PMTableReader.read() and never labelled
 # "Verified".
-# VDD_MEM at 0x0A8: stable 1.397V (EXPO), verified idle+load on DDR5-6000 (9950X3D).
-# VDDQ at 0x0E8: stable 1.100V (JEDEC default), per-channel pair at 0x0E8/0x0EC.
+# VDD_MEM at 0x0A8; VDDQ at 0x0E8 (per-channel pair at 0x0E8/0x0EC).
 PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
     0x620205: PMTableOffsets(
         table_size=0x994,
@@ -426,16 +425,11 @@ class PMTableReader:
 
         Header layout (0x62xxxx family only): no open-source project publishes
         an authoritative label map — ZenStates-Core's PowerTable.cs carries NO
-        power fields for any generation. These indices are evidence-based,
-        cross-checked on two machines/table versions (9950X3D 0x620205 live,
-        9800X3D 0x620105 dump): [0..1]=0, [2]=PPT limit W (static; matches the
-        9800X3D's exact stock PPT), [3]=package power W (moves with load),
-        [4..7]=0, [8]=TDC limit A, [9]=TDC current A (moves with load, amp
-        magnitudes), [10]=thermal throttle limit C (static), [11]=hotspot
-        temperature C (moves). [63]=EDC limit A (owner-confirmed: BIOS EDC
-        230 A matches the decoded value on the 9950X3D).
-        The old [0..5]=PPT/TDC/EDC-pairs guess decoded zeros and mislabeled
-        every field on real Zen 5 silicon.
+        power fields for any generation — so these indices are evidence-based:
+        [0..1]=0, [2]=PPT limit W (static), [3]=package power W (moves with
+        load), [4..7]=0, [8]=TDC limit A, [9]=TDC current A (moves with load),
+        [10]=thermal throttle limit C (static), [11]=hotspot temperature C
+        (moves), [63]=EDC limit A.
         """
         if len(floats) < 200:
             return

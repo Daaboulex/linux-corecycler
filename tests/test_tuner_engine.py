@@ -504,8 +504,7 @@ class TestCCDAlternatingOrder:
 
         # Drive it the way _run_next does in REAL operation: advance the cursor
         # after each pick and leave cores ACTIVE (a core takes many tests before it
-        # confirms, so confirmed-counts barely move). The old fewest-confirmed-only
-        # picker drained CCD0 entirely here; genuine alternation must hold.
+        # confirms, so confirmed-counts barely move); genuine alternation must hold.
         topo = topo_dual_ccd_x3d
         order = []
         for _ in range(6):
@@ -599,8 +598,7 @@ class TestCoreCyclingIntent:
         self, db, simple_topology, mock_smu, mock_backend
     ):
         """Sequential keeps returning core 0 through EVERY active phase — including
-        SETTLED — and only moves to core 1 once core 0 is done. (The old two-pass
-        picker jumped to core 1 while core 0 sat in SETTLED.)"""
+        SETTLED — and only moves to core 1 once core 0 is done."""
         eng = self._engine(db, simple_topology, mock_smu, mock_backend, "sequential", [0, 1])
         eng._core_states = {
             0: CoreState(core_id=0, phase=TunerPhase.NOT_STARTED),
@@ -969,8 +967,8 @@ class TestCrashDetection:
 
         Stability is monotonic, so a crash at -20 means everything more aggressive
         (incl. the old -30) also fails; tracking the least-aggressive fail is the
-        tightest safe bound AND lets the binary search converge (a fuzzer-found
-        bug: keeping -30 made the midpoint search oscillate forever).
+        tightest safe bound AND lets the binary search converge instead of
+        oscillating forever.
         """
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         cs = CoreState(

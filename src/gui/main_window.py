@@ -108,8 +108,8 @@ class MainWindow(QMainWindow):
         if self._settings.record_history:
             try:
                 self._history_db = HistoryDB()
-                # One-database guarantee: under sudo, merge any history the old
-                # split-database bug left in /root into the user's database.
+                # One-database guarantee: under sudo, merge any history left
+                # under /root into the user's database.
                 try:
                     adopted = adopt_legacy_root_db(self._history_db)
                     if adopted:
@@ -705,7 +705,7 @@ class MainWindow(QMainWindow):
 
         Uses ``_active_test_core`` (set by ``_on_core_started`` signal handler
         in the GUI thread) instead of reading scheduler state directly
-        across threads -- this is the Phase 2 signal/slot cache pattern.
+        across threads.
         """
         current_core = self._active_test_core
         if current_core is None:

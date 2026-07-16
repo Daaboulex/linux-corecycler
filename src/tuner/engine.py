@@ -22,6 +22,7 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from engine.backends import get_backend, load_all
 from engine.backends.base import StressConfig
 from engine.detector import MCEEvent, harvest_kernel_mce
+from engine.parallel import ParallelStress
 from engine.scheduler import CoreScheduler, SchedulerConfig
 from monitor.msr import MSRReader
 
@@ -105,8 +106,7 @@ def _pick_report(results: dict[int, list], primary: int) -> tuple[int, object | 
     """Choose which core's verdict a multi-core scheduler run reports.
 
     The primary core is the default, but a failure on ANY core in the batch
-    outranks the primary's pass — the old first-core-only read let a detected
-    failure on cores 2..N vanish behind core 1's pass and the stage read PASS.
+    outranks the primary's pass.
     """
     primary_results = results.get(primary, [])
     report = primary_results[0] if primary_results else None
@@ -145,8 +145,9 @@ class _TunerWorker(QThread):
     turbo ramp-up, and C-state transitions before load reaches 100%.
     """
 
-    # core_id, passed, error_msg, error_type, duration, peak_stretch_pct, mce_json
-    finished = Signal(int, bool, str, str, float, float, str)
+    # core_id, passed, error_msg, error_type, duration, peak_stretch_pct,
+    # mce_json, results_json (per-core verdicts of a multi-core run)
+    finished = Signal(int, bool, str, str, float, float, str, str)
 
     def __init__(
         self,
@@ -195,20 +196,20 @@ class _TunerWorker(QThread):
                     report_core, report.passed,
                     report.error_message or "", report.error_type or "", elapsed,
                     peak_stretch if report_core == self._core_id else 0.0,
-                    mce_json,
+                    mce_json, "",
                 )
             else:
                 # The scheduler produced no verdict for this core (stopped early,
                 # environment problem) — that is NOT a stability failure.
                 self.finished.emit(
                     self._core_id, False, "No result returned", "startup", elapsed,
-                    peak_stretch, mce_json,
+                    peak_stretch, mce_json, "",
                 )
         except Exception as e:
             # A Python exception in the harness is an app/environment fault,
             # not CPU instability — must not advance the search state machine.
             log.exception("Tuner worker crashed for core %d", self._core_id)
-            self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0, "")
+            self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0, "", "")
 
     def _stretch_sampler(
         self, samples: list[float], stop: threading.Event
@@ -273,11 +274,57 @@ class _RapidTransitionWorker(_TunerWorker):
             elapsed = time.monotonic() - start
             self.finished.emit(
                 self._core_id, passed, error or "", "", elapsed, 0.0,
-                _serialize_mce(self.scheduler.observed_mce),
+                _serialize_mce(self.scheduler.observed_mce), "",
             )
         except Exception as e:
             log.exception("Rapid transition worker crashed for core %d", self._core_id)
-            self.finished.emit(self._core_id, False, str(e), "crash", 0.0, 0.0, "")
+            self.finished.emit(self._core_id, False, str(e), "crash", 0.0, 0.0, "", "")
+
+
+class _ParallelWorker(_TunerWorker):
+    """Runs one ParallelStress batch (all lanes simultaneously) on a thread."""
+
+    def __init__(
+        self,
+        core_id: int,
+        logical_cpu: int,
+        runner: ParallelStress,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(core_id, logical_cpu, runner, msr=None, parent=parent)
+
+    def run(self) -> None:
+        try:
+            start = time.monotonic()
+            raw = self._scheduler.run()
+            elapsed = time.monotonic() - start
+            results = {c: [r] for c, r in raw.items()}
+            mce_json = _serialize_mce(self._scheduler.observed_mce)
+            results_json = json.dumps([
+                {
+                    "core": c,
+                    "passed": r.passed,
+                    "error_type": r.error_type,
+                    "error_message": r.error_message,
+                    "duration": r.duration_seconds,
+                }
+                for c, r in raw.items()
+            ])
+            report_core, report = _pick_report(results, self._core_id)
+            if report is not None:
+                self.finished.emit(
+                    report_core, report.passed,
+                    report.error_message or "", report.error_type or "", elapsed,
+                    0.0, mce_json, results_json,
+                )
+            else:
+                self.finished.emit(
+                    self._core_id, False, "No result returned", "startup",
+                    elapsed, 0.0, mce_json, results_json,
+                )
+        except Exception as e:
+            log.exception("Parallel worker crashed for core %d", self._core_id)
+            self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0, "", "")
 
 
 # ------------------------------------------------------------------
@@ -500,7 +547,7 @@ class TunerEngine(QObject):
         # Fail closed on a corrupted/hand-edited config_json: from_json only
         # rejects wrong TYPES, so a well-typed but out-of-range value (e.g.
         # coarse_step=0, which makes the search non-convergent) survives it.
-        # start() rejects those; resume must too, or the bug returns on this path.
+        # start() rejects those; resume must too.
         errors = self._config.validate()
         if errors:
             self.log_message.emit(f"Invalid tuner config: {'; '.join(errors)}")
@@ -524,11 +571,10 @@ class TunerEngine(QObject):
         rebooted = _rebooted_since(self._db.latest_session_activity(session_id))
 
         # Check for CO drift — warn only when the SMU differs from what the
-        # TUNER last wrote (the CO journal). Comparing against baselines cried
-        # wolf on every mid-validation restart: validation deliberately leaves
-        # the confirmed offsets applied, and reporting the tuner's own work as
-        # "drift" was false information. Real drift = a third party (Curve
-        # Optimizer tab, another tool) changed the values behind our back.
+        # TUNER last wrote (the CO journal); validation deliberately leaves the
+        # confirmed offsets applied, so a baseline comparison would flag the
+        # tuner's own work. Real drift = a third party (Curve Optimizer tab,
+        # another tool) changed the values behind our back.
         if self._smu is not None:
             expected_values = tp.journal_values(self._db, session_id)
             drift: dict[int, dict[str, int]] = {}
@@ -842,7 +888,6 @@ class TunerEngine(QObject):
         # best_offset is set (the crash penalty seeds it), but a persisted row
         # from an older version or a hand-edit can violate that. Fail closed to
         # the baseline instead of a TypeError mid-transition.
-        # (Found by the exhaustive transition sweep.)
         if cs.best_offset is None and cs.phase in (
             TunerPhase.BACKOFF_PRECONFIRM,
             TunerPhase.BACKOFF_CONFIRMING,
@@ -853,7 +898,6 @@ class TunerEngine(QObject):
         # bound must never widen the bounds — failures outrank passes for
         # safety, and letting the pass through inverts the bounds so the
         # backoff binary search DIVERGES toward more aggressive values.
-        # (Found by the exhaustive transition sweep, tests/test_state_transition_spec.py.)
         if (
             passed
             and cs.phase in (TunerPhase.BACKOFF_PRECONFIRM, TunerPhase.BACKOFF_CONFIRMING)
@@ -1164,7 +1208,7 @@ class TunerEngine(QObject):
         # monotonic (anything more aggressive than a failing offset also fails), so
         # this is the tightest SAFE bound, and it lets the backoff binary search
         # converge: a crash at a midpoint less aggressive than the old bound must
-        # TIGHTEN it, otherwise the search oscillates forever (found by the fuzzer).
+        # TIGHTEN it, otherwise the search oscillates forever.
         if cs.backoff_fail_bound is None or not self._is_more_aggressive(
             crashed_offset, cs.backoff_fail_bound
         ):
@@ -1197,7 +1241,7 @@ class TunerEngine(QObject):
             cs.crash_cooldown = 2
         # A core that crashed before ever passing has no proven-safe best yet; the
         # only known-safe value is its baseline. Seed it so the backoff math (which
-        # assumes best_offset is set) never produces a None offset (found by fuzz).
+        # assumes best_offset is set) never produces a None offset.
         if cs.best_offset is None:
             cs.best_offset = cs.baseline_offset
         # A value resident at a hard crash can never remain "best": validation and
@@ -1225,18 +1269,12 @@ class TunerEngine(QObject):
     def _apparatus_suspect(self, core_id: int) -> bool:
         """Trip on a physically implausible fail streak and recover from evidence.
 
-        Every post-fail step moves the offset toward baseline (more voltage)
-        and the midpoint jumps converge exponentially, so a healthy test
-        apparatus cannot produce ``apparatus_failure_streak`` consecutive
-        FAILs on one core. The live case: a stale mprime results.txt turned
-        every verdict into the same phantom FAIL and marched three cores from
-        -49 back to baseline before anything objected. The breaker bounds the
-        whole class (broken backend, corrupt work dir, dying disk): roll the
-        core back to its most aggressive PROVEN pass (passes cannot be faked
-        by a stale error file), clear the poisoned backoff bounds, and pause
-        loudly so the root cause gets fixed instead of absorbed. Synthetic
-        crash rows (duration NULL) are reboots, not apparatus verdicts, and
-        do not count toward the streak.
+        Post-fail steps only ADD voltage, so a healthy apparatus cannot fail
+        ``apparatus_failure_streak`` times in a row on one core (a broken
+        backend, stale results file, or dying disk can). Roll back to the most
+        aggressive PROVEN pass (passes cannot be faked by a stale error file),
+        clear the backoff bounds, and pause. Synthetic crash rows (duration
+        NULL) are reboots, not apparatus verdicts, and do not count.
 
         Returns True when tripped (the caller must stop this flow).
         """
@@ -1942,12 +1980,9 @@ class TunerEngine(QObject):
         """Alternate between CCDs for cross-CCD thermal balance.
 
         Primary rule is genuine alternation: prefer a CCD different from the one
-        just tested so the previously-loaded CCD cools while the other works. This
-        must hold during real operation, where a core stays in an active phase
-        across many tests (so confirmed-counts barely move) — the earlier
-        fewest-confirmed-only rule silently failed there, draining one CCD before
-        touching the other. Fewest-confirmed (then lowest index) is the tie-break
-        among the alternation candidates, keeping the CCDs balanced over the run.
+        just tested so the previously-loaded CCD cools while the other works.
+        Fewest-confirmed (then lowest index) is the tie-break among the
+        alternation candidates, keeping the CCDs balanced over the run.
         """
         ccd_cores: dict[int, list[int]] = {}
         for core_id, cs in self._core_states.items():
@@ -2145,7 +2180,7 @@ class TunerEngine(QObject):
         always fails to start).
         """
         QTimer.singleShot(
-            0, lambda: self._on_test_finished(core_id, False, message, "startup", 0.0, 0.0, "")
+            0, lambda: self._on_test_finished(core_id, False, message, "startup", 0.0, 0.0, "", "")
         )
 
     def _start_worker(self, core_id: int, duration: int, *, hunt: bool = False) -> None:
@@ -2218,7 +2253,7 @@ class TunerEngine(QObject):
         self._worker.start()
         self.worker_started.emit(core_id)
 
-    @Slot(int, bool, str, str, float, float, str)
+    @Slot(int, bool, str, str, float, float, str, str)
     def _on_test_finished(
         self,
         core_id: int,
@@ -2228,6 +2263,7 @@ class TunerEngine(QObject):
         duration: float,
         peak_stretch_pct: float,
         mce_json: str = "",
+        results_json: str = "",
     ) -> None:
         """Process test result — log, advance state machine, continue."""
         # Check abort FIRST — if abort() already ran, don't touch any state.
@@ -2301,8 +2337,8 @@ class TunerEngine(QObject):
 
         # A thermal stop is not a stability verdict — advancing the state machine
         # or logging a fail here would push the offset the wrong way on a thermal
-        # transient (the reported bug). Cool down and retry. Handled for the
-        # search flow, validation, and hunt slots alike.
+        # transient. Cool down and retry. Handled for the search flow,
+        # validation, and hunt slots alike.
         if not passed and error_type == "thermal":
             if self._hunting:
                 self._validation_thermal_aborts += 1
@@ -2380,6 +2416,9 @@ class TunerEngine(QObject):
                 fft_preset=fft_preset,
                 peak_stretch_pct=peak_stretch_pct if peak_stretch_pct > 0 else None,
             )
+
+        if results_json and self._session_id and self._validation_stage in (2, 3):
+            self._log_parallel_rows(core_id, results_json, log_phase)
 
         status_str = "PASS" if passed else "FAIL"
         stretch_info = f" stretch:{peak_stretch_pct:.1f}%" if peak_stretch_pct > 0 else ""
@@ -2460,6 +2499,40 @@ class TunerEngine(QObject):
         # validation path) so a synchronous start failure cannot recurse back
         # into _on_test_finished.
         QTimer.singleShot(0, self._run_next)
+
+    def _log_parallel_rows(self, reported: int, results_json: str, phase: str) -> None:
+        """Record every lane's verdict from a simultaneous stage, not only the
+        reported core's. Fail closed: a malformed payload records nothing."""
+        try:
+            entries = json.loads(results_json)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(entries, list):
+            return
+        backend, stress_mode, fft_preset = (
+            self._config.backend, self._config.stress_mode, self._config.fft_preset,
+        )
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            core = e.get("core")
+            if not isinstance(core, int) or core == reported:
+                continue
+            cs = self._core_states.get(core)
+            if cs is None:
+                continue
+            offset = self._co_applied.get(core)
+            if offset is None:
+                offset = cs.best_offset if cs.best_offset is not None else cs.current_offset
+            duration = e.get("duration")
+            tp.log_test_result(
+                self._db, self._session_id, core, offset, phase,
+                bool(e.get("passed")),
+                error_msg=e.get("error_message"),
+                error_type=e.get("error_type"),
+                duration=float(duration) if isinstance(duration, (int, float)) else None,
+                backend=backend, stress_mode=stress_mode, fft_preset=fft_preset,
+            )
 
     def _handle_thermal_abort(self, core_id: int, cs: CoreState, duration: float) -> None:
         """Handle a test stopped by the thermal safety limit (not instability).
@@ -2727,6 +2800,12 @@ class TunerEngine(QObject):
             self._validation_dirty,
             json.dumps(self._validation_requeue),
         )
+        log.debug(
+            "validation cursor: stage=%d index=%d half=%d dirty=%s requeue=%s",
+            self._validation_stage, self._validation_core_index,
+            self._validation_half_index, self._validation_dirty,
+            self._validation_requeue,
+        )
 
     def _has_stage1_pass_at_current_best(self, core_id: int) -> bool:
         """True when the test log holds a real stage-1 pass at the core's
@@ -2949,18 +3028,13 @@ class TunerEngine(QObject):
         self._start_worker(core_id, self._config.validate_duration_seconds)
 
     def _run_validation_stage2(self) -> None:
-        """Stage 2: every confirmed core, back-to-back at validation length.
-
-        CoreScheduler.run() cycles the given cores ONE AT A TIME (per-core
-        pinning is its design), so this stage is sequential coverage of the
-        whole set with all offsets live — not simultaneous power draw. True
-        parallel all-core load is the validation-restructure work; until then
-        the only genuinely concurrent stage is S4's rapid transitions.
-        """
+        """Stage 2: all cores stressed simultaneously — full package power
+        draw, one pinned process per core, per-core verdicts."""
         cores = self._validation_core_order
         self.log_message.emit(
-            f"Validation stage 2: all {len(cores)} cores back-to-back "
-            f"({self._config.validate_duration_seconds}s each, all offsets applied)"
+            f"Validation stage 2: stressing all {len(cores)} cores "
+            f"simultaneously ({self._config.validate_duration_seconds}s, "
+            f"all offsets applied)"
         )
         self.validation_progress.emit(2, 0, 1)
 
@@ -2994,8 +3068,8 @@ class TunerEngine(QObject):
         half = self._validation_halves[self._validation_half_index]
         half_label = "A" if self._validation_half_index == 0 else "B"
         self.log_message.emit(
-            f"Validation stage 3{half_label}: cores {half} back-to-back, "
-            f"the other half idle at their offsets"
+            f"Validation stage 3{half_label}: cores {half} loaded "
+            f"simultaneously, the other half idle at their offsets"
         )
         self.validation_progress.emit(
             3, self._validation_half_index, len(self._validation_halves)
@@ -3014,28 +3088,27 @@ class TunerEngine(QObject):
         self._start_multi_core_worker(half, self._config.validate_duration_seconds)
 
     def _start_multi_core_worker(self, cores: list[int], duration: int) -> None:
-        """Launch a worker that cycles the given cores one at a time.
-
-        CoreScheduler tests per-core (pinned); the worker reports the first
-        FAILING core's verdict, else the first core's pass (_pick_report) —
-        a failure anywhere in the batch is never hidden by an earlier pass.
-        """
+        """Launch every core's stress process simultaneously (one pinned
+        process per core) with per-core verdicts; the worker reports the
+        first failing core, else the first core's pass."""
         stress_config = StressConfig(
             mode=self._get_stress_mode(),
             fft_preset=self._get_fft_preset(),
-            threads=0,  # let scheduler figure out threads per core
+            threads=0,  # per-lane SMT width is set by the runner
         )
-
-        # For multi-core: each core gets its own threads via scheduler
         scheduler_config = SchedulerConfig(
             seconds_per_core=duration,
             cores_to_test=cores,
             stop_on_error=True,
             cycle_count=1,
+            max_temperature=self._config.max_temperature_c,
+            over_temp_grace_seconds=self._config.over_temp_grace_seconds,
+            over_temp_hard_margin=self._config.over_temp_hard_margin_c,
+            require_thermal_sensor=not self._config.allow_missing_thermal_sensor,
         )
 
         try:
-            scheduler = CoreScheduler(
+            runner = ParallelStress(
                 topology=self._topology,
                 backend=self._backend,
                 stress_config=stress_config,
@@ -3048,11 +3121,7 @@ class TunerEngine(QObject):
 
         core_info = self._topology.cores.get(cores[0])
         logical_cpu = core_info.logical_cpus[0] if core_info and core_info.logical_cpus else cores[0]
-        self._worker = _TunerWorker(
-            cores[0], logical_cpu, scheduler,
-            msr=None,  # stretch detection not meaningful for multi-core
-            parent=self,
-        )
+        self._worker = _ParallelWorker(cores[0], logical_cpu, runner, parent=self)
         self._worker.finished.connect(self._on_test_finished)
         self._worker.start()
 
@@ -3280,6 +3349,7 @@ class TunerEngine(QObject):
         survived = not self._is_more_aggressive(value, self._co_survived.get(core_id, 0))
         if self._session_id is not None:
             tp.journal_co_intent(self._db, self._session_id, core_id, value, survived)
+        log.debug("CO write: core=%d value=%d survived=%s", core_id, value, survived)
         return self._smu.set_co_offset(core_id, value)
 
     def _apply_validation_offsets(self, test_core_id: int, test_offset: int) -> bool:

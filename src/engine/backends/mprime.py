@@ -157,8 +157,8 @@ class MprimeBackend(StressBackend):
         )
         # Output files stay at Prime95's defaults (results.txt / prime.log in
         # the work dir). The real override keys are literally "results.txt="
-        # and "prime.log=" (commonc.c) — the previously-written ResultsFile=/
-        # LogFile= keys were never read by mprime.
+        # and "prime.log=" (commonc.c); ResultsFile=/LogFile= are never read
+        # by mprime.
 
     def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
         combined = stdout + "\n" + stderr
@@ -229,7 +229,7 @@ class MprimeBackend(StressBackend):
     def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
         # On failure, preserve results.txt/prime.log for post-mortem — but RENAMED,
         # so a later run in the same work dir can never re-parse the old error as
-        # its own (the false-FAIL cascade that walked offsets back to baseline).
+        # its own.
         if preserve_on_error:
             for f in ("results.txt", "prime.log"):
                 p = work_dir / f

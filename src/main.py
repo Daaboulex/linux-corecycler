@@ -98,14 +98,31 @@ def main() -> int:
     import logging
     import os
 
-    # Root logging config: INFO to stderr (journald captures it for the
-    # systemd service). Without this, every log.warning/info breadcrumb the
-    # engine emits about root causes went nowhere.
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        stream=sys.stderr,
-    )
+    # Two log surfaces from one root: the human narrative at INFO on stderr,
+    # and a rotating DEBUG file capturing what verdicts drop (detector polls,
+    # CO writes, cursor saves, lane lifecycle) for after-the-fact forensics.
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(logging.INFO)
+    stderr_handler.setFormatter(fmt)
+    handlers: list[logging.Handler] = [stderr_handler]
+    try:
+        from logging.handlers import RotatingFileHandler
+
+        from config.paths import fix_sudo_ownership, user_home
+
+        log_dir = user_home() / ".local" / "share" / "corecycler" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_dir / "corecycler.log", maxBytes=5_000_000, backupCount=3
+        )
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(fmt)
+        handlers.append(file_handler)
+        fix_sudo_ownership(log_dir, log_dir / "corecycler.log")
+    except OSError as e:
+        print(f"corecycler: debug log unavailable: {e}", file=sys.stderr)
+    logging.basicConfig(level=logging.DEBUG, handlers=handlers)
 
     # Suppress Qt/KDE warnings when running under sudo (no D-Bus session)
     os.environ.setdefault(

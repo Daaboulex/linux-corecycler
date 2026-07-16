@@ -1,17 +1,7 @@
-"""End-to-end replay of the 2026-07-09 stale-results disaster.
-
-These tests drive the REAL CoreScheduler subprocess path (taskset + a fake
-mprime executable + the real MprimeBackend prepare/poll/parse/cleanup cycle)
-through the exact mechanics that poisoned session 16 on the ryzen-9950x3d:
-
-  1. a test fails genuinely and its results.txt is preserved for post-mortem,
-  2. the next test in the same work dir starts,
-  3. OLD code re-parsed the leftover FATAL ERROR as the new test's verdict and
-     failed every subsequent run at full duration, walking offsets to baseline.
-
-They also prove the live-polling half: an error that lands only in
-results.txt while the process keeps running (mprime's real behavior) is
-detected within the poll interval, not at end-of-test.
+"""End-to-end stale-results coverage on the REAL CoreScheduler subprocess path
+(taskset + fake mprime + the real MprimeBackend prepare/poll/parse/cleanup):
+a preserved failure file must never be re-parsed as a later run's verdict, and
+an error landing only in results.txt is caught by the live poll, not at end.
 """
 
 from __future__ import annotations
@@ -81,7 +71,7 @@ class TestStaleResultsDisasterReplay:
     def test_error_only_in_results_txt_is_caught_live_not_at_timeout(self, tmp_path, exec_dir):
         """mprime keeps running after a computation error (it lands only in
         results.txt). The live poll must fail the test within ~one poll
-        interval — before the fix this burned the full duration every time."""
+        interval, not burn the full duration."""
         fake = _fake_mprime(exec_dir, """
             echo "[Worker #1] Worker starting"
             sleep 1
@@ -102,9 +92,8 @@ class TestStaleResultsDisasterReplay:
         )
 
     def test_failure_cannot_poison_the_next_run(self, tmp_path, exec_dir):
-        """The disaster itself: after a genuine failure, a CLEAN run in the
-        same per-core work dir must PASS. Old code re-read the preserved
-        results.txt and failed every subsequent test."""
+        """After a genuine failure, a CLEAN run in the same per-core work dir
+        must PASS — the preserved results.txt must not poison it."""
         work_dir = tmp_path / "work"
 
         # Run 1: genuine failure (error in results.txt).

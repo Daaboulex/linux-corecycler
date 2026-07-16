@@ -358,9 +358,8 @@ class TestMprimeBackend:
         assert msg is None
 
     def test_parse_output_benign_worker_stop_is_not_an_error(self):
-        """"Worker stopped." is Prime95's graceful-stop line (commonb.c:3143) —
-        the old pattern list treated it as fatal, a false-positive on any
-        intentional stop."""
+        """"Worker stopped." is Prime95's graceful-stop line (commonb.c:3143),
+        not a fatal error."""
         backend = MprimeBackend()
         passed, msg = backend.parse_output(
             "[Worker #1] Self-test 240K passed!\n[Worker #1] Worker stopped.\n", "", -15
@@ -410,9 +409,7 @@ class TestMprimeBackend:
     def test_cleanup_on_error_renames_postmortem_files(self, tmp_path):
         """A preserved results.txt must be RENAMED, never left in place: mprime
         appends to results.txt, so a stale FATAL ERROR would be re-parsed by
-        every later run in this work dir as its own failure (observed live:
-        offsets marched from -49 back to baseline on phantom full-duration
-        FAILs)."""
+        every later run in this work dir as its own failure."""
         backend = MprimeBackend()
         (tmp_path / "results.txt").write_text("FATAL ERROR: Rounding was 0.5")
         (tmp_path / "prime.log").write_text("log")
