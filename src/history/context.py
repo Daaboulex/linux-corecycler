@@ -34,16 +34,30 @@ def read_bios_version(path: Path = BIOS_VERSION_PATH) -> str:
     return ""
 
 
-def compute_co_hash(offsets: dict[int, int | None]) -> str:
-    """Deterministic SHA-256 of CO offsets dict.
+def compute_co_hash(
+    offsets: dict[int, int | None],
+    limits: tuple[float | None, float | None, float | None] | None = None,
+) -> str:
+    """Deterministic SHA-256 identity of CO offsets plus PBO power limits.
 
     None values are excluded (unknown cores don't affect identity).
     Order-independent: {0: -30, 1: -20} == {1: -20, 0: -30}.
+    Power limits (PPT/TDC/EDC) are part of the stability environment, so they
+    are part of the identity; when none are available the payload stays
+    byte-identical to the pre-v13 CO-only form so existing contexts keep
+    their identity.
     """
     clean = {k: v for k, v in offsets.items() if v is not None}
-    if not clean:
+    have_limits = limits is not None and any(v is not None for v in limits)
+    if not clean and not have_limits:
         return ""
-    payload = json.dumps(sorted(clean.items()), separators=(",", ":"))
+    payload_obj: object = sorted(clean.items())
+    if have_limits:
+        payload_obj = {
+            "co": sorted(clean.items()),
+            "limits": [None if v is None else round(v, 1) for v in limits],
+        }
+    payload = json.dumps(payload_obj, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -61,6 +75,7 @@ def capture_system_context(
     co_offsets: dict[int, int | None] = {}
     pbo_scalar: float | None = None
     boost_limit: int | None = None
+    ppt = tdc = edc = None
 
     if smu is not None and num_cores > 0:
         try:
@@ -78,7 +93,16 @@ def capture_system_context(
         except Exception:
             log.debug("Failed to read boost limit", exc_info=True)
 
-    co_hash = compute_co_hash(co_offsets)
+        # PBO power limits are part of the stability environment: the same CO
+        # profile can be stable at PPT 200 W and unstable at 230 W.
+        try:
+            from smu.pmtable import read_power_limits
+
+            ppt, tdc, edc = read_power_limits(num_cores)
+        except Exception:
+            log.debug("Failed to read PBO power limits", exc_info=True)
+
+    co_hash = compute_co_hash(co_offsets, (ppt, tdc, edc))
     co_json = json.dumps(
         {k: v for k, v in co_offsets.items() if v is not None},
         separators=(",", ":"),
@@ -90,6 +114,9 @@ def capture_system_context(
         co_hash=co_hash,
         pbo_scalar=pbo_scalar,
         boost_limit_mhz=boost_limit,
+        ppt_limit_w=ppt,
+        tdc_limit_a=tdc,
+        edc_limit_a=edc,
     )
 
 

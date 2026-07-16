@@ -104,24 +104,25 @@ class TestPMTableReader:
         assert result.raw_floats[0] == pytest.approx(42.0)
 
     def test_read_full_pm_table(self, tmp_path):
-        """Create a PM table with enough data for Granite Ridge parsing."""
+        """Zen 5 header layout (evidence-based indices) plus core arrays.
+
+        Live-verified on a 9950X3D (0x620205): [2]=PPT limit (static),
+        [3]=package power (moves with load), [8]=TDC limit, [9]=TDC value,
+        [11]=hotspot temp, [63]=EDC limit candidate.
+        """
         smu_dir = tmp_path / "ryzen_smu_drv"
         smu_dir.mkdir()
+        (smu_dir / "pm_table_version").write_bytes(struct.pack("<I", 0x00620205))
 
         # Build 420 floats (enough for 16 cores with stride 10 starting at 100)
         floats = [0.0] * 420
 
-        # Package telemetry
-        floats[0] = 200.0    # PPT limit
-        floats[1] = 142.0    # PPT value
-        floats[2] = 120.0    # TDC limit
-        floats[3] = 95.0     # TDC value
-        floats[4] = 180.0    # EDC limit
-        floats[5] = 150.0    # EDC value
-        floats[10] = 72.5    # Tctl
-        floats[11] = 70.0    # Tdie
-        floats[26] = 141.5   # package power
-        floats[28] = 18.3    # SoC power
+        floats[2] = 225.0    # PPT limit
+        floats[3] = 142.0    # PPT value / package power
+        floats[8] = 190.0    # TDC limit
+        floats[9] = 95.0     # TDC value
+        floats[11] = 70.0    # hotspot temperature
+        floats[63] = 230.0   # EDC limit
 
         # Per-core data (core 0 at offset 100)
         floats[100] = 5700.0  # core 0 freq
@@ -144,16 +145,16 @@ class TestPMTableReader:
         result = reader.read()
 
         assert result is not None
-        assert result.ppt_limit_w == pytest.approx(200.0)
+        assert result.ppt_limit_w == pytest.approx(225.0)
         assert result.ppt_value_w == pytest.approx(142.0)
-        assert result.tdc_limit_a == pytest.approx(120.0)
+        assert result.tdc_limit_a == pytest.approx(190.0)
         assert result.tdc_value_a == pytest.approx(95.0)
-        assert result.edc_limit_a == pytest.approx(180.0)
-        assert result.edc_value_a == pytest.approx(150.0)
-        assert result.tctl_c == pytest.approx(72.5)
-        assert result.tdie_c == pytest.approx(70.0)
-        assert result.package_power_w == pytest.approx(141.5)
-        assert result.soc_power_w == pytest.approx(18.3)
+        assert result.edc_limit_a == pytest.approx(230.0)
+        assert result.edc_value_a == 0.0  # value slot not located — absent
+        assert result.tctl_c == pytest.approx(70.0)
+        assert result.tdie_c == 0.0  # not located — absent
+        assert result.package_power_w == pytest.approx(142.0)
+        assert result.soc_power_w == 0.0  # not located — absent
 
         assert result.core_frequency_mhz[0] == pytest.approx(5700.0)
         assert result.core_voltage_v[0] == pytest.approx(1.35)
@@ -172,7 +173,6 @@ class TestPMTableReader:
         # 210 floats: enough to trigger parsing (>= 200) and cover core 0
         # (offset 100) and core 1 (offset 110), but NOT core 11+ (offset 210+)
         floats = [0.0] * 210
-        floats[0] = 100.0  # PPT limit
         floats[100] = 4800.0  # core 0 freq
         floats[110] = 5100.0  # core 1 freq
 
@@ -183,7 +183,6 @@ class TestPMTableReader:
         result = reader.read()
 
         assert result is not None
-        assert result.ppt_limit_w == pytest.approx(100.0)
         assert result.core_frequency_mhz[0] == pytest.approx(4800.0)
         assert result.core_frequency_mhz[1] == pytest.approx(5100.0)
         # Core 11+ should not be present (offset 210+ out of range)
@@ -583,9 +582,11 @@ class TestVersionDispatch:
         assert len(result.raw_floats) > 0
 
     def test_no_version_file_falls_back_to_legacy(self, tmp_path):
-        """read() without pm_table_version file uses legacy _parse_granite_ridge."""
+        """Without a version, core arrays still parse but the power header
+        does NOT: its layout is version-family-specific, and labeling unknown
+        bytes as PPT/TDC/EDC is exactly the mislabeling this fixed."""
         floats = [0.0] * 420
-        floats[0] = 200.0  # PPT limit
+        floats[2] = 225.0  # would be PPT limit on a known Zen 5 table
         floats[100] = 5700.0  # core 0 freq
         raw = struct.pack(f"<{len(floats)}f", *floats)
         smu_dir = _make_smu_dir(tmp_path, version_int=None, raw_bytes=raw)
@@ -593,8 +594,7 @@ class TestVersionDispatch:
         result = reader.read()
 
         assert result is not None
-        # Legacy behavior: core data parsed, no version info
-        assert result.ppt_limit_w == pytest.approx(200.0)
+        assert result.ppt_limit_w == 0.0  # fail closed — unknown layout
         assert result.core_frequency_mhz[0] == pytest.approx(5700.0)
         # No version dispatch happened
         assert result.pm_table_version == 0
@@ -682,9 +682,8 @@ class TestVersionDispatch:
             vddcr_soc=1.25,
             vdd_mem=1.395,
         ))
-        # Insert legacy core data
-        # PPT limit at float index 0 (byte offset 0)
-        struct.pack_into("<f", raw, 0, 200.0)
+        # PPT limit at float index 2 (byte offset 8) — Zen 5 header layout
+        struct.pack_into("<f", raw, 8, 225.0)
         # Core 0 freq at float index 100 (byte offset 400)
         struct.pack_into("<f", raw, 400, 5700.0)
         smu_dir = _make_smu_dir(tmp_path, version_int=0x00620205, raw_bytes=bytes(raw))
@@ -695,8 +694,8 @@ class TestVersionDispatch:
         # Versioned data
         assert result.is_calibrated is True
         assert result.fclk_mhz == pytest.approx(2000.0)
-        # Legacy core data also parsed
-        assert result.ppt_limit_w == pytest.approx(200.0)
+        # Power header + core data also parsed
+        assert result.ppt_limit_w == pytest.approx(225.0)
         assert result.core_frequency_mhz[0] == pytest.approx(5700.0)
 
 
@@ -738,3 +737,58 @@ class TestComputeFclkUclkRatio:
     def test_near_1_2_ratio(self):
         """Slightly off ratio should still round to 1:2."""
         assert compute_fclk_uclk_ratio(1000.0, 1999.0) == (1, 2)
+
+
+# ===========================================================================
+# read_power_limits — PBO limits for the tuning context
+# ===========================================================================
+
+
+class TestReadPowerLimits:
+    def _tree(self, tmp_path, version: int | None, floats: list[float]):
+        smu_dir = tmp_path / "ryzen_smu_drv"
+        smu_dir.mkdir()
+        if version is not None:
+            (smu_dir / "pm_table_version").write_bytes(struct.pack("<I", version))
+        (smu_dir / "pm_table").write_bytes(struct.pack(f"<{len(floats)}f", *floats))
+        return smu_dir
+
+    def _floats(self, ppt=225.0, tdc=190.0, edc=230.0) -> list[float]:
+        floats = [0.0] * 420
+        floats[2] = ppt
+        floats[8] = tdc
+        floats[63] = edc
+        return floats
+
+    def test_reads_zen5_limits(self, tmp_path):
+        from smu.pmtable import read_power_limits
+
+        smu_dir = self._tree(tmp_path, 0x00620205, self._floats())
+        assert read_power_limits(16, smu_dir) == (225.0, 190.0, 230.0)
+
+    def test_unknown_generation_fails_closed(self, tmp_path):
+        from smu.pmtable import read_power_limits
+
+        smu_dir = self._tree(tmp_path, 0x00540104, self._floats())
+        assert read_power_limits(16, smu_dir) == (None, None, None)
+
+    def test_implausible_values_fail_closed_per_field(self, tmp_path):
+        from smu.pmtable import read_power_limits
+
+        smu_dir = self._tree(
+            tmp_path, 0x00620205, self._floats(ppt=1e9, tdc=190.0, edc=5.0)
+        )
+        assert read_power_limits(16, smu_dir) == (None, 190.0, None)
+
+    def test_zero_reads_as_absent(self, tmp_path):
+        from smu.pmtable import read_power_limits
+
+        smu_dir = self._tree(
+            tmp_path, 0x00620205, self._floats(ppt=0.0, tdc=0.0, edc=0.0)
+        )
+        assert read_power_limits(16, smu_dir) == (None, None, None)
+
+    def test_missing_table_fails_closed(self, tmp_path):
+        from smu.pmtable import read_power_limits
+
+        assert read_power_limits(16, tmp_path / "nope") == (None, None, None)

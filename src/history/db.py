@@ -130,10 +130,13 @@ class TuningContextRecord:
     created_at: str = ""
     bios_version: str = ""
     co_offsets_json: str = "{}"
-    co_hash: str = ""
+    co_hash: str = ""  # identity hash of CO offsets + power limits (v13+)
     pbo_scalar: float | None = None
     boost_limit_mhz: int | None = None
     notes: str = ""
+    ppt_limit_w: float | None = None
+    tdc_limit_a: float | None = None
+    edc_limit_a: float | None = None
 
 
 @dataclass(slots=True)
@@ -156,7 +159,7 @@ class TelemetrySample:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 12
+    SCHEMA_VERSION = 13
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -234,6 +237,9 @@ CREATE TABLE IF NOT EXISTS tuning_contexts (
     pbo_scalar      REAL,
     boost_limit_mhz INTEGER,
     notes           TEXT    NOT NULL DEFAULT '',
+    ppt_limit_w     REAL,
+    tdc_limit_a     REAL,
+    edc_limit_a     REAL,
     UNIQUE(co_hash, bios_version)
 );
 CREATE INDEX IF NOT EXISTS idx_context_hash ON tuning_contexts(co_hash, bios_version);
@@ -321,7 +327,9 @@ CREATE TABLE IF NOT EXISTS tuner_sessions (
     config_json         TEXT    NOT NULL DEFAULT '{}',
     context_id          INTEGER REFERENCES tuning_contexts(id),
     resume_crash_streak INTEGER NOT NULL DEFAULT 0,
-    notes               TEXT    NOT NULL DEFAULT ''
+    notes               TEXT    NOT NULL DEFAULT '',
+    unattributed_crashes INTEGER NOT NULL DEFAULT 0,
+    hunting_core        INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS tuner_core_states (
@@ -362,7 +370,8 @@ CREATE TABLE IF NOT EXISTS tuner_test_log (
     backend             TEXT,
     stress_mode         TEXT,
     fft_preset          TEXT,
-    tested_at           TEXT    NOT NULL
+    tested_at           TEXT    NOT NULL,
+    peak_stretch_pct    REAL
 );
 CREATE INDEX IF NOT EXISTS idx_tuner_log_session ON tuner_test_log(session_id, core_id);
 
@@ -577,6 +586,18 @@ ALTER TABLE tuner_core_states_v12 RENAME TO tuner_core_states;
 COMMIT;
 """
 
+    # v12 -> v13: power-limit capture on tuning contexts (PPT/TDC/EDC are part
+    # of the stability environment), crash-hunt bookkeeping on sessions, and
+    # peak clock stretch preserved per test instead of only inside fail text.
+    _DDL_MIGRATE_V13 = """\
+ALTER TABLE tuning_contexts ADD COLUMN ppt_limit_w REAL;
+ALTER TABLE tuning_contexts ADD COLUMN tdc_limit_a REAL;
+ALTER TABLE tuning_contexts ADD COLUMN edc_limit_a REAL;
+ALTER TABLE tuner_sessions ADD COLUMN unattributed_crashes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tuner_sessions ADD COLUMN hunting_core INTEGER;
+ALTER TABLE tuner_test_log ADD COLUMN peak_stretch_pct REAL;
+"""
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _DDL_MIGRATE_V2,
         3: _DDL_MIGRATE_V3,
@@ -589,6 +610,7 @@ COMMIT;
         10: _DDL_MIGRATE_V10,
         11: _migrate_v11,
         12: _DDL_MIGRATE_V12,
+        13: _DDL_MIGRATE_V13,
     }
 
     # ------------------------------------------------------------------
@@ -960,8 +982,9 @@ COMMIT;
             """\
             INSERT OR IGNORE INTO tuning_contexts (
                 created_at, bios_version, co_offsets_json, co_hash,
-                pbo_scalar, boost_limit_mhz, notes
-            ) VALUES (?,?,?,?,?,?,?)
+                pbo_scalar, boost_limit_mhz, notes,
+                ppt_limit_w, tdc_limit_a, edc_limit_a
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 ctx.created_at,
@@ -971,6 +994,9 @@ COMMIT;
                 ctx.pbo_scalar,
                 ctx.boost_limit_mhz,
                 ctx.notes,
+                ctx.ppt_limit_w,
+                ctx.tdc_limit_a,
+                ctx.edc_limit_a,
             ),
         )
         if cur.lastrowid and cur.rowcount > 0:
@@ -1029,6 +1055,9 @@ COMMIT;
             pbo_scalar=row["pbo_scalar"],
             boost_limit_mhz=row["boost_limit_mhz"],
             notes=row["notes"],
+            ppt_limit_w=row["ppt_limit_w"],
+            tdc_limit_a=row["tdc_limit_a"],
+            edc_limit_a=row["edc_limit_a"],
         )
 
     # ------------------------------------------------------------------
@@ -1132,12 +1161,25 @@ COMMIT;
         # Force the intent to disk before the caller writes the value to hardware.
         self.__conn.execute("PRAGMA wal_checkpoint(FULL)")
 
-    def journal_mark_survived(self, session_id: int) -> None:
+    def journal_mark_survived(
+        self, session_id: int, exclude_cores: tuple[int, ...] | list[int] = ()
+    ) -> None:
         """Mark every resident CO value for the session as survived.
 
         Called after a test completes without a hard crash: the machine
         demonstrably ran with the whole resident offset vector and lived.
+        ``exclude_cores`` keeps cores with fresh contrary evidence (a corrected
+        MCE named them during this very test) un-survived — surviving the test
+        does not clear an error the hardware just reported.
         """
+        if exclude_cores:
+            marks = ",".join("?" * len(exclude_cores))
+            self.__conn.execute(
+                f"UPDATE tuner_co_journal SET survived=1, updated_at=? "
+                f"WHERE session_id=? AND core_id NOT IN ({marks})",
+                (self._now_iso(), session_id, *exclude_cores),
+            )
+            return
         self.__conn.execute(
             "UPDATE tuner_co_journal SET survived=1, updated_at=? WHERE session_id=?",
             (self._now_iso(), session_id),
@@ -1162,6 +1204,17 @@ COMMIT;
         ).fetchall()
         return {r["core_id"]: r["value"] for r in rows}
 
+    def journal_values(self, session_id: int) -> dict[int, int]:
+        """Return ``{core_id: value}`` — the last CO value the tuner wrote per
+        core, survived or not. This is what the SMU is EXPECTED to hold; drift
+        detection compares live hardware against it (not against baselines,
+        which validation deliberately leaves behind)."""
+        rows = self.__conn.execute(
+            "SELECT core_id, value FROM tuner_co_journal WHERE session_id=?",
+            (session_id,),
+        ).fetchall()
+        return {r["core_id"]: r["value"] for r in rows}
+
     def latest_session_activity(self, session_id: int) -> str | None:
         """Most recent write timestamp across all of a session's state.
 
@@ -1181,6 +1234,30 @@ COMMIT;
             (session_id, session_id, session_id, session_id),
         ).fetchone()
         return row[0] if row else None
+
+    def get_unattributed_crashes(self, session_id: int) -> int:
+        row = self.__conn.execute(
+            "SELECT unattributed_crashes FROM tuner_sessions WHERE id=?", (session_id,)
+        ).fetchone()
+        if row is None:
+            return 0
+        return row["unattributed_crashes"] or 0
+
+    def set_unattributed_crashes(self, session_id: int, value: int) -> None:
+        self.__conn.execute(
+            "UPDATE tuner_sessions SET unattributed_crashes=?, updated_at=? WHERE id=?",
+            (value, self._now_iso(), session_id),
+        )
+
+    def set_hunting_core(self, session_id: int, core_id: int | None) -> None:
+        """Persist which core an isolated hunt slot is stressing BEFORE the
+        slot starts: a hard crash mid-slot then names its proven culprit on
+        resume (every other core was at stock during the slot)."""
+        self.__conn.execute(
+            "UPDATE tuner_sessions SET hunting_core=?, updated_at=? WHERE id=?",
+            (core_id, self._now_iso(), session_id),
+        )
+        self.__conn.execute("PRAGMA wal_checkpoint(FULL)")
 
     def get_resume_crash_streak(self, session_id: int) -> int:
         row = self.__conn.execute(
@@ -1334,14 +1411,15 @@ COMMIT;
         backend: str | None = None,
         stress_mode: str | None = None,
         fft_preset: str | None = None,
+        peak_stretch_pct: float | None = None,
     ) -> int:
         cur = self.__conn.execute(
             """\
             INSERT INTO tuner_test_log
                 (session_id, core_id, offset_tested, phase, passed,
                  error_message, error_type, duration_seconds, run_id,
-                 backend, stress_mode, fft_preset, tested_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 backend, stress_mode, fft_preset, tested_at, peak_stretch_pct)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 session_id,
@@ -1357,6 +1435,7 @@ COMMIT;
                 stress_mode,
                 fft_preset,
                 self._now_iso(),
+                peak_stretch_pct,
             ),
         )
         return cur.lastrowid
@@ -1377,9 +1456,12 @@ COMMIT;
         return [dict(r) for r in rows]
 
     def get_tuner_best_profile(self, session_id: int) -> dict[int, int]:
+        # HARDENED is confirmed-plus-extra-stress — excluding it made Export/
+        # Validate report "no confirmed cores" on any fully hardened session.
         rows = self.__conn.execute(
             "SELECT core_id, best_offset FROM tuner_core_states "
-            "WHERE session_id=? AND phase='confirmed' AND best_offset IS NOT NULL",
+            "WHERE session_id=? AND phase IN ('confirmed','hardened') "
+            "AND best_offset IS NOT NULL",
             (session_id,),
         ).fetchall()
         return {r["core_id"]: r["best_offset"] for r in rows}
@@ -1411,6 +1493,8 @@ COMMIT;
             context_id=row["context_id"],
             resume_crash_streak=row["resume_crash_streak"],
             notes=row["notes"],
+            unattributed_crashes=row["unattributed_crashes"] or 0,
+            hunting_core=row["hunting_core"],
         )
 
     def _execute_raw(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -1451,7 +1535,8 @@ COMMIT;
         ("tuner_test_log",
          ("session_id", "core_id", "offset_tested", "phase", "passed",
           "error_message", "error_type", "duration_seconds", "run_id",
-          "backend", "stress_mode", "fft_preset", "tested_at"),
+          "backend", "stress_mode", "fft_preset", "tested_at",
+          "peak_stretch_pct"),
          {"session_id": "tuner_sessions", "run_id": "runs"}),
     )
 
@@ -1481,12 +1566,14 @@ COMMIT;
                     """\
                     INSERT OR IGNORE INTO tuning_contexts
                         (created_at, bios_version, co_offsets_json, co_hash,
-                         pbo_scalar, boost_limit_mhz, notes)
-                    VALUES (?,?,?,?,?,?,?)
+                         pbo_scalar, boost_limit_mhz, notes,
+                         ppt_limit_w, tdc_limit_a, edc_limit_a)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
                     """,
                     (row["created_at"], row["bios_version"], row["co_offsets_json"],
                      row["co_hash"], row["pbo_scalar"], row["boost_limit_mhz"],
-                     row["notes"]),
+                     row["notes"], row["ppt_limit_w"], row["tdc_limit_a"],
+                     row["edc_limit_a"]),
                 )
                 if cur.rowcount > 0:
                     ctx_map[row["id"]] = cur.lastrowid
@@ -1531,6 +1618,7 @@ COMMIT;
                 "created_at", "updated_at", "status", "bios_version",
                 "cpu_model", "config_json", "context_id",
                 "resume_crash_streak", "notes",
+                "unattributed_crashes", "hunting_core",
             ))
             counts["tuner_sessions"] = len(maps["tuner_sessions"])
 

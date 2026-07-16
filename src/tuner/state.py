@@ -72,3 +72,8 @@ class TunerSession:
     context_id: int | None = None
     resume_crash_streak: int = 0
     notes: str = ""
+    # Crash-hunt bookkeeping: fruitless-hunt count toward the pause threshold,
+    # and the core an isolated hunt slot was stressing (a crash mid-slot then
+    # names its culprit on resume — every other core was at stock).
+    unattributed_crashes: int = 0
+    hunting_core: int | None = None

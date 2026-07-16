@@ -217,50 +217,41 @@ class TestSchedulerProcessSafety:
 
 
 class TestDetectorSafety:
-    def test_check_mce_no_sysfs(self):
-        """check_mce must not crash when sysfs machinecheck dir is missing."""
+    def _fresh(self) -> ErrorDetector:
         det = ErrorDetector()
-        # On systems without MCE sysfs, should return empty list
-        events = det._check_sysfs_mce(target_cpu=None)
-        # Must not raise, may or may not find events on this system
-        assert isinstance(events, list)
+        det._dmesg_baseline_ts = 1.0
+        det._last_dmesg_time = 0.0
+        return det
 
     def test_check_mce_no_dmesg(self):
         """check_mce must not crash when dmesg is unavailable."""
-        det = ErrorDetector()
+        det = self._fresh()
         with patch("subprocess.run", side_effect=FileNotFoundError):
-            events = det._check_dmesg_mce(target_cpu=None)
+            events = det.check_mce()
         assert events == []
 
     def test_check_mce_dmesg_permission_denied(self):
-        det = ErrorDetector()
+        det = self._fresh()
         with patch("subprocess.run", side_effect=OSError("Permission denied")):
-            events = det._check_dmesg_mce(target_cpu=None)
+            events = det.check_mce()
         assert events == []
 
     def test_check_mce_dmesg_timeout(self):
-        det = ErrorDetector()
+        det = self._fresh()
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("dmesg", 5)):
-            events = det._check_dmesg_mce(target_cpu=None)
+            events = det.check_mce()
         assert events == []
 
     def test_reset_no_crash(self):
         """reset() must not crash in any environment."""
         det = ErrorDetector()
-        with (
-            patch.object(det, "_count_mce_events", return_value=0),
-            patch.object(det, "_snapshot_mce_banks", return_value={}),
-            patch("engine.detector._get_dmesg_raw_timestamp", return_value=0.0),
-        ):
+        with patch("engine.detector._get_dmesg_raw_timestamp", return_value=0.0):
             det.reset()  # must not raise
 
     def test_full_check_mce_graceful(self):
-        """Full check_mce pipeline must be graceful."""
-        det = ErrorDetector()
-        with (
-            patch.object(det, "_check_sysfs_mce", return_value=[]),
-            patch.object(det, "_check_dmesg_mce", return_value=[]),
-        ):
+        """check_mce with no baseline must be graceful and detect nothing."""
+        det = ErrorDetector()  # baseline 0.0 — cannot separate old from new
+        with patch("subprocess.run", side_effect=AssertionError("must not run")):
             events = det.check_mce()
         assert events == []
 

@@ -56,15 +56,14 @@ class TestDetectorParsersRobust:
         assert isinstance(_is_kernel_error_line(line.lower()), bool)
 
     @settings(max_examples=300, deadline=None)
-    @given(dmesg_out=st.text(max_size=800),
-           target=st.one_of(st.none(), st.integers(0, 63)))
-    def test_check_dmesg_mce_never_crashes(self, dmesg_out, target):
+    @given(dmesg_out=st.text(max_size=800))
+    def test_check_mce_never_crashes(self, dmesg_out):
         det = ErrorDetector()
         det._dmesg_baseline_ts = 1.0  # so the timestamp filter runs the parse path
         det._last_dmesg_time = 0.0
         fake = MagicMock(returncode=0, stdout=dmesg_out)
         with patch("subprocess.run", return_value=fake):
-            events = det._check_dmesg_mce(target)
+            events = det.check_mce()
         assert isinstance(events, list)
 
     def test_real_mce_line_is_classified(self):

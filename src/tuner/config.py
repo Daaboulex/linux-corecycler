@@ -77,6 +77,15 @@ class TunerConfig:
     # the session instead of re-applying a profile that keeps crashing the machine.
     resume_crash_quarantine_threshold: int = 3
 
+    # Crash hunt (evidence-based attribution). When a hard crash cannot be
+    # attributed — no kernel MCE trace and multiple cores held offsets — the
+    # tuner never guesses a culprit: it runs isolated per-core hunt slots
+    # (candidate at its tuned value, every other core at stock) under
+    # variable/idle load. Slot length per core, and how many fruitless hunts
+    # in a row pause the session for the owner instead of continuing blind.
+    hunt_slot_seconds: int = 60
+    max_unattributed_crash_hunts: int = 2
+
     # Fail closed when no CPU temperature sensor is readable: refuse to drive a
     # stress test with zero thermal protection unless the user explicitly opts in.
     allow_missing_thermal_sensor: bool = False
@@ -167,6 +176,10 @@ class TunerConfig:
             errors.append("crash_penalty_steps must be 1-10")
         if not 1 <= self.resume_crash_quarantine_threshold <= 20:
             errors.append("resume_crash_quarantine_threshold must be 1-20")
+        if not 30 <= self.hunt_slot_seconds <= 600:
+            errors.append("hunt_slot_seconds must be 30-600")
+        if not 1 <= self.max_unattributed_crash_hunts <= 10:
+            errors.append("max_unattributed_crash_hunts must be 1-10")
         if not 0 <= self.apparatus_failure_streak <= 100:
             errors.append("apparatus_failure_streak must be 0-100 (0 disables)")
         if 0 < self.apparatus_failure_streak <= self.max_confirm_retries:

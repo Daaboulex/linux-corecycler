@@ -597,28 +597,25 @@ class TestValidationCrashArmsBreaker:
     def test_in_test_validation_cores_are_attributed_as_crashes(
         self, db, topo, smu, mock_backend
     ):
-        """The detection half of the fix: a confirmed core left in_test by a crashing
-        validation worker is attributed as a crash and penalized on the resume path —
-        phase is irrelevant, only the in_test flag matters, and the journal cannot see
-        it. The streak/quarantine half (a non-empty crashed set -> breaker) is the
-        same code TestResumeCrashCircuitBreaker covers; the two compose to the full
-        guarantee. (resume()'s drift/status Qt signal emissions abort under
-        pytest+PySide6, but _detect_and_handle_crashes is the load-bearing logic and
-        the end-to-end path is verified out-of-harness.)"""
+        """The detection half of the fix: cores left in_test by a crashing
+        validation worker are still SEEN on the resume path — phase is
+        irrelevant, only the in_test flag matters, and the journal cannot see
+        it. Attribution policy: a multi-core stress set cannot identify the
+        guilty core, and guessing (the old most-aggressive rule) punished
+        innocents in the field — a validation crash with no kernel forensics
+        penalizes NOBODY and requests the isolated crash hunt instead. The
+        breaker still arms (pending_hunt counts as a crash-resume)."""
         cliffs = {0: -10, 1: -12}
         eng, sid, _ = self._seed_validating_at_stage2(
             db, smu, topo, mock_backend, cliffs, crash_penalty_steps=1, fine_step=1,
         )
         assert tp.journal_suspects(db, sid) == []  # journal is blind to validation
-        crashed = eng._detect_and_handle_crashes(eng._core_states)
-        # Attribution policy: a multi-core stress set cannot identify the guilty
-        # core; penalizing every member would demolish the whole profile on one
-        # event. Only the MOST AGGRESSIVE resident offset is penalized (the same
-        # policy the soft-fail validation path uses) — the breaker still arms
-        # (crashed is non-empty), and repeated wrong guesses are bounded by it.
-        assert crashed == [1]                            # -12 is most aggressive
-        assert eng._core_states[1].crash_count == 1      # penalized
-        assert eng._core_states[0].crash_count == 0      # spared
+        session = tp.get_session(db, sid)
+        crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
+        assert crashed == []                             # nobody guessed at
+        assert pending_hunt is True                      # hunt requested instead
+        assert eng._core_states[0].crash_count == 0      # no innocent penalized
+        assert eng._core_states[1].crash_count == 0
         assert all(not eng._core_states[c].in_test for c in cliffs)  # flags cleared
 
     def test_normal_validation_completion_clears_in_test(self, db, topo, smu, mock_backend):
@@ -1273,8 +1270,11 @@ class TestCrashAtConfirmedValue:
         )
         eng._core_states = {0: cs}
 
-        crashed = eng._detect_and_handle_crashes(eng._core_states)
+        crashed, pending_hunt = eng._attribute_crash_after_reboot(
+            tp.get_session(db, sid)
+        )
         assert crashed == [0]
+        assert pending_hunt is False
         assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM  # must re-earn confirmation
         assert cs.current_offset == -39                   # penalized by 3 steps
         assert cs.best_offset == -39                      # crashed -42 cannot stay best

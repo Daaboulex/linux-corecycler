@@ -1018,6 +1018,9 @@ class TestRapidTransitions:
 
         with (
             patch("subprocess.Popen", return_value=mock_proc),
+            # reset() shells out to dmesg — with Popen mocked globally that
+            # subprocess.run call would unpack a MagicMock; stub it out.
+            patch.object(sched.detector, "reset"),
             patch.object(sched.detector, "check_mce", return_value=[]),
             patch("time.sleep"),
         ):
@@ -1066,6 +1069,7 @@ class TestRapidTransitions:
 
         with (
             patch("subprocess.Popen", return_value=mock_proc),
+            patch.object(sched.detector, "reset"),
             patch.object(sched.detector, "check_mce", return_value=[fake_mce]),
             patch("time.sleep"),
         ):

@@ -709,14 +709,14 @@ class TunerTab(QWidget):
     def _on_co_drift(self, drift_json: str) -> None:
         """Warn user that SMU CO values differ from session baselines."""
         drift = json.loads(drift_json)
-        lines = [f"Core {cid}: expected {v['expected']}, found {v['actual']}"
+        lines = [f"Core {cid}: tuner last wrote {v['expected']}, found {v['actual']}"
                  for cid, v in sorted(drift.items(), key=lambda x: int(x[0]))]
         QMessageBox.warning(
             self, "CO Drift Detected",
-            "CO offsets in SMU differ from session baselines.\n"
-            "This may happen if you changed CO values manually (Curve Optimizer tab) "
-            "or ran other tools since the last session.\n\n"
-            "Baselines will be restored before testing resumes.\n\n"
+            "CO offsets in the SMU differ from what the tuner last wrote — "
+            "something outside the tuner changed them (Curve Optimizer tab, "
+            "another tool).\n\n"
+            "The session's own values will be re-applied before testing resumes.\n\n"
             + "\n".join(lines),
         )
 
@@ -786,7 +786,7 @@ class TunerTab(QWidget):
         if status == "paused":
             self._pause_btn.setEnabled(False)
             self._resume_btn.setEnabled(True)
-        elif status in ("running", "validating"):
+        elif status in ("running", "validating", "hunting"):
             self._pause_btn.setEnabled(True)
             self._resume_btn.setEnabled(False)
             self._abort_btn.setEnabled(True)

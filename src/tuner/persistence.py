@@ -73,9 +73,15 @@ def journal_co_intent(
     db.journal_co_intent(session_id, core_id, value, survived)
 
 
-def journal_mark_survived(db: HistoryDB, session_id: int) -> None:
-    """Mark all resident CO values survived after a test completes without a crash."""
-    db.journal_mark_survived(session_id)
+def journal_mark_survived(
+    db: HistoryDB, session_id: int, exclude_cores: tuple[int, ...] | list[int] = ()
+) -> None:
+    """Mark all resident CO values survived after a test completes without a crash.
+
+    Cores in ``exclude_cores`` stay un-survived — fresh contrary evidence (a
+    corrected MCE named them during this very test) outranks the survival.
+    """
+    db.journal_mark_survived(session_id, exclude_cores)
 
 
 def journal_suspects(db: HistoryDB, session_id: int) -> list[tuple[int, int]]:
@@ -94,6 +100,24 @@ def get_resume_crash_streak(db: HistoryDB, session_id: int) -> int:
 
 def set_resume_crash_streak(db: HistoryDB, session_id: int, value: int) -> None:
     db.set_resume_crash_streak(session_id, value)
+
+
+def journal_values(db: HistoryDB, session_id: int) -> dict[int, int]:
+    """Return {core_id: value} — the last CO value the tuner wrote per core."""
+    return db.journal_values(session_id)
+
+
+def get_unattributed_crashes(db: HistoryDB, session_id: int) -> int:
+    return db.get_unattributed_crashes(session_id)
+
+
+def set_unattributed_crashes(db: HistoryDB, session_id: int, value: int) -> None:
+    db.set_unattributed_crashes(session_id, value)
+
+
+def set_hunting_core(db: HistoryDB, session_id: int, core_id: int | None) -> None:
+    """Durably record which core an isolated hunt slot stresses, before it runs."""
+    db.set_hunting_core(session_id, core_id)
 
 
 # ---------------------------------------------------------------------------
@@ -115,11 +139,13 @@ def log_test_result(
     backend: str | None = None,
     stress_mode: str | None = None,
     fft_preset: str | None = None,
+    peak_stretch_pct: float | None = None,
 ) -> int:
     return db.insert_tuner_test_log(
         session_id, core_id, offset, phase, passed,
         error_msg, error_type, duration, run_id,
         backend=backend, stress_mode=stress_mode, fft_preset=fft_preset,
+        peak_stretch_pct=peak_stretch_pct,
     )
 
 

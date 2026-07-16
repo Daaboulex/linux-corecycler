@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .backends.base import KILLED_BY_US_CODES, StressBackend, StressConfig, StressResult
-from .detector import ErrorDetector
+from .detector import ErrorDetector, MCEEvent
 
 if TYPE_CHECKING:
     from .topology import CPUTopology
@@ -99,6 +99,10 @@ class CoreScheduler:
 
         self.state = TestState.IDLE
         self.results: dict[int, list[StressResult]] = {}
+        # Every kernel error event seen during this run, tested core or not —
+        # events on OTHER cores are evidence about those cores (a corrected MCE
+        # names its CPU) and must reach the engine instead of being dropped.
+        self.observed_mce: list[MCEEvent] = []
         self.core_status: dict[int, CoreTestStatus] = {}
         self._process: subprocess.Popen | None = None
         self._process_lock = threading.Lock()
@@ -140,6 +144,7 @@ class CoreScheduler:
         """Run the full test cycle. Blocks until complete. Use run_async() for GUI."""
         self.state = TestState.RUNNING
         self._stop_event.clear()
+        self.observed_mce = []
         self.detector.reset()
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -189,6 +194,33 @@ class CoreScheduler:
     # ------------------------------------------------------------------
     # Temperature monitoring
     # ------------------------------------------------------------------
+
+    def _poll_mce(self, own_cpus: set[int], phase: str) -> str | None:
+        """Poll for new kernel error events; record ALL, fail only on OWN.
+
+        An event on one of the tested core's CPUs (either SMT sibling) or with
+        no CPU attribution (kernel oops) fails the current test. Events on
+        other CPUs are evidence about THOSE cores: recorded in observed_mce
+        for the engine, never a verdict on the core under test.
+        """
+        events = self.detector.check_mce()
+        if not events:
+            return None
+        self.observed_mce.extend(events)
+        for e in events:
+            if e.cpu == -1 or e.cpu in own_cpus:
+                return f"MCE during {phase}: {e.message}"
+        return None
+
+    @staticmethod
+    def _own_cpu_set(cpu_list: str) -> set[int]:
+        """Parse a taskset-style comma list ("0,16") into a CPU id set."""
+        cpus: set[int] = set()
+        for part in cpu_list.split(","):
+            part = part.strip()
+            if part.isdigit():
+                cpus.add(int(part))
+        return cpus
 
     @staticmethod
     def _read_cpu_temperature() -> float | None:
@@ -467,14 +499,13 @@ class CoreScheduler:
             # Check for MCE during idle (the primary purpose of idle testing)
             core_info = self.topology.cores.get(core_id)
             if core_info:
-                logical_cpu = core_info.logical_cpus[0]
-                mce_events = self.detector.check_mce(target_cpu=logical_cpu)
-                if mce_events and status:
+                mce_error = self._poll_mce(set(core_info.logical_cpus), f"{phase_name} (idle)")
+                if mce_error and status:
                     status.errors += 1
-                    status.last_error = f"MCE during idle: {mce_events[0].message}"
+                    status.last_error = mce_error
                     if self.config.stop_on_error:
                         self._stop_event.set()
-                    return  # always stop idle on MCE
+                    return  # always stop idle on an own-core MCE
 
             time.sleep(min(1.0, duration - (time.monotonic() - start)))
 
@@ -497,6 +528,7 @@ class CoreScheduler:
         for cb in self.on_phase_change:
             cb(core_id, "variable load")
 
+        own_cpus = self._own_cpu_set(cpu_list)
         start_time = time.monotonic()
         deadline = start_time + total_duration
         interval = self.config.variable_load_interval
@@ -535,10 +567,10 @@ class CoreScheduler:
                             )
                             self._stop_event.set()
                             break
-                        mce_events = self.detector.check_mce(target_cpu=logical_cpu)
-                        if mce_events:
+                        mce_error = self._poll_mce(own_cpus, "variable load")
+                        if mce_error:
                             passed = False
-                            error_msg = f"MCE during variable load: {mce_events[0].message}"
+                            error_msg = mce_error
                             if self.config.stop_on_error:
                                 self._stop_event.set()
                             break
@@ -586,10 +618,10 @@ class CoreScheduler:
                         )
                         self._stop_event.set()
                         break
-                    mce_events = self.detector.check_mce(target_cpu=logical_cpu)
-                    if mce_events:
+                    mce_error = self._poll_mce(own_cpus, "idle transition")
+                    if mce_error:
                         passed = False
-                        error_msg = f"MCE during idle transition: {mce_events[0].message}"
+                        error_msg = mce_error
                         if self.config.stop_on_error:
                             self._stop_event.set()
                         break
@@ -709,6 +741,7 @@ class CoreScheduler:
         cmd = self.backend.get_command(self.stress_config, core_work_dir)
         full_cmd = ["taskset", "-c", cpu_list] + cmd
 
+        own_cpus = self._own_cpu_set(cpu_list)
         start_time = time.monotonic()
         stdout_data = ""
         stderr_data = ""
@@ -816,11 +849,12 @@ class CoreScheduler:
                             self._stop_event.set()
                         break
 
-                # periodic MCE check
-                mce_events = self.detector.check_mce(target_cpu=logical_cpu)
-                if mce_events:
+                # periodic MCE check — an own-core event fails this test;
+                # foreign events are recorded as evidence, never a verdict here
+                mce_error = self._poll_mce(own_cpus, f"stress (CPU {cpu_list})")
+                if mce_error:
                     passed = False
-                    error_msg = f"MCE detected on CPU {logical_cpu}: {mce_events[0].message}"
+                    error_msg = mce_error
                     status.errors += 1
                     status.last_error = error_msg
                     if self.config.stop_on_error:
@@ -848,9 +882,18 @@ class CoreScheduler:
             # kill process if still running (timeout or stop requested)
             self._kill_current()
 
-            # Drain any MCE events that arrived during the kill to prevent
-            # false attribution to the next core's test
-            self.detector.check_mce()
+            # Drain events that arrived during the kill: they happened inside
+            # this test's window, so record them and let an own-core event
+            # still flip this verdict rather than vanish.
+            drained = self.detector.check_mce()
+            if drained:
+                self.observed_mce.extend(drained)
+                own_late = [e for e in drained if e.cpu == -1 or e.cpu in own_cpus]
+                if passed and own_late:
+                    passed = False
+                    error_msg = f"MCE during stress (CPU {cpu_list}): {own_late[0].message}"
+                    status.errors += 1
+                    status.last_error = error_msg
 
             # Warn if the process exited almost immediately — likely a missing
             # binary, bad path, or misconfigured backend.
@@ -993,6 +1036,8 @@ class CoreScheduler:
         if self._stop_event.is_set():
             self.state = TestState.FINISHED
             return True, None
+        self.observed_mce = []
+        self.detector.reset()
         elapsed = 0.0
         cycle = 0
         core_work_dir = self.work_dir / "rapid_transition"
@@ -1068,10 +1113,14 @@ class CoreScheduler:
                 elapsed += time.monotonic() - segment_start
                 if stopped:
                     break
-                mce_events = self.detector.check_mce()
-                if mce_events:
+                events = self.detector.check_mce()
+                if events:
+                    self.observed_mce.extend(events)
                     self.state = TestState.FINISHED
-                    return False, f"MCE during idle phase of rapid transition cycle {cycle}"
+                    return False, (
+                        f"MCE during idle phase of rapid transition cycle {cycle}: "
+                        f"{events[0].message}"
+                    )
 
         self.state = TestState.FINISHED
         return True, None

@@ -174,6 +174,8 @@ class TestConfigValidationFailsClosed:
             "backoff_preconfirm_multiplier": 0.0,
             "stretch_threshold_pct": -1.0,
             "resume_crash_quarantine_threshold": 0,
+            "hunt_slot_seconds": 10,
+            "max_unattributed_crash_hunts": 0,
         }
         for field, bad in cases.items():
             errors = self._cfg(**{field: bad}).validate()
