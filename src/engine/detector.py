@@ -182,8 +182,14 @@ def harvest_kernel_mce(
     if since is None:
         return [], False
     try:
+        # _TRANSPORT=kernel, NOT -k: -k implies --boot (current boot only),
+        # which silently hides the crashed boot's MCE lines — the entire
+        # point of this harvest (proven empty on the live incident journal).
         result = subprocess.run(
-            ["journalctl", "-k", "-q", "--no-pager", "-o", "short-unix", "--since", since],
+            [
+                "journalctl", "-q", "--no-pager", "-o", "short-unix",
+                "--since", since, "_TRANSPORT=kernel",
+            ],
             capture_output=True,
             text=True,
             timeout=timeout,
