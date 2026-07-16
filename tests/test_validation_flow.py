@@ -93,7 +93,7 @@ class TestIncrementalValidation:
         _seed_validating(eng, db)
         eng._validation_core_order = sorted(BEST)
         eng._validation_halves = [sorted(BEST)[:4], sorted(BEST)[4:]]
-        eng._validation_stage = 5  # finalize sentinel
+        eng._validation_stage = 7  # finalize sentinel
         eng._validation_dirty = True
 
         eng._run_validation_next()
@@ -107,7 +107,7 @@ class TestIncrementalValidation:
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_validating(eng, db)
         eng._validation_core_order = sorted(BEST)
-        eng._validation_stage = 5
+        eng._validation_stage = 7
         eng._validation_dirty = False
 
         eng._run_validation_next()
@@ -176,6 +176,105 @@ class TestValidationResumePosition:
         assert eng._validation_dirty is False
         sess = tp.get_session(db, eng._session_id)
         assert (sess.validation_stage, sess.validation_index) == (1, 0)
+
+
+class TestSpectrumAndSoak:
+    def test_disabled_stages_chain_through_to_finalize(self, db, topo_dual_ccd_x3d, mock_backend):
+        eng = _make_engine(
+            db, topo_dual_ccd_x3d, mock_backend,
+            validate_transitions=False, validate_spectrum=False, validate_soak=False,
+        )
+        _seed_validating(eng, db)
+        eng._validation_core_order = sorted(BEST)
+        eng._validation_stage = 4
+
+        # Each skip hop is a queued step; drive the chain to completion.
+        for _ in range(5):
+            if eng.status == "idle":
+                break
+            eng._run_validation_next()
+
+        assert eng.status == "idle"
+        assert tp.get_session(db, eng._session_id).status == "completed"
+
+    def test_stage5_slot_uses_spectrum_profile(self, db, topo_dual_ccd_x3d, mock_backend):
+        eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
+        _seed_validating(eng, db)
+        eng._validation_core_order = sorted(BEST)
+        eng._validation_stage = 5
+        eng._validation_core_index = 2
+        calls = []
+        eng._start_worker = lambda core, dur, **kw: calls.append((core, dur, kw))
+
+        eng._run_validation_stage5()
+
+        assert calls == [(sorted(BEST)[2], eng._config.spectrum_slot_seconds,
+                          {"spectrum": True})]
+
+    def test_stage5_pass_advances_and_fail_retries_slot(self, db, topo_dual_ccd_x3d, mock_backend):
+        eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
+        _seed_validating(eng, db)
+        eng._validation_core_order = sorted(BEST)
+        eng._validation_stage = 5
+        eng._validation_core_index = 3
+
+        eng._on_validation_test_finished(sorted(BEST)[3], passed=True)
+        assert eng._validation_core_index == 4
+
+        eng._on_validation_test_finished(sorted(BEST)[4], passed=False)
+        assert eng._validation_core_index == 4  # same slot retries
+        assert eng._validation_stage == 5
+        assert eng._validation_dirty is True
+
+    def test_soak_pass_finalizes(self, db, topo_dual_ccd_x3d, mock_backend):
+        eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
+        _seed_validating(eng, db)
+        eng._validation_core_order = sorted(BEST)
+        eng._validation_stage = 6
+        eng._soaking = True
+
+        eng._on_test_finished(sorted(BEST)[0], True, "", "", 10.0, 0.0, "", "")
+
+        assert eng._validation_stage == 7
+        eng._run_validation_next()
+        assert eng.status == "idle"
+        assert tp.get_session(db, eng._session_id).status == "completed"
+
+    def test_soak_event_demotes_named_core_and_exits_validation(
+        self, db, topo_dual_ccd_x3d, mock_backend
+    ):
+        import json as _json
+
+        eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
+        _seed_validating(eng, db)
+        eng._validation_core_order = sorted(BEST)
+        eng._validation_stage = 6
+        eng._soaking = True
+        eng._co_applied[5] = BEST[5]
+        cpu = topo_dual_ccd_x3d.cores[5].logical_cpus[0]
+        payload = _json.dumps([
+            {"cpu": cpu, "bank": 0, "corrected": True, "message": "soak whisper",
+             "raw_ts": 1.0},
+        ])
+
+        eng._on_test_finished(
+            sorted(BEST)[0], False, "kernel error during soak", "mce",
+            10.0, 0.0, payload, "",
+        )
+
+        cs = eng._core_states[5]
+        assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
+        assert cs.backoff_fail_bound == BEST[5]
+        assert eng._validation_dirty is True
+        assert eng.status == "running"
+        assert tp.get_session(db, eng._session_id).validation_stage == 6
+
+    def test_stage_count_reflects_flags(self, db, topo_dual_ccd_x3d, mock_backend):
+        eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
+        assert eng._get_validation_stage_count() == 6
+        eng._config.validate_transitions = False
+        eng._config.validate_soak = False
+        assert eng._get_validation_stage_count() == 4
 
 
 class TestBackoffKeepsPhase:

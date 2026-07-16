@@ -107,6 +107,8 @@ class TestNewConfigOptions:
         assert cfg.hardening_tiers == [
             {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
             {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "LARGE"},
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL",
+             "profile": "spectrum"},
         ]
 
     def test_max_core_time_default(self):
@@ -144,6 +146,21 @@ class TestNewConfigOptions:
         errors = cfg.validate()
         assert any("max_core_time" in e.lower() for e in errors)
 
+    def test_spectrum_tier_profile_validated(self):
+        good = TunerConfig(hardening_tiers=[
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL",
+             "profile": "spectrum"},
+        ])
+        assert not any("profile" in e for e in good.validate())
+        bad = TunerConfig(hardening_tiers=[
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL",
+             "profile": "bogus"},
+        ])
+        assert any("profile" in e for e in bad.validate())
+
+    def test_default_tiers_include_spectrum(self):
+        assert TunerConfig().hardening_tiers[-1]["profile"] == "spectrum"
+
 
 class TestConfigValidationFailsClosed:
     """Invalid configs must be rejected (fail closed). A step size < 1 would make
@@ -174,6 +191,8 @@ class TestConfigValidationFailsClosed:
             "resume_crash_quarantine_threshold": 0,
             "hunt_slot_seconds": 10,
             "max_unattributed_crash_hunts": 0,
+            "spectrum_slot_seconds": 10,
+            "soak_duration_seconds": 10,
         }
         for field, bad in cases.items():
             errors = self._cfg(**{field: bad}).validate()

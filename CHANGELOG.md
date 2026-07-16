@@ -56,6 +56,24 @@ core 7 (the deepest, most-proven offset) on the next resume.
 - Export/Validate read only `phase='confirmed'` and reported "no confirmed
   cores" on a fully HARDENED session; hardened cores are included now.
 
+### Added (2026-07-17, light-load coverage + real-world soak)
+
+- The load class that actually crashes machines is now tested per core: a
+  third default hardening tier runs the light-load spectrum (max-boost
+  bursts, load transitions, idle watch) instead of sustained stress, and
+  validation gains stage 5 — the same spectrum per core with every offset
+  applied. Sustained-only testing passes cores that fail at max boost.
+- Validation stage 6: the real-world soak. After a clean pass, the tuner
+  applies the profile and just watches the kernel error stream (no
+  synthetic load) while the machine is used normally; any hardware whisper
+  demotes the named core and validation resumes after it re-earns. A dirty
+  pass skips the soak; only the final clean pass earns it.
+- Config: `validate_spectrum`/`spectrum_slot_seconds`,
+  `validate_soak`/`soak_duration_seconds`, and hardening tiers accept
+  `profile: spectrum`; all validated. Stage flow is a skip-chain (4 ->
+  5 -> 6 -> finalize sentinel 7), so disabled stages fall through and the
+  persisted cursor stays meaningful across versions.
+
 ### Changed (2026-07-17, simultaneous validation + observability)
 
 - Validation stages 2/3 now genuinely run all target cores at once: one
