@@ -215,8 +215,7 @@ class TestEncodeDecodeZen3:
         """Zen 3 must honor the topology-detected CCD and probed slot, not derive
         them from core_id. On a harvested/2-CCD part (5900X 6+6, 5600X 6-of-8) the
         kernel renumbers cores contiguously, so deriving the slot from core_id alone
-        targets the WRONG physical SMU slot — a silent wrong-core write. Regression
-        for the blind-audit finding that the Zen 3 branch discarded ccd/slot."""
+        targets the WRONG physical SMU slot — a silent wrong-core write."""
         # Logical core 6 is physically CCD1, slot 0 (5900X). Must encode CCD1/slot0,
         # NOT the core_id-derived CCD0/slot6.
         encoded = encode_co_arg(6, -30, self.gen, ccd=1, slot=0)

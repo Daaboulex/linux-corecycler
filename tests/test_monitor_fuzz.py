@@ -58,7 +58,7 @@ class TestProcStatRobust:
     def test_cpu_usage_skips_malformed_cpu_lines(self):
         """A malformed cpuN line (non-numeric id/values, too few fields) is skipped,
         not crashed on. The random-text fuzz rarely produces a 'cpu' line, so assert
-        this explicitly (truthful regression for the parse guard)."""
+        this explicitly."""
         reader = CPUUsageReader()
         bad = "cpu0 abc def ghi\ncpuX 1 2 3\ncpu7 5 6\ncpu1 100 0 50 1000 10 0 5 0\n"
         with patch("pathlib.Path.read_text", return_value=bad):

@@ -257,7 +257,7 @@ class TestDetectCCDLayout:
     @pytest.mark.parametrize("bad_id", ["0x0", "", "  ", "abc"])
     def test_malformed_l3_id_does_not_crash(self, tmp_path, bad_id):
         """A non-decimal sysfs L3 cache `id` (transient zero-byte read, a hex id)
-        must not crash detection with ValueError on int() — blind audit found this."""
+        must not crash detection with ValueError on int()."""
         topo = parse_cpuinfo_from_text(CPUINFO_SINGLE_CCD_NO_SMT)
         cpu_dir = tmp_path / "cpu"
         for i in range(4):

@@ -386,8 +386,8 @@ def drive_intermittent(db, topo, backend, cliffs, flaky, cfg_kw, baseline=0, cap
 
 class TestJournalCatchesUnflaggedCrash:
     def test_unflagged_crash_is_penalized_via_journal(self, db, topo, smu, mock_backend):
-        """The old in_test-only detection missed crashes during idle / baseline
-        restore / revert. The CO journal catches them."""
+        """The CO journal catches a crash with no in_test flag (idle, baseline
+        restore, revert)."""
         cfg = TunerConfig(cores_to_test=[0], crash_penalty_steps=3, fine_step=1)
         sid = tp.create_session(db, cfg, "", "")
         # Core was NOT mid-test (in_test=False) but -12 was resident when the box died.
@@ -545,9 +545,7 @@ class TestValidationCrashArmsBreaker:
     Validation re-applies each core's confirmed offset, which `_apply_co` journals
     survived=1, so the CO-journal crash detector is blind to it. Only the in_test
     flag can attribute a multi-core power-interaction crash (the failure mode
-    validation exists to find). Before the fix the validation workers never set
-    in_test, so such a crash left `crashed` empty -> streak reset to 0 -> the same
-    profile was re-applied into the same crash forever.
+    validation exists to find).
     """
 
     def _seed_validating_at_stage2(self, db, smu, topo, backend, cliffs, **cfg):
@@ -581,10 +579,10 @@ class TestValidationCrashArmsBreaker:
     def test_validation_stage_flags_all_stressed_cores_in_test(
         self, db, topo, smu, mock_backend
     ):
-        """The fix: a multi-core validation stage flags EVERY stressed core in_test
-        and PERSISTS it before the worker — and the CO journal is blind here
-        (confirmed offsets journal survived=1), so in_test is the only signal that
-        can attribute a validation crash."""
+        """A multi-core validation stage flags EVERY stressed core in_test and
+        PERSISTS it before the worker — the CO journal is blind here (confirmed
+        offsets journal survived=1), so in_test is the only signal that can
+        attribute a validation crash."""
         cliffs = {0: -10, 1: -12, 2: -8, 3: -15}
         _eng, sid, launched = self._seed_validating_at_stage2(
             db, smu, topo, mock_backend, cliffs,
@@ -597,14 +595,12 @@ class TestValidationCrashArmsBreaker:
     def test_in_test_validation_cores_are_attributed_as_crashes(
         self, db, topo, smu, mock_backend
     ):
-        """The detection half of the fix: cores left in_test by a crashing
-        validation worker are still SEEN on the resume path — phase is
-        irrelevant, only the in_test flag matters, and the journal cannot see
-        it. Attribution policy: a multi-core stress set cannot identify the
-        guilty core, and guessing (the old most-aggressive rule) punished
-        innocents in the field — a validation crash with no kernel forensics
-        penalizes NOBODY and requests the isolated crash hunt instead. The
-        breaker still arms (pending_hunt counts as a crash-resume)."""
+        """Cores left in_test by a crashing validation worker are SEEN on the
+        resume path — phase is irrelevant, only the in_test flag matters, and
+        the journal cannot see it. A multi-core stress set cannot identify the
+        guilty core, so a validation crash with no kernel forensics penalizes
+        NOBODY and requests the isolated crash hunt instead. The breaker still
+        arms (pending_hunt counts as a crash-resume)."""
         cliffs = {0: -10, 1: -12}
         eng, sid, _ = self._seed_validating_at_stage2(
             db, smu, topo, mock_backend, cliffs, crash_penalty_steps=1, fine_step=1,
@@ -756,16 +752,16 @@ class TestClosedLoopSimulation:
 
 class TestIntermittentInstability:
     """The deterministic closed-loop sim proves safety only for a monotonic cliff;
-    the audit flagged that real CO instability is intermittent -- an offset passes a
-    short search test and crashes a later confirm/harden. These drive the REAL loop
-    against an intermittent oracle and assert the generalized safety invariant: after
+    real CO instability is intermittent -- an offset passes a short search test
+    and crashes a later confirm/harden. These drive the REAL loop against an
+    intermittent oracle and assert the generalized safety invariant: after
     termination, each core's resident CO is strictly LESS aggressive than every offset
     that actually hard-crashed during the run (resident > max(crashed offsets))."""
 
     def test_offset_that_passes_then_crashes_is_backed_off(self, db, topo, mock_backend):
         # Core 0: >= -8 always stable; <= -20 always hard-crashes; a marginal offset
         # passes its FIRST test then hard-crashes on the SECOND -- "passed search,
-        # failed confirm/harden". Deterministic regression for the intermittent path.
+        # failed confirm/harden".
         cliffs = {0: (-8, -20)}
         flaky = {0: 2}
         eng, steps, crashes, crashed_at, sid = drive_intermittent(
@@ -1337,7 +1333,7 @@ class TestStartupFailureIsNotAVerdict:
         eng._validation_stage = 2
         eng._validation_core_order = sorted(cliffs)
 
-        with patch("tuner.engine.CoreScheduler", side_effect=RuntimeError("boom")):
+        with patch("tuner.engine.ParallelStress", side_effect=RuntimeError("boom")):
             eng._run_validation_stage2()
 
         assert eng._status == "paused"

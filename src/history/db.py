@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 DATA_DIR = user_home() / ".local" / "share" / "corecycler" / "history"
 DEFAULT_DB_PATH = DATA_DIR / "history.db"
 
-# Where the old sudo-splits-the-database bug left root's data.
+# Legacy location of root-owned history data from sudo runs.
 LEGACY_ROOT_DB = Path("/root/.local/share/corecycler/history/history.db")
 
 log = logging.getLogger(__name__)
@@ -31,9 +31,9 @@ log = logging.getLogger(__name__)
 def adopt_legacy_root_db(db: HistoryDB, root_db: Path = LEGACY_ROOT_DB) -> dict[str, int] | None:
     """One-time adoption of a root-owned history database.
 
-    The old bug wrote sudo runs to /root; this merges that data into the
-    user's (single) database and renames the source ``*.adopted`` so it can
-    never be merged twice or silently diverge again. Only possible when
+    Sudo runs may have left history under /root; this merges that data into
+    the user's (single) database and renames the source ``*.adopted`` so it
+    can never be merged twice or silently diverge again. Only possible when
     running as root — the file is unreadable otherwise. Returns the merge
     counts, or None when there was nothing to adopt.
     """
@@ -605,7 +605,7 @@ ALTER TABLE tuner_test_log ADD COLUMN peak_stretch_pct REAL;
 
     # v13 -> v14: validation progress survives reboots and app restarts, so a
     # back-off or crash never restarts the whole multi-core validation from
-    # stage 1 (141 stage-1 re-tests in one field session).
+    # stage 1.
     _DDL_MIGRATE_V14 = """\
 ALTER TABLE tuner_sessions ADD COLUMN validation_stage INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE tuner_sessions ADD COLUMN validation_index INTEGER NOT NULL DEFAULT 0;
@@ -1492,8 +1492,7 @@ ALTER TABLE tuner_sessions ADD COLUMN validation_requeue TEXT NOT NULL DEFAULT '
         return [dict(r) for r in rows]
 
     def get_tuner_best_profile(self, session_id: int) -> dict[int, int]:
-        # HARDENED is confirmed-plus-extra-stress — excluding it made Export/
-        # Validate report "no confirmed cores" on any fully hardened session.
+        # HARDENED is confirmed-plus-extra-stress, so it counts as confirmed here.
         rows = self.__conn.execute(
             "SELECT core_id, best_offset FROM tuner_core_states "
             "WHERE session_id=? AND phase IN ('confirmed','hardened') "
@@ -1584,7 +1583,7 @@ ALTER TABLE tuner_sessions ADD COLUMN validation_requeue TEXT NOT NULL DEFAULT '
     def merge_from(self, other_path: str | Path) -> dict[str, int]:
         """Adopt every record from another corecycler history database.
 
-        Ends the old sudo-splits-the-database situation without losing data:
+        Merges a database left elsewhere (e.g. under /root by sudo runs):
         the source is first opened through HistoryDB (migrating it to the
         current schema, however old it is), then every run, tuning context and
         tuner session is copied in with fresh ids and remapped references.

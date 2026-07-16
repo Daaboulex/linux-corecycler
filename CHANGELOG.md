@@ -56,6 +56,24 @@ core 7 (the deepest, most-proven offset) on the next resume.
 - Export/Validate read only `phase='confirmed'` and reported "no confirmed
   cores" on a fully HARDENED session; hardened cores are included now.
 
+### Changed (2026-07-17, simultaneous validation + observability)
+
+- Validation stages 2/3 now genuinely run all target cores at once: one
+  pinned stress process per core (`engine/parallel.py`), full package power
+  draw, and per-core verdicts — every lane's pass/fail is logged, a failure
+  names exactly its core, and launch failures fail closed (a missing binary
+  behind taskset previously read as a clean pass).
+- Live MCE polling no longer filters dmesg by level: AMD decoded
+  corrected-error lines sit below err/warn and were silently invisible to
+  the in-test detector (found live: a corrected error on an idle core during
+  a validation slot left no trace). The line classifier is the filter.
+- Two log surfaces: the human narrative stays at INFO on stderr; a rotating
+  DEBUG file (`~/.local/share/corecycler/logs/corecycler.log`) records what
+  verdicts drop — every dmesg poll and its events, every CO write with its
+  survived state, and every validation-cursor save.
+- Narration comments stripped repo-wide (175 lines): the source states
+  timeless facts and constraints; the change story lives here.
+
 ### Changed (2026-07-16, incremental validation — schema v14)
 
 - Validation progress is persisted after every transition

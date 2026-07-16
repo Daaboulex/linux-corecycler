@@ -59,7 +59,7 @@ class TestUpdateElapsedNoNameError:
         feed_mock = MagicMock()
         ns._feed_core_grid_telemetry = feed_mock
 
-        # Must not raise NameError (the original bug: `scheduler` undefined)
+        # Must not raise NameError
         ns._update_elapsed()
 
         # Verify _feed_core_grid_telemetry was called
@@ -143,10 +143,7 @@ class TestActiveTestCoreSetBySignal:
 
 class TestNoCrossThreadSchedulerAccess:
     def test_no_cross_thread_scheduler_access(self):
-        """src/gui/main_window.py must not contain 'scheduler._current_core'.
-
-        This is the codebase audit test pattern from Phase 2 (test_no_bare_setsid_in_src).
-        """
+        """src/gui/main_window.py must not contain 'scheduler._current_core'."""
         from pathlib import Path
 
         src = Path(__file__).resolve().parent.parent / "src" / "gui" / "main_window.py"

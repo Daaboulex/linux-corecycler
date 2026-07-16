@@ -613,10 +613,9 @@ def mock_ryzen_smu_sysfs(tmp_path):
 @pytest.fixture(autouse=True)
 def assume_rebooted(monkeypatch):
     """Resume-time crash detection is gated on an actual reboot since the
-    session's last write (tuner.engine._rebooted_since). The crash-recovery
-    tests were written under the old always-on semantics and a test process
-    obviously never rebooted, so default the gate to "rebooted" here; tests
-    covering the no-reboot path override it explicitly.
+    session's last write (tuner.engine._rebooted_since). A test process never
+    rebooted, so default the gate to "rebooted" here; tests covering the
+    no-reboot path override it explicitly.
     """
     import tuner.engine as engine_mod
 

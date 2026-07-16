@@ -82,7 +82,7 @@ class TunerConfig:
     # tuner never guesses a culprit: it runs isolated per-core hunt slots
     # (candidate at its tuned value, every other core at stock) under
     # variable/idle load. Slot length per core, and how many fruitless hunts
-    # in a row pause the session for the owner instead of continuing blind.
+    # in a row pause the session for the user instead of continuing blind.
     hunt_slot_seconds: int = 60
     max_unattributed_crash_hunts: int = 2
 

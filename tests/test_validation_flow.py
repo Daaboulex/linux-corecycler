@@ -1,8 +1,6 @@
 """Incremental multi-core validation: persisted cursor, one-slot retries,
 solo re-tests after back-offs, and the final clean pass required for DONE.
-
-Field motivation: one session logged 141 stage-1 tests (~12 hours) because
-every single back-off restarted the whole stage for all 16 cores.
+A back-off must never restart the whole stage for every core.
 """
 
 from __future__ import annotations

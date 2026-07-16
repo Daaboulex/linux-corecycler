@@ -670,7 +670,7 @@ class CoreScheduler:
         error_msg = None
         start_time = time.monotonic()
 
-        # --- Phase 1: Main stress test ---
+        # --- Main stress test ---
         status.current_phase = "stress"
         for cb in self.on_phase_change:
             cb(core_id, "stress")
@@ -682,7 +682,7 @@ class CoreScheduler:
             passed = False
             error_msg = phase_error
 
-        # --- Phase 2: Variable load test (if enabled) ---
+        # --- Variable load test (if enabled) ---
         if passed and self.config.variable_load and not self._stop_event.is_set():
             # Use 1/3 of the per-core time for variable load
             var_duration = self.config.seconds_per_core / 3.0
@@ -695,7 +695,7 @@ class CoreScheduler:
                 status.errors += 1
                 status.last_error = error_msg
 
-        # --- Phase 3: Idle stability test (if enabled) ---
+        # --- Idle stability test (if enabled) ---
         if passed and self.config.idle_stability_test > 0 and not self._stop_event.is_set():
             errors_before = status.errors
             self._idle_period(core_id, self.config.idle_stability_test, "idle stability")

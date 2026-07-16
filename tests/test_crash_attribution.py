@@ -1,12 +1,6 @@
 """Evidence-based crash attribution, the isolated crash hunt, and cross-core
-MCE evidence.
-
-The replay tests reconstruct the real 2026-07-16 field incident on a Ryzen 9
-9950X3D: a freeze during validation left EVERY core in_test with the whole CO
-journal marked survived, while the kernel journal named the true culprits via
-corrected Load-Store MCEs. The old policy ("blame the most aggressive
-in-test core") would have penalized the deepest-undervolt core — the single
-most proven one — and left the real marginal cores untouched.
+MCE evidence. The replay scenario: a validation freeze leaves every core
+in_test and the whole CO journal survived while kernel MCEs name the culprits.
 """
 
 from __future__ import annotations
@@ -27,7 +21,7 @@ from tuner.config import TunerConfig
 from tuner.engine import TunerEngine, _pick_report
 from tuner.state import CoreState, TunerPhase
 
-# Real kernel lines from the incident (kernel: prefix stripped).
+# Real kernel MCE line shape (kernel: prefix stripped).
 CPU5_CORRECTED = (
     "[Hardware Error]: CPU:{cpu} (1a:44:0) "
     "MC0_STATUS[Over|CE|MiscV|AddrV|-|-|SyndV|CECC|-|-|-]: 0xdc204000000d0175"
@@ -80,7 +74,7 @@ def _make_engine(db, topo, mock_backend, **cfg_kwargs):
 
 
 def _seed_hardened_validating(eng, db, best: dict[int, int], baselines: dict[int, int]):
-    """Recreate the field incident's persisted shape: every core HARDENED and
+    """Seed a validation freeze's persisted shape: every core HARDENED and
     in_test (a validation stage was stressing the whole set when the box
     froze), every journal row survived (validation re-applies proven values).
     """
@@ -124,7 +118,7 @@ class TestForensicAttribution:
         assert eng._core_states[5].backoff_fail_bound == -30
         assert eng._core_states[6].backoff_fail_bound == -41
         assert eng._core_states[5].phase == TunerPhase.BACKOFF_PRECONFIRM
-        # The deepest-undervolt core — the old policy's scapegoat — is untouched.
+        # The deepest-undervolt core is untouched.
         assert eng._core_states[7].crash_count == 0
         assert eng._core_states[7].best_offset == -50
         assert eng._core_states[7].phase == TunerPhase.HARDENED
@@ -271,7 +265,7 @@ class TestCrashHunt:
         eng._hunt_queue = []
         eng._end_hunt_fruitless()
         assert tp.get_unattributed_crashes(db, eng._session_id) == 2
-        assert eng.status == "paused"  # threshold reached — owner's call now
+        assert eng.status == "paused"  # threshold reached — user's call now
 
     def test_hunt_slot_failure_convicts_core_and_resets_counter(
         self, db, topo_dual_ccd_x3d, mock_backend
@@ -397,8 +391,7 @@ class TestPickReport:
         assert report.passed is True
 
     def test_failure_on_any_core_outranks_primary_pass(self):
-        """The field bug: stage 2 read only cores[0] — a detected failure on
-        core 5 vanished behind core 0's pass and the stage reported PASS."""
+        """A failure on any core in the batch must outrank the primary's pass."""
         results = {
             0: [self._result(0, True)],
             5: [self._result(5, False)],
@@ -423,9 +416,8 @@ class TestDriftAgainstJournal:
     def test_no_false_drift_when_smu_holds_tuner_written_values(
         self, db, topo_dual_ccd_x3d, mock_backend, monkeypatch
     ):
-        """Reopening mid-validation: the SMU holds exactly what the tuner wrote
-        (the confirmed offsets). The old baseline comparison called that drift
-        and promised to 'restore baselines' — false information, twice."""
+        """Reopening mid-validation: the SMU holding exactly what the tuner
+        wrote (the confirmed offsets) is not drift."""
         import tuner.engine as engine_mod
 
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)

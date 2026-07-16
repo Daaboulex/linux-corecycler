@@ -1,8 +1,6 @@
 """Tests for kernel-log error detection (MCE parsing, dmesg, journal harvest).
 
-The AMD Zen fixtures below are REAL kernel lines captured from a Ryzen 9
-9950X3D (2026-07-16) during the corrected-MCE storm that preceded a hard
-freeze — the exact format the previous parser silently rejected.
+The AMD Zen fixtures below are REAL kernel lines, verbatim.
 """
 
 from __future__ import annotations
@@ -248,6 +246,14 @@ class TestCheckMCE:
         det = _fresh_detector(baseline=100.0)
         with patch("subprocess.run", side_effect=FileNotFoundError):
             assert det.check_mce() == []
+
+    def test_dmesg_runs_unfiltered_by_level(self):
+        # AMD corrected-error lines sit below err/warn; a level filter hides
+        # them and the classifier is the intended filter.
+        det = _fresh_detector(baseline=100.0)
+        with patch("subprocess.run", return_value=_dmesg_result("")) as mock_run:
+            det.check_mce()
+        assert not any(str(a).startswith("--level") for a in mock_run.call_args[0][0])
 
     def test_reset_clears_seen_and_rebaselines(self):
         det = ErrorDetector()

@@ -148,7 +148,7 @@ class TestStatusAndCycle:
 
 class TestTestCompletion:
     def test_on_test_completed(self, db, logger):
-        # Signal(str) contract from Phase 1: results arrive as JSON string
+        # Signal(str) contract: results arrive as JSON string
         results = {
             "0": [{"passed": True, "duration_seconds": 600}],
             "1": [{"passed": False, "duration_seconds": 300, "error_message": "fail"}],

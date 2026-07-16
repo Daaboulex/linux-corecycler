@@ -104,11 +104,9 @@ class TestPMTableReader:
         assert result.raw_floats[0] == pytest.approx(42.0)
 
     def test_read_full_pm_table(self, tmp_path):
-        """Zen 5 header layout (evidence-based indices) plus core arrays.
-
-        Live-verified on a 9950X3D (0x620205): [2]=PPT limit (static),
-        [3]=package power (moves with load), [8]=TDC limit, [9]=TDC value,
-        [11]=hotspot temp, [63]=EDC limit candidate.
+        """Zen 5 header layout (evidence-based indices) plus core arrays:
+        [2]=PPT limit (static), [3]=package power (moves with load),
+        [8]=TDC limit, [9]=TDC value, [11]=hotspot temp, [63]=EDC limit.
         """
         smu_dir = tmp_path / "ryzen_smu_drv"
         smu_dir.mkdir()
@@ -449,7 +447,7 @@ class TestPMTableOffsets:
         assert offsets.verified is False
 
     def test_zen5_baseline_is_verified(self):
-        """The empirically-confirmed 9950X3D version is marked verified."""
+        """The empirically-confirmed table version 0x620205 is marked verified."""
         assert PM_TABLE_OFFSETS[0x620205].verified is True
 
 
