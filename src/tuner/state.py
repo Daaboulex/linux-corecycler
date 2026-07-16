@@ -77,3 +77,11 @@ class TunerSession:
     # names its culprit on resume — every other core was at stock).
     unattributed_crashes: int = 0
     hunting_core: int | None = None
+    # Multi-core validation cursor, persisted after every transition so a
+    # reboot or restart continues in place. dirty = a back-off happened since
+    # the last clean pass; DONE requires one full pass with dirty False.
+    validation_stage: int = 0
+    validation_index: int = 0
+    validation_half: int = 0
+    validation_dirty: bool = False
+    validation_requeue: str = "[]"  # JSON list of cores owing a solo re-test

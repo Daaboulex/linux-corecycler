@@ -56,6 +56,25 @@ core 7 (the deepest, most-proven offset) on the next resume.
 - Export/Validate read only `phase='confirmed'` and reported "no confirmed
   cores" on a fully HARDENED session; hardened cores are included now.
 
+### Changed (2026-07-16, incremental validation — schema v14)
+
+- Validation progress is persisted after every transition
+  (`tuner_sessions.validation_stage/index/half/dirty/requeue`): a reboot,
+  app restart, or search interlude continues exactly where validation was.
+  The old behavior restarted stage 1 for every core on every re-entry and
+  every back-off — one field session logged 141 stage-1 tests (~12 h).
+- A back-off now costs one re-test, not sixteen: a stage-1 failure retries
+  only its own slot; a stage-2/3/4 failure backs off the FAILING core
+  (per-core verdicts from phase 1), gives it one solo re-test with all
+  offsets live, then reruns just the failed stage. Justification: raising
+  one core's voltage cannot destabilize the others, so their coverage
+  stays valid. Cores whose offset changed during a search interlude are
+  detected by evidence (no stage-1 pass logged at their current best) and
+  requeued automatically.
+- DONE is stricter, not looser: if any back-off happened during a pass,
+  one final complete validation pass must come through with zero
+  back-offs before the profile is declared finished.
+
 ### Added (2026-07-16)
 
 - PBO power limits (PPT W / TDC A / EDC A) captured into every tuning

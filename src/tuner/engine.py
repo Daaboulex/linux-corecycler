@@ -352,6 +352,13 @@ class TunerEngine(QObject):
         # circuit breaker for a multi-core power-interaction crash).
         self._cores_under_stress: list[int] = []
 
+        # Incremental validation: dirty = a back-off happened since the last
+        # clean pass (DONE requires one full pass with dirty False); requeue =
+        # cores owing a solo re-test because their offset changed.
+        self._validation_dirty = False
+        self._validation_requeue: list[int] = []
+        self._in_requeue = False
+
         # Crash hunt: when a hard crash cannot be attributed by evidence, the
         # engine runs isolated per-core hunt slots instead of guessing.
         self._hunting = False
@@ -387,6 +394,9 @@ class TunerEngine(QObject):
         self._paused = False
         self._consecutive_start_failures = 0
         self._validation_stage = 0
+        self._validation_dirty = False
+        self._validation_requeue = []
+        self._in_requeue = False
         self._hunting = False
         self._hunt_queue = []
 
@@ -471,6 +481,9 @@ class TunerEngine(QObject):
         self._abort_requested = False
         self._paused = False
         self._validation_stage = 0
+        self._validation_dirty = False
+        self._validation_requeue = []
+        self._in_requeue = False
         self._hunting = False
         self._hunt_queue = []
         self._session_id = session_id
@@ -659,7 +672,7 @@ class TunerEngine(QObject):
                 f"Resumed session {session_id} — "
                 f"all cores confirmed, re-entering validation"
             )
-            self._enter_auto_validation(profile)
+            self._enter_auto_validation(profile, resume_from=session)
         else:
             self._set_status("running")
             tp.update_session_status(self._db, session_id, "running")
@@ -704,6 +717,7 @@ class TunerEngine(QObject):
         self._clear_cores_under_stress()
         self._revert_all_to_baseline()
         self._validation_stage = 0
+        self._in_requeue = False
         if self._hunting:
             self._hunting = False
             self._hunt_queue = []
@@ -724,6 +738,9 @@ class TunerEngine(QObject):
         self._abort_requested = False
         self._paused = False
         self._validation_stage = 0
+        self._validation_dirty = False
+        self._validation_requeue = []
+        self._in_requeue = False
         self._hunting = False
         self._hunt_queue = []
         self._session_id = session_id
@@ -1737,7 +1754,8 @@ class TunerEngine(QObject):
             for cs in self._core_states.values()
             if cs.best_offset is not None
         }
-        self._enter_auto_validation(profile)
+        session = tp.get_session(self._db, self._session_id)
+        self._enter_auto_validation(profile, resume_from=session)
 
     def _on_hunt_slot_finished(
         self, core_id: int, passed: bool, error_type: str, foreign: dict[int, dict]
@@ -2517,10 +2535,11 @@ class TunerEngine(QObject):
         self.log_message.emit(
             f"Validation: core {core_id} thermal abort "
             f"({self._validation_thermal_aborts}/{self._config.max_thermal_retries}) "
-            f"— cooling down, re-running the same stage"
+            f"— cooling down, re-running the same step"
         )
         QTimer.singleShot(
-            int(self._config.thermal_cooldown_seconds * 1000), self._run_validation_next
+            int(self._config.thermal_cooldown_seconds * 1000),
+            self._run_validation_requeue if self._in_requeue else self._run_validation_next,
         )
 
     def _complete_session(self) -> None:
@@ -2576,7 +2595,11 @@ class TunerEngine(QObject):
             self.log_message.emit(
                 f"All {len(profile)} cores confirmed — entering multi-core validation"
             )
-            self._enter_auto_validation(profile)
+            session = (
+                tp.get_session(self._db, self._session_id)
+                if self._session_id is not None else None
+            )
+            self._enter_auto_validation(profile, resume_from=session)
             return
 
         self._finalize_session(profile)
@@ -2606,6 +2629,8 @@ class TunerEngine(QObject):
             tp.update_session_status(self._db, self._session_id, "completed")
 
         self._validation_stage = 0
+        self._validation_requeue = []
+        self._save_validation_pos()
         self._set_status("idle")
         self._emit_progress()
         self.log_message.emit(
@@ -2618,35 +2643,134 @@ class TunerEngine(QObject):
     # Multi-core validation (3-stage)
     # ------------------------------------------------------------------
 
-    def _enter_auto_validation(self, profile: dict[int, int]) -> None:
-        """Begin the 3-stage multi-core validation sequence.
+    def _enter_auto_validation(self, profile: dict[int, int], resume_from=None) -> None:
+        """Begin or CONTINUE the multi-core validation sequence.
 
         Stage 1: Per-core with all offsets live — stress each core individually
                  while all other cores hold their confirmed offsets.
-        Stage 2: All-core simultaneous — all cores stressed at once.
-        Stage 3: Alternating half-core load — half loaded / half idle, rotating.
+        Stage 2: All-core coverage with all offsets applied.
+        Stage 3: Half-core load — half tested / half idle, rotating.
+
+        ``resume_from`` (a TunerSession) restores the persisted cursor so a
+        reboot, app restart, or a search interlude after a penalty continues
+        where validation was — never a full stage-1 restart. Cores whose
+        current best has no logged stage-1 pass (their offset changed since)
+        are requeued for a solo re-test first; every other core's coverage is
+        still valid — raising one core's voltage cannot destabilize others.
         """
-        # Apply all confirmed offsets (validation mode — no isolation)
         self._set_status("validating")
         if self._session_id:
             tp.update_session_status(self._db, self._session_id, "validating")
 
-        # Set up core order for stage 1 (follows test_order from config)
+        # Stage-1 order is deterministic (sorted), so a restored index means
+        # the same cores; halves are CCD-split (or even/odd), also stable.
         self._validation_core_order = sorted(profile.keys())
-        self._validation_core_index = 0
-
-        # Set up halves for stage 3 (split by CCD if available, else even/odd)
-        # Filter out empty halves to prevent IndexError with odd core counts
         self._validation_halves = [
             h for h in self._split_cores_into_halves(profile) if h
         ]
-        self._validation_half_index = 0
-
-        self._validation_stage = 1
         self._validation_thermal_aborts = 0
+
+        if resume_from is not None and resume_from.validation_stage > 0:
+            self._validation_stage = min(resume_from.validation_stage, 5)
+            self._validation_core_index = max(
+                0, min(resume_from.validation_index, len(self._validation_core_order))
+            )
+            self._validation_half_index = max(
+                0, min(resume_from.validation_half, len(self._validation_halves))
+            )
+            self._validation_dirty = resume_from.validation_dirty
+            try:
+                raw = json.loads(resume_from.validation_requeue)
+            except (json.JSONDecodeError, TypeError):
+                raw = []  # fail closed: a corrupt cursor loses only the hint
+            requeue = [
+                c for c in raw
+                if isinstance(c, int) and c in self._core_states
+            ] if isinstance(raw, list) else []
+            if self._validation_stage >= 2:
+                for c in self._validation_core_order:
+                    if c not in requeue and not self._has_stage1_pass_at_current_best(c):
+                        requeue.append(c)
+            self._validation_requeue = requeue
+            self.log_message.emit(
+                f"Continuing validation at stage {self._validation_stage} "
+                f"(position preserved; {len(requeue)} core(s) owe a solo re-test)"
+            )
+            self._save_validation_pos()
+            if requeue:
+                self._run_validation_requeue()
+            else:
+                self._run_validation_next()
+            return
+
+        self._validation_core_index = 0
+        self._validation_half_index = 0
+        self._validation_stage = 1
+        self._validation_dirty = False
+        self._validation_requeue = []
         self.log_message.emit("Validation stage 1: per-core with all offsets live")
         self.validation_progress.emit(1, 0, len(self._validation_core_order))
+        self._save_validation_pos()
         self._run_validation_next()
+
+    def _save_validation_pos(self) -> None:
+        """Persist the validation cursor after every transition, so progress
+        survives power loss and app restarts alike."""
+        if self._session_id is None:
+            return
+        tp.set_validation_position(
+            self._db,
+            self._session_id,
+            self._validation_stage,
+            self._validation_core_index,
+            self._validation_half_index,
+            self._validation_dirty,
+            json.dumps(self._validation_requeue),
+        )
+
+    def _has_stage1_pass_at_current_best(self, core_id: int) -> bool:
+        """True when the test log holds a real stage-1 pass at the core's
+        CURRENT best offset — the evidence a solo re-test would reproduce."""
+        if self._session_id is None:
+            return False
+        cs = self._core_states.get(core_id)
+        if cs is None or cs.best_offset is None:
+            return False
+        for r in tp.get_test_log(self._db, self._session_id, core_id=core_id):
+            if (
+                r.get("phase") == "validate_s1"
+                and r.get("passed")
+                and r.get("offset_tested") == cs.best_offset
+                and r.get("duration_seconds") is not None
+            ):
+                return True
+        return False
+
+    def _run_validation_requeue(self) -> None:
+        """Solo re-test (all offsets live) for cores whose offset changed —
+        the only coverage a one-core back-off invalidates. When the queue
+        drains, the pending stage reruns."""
+        if self._abort_requested or self._paused:
+            return
+        if not self._validation_requeue:
+            self._in_requeue = False
+            self._save_validation_pos()
+            QTimer.singleShot(0, self._run_validation_next)
+            return
+        self._in_requeue = True
+        core_id = self._validation_requeue[0]
+        cs = self._core_states[core_id]
+        offset = cs.best_offset if cs.best_offset is not None else cs.baseline_offset
+        self.log_message.emit(
+            f"Validation re-test: core {core_id} solo at {offset} "
+            f"({len(self._validation_requeue)} owed), then stage "
+            f"{self._validation_stage} reruns"
+        )
+        if self._smu is not None and not self._apply_validation_offsets(core_id, offset):
+            return
+        self._last_tested_core = core_id
+        self._mark_cores_under_stress([core_id])
+        self._start_worker(core_id, self._config.validate_duration_seconds)
 
     def _split_cores_into_halves(self, profile: dict[int, int]) -> list[list[int]]:
         """Split confirmed cores into two halves for stage 3.
@@ -2763,13 +2887,33 @@ class TunerEngine(QObject):
             case 4 if self._config.validate_transitions:
                 self._run_validation_stage4()
             case _:
-                # All stages complete
+                # All stages complete. If any back-off happened along the way,
+                # the profile changed mid-pass — run ONE final complete pass
+                # that must come through clean before DONE is declared.
+                if self._validation_dirty:
+                    self.log_message.emit(
+                        "All stages passed, but cores were backed off along the "
+                        "way — running one final clean validation pass to prove "
+                        "the finished profile."
+                    )
+                    self._validation_dirty = False
+                    self._validation_stage = 1
+                    self._validation_core_index = 0
+                    self._validation_half_index = 0
+                    self._validation_requeue = []
+                    self._save_validation_pos()
+                    QTimer.singleShot(0, self._run_validation_next)
+                    return
                 profile = {
                     cs.core_id: cs.best_offset
                     for cs in self._core_states.values()
                     if cs.best_offset is not None
                 }
-                self.log_message.emit("All validation stages passed")
+                self.log_message.emit(
+                    "All validation stages passed in one clean pass"
+                )
+                self._validation_core_index = 0
+                self._validation_half_index = 0
                 self._finalize_session(profile)
 
     def _run_validation_stage1(self) -> None:
@@ -2777,9 +2921,9 @@ class TunerEngine(QObject):
         if self._validation_core_index >= len(self._validation_core_order):
             # Stage 1 complete — advance to stage 2
             self._validation_stage = 2
+            self._save_validation_pos()
             self.log_message.emit(
-                "Validation stage 1 passed — "
-                "stage 2: all-core simultaneous stress"
+                "Validation stage 1 passed — stage 2: all-core coverage"
             )
             QTimer.singleShot(0, self._run_validation_next)
             return
@@ -3001,7 +3145,34 @@ class TunerEngine(QObject):
         return True
 
     def _on_validation_test_finished(self, core_id: int, passed: bool) -> None:
-        """Handle test result during multi-core validation stages."""
+        """Handle test result during multi-core validation stages.
+
+        A back-off costs one solo re-test plus a rerun of the failed stage —
+        never a full restart: raising one core's voltage cannot destabilize
+        the others, so their existing coverage stays valid. The dirty flag
+        remembers that back-offs happened; DONE still requires one final
+        complete pass with zero back-offs (see the finalize sentinel).
+        """
+        if self._in_requeue:
+            if passed:
+                self._validation_thermal_aborts = 0
+                if core_id in self._validation_requeue:
+                    self._validation_requeue.remove(core_id)
+                self._save_validation_pos()
+                QTimer.singleShot(0, self._run_validation_requeue)
+                return
+            self._validation_dirty = True
+            if not self._backoff_core(core_id):
+                self._finalize_exhausted()
+                return
+            self._save_validation_pos()
+            self.log_message.emit(
+                f"Validation re-test: core {core_id} failed again — backed off "
+                f"one more step, retrying its solo slot"
+            )
+            QTimer.singleShot(0, self._run_validation_requeue)
+            return
+
         if passed:
             self._validation_thermal_aborts = 0  # streak broken by a clean pass
             match self._validation_stage:
@@ -3020,44 +3191,57 @@ class TunerEngine(QObject):
                 case 4:
                     # Stage 4 passed — advance to finalize sentinel
                     self._validation_stage = 5
+            self._save_validation_pos()
             # Use QTimer to break the call stack (this is called from _on_test_finished)
             QTimer.singleShot(0, self._run_validation_next)
             return
 
-        # Validation failure — back off and restart
+        # Validation failure — back off the FAILING core. Stages 2/3 report
+        # the failing core directly (per-core verdicts); stage 4's rapid
+        # transition worker only knows the batch, so fall back to the most
+        # aggressive offset there.
         target: int | None = None
         match self._validation_stage:
-            case 1:
-                # Stage 1: the tested core failed — back it off
+            case 1 | 2 | 3:
                 target = core_id
-            case 2 | 3 | 4:
-                # Stage 2/3/4: multi-core failure — back off most aggressive core
+            case 4:
                 target = self._find_most_aggressive_core()
 
         if target is None or not self._backoff_core(target):
-            # Nothing to back off — finalize with what we have
-            self.log_message.emit(
-                "Validation failed but no core can be backed off further — finalizing"
-            )
-            profile = {
-                cs.core_id: cs.best_offset
-                for cs in self._core_states.values()
-                if cs.best_offset is not None
-            }
-            self._finalize_session(profile)
+            self._finalize_exhausted()
             return
 
-        self.log_message.emit(
-            f"Validation stage {self._validation_stage} failed — "
-            f"backed off core {target}, restarting stage 1"
-        )
+        self._validation_dirty = True
+        if self._validation_stage == 1:
+            # The failed slot simply retries at the new offset — the cursor
+            # has not advanced, and nobody else's coverage changed.
+            self.log_message.emit(
+                f"Validation stage 1: core {target} backed off — retrying its "
+                f"slot (position kept)"
+            )
+            self._save_validation_pos()
+            QTimer.singleShot(0, self._run_validation_next)
+            return
 
-        # Restart from stage 1
-        self._validation_stage = 1
-        self._validation_core_index = 0
-        self._validation_half_index = 0
-        self.log_message.emit("Validation stage 1: per-core with all offsets live (retry)")
-        QTimer.singleShot(0, self._run_validation_next)
+        self._validation_requeue = [target]
+        self.log_message.emit(
+            f"Validation stage {self._validation_stage} failed — core {target} "
+            f"backed off; solo re-test, then stage {self._validation_stage} reruns"
+        )
+        self._save_validation_pos()
+        QTimer.singleShot(0, self._run_validation_requeue)
+
+    def _finalize_exhausted(self) -> None:
+        """A core hit baseline with nothing left to give — finalize honestly."""
+        self.log_message.emit(
+            "Validation failed but no core can be backed off further — finalizing"
+        )
+        profile = {
+            cs.core_id: cs.best_offset
+            for cs in self._core_states.values()
+            if cs.best_offset is not None
+        }
+        self._finalize_session(profile)
 
     # ------------------------------------------------------------------
     # Helpers
