@@ -353,6 +353,11 @@ class TestSchemaV11:
             ("tuning_contexts", "edc_limit_a"),
             ("tuner_sessions", "unattributed_crashes"),
             ("tuner_sessions", "hunting_core"),
+            ("tuner_sessions", "validation_stage"),
+            ("tuner_sessions", "validation_index"),
+            ("tuner_sessions", "validation_half"),
+            ("tuner_sessions", "validation_dirty"),
+            ("tuner_sessions", "validation_requeue"),
             ("tuner_test_log", "peak_stretch_pct"),
         ):
             db._execute_raw(f"ALTER TABLE {table} DROP COLUMN {column}")

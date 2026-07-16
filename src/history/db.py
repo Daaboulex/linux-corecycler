@@ -159,7 +159,7 @@ class TelemetrySample:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 13
+    SCHEMA_VERSION = 14
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -329,7 +329,12 @@ CREATE TABLE IF NOT EXISTS tuner_sessions (
     resume_crash_streak INTEGER NOT NULL DEFAULT 0,
     notes               TEXT    NOT NULL DEFAULT '',
     unattributed_crashes INTEGER NOT NULL DEFAULT 0,
-    hunting_core        INTEGER
+    hunting_core        INTEGER,
+    validation_stage    INTEGER NOT NULL DEFAULT 0,
+    validation_index    INTEGER NOT NULL DEFAULT 0,
+    validation_half     INTEGER NOT NULL DEFAULT 0,
+    validation_dirty    INTEGER NOT NULL DEFAULT 0,
+    validation_requeue  TEXT    NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS tuner_core_states (
@@ -598,6 +603,17 @@ ALTER TABLE tuner_sessions ADD COLUMN hunting_core INTEGER;
 ALTER TABLE tuner_test_log ADD COLUMN peak_stretch_pct REAL;
 """
 
+    # v13 -> v14: validation progress survives reboots and app restarts, so a
+    # back-off or crash never restarts the whole multi-core validation from
+    # stage 1 (141 stage-1 re-tests in one field session).
+    _DDL_MIGRATE_V14 = """\
+ALTER TABLE tuner_sessions ADD COLUMN validation_stage INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tuner_sessions ADD COLUMN validation_index INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tuner_sessions ADD COLUMN validation_half INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tuner_sessions ADD COLUMN validation_dirty INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tuner_sessions ADD COLUMN validation_requeue TEXT NOT NULL DEFAULT '[]';
+"""
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _DDL_MIGRATE_V2,
         3: _DDL_MIGRATE_V3,
@@ -611,6 +627,7 @@ ALTER TABLE tuner_test_log ADD COLUMN peak_stretch_pct REAL;
         11: _migrate_v11,
         12: _DDL_MIGRATE_V12,
         13: _DDL_MIGRATE_V13,
+        14: _DDL_MIGRATE_V14,
     }
 
     # ------------------------------------------------------------------
@@ -1249,6 +1266,25 @@ ALTER TABLE tuner_test_log ADD COLUMN peak_stretch_pct REAL;
             (value, self._now_iso(), session_id),
         )
 
+    def set_validation_position(
+        self,
+        session_id: int,
+        stage: int,
+        index: int,
+        half: int,
+        dirty: bool,
+        requeue_json: str,
+    ) -> None:
+        """Persist the multi-core validation cursor after every transition,
+        so a reboot or app restart continues exactly where validation was
+        instead of restarting stage 1 for every core."""
+        self.__conn.execute(
+            "UPDATE tuner_sessions SET validation_stage=?, validation_index=?, "
+            "validation_half=?, validation_dirty=?, validation_requeue=?, "
+            "updated_at=? WHERE id=?",
+            (stage, index, half, int(dirty), requeue_json, self._now_iso(), session_id),
+        )
+
     def set_hunting_core(self, session_id: int, core_id: int | None) -> None:
         """Persist which core an isolated hunt slot is stressing BEFORE the
         slot starts: a hard crash mid-slot then names its proven culprit on
@@ -1495,6 +1531,11 @@ ALTER TABLE tuner_test_log ADD COLUMN peak_stretch_pct REAL;
             notes=row["notes"],
             unattributed_crashes=row["unattributed_crashes"] or 0,
             hunting_core=row["hunting_core"],
+            validation_stage=row["validation_stage"] or 0,
+            validation_index=row["validation_index"] or 0,
+            validation_half=row["validation_half"] or 0,
+            validation_dirty=bool(row["validation_dirty"]),
+            validation_requeue=row["validation_requeue"] or "[]",
         )
 
     def _execute_raw(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -1619,6 +1660,8 @@ ALTER TABLE tuner_test_log ADD COLUMN peak_stretch_pct REAL;
                 "cpu_model", "config_json", "context_id",
                 "resume_crash_streak", "notes",
                 "unattributed_crashes", "hunting_core",
+                "validation_stage", "validation_index", "validation_half",
+                "validation_dirty", "validation_requeue",
             ))
             counts["tuner_sessions"] = len(maps["tuner_sessions"])
 

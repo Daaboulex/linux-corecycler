@@ -120,6 +120,19 @@ def set_hunting_core(db: HistoryDB, session_id: int, core_id: int | None) -> Non
     db.set_hunting_core(session_id, core_id)
 
 
+def set_validation_position(
+    db: HistoryDB,
+    session_id: int,
+    stage: int,
+    index: int,
+    half: int,
+    dirty: bool,
+    requeue_json: str,
+) -> None:
+    """Persist the validation cursor so progress survives reboots/restarts."""
+    db.set_validation_position(session_id, stage, index, half, dirty, requeue_json)
+
+
 # ---------------------------------------------------------------------------
 # Test log
 # ---------------------------------------------------------------------------

@@ -1791,8 +1791,12 @@ class TestValidationS4:
             patch("PySide6.QtCore.QTimer.singleShot"),
         ):
             engine._on_validation_test_finished(0, passed=False)
-        # Should restart from stage 1
-        assert engine._validation_stage == 1
+        # Incremental semantics: the core is backed off and owes a solo
+        # re-test, then stage 4 itself reruns — no stage-1 restart.
+        assert engine._core_states[0].best_offset == -9
+        assert engine._validation_requeue == [0]
+        assert engine._validation_stage == 4
+        assert engine._validation_dirty is True
 
 
 class TestHardeningTierPhaseLabeling:

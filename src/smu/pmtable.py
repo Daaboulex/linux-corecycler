@@ -432,7 +432,8 @@ class PMTableReader:
         9800X3D's exact stock PPT), [3]=package power W (moves with load),
         [4..7]=0, [8]=TDC limit A, [9]=TDC current A (moves with load, amp
         magnitudes), [10]=thermal throttle limit C (static), [11]=hotspot
-        temperature C (moves). [63]=EDC limit A is a single-source candidate.
+        temperature C (moves). [63]=EDC limit A (owner-confirmed: BIOS EDC
+        230 A matches the decoded value on the 9950X3D).
         The old [0..5]=PPT/TDC/EDC-pairs guess decoded zeros and mislabeled
         every field on real Zen 5 silicon.
         """
