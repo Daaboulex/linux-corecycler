@@ -20,6 +20,24 @@ from PySide6.QtWidgets import (
 )
 
 from config.settings import load_settings
+from gui.style import (
+    BG_ACTIVE_TINT,
+    BG_PANEL,
+    BG_PANEL_DARK,
+    BG_SELECTED,
+    BORDER_DARKER,
+    CHART_FREQ,
+    CHART_POWER,
+    CHART_TEMP,
+    CHART_VOLT,
+    COLOR_ACTIVE,
+    COLOR_BLUE_DEEP,
+    COLOR_MUTED,
+    COLOR_MUTED_DARK,
+    COLOR_PASS,
+    COLOR_TEXT_DIM,
+    COLOR_WARN_SOFT,
+)
 from gui.widgets.charts import LiveChart
 from monitor.cpu_usage import CPUUsageReader
 from monitor.frequency import (
@@ -30,6 +48,7 @@ from monitor.frequency import (
 from monitor.hwmon import HWMonReader
 from monitor.msr import MSRReader
 from monitor.power import PowerMonitor
+from smu.pmtable import PMTableReader
 
 MAX_FREQ_HISTORY = 60  # 1 minute at 1s
 
@@ -97,12 +116,12 @@ class CoreFreqBar(QWidget):
         w, h = self.width(), self.height()
 
         # background — highlighted if this core is being tested
-        bg = QColor("#1a2a1a") if self._is_active else QColor("#1e1e1e")
+        bg = QColor(BG_ACTIVE_TINT) if self._is_active else QColor(BG_PANEL_DARK)
         painter.fillRect(0, 0, w, h, bg)
 
         # label area
         label_w = 40
-        label_color = QColor("#4fc3f7") if self._is_active else QColor("#aaa")
+        label_color = QColor(COLOR_ACTIVE) if self._is_active else QColor(COLOR_TEXT_DIM)
         painter.setPen(label_color)
         painter.setFont(QFont("monospace", 7, QFont.Weight.Bold))
         painter.drawText(4, 0, label_w - 4, h, Qt.AlignmentFlag.AlignVCenter, self._label)
@@ -116,14 +135,14 @@ class CoreFreqBar(QWidget):
 
             # color: blue at low, cyan at mid, green at high
             if fill_ratio < 0.5:
-                color = QColor("#2196f3")
+                color = QColor(COLOR_BLUE_DEEP)
             elif fill_ratio < 0.8:
-                color = QColor("#4fc3f7")
+                color = QColor(COLOR_ACTIVE)
             else:
-                color = QColor("#4caf50")
+                color = QColor(COLOR_PASS)
 
             # bar background
-            painter.fillRect(bar_x, 3, bar_w, h - 6, QColor("#2a2a2a"))
+            painter.fillRect(bar_x, 3, bar_w, h - 6, QColor(BG_PANEL))
             # filled portion
             fill_w = int(bar_w * fill_ratio)
             if fill_w > 0:
@@ -133,7 +152,7 @@ class CoreFreqBar(QWidget):
             if self._eff_max > 0:
                 eff_ratio = min(self._eff_max / self._max_freq, 1.0)
                 marker_x = int(bar_x + bar_w * eff_ratio)
-                pen = QPen(QColor("#ffb74d"), 1, Qt.PenStyle.DashLine)
+                pen = QPen(QColor(COLOR_WARN_SOFT), 1, Qt.PenStyle.DashLine)
                 painter.setPen(pen)
                 painter.drawLine(marker_x, 3, marker_x, h - 3)
 
@@ -160,46 +179,46 @@ class CoreFreqBar(QWidget):
         # Column definitions: (text, color, fixed_chars)
         # Usage
         usage_str = f"{self._usage_pct:3.0f}%"
-        usage_color = QColor("#4caf50") if self._usage_pct > 50 else QColor("#888")
+        usage_color = QColor(COLOR_PASS) if self._usage_pct > 50 else QColor(COLOR_MUTED)
 
         # Frequency — always unit-labelled; the boost ceiling shows only for a
         # live core (the dashed bar marker also shows it).
         freq_str = self._freq_text(self._freq, self._eff_max)
-        freq_color = QColor("#4fc3f7")
+        freq_color = QColor(COLOR_ACTIVE)
 
         # Stretch — fixed slot, blank when idle (keeps alignment stable)
         if self._stretch_pct is not None and self._usage_pct > 5:
             stretch_str = f"S:{self._stretch_pct:4.1f}%"
             if self._stretch_pct > 3.0:
-                stretch_color = QColor("#ff7043")
+                stretch_color = QColor(CHART_TEMP)
             elif self._stretch_pct > 1.0:
-                stretch_color = QColor("#ffb74d")
+                stretch_color = QColor(COLOR_WARN_SOFT)
             else:
-                stretch_color = QColor("#666")
+                stretch_color = QColor(COLOR_MUTED_DARK)
         else:
             stretch_str = "       "  # 7 chars placeholder
-            stretch_color = QColor("#666")
+            stretch_color = QColor(COLOR_MUTED_DARK)
 
         # Power
         if self._core_watts is not None:
             watts_str = f"{self._core_watts:5.1f}W"
-            watts_color = QColor("#ffb74d")
+            watts_color = QColor(COLOR_WARN_SOFT)
         else:
             watts_str = "      "  # 6 chars placeholder
-            watts_color = QColor("#666")
+            watts_color = QColor(COLOR_MUTED_DARK)
 
         # Temperature
         if self._temp > 0:
             temp_str = f"{self._temp:3.0f}C"
             if self._temp >= 85:
-                temp_color = QColor("#ff7043")
+                temp_color = QColor(CHART_TEMP)
             elif self._temp >= 70:
-                temp_color = QColor("#ffb74d")
+                temp_color = QColor(COLOR_WARN_SOFT)
             else:
-                temp_color = QColor("#888")
+                temp_color = QColor(COLOR_MUTED)
         else:
             temp_str = "    "  # 4 chars placeholder
-            temp_color = QColor("#888")
+            temp_color = QColor(COLOR_MUTED)
 
         # Draw each column at fixed positions
         cols = [
@@ -217,7 +236,7 @@ class CoreFreqBar(QWidget):
             cx += tw + col_gap
 
         # border — highlighted if active
-        border_color = QColor("#4fc3f7") if self._is_active else QColor("#333")
+        border_color = QColor(COLOR_ACTIVE) if self._is_active else QColor(BORDER_DARKER)
         border_width = 2 if self._is_active else 1
         painter.setPen(QPen(border_color, border_width))
         painter.drawRect(0, 0, w - 1, h - 1)
@@ -231,7 +250,7 @@ class MonitorTab(QWidget):
     # Staleness tracking — grey out labels after consecutive sensor read failures
     _STALE_THRESHOLD = 3
     _NORMAL_STYLE = "font: bold 11px monospace; padding: 2px;"
-    _STALE_STYLE = "font: bold 11px monospace; padding: 2px; color: #666;"
+    _STALE_STYLE = f"font: bold 11px monospace; padding: 2px; color: {COLOR_MUTED_DARK};"
 
     def __init__(self, topology=None) -> None:
         super().__init__()
@@ -240,6 +259,7 @@ class MonitorTab(QWidget):
         self._power = PowerMonitor()
         self._msr = MSRReader()
         self._cpu_usage = CPUUsageReader()
+        self._pmtable = PMTableReader()
         self._per_core_bars: dict[int, CoreFreqBar] = {}
         self._per_core_visible = False
         self._hwmon_fail_count: int = 0
@@ -281,6 +301,10 @@ class MonitorTab(QWidget):
         self._power_label = QLabel("Package: --W")
         self._max_freq_label = QLabel("Max Boost: --MHz")
 
+        self._ppt_label = QLabel("PPT: --/--W")
+        self._tdc_label = QLabel("TDC: --/--A")
+        self._edc_label = QLabel("EDC: --/--A")
+
         row0_labels = [
             self._tctl_label,
             self._vcore_label,
@@ -290,6 +314,11 @@ class MonitorTab(QWidget):
         for i, label in enumerate(row0_labels):
             label.setStyleSheet("font: bold 11px monospace; padding: 2px;")
             values_layout.addWidget(label, 0, i)
+        for i, label in enumerate(
+            (self._ppt_label, self._tdc_label, self._edc_label)
+        ):
+            label.setStyleSheet("font: bold 11px monospace; padding: 2px;")
+            values_layout.addWidget(label, 2, i)
 
         top_bar.addWidget(values_group, 1)
 
@@ -298,7 +327,7 @@ class MonitorTab(QWidget):
         self._toggle_btn.setFixedSize(110, 36)
         self._toggle_btn.setStyleSheet(
             "QPushButton { padding: 6px; } "
-            "QPushButton:checked { background: #1a3a5c; border: 1px solid #4fc3f7; }"
+            f"QPushButton:checked {{ background: {BG_SELECTED}; border: 1px solid {COLOR_ACTIVE}; }}"
         )
         self._toggle_btn.toggled.connect(self._toggle_view)
         top_bar.addWidget(self._toggle_btn)
@@ -311,10 +340,10 @@ class MonitorTab(QWidget):
         charts_layout.setContentsMargins(0, 0, 0, 0)
         charts_layout.setSpacing(4)
 
-        self._freq_chart = LiveChart("Frequency", "MHz", 0, 6000, "#4fc3f7")
-        self._temp_chart = LiveChart("Temperature", "°C", 0, 100, "#ff7043")
-        self._power_chart = LiveChart("Package Power", "W", 0, 250, "#66bb6a")
-        self._voltage_chart = LiveChart("Vcore", "V", 0.5, 1.6, "#ab47bc")
+        self._freq_chart = LiveChart("Frequency", "MHz", 0, 6000, CHART_FREQ)
+        self._temp_chart = LiveChart("Temperature", "°C", 0, 100, CHART_TEMP)
+        self._power_chart = LiveChart("Package Power", "W", 0, 250, CHART_POWER)
+        self._voltage_chart = LiveChart("Vcore", "V", 0.5, 1.6, CHART_VOLT)
 
         charts_layout.addWidget(self._freq_chart, 0, 0)
         charts_layout.addWidget(self._temp_chart, 0, 1)
@@ -368,7 +397,7 @@ class MonitorTab(QWidget):
                 vcache_str = " (V-Cache)" if any(c.has_vcache for c in cores) else ""
                 header = QLabel(f"CCD {ccd_idx}{vcache_str}")
                 header.setFont(QFont("monospace", 8, QFont.Weight.Bold))
-                header.setStyleSheet("color: #aaa; padding: 1px 4px;")
+                header.setStyleSheet(f"color: {COLOR_TEXT_DIM}; padding: 1px 4px;")
                 header.setFixedHeight(16)
                 self._per_core_layout.addWidget(header)
 
@@ -551,6 +580,27 @@ class MonitorTab(QWidget):
                         tctl or 0,
                         usage_pct=usage_data.get(cpu_id, 0),
                     )
+
+        self._update_power_limits()
+
+    def _update_power_limits(self) -> None:
+        pm = self._pmtable.read() if self._pmtable.is_available() else None
+        if pm is None:
+            self._ppt_label.setText("PPT: N/A")
+            self._tdc_label.setText("TDC: N/A")
+            self._edc_label.setText("EDC: N/A")
+            return
+
+        def fmt(label, name, value, limit, unit):
+            if limit > 0:
+                pct = (value / limit) * 100 if value >= 0 else 0
+                label.setText(f"{name}: {value:.0f}/{limit:.0f}{unit} ({pct:.0f}%)")
+            else:
+                label.setText(f"{name}: N/A")
+
+        fmt(self._ppt_label, "PPT", pm.ppt_value_w, pm.ppt_limit_w, "W")
+        fmt(self._tdc_label, "TDC", pm.tdc_value_a, pm.tdc_limit_a, "A")
+        fmt(self._edc_label, "EDC", pm.edc_value_a, pm.edc_limit_a, "A")
 
     def set_topology(self, topology) -> None:
         """Update topology and rebuild per-core bars."""

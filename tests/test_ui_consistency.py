@@ -277,6 +277,7 @@ class TestStalenessIndicator:
         tab._voltage_chart = MagicMock()
         tab._power_chart = MagicMock()
         tab._max_freq_label = MagicMock()
+        tab._update_power_limits = MagicMock()
 
         # hwmon returns None tctl for 3 consecutive reads
         tab._hwmon.read.return_value = HWMonData(tctl_c=None, tccd_temps={}, vcore_v=None)
@@ -332,6 +333,7 @@ class TestStalenessRecovery:
         tab._voltage_chart = MagicMock()
         tab._power_chart = MagicMock()
         tab._max_freq_label = MagicMock()
+        tab._update_power_limits = MagicMock()
 
         tab._do_update = MethodType(MonitorTab._do_update, tab)
         tab._STALE_THRESHOLD = MonitorTab._STALE_THRESHOLD
@@ -355,3 +357,77 @@ class TestStalenessRecovery:
             "tctl label should recover from grey after successful read"
         )
         assert tab._hwmon_fail_count == 0, "fail count should be reset on success"
+
+
+class TestLoadToCOEnabledForHardened:
+    """A session whose cores all reached HARDENED (the terminal phase with
+    hardening tiers on — the default) must still offer Load to CO: hardened is
+    confirmed plus extra stress. The gate only knowing CONFIRMED left every
+    finished default-config session with a dead button."""
+
+    def _detail_ns(self):
+        ns = types.SimpleNamespace()
+        ns._db = MagicMock()
+        ns._selected_tuner_session = None
+        ns._tuner_actions_row = MagicMock()
+        ns._load_co_btn = MagicMock()
+        ns._expand_detail = MagicMock()
+        ns._detail_info = MagicMock()
+        ns._core_results_table = MagicMock()
+        ns._auto_size_core_results_table = MagicMock()
+        ns._events_log = MagicMock()
+        return ns
+
+    def _run_detail(self, phases, best_offset=-10):
+        from gui.history_tab import HistoryTab
+        from tuner.state import CoreState, TunerPhase  # noqa: F401
+
+        ns = self._detail_ns()
+        sess = types.SimpleNamespace(
+            id=1, config_json="{}", cpu_model="cpu", bios_version=None,
+            created_at="2026-07-17T00:00:00+00:00",
+        )
+        states = {
+            i: CoreState(core_id=i, phase=p, current_offset=-10,
+                         best_offset=best_offset, baseline_offset=0)
+            for i, p in enumerate(phases)
+        }
+        with patch("gui.history_tab.tp.load_core_states", return_value=states), \
+                patch("gui.history_tab.tp.get_test_log", return_value=[]), \
+                patch("gui.history_tab.tp.get_events", return_value=[]):
+            MethodType(HistoryTab._show_tuner_session_detail, ns)(sess)
+        return ns
+
+    def test_all_hardened_session_enables_load(self):
+        from tuner.state import TunerPhase
+
+        ns = self._run_detail([TunerPhase.HARDENED] * 4)
+        ns._load_co_btn.setEnabled.assert_called_with(True)
+
+    def test_unfinished_session_with_values_enables_load(self):
+        from tuner.state import TunerPhase
+
+        ns = self._run_detail([TunerPhase.COARSE_SEARCH] * 4)
+        ns._load_co_btn.setEnabled.assert_called_with(True)
+
+    def test_session_without_values_disables_load(self):
+        from tuner.state import TunerPhase
+
+        ns = self._run_detail([TunerPhase.NOT_STARTED] * 4, best_offset=None)
+        ns._load_co_btn.setEnabled.assert_called_with(False)
+
+
+class TestNoStrayDisplayConstants:
+    """The display standard lives in gui/style.py alone; a hex literal in any
+    other GUI file is a stray that can drift from the palette."""
+
+    def test_no_hex_colors_outside_style(self):
+        gui = Path(__file__).parent.parent / "src" / "gui"
+        offenders = []
+        for f in sorted(gui.rglob("*.py")):
+            if f.name == "style.py":
+                continue
+            for i, line in enumerate(f.read_text().splitlines(), 1):
+                if re.search(r"#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b", line):
+                    offenders.append(f"{f.name}:{i}: {line.strip()[:60]}")
+        assert not offenders, "hex colors outside gui/style.py:\n" + "\n".join(offenders)

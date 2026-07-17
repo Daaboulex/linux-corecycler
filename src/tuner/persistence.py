@@ -196,3 +196,8 @@ def get_test_log(
 def get_best_profile(db: HistoryDB, session_id: int) -> dict[int, int]:
     """Return {core_id: confirmed_offset} for all CONFIRMED cores."""
     return db.get_tuner_best_profile(session_id)
+
+
+def get_session_offsets(db: HistoryDB, session_id: int) -> dict[int, int]:
+    """Return {core_id: best_offset} for every core with a value, any phase."""
+    return db.get_tuner_session_offsets(session_id)

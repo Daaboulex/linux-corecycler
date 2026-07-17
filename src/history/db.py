@@ -1544,6 +1544,14 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_tuner_session_offsets(self, session_id: int) -> dict[int, int]:
+        rows = self.__conn.execute(
+            "SELECT core_id, best_offset FROM tuner_core_states "
+            "WHERE session_id=? AND best_offset IS NOT NULL",
+            (session_id,),
+        ).fetchall()
+        return {r["core_id"]: r["best_offset"] for r in rows}
+
     def get_tuner_best_profile(self, session_id: int) -> dict[int, int]:
         # HARDENED is confirmed-plus-extra-stress, so it counts as confirmed here.
         rows = self.__conn.execute(

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from config.settings import load_settings
 from engine.backends.base import KILLED_BY_US_CODES
+from gui.style import BTN_RED, COLOR_MUTED, COLOR_MUTED_DARKER, COLOR_PASS, COLOR_WARN_SOFT
 from monitor.memory import DIMMInfo, SPD5118Reader, read_dimm_info
 from smu.pmtable import PMTableReader, compute_fclk_uclk_ratio
 
@@ -198,12 +199,12 @@ class MemoryTab(QWidget):
 
         # Calibration status
         self._cal_label = QLabel("")
-        self._cal_label.setStyleSheet("color: #888; font: 9px monospace;")
+        self._cal_label.setStyleSheet(f"color: {COLOR_MUTED}; font: 9px monospace;")
         mc_layout.addWidget(self._cal_label)
 
         # Driver-missing message (hidden by default)
         self._mc_missing_label = QLabel("Requires ryzen_smu driver")
-        self._mc_missing_label.setStyleSheet("color: #888; font: 10px monospace; padding: 8px;")
+        self._mc_missing_label.setStyleSheet(f"color: {COLOR_MUTED}; font: 10px monospace; padding: 8px;")
         self._mc_missing_label.setVisible(False)
         mc_layout.addWidget(self._mc_missing_label)
 
@@ -232,7 +233,7 @@ class MemoryTab(QWidget):
         self._secondary_label = QLabel("Secondary: --")
         self._secondary_label.setFont(QFont("monospace", 10))
         self._spd_unavailable_label = QLabel("")
-        self._spd_unavailable_label.setStyleSheet("color: #888; font: 10px monospace; padding: 4px;")
+        self._spd_unavailable_label.setStyleSheet(f"color: {COLOR_MUTED}; font: 10px monospace; padding: 4px;")
         self._spd_unavailable_label.setVisible(False)
         spd_layout.addWidget(self._primary_label)
         spd_layout.addWidget(self._secondary_label)
@@ -245,7 +246,7 @@ class MemoryTab(QWidget):
 
         # Dependency status
         self._deps_label = QLabel("")
-        self._deps_label.setStyleSheet("color: #888; font: 9px monospace;")
+        self._deps_label.setStyleSheet(f"color: {COLOR_MUTED}; font: 9px monospace;")
         layout.addWidget(self._deps_label)
 
         self._temp_group = QGroupBox("DIMM Temperatures (SPD5118)")
@@ -294,8 +295,8 @@ class MemoryTab(QWidget):
         self._stop_btn = QPushButton("Stop")
         self._stop_btn.setEnabled(False)
         self._stop_btn.setStyleSheet(
-            "QPushButton { background: #b71c1c; color: white; padding: 4px 10px; "
-            "border-radius: 3px; } QPushButton:disabled { background: #555; color: #888; }"
+            f"QPushButton {{ background: {BTN_RED}; color: white; padding: 4px 10px; "
+            f"border-radius: 3px; }} QPushButton:disabled {{ background: {COLOR_MUTED_DARKER}; color: {COLOR_MUTED}; }}"
         )
         self._stop_btn.clicked.connect(self._stop_memory_stress)
         stress_layout.addWidget(self._stop_btn)
@@ -456,9 +457,9 @@ class MemoryTab(QWidget):
         if ratio is not None:
             self._ratio_label.setText(f"FCLK:UCLK {ratio[0]}:{ratio[1]}")
             if ratio == (1, 1):
-                self._ratio_label.setStyleSheet("color: #4caf50;")  # green — coupled
+                self._ratio_label.setStyleSheet(f"color: {COLOR_PASS};")
             else:
-                self._ratio_label.setStyleSheet("color: #ffb74d;")  # amber — decoupled
+                self._ratio_label.setStyleSheet(f"color: {COLOR_WARN_SOFT};")
         else:
             self._ratio_label.setText("FCLK:UCLK --")
             self._ratio_label.setStyleSheet("")
@@ -469,13 +470,13 @@ class MemoryTab(QWidget):
             self._vdd_label.setStyleSheet("")
         else:
             self._vdd_label.setText("VDD: --")
-            self._vdd_label.setStyleSheet("color: #888;")
+            self._vdd_label.setStyleSheet(f"color: {COLOR_MUTED};")
         if pm_data.vddq_v > 0:
             self._vddq_label.setText(f"VDDQ: {pm_data.vddq_v:.3f}V")
             self._vddq_label.setStyleSheet("")
         else:
             self._vddq_label.setText("VDDQ: --")
-            self._vddq_label.setStyleSheet("color: #888;")
+            self._vddq_label.setStyleSheet(f"color: {COLOR_MUTED};")
 
     def _show_uncalibrated(self, pm_data) -> None:
         self._fclk_label.setText("FCLK: --")
@@ -487,7 +488,7 @@ class MemoryTab(QWidget):
         self._vddq_label.setText("VDDQ: --")
         for lbl in (self._fclk_label, self._uclk_label, self._mclk_label,
                      self._vdd_label, self._vddq_label):
-            lbl.setStyleSheet("color: #888;")
+            lbl.setStyleSheet(f"color: {COLOR_MUTED};")
         self._cal_label.setText(
             f"PM Table v{pm_data.pm_table_version:#010x} \u2014 Uncalibrated "
             f"({len(pm_data.raw_floats)} floats)"
@@ -497,9 +498,9 @@ class MemoryTab(QWidget):
         for lbl in (self._fclk_label, self._uclk_label, self._mclk_label,
                      self._vdd_label, self._vddq_label):
             lbl.setText(lbl.text().split(":")[0] + ": --")
-            lbl.setStyleSheet("color: #888;")
+            lbl.setStyleSheet(f"color: {COLOR_MUTED};")
         self._ratio_label.setText("FCLK:UCLK --")
-        self._ratio_label.setStyleSheet("color: #888;")
+        self._ratio_label.setStyleSheet(f"color: {COLOR_MUTED};")
         self._cal_label.setText("")
 
     def set_test_running(self, running: bool) -> None:

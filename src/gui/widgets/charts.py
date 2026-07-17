@@ -7,6 +7,8 @@ from collections import deque
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
+from gui.style import BG_PANEL_DARK, BORDER_DARKER, CHART_FREQ, COLOR_TEXT_BRIGHT
+
 MAX_POINTS = 120  # 2 minutes at 1s interval
 
 
@@ -19,7 +21,7 @@ class LiveChart(QWidget):
         unit: str = "",
         min_val: float = 0,
         max_val: float = 100,
-        color: str = "#4fc3f7",
+        color: str = CHART_FREQ,
     ) -> None:
         super().__init__()
         self.title = title
@@ -51,10 +53,10 @@ class LiveChart(QWidget):
         h = self.height()
 
         # background
-        painter.fillRect(0, 0, w, h, QColor("#1e1e1e"))
+        painter.fillRect(0, 0, w, h, QColor(BG_PANEL_DARK))
 
         # border
-        painter.setPen(QPen(QColor("#333"), 1))
+        painter.setPen(QPen(QColor(BORDER_DARKER), 1))
         painter.drawRect(0, 0, w - 1, h - 1)
 
         margin_top = 20
@@ -65,7 +67,7 @@ class LiveChart(QWidget):
         chart_w = w - margin_left - margin_right
 
         # title + current value
-        painter.setPen(QColor("#ccc"))
+        painter.setPen(QColor(COLOR_TEXT_BRIGHT))
         painter.setFont(QFont("monospace", 8))
         val_text = f"{self.title}: {self._current:.1f} {self.unit}"
         painter.drawText(margin_left + 2, 14, val_text)

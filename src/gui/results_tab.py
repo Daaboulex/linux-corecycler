@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui.style import COLOR_FAIL, COLOR_PASS, PENDING_VALUE, STATE_COLORS, duration_str, state_label
 from gui.widgets import table_item as _item
 
 if TYPE_CHECKING:
@@ -38,11 +39,11 @@ class ResultsTab(QWidget):
         summary_group = QGroupBox("Summary")
         summary_layout = QHBoxLayout(summary_group)
 
-        self._total_label = QLabel("Cores: —")
-        self._passed_label = QLabel("Passed: —")
-        self._passed_label.setStyleSheet("color: #4caf50; font-weight: bold;")
-        self._failed_label = QLabel("Failed: —")
-        self._failed_label.setStyleSheet("color: #f44336; font-weight: bold;")
+        self._total_label = QLabel(f"Cores: {PENDING_VALUE}")
+        self._passed_label = QLabel(f"Passed: {PENDING_VALUE}")
+        self._passed_label.setStyleSheet(f"color: {COLOR_PASS}; font-weight: bold;")
+        self._failed_label = QLabel(f"Failed: {PENDING_VALUE}")
+        self._failed_label.setStyleSheet(f"color: {COLOR_FAIL}; font-weight: bold;")
         self._elapsed_label = QLabel("Start a test to see results")
         self._cycle_label = QLabel("")
 
@@ -132,10 +133,7 @@ class ResultsTab(QWidget):
         self._passed_label.setText(f"Passed: {passed}")
         self._failed_label.setText(f"Failed: {failed}")
 
-        h = int(elapsed // 3600)
-        m = int((elapsed % 3600) // 60)
-        s = int(elapsed % 60)
-        self._elapsed_label.setText(f"Elapsed: {h}:{m:02d}:{s:02d}")
+        self._elapsed_label.setText(f"Elapsed: {duration_str(elapsed)}")
         self._cycle_label.setText(f"Cycle: {cycle}/{total_cycles}")
 
     def clear(self) -> None:
@@ -151,29 +149,20 @@ class ResultsTab(QWidget):
         )
 
         status_item = _item(
-            status.state.capitalize(), Qt.AlignmentFlag.AlignCenter
+            state_label(status.state), Qt.AlignmentFlag.AlignCenter
         )
-        color_map = {
-            "passed": "#4caf50",
-            "failed": "#f44336",
-            "testing": "#4fc3f7",
-            "pending": "#888888",
-            "skipped": "#555555",
-        }
-        color = color_map.get(status.state, "#888")
-        status_item.setForeground(QColor(color))
+        _, fg, _border = STATE_COLORS.get(status.state, STATE_COLORS["pending"])
+        status_item.setForeground(QColor(fg))
         self._table.setItem(row, 2, status_item)
 
         errors_item = _item(str(status.errors), Qt.AlignmentFlag.AlignCenter)
         if status.errors > 0:
-            errors_item.setForeground(QColor("#f44336"))
+            errors_item.setForeground(QColor(COLOR_FAIL))
         self._table.setItem(row, 3, errors_item)
 
         self._table.setItem(row, 4, _item(str(status.iterations), Qt.AlignmentFlag.AlignCenter))
 
-        mins = int(status.elapsed_seconds // 60)
-        secs = int(status.elapsed_seconds % 60)
-        self._table.setItem(row, 5, _item(f"{mins}m {secs}s", Qt.AlignmentFlag.AlignCenter))
+        self._table.setItem(row, 5, _item(duration_str(status.elapsed_seconds), Qt.AlignmentFlag.AlignCenter))
 
         error_item = _item(status.last_error or "-")
         if status.last_error:
