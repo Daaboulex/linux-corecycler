@@ -807,6 +807,20 @@ class TunerTab(QWidget):
         self._set_running_state(False)
         self._validate_btn.setEnabled(bool(profile))
         self._export_btn.setEnabled(bool(profile))
+        self._notify(
+            "Tuning complete",
+            f"{len(profile)} core(s) confirmed. Load the profile from the "
+            f"Curve Optimizer or History tab.",
+        )
+
+    def _notify(self, title: str, body: str, *, urgency: str = "normal") -> None:
+        from config.settings import load_settings
+
+        if not load_settings().notify_on_completion:
+            return
+        from notify import desktop_notify
+
+        desktop_notify(title, body, urgency=urgency)
 
     @Slot(str)
     def _on_status_changed(self, status: str) -> None:
@@ -834,6 +848,14 @@ class TunerTab(QWidget):
                 for core_id, cs in self._engine.core_states.items():
                     self.tuner_core_testing.emit(core_id, _PHASE_TO_GRID[cs.phase])
                     self.tuner_core_info.emit(core_id, cs.current_offset, cs.phase)
+            if status == "quarantined":
+                self._notify(
+                    "Tuning quarantined",
+                    "The machine kept crashing on resume — the profile is "
+                    "unsafe and every core was forced to stock. Investigate "
+                    "before retrying.",
+                    urgency="critical",
+                )
 
     @Slot(int, int, int)
     def _on_validation_progress(self, stage: int, current: int, total: int) -> None:

@@ -110,6 +110,7 @@
                         ++ [
                           pkgs.util-linux # for taskset
                           pkgs.dmidecode # for DIMM info in Memory tab
+                          pkgs.libnotify # for notify-send desktop notifications
                         ]
                       )
                     }

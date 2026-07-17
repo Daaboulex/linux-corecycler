@@ -138,6 +138,17 @@ def main() -> int:
         print(f"corecycler: debug log unavailable: {e}", file=sys.stderr)
     logging.basicConfig(level=logging.DEBUG, handlers=handlers)
 
+    argv = sys.argv[1:]
+    if argv and argv[0] in ("-h", "--help"):
+        from cli import USAGE
+
+        print(USAGE)
+        return 0
+    if argv and argv[0] in ("status", "tune", "resume"):
+        from cli import cli_main
+
+        return cli_main(argv)
+
     # Suppress Qt/KDE warnings when running under sudo (no D-Bus session)
     os.environ.setdefault(
         "QT_LOGGING_RULES",
