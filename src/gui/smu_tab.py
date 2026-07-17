@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -35,7 +35,6 @@ if TYPE_CHECKING:
 class SMUTab(QWidget):
     """Curve Optimizer read/write interface."""
 
-    co_changed = Signal(int, int)  # core_id, new_value
 
     def __init__(self, topology: CPUTopology | None = None) -> None:
         super().__init__()
@@ -330,7 +329,6 @@ class SMUTab(QWidget):
             row = self._core_row_map().get(core_id)
             if row is not None:
                 self._table.setItem(row, 2, _item(str(value)))
-            self.co_changed.emit(core_id, value)
         else:
             QMessageBox.warning(self, "Error", f"Failed to set CO for core {core_id}")
 

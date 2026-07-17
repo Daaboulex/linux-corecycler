@@ -70,6 +70,9 @@ class TestWorker(QThread):
     status_updated = Signal(int, object)  # core_id, CoreTestStatus
     cycle_completed = Signal(int)
     test_completed = Signal(str)  # JSON-encoded results — avoids PySide6 dict marshalling crash
+    thermal_throttled = Signal(float)
+    stall_detected = Signal(int)
+    phase_changed = Signal(int, str)
 
     def __init__(self, scheduler: CoreScheduler) -> None:
         super().__init__()
@@ -88,6 +91,9 @@ class TestWorker(QThread):
                 })
             )
         ]
+        self.scheduler.on_thermal_throttle = [self.thermal_throttled.emit]
+        self.scheduler.on_stall_detected = [self.stall_detected.emit]
+        self.scheduler.on_phase_change = [self.phase_changed.emit]
 
     def run(self) -> None:
         self.scheduler.run()
@@ -418,6 +424,9 @@ class MainWindow(QMainWindow):
                 self._worker.status_updated.connect(self._logger.on_status_updated)
                 self._worker.cycle_completed.connect(self._logger.on_cycle_completed)
                 self._worker.test_completed.connect(self._logger.on_test_completed)
+                self._worker.thermal_throttled.connect(self._logger.record_thermal_event)
+                self._worker.stall_detected.connect(self._logger.record_stall_event)
+                self._worker.phase_changed.connect(self._logger.record_phase_change)
             except Exception:
                 log.exception("Failed to create history logger")
                 self._logger = None

@@ -622,10 +622,5 @@ class MonitorTab(QWidget):
         for cid, bar in self._per_core_bars.items():
             bar.set_active(cid == core_id)
 
-    def start_monitoring(self) -> None:
-        if not self._timer.isActive():
-            settings = load_settings()
-            self._timer.start(int(settings.poll_interval * 1000))
-
     def stop_monitoring(self) -> None:
         self._timer.stop()

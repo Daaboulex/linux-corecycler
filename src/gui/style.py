@@ -67,10 +67,6 @@ def scheduler_phase_label(phase: str) -> str:
     return phase.capitalize() if phase else ""
 
 
-def secs_str(seconds: float | None) -> str:
-    return ABSENT if seconds is None else f"{seconds:.1f}s"
-
-
 PHASE_LABELS: dict[TunerPhase, str] = {
     TunerPhase.NOT_STARTED: "Not started",
     TunerPhase.COARSE_SEARCH: "Coarse search",
@@ -178,10 +174,6 @@ def state_label(state: str) -> str:
 
 def status_label(status: str) -> str:
     return SESSION_STATUS_LABELS.get(status, status)
-
-
-def offset_str(value: int | None) -> str:
-    return ABSENT if value is None else str(value)
 
 
 def duration_str(seconds: float | None) -> str:

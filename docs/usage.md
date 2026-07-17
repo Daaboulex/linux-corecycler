@@ -74,18 +74,30 @@ The Auto-Tuner automates the entire PBO Curve Optimizer search via runtime SMU w
    (from `inherit_current`), not zero -- unless the baseline itself crashes, in which
    case it descends toward CO=0 (see [Crash safety](#crash-safety)).
 4. **Multi-core validation** (`auto_validate`, on by default) -- after every core is
-   individually confirmed, a 3-stage sequence catches failures invisible to per-core
+   individually confirmed, a staged sequence catches failures invisible to per-core
    testing:
    - **Stage 1 -- per-core, all offsets live**: all confirmed offsets applied, each core
      stressed in turn. Catches shared-VRM power-delivery interactions.
-   - **Stage 2 -- all-core simultaneous**: every core stressed at once for
-     `validate_duration` -- full package-power worst case.
+   - **Stage 2 -- all-core simultaneous**: one pinned stress process per core at once
+     for `validate_duration` -- full package-power worst case, per-core verdicts.
    - **Stage 3 -- alternating half-core load**: half loaded, half idle, then swap
      (split by CCD when available). Catches boost-ramp voltage transients.
+   - **Stage 4 -- rapid transitions** (`validate_transitions`): fast load/idle cycling
+     across all cores -- catches idle-to-boost instability.
+   - **Stage 5 -- per-core spectrum** (`validate_spectrum`): bursts, load transitions
+     and idle watch per core with all offsets live.
+   - **Stage 6 -- real-world soak** (`validate_soak`): no synthetic load; the kernel
+     error stream is watched for `soak_duration_seconds` while the machine is used
+     normally. Any hardware event fails it.
 
-   If a stage fails, the most aggressive core is backed off by one `fine_step` and
-   validation restarts from stage 1; if no core can back off further, the tuner
-   finalizes with the current profile.
+   A failing core is backed off by one `fine_step`, re-proven solo, and only the failed
+   stage reruns. A stall, external kill, or unattributable machine check is an
+   APPARATUS fault: the step retries without a verdict (up to `max_apparatus_retries`),
+   never a back-off. Any back-off marks the pass dirty -- completion requires one final
+   clean pass. If a failing core reaches its baseline with real failures persisting,
+   the tuner reverts everything to baseline and PAUSES with an honest message instead
+   of declaring completion. A reboot mid-validation with no attributable evidence is
+   recorded as an unattributed incident; repeated incidents pause for your decision.
 5. **Result** -- each core gets a confirmed, cross-validated best offset. Export it as
    JSON or load it into the Curve Optimizer tab.
 
@@ -122,8 +134,8 @@ configuration that crashes the machine. Three mechanisms enforce this:
 
 An interrupted session is detected on next launch and offered for resume; resume
 re-applies only journaled-safe baselines and re-engages one core at a time. A crash or
-pause during validation is recoverable: on resume the tuner detects the all-confirmed
-state and re-enters validation from stage 1.
+pause during validation is recoverable: on resume the tuner restores the persisted
+validation cursor and continues at the exact stage and position it left off.
 
 ### State machine
 
@@ -132,11 +144,11 @@ NOT_STARTED -> COARSE_SEARCH -> FINE_SEARCH -> SETTLED -> CONFIRMING -> CONFIRME
                                     |                       |            |
                                     v                       v            v (all cores)
                                  SETTLED              FAILED_CONFIRM   VALIDATION
-                                                           |          S1 -> S2 -> S3 -> DONE
-                                                           v            ^     |     |
-                                                    BACKOFF (smart)     +-----+-----+
-                                                    - pre-confirm     (backoff, restart S1)
-                                                    - midpoint jump
+                                                           |     S1 -> S2 -> S3 -> S4 -> S5 -> S6
+                                                           v      (fail: back off failing core,
+                                                    BACKOFF (smart)    solo re-prove, rerun stage;
+                                                    - pre-confirm      dirty pass => one final
+                                                    - midpoint jump    clean pass before DONE)
                                                     - binary search
                                                     - baseline floor
 ```
@@ -153,7 +165,7 @@ NOT_STARTED -> COARSE_SEARCH -> FINE_SEARCH -> SETTLED -> CONFIRMING -> CONFIRME
 | Confirm Duration | 300s | 30-1800s | Test duration for the confirmation run |
 | Validate Duration | 300s | 30-3600s | Test duration per multi-core validation stage |
 | Max Confirm Retries | 2 | 0-5 | Retries before backing off from a value |
-| Auto Validate | true | true/false | Run 3-stage multi-core validation after all cores confirm |
+| Auto Validate | true | true/false | Run staged multi-core validation (stages 1-6) after all cores confirm |
 | Backend | mprime | mprime/stress-ng/y-cruncher | Per-core stress backend (stressapptest is Memory tab only) |
 | Mode | SSE | SSE/AVX/AVX2/AVX512 | Stress instruction set |
 | FFT Preset | SMALL | SMALL/MEDIUM/LARGE/HEAVY/ALL | FFT size preset (mprime) |
@@ -183,7 +195,7 @@ defaults and are not exposed in the UI.
   clocks and the most sensitive error detection (rounding checks, SUMOUT verification).
 - The default `max_offset` of -50 suits Zen 4; Zen 5 can push to -60; Zen 3/3D are
   clamped to -30 automatically.
-- A typical 16-core run takes ~2-4 hours plus ~80 min for 3-stage validation.
+- A typical 16-core run takes ~2-4 hours plus several hours of staged validation (stages 1-6 include a 30-minute real-world soak).
 - If many cores fail at the starting offset, enable **abort on consecutive failures**
   (e.g. 3) -- it usually means BIOS PBO needs adjusting first.
 - **Multi-core validation** is the key differentiator from manual testing: a core stable

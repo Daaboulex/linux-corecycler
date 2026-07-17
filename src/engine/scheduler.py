@@ -33,16 +33,6 @@ class TestState(Enum):
     FINISHED = auto()
 
 
-class TestMode(Enum):
-    """Pre-configured test thoroughness levels."""
-
-    QUICK = auto()  # 2 min/core, 1 cycle — fast screening
-    STANDARD = auto()  # 10 min/core, 1 cycle — initial CO tuning
-    THOROUGH = auto()  # 30 min/core, 2 cycles — validation
-    FULL_SPECTRUM = auto()  # multi-pass: SSE, AVX2, variable load, idle — comprehensive
-    CUSTOM = auto()  # user-configured
-
-
 @dataclass(slots=True)
 class CoreTestStatus:
     core_id: int
@@ -68,7 +58,6 @@ class SchedulerConfig:
     over_temp_hard_margin: float = 8.0  # instant stop if temp >= max + this (runaway)
     stall_timeout: float = 30.0  # seconds of near-zero CPU before declaring stall
     require_thermal_sensor: bool = False  # fail closed if CPU temperature is unreadable
-    test_mode: TestMode = TestMode.CUSTOM
     # Full spectrum options
     variable_load: bool = False  # periodically stop/start stress during test
     variable_load_interval: float = 15.0  # seconds between load transitions
@@ -333,24 +322,6 @@ class CoreScheduler:
     # ------------------------------------------------------------------
     # Affinity verification
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _verify_affinity(pid: int, expected_cpus: str) -> bool:
-        """Verify a process is pinned to the expected CPUs via /proc/pid/status.
-
-        expected_cpus is a comma-separated list like "0,16".
-        Returns True if Cpus_allowed_list matches (order-insensitive).
-        Returns True (lenient) if /proc is unreadable — don't block the test.
-        """
-        try:
-            status_path = Path(f"/proc/{pid}/status")
-            for line in status_path.read_text().splitlines():
-                if line.startswith("Cpus_allowed_list:"):
-                    allowed = line.split(":", 1)[1].strip()
-                    return allowed == expected_cpus
-            return True  # field not found — don't block
-        except (OSError, ValueError):
-            return True  # can't read /proc — don't block
 
     @staticmethod
     def _verify_child_affinity(
@@ -1181,58 +1152,3 @@ class CoreScheduler:
         return "unknown"
 
 
-# ===========================================================================
-# Pre-configured test mode factories
-# ===========================================================================
-
-
-def make_quick_config() -> SchedulerConfig:
-    """Quick screening: 2 min/core, 1 cycle. Fast but less sensitive."""
-    return SchedulerConfig(
-        seconds_per_core=120,
-        cycle_count=1,
-        test_mode=TestMode.QUICK,
-    )
-
-
-def make_standard_config() -> SchedulerConfig:
-    """Standard CO tuning: 10 min/core, 1 cycle. Good starting point."""
-    return SchedulerConfig(
-        seconds_per_core=600,
-        cycle_count=1,
-        test_mode=TestMode.STANDARD,
-    )
-
-
-def make_thorough_config() -> SchedulerConfig:
-    """Thorough validation: 30 min/core, 2 cycles. Catches intermittent errors."""
-    return SchedulerConfig(
-        seconds_per_core=1800,
-        cycle_count=2,
-        test_mode=TestMode.THOROUGH,
-    )
-
-
-def make_full_spectrum_config() -> SchedulerConfig:
-    """Full spectrum: stress + variable load + idle stability, 3 cycles.
-
-    Tests the full range of operating conditions:
-    - Sustained maximum load (catches voltage droop errors)
-    - Variable load transitions (catches C-state transition errors)
-    - Idle stability (catches boost-to-idle errors, the #1 cause of
-      CO-related crashes in daily use)
-    - Multiple cycles (catches thermal cycling fatigue)
-
-    This is the most comprehensive test. It takes significantly longer
-    but provides the highest confidence that CO values are stable across
-    all real-world scenarios.
-    """
-    return SchedulerConfig(
-        seconds_per_core=1200,  # 20 min stress per core
-        cycle_count=3,
-        variable_load=True,
-        variable_load_interval=15.0,
-        idle_between_cores=10.0,  # 10s idle between cores
-        idle_stability_test=60.0,  # 60s idle test per core
-        test_mode=TestMode.FULL_SPECTRUM,
-    )

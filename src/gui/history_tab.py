@@ -79,10 +79,6 @@ class HistoryTab(QWidget):
         if db:
             self.refresh()
 
-    def set_db(self, db: HistoryDB) -> None:
-        self._db = db
-        self.refresh()
-
     def set_bios_warning(self, old_version: str, new_version: str) -> None:
         """Show BIOS change warning in the summary bar."""
         self._bios_warning = f"BIOS changed: {old_version} -> {new_version}"
@@ -1411,28 +1407,6 @@ class _ExportOptionsDialog(QDialog):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _dead_duration(seconds: float) -> str:
-    if seconds <= 0:
-        return ""
-    m, s = divmod(int(seconds), 60)
-    h, m = divmod(m, 60)
-    if h > 0:
-        return f"{h}h {m:02d}m {s:02d}s"
-    return f"{m}m {s:02d}s"
-
-
-def _format_duration_from_timestamps(start: str, end: str) -> str:
-    """Calculate duration from ISO timestamp strings."""
-    from datetime import datetime
-    try:
-        t_start = datetime.fromisoformat(start)
-        t_end = datetime.fromisoformat(end)
-        delta = (t_end - t_start).total_seconds()
-        return duration_str(delta)
-    except (ValueError, TypeError):
-        return "-"
 
 
 def _co_summary(co_json: str) -> str:
