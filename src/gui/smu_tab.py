@@ -308,6 +308,13 @@ class SMUTab(QWidget):
         if not self._smu:
             QMessageBox.warning(self, "Error", "ryzen_smu driver not available")
             return
+        if self._tuner_active:
+            QMessageBox.warning(
+                self, "Tuner Running",
+                "The auto-tuner owns the SMU right now — CO writes are locked "
+                "until it stops.",
+            )
+            return
 
         spin = self._spinboxes.get(core_id)
         if not spin:
@@ -330,6 +337,13 @@ class SMUTab(QWidget):
     def _apply_all_co(self) -> None:
         if not self._smu:
             QMessageBox.warning(self, "Error", "ryzen_smu driver not available")
+            return
+        if self._tuner_active:
+            QMessageBox.warning(
+                self, "Tuner Running",
+                "The auto-tuner owns the SMU right now — CO writes are locked "
+                "until it stops.",
+            )
             return
 
         summary = ", ".join(
@@ -358,6 +372,13 @@ class SMUTab(QWidget):
 
     def _reset_all_co(self) -> None:
         if not self._smu:
+            return
+        if self._tuner_active:
+            QMessageBox.warning(
+                self, "Tuner Running",
+                "The auto-tuner owns the SMU right now — CO writes are locked "
+                "until it stops.",
+            )
             return
 
         if not self._confirm_co_write("Reset all Curve Optimizer offsets to 0."):
@@ -514,14 +535,28 @@ class SMUTab(QWidget):
 
     def set_co_profile(self, profile: dict[int, int]) -> None:
         """Populate CO spinboxes from a profile without applying to hardware."""
+        altered: list[str] = []
         for core_id, offset in profile.items():
-            if core_id in self._spinboxes:
-                self._spinboxes[core_id].setValue(offset)
+            spin = self._spinboxes.get(core_id)
+            if spin is None:
+                altered.append(f"core {core_id}: not present on this CPU")
+                continue
+            spin.setValue(offset)
+            if spin.value() != offset:
+                altered.append(
+                    f"core {core_id}: {offset} clamped to {spin.value()}"
+                )
         count = len(profile)
         self._profile_banner.setText(
             f"Loaded {count} core(s) from tuner session \u2014 click 'Apply All New Values' to write to SMU"
         )
         self._profile_banner.setVisible(True)
+        if altered:
+            QMessageBox.warning(
+                self, "Profile Adjusted",
+                "Some loaded values could not be taken as-is:\n"
+                + "\n".join(altered),
+            )
 
     # ------------------------------------------------------------------
     # Helpers

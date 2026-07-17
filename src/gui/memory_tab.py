@@ -509,6 +509,8 @@ class MemoryTab(QWidget):
         self._stress_btn.setEnabled(not running and not (self._stress_worker and self._stress_worker.isRunning()))
 
     def _run_memory_stress(self) -> None:
+        if self._stress_worker is not None and self._stress_worker.isRunning():
+            return
         tool = self._stress_tool.currentText()
         if tool == "(none installed)":
             QMessageBox.warning(
@@ -528,6 +530,7 @@ class MemoryTab(QWidget):
         self._stress_worker.start()
 
     def _stop_memory_stress(self) -> None:
+        self._stop_btn.setEnabled(False)
         """Stop the running memory stress test."""
         if self._stress_worker and self._stress_worker.isRunning():
             self._stress_status.setText("Stopping...")

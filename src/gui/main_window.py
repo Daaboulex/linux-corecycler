@@ -652,14 +652,21 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_memory_stress_started(self) -> None:
-        """Set all cores to memory stress state in sidebar."""
+        """Set all cores to memory stress state; lock the other test starters."""
+        self._start_btn.setEnabled(False)
+        self._tuner_tab.set_test_running(True)
         for core_id in self._core_grid._cells:
             status = CoreTestStatus(core_id=core_id, state="mem_stress")
             self._core_grid.update_core_status(core_id, status)
 
     @Slot(bool)
     def _on_memory_stress_done(self, passed: bool) -> None:
-        """Reset all cores to pending after memory stress."""
+        """Reset cores to pending; release the other test starters."""
+        self._start_btn.setEnabled(
+            (self._worker is None or not self._worker.isRunning())
+            and not self._tuner_tab.is_running
+        )
+        self._tuner_tab.set_test_running(False)
         for core_id in self._core_grid._cells:
             status = CoreTestStatus(core_id=core_id, state="pending")
             self._core_grid.update_core_status(core_id, status)
