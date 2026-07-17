@@ -574,6 +574,11 @@ class CoreScheduler:
                             if self.config.stop_on_error:
                                 self._stop_event.set()
                             break
+                        # Backends re-pin their own threads after launch — hold
+                        # the load on the core under test, like the fixed path.
+                        self._verify_child_affinity(
+                            self._process.pid, own_cpus, cpu_list
+                        )
                         time.sleep(0.5)
 
                     # Drain output before kill for error detection
@@ -1072,10 +1077,19 @@ class CoreScheduler:
                 with self._process_lock:
                     self._process = proc
 
-                # Load phase
+                # Load phase — stepped wait so drifted backend threads are
+                # re-pinned onto the requested cores while the load runs.
                 load_time = min(load_seconds, total_duration - elapsed)
                 segment_start = time.monotonic()
-                stopped = self._stop_event.wait(load_time)
+                segment_end = segment_start + load_time
+                expected_cpus = set(logical_ids)
+                stopped = False
+                while not stopped and time.monotonic() < segment_end:
+                    stopped = self._stop_event.wait(
+                        min(1.0, max(0.0, segment_end - time.monotonic()))
+                    )
+                    if not stopped and proc.poll() is None and expected_cpus:
+                        self._verify_child_affinity(proc.pid, expected_cpus, cpu_list)
                 elapsed += time.monotonic() - segment_start
 
                 # Kill process to trigger idle transition
@@ -1151,6 +1165,10 @@ class CoreScheduler:
             return "computation"
         if "timeout" in msg_lower:
             return "timeout"
+        # An external kill (OOM killer, a stray pkill) is an apparatus event,
+        # not silicon evidence — it must never classify as a crash verdict.
+        if "killed externally" in msg_lower:
+            return "killed"
         # detect signal exits: "exited with code -11", "killed by signal"
         if "crash" in msg_lower or "signal" in msg_lower:
             return "crash"

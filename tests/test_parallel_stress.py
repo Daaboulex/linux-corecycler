@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -157,11 +159,85 @@ class TestParallelLanes:
         assert results[2].error_type == "stall"
 
     def test_stop_kills_all_lanes(self, topo_dual_ccd_x3d, tmp_path):
-        import threading
-
         runner = _runner(topo_dual_ccd_x3d, LaneBackend(), [0, 1], tmp_path,
                          seconds_per_core=30)
         threading.Timer(0.3, runner.stop).start()
         start = time.monotonic()
         runner.run()
         assert time.monotonic() - start < 5.0
+
+
+# A backend that re-pins itself off the taskset mask at startup — exactly what
+# mprime does (it moves its workers to the first core it detects).
+DRIFT_CMD = [
+    sys.executable, "-c",
+    "import os, time\n"
+    "os.sched_setaffinity(0, {0})\n"
+    "end = time.time() + 30\n"
+    "while time.time() < end: pass",
+]
+
+
+class TestLaneIntegrity:
+    def test_self_repinned_lane_is_forced_back_onto_its_core(
+        self, topo_dual_ccd_x3d, tmp_path
+    ):
+        """The live failure mode: every mprime instance re-pins its threads to
+        core 0, the lane's own CPUs idle, and the stall watchdog blames the
+        core. The runner must detect the drift and force the process back."""
+        backend = LaneBackend(cmd=DRIFT_CMD)
+        runner = _runner(topo_dual_ccd_x3d, backend, [1], tmp_path,
+                         seconds_per_core=30)
+        expected = set(topo_dual_ccd_x3d.cores[1].logical_cpus)
+        worker = threading.Thread(target=runner.run)
+        worker.start()
+        try:
+            time.sleep(1.0)  # drift happens at exec; re-pin within one poll
+            lane = runner._lanes.get(1)
+            assert lane is not None and lane.proc is not None
+            assert lane.proc.poll() is None
+            mask = os.sched_getaffinity(lane.proc.pid)
+            assert mask and mask <= expected  # dragged back off CPU 0
+            assert 0 not in mask
+        finally:
+            runner.stop()
+            worker.join(timeout=10)
+
+    def test_interrupted_batch_invents_no_pass_verdicts(
+        self, topo_dual_ccd_x3d, tmp_path, monkeypatch
+    ):
+        """When one lane fails early, the killed survivors ran a fraction of
+        the duration — recording them as PASSED would enter fake evidence into
+        the record (1359 such rows in one live night)."""
+        from engine import parallel as par
+
+        monkeypatch.setattr(par, "_ERROR_POLL_INTERVAL", 0.1)
+        backend = LaneBackend(error_dirs={"core_0": "mprime error: FATAL ERROR"})
+        runner = _runner(topo_dual_ccd_x3d, backend, [0, 1], tmp_path,
+                         seconds_per_core=30)
+        results = runner.run()
+        assert results[0].passed is False
+        assert 1 not in results  # no invented pass for the killed survivor
+
+    def test_unattributed_mce_is_typed_and_never_blames_a_lane(
+        self, topo_dual_ccd_x3d, tmp_path
+    ):
+        """An MCE with no CPU proves the box is unwell, not that any one core
+        is: the batch stops with a distinct error_type the tuner treats as an
+        apparatus event, never as back-off evidence."""
+        runner = _runner(topo_dual_ccd_x3d, LaneBackend(), [0, 3], tmp_path,
+                         seconds_per_core=30)
+        fired = []
+
+        def fake_check():
+            if not fired:
+                fired.append(1)
+                return [MCEEvent(0.0, -1, 0, "uncorrected err", False)]
+            return []
+
+        runner.detector.check_mce = fake_check
+        results = runner.run()
+        assert results[0].passed is False
+        assert results[0].error_type == "mce_unattributed"
+        assert 3 not in results  # the other lane earns no invented verdict
+        assert runner.observed_mce
