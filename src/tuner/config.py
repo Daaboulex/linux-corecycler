@@ -140,7 +140,12 @@ class TunerConfig:
     validate_spectrum: bool = True
     spectrum_slot_seconds: int = 60
 
-    # S6 real-world soak: after a clean validation pass, watch the kernel
+    # S6 all-core memory-load stress (all offsets live): one memory stressor
+    # per core at once, catching CO marginality that only appears under
+    # memory-controller load. Skipped if no memory stress tool is installed.
+    validate_memory: bool = True
+
+    # S7 real-world soak: after a clean validation pass, watch the kernel
     # error stream for this long with NO synthetic load while the machine is
     # used normally. Zero events = DONE.
     validate_soak: bool = True

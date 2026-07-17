@@ -212,6 +212,9 @@ def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=4000):
     eng = make_engine(db, topo, FaultSMU(), backend, **cfg_kw)
     eng._start_worker = patched_single
     eng._start_multi_core_worker = patched_multi
+    # Force the memory stage to run (stressapptest is not installed under test)
+    # so the full chain including a live memory stage is exercised, not skipped.
+    eng._get_memory_backend = lambda: object()
     eng._session_id = sid
     eng._core_states = {
         c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=stable,

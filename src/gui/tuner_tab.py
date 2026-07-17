@@ -862,7 +862,7 @@ class TunerTab(QWidget):
         """Update status and progress labels during multi-core validation."""
         stage_names = {
             1: "per-core", 2: "all-core", 3: "half-core",
-            4: "transitions", 5: "spectrum", 6: "soak",
+            4: "transitions", 5: "spectrum", 6: "memory", 7: "soak",
         }
         stage_name = stage_names.get(stage, f"stage {stage}")
         self._status_label.setText(f"Status: Validating S{stage} ({stage_name})")
