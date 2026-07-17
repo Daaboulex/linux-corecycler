@@ -16,7 +16,6 @@ from history.db import (
     TelemetrySample,
 )
 from history.export import (
-    ExportSettings,
     export_run_csv,
     export_run_csv_file,
     export_run_json,
@@ -30,7 +29,6 @@ from history.timefmt import format_local
 __all__ = [
     "CoreResultRecord",
     "EventRecord",
-    "ExportSettings",
     "HistoryDB",
     "RunRecord",
     "TelemetrySample",

@@ -587,14 +587,8 @@ class TunerEngine(QObject):
         self._run_next()
 
     def resume(self, session_id: int) -> None:
-        """Resume a crashed/paused session.
-
-        Order matters for crash safety:
-        1. Advance interrupted cores FIRST (treat crash as failure, back off)
-        2. THEN re-apply only safe offsets for cores at known-good values
-        This prevents re-applying the exact offset that caused a crash,
-        which could crash the system again even at idle with extreme values.
-        """
+        """Resume a crashed/paused session: attribute any crash from evidence
+        first, then restore baselines, then continue where the cursor points."""
         # A pause takes effect AFTER the in-flight test; resuming under a live
         # worker would rewrite SMU baselines beneath the running stress test
         # (false PASS at an untested offset) and orphan the worker thread.

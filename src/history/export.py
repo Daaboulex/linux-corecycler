@@ -5,23 +5,13 @@ from __future__ import annotations
 import csv
 import io
 import json
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from dataclasses import asdict
 from typing import TYPE_CHECKING
-
-from tuner.state import TunerPhase
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from history.db import HistoryDB
-
-
-@dataclass(slots=True)
-class ExportSettings:
-    include_events: bool = True
-    include_telemetry: bool = False
-    format: str = "json"  # "json" or "csv"
 
 
 # ---------------------------------------------------------------------------
@@ -186,112 +176,3 @@ def _make_csv_row(run, rec) -> dict:
         "min_vcore_v": rec.min_vcore_v,
         "max_vcore_v": rec.max_vcore_v,
     }
-
-
-# ---------------------------------------------------------------------------
-# Tuner profile export / import
-# ---------------------------------------------------------------------------
-
-_IMPORTABLE_PHASES = {TunerPhase.CONFIRMED, TunerPhase.HARDENED}
-
-
-def export_tuner_profile(db: HistoryDB, session_id: int) -> str:
-    """Export confirmed/hardened CO offsets from a tuner session as JSON."""
-    session = db.get_tuner_session(session_id)
-    if session is None:
-        raise ValueError(f"Session {session_id} not found")
-    states = db.get_tuner_core_states(session_id)
-    profile = {
-        str(cs.core_id): cs.best_offset
-        for cs in states.values()
-        if cs.phase in _IMPORTABLE_PHASES and cs.best_offset is not None
-    }
-    try:
-        config = json.loads(session.config_json) if session.config_json else {}
-    except (json.JSONDecodeError, TypeError):
-        config = {}
-    if not isinstance(config, dict):
-        config = {}
-    hardening_tiers = config.get("hardening_tiers", [])
-    tiers_passed = [
-        f"{t['stress_mode']}:{t['fft_preset']}"
-        for t in hardening_tiers
-        if isinstance(t, dict) and "stress_mode" in t and "fft_preset" in t
-    ]
-    has_hardened = any(cs.phase == TunerPhase.HARDENED for cs in states.values())
-    data = {
-        "cpu_model": session.cpu_model,
-        "core_count": len(profile),
-        "bios_version": session.bios_version,
-        "source_session_id": session_id,
-        "exported_at": datetime.now(UTC).isoformat(),
-        "primary_backend": config.get("backend", "mprime"),
-        "primary_mode": config.get("stress_mode", "SSE"),
-        "primary_fft": config.get("fft_preset", "SMALL"),
-        "hardened": has_hardened,
-        "hardening_tiers_passed": tiers_passed if has_hardened else [],
-        "profile": profile,
-    }
-    return json.dumps(data, indent=2)
-
-
-def parse_tuner_profile(json_str: str) -> dict:
-    """Parse a tuner profile JSON string into a dict with int core keys.
-
-    Fails closed on a malformed import file: raises a single ValueError (never an
-    opaque JSONDecodeError/TypeError/AttributeError) so the caller can reject an
-    invalid profile cleanly instead of crashing.
-    """
-    try:
-        data = json.loads(json_str)
-    except (json.JSONDecodeError, TypeError) as e:
-        raise ValueError(f"invalid profile JSON: {e}") from e
-    if not isinstance(data, dict):
-        raise ValueError("profile JSON must be a JSON object")
-    raw_profile = data.get("profile", {})
-    if not isinstance(raw_profile, dict):
-        raise ValueError("'profile' must be a JSON object of core:offset pairs")
-    try:
-        profile = {int(k): int(v) for k, v in raw_profile.items()}
-    except (ValueError, TypeError) as e:
-        raise ValueError(f"profile entries must be integer core:offset pairs: {e}") from e
-    return {
-        "profile": profile,
-        "cpu_model": data.get("cpu_model", ""),
-        "core_count": data.get("core_count", len(profile)),
-        "bios_version": data.get("bios_version", ""),
-        "hardened": data.get("hardened", False),
-        "source_session_id": data.get("source_session_id"),
-    }
-
-
-def validate_tuner_profile_import(
-    profile_data: dict,
-    system_core_count: int,
-    system_cpu_model: str,
-) -> list[dict]:
-    """Validate imported profile against current system. Returns list of {level, message}."""
-    messages = []
-    imported_max_core = max(profile_data["profile"].keys()) + 1 if profile_data["profile"] else 0
-    if profile_data.get("core_count", 0) > system_core_count or imported_max_core > system_core_count:
-        messages.append({
-            "level": "error",
-            "message": (
-                f"Core count mismatch: profile has {profile_data.get('core_count', imported_max_core)}"
-                f" cores, system has {system_core_count}"
-            ),
-        })
-    if profile_data.get("cpu_model") and profile_data["cpu_model"] != system_cpu_model:
-        messages.append({
-            "level": "warning",
-            "message": (
-                f"CPU model mismatch: profile='{profile_data['cpu_model']}',"
-                f" system='{system_cpu_model}'"
-            ),
-        })
-    if not profile_data.get("profile"):
-        messages.append({
-            "level": "error",
-            "message": "Profile contains no confirmed cores",
-        })
-    return messages

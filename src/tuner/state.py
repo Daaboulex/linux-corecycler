@@ -32,12 +32,7 @@ class TunerPhase(StrEnum):
 
 @dataclass(slots=True)
 class CoreState:
-    """Per-core state in the auto-tuner state machine.
-
-    Phases: not_started, coarse_search, fine_search, settled,
-    confirming, confirmed, failed_confirm, backoff_preconfirm,
-    backoff_confirming.
-    """
+    """Per-core state in the auto-tuner state machine."""
 
     core_id: int
     phase: TunerPhase = TunerPhase.NOT_STARTED

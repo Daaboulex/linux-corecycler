@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from gui.style import (
@@ -31,8 +31,6 @@ _TIME_WIDTH = 48
 class CoreCell(QWidget):
     """Single core display cell — fixed slots so text never shifts or clips."""
 
-    clicked = Signal(int)
-
     def __init__(self, core_id: int, ccd: int | None = None, has_vcache: bool = False) -> None:
         super().__init__()
         self.core_id = core_id
@@ -47,7 +45,6 @@ class CoreCell(QWidget):
 
         self.setFixedHeight(CELL_HEIGHT_NORMAL)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 1, 4, 1)
@@ -167,15 +164,8 @@ class CoreCell(QWidget):
             f" QLabel {{ color: {fg}; background: transparent; }}"
         )
 
-    def mousePressEvent(self, event) -> None:
-        self.clicked.emit(self.core_id)
-        super().mousePressEvent(event)
-
-
 class CoreGridWidget(QWidget):
     """Vertical list of CoreCells grouped by CCD."""
-
-    core_clicked = Signal(int)
 
     def __init__(self, topology: CPUTopology | None = None) -> None:
         super().__init__()
@@ -225,7 +215,6 @@ class CoreGridWidget(QWidget):
                     ccd=ccd_idx,
                     has_vcache=core_info.has_vcache if core_info else False,
                 )
-                cell.clicked.connect(self.core_clicked.emit)
                 self._cells[core_id] = cell
                 self._layout.addWidget(cell)
 

@@ -220,20 +220,6 @@ class TestMonitorTabUsesPollInterval:
         )
 
 
-class TestStartMonitoringUsesPollInterval:
-    def test_start_monitoring_uses_poll_interval(self):
-        """MonitorTab.start_monitoring() must use poll_interval, not hardcoded 1000."""
-        content = _MONITOR_TAB_SRC.read_text()
-        start_match = re.search(
-            r"def start_monitoring\(.*?\n(?:(?!    def ).*\n)*", content
-        )
-        assert start_match is not None, "Could not find start_monitoring in monitor_tab.py"
-        start_body = start_match.group()
-        assert "poll_interval" in start_body, (
-            "start_monitoring() should use poll_interval, not hardcoded 1000"
-        )
-
-
 class TestMonitorTabNarrowedException:
     def test_monitor_tab_narrowed_exception(self):
         """monitor_tab.py must use suppress(OSError, ...) not suppress(Exception)."""

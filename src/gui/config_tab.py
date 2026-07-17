@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -45,7 +44,6 @@ TEST_MODE_INFO: dict[str, str] = {
 class ConfigTab(QWidget):
     """Configuration panel for stress test settings."""
 
-    profile_changed = Signal(TestProfile)
 
     def __init__(self, topology: CPUTopology | None = None) -> None:
         super().__init__()
@@ -341,7 +339,6 @@ class ConfigTab(QWidget):
             self._mode_combo.setCurrentText("CUSTOM")
             self._mode_desc.setText(TEST_MODE_INFO["CUSTOM"])
             self._building = False
-        self.profile_changed.emit(self.get_profile())
 
     def get_profile(self) -> TestProfile:
         cores_text = self._cores_input.text().strip().rstrip(",").strip()
