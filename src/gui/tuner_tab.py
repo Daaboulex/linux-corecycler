@@ -814,13 +814,19 @@ class TunerTab(QWidget):
         )
 
     def _notify(self, title: str, body: str, *, urgency: str = "normal") -> None:
-        from config.settings import load_settings
+        # A notification must never take the app down: swallow any failure
+        # (module missing, no D-Bus, no daemon) — the tune result already
+        # stands by the time this runs.
+        try:
+            from config.settings import load_settings
 
-        if not load_settings().notify_on_completion:
-            return
-        from notify import desktop_notify
+            if not load_settings().notify_on_completion:
+                return
+            from notify import desktop_notify
 
-        desktop_notify(title, body, urgency=urgency)
+            desktop_notify(title, body, urgency=urgency)
+        except Exception:
+            log.debug("desktop notification failed", exc_info=True)
 
     @Slot(str)
     def _on_status_changed(self, status: str) -> None:
