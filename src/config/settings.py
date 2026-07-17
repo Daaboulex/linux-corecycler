@@ -77,6 +77,8 @@ class AppSettings:
     record_history: bool = True
     record_telemetry: bool = True
     history_retention_days: int = 90
+    # Notifications
+    notify_on_completion: bool = True
 
     @property
     def active_profile(self) -> TestProfile:
