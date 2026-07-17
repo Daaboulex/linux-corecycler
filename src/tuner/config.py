@@ -99,6 +99,11 @@ class TunerConfig:
     max_thermal_retries: int = 3  # retry same offset this many times before aborting
     thermal_cooldown_seconds: float = 5.0  # real wall-clock cooldown before a thermal retry
 
+    # An apparatus fault (stall, external kill, unattributable machine check)
+    # is not a stability verdict either: retry the same step without recording
+    # a verdict, up to this many consecutive faults, then stop honestly.
+    max_apparatus_retries: int = 3
+
     # Inherit current CO offsets from SMU as starting point
     inherit_current: bool = False
 
@@ -224,6 +229,8 @@ class TunerConfig:
             errors.append("over_temp_hard_margin_c must be >= 0")
         if self.max_thermal_retries < 0:
             errors.append("max_thermal_retries must be >= 0")
+        if self.max_apparatus_retries < 0:
+            errors.append("max_apparatus_retries must be >= 0")
         if self.thermal_cooldown_seconds < 0:
             errors.append("thermal_cooldown_seconds must be >= 0")
         if self.validate_duration_seconds < 1:

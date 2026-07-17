@@ -146,6 +146,11 @@ class TestNewConfigOptions:
         errors = cfg.validate()
         assert any("max_core_time" in e.lower() for e in errors)
 
+    def test_validate_max_apparatus_retries_range(self):
+        cfg = TunerConfig(max_apparatus_retries=-1)
+        errors = cfg.validate()
+        assert any("max_apparatus_retries" in e.lower() for e in errors)
+
     def test_spectrum_tier_profile_validated(self):
         good = TunerConfig(hardening_tiers=[
             {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL",

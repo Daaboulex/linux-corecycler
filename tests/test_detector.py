@@ -24,6 +24,7 @@ from engine.detector import (
     _iso_to_journal_since,
     classify_mce_line,
     harvest_kernel_mce,
+    last_boot_ended_cleanly,
 )
 
 # Real AMD Zen 5 decoded MCA block (kernel: prefix stripped), one error event.
@@ -408,3 +409,33 @@ class TestGetDmesgTimestamp:
     def test_file_not_found(self):
         with patch("subprocess.run", side_effect=FileNotFoundError):
             assert _get_dmesg_raw_timestamp() == 0.0
+
+
+# ===========================================================================
+# last_boot_ended_cleanly — freeze vs deliberate reboot
+# ===========================================================================
+
+
+class TestLastBootEndedCleanly:
+    def test_clean_shutdown_detected(self):
+        tail = "some line\nJournal stopped\n"
+        with patch("subprocess.run", return_value=_dmesg_result(tail)):
+            assert last_boot_ended_cleanly() is True
+
+    def test_pid1_shutdown_marker_detected(self):
+        tail = "unmounting\nShutting down.\n"
+        with patch("subprocess.run", return_value=_dmesg_result(tail)):
+            assert last_boot_ended_cleanly() is True
+
+    def test_abrupt_end_is_dirty(self):
+        tail = "lmstudio.service: Failed with result 'exit-code'.\n"
+        with patch("subprocess.run", return_value=_dmesg_result(tail)):
+            assert last_boot_ended_cleanly() is False
+
+    def test_unreadable_journal_fails_closed(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            assert last_boot_ended_cleanly() is False
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("journalctl", 5)):
+            assert last_boot_ended_cleanly() is False
+        with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="")):
+            assert last_boot_ended_cleanly() is False

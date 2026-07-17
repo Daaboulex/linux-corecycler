@@ -1204,6 +1204,15 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
         # Force the intent to disk before the caller writes the value to hardware.
         self.__conn.execute("PRAGMA wal_checkpoint(FULL)")
 
+    def checkpoint(self) -> None:
+        """Flush the WAL to the main database file.
+
+        For writes that must survive a hard crash moments later (the in-test
+        marks before a validation worker starts): a committed WAL frame alone
+        can still be lost to a freeze if the kernel never flushed it.
+        """
+        self.__conn.execute("PRAGMA wal_checkpoint(FULL)")
+
     def journal_mark_survived(
         self, session_id: int, exclude_cores: tuple[int, ...] | list[int] = ()
     ) -> None:

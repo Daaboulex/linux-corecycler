@@ -232,6 +232,31 @@ def harvest_kernel_mce(
     return events, True
 
 
+def last_boot_ended_cleanly(timeout: float = 15.0) -> bool:
+    """True when the previous boot ended in an orderly shutdown.
+
+    Journald writes a final "Journal stopped" record on every clean shutdown;
+    a freeze or hard reset leaves the boot's journal without one. Fail closed:
+    any read problem returns False — an unproven shutdown is treated as dirty.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "journalctl", "-q", "--no-pager", "-b", "-1",
+                "-n", "25", "-o", "cat",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError) as exc:
+        log.warning("clean-shutdown probe failed: %s", exc)
+        return False
+    if result.returncode != 0:
+        return False
+    return "Journal stopped" in result.stdout or "Shutting down." in result.stdout
+
+
 def _iso_to_journal_since(iso_ts: str) -> str | None:
     """Convert an ISO-8601 timestamp to systemd's --since form, in UTC."""
     try:

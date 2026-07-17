@@ -636,3 +636,16 @@ def no_real_forensics(monkeypatch):
     monkeypatch.setattr(
         engine_mod, "harvest_kernel_mce", lambda since, timeout=15.0: ([], True)
     )
+
+
+@pytest.fixture(autouse=True)
+def assume_clean_shutdown(monkeypatch):
+    """Resume probes the host journal to tell a freeze from a deliberate
+    reboot (tuner.engine.last_boot_ended_cleanly). Default it to clean so the
+    unattributed-incident gate stays quiet; incident tests override with False.
+    """
+    import tuner.engine as engine_mod
+
+    monkeypatch.setattr(
+        engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: True
+    )
