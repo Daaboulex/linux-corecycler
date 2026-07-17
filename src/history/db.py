@@ -159,7 +159,7 @@ class TelemetrySample:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 14
+    SCHEMA_VERSION = 15
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -379,6 +379,16 @@ CREATE TABLE IF NOT EXISTS tuner_test_log (
     peak_stretch_pct    REAL
 );
 CREATE INDEX IF NOT EXISTS idx_tuner_log_session ON tuner_test_log(session_id, core_id);
+
+CREATE TABLE IF NOT EXISTS tuner_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL REFERENCES tuner_sessions(id) ON DELETE CASCADE,
+    timestamp   TEXT    NOT NULL,
+    boot_id     TEXT    NOT NULL DEFAULT '',
+    severity    TEXT    NOT NULL DEFAULT 'info',
+    message     TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
 
 CREATE TABLE IF NOT EXISTS tuner_co_journal (
     session_id  INTEGER NOT NULL REFERENCES tuner_sessions(id) ON DELETE CASCADE,
@@ -614,6 +624,21 @@ ALTER TABLE tuner_sessions ADD COLUMN validation_dirty INTEGER NOT NULL DEFAULT 
 ALTER TABLE tuner_sessions ADD COLUMN validation_requeue TEXT NOT NULL DEFAULT '[]';
 """
 
+    # v14 -> v15: the tuner narrative becomes durable — every log line the
+    # engine emits lands in tuner_events, so a session's story survives the
+    # terminal and can be replayed on resume.
+    _DDL_MIGRATE_V15 = """\
+CREATE TABLE IF NOT EXISTS tuner_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL REFERENCES tuner_sessions(id) ON DELETE CASCADE,
+    timestamp   TEXT    NOT NULL,
+    boot_id     TEXT    NOT NULL DEFAULT '',
+    severity    TEXT    NOT NULL DEFAULT 'info',
+    message     TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
+"""
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _DDL_MIGRATE_V2,
         3: _DDL_MIGRATE_V3,
@@ -628,6 +653,7 @@ ALTER TABLE tuner_sessions ADD COLUMN validation_requeue TEXT NOT NULL DEFAULT '
         12: _DDL_MIGRATE_V12,
         13: _DDL_MIGRATE_V13,
         14: _DDL_MIGRATE_V14,
+        15: _DDL_MIGRATE_V15,
     }
 
     # ------------------------------------------------------------------
@@ -1285,6 +1311,24 @@ ALTER TABLE tuner_sessions ADD COLUMN validation_requeue TEXT NOT NULL DEFAULT '
             (stage, index, half, int(dirty), requeue_json, self._now_iso(), session_id),
         )
 
+    def insert_tuner_event(
+        self, session_id: int, message: str, boot_id: str = "", severity: str = "info"
+    ) -> None:
+        self.__conn.execute(
+            "INSERT INTO tuner_events (session_id, timestamp, boot_id, severity, message) "
+            "VALUES (?,?,?,?,?)",
+            (session_id, self._now_iso(), boot_id, severity, message),
+        )
+
+    def get_tuner_events(self, session_id: int, limit: int = 200) -> list[dict]:
+        """Newest-last narrative lines for a session (the replayable story)."""
+        rows = self.__conn.execute(
+            "SELECT * FROM (SELECT * FROM tuner_events WHERE session_id=? "
+            "ORDER BY id DESC LIMIT ?) ORDER BY id",
+            (session_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def set_hunting_core(self, session_id: int, core_id: int | None) -> None:
         """Persist which core an isolated hunt slot is stressing BEFORE the
         slot starts: a hard crash mid-slot then names its proven culprit on
@@ -1571,6 +1615,9 @@ ALTER TABLE tuner_sessions ADD COLUMN validation_requeue TEXT NOT NULL DEFAULT '
           "backoff_pass_bound", "in_test", "crash_count", "crash_cooldown",
           "thermal_aborts", "cumulative_test_time", "hardening_tier_index",
           "updated_at"),
+         {"session_id": "tuner_sessions"}),
+        ("tuner_events",
+         ("session_id", "timestamp", "boot_id", "severity", "message"),
          {"session_id": "tuner_sessions"}),
         ("tuner_test_log",
          ("session_id", "core_id", "offset_tested", "phase", "passed",

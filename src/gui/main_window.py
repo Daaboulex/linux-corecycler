@@ -808,6 +808,28 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"Failed to load profile: {e}")
 
+    def attempt_auto_resume(self) -> None:
+        """Login-autostart entry: resume the active mid-run session, if any.
+
+        Paused sessions are a deliberate human choice and stay paused;
+        quarantined/completed ones never qualify.
+        """
+        from tuner import persistence as tp
+
+        if self._history_db is None:
+            log.info("auto-resume: no database available")
+            return
+        session = tp.pick_auto_resume_session(self._history_db)
+        if session is None:
+            log.info("auto-resume: no mid-run session to resume")
+            return
+        engine = getattr(self._tuner_tab, "_engine", None)
+        if engine is not None and engine.status != "idle":
+            log.info("auto-resume: engine already active (%s)", engine.status)
+            return
+        log.info("auto-resume: resuming session %d (%s)", session.id, session.status)
+        self._tuner_tab._resume_session(session.id)
+
     def closeEvent(self, event) -> None:
         # Check if ANYTHING is running (manual test OR tuner OR memory stress)
         manual_running = self._worker and self._worker.isRunning()

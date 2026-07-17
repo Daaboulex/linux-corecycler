@@ -94,6 +94,20 @@ def _install_exception_hooks(window) -> None:
     threading.excepthook = _thread_handle
 
 
+def _parse_auto_resume(argv: list[str]) -> int | None:
+    """--auto-resume [seconds]: resume the active mid-run session after a
+    settle delay (the login-autostart path). Returns None when absent."""
+    if "--auto-resume" not in argv:
+        return None
+    i = argv.index("--auto-resume")
+    if i + 1 < len(argv):
+        try:
+            return max(0, int(argv[i + 1]))
+        except ValueError:
+            pass
+    return 120
+
+
 def main() -> int:
     import logging
     import os
@@ -162,6 +176,19 @@ def main() -> int:
     app.setApplicationName("CoreCycler")
     app.setOrganizationName("corecycler")
 
+    # One instance only — two engines would fight over the SMU.
+    from PySide6.QtCore import QLockFile
+
+    from config.paths import user_home
+
+    lock_dir = user_home() / ".local" / "share" / "corecycler"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    instance_lock = QLockFile(str(lock_dir / "corecycler.lock"))
+    if not instance_lock.tryLock(0):
+        print("corecycler: another instance is already running.", file=sys.stderr)
+        return 1
+    app._corecycler_instance_lock = instance_lock
+
     # Locate assets — dev mode (src/../assets) or installed ($out/share/...)
     assets_dir = _find_assets_dir()
 
@@ -178,6 +205,12 @@ def main() -> int:
     from gui.main_window import MainWindow
 
     window = MainWindow()
+
+    auto_resume_delay = _parse_auto_resume(sys.argv[1:])
+    if auto_resume_delay is not None:
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(auto_resume_delay * 1000, window.attempt_auto_resume)
 
     import atexit
     import signal

@@ -628,6 +628,8 @@ class TunerTab(QWidget):
             self._apply_config_to_ui(TunerConfig.from_json(session.config_json))
         self._set_running_state(True)
         log.info("Resuming tuner session %d with its saved config", session_id)
+        for event in tp.get_events(self._db, session_id, limit=20):
+            log.info("[tuner] story: %s %s", event.get("timestamp", "")[:19], event.get("message", ""))
         self._engine.resume(session_id)
 
         # Initialize table with all cores

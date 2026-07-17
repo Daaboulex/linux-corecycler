@@ -56,6 +56,21 @@ core 7 (the deepest, most-proven offset) on the next resume.
 - Export/Validate read only `phase='confirmed'` and reported "no confirmed
   cores" on a fully HARDENED session; hardened cores are included now.
 
+### Added (2026-07-17, durable narrative + login auto-resume)
+
+- Schema v15: every narrative line the tuner emits is persisted to
+  `tuner_events` (with boot id), so a session's story survives the terminal
+  and reboots; resuming a session replays its recent story into the log.
+- Login auto-resume: `corecycler --auto-resume [seconds]` waits for the
+  system to settle, then resumes the active MID-RUN session (running or
+  validating) — a paused session is a human choice and stays paused;
+  quarantined/completed never qualify. The NixOS module gains
+  `services.corecycler.autoResume.{enable,delaySeconds}` installing a login
+  autostart entry; it runs sudo-less through the device-access group
+  (SMU group-rw, MSR group-read, PM table world-read).
+- Single-instance lock: a second corecycler exits immediately instead of
+  fighting the first over the SMU.
+
 ### Added (2026-07-17, light-load coverage + real-world soak)
 
 - The load class that actually crashes machines is now tested per core: a

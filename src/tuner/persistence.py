@@ -120,6 +120,26 @@ def set_hunting_core(db: HistoryDB, session_id: int, core_id: int | None) -> Non
     db.set_hunting_core(session_id, core_id)
 
 
+def log_event(
+    db: HistoryDB, session_id: int, message: str, boot_id: str = "", severity: str = "info"
+) -> None:
+    db.insert_tuner_event(session_id, message, boot_id, severity)
+
+
+def get_events(db: HistoryDB, session_id: int, limit: int = 200) -> list[dict]:
+    return db.get_tuner_events(session_id, limit)
+
+
+def pick_auto_resume_session(db: HistoryDB):
+    """The session login-autostart may resume: mid-run (running/validating)
+    only. A paused session is a deliberate human choice; quarantined and
+    completed ones are excluded by the active query."""
+    session = db.get_active_tuner_session()
+    if session is not None and session.status in ("running", "validating"):
+        return session
+    return None
+
+
 def set_validation_position(
     db: HistoryDB,
     session_id: int,

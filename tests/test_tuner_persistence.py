@@ -492,3 +492,35 @@ class TestSchemaV13:
             assert db.get_tuner_best_profile(sid) == {0: -41, 1: -30}
         finally:
             db.close()
+
+
+class TestSchemaV15Narrative:
+    def test_events_round_trip_newest_last(self, tmp_path):
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            for i in range(5):
+                db.insert_tuner_event(sid, f"line {i}", boot_id="boot-a")
+            events = db.get_tuner_events(sid, limit=3)
+            assert [e["message"] for e in events] == ["line 2", "line 3", "line 4"]
+            assert events[0]["boot_id"] == "boot-a"
+            assert events[0]["severity"] == "info"
+        finally:
+            db.close()
+
+    def test_pick_auto_resume_session_statuses(self, tmp_path):
+        from tuner import persistence as tp
+
+        db = HistoryDB(tmp_path / "test.db")
+        try:
+            assert tp.pick_auto_resume_session(db) is None
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            assert tp.pick_auto_resume_session(db).id == sid  # running
+            db.update_tuner_session_status(sid, "validating")
+            assert tp.pick_auto_resume_session(db).id == sid
+            db.update_tuner_session_status(sid, "paused")
+            assert tp.pick_auto_resume_session(db) is None  # human choice
+            db.update_tuner_session_status(sid, "quarantined")
+            assert tp.pick_auto_resume_session(db) is None
+        finally:
+            db.close()
