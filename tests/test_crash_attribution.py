@@ -459,3 +459,16 @@ class TestDriftAgainstJournal:
         assert len(drift_reports) == 1
         drift = json.loads(drift_reports[0])
         assert drift == {"3": {"expected": BEST[3], "actual": -10}}
+
+
+class TestNarrativePersistence:
+    def test_log_messages_become_durable_events(self, db, topo_dual_ccd_x3d, mock_backend):
+        eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
+        eng.log_message.emit("the story survives the terminal")
+        events = tp.get_events(db, eng._session_id)
+        assert [e["message"] for e in events] == ["the story survives the terminal"]
+
+    def test_narrative_without_session_is_dropped(self, db, topo_dual_ccd_x3d, mock_backend):
+        eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
+        eng._session_id = None
+        eng.log_message.emit("nowhere to persist")  # must not raise

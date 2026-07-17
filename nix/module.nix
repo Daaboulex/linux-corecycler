@@ -116,6 +116,15 @@ in
       default = "";
       description = "Username to grant device access to (added to the corecycler group). Required when deviceAccess is true.";
     };
+
+    autoResume = {
+      enable = lib.mkEnableOption "resuming the active tuner session automatically after login (freeze-and-continue without clicks). Runs sudo-less via the corecycler device-access group.";
+      delaySeconds = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 120;
+        description = "Settle time after login before the session resumes.";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -127,6 +136,18 @@ in
     ];
 
     environment.systemPackages = [ package ];
+
+    # Login autostart: the app itself enforces the guards (mid-run sessions
+    # only, single-instance lock, settle delay).
+    environment.etc."xdg/autostart/corecycler-autoresume.desktop" = lib.mkIf cfg.autoResume.enable {
+      text = ''
+        [Desktop Entry]
+        Type=Application
+        Name=CoreCycler auto-resume
+        Exec=${lib.getExe package} --auto-resume ${toString cfg.autoResume.delaySeconds}
+        X-GNOME-Autostart-enabled=true
+      '';
+    };
 
     # --- Device access via dedicated group (no sudo) ---
     users.groups.corecycler = lib.mkIf cfg.deviceAccess { };

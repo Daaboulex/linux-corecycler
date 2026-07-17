@@ -75,6 +75,14 @@ _STRETCH_SAMPLE_INTERVAL = 5  # seconds between APERF/MPERF samples
 _STRETCH_MIN_BUSY = 0.9  # a sample window counts only under sustained load
 
 
+def _read_boot_id() -> str:
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def _read_cpu_times(cpu_id: int) -> tuple[int, int] | None:
     """(idle+iowait, total) jiffies for one logical CPU from /proc/stat."""
     try:
@@ -411,6 +419,10 @@ class TunerEngine(QObject):
         self._work_dir = work_dir or Path("/tmp/corecycler/tuner")
 
         self._msr = MSRReader()
+        self._boot_id = _read_boot_id()
+        # Every narrative line becomes durable: the story survives the
+        # terminal and is replayed on resume.
+        self.log_message.connect(self._persist_narrative)
 
         self._session_id: int | None = None
         self._core_states: dict[int, CoreState] = {}
@@ -3472,6 +3484,15 @@ class TunerEngine(QObject):
         if self._config.cores_to_test is not None:
             return sorted(self._config.cores_to_test)
         return sorted(self._topology.cores.keys())
+
+    def _persist_narrative(self, message: str) -> None:
+        """A narrative write must never take the engine down with it."""
+        if self._session_id is None:
+            return
+        try:
+            tp.log_event(self._db, self._session_id, message, self._boot_id)
+        except Exception:
+            log.debug("narrative write failed", exc_info=True)
 
     def _set_status(self, status: str) -> None:
         self._status = status
