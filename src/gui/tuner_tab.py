@@ -35,7 +35,19 @@ from PySide6.QtWidgets import (
 )
 
 from engine.backends.base import FFTPreset, StressMode
-from gui.phase_style import PHASE_COLORS, PHASE_TO_GRID
+from gui.style import (
+    BTN_GREEN,
+    BTN_RED,
+    COLOR_FAIL,
+    COLOR_MUTED,
+    COLOR_PASS,
+    COLOR_TEXT_DIM,
+    PHASE_COLORS,
+    PHASE_TO_GRID,
+    button_qss,
+    phase_label,
+    status_label,
+)
 from history.timefmt import format_local
 from tuner import persistence as tp
 from tuner.config import TunerConfig
@@ -50,9 +62,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Phase -> grid state / color: single source of truth in gui.phase_style,
-# exhaustive over TunerPhase (enforced at its import). Only the core with an
-# active worker shows "testing" — set via _on_worker_started.
 _PHASE_TO_GRID = PHASE_TO_GRID
 
 
@@ -96,12 +105,12 @@ class TunerTab(QWidget):
 
         # Status bar
         status_layout = QHBoxLayout()
-        self._status_label = QLabel("Status: IDLE")
+        self._status_label = QLabel("Status: Idle")
         self._status_label.setFont(QFont("monospace", 11, QFont.Weight.Bold))
         status_layout.addWidget(self._status_label)
 
         self._progress_label = QLabel("")
-        self._progress_label.setStyleSheet("color: #aaa;")
+        self._progress_label.setStyleSheet(f"color: {COLOR_TEXT_DIM};")
         status_layout.addWidget(self._progress_label)
         status_layout.addStretch()
         layout.addLayout(status_layout)
@@ -125,11 +134,7 @@ class TunerTab(QWidget):
         # Action buttons
         btn_layout = QHBoxLayout()
         self._start_btn = QPushButton("Start Tuning")
-        self._start_btn.setStyleSheet(
-            "QPushButton { background: #1b5e20; color: white; padding: 6px 14px; "
-            "border-radius: 4px; font-weight: bold; }"
-            "QPushButton:disabled { background: #555; color: #888; }"
-        )
+        self._start_btn.setStyleSheet(button_qss(BTN_GREEN))
         self._start_btn.clicked.connect(self._on_start)
         btn_layout.addWidget(self._start_btn)
 
@@ -145,11 +150,7 @@ class TunerTab(QWidget):
 
         self._abort_btn = QPushButton("Abort")
         self._abort_btn.setEnabled(False)
-        self._abort_btn.setStyleSheet(
-            "QPushButton { background: #b71c1c; color: white; padding: 6px 14px; "
-            "border-radius: 4px; font-weight: bold; }"
-            "QPushButton:disabled { background: #555; color: #888; }"
-        )
+        self._abort_btn.setStyleSheet(button_qss(BTN_RED))
         self._abort_btn.clicked.connect(self._on_abort)
         btn_layout.addWidget(self._abort_btn)
 
@@ -199,7 +200,7 @@ class TunerTab(QWidget):
         log_header.addWidget(log_label)
 
         self._log_filter_label = QLabel("(all cores)")
-        self._log_filter_label.setStyleSheet("color: #aaa;")
+        self._log_filter_label.setStyleSheet(f"color: {COLOR_TEXT_DIM};")
         log_header.addWidget(self._log_filter_label)
         log_header.addStretch()
 
@@ -323,7 +324,7 @@ class TunerTab(QWidget):
                 "MSR access unavailable — clock stretch detection disabled.\n"
                 "Requires msr kernel module and read permission on /dev/cpu/*/msr."
             )
-            self._stretch_threshold_spin.setStyleSheet("color: #888;")
+            self._stretch_threshold_spin.setStyleSheet(f"color: {COLOR_MUTED};")
 
         search_layout.addRow("Stretch threshold:", self._stretch_threshold_spin)
 
@@ -563,7 +564,10 @@ class TunerTab(QWidget):
         for sess in sessions:
             core_states = tp.load_core_states(self._db, sess.id)
             total = len(core_states)
-            confirmed = sum(1 for cs in core_states.values() if cs.phase == TunerPhase.CONFIRMED)
+            confirmed = sum(
+                1 for cs in core_states.values()
+                if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
+            )
             date_str = format_local(sess.created_at) if sess.created_at else "?"
             label = (
                 f"#{sess.id}  {date_str}  "
@@ -781,9 +785,9 @@ class TunerTab(QWidget):
     @Slot(str)
     def _on_status_changed(self, status: str) -> None:
         if status == "validating":
-            self._status_label.setText("Status: VALIDATING")
+            self._status_label.setText("Status: Validating")
         else:
-            self._status_label.setText(f"Status: {status.upper()}")
+            self._status_label.setText(f"Status: {status_label(status)}")
             # Clear validation progress when leaving validation
             self._progress_label.setText("")
         # The engine pauses ITSELF on apparatus/SMU/startup faults ("fix the
@@ -805,7 +809,7 @@ class TunerTab(QWidget):
             4: "transitions", 5: "spectrum", 6: "soak",
         }
         stage_name = stage_names.get(stage, f"stage {stage}")
-        self._status_label.setText(f"Status: VALIDATING S{stage} ({stage_name})")
+        self._status_label.setText(f"Status: Validating S{stage} ({stage_name})")
         self._progress_label.setText(f"S{stage}: {current}/{total}")
 
     @Slot(int, int)
@@ -847,7 +851,7 @@ class TunerTab(QWidget):
         items = [
             str(core_id),
             str(ccd) if ccd is not None else "-",
-            cs.phase.upper(),
+            phase_label(cs.phase),
             str(cs.current_offset),
             str(cs.best_offset) if cs.best_offset is not None else "-",
             str(self._count_tests(core_id)),
@@ -917,7 +921,7 @@ class TunerTab(QWidget):
             f"{entry.get('duration_seconds', 0):.1f}s" if entry.get("duration_seconds") else "-",
             entry.get("error_message", "") or "",
         ]
-        color = QColor(50, 180, 50) if passed else QColor(200, 50, 50)
+        color = QColor(COLOR_PASS) if passed else QColor(COLOR_FAIL)
         for col, text in enumerate(items):
             item = QTableWidgetItem(text)
             if col == 4:  # Result column
@@ -961,7 +965,7 @@ class TunerTab(QWidget):
                 f"{entry.get('duration_seconds', 0):.1f}s" if entry.get("duration_seconds") else "-",
                 entry.get("error_message", "") or "",
             ]
-            color = QColor(50, 180, 50) if passed else QColor(200, 50, 50)
+            color = QColor(COLOR_PASS) if passed else QColor(COLOR_FAIL)
             for col_idx, text in enumerate(items):
                 item = QTableWidgetItem(text)
                 if col_idx == 4:

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from config.settings import TestProfile
 from engine.backends.base import FFTPreset, StressMode
+from gui.style import COLOR_FAIL, COLOR_MUTED
 
 if TYPE_CHECKING:
     from engine.topology import CPUTopology
@@ -77,7 +78,7 @@ class ConfigTab(QWidget):
 
         self._mode_desc = QLabel(TEST_MODE_INFO["STANDARD"])
         self._mode_desc.setWordWrap(True)
-        self._mode_desc.setStyleSheet("color: #888; padding: 4px;")
+        self._mode_desc.setStyleSheet(f"color: {COLOR_MUTED}; padding: 4px;")
         mode_layout.addWidget(self._mode_desc)
 
         layout.addWidget(mode_group)
@@ -225,7 +226,7 @@ class ConfigTab(QWidget):
         cores_layout.addWidget(self._cores_input)
 
         self._cores_error_label = QLabel("")
-        self._cores_error_label.setStyleSheet("color: #f44336; font-size: 10px; padding: 2px;")
+        self._cores_error_label.setStyleSheet(f"color: {COLOR_FAIL}; font-size: 10px; padding: 2px;")
         self._cores_error_label.setVisible(False)
         cores_layout.addWidget(self._cores_error_label)
 

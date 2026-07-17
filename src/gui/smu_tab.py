@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from config.paths import user_home
+from gui.style import BG_SELECTED, COLOR_ACTIVE, COLOR_FAIL, COLOR_ORANGE, COLOR_PASS
 from smu.commands import SMUCommandSet, detect_generation, get_commands
 from smu.driver import RyzenSMU
 
@@ -57,7 +58,7 @@ class SMUTab(QWidget):
         # profile banner (shown when CO offsets are loaded from a tuner session)
         self._profile_banner = QLabel("")
         self._profile_banner.setStyleSheet(
-            "background: #1a3a5c; color: #4fc3f7; padding: 8px; "
+            f"background: {BG_SELECTED}; color: {COLOR_ACTIVE}; padding: 8px; "
             "border-radius: 4px; font: 11px monospace;"
         )
         self._profile_banner.setVisible(False)
@@ -156,7 +157,7 @@ class SMUTab(QWidget):
             "Use BIOS for persistent values. Requires ryzen_smu kernel module and root access."
         )
         warn.setWordWrap(True)
-        warn.setStyleSheet("color: #ff9800; padding: 8px;")
+        warn.setStyleSheet(f"color: {COLOR_ORANGE}; padding: 8px;")
         co_layout.addWidget(warn)
 
         layout.addWidget(co_group)
@@ -177,7 +178,7 @@ class SMUTab(QWidget):
             self._smu = RyzenSMU(self._commands, dry_run=self._dry_run_cb.isChecked())
             self._smu.set_topology(topology)
             self._status_label.setText("ryzen_smu: Connected")
-            self._status_label.setStyleSheet("color: #4caf50;")
+            self._status_label.setStyleSheet(f"color: {COLOR_PASS};")
             self._gen_label.setText(f"Generation: {gen.name}")
             co_min, co_max = self._commands.co_range
             self._range_label.setText(f"CO Range: [{co_min}, {co_max}]")
@@ -185,16 +186,16 @@ class SMUTab(QWidget):
             self._smu = RyzenSMU(self._commands, dry_run=self._dry_run_cb.isChecked())
             self._smu.set_topology(topology)
             self._status_label.setText("ryzen_smu: Connected (no CO support)")
-            self._status_label.setStyleSheet("color: #ff9800;")
+            self._status_label.setStyleSheet(f"color: {COLOR_ORANGE};")
             self._gen_label.setText(f"Generation: {gen.name}")
             self._range_label.setText("CO: Not supported on this generation")
         elif self._commands:
             self._status_label.setText("ryzen_smu: Driver not loaded")
-            self._status_label.setStyleSheet("color: #f44336;")
+            self._status_label.setStyleSheet(f"color: {COLOR_FAIL};")
             self._gen_label.setText(f"Generation: {gen.name}")
         else:
             self._status_label.setText(f"Unsupported CPU generation: {gen.name}")
-            self._status_label.setStyleSheet("color: #ff9800;")
+            self._status_label.setStyleSheet(f"color: {COLOR_ORANGE};")
 
         # Disable CO buttons if SMU is not available or generation lacks CO
         co_available = smu_available and has_co
@@ -248,7 +249,7 @@ class SMUTab(QWidget):
 
         # visual feedback on write buttons
         dry_style = (
-            "QPushButton { border: 2px dashed #ff9800; color: #ff9800; }"
+            f"QPushButton {{ border: 2px dashed {COLOR_ORANGE}; color: {COLOR_ORANGE}; }}"
             if checked
             else ""
         )

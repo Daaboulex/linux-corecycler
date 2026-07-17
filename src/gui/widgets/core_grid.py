@@ -5,35 +5,33 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+
+from gui.style import (
+    COLOR_TEXT_DIM,
+    STATE_COLORS,
+    duration_str,
+    font_mono,
+    phase_label,
+    scheduler_phase_label,
+    state_label,
+)
 
 if TYPE_CHECKING:
     from engine.scheduler import CoreTestStatus
     from engine.topology import CPUTopology
 
-# state -> (background color, text color, border color)
-STATE_COLORS: dict[str, tuple[str, str, str]] = {
-    "pending": ("#2d2d2d", "#888888", "#444"),
-    "testing": ("#1a3a5c", "#4fc3f7", "#4fc3f7"),
-    "passed": ("#1b3a1b", "#4caf50", "#4caf50"),
-    "failed": ("#3a1b1b", "#f44336", "#f44336"),
-    "skipped": ("#2d2d2d", "#555555", "#444"),
-    # passed but had errors in earlier iterations — warning state
-    "warned": ("#3a3a1b", "#ffb74d", "#ffb74d"),
-    "queued": ("#2d2d2d", "#aaaaaa", "#555"),
-    "backoff": ("#3a2a1a", "#ffb74d", "#ff9800"),
-    "mem_stress": ("#2a1a2e", "#ce93d8", "#ab47bc"),
-}
-
 CELL_HEIGHT_NORMAL = 22
-CELL_HEIGHT_ACTIVE = 38  # taller to show telemetry details
+CELL_HEIGHT_ACTIVE = 38
+
+_STATUS_WIDTH = 92
+_TIME_WIDTH = 48
 
 
 class CoreCell(QWidget):
-    """Single core display cell — compact horizontal row, expands when testing."""
+    """Single core display cell — fixed slots so text never shifts or clips."""
 
-    clicked = Signal(int)  # emits core_id
+    clicked = Signal(int)
 
     def __init__(self, core_id: int, ccd: int | None = None, has_vcache: bool = False) -> None:
         super().__init__()
@@ -41,9 +39,9 @@ class CoreCell(QWidget):
         self.ccd = ccd
         self.has_vcache = has_vcache
         self._state = "pending"
-        self._freq_mhz: float = 0
-        self._temp_c: float = 0
-        self._vcore_v: float | None = None
+        self._scheduler_phase = ""
+        self._tuner_phase: str | None = None
+        self._co_offset: int | None = None
         self._errors: int = 0
         self._elapsed: float = 0
 
@@ -55,7 +53,6 @@ class CoreCell(QWidget):
         outer.setContentsMargins(4, 1, 4, 1)
         outer.setSpacing(0)
 
-        # Row 1: core label + status + detail
         row1 = QHBoxLayout()
         row1.setSpacing(0)
 
@@ -64,64 +61,68 @@ class CoreCell(QWidget):
             header += "V"
 
         self._header_label = QLabel(header)
-        self._header_label.setFont(QFont("monospace", 8, QFont.Weight.Bold))
+        self._header_label.setFont(font_mono(8, bold=True))
         self._header_label.setFixedWidth(32)
         self._header_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         row1.addWidget(self._header_label)
 
-        self._status_label = QLabel("Pending")
-        self._status_label.setFont(QFont("monospace", 7))
-        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        row1.addWidget(self._status_label, 1)
+        self._status_label = QLabel(state_label("pending"))
+        self._status_label.setFont(font_mono(7))
+        self._status_label.setFixedWidth(_STATUS_WIDTH)
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        row1.addWidget(self._status_label)
 
         self._detail_label = QLabel("")
-        self._detail_label.setFont(QFont("monospace", 7))
+        self._detail_label.setFont(font_mono(7))
         self._detail_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        row1.addWidget(self._detail_label)
+        row1.addWidget(self._detail_label, 1)
+
+        self._time_label = QLabel("")
+        self._time_label.setFont(font_mono(7))
+        self._time_label.setFixedWidth(_TIME_WIDTH)
+        self._time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        row1.addWidget(self._time_label)
 
         outer.addLayout(row1)
 
-        # Row 2: expanded telemetry (only visible when testing)
         self._telemetry_label = QLabel("")
-        self._telemetry_label.setFont(QFont("monospace", 7))
+        self._telemetry_label.setFont(font_mono(7))
         self._telemetry_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._telemetry_label.setVisible(False)
         outer.addWidget(self._telemetry_label)
 
         self._apply_state_style()
 
+    def _refresh_labels(self) -> None:
+        if self._tuner_phase:
+            text = phase_label(self._tuner_phase)
+        elif self._state == "testing" and self._scheduler_phase:
+            text = scheduler_phase_label(self._scheduler_phase)
+        else:
+            text = state_label(self._state)
+        if self._errors > 0:
+            text += f" ({self._errors}e)"
+        self._status_label.setText(text)
+        self._time_label.setText(
+            duration_str(self._elapsed) if self._elapsed > 0 else ""
+        )
+        self._detail_label.setText(
+            f"CO:{self._co_offset}" if self._co_offset is not None else ""
+        )
+
     def update_status(self, status: CoreTestStatus) -> None:
         self._errors = status.errors
         self._elapsed = status.elapsed_seconds
+        self._scheduler_phase = status.current_phase or ""
 
         prev_state = self._state
-        # Determine visual state: "warned" = passed but had errors in prior iterations
         if status.state == "passed" and status.errors > 0:
             self._state = "warned"
         else:
             self._state = status.state
 
-        state_text = status.state.capitalize()
-        if status.state == "testing" and status.current_phase:
-            state_text = status.current_phase.capitalize()
-        if status.errors > 0:
-            state_text += f" ({status.errors}err)"
+        self._refresh_labels()
 
-        mins = int(status.elapsed_seconds // 60)
-        secs = int(status.elapsed_seconds % 60)
-        time_str = f"{mins}m{secs:02d}s" if status.elapsed_seconds > 0 else ""
-
-        # When testing, combine phase + time in status label (detail_label is used for telemetry)
-        if self._state == "testing":
-            if time_str:
-                self._status_label.setText(f"{state_text}  {time_str}")
-            else:
-                self._status_label.setText(state_text)
-        else:
-            self._status_label.setText(state_text)
-            self._detail_label.setText(time_str)
-
-        # Expand/collapse cell for testing state
         if self._state == "testing" and prev_state != "testing":
             self.setFixedHeight(CELL_HEIGHT_ACTIVE)
             self._telemetry_label.setVisible(True)
@@ -141,22 +142,11 @@ class CoreCell(QWidget):
         co_offset: int | None = None,
         tuner_phase: str | None = None,
     ) -> None:
-        self._freq_mhz = freq_mhz
-        self._temp_c = temp_c
-        self._vcore_v = vcore_v
+        self._co_offset = co_offset
+        self._tuner_phase = tuner_phase
+        self._refresh_labels()
 
-        if self._state == "testing":
-            # Row 1 right: show CO offset + tuner phase if available
-            if co_offset is not None:
-                phase_short = (tuner_phase or "").replace("_", " ").title()
-                self._detail_label.setText(f"CO:{co_offset}  {phase_short}")
-            else:
-                self._detail_label.setText("")
-        elif self._state in ("queued", "backoff"):
-            if co_offset is not None:
-                phase_short = (tuner_phase or "").replace("_", " ").title()
-                self._detail_label.setText(f"CO:{co_offset}  {phase_short}")
-            # Row 2: all telemetry on the expanded line
+        if self._state in ("testing", "queued", "backoff"):
             parts = []
             if freq_mhz > 0:
                 parts.append(f"{freq_mhz:.0f}MHz")
@@ -167,17 +157,6 @@ class CoreCell(QWidget):
             if vcore_v is not None:
                 parts.append(f"{vcore_v:.4f}V")
             self._telemetry_label.setText("  ".join(parts))
-        else:
-            # Non-testing: show last reading in detail label
-            parts = []
-            if freq_mhz > 0:
-                parts.append(f"{freq_mhz:.0f}")
-            if temp_c > 0:
-                parts.append(f"{temp_c:.0f}C")
-            if vcore_v is not None:
-                parts.append(f"{vcore_v:.3f}V")
-            if parts:
-                self._detail_label.setText(" ".join(parts))
 
     def _apply_state_style(self) -> None:
         bg, fg, border = STATE_COLORS.get(self._state, STATE_COLORS["pending"])
@@ -210,12 +189,10 @@ class CoreGridWidget(QWidget):
 
     def set_topology(self, topology: CPUTopology) -> None:
         """Rebuild the vertical list from CPU topology."""
-        # clear existing
         for cell in self._cells.values():
             cell.deleteLater()
         self._cells.clear()
 
-        # clear layout
         while self._layout.count():
             item = self._layout.takeAt(0)
             if item.widget():
@@ -223,7 +200,6 @@ class CoreGridWidget(QWidget):
             elif item.layout():
                 self._clear_layout(item.layout())
 
-        # group cores by CCD
         ccd_groups: dict[int, list[int]] = {}
         for core in sorted(topology.cores.values(), key=lambda c: c.core_id):
             ccd = core.ccd if core.ccd is not None else 0
@@ -232,18 +208,16 @@ class CoreGridWidget(QWidget):
         for ccd_idx in sorted(ccd_groups.keys()):
             core_ids = ccd_groups[ccd_idx]
 
-            # CCD header
             has_vcache = any(
                 topology.cores[cid].has_vcache for cid in core_ids if cid in topology.cores
             )
             vcache_str = " (V-Cache)" if has_vcache else ""
             ccd_label = QLabel(f"CCD {ccd_idx}{vcache_str}")
-            ccd_label.setFont(QFont("monospace", 8, QFont.Weight.Bold))
-            ccd_label.setStyleSheet("color: #aaa; padding: 1px 4px;")
+            ccd_label.setFont(font_mono(8, bold=True))
+            ccd_label.setStyleSheet(f"color: {COLOR_TEXT_DIM}; padding: 1px 4px;")
             ccd_label.setFixedHeight(18)
             self._layout.addWidget(ccd_label)
 
-            # core cells in a vertical list
             for core_id in core_ids:
                 core_info = topology.cores.get(core_id)
                 cell = CoreCell(
