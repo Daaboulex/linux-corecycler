@@ -24,7 +24,7 @@ dev = ["pytest>=8.0", "ruff>=0.8", "hypothesis>=6.100"]
 where = ["src"]
 
 [tool.setuptools]
-py-modules = ["main"]
+py-modules = ["main", "cli", "notify"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
