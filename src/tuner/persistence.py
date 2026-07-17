@@ -57,6 +57,11 @@ def save_core_state(db: HistoryDB, session_id: int, cs: CoreState) -> None:
     db.upsert_tuner_core_state(session_id, cs)
 
 
+def checkpoint(db: HistoryDB) -> None:
+    """Flush the WAL to disk — for state that must survive a hard crash."""
+    db.checkpoint()
+
+
 def load_core_states(db: HistoryDB, session_id: int) -> dict[int, CoreState]:
     return db.get_tuner_core_states(session_id)
 

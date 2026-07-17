@@ -19,6 +19,7 @@ the tuner suite).
 
 from __future__ import annotations
 
+import json
 from datetime import UTC
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1503,3 +1504,301 @@ class TestNoRebootResidentOffset:
         eng = _resume_fresh(db, topo, smu, mock_backend, sid)
         assert (0, 0) not in smu.writes
         assert eng._co_applied[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# Apparatus faults (stall / external kill / unattributable MCE) are not verdicts
+# ---------------------------------------------------------------------------
+
+
+def _seed_validating(db, topo, smu, backend, cliffs, **cfg):
+    """A confirmed profile parked at validation stage 2, no worker running."""
+    sid = tp.create_session(db, TunerConfig(cores_to_test=list(cliffs), **cfg), "", "")
+    eng = make_engine(db, topo, smu, backend, cores_to_test=list(cliffs), **cfg)
+    eng._session_id = sid
+    eng._core_states = {
+        c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=v,
+                     best_offset=v, baseline_offset=0)
+        for c, v in cliffs.items()
+    }
+    for cs in eng._core_states.values():
+        tp.save_core_state(db, sid, cs)
+    eng._co_survived = dict(cliffs)
+    eng._set_status("validating")
+    tp.update_session_status(db, sid, "validating")
+    eng._validation_stage = 2
+    eng._validation_core_order = sorted(cliffs)
+    return eng, sid
+
+
+class TestApparatusFaultIsNotAVerdict:
+    """One night of live operation produced 85 stage-2 stall failures — every
+    one an orchestration artifact, every one converted into a CO back-off on an
+    innocent core. An apparatus fault must retry without a verdict, bounded,
+    and never move an offset."""
+
+    def test_stall_during_validation_retries_without_backoff(
+        self, db, topo, smu, mock_backend
+    ):
+        cliffs = {0: -10, 1: -12}
+        eng, sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
+        with patch.object(eng, "_run_validation_next") as nxt:
+            eng._on_test_finished(
+                0, False,
+                "Stress test stalled on core 0 (CPU usage near 0 on CPUs 0,8 for 30s)",
+                "stall", 35.0, 0.0,
+            )
+        assert eng._core_states[0].best_offset == -10  # nobody backed off
+        assert eng._core_states[1].best_offset == -12
+        assert eng._status == "validating"
+        assert eng._apparatus_fault_streak == 1
+        nxt.assert_called_once()
+        assert tp.get_test_log(db, sid) == []          # no verdict recorded
+
+    def test_apparatus_faults_bounded_then_stop(self, db, topo, smu, mock_backend):
+        cliffs = {0: -10}
+        eng, sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
+        eng._co_applied = dict(cliffs)
+        smu.applied.update(cliffs)
+        eng._apparatus_fault_streak = eng._config.max_apparatus_retries
+        eng._on_test_finished(
+            0, False, "Stress test stalled on core 0", "stall", 35.0, 0.0
+        )
+        assert eng._status == "idle"                   # abort: stop + revert
+        assert smu.applied[0] == 0                     # nothing aggressive resident
+        assert eng._core_states[0].best_offset == -10  # state untouched
+
+    def test_stall_in_search_flow_retries_same_offset(
+        self, db, topo, smu, mock_backend
+    ):
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        eng = make_engine(db, topo, smu, mock_backend)
+        eng._session_id = sid
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10,
+                       baseline_offset=0, in_test=True)
+        eng._core_states = {0: cs}
+        eng._co_applied[0] = -10
+        smu.applied[0] = -10
+        eng._set_status("running")
+        with patch.object(eng, "_run_next") as nxt, \
+                patch.object(eng, "_advance_core") as adv:
+            eng._on_test_finished(
+                0, False, "Stress test stalled on core 0", "stall", 35.0, 0.0
+            )
+        adv.assert_not_called()
+        nxt.assert_called_once()
+        assert cs.current_offset == -10   # same offset re-earns next slot
+        assert cs.crash_count == 0
+        assert smu.applied[0] == 0        # not left resident between slots
+        assert tp.get_test_log(db, sid) == []
+
+    def test_external_kill_is_apparatus_not_verdict(self, db, topo, smu, mock_backend):
+        cliffs = {0: -10, 1: -12}
+        eng, sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
+        with patch.object(eng, "_run_validation_next") as nxt:
+            eng._on_test_finished(
+                1, False, "Stress process killed externally (code -9)",
+                "killed", 12.0, 0.0,
+            )
+        assert eng._core_states[1].best_offset == -12
+        assert eng._apparatus_fault_streak == 1
+        nxt.assert_called_once()
+        assert tp.get_test_log(db, sid) == []
+
+    def test_real_verdict_resets_apparatus_streak(self, db, topo, smu, mock_backend):
+        cliffs = {0: -10, 1: -12}
+        eng, _sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
+        eng._apparatus_fault_streak = 2
+        with patch.object(eng, "_run_validation_next"):
+            eng._on_test_finished(0, True, "", "", 1.0, 0.0)
+        assert eng._apparatus_fault_streak == 0
+
+    def test_unattributed_mce_blocks_survival_promotion(
+        self, db, topo, smu, mock_backend
+    ):
+        """A machine check naming no CPU taints every resident value — none may
+        be promoted to survived off the back of that test."""
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        eng = make_engine(db, topo, smu, mock_backend)
+        eng._session_id = sid
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10,
+                       baseline_offset=0, in_test=True)
+        eng._core_states = {0: cs}
+        tp.journal_co_intent(db, sid, 0, -10, survived=False)
+        mce_json = json.dumps([{
+            "cpu": -1, "bank": 3, "corrected": False, "message": "x", "raw_ts": 0.0,
+        }])
+        with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core"):
+            eng._on_test_finished(
+                0, False,
+                "Machine check without core attribution during parallel stress: x",
+                "mce_unattributed", 5.0, 0.0, mce_json, "",
+            )
+        assert tp.journal_survived_values(db, sid).get(0) != -10
+
+
+class TestUnattributedMCEParsing:
+    def test_payload_shapes(self):
+        from tuner.engine import _has_unattributed_mce
+
+        assert _has_unattributed_mce("") is False
+        assert _has_unattributed_mce("not json") is False
+        assert _has_unattributed_mce(json.dumps({"cpu": -1})) is False
+        assert _has_unattributed_mce(json.dumps([{"cpu": 3}])) is False
+        assert _has_unattributed_mce(json.dumps([{"cpu": 3}, {"cpu": -1}])) is True
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed finalize: a failed validation must never declare completion
+# ---------------------------------------------------------------------------
+
+
+class TestFailClosedFinalize:
+    """Session 4 live: 'Validation failed but no core can be backed off
+    further' completed the session, applied the unproven profile as truth and
+    reported '16 cores confirmed'. Exhaustion must pause honestly instead."""
+
+    def test_finalize_exhausted_reverts_and_pauses(self, db, topo, smu, mock_backend):
+        cliffs = {0: -10, 1: -12}
+        eng, sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
+        eng._co_applied = dict(cliffs)
+        smu.applied.update(cliffs)
+        eng._finalize_exhausted()
+        assert eng._status == "paused"
+        assert tp.get_session(db, sid).status == "paused"
+        assert smu.applied[0] == 0 and smu.applied[1] == 0  # reverted
+        assert tp.get_session(db, sid).status != "completed"
+
+    def test_finalize_session_refuses_dirty(self, db, topo, smu, mock_backend):
+        cliffs = {0: -10, 1: -12}
+        eng, sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
+        eng._validation_dirty = True
+        eng._co_applied = dict(cliffs)
+        smu.applied.update(cliffs)
+        eng._finalize_session(dict(cliffs))
+        assert eng._status == "paused"
+        assert tp.get_session(db, sid).status != "completed"
+        assert smu.applied[0] == 0 and smu.applied[1] == 0
+
+    def test_clean_finalize_completes_and_clears_incidents(
+        self, db, topo, smu, mock_backend
+    ):
+        cliffs = {0: -10, 1: -12}
+        eng, sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
+        tp.set_unattributed_crashes(db, sid, 2)
+        eng._finalize_session(dict(cliffs))
+        assert eng._status == "idle"
+        assert tp.get_session(db, sid).status == "completed"
+        assert tp.get_unattributed_crashes(db, sid) == 0
+
+
+# ---------------------------------------------------------------------------
+# A dirty reboot mid-validation is an incident, never silence
+# ---------------------------------------------------------------------------
+
+
+class TestUnattributedIncidentOnResume:
+    """Two live freezes in one night resumed with zero reaction: no in_test
+    core, no kernel evidence, nothing said. The machine dying with the profile
+    live must be recorded, must re-owe the clean pass, and must pause for the
+    owner when it keeps happening. A provably clean shutdown is exempt."""
+
+    def _seed(self, db, cliffs, unattributed=0):
+        sid = tp.create_session(db, TunerConfig(cores_to_test=list(cliffs)), "", "")
+        for c, v in cliffs.items():
+            tp.save_core_state(db, sid, CoreState(
+                core_id=c, phase=TunerPhase.CONFIRMED, current_offset=v,
+                best_offset=v, baseline_offset=0,
+            ))
+            tp.journal_co_intent(db, sid, c, v, survived=True)
+            # evidence backing the CONFIRMED claim, or the resume-time
+            # reconciler demotes the core and validation never re-enters
+            tp.log_test_result(db, sid, c, v, "confirm", True, duration=1.0)
+        tp.update_session_status(db, sid, "validating")
+        if unattributed:
+            tp.set_unattributed_crashes(db, sid, unattributed)
+        return sid
+
+    def test_dirty_reboot_mid_validation_is_recorded(
+        self, db, topo, smu, mock_backend, monkeypatch
+    ):
+        import tuner.engine as engine_mod
+        monkeypatch.setattr(
+            engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False
+        )
+        sid = self._seed(db, {0: -10, 1: -12})
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0, 1])
+        with patch.object(eng, "_run_next"), patch.object(eng, "_run_validation_next"):
+            eng.resume(sid)
+        assert tp.get_unattributed_crashes(db, sid) == 1
+        assert eng._validation_dirty is True   # clean pass owed again
+        assert eng._status == "validating"     # first incident continues
+
+    def test_repeat_dirty_reboots_pause_for_decision(
+        self, db, topo, smu, mock_backend, monkeypatch
+    ):
+        import tuner.engine as engine_mod
+        monkeypatch.setattr(
+            engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False
+        )
+        sid = self._seed(db, {0: -10}, unattributed=1)
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
+        with patch.object(eng, "_run_next"), patch.object(eng, "_run_validation_next"):
+            eng.resume(sid)
+        assert tp.get_unattributed_crashes(db, sid) == 2
+        assert eng._status == "paused"
+
+    def test_clean_reboot_mid_validation_is_not_an_incident(
+        self, db, topo, smu, mock_backend
+    ):
+        # autouse fixture: last_boot_ended_cleanly -> True (deliberate reboot)
+        sid = self._seed(db, {0: -10, 1: -12})
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0, 1])
+        with patch.object(eng, "_run_next"), patch.object(eng, "_run_validation_next"):
+            eng.resume(sid)
+        assert tp.get_unattributed_crashes(db, sid) == 0
+        assert eng._status == "validating"
+
+    def test_search_flow_reboot_is_not_an_incident(
+        self, db, topo, smu, mock_backend, monkeypatch
+    ):
+        """The incident class is validation-specific: a mid-search reboot is
+        already covered by the journal/in_test detectors."""
+        import tuner.engine as engine_mod
+        monkeypatch.setattr(
+            engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False
+        )
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10,
+            baseline_offset=0,
+        ))
+        eng = _resume_fresh(db, topo, smu, mock_backend, sid)
+        assert tp.get_unattributed_crashes(db, sid) == 0
+        assert eng._status == "running"
+
+
+# ---------------------------------------------------------------------------
+# The in_test mark must be durable, not merely committed
+# ---------------------------------------------------------------------------
+
+
+class TestInTestMarkDurability:
+    def test_mark_cores_under_stress_forces_wal_flush(
+        self, db, topo, smu, mock_backend, monkeypatch
+    ):
+        """A freeze seconds after the mark ate the WAL frame in live operation
+        (the CO journal checkpoint ran BEFORE the mark, so everything else
+        survived) — the mark must be followed by its own checkpoint."""
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        eng = make_engine(db, topo, smu, mock_backend)
+        eng._session_id = sid
+        eng._core_states = {0: CoreState(
+            core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-5,
+            best_offset=-5, baseline_offset=0,
+        )}
+        flushed = []
+        monkeypatch.setattr(db, "checkpoint", lambda: flushed.append(1))
+        eng._mark_cores_under_stress([0])
+        assert flushed
+        assert db.get_tuner_core_states(sid)[0].in_test

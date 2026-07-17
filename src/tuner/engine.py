@@ -21,7 +21,12 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
 from engine.backends import get_backend, load_all
 from engine.backends.base import StressConfig
-from engine.detector import ErrorDetector, MCEEvent, harvest_kernel_mce
+from engine.detector import (
+    ErrorDetector,
+    MCEEvent,
+    harvest_kernel_mce,
+    last_boot_ended_cleanly,
+)
 from engine.parallel import ParallelStress
 from engine.scheduler import CoreScheduler, SchedulerConfig
 from monitor.msr import MSRReader
@@ -37,6 +42,23 @@ if TYPE_CHECKING:
     from smu.driver import RyzenSMU
 
 log = logging.getLogger(__name__)
+
+
+def _has_unattributed_mce(mce_json: str) -> bool:
+    """True when the worker's MCE payload holds an event naming no CPU.
+
+    Fail closed at the payload level only: a malformed payload is no evidence
+    (matching _foreign_mce_by_core); an explicit cpu == -1 event is.
+    """
+    if not mce_json:
+        return False
+    try:
+        raw = json.loads(mce_json)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(raw, list):
+        return False
+    return any(isinstance(item, dict) and item.get("cpu") == -1 for item in raw)
 
 
 def _rebooted_since(iso_ts: str | None, stat_path: str = "/proc/stat") -> bool:
@@ -443,6 +465,7 @@ class TunerEngine(QObject):
         # Multi-core validation state
         self._validation_stage: int = 0  # 0 = not validating, 1/2/3 = stage
         self._validation_thermal_aborts: int = 0  # consecutive thermal stops in validation
+        self._apparatus_fault_streak: int = 0  # consecutive faults with no verdict
         self._validation_core_index: int = 0  # index into _validation_core_order for stage 1
         self._validation_core_order: list[int] = []  # cores to cycle through in stage 1
         self._validation_half_index: int = 0  # which half to test in stage 3
@@ -754,6 +777,47 @@ class TunerEngine(QObject):
         # cycling order continues across the reboot instead of restarting.
         self._reconstruct_scheduling_position()
 
+        # A reboot mid-validation that produced no kernel evidence and left
+        # nothing in-test (it hit between two slots, or the in-test mark was
+        # lost with the crash) must not pass silently: the machine died with
+        # the profile live. A provably clean shutdown is exempt — rebooting
+        # deliberately is not an incident.
+        unattributed_incident = (
+            rebooted
+            and not crashed
+            and not pending_hunt
+            and session.status == "validating"
+            and not last_boot_ended_cleanly()
+        )
+        if unattributed_incident:
+            n = tp.get_unattributed_crashes(self._db, session_id) + 1
+            tp.set_unattributed_crashes(self._db, session_id, n)
+            self.log_message.emit(
+                f"The machine went down mid-validation with the profile live, "
+                f"but no kernel evidence names a core and nothing was marked "
+                f"in-test — recorded unattributed incident "
+                f"{n}/{self._config.max_unattributed_crash_hunts}. The final "
+                f"clean validation pass is owed again."
+            )
+            if n >= self._config.max_unattributed_crash_hunts:
+                self.log_message.emit(
+                    "The machine keeps dying around validation with no "
+                    "attributable evidence. Pausing for your decision: rule "
+                    "out an external cause (foreign load, another tool, "
+                    "power/BIOS), or lower max_offset. Resume continues "
+                    "validation."
+                )
+                # The owed clean pass survives the pause: persist dirty with
+                # the session's own cursor (the engine's is not restored yet).
+                tp.set_validation_position(
+                    self._db, session_id,
+                    session.validation_stage, session.validation_index,
+                    session.validation_half, True,
+                    session.validation_requeue or "[]",
+                )
+                self.pause()
+                return
+
         # An unattributed crash outranks re-entering validation: find the
         # culprit in isolation first, or validation just crashes again.
         if pending_hunt:
@@ -776,6 +840,11 @@ class TunerEngine(QObject):
                 f"all cores confirmed, re-entering validation"
             )
             self._enter_auto_validation(profile, resume_from=session)
+            if unattributed_incident and not self._validation_dirty:
+                # The incident invalidates any clean-pass credit: even if the
+                # remaining stages pass, one full clean pass is owed.
+                self._validation_dirty = True
+                self._save_validation_pos()
         else:
             self._set_status("running")
             tp.update_session_status(self._db, session_id, "running")
@@ -2391,13 +2460,21 @@ class TunerEngine(QObject):
         # failures too — both mean the box lived.)
         if self._session_id is not None:
             # Cores the kernel just named stay un-survived: surviving the test
-            # does not clear an error the hardware reported minutes ago.
-            tp.journal_mark_survived(
-                self._db, self._session_id, exclude_cores=sorted(foreign)
-            )
-            for c, v in tp.journal_survived_values(self._db, self._session_id).items():
-                if self._is_more_aggressive(v, self._co_survived.get(c, 0)):
-                    self._co_survived[c] = v
+            # does not clear an error the hardware reported minutes ago. A
+            # machine check that names NO core taints every resident value —
+            # fail closed and leave the whole set unproven for this test.
+            if _has_unattributed_mce(mce_json):
+                self.log_message.emit(
+                    "Machine check without core attribution observed during the "
+                    "test — resident offsets stay unproven for this run."
+                )
+            else:
+                tp.journal_mark_survived(
+                    self._db, self._session_id, exclude_cores=sorted(foreign)
+                )
+                for c, v in tp.journal_survived_values(self._db, self._session_id).items():
+                    if self._is_more_aggressive(v, self._co_survived.get(c, 0)):
+                        self._co_survived[c] = v
             if tp.get_resume_crash_streak(self._db, self._session_id) != 0:
                 tp.set_resume_crash_streak(self._db, self._session_id, 0)
 
@@ -2432,10 +2509,21 @@ class TunerEngine(QObject):
                 self._handle_validation_thermal_abort(core_id)
             return
 
+        # An apparatus fault is not a stability verdict: a stall means the load
+        # never ran on the core, an external kill means something else stopped
+        # the process, an unattributable machine check names nobody. Moving a
+        # CO offset on any of them punishes an innocent core (85 back-offs in
+        # one night came through the stall path). Retry without a verdict,
+        # bounded, then stop honestly.
+        if not passed and error_type in ("stall", "killed", "mce_unattributed"):
+            self._handle_apparatus_fault(core_id, error_msg, error_type, foreign)
+            return
+
         # Reached only on a non-thermal outcome → the thermal-retry streak for
         # this core is broken; reset so the cap counts CONSECUTIVE thermal stops
         # at one offset, not lifetime thermals across the whole search.
         cs.thermal_aborts = 0
+        self._apparatus_fault_streak = 0
 
         # Clock stretch check — if stress test "passed" but core was stretching
         # badly, treat it as a failure (CO too aggressive, voltage drooping)
@@ -2703,6 +2791,71 @@ class TunerEngine(QObject):
             self._run_validation_requeue if self._in_requeue else self._run_validation_next,
         )
 
+    def _handle_apparatus_fault(
+        self, core_id: int, error_msg: str, error_type: str, foreign: dict[int, dict]
+    ) -> None:
+        """Retry the current step after a fault that proves nothing about the
+        silicon; after max_apparatus_retries consecutive faults, stop honestly.
+
+        No CO offset moves here: the search bounds, validation back-offs and
+        crash penalties all stay untouched. Hardware evidence about OTHER
+        cores that arrived with the fault is still applied — evidence outranks
+        the retry.
+        """
+        self._soaking = False
+        if foreign:
+            self._apply_foreign_evidence(foreign)
+            if self._validation_stage > 0:
+                self.log_message.emit(
+                    "Leaving validation: kernel evidence named other core(s); "
+                    "they must re-earn confirmation, then validation restarts."
+                )
+                self._validation_stage = 0
+                self._set_status("running")
+                if self._session_id:
+                    tp.update_session_status(self._db, self._session_id, "running")
+                QTimer.singleShot(0, self._run_next)
+                return
+
+        self._apparatus_fault_streak += 1
+        limit = self._config.max_apparatus_retries
+        if self._apparatus_fault_streak > limit:
+            self.log_message.emit(
+                f"Stress apparatus failed {self._apparatus_fault_streak} times in "
+                f"a row ({error_type}: {error_msg}) — the environment cannot run "
+                f"this test, and repeating it would prove nothing. Stopping with "
+                f"offsets reverted to baseline; fix the cause (backend install, "
+                f"foreign load, permissions), then Resume."
+            )
+            self.abort()
+            return
+
+        self.log_message.emit(
+            f"Core {core_id}: apparatus fault ({error_msg}) — retrying the same "
+            f"step without a verdict "
+            f"({self._apparatus_fault_streak}/{limit})"
+        )
+        if self._hunting:
+            self._hunt_queue.insert(0, core_id)
+            if self._session_id is not None:
+                tp.set_hunting_core(self._db, self._session_id, None)
+            QTimer.singleShot(0, self._run_next_hunt_slot)
+        elif self._validation_stage > 0:
+            QTimer.singleShot(
+                0,
+                self._run_validation_requeue if self._in_requeue
+                else self._run_validation_next,
+            )
+        else:
+            if not self._revert_core_to_baseline(core_id):
+                self.log_message.emit(
+                    f"Core {core_id}: test offset is still resident because the "
+                    f"SMU revert failed. Pausing (hardware-state fault)."
+                )
+                self.pause()
+                return
+            QTimer.singleShot(0, self._run_next)
+
     def _complete_session(self) -> None:
         """All cores done — enter auto-validation or finalize session."""
         # With hardening configured, a core can reach CONFIRMED via a settling path
@@ -2767,6 +2920,20 @@ class TunerEngine(QObject):
 
     def _finalize_session(self, profile: dict[int, int]) -> None:
         """Apply confirmed profile to SMU and emit completion."""
+        if self._validation_dirty:
+            # Invariant: DONE requires one final clean pass. The legit flow
+            # (_run_validation_next's finalize sentinel) redirects a dirty pass
+            # before ever calling here — reaching this guard is a bug upstream,
+            # and completing anyway would publish an unproven profile.
+            self.log_message.emit(
+                "Refusing to declare completion: a final clean validation pass "
+                "is still owed. Reverting to baselines and pausing — Resume to "
+                "run the owed pass."
+            )
+            self._revert_all_to_baseline()
+            self._save_validation_pos()
+            self.pause()
+            return
         if self._smu is not None and profile:
             failed: list[int] = []
             for core_id, offset in profile.items():
@@ -2788,6 +2955,9 @@ class TunerEngine(QObject):
 
         if self._session_id:
             tp.update_session_status(self._db, self._session_id, "completed")
+            # A full clean pass just proved the profile; older unexplained
+            # incidents are stale evidence and must not haunt the next resume.
+            tp.set_unattributed_crashes(self._db, self._session_id, 0)
 
         self._validation_stage = 0
         self._validation_requeue = []
@@ -3292,6 +3462,7 @@ class TunerEngine(QObject):
         stressed set (a multi-core stage reports only its first core).
         """
         self._cores_under_stress = list(cores)
+        marked = False
         for core_id in cores:
             cs = self._core_states.get(core_id)
             if cs is None:
@@ -3299,6 +3470,14 @@ class TunerEngine(QObject):
             cs.in_test = True
             if self._session_id is not None:
                 tp.save_core_state(self._db, self._session_id, cs)
+                marked = True
+        if marked:
+            # The mark is the ONE signal that attributes a hard crash during
+            # validation; a WAL commit alone can be lost to a freeze (the CO
+            # journal's checkpoint runs BEFORE this write, so everything up to
+            # it survives while the mark evaporates — observed live). Force it
+            # to disk before any stress starts.
+            tp.checkpoint(self._db)
 
     def _clear_cores_under_stress(self) -> None:
         """Clear and persist in_test for every core marked under validation stress.
@@ -3465,16 +3644,23 @@ class TunerEngine(QObject):
         QTimer.singleShot(0, self._run_next)
 
     def _finalize_exhausted(self) -> None:
-        """A core hit baseline with nothing left to give — finalize honestly."""
+        """Validation failed with nothing left to back off — fail closed.
+
+        Completing here would stamp "confirmed" on a profile whose validation
+        just FAILED. Reaching this point means real failures persisted all the
+        way down to baseline values, which indicts the baseline itself or the
+        environment — either way not a tuner verdict to paper over.
+        """
         self.log_message.emit(
-            "Validation failed but no core can be backed off further — finalizing"
+            "Validation failed and no core can be backed off further — the "
+            "profile cannot be proven. Reverting all cores to baseline and "
+            "pausing: failures reached baseline values, so either the baseline "
+            "itself is unstable or something else on this machine interfered. "
+            "Investigate, then Resume to retry validation."
         )
-        profile = {
-            cs.core_id: cs.best_offset
-            for cs in self._core_states.values()
-            if cs.best_offset is not None
-        }
-        self._finalize_session(profile)
+        self._revert_all_to_baseline()
+        self._save_validation_pos()
+        self.pause()
 
     # ------------------------------------------------------------------
     # Helpers
