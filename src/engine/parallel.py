@@ -8,7 +8,7 @@ import logging
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,7 +35,8 @@ class _Lane:
     proc: subprocess.Popen | None = None
     verdict: StressResult | None = None
     last_active: float = 0.0
-    prev_times: tuple[int, int] | None = None
+    prev_times: dict[int, tuple[int, int]] = field(default_factory=dict)
+    repins: int = 0
 
 
 class ParallelStress:
@@ -134,7 +135,27 @@ class ParallelStress:
                     self.observed_mce.extend(events)
                     hit = False
                     for e in events:
-                        core = cpu_to_core.get(e.cpu, min(self._lanes) if e.cpu == -1 else None)
+                        if e.cpu == -1:
+                            # A machine check that names no CPU is evidence the
+                            # box is unwell, not evidence against any one core:
+                            # stop the batch on the anchor lane with a distinct
+                            # type so the tuner never turns it into a back-off.
+                            anchor = self._lanes[min(self._lanes)]
+                            if anchor.verdict is None:
+                                anchor.verdict = StressResult(
+                                    core_id=anchor.core_id,
+                                    passed=False,
+                                    duration_seconds=time.monotonic() - start,
+                                    error_message=(
+                                        "Machine check without core attribution "
+                                        f"during parallel stress: {e.message}"
+                                    ),
+                                    error_type="mce_unattributed",
+                                )
+                                self._stop_event.set()
+                                hit = True
+                            continue
+                        core = cpu_to_core.get(e.cpu)
                         lane = self._lanes.get(core) if core is not None else None
                         if lane is not None and lane.verdict is None:
                             self._fail_lane(
@@ -162,10 +183,21 @@ class ParallelStress:
             if drained:
                 self.observed_mce.extend(drained)
             elapsed = time.monotonic() - start
+            interrupted = (
+                self._stop_event.is_set()
+                and elapsed < self.config.seconds_per_core
+            )
+            total_repins = sum(lane.repins for lane in self._lanes.values())
+            if total_repins:
+                log.info(
+                    "Parallel batch: re-pinned %d drifted thread(s) across %d lane(s)",
+                    total_repins,
+                    sum(1 for lane in self._lanes.values() if lane.repins),
+                )
             results: dict[int, StressResult] = {}
             for lane in self._lanes.values():
                 if lane.verdict is None and lane.proc is not None:
-                    lane.verdict = self._final_verdict(lane, elapsed)
+                    lane.verdict = self._final_verdict(lane, elapsed, interrupted)
                 if lane.verdict is not None:
                     results[lane.core_id] = lane.verdict
                 self.backend.cleanup(
@@ -228,24 +260,46 @@ class ParallelStress:
                     continue
                 self._fail_lane(lane, msg or f"stress exited with code {rc}", now - start)
                 return True
+            # Backends set their own thread affinity after launch (mprime
+            # re-pins its workers to the first core it detects, overriding
+            # taskset) — without correction every lane's load lands on one
+            # core and the other lanes read as stalled. Same enforcement as
+            # the solo scheduler, once per poll.
+            _, drifts = CoreScheduler._verify_child_affinity(
+                lane.proc.pid, lane.cpus, lane.cpu_list
+            )
+            if drifts:
+                lane.repins += drifts
             if now - start >= _STALL_GRACE_SECONDS:
-                primary = min(lane.cpus)
-                cur = _cpu_times(primary)
-                busy = _busy(lane.prev_times, cur)
-                lane.prev_times = cur
-                if busy is None or busy > 0.05:
+                active = False
+                any_sample = False
+                for cpu in sorted(lane.cpus):
+                    cur = _cpu_times(cpu)
+                    busy = _busy(lane.prev_times.get(cpu), cur)
+                    if cur is not None:
+                        lane.prev_times[cpu] = cur
+                    if busy is not None:
+                        any_sample = True
+                        if busy > 0.05:
+                            active = True
+                # No readable CPU at all -> cannot observe, so cannot accuse;
+                # one unreadable sibling must not blind the watchdog though.
+                if active or not any_sample:
                     lane.last_active = now
                 elif now - lane.last_active > self.config.stall_timeout:
                     self._fail_lane(
                         lane,
                         f"Stress test stalled on core {lane.core_id} "
-                        f"(CPU usage near 0 for {self.config.stall_timeout:.0f}s)",
+                        f"(CPU usage near 0 on CPUs {lane.cpu_list} for "
+                        f"{self.config.stall_timeout:.0f}s)",
                         now - start,
                     )
                     return True
         return False
 
-    def _final_verdict(self, lane: _Lane, elapsed: float) -> StressResult | None:
+    def _final_verdict(
+        self, lane: _Lane, elapsed: float, interrupted: bool = False
+    ) -> StressResult | None:
         out, err = "", ""
         with contextlib.suppress(Exception):
             out, err = lane.proc.communicate(timeout=2)
@@ -270,6 +324,12 @@ class ParallelStress:
                     core_id=lane.core_id, passed=False, duration_seconds=elapsed,
                     error_message=msg, error_type=CoreScheduler._classify_error(msg),
                 )
+            if interrupted:
+                # The batch stopped early on another lane's failure (or an
+                # external stop): this lane ran a fraction of the duration and
+                # showed no error of its own. That is not a pass — inventing
+                # one would enter the evidence record as a proven offset.
+                return None
             return StressResult(core_id=lane.core_id, passed=True, duration_seconds=elapsed)
         passed, msg = self.backend.parse_output(out or "", err or "", rc)
         return StressResult(
