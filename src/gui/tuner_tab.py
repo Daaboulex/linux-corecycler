@@ -64,6 +64,8 @@ log = logging.getLogger(__name__)
 
 _PHASE_TO_GRID = PHASE_TO_GRID
 
+ACTIVE_STATUSES = ("running", "validating", "hunting")
+
 
 class TunerTab(QWidget):
     """Auto-Tuner tab for the main window."""
@@ -513,6 +515,12 @@ class TunerTab(QWidget):
             return
 
         config = self._get_config()
+        errors = config.validate()
+        if errors:
+            QMessageBox.warning(
+                self, "Invalid Configuration", "\n".join(errors)
+            )
+            return
         self._engine = TunerEngine(
             db=self._db,
             topology=self._topology,
@@ -522,8 +530,14 @@ class TunerTab(QWidget):
         )
         self._wire_engine()
 
-        self._set_running_state(True)
         self._engine.start()
+        if self._engine.status not in ACTIVE_STATUSES:
+            QMessageBox.warning(
+                self, "Tuner Did Not Start",
+                "The engine refused to start — see the log for the reason.",
+            )
+            return
+        self._set_running_state(True)
 
         # Initialize table with all cores
         for core_id in self._engine.core_states:
@@ -630,7 +644,6 @@ class TunerTab(QWidget):
         session = tp.get_session(self._db, session_id) if self._db else None
         if session is not None:
             self._apply_config_to_ui(TunerConfig.from_json(session.config_json))
-        self._set_running_state(True)
         log.info("Resuming tuner session %d with its saved config", session_id)
         for event in tp.get_events(self._db, session_id, limit=20):
             log.info(
@@ -639,6 +652,13 @@ class TunerTab(QWidget):
                 event.get("message", ""),
             )
         self._engine.resume(session_id)
+        if self._engine.status not in ACTIVE_STATUSES:
+            QMessageBox.warning(
+                self, "Resume Did Not Start",
+                "The engine did not resume — see the log for the reason.",
+            )
+            return
+        self._set_running_state(True)
 
         # Initialize table with all cores
         for core_id in self._engine.core_states:
@@ -664,8 +684,14 @@ class TunerTab(QWidget):
         backend = self._get_backend()
         if backend is None:
             return
-        self._set_running_state(True)
         self._engine.validate_profile(self._engine.session_id)
+        if self._engine.status not in ACTIVE_STATUSES:
+            QMessageBox.warning(
+                self, "Validation Did Not Start",
+                "The engine refused to validate — see the log for the reason.",
+            )
+            return
+        self._set_running_state(True)
 
     def _on_export(self) -> None:
         """Export confirmed CO profile to a JSON file."""
@@ -800,6 +826,14 @@ class TunerTab(QWidget):
             self._pause_btn.setEnabled(True)
             self._resume_btn.setEnabled(False)
             self._abort_btn.setEnabled(True)
+        elif status in ("idle", "quarantined"):
+            self._active_test_core = None
+            self._tuner_timer.stop()
+            self._set_running_state(False)
+            if self._engine is not None:
+                for core_id, cs in self._engine.core_states.items():
+                    self.tuner_core_testing.emit(core_id, _PHASE_TO_GRID[cs.phase])
+                    self.tuner_core_info.emit(core_id, cs.current_offset, cs.phase)
 
     @Slot(int, int, int)
     def _on_validation_progress(self, stage: int, current: int, total: int) -> None:
@@ -1019,6 +1053,9 @@ class TunerTab(QWidget):
         self._resume_btn.setEnabled(False)
         self._abort_btn.setEnabled(running)
         self._config_container.setEnabled(not running)
+        if running:
+            self._validate_btn.setEnabled(False)
+            self._export_btn.setEnabled(False)
         self.tuner_running_changed.emit(running)
 
     def _get_backend(self) -> StressBackend | None:
@@ -1067,7 +1104,10 @@ class TunerTab(QWidget):
             self._start_btn.setEnabled(False)
             self._start_btn.setToolTip("Manual test is running")
         else:
-            has_active = self._engine is not None and self._engine.status in ("paused", "running", "validating")
+            has_active = self._engine is not None and (
+                self._engine.status == "paused"
+                or self._engine.status in ACTIVE_STATUSES
+            )
             self._start_btn.setEnabled(not has_active)
             if has_active:
                 self._start_btn.setToolTip("Tuner session is active — resume or abort first")
@@ -1081,4 +1121,4 @@ class TunerTab(QWidget):
 
     @property
     def is_running(self) -> bool:
-        return self._engine is not None and self._engine.status in ("running", "validating")
+        return self._engine is not None and self._engine.status in ACTIVE_STATUSES

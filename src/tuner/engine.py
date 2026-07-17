@@ -853,6 +853,13 @@ class TunerEngine(QObject):
 
     def pause(self) -> None:
         """Pause after the current test completes."""
+        if self._session_id:
+            session = tp.get_session(self._db, self._session_id)
+            if session is not None and session.status == "quarantined":
+                self.log_message.emit(
+                    "Pause ignored: the session is quarantined and stays that way."
+                )
+                return
         self._paused = True
         self._set_status("paused")
         if self._session_id:
@@ -898,7 +905,9 @@ class TunerEngine(QObject):
                 tp.set_hunting_core(self._db, self._session_id, None)
         self._set_status("idle")
         if self._session_id:
-            tp.update_session_status(self._db, self._session_id, "aborted")
+            session = tp.get_session(self._db, self._session_id)
+            if session is None or session.status != "quarantined":
+                tp.update_session_status(self._db, self._session_id, "aborted")
         self.log_message.emit("Tuner aborted")
 
     def validate_profile(self, session_id: int) -> None:

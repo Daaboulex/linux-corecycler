@@ -676,7 +676,8 @@ class HistoryTab(QWidget):
             self._compare_btn.setEnabled(False)
             if len(rows) == 1 and rows[0] < len(self._tuner_sessions):
                 self._show_tuner_session_detail(self._tuner_sessions[rows[0]])
-            elif len(rows) == 0:
+            else:
+                self._selected_tuner_session = None
                 self._clear_detail()
             return
 
@@ -1082,6 +1083,8 @@ class HistoryTab(QWidget):
 
     @Slot()
     def _show_context_menu(self, pos) -> None:
+        if self._view_mode == self.VIEW_TUNER:
+            return
         rows = self._selected_run_rows()
         if not rows:
             return
@@ -1192,6 +1195,7 @@ class HistoryTab(QWidget):
             "Delete Runs",
             f"Delete {len(run_ids)} run(s) and all associated data?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
@@ -1229,6 +1233,7 @@ class HistoryTab(QWidget):
             f"This will permanently delete {len(ctx_ids)} context(s) and ALL "
             f"{total_runs} associated test run(s). This cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
@@ -1243,10 +1248,21 @@ class HistoryTab(QWidget):
             return
 
         session_ids = []
+        active = []
         for row in rows:
             if row < len(self._tuner_sessions) and self._tuner_sessions[row].id is not None:
-                session_ids.append(self._tuner_sessions[row].id)
+                sess = self._tuner_sessions[row]
+                if sess.status in ("running", "validating"):
+                    active.append(sess.id)
+                else:
+                    session_ids.append(sess.id)
 
+        if active:
+            QMessageBox.warning(
+                self, "Session Active",
+                f"Session(s) {active} are mid-run — abort them in the "
+                f"Auto-Tuner tab before deleting.",
+            )
         if not session_ids:
             return
 
@@ -1255,6 +1271,7 @@ class HistoryTab(QWidget):
             "Delete Tuner Sessions",
             f"Delete {len(session_ids)} tuner session(s) and all associated data?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return

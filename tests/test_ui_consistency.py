@@ -431,3 +431,51 @@ class TestNoStrayDisplayConstants:
                 if re.search(r"#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b", line):
                     offenders.append(f"{f.name}:{i}: {line.strip()[:60]}")
         assert not offenders, "hex colors outside gui/style.py:\n" + "\n".join(offenders)
+
+
+class TestEngineInitiatedStops:
+    """The engine pauses, aborts and quarantines ITSELF (thermal, apparatus,
+    SMU faults, breaker) — the buttons must follow status_changed, or every
+    self-stop strands the tab with Start greyed out and the config locked."""
+
+    def _ns(self):
+        ns = types.SimpleNamespace()
+        for name in ("_start_btn", "_pause_btn", "_resume_btn", "_abort_btn",
+                     "_config_container", "_status_label", "_progress_label",
+                     "_tuner_timer"):
+            setattr(ns, name, MagicMock())
+        ns.tuner_running_changed = MagicMock()
+        ns._active_test_core = 3
+        ns._engine = None
+        ns._validate_btn = MagicMock()
+        ns._export_btn = MagicMock()
+        return ns
+
+    def test_engine_self_abort_reenables_ui(self):
+        from gui.tuner_tab import TunerTab
+
+        ns = self._ns()
+        ns._set_running_state = MethodType(TunerTab._set_running_state, ns)
+        MethodType(TunerTab._on_status_changed, ns)("idle")
+        ns._start_btn.setEnabled.assert_called_with(True)
+        ns._config_container.setEnabled.assert_called_with(True)
+        ns._tuner_timer.stop.assert_called()
+        assert ns._active_test_core is None
+        ns.tuner_running_changed.emit.assert_called_with(False)
+
+    def test_engine_quarantine_reenables_ui(self):
+        from gui.tuner_tab import TunerTab
+
+        ns = self._ns()
+        ns._set_running_state = MethodType(TunerTab._set_running_state, ns)
+        MethodType(TunerTab._on_status_changed, ns)("quarantined")
+        ns._start_btn.setEnabled.assert_called_with(True)
+        ns.tuner_running_changed.emit.assert_called_with(False)
+
+    def test_engine_self_pause_enables_resume(self):
+        from gui.tuner_tab import TunerTab
+
+        ns = self._ns()
+        MethodType(TunerTab._on_status_changed, ns)("paused")
+        ns._resume_btn.setEnabled.assert_called_with(True)
+        ns._pause_btn.setEnabled.assert_called_with(False)
