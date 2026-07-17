@@ -93,7 +93,7 @@ class TestIncrementalValidation:
         _seed_validating(eng, db)
         eng._validation_core_order = sorted(BEST)
         eng._validation_halves = [sorted(BEST)[:4], sorted(BEST)[4:]]
-        eng._validation_stage = 7  # finalize sentinel
+        eng._validation_stage = 8  # finalize sentinel
         eng._validation_dirty = True
 
         eng._run_validation_next()
@@ -107,7 +107,7 @@ class TestIncrementalValidation:
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_validating(eng, db)
         eng._validation_core_order = sorted(BEST)
-        eng._validation_stage = 7
+        eng._validation_stage = 8
         eng._validation_dirty = False
 
         eng._run_validation_next()
@@ -182,14 +182,15 @@ class TestSpectrumAndSoak:
     def test_disabled_stages_chain_through_to_finalize(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = _make_engine(
             db, topo_dual_ccd_x3d, mock_backend,
-            validate_transitions=False, validate_spectrum=False, validate_soak=False,
+            validate_transitions=False, validate_spectrum=False,
+            validate_memory=False, validate_soak=False,
         )
         _seed_validating(eng, db)
         eng._validation_core_order = sorted(BEST)
         eng._validation_stage = 4
 
         # Each skip hop is a queued step; drive the chain to completion.
-        for _ in range(5):
+        for _ in range(8):
             if eng.status == "idle":
                 break
             eng._run_validation_next()
@@ -230,12 +231,12 @@ class TestSpectrumAndSoak:
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_validating(eng, db)
         eng._validation_core_order = sorted(BEST)
-        eng._validation_stage = 6
+        eng._validation_stage = 7
         eng._soaking = True
 
         eng._on_test_finished(sorted(BEST)[0], True, "", "", 10.0, 0.0, "", "")
 
-        assert eng._validation_stage == 7
+        assert eng._validation_stage == 8
         eng._run_validation_next()
         assert eng.status == "idle"
         assert tp.get_session(db, eng._session_id).status == "completed"
@@ -248,7 +249,7 @@ class TestSpectrumAndSoak:
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_validating(eng, db)
         eng._validation_core_order = sorted(BEST)
-        eng._validation_stage = 6
+        eng._validation_stage = 7
         eng._soaking = True
         eng._co_applied[5] = BEST[5]
         cpu = topo_dual_ccd_x3d.cores[5].logical_cpus[0]
@@ -267,14 +268,14 @@ class TestSpectrumAndSoak:
         assert cs.backoff_fail_bound == BEST[5]
         assert eng._validation_dirty is True
         assert eng.status == "running"
-        assert tp.get_session(db, eng._session_id).validation_stage == 6
+        assert tp.get_session(db, eng._session_id).validation_stage == 7
 
     def test_stage_count_reflects_flags(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
-        assert eng._get_validation_stage_count() == 6
+        assert eng._get_validation_stage_count() == 7
         eng._config.validate_transitions = False
         eng._config.validate_soak = False
-        assert eng._get_validation_stage_count() == 4
+        assert eng._get_validation_stage_count() == 5
 
 
 class TestBackoffKeepsPhase:
@@ -292,3 +293,108 @@ class TestBackoffKeepsPhase:
         cs = eng._core_states[sorted(BEST)[0]]
         assert cs.phase == TunerPhase.HARDENED
         assert cs.best_offset == BEST[sorted(BEST)[0]] + 1
+
+
+class _FakeMemBackend:
+    """A stand-in memory backend that reports itself available."""
+
+    name = "stressapptest"
+
+    def is_available(self):
+        return True
+
+
+class TestMemoryValidationStage:
+    """Stage 6 memory-load validation drives the REAL dispatch/advance state
+    machine: it runs only when enabled AND a memory tool is present, uses the
+    memory backend (not the CPU backend), advances to soak on pass, and backs
+    off the failing core on fail. No mock asserts — every check reads the real
+    cursor and the captured dispatch decision."""
+
+    def _seed(self, db, topo, backend, **cfg):
+        eng = _make_engine(db, topo, backend, **cfg)
+        _seed_hardened_validating(eng, db, BEST, BASELINES)
+        for cs in eng._core_states.values():
+            cs.in_test = False
+        eng._start_worker = lambda *a, **k: None
+        eng._run_validation_stage4 = lambda *a, **k: None
+        eng._set_status("validating")
+        eng._validation_core_order = sorted(BEST)
+        return eng
+
+    def test_memory_stage_runs_with_memory_backend_when_available(
+        self, db, topo_dual_ccd_x3d, mock_backend
+    ):
+        eng = self._seed(db, topo_dual_ccd_x3d, mock_backend)
+        captured = {}
+        eng._get_memory_backend = lambda: _FakeMemBackend()
+        eng._start_multi_core_worker = (
+            lambda cores, dur, backend=None: captured.update(
+                cores=list(cores), backend=backend
+            )
+        )
+        eng._validation_stage = 6
+
+        eng._run_validation_next()
+
+        assert captured["cores"] == sorted(BEST)  # every core stressed together
+        assert isinstance(captured["backend"], _FakeMemBackend)  # memory, not CPU
+        assert eng._validation_stage == 6
+
+    def test_memory_pass_advances_to_soak(self, db, topo_dual_ccd_x3d, mock_backend):
+        eng = self._seed(db, topo_dual_ccd_x3d, mock_backend)
+        eng._validation_stage = 6
+
+        eng._on_validation_test_finished(sorted(BEST)[0], passed=True)
+
+        assert eng._validation_stage == 7  # soak is next
+        assert tp.get_session(db, eng._session_id).validation_stage == 7
+
+    def test_memory_failure_backs_off_failing_core_and_requeues(
+        self, db, topo_dual_ccd_x3d, mock_backend
+    ):
+        eng = self._seed(db, topo_dual_ccd_x3d, mock_backend)
+        eng._start_multi_core_worker = lambda *a, **k: None
+        eng._validation_stage = 6
+        before = eng._core_states[5].best_offset
+
+        eng._on_validation_test_finished(5, passed=False)
+
+        assert eng._core_states[5].best_offset == before + 1  # one fine step
+        assert eng._validation_requeue == [5]  # solo re-prove, like stage 2/3
+        assert eng._validation_stage == 6  # stage reruns, not a restart
+        assert eng._validation_dirty is True
+
+    def test_memory_stage_skipped_when_disabled(self, db, topo_dual_ccd_x3d, mock_backend):
+        eng = self._seed(db, topo_dual_ccd_x3d, mock_backend, validate_memory=False)
+        ran = []
+        eng._get_memory_backend = lambda: _FakeMemBackend()
+        eng._start_multi_core_worker = lambda *a, **k: ran.append(True)
+        eng._validation_stage = 6
+
+        eng._run_validation_next()
+
+        assert ran == []  # memory did not run
+        assert eng._validation_stage == 7  # jumped straight to soak
+
+    def test_memory_stage_skipped_when_no_tool_installed(
+        self, db, topo_dual_ccd_x3d, mock_backend
+    ):
+        eng = self._seed(db, topo_dual_ccd_x3d, mock_backend)
+        ran = []
+        eng._get_memory_backend = lambda: None  # stressapptest not installed
+        eng._start_multi_core_worker = lambda *a, **k: ran.append(True)
+        eng._validation_stage = 6
+
+        eng._run_validation_next()
+
+        assert ran == []  # skipped, not failed
+        assert eng._validation_stage == 7  # advanced to soak
+
+    def test_get_memory_backend_returns_none_without_stressapptest(
+        self, db, topo_dual_ccd_x3d, mock_backend
+    ):
+        eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
+        # In the test/sandbox environment stressapptest is not installed, so the
+        # real availability check must yield None (not raise, not a CPU backend).
+        assert eng._get_memory_backend() is None

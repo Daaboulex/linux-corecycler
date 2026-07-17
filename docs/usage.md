@@ -86,7 +86,11 @@ The Auto-Tuner automates the entire PBO Curve Optimizer search via runtime SMU w
      across all cores -- catches idle-to-boost instability.
    - **Stage 5 -- per-core spectrum** (`validate_spectrum`): bursts, load transitions
      and idle watch per core with all offsets live.
-   - **Stage 6 -- real-world soak** (`validate_soak`): no synthetic load; the kernel
+   - **Stage 6 -- all-core memory load** (`validate_memory`): one memory stressor
+     (stressapptest) per core at once, all offsets live -- catches CO marginality
+     that only appears under memory-controller load. Skipped with a log if no memory
+     stress tool is installed.
+   - **Stage 7 -- real-world soak** (`validate_soak`): no synthetic load; the kernel
      error stream is watched for `soak_duration_seconds` while the machine is used
      normally. Any hardware event fails it.
 
@@ -144,7 +148,7 @@ NOT_STARTED -> COARSE_SEARCH -> FINE_SEARCH -> SETTLED -> CONFIRMING -> CONFIRME
                                     |                       |            |
                                     v                       v            v (all cores)
                                  SETTLED              FAILED_CONFIRM   VALIDATION
-                                                           |     S1 -> S2 -> S3 -> S4 -> S5 -> S6
+                                                           |     S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7
                                                            v      (fail: back off failing core,
                                                     BACKOFF (smart)    solo re-prove, rerun stage;
                                                     - pre-confirm      dirty pass => one final
@@ -165,7 +169,7 @@ NOT_STARTED -> COARSE_SEARCH -> FINE_SEARCH -> SETTLED -> CONFIRMING -> CONFIRME
 | Confirm Duration | 300s | 30-1800s | Test duration for the confirmation run |
 | Validate Duration | 300s | 30-3600s | Test duration per multi-core validation stage |
 | Max Confirm Retries | 2 | 0-5 | Retries before backing off from a value |
-| Auto Validate | true | true/false | Run staged multi-core validation (stages 1-6) after all cores confirm |
+| Auto Validate | true | true/false | Run staged multi-core validation (stages 1-7) after all cores confirm |
 | Backend | mprime | mprime/stress-ng/y-cruncher | Per-core stress backend (stressapptest is Memory tab only) |
 | Mode | SSE | SSE/AVX/AVX2/AVX512 | Stress instruction set |
 | FFT Preset | SMALL | SMALL/MEDIUM/LARGE/HEAVY/ALL | FFT size preset (mprime) |
@@ -195,7 +199,7 @@ defaults and are not exposed in the UI.
   clocks and the most sensitive error detection (rounding checks, SUMOUT verification).
 - The default `max_offset` of -50 suits Zen 4; Zen 5 can push to -60; Zen 3/3D are
   clamped to -30 automatically.
-- A typical 16-core run takes ~2-4 hours plus several hours of staged validation (stages 1-6 include a 30-minute real-world soak).
+- A typical 16-core run takes ~2-4 hours plus several hours of staged validation (stages 1-7 include an all-core memory-load stage and a 30-minute real-world soak).
 - If many cores fail at the starting offset, enable **abort on consecutive failures**
   (e.g. 3) -- it usually means BIOS PBO needs adjusting first.
 - **Multi-core validation** is the key differentiator from manual testing: a core stable

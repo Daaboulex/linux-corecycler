@@ -123,6 +123,12 @@ class TestNewConfigOptions:
         cfg = TunerConfig()
         assert cfg.validate_transitions is True
 
+    def test_validate_memory_default_and_roundtrips(self):
+        cfg = TunerConfig()
+        assert cfg.validate_memory is True
+        restored = TunerConfig.from_json(TunerConfig(validate_memory=False).to_json())
+        assert restored.validate_memory is False
+
     def test_hardening_tiers_json_roundtrip(self):
         cfg = TunerConfig()
         restored = TunerConfig.from_json(cfg.to_json())

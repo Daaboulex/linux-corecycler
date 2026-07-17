@@ -34,7 +34,7 @@ src/
     config.py          TunerConfig dataclass (search parameters with defaults)
     state.py           TunerPhase StrEnum, CoreState / TunerSession dataclasses
     persistence.py     Session CRUD, core-state upsert, test log, CO write-ahead journal
-    engine.py          TunerEngine: state machine, scheduling, crash recovery, staged validation (1-6)
+    engine.py          TunerEngine: state machine, scheduling, crash recovery, staged validation (1-7)
   gui/               Qt tabs (config, results, monitor, smu, tuner, memory, history) + core grid widget
   config/            JSON settings and test-profile persistence (~/.config/corecycler/)
 nix/                 NixOS module + kernel-module derivations (ryzen-smu, zenpower, it87)

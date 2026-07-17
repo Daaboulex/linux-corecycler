@@ -2635,7 +2635,7 @@ class TunerEngine(QObject):
                 return
             if passed:
                 self.log_message.emit("Real-world soak passed — no kernel events")
-                self._validation_stage = 7
+                self._validation_stage = 8
                 self._save_validation_pos()
                 QTimer.singleShot(0, self._run_validation_next)
                 return
@@ -3005,7 +3005,9 @@ class TunerEngine(QObject):
         self._validation_thermal_aborts = 0
 
         if resume_from is not None and resume_from.validation_stage > 0:
-            self._validation_stage = min(resume_from.validation_stage, 5)
+            # Clamp below the terminal soak (7) and finalize sentinel (8): a
+            # resume re-runs synthetic stages, never lands straight in the soak.
+            self._validation_stage = min(resume_from.validation_stage, 6)
             self._validation_core_index = max(
                 0, min(resume_from.validation_index, len(self._validation_core_order))
             )
@@ -3142,11 +3144,12 @@ class TunerEngine(QObject):
         return [cores[::2], cores[1::2]]
 
     def _get_validation_stage_count(self) -> int:
-        """Total enabled validation stages (3 base + transitions/spectrum/soak)."""
+        """Total enabled validation stages (3 base + transitions/spectrum/memory/soak)."""
         return (
             3
             + int(self._config.validate_transitions)
             + int(self._config.validate_spectrum)
+            + int(self._config.validate_memory)
             + int(self._config.validate_soak)
         )
 
@@ -3241,11 +3244,23 @@ class TunerEngine(QObject):
                     self._save_validation_pos()
                     QTimer.singleShot(0, self._run_validation_next)
             case 6:
+                if self._config.validate_memory and self._get_memory_backend() is not None:
+                    self._run_validation_memory()
+                else:
+                    if self._config.validate_memory:
+                        self.log_message.emit(
+                            "Validation stage 6 (memory load) skipped: no memory "
+                            "stress tool (stressapptest) is installed."
+                        )
+                    self._validation_stage = 7
+                    self._save_validation_pos()
+                    QTimer.singleShot(0, self._run_validation_next)
+            case 7:
                 # A dirty pass skips the soak; the final clean pass earns it.
                 if self._config.validate_soak and not self._validation_dirty:
                     self._run_validation_soak()
                 else:
-                    self._validation_stage = 7
+                    self._validation_stage = 8
                     self._save_validation_pos()
                     QTimer.singleShot(0, self._run_validation_next)
             case _:
@@ -3333,6 +3348,39 @@ class TunerEngine(QObject):
         self._mark_cores_under_stress(cores)
         self._start_multi_core_worker(cores, self._config.validate_duration_seconds)
 
+    def _run_validation_memory(self) -> None:
+        """Stage 6: all cores stressed simultaneously under a MEMORY load with
+        all offsets live — catches CO marginality that only shows under
+        memory-controller pressure, invisible to the CPU-only stages."""
+        cores = self._validation_core_order
+        backend = self._get_memory_backend()
+        if backend is None:
+            # Availability was checked before dispatch; a race is treated as a
+            # skip, never a silicon verdict.
+            self._validation_stage = 7
+            self._save_validation_pos()
+            QTimer.singleShot(0, self._run_validation_next)
+            return
+        self.log_message.emit(
+            f"Validation stage 6: memory-load stress on all {len(cores)} cores "
+            f"simultaneously ({self._config.validate_duration_seconds}s, "
+            f"all offsets applied)"
+        )
+        self.validation_progress.emit(6, 0, 1)
+
+        if self._smu is not None:
+            first_core = cores[0]
+            cs = self._core_states[first_core]
+            offset = cs.best_offset if cs.best_offset is not None else cs.baseline_offset
+            if not self._apply_validation_offsets(first_core, offset):
+                return
+
+        self._last_tested_core = cores[0]
+        self._mark_cores_under_stress(cores)
+        self._start_multi_core_worker(
+            cores, self._config.validate_duration_seconds, backend=backend
+        )
+
     def _run_validation_stage3(self) -> None:
         """Stage 3: alternating half-core load — catches voltage transients."""
         if self._validation_half_index >= len(self._validation_halves):
@@ -3415,10 +3463,25 @@ class TunerEngine(QObject):
         self._worker.finished.connect(self._on_test_finished)
         self._worker.start()
 
-    def _start_multi_core_worker(self, cores: list[int], duration: int) -> None:
+    def _get_memory_backend(self):
+        """The memory stress backend (stressapptest) if installed, else None.
+
+        A missing memory tool is an environment condition, not a stability
+        verdict — the memory validation stage skips rather than fails on it.
+        """
+        try:
+            backend = get_backend("stressapptest")
+        except KeyError:
+            return None
+        return backend if backend.is_available() else None
+
+    def _start_multi_core_worker(
+        self, cores: list[int], duration: int, backend=None
+    ) -> None:
         """Launch every core's stress process simultaneously (one pinned
         process per core) with per-core verdicts; the worker reports the
-        first failing core, else the first core's pass."""
+        first failing core, else the first core's pass. ``backend`` overrides
+        the configured CPU backend (the memory stage passes stressapptest)."""
         stress_config = StressConfig(
             mode=self._get_stress_mode(),
             fft_preset=self._get_fft_preset(),
@@ -3438,7 +3501,7 @@ class TunerEngine(QObject):
         try:
             runner = ParallelStress(
                 topology=self._topology,
-                backend=self._backend,
+                backend=backend or self._backend,
                 stress_config=stress_config,
                 scheduler_config=scheduler_config,
                 work_dir=self._work_dir,
@@ -3599,6 +3662,9 @@ class TunerEngine(QObject):
                     self._validation_core_index = 0
                 case 5:
                     self._validation_core_index += 1
+                case 6:
+                    # Memory stage passed — advance to soak (stage 7)
+                    self._validation_stage = 7
             self._save_validation_pos()
             # Use QTimer to break the call stack (this is called from _on_test_finished)
             QTimer.singleShot(0, self._run_validation_next)
@@ -3610,7 +3676,7 @@ class TunerEngine(QObject):
         # aggressive offset there.
         target: int | None = None
         match self._validation_stage:
-            case 1 | 2 | 3 | 5:
+            case 1 | 2 | 3 | 5 | 6:
                 target = core_id
             case 4:
                 target = self._find_most_aggressive_core()
