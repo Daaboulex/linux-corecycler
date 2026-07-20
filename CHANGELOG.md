@@ -9,6 +9,16 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-07-20 packaging)
+
+- The wheel installed ten flat top-level entries (`main`, `cli`, `notify` and
+  the seven package directories) straight into `site-packages` — a global
+  namespace. hermes-agent ships a flat `cli.py` too, so a Nix home profile
+  containing both applications failed to build on the name collision.
+  Everything now lives under one `corecycler` package (entry point
+  `corecycler.main:main`); the packaging test pins the single-package
+  invariant so nothing flat can return.
+
 ### Fixed (2026-07-16 truth-and-attribution session, ryzen-9950x3d forensics)
 
 Field incident driving all of this: three freezes in one day during

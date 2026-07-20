@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from tuner.config import TunerConfig
+from corecycler.tuner.config import TunerConfig
 
 
 class TestTunerConfigDefaults:

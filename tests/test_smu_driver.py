@@ -11,8 +11,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from smu.commands import CPUGeneration, SMUCommandSet, get_commands
-from smu.driver import SYSFS_BASE, RyzenSMU, SMUResponse
+from corecycler.smu.commands import CPUGeneration, SMUCommandSet, get_commands
+from corecycler.smu.driver import SYSFS_BASE, RyzenSMU, SMUResponse
 
 # ===========================================================================
 # Fixtures

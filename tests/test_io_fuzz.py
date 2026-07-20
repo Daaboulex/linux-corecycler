@@ -14,14 +14,14 @@ from hypothesis import strategies as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.detector import (  # noqa: E402
+from corecycler.engine.detector import (  # noqa: E402
     ErrorDetector,
     _is_kernel_error_line,
     _is_mce_error_line,
 )
-from history.timefmt import format_local  # noqa: E402
-from smu.commands import CPUGeneration, SMUCommandSet  # noqa: E402
-from smu.driver import RyzenSMU  # noqa: E402
+from corecycler.history.timefmt import format_local  # noqa: E402
+from corecycler.smu.commands import CPUGeneration, SMUCommandSet  # noqa: E402
+from corecycler.smu.driver import RyzenSMU  # noqa: E402
 
 _ZEN5 = SMUCommandSet(
     generation=CPUGeneration.ZEN5_GRANITE_RIDGE,

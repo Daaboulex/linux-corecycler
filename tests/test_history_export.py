@@ -8,8 +8,8 @@ import json
 
 import pytest
 
-from history.db import CoreResultRecord, EventRecord, HistoryDB, RunRecord, TelemetrySample
-from history.export import (
+from corecycler.history.db import CoreResultRecord, EventRecord, HistoryDB, RunRecord, TelemetrySample
+from corecycler.history.export import (
     export_run_csv,
     export_run_json,
     export_runs_bulk_csv,

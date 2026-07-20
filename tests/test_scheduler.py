@@ -12,9 +12,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.backends.base import StressConfig, StressMode
-from engine.scheduler import _STALL_GRACE_SECONDS, CoreScheduler, CoreTestStatus, SchedulerConfig, TestState
-from engine.topology import CPUTopology, PhysicalCore
+from corecycler.engine.backends.base import StressConfig, StressMode
+from corecycler.engine.scheduler import _STALL_GRACE_SECONDS, CoreScheduler, CoreTestStatus, SchedulerConfig, TestState
+from corecycler.engine.topology import CPUTopology, PhysicalCore
 
 # ===========================================================================
 # Fixtures
@@ -941,7 +941,7 @@ class TestCrossThreadSafety:
         """
         import re
 
-        gui_dir = Path(__file__).parent.parent / "src" / "gui"
+        gui_dir = Path(__file__).parent.parent / "src" / "corecycler" / "gui"
         violations = []
         for py_file in gui_dir.glob("*.py"):
             text = py_file.read_text()
@@ -963,7 +963,7 @@ class TestCrossThreadSafety:
         """TunerEngine.abort() must call force_stop() before terminate()."""
         import re
 
-        engine_file = Path(__file__).parent.parent / "src" / "tuner" / "engine.py"
+        engine_file = Path(__file__).parent.parent / "src" / "corecycler" / "tuner" / "engine.py"
         text = engine_file.read_text()
         abort_match = re.search(
             r"def abort\(self\).*?(?=\n    def |\nclass |\Z)", text, re.DOTALL
@@ -978,7 +978,7 @@ class TestCrossThreadSafety:
 
     def test_main_window_has_core_status_cache(self):
         """MainWindow must use _core_status_cache for thread-safe status access."""
-        mw_file = Path(__file__).parent.parent / "src" / "gui" / "main_window.py"
+        mw_file = Path(__file__).parent.parent / "src" / "corecycler" / "gui" / "main_window.py"
         text = mw_file.read_text()
         assert "_core_status_cache" in text, "MainWindow must define _core_status_cache"
         assert "_core_status_cache: dict" in text or "_core_status_cache =" in text, \
@@ -1054,7 +1054,7 @@ class TestRapidTransitions:
 
     def test_rapid_transitions_mce_returns_failure(self, mock_backend, topo_dual_ccd_x3d, tmp_path):
         """MCE during idle phase causes run_rapid_transitions to return failure."""
-        from engine.detector import MCEEvent
+        from corecycler.engine.detector import MCEEvent
 
         config = SchedulerConfig(seconds_per_core=30)
         stress_config = StressConfig(mode=StressMode.SSE)

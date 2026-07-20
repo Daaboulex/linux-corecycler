@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from history.db import HistoryDB
-from tuner.config import TunerConfig
+from corecycler.history.db import HistoryDB
+from corecycler.tuner.config import TunerConfig
 
 
 @pytest.fixture
@@ -56,7 +56,7 @@ class TestSelfPauseRecoverable:
     def test_status_paused_enables_resume(self):
         from PySide6.QtWidgets import QApplication
 
-        from gui.tuner_tab import TunerTab
+        from corecycler.gui.tuner_tab import TunerTab
 
         app = QApplication.instance() or QApplication([])
         assert app is not None

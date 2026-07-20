@@ -7,8 +7,8 @@ not be counted as stress tests).
 
 from __future__ import annotations
 
-from gui.monitor_tab import CoreFreqBar
-from gui.tuner_tab import TunerTab
+from corecycler.gui.monitor_tab import CoreFreqBar
+from corecycler.gui.tuner_tab import TunerTab
 
 
 class TestPerCoreFreqText:

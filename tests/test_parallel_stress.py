@@ -13,10 +13,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.backends.base import StressBackend, StressConfig, StressMode
-from engine.detector import MCEEvent
-from engine.parallel import ParallelStress
-from engine.scheduler import SchedulerConfig
+from corecycler.engine.backends.base import StressBackend, StressConfig, StressMode
+from corecycler.engine.detector import MCEEvent
+from corecycler.engine.parallel import ParallelStress
+from corecycler.engine.scheduler import SchedulerConfig
 
 # These lanes exec real pinned processes; the nix build sandbox has no taskset.
 pytestmark = pytest.mark.skipif(
@@ -113,7 +113,7 @@ class TestParallelLanes:
         assert runner.observed_mce
 
     def test_thermal_trip_stops_the_batch(self, topo_dual_ccd_x3d, tmp_path, monkeypatch):
-        from engine import parallel as par
+        from corecycler.engine import parallel as par
 
         monkeypatch.setattr(
             par.CoreScheduler, "_read_cpu_temperature", staticmethod(lambda: 200.0)
@@ -146,7 +146,7 @@ class TestParallelLanes:
         assert "killed externally" in results[0].error_message
 
     def test_stalled_lane_is_named(self, topo_dual_ccd_x3d, tmp_path, monkeypatch):
-        from engine import parallel as par
+        from corecycler.engine import parallel as par
 
         monkeypatch.setattr(par, "_STALL_GRACE_SECONDS", 0.0)
         monkeypatch.setattr(par, "_busy", lambda prev, now: 0.0)
@@ -209,7 +209,7 @@ class TestLaneIntegrity:
         """When one lane fails early, the killed survivors ran a fraction of
         the duration — recording them as PASSED would enter fake evidence into
         the record (1359 such rows in one live night)."""
-        from engine import parallel as par
+        from corecycler.engine import parallel as par
 
         monkeypatch.setattr(par, "_ERROR_POLL_INTERVAL", 0.1)
         backend = LaneBackend(error_dirs={"core_0": "mprime error: FATAL ERROR"})

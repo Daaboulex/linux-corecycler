@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from history.db import (
+from corecycler.history.db import (
     CoreResultRecord,
     EventRecord,
     HistoryDB,
@@ -672,7 +672,7 @@ class TestMergeFrom:
         src.insert_telemetry_batch([TelemetrySample(run_id=rid, core_id=3, freq_mhz=5300.0)])
         # a tuner session with state, log, and journal
         sid = src.create_tuner_session("{}", "2401", "9950X3D", context_id=src_ctx)
-        from tuner.state import CoreState, TunerPhase
+        from corecycler.tuner.state import CoreState, TunerPhase
         src.upsert_tuner_core_state(sid, CoreState(
             core_id=3, phase=TunerPhase.CONFIRMED, current_offset=-30, best_offset=-30))
         src.insert_tuner_test_log(sid, 3, -30, "confirm", True, duration=300.0, run_id=rid)

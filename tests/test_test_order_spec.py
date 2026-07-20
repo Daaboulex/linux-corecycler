@@ -11,11 +11,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from history.db import HistoryDB
-from tuner import persistence as tp
-from tuner.config import TunerConfig
-from tuner.engine import TunerEngine
-from tuner.state import CoreState, TunerPhase
+from corecycler.history.db import HistoryDB
+from corecycler.tuner import persistence as tp
+from corecycler.tuner.config import TunerConfig
+from corecycler.tuner.engine import TunerEngine
+from corecycler.tuner.state import CoreState, TunerPhase
 
 ORDERS = ["sequential", "round_robin", "weakest_first", "ccd_alternating", "ccd_round_robin"]
 

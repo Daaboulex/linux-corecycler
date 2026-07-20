@@ -11,8 +11,10 @@ their own process group for clean teardown.
 ## Source layout
 
 ```text
-src/
+src/corecycler/
   main.py            Entry point, dark theme, Qt setup
+  cli.py             Headless status/tune/resume commands (no display needed)
+  notify.py          Desktop notifications via notify-send, best-effort
   engine/            Stress execution
     topology.py        CPU topology: cores, CCDs, L3 cache, X3D V-Cache detection
     scheduler.py       Per-core cycling, variable load, idle tests, process management
@@ -56,7 +58,7 @@ nix flake check      # build + every check (what CI runs)
 
 ### Adding a stress backend
 
-1. Create `src/engine/backends/<name>.py`, subclassing `StressBackend` from `base.py`.
+1. Create `src/corecycler/engine/backends/<name>.py`, subclassing `StressBackend` from `base.py`.
 2. Implement `is_available`, `get_command`, `parse_output`, `get_supported_modes`.
 3. Add the `@register_backend("display-name")` decorator -- it is discovered
    automatically; no GUI files need editing.

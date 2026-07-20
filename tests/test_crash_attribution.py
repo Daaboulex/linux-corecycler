@@ -14,12 +14,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.detector import MCEEvent
-from history.db import HistoryDB
-from tuner import persistence as tp
-from tuner.config import TunerConfig
-from tuner.engine import TunerEngine, _pick_report
-from tuner.state import CoreState, TunerPhase
+from corecycler.engine.detector import MCEEvent
+from corecycler.history.db import HistoryDB
+from corecycler.tuner import persistence as tp
+from corecycler.tuner.config import TunerConfig
+from corecycler.tuner.engine import TunerEngine, _pick_report
+from corecycler.tuner.state import CoreState, TunerPhase
 
 # Real kernel MCE line shape (kernel: prefix stripped).
 CPU5_CORRECTED = (
@@ -418,7 +418,7 @@ class TestDriftAgainstJournal:
     ):
         """Reopening mid-validation: the SMU holding exactly what the tuner
         wrote (the confirmed offsets) is not drift."""
-        import tuner.engine as engine_mod
+        import corecycler.tuner.engine as engine_mod
 
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_hardened_validating(eng, db, BEST, BASELINES)
@@ -439,7 +439,7 @@ class TestDriftAgainstJournal:
     def test_third_party_change_is_reported_against_last_write(
         self, db, topo_dual_ccd_x3d, mock_backend, monkeypatch
     ):
-        import tuner.engine as engine_mod
+        import corecycler.tuner.engine as engine_mod
 
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_hardened_validating(eng, db, BEST, BASELINES)

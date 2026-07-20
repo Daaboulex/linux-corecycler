@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from smu.commands import (
+from corecycler.smu.commands import (
     COMMAND_SETS,
     CPUGeneration,
     SMUCommandSet,

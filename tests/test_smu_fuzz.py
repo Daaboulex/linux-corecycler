@@ -17,7 +17,7 @@ from hypothesis import strategies as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from smu.commands import (  # noqa: E402
+from corecycler.smu.commands import (  # noqa: E402
     COMMAND_SETS,
     CPUGeneration,
     decode_co_arg,

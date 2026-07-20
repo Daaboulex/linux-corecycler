@@ -18,9 +18,9 @@ from hypothesis import strategies as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from history.db import HistoryDB  # noqa: E402
-from tuner.config import TunerConfig  # noqa: E402
-from tuner.state import CoreState, TunerPhase  # noqa: E402
+from corecycler.history.db import HistoryDB  # noqa: E402
+from corecycler.tuner.config import TunerConfig  # noqa: E402
+from corecycler.tuner.state import CoreState, TunerPhase  # noqa: E402
 
 
 class TestConfigJsonFailsClosed:

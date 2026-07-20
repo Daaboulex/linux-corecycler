@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from smu.pmtable import (
+from corecycler.smu.pmtable import (
     PM_TABLE_OFFSETS,
     PMTableData,
     PMTableOffsets,
@@ -759,19 +759,19 @@ class TestReadPowerLimits:
         return floats
 
     def test_reads_zen5_limits(self, tmp_path):
-        from smu.pmtable import read_power_limits
+        from corecycler.smu.pmtable import read_power_limits
 
         smu_dir = self._tree(tmp_path, 0x00620205, self._floats())
         assert read_power_limits(16, smu_dir) == (225.0, 190.0, 230.0)
 
     def test_unknown_generation_fails_closed(self, tmp_path):
-        from smu.pmtable import read_power_limits
+        from corecycler.smu.pmtable import read_power_limits
 
         smu_dir = self._tree(tmp_path, 0x00540104, self._floats())
         assert read_power_limits(16, smu_dir) == (None, None, None)
 
     def test_implausible_values_fail_closed_per_field(self, tmp_path):
-        from smu.pmtable import read_power_limits
+        from corecycler.smu.pmtable import read_power_limits
 
         smu_dir = self._tree(
             tmp_path, 0x00620205, self._floats(ppt=1e9, tdc=190.0, edc=5.0)
@@ -779,7 +779,7 @@ class TestReadPowerLimits:
         assert read_power_limits(16, smu_dir) == (None, 190.0, None)
 
     def test_zero_reads_as_absent(self, tmp_path):
-        from smu.pmtable import read_power_limits
+        from corecycler.smu.pmtable import read_power_limits
 
         smu_dir = self._tree(
             tmp_path, 0x00620205, self._floats(ppt=0.0, tdc=0.0, edc=0.0)
@@ -787,6 +787,6 @@ class TestReadPowerLimits:
         assert read_power_limits(16, smu_dir) == (None, None, None)
 
     def test_missing_table_fails_closed(self, tmp_path):
-        from smu.pmtable import read_power_limits
+        from corecycler.smu.pmtable import read_power_limits
 
         assert read_power_limits(16, tmp_path / "nope") == (None, None, None)

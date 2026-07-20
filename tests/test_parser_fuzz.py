@@ -16,9 +16,9 @@ from hypothesis import strategies as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import engine.topology as topo_mod  # noqa: E402
-from engine.topology import CPUTopology, _field_int, _parse_cpuinfo  # noqa: E402
-from smu.pmtable import PMTableReader, compute_fclk_uclk_ratio  # noqa: E402
+import corecycler.engine.topology as topo_mod  # noqa: E402
+from corecycler.engine.topology import CPUTopology, _field_int, _parse_cpuinfo  # noqa: E402
+from corecycler.smu.pmtable import PMTableReader, compute_fclk_uclk_ratio  # noqa: E402
 
 
 class TestCpuinfoParserRobust:
