@@ -15,16 +15,13 @@ dependencies = [
 ]
 
 [project.scripts]
-corecycler = "main:main"
+corecycler = "corecycler.main:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.8", "hypothesis>=6.100"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools]
-py-modules = ["main", "cli", "notify"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -45,8 +42,8 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "TCH", "TID251"]
 # Regression-lock for the split-database bug class: under sudo these resolve
 # to /root, silently forking app state. config.paths is the one allowed user.
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"pathlib.Path.home".msg = "Path.home() is /root under sudo (split-database bug) — use config.paths.user_home()"
-"os.path.expanduser".msg = "expanduser('~') is /root under sudo — use config.paths.user_home()"
+"pathlib.Path.home".msg = "Path.home() is /root under sudo (split-database bug) — use corecycler.config.paths.user_home()"
+"os.path.expanduser".msg = "expanduser('~') is /root under sudo — use corecycler.config.paths.user_home()"
 
 [tool.ruff.lint.per-file-ignores]
-"src/config/paths.py" = ["TID251"]
+"src/corecycler/config/paths.py" = ["TID251"]

@@ -11,14 +11,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from monitor.frequency import (
+from corecycler.monitor.frequency import (
     _read_from_proc,
     read_core_frequencies,
     read_max_frequency,
     read_min_frequency,
 )
-from monitor.hwmon import HWMonData, HWMonReader
-from monitor.power import PowerMonitor
+from corecycler.monitor.hwmon import HWMonData, HWMonReader
+from corecycler.monitor.power import PowerMonitor
 
 # ===========================================================================
 # HWMonData tests
@@ -63,37 +63,37 @@ class TestHWMonReader:
 
     def test_find_k10temp(self, tmp_path):
         hwmon_base = self._create_hwmon(tmp_path, "k10temp")
-        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             assert reader.is_available() is True
 
     def test_find_zenpower(self, tmp_path):
         hwmon_base = self._create_hwmon(tmp_path, "zenpower")
-        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             assert reader.is_available() is True
 
     def test_find_zenpower3(self, tmp_path):
         hwmon_base = self._create_hwmon(tmp_path, "zenpower3")
-        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             assert reader.is_available() is True
 
     def test_find_coretemp(self, tmp_path):
         hwmon_base = self._create_hwmon(tmp_path, "coretemp")
-        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             assert reader.is_available() is True
 
     def test_not_found(self, tmp_path):
         hwmon_base = self._create_hwmon(tmp_path, "acpitz")
-        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             assert reader.is_available() is False
 
     def test_missing_hwmon_dir(self, tmp_path):
         fake_base = tmp_path / "nonexistent"
-        with patch("monitor.hwmon.HWMON_BASE", fake_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", fake_base):
             reader = HWMonReader()
             assert reader.is_available() is False
 
@@ -105,7 +105,7 @@ class TestHWMonReader:
             ("Tccd2", 58000),  # 58.0C
         ]
         hwmon_base = self._create_hwmon(tmp_path, "k10temp", temps=temps)
-        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             data = reader.read()
 
@@ -119,7 +119,7 @@ class TestHWMonReader:
             ("Vsoc", 1100),     # 1.1V
         ]
         hwmon_base = self._create_hwmon(tmp_path, "k10temp", voltages=voltages)
-        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             data = reader.read()
 
@@ -142,7 +142,7 @@ class TestHWMonReader:
             ("Vsoc", 1050),
         ]
         hwmon_base = self._create_hwmon(tmp_path, "k10temp", voltages=voltages)
-        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             data = reader.read()
 
@@ -157,7 +157,7 @@ class TestHWMonReader:
         (hwmon_dir / "temp1_input").write_text("70000")
         # no label file
 
-        with patch("monitor.hwmon.HWMON_BASE", tmp_path / "hwmon"):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", tmp_path / "hwmon"):
             reader = HWMonReader()
             data = reader.read()
 
@@ -170,7 +170,7 @@ class TestHWMonReader:
         (hwmon_dir / "temp1_input").write_text("not_a_number")
         (hwmon_dir / "temp1_label").write_text("Tctl")
 
-        with patch("monitor.hwmon.HWMON_BASE", tmp_path / "hwmon"):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", tmp_path / "hwmon"):
             reader = HWMonReader()
             data = reader.read()
 
@@ -178,7 +178,7 @@ class TestHWMonReader:
 
     def test_read_when_not_available(self, tmp_path):
         """Reading when hwmon not found should return empty data."""
-        with patch("monitor.hwmon.HWMON_BASE", tmp_path / "nonexistent"):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", tmp_path / "nonexistent"):
             reader = HWMonReader()
             data = reader.read()
 
@@ -200,7 +200,7 @@ class TestHWMonReader:
         (d1 / "temp1_input").write_text("72000")
         (d1 / "temp1_label").write_text("Tctl")
 
-        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             assert reader.is_available() is True
             data = reader.read()
@@ -221,7 +221,7 @@ class TestHWMonReader:
         (sio / "name").write_text("nct6799")
         (sio / "in0_input").write_text("1350")
 
-        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             data = reader.read()
 
@@ -243,7 +243,7 @@ class TestHWMonReader:
         (sio / "name").write_text("nct6799")
         (sio / "in0_input").write_text("999")
 
-        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             data = reader.read()
 
@@ -265,7 +265,7 @@ class TestHWMonReader:
         (sio / "in4_input").write_text("1400")
         (sio / "in4_label").write_text("CPU Vcore")
 
-        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             data = reader.read()
 
@@ -287,7 +287,7 @@ class TestHWMonReader:
         (sio / "in1_input").write_text("3300")
         (sio / "in1_label").write_text("+3.3V")
 
-        with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+        with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
             reader = HWMonReader()
             data = reader.read()
 
@@ -305,7 +305,7 @@ class TestHWMonReader:
             (sio / "name").write_text(chip_name)
             (sio / "in0_input").write_text("1350")
 
-            with patch("monitor.hwmon.HWMON_BASE", hwmon_base):
+            with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
                 reader = HWMonReader()
                 assert reader._superio_path is not None, f"{chip_name} not detected"
 
@@ -327,7 +327,7 @@ class TestFrequencyReader:
 
     def test_read_from_sysfs(self, tmp_path):
         cpu_dir = self._create_cpufreq_sysfs(tmp_path, {0: 4500000, 1: 3800000})
-        with patch("monitor.frequency.CPUFREQ_BASE", cpu_dir):
+        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", cpu_dir):
             freqs = read_core_frequencies()
 
         assert freqs[0] == 4500.0
@@ -340,7 +340,7 @@ class TestFrequencyReader:
         d.mkdir(parents=True)
         (d / "cpuinfo_cur_freq").write_text("5000000")
 
-        with patch("monitor.frequency.CPUFREQ_BASE", cpu_dir):
+        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", cpu_dir):
             freqs = read_core_frequencies()
 
         assert freqs[0] == 5000.0
@@ -356,8 +356,11 @@ class TestFrequencyReader:
         mock_proc.read_text.return_value = proc_text
 
         with (
-            patch("monitor.frequency.CPUFREQ_BASE", cpu_dir),
-            patch("monitor.frequency.Path", side_effect=lambda p: mock_proc if "cpuinfo" in str(p) else Path(p)),
+            patch("corecycler.monitor.frequency.CPUFREQ_BASE", cpu_dir),
+            patch(
+                "corecycler.monitor.frequency.Path",
+                side_effect=lambda p: mock_proc if "cpuinfo" in str(p) else Path(p),
+            ),
         ):
             freqs = _read_from_proc()
             # Test the function directly
@@ -370,7 +373,7 @@ class TestFrequencyReader:
             "processor\t: 0\ncpu MHz\t\t: 3700.5\n\nprocessor\t: 1\ncpu MHz\t\t: 3600.0\n"
         )
 
-        with patch("monitor.frequency.Path", return_value=proc_file):
+        with patch("corecycler.monitor.frequency.Path", return_value=proc_file):
             # Direct test using patched path
             freqs: dict[int, float] = {}
             text = proc_file.read_text()
@@ -387,11 +390,11 @@ class TestFrequencyReader:
     def test_no_sysfs_no_proc(self, tmp_path):
         """Missing both sysfs and /proc/cpuinfo should return empty dict."""
         fake = tmp_path / "nonexistent"
-        with patch("monitor.frequency.CPUFREQ_BASE", fake):
+        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", fake):
             # _read_from_proc fallback will also fail if /proc/cpuinfo is missing
             mock_proc_path = MagicMock()
             mock_proc_path.exists.return_value = False
-            with patch("monitor.frequency.Path", return_value=mock_proc_path):
+            with patch("corecycler.monitor.frequency.Path", return_value=mock_proc_path):
                 freqs = _read_from_proc()
             assert freqs == {}
 
@@ -402,8 +405,8 @@ class TestFrequencyReader:
         (d / "scaling_cur_freq").write_text("bad")
 
         # Also mock _read_from_proc to prevent fallback to real /proc/cpuinfo
-        with patch("monitor.frequency.CPUFREQ_BASE", cpu_dir), \
-             patch("monitor.frequency._read_from_proc", return_value={}):
+        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", cpu_dir), \
+             patch("corecycler.monitor.frequency._read_from_proc", return_value={}):
             freqs = read_core_frequencies()
         # Should be empty (ValueError caught, fallback also empty)
         assert 0 not in freqs
@@ -418,7 +421,7 @@ class TestFrequencyReader:
         d.mkdir(parents=True)
         (d / "scaling_cur_freq").write_text("3500000")
 
-        with patch("monitor.frequency.CPUFREQ_BASE", cpu_dir):
+        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", cpu_dir):
             freqs = read_core_frequencies()
         assert freqs == {0: 3500.0}
 
@@ -428,12 +431,12 @@ class TestFrequencyReader:
         d.mkdir(parents=True)
         (d / "cpuinfo_max_freq").write_text("5800000")
 
-        with patch("monitor.frequency.CPUFREQ_BASE", cpu_dir):
+        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", cpu_dir):
             result = read_max_frequency(0)
         assert result == 5800.0
 
     def test_read_max_frequency_missing(self, tmp_path):
-        with patch("monitor.frequency.CPUFREQ_BASE", tmp_path / "nonexistent"):
+        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", tmp_path / "nonexistent"):
             result = read_max_frequency(0)
         assert result is None
 
@@ -443,12 +446,12 @@ class TestFrequencyReader:
         d.mkdir(parents=True)
         (d / "cpuinfo_min_freq").write_text("400000")
 
-        with patch("monitor.frequency.CPUFREQ_BASE", cpu_dir):
+        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", cpu_dir):
             result = read_min_frequency(0)
         assert result == 400.0
 
     def test_read_min_frequency_missing(self, tmp_path):
-        with patch("monitor.frequency.CPUFREQ_BASE", tmp_path / "nonexistent"):
+        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", tmp_path / "nonexistent"):
             result = read_min_frequency(0)
         assert result is None
 
@@ -469,21 +472,21 @@ class TestPowerMonitor:
 
     def test_find_package(self, tmp_path):
         rapl_base = self._create_rapl_sysfs(tmp_path, 1000000)
-        with patch("monitor.power.RAPL_BASE", rapl_base):
+        with patch("corecycler.monitor.power.RAPL_BASE", rapl_base):
             mon = PowerMonitor()
             assert mon.is_available() is True
 
     def test_not_available(self, tmp_path):
         with (
-            patch("monitor.power.RAPL_BASE", tmp_path / "nonexistent"),
-            patch("monitor.power.HWMON_BASE", tmp_path / "nonexistent2"),
+            patch("corecycler.monitor.power.RAPL_BASE", tmp_path / "nonexistent"),
+            patch("corecycler.monitor.power.HWMON_BASE", tmp_path / "nonexistent2"),
         ):
             mon = PowerMonitor()
             assert mon.is_available() is False
 
     def test_first_read_returns_none(self, tmp_path):
         rapl_base = self._create_rapl_sysfs(tmp_path, 1000000)
-        with patch("monitor.power.RAPL_BASE", rapl_base):
+        with patch("corecycler.monitor.power.RAPL_BASE", rapl_base):
             mon = PowerMonitor()
             result = mon.read_power_watts()
         assert result is None
@@ -495,7 +498,7 @@ class TestPowerMonitor:
         energy_file.write_text("1000000")  # 1 joule
 
         rapl_base = tmp_path / "powercap" / "intel-rapl"
-        with patch("monitor.power.RAPL_BASE", rapl_base):
+        with patch("corecycler.monitor.power.RAPL_BASE", rapl_base):
             mon = PowerMonitor()
             mon.read_power_watts()  # first read (baseline)
 
@@ -516,7 +519,7 @@ class TestPowerMonitor:
         energy_file.write_text("0")
 
         rapl_base = tmp_path / "powercap" / "intel-rapl"
-        with patch("monitor.power.RAPL_BASE", rapl_base):
+        with patch("corecycler.monitor.power.RAPL_BASE", rapl_base):
             mon = PowerMonitor()
             assert mon.is_available()
 
@@ -539,7 +542,7 @@ class TestPowerMonitor:
         energy_file.write_text("0")
 
         rapl_base = tmp_path / "powercap" / "intel-rapl"
-        with patch("monitor.power.RAPL_BASE", rapl_base):
+        with patch("corecycler.monitor.power.RAPL_BASE", rapl_base):
             mon = PowerMonitor()
 
             # Set baseline near max 32-bit value
@@ -555,8 +558,8 @@ class TestPowerMonitor:
 
     def test_read_when_not_available(self, tmp_path):
         with (
-            patch("monitor.power.RAPL_BASE", tmp_path / "nonexistent"),
-            patch("monitor.power.HWMON_BASE", tmp_path / "nonexistent2"),
+            patch("corecycler.monitor.power.RAPL_BASE", tmp_path / "nonexistent"),
+            patch("corecycler.monitor.power.HWMON_BASE", tmp_path / "nonexistent2"),
         ):
             mon = PowerMonitor()
             assert mon.read_power_watts() is None
@@ -568,8 +571,8 @@ class TestPowerMonitor:
 
         rapl_base = tmp_path / "powercap" / "intel-rapl"
         with (
-            patch("monitor.power.RAPL_BASE", rapl_base),
-            patch("monitor.power.HWMON_BASE", tmp_path / "nonexistent"),
+            patch("corecycler.monitor.power.RAPL_BASE", rapl_base),
+            patch("corecycler.monitor.power.HWMON_BASE", tmp_path / "nonexistent"),
         ):
             mon = PowerMonitor()
             result = mon.read_power_watts()
@@ -585,8 +588,8 @@ class TestPowerMonitor:
         (hwmon_dir / "power1_label").write_text("RAPL_P_Package")
 
         with (
-            patch("monitor.power.RAPL_BASE", tmp_path / "nonexistent"),
-            patch("monitor.power.HWMON_BASE", hwmon_base),
+            patch("corecycler.monitor.power.RAPL_BASE", tmp_path / "nonexistent"),
+            patch("corecycler.monitor.power.HWMON_BASE", hwmon_base),
         ):
             mon = PowerMonitor()
             assert mon.is_available() is True
@@ -609,8 +612,8 @@ class TestPowerMonitor:
 
         rapl_base = tmp_path / "powercap" / "intel-rapl"
         with (
-            patch("monitor.power.RAPL_BASE", rapl_base),
-            patch("monitor.power.HWMON_BASE", hwmon_base),
+            patch("corecycler.monitor.power.RAPL_BASE", rapl_base),
+            patch("corecycler.monitor.power.HWMON_BASE", hwmon_base),
         ):
             mon = PowerMonitor()
             assert mon.is_available() is True
@@ -626,7 +629,7 @@ class TestPowerMonitor:
         energy_file.write_text("5000000")
 
         rapl_base = tmp_path / "powercap" / "intel-rapl"
-        with patch("monitor.power.RAPL_BASE", rapl_base):
+        with patch("corecycler.monitor.power.RAPL_BASE", rapl_base):
             mon = PowerMonitor()
             mon._last_energy_uj = 1000000
             mon._last_time = time.monotonic()  # now = nearly 0 delta

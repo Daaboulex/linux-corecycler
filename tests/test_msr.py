@@ -5,7 +5,7 @@ from __future__ import annotations
 import struct
 from unittest.mock import patch
 
-from monitor.msr import (
+from corecycler.monitor.msr import (
     MSR_APERF,
     MSR_MPERF,
     MSRReader,

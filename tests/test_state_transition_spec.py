@@ -16,10 +16,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from history.db import HistoryDB
-from tuner.config import TunerConfig
-from tuner.engine import TunerEngine
-from tuner.state import CoreState, TunerPhase
+from corecycler.history.db import HistoryDB
+from corecycler.tuner.config import TunerConfig
+from corecycler.tuner.engine import TunerEngine
+from corecycler.tuner.state import CoreState, TunerPhase
 
 P = TunerPhase
 
@@ -85,7 +85,7 @@ FAIL_BOUNDS = (None, -22)
 
 
 def make_engine(db, hardening: bool) -> TunerEngine:
-    from engine.topology import CPUTopology, PhysicalCore
+    from corecycler.engine.topology import CPUTopology, PhysicalCore
 
     topo = CPUTopology()
     topo.cores[0] = PhysicalCore(core_id=0, ccd=0, ccx=None, logical_cpus=(0,))

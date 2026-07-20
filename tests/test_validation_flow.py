@@ -12,15 +12,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from history.db import HistoryDB
+from corecycler.history.db import HistoryDB
+from corecycler.tuner import persistence as tp
+from corecycler.tuner.state import TunerPhase
 from tests.test_crash_attribution import (
     BASELINES,
     BEST,
     _make_engine,
     _seed_hardened_validating,
 )
-from tuner import persistence as tp
-from tuner.state import TunerPhase
 
 
 @pytest.fixture

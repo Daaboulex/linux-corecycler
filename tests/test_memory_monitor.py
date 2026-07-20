@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from monitor.memory import SPD5118Reader, SPDTimingData, decode_spd_timings, parse_dmidecode_output
-from smu.pmtable import PMTableData, compute_fclk_uclk_ratio
+from corecycler.monitor.memory import SPD5118Reader, SPDTimingData, decode_spd_timings, parse_dmidecode_output
+from corecycler.smu.pmtable import PMTableData, compute_fclk_uclk_ratio
 
 SAMPLE_DMIDECODE = """\
 # dmidecode 3.6
@@ -223,7 +223,7 @@ def _make_headless_tab():
     """
     import types
 
-    from gui.memory_tab import MemoryTab
+    from corecycler.gui.memory_tab import MemoryTab
 
     tab = types.SimpleNamespace()
     tab._fclk_label = _MockLabel("FCLK: --")
@@ -561,7 +561,7 @@ class TestSPDTimingDisplay:
         """Create a headless tab with mock SPD reader returning given data."""
         import types
 
-        from gui.memory_tab import MemoryTab
+        from corecycler.gui.memory_tab import MemoryTab
 
         tab = types.SimpleNamespace()
         tab._primary_label = _MockVisibleLabel("Primary: --")
@@ -638,5 +638,5 @@ class TestColumnResize:
     """Tests for DIMM table column resize constants."""
 
     def test_part_number_col_is_6(self):
-        from gui.memory_tab import PART_NUMBER_COL
+        from corecycler.gui.memory_tab import PART_NUMBER_COL
         assert PART_NUMBER_COL == 6

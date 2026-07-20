@@ -28,13 +28,13 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from engine.backends.base import FFTPreset, StressBackend, StressConfig, StressMode
-from engine.scheduler import CoreScheduler, SchedulerConfig
-from history.db import HistoryDB
-from tuner import persistence as tp
-from tuner.config import TunerConfig
-from tuner.engine import TunerEngine
-from tuner.state import CoreState, TunerPhase
+from corecycler.engine.backends.base import FFTPreset, StressBackend, StressConfig, StressMode
+from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
+from corecycler.history.db import HistoryDB
+from corecycler.tuner import persistence as tp
+from corecycler.tuner.config import TunerConfig
+from corecycler.tuner.engine import TunerEngine
+from corecycler.tuner.state import CoreState, TunerPhase
 
 # ---------------------------------------------------------------------------
 # Fault-injectable fake SMU
@@ -48,7 +48,7 @@ def _synchronous_qtimer():
     firing inline; the conftest Qt mock already does this, but a REAL PySide6 env
     (a developer's machine) would queue them on an idle event loop and the driver
     would stall. This makes the fault tests env-independent."""
-    with patch("tuner.engine.QTimer.singleShot", new=lambda _ms, fn: fn()):
+    with patch("corecycler.tuner.engine.QTimer.singleShot", new=lambda _ms, fn: fn()):
         yield
 
 
@@ -179,7 +179,7 @@ class _StubBackend(StressBackend):
 
 def _make_topo(n_cores: int, n_ccds: int):
     """Build a CPUTopology with n_cores spread across n_ccds (no sysfs needed)."""
-    from engine.topology import CPUTopology, PhysicalCore
+    from corecycler.engine.topology import CPUTopology, PhysicalCore
 
     topo = CPUTopology()
     per_ccd = max(1, (n_cores + n_ccds - 1) // n_ccds)
@@ -254,7 +254,7 @@ def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000,
     no-reboot world, which must clear in_test WITHOUT a crash penalty and write
     baselines back explicitly. Returns (final_engine, steps, crashes, sid).
     """
-    import tuner.engine as engine_mod
+    import corecycler.tuner.engine as engine_mod
 
     world = {"rebooted": True}
     engine_mod._rebooted_since = lambda *a, **k: world["rebooted"]
@@ -962,7 +962,7 @@ class TestThermalFailClosed:
         """The fail-closed flag must actually reach the scheduler — not just sit in
         config. Capture the SchedulerConfig built in _start_worker and assert
         require_thermal_sensor is wired = not allow_missing_thermal_sensor."""
-        import tuner.engine as te
+        import corecycler.tuner.engine as te
 
         captured = {}
 
@@ -1206,7 +1206,7 @@ class TestRebootGate:
     def test_no_reboot_clears_in_test_without_penalty(
         self, db, topo, smu, mock_backend, monkeypatch
     ):
-        import tuner.engine as engine_mod
+        import corecycler.tuner.engine as engine_mod
         monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: False)
 
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
@@ -1338,7 +1338,7 @@ class TestStartupFailureIsNotAVerdict:
         eng._validation_stage = 2
         eng._validation_core_order = sorted(cliffs)
 
-        with patch("tuner.engine.ParallelStress", side_effect=RuntimeError("boom")):
+        with patch("corecycler.tuner.engine.ParallelStress", side_effect=RuntimeError("boom")):
             eng._run_validation_stage2()
 
         assert eng._status == "paused"
@@ -1479,7 +1479,7 @@ class TestNoRebootResidentOffset:
         """Without a reboot the SMU is NOT zeroed: a core with baseline 0 that
         died mid-test still holds its test offset. Resume must WRITE the
         baseline back, never assume it (the stale-resident-offset hole)."""
-        import tuner.engine as engine_mod
+        import corecycler.tuner.engine as engine_mod
         monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: False)
 
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
@@ -1642,7 +1642,7 @@ class TestApparatusFaultIsNotAVerdict:
 
 class TestUnattributedMCEParsing:
     def test_payload_shapes(self):
-        from tuner.engine import _has_unattributed_mce
+        from corecycler.tuner.engine import _has_unattributed_mce
 
         assert _has_unattributed_mce("") is False
         assert _has_unattributed_mce("not json") is False
@@ -1725,7 +1725,7 @@ class TestUnattributedIncidentOnResume:
     def test_dirty_reboot_mid_validation_is_recorded(
         self, db, topo, smu, mock_backend, monkeypatch
     ):
-        import tuner.engine as engine_mod
+        import corecycler.tuner.engine as engine_mod
         monkeypatch.setattr(
             engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False
         )
@@ -1740,7 +1740,7 @@ class TestUnattributedIncidentOnResume:
     def test_repeat_dirty_reboots_pause_for_decision(
         self, db, topo, smu, mock_backend, monkeypatch
     ):
-        import tuner.engine as engine_mod
+        import corecycler.tuner.engine as engine_mod
         monkeypatch.setattr(
             engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False
         )
@@ -1767,7 +1767,7 @@ class TestUnattributedIncidentOnResume:
     ):
         """The incident class is validation-specific: a mid-search reboot is
         already covered by the journal/in_test detectors."""
-        import tuner.engine as engine_mod
+        import corecycler.tuner.engine as engine_mod
         monkeypatch.setattr(
             engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False
         )

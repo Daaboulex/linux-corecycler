@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from history.db import HistoryDB
-from tuner.config import TunerConfig
-from tuner.persistence import (
+from corecycler.history.db import HistoryDB
+from corecycler.tuner.config import TunerConfig
+from corecycler.tuner.persistence import (
     create_session,
     get_active_session,
     get_best_profile,
@@ -18,7 +18,7 @@ from tuner.persistence import (
     save_core_state,
     update_session_status,
 )
-from tuner.state import CoreState, TunerPhase
+from corecycler.tuner.state import CoreState, TunerPhase
 
 
 @pytest.fixture
@@ -386,7 +386,7 @@ class TestSchemaV13:
             db.close()
 
     def test_context_power_limits_round_trip(self, tmp_path):
-        from history.db import TuningContextRecord
+        from corecycler.history.db import TuningContextRecord
 
         db = HistoryDB(tmp_path / "test.db")
         try:
@@ -405,7 +405,7 @@ class TestSchemaV13:
     def test_best_profile_includes_hardened(self, tmp_path):
         """HARDENED is confirmed-plus-extra-stress; excluding it made Export/
         Validate report 'no confirmed cores' on a fully hardened session."""
-        from tuner.state import CoreState, TunerPhase
+        from corecycler.tuner.state import CoreState, TunerPhase
 
         db = HistoryDB(tmp_path / "test.db")
         try:
@@ -436,7 +436,7 @@ class TestSchemaV15Narrative:
             db.close()
 
     def test_pick_auto_resume_session_statuses(self, tmp_path):
-        from tuner import persistence as tp
+        from corecycler.tuner import persistence as tp
 
         db = HistoryDB(tmp_path / "test.db")
         try:

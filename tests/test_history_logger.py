@@ -6,12 +6,12 @@ import json
 
 import pytest
 
-from config.settings import TestProfile
-from engine.backends.base import StressResult
-from engine.scheduler import CoreTestStatus
-from engine.topology import CPUTopology, PhysicalCore
-from history.db import HistoryDB
-from history.logger import TestRunLogger
+from corecycler.config.settings import TestProfile
+from corecycler.engine.backends.base import StressResult
+from corecycler.engine.scheduler import CoreTestStatus
+from corecycler.engine.topology import CPUTopology, PhysicalCore
+from corecycler.history.db import HistoryDB
+from corecycler.history.logger import TestRunLogger
 
 
 @pytest.fixture

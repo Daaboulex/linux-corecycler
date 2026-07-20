@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from engine.backends.base import StressConfig
-from engine.scheduler import CoreScheduler, SchedulerConfig
-from engine.topology import CPUTopology, PhysicalCore
-from tuner.config import TunerConfig
+from corecycler.engine.backends.base import StressConfig
+from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
+from corecycler.engine.topology import CPUTopology, PhysicalCore
+from corecycler.tuner.config import TunerConfig
 
 
 def _topology(num_cores: int = 4) -> CPUTopology:

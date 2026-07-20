@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from config.settings import (
+from corecycler.config.settings import (
     AppSettings,
     TestProfile,
     load_profile,
@@ -18,7 +18,7 @@ from config.settings import (
     save_profile,
     save_settings,
 )
-from engine.backends.base import FFTPreset, StressMode
+from corecycler.engine.backends.base import FFTPreset, StressMode
 
 # ===========================================================================
 # TestProfile tests
@@ -143,7 +143,7 @@ class TestAppSettings:
 
 class TestSaveLoadSettings:
     def test_round_trip(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("config.settings.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
 
         original = AppSettings(
             work_dir="/tmp/test",
@@ -179,27 +179,27 @@ class TestSaveLoadSettings:
         assert loaded.profiles[0].seconds_per_core == 120
 
     def test_load_default_when_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("config.settings.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
         s = load_settings()
         assert s.work_dir == "/tmp/corecycler"
         assert len(s.profiles) == 1
 
     def test_load_corrupted_json(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("config.settings.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
         (tmp_path / "settings.json").write_text("not valid json{{{")
         s = load_settings()
         assert isinstance(s, AppSettings)
         assert s.work_dir == "/tmp/corecycler"
 
     def test_load_wrong_types(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("config.settings.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
         (tmp_path / "settings.json").write_text('{"work_dir": 42, "profiles": "bad"}')
         s = load_settings()
         # should fall back to defaults
         assert isinstance(s, AppSettings)
 
     def test_load_extra_fields_ignored(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("config.settings.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
         data = {
             "work_dir": "/tmp/test",
             "theme": "system",
@@ -218,12 +218,12 @@ class TestSaveLoadSettings:
 
     def test_save_creates_dir(self, tmp_path, monkeypatch):
         config_dir = tmp_path / "deep" / "nested"
-        monkeypatch.setattr("config.settings.CONFIG_DIR", config_dir)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", config_dir)
         save_settings(AppSettings())
         assert (config_dir / "settings.json").exists()
 
     def test_save_produces_valid_json(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("config.settings.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
         save_settings(AppSettings())
 
         content = (tmp_path / "settings.json").read_text()
@@ -233,7 +233,7 @@ class TestSaveLoadSettings:
         assert "work_dir" in data
 
     def test_multiple_profiles_round_trip(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("config.settings.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
 
         profiles = [
             TestProfile(name="Quick", seconds_per_core=60),
@@ -251,14 +251,14 @@ class TestSaveLoadSettings:
         assert loaded.active_profile_idx == 2
 
     def test_cores_to_test_round_trip(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("config.settings.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
         p = TestProfile(cores_to_test=[0, 3, 7, 15])
         save_settings(AppSettings(profiles=[p]))
         loaded = load_settings()
         assert loaded.profiles[0].cores_to_test == [0, 3, 7, 15]
 
     def test_cores_to_test_none_round_trip(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("config.settings.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
         p = TestProfile(cores_to_test=None)
         save_settings(AppSettings(profiles=[p]))
         loaded = load_settings()
@@ -350,7 +350,7 @@ class TestSaveLoadProfile:
 
 class TestJSONEdgeCases:
     def test_empty_profiles_list(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("config.settings.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
         s = AppSettings(profiles=[])
         save_settings(s)
         loaded = load_settings()
@@ -364,7 +364,7 @@ class TestJSONEdgeCases:
         assert loaded.name == "Stress-Test Uberprufen"
 
     def test_large_values(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("config.settings.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
         s = AppSettings(
             window_width=99999,
             window_height=99999,
@@ -378,7 +378,7 @@ class TestJSONEdgeCases:
 
 class TestCorruptSettingsPreserved:
     def test_corrupt_settings_moved_aside_not_silently_reset(self, tmp_path, monkeypatch):
-        import config.settings as settings_mod
+        import corecycler.config.settings as settings_mod
 
         monkeypatch.setattr(settings_mod, "CONFIG_DIR", tmp_path)
         bad = tmp_path / "settings.json"

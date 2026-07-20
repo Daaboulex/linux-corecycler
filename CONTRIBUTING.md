@@ -126,7 +126,7 @@ To run: `pytest tests/test_tuner_engine.py -k "Invariant" -v`
 
 CoreCycler uses a backend registry. Adding a new backend is 3 steps:
 
-1. Create `src/engine/backends/<name>.py`
+1. Create `src/corecycler/engine/backends/<name>.py`
 2. Subclass `StressBackend` from `base.py` and implement:
    - `is_available() -> bool` — check if the tool is installed
    - `get_command(config, work_dir) -> list[str]` — build the
@@ -138,7 +138,7 @@ CoreCycler uses a backend registry. Adding a new backend is 3 steps:
 
 The GUI discovers backends automatically — no GUI code changes needed.
 
-See `src/engine/backends/mprime.py` for a reference implementation.
+See `src/corecycler/engine/backends/mprime.py` for a reference implementation.
 
 ## SMU / Hardware Contributions
 
@@ -152,7 +152,7 @@ Hardware-touching code (SMU driver, hwmon, topology) has higher review standards
 
 ### Adding Support for a New CPU
 
-1. Add `CPUGeneration` enum value in `src/smu/commands.py`
+1. Add `CPUGeneration` enum value in `src/corecycler/smu/commands.py`
 2. Add `SMUCommandSet` entry in `COMMAND_SETS` with correct opcodes
 3. Add detection logic in `detect_generation()`
 4. Add test fixture in `tests/conftest.py`
@@ -161,7 +161,7 @@ Hardware-touching code (SMU driver, hwmon, topology) has higher review standards
 
 ### Adding a Super I/O Chip
 
-1. Add the chip name prefix to `_SUPERIO_CHIPS` in `src/monitor/hwmon.py`
+1. Add the chip name prefix to `_SUPERIO_CHIPS` in `src/corecycler/monitor/hwmon.py`
 2. If the Vcore input is not `in0`, the label-scanning code handles it automatically
 3. If the chip needs a new kernel module, add an option to `nix/module.nix`
 4. Add a test in `tests/test_monitor.py`

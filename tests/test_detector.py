@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.detector import (
+from corecycler.engine.detector import (
     ErrorDetector,
     ErrorState,
     MCEEvent,
@@ -259,7 +259,7 @@ class TestCheckMCE:
     def test_reset_clears_seen_and_rebaselines(self):
         det = ErrorDetector()
         with patch(
-            "engine.detector._get_dmesg_raw_timestamp", return_value=500.0
+            "corecycler.engine.detector._get_dmesg_raw_timestamp", return_value=500.0
         ):
             det._seen.add((1.0, 2, 3))
             det.reset()

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from history.context import (
+from corecycler.history.context import (
     TuningContextRecord,
     capture_system_context,
     compute_co_hash,
@@ -15,7 +15,7 @@ from history.context import (
     find_or_create_context,
     read_bios_version,
 )
-from history.db import HistoryDB
+from corecycler.history.db import HistoryDB
 
 
 @pytest.fixture
@@ -184,14 +184,14 @@ class TestPowerLimitsInContext:
     the context identity."""
 
     def test_hash_without_limits_is_legacy_identical(self):
-        from history.context import compute_co_hash
+        from corecycler.history.context import compute_co_hash
 
         offsets = {0: -30, 1: -20}
         assert compute_co_hash(offsets) == compute_co_hash(offsets, None)
         assert compute_co_hash(offsets) == compute_co_hash(offsets, (None, None, None))
 
     def test_limits_change_the_identity(self):
-        from history.context import compute_co_hash
+        from corecycler.history.context import compute_co_hash
 
         offsets = {0: -30, 1: -20}
         base = compute_co_hash(offsets)
@@ -201,15 +201,15 @@ class TestPowerLimitsInContext:
         assert with_limits != other_limits
 
     def test_limits_hash_is_order_independent_and_rounded(self):
-        from history.context import compute_co_hash
+        from corecycler.history.context import compute_co_hash
 
         a = compute_co_hash({0: -30, 1: -20}, (225.04, 190.0, None))
         b = compute_co_hash({1: -20, 0: -30}, (225.0, 190.01, None))
         assert a == b
 
     def test_capture_records_limits(self, monkeypatch):
-        import smu.pmtable as pmtable_mod
-        from history.context import capture_system_context
+        import corecycler.smu.pmtable as pmtable_mod
+        from corecycler.history.context import capture_system_context
 
         monkeypatch.setattr(
             pmtable_mod, "read_power_limits", lambda n: (225.0, 190.0, 230.0)
@@ -223,6 +223,6 @@ class TestPowerLimitsInContext:
         assert ctx.tdc_limit_a == 190.0
         assert ctx.edc_limit_a == 230.0
         # And the identity reflects them.
-        from history.context import compute_co_hash
+        from corecycler.history.context import compute_co_hash
 
         assert ctx.co_hash == compute_co_hash({0: -30}, (225.0, 190.0, 230.0))

@@ -22,15 +22,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.backends.base import StressConfig
-from engine.backends.mprime import MprimeBackend
-from engine.backends.stress_ng import StressNgBackend
-from engine.backends.ycruncher import YCruncherBackend
-from engine.detector import ErrorDetector
-from engine.scheduler import CoreScheduler, SchedulerConfig, TestState
-from engine.topology import CPUTopology, PhysicalCore
-from smu.commands import CPUGeneration, encode_co_arg, get_commands
-from smu.driver import RyzenSMU
+from corecycler.engine.backends.base import StressConfig
+from corecycler.engine.backends.mprime import MprimeBackend
+from corecycler.engine.backends.stress_ng import StressNgBackend
+from corecycler.engine.backends.ycruncher import YCruncherBackend
+from corecycler.engine.detector import ErrorDetector
+from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig, TestState
+from corecycler.engine.topology import CPUTopology, PhysicalCore
+from corecycler.smu.commands import CPUGeneration, encode_co_arg, get_commands
+from corecycler.smu.driver import RyzenSMU
 
 # ===========================================================================
 # SMU driver safety — graceful handling of missing driver
@@ -245,7 +245,7 @@ class TestDetectorSafety:
     def test_reset_no_crash(self):
         """reset() must not crash in any environment."""
         det = ErrorDetector()
-        with patch("engine.detector._get_dmesg_raw_timestamp", return_value=0.0):
+        with patch("corecycler.engine.detector._get_dmesg_raw_timestamp", return_value=0.0):
             det.reset()  # must not raise
 
     def test_full_check_mce_graceful(self):
@@ -265,9 +265,9 @@ class TestSettingsSafety:
     def test_save_only_writes_to_config_dir(self, tmp_path, monkeypatch):
         """save_settings must only create files within CONFIG_DIR."""
         config_dir = tmp_path / "config"
-        monkeypatch.setattr("config.settings.CONFIG_DIR", config_dir)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", config_dir)
 
-        from config.settings import AppSettings, save_settings
+        from corecycler.config.settings import AppSettings, save_settings
 
         save_settings(AppSettings())
 
@@ -278,7 +278,7 @@ class TestSettingsSafety:
 
     def test_save_profile_only_writes_specified_path(self, tmp_path):
         """save_profile must only write to the specified path."""
-        from config.settings import TestProfile, save_profile
+        from corecycler.config.settings import TestProfile, save_profile
 
         target = tmp_path / "profiles" / "test.json"
         save_profile(TestProfile(), target)
@@ -290,10 +290,10 @@ class TestSettingsSafety:
 
     def test_settings_no_path_traversal(self, tmp_path, monkeypatch):
         """Settings with path traversal in work_dir should be stored as-is."""
-        from config.settings import AppSettings, load_settings, save_settings
+        from corecycler.config.settings import AppSettings, load_settings, save_settings
 
         config_dir = tmp_path / "config"
-        monkeypatch.setattr("config.settings.CONFIG_DIR", config_dir)
+        monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", config_dir)
 
         s = AppSettings(work_dir="/tmp/../etc/passwd")
         save_settings(s)
@@ -404,7 +404,7 @@ class TestEncodeSafety:
 class TestTopologySafety:
     def test_empty_topology_helpers(self):
         """Helper functions must not crash on empty topology."""
-        from engine.topology import get_first_logical_cpu, get_physical_core_list
+        from corecycler.engine.topology import get_first_logical_cpu, get_physical_core_list
 
         topo = CPUTopology()
         assert get_physical_core_list(topo) == []
@@ -419,10 +419,10 @@ class TestTopologySafety:
         mock_sysfs.exists.return_value = False
 
         with (
-            patch("engine.topology.CPUINFO", mock_cpuinfo),
-            patch("engine.topology.SYSFS_CPU", mock_sysfs),
+            patch("corecycler.engine.topology.CPUINFO", mock_cpuinfo),
+            patch("corecycler.engine.topology.SYSFS_CPU", mock_sysfs),
         ):
-            from engine.topology import detect_topology
+            from corecycler.engine.topology import detect_topology
 
             topo = detect_topology()
             assert isinstance(topo, CPUTopology)

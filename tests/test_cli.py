@@ -15,11 +15,11 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication
 
-import cli
-from history.db import HistoryDB
-from tuner import persistence as tp
-from tuner.config import TunerConfig
-from tuner.state import CoreState, TunerPhase
+from corecycler import cli
+from corecycler.history.db import HistoryDB
+from corecycler.tuner import persistence as tp
+from corecycler.tuner.config import TunerConfig
+from corecycler.tuner.state import CoreState, TunerPhase
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -39,7 +39,7 @@ def db():
 
 @pytest.fixture(autouse=True)
 def _isolated_lock(tmp_path, monkeypatch):
-    import config.paths as paths
+    import corecycler.config.paths as paths
 
     monkeypatch.setattr(paths, "user_home", lambda: tmp_path)
 

@@ -16,9 +16,9 @@ from hypothesis import strategies as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from monitor import frequency as freq_mod  # noqa: E402
-from monitor.cpu_usage import CPUUsageReader  # noqa: E402
-from monitor.memory import decode_spd_timings, parse_dmidecode_output  # noqa: E402
+from corecycler.monitor import frequency as freq_mod  # noqa: E402
+from corecycler.monitor.cpu_usage import CPUUsageReader  # noqa: E402
+from corecycler.monitor.memory import decode_spd_timings, parse_dmidecode_output  # noqa: E402
 
 
 class TestMemoryParsersRobust:

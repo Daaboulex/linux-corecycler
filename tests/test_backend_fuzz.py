@@ -16,11 +16,11 @@ from hypothesis import strategies as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.backends.base import CRASH_SIGNALS  # noqa: E402
-from engine.backends.mprime import MprimeBackend  # noqa: E402
-from engine.backends.stress_ng import StressNgBackend  # noqa: E402
-from engine.backends.stressapptest import StressapptestBackend  # noqa: E402
-from engine.backends.ycruncher import YCruncherBackend  # noqa: E402
+from corecycler.engine.backends.base import CRASH_SIGNALS  # noqa: E402
+from corecycler.engine.backends.mprime import MprimeBackend  # noqa: E402
+from corecycler.engine.backends.stress_ng import StressNgBackend  # noqa: E402
+from corecycler.engine.backends.stressapptest import StressapptestBackend  # noqa: E402
+from corecycler.engine.backends.ycruncher import YCruncherBackend  # noqa: E402
 
 _BACKENDS = [MprimeBackend, YCruncherBackend, StressNgBackend, StressapptestBackend]
 

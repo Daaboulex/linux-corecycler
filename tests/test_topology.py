@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.topology import (
+from corecycler.engine.topology import (
     CPUTopology,
     LogicalCPU,
     PhysicalCore,
@@ -42,7 +42,7 @@ def parse_cpuinfo_from_text(text: str) -> CPUTopology:
     mock_path = MagicMock()
     mock_path.exists.return_value = True
     mock_path.read_text.return_value = text
-    with patch("engine.topology.CPUINFO", mock_path):
+    with patch("corecycler.engine.topology.CPUINFO", mock_path):
         _parse_cpuinfo(topo)
     return topo
 
@@ -117,7 +117,7 @@ class TestParseCpuinfo:
         topo = CPUTopology()
         mock_path = MagicMock()
         mock_path.exists.return_value = False
-        with patch("engine.topology.CPUINFO", mock_path):
+        with patch("corecycler.engine.topology.CPUINFO", mock_path):
             _parse_cpuinfo(topo)
         assert topo.physical_cores == 0
 
@@ -155,7 +155,7 @@ class TestParseSysfs:
         topo = CPUTopology()
         mock_path = MagicMock()
         mock_path.exists.return_value = False
-        with patch("engine.topology.SYSFS_CPU", mock_path):
+        with patch("corecycler.engine.topology.SYSFS_CPU", mock_path):
             _parse_sysfs(topo)
         # should not crash
 
@@ -164,7 +164,7 @@ class TestParseSysfs:
         cpu_dir.mkdir()
         (cpu_dir / "online").write_text("0-7\n")
         topo = CPUTopology()
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _parse_sysfs(topo)
         assert topo.logical_cpus_count == 8
 
@@ -173,7 +173,7 @@ class TestParseSysfs:
         cpu_dir.mkdir()
         (cpu_dir / "online").write_text("0-15,32-47\n")
         topo = CPUTopology()
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _parse_sysfs(topo)
         assert topo.logical_cpus_count == 32
 
@@ -182,7 +182,7 @@ class TestParseSysfs:
         cpu_dir.mkdir()
         (cpu_dir / "online").write_text("0,1,2,3\n")
         topo = CPUTopology()
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _parse_sysfs(topo)
         assert topo.logical_cpus_count == 4
 
@@ -192,7 +192,7 @@ class TestParseSysfs:
         (cpu_dir / "online").write_text("0-3\n")
         topo = CPUTopology()
         topo.logical_cpus_count = 99
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _parse_sysfs(topo)
         # should keep existing count (99), not overwrite
         assert topo.logical_cpus_count == 99
@@ -215,7 +215,7 @@ class TestDetectCCDLayout:
             (cache_dir / "level").write_text("3")
             (cache_dir / "id").write_text("0")
 
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _detect_ccd_layout(topo)
 
         assert topo.ccds == 1
@@ -237,7 +237,7 @@ class TestDetectCCDLayout:
             l3_id = "0" if phys_core < 4 else "1"
             (cache_dir / "id").write_text(l3_id)
 
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _detect_ccd_layout(topo)
 
         assert topo.ccds == 2
@@ -250,7 +250,7 @@ class TestDetectCCDLayout:
         topo = parse_cpuinfo_from_text(CPUINFO_SINGLE_CCD_NO_SMT)
         cpu_dir = tmp_path / "cpu"
         cpu_dir.mkdir()
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _detect_ccd_layout(topo)
         assert topo.ccds == 1
 
@@ -265,7 +265,7 @@ class TestDetectCCDLayout:
             cache_dir.mkdir(parents=True)
             (cache_dir / "level").write_text("3")
             (cache_dir / "id").write_text(bad_id)
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _detect_ccd_layout(topo)  # must not raise
         assert topo.ccds >= 1
 
@@ -298,7 +298,7 @@ class TestDetectX3D:
     )
     def test_x3d_detection_by_name(self, model_name, expected):
         topo = CPUTopology(model_name=model_name)
-        with patch("engine.topology.SYSFS_CPU", MagicMock()):
+        with patch("corecycler.engine.topology.SYSFS_CPU", MagicMock()):
             _detect_x3d(topo)
         assert topo.is_x3d == expected
 
@@ -319,7 +319,7 @@ class TestDetectX3D:
                     logical_cpus=lcpu.core_cpus,
                 )
 
-        with patch("engine.topology.SYSFS_CPU", MagicMock()):
+        with patch("corecycler.engine.topology.SYSFS_CPU", MagicMock()):
             _detect_x3d(topo)
 
         assert topo.is_x3d is True
@@ -356,7 +356,7 @@ class TestDetectX3D:
             size = "96M" if core.ccd == 0 else "32M"
             (cache_dir / "size").write_text(size)
 
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _detect_x3d(topo)
 
         assert topo.is_x3d is True
@@ -391,7 +391,7 @@ class TestDetectX3D:
             size = "32M" if core.ccd == 0 else "96M"
             (cache_dir / "size").write_text(size)
 
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _detect_x3d(topo)
 
         assert topo.vcache_ccd == 1
@@ -420,7 +420,7 @@ class TestDetectX3D:
             size = "98304K" if core.ccd == 0 else "32768K"
             (cache_dir / "size").write_text(size)
 
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _detect_x3d(topo)
 
         assert topo.vcache_ccd == 0
@@ -481,8 +481,8 @@ class TestDetectTopologyIntegration:
             (cache_dir / "id").write_text("0")
 
         with (
-            patch("engine.topology.CPUINFO", mock_cpuinfo),
-            patch("engine.topology.SYSFS_CPU", cpu_dir),
+            patch("corecycler.engine.topology.CPUINFO", mock_cpuinfo),
+            patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir),
         ):
             topo = detect_topology()
 
@@ -500,8 +500,8 @@ class TestDetectTopologyIntegration:
         mock_sysfs.exists.return_value = False
 
         with (
-            patch("engine.topology.CPUINFO", mock_cpuinfo),
-            patch("engine.topology.SYSFS_CPU", mock_sysfs),
+            patch("corecycler.engine.topology.CPUINFO", mock_cpuinfo),
+            patch("corecycler.engine.topology.SYSFS_CPU", mock_sysfs),
         ):
             topo = detect_topology()
 
@@ -553,7 +553,7 @@ class TestTopologyEdgeCases:
         cpu_dir.mkdir()
         (cpu_dir / "online").write_text("0-15")
 
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _detect_ccd_layout(topo)
 
         assert topo.ccds == 1
@@ -563,7 +563,7 @@ class TestTopologyEdgeCases:
         topo = parse_cpuinfo_from_text(CPUINFO_DUAL_CCD_SMT)
         fake_dir = tmp_path / "nonexistent"
 
-        with patch("engine.topology.SYSFS_CPU", fake_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", fake_dir):
             _parse_sysfs(topo)
             _detect_ccd_layout(topo)
 
@@ -609,7 +609,7 @@ class TestTopologyEdgeCases:
             size = "96M" if core.ccd == 0 else "32M"
             (cache_dir / "size").write_text(size)
 
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _detect_x3d(topo)
 
         assert topo.vcache_ccd == 0
@@ -632,7 +632,7 @@ class TestTopologyEdgeCases:
             (cache_dir / "id").write_text(str(core.ccd))
             (cache_dir / "size").write_text("32M")
 
-        with patch("engine.topology.SYSFS_CPU", cpu_dir):
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _detect_x3d(topo)
 
         assert topo.vcache_ccd is not None

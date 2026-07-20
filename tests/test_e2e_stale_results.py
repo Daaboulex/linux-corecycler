@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from engine.backends.mprime import MprimeBackend
-from engine.scheduler import CoreScheduler, SchedulerConfig
-from engine.topology import CPUTopology, PhysicalCore
+from corecycler.engine.backends.mprime import MprimeBackend
+from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
+from corecycler.engine.topology import CPUTopology, PhysicalCore
 
 
 def _single_core_topology() -> CPUTopology:
@@ -49,7 +49,7 @@ def _run_one(backend: MprimeBackend, work_dir: Path, seconds: int = 12):
     scheduler = CoreScheduler(
         topology=_single_core_topology(),
         backend=backend,
-        stress_config=__import__("engine.backends.base", fromlist=["StressConfig"]).StressConfig(),
+        stress_config=__import__("corecycler.engine.backends.base", fromlist=["StressConfig"]).StressConfig(),
         scheduler_config=SchedulerConfig(
             seconds_per_core=seconds,
             cores_to_test=[0],

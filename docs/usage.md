@@ -4,7 +4,7 @@
 
 ## Quick start
 
-1. Launch CoreCycler (`sudo corecycler` or `sudo python src/main.py`). Root is
+1. Launch CoreCycler (`sudo corecycler` or `sudo python src/corecycler/main.py`). Root is
    recommended for full monitoring (clock stretch, per-core power, Curve Optimizer);
    it runs without root with reduced telemetry and a status-bar warning.
 2. The CPU topology (cores, CCDs, SMT, X3D) is detected automatically.

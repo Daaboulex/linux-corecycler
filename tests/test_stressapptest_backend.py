@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from engine.backends.base import StressConfig, StressMode
-from engine.backends.stressapptest import StressapptestBackend
+from corecycler.engine.backends.base import StressConfig, StressMode
+from corecycler.engine.backends.stressapptest import StressapptestBackend
 
 
 class TestStressapptestBackend:

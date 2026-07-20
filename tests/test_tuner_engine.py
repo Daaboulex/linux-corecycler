@@ -6,11 +6,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from history.db import HistoryDB
-from tuner import persistence as tp
-from tuner.config import TunerConfig
-from tuner.engine import TunerEngine
-from tuner.state import CoreState, TunerPhase
+from corecycler.history.db import HistoryDB
+from corecycler.tuner import persistence as tp
+from corecycler.tuner.config import TunerConfig
+from corecycler.tuner.engine import TunerEngine
+from corecycler.tuner.state import CoreState, TunerPhase
 
 
 @pytest.fixture
@@ -1575,9 +1575,9 @@ class TestHardeningTransitions:
         tier_backend = MagicMock(name="tier_backend")
 
         with (
-            patch("tuner.engine.get_backend", return_value=tier_backend) as get_backend_mock,
-            patch("tuner.engine.CoreScheduler") as scheduler_mock,
-            patch("tuner.engine._TunerWorker.start"),
+            patch("corecycler.tuner.engine.get_backend", return_value=tier_backend) as get_backend_mock,
+            patch("corecycler.tuner.engine.CoreScheduler") as scheduler_mock,
+            patch("corecycler.tuner.engine._TunerWorker.start"),
         ):
             eng._start_worker(0, 1)
 
@@ -1663,7 +1663,7 @@ class TestHardeningTransitions:
 
 def _make_minimal_topology():
     """Build a 4-core single CCD topology without sysfs."""
-    from engine.topology import CPUTopology, PhysicalCore
+    from corecycler.engine.topology import CPUTopology, PhysicalCore
     topo = CPUTopology()
     topo.physical_cores = 4
     topo.smt_enabled = False
@@ -1682,8 +1682,8 @@ def make_test_engine(cfg: TunerConfig) -> TunerEngine:
     """Build a minimal TunerEngine for unit testing (no Qt event loop needed)."""
     from unittest.mock import MagicMock
 
-    from engine.backends.base import StressMode
-    from history.db import HistoryDB
+    from corecycler.engine.backends.base import StressMode
+    from corecycler.history.db import HistoryDB
 
     db = HistoryDB(":memory:")
     topo = _make_minimal_topology()
@@ -2228,7 +2228,7 @@ class TestThermalAbort:
         cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, best_offset=-5)
         eng._core_states = {0: cs}
         with (
-            patch("tuner.engine.QTimer") as qtimer,
+            patch("corecycler.tuner.engine.QTimer") as qtimer,
             patch.object(eng, "_revert_core_to_baseline") as revert,
             patch.object(eng, "abort") as abort_,
             patch.object(tp, "save_core_state"),
@@ -2252,7 +2252,7 @@ class TestThermalAbort:
         cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10)
         eng._core_states = {0: cs}
         with (
-            patch("tuner.engine.QTimer"),
+            patch("corecycler.tuner.engine.QTimer"),
             patch.object(eng, "_revert_core_to_baseline"),
             patch.object(tp, "save_core_state"),
         ):
@@ -2266,7 +2266,7 @@ class TestThermalAbort:
         )
         eng._core_states = {0: cs}
         with (
-            patch("tuner.engine.QTimer") as qtimer,
+            patch("corecycler.tuner.engine.QTimer") as qtimer,
             patch.object(eng, "_revert_core_to_baseline"),
             patch.object(eng, "abort") as abort_,
             patch.object(tp, "save_core_state"),
@@ -2411,7 +2411,7 @@ class TestValidationThermal:
         eng._validation_stage = 2
         eng._validation_thermal_aborts = 0
         with (
-            patch("tuner.engine.QTimer") as qtimer,
+            patch("corecycler.tuner.engine.QTimer") as qtimer,
             patch.object(eng, "abort") as abort_,
         ):
             eng._handle_validation_thermal_abort(0)
@@ -2427,7 +2427,7 @@ class TestValidationThermal:
         eng._validation_stage = 2
         eng._validation_thermal_aborts = 3
         with (
-            patch("tuner.engine.QTimer") as qtimer,
+            patch("corecycler.tuner.engine.QTimer") as qtimer,
             patch.object(eng, "abort") as abort_,
         ):
             eng._handle_validation_thermal_abort(0)
@@ -2453,7 +2453,7 @@ class TestEventLoopDeferral:
         cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5, best_offset=0)
         eng._core_states = {0: cs}
         with (
-            patch("tuner.engine.QTimer") as qtimer,
+            patch("corecycler.tuner.engine.QTimer") as qtimer,
             patch.object(eng, "_advance_core"),
             patch.object(eng, "_revert_core_to_baseline"),
             patch.object(eng, "_run_next") as run_next,
@@ -2465,7 +2465,7 @@ class TestEventLoopDeferral:
     def test_start_failure_delivered_async(self, db, simple_topology, mock_smu, mock_backend):
         eng = self._make_engine(db, simple_topology, mock_smu, mock_backend)
         with (
-            patch("tuner.engine.QTimer") as qtimer,
+            patch("corecycler.tuner.engine.QTimer") as qtimer,
             patch.object(eng, "_on_test_finished") as otf,
         ):
             eng._start_worker(99, 60)  # core 99 does not exist → start failure

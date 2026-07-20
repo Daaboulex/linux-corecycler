@@ -9,7 +9,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     std = {
-      url = "github:Daaboulex/nix-packaging-standard?ref=v2.11.0";
+      url = "github:Daaboulex/nix-packaging-standard?ref=v2.12.0";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.git-hooks.follows = "git-hooks";
     };
@@ -196,6 +196,16 @@
               pkgs = inputs.nixpkgs.legacyPackages.${system};
               name = "corecycler-full-eval";
               drv = b.full;
+            };
+
+            # Built-output ground truth: the wheel ships exactly one top-level
+            # package -- a flat module (cli.py) collides with any other app in a
+            # merged site-packages. tests/test_packaging.py is the fast pytest
+            # mirror of the same invariant.
+            checks.python-site-packages = inputs.std.lib.pythonSitePackagesCheck {
+              inherit (b) pkgs;
+              drv = b.default;
+              package = "corecycler";
             };
 
             # Force full evaluation of the NixOS module (options + assertions +

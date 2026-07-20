@@ -15,8 +15,8 @@ import pytest
 if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
-from engine.topology import CPUTopology, PhysicalCore
-from monitor.hwmon import HWMonData
+from corecycler.engine.topology import CPUTopology, PhysicalCore
+from corecycler.monitor.hwmon import HWMonData
 
 
 def _make_mock_mainwindow(**overrides):
@@ -50,7 +50,7 @@ def _make_mock_mainwindow(**overrides):
 class TestUpdateElapsedNoNameError:
     def test_update_elapsed_no_name_error(self):
         """Calling _update_elapsed with _worker.isRunning()=True must NOT raise NameError."""
-        from gui.main_window import MainWindow
+        from corecycler.gui.main_window import MainWindow
 
         ns = _make_mock_mainwindow()
         # Bind _update_elapsed
@@ -71,7 +71,7 @@ class TestOnTestCompletedFailsClosed:
         """The _on_test_completed slot must fail closed on malformed/odd payloads."""
         import time
 
-        from gui.main_window import MainWindow
+        from corecycler.gui.main_window import MainWindow
 
         ns = types.SimpleNamespace()
         ns._test_start_time = time.monotonic()
@@ -85,11 +85,11 @@ class TestOnTestCompletedFailsClosed:
 
 
 class TestCoreGridTelemetryFed:
-    @patch("gui.main_window.read_core_frequencies", return_value={0: 5500.0})
+    @patch("corecycler.gui.main_window.read_core_frequencies", return_value={0: 5500.0})
     def test_core_grid_telemetry_fed(self, mock_freqs):
         """_feed_core_grid_telemetry with _active_test_core=0 calls update_core_telemetry."""
-        from gui.main_window import MainWindow
-        from monitor.hwmon import HWMonData
+        from corecycler.gui.main_window import MainWindow
+        from corecycler.monitor.hwmon import HWMonData
 
         topo = CPUTopology()
         topo.cores = {0: PhysicalCore(core_id=0, ccd=0, ccx=None, logical_cpus=(0,))}
@@ -131,7 +131,7 @@ class TestCoreGridTelemetryFed:
 class TestActiveTestCoreSetBySignal:
     def test_active_test_core_set_by_signal(self):
         """Calling _on_core_started(5, 0) sets _active_test_core = 5."""
-        from gui.main_window import MainWindow
+        from corecycler.gui.main_window import MainWindow
 
         ns = _make_mock_mainwindow()
         ns._on_core_started = types.MethodType(MainWindow._on_core_started, ns)
@@ -146,7 +146,7 @@ class TestNoCrossThreadSchedulerAccess:
         """src/gui/main_window.py must not contain 'scheduler._current_core'."""
         from pathlib import Path
 
-        src = Path(__file__).resolve().parent.parent / "src" / "gui" / "main_window.py"
+        src = Path(__file__).resolve().parent.parent / "src" / "corecycler" / "gui" / "main_window.py"
         content = src.read_text()
         assert "scheduler._current_core" not in content
 
@@ -154,7 +154,7 @@ class TestNoCrossThreadSchedulerAccess:
 class TestFeedTelemetryNoopWhenNoActiveCore:
     def test_feed_telemetry_noop_when_no_active_core(self):
         """_feed_core_grid_telemetry with _active_test_core=None must not call update_core_telemetry."""
-        from gui.main_window import MainWindow
+        from corecycler.gui.main_window import MainWindow
 
         core_grid_mock = MagicMock()
         ns = _make_mock_mainwindow(
@@ -175,7 +175,7 @@ class TestFeedTelemetryNoopWhenNoActiveCore:
 # ---------------------------------------------------------------------------
 
 _MONITOR_TAB_SRC = (
-    Path(__file__).resolve().parent.parent / "src" / "gui" / "monitor_tab.py"
+    Path(__file__).resolve().parent.parent / "src" / "corecycler" / "gui" / "monitor_tab.py"
 )
 
 
@@ -236,7 +236,7 @@ class TestMonitorTabNarrowedException:
 class TestStalenessIndicator:
     def test_staleness_indicator(self):
         """After 3 consecutive None hwmon reads, tctl label should turn grey."""
-        from gui.monitor_tab import MonitorTab
+        from corecycler.gui.monitor_tab import MonitorTab
 
         tab = types.SimpleNamespace()
         tab._hwmon = MagicMock()
@@ -294,7 +294,7 @@ class TestStalenessIndicator:
 class TestStalenessRecovery:
     def test_staleness_recovery(self):
         """After staleness, a successful read should remove grey styling."""
-        from gui.monitor_tab import MonitorTab
+        from corecycler.gui.monitor_tab import MonitorTab
 
         tab = types.SimpleNamespace()
         tab._hwmon = MagicMock()
@@ -365,8 +365,8 @@ class TestLoadToCOEnabledForHardened:
         return ns
 
     def _run_detail(self, phases, best_offset=-10):
-        from gui.history_tab import HistoryTab
-        from tuner.state import CoreState, TunerPhase  # noqa: F401
+        from corecycler.gui.history_tab import HistoryTab
+        from corecycler.tuner.state import CoreState, TunerPhase  # noqa: F401
 
         ns = self._detail_ns()
         sess = types.SimpleNamespace(
@@ -378,26 +378,26 @@ class TestLoadToCOEnabledForHardened:
                          best_offset=best_offset, baseline_offset=0)
             for i, p in enumerate(phases)
         }
-        with patch("gui.history_tab.tp.load_core_states", return_value=states), \
-                patch("gui.history_tab.tp.get_test_log", return_value=[]), \
-                patch("gui.history_tab.tp.get_events", return_value=[]):
+        with patch("corecycler.gui.history_tab.tp.load_core_states", return_value=states), \
+                patch("corecycler.gui.history_tab.tp.get_test_log", return_value=[]), \
+                patch("corecycler.gui.history_tab.tp.get_events", return_value=[]):
             MethodType(HistoryTab._show_tuner_session_detail, ns)(sess)
         return ns
 
     def test_all_hardened_session_enables_load(self):
-        from tuner.state import TunerPhase
+        from corecycler.tuner.state import TunerPhase
 
         ns = self._run_detail([TunerPhase.HARDENED] * 4)
         ns._load_co_btn.setEnabled.assert_called_with(True)
 
     def test_unfinished_session_with_values_enables_load(self):
-        from tuner.state import TunerPhase
+        from corecycler.tuner.state import TunerPhase
 
         ns = self._run_detail([TunerPhase.COARSE_SEARCH] * 4)
         ns._load_co_btn.setEnabled.assert_called_with(True)
 
     def test_session_without_values_disables_load(self):
-        from tuner.state import TunerPhase
+        from corecycler.tuner.state import TunerPhase
 
         ns = self._run_detail([TunerPhase.NOT_STARTED] * 4, best_offset=None)
         ns._load_co_btn.setEnabled.assert_called_with(False)
@@ -408,7 +408,7 @@ class TestNoStrayDisplayConstants:
     other GUI file is a stray that can drift from the palette."""
 
     def test_no_hex_colors_outside_style(self):
-        gui = Path(__file__).parent.parent / "src" / "gui"
+        gui = Path(__file__).parent.parent / "src" / "corecycler" / "gui"
         offenders = []
         for f in sorted(gui.rglob("*.py")):
             if f.name == "style.py":
@@ -439,7 +439,7 @@ class TestEngineInitiatedStops:
         return ns
 
     def test_engine_self_abort_reenables_ui(self):
-        from gui.tuner_tab import TunerTab
+        from corecycler.gui.tuner_tab import TunerTab
 
         ns = self._ns()
         ns._set_running_state = MethodType(TunerTab._set_running_state, ns)
@@ -451,7 +451,7 @@ class TestEngineInitiatedStops:
         ns.tuner_running_changed.emit.assert_called_with(False)
 
     def test_engine_quarantine_reenables_ui(self):
-        from gui.tuner_tab import TunerTab
+        from corecycler.gui.tuner_tab import TunerTab
 
         ns = self._ns()
         ns._set_running_state = MethodType(TunerTab._set_running_state, ns)
@@ -460,7 +460,7 @@ class TestEngineInitiatedStops:
         ns.tuner_running_changed.emit.assert_called_with(False)
 
     def test_engine_self_pause_enables_resume(self):
-        from gui.tuner_tab import TunerTab
+        from corecycler.gui.tuner_tab import TunerTab
 
         ns = self._ns()
         MethodType(TunerTab._on_status_changed, ns)("paused")

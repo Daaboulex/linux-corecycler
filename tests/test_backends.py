@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from engine.backends.base import (
+from corecycler.engine.backends.base import (
     KILLED_BY_US_CODES,
     FFTPreset,
     StressBackend,
@@ -18,9 +18,9 @@ from engine.backends.base import (
     StressMode,
     StressResult,
 )
-from engine.backends.mprime import FFT_RANGES, MODE_TO_TORTURE, MprimeBackend
-from engine.backends.stress_ng import StressNgBackend, _mode_to_method
-from engine.backends.ycruncher import YCruncherBackend, _mode_flag
+from corecycler.engine.backends.mprime import FFT_RANGES, MODE_TO_TORTURE, MprimeBackend
+from corecycler.engine.backends.stress_ng import StressNgBackend, _mode_to_method
+from corecycler.engine.backends.ycruncher import YCruncherBackend, _mode_flag
 
 # ===========================================================================
 # Base class tests

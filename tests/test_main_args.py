@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from main import _parse_auto_resume
+from corecycler.main import _parse_auto_resume
 
 
 class TestParseAutoResume:

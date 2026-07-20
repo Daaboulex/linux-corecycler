@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from history.timefmt import format_local
+from corecycler.history.timefmt import format_local
 
 
 @pytest.fixture

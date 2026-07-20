@@ -98,7 +98,7 @@ git clone https://github.com/amkillam/ryzen_smu.git
 cd ryzen_smu && make && sudo make install && sudo modprobe ryzen_smu
 
 git clone https://github.com/Daaboulex/linux-corecycler.git
-cd linux-corecycler && sudo python src/main.py
+cd linux-corecycler && sudo python src/corecycler/main.py
 ```
 
 ### Ubuntu / Debian
@@ -112,7 +112,7 @@ cd ryzen_smu && make && sudo make install && sudo modprobe ryzen_smu
 git clone https://github.com/Daaboulex/linux-corecycler.git
 cd linux-corecycler
 python3 -m venv .venv && .venv/bin/pip install PySide6
-sudo .venv/bin/python src/main.py
+sudo .venv/bin/python src/corecycler/main.py
 ```
 
 ### Fedora
@@ -130,7 +130,7 @@ cd ryzen_smu && make && sudo make install && sudo modprobe ryzen_smu && cd ..
 git clone https://github.com/Daaboulex/linux-corecycler.git
 cd linux-corecycler
 python3 -m venv .venv && .venv/bin/pip install PySide6
-sudo .venv/bin/python src/main.py
+sudo .venv/bin/python src/corecycler/main.py
 ```
 
 ### From source (any distro)
@@ -139,7 +139,7 @@ sudo .venv/bin/python src/main.py
 git clone https://github.com/Daaboulex/linux-corecycler.git
 cd linux-corecycler
 python3 -m venv .venv && .venv/bin/pip install PySide6
-sudo .venv/bin/python src/main.py
+sudo .venv/bin/python src/corecycler/main.py
 ```
 
 Install stress backends and kernel modules separately (below). Requires Python 3.12+
@@ -149,7 +149,7 @@ and PySide6 >= 6.7.
 
 ```bash
 sudo corecycler          # Nix-installed
-sudo python src/main.py  # from source
+sudo python src/corecycler/main.py  # from source
 ```
 
 | Feature | Without root | With root |

@@ -69,9 +69,9 @@ if "PySide6" not in sys.modules:
         sys.modules["PySide6"] = _qt
         sys.modules["PySide6.QtCore"] = _qtcore
 
-from engine.backends.base import StressBackend, StressConfig, StressMode
-from engine.topology import CPUTopology, PhysicalCore
-from smu.commands import CPUGeneration, SMUCommandSet
+from corecycler.engine.backends.base import StressBackend, StressConfig, StressMode
+from corecycler.engine.topology import CPUTopology, PhysicalCore
+from corecycler.smu.commands import CPUGeneration, SMUCommandSet
 
 # ---------------------------------------------------------------------------
 # Mock cpuinfo data for various CPU configurations
@@ -462,14 +462,14 @@ def build_topology(
     This patches file I/O so the real _parse_cpuinfo works on our fake data.
     Does NOT call _parse_sysfs or _detect_ccd_layout (those need sysfs mocking).
     """
-    from engine.topology import _parse_cpuinfo
+    from corecycler.engine.topology import _parse_cpuinfo
 
     topo = CPUTopology()
 
     from unittest.mock import patch
 
-    with patch("engine.topology.CPUINFO", new_callable=lambda: MagicMock()):
-        import engine.topology as tmod
+    with patch("corecycler.engine.topology.CPUINFO", new_callable=lambda: MagicMock()):
+        import corecycler.engine.topology as tmod
 
         orig_cpuinfo = tmod.CPUINFO
         mock_path = MagicMock()
@@ -617,7 +617,7 @@ def assume_rebooted(monkeypatch):
     rebooted, so default the gate to "rebooted" here; tests covering the
     no-reboot path override it explicitly.
     """
-    import tuner.engine as engine_mod
+    import corecycler.tuner.engine as engine_mod
 
     real = engine_mod._rebooted_since
     monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: True)
@@ -631,7 +631,7 @@ def no_real_forensics(monkeypatch):
     lines and nondeterministically penalize cores mid-test. Default to a
     clean, available harvest; forensics tests set engine._forensics directly.
     """
-    import tuner.engine as engine_mod
+    import corecycler.tuner.engine as engine_mod
 
     monkeypatch.setattr(
         engine_mod, "harvest_kernel_mce", lambda since, timeout=15.0: ([], True)
@@ -644,7 +644,7 @@ def assume_clean_shutdown(monkeypatch):
     reboot (tuner.engine.last_boot_ended_cleanly). Default it to clean so the
     unattributed-incident gate stays quiet; incident tests override with False.
     """
-    import tuner.engine as engine_mod
+    import corecycler.tuner.engine as engine_mod
 
     monkeypatch.setattr(
         engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: True
