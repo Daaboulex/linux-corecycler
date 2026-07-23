@@ -184,3 +184,53 @@ class TestRunOutcomes:
             assert code == cli.EXIT_LOCKED
         finally:
             held.unlock()
+
+
+class TestCliMainDispatch:
+    def test_status_dispatches(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(cli, "cmd_status", lambda: seen.append("s") or 0)
+        assert cli.cli_main(["status"]) == 0
+        assert seen == ["s"]
+
+    def test_tune_dispatches_with_no_config(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(cli, "cmd_run", lambda **k: seen.update(k) or 0)
+        assert cli.cli_main(["tune"]) == 0
+        assert seen == {"config_path": None, "resume_id": None, "auto_resume": False}
+
+    def test_tune_forwards_config_path(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(cli, "cmd_run", lambda **k: seen.update(k) or 0)
+        cli.cli_main(["tune", "--config", "/tmp/x.json"])
+        assert seen["config_path"] == "/tmp/x.json"
+
+    def test_resume_by_id_dispatches(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(cli, "cmd_run", lambda **k: seen.update(k) or 0)
+        cli.cli_main(["resume", "7"])
+        assert seen["resume_id"] == 7 and seen["auto_resume"] is False
+
+    def test_resume_no_id_is_auto(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(cli, "cmd_run", lambda **k: seen.update(k) or 0)
+        cli.cli_main(["resume"])
+        assert seen["resume_id"] is None and seen["auto_resume"] is True
+
+
+class TestBuildSmu:
+    def test_returns_none_when_smu_unavailable(self, monkeypatch):
+        from corecycler.engine.topology import CPUTopology
+
+        topo = CPUTopology(family=26, model=0x44, model_name="Test 9950X")
+        monkeypatch.setattr(
+            "corecycler.smu.driver.RyzenSMU.is_available", staticmethod(lambda *a, **k: False)
+        )
+        assert cli._build_smu(topo) is None
+
+
+class TestCmdStatusOwnDb:
+    def test_opens_and_closes_its_own_db(self, monkeypatch):
+        own = HistoryDB(":memory:")
+        monkeypatch.setattr("corecycler.history.db.HistoryDB", lambda *a, **k: own)
+        assert cli.cmd_status() == cli.EXIT_COMPLETED

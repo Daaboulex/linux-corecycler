@@ -47,3 +47,17 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "TCH", "TID251"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/corecycler/config/paths.py" = ["TID251"]
+
+[tool.coverage.run]
+source = ["corecycler"]
+branch = false
+omit = ["*/main.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+    "if __name__ == .__main__.:",
+]
