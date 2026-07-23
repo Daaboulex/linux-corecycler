@@ -16,7 +16,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .backends.base import KILLED_BY_US_CODES, StressBackend, StressConfig, StressResult
+from .backends.base import CRASH_SIGNALS, KILLED_BY_US_CODES, StressBackend, StressConfig, StressResult
 from .detector import ErrorDetector, MCEEvent
 
 if TYPE_CHECKING:
@@ -871,14 +871,25 @@ class CoreScheduler:
                     status.errors += 1
                     status.last_error = error_msg
 
-            # Warn if the process exited almost immediately — likely a missing
-            # binary, bad path, or misconfigured backend.
             if self._process.returncode is not None and (time.monotonic() - start_time) < 2.0:
                 log.warning(
                     "Stress process for core %d exited in <2s (code %d) — "
                     "binary may be missing or misconfigured",
                     core_id, self._process.returncode,
                 )
+                if (
+                    passed
+                    and not self._we_killed_it
+                    and self._process.returncode not in KILLED_BY_US_CODES
+                    and self._process.returncode not in CRASH_SIGNALS
+                ):
+                    passed = False
+                    error_msg = (
+                        f"stress exited at startup (code {self._process.returncode}) "
+                        "with no work done — verdict unavailable"
+                    )
+                    status.errors += 1
+                    status.last_error = error_msg
 
             # parse backend output for errors
             if passed:  # only check output if no MCE already detected
