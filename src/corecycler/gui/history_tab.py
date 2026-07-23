@@ -606,6 +606,7 @@ class HistoryTab(QWidget):
 
     def _populate_runs_table(self, runs: list[RunRecord]) -> None:
         self._displayed_runs = runs
+        self._runs_table.setSortingEnabled(False)
 
         # Always reset column headers (tuner sessions view may have changed them)
         self._runs_table.setColumnCount(8)
@@ -656,7 +657,11 @@ class HistoryTab(QWidget):
                     item.setForeground(QColor(status_color))
                 elif run.cores_failed > 0 and run.status == "completed":
                     item.setForeground(QColor(COLOR_FAIL))
+                if col == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, row)
                 self._runs_table.setItem(row, col, item)
+
+        self._runs_table.setSortingEnabled(True)
 
     # ------------------------------------------------------------------
     # Selection & detail
@@ -687,7 +692,12 @@ class HistoryTab(QWidget):
             self._clear_detail()
 
     def _selected_run_rows(self) -> list[int]:
-        return sorted({idx.row() for idx in self._runs_table.selectionModel().selectedRows()})
+        indices: set[int] = set()
+        for idx in self._runs_table.selectionModel().selectedRows():
+            item = self._runs_table.item(idx.row(), 0)
+            data = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+            indices.add(int(data) if data is not None else idx.row())
+        return sorted(indices)
 
     def _show_run_detail(self, run: RunRecord) -> None:
         if not self._db or run.id is None:
@@ -852,6 +862,7 @@ class HistoryTab(QWidget):
 
     def _populate_tuner_sessions(self) -> None:
         sessions = self._tuner_sessions
+        self._runs_table.setSortingEnabled(False)
         self._runs_table.setColumnCount(7)
         self._runs_table.setHorizontalHeaderLabels(
             ["Date", "Status", "CPU", "Cores", "Confirmed", "Duration", "BIOS"]
@@ -901,6 +912,8 @@ class HistoryTab(QWidget):
                     cell.setForeground(QColor(status_color))
                 elif col == 4 and total > 0 and confirmed == total:
                     cell.setForeground(QColor(COLOR_PASS))
+                if col == 0:
+                    cell.setData(Qt.ItemDataRole.UserRole, row)
                 self._runs_table.setItem(row, col, cell)
 
         # Auto-select latest session so detail is visible immediately.
@@ -910,6 +923,8 @@ class HistoryTab(QWidget):
         if sessions:
             self._runs_table.selectRow(0)
             self._show_tuner_session_detail(sessions[0])
+
+        self._runs_table.setSortingEnabled(True)
 
     def _show_tuner_session_detail(self, sess: TunerSession) -> None:
         if not self._db or sess.id is None:

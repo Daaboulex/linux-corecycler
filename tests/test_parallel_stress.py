@@ -241,3 +241,16 @@ class TestLaneIntegrity:
         assert results[0].error_type == "mce_unattributed"
         assert 3 not in results  # the other lane earns no invented verdict
         assert runner.observed_mce
+
+    def test_empty_topology_returns_empty_not_crash(self, tmp_path):
+        from corecycler.engine.topology import CPUTopology
+
+        runner = _runner(CPUTopology(), LaneBackend(), [], tmp_path)
+        assert runner.run() == {}
+
+    def test_instant_clean_exit_is_startup_not_pass(self, topo_dual_ccd_x3d, tmp_path):
+        backend = LaneBackend(cmd=[sys.executable, "-c", "pass"], parse=(True, None))
+        runner = _runner(topo_dual_ccd_x3d, backend, [0], tmp_path, seconds_per_core=30)
+        results = runner.run()
+        assert results[0].passed is False
+        assert results[0].error_type == "startup"

@@ -91,7 +91,6 @@ class TunerTab(QWidget):
         self._backend_factory = backend_factory
         self._engine: TunerEngine | None = None
         self._selected_core: int | None = None
-        self._pending_resume_id: int | None = None
 
         self._tuner_timer = QTimer(self)
         self._tuner_timer.timeout.connect(self._tick_tuner)
@@ -484,6 +483,17 @@ class TunerTab(QWidget):
             QMessageBox.warning(self, "Error", "Database or topology not available")
             return
 
+        if self._engine is not None and (
+            self._engine.status in ACTIVE_STATUSES or self._engine.status == "paused"
+        ):
+            QMessageBox.warning(
+                self,
+                "Session Active",
+                "A tuner session is already active or paused. Resume or abort it "
+                "before starting a new one.",
+            )
+            return
+
         if not self._smu or not self._smu.is_available():
             QMessageBox.warning(
                 self,
@@ -638,7 +648,6 @@ class TunerTab(QWidget):
             )
             self._wire_engine()
 
-        self._pending_resume_id = None
         # The engine runs the session's SAVED config — mirror it into the
         # config panel so the boxes show what is actually being executed.
         session = tp.get_session(self._db, session_id) if self._db else None
@@ -1124,7 +1133,6 @@ class TunerTab(QWidget):
                     f"Status: {len(sessions)} RECOVERABLE SESSIONS \u2014 click Resume to pick one"
                 )
             self._resume_btn.setEnabled(True)
-            self._pending_resume_id = sessions[0].id
 
     def set_test_running(self, running: bool) -> None:
         """Called by MainWindow to disable tuner Start when manual test is active."""

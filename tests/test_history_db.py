@@ -720,3 +720,23 @@ class TestMergeFrom:
         assert counts["runs"] == 1
         assert dst.list_runs()[0].cpu_model == "old-cpu"
         dst.close()
+
+
+class TestMigrationCrashSafety:
+    def test_interrupted_migration_reruns_idempotently(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "history.db"
+        HistoryDB(str(path)).close()
+
+        conn = sqlite3.connect(str(path))
+        conn.execute("UPDATE schema_version SET version = 8")
+        conn.commit()
+        conn.close()
+
+        db = HistoryDB(str(path))
+        try:
+            version = db._execute_raw("SELECT version FROM schema_version").fetchone()[0]
+            assert version == HistoryDB.SCHEMA_VERSION
+        finally:
+            db.close()

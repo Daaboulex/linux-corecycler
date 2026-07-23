@@ -246,4 +246,7 @@ class MSRReader:
         return self._energy_unit
 
     def __del__(self) -> None:
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            self._fds = {}

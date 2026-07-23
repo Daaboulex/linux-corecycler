@@ -401,7 +401,7 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
 """).replace("__SCHEMA_VERSION__", str(SCHEMA_VERSION))
 
     # Migration from v1 to v2
-    _DDL_MIGRATE_V2 = """\
+    _DDL_MIGRATE_V2_TABLES = """\
 CREATE TABLE IF NOT EXISTS tuning_contexts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at      TEXT    NOT NULL,
@@ -413,10 +413,19 @@ CREATE TABLE IF NOT EXISTS tuning_contexts (
     notes           TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_context_hash ON tuning_contexts(co_hash, bios_version);
-
-ALTER TABLE runs ADD COLUMN context_id INTEGER REFERENCES tuning_contexts(id);
-ALTER TABLE runs ADD COLUMN bios_version TEXT NOT NULL DEFAULT '';
 """
+
+    @staticmethod
+    def _migrate_v2(conn: sqlite3.Connection) -> None:
+        conn.executescript(HistoryDB._DDL_MIGRATE_V2_TABLES)
+        HistoryDB._add_columns(
+            conn,
+            "runs",
+            [
+                ("context_id", "INTEGER REFERENCES tuning_contexts(id)"),
+                ("bios_version", "TEXT NOT NULL DEFAULT ''"),
+            ],
+        )
 
     # Migration from v2 to v3 — add tuner tables
     _DDL_MIGRATE_V3 = """\
@@ -465,9 +474,9 @@ CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC);
 """
 
     # Migration from v3 to v4 — add effective_max_mhz for clock stretch detection
-    _DDL_MIGRATE_V4 = """\
-ALTER TABLE telemetry_samples ADD COLUMN effective_max_mhz REAL;
-"""
+    @staticmethod
+    def _migrate_v4(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(conn, "telemetry_samples", [("effective_max_mhz", "REAL")])
 
     # Migration from v4 to v5 — deduplicate tuning contexts, add UNIQUE constraint
     _DDL_MIGRATE_V5 = """\
@@ -481,9 +490,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_
 """
 
     # Migration from v5 to v6 — add baseline_offset for CO isolation during tuning
-    _DDL_MIGRATE_V6 = """\
-ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAULT 0;
-"""
+    @staticmethod
+    def _migrate_v6(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(
+            conn, "tuner_core_states", [("baseline_offset", "INTEGER NOT NULL DEFAULT 0")]
+        )
 
     # Migration from v6 to v7 — add backoff algorithm columns
     _DDL_MIGRATE_V7_COLUMNS = [
@@ -496,6 +507,14 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
     @staticmethod
     def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
         return any(r[1] == column for r in conn.execute(f"PRAGMA table_info({table})"))
+
+    @staticmethod
+    def _add_columns(
+        conn: sqlite3.Connection, table: str, columns: list[tuple[str, str]]
+    ) -> None:
+        for name, coldef in columns:
+            if not HistoryDB._column_exists(conn, table, name):
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {coldef}")
 
     @staticmethod
     def _migrate_v7(conn: sqlite3.Connection) -> None:
@@ -512,19 +531,29 @@ ALTER TABLE tuner_core_states ADD COLUMN baseline_offset INTEGER NOT NULL DEFAUL
                 "ALTER TABLE tuner_core_states ADD COLUMN in_test INTEGER NOT NULL DEFAULT 0"
             )
 
-    _DDL_MIGRATE_V9 = """\
-ALTER TABLE tuner_core_states ADD COLUMN crash_count INTEGER DEFAULT 0;
-ALTER TABLE tuner_core_states ADD COLUMN crash_cooldown INTEGER DEFAULT 0;
-ALTER TABLE tuner_core_states ADD COLUMN cumulative_test_time REAL DEFAULT 0.0;
-ALTER TABLE tuner_core_states ADD COLUMN hardening_tier_index INTEGER DEFAULT 0;
-ALTER TABLE tuner_test_log ADD COLUMN backend TEXT;
-ALTER TABLE tuner_test_log ADD COLUMN stress_mode TEXT;
-ALTER TABLE tuner_test_log ADD COLUMN fft_preset TEXT;
-"""
+    @staticmethod
+    def _migrate_v9(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(
+            conn,
+            "tuner_core_states",
+            [
+                ("crash_count", "INTEGER DEFAULT 0"),
+                ("crash_cooldown", "INTEGER DEFAULT 0"),
+                ("cumulative_test_time", "REAL DEFAULT 0.0"),
+                ("hardening_tier_index", "INTEGER DEFAULT 0"),
+            ],
+        )
+        HistoryDB._add_columns(
+            conn,
+            "tuner_test_log",
+            [("backend", "TEXT"), ("stress_mode", "TEXT"), ("fft_preset", "TEXT")],
+        )
 
-    _DDL_MIGRATE_V10 = """\
-ALTER TABLE tuner_core_states ADD COLUMN thermal_aborts INTEGER DEFAULT 0;
-"""
+    @staticmethod
+    def _migrate_v10(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(
+            conn, "tuner_core_states", [("thermal_aborts", "INTEGER DEFAULT 0")]
+        )
 
     # v10 -> v11: CO write-ahead journal (crash-attributable SMU writes) +
     # resume-crash circuit-breaker counter on the session. The ADD COLUMN is
@@ -604,25 +633,39 @@ COMMIT;
     # v12 -> v13: power-limit capture on tuning contexts (PPT/TDC/EDC are part
     # of the stability environment), crash-hunt bookkeeping on sessions, and
     # peak clock stretch preserved per test instead of only inside fail text.
-    _DDL_MIGRATE_V13 = """\
-ALTER TABLE tuning_contexts ADD COLUMN ppt_limit_w REAL;
-ALTER TABLE tuning_contexts ADD COLUMN tdc_limit_a REAL;
-ALTER TABLE tuning_contexts ADD COLUMN edc_limit_a REAL;
-ALTER TABLE tuner_sessions ADD COLUMN unattributed_crashes INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE tuner_sessions ADD COLUMN hunting_core INTEGER;
-ALTER TABLE tuner_test_log ADD COLUMN peak_stretch_pct REAL;
-"""
+    @staticmethod
+    def _migrate_v13(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(
+            conn,
+            "tuning_contexts",
+            [("ppt_limit_w", "REAL"), ("tdc_limit_a", "REAL"), ("edc_limit_a", "REAL")],
+        )
+        HistoryDB._add_columns(
+            conn,
+            "tuner_sessions",
+            [
+                ("unattributed_crashes", "INTEGER NOT NULL DEFAULT 0"),
+                ("hunting_core", "INTEGER"),
+            ],
+        )
+        HistoryDB._add_columns(conn, "tuner_test_log", [("peak_stretch_pct", "REAL")])
 
     # v13 -> v14: validation progress survives reboots and app restarts, so a
     # back-off or crash never restarts the whole multi-core validation from
     # stage 1.
-    _DDL_MIGRATE_V14 = """\
-ALTER TABLE tuner_sessions ADD COLUMN validation_stage INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE tuner_sessions ADD COLUMN validation_index INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE tuner_sessions ADD COLUMN validation_half INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE tuner_sessions ADD COLUMN validation_dirty INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE tuner_sessions ADD COLUMN validation_requeue TEXT NOT NULL DEFAULT '[]';
-"""
+    @staticmethod
+    def _migrate_v14(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(
+            conn,
+            "tuner_sessions",
+            [
+                ("validation_stage", "INTEGER NOT NULL DEFAULT 0"),
+                ("validation_index", "INTEGER NOT NULL DEFAULT 0"),
+                ("validation_half", "INTEGER NOT NULL DEFAULT 0"),
+                ("validation_dirty", "INTEGER NOT NULL DEFAULT 0"),
+                ("validation_requeue", "TEXT NOT NULL DEFAULT '[]'"),
+            ],
+        )
 
     # v14 -> v15: the tuner narrative becomes durable — every log line the
     # engine emits lands in tuner_events, so a session's story survives the
@@ -640,19 +683,19 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
 """
 
     _MIGRATIONS: dict[int, str | callable] = {
-        2: _DDL_MIGRATE_V2,
+        2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
-        4: _DDL_MIGRATE_V4,
+        4: _migrate_v4,
         5: _DDL_MIGRATE_V5,
-        6: _DDL_MIGRATE_V6,
+        6: _migrate_v6,
         7: _migrate_v7,
         8: _migrate_v8,
-        9: _DDL_MIGRATE_V9,
-        10: _DDL_MIGRATE_V10,
+        9: _migrate_v9,
+        10: _migrate_v10,
         11: _migrate_v11,
         12: _DDL_MIGRATE_V12,
-        13: _DDL_MIGRATE_V13,
-        14: _DDL_MIGRATE_V14,
+        13: _migrate_v13,
+        14: _migrate_v14,
         15: _DDL_MIGRATE_V15,
     }
 
