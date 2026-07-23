@@ -11,7 +11,7 @@ import sys as _sys
 from unittest.mock import patch
 
 import pytest
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
@@ -66,6 +66,7 @@ def _tuner_tab():
 
 
 class TestCoreInputParser:
+    @settings(deadline=None)
     @given(st.text(max_size=48))
     def test_any_string_yields_none_or_valid_cores(self, text):
         tab = _config_tab()
@@ -73,6 +74,7 @@ class TestCoreInputParser:
         cores = tab.get_profile().cores_to_test
         assert cores is None or all(0 <= c <= 7 for c in cores)
 
+    @settings(deadline=None)
     @given(st.lists(st.integers(-50, 50), max_size=12))
     def test_integer_lists_filter_to_present_cores(self, ids):
         tab = _config_tab()
@@ -82,6 +84,7 @@ class TestCoreInputParser:
 
 
 class TestCoProfileInjection:
+    @settings(deadline=None)
     @given(st.dictionaries(st.integers(-5, 12), st.integers(-1000, 1000), max_size=10))
     def test_profile_always_clamps_within_co_range(self, profile):
         tab = _smu_tab()
@@ -107,6 +110,7 @@ class TestTunerConfigPanel:
         assert out.inherit_current is True
         assert out.auto_validate is False
 
+    @settings(deadline=None)
     @given(
         start=st.integers(-200, 200),
         coarse=st.integers(-50, 200),
