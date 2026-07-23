@@ -141,3 +141,128 @@ class TestBiosWarning:
         tab = _tab(db)
         tab.set_bios_warning("2401", "2402")
         assert tab._bios_warning
+
+
+def _seed_run_with_results(db, cores=2, failed=0):
+    from corecycler.history.db import CoreResultRecord
+
+    rid = db.create_run(
+        RunRecord(
+            started_at="2026-07-20T10:00:00+00:00", finished_at="2026-07-20T11:00:00+00:00",
+            status="completed", backend="mprime", stress_mode="SSE", fft_preset="SMALL",
+            cpu_model="Test 8C", seconds_per_core=600, cycle_count=1,
+            total_cores=cores, cores_passed=cores - failed, cores_failed=failed,
+            bios_version="2402",
+        )
+    )
+    for c in range(cores):
+        db.insert_core_result(
+            CoreResultRecord(
+                run_id=rid, core_id=c, ccd=0, cycle=0, started_at="2026-07-20T10:00:00+00:00",
+                passed=(c >= failed), elapsed_seconds=600.0, iterations_completed=5,
+                peak_freq_mhz=5200.0, max_temp_c=78.0,
+                error_message=None if c >= failed else "rounding error",
+                error_type=None if c >= failed else "computation",
+            )
+        )
+    return rid
+
+
+def _run_by_id(db, rid):
+    return next(r for r in db.list_runs() if r.id == rid)
+
+
+class TestRunDetail:
+    def test_show_run_detail_renders(self, db):
+        rid = _seed_run_with_results(db, cores=3, failed=1)
+        tab = _tab(db)
+        tab._view_mode = tab.VIEW_ALL
+        tab.refresh()
+        tab._show_run_detail(_run_by_id(db, rid))
+        assert tab._detail_info.text()
+
+    def test_selecting_row_opens_detail(self, db):
+        _seed_run_with_results(db, cores=2)
+        tab = _tab(db)
+        tab._view_mode = tab.VIEW_ALL
+        tab.refresh()
+        tab._runs_table.selectRow(0)
+        tab._on_run_selection_changed()
+        assert tab._detail_info.text()
+
+
+class TestTunerSessionDetail:
+    def test_show_tuner_session_detail_renders(self, db):
+        from corecycler.tuner.state import CoreState, TunerPhase
+
+        sid = _seed_session(db, "completed")
+        for c in range(3):
+            tp.save_core_state(
+                db, sid,
+                CoreState(core_id=c, phase=TunerPhase.HARDENED, current_offset=-30, best_offset=-30),
+            )
+        tab = _tab(db)
+        tab._view_mode = tab.VIEW_TUNER
+        tab.refresh()
+        sess = db.list_tuner_sessions()[0]
+        tab._show_tuner_session_detail(sess)
+        assert tab._selected_tuner_session is not None
+
+
+class TestToggles:
+    def test_toggle_between_views(self, db):
+        _seed_run_with_results(db, cores=1)
+        tab = _tab(db)
+        tab._toggle_view()
+        tab._toggle_tuner_view()
+        tab._toggle_tuner_view()
+
+
+class TestExport:
+    def test_export_json(self, db, tmp_path):
+        from PySide6.QtWidgets import QDialog
+
+        _seed_run_with_results(db, cores=2)
+        tab = _tab(db)
+        tab._view_mode = tab.VIEW_ALL
+        tab.refresh()
+        out = tmp_path / "run.json"
+        with (
+            patch("corecycler.gui.history_tab.QFileDialog.getSaveFileName", return_value=(str(out), "")),
+            patch("corecycler.gui.history_tab._ExportOptionsDialog.exec", return_value=QDialog.DialogCode.Accepted),
+        ):
+            tab._export_json(0)
+        assert out.exists()
+
+    def test_export_csv(self, db, tmp_path):
+        _seed_run_with_results(db, cores=2)
+        tab = _tab(db)
+        tab._view_mode = tab.VIEW_ALL
+        tab.refresh()
+        out = tmp_path / "run.csv"
+        with patch("corecycler.gui.history_tab.QFileDialog.getSaveFileName", return_value=(str(out), "")):
+            tab._export_csv(0)
+        assert out.exists()
+
+    def test_export_bulk_csv(self, db, tmp_path):
+        _seed_run_with_results(db, cores=1)
+        _seed_run_with_results(db, cores=1)
+        tab = _tab(db)
+        tab._view_mode = tab.VIEW_ALL
+        tab.refresh()
+        out = tmp_path / "bulk.csv"
+        with patch("corecycler.gui.history_tab.QFileDialog.getSaveFileName", return_value=(str(out), "")):
+            tab._export_bulk_csv([0, 1])
+        assert out.exists()
+
+
+class TestCompare:
+    def test_compare_two_runs(self, db):
+        _seed_run_with_results(db, cores=2)
+        _seed_run_with_results(db, cores=2)
+        tab = _tab(db)
+        tab._view_mode = tab.VIEW_ALL
+        tab.refresh()
+        tab._compare_selected_rows = [0, 1]
+        tab._runs_table.selectAll()
+        tab._compare_selected()
