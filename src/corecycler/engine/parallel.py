@@ -76,6 +76,8 @@ class ParallelStress:
 
     def run(self) -> dict[int, StressResult]:
         self._stop_event.clear()
+        self._we_killed = False
+        self._thermal_over_since = None
         self.observed_mce = []
         self.detector.reset()
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +119,9 @@ class ParallelStress:
                     self._kill_all()
                     return {lane.core_id: self._startup_fail(lane.core_id, f"Failed to start stress test: {e}")}
                 lane.last_active = time.monotonic()
+
+            if not self._lanes:
+                return {}
 
             deadline = start + self.config.seconds_per_core
             last_error_poll = start
@@ -246,7 +251,7 @@ class ParallelStress:
                 if not self._we_killed and rc in KILLED_BY_US_CODES:
                     self._fail_lane(lane, f"Stress process killed externally (code {rc})", now - start)
                     return True
-                if rc != 0 and now - start < 2.0:
+                if rc not in KILLED_BY_US_CODES and now - start < 2.0:
                     lane.verdict = self._startup_fail(
                         lane.core_id, f"stress exited with code {rc} at startup"
                     )
@@ -331,6 +336,12 @@ class ParallelStress:
                 # one would enter the evidence record as a proven offset.
                 return None
             return StressResult(core_id=lane.core_id, passed=True, duration_seconds=elapsed)
+        live_err = self.backend.poll_errors(lane.work_dir)
+        if live_err:
+            return StressResult(
+                core_id=lane.core_id, passed=False, duration_seconds=elapsed,
+                error_message=live_err, error_type=CoreScheduler._classify_error(live_err),
+            )
         passed, msg = self.backend.parse_output(out or "", err or "", rc)
         return StressResult(
             core_id=lane.core_id, passed=passed, duration_seconds=elapsed,

@@ -241,6 +241,32 @@ class TestSpectrumAndSoak:
         assert eng.status == "idle"
         assert tp.get_session(db, eng._session_id).status == "completed"
 
+    def test_soak_unattributed_event_pauses_not_finalizes(
+        self, db, topo_dual_ccd_x3d, mock_backend
+    ):
+        import json as _json
+
+        eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
+        _seed_validating(eng, db)
+        eng._validation_core_order = sorted(BEST)
+        eng._validation_stage = 7
+        eng._soaking = True
+        eng._config.max_unattributed_crash_hunts = 1
+        payload = _json.dumps([
+            {"cpu": -1, "bank": 4, "corrected": False,
+             "message": "general MCE, no core named", "raw_ts": 1.0},
+        ])
+
+        eng._on_test_finished(
+            sorted(BEST)[0], False, "kernel error during soak", "mce",
+            10.0, 0.0, payload, "",
+        )
+
+        assert eng._validation_dirty is True
+        assert tp.get_unattributed_crashes(db, eng._session_id) == 1
+        assert eng.status == "paused"
+        assert tp.get_session(db, eng._session_id).status != "completed"
+
     def test_soak_event_demotes_named_core_and_exits_validation(
         self, db, topo_dual_ccd_x3d, mock_backend
     ):

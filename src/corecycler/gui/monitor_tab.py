@@ -624,3 +624,4 @@ class MonitorTab(QWidget):
 
     def stop_monitoring(self) -> None:
         self._timer.stop()
+        self._msr.close()

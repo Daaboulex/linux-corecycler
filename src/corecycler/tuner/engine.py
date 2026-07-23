@@ -308,7 +308,7 @@ class _RapidTransitionWorker(_TunerWorker):
             )
         except Exception as e:
             log.exception("Rapid transition worker crashed for core %d", self._core_id)
-            self.finished.emit(self._core_id, False, str(e), "crash", 0.0, 0.0, "", "")
+            self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0, "", "")
 
 
 class _ParallelWorker(_TunerWorker):
@@ -2575,7 +2575,7 @@ class TunerEngine(QObject):
                 peak_stretch_pct=peak_stretch_pct if peak_stretch_pct > 0 else None,
             )
 
-        if results_json and self._session_id and self._validation_stage in (2, 3):
+        if results_json and self._session_id and self._validation_stage in (2, 3, 6):
             self._log_parallel_rows(core_id, results_json, log_phase)
 
         status_str = "PASS" if passed else "FAIL"
@@ -2639,6 +2639,25 @@ class TunerEngine(QObject):
                 self._save_validation_pos()
                 QTimer.singleShot(0, self._run_validation_next)
                 return
+            self._validation_dirty = True
+            if self._session_id is not None:
+                n = tp.get_unattributed_crashes(self._db, self._session_id) + 1
+                tp.set_unattributed_crashes(self._db, self._session_id, n)
+                if n >= self._config.max_unattributed_crash_hunts:
+                    self._save_validation_pos()
+                    self.log_message.emit(
+                        f"Soak saw an unattributed kernel event with no core named "
+                        f"({n} in a row). Pausing for your call: check the kernel "
+                        f"journal around the event, PSU/memory/thermals, or lower "
+                        f"max_offset, then Resume."
+                    )
+                    self.pause()
+                    return
+            self._save_validation_pos()
+            self.log_message.emit(
+                "Soak saw an unattributed kernel event — not a clean pass; "
+                "re-proving the profile with a fresh validation pass."
+            )
             QTimer.singleShot(0, self._run_validation_next)
             return
 

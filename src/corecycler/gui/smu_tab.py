@@ -41,6 +41,7 @@ class SMUTab(QWidget):
         self._topology = topology
         self._smu: RyzenSMU | None = None
         self._commands: SMUCommandSet | None = None
+        self._tuner_active = False
         self._setup_ui()
 
         if topology:
