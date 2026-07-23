@@ -254,3 +254,18 @@ class TestLaneIntegrity:
         results = runner.run()
         assert results[0].passed is False
         assert results[0].error_type == "startup"
+
+    def test_reused_instance_resets_kill_state(self, topo_dual_ccd_x3d, tmp_path):
+        runner = _runner(topo_dual_ccd_x3d, LaneBackend(cmd=SLEEP_CMD), [0], tmp_path, seconds_per_core=1)
+        runner.run()
+        assert runner._we_killed is True
+        runner.backend = LaneBackend(cmd=[sys.executable, "-c", "import sys; sys.exit(137)"])
+        results = runner.run()
+        assert results[0].passed is False
+        assert "external" in (results[0].error_message or "").lower()
+
+    def test_final_verdict_reads_results_file_on_normal_completion(self, topo_dual_ccd_x3d, tmp_path):
+        backend = LaneBackend(cmd=SLEEP_CMD, error_dirs={"core_0": "mprime error: FATAL ERROR"}, parse=(True, None))
+        runner = _runner(topo_dual_ccd_x3d, backend, [0], tmp_path, seconds_per_core=1)
+        results = runner.run()
+        assert results[0].passed is False

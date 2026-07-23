@@ -44,6 +44,8 @@ def _mw(**over):
     ns._active_test_core = 1
     ns._worker = None
     ns._status_msg = MagicMock()
+    ns._core_telemetry = {}
+    ns._logger = None
     for k, v in over.items():
         setattr(ns, k, v)
     return ns
@@ -112,3 +114,45 @@ class TestCleanup:
         ns._elapsed_timer.stop.assert_called_once()
         assert ns._worker is None
         assert ns._active_test_core is None
+
+
+class TestGridAndCacheSlots:
+    def test_core_started_tracks_active_core(self):
+        ns = _mw()
+        _call("_on_core_started", ns, 5, 0)
+        assert ns._active_test_core == 5
+        ns._monitor_tab.set_active_core.assert_called_with(5)
+
+    def test_status_cached(self):
+        ns = _mw()
+        st = MagicMock()
+        _call("_on_status_cached", ns, 2, st)
+        assert ns._core_status_cache[2] is st
+
+    def test_cycle_cached(self):
+        ns = _mw()
+        _call("_on_cycle_cached", ns, 7)
+        assert ns._cached_cycle == 7
+
+    def test_tuner_core_update_pushes_grid_status(self):
+        ns = _mw()
+        _call("_on_tuner_core_update", ns, 3, "testing")
+        ns._core_grid.update_core_status.assert_called()
+
+    def test_tuner_core_info_updates_grid_and_smu(self):
+        ns = _mw()
+        _call("_on_tuner_core_info", ns, 3, -35, "confirm")
+        ns._core_grid.update_core_telemetry.assert_called()
+        ns._smu_tab.update_current_co.assert_called_with(3, -35)
+
+    def test_core_finished_failed_adds_error(self):
+        ns = _mw(_core_status_cache={4: MagicMock(state="failed")})
+        result = MagicMock(passed=False, error_message="rounding")
+        _call("_on_core_finished", ns, 4, result)
+        ns._results_tab.add_error.assert_called_with(4, "rounding")
+
+    def test_core_finished_unknown_error_message(self):
+        ns = _mw(_core_status_cache={0: MagicMock(state="failed")})
+        result = MagicMock(passed=False, error_message=None)
+        _call("_on_core_finished", ns, 0, result)
+        ns._results_tab.add_error.assert_called_with(0, "Unknown error")
