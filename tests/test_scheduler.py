@@ -231,7 +231,7 @@ class TestClassifyError:
 class TestRun:
     def test_basic_run(self, simple_topo, mock_backend, tmp_path):
         """Full run through all cores should complete."""
-        cfg = SchedulerConfig(seconds_per_core=1, poll_interval=0.01)
+        cfg = SchedulerConfig(seconds_per_core=0.05, poll_interval=0.01)
         sched = CoreScheduler(
             topology=simple_topo,
             backend=mock_backend,
@@ -241,15 +241,18 @@ class TestRun:
         )
 
         mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0  # process immediately exits
+        mock_proc.poll.return_value = None
         mock_proc.communicate.return_value = ("passed", "")
-        mock_proc.returncode = 0
+        mock_proc.returncode = -15
         mock_proc.pid = 12345
 
         with (
             patch("subprocess.Popen", return_value=mock_proc),
             patch.object(sched.detector, "check_mce", return_value=[]),
             patch.object(sched.detector, "reset"),
+            patch.object(sched, "_check_temperature", return_value=True),
+            patch("os.getpgid", return_value=424242),
+            patch("os.killpg"),
         ):
             results = sched.run()
 
@@ -258,6 +261,33 @@ class TestRun:
         for core_id in range(4):
             assert len(results[core_id]) == 1
             assert results[core_id][0].passed is True
+
+    def test_instant_self_exit_is_startup_not_pass(self, simple_topo, mock_backend, tmp_path):
+        cfg = SchedulerConfig(seconds_per_core=1, poll_interval=0.01, cores_to_test=[0])
+        sched = CoreScheduler(
+            topology=simple_topo,
+            backend=mock_backend,
+            stress_config=StressConfig(),
+            scheduler_config=cfg,
+            work_dir=tmp_path,
+        )
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_proc.communicate.return_value = ("", "")
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        with (
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch.object(sched.detector, "check_mce", return_value=[]),
+            patch.object(sched.detector, "reset"),
+            patch.object(sched, "_check_temperature", return_value=True),
+        ):
+            results = sched.run()
+
+        assert results[0][0].passed is False
+        assert results[0][0].error_type == "startup"
 
     def test_callbacks_fire(self, simple_topo, mock_backend, tmp_path):
         """Callbacks should be called during run."""
@@ -330,7 +360,7 @@ class TestRun:
         mock_backend.should_pass = False
         mock_backend.error_message = "FATAL ERROR"
 
-        cfg = SchedulerConfig(seconds_per_core=1, poll_interval=0.01)
+        cfg = SchedulerConfig(seconds_per_core=0.05, poll_interval=0.01)
         sched = CoreScheduler(
             topology=simple_topo,
             backend=mock_backend,
@@ -340,15 +370,18 @@ class TestRun:
         )
 
         mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0
+        mock_proc.poll.return_value = None
         mock_proc.communicate.return_value = ("FATAL ERROR", "")
-        mock_proc.returncode = 1
+        mock_proc.returncode = -15
         mock_proc.pid = 12345
 
         with (
             patch("subprocess.Popen", return_value=mock_proc),
             patch.object(sched.detector, "check_mce", return_value=[]),
             patch.object(sched.detector, "reset"),
+            patch.object(sched, "_check_temperature", return_value=True),
+            patch("os.getpgid", return_value=424242),
+            patch("os.killpg"),
         ):
             results = sched.run()
 
@@ -602,15 +635,18 @@ class TestMissingCore:
         )
 
         mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0
+        mock_proc.poll.return_value = None
         mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
+        mock_proc.returncode = -15
         mock_proc.pid = 12345
 
         with (
             patch("subprocess.Popen", return_value=mock_proc),
             patch.object(sched.detector, "check_mce", return_value=[]),
             patch.object(sched.detector, "reset"),
+            patch.object(sched, "_check_temperature", return_value=True),
+            patch("os.getpgid", return_value=424242),
+            patch("os.killpg"),
         ):
             results = sched.run()
 
