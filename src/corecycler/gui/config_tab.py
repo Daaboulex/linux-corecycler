@@ -280,7 +280,6 @@ class ConfigTab(QWidget):
                 self._idle_stability_spin.setValue(60)
                 self._idle_between_spin.setValue(10)
         self._building = False
-        self._on_change()
 
     def _on_fft_change(self) -> None:
         is_custom = self._fft_combo.currentText() == "CUSTOM"
