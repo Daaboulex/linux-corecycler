@@ -31,6 +31,7 @@ from hypothesis import strategies as st
 from corecycler.engine.backends.base import FFTPreset, StressBackend, StressConfig, StressMode
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
 from corecycler.history.db import HistoryDB
+from corecycler.tuner import engine as engine_mod
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.engine import TunerEngine
@@ -191,25 +192,113 @@ def _make_topo(n_cores: int, n_ccds: int):
     return topo
 
 
-def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=4000):
-    """Drive the REAL multi-core validation flow (stages 1/2/3) to termination.
+class _StubSignal:
+    def connect(self, _slot):
+        return None
+
+    def disconnect(self, _slot=None):
+        return None
+
+
+class _StubThread:
+    """The QThread surface the engine drives: retire on finish, tear down on abort."""
+
+    def __init__(self) -> None:
+        self.finished = _StubSignal()
+        self.scheduler = SimpleNamespace(force_stop=lambda: None)
+
+    def wait(self, _msec=0):
+        return True
+
+    def isRunning(self):
+        return True
+
+    def terminate(self):
+        return None
+
+    def deleteLater(self):
+        return None
+
+
+def _stub_transition_worker(pending, stage_of):
+    class _Stub(_StubThread):
+        def __init__(self, core_id, _logical_cpu, _scheduler, cores, _duration, parent=None):
+            super().__init__()
+            self._dispatch = (core_id, list(cores), stage_of())
+
+        def start(self):
+            pending.append(self._dispatch)
+
+    return _Stub
+
+
+def _stub_soak_worker(pending, stage_of):
+    class _Stub(_StubThread):
+        def __init__(self, core_id, _duration, parent=None):
+            super().__init__()
+            self._dispatch = (core_id, None, stage_of())
+
+        def start(self):
+            pending.append(self._dispatch)
+
+    return _Stub
+
+
+SOAK_STAGE = 7
+
+
+def _mce_json(cpu):
+    return json.dumps([
+        {"cpu": cpu, "bank": 5, "corrected": True, "message": "corrected", "raw_ts": 0.0}
+    ])
+
+
+_FAULTS = {
+    "thermal": lambda core, cliffs: ("thermal", ""),
+    "apparatus": lambda core, cliffs: ("startup", ""),
+    "killed": lambda core, cliffs: ("killed", ""),
+    "foreign_mce": lambda core, cliffs: (
+        "mce", _mce_json(next((c for c in cliffs if c != core), core)),
+    ),
+    "unattributed_mce": lambda core, cliffs: ("mce", _mce_json(-1)),
+}
+
+
+def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=8000, abort_at=0,
+                     faults=None):
+    """Drive the REAL multi-core validation flow to termination, every stage.
 
     Cores are seeded CONFIRMED at their individual stable limit, then validation
     runs. The aggregate model: a set passes only if EVERY member's offset is at
     least ``agg_margin`` less aggressive than its individual stable limit (power
     delivery makes the aggregate tougher than a core alone). A validation failure
-    backs off the most aggressive core and restarts. Returns (final_engine, steps).
+    backs off the most aggressive core and restarts.
+
+    Stages 4 (rapid transitions) and 7 (soak) construct their worker classes
+    directly instead of going through _start_worker, so both are replaced by
+    stubs that route the dispatch into the same queue -- otherwise those two
+    stages could only be exercised by turning them off. The soak runs NO
+    synthetic load: its failure mode is a kernel event, not aggregate
+    instability, so it always passes here. Returns (final_engine, steps).
     """
     sid = tp.create_session(db, TunerConfig(**cfg_kw), "", "")
-    pending: list[tuple[int, list[int] | None]] = []
+    pending: list[tuple[int, list[int] | None, int]] = []
+    holder: dict[str, object] = {}
+
+    def stage_of():
+        eng = holder.get("eng")
+        return eng._validation_stage if eng is not None else 0
 
     def patched_single(core_id, duration, **kw):
-        pending.append((core_id, None))
+        holder["eng"]._worker = _StubThread()
+        pending.append((core_id, None, stage_of()))
 
     def patched_multi(cores, duration, **kw):
-        pending.append((cores[0], list(cores)))
+        holder["eng"]._worker = _StubThread()
+        pending.append((cores[0], list(cores), stage_of()))
 
     eng = make_engine(db, topo, FaultSMU(), backend, **cfg_kw)
+    holder["eng"] = eng
     eng._start_worker = patched_single
     eng._start_multi_core_worker = patched_multi
     # Force the memory stage to run (stressapptest is not installed under test)
@@ -224,18 +313,30 @@ def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=4000):
     for cs in eng._core_states.values():
         tp.save_core_state(db, sid, cs)
     profile = {c: stable for c, (stable, _crash) in cliffs.items()}
-    eng._enter_auto_validation(profile)
 
     steps = 0
-    while pending and steps < cap:
-        steps += 1
-        core, cset = pending.pop(0)
-        members = cset if cset is not None else [core]
-        ok = all(
-            eng._core_states[m].best_offset >= cliffs[m][0] + agg_margin
-            for m in members
-        )
-        eng._on_test_finished(core, ok, "", "" if ok else "agg", 1.0, 0.0)
+    with (
+        patch.object(engine_mod, "_RapidTransitionWorker", _stub_transition_worker(pending, stage_of)),
+        patch.object(engine_mod, "_SoakWorker", _stub_soak_worker(pending, stage_of)),
+    ):
+        eng._enter_auto_validation(profile)
+        while pending and steps < cap:
+            steps += 1
+            if abort_at and steps == abort_at:
+                eng.abort()
+                break
+            core, cset, stage = pending.pop(0)
+            fault = faults.get(steps) if faults else None
+            if fault is not None:
+                error_type, mce_json = _FAULTS[fault](core, cliffs)
+                eng._on_test_finished(core, False, fault, error_type, 1.0, 0.0, mce_json, "")
+                continue
+            members = cset if cset is not None else [core]
+            ok = stage == SOAK_STAGE or all(
+                eng._core_states[m].best_offset >= cliffs[m][0] + agg_margin
+                for m in members
+            )
+            eng._on_test_finished(core, ok, "", "" if ok else "agg", 1.0, 0.0)
     return eng, steps
 
 
@@ -1103,6 +1204,10 @@ class TestValidationFuzz:
         n_ccds = data.draw(st.sampled_from([1, 2]), label="n_ccds")
         agg_margin = data.draw(st.integers(min_value=0, max_value=5), label="agg_margin")
         order = data.draw(st.sampled_from(["sequential", "ccd_round_robin"]), label="order")
+        transitions = data.draw(st.booleans(), label="validate_transitions")
+        spectrum = data.draw(st.booleans(), label="validate_spectrum")
+        memory = data.draw(st.booleans(), label="validate_memory")
+        soak = data.draw(st.booleans(), label="validate_soak")
         # stable in [-30, -8] keeps the aggregate threshold (stable + margin, with
         # margin <= 5) at or below -3, i.e. achievable by undervolting less (a real
         # CPU never needs a positive offset for aggregate stability). Crash is 5 below.
@@ -1116,14 +1221,16 @@ class TestValidationFuzz:
             topo = _make_topo(n_cores, n_ccds)
             cfg_kw = dict(
                 cores_to_test=list(range(n_cores)), test_order=order,
-                auto_validate=True, validate_transitions=False, hardening_tiers=[],
-                validate_spectrum=False, validate_soak=False,
-                fine_step=1, validate_duration_seconds=1,
+                auto_validate=True, hardening_tiers=[],
+                validate_transitions=transitions, validate_spectrum=spectrum,
+                validate_memory=memory, validate_soak=soak,
+                fine_step=1, validate_duration_seconds=1, spectrum_slot_seconds=30,
+                soak_duration_seconds=60,
                 search_duration_seconds=1, confirm_duration_seconds=1,
             )
             eng, steps = drive_validation(db, topo, _StubBackend(), cliffs, agg_margin, cfg_kw)
 
-            assert steps < 4000, f"validation did not converge: cliffs={cliffs} margin={agg_margin}"
+            assert steps < 8000, f"validation did not converge: cliffs={cliffs} margin={agg_margin}"
             assert eng.status == "idle", f"validation stuck in {eng.status}"
             for c, (stable, crash) in cliffs.items():
                 best = eng._core_states[c].best_offset
@@ -1135,6 +1242,107 @@ class TestValidationFuzz:
                 assert best >= stable + agg_margin, (
                     f"core {c} at {best} below aggregate threshold {stable + agg_margin}"
                 )
+        finally:
+            db.close()
+
+
+class TestAbortSafety:
+    """Abort is a safety action, not just a stop: whatever the tuner was doing,
+    no aggressive CO may stay resident in the SMU afterwards. During validation
+    EVERY confirmed core has its offset applied at once, so reverting only the
+    core under test would leave the rest undervolted with nothing driving them."""
+
+    @settings(max_examples=60, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(data=st.data())
+    def test_abort_mid_validation_reverts_every_core(self, data):
+        n_cores = data.draw(st.integers(min_value=2, max_value=5), label="n_cores")
+        abort_at = data.draw(st.integers(min_value=1, max_value=n_cores), label="abort_at")
+        cliffs = {}
+        for c in range(n_cores):
+            stable = data.draw(st.integers(min_value=-30, max_value=-8), label=f"stable{c}")
+            cliffs[c] = (stable, stable - 5)
+
+        db = HistoryDB(":memory:")
+        try:
+            topo = _make_topo(n_cores, 1)
+            cfg_kw = dict(
+                cores_to_test=list(range(n_cores)), auto_validate=True,
+                hardening_tiers=[], fine_step=1, validate_duration_seconds=1,
+                spectrum_slot_seconds=30, soak_duration_seconds=60,
+                search_duration_seconds=1, confirm_duration_seconds=1,
+            )
+            eng, _steps = drive_validation(
+                db, topo, _StubBackend(), cliffs, 0, cfg_kw, abort_at=abort_at
+            )
+
+            assert eng._abort_requested
+            assert eng.status == "idle"
+            assert eng._worker is None
+            assert eng._validation_stage == 0
+            assert not eng._soaking
+            for c, cs in eng._core_states.items():
+                resident = eng._smu.applied.get(c, cs.baseline_offset)
+                assert resident == cs.baseline_offset, (
+                    f"core {c} left resident at {resident}, baseline {cs.baseline_offset}"
+                )
+                assert not cs.in_test
+            assert tp.get_session(db, eng._session_id).status == "aborted"
+        finally:
+            db.close()
+
+
+class TestValidationFaultInjection:
+    """Validation must survive the apparatus, not only the silicon.
+
+    A thermal stop, a backend that will not launch, an external kill and a
+    kernel event that names another core (or no core at all) all arrive on the
+    same signal as a real failure. None of them is evidence about the offset
+    under test, so none may make an offset MORE aggressive, and the flow must
+    still reach a terminal state instead of looping on the fault."""
+
+    @settings(max_examples=120, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(data=st.data())
+    def test_faults_never_deepen_an_offset_and_always_terminate(self, data):
+        n_cores = data.draw(st.integers(min_value=2, max_value=4), label="n_cores")
+        cliffs = {}
+        for c in range(n_cores):
+            stable = data.draw(st.integers(min_value=-30, max_value=-8), label=f"stable{c}")
+            cliffs[c] = (stable, stable - 5)
+        faults = data.draw(
+            st.dictionaries(
+                st.integers(min_value=1, max_value=30),
+                st.sampled_from(sorted(_FAULTS)),
+                max_size=6,
+            ),
+            label="faults",
+        )
+
+        db = HistoryDB(":memory:")
+        try:
+            topo = _make_topo(n_cores, 1)
+            cfg_kw = dict(
+                cores_to_test=list(range(n_cores)), auto_validate=True,
+                hardening_tiers=[], fine_step=1, validate_duration_seconds=1,
+                spectrum_slot_seconds=30, soak_duration_seconds=60,
+                search_duration_seconds=1, confirm_duration_seconds=1,
+            )
+            eng, steps = drive_validation(
+                db, topo, _StubBackend(), cliffs, 0, cfg_kw, faults=faults
+            )
+
+            assert steps < 8000, f"did not terminate: faults={faults}"
+            assert eng.status in ("idle", "paused", "running", "quarantined"), eng.status
+            for c, (stable, crash) in cliffs.items():
+                best = eng._core_states[c].best_offset
+                assert best is not None
+                assert best >= stable, (
+                    f"core {c} deepened to {best} below its seeded {stable} -- a fault "
+                    f"moved the search bound"
+                )
+                assert best > crash
+                assert best <= 0
         finally:
             db.close()
 
