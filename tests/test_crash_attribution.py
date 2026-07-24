@@ -472,3 +472,61 @@ class TestNarrativePersistence:
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         eng._session_id = None
         eng.log_message.emit("nowhere to persist")  # must not raise
+
+
+def _mce_payload(cpu: int) -> str:
+    return json.dumps([
+        {"cpu": cpu, "bank": 0, "corrected": True,
+         "message": CPU5_CORRECTED.format(cpu=cpu), "raw_ts": 1.0}
+    ])
+
+
+class TestUnattributedMcePayload:
+    """A machine check that names NO core taints every resident value.
+
+    Surviving a stress test does not clear an error the hardware just reported,
+    and with no CPU named there is no core to exclude -- so the whole resident
+    set must stay unproven. Journalling it survived would record a value the
+    hardware complained about as proven, and the search would then treat it as
+    a safe floor.
+    """
+
+    def test_a_payload_naming_no_cpu_is_detected(self):
+        from corecycler.tuner.engine import _has_unattributed_mce
+
+        assert _has_unattributed_mce(_mce_payload(-1)) is True
+
+    def test_an_attributed_or_absent_payload_is_not(self):
+        from corecycler.tuner.engine import _has_unattributed_mce
+
+        assert _has_unattributed_mce(_mce_payload(5)) is False
+        assert _has_unattributed_mce("") is False
+        assert _has_unattributed_mce("not json") is False
+        assert _has_unattributed_mce(json.dumps({"cpu": -1})) is False
+
+    def _mark_survived_calls(self, db, topo_single_ccd, mock_backend, mce_json, monkeypatch):
+        eng = _make_engine(db, topo_single_ccd, mock_backend)
+        sid = eng._session_id
+        cs = CoreState(core_id=0, phase=TunerPhase.CONFIRMING,
+                       current_offset=-20, best_offset=-20, baseline_offset=0)
+        eng._core_states = {0: cs}
+        tp.save_core_state(db, sid, cs)
+        eng._co_applied[0] = -20
+        db.journal_co_intent(sid, 0, -20, survived=False)
+        calls = []
+        monkeypatch.setattr(tp, "journal_mark_survived", lambda *a, **kw: calls.append(kw))
+        eng._on_test_finished(0, True, "", "", 1.0, 0.0, mce_json, "")
+        return calls
+
+    def test_a_clean_pass_marks_the_resident_set_survived(
+        self, db, topo_single_ccd, mock_backend, monkeypatch
+    ):
+        assert self._mark_survived_calls(db, topo_single_ccd, mock_backend, "", monkeypatch)
+
+    def test_a_pass_carrying_an_unattributed_mce_marks_nothing_survived(
+        self, db, topo_single_ccd, mock_backend, monkeypatch
+    ):
+        calls = self._mark_survived_calls(
+            db, topo_single_ccd, mock_backend, _mce_payload(-1), monkeypatch
+        )
+        assert calls == []
