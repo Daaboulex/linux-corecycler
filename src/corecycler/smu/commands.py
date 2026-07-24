@@ -92,7 +92,7 @@ class SMUCommandSet:
 # - Zen 3: -30 to +30 (positive increases voltage, rarely useful)
 # - Zen 3D: -30 to +30 (V-Cache sensitive, be conservative)
 # - Zen 4: -50 to +30 (extended negative range confirmed by community)
-# - Zen 5: -60 to +10
+# - Zen 5: -50 to +10 (firmware clamps at -50; -60 is a BIOS input ceiling only)
 #
 # Zen 2 has NO Curve Optimizer but does have PBO scalar/limits.
 # ===========================================================================
@@ -294,7 +294,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
     # -----------------------------------------------------------------------
     CPUGeneration.ZEN5_GRANITE_RIDGE: SMUCommandSet(
         generation=CPUGeneration.ZEN5_GRANITE_RIDGE,
-        co_range=(-60, 10),
+        co_range=(-50, 10),
         mailbox="rsmu",
         encoding_scheme="zen4_5",
         set_co_cmd=0x06,
@@ -324,7 +324,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
     # -----------------------------------------------------------------------
     CPUGeneration.ZEN5_STRIX_POINT: SMUCommandSet(
         generation=CPUGeneration.ZEN5_STRIX_POINT,
-        co_range=(-60, 10),
+        co_range=(-50, 10),
         mailbox="rsmu",
         encoding_scheme="zen4_5",
         set_co_cmd=0x06,
@@ -350,7 +350,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
     # -----------------------------------------------------------------------
     CPUGeneration.ZEN5_SHIMADA_PEAK: SMUCommandSet(
         generation=CPUGeneration.ZEN5_SHIMADA_PEAK,
-        co_range=(-60, 10),
+        co_range=(-50, 10),
         mailbox="rsmu",
         encoding_scheme="zen4_5",
         set_co_cmd=0x06,
