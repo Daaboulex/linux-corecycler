@@ -657,3 +657,35 @@ class TestTopologyEdgeCases:
         assert topo.physical_cores == 12
         assert topo.family == 26
         assert "9900X" in topo.model_name
+
+
+class TestTopologyDriftEdges:
+    def test_malformed_online_range_entries_skipped(self, tmp_path):
+        """A malformed cpu online entry (non-numeric single or range bound) is
+        skipped without crashing; valid entries still count."""
+        cpu_dir = tmp_path / "cpu"
+        cpu_dir.mkdir()
+        (cpu_dir / "online").write_text("0-3,bad,9-z,5\n")
+        topo = CPUTopology()
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
+            _parse_sysfs(topo)
+        assert topo.logical_cpus_count == 5
+
+    def test_x3d_multi_ccd_skips_none_ccd_and_missing_cache(self, tmp_path):
+        """The multi-CCD X3D L3-size scan tolerates a core with no CCD assignment
+        and a core whose cache sysfs is absent, still picking the largest-L3 CCD."""
+        topo = CPUTopology(model_name="AMD Ryzen 9 7950X3D 16-Core Processor", ccds=2)
+        topo.cores = {
+            0: PhysicalCore(core_id=0, ccd=0, ccx=None, logical_cpus=(0,)),
+            1: PhysicalCore(core_id=1, ccd=None, ccx=None, logical_cpus=(1,)),
+            8: PhysicalCore(core_id=8, ccd=1, ccx=None, logical_cpus=(8,)),
+        }
+        cpu_dir = tmp_path / "cpu"
+        cache_dir = cpu_dir / "cpu0" / "cache" / "index3"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "level").write_text("3")
+        (cache_dir / "size").write_text("96M")
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
+            _detect_x3d(topo)
+        assert topo.is_x3d is True
+        assert topo.vcache_ccd == 0

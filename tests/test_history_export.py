@@ -8,7 +8,14 @@ import json
 
 import pytest
 
-from corecycler.history.db import CoreResultRecord, EventRecord, HistoryDB, RunRecord, TelemetrySample
+from corecycler.history.db import (
+    CoreResultRecord,
+    EventRecord,
+    HistoryDB,
+    RunRecord,
+    TelemetrySample,
+    TuningContextRecord,
+)
 from corecycler.history.export import (
     export_run_csv,
     export_run_json,
@@ -166,3 +173,26 @@ class TestBulkCsvExport:
         reader = csv.DictReader(io.StringIO(text))
         rows = list(reader)
         assert len(rows) == 1
+
+
+class TestJsonExportWithContext:
+    def test_includes_tuning_context(self, db):
+        """A run linked to a tuning context embeds that context in the JSON export."""
+        ctx_id = db.create_context(
+            TuningContextRecord(
+                bios_version="1.0.0.0",
+                co_offsets_json='{"0": -30, "1": -25}',
+                co_hash="ctx-hash-abc",
+                ppt_limit_w=225.0,
+            )
+        )
+        run_id = db.create_run(
+            RunRecord(cpu_model="AMD Ryzen 9 9950X3D", backend="mprime", context_id=ctx_id)
+        )
+        db.insert_core_result(CoreResultRecord(run_id=run_id, core_id=0, passed=True))
+
+        data = json.loads(export_run_json(db, run_id))
+
+        assert "tuning_context" in data
+        assert data["tuning_context"]["co_hash"] == "ctx-hash-abc"
+        assert data["tuning_context"]["ppt_limit_w"] == 225.0
