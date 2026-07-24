@@ -263,5 +263,5 @@ def _notify_outcome(code: int) -> None:
 
         title, body, urgency = note
         desktop_notify(title, body, urgency=urgency)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"notification failed: {e}", file=sys.stderr)
