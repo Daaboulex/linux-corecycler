@@ -145,7 +145,7 @@ class TestGetCommands:
         assert cmds.has_co is True
         assert cmds.set_co_cmd == 0x06
         assert cmds.get_co_cmd == 0xD5
-        assert cmds.co_range == (-60, 10)
+        assert cmds.co_range == (-50, 10)
         assert cmds.mailbox == "rsmu"
         assert cmds.set_boost_limit_cmd == 0x70
         assert cmds.get_boost_limit_cmd == 0x6E

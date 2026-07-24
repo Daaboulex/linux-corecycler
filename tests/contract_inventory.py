@@ -95,6 +95,17 @@ def _pin_dmidecode_dimm_parse() -> None:
     assert dimms[0].mem_type == "DDR5"
 
 
+def _pin_zen5_co_range() -> None:
+    for gen in (
+        CPUGeneration.ZEN5_GRANITE_RIDGE,
+        CPUGeneration.ZEN5_STRIX_POINT,
+        CPUGeneration.ZEN5_SHIMADA_PEAK,
+    ):
+        cmds = get_commands(gen)
+        assert cmds is not None
+        assert cmds.co_range == (-50, 10), (gen.name, cmds.co_range)
+
+
 CONTRACTS: list[Contract] = [
     Contract(
         name="smu-co-bit-layout",
@@ -126,5 +137,12 @@ CONTRACTS: list[Contract] = [
         ring_a=_pin_dmidecode_dimm_parse,
         live_verifiable=True,
         ring_b_test="test_hardware_contracts.py::test_dmidecode_parses_real_dimms",
+    ),
+    Contract(
+        name="zen5-co-range",
+        kind="arch",
+        source="ZenStates-Core Utils.cs clamps Zen4+ CO to [-50,50]; 9950X3D read-back rejects -60",
+        ring_a=_pin_zen5_co_range,
+        live_verifiable=False,
     ),
 ]

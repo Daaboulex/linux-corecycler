@@ -78,7 +78,7 @@ class TestCOBoundsChecking:
             (CPUGeneration.ZEN3_VERMEER, -30, 30),
             (CPUGeneration.ZEN3D_WARHOL, -30, 30),
             (CPUGeneration.ZEN4_RAPHAEL, -50, 30),
-            (CPUGeneration.ZEN5_GRANITE_RIDGE, -60, 10),
+            (CPUGeneration.ZEN5_GRANITE_RIDGE, -50, 10),
         ],
     )
     def test_co_range_enforced(self, gen, min_val, max_val, tmp_path):
