@@ -776,13 +776,14 @@ class HistoryTab(QWidget):
                 co_summary = _co_summary(ctx.co_offsets_json)
                 if co_summary and co_summary != "none":
                     lines.append(f"  CO:   {co_summary}")
-                    try:
-                        offsets = json.loads(ctx.co_offsets_json)
-                        if offsets:
-                            for core_id in sorted(offsets, key=int):
-                                lines.append(f"         Core {core_id}: {offsets[core_id]}")
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+                    offsets = _co_offsets(ctx.co_offsets_json)
+                    if offsets:
+                        try:
+                            ordered = sorted(offsets, key=int)
+                        except ValueError:
+                            ordered = sorted(offsets, key=str)
+                        for core_id in ordered:
+                            lines.append(f"         Core {core_id}: {offsets[core_id]}")
                 if ctx.pbo_scalar is not None:
                     lines.append(f"  PBO Scalar: {ctx.pbo_scalar:.1f}")
                 if ctx.boost_limit_mhz is not None:
@@ -1424,21 +1425,36 @@ class _ExportOptionsDialog(QDialog):
 # ---------------------------------------------------------------------------
 
 
-def _co_summary(co_json: str) -> str:
-    """Summarize CO offsets JSON for display in context table."""
+def _co_offsets(co_json: str) -> dict | None:
+    """Parse a context's stored CO offsets, or None if the value is unusable.
+
+    The single parse for both the context table and the run detail: a stored
+    value that is not a non-empty JSON object (a hand-edited row, a database
+    merged from elsewhere) must degrade the display, never raise inside a slot.
+    """
     try:
         offsets = json.loads(co_json)
     except (json.JSONDecodeError, TypeError):
-        return "none"
-    if not offsets:
+        return None
+    if not isinstance(offsets, dict) or not offsets:
+        return None
+    return offsets
+
+
+def _co_summary(co_json: str) -> str:
+    """Summarize CO offsets JSON for display in context table."""
+    offsets = _co_offsets(co_json)
+    if offsets is None:
         return "none"
 
     values = list(offsets.values())
     if all(v == values[0] for v in values):
         return f"all {values[0]}"
 
-    lo, hi = min(values), max(values)
-    return f"mixed [{lo}..{hi}]"
+    try:
+        return f"mixed [{min(values)}..{max(values)}]"
+    except TypeError:
+        return "mixed"
 
 
 def _best_result(runs: list[RunRecord]) -> str:

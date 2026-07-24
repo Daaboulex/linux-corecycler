@@ -12,6 +12,8 @@ import sys as _sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
@@ -855,3 +857,60 @@ class TestHelpers:
             RunRecord(status="completed", total_cores=4, cores_passed=3),
         ]
         assert ht._best_result(runs) == "3/4"
+
+
+class TestMalformedContextData:
+    """A stored CO profile is DB content: a hand-edited row or a database merged
+    from elsewhere can hold anything, and a display slot must never raise."""
+
+    def test_a_non_object_profile_reads_as_none(self):
+        assert ht._co_summary("[1, 2, 3]") == "none"
+        assert ht._co_summary('"abc"') == "none"
+        assert ht._co_summary("5") == "none"
+
+    def test_mixed_value_types_still_summarise(self):
+        assert ht._co_summary('{"0": -20, "1": "x"}') == "mixed"
+
+    def test_a_malformed_profile_does_not_break_the_context_table(self, db):
+        cid = db.create_context(
+            TuningContextRecord(
+                bios_version="2402", co_offsets_json="[1, 2, 3]", co_hash="broken"
+            )
+        )
+        _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
+        tab = _grouped_tab(db)
+        assert tab._context_table.rowCount() == 1
+        assert tab._context_table.item(0, 1).text() == "none"
+
+    def test_non_numeric_core_ids_still_render_in_the_detail(self, db):
+        cid = db.create_context(
+            TuningContextRecord(
+                bios_version="2402",
+                co_offsets_json='{"a": -20, "b": -25}',
+                co_hash="letters",
+            )
+        )
+        rid = _seed_detailed_run(db, cid)
+        tab = _tab(db)
+        tab._view_mode = tab.VIEW_ALL
+        tab.refresh()
+        tab._show_run_detail(_run_by_id(db, rid))
+        text = tab._events_log.toPlainText()
+        assert "Core a: -20" in text
+        assert "Core b: -25" in text
+
+    @settings(deadline=None, max_examples=250)
+    @given(st.text())
+    def test_no_stored_text_can_break_the_summary(self, payload):
+        assert isinstance(ht._co_summary(payload), str)
+
+    @settings(deadline=None, max_examples=250)
+    @given(
+        st.recursive(
+            st.none() | st.booleans() | st.integers() | st.floats(allow_nan=False) | st.text(),
+            lambda children: st.lists(children) | st.dictionaries(st.text(), children),
+            max_leaves=8,
+        )
+    )
+    def test_no_stored_json_value_can_break_the_summary(self, value):
+        assert isinstance(ht._co_summary(json.dumps(value)), str)
