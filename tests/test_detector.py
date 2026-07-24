@@ -462,3 +462,17 @@ class TestHarvestAndDmesgDrift:
         fake = MagicMock(returncode=0, stdout="garbage more text\n", stderr="")
         with patch("subprocess.run", return_value=fake):
             assert _get_dmesg_raw_timestamp() == 0.0
+
+
+class TestMalformedDmesgTimestamp:
+    def test_a_dotted_timestamp_is_skipped_not_crashed(self):
+        det = _fresh_detector(baseline=100.0)
+        out = "... some line with no real timestamp\n101.0 mce: [Hardware Error]: CPU 3\n"
+        with patch("subprocess.run", return_value=_dmesg_result(out)):
+            events = det.check_mce()
+        assert isinstance(events, list)
+
+    def test_a_line_without_any_timestamp_is_skipped(self):
+        det = _fresh_detector(baseline=100.0)
+        with patch("subprocess.run", return_value=_dmesg_result("no timestamp at all\n")):
+            assert det.check_mce() == []
