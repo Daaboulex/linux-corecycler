@@ -76,6 +76,7 @@
                 nativeCheckInputs = [
                   pythonPkgs.pytestCheckHook
                   pythonPkgs.hypothesis
+                  pythonPkgs.pytest-cov
                 ];
                 doCheck = true;
                 preCheck = ''
@@ -83,6 +84,16 @@
                   export HOME=$TMPDIR
                 '';
                 disabledTestMarks = [ "slow" ];
+
+                # Coverage ratchet: line coverage may never fall below this floor.
+                # Raise the floor to the percentage this check prints whenever a
+                # batch lands. It is measured WITHOUT the slow/taskset tests, so it
+                # trails the out-of-sandbox number.
+                pytestFlags = [
+                  "--cov=corecycler"
+                  "--cov-report=term"
+                  "--cov-fail-under=80"
+                ];
 
                 # Qt6 runtime needs
                 nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];
