@@ -173,3 +173,54 @@ class TestContextIdentity:
         )
         assert first == second
         assert len(db.list_contexts()) == 1
+
+
+class TestFailClosedOnBadInput:
+    def test_a_context_that_cannot_be_stored_is_refused_loudly(self, db):
+        with pytest.raises(RuntimeError, match="database inconsistent"):
+            db.create_context(
+                TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash=None)
+            )
+
+    def test_a_merge_that_cannot_complete_leaves_nothing_behind(self, tmp_path):
+        """All-or-nothing: a source holding a child row whose parent is gone
+        must roll the whole merge back, not half-import it."""
+        source = tmp_path / "orphaned.db"
+        _seed(source)
+        raw = sqlite3.connect(source)
+        raw.execute("PRAGMA foreign_keys=OFF")
+        raw.execute("DELETE FROM runs")
+        raw.commit()
+        raw.close()
+
+        target = HistoryDB(tmp_path / "target.db")
+        _seed_run_only(target)
+        before = len(target.list_runs())
+        with pytest.raises(sqlite3.Error):
+            target.merge_from(source)
+        assert len(target.list_runs()) == before
+        assert target.list_tuner_sessions() == []
+        target.close()
+
+    def test_a_corrupted_page_is_refused_at_open(self, tmp_path):
+        path = tmp_path / "history.db"
+        seeded = HistoryDB(path)
+        for i in range(400):
+            seeded.create_run(
+                RunRecord(started_at=f"2026-07-20T10:00:{i % 60:02d}+00:00", status="completed")
+            )
+        seeded.close()
+
+        raw = bytearray(path.read_bytes())
+        assert len(raw) > 16384
+        raw[-4096:] = b"\xde\xad\xbe\xef" * 1024
+        path.write_bytes(bytes(raw))
+
+        with pytest.raises(RuntimeError, match="failed integrity check"):
+            HistoryDB(path)
+
+
+def _seed_run_only(db):
+    return db.create_run(
+        RunRecord(started_at="2026-07-20T10:00:00+00:00", status="completed")
+    )
