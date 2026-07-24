@@ -115,8 +115,11 @@ class TestCoreGridEdges:
         from corecycler.gui.widgets.core_grid import CoreGridWidget
 
         grid = CoreGridWidget(_topo())
+        inner = QVBoxLayout()
+        inner.addWidget(QLabel("deep"))
         nested = QVBoxLayout()
         nested.addWidget(QLabel("nested"))
+        nested.addLayout(inner)
         grid._layout.addLayout(nested)
 
         grid.set_topology(_topo(2))
