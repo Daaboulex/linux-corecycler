@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -129,12 +130,10 @@ class StressBackend(ABC):
 
     def find_binary(self, name: str) -> str | None:
         """Find a binary on PATH."""
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired, FileNotFoundError):
             result = subprocess.run(
                 ["which", name], capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0:
                 return result.stdout.strip()
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
         return None

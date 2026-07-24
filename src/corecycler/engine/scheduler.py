@@ -221,7 +221,7 @@ class CoreScheduler:
         if not hwmon_base.exists():
             return None
 
-        try:
+        with contextlib.suppress(OSError):
             for hwmon_dir in hwmon_base.iterdir():
                 name_file = hwmon_dir / "name"
                 if not name_file.exists():
@@ -248,8 +248,6 @@ class CoreScheduler:
 
                 if max_temp > 0:
                     return max_temp
-        except OSError:
-            pass
         return None
 
     def _trip_thermal(self, temp: float) -> None:
@@ -993,14 +991,11 @@ class CoreScheduler:
     @staticmethod
     def _reap_zombies() -> None:
         """Reap any zombie child processes to prevent accumulation."""
-        try:
+        with contextlib.suppress(ChildProcessError):
             while True:
                 pid, _ = os.waitpid(-1, os.WNOHANG)
                 if pid == 0:
                     break
-        except ChildProcessError:
-            # No child processes — normal
-            pass
 
     def run_rapid_transitions(
         self,

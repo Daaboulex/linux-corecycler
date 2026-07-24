@@ -77,13 +77,10 @@ def _rebooted_since(iso_ts: str | None, stat_path: str = "/proc/stat") -> bool:
         last_write = datetime.fromisoformat(iso_ts).timestamp()
     except ValueError:
         return True
-    try:
-        with open(stat_path) as f:
-            for line in f:
-                if line.startswith("btime "):
-                    return float(line.split()[1]) > last_write
-    except (OSError, ValueError, IndexError):
-        pass
+    with contextlib.suppress(OSError, ValueError, IndexError), open(stat_path) as f:
+        for line in f:
+            if line.startswith("btime "):
+                return float(line.split()[1]) > last_write
     return True
 
 
@@ -107,15 +104,12 @@ def _read_boot_id() -> str:
 
 def _read_cpu_times(cpu_id: int) -> tuple[int, int] | None:
     """(idle+iowait, total) jiffies for one logical CPU from /proc/stat."""
-    try:
-        with open("/proc/stat") as f:
-            prefix = f"cpu{cpu_id} "
-            for line in f:
-                if line.startswith(prefix):
-                    vals = [int(x) for x in line.split()[1:]]
-                    return vals[3] + vals[4], sum(vals)
-    except (OSError, ValueError, IndexError):
-        pass
+    with contextlib.suppress(OSError, ValueError, IndexError), open("/proc/stat") as f:
+        prefix = f"cpu{cpu_id} "
+        for line in f:
+            if line.startswith(prefix):
+                vals = [int(x) for x in line.split()[1:]]
+                return vals[3] + vals[4], sum(vals)
     return None
 
 

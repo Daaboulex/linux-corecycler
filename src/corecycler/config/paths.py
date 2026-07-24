@@ -9,6 +9,7 @@ files back to the user so a later non-sudo run can still write them.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -20,10 +21,8 @@ def user_home() -> Path:
         if sudo_user and sudo_user != "root":
             import pwd
 
-            try:
+            with contextlib.suppress(KeyError):
                 return Path(pwd.getpwnam(sudo_user).pw_dir)
-            except KeyError:
-                pass  # stale SUDO_USER — fall back to the real home
     return Path.home()
 
 
@@ -41,8 +40,6 @@ def fix_sudo_ownership(*paths: Path) -> None:
     if not (uid.isdigit() and gid.isdigit()):
         return
     for p in paths:
-        try:
+        with contextlib.suppress(OSError):
             if p.exists():
                 os.chown(p, int(uid), int(gid))
-        except OSError:
-            pass

@@ -396,15 +396,12 @@ class ParallelStress:
 
 
 def _cpu_times(cpu_id: int) -> tuple[int, int] | None:
-    try:
-        with open("/proc/stat") as f:
-            prefix = f"cpu{cpu_id} "
-            for line in f:
-                if line.startswith(prefix):
-                    vals = [int(x) for x in line.split()[1:]]
-                    return vals[3] + vals[4], sum(vals)
-    except (OSError, ValueError, IndexError):
-        pass
+    with contextlib.suppress(OSError, ValueError, IndexError), open("/proc/stat") as f:
+        prefix = f"cpu{cpu_id} "
+        for line in f:
+            if line.startswith(prefix):
+                vals = [int(x) for x in line.split()[1:]]
+                return vals[3] + vals[4], sum(vals)
     return None
 
 

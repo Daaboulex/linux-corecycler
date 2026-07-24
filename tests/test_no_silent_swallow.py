@@ -1,12 +1,23 @@
-"""No blind except may silently swallow -- it must surface the failure.
+"""No except may silently swallow -- it must surface the failure or say it is deliberate.
 
-A bare ``except:`` or ``except Exception/BaseException:`` that leaves no trace of
-the failure hides an unexpected error. A handler "surfaces" when it re-raises,
-logs, emits the error on a Qt signal, prints it, or otherwise references the
-caught exception (e.g. carries it in a returned/emitted message). For a
-deliberate, expected suppression use ``contextlib.suppress(...)`` (explicit and
-exempt); a ``__del__`` finalizer is exempt because surfacing is unsafe during
-interpreter shutdown.
+Two rules, one intent: a reader must never have to guess whether a swallowed
+failure was meant to be swallowed.
+
+1. A bare ``except:`` or ``except Exception/BaseException:`` that leaves no trace
+   of the failure hides an unexpected error. A handler "surfaces" when it
+   re-raises, logs, emits the error on a Qt signal, prints it, or otherwise
+   references the caught exception.
+2. A TYPED handler whose whole body is ``pass`` must be written as
+   ``contextlib.suppress(...)``. The two forms are identical to the interpreter
+   and opposite to a reader: ``suppress`` states that the failure is expected
+   and acceptable, while ``except X: pass`` reads the same whether the author
+   meant it or wrote the wrong type. Both real cases this rule was written for
+   caught exceptions that could not occur while the reachable failure went
+   unguarded, and neither was visible as anything but a normal handler.
+
+``continue`` bodies are exempt: skipping one malformed row inside a loop is
+visible from its context. A ``__del__`` finalizer is exempt because surfacing is
+unsafe during interpreter shutdown.
 """
 
 from __future__ import annotations
@@ -72,4 +83,25 @@ def test_no_silent_blind_except():
     assert not offenders, (
         "Blind except that does not surface the failure (silent swallow) -- re-raise, log it, "
         "emit/print it, or use contextlib.suppress:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_no_typed_pass_swallow():
+    offenders = []
+    for path in sorted(SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        exempt = _finalizer_handlers(tree)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ExceptHandler)
+                and node not in exempt
+                and not _is_blind(node)
+                and len(node.body) == 1
+                and isinstance(node.body[0], ast.Pass)
+            ):
+                offenders.append(f"{path.relative_to(SRC.parent)}:{node.lineno}")
+    assert not offenders, (
+        "A typed handler whose whole body is `pass` cannot be told apart from one that "
+        "catches the wrong exception type. Write a deliberate suppression as "
+        "contextlib.suppress(...), or surface the failure:\n  " + "\n  ".join(offenders)
     )

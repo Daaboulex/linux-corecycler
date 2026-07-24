@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -99,10 +100,8 @@ def _parse_auto_resume(argv: list[str]) -> int | None:
         return None
     i = argv.index("--auto-resume")
     if i + 1 < len(argv):
-        try:
+        with contextlib.suppress(ValueError):
             return max(0, int(argv[i + 1]))
-        except ValueError:
-            pass
     return 120
 
 

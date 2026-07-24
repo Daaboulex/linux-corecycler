@@ -9,6 +9,7 @@ POST, and SMU writes here overlay (replace) them until the next power cycle.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import struct
@@ -589,11 +590,9 @@ def _read_max_freq_sysfs() -> float | None:
     and BCLK scaling.
     """
     path = Path("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
-    try:
+    with contextlib.suppress(ValueError, OSError):
         if path.exists():
             return int(path.read_text().strip()) / 1000.0
-    except (ValueError, OSError):
-        pass
     return None
 
 
