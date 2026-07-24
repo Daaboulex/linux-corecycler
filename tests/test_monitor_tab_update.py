@@ -102,9 +102,24 @@ class TestMonitorUpdateMatrix:
         assert tab._power_label.styleSheet() == tab._STALE_STYLE
 
     def test_falls_back_to_simple_frequency_read(self, monkeypatch):
+        import corecycler.gui.monitor_tab as mt
+
         tab = _tab()
-        _drive(tab, monkeypatch, dual={}, simple={0: 4800.0, 1: 4700.0}, watts=50.0)
-        assert tab._freq_chart.values
+        simple = MagicMock(return_value={0: 4800.0, 1: 4700.0})
+        monkeypatch.setattr(mt, "read_core_frequencies_dual", lambda: {})
+        monkeypatch.setattr(mt, "read_core_frequencies", simple)
+        tab._hwmon = MagicMock()
+        tab._hwmon.read.return_value = _hwmon_data()
+        tab._power = MagicMock()
+        tab._power.read_power_watts.return_value = 50.0
+        tab._msr = MagicMock()
+        tab._msr.is_available.return_value = False
+        tab._cpu_usage = MagicMock()
+        tab._cpu_usage.read.return_value = {}
+        tab._pmtable = MagicMock()
+        tab._pmtable.is_available.return_value = False
+        tab._update()
+        simple.assert_called_once()
 
     def test_boost_above_ceiling_raises_max(self, monkeypatch):
         tab = _tab()
