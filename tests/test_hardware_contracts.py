@@ -85,3 +85,20 @@ def test_dmidecode_parses_real_dimms():
     dimms = parse_dmidecode_output(result.stdout)
     assert len(dimms) >= 1, "no DIMMs parsed from real dmidecode output"
     assert all(d.size_gb > 0 for d in dimms)
+
+
+def test_proc_stat_cpu_line_matches_the_pinned_fields():
+    """The stall watchdog reads idle+iowait from /proc/stat; drift here blinds it."""
+    from corecycler.engine.parallel import _cpu_times
+
+    require(Path("/proc/stat").exists(), "/proc/stat not readable")
+    sample = _cpu_times(0)
+    require(sample is not None, "no cpu0 line in /proc/stat")
+    idle, total = sample
+    assert 0 < idle < total
+    fields = next(
+        line.split() for line in Path("/proc/stat").read_text().splitlines()
+        if line.startswith("cpu0 ")
+    )
+    assert len(fields) >= 6
+    assert idle == int(fields[4]) + int(fields[5])

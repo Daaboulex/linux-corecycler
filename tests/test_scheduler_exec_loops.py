@@ -31,6 +31,7 @@ from corecycler.engine.topology import CPUTopology, PhysicalCore
 
 pytestmark = [
     pytest.mark.slow,
+    pytest.mark.contract,
     pytest.mark.skipif(shutil.which("taskset") is None, reason="taskset not available"),
 ]
 
