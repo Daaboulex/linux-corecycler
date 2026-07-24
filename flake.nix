@@ -92,7 +92,7 @@
                 pytestFlags = [
                   "--cov=corecycler"
                   "--cov-report=term"
-                  "--cov-fail-under=97"
+                  "--cov-fail-under=98"
                 ];
 
                 # Qt6 runtime needs
