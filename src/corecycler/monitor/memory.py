@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import struct
@@ -213,13 +214,11 @@ class SPD5118Reader:
                     # Discover eeprom via device symlink to i2c parent
                     device_link = hwmon_dir / "device"
                     if device_link.exists():
-                        try:
+                        with contextlib.suppress(OSError):
                             i2c_device = device_link.resolve()
                             eeprom_path = i2c_device / "eeprom"
                             if eeprom_path.exists():
                                 self._eeprom_paths.append(eeprom_path)
-                        except OSError:
-                            pass
 
     @property
     def spd_timings(self) -> SPDTimingData | None:
@@ -247,11 +246,9 @@ class SPD5118Reader:
         for dev in self._devices:
             temp_file = dev / "temp1_input"
             if temp_file.exists():
-                try:
+                with contextlib.suppress(ValueError, OSError):
                     raw = int(temp_file.read_text().strip())
                     temp_c = raw / 1000.0
                     if -40.0 <= temp_c <= 125.0:  # SPD5118 sensor range
                         temps.append(temp_c)
-                except (ValueError, OSError):
-                    pass
         return temps

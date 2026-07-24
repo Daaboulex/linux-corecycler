@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import shutil
@@ -127,13 +128,10 @@ class _StressWorker(QThread):
 
 def _get_free_memory_mb() -> int | None:
     """Read available memory from /proc/meminfo in MB."""
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) // 1024  # kB → MB
-    except (OSError, ValueError):
-        pass
+    with contextlib.suppress(OSError, ValueError), open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024  # kB → MB
     return None
 
 

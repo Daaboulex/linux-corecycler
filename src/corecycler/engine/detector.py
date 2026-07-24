@@ -8,6 +8,7 @@ error is logged, so counting them cannot detect anything.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import subprocess
@@ -338,7 +339,7 @@ def _is_kernel_error_line(line_lower: str) -> bool:
 
 def _get_dmesg_raw_timestamp() -> float:
     """Get the latest dmesg raw monotonic timestamp for baseline filtering."""
-    try:
+    with contextlib.suppress(subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError):
         result = subprocess.run(
             ["dmesg", "--time-format=raw"],
             capture_output=True,
@@ -352,6 +353,4 @@ def _get_dmesg_raw_timestamp() -> float:
                 return float(ts_str.strip("[]"))
             except ValueError:
                 return 0.0
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError):
-        pass
     return 0.0

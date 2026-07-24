@@ -122,10 +122,8 @@ def read_max_frequency(cpu_id: int = 0) -> float | None:
     """Read the maximum boost frequency for a CPU (MHz)."""
     path = CPUFREQ_BASE / f"cpu{cpu_id}" / "cpufreq" / "cpuinfo_max_freq"
     if path.exists():
-        try:
+        with contextlib.suppress(ValueError, OSError):
             return int(path.read_text().strip()) / 1000.0
-        except (ValueError, OSError):
-            pass
     return None
 
 
@@ -133,8 +131,6 @@ def read_min_frequency(cpu_id: int = 0) -> float | None:
     """Read the minimum frequency for a CPU (MHz)."""
     path = CPUFREQ_BASE / f"cpu{cpu_id}" / "cpufreq" / "cpuinfo_min_freq"
     if path.exists():
-        try:
+        with contextlib.suppress(ValueError, OSError):
             return int(path.read_text().strip()) / 1000.0
-        except (ValueError, OSError):
-            pass
     return None
