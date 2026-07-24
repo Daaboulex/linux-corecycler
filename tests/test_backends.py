@@ -20,7 +20,7 @@ from corecycler.engine.backends.base import (
 )
 from corecycler.engine.backends.mprime import FFT_RANGES, MODE_TO_TORTURE, MprimeBackend
 from corecycler.engine.backends.stress_ng import StressNgBackend, _mode_to_method
-from corecycler.engine.backends.ycruncher import YCruncherBackend, _mode_flag
+from corecycler.engine.backends.ycruncher import MODE_TO_ALGORITHMS, YCruncherBackend
 
 # ===========================================================================
 # Base class tests
@@ -580,6 +580,42 @@ class TestModeToMethod:
 # ===========================================================================
 
 
+_CAPTURED_PASS_OUTPUT = """\
+Auto-Selecting: 11-SNB ~ Hina
+
+Component Stress Tester
+
+  1   Logical Cores:      4
+  2   Memory:              200 MiB  ( 50.0 MiB per thread )
+  6   Stop on Error:      Enabled
+
+  #  Tag   Test Name                   Mem/Thread  Component
+ 11  BKT   Basecase + Karatsuba          27.8 KiB  Scalar Integer
+ 16  FFTv4 Fast Fourier Transform (v4)   246 MiB   AVX Float
+
+  0   Start Stress-Testing!
+
+Allocating Memory...
+  Core   0:  27.8 KiB
+
+Iteration: 0  Total Elapsed Time: 0.001 seconds  ( 0.000 minutes )
+Running BKT: Passed  Test Speed:  5.25 * 10^08  bits / sec
+
+Iteration: 1  Total Elapsed Time: 3.054 seconds  ( 0.051 minutes )
+Running BKT: Passed  Test Speed:  5.2 * 10^08  bits / sec
+"""
+
+_CAPTURED_INVALID_PARAM_OUTPUT = """\
+Reading Hardware Topology...
+
+Logical Cores:
+    0 1 2 3
+
+Invalid Parameter: SSE
+Press ENTER to continue . . .
+"""
+
+
 class TestYCruncherBackend:
     def test_name(self):
         assert YCruncherBackend.name == "y-cruncher"
@@ -607,12 +643,49 @@ class TestYCruncherBackend:
         with patch.object(backend, "find_binary", return_value=None):
             assert backend.is_available() is False
 
-    def test_get_command(self, tmp_path):
+    def test_get_command_sse_selects_scalar_algorithm(self, tmp_path):
         backend = YCruncherBackend()
         backend._binary = "/bin/y-cruncher"
-        cfg = StressConfig(mode=StressMode.AVX2, threads=8)
-        cmd = backend.get_command(cfg, tmp_path)
-        assert cmd == ["/bin/y-cruncher", "stress", "-M", "AVX2", "-T", "8"]
+        cmd = backend.get_command(StressConfig(mode=StressMode.SSE), tmp_path)
+        assert cmd == [
+            "/bin/y-cruncher",
+            "skip-warnings",
+            "pause:-2",
+            "status:none",
+            "stress",
+            "-M:1024M",
+            "-D:30",
+            "BKT",
+        ]
+
+    def test_get_command_avx2_enables_all_algorithms(self, tmp_path):
+        backend = YCruncherBackend()
+        backend._binary = "/bin/y-cruncher"
+        cmd = backend.get_command(StressConfig(mode=StressMode.AVX2), tmp_path)
+        assert cmd == [
+            "/bin/y-cruncher",
+            "skip-warnings",
+            "pause:-2",
+            "status:none",
+            "stress",
+            "-M:1024M",
+            "-D:30",
+        ]
+
+    def test_get_command_is_headless_never_blocks(self, tmp_path):
+        backend = YCruncherBackend()
+        backend._binary = "/bin/y-cruncher"
+        cmd = backend.get_command(StressConfig(mode=StressMode.AVX), tmp_path)
+        assert "skip-warnings" in cmd
+        assert "pause:-2" in cmd
+        assert cmd.index("skip-warnings") < cmd.index("stress")
+        assert cmd.index("pause:-2") < cmd.index("stress")
+
+    def test_get_command_memory_override(self, tmp_path):
+        backend = YCruncherBackend()
+        backend._binary = "/bin/y-cruncher"
+        cmd = backend.get_command(StressConfig(mode=StressMode.SSE, memory_mb=2048), tmp_path)
+        assert "-M:2048M" in cmd
 
     def test_get_command_no_binary_raises(self, tmp_path):
         backend = YCruncherBackend()
@@ -631,35 +704,62 @@ class TestYCruncherBackend:
         assert StressMode.AVX2 in modes
         assert StressMode.AVX512 in modes
 
-    # --- parse_output ---
-
-    @pytest.mark.parametrize(
-        "output",
-        [
-            "Failed some test",
-            "FAILED some test",
-            "Error during computation",
-            "Verification test FAIL",
-            "Result: FAIL",
-        ],
-    )
-    def test_parse_output_errors(self, output):
+    def test_parse_real_pass_output_not_false_flagged(self):
         backend = YCruncherBackend()
-        passed, msg = backend.parse_output(output, "", 1)
+        passed, msg = backend.parse_output(_CAPTURED_PASS_OUTPUT, "", -15)
+        assert passed, msg
+        assert msg is None
+
+    @pytest.mark.parametrize("code", sorted(KILLED_BY_US_CODES))
+    def test_parse_killed_is_pass(self, code):
+        backend = YCruncherBackend()
+        passed, _msg = backend.parse_output(_CAPTURED_PASS_OUTPUT, "", code)
+        assert passed
+
+    def test_parse_self_exit_zero_is_anomaly_not_silent_pass(self):
+        backend = YCruncherBackend()
+        passed, msg = backend.parse_output(_CAPTURED_PASS_OUTPUT, "", 0)
+        assert not passed
+        assert "verdict unavailable" in msg
+
+    def test_parse_error_encountered(self):
+        backend = YCruncherBackend()
+        passed, msg = backend.parse_output(
+            "Iteration: 5\nError(s) encountered on logical core 3.\n", "", 0
+        )
         assert not passed
         assert "y-cruncher error" in msg
 
-    @pytest.mark.parametrize("code", sorted(KILLED_BY_US_CODES) + [0])
-    def test_parse_output_success_codes(self, code):
+    def test_parse_coefficient_too_large(self):
         backend = YCruncherBackend()
-        passed, msg = backend.parse_output("All tests completed", "", code)
-        assert passed
+        passed, msg = backend.parse_output("Coefficient is too large\n", "", 0)
+        assert not passed
+        assert "Coefficient is too large" in msg
 
-    def test_parse_output_unknown_exit_code(self):
+    def test_parse_invalid_parameter(self):
+        backend = YCruncherBackend()
+        passed, msg = backend.parse_output(_CAPTURED_INVALID_PARAM_OUTPUT, "", 0)
+        assert not passed
+        assert "Invalid Parameter" in msg
+
+    def test_parse_ansi_codes_stripped(self):
+        backend = YCruncherBackend()
+        passed, _msg = backend.parse_output("\x1b[01;31mCoefficient is too large\x1b[0m\n", "", 0)
+        assert not passed
+
+    @pytest.mark.parametrize("code", [-11, -6, -4])
+    def test_parse_crash_signal_fails(self, code):
+        backend = YCruncherBackend()
+        passed, msg = backend.parse_output("", "", code)
+        assert not passed
+        assert "crashed" in msg
+
+    def test_parse_unknown_exit_code_is_apparatus_fault(self):
         backend = YCruncherBackend()
         passed, msg = backend.parse_output("", "", 7)
         assert not passed
         assert "exited with code 7" in msg
+        assert "verdict unavailable" in msg
 
     def test_prepare(self, tmp_path):
         backend = YCruncherBackend()
@@ -672,19 +772,21 @@ class TestYCruncherBackend:
         backend.cleanup(tmp_path)
 
 
-class TestModeFlag:
-    @pytest.mark.parametrize(
-        "mode,expected",
-        [
-            (StressMode.SSE, "SSE"),
-            (StressMode.AVX, "AVX"),
-            (StressMode.AVX2, "AVX2"),
-            (StressMode.AVX512, "AVX512"),
-            (StressMode.CUSTOM, "SSE"),
-        ],
-    )
-    def test_mode_flags(self, mode, expected):
-        assert _mode_flag(mode) == expected
+class TestYCruncherModeMapping:
+    @pytest.mark.parametrize("mode", list(StressMode))
+    def test_every_mode_maps(self, mode):
+        assert mode in MODE_TO_ALGORITHMS
+
+    def test_sse_is_scalar_only(self):
+        assert MODE_TO_ALGORITHMS[StressMode.SSE] == ("BKT",)
+
+    def test_avx2_enables_all_by_default(self):
+        assert MODE_TO_ALGORITHMS[StressMode.AVX2] == ()
+
+    def test_algorithms_are_valid_ycruncher_names(self):
+        valid = {"BKT", "BBP", "SFTv4", "SNT", "SVT", "FFTv4", "NTT63", "N63", "VSTv3", "VT3"}
+        for algos in MODE_TO_ALGORITHMS.values():
+            assert set(algos) <= valid
 
 
 # ===========================================================================

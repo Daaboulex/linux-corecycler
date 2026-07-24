@@ -183,6 +183,24 @@ NOT_STARTED -> COARSE_SEARCH -> FINE_SEARCH -> SETTLED -> CONFIRMING -> CONFIRME
 The Backoff Pre-Confirm Multiplier (2.0) and Midpoint Jump Threshold (3) use sensible
 defaults and are not exposed in the UI.
 
+### How each backend uses Mode and FFT Preset
+
+**Mode** (SSE/AVX/AVX2/AVX512) and **FFT Preset** mean different things per backend:
+
+- **mprime** -- Mode selects the torture-test instruction set and FFT Preset sets the FFT
+  size range. `SSE` with Small FFTs is the most sensitive, highest-boost combination.
+- **stress-ng** -- Mode selects the CPU stressor method; FFT Preset is ignored.
+- **y-cruncher** -- y-cruncher has no instruction-set switch: the instruction set is fixed
+  by the per-microarchitecture binary it auto-selects for your CPU. Mode instead chooses
+  which of y-cruncher's component tests run (FFT Preset is ignored):
+  - `SSE` -- `BKT` only (scalar-integer Basecase/Karatsuba): the lowest-power,
+    highest-boost, most CO-sensitive test.
+  - `AVX` -- `BKT, BBP, SFTv4, SNT, SVT` (adds the AVX compute and small in-cache tests).
+  - `AVX2` / `AVX512` -- all algorithms, including the memory-bandwidth transforms
+    (`FFTv4, N63, VT3`). Because y-cruncher auto-selects a supported binary, `AVX512` mode
+    runs the strongest instruction set your CPU actually has and never crashes on a
+    non-AVX512 chip.
+
 ### Test orderings
 
 | Order | Strategy | Best for |

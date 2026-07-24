@@ -12,6 +12,28 @@ from .base import CRASH_SIGNALS, KILLED_BY_US_CODES, StressBackend, StressConfig
 if TYPE_CHECKING:
     from pathlib import Path
 
+_HEADLESS_FLAGS = ("skip-warnings", "pause:-2", "status:none")
+_DEFAULT_MEMORY_MIB = 1024
+_PER_TEST_SECONDS = 30
+
+MODE_TO_ALGORITHMS: dict[StressMode, tuple[str, ...]] = {
+    StressMode.SSE: ("BKT",),
+    StressMode.AVX: ("BKT", "BBP", "SFTv4", "SNT", "SVT"),
+    StressMode.AVX2: (),
+    StressMode.AVX512: (),
+    StressMode.CUSTOM: (),
+}
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+_ERROR_PATTERNS: tuple[str, ...] = (
+    r"Error\(s\) encountered",
+    r"Coefficient is too large",
+    r"Invalid Parameter",
+    r"\bFAIL(?:ED)?\b",
+    r"(?<!Stop on )\bError\b(?!\s+Checking)",
+)
+
 
 @register_backend("y-cruncher")
 class YCruncherBackend(StressBackend):
@@ -21,7 +43,6 @@ class YCruncherBackend(StressBackend):
         self._binary: str | None = None
 
     def is_available(self) -> bool:
-        # y-cruncher is typically not on PATH — check common locations
         for name in ("y-cruncher", "y_cruncher"):
             self._binary = self.find_binary(name)
             if self._binary:
@@ -34,15 +55,15 @@ class YCruncherBackend(StressBackend):
         if not self._binary:
             raise RuntimeError("y-cruncher binary not found")
 
-        # y-cruncher component stress test mode
+        memory_mib = config.memory_mb if config.memory_mb and config.memory_mb > 0 else _DEFAULT_MEMORY_MIB
         cmd = [
             self._binary,
+            *_HEADLESS_FLAGS,
             "stress",
-            "-M",
-            _mode_flag(config.mode),
-            "-T",
-            str(config.threads),
+            f"-M:{memory_mib}M",
+            f"-D:{_PER_TEST_SECONDS}",
         ]
+        cmd.extend(MODE_TO_ALGORITHMS.get(config.mode, ()))
         return cmd
 
     def get_supported_modes(self) -> list[StressMode]:
@@ -52,42 +73,23 @@ class YCruncherBackend(StressBackend):
         work_dir.mkdir(parents=True, exist_ok=True)
 
     def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
-        combined = stdout + "\n" + stderr
+        combined = _ANSI_RE.sub("", stdout + "\n" + stderr)
 
-        # y-cruncher error patterns — avoid false positives from benign output
-        # e.g., "Error Checking: Enabled", "Tests Failed: 0"
-        error_patterns = [
-            r"Verification\b.*\bFAIL",  # "Verification ... FAIL"
-            r"Result:\s*FAIL",  # "Result: FAIL"
-            r"Tests?\s+Failed:\s*[1-9]",  # "Tests Failed: N" where N > 0
-            r"\bFAILED\b",  # standalone FAILED
-            r"\berror\b(?![\s:]*(?:checking|rate|count)\b)",  # "error" not followed by "checking/rate/count"
-        ]
-        for pattern in error_patterns:
+        for pattern in _ERROR_PATTERNS:
             match = re.search(pattern, combined, re.IGNORECASE)
             if match:
                 return False, f"y-cruncher error: {match.group(0)}"
 
-        if returncode in KILLED_BY_US_CODES or returncode == 0:
-            return True, None
-
-        # SIGSEGV/SIGABRT/SIGBUS = likely CO instability crash
         if returncode in CRASH_SIGNALS:
             return False, f"y-cruncher crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
 
-        return False, f"y-cruncher exited with code {returncode}"
+        if returncode in KILLED_BY_US_CODES:
+            return True, None
+
+        if returncode == 0:
+            return False, "y-cruncher exited on its own (code 0) without being stopped: verdict unavailable"
+
+        return False, f"y-cruncher exited with code {returncode}: verdict unavailable"
 
     def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
         pass
-
-
-def _mode_flag(mode: StressMode) -> str:
-    match mode:
-        case StressMode.AVX512:
-            return "AVX512"
-        case StressMode.AVX2:
-            return "AVX2"
-        case StressMode.AVX:
-            return "AVX"
-        case _:
-            return "SSE"
