@@ -44,14 +44,33 @@ class Mutant:
     source: str
 
 
+def _inert(tree: ast.Module) -> set[int]:
+    """Nodes whose value cannot change behaviour: decorator arguments (a
+    dataclass(slots=...) flip is invisible to every real path) and dunder
+    configuration like __test__, which addresses the test runner, not the code."""
+    inert: set[int] = set()
+    for node in ast.walk(tree):
+        for decorator in getattr(node, "decorator_list", []):
+            inert.update(id(sub) for sub in ast.walk(decorator))
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id.startswith("__") and t.id.endswith("__")
+            for t in node.targets
+        ):
+            inert.update(id(sub) for sub in ast.walk(node.value))
+    return inert
+
+
 class _Mutator(ast.NodeTransformer):
-    def __init__(self, target: int) -> None:
+    def __init__(self, target: int, inert: set[int] | None = None) -> None:
         self.target = target
+        self.inert = inert or set()
         self.seen = 0
         self.applied: str | None = None
         self.lineno = 0
 
     def _take(self, node: ast.AST, description: str) -> bool:
+        if id(node) in self.inert:
+            return False
         hit = self.seen == self.target
         self.seen += 1
         if hit:
@@ -98,15 +117,17 @@ class _Mutator(ast.NodeTransformer):
 
 
 def _count(source: str) -> int:
-    counter = _Mutator(target=-1)
-    counter.visit(ast.parse(source))
+    tree = ast.parse(source)
+    counter = _Mutator(target=-1, inert=_inert(tree))
+    counter.visit(tree)
     return counter.seen
 
 
 def _build(path: Path, index: int) -> Mutant | None:
     original = path.read_text()
-    mutator = _Mutator(target=index)
-    mutated = mutator.visit(ast.parse(original))
+    tree = ast.parse(original)
+    mutator = _Mutator(target=index, inert=_inert(tree))
+    mutated = mutator.visit(tree)
     if mutator.applied is None:
         return None
     ast.fix_missing_locations(mutated)
