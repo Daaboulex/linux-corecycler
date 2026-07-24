@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import sys
 from pathlib import Path
 
@@ -234,17 +233,19 @@ def main() -> int:
                 if not window._worker.wait(3000):
                     window._worker.terminate()
                     window._worker.wait(2000)
-        except Exception:
-            pass  # best-effort on exit
+        except Exception as e:
+            print(f"exit cleanup: stress worker stop failed: {e}", file=sys.stderr)
 
         try:
             if window._tuner_tab.is_running:
                 window._tuner_tab.force_stop()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"exit cleanup: tuner stop failed: {e}", file=sys.stderr)
 
-        with contextlib.suppress(Exception):
+        try:
             window._memory_tab.force_stop()
+        except Exception as e:
+            print(f"exit cleanup: memory stop failed: {e}", file=sys.stderr)
 
     atexit.register(_cleanup_on_exit)
 
