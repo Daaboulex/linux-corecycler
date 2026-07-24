@@ -740,3 +740,73 @@ class TestMigrationCrashSafety:
             assert version == HistoryDB.SCHEMA_VERSION
         finally:
             db.close()
+
+
+class TestAdoptLegacyRootDb:
+    def _adopt(self, dest, root_path, euid=0):
+        from unittest.mock import patch
+
+        from corecycler.history.db import adopt_legacy_root_db
+
+        with patch("corecycler.history.db.os.geteuid", return_value=euid):
+            return adopt_legacy_root_db(dest, root_path)
+
+    def test_non_root_returns_none(self, tmp_path):
+        db = HistoryDB(":memory:")
+        try:
+            assert self._adopt(db, tmp_path / "root.db", euid=1000) is None
+        finally:
+            db.close()
+
+    def test_missing_root_db_returns_none(self, tmp_path):
+        db = HistoryDB(":memory:")
+        try:
+            assert self._adopt(db, tmp_path / "nope.db") is None
+        finally:
+            db.close()
+
+    def test_same_file_returns_none(self, tmp_path):
+        path = tmp_path / "shared.db"
+        db = HistoryDB(path)
+        try:
+            assert self._adopt(db, path) is None
+        finally:
+            db.close()
+
+    def test_resolve_error_returns_none(self, tmp_path):
+        from unittest.mock import patch
+
+        root_path = tmp_path / "root.db"
+        root_path.write_bytes(b"")
+        db = HistoryDB(":memory:")
+        try:
+            with patch("pathlib.Path.resolve", side_effect=OSError):
+                assert self._adopt(db, root_path) is None
+        finally:
+            db.close()
+
+    def test_adopts_merges_renames_and_clears_sidecars(self, tmp_path):
+        root_path = tmp_path / "root.db"
+        src = HistoryDB(root_path)
+        src.create_run(RunRecord(cpu_model="legacy-root", backend="mprime"))
+        src.close()
+        for sidecar in ("-wal", "-shm"):
+            root_path.with_name(root_path.name + sidecar).write_bytes(b"")
+
+        from unittest.mock import patch
+
+        dest = HistoryDB(tmp_path / "user.db")
+        merged: list = []
+        try:
+            with patch.object(
+                HistoryDB, "merge_from", lambda self, p: merged.append(p) or {"runs": 1}
+            ):
+                counts = self._adopt(dest, root_path)
+            assert counts == {"runs": 1}
+            assert merged == [root_path]
+            assert not root_path.exists()
+            assert root_path.with_name("root.db.adopted").exists()
+            assert not root_path.with_name("root.db-wal").exists()
+            assert not root_path.with_name("root.db-shm").exists()
+        finally:
+            dest.close()
