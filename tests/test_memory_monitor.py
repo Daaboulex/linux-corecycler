@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import struct
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -640,3 +640,59 @@ class TestColumnResize:
     def test_part_number_col_is_6(self):
         from corecycler.gui.memory_tab import PART_NUMBER_COL
         assert PART_NUMBER_COL == 6
+
+
+class TestMemoryDriftEdges:
+    def test_empty_slot_skipped(self):
+        """A DMI type 17 block with no installed module is skipped."""
+        text = (
+            "Handle 0x0001, DMI type 17, 92 bytes\nMemory Device\n"
+            "\tSize: No Module Installed\n\tLocator: DIMM 2\n"
+        )
+        assert parse_dmidecode_output(text) == []
+
+    def test_read_dimm_info_tool_absent_returns_empty(self):
+        from corecycler.monitor.memory import read_dimm_info
+        with patch("corecycler.monitor.memory.subprocess.run", side_effect=FileNotFoundError):
+            assert read_dimm_info() == []
+
+    def test_spd_scan_missing_hwmon_base(self, tmp_path):
+        reader = SPD5118Reader(hwmon_base=tmp_path / "nonexistent")
+        assert reader.is_available() is False
+
+    def test_spd_scan_name_read_oserror_skips(self, tmp_path):
+        """A hwmon 'name' that raises on read (a directory) is skipped, not fatal."""
+        dev = tmp_path / "hwmon" / "hwmon0"
+        dev.mkdir(parents=True)
+        (dev / "name").mkdir()
+        reader = SPD5118Reader(hwmon_base=tmp_path / "hwmon")
+        assert reader.is_available() is False
+
+    def test_spd_eeprom_resolve_oserror_tolerated(self, tmp_path):
+        dev = tmp_path / "hwmon" / "hwmon0"
+        dev.mkdir(parents=True)
+        (dev / "name").write_text("spd5118\n")
+        (dev / "device").mkdir()
+        with patch("pathlib.Path.resolve", side_effect=OSError):
+            reader = SPD5118Reader(hwmon_base=tmp_path / "hwmon")
+        assert reader.is_available() is True
+        assert reader._eeprom_paths == []
+
+    def test_spd_timings_eeprom_read_failure_returns_none(self, tmp_path):
+        dev = tmp_path / "hwmon" / "hwmon0"
+        dev.mkdir(parents=True)
+        (dev / "name").write_text("spd5118\n")
+        reader = SPD5118Reader(hwmon_base=tmp_path / "hwmon")
+        bad = MagicMock()
+        bad.read_bytes.side_effect = OSError
+        reader._eeprom_paths = [bad]
+        reader._spd_loaded = False
+        assert reader.spd_timings is None
+
+    def test_read_temperatures_garbage_value_skipped(self, tmp_path):
+        dev = tmp_path / "hwmon" / "hwmon0"
+        dev.mkdir(parents=True)
+        (dev / "name").write_text("spd5118\n")
+        (dev / "temp1_input").write_text("not-a-number\n")
+        reader = SPD5118Reader(hwmon_base=tmp_path / "hwmon")
+        assert reader.read_temperatures() == []
