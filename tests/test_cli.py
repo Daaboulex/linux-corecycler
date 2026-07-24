@@ -75,6 +75,11 @@ class FakeEngine(QObject):
         elif self.behavior == "quarantines":
             self.status = "quarantined"
             self.status_changed.emit("quarantined")
+        elif self.behavior == "aborts":
+            self.status = "idle"
+            self.status_changed.emit("idle")
+        elif self.behavior == "runs":
+            self.status = "running"
 
 
 class TestArgHandling:
@@ -234,3 +239,158 @@ class TestCmdStatusOwnDb:
         own = HistoryDB(":memory:")
         monkeypatch.setattr("corecycler.history.db.HistoryDB", lambda *a, **k: own)
         assert cli.cmd_status() == cli.EXIT_COMPLETED
+
+
+def _fake_topology():
+    from corecycler.engine.topology import CPUTopology, PhysicalCore
+
+    topo = CPUTopology(model_name="AMD Ryzen 9 9950X3D 16-Core Processor", family=26, model=0x44)
+    topo.cores = {0: PhysicalCore(core_id=0, ccd=0, ccx=None, logical_cpus=(0,))}
+    return topo
+
+
+class TestRunPreflightRefusals:
+    def _run(self, db):
+        return cli.cmd_run(None, None, False, db=db)
+
+    def test_topology_detection_failure_refused(self, db, monkeypatch, capsys):
+        monkeypatch.setattr("corecycler.engine.topology.detect_topology", lambda: None)
+        assert self._run(db) == cli.EXIT_REFUSED
+        assert "topology detection failed" in capsys.readouterr().err
+
+    def test_smu_unavailable_refused(self, db, monkeypatch, capsys):
+        monkeypatch.setattr("corecycler.engine.topology.detect_topology", _fake_topology)
+        monkeypatch.setattr(cli, "_build_smu", lambda _t: None)
+        assert self._run(db) == cli.EXIT_REFUSED
+        assert "ryzen_smu is not available" in capsys.readouterr().err
+
+    def test_unknown_backend_refused(self, db, monkeypatch, capsys):
+        monkeypatch.setattr("corecycler.engine.topology.detect_topology", _fake_topology)
+        monkeypatch.setattr(cli, "_build_smu", lambda _t: object())
+
+        def boom(name):
+            raise KeyError(name)
+
+        monkeypatch.setattr("corecycler.engine.backends.get_backend", boom)
+        assert self._run(db) == cli.EXIT_REFUSED
+        assert "unknown backend" in capsys.readouterr().err
+
+    def test_backend_not_installed_refused(self, db, monkeypatch, capsys):
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr("corecycler.engine.topology.detect_topology", _fake_topology)
+        monkeypatch.setattr(cli, "_build_smu", lambda _t: object())
+        backend = MagicMock()
+        backend.is_available.return_value = False
+        monkeypatch.setattr("corecycler.engine.backends.get_backend", lambda _n: backend)
+        assert self._run(db) == cli.EXIT_REFUSED
+        assert "is not installed" in capsys.readouterr().err
+
+    def test_build_smu_returns_none_on_unsupported_cpu(self):
+        from corecycler.engine.topology import CPUTopology
+
+        assert cli._build_smu(CPUTopology(model_name="Intel", family=6, model=1)) is None
+
+    def test_build_smu_constructs_driver_when_available(self, monkeypatch):
+        from corecycler.smu import driver as drv
+
+        monkeypatch.setattr(drv.RyzenSMU, "is_available", staticmethod(lambda *a, **k: True))
+        assert cli._build_smu(_fake_topology()) is not None
+
+
+class TestRunStatusAndSignal:
+    def test_idle_status_maps_to_engine_aborted(self, db):
+        code = cli.cmd_run(None, None, False, engine_factory=lambda *_: FakeEngine("aborts"), db=db)
+        assert code == cli.EXIT_ENGINE_ABORTED
+
+    def test_signal_handler_aborts_with_signal_exit(self, db, monkeypatch):
+        import signal as signal_mod
+
+        captured: dict = {}
+        real = signal_mod.signal
+
+        def fake_signal(sig, handler):
+            captured[sig] = handler
+            return real(sig, handler)
+
+        monkeypatch.setattr(signal_mod, "signal", fake_signal)
+        made = []
+
+        def factory(_db, _config):
+            eng = FakeEngine("runs")
+            made.append(eng)
+            QTimer.singleShot(10, lambda: captured[signal_mod.SIGINT](signal_mod.SIGINT, None))
+            return eng
+
+        code = cli.cmd_run(None, None, False, engine_factory=factory, db=db)
+        assert code == cli.EXIT_SIGNAL
+        assert made[0].status == "idle"
+
+    def test_auto_resume_falls_back_to_first_resumable(self, db):
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        tp.update_session_status(db, sid, "paused")
+        made = []
+
+        def factory(_db, _config):
+            eng = FakeEngine("completes")
+            made.append(eng)
+            return eng
+
+        code = cli.cmd_run(None, None, True, engine_factory=factory, db=db)
+        assert code == cli.EXIT_COMPLETED
+        assert made[0].resumed_with == sid
+
+
+class TestRunEngineConstruction:
+    def test_db_constructed_when_not_injected(self, monkeypatch):
+        own = HistoryDB(":memory:")
+        monkeypatch.setattr("corecycler.history.db.HistoryDB", lambda *a, **k: own)
+        code = cli.cmd_run(
+            None, None, False, engine_factory=lambda *_: FakeEngine("completes"), db=None
+        )
+        assert code == cli.EXIT_COMPLETED
+
+    def test_real_engine_built_when_preflight_passes(self, db, monkeypatch):
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr("corecycler.engine.topology.detect_topology", _fake_topology)
+        monkeypatch.setattr(cli, "_build_smu", lambda _t: object())
+        backend = MagicMock()
+        backend.is_available.return_value = True
+        monkeypatch.setattr("corecycler.engine.backends.get_backend", lambda _n: backend)
+        built = []
+
+        def fake_engine(**kw):
+            built.append(kw)
+            return FakeEngine("completes")
+
+        monkeypatch.setattr("corecycler.tuner.engine.TunerEngine", fake_engine)
+        assert cli.cmd_run(None, None, False, db=db) == cli.EXIT_COMPLETED
+        assert built and built[0]["backend"] is backend
+
+
+class TestNotifyOutcome:
+    def test_unknown_code_is_silent(self, capsys):
+        cli._notify_outcome(999)
+        assert capsys.readouterr().err == ""
+
+    def test_disabled_by_setting(self, monkeypatch, capsys):
+        from types import SimpleNamespace
+
+        from corecycler.config import settings as settings_mod
+
+        monkeypatch.setattr(
+            settings_mod, "load_settings", lambda: SimpleNamespace(notify_on_completion=False)
+        )
+        cli._notify_outcome(cli.EXIT_COMPLETED)
+        assert capsys.readouterr().err == ""
+
+    def test_failure_surfaces_on_stderr(self, monkeypatch, capsys):
+        from corecycler.config import settings as settings_mod
+
+        def boom():
+            raise RuntimeError("no settings")
+
+        monkeypatch.setattr(settings_mod, "load_settings", boom)
+        cli._notify_outcome(cli.EXIT_COMPLETED)
+        assert "notification failed" in capsys.readouterr().err
