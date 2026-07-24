@@ -43,4 +43,7 @@ def test_no_dormant_drift_seam():
         rel, _, node = c.ring_b_test.partition("::")
         path = tests_dir / rel
         assert path.exists(), f"{c.name}: Ring B file missing: {rel}"
-        assert node and node in path.read_text(), f"{c.name}: Ring B node missing: {c.ring_b_test}"
+        assert node, f"{c.name}: Ring B test names no node: {c.ring_b_test}"
+        text = path.read_text()
+        for part in node.split("::"):
+            assert part in text, f"{c.name}: Ring B node missing: {c.ring_b_test} ({part})"
