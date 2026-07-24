@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -696,3 +697,46 @@ class TestMemoryDriftEdges:
         (dev / "temp1_input").write_text("not-a-number\n")
         reader = SPD5118Reader(hwmon_base=tmp_path / "hwmon")
         assert reader.read_temperatures() == []
+
+
+class TestDimmInfoReader:
+    """dmidecode is optional and privileged: absent, slow, or refusing to run,
+    it must degrade to an empty inventory -- and a non-zero exit still gets
+    parsed, because some systems return 1 while printing usable output."""
+
+    def _run(self, monkeypatch, **result):
+        import subprocess as sp
+
+        from corecycler.monitor import memory as mem
+
+        monkeypatch.setattr(
+            sp, "run", lambda *_a, **_kw: SimpleNamespace(**result)
+        )
+        return mem.read_dimm_info()
+
+    def test_a_refusing_dmidecode_is_reported_and_still_parsed(self, monkeypatch, caplog):
+        sample = (
+            "Handle 0x0001, DMI type 17, 92 bytes\nMemory Device\n"
+            "\tSize: 32 GB\n\tLocator: DIMM 0\n\tType: DDR5\n"
+        )
+        with caplog.at_level("WARNING", logger="corecycler.monitor.memory"):
+            dimms = self._run(
+                monkeypatch, returncode=1, stdout=sample, stderr="Permission denied"
+            )
+        assert "dmidecode exited with code 1" in caplog.text
+        assert len(dimms) == 1
+        assert dimms[0].size_gb == 32
+
+    def test_output_that_parses_to_nothing_is_an_empty_inventory(self, monkeypatch):
+        assert self._run(monkeypatch, returncode=0, stdout="no devices here", stderr="") == []
+
+    def test_an_absent_dmidecode_is_an_empty_inventory(self, monkeypatch):
+        import subprocess as sp
+
+        from corecycler.monitor import memory as mem
+
+        def _missing(*_a, **_kw):
+            raise FileNotFoundError("dmidecode")
+
+        monkeypatch.setattr(sp, "run", _missing)
+        assert mem.read_dimm_info() == []
