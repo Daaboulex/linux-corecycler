@@ -531,3 +531,121 @@ class TestBackupRestore:
         with patch.object(smu, "set_co_offset", side_effect=[True, False, True]):
             ok, failed = smu.restore_co_offsets()
         assert ok is False and failed == [1]
+
+
+class TestDriverWriteReadBranches:
+    def _zen5_full(self):
+        return get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE)
+
+    def _no_co(self):
+        return SMUCommandSet(
+            generation=CPUGeneration.ZEN2_MATISSE,
+            co_range=(0, 0),
+            mailbox="rsmu",
+            encoding_scheme="none",
+        )
+
+    def _ok(self):
+        return SMUResponse(success=True, args=(0,) * 6, raw=b"")
+
+    def _resp(self, arg0):
+        return SMUResponse(success=True, args=(arg0, 0, 0, 0, 0, 0), raw=b"")
+
+    def test_send_rsmu_pads_args_and_fails_closed_on_write_error(self, tmp_path, zen5_cmds):
+        smu_dir = tmp_path / "ryzen_smu_drv"
+        smu_dir.mkdir()
+        (smu_dir / "smu_args").mkdir()
+        (smu_dir / "rsmu_cmd").write_bytes(struct.pack("<I", 1))
+        smu = RyzenSMU(zen5_cmds, smu_dir)
+        resp = smu._send_rsmu_command(0x70, (1,))
+        assert resp.success is False
+
+    def test_get_co_offset_none_without_co(self, smu_dir):
+        assert RyzenSMU(self._no_co(), smu_dir).get_co_offset(0) is None
+
+    def test_set_co_offset_false_without_co(self, smu_dir):
+        assert RyzenSMU(self._no_co(), smu_dir).set_co_offset(0, 0) is False
+
+    def test_set_all_co_false_without_co(self, smu_dir):
+        assert RyzenSMU(self._no_co(), smu_dir).set_all_co(0) is False
+
+    def test_set_all_co_out_of_range_raises(self, smu_dir, zen5_cmds):
+        with pytest.raises(ValueError, match="out of range"):
+            RyzenSMU(zen5_cmds, smu_dir).set_all_co(100)
+
+    def test_set_all_co_dry_run(self, smu_dir, zen5_cmds):
+        assert RyzenSMU(zen5_cmds, smu_dir, dry_run=True).set_all_co(0) is True
+
+    def test_set_all_co_readback_mismatch_fails(self, smu_dir, zen5_cmds):
+        smu = RyzenSMU(zen5_cmds, smu_dir, dry_run=False)
+        with (
+            patch.object(smu, "_send_command", return_value=self._ok()),
+            patch.object(smu, "get_co_offset", return_value=-5),
+        ):
+            assert smu.set_all_co(-10) is False
+
+    def test_set_all_co_no_set_all_cmd_returns_false(self, smu_dir):
+        cmds = SMUCommandSet(
+            generation=CPUGeneration.ZEN5_GRANITE_RIDGE,
+            co_range=(-50, 10),
+            mailbox="rsmu",
+            encoding_scheme="zen4_5",
+            set_co_cmd=0x06,
+            get_co_cmd=0xD5,
+        )
+        assert RyzenSMU(cmds, smu_dir, dry_run=False).set_all_co(-10) is False
+
+    def test_set_ppt_limit_real_write(self, smu_dir):
+        smu = RyzenSMU(self._zen5_full(), smu_dir, dry_run=False)
+        with patch.object(smu, "_send_rsmu_command", return_value=self._ok()) as m:
+            assert smu.set_ppt_limit(200) is True
+        m.assert_called_once()
+
+    def test_set_tdc_limit_real_write(self, smu_dir):
+        smu = RyzenSMU(self._zen5_full(), smu_dir, dry_run=False)
+        with patch.object(smu, "_send_rsmu_command", return_value=self._ok()):
+            assert smu.set_tdc_limit(160) is True
+
+    def test_set_edc_limit_real_write(self, smu_dir):
+        smu = RyzenSMU(self._zen5_full(), smu_dir, dry_run=False)
+        with patch.object(smu, "_send_rsmu_command", return_value=self._ok()):
+            assert smu.set_edc_limit(200) is True
+
+    def test_get_pbo_scalar_none_without_cmd(self, smu_dir, zen3_cmds):
+        assert RyzenSMU(zen3_cmds, smu_dir).get_pbo_scalar() is None
+
+    def test_get_pbo_scalar_reads_float(self, smu_dir):
+        smu = RyzenSMU(self._zen5_full(), smu_dir)
+        bits = struct.unpack("<I", struct.pack("<f", 3.0))[0]
+        with patch.object(smu, "_send_rsmu_command", return_value=self._resp(bits)):
+            assert smu.get_pbo_scalar() == pytest.approx(3.0)
+
+    def test_set_pbo_scalar_none_without_cmd(self, smu_dir, zen3_cmds):
+        assert RyzenSMU(zen3_cmds, smu_dir).set_pbo_scalar(2.0) is False
+
+    def test_set_pbo_scalar_real_write(self, smu_dir):
+        smu = RyzenSMU(self._zen5_full(), smu_dir, dry_run=False)
+        with patch.object(smu, "_send_rsmu_command", return_value=self._ok()):
+            assert smu.set_pbo_scalar(3.0) is True
+
+    def test_get_fastest_core_none_without_cmd(self, smu_dir, zen3_cmds):
+        assert RyzenSMU(zen3_cmds, smu_dir).get_fastest_core() is None
+
+    def test_get_fastest_core_reads_index(self, smu_dir):
+        smu = RyzenSMU(self._zen5_full(), smu_dir)
+        with patch.object(smu, "_send_rsmu_command", return_value=self._resp(5)):
+            assert smu.get_fastest_core() == 5
+
+    def test_detect_system_state_reads_fastest_core(self, smu_dir):
+        smu = RyzenSMU(self._zen5_full(), smu_dir)
+        with patch.object(smu, "_send_rsmu_command", return_value=self._resp(7)):
+            state = smu.detect_system_state(2)
+        assert state.fastest_core == 7
+
+    def test_read_max_freq_sysfs_handles_error(self):
+        from corecycler.smu.driver import _read_max_freq_sysfs
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.read_text", side_effect=OSError),
+        ):
+            assert _read_max_freq_sysfs() is None

@@ -240,3 +240,130 @@ class TestReadMSR:
 
         # os.open should only be called once (fd cached)
         mock_open.assert_called_once()
+
+
+class TestReadPackagePower:
+    def _make_reader(self):
+        reader = MSRReader()
+        reader._available = True
+        reader._energy_unit = 1.0 / (1 << 14)
+        return reader
+
+    def test_not_available_returns_none(self):
+        reader = MSRReader()
+        reader._available = False
+        assert reader.read_package_power() is None
+
+    def test_energy_unit_unavailable_returns_none(self):
+        reader = MSRReader()
+        reader._available = True
+        reader._energy_unit = None
+        with patch.object(reader, "_read_msr", return_value=None):
+            assert reader.read_package_power() is None
+
+    def test_raw_read_failure_returns_none(self):
+        reader = self._make_reader()
+        with patch.object(reader, "_read_msr", return_value=None):
+            assert reader.read_package_power() is None
+
+    def test_first_read_establishes_baseline(self):
+        reader = self._make_reader()
+        with (
+            patch.object(reader, "_read_msr", return_value=1_000_000),
+            patch("time.monotonic", return_value=100.0),
+        ):
+            assert reader.read_package_power() is None
+        assert reader._pkg_energy_prev.energy_raw == 1_000_000
+
+    def test_second_read_returns_watts(self):
+        reader = self._make_reader()
+        reader._pkg_energy_prev = _EnergySnapshot(energy_raw=1_000_000, timestamp=100.0)
+        with (
+            patch.object(reader, "_read_msr", return_value=1_000_000 + 163840),
+            patch("time.monotonic", return_value=101.0),
+        ):
+            watts = reader.read_package_power()
+        assert watts is not None
+        assert abs(watts - 10.0) < 0.1
+
+    def test_counter_wraparound(self):
+        reader = self._make_reader()
+        reader._pkg_energy_prev = _EnergySnapshot(energy_raw=(1 << 32) - 100, timestamp=100.0)
+        with (
+            patch.object(reader, "_read_msr", return_value=60),
+            patch("time.monotonic", return_value=101.0),
+        ):
+            watts = reader.read_package_power()
+        assert watts is not None
+        assert watts > 0
+
+
+class TestMSRExtraBranches:
+    def test_read_clock_stretch_unavailable_returns_empty(self):
+        reader = MSRReader()
+        reader._available = False
+        assert reader.read_clock_stretch([0]) == {}
+
+    def test_read_core_power_unavailable_returns_empty(self):
+        reader = MSRReader()
+        reader._available = False
+        assert reader.read_core_power([0]) == {}
+
+    def test_core_power_raw_read_failure_skips_cpu(self):
+        reader = MSRReader()
+        reader._available = True
+        reader._energy_unit = 1.0 / (1 << 14)
+        with patch.object(reader, "_read_msr", return_value=None):
+            assert reader.read_core_power([0]) == {}
+
+    def test_clock_stretch_counter_wraparound(self):
+        reader = MSRReader()
+        reader._available = True
+        reader._perf_prev[0] = _PerfSnapshot(aperf=(1 << 64) - 50, mperf=(1 << 64) - 100)
+        with patch.object(reader, "_read_msr", side_effect=[50, 100]):
+            result = reader.read_clock_stretch([0])
+        assert 0 in result
+        assert result[0].ratio > 0
+
+    def test_core_power_counter_wraparound(self):
+        reader = MSRReader()
+        reader._available = True
+        reader._energy_unit = 1.0 / (1 << 14)
+        reader._energy_prev[0] = _EnergySnapshot(energy_raw=(1 << 32) - 100, timestamp=100.0)
+        with (
+            patch.object(reader, "_read_msr", return_value=60),
+            patch("time.monotonic", return_value=101.0),
+        ):
+            result = reader.read_core_power([0])
+        assert 0 in result
+        assert result[0].watts > 0
+
+    def test_read_msr_pread_failure_returns_none(self):
+        reader = MSRReader()
+        with (
+            patch("os.open", return_value=99),
+            patch("os.pread", side_effect=OSError),
+            patch("os.close"),
+        ):
+            assert reader._read_msr(0, MSR_APERF) is None
+
+    def test_get_energy_unit_computes_and_caches(self):
+        reader = MSRReader()
+        raw = 14 << 8
+        with patch.object(reader, "_read_msr", return_value=raw):
+            unit = reader._get_energy_unit()
+        assert unit == 1.0 / (1 << 14)
+        with patch.object(reader, "_read_msr") as m2:
+            assert reader._get_energy_unit() == unit
+            m2.assert_not_called()
+
+    def test_get_energy_unit_read_failure_returns_none(self):
+        reader = MSRReader()
+        with patch.object(reader, "_read_msr", return_value=None):
+            assert reader._get_energy_unit() is None
+
+    def test_del_swallows_close_error(self):
+        reader = MSRReader()
+        with patch.object(reader, "close", side_effect=RuntimeError("shutdown")):
+            reader.__del__()
+        assert reader._fds == {}

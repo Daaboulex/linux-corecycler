@@ -7,13 +7,18 @@ where an absent resource fails loud instead of skipping green.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from corecycler.monitor.memory import parse_dmidecode_output
+from corecycler.monitor.msr import MSRReader
 from corecycler.smu.commands import CPUGeneration, detect_generation, get_commands
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -56,3 +61,27 @@ def test_real_cpu_resolves_to_supported_generation():
     gen = detect_generation(family, model, name)
     assert gen is not CPUGeneration.UNKNOWN, f"unmapped CPU family={family} model={model} name={name!r}"
     assert get_commands(gen) is not None
+
+
+def test_msr_reads_are_plausible():
+    reader = MSRReader()
+    require(reader.is_available(), "requires /dev/cpu/0/msr (root or msr group + msr module)")
+    unit = reader._get_energy_unit()
+    assert unit is not None and 1e-6 < unit < 1e-2, f"implausible RAPL energy unit {unit}"
+    reader.read_clock_stretch([0])
+    time.sleep(0.1)
+    stretch = reader.read_clock_stretch([0])
+    reader.close()
+    if 0 in stretch:
+        assert 0.0 < stretch[0].ratio <= 1.6, f"implausible APERF/MPERF ratio {stretch[0].ratio}"
+
+
+def test_dmidecode_parses_real_dimms():
+    require(shutil.which("dmidecode") is not None, "requires dmidecode")
+    result = subprocess.run(
+        ["dmidecode", "-t", "memory"], capture_output=True, text=True, timeout=15
+    )
+    require(result.returncode == 0 and bool(result.stdout), "dmidecode -t memory needs root")
+    dimms = parse_dmidecode_output(result.stdout)
+    assert len(dimms) >= 1, "no DIMMs parsed from real dmidecode output"
+    assert all(d.size_gb > 0 for d in dimms)
