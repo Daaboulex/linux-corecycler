@@ -434,34 +434,30 @@ class PMTableReader:
         if len(floats) < 200:
             return
 
-        try:
-            if (data.pm_table_version >> 16) & 0xFF == _ZEN5_PREFIX:
-                data.ppt_limit_w = floats[2]
-                data.ppt_value_w = floats[3]
-                data.tdc_limit_a = floats[8]
-                data.tdc_value_a = floats[9]
-                data.edc_limit_a = floats[63] if len(floats) > 63 else 0.0
-                data.edc_value_a = 0.0  # value slot not located — absent, not a guess
-                data.tctl_c = floats[11] if len(floats) > 11 else 0.0
-                data.tdie_c = 0.0  # not located — absent, not a guess
-                # PPT value IS the package power the limit governs.
-                data.package_power_w = floats[3]
-                data.soc_power_w = 0.0  # not located — absent, not a guess
+        if (data.pm_table_version >> 16) & 0xFF == _ZEN5_PREFIX:
+            data.ppt_limit_w = floats[2]
+            data.ppt_value_w = floats[3]
+            data.tdc_limit_a = floats[8]
+            data.tdc_value_a = floats[9]
+            data.edc_limit_a = floats[63]
+            data.edc_value_a = 0.0  # value slot not located — absent, not a guess
+            data.tctl_c = floats[11]
+            data.tdie_c = 0.0  # not located — absent, not a guess
+            # PPT value IS the package power the limit governs.
+            data.package_power_w = floats[3]
+            data.soc_power_w = 0.0  # not located — absent, not a guess
 
-            # per-core data typically starts around offset 100+
-            # each core has ~10 float fields (freq, voltage, power, temp, residency, ...)
-            core_base = 100
-            core_stride = 10
+        # per-core data typically starts around offset 100+
+        # each core has ~10 float fields (freq, voltage, power, temp, residency, ...)
+        core_base = 100
+        core_stride = 10
 
-            for core in range(min(self.num_cores, 32)):
-                offset = core_base + core * core_stride
-                if offset + core_stride > len(floats):
-                    break
-                data.core_frequency_mhz[core] = floats[offset]
-                data.core_voltage_v[core] = floats[offset + 1]
-                data.core_power_w[core] = floats[offset + 2]
-                data.core_temperature_c[core] = floats[offset + 3]
-                data.core_c0_residency[core] = floats[offset + 4]
-
-        except IndexError:
-            pass  # PM table smaller than expected, partial data is fine
+        for core in range(min(self.num_cores, 32)):
+            offset = core_base + core * core_stride
+            if offset + core_stride > len(floats):
+                break
+            data.core_frequency_mhz[core] = floats[offset]
+            data.core_voltage_v[core] = floats[offset + 1]
+            data.core_power_w[core] = floats[offset + 2]
+            data.core_temperature_c[core] = floats[offset + 3]
+            data.core_c0_residency[core] = floats[offset + 4]
