@@ -65,7 +65,11 @@ def test_real_cpu_resolves_to_supported_generation():
 
 def test_msr_reads_are_plausible():
     reader = MSRReader()
-    require(reader.is_available(), "requires /dev/cpu/0/msr (root or msr group + msr module)")
+    require(
+        reader.is_available(),
+        "requires CAP_SYS_RAWIO on /dev/cpu/0/msr: the kernel gates msr_open() on the "
+        "capability, so a udev group grant alone opens the file mode but still EPERMs",
+    )
     unit = reader._get_energy_unit()
     assert unit is not None and 1e-6 < unit < 1e-2, f"implausible RAPL energy unit {unit}"
     reader.read_clock_stretch([0])

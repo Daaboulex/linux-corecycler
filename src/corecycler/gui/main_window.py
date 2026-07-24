@@ -289,8 +289,6 @@ class MainWindow(QMainWindow):
         self._status_msg = QLabel("Ready")
         self._status_bar.addWidget(self._status_msg)
 
-        # Check actual device access rather than euid — supports udev/group-based
-        # permissions without requiring root
         missing: list[str] = []
         try:
             fd = os.open("/dev/cpu/0/msr", os.O_RDONLY)
