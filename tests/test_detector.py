@@ -439,3 +439,26 @@ class TestLastBootEndedCleanly:
             assert last_boot_ended_cleanly() is False
         with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="")):
             assert last_boot_ended_cleanly() is False
+
+
+class TestHarvestAndDmesgDrift:
+    def test_harvest_dedups_and_tolerates_bad_timestamp(self):
+        """The journal harvest skips a duplicate (ts,cpu,bank) line and, on a
+        malformed timestamp, records the event with raw_ts 0.0 instead of crashing."""
+        good = f"1700000000.5 host kernel: {ZEN_BLOCK_STATUS}"
+        dup = f"1700000000.5 host kernel: {ZEN_BLOCK_STATUS}"
+        bad_ts = f"1.2.3 host kernel: {ZEN_BLOCK_STATUS}"
+        stdout = "\n".join([good, dup, bad_ts]) + "\n"
+        fake = MagicMock(returncode=0, stdout=stdout, stderr="")
+        with patch("subprocess.run", return_value=fake):
+            events, ok = harvest_kernel_mce("2026-07-24T00:00:00")
+        assert ok is True
+        assert len(events) == 2
+        assert any(e.raw_ts == 0.0 for e in events)
+        assert all(e.cpu == 9 for e in events)
+
+    def test_dmesg_raw_timestamp_malformed_returns_zero(self):
+        """A dmesg last line whose first token is not a float yields a 0.0 baseline."""
+        fake = MagicMock(returncode=0, stdout="garbage more text\n", stderr="")
+        with patch("subprocess.run", return_value=fake):
+            assert _get_dmesg_raw_timestamp() == 0.0

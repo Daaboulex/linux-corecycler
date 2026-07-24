@@ -16,6 +16,7 @@ from corecycler.smu.commands import (
     decode_co_arg,
     detect_generation,
     encode_co_arg,
+    encode_pbo_limit_arg,
     get_commands,
 )
 
@@ -440,3 +441,25 @@ class TestCPUGeneration:
         }
         actual = {g.name for g in CPUGeneration}
         assert actual == expected
+
+
+class TestDetectGenerationDriftEdges:
+    def test_zen2_castle_peak_model_0x31(self):
+        assert detect_generation(23, 0x31, "AMD Ryzen Threadripper 3960X") == CPUGeneration.ZEN2_CASTLE_PEAK
+
+    def test_family23_unknown_model_falls_back_to_matisse(self):
+        assert detect_generation(23, 0x01, "AMD Ryzen 7 1700 Eight-Core") == CPUGeneration.ZEN2_MATISSE
+
+    def test_zen4_x3d_model_in_raphael_range(self):
+        assert detect_generation(25, 0x61, "AMD Ryzen 9 7950X3D 16-Core Processor") == CPUGeneration.ZEN4_RAPHAEL
+
+    def test_zen5_strix_halo_model_0x70(self):
+        assert detect_generation(26, 0x70, "AMD Ryzen AI Max+ 395") == CPUGeneration.ZEN5_STRIX_POINT
+
+    def test_decode_co_arg_rejects_zen2(self):
+        with pytest.raises(ValueError, match="Unsupported generation"):
+            decode_co_arg(0, 0x0, CPUGeneration.ZEN2_MATISSE)
+
+    def test_encode_pbo_limit_arg_watts_to_milliwatts(self):
+        assert encode_pbo_limit_arg(225) == 225000
+        assert encode_pbo_limit_arg(0) == 0

@@ -30,6 +30,7 @@ python_files = ["test_*.py"]
 markers = [
     "slow: tests that take >5s (deselect with -m 'not slow')",
     "hardware: tests that verify hardware-specific detection behavior",
+    "contract: Ring B live drift tests -- real binary/hardware, run outside the sandbox (pytest -m contract)",
 ]
 
 [tool.ruff]
