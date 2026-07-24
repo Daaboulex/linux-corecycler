@@ -295,6 +295,16 @@ class TestSoakWorker:
         assert "corrected" in seen[0][2]
         assert json.loads(seen[0][6])[0]["cpu"] == 1
 
+    def test_a_quiet_watch_polls_until_its_duration_ends(self):
+        worker = _SoakWorker(0, 600)
+        worker.detector = MagicMock()
+        worker.detector.check_mce.return_value = []
+        worker._stop = _Ticks([False, False, True])
+        seen = _collect(worker)
+        worker.run()
+        assert seen[0][1] is True
+        assert worker.detector.check_mce.call_count == 3
+
     def test_stopping_ends_the_watch(self):
         worker = _SoakWorker(0, 600)
         worker.detector = MagicMock()
