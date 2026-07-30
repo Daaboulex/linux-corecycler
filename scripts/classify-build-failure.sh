@@ -15,7 +15,8 @@ set -uo pipefail
 #
 # Outputs (GITHUB_OUTPUT or stdout):
 #   class=<transient-infra|upstream-rerelease-hash-mismatch|nixpkgs-package-drop|
-#          missing-python-dep|requirements-coverage|unclassified>
+#          missing-python-dep|requirements-coverage|
+#          python-metadata-version-mismatch|unclassified>
 #   failed_attrs=<nix-fast-build failed attribute list, if present>
 #   failed_drvs=<up to 12 failing derivations, deduplicated>
 #
@@ -39,10 +40,21 @@ failed_drvs=$(grep -oE "Cannot build '/nix/store/[^']+\.drv'" "$LOG" |
 
 class=unclassified
 grep -qiE "couldn.t resolve host|temporary failure in name resolution|connection reset by peer|status code: (403|429)|operation timed out|service unavailable" "$LOG" && class=transient-infra
+# A store path the evaluator named but the store does not hold (a runner-side
+# fetch/GC race, not our code): the same revision re-runs green, so it is
+# transient -- never a repo defect to chase.
+grep -qE "path '[^']+' is not valid|does not exist in the Nix store|no such path in the store" "$LOG" && class=transient-infra
 grep -q 'hash mismatch in fixed-output' "$LOG" && class=upstream-rerelease-hash-mismatch
 grep -qE 'not supported for interpreter python|is marked as broken' "$LOG" && class=nixpkgs-package-drop
 grep -q 'ModuleNotFoundError' "$LOG" && class=missing-python-dep
+# nixpkgs' pythonRuntimeDepsCheck: the packaged upstream declares a runtime
+# dependency the derivation does not carry (a git-main src that moved ahead of
+# nixpkgs' release). Same actionable class as an import failure.
+grep -qE '^ *> *- [a-zA-Z0-9_.-]+ not installed' "$LOG" && class=missing-python-dep
 grep -q 'requirements not present in the env' "$LOG" && class=requirements-coverage
+# The declared version contradicts the built wheel's METADATA -- a real
+# packaging defect with a documented remedy (pyprojectVersionPatchHook).
+grep -q 'METADATA specifies version' "$LOG" && class=python-metadata-version-mismatch
 
 out "class" "$class"
 out "failed_attrs" "${failed_attrs:-}"

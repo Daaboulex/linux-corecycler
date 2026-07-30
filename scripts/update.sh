@@ -57,6 +57,10 @@ REV_FILE=$(echo "$CONFIG" | jq -r --arg d "$VERSION_FILE" '.revFile // $d')
 # several namespaces (desktop "2026.2" vs "android/2026.5") pin to the ones it
 # packages — GitHub's "latest" flag can otherwise select a foreign namespace.
 TAG_FILTER=$(echo "$CONFIG" | jq -r '.upstream.tagFilter // ".*"')
+# How many 100-item pages of the tag/release list to search for a tagFilter
+# match before giving up. Bounds fetch_paged_match so a filter that can never
+# match still terminates instead of walking an unbounded history.
+TAG_PAGE_LIMIT=10
 # trackOnly: for hand-mirrored repos with no buildable artifact (the package is
 # a reimplementation, not a fetched source). The updater only DETECTS upstream
 # movement and files a "remirror-needed" reminder; it never writes, builds, or
@@ -77,6 +81,27 @@ if [ "$UPSTREAM_TYPE" = "custom" ]; then
   log "Upstream type is 'custom' — repo provides its own update logic"
   output "updated" "false"
   exit 0
+fi
+
+# --- Hash-config validation ---------------------------------------------
+# A source FOD reports no field identity, so the router below can only map a
+# mismatch to the one declared non-vendor field; a second is unattributable.
+VARIANT_ASSETS=$(echo "$CONFIG" | jq -c '.variantAssets // empty')
+DECLARED_HASHES=$(echo "$CONFIG" | jq '.hashes // [] | length')
+DECLARED_SOURCE_HASHES=$(echo "$CONFIG" | jq '
+  [.hashes // [] | .[] | if type == "string" then . else .field end
+   | select(. != "vendorHash" and . != "npmDepsHash" and . != "cargoHash")] | length')
+if [ -n "$VARIANT_ASSETS" ] && [ "$DECLARED_HASHES" -gt 0 ]; then
+  err "variantAssets and hashes are mutually exclusive: variantAssets resolves every variant from its asset URL, so hashes[] must be empty"
+  output "updated" "false"
+  output "error_type" "config-error"
+  exit 1
+fi
+if [ "$DECLARED_SOURCE_HASHES" -gt 1 ]; then
+  err "hashes[] declares $DECLARED_SOURCE_HASHES source hashes: every source mismatch routes to the first field, leaving the rest dummied, so the loop can never converge — use variantAssets for a multi-variant release"
+  output "updated" "false"
+  output "error_type" "config-error"
+  exit 1
 fi
 
 # --- Get current version -------------------------------------------------
@@ -134,6 +159,33 @@ fetch_latest() {
   return 1
 }
 
+# fetch_paged_match <api-url-with-per_page> <jq-selector> — page through a
+# GitHub list endpoint until <jq-selector> (given $f = tagFilter) yields a
+# value. A repo publishing several tag namespaces can push the tracked one far
+# past the first page (CachyOS/wine-cachyos carries ~370 rolling experimental-*
+# tags ahead of the newest *-wine build tag), and a single-page fetch would
+# report "no match" forever, failing every scheduled run. Stops at the first
+# match, at a short page (end of the list), or at TAG_PAGE_LIMIT.
+# Sets PAGED_MATCH (the match) and PAGED_BODY (the page it came from, so a
+# caller can read the matched entry's other fields — variantAssets needs the
+# release's asset list); returns 1 when nothing matched, 2 on a fetch error.
+# Deliberately not echo-and-capture: a command substitution runs in a subshell,
+# which would drop PAGED_BODY.
+fetch_paged_match() {
+  local url="$1" selector="$2" page=1 body
+  PAGED_MATCH=""
+  PAGED_BODY=""
+  while [ "$page" -le "$TAG_PAGE_LIMIT" ]; do
+    body=$(fetch_latest "curl -sfL '$url&page=$page'") || return 2
+    PAGED_BODY="$body"
+    PAGED_MATCH=$(echo "$body" | jq -r --arg f "$TAG_FILTER" "$selector")
+    [ -n "$PAGED_MATCH" ] && return 0
+    [ "$(echo "$body" | jq -r 'length')" -lt 100 ] && return 1
+    page=$((page + 1))
+  done
+  return 1
+}
+
 FULL_REV=""
 case "$UPSTREAM_TYPE" in
 github-release)
@@ -143,15 +195,20 @@ github-release)
   # non-draft, non-prerelease tag whose name matches tagFilter. Filtering the
   # list — not trusting /releases/latest — is what lets a repo ignore a foreign
   # release namespace; GitHub's "latest" flag can point at any of them.
-  RELEASES=$(fetch_latest "curl -sfL 'https://api.github.com/repos/$OWNER/$REPO/releases?per_page=100'") || {
+  RC=0
+  # shellcheck disable=SC2016  # $f is a jq variable (--arg f), not a shell one
+  fetch_paged_match \
+    "https://api.github.com/repos/$OWNER/$REPO/releases?per_page=100" \
+    'map(select((.draft | not) and (.prerelease | not)) | .tag_name | select(test($f)))[0] // empty' || RC=$?
+  if [ "$RC" -eq 2 ]; then
     warn "Failed to fetch releases from $OWNER/$REPO"
     output "updated" "false"
     exit 2
-  }
-  LATEST_TAG=$(echo "$RELEASES" | jq -r --arg f "$TAG_FILTER" \
-    'map(select((.draft | not) and (.prerelease | not)) | .tag_name | select(test($f)))[0] // empty')
+  fi
+  LATEST_TAG="$PAGED_MATCH"
+  RELEASES="$PAGED_BODY"
   if [ -z "$LATEST_TAG" ]; then
-    err "No release tag matched tagFilter '$TAG_FILTER' for $OWNER/$REPO"
+    err "No release tag matched tagFilter '$TAG_FILTER' for $OWNER/$REPO (searched up to $TAG_PAGE_LIMIT pages)"
     output "updated" "false"
     output "error_type" "no-matching-tag"
     exit 1
@@ -163,15 +220,19 @@ github-release)
 github-tag)
   OWNER=$(echo "$CONFIG" | jq -r '.upstream.owner')
   REPO=$(echo "$CONFIG" | jq -r '.upstream.repo')
-  TAGS=$(fetch_latest "curl -sfL 'https://api.github.com/repos/$OWNER/$REPO/tags?per_page=100'") || {
+  RC=0
+  # shellcheck disable=SC2016  # $f is a jq variable (--arg f), not a shell one
+  fetch_paged_match \
+    "https://api.github.com/repos/$OWNER/$REPO/tags?per_page=100" \
+    'map(.name | select(test($f)))[0] // empty' || RC=$?
+  if [ "$RC" -eq 2 ]; then
     warn "Failed to fetch tags from $OWNER/$REPO"
     output "updated" "false"
     exit 2
-  }
-  LATEST_TAG=$(echo "$TAGS" | jq -r --arg f "$TAG_FILTER" \
-    'map(.name | select(test($f)))[0] // empty')
+  fi
+  LATEST_TAG="$PAGED_MATCH"
   if [ -z "$LATEST_TAG" ]; then
-    err "No tag matched tagFilter '$TAG_FILTER' for $OWNER/$REPO"
+    err "No tag matched tagFilter '$TAG_FILTER' for $OWNER/$REPO (searched up to $TAG_PAGE_LIMIT pages)"
     output "updated" "false"
     output "error_type" "no-matching-tag"
     exit 1
@@ -391,6 +452,82 @@ else
     CUR_REV=$(grep -oP 'rev\s*=\s*"\K[^"]+' "$REV_FILE" | head -1 || true)
     [ -n "$CUR_REV" ] && sed -i "s|rev = \"$CUR_REV\"|rev = \"$FULL_REV\"|" "$REV_FILE"
   fi
+fi
+
+# --- Variant-asset discovery (multi-arch prebuilt release) --------------
+# A release that ships one prebuilt asset per CPU microarchitecture (e.g.
+# proton-cachyos <tag>-x86_64 / -x86_64_v3 / -arm64) cannot use the field-name
+# loop below: the assets share a fetchzip derivation name and only the default
+# variant is ever built here, so a mismatch cannot be routed to the right one.
+# Instead enumerate the release's assets, take each <variant> from
+# <assetPrefix><tag>-<variant><assetSuffix>, prefetch it unpacked (the exact
+# FOD hash fetchzip produces — proven equal to `nix hash path` of the unpacked
+# tree), and regenerate the marker-delimited rolling `variants` attrset in
+# sourceFile. A newly published variant (a future -x86_64_v4) is picked up with
+# no config change; a dropped one disappears. Pins sit outside the markers and
+# are never rewritten. Mutually exclusive with `hashes` (which stays empty).
+# defaultVariant names the variant whose asset carries no `-<variant>` token
+# (GE-Proton ships `<tag>.tar.gz` for x86_64 and `<tag>-aarch64.tar.gz`).
+if [ -n "$VARIANT_ASSETS" ]; then
+  if [ "$UPSTREAM_TYPE" != "github-release" ]; then
+    err "variantAssets requires upstream.type 'github-release'"
+    output "error_type" "config-error"
+    exit 1
+  fi
+  VA_FILE=$(echo "$VARIANT_ASSETS" | jq -r '.sourceFile // "sources.nix"')
+  VA_PREFIX=$(echo "$VARIANT_ASSETS" | jq -r '.assetPrefix')
+  VA_SUFFIX=$(echo "$VARIANT_ASSETS" | jq -r '.assetSuffix // ".tar.xz"')
+  VA_DEFAULT=$(echo "$VARIANT_ASSETS" | jq -r '.defaultVariant // empty')
+  if [ ! -f "$VA_FILE" ] || ! grep -q 'std:variants-begin' "$VA_FILE" ||
+    ! grep -q 'std:variants-end' "$VA_FILE"; then
+    err "variantAssets: '$VA_FILE' needs both '# std:variants-begin' and '# std:variants-end' markers"
+    output "error_type" "config-error"
+    exit 1
+  fi
+  VA_ASSETS=$(echo "$RELEASES" | jq -c --arg t "$LATEST_TAG" 'map(select(.tag_name==$t))[0].assets // []')
+  VA_MATCH="${VA_PREFIX}${LATEST_TAG}-"
+  VA_BLOCK=""
+  VA_COUNT=0
+  while IFS=$'\t' read -r a_name a_url; do
+    [ -n "$a_name" ] || continue
+    if [ -n "$VA_DEFAULT" ] && [ "$a_name" = "${VA_PREFIX}${LATEST_TAG}${VA_SUFFIX}" ]; then
+      variant="$VA_DEFAULT"
+    else
+      case "$a_name" in
+      "$VA_MATCH"*"$VA_SUFFIX") ;;
+      *) continue ;;
+      esac
+      variant="${a_name#"$VA_MATCH"}"
+      variant="${variant%"$VA_SUFFIX"}"
+      case "$variant" in
+      "" | *[!A-Za-z0-9_]*) continue ;;
+      esac
+    fi
+    log "variant '$variant': prefetch $a_url"
+    v_hash=$(nix store prefetch-file --unpack --hash-type sha256 --json "$a_url" 2>/dev/null | jq -r '.hash // empty' || true)
+    if [ -z "$v_hash" ]; then
+      err "variantAssets: prefetch failed for $a_url"
+      output "error_type" "hash-extraction"
+      exit 1
+    fi
+    VA_BLOCK="${VA_BLOCK}    ${variant} = \"${v_hash}\";"$'\n'
+    VA_COUNT=$((VA_COUNT + 1))
+  done < <(echo "$VA_ASSETS" | jq -r '.[] | [.name, .browser_download_url] | @tsv')
+  if [ "$VA_COUNT" -eq 0 ]; then
+    VA_WANTED="'${VA_MATCH}*${VA_SUFFIX}'"
+    [ -n "$VA_DEFAULT" ] && VA_WANTED="$VA_WANTED or '${VA_PREFIX}${LATEST_TAG}${VA_SUFFIX}'"
+    err "variantAssets: no asset matched $VA_WANTED in release $LATEST_TAG"
+    output "error_type" "no-matching-tag"
+    exit 1
+  fi
+  VA_NEW="  variants = {"$'\n'"${VA_BLOCK}  };"
+  awk -v repl="$VA_NEW" '
+    /std:variants-begin/ { print; print repl; skip = 1; next }
+    /std:variants-end/ { skip = 0; print; next }
+    !skip { print }
+  ' "$VA_FILE" >"$VA_FILE.tmp" && mv "$VA_FILE.tmp" "$VA_FILE"
+  log "variantAssets: regenerated $VA_COUNT variant(s) in $VA_FILE"
+  output "variants" "$VA_COUNT"
 fi
 
 # --- Extract hashes (iterative build-fail-parse) ------------------------
