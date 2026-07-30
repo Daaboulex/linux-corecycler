@@ -2,9 +2,10 @@
 # Source of truth: github:Daaboulex/nix-packaging-standard. Synced into each
 # packaging repo by sync.sh; byte-identity enforced by the `std-conformance`
 # flake check. flake.lock refresh: rebuild, push only if green, else open a
-# labeled issue; plus stale-branch cleanup. Temporary fixes are probed and healed
-# in that same job, between the update and the build. Cadence is per-repo via the
-# MAINTENANCE_CADENCE repo variable (daily | biweekly | weekly); unset = weekly.
+# labeled issue that closes itself on the next clean run; plus stale-branch
+# cleanup. Temporary fixes are probed and healed in that same job, between the
+# update and the build. Cadence is per-repo via the MAINTENANCE_CADENCE repo
+# variable (daily | biweekly | weekly); unset = weekly.
 name: Maintenance
 on:
   schedule:
@@ -111,6 +112,32 @@ jobs:
             git commit -m "chore: update flake.lock"
           fi
           git push
+
+      # Nothing else ever closed these, so a maintenance failure that got fixed
+      # stayed open forever and kept fleet-audit red (update.yml has always
+      # closed its own on success; this is the same contract).
+      - name: Close prior failure reports on success
+        if: steps.build.outputs.exit_code == '0'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
+        with:
+          script: |
+            const titleBase = 'Maintenance: flake.lock update broke build';
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: 'maintenance', state: 'open'
+            });
+            for (const issue of open.data) {
+              if (!issue.title.startsWith(titleBase)) continue;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Resolved: the scheduled lock refresh built clean in [run ${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, state: 'closed', state_reason: 'completed'
+              });
+            }
 
       # A red verification must leave the tree exactly as main has it, so the
       # fixes come back before anything is reported. `git rm` cleared them from
