@@ -920,6 +920,12 @@ class TunerEngine(QObject):
                 "Validate ignored: a test is still running — wait for it to finish."
             )
             return
+        map_err = core_map_blocked(self._smu)
+        if map_err is not None:
+            self.log_message.emit(
+                f"Cannot validate: per-core CO is unavailable — {map_err}"
+            )
+            return
         self._abort_requested = False
         self._paused = False
         self._validation_stage = 0

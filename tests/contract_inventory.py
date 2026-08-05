@@ -172,6 +172,60 @@ def _pin_apu_co_command_ids() -> None:
     assert halo.get_co_cmd == 0xAF
 
 
+def _pin_apu_pbo_command_ids() -> None:
+    cezanne = get_commands(CPUGeneration.ZEN3_CEZANNE)
+    phoenix = get_commands(CPUGeneration.ZEN4_PHOENIX)
+    strix = get_commands(CPUGeneration.ZEN5_STRIX_POINT)
+    for cmds in (cezanne, phoenix, strix):
+        assert cmds is not None
+        assert (
+            cmds.set_ppt_cmd,
+            cmds.set_tdc_cmd,
+            cmds.set_edc_cmd,
+            cmds.set_htc_cmd,
+        ) == (0x33, 0x38, 0x3A, 0x37)
+        assert cmds.get_pbo_scalar_cmd == 0xF
+        assert cmds.get_boost_limit_cmd == 0x42
+        assert (cmds.enable_oc_cmd, cmds.disable_oc_cmd) == (0x17, 0x18)
+        assert cmds.is_overclockable_cmd == 0x82
+        assert (
+            cmds.transfer_table_cmd,
+            cmds.get_dram_base_cmd,
+            cmds.get_table_version_cmd,
+        ) == (0x65, 0x66, 0x06)
+        assert cmds.get_fastest_core_cmd is None
+    assert cezanne.set_pbo_scalar_cmd == 0x3F
+    assert cezanne.set_boost_limit_cmd is None
+    rembrandt = get_commands(CPUGeneration.ZEN3_REMBRANDT)
+    assert rembrandt is not None and rembrandt.co_range == (-30, 30)
+    for cmds in (phoenix, strix):
+        assert cmds.set_pbo_scalar_cmd == 0x3E
+        assert cmds.set_boost_limit_cmd == 0x47
+        assert cmds.get_ln2_mode_cmd == 0xC4
+
+
+def _pin_desktop_pbo_command_ids() -> None:
+    for gen in (CPUGeneration.ZEN4_RAPHAEL, CPUGeneration.ZEN5_GRANITE_RIDGE):
+        cmds = get_commands(gen)
+        assert cmds is not None
+        assert (
+            cmds.set_ppt_cmd,
+            cmds.set_tdc_cmd,
+            cmds.set_edc_cmd,
+            cmds.set_htc_cmd,
+        ) == (0x56, 0x57, 0x58, 0x59)
+        assert cmds.get_fastest_core_cmd is None
+        assert (
+            cmds.transfer_table_cmd,
+            cmds.get_dram_base_cmd,
+            cmds.get_table_version_cmd,
+        ) == (0x03, 0x04, 0x05)
+    for gen in (CPUGeneration.ZEN2_MATISSE, CPUGeneration.ZEN3_VERMEER):
+        cmds = get_commands(gen)
+        assert cmds is not None
+        assert cmds.get_fastest_core_cmd == 0x59
+
+
 def _pin_core_slot_mapping() -> None:
     vermeer = get_commands(CPUGeneration.ZEN3_VERMEER)
     assert vermeer is not None and vermeer.uniform_8core_ccds
@@ -272,6 +326,33 @@ CONTRACTS: list[Contract] = [
             "corroborated by RyzenAdj lib/api.c"
         ),
         ring_a=_pin_apu_co_command_ids,
+        live_verifiable=False,
+    ),
+    Contract(
+        name="apu-pbo-command-ids",
+        kind="arch",
+        source=(
+            "ZenStates-Core APUSettings1 RSMU block (SetSlowLimit 0x33 = sustained-"
+            "PPT analogue, TDCVDD 0x38, EDCVDD 0x3A, TctlMax 0x37, GetPBOScalar 0xF, "
+            "SetPBOScalar 0x3F Cezanne / 0x3E Phoenix+, boost get 0x42 / set-all 0x47 "
+            "Phoenix+, OC 0x17/0x18/0x82, PM table 0x65/0x66/0x6); ids corroborated "
+            "by RyzenAdj api.c RSMU retry paths (stapm 0x31, Rembrandt OC 0x17/0x18) "
+            "and its PM-table commands 0x65/0x66/0x6"
+        ),
+        ring_a=_pin_apu_pbo_command_ids,
+        live_verifiable=False,
+    ),
+    Contract(
+        name="desktop-pbo-command-ids",
+        kind="arch",
+        source=(
+            "ZenStates-Core Zen4Settings/Zen5Settings: RSMU SetFastLimit(=PPT) 0x56, "
+            "TDCVDD 0x57, EDCVDD 0x58, SetTctlMax 0x59, PM table 0x3/0x4/0x5; "
+            "GetFastestCoreofSocket exists ONLY on Zen2/Zen3 (RSMU 0x59) — on Zen4/5 "
+            "0x59 is the thermal-limit SETTER, so no fastest-core command is wired "
+            "there"
+        ),
+        ring_a=_pin_desktop_pbo_command_ids,
         live_verifiable=False,
     ),
     Contract(

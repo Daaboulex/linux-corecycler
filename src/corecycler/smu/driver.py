@@ -156,6 +156,7 @@ class RyzenSMU:
         self._core_map: dict[int, tuple[int, int]] | None = None
         self._core_map_error: str | None = None
         self._known_core_ids: list[int] | None = None
+        self._offline_hint = ""
 
     def set_topology(self, topology) -> None:
         """Discover how OS core ids map onto SMU (CCD, physical slot) addresses.
@@ -170,13 +171,17 @@ class RyzenSMU:
 
         Mapping rules, per L3 group (falling back to ``core_id // 8`` grouping
         when L3 info is absent):
-          - Any hole in the global id space proves gap-preserving numbering:
-            slot = ``core_id % 8``, CCD from L3. The pre-discovery behaviour,
-            kept verbatim for these machines.
-          - A fully contiguous id space with only full 8-core groups is
-            physical by construction: same derivation.
-          - A contiguous id space with a harvested group is ambiguous: each
-            such CCD's 8 slots are probed with the read-only CO query, and the
+          - A full 8-core group maps to identity slots under any numbering
+            scheme -- no SMU traffic.
+          - A group with a hole INTERNAL to its own 8-slot window proves the
+            physical numbering: slot = ``core_id % 8``, CCD from L3. Only
+            internal holes count -- a hole BETWEEN windows proves nothing,
+            because a per-CCD-compacting firmware keeps the window stride --
+            and only while every present CPU is online, because a
+            fully-offlined core fakes a hole.
+          - Every other harvested group is ambiguous (its slots form the
+            0..n-1 prefix, it spans windows, or its holes are untrusted): the
+            CCD's 8 slots are probed with the read-only CO query and the
             group's cores map onto the answering slots in ascending order (the
             same order-preserving mapping the Windows tools build from the SMN
             core-disable fuse, which needs root here since the ryzen_smu `smn`
@@ -184,7 +189,9 @@ class RyzenSMU:
           - A probe that cannot isolate the fused-off slots stores
             ``core_map_error`` and every per-core CO operation refuses --
             failing closed beats tuning a different core than the one under
-            test.
+            test. While discovery runs, ``core_map_error`` holds a sentinel so
+            a concurrent reader refuses rather than falling open to legacy
+            addressing.
 
         The whole discovery is gated on the generation's declared
         ``uniform_8core_ccds`` (classic 8-slot CCD/CCX layout, verified): a
@@ -197,24 +204,28 @@ class RyzenSMU:
             if core_info.ccd is not None:
                 self._topology_ccd[core_id] = core_info.ccd
         self._core_map = None
-        self._core_map_error = None
+        self._core_map_error = "core map discovery in progress"
         ids = sorted(topology.cores)
         self._known_core_ids = ids or None
         if not ids or not self.commands.has_co or not self.commands.uniform_8core_ccds:
+            self._core_map_error = None
             return
         groups = self._group_cores(topology, ids)
         if groups is None:
+            self._core_map_error = None
             return
-        gap_preserving = max(ids) + 1 > len(ids)
+        fully_online = getattr(topology, "cpus_all_online", True) is not False
+        self._offline_hint = (
+            ""
+            if fully_online
+            else " (some present CPUs are offline — online all cores for CO tuning)"
+        )
         core_map: dict[int, tuple[int, int]] = {}
         try:
             for encode_ccd in sorted(groups):
                 group_ids = groups[encode_ccd]
-                if gap_preserving:
-                    slots = [cid % _SLOTS_PER_CCD for cid in group_ids]
-                elif len(group_ids) == _SLOTS_PER_CCD:
-                    slots = list(range(_SLOTS_PER_CCD))
-                else:
+                slots = self._derive_group_slots(group_ids, fully_online)
+                if slots is None:
                     slots = self._probe_group_slots(encode_ccd, len(group_ids))
                 core_map.update(
                     (cid, (encode_ccd, slot))
@@ -225,6 +236,28 @@ class RyzenSMU:
             log.error("SMU core mapping unavailable: %s", exc)
             return
         self._core_map = core_map
+        self._core_map_error = None
+
+    @staticmethod
+    def _derive_group_slots(
+        group_ids: list[int], holes_trusted: bool
+    ) -> list[int] | None:
+        """Slots this group's numbering proves by itself; None means probe.
+
+        A full 8-core group is identity under any numbering scheme. Only a
+        hole INTERNAL to the group's own 8-slot window proves physical
+        numbering, and only while every present CPU is online (an offlined
+        core fakes a hole). A 0..n-1 prefix is ambiguous, and a group spanning
+        windows is renumbered -- a per-CCD-compacting firmware keeps the
+        window stride, so a hole BETWEEN windows proves nothing.
+        """
+        windows = {cid // _SLOTS_PER_CCD for cid in group_ids}
+        if len(windows) != 1:
+            return None
+        rel = [cid % _SLOTS_PER_CCD for cid in group_ids]
+        if rel == list(range(len(group_ids))):
+            return rel if len(group_ids) == _SLOTS_PER_CCD else None
+        return rel if holes_trusted else None
 
     @staticmethod
     def _group_cores(topology, ids: list[int]) -> dict[int, list[int]] | None:
@@ -264,12 +297,14 @@ class RyzenSMU:
                 f"core ids on this CPU are renumbered and no CCD-{encode_ccd} "
                 f"slot answered the CO read probe{hint} -- check ryzen_smu "
                 f"access, or run once with working SMU permissions"
+                f"{self._offline_hint}"
             )
         raise CoreMapError(
             f"core ids on this CPU are renumbered and the CO read probe could "
             f"not isolate the fused-off slots: CCD {encode_ccd} has {want} OS "
             f"cores but slots {present} answered -- per-core CO stays disabled "
             f"instead of writing to the wrong cores; please report this output"
+            f"{self._offline_hint}"
         )
 
     def _probe_slot(self, encode_ccd: int, slot: int) -> bool:
@@ -591,15 +626,15 @@ class RyzenSMU:
         return False
 
     def reset_all_co(self) -> bool:
-        """Reset all CO offsets to 0. Uses set_all_co if available.
+        """Reset all CO offsets to 0 by delegating to ``set_all_co``.
+
+        The delegate owns the whole refusal contract (range check, core-map
+        guard, dry-run), so a dry-run reset can never report success for an
+        operation the real path refuses.
 
         CO values are VOLATILE — this resets them to 0 for the current
         session only.  On reboot they return to whatever the BIOS sets.
         """
-        if self.dry_run:
-            log.info("[DRY RUN] Would reset all CO offsets to 0 (not written)")
-            return True
-
         return self.set_all_co(0)
 
     def get_all_co_offsets(self, num_cores: int) -> dict[int, int | None]:
