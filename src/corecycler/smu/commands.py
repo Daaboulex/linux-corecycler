@@ -63,7 +63,12 @@ class SMUCommandSet:
     get_co_cmd: int | None = None
     get_co_mailbox: str | None = None
 
-    # PBO power limits
+    # PBO power limits, all sent on the RSMU mailbox. Desktop dies use the
+    # RSMU SetFastLimit(=PPT)/SetTDCVDDLimit/SetEDCVDDLimit/SetTctlMax ids.
+    # APU dies have no desktop PPT command: set_ppt carries the APU RSMU
+    # SetSlowLimit (the sustained package-power analogue), tdc/edc the APU
+    # TDC/EDC-VDD ids, htc SetTctlMax (ZenStates-Core APUSettings1 block,
+    # ids corroborated by RyzenAdj's RSMU retry paths).
     set_ppt_cmd: int | None = None
     set_tdc_cmd: int | None = None
     set_edc_cmd: int | None = None
@@ -220,18 +225,21 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         set_all_co_cmd=0x55,
         get_co_cmd=0xC3,
         get_co_mailbox="rsmu",
-        set_ppt_cmd=0x53,
-        set_tdc_cmd=0x54,
-        set_edc_cmd=0x55,
-        set_htc_cmd=0x56,
-        set_pbo_scalar_cmd=0x58,
-        get_pbo_scalar_cmd=0x6C,
-        enable_oc_cmd=0x5A,
-        disable_oc_cmd=0x5B,
-        is_overclockable_cmd=0x6F,
-        transfer_table_cmd=0x05,
-        get_dram_base_cmd=0x06,
-        get_table_version_cmd=0x08,
+        set_ppt_cmd=0x33,
+        set_tdc_cmd=0x38,
+        set_edc_cmd=0x3A,
+        set_htc_cmd=0x37,
+        set_pbo_scalar_cmd=0x3F,
+        get_pbo_scalar_cmd=0xF,
+        get_boost_limit_cmd=0x42,
+        set_oc_freq_all_cmd=0x19,
+        set_oc_freq_per_core_cmd=0x1A,
+        enable_oc_cmd=0x17,
+        disable_oc_cmd=0x18,
+        is_overclockable_cmd=0x82,
+        transfer_table_cmd=0x65,
+        get_dram_base_cmd=0x66,
+        get_table_version_cmd=0x06,
     ),
     # -----------------------------------------------------------------------
     # Zen 4 Raphael — RSMU mailbox, extended negative CO range
@@ -258,7 +266,6 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         enable_oc_cmd=0x5D,
         disable_oc_cmd=0x5E,
         is_overclockable_cmd=0x6F,
-        get_fastest_core_cmd=0x59,
         get_ln2_mode_cmd=0xDD,
         transfer_table_cmd=0x03,
         get_dram_base_cmd=0x04,
@@ -277,18 +284,23 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         set_all_co_cmd=0x4C,
         get_co_cmd=0xE1,
         get_co_mailbox="rsmu",
-        set_ppt_cmd=0x56,
-        set_tdc_cmd=0x57,
-        set_edc_cmd=0x58,
-        set_htc_cmd=0x59,
-        set_pbo_scalar_cmd=0x5B,
-        get_pbo_scalar_cmd=0x6D,
-        enable_oc_cmd=0x5D,
-        disable_oc_cmd=0x5E,
-        is_overclockable_cmd=0x6F,
-        transfer_table_cmd=0x03,
-        get_dram_base_cmd=0x04,
-        get_table_version_cmd=0x05,
+        set_ppt_cmd=0x33,
+        set_tdc_cmd=0x38,
+        set_edc_cmd=0x3A,
+        set_htc_cmd=0x37,
+        set_pbo_scalar_cmd=0x3E,
+        get_pbo_scalar_cmd=0xF,
+        set_boost_limit_cmd=0x47,
+        get_boost_limit_cmd=0x42,
+        set_oc_freq_all_cmd=0x19,
+        set_oc_freq_per_core_cmd=0x1A,
+        enable_oc_cmd=0x17,
+        disable_oc_cmd=0x18,
+        is_overclockable_cmd=0x82,
+        get_ln2_mode_cmd=0xC4,
+        transfer_table_cmd=0x65,
+        get_dram_base_cmd=0x66,
+        get_table_version_cmd=0x06,
     ),
     # -----------------------------------------------------------------------
     # Zen 4 Storm Peak (ThreadRipper)
@@ -343,7 +355,6 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         enable_oc_cmd=0x5D,
         disable_oc_cmd=0x5E,
         is_overclockable_cmd=0x6F,
-        get_fastest_core_cmd=0x59,
         get_ln2_mode_cmd=0xDD,
         transfer_table_cmd=0x03,
         get_dram_base_cmd=0x04,
@@ -361,18 +372,23 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         set_all_co_cmd=0x4C,
         get_co_cmd=0xAF,
         get_co_mailbox="rsmu",
-        set_ppt_cmd=0x56,
-        set_tdc_cmd=0x57,
-        set_edc_cmd=0x58,
-        set_htc_cmd=0x59,
-        set_pbo_scalar_cmd=0x5B,
-        get_pbo_scalar_cmd=0x6D,
-        enable_oc_cmd=0x5D,
-        disable_oc_cmd=0x5E,
-        is_overclockable_cmd=0x6F,
-        transfer_table_cmd=0x03,
-        get_dram_base_cmd=0x04,
-        get_table_version_cmd=0x05,
+        set_ppt_cmd=0x33,
+        set_tdc_cmd=0x38,
+        set_edc_cmd=0x3A,
+        set_htc_cmd=0x37,
+        set_pbo_scalar_cmd=0x3E,
+        get_pbo_scalar_cmd=0xF,
+        set_boost_limit_cmd=0x47,
+        get_boost_limit_cmd=0x42,
+        set_oc_freq_all_cmd=0x19,
+        set_oc_freq_per_core_cmd=0x1A,
+        enable_oc_cmd=0x17,
+        disable_oc_cmd=0x18,
+        is_overclockable_cmd=0x82,
+        get_ln2_mode_cmd=0xC4,
+        transfer_table_cmd=0x65,
+        get_dram_base_cmd=0x66,
+        get_table_version_cmd=0x06,
     ),
     # -----------------------------------------------------------------------
     # Zen 5 Shimada Peak (ThreadRipper) — different RSMU base addresses!
@@ -433,7 +449,10 @@ COMMAND_SETS[CPUGeneration.ZEN3_CHAGALL] = _alias_commands(
     CPUGeneration.ZEN3_VERMEER, CPUGeneration.ZEN3_CHAGALL
 )
 COMMAND_SETS[CPUGeneration.ZEN3_REMBRANDT] = _alias_commands(
-    CPUGeneration.ZEN4_PHOENIX, CPUGeneration.ZEN3_REMBRANDT, get_co_cmd=0x2F
+    CPUGeneration.ZEN4_PHOENIX,
+    CPUGeneration.ZEN3_REMBRANDT,
+    get_co_cmd=0x2F,
+    co_range=(-30, 30),
 )
 COMMAND_SETS[CPUGeneration.ZEN4_DRAGON_RANGE] = _alias_commands(
     CPUGeneration.ZEN4_RAPHAEL, CPUGeneration.ZEN4_DRAGON_RANGE

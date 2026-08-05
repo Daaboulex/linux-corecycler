@@ -387,3 +387,132 @@ class TestCliRefusal:
             topo.cores[cid] = PhysicalCore(core_id=cid, ccd=0, ccx=None, logical_cpus=(cid,))
         assert cli._build_smu(topo) is None
         assert "per-core CO disabled" in capsys.readouterr().err
+
+
+class TestTunerEndToEndOnRenumbered:
+    def test_engine_traffic_lands_on_mapped_slots(self, monkeypatch, tmp_path):
+        from corecycler.history.db import HistoryDB
+        from corecycler.tuner import engine as eng_mod
+        from corecycler.tuner.config import TunerConfig
+        from corecycler.tuner.engine import TunerEngine
+
+        smu, mailbox = _mapped_smu(
+            VERMEER, {c: 0 for c in range(6)}, {0: REPORTED_5600X_LIVE_SLOTS}
+        )
+        topo = MagicMock()
+        topo.cores = {c: MagicMock(ccd=0, logical_cpus=(c,)) for c in range(6)}
+        topo.model_name = "AMD Ryzen 5 5600X 6-Core Processor"
+        db = HistoryDB(":memory:")
+        backend = MagicMock()
+        backend.name = "mprime"
+        engine = TunerEngine(
+            db=db,
+            topology=topo,
+            smu=smu,
+            backend=backend,
+            config=TunerConfig(cores_to_test=[2, 3], inherit_current=True),
+            work_dir=tmp_path,
+        )
+        monkeypatch.setattr(engine, "_start_worker", MagicMock())
+        monkeypatch.setattr(eng_mod.QTimer, "singleShot", lambda _ms, fn: None)
+        engine.start()
+        assert engine._session_id is not None
+        assert (0, 4) in mailbox.get_calls
+        assert (0, 5) in mailbox.get_calls
+        assert (0, 2) not in mailbox.get_calls[8:]
+        assert engine._apply_co(2, -5) is True
+        assert mailbox.writes[-1] == (0, 4, -5)
+        assert engine._apply_co(3, -5) is True
+        assert mailbox.writes[-1] == (0, 5, -5)
+        engine.abort()
+        db.close()
+        assert all(slot not in (2, 3) for _ccd, slot, _v in mailbox.writes)
+
+
+class TestOfflineCpusDisableGapProof:
+    def test_offline_with_vanished_core_refuses(self):
+        smu = RyzenSMU(ZEN5, MagicMock())
+        mailbox = _FakeMailbox(smu, ZEN5, {0: set(range(8))})
+        topo = _topo({c: 0 for c in (0, 1, 2, 4, 5, 6, 7)})
+        topo.cpus_all_online = False
+        smu.set_topology(topo)
+        assert smu.core_map_error is not None
+        assert "offline" in smu.core_map_error
+        assert mailbox.get_calls != []
+
+    def test_offline_but_probe_matches_still_maps(self):
+        smu = RyzenSMU(VERMEER, MagicMock())
+        _FakeMailbox(smu, VERMEER, {0: REPORTED_5600X_LIVE_SLOTS})
+        topo = _topo({c: 0 for c in (0, 1, 4, 5, 6, 7)})
+        topo.cpus_all_online = False
+        smu.set_topology(topo)
+        assert smu.core_map_error is None
+        assert smu.core_map == {
+            0: (0, 0), 1: (0, 1), 4: (0, 4), 5: (0, 5), 6: (0, 6), 7: (0, 7)
+        }
+
+    def test_fully_online_gap_machine_still_skips_probe(self):
+        smu = RyzenSMU(ZEN5, MagicMock())
+        mailbox = _FakeMailbox(smu, ZEN5, {})
+        topo = _topo({c: 0 for c in (0, 1, 2, 4, 5, 6, 7)})
+        topo.cpus_all_online = True
+        smu.set_topology(topo)
+        assert smu.core_map_error is None
+        assert mailbox.get_calls == []
+        assert smu.core_map == {c: (0, c) for c in (0, 1, 2, 4, 5, 6, 7)}
+
+
+class TestPerCcdCompactionIsProbed:
+    def test_stride_preserving_compaction_cannot_bypass_the_probe(self):
+        cores = {c: 0 for c in range(6)}
+        cores.update({c: 1 for c in range(8, 14)})
+        present = {0: {0, 1, 4, 5, 6, 7}, 1: {0, 1, 4, 5, 6, 7}}
+        smu, mailbox = _mapped_smu(ZEN5, cores, present)
+        assert smu.core_map_error is None
+        assert mailbox.get_calls != []
+        assert smu.core_map[4] == (0, 6)
+        assert smu.core_map[5] == (0, 7)
+        assert smu.core_map[12] == (1, 6)
+        assert smu.core_map[13] == (1, 7)
+
+    def test_internal_hole_still_maps_without_probe(self):
+        cores = {c: 0 for c in (0, 1, 4, 5, 6, 7)}
+        cores.update({c: 1 for c in (8, 9, 12, 13, 14, 15)})
+        smu, mailbox = _mapped_smu(ZEN5, cores, {})
+        assert smu.core_map_error is None
+        assert mailbox.get_calls == []
+        assert smu.core_map[15] == (1, 7)
+
+    def test_dry_run_reset_all_refused_on_blocked_map(self):
+        smu, _mailbox = _mapped_smu(
+            VERMEER, {c: 0 for c in range(6)}, {0: set(range(8))}, dry_run=True
+        )
+        assert smu.reset_all_co() is False
+
+
+class TestValidateProfileRefusesUnmappedSMU:
+    def test_validate_refuses_with_the_map_error(self):
+        from corecycler.history.db import HistoryDB
+        from corecycler.tuner.config import TunerConfig
+        from corecycler.tuner.engine import TunerEngine
+
+        smu, _mailbox = _mapped_smu(
+            VERMEER, {c: 0 for c in range(6)}, {0: set(range(8))}
+        )
+        topo = MagicMock()
+        topo.cores = {c: MagicMock(ccd=0, logical_cpus=(c,)) for c in range(4)}
+        topo.model_name = "Test"
+        db = HistoryDB(":memory:")
+        engine = TunerEngine(
+            db=db,
+            topology=topo,
+            smu=smu,
+            backend=MagicMock(name="mprime"),
+            config=TunerConfig(cores_to_test=[0, 1], inherit_current=False),
+        )
+        messages: list[str] = []
+        engine.log_message.connect(messages.append)
+        engine.validate_profile(1)
+        db.close()
+        assert engine._status != "running"
+        assert any("Cannot validate" in m for m in messages)

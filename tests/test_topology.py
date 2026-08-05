@@ -689,3 +689,32 @@ class TestTopologyDriftEdges:
             _detect_x3d(topo)
         assert topo.is_x3d is True
         assert topo.vcache_ccd == 0
+
+
+class TestCpusAllOnline:
+    def _run(self, tmp_path, online, present):
+        cpu_dir = tmp_path / "cpu"
+        cpu_dir.mkdir()
+        (cpu_dir / "online").write_text(online)
+        if present is not None:
+            (cpu_dir / "present").write_text(present)
+        topo = CPUTopology()
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
+            _parse_sysfs(topo)
+        return topo
+
+    def test_all_online_when_sets_match(self, tmp_path):
+        topo = self._run(tmp_path, "0-15\n", "0-15\n")
+        assert topo.cpus_all_online is True
+
+    def test_offline_cpu_detected(self, tmp_path):
+        topo = self._run(tmp_path, "0-3,6-15\n", "0-15\n")
+        assert topo.cpus_all_online is False
+
+    def test_nosmt_pattern_detected_as_offline(self, tmp_path):
+        topo = self._run(tmp_path, "0,2,4,6\n", "0-7\n")
+        assert topo.cpus_all_online is False
+
+    def test_missing_present_file_stays_trusting(self, tmp_path):
+        topo = self._run(tmp_path, "0-7\n", None)
+        assert topo.cpus_all_online is True

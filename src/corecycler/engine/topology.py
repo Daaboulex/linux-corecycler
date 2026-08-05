@@ -40,6 +40,10 @@ class CPUTopology:
     ccds: int = 0
     is_x3d: bool = False
     vcache_ccd: int | None = None
+    # False when a present CPU is offline. A fully-offlined core vanishes from
+    # /proc/cpuinfo and fakes a hole in the core-id space, so gap-based
+    # physical-numbering proofs are only trustworthy when this is True.
+    cpus_all_online: bool = True
     cores: dict[int, PhysicalCore] = field(default_factory=dict)
     logical_map: dict[int, LogicalCPU] = field(default_factory=dict)
 
@@ -155,28 +159,40 @@ def _parse_cpuinfo(topo: CPUTopology) -> None:
         )
 
 
+def _parse_cpu_ranges(text: str) -> set[int]:
+    """Parse a sysfs CPU list ("0-15,32-47") into a set of CPU ids.
+
+    A malformed part is skipped rather than crashing, so a transient bad read
+    degrades to a smaller set instead of taking topology detection down.
+    """
+    cpus: set[int] = set()
+    for part in text.strip().split(","):
+        try:
+            if "-" in part:
+                lo, hi = part.split("-", 1)
+                cpus.update(range(int(lo), int(hi) + 1))
+            elif part:
+                cpus.add(int(part))
+        except ValueError:
+            continue
+    return cpus
+
+
 def _parse_sysfs(topo: CPUTopology) -> None:
-    """Read sysfs for additional topology info (cache, online status)."""
+    """Read sysfs for additional topology info (online/present status)."""
     if not SYSFS_CPU.exists():
         return
-    # count online CPUs as sanity check
     online_path = SYSFS_CPU / "online"
+    present_path = SYSFS_CPU / "present"
+    online: set[int] | None = None
     if online_path.exists():
-        text = online_path.read_text().strip()
-        # format: "0-31" or "0-15,32-47" — tolerate a malformed range without crashing.
-        total = 0
-        for part in text.split(","):
-            try:
-                if "-" in part:
-                    lo, hi = part.split("-", 1)
-                    total += int(hi) - int(lo) + 1
-                elif part:
-                    int(part)  # validate it is a single CPU id
-                    total += 1
-            except ValueError:
-                continue
-        if topo.logical_cpus_count == 0 and total > 0:
-            topo.logical_cpus_count = total
+        online = _parse_cpu_ranges(online_path.read_text())
+        if topo.logical_cpus_count == 0 and online:
+            topo.logical_cpus_count = len(online)
+    if online is not None and present_path.exists():
+        present = _parse_cpu_ranges(present_path.read_text())
+        if present and online != present:
+            topo.cpus_all_online = False
 
 
 def _detect_ccd_layout(topo: CPUTopology) -> None:

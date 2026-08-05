@@ -9,6 +9,39 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-08-06 APU PBO commands, slot-proof soundness, wiring matrix)
+
+- APU PBO command ids were desktop-copied like the CO ids before them; they
+  now carry the reference APU RSMU block (ZenStates-Core APUSettings1, ids
+  corroborated by RyzenAdj's RSMU paths): `set_ppt` maps to the APU
+  SetSlowLimit — the sustained package-power analogue, since no desktop PPT
+  command exists on APUs — tdc/edc to TDC/EDC-VDD, htc to SetTctlMax, scalar
+  get/set to 0xF and 0x3F (Cezanne) / 0x3E (Phoenix and later), boost get
+  0x42 everywhere with set-all 0x47 from Phoenix on, OC mode 0x17/0x18/0x82,
+  and PM-table transfer/base/version 0x65/0x66/0x6. Rembrandt's CO range is
+  pinned back to its documented -30..+30. All of it is a drift contract.
+- `get_fastest_core_cmd` is removed from Zen 4/5 desktop sets: RSMU 0x59
+  there is SetTctlMax — the thermal-limit SETTER — and the fastest-core query
+  exists only on Zen 2/3 (still wired there). The latent misfire (a
+  thermal-limit write masquerading as a read in system-state detection) can
+  no longer be sent, and the absence is a pinned contract.
+- The core-map gap proof is now per-CCD: only a hole internal to a group's
+  own 8-slot window proves physical numbering, so a firmware that compacts
+  ids per CCD while keeping the window stride (a multi-CCD sibling of the
+  issue-#11 class) probes instead of silently cross-pairing cores. Holes are
+  only trusted when every present CPU is online — a fully-offlined core fakes
+  a hole — and while discovery runs the driver refuses rather than falling
+  back to legacy addressing. `validate_profile` now refuses on an unusable
+  core map exactly like start/resume, dry-run reset-all refuses like the real
+  path, and the CLI no-SMU message no longer blames a missing module when the
+  core map was the refusal.
+- New emulated verification layers: a wiring conformance matrix drives every
+  generation's command set through the real driver against a recording
+  mailbox (exact mailbox, command id and encoded argument per operation, and
+  zero traffic where a command is absent), and an end-to-end emulated tuner
+  run on the renumbered-5600X shape proves engine traffic lands only on the
+  discovered slots.
+
 ### Fixed (2026-08-05 core-id renumbering on harvested parts, issue #11)
 
 - Some BIOS/AGESA builds renumber `/proc/cpuinfo` core ids contiguously on
@@ -24,7 +57,8 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
   the GUI, on CLI stderr, and as a tuner start/resume refusal — never a write
   to the wrong core. Discovery is gated per generation by a declared
   `uniform_8core_ccds` command-set field, so heterogeneous Zen 4c/5c dies
-  (Phoenix2, Strix Point/Halo) keep the previous addressing bit-for-bit.
+  (Phoenix2, Strix Point, Krackan) and Strix Halo (classic CCDs, CO tuning
+  unverified there) keep the previous addressing bit-for-bit.
 - Reading "all cores" (backup, context capture, system state) now iterates the
   machine's real core-id set instead of `range(n)` — on gap-preserving
   multi-CCD parts (5900X-class, ids 0-5 and 8-13) it previously queried two

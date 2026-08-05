@@ -644,13 +644,25 @@ class TestDriverWriteReadBranches:
     def test_get_fastest_core_none_without_cmd(self, smu_dir, zen3_cmds):
         assert RyzenSMU(zen3_cmds, smu_dir).get_fastest_core() is None
 
-    def test_get_fastest_core_reads_index(self, smu_dir):
-        smu = RyzenSMU(self._zen5_full(), smu_dir)
+    def _vermeer_full(self):
+        return get_commands(CPUGeneration.ZEN3_VERMEER)
+
+    def test_get_fastest_core_reads_index_on_zen3(self, smu_dir):
+        smu = RyzenSMU(self._vermeer_full(), smu_dir)
         with patch.object(smu, "_send_rsmu_command", return_value=self._resp(5)):
             assert smu.get_fastest_core() == 5
 
-    def test_detect_system_state_reads_fastest_core(self, smu_dir):
+    def test_get_fastest_core_refused_on_zen5(self, smu_dir):
+        """RSMU 0x59 on Zen 4/5 is SetTctlMax, not a fastest-core read — the
+        command set carries None there so no thermal-limit write can masquerade
+        as a query."""
         smu = RyzenSMU(self._zen5_full(), smu_dir)
+        with patch.object(smu, "_send_rsmu_command", return_value=self._resp(5)) as send:
+            assert smu.get_fastest_core() is None
+        send.assert_not_called()
+
+    def test_detect_system_state_reads_fastest_core_on_zen3(self, smu_dir):
+        smu = RyzenSMU(self._vermeer_full(), smu_dir)
         with patch.object(smu, "_send_rsmu_command", return_value=self._resp(7)):
             state = smu.detect_system_state(2)
         assert state.fastest_core == 7

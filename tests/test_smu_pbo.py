@@ -80,6 +80,10 @@ class TestSystemStateReads:
         assert self._drv(tmp_path).get_pbo_scalar() is None
 
     def test_get_fastest_core_none_on_failed_read(self, tmp_path):
+        vermeer = RyzenSMU(get_commands(CPUGeneration.ZEN3_VERMEER), tmp_path)
+        assert vermeer.get_fastest_core() is None
+
+    def test_get_fastest_core_none_without_command(self, tmp_path):
         assert self._drv(tmp_path).get_fastest_core() is None
 
     def test_get_boost_limit_none_on_failed_read(self, tmp_path):

@@ -166,8 +166,9 @@ def cmd_run(
         smu = _build_smu(topology)
         if smu is None:
             print(
-                "corecycler: ryzen_smu is not available — the tuner needs SMU "
-                "access (modprobe ryzen_smu, device permissions).",
+                "corecycler: per-core SMU access is unavailable — the tuner "
+                "needs it (any refusal reason is printed above; otherwise "
+                "check modprobe ryzen_smu and device permissions).",
                 file=sys.stderr,
             )
             return EXIT_REFUSED

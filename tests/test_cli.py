@@ -265,7 +265,7 @@ class TestRunPreflightRefusals:
         monkeypatch.setattr("corecycler.engine.topology.detect_topology", _fake_topology)
         monkeypatch.setattr(cli, "_build_smu", lambda _t: None)
         assert self._run(db) == cli.EXIT_REFUSED
-        assert "ryzen_smu is not available" in capsys.readouterr().err
+        assert "per-core SMU access is unavailable" in capsys.readouterr().err
 
     def test_unknown_backend_refused(self, db, monkeypatch, capsys):
         monkeypatch.setattr("corecycler.engine.topology.detect_topology", _fake_topology)
