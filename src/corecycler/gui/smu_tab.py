@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 from corecycler.config.paths import user_home
 from corecycler.gui.style import BG_SELECTED, COLOR_ACTIVE, COLOR_FAIL, COLOR_ORANGE, COLOR_PASS
 from corecycler.smu.commands import SMUCommandSet, detect_generation, get_commands
-from corecycler.smu.driver import RyzenSMU
+from corecycler.smu.driver import RyzenSMU, core_map_blocked
 
 if TYPE_CHECKING:
     from corecycler.engine.topology import CPUTopology
@@ -177,11 +177,20 @@ class SMUTab(QWidget):
         if smu_available and has_co:
             self._smu = RyzenSMU(self._commands, dry_run=self._dry_run_cb.isChecked())
             self._smu.set_topology(topology)
-            self._status_label.setText("ryzen_smu: Connected")
-            self._status_label.setStyleSheet(f"color: {COLOR_PASS};")
-            self._gen_label.setText(f"Generation: {gen.name}")
-            co_min, co_max = self._commands.co_range
-            self._range_label.setText(f"CO Range: [{co_min}, {co_max}]")
+            map_err = core_map_blocked(self._smu)
+            if map_err is not None:
+                self._status_label.setText("ryzen_smu: Connected (per-core CO unavailable)")
+                self._status_label.setStyleSheet(f"color: {COLOR_ORANGE};")
+                self._status_label.setToolTip(map_err)
+                self._gen_label.setText(f"Generation: {gen.name}")
+                self._range_label.setText(f"CO disabled: {map_err}")
+                self._range_label.setWordWrap(True)
+            else:
+                self._status_label.setText("ryzen_smu: Connected")
+                self._status_label.setStyleSheet(f"color: {COLOR_PASS};")
+                self._gen_label.setText(f"Generation: {gen.name}")
+                co_min, co_max = self._commands.co_range
+                self._range_label.setText(f"CO Range: [{co_min}, {co_max}]")
         elif smu_available and not has_co:
             self._smu = RyzenSMU(self._commands, dry_run=self._dry_run_cb.isChecked())
             self._smu.set_topology(topology)
@@ -197,8 +206,11 @@ class SMUTab(QWidget):
             self._status_label.setText(f"Unsupported CPU generation: {gen.name}")
             self._status_label.setStyleSheet(f"color: {COLOR_ORANGE};")
 
-        # Disable CO buttons if SMU is not available or generation lacks CO
-        co_available = smu_available and has_co
+        # Disable CO buttons if SMU is not available, the generation lacks CO,
+        # or the core map could not be discovered (writes would refuse anyway).
+        co_available = (
+            smu_available and has_co and core_map_blocked(self._smu) is None
+        )
         self._apply_all_btn.setEnabled(co_available)
         self._reset_btn.setEnabled(co_available)
         self._backup_btn.setEnabled(co_available)
@@ -210,7 +222,7 @@ class SMUTab(QWidget):
         if not self._topology:
             return
 
-        smu_available = self._smu is not None
+        smu_available = self._smu is not None and core_map_blocked(self._smu) is None
 
         cores = sorted(self._topology.cores.values(), key=lambda c: c.core_id)
         self._table.setRowCount(len(cores))
@@ -288,6 +300,8 @@ class SMUTab(QWidget):
 
     def _read_all_co(self) -> None:
         if not self._smu or not self._topology:
+            return
+        if core_map_blocked(self._smu) is not None:
             return
 
         max_retries = 2

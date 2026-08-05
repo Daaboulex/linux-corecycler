@@ -97,7 +97,7 @@ def cmd_status(db=None) -> int:
 
 def _build_smu(topology):
     from corecycler.smu.commands import detect_generation, get_commands
-    from corecycler.smu.driver import RyzenSMU
+    from corecycler.smu.driver import RyzenSMU, core_map_blocked
 
     commands = get_commands(
         detect_generation(topology.family, topology.model, topology.model_name)
@@ -106,6 +106,10 @@ def _build_smu(topology):
         return None
     smu = RyzenSMU(commands)
     smu.set_topology(topology)
+    map_err = core_map_blocked(smu)
+    if map_err is not None:
+        print(f"corecycler: per-core CO disabled: {map_err}", file=sys.stderr)
+        return None
     return smu
 
 

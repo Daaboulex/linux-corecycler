@@ -106,3 +106,33 @@ def test_proc_stat_cpu_line_matches_the_pinned_fields():
     )
     assert len(fields) >= 6
     assert idle == int(fields[4]) + int(fields[5])
+
+
+def test_core_slot_probe_matches_live_topology():
+    """The mapping's ground assumption, on real silicon: the SMU answers the CO
+    read for exactly the enabled physical slots of each CCD, and set_topology's
+    discovered map pairs the OS cores with those slots in ascending order."""
+    require(_is_amd_zen(), "requires a real AMD Zen CPU")
+    from corecycler.engine.topology import detect_topology
+    from corecycler.smu.driver import RyzenSMU
+
+    info = _read_cpuinfo()
+    assert info is not None
+    commands = get_commands(detect_generation(*info))
+    require(commands is not None and commands.has_co, "requires a CO-capable generation")
+    require(commands.uniform_8core_ccds, "requires a classic 8-slot-per-CCD die")
+    require(RyzenSMU.is_available(), "requires the ryzen_smu module")
+    smu = RyzenSMU(commands)
+    require(smu.check_writable()[0], "requires ryzen_smu mailbox access")
+    topo = detect_topology()
+    smu.set_topology(topo)
+    assert smu.core_map_error is None, smu.core_map_error
+    core_map = smu.core_map
+    assert core_map is not None
+    assert set(core_map) == set(topo.cores)
+    per_ccd: dict[int, list[int]] = {}
+    for _core_id, (ccd, slot) in sorted(core_map.items()):
+        per_ccd.setdefault(ccd, []).append(slot)
+    for ccd, mapped_slots in per_ccd.items():
+        answered = [s for s in range(8) if smu._probe_slot(ccd, s)]
+        assert answered == mapped_slots, (ccd, answered, mapped_slots)

@@ -9,6 +9,46 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-08-05 core-id renumbering on harvested parts, issue #11)
+
+- Some BIOS/AGESA builds renumber `/proc/cpuinfo` core ids contiguously on
+  harvested parts (reported on a 5600X) instead of leaving holes at the
+  fused-off slots; the SMU layer assumed core id == physical slot, so CO
+  reads/writes addressed dead or wrong slots and failed. `RyzenSMU.set_topology`
+  now discovers the id-to-(CCD, slot) map: numberings that prove themselves
+  physical (holes, or only full 8-core CCDs) are used directly with no SMU
+  traffic; an ambiguous CCD is probed once with the read-only CO query and its
+  cores map onto the answering slots in ascending order (the order-preserving
+  mapping Windows tools build from the root-only SMN core-disable fuse); an
+  undiscoverable map disables per-core CO with an explicit reason surfaced in
+  the GUI, on CLI stderr, and as a tuner start/resume refusal — never a write
+  to the wrong core. Discovery is gated per generation by a declared
+  `uniform_8core_ccds` command-set field, so heterogeneous Zen 4c/5c dies
+  (Phoenix2, Strix Point/Halo) keep the previous addressing bit-for-bit.
+- Reading "all cores" (backup, context capture, system state) now iterates the
+  machine's real core-id set instead of `range(n)` — on gap-preserving
+  multi-CCD parts (5900X-class, ids 0-5 and 8-13) it previously queried two
+  dead slots and missed the two highest cores. `set_all_co` read-back now
+  verifies against the first existing core instead of literal core 0, which
+  can be a fused-off slot.
+- Generation routing is now one declarative model table grounded in the
+  pinned ryzen_smu driver's CPUID map, AMD's 16-model-per-die block scheme,
+  and InstLatx64 dumps: Chagall (0x00-0x0F) and Rembrandt (0x40-0x4F) get
+  their own identities, Storm Peak covers its whole 0x10-0x1F block, Shimada
+  Peak routes by model (family 0x1A, 0x00-0x0F, dump B00F81) as well as by
+  name, Strix Halo resolves to its own generation, and the heterogeneous
+  Zen4c/5c dies (Phoenix2 0x78, Hawk Point 2 0x7C, Krackan Point 0x60/0x68)
+  route to APU generations that never engage the 8-slot core map. Unmatched
+  family 0x19/0x1A models now fail closed to UNKNOWN instead of inheriting a
+  desktop generation (Zen 6 CPUID sightings already sit outside every block).
+- APU Curve Optimizer command IDs were desktop-copied and wrong; they now
+  match the reference implementations (ZenStates-Core APUSettings, RyzenAdj):
+  Cezanne sets via MP1 0x54/0x55 and reads back via RSMU 0xC3; Rembrandt,
+  Phoenix, Phoenix2 and Hawk Point set via MP1 0x4B/0x4C with RSMU gets 0x2F
+  and 0xE1; the Strix/Krackan class shares 0x4B/0x4C with RSMU get 0xAF. CO
+  reads now ride the get-side mailbox where it differs from the set side, and
+  the APU command IDs are pinned as a drift contract.
+
 ### Fixed (2026-07-20 packaging)
 
 - The wheel installed ten flat top-level entries (`main`, `cli`, `notify` and

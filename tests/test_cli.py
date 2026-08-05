@@ -245,7 +245,10 @@ def _fake_topology():
     from corecycler.engine.topology import CPUTopology, PhysicalCore
 
     topo = CPUTopology(model_name="AMD Ryzen 9 9950X3D 16-Core Processor", family=26, model=0x44)
-    topo.cores = {0: PhysicalCore(core_id=0, ccd=0, ccx=None, logical_cpus=(0,))}
+    topo.cores = {
+        cid: PhysicalCore(core_id=cid, ccd=cid // 8, ccx=None, logical_cpus=(cid,))
+        for cid in range(16)
+    }
     return topo
 
 

@@ -111,3 +111,39 @@ class TestReadBack:
         tab._dry_run_cb.setChecked(True)
         assert tab._smu.dry_run is True
         assert "[DRY]" in tab._apply_all_btn.text()
+
+
+class TestCoreMapRefusal:
+    def test_map_error_disables_co_controls_and_reads(self, monkeypatch):
+        import corecycler.gui.smu_tab as st
+        from corecycler.smu.driver import SMUResponse
+
+        monkeypatch.setattr(
+            st.RyzenSMU, "is_available", staticmethod(lambda *a, **k: True)
+        )
+        monkeypatch.setattr(
+            st.RyzenSMU,
+            "_send_command",
+            lambda self, cmd, args=(0,) * 6: SMUResponse(
+                success=False, args=(0,) * 6, raw=b""
+            ),
+        )
+        _qapp()
+        topo = CPUTopology(
+            model_name="Test", family=26, model=0x44, physical_cores=6, ccds=1
+        )
+        for cid in range(6):
+            topo.cores[cid] = PhysicalCore(
+                core_id=cid, ccd=0, ccx=None, logical_cpus=(cid,)
+            )
+        tab = st.SMUTab(topo)
+        assert tab._smu is not None
+        assert tab._smu.core_map_error is not None
+        assert not tab._apply_all_btn.isEnabled()
+        assert not tab._reset_btn.isEnabled()
+        assert not tab._backup_btn.isEnabled()
+        assert "CO disabled" in tab._range_label.text()
+        row0_btn = tab._table.cellWidget(0, 4)
+        assert row0_btn is not None and not row0_btn.isEnabled()
+        tab._read_all_co()
+        assert tab._table.item(0, 2).text() == "--"

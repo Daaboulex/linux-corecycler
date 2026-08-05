@@ -30,6 +30,7 @@ from corecycler.engine.detector import (
 from corecycler.engine.parallel import ParallelStress
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
 from corecycler.monitor.msr import MSRReader
+from corecycler.smu.driver import core_map_blocked
 
 from . import persistence as tp
 from .config import TunerConfig
@@ -526,6 +527,13 @@ class TunerEngine(QObject):
             self.log_message.emit(f"Invalid tuner config: {'; '.join(errors)}")
             return
 
+        # A tuning session is meaningless when per-core CO addressing is
+        # refused: every write would fail and every result would be noise.
+        map_err = core_map_blocked(self._smu)
+        if map_err is not None:
+            self.log_message.emit(f"Cannot start: per-core CO is unavailable — {map_err}")
+            return
+
         # Capture system context
         num_cores = len(self._topology.cores)
         ctx = capture_system_context(self._smu, num_cores)
@@ -619,6 +627,13 @@ class TunerEngine(QObject):
         errors = self._config.validate()
         if errors:
             self.log_message.emit(f"Invalid tuner config: {'; '.join(errors)}")
+            return
+
+        # start() refuses on an unusable per-core CO map; a resumed session
+        # would otherwise grind through refused writes as apparatus faults.
+        map_err = core_map_blocked(self._smu)
+        if map_err is not None:
+            self.log_message.emit(f"Cannot resume: per-core CO is unavailable — {map_err}")
             return
 
         self._core_states = tp.load_core_states(self._db, session_id)

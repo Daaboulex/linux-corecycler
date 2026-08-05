@@ -29,6 +29,7 @@ def zen3_cmds():
         mailbox="mp1",
         co_range=(-30, 30),
         encoding_scheme="zen3",
+        uniform_8core_ccds=True,
     )
 
 
@@ -42,6 +43,7 @@ def zen5_cmds():
         mailbox="rsmu",
         co_range=(-60, 10),
         encoding_scheme="zen4_5",
+        uniform_8core_ccds=True,
         set_boost_limit_cmd=0x70,
         get_boost_limit_cmd=0x6E,
     )
@@ -394,23 +396,34 @@ def _stateful_smu(smu, commands):
 
 
 class TestDeterministicSlotMapping:
-    """The SMU physical slot is derived deterministically from the Linux physical
-    (gap-preserving) core_id -- no probe. These drive the REAL encode + write +
-    read-back path and confirm a CO write lands on the true physical (ccd, slot)
-    on harvested parts, where core_id carries the gaps."""
+    """A numbering that proves itself physical (holes at fused slots, or full
+    8-core CCDs) is mapped deterministically from core_id -- no probe. These
+    drive the REAL encode + write + read-back path and confirm a CO write lands
+    on the true physical (ccd, slot) on such parts. The ambiguous
+    contiguous-harvested numbering (renumbering BIOSes, issue #11) is probed
+    instead -- covered in test_smu_core_map.py."""
 
-    def test_set_topology_does_not_probe(self, smu_dir, zen5_cmds):
-        """set_topology must issue NO SMU command -- the echo-probe is gone."""
-        smu = RyzenSMU(zen5_cmds, smu_dir)
+    @staticmethod
+    def _assert_maps_without_probing(smu_dir, cmds, cores):
+        smu = RyzenSMU(cmds, smu_dir)
         topo = MagicMock()
-        topo.cores = {0: MagicMock(ccd=0), 1: MagicMock(ccd=0)}
+        topo.cores = cores
         calls: list[int] = []
         smu._send_command = lambda cmd, args=(0,) * 6: (
             calls.append(cmd) or SMUResponse(success=True, args=(0,) * 6, raw=b"")
         )
         smu.set_topology(topo)
-        assert calls == [], "set_topology issued an SMU command (probe not removed)"
-        assert smu._topology_ccd == {0: 0, 1: 0}
+        assert calls == [], "set_topology probed an unambiguous topology"
+        assert smu.core_map_error is None
+        assert smu.core_map == {c: (c // 8, c % 8) for c in cores}
+        assert smu._topology_ccd == {c: c // 8 for c in cores}
+
+    def test_set_topology_does_not_probe_unambiguous(self, smu_dir, zen5_cmds):
+        """A provably-physical numbering must be mapped with NO SMU command."""
+        full_two_ccd = {c: MagicMock(ccd=c // 8) for c in range(16)}
+        sparse_harvest = {c: MagicMock(ccd=0) for c in (0, 1, 4, 5, 6, 7)}
+        for cores in (full_two_ccd, sparse_harvest):
+            self._assert_maps_without_probing(smu_dir, zen5_cmds, cores)
 
     def test_harvested_1ccd_writes_land_on_physical_slot(self, smu_dir, zen5_cmds):
         """5600X/7600X/9600X-style: 6 of 8 on one CCD. Linux core_id is physical
