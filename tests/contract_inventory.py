@@ -16,7 +16,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import mock_open, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 from corecycler.engine.parallel import _cpu_times
 from corecycler.engine.scheduler import CoreScheduler
@@ -29,12 +29,14 @@ from corecycler.monitor.msr import (
     MSR_PWR_UNIT,
 )
 from corecycler.smu.commands import (
+    COMMAND_SETS,
     CPUGeneration,
     decode_co_arg,
     detect_generation,
     encode_co_arg,
     get_commands,
 )
+from corecycler.smu.driver import RyzenSMU, SMUResponse
 from corecycler.tuner.engine import _read_cpu_times
 
 if TYPE_CHECKING:
@@ -69,15 +71,35 @@ def _pin_detect_generation_map() -> None:
     cases = [
         (23, 0x71, "AMD Ryzen 9 3950X 16-Core Processor", CPUGeneration.ZEN2_MATISSE),
         (23, 0x31, "AMD Ryzen Threadripper 3960X", CPUGeneration.ZEN2_CASTLE_PEAK),
+        (25, 0x08, "AMD Ryzen Threadripper PRO 5965WX", CPUGeneration.ZEN3_CHAGALL),
+        (25, 0x18, "AMD Ryzen Threadripper 7970X", CPUGeneration.ZEN4_STORM_PEAK),
         (25, 0x21, "AMD Ryzen 9 5950X 16-Core Processor", CPUGeneration.ZEN3_VERMEER),
+        (25, 0x21, "AMD Ryzen 5 5600X 6-Core Processor", CPUGeneration.ZEN3_VERMEER),
+        (25, 0x21, "AMD Ryzen 7 5800X3D 8-Core Processor", CPUGeneration.ZEN3D_WARHOL),
+        (25, 0x44, "AMD Ryzen 9 6900HX with Radeon Graphics", CPUGeneration.ZEN3_REMBRANDT),
+        (25, 0x50, "AMD Ryzen 7 5700G with Radeon Graphics", CPUGeneration.ZEN3_CEZANNE),
         (25, 0x61, "AMD Ryzen 9 7950X3D 16-Core Processor", CPUGeneration.ZEN4_RAPHAEL),
+        (25, 0x61, "AMD Ryzen 9 7945HX with Radeon Graphics", CPUGeneration.ZEN4_RAPHAEL),
+        (25, 0x74, "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics", CPUGeneration.ZEN4_PHOENIX),
+        (25, 0x75, "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics", CPUGeneration.ZEN4_PHOENIX),
+        (25, 0x78, "AMD Ryzen 5 7540U w/ Radeon 740M Graphics", CPUGeneration.ZEN4_PHOENIX2),
+        (25, 0x7C, "AMD Ryzen 5 PRO 215", CPUGeneration.ZEN4_PHOENIX2),
         (26, 0x44, "AMD Ryzen 9 9950X3D 16-Core Processor", CPUGeneration.ZEN5_GRANITE_RIDGE),
         (26, 0x24, "AMD Ryzen AI 9 HX 370", CPUGeneration.ZEN5_STRIX_POINT),
+        (26, 0x60, "AMD Ryzen AI 7 350", CPUGeneration.ZEN5_STRIX_POINT),
+        (26, 0x68, "AMD Ryzen AI 5 330", CPUGeneration.ZEN5_STRIX_POINT),
+        (26, 0x70, "AMD Ryzen AI Max+ 395", CPUGeneration.ZEN5_STRIX_HALO),
+        (26, 0x08, "AMD Ryzen Threadripper 9980X", CPUGeneration.ZEN5_SHIMADA_PEAK),
+        (26, 0x08, "AMD Eng Sample 100-000001", CPUGeneration.ZEN5_SHIMADA_PEAK),
+        (25, 0x35, "AMD Eng Sample 100-000002", CPUGeneration.UNKNOWN),
+        (26, 0x80, "AMD Eng Sample 100-000003", CPUGeneration.UNKNOWN),
         (6, 0xA7, "13th Gen Intel(R) Core(TM) i9-13900K", CPUGeneration.UNKNOWN),
     ]
     for family, model, name, expected in cases:
         assert detect_generation(family, model, name) == expected, (family, model, name)
-    assert get_commands(_ZEN5) is not None
+    for gen in CPUGeneration:
+        if gen is not CPUGeneration.UNKNOWN:
+            assert get_commands(gen) is not None, gen
 
 
 def _pin_msr_addresses() -> None:
@@ -127,6 +149,59 @@ def _pin_proc_stat_cpu_fields() -> None:
     for reader in (_cpu_times, _read_cpu_times):
         with patch("builtins.open", mock_open(read_data=stat)):
             assert reader(0) == (4050, 4491), reader.__module__
+
+
+def _pin_apu_co_command_ids() -> None:
+    cezanne = get_commands(CPUGeneration.ZEN3_CEZANNE)
+    rembrandt = get_commands(CPUGeneration.ZEN3_REMBRANDT)
+    phoenix = get_commands(CPUGeneration.ZEN4_PHOENIX)
+    phoenix2 = get_commands(CPUGeneration.ZEN4_PHOENIX2)
+    strix = get_commands(CPUGeneration.ZEN5_STRIX_POINT)
+    halo = get_commands(CPUGeneration.ZEN5_STRIX_HALO)
+    for cmds in (cezanne, rembrandt, phoenix, phoenix2, strix, halo):
+        assert cmds is not None
+        assert cmds.mailbox == "mp1"
+        assert cmds.get_co_mailbox == "rsmu"
+    assert (cezanne.set_co_cmd, cezanne.set_all_co_cmd, cezanne.get_co_cmd) == (0x54, 0x55, 0xC3)
+    for cmds in (rembrandt, phoenix, phoenix2, strix, halo):
+        assert (cmds.set_co_cmd, cmds.set_all_co_cmd) == (0x4B, 0x4C)
+    assert phoenix.get_co_cmd == 0xE1
+    assert phoenix2.get_co_cmd == 0xE1
+    assert rembrandt.get_co_cmd == 0x2F
+    assert strix.get_co_cmd == 0xAF
+    assert halo.get_co_cmd == 0xAF
+
+
+def _pin_core_slot_mapping() -> None:
+    vermeer = get_commands(CPUGeneration.ZEN3_VERMEER)
+    assert vermeer is not None and vermeer.uniform_8core_ccds
+    smu = RyzenSMU(vermeer, Path("/nonexistent"))
+    topo = MagicMock()
+    topo.cores = {c: MagicMock(ccd=0) for c in range(6)}
+    live = {0, 1, 4, 5, 6, 7}
+
+    def responder(cmd, args=(0, 0, 0, 0, 0, 0)):
+        slot = (args[0] >> 20) & 0xF
+        ok = cmd == vermeer.get_co_cmd and slot in live
+        return SMUResponse(success=ok, args=(0,) * 6, raw=b"")
+
+    smu._send_command = responder
+    smu.set_topology(topo)
+    assert smu.core_map == {0: (0, 0), 1: (0, 1), 2: (0, 4), 3: (0, 5), 4: (0, 6), 5: (0, 7)}
+    mapped = {gen for gen, cmds in COMMAND_SETS.items() if cmds.uniform_8core_ccds}
+    assert mapped == {
+        CPUGeneration.ZEN3_VERMEER,
+        CPUGeneration.ZEN3_CHAGALL,
+        CPUGeneration.ZEN3D_WARHOL,
+        CPUGeneration.ZEN3_CEZANNE,
+        CPUGeneration.ZEN3_REMBRANDT,
+        CPUGeneration.ZEN4_RAPHAEL,
+        CPUGeneration.ZEN4_DRAGON_RANGE,
+        CPUGeneration.ZEN4_STORM_PEAK,
+        CPUGeneration.ZEN4_PHOENIX,
+        CPUGeneration.ZEN5_GRANITE_RIDGE,
+        CPUGeneration.ZEN5_SHIMADA_PEAK,
+    }
 
 
 CONTRACTS: list[Contract] = [
@@ -186,5 +261,30 @@ CONTRACTS: list[Contract] = [
         source="ZenStates-Core Utils.cs clamps Zen4+ CO to [-50,50]; 9950X3D read-back rejects -60",
         ring_a=_pin_zen5_co_range,
         live_verifiable=False,
+    ),
+    Contract(
+        name="apu-co-command-ids",
+        kind="arch",
+        source=(
+            "ZenStates-Core APUSettings1 (Cezanne: MP1 set 0x54/0x55, RSMU get 0xC3), "
+            "APUSettings1_Phoenix (Rembrandt/Phoenix/Phoenix2: MP1 0x4B/0x4C, RSMU get "
+            "0xE1, Rembrandt 0x2F), APUSettings1_Strix (Strix/Krackan: RSMU get 0xAF); "
+            "corroborated by RyzenAdj lib/api.c"
+        ),
+        ring_a=_pin_apu_co_command_ids,
+        live_verifiable=False,
+    ),
+    Contract(
+        name="smu-core-slot-mapping",
+        kind="arch",
+        source=(
+            "Issue #11 (5600X renumbered core ids) + ZenStates-Core Cpu.cs: SMU CO "
+            "addresses physical 8-slot CCDs including fused-off cores; enabled slots "
+            "pair with OS cores in ascending order (the fuse-map order Windows tools "
+            "use); a fused-off slot does not answer the CO read"
+        ),
+        ring_a=_pin_core_slot_mapping,
+        live_verifiable=True,
+        ring_b_test="test_hardware_contracts.py::test_core_slot_probe_matches_live_topology",
     ),
 ]

@@ -69,14 +69,20 @@ class TestDetectGeneration:
             (25, 0x75, "AMD Ryzen 7 8845HS", CPUGeneration.ZEN4_PHOENIX),
             # Zen 4 Storm Peak (TR)
             (25, 0x18, "AMD Ryzen Threadripper 7980X", CPUGeneration.ZEN4_STORM_PEAK),
-            # Rembrandt -> Cezanne fallback
-            (25, 0x44, "AMD Ryzen 7 6800H", CPUGeneration.ZEN3_CEZANNE),
-            # Family 25 fallback
-            (25, 0x10, "Unknown AMD CPU", CPUGeneration.ZEN3_VERMEER),
+            # Rembrandt (Cezanne commands, own identity)
+            (25, 0x44, "AMD Ryzen 7 6800H", CPUGeneration.ZEN3_REMBRANDT),
+            # Zen 3 TR / Zen 4 TR model blocks
+            (25, 0x08, "AMD Ryzen Threadripper PRO 5965WX", CPUGeneration.ZEN3_CHAGALL),
+            (25, 0x10, "Unknown AMD CPU", CPUGeneration.ZEN4_STORM_PEAK),
+            # Phoenix2 heterogeneous block
+            (25, 0x78, "AMD Ryzen 5 7540U", CPUGeneration.ZEN4_PHOENIX2),
+            # Unmatched model blocks fail closed
+            (25, 0x35, "AMD Eng Sample", CPUGeneration.UNKNOWN),
+            (26, 0x80, "AMD Eng Sample", CPUGeneration.UNKNOWN),
             # Zen 5 Granite Ridge
             (26, 0x44, "AMD Ryzen 9 9950X3D", CPUGeneration.ZEN5_GRANITE_RIDGE),
             (26, 0x44, "AMD Ryzen 9 9950X", CPUGeneration.ZEN5_GRANITE_RIDGE),
-            (26, 0x01, "AMD Ryzen 7 9700X", CPUGeneration.ZEN5_GRANITE_RIDGE),
+            (26, 0x08, "AMD Ryzen Threadripper 9980X", CPUGeneration.ZEN5_SHIMADA_PEAK),
             # Zen 5 Strix Point (APU)
             (26, 0x24, "AMD Ryzen AI 9 HX 370", CPUGeneration.ZEN5_STRIX_POINT),
             # Zen 5 ThreadRipper
@@ -427,10 +433,13 @@ class TestCPUGeneration:
             "ZEN2_MATISSE",
             "ZEN2_CASTLE_PEAK",
             "ZEN3_VERMEER",
+            "ZEN3_CHAGALL",
             "ZEN3_CEZANNE",
+            "ZEN3_REMBRANDT",
             "ZEN3D_WARHOL",
             "ZEN4_RAPHAEL",
             "ZEN4_PHOENIX",
+            "ZEN4_PHOENIX2",
             "ZEN4_DRAGON_RANGE",
             "ZEN4_STORM_PEAK",
             "ZEN5_GRANITE_RIDGE",
@@ -454,7 +463,7 @@ class TestDetectGenerationDriftEdges:
         assert detect_generation(25, 0x61, "AMD Ryzen 9 7950X3D 16-Core Processor") == CPUGeneration.ZEN4_RAPHAEL
 
     def test_zen5_strix_halo_model_0x70(self):
-        assert detect_generation(26, 0x70, "AMD Ryzen AI Max+ 395") == CPUGeneration.ZEN5_STRIX_POINT
+        assert detect_generation(26, 0x70, "AMD Ryzen AI Max+ 395") == CPUGeneration.ZEN5_STRIX_HALO
 
     def test_decode_co_arg_rejects_zen2(self):
         with pytest.raises(ValueError, match="Unsupported generation"):

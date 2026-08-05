@@ -39,6 +39,12 @@ SYSFS_BASE = Path("/sys/kernel/ryzen_smu_drv")
 _PBO_LIMIT_MIN: int = 1
 _PBO_LIMIT_MAX: int = 2000
 
+# Physical core slots per CCD on every CO-capable generation this tool models
+# (Zen 3/4/5 classic layouts: one 8-core CCX per CCD). Dense-CCX APU dies
+# (Zen 4c/5c, >8 cores per L3 group) fall outside this model and keep the
+# legacy core_id-derived addressing.
+_SLOTS_PER_CCD: int = 8
+
 
 def _check_pbo_limit(name: str, value: int) -> None:
     """Fail closed on a malformed PBO limit before it is encoded and written."""
@@ -47,6 +53,27 @@ def _check_pbo_limit(name: str, value: int) -> None:
             f"{name} limit {value} out of sane range "
             f"[{_PBO_LIMIT_MIN}, {_PBO_LIMIT_MAX}]"
         )
+
+
+class CoreMapError(Exception):
+    """The OS-core to SMU-slot mapping could not be discovered.
+
+    Raised internally during ``RyzenSMU.set_topology`` and stored as
+    ``core_map_error``; per-core CO operations then refuse instead of
+    addressing slots that may belong to different or fused-off cores.
+    """
+
+
+def core_map_blocked(smu) -> str | None:
+    """The SMU's core-map failure reason, or None when per-core CO is usable.
+
+    Accepts None and duck-typed test doubles: only a real, non-empty ``str``
+    (the type of ``RyzenSMU.core_map_error``) blocks.
+    """
+    err = getattr(smu, "core_map_error", None)
+    if isinstance(err, str) and err:
+        return err
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,33 +146,161 @@ class RyzenSMU:
         self.dry_run = dry_run
         self._smu_lock = threading.Lock()
         self._backup: dict[int, int] | None = None
-        # Topology-detected CCD map: {physical_core_id: ccd_index}. Set via
-        # set_topology() to pin the SMU CCD field from L3 topology instead of
-        # core_id // 8. The physical SLOT is not stored: it is core_id % 8 (see
-        # set_topology / encode_co_arg for why that is exact on Linux).
+        # Legacy CCD map {core_id: ccd_index} from L3 topology, used only when
+        # no discovered core map exists (set_topology never called, or a dense
+        # layout outside the 8-slot-per-CCD model). The full addressing truth
+        # lives in _core_map.
         self._topology_ccd: dict[int, int] | None = None
+        # Discovered addressing map {core_id: (ccd_index, physical_slot)} and
+        # its fail-closed error state. See set_topology.
+        self._core_map: dict[int, tuple[int, int]] | None = None
+        self._core_map_error: str | None = None
+        self._known_core_ids: list[int] | None = None
 
     def set_topology(self, topology) -> None:
-        """Load the L3-detected CCD map so the SMU CCD field is exact.
+        """Discover how OS core ids map onto SMU (CCD, physical slot) addresses.
 
-        The physical slot within a CCD is NOT probed. On Linux the kernel decodes
-        each core's APIC ID (CPUID Fn8000_001E) with the hardware's own field
-        widths and exposes the result as the physical, gap-preserving /proc/cpuinfo
-        "core id" -- so ``core_id % 8`` IS the physical SMU slot, including on
-        harvested / multi-CCD parts (5900X, 7900X, 9900X, 5600X, ...), where a
-        fused-off core leaves a hole in the numbering rather than renumbering the
-        rest. (This is the Linux-vs-Windows difference: Windows enumerates cores
-        contiguously, which is why the Windows tools read the SMN core-disable fuse
-        to rebuild the physical slot; Linux hands us the physical slot directly.)
+        The SMU addresses cores by physical slot within a CCD, counting
+        fused-off cores. The kernel's /proc/cpuinfo "core id" (the APIC-ID
+        decode from CPUID Fn8000_001E) is that physical numbering on most
+        machines -- a fused-off core leaves a hole -- but some BIOS/AGESA
+        builds renumber core ids contiguously on harvested parts instead
+        (field-reported on a 5600X, issue #11), and the ids alone then hide
+        which slots are fused off.
 
-        encode_co_arg derives the slot from core_id; this method only supplies the
-        CCD index, which L3 topology pins more robustly than core_id // 8 on
-        non-standard layouts.
+        Mapping rules, per L3 group (falling back to ``core_id // 8`` grouping
+        when L3 info is absent):
+          - Any hole in the global id space proves gap-preserving numbering:
+            slot = ``core_id % 8``, CCD from L3. The pre-discovery behaviour,
+            kept verbatim for these machines.
+          - A fully contiguous id space with only full 8-core groups is
+            physical by construction: same derivation.
+          - A contiguous id space with a harvested group is ambiguous: each
+            such CCD's 8 slots are probed with the read-only CO query, and the
+            group's cores map onto the answering slots in ascending order (the
+            same order-preserving mapping the Windows tools build from the SMN
+            core-disable fuse, which needs root here since the ryzen_smu `smn`
+            file is root-only).
+          - A probe that cannot isolate the fused-off slots stores
+            ``core_map_error`` and every per-core CO operation refuses --
+            failing closed beats tuning a different core than the one under
+            test.
+
+        The whole discovery is gated on the generation's declared
+        ``uniform_8core_ccds`` (classic 8-slot CCD/CCX layout, verified): a
+        generation without it, and any L3 group larger than 8 cores (dense
+        Zen 4c/5c CCX dies), keeps the legacy core_id-derived addressing
+        bit-for-bit.
         """
         self._topology_ccd = {}
         for core_id, core_info in topology.cores.items():
             if core_info.ccd is not None:
                 self._topology_ccd[core_id] = core_info.ccd
+        self._core_map = None
+        self._core_map_error = None
+        ids = sorted(topology.cores)
+        self._known_core_ids = ids or None
+        if not ids or not self.commands.has_co or not self.commands.uniform_8core_ccds:
+            return
+        groups = self._group_cores(topology, ids)
+        if groups is None:
+            return
+        gap_preserving = max(ids) + 1 > len(ids)
+        core_map: dict[int, tuple[int, int]] = {}
+        try:
+            for encode_ccd in sorted(groups):
+                group_ids = groups[encode_ccd]
+                if gap_preserving:
+                    slots = [cid % _SLOTS_PER_CCD for cid in group_ids]
+                elif len(group_ids) == _SLOTS_PER_CCD:
+                    slots = list(range(_SLOTS_PER_CCD))
+                else:
+                    slots = self._probe_group_slots(encode_ccd, len(group_ids))
+                core_map.update(
+                    (cid, (encode_ccd, slot))
+                    for cid, slot in zip(group_ids, slots, strict=True)
+                )
+        except CoreMapError as exc:
+            self._core_map_error = str(exc)
+            log.error("SMU core mapping unavailable: %s", exc)
+            return
+        self._core_map = core_map
+
+    @staticmethod
+    def _group_cores(topology, ids: list[int]) -> dict[int, list[int]] | None:
+        """Group core ids by encode-CCD index; None for unmodeled dense layouts.
+
+        L3-detected CCDs are used when every core has one (the CCD index the CO
+        argument encodes); otherwise the ``core_id // 8`` window. Ids stay
+        ascending within each group.
+        """
+        by_l3 = all(topology.cores[cid].ccd is not None for cid in ids)
+        groups: dict[int, list[int]] = {}
+        for cid in ids:
+            key = topology.cores[cid].ccd if by_l3 else cid // _SLOTS_PER_CCD
+            groups.setdefault(key, []).append(cid)
+        if any(len(members) > _SLOTS_PER_CCD for members in groups.values()):
+            return None
+        return groups
+
+    def _probe_group_slots(self, encode_ccd: int, want: int) -> list[int]:
+        """Find this CCD's live physical slots by probing the read-only CO query.
+
+        The SMU itself is the authority on which slots exist: a fused-off slot
+        does not answer. Returns the answering slots (ascending) when exactly
+        ``want`` answer; raises CoreMapError otherwise.
+        """
+        present = [
+            slot
+            for slot in range(_SLOTS_PER_CCD)
+            if self._probe_slot(encode_ccd, slot)
+        ]
+        if len(present) == want:
+            return present
+        if not present:
+            ok, msg = self.check_writable()
+            hint = "" if ok else f" ({msg})"
+            raise CoreMapError(
+                f"core ids on this CPU are renumbered and no CCD-{encode_ccd} "
+                f"slot answered the CO read probe{hint} -- check ryzen_smu "
+                f"access, or run once with working SMU permissions"
+            )
+        raise CoreMapError(
+            f"core ids on this CPU are renumbered and the CO read probe could "
+            f"not isolate the fused-off slots: CCD {encode_ccd} has {want} OS "
+            f"cores but slots {present} answered -- per-core CO stays disabled "
+            f"instead of writing to the wrong cores; please report this output"
+        )
+
+    def _probe_slot(self, encode_ccd: int, slot: int) -> bool:
+        """Whether one (CCD, slot) address answers the read-only CO query."""
+        arg = encode_co_arg(
+            0, 0, self.commands.generation, ccd=encode_ccd, slot=slot
+        )
+        return self._send_get_co(arg).success
+
+    @property
+    def core_map(self) -> dict[int, tuple[int, int]] | None:
+        """Discovered {core_id: (ccd, slot)} addressing map, if any."""
+        return dict(self._core_map) if self._core_map is not None else None
+
+    @property
+    def core_map_error(self) -> str | None:
+        """Why per-core CO is refused, or None when addressing is usable."""
+        return self._core_map_error
+
+    def _co_address(self, core_id: int) -> tuple[int | None, int | None] | None:
+        """(ccd, slot) for encode_co_arg, or None when the write must refuse.
+
+        None means either the map discovery failed (core_map_error holds why)
+        or the caller named a core the discovered map does not contain.
+        """
+        if self._core_map_error is not None:
+            return None
+        if self._core_map is not None:
+            return self._core_map.get(core_id)
+        ccd = self._topology_ccd.get(core_id) if self._topology_ccd else None
+        return (ccd, None)
 
     @staticmethod
     def is_available(sysfs_path: Path = SYSFS_BASE) -> bool:
@@ -217,6 +372,17 @@ class RyzenSMU:
         if self.commands.mailbox == "mp1":
             return "mp1_smu_cmd"
         return "rsmu_cmd"
+
+    def _send_get_co(self, arg: int) -> SMUResponse:
+        """Send the CO read on its own mailbox.
+
+        APU generations set CO via MP1 but read it back via RSMU
+        (get_co_mailbox="rsmu"); everything else reads on the default mailbox.
+        """
+        mailbox = self.commands.get_co_mailbox or self.commands.mailbox
+        if mailbox == "rsmu" and self.commands.mailbox != "rsmu":
+            return self._send_rsmu_command(self.commands.get_co_cmd, (arg,))
+        return self._send_command(self.commands.get_co_cmd, (arg,))
 
     def _get_cmd_path(self) -> Path:
         """Get the command file path based on mailbox type."""
@@ -291,9 +457,17 @@ class RyzenSMU:
         """
         if not self.commands.has_co:
             return None
-        ccd = self._topology_ccd.get(core_id) if self._topology_ccd else None
-        arg = encode_co_arg(core_id, 0, self.commands.generation, ccd=ccd)
-        resp = self._send_command(self.commands.get_co_cmd, (arg,))
+        addr = self._co_address(core_id)
+        if addr is None:
+            log.error(
+                "CO read refused for core %d: %s",
+                core_id,
+                self._core_map_error or "core is not in the discovered core map",
+            )
+            return None
+        ccd, slot = addr
+        arg = encode_co_arg(core_id, 0, self.commands.generation, ccd=ccd, slot=slot)
+        resp = self._send_get_co(arg)
         if not resp.success:
             return None
         return decode_co_arg(core_id, resp.args[0], self.commands.generation)
@@ -324,6 +498,17 @@ class RyzenSMU:
                 f"for {self.commands.generation.name}"
             )
 
+        # --- core-address guard (before dry-run: never simulate an
+        # unaddressable write) ---
+        addr = self._co_address(core_id)
+        if addr is None:
+            log.error(
+                "CO write refused for core %d: %s",
+                core_id,
+                self._core_map_error or "core is not in the discovered core map",
+            )
+            return False
+
         # --- dry-run guard ---
         if self.dry_run:
             log.info("[DRY RUN] Would set core %d CO to %d (not written)", core_id, value)
@@ -335,8 +520,8 @@ class RyzenSMU:
             log.error("Permission check failed before CO write: %s", msg)
             return False
 
-        ccd = self._topology_ccd.get(core_id) if self._topology_ccd else None
-        arg = encode_co_arg(core_id, value, self.commands.generation, ccd=ccd)
+        ccd, slot = addr
+        arg = encode_co_arg(core_id, value, self.commands.generation, ccd=ccd, slot=slot)
         resp = self._send_command(self.commands.set_co_cmd, (arg,))
         if not resp.success:
             log.error("SMU rejected CO write for core %d value %d", core_id, value)
@@ -372,6 +557,13 @@ class RyzenSMU:
                 f"for {self.commands.generation.name}"
             )
 
+        # The all-cores command takes no core address, but its read-back
+        # verification does — with no usable core map the write would be
+        # unverifiable, so it refuses like the per-core path.
+        if self._core_map_error is not None:
+            log.error("set_all_co refused: %s", self._core_map_error)
+            return False
+
         if self.dry_run:
             log.info("[DRY RUN] Would set all cores CO to %d (not written)", value)
             return True
@@ -383,13 +575,16 @@ class RyzenSMU:
                 log.error("SMU rejected set_all_co with value %d", value)
                 return False
 
-            # Read-back verification on core 0 to confirm the write took effect
-            readback = self.get_co_offset(0)
+            # Read-back verification on the first known core (core id 0 can be
+            # a fused-off slot on harvested parts) to confirm the write took.
+            readback_core = self._known_core_ids[0] if self._known_core_ids else 0
+            readback = self.get_co_offset(readback_core)
             if readback != value:
                 log.error(
-                    "set_all_co read-back mismatch: wrote %d, read back %s from core 0",
+                    "set_all_co read-back mismatch: wrote %d, read back %s from core %d",
                     value,
                     readback,
+                    readback_core,
                 )
                 return False
             return True
@@ -410,12 +605,19 @@ class RyzenSMU:
     def get_all_co_offsets(self, num_cores: int) -> dict[int, int | None]:
         """Read CO offsets for all cores.
 
+        With a loaded topology this iterates the machine's real core-id set
+        (ids are not contiguous on gap-preserving harvested parts: a 5900X
+        runs 0-5 and 8-13), and ``num_cores`` is only the fallback domain
+        ``range(num_cores)`` for callers that never loaded one.
+
         CO values are VOLATILE — they reset to zero on reboot.
         """
-        offsets: dict[int, int | None] = {}
-        for core_id in range(num_cores):
-            offsets[core_id] = self.get_co_offset(core_id)
-        return offsets
+        core_ids = (
+            self._known_core_ids
+            if self._known_core_ids is not None
+            else range(num_cores)
+        )
+        return {core_id: self.get_co_offset(core_id) for core_id in core_ids}
 
     # ------------------------------------------------------------------
     # Boost frequency

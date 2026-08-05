@@ -15,16 +15,24 @@ class CPUGeneration(Enum):
     ZEN2_MATISSE = auto()       # 3000 series desktop (family 0x17, model 0x71)
     ZEN2_CASTLE_PEAK = auto()   # 3000 TR (family 0x17, model 0x31) — same SMU as Matisse
     ZEN3_VERMEER = auto()       # 5000 series desktop (family 0x19, model 0x20-0x2F)
-    ZEN3_CEZANNE = auto()       # 5000 APU (family 0x19, model 0x50)
+    ZEN3_CHAGALL = auto()       # 5000 TR + Milan (family 0x19, model 0x00-0x0F) — Vermeer SMU
+    ZEN3_CEZANNE = auto()       # 5000 APU (family 0x19, model 0x50-0x5F)
+    ZEN3_REMBRANDT = auto()     # 6000 APU (family 0x19, model 0x40-0x4F) —
+                                # Phoenix-class CO commands, get_co=0x2F
     ZEN3D_WARHOL = auto()       # 5800X3D (family 0x19, model 0x20-0x21 + X3D name)
-    ZEN4_RAPHAEL = auto()       # 7000 series desktop (family 0x19, model 0x60-0x7F)
-    ZEN4_PHOENIX = auto()       # 7040/8040 APU (family 0x19, model 0x74-0x75)
+    ZEN4_RAPHAEL = auto()       # 7000 desktop + Dragon Range (family 0x19, model 0x60-0x6F)
+    ZEN4_PHOENIX = auto()       # 7040/8040 APU (family 0x19, model 0x74 Phoenix,
+                                # 0x75 Hawk Point — classic monolithic 8-core CCX)
+    ZEN4_PHOENIX2 = auto()      # Small het APU (family 0x19, 0x78 Phoenix2 2+4c,
+                                # 0x7C Hawk Point 2) — Phoenix commands, no slot map
     ZEN4_DRAGON_RANGE = auto()  # 7045 mobile — uses Raphael commands
-    ZEN4_STORM_PEAK = auto()    # Zen 4 TR (family 0x19, model 0x18)
-    ZEN5_GRANITE_RIDGE = auto() # 9000 series desktop (family 0x1A, model 0x44)
-    ZEN5_STRIX_POINT = auto()   # 9050 APU (family 0x1A, model 0x24)
-    ZEN5_STRIX_HALO = auto()    # Zen 5 APU (family 0x1A, model 0x70)
-    ZEN5_SHIMADA_PEAK = auto()  # Zen 5 TR (different RSMU addresses)
+    ZEN4_STORM_PEAK = auto()    # Zen 4 TR (family 0x19, model 0x10-0x1F)
+    ZEN5_GRANITE_RIDGE = auto() # 9000 desktop + Fire Range (family 0x1A, model 0x40-0x4F)
+    ZEN5_STRIX_POINT = auto()   # Ryzen AI APU (family 0x1A, model 0x20-0x2F het 4+8c;
+                                # 0x60-0x6F Krackan Point 4+4c / 1+3c het routes here too)
+    ZEN5_STRIX_HALO = auto()    # Ryzen AI Max APU (family 0x1A, model 0x70-0x7F)
+    ZEN5_SHIMADA_PEAK = auto()  # Zen 5 TR (family 0x1A, model 0x00-0x0F, 9980X dump
+                                # B00F81; different RSMU addresses, get_co=0xA3)
     UNKNOWN = auto()
 
 
@@ -36,11 +44,24 @@ class SMUCommandSet:
     co_range: tuple[int, int]  # (min, max) CO values this generation supports
     mailbox: str  # "rsmu" or "mp1"
     encoding_scheme: str  # "none" | "zen3" | "zen4_5"
+    # True where the CO core address space is verified to be uniform 8-slot
+    # CCDs (one 8-core CCX per CCD): classic desktop/TR dies and monolithic
+    # 8-core-CCX APUs. Gates RyzenSMU's core-map discovery (slot probing and
+    # its fail-closed refusals); False keeps the legacy core_id-derived
+    # addressing untouched. Deliberately False for heterogeneous Zen4c/5c
+    # parts (Phoenix2/Hawk Point 2, Strix Point, Krackan), for Strix Halo
+    # (classic CCDs, but per-core CO tuning there is unverified with known
+    # tool failures), and for any future generation until verified.
+    uniform_8core_ccds: bool = False
 
-    # CO (Curve Optimizer / DldoPsmMargin) commands — None if generation lacks CO
+    # CO (Curve Optimizer / DldoPsmMargin) commands — None if generation lacks CO.
+    # get_co_mailbox overrides the mailbox for the GET command only: the APU
+    # classes set CO via MP1 but read it back via RSMU (ZenStates-Core
+    # APUSettings1*); None means the default mailbox.
     set_co_cmd: int | None = None
     set_all_co_cmd: int | None = None
     get_co_cmd: int | None = None
+    get_co_mailbox: str | None = None
 
     # PBO power limits
     set_ppt_cmd: int | None = None
@@ -137,6 +158,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         co_range=(-30, 30),
         mailbox="mp1",
         encoding_scheme="zen3",
+        uniform_8core_ccds=True,
         set_co_cmd=0x35,
         set_all_co_cmd=0x36,
         get_co_cmd=0x48,
@@ -167,6 +189,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         co_range=(-30, 30),  # hardware accepts this; V-Cache makes >-25 risky
         mailbox="mp1",
         encoding_scheme="zen3",
+        uniform_8core_ccds=True,
         set_co_cmd=0x35,
         set_all_co_cmd=0x36,
         get_co_cmd=0x48,
@@ -192,9 +215,11 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         co_range=(-30, 30),
         mailbox="mp1",
         encoding_scheme="zen3",
-        set_co_cmd=0x35,
-        set_all_co_cmd=0x36,
-        get_co_cmd=0x48,
+        uniform_8core_ccds=True,
+        set_co_cmd=0x54,
+        set_all_co_cmd=0x55,
+        get_co_cmd=0xC3,
+        get_co_mailbox="rsmu",
         set_ppt_cmd=0x53,
         set_tdc_cmd=0x54,
         set_edc_cmd=0x55,
@@ -216,6 +241,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         co_range=(-50, 30),  # -40 confirmed working, allow -50 for headroom
         mailbox="rsmu",
         encoding_scheme="zen4_5",
+        uniform_8core_ccds=True,
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xD5,
@@ -244,11 +270,13 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
     CPUGeneration.ZEN4_PHOENIX: SMUCommandSet(
         generation=CPUGeneration.ZEN4_PHOENIX,
         co_range=(-50, 30),
-        mailbox="rsmu",
+        mailbox="mp1",
         encoding_scheme="zen4_5",
-        set_co_cmd=0x06,
-        set_all_co_cmd=0x07,
-        get_co_cmd=0xD5,
+        uniform_8core_ccds=True,
+        set_co_cmd=0x4B,
+        set_all_co_cmd=0x4C,
+        get_co_cmd=0xE1,
+        get_co_mailbox="rsmu",
         set_ppt_cmd=0x56,
         set_tdc_cmd=0x57,
         set_edc_cmd=0x58,
@@ -270,6 +298,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         co_range=(-50, 30),
         mailbox="rsmu",
         encoding_scheme="zen4_5",
+        uniform_8core_ccds=True,
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xD5,
@@ -297,6 +326,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         co_range=(-50, 10),
         mailbox="rsmu",
         encoding_scheme="zen4_5",
+        uniform_8core_ccds=True,
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xD5,
@@ -325,11 +355,12 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
     CPUGeneration.ZEN5_STRIX_POINT: SMUCommandSet(
         generation=CPUGeneration.ZEN5_STRIX_POINT,
         co_range=(-50, 10),
-        mailbox="rsmu",
+        mailbox="mp1",
         encoding_scheme="zen4_5",
-        set_co_cmd=0x06,
-        set_all_co_cmd=0x07,
-        get_co_cmd=0xD5,
+        set_co_cmd=0x4B,
+        set_all_co_cmd=0x4C,
+        get_co_cmd=0xAF,
+        get_co_mailbox="rsmu",
         set_ppt_cmd=0x56,
         set_tdc_cmd=0x57,
         set_edc_cmd=0x58,
@@ -353,6 +384,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         co_range=(-50, 10),
         mailbox="rsmu",
         encoding_scheme="zen4_5",
+        uniform_8core_ccds=True,
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xA3,  # different from desktop!
@@ -375,15 +407,19 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
 }
 
 
-def _alias_commands(source: CPUGeneration, target: CPUGeneration) -> SMUCommandSet:
+def _alias_commands(
+    source: CPUGeneration, target: CPUGeneration, **overrides
+) -> SMUCommandSet:
     """Create a command set for target that shares source's commands.
 
-    All fields are copied from source except ``generation``, which is set to target.
-    Only use when two generations have truly identical SMU commands (same silicon).
+    All fields are copied from source except ``generation`` (set to target) and
+    any explicit ``overrides`` (e.g. a die that shares the mailbox commands but
+    not the classic CCX layout). Only use when the SMU commands truly match.
     """
     base = COMMAND_SETS[source]
     fields = {f.name: getattr(base, f.name) for f in dataclass_fields(base)}
     fields["generation"] = target
+    fields.update(overrides)
     return SMUCommandSet(**fields)
 
 
@@ -393,72 +429,93 @@ def _alias_commands(source: CPUGeneration, target: CPUGeneration) -> SMUCommandS
 COMMAND_SETS[CPUGeneration.ZEN2_CASTLE_PEAK] = _alias_commands(
     CPUGeneration.ZEN2_MATISSE, CPUGeneration.ZEN2_CASTLE_PEAK
 )
+COMMAND_SETS[CPUGeneration.ZEN3_CHAGALL] = _alias_commands(
+    CPUGeneration.ZEN3_VERMEER, CPUGeneration.ZEN3_CHAGALL
+)
+COMMAND_SETS[CPUGeneration.ZEN3_REMBRANDT] = _alias_commands(
+    CPUGeneration.ZEN4_PHOENIX, CPUGeneration.ZEN3_REMBRANDT, get_co_cmd=0x2F
+)
 COMMAND_SETS[CPUGeneration.ZEN4_DRAGON_RANGE] = _alias_commands(
     CPUGeneration.ZEN4_RAPHAEL, CPUGeneration.ZEN4_DRAGON_RANGE
 )
-# Strix Halo is a Zen 5 APU sharing Strix Point's SMU interface. Without this it
-# had no command set, so any future routing of model 0x70 to ZEN5_STRIX_HALO (it
-# currently resolves to ZEN5_STRIX_POINT) would build RyzenSMU(commands=None) and
-# crash. The completeness test below pins "every known generation has a set".
+# Phoenix2 (2x Zen4 + 4x Zen4c in one shared CCX) and Hawk Point 2 share
+# Phoenix's mailbox commands but not its classic 8-core CCX layout, so the
+# slot-map discovery stays off for them.
+COMMAND_SETS[CPUGeneration.ZEN4_PHOENIX2] = _alias_commands(
+    CPUGeneration.ZEN4_PHOENIX,
+    CPUGeneration.ZEN4_PHOENIX2,
+    uniform_8core_ccds=False,
+)
+# Strix Halo shares Strix Point's SMU interface. The completeness test pins
+# "every known generation has a set", so a routed generation can never build
+# RyzenSMU(commands=None).
 COMMAND_SETS[CPUGeneration.ZEN5_STRIX_HALO] = _alias_commands(
     CPUGeneration.ZEN5_STRIX_POINT, CPUGeneration.ZEN5_STRIX_HALO
+)
+
+
+# The single model-routing table: (family, model_lo, model_hi, generation),
+# first match wins; an unmatched family/model is UNKNOWN (no SMU commands —
+# fail closed for future dies rather than inheriting a probing generation:
+# Zen 6 CPUID sightings already sit at family 0x1A model 0x80+). Grounded in
+# the ryzen_smu driver's own CPUID table (smu.c smu_resolve_cpu_class,
+# amkillam fork rev 21c1e2c — the exact source pinned in nix/ryzen-smu.nix,
+# and the transport every SMU feature here rides on), the documented block
+# scheme from Zen 3 on (AMD reserves 16 model ids per die: Chagall 0x00-0x0F,
+# Storm Peak 0x10-0x1F, Vermeer 0x20-0x2F, ..., which Ryzen Master keys on),
+# and InstLatx64 CPUID dumps (Chagall A00F82, Storm Peak A10F81, Phoenix2
+# A70F80-class, Hawk Point 2 A70FC0, Granite Ridge B40F40, Strix Point
+# B20F40, Krackan B60F00/B60F80, Strix Halo B70F00, Shimada Peak B00F81).
+# Heterogeneous Zen4c/5c blocks (Phoenix2/HP2 0x76-0x7F, Strix 0x20-0x2F,
+# Krackan 0x60-0x6F) route to generations declaring uniform_8core_ccds=False.
+# Family 0x17 (Zen1/+/2) has no CO, so the whole family safely shares the
+# Matisse PBO-only set, Castle Peak excepted for its own display identity.
+# Name-based adjustments (X3D, Zen 5 Threadripper) live in detect_generation.
+_MODEL_TABLE: tuple[tuple[int, int, int, CPUGeneration], ...] = (
+    (23, 0x31, 0x31, CPUGeneration.ZEN2_CASTLE_PEAK),
+    (23, 0x00, 0xFF, CPUGeneration.ZEN2_MATISSE),
+    (25, 0x00, 0x0F, CPUGeneration.ZEN3_CHAGALL),
+    (25, 0x10, 0x1F, CPUGeneration.ZEN4_STORM_PEAK),
+    (25, 0x20, 0x2F, CPUGeneration.ZEN3_VERMEER),
+    (25, 0x40, 0x4F, CPUGeneration.ZEN3_REMBRANDT),
+    (25, 0x50, 0x5F, CPUGeneration.ZEN3_CEZANNE),
+    (25, 0x60, 0x6F, CPUGeneration.ZEN4_RAPHAEL),
+    (25, 0x74, 0x75, CPUGeneration.ZEN4_PHOENIX),
+    (25, 0x70, 0x7F, CPUGeneration.ZEN4_PHOENIX2),
+    (26, 0x00, 0x0F, CPUGeneration.ZEN5_SHIMADA_PEAK),
+    (26, 0x20, 0x2F, CPUGeneration.ZEN5_STRIX_POINT),
+    (26, 0x40, 0x4F, CPUGeneration.ZEN5_GRANITE_RIDGE),
+    (26, 0x60, 0x6F, CPUGeneration.ZEN5_STRIX_POINT),
+    (26, 0x70, 0x7F, CPUGeneration.ZEN5_STRIX_HALO),
 )
 
 
 def detect_generation(family: int, model: int, model_name: str) -> CPUGeneration:
     """Detect CPU generation from CPUID family/model and model name.
 
-    Uses family (from /proc/cpuinfo 'cpu family') and model to identify
-    the processor codename, which determines the SMU command set.
+    All family/model knowledge lives in _MODEL_TABLE (first match wins); this
+    function only applies the name-based adjustments the table cannot express:
+    the 5800X3D (Warhol shares Vermeer's model block) and a belt-and-braces
+    Zen 5 Threadripper name check alongside Shimada Peak's model row.
     """
     name_lower = model_name.lower()
 
-    # AMD family 0x17 (23) = Zen / Zen+ / Zen 2
-    if family == 23:
-        if model in (0x71,):  # Matisse
-            return CPUGeneration.ZEN2_MATISSE
-        if model in (0x31,):  # Castle Peak (TR)
-            return CPUGeneration.ZEN2_CASTLE_PEAK
-        # Zen 1 (0x01, 0x11) and Zen+ (0x08, 0x18) — same PBO limits as Matisse
-        return CPUGeneration.ZEN2_MATISSE  # fallback for family 23
+    if family == 26 and ("threadripper" in name_lower or "shimada" in name_lower):
+        return CPUGeneration.ZEN5_SHIMADA_PEAK
 
-    # AMD family 0x19 (25) = Zen 3 / Zen 4
-    if family == 25:
-        # X3D detection first (overrides model-based detection)
-        # Zen 3 X3D (5800X3D): model 0x20-0x2F + X3D name
-        if "5800x3d" in name_lower or ("x3d" in name_lower and model in range(0x20, 0x30)):
-            return CPUGeneration.ZEN3D_WARHOL
-        # Zen 4 X3D (7800X3D, 7900X3D, 7950X3D): model 0x60-0x7F + X3D name
-        # Same Raphael commands — X3D CO tuning works but V-Cache is sensitive
-        if "x3d" in name_lower and model in range(0x60, 0x80):
-            return CPUGeneration.ZEN4_RAPHAEL
+    generation = next(
+        (
+            gen
+            for fam, lo, hi, gen in _MODEL_TABLE
+            if family == fam and lo <= model <= hi
+        ),
+        CPUGeneration.UNKNOWN,
+    )
 
-        if model in range(0x20, 0x30):  # Vermeer
-            return CPUGeneration.ZEN3_VERMEER
-        if model in range(0x50, 0x60):  # Cezanne
-            return CPUGeneration.ZEN3_CEZANNE
-        if model in (0x18,):  # Storm Peak (Zen 4 TR)
-            return CPUGeneration.ZEN4_STORM_PEAK
-        if model in (0x74, 0x75):  # Phoenix / Hawk Point (must be before Raphael range)
-            return CPUGeneration.ZEN4_PHOENIX
-        if model in range(0x60, 0x80):  # Raphael + Dragon Range (same silicon)
-            return CPUGeneration.ZEN4_RAPHAEL
-        if model in range(0x40, 0x50):  # Rembrandt (Zen 3+ APU)
-            return CPUGeneration.ZEN3_CEZANNE  # same SMU commands
+    if generation is CPUGeneration.ZEN3_VERMEER and "x3d" in name_lower:
+        return CPUGeneration.ZEN3D_WARHOL
 
-        return CPUGeneration.ZEN3_VERMEER  # fallback for family 25
-
-    # AMD family 0x1A (26) = Zen 5
-    if family == 26:
-        if model in (0x24,):  # Strix Point
-            return CPUGeneration.ZEN5_STRIX_POINT
-        if model in (0x70,):  # Strix Halo
-            return CPUGeneration.ZEN5_STRIX_POINT  # similar commands
-        if "threadripper" in name_lower or "shimada" in name_lower:
-            return CPUGeneration.ZEN5_SHIMADA_PEAK
-        return CPUGeneration.ZEN5_GRANITE_RIDGE
-
-    return CPUGeneration.UNKNOWN
+    return generation
 
 
 def get_commands(generation: CPUGeneration) -> SMUCommandSet | None:
@@ -498,11 +555,12 @@ def encode_co_arg(
              deriving CCD from ``core_id // 8``. Always prefer passing the
              L3-detected CCD from topology when available.
         slot: Physical slot index (0-7) within the CCD, overriding the default
-              ``core_id % 8``. On Linux ``core_id`` is already the physical,
-              gap-preserving core index (the kernel's own APIC-ID decode), so the
-              default is exact even on harvested parts; this override exists only
-              for a caller with a different authoritative source (e.g. an SMN
-              core-disable fuse map, as the Windows tools use).
+              ``core_id % 8``. The default is exact only when the kernel's
+              ``core id`` carries the physical, gap-preserving numbering (a
+              fused-off core leaves a hole). Some BIOS/AGESA builds renumber
+              core ids contiguously on harvested parts instead (issue #11,
+              5600X), so ``RyzenSMU.set_topology`` discovers the true mapping
+              and passes both ``ccd`` and ``slot`` explicitly.
     """
     commands = get_commands(generation)
     if commands is None:
@@ -515,14 +573,10 @@ def encode_co_arg(
     margin = value & 0xFFFF
 
     if scheme in ("zen3", "zen4_5"):
-        # Zen 3/4/5 per-core layout: CCD in bits [31:28], physical core-in-CCD in
-        # bits [23:20]. On Linux core_id is the kernel's APIC-ID-derived PHYSICAL
-        # core index and is gap-preserving on harvested parts (a fused-off core
-        # leaves a hole, not a renumber), so core_id % 8 IS the physical slot and
-        # core_id // 8 the CCD. The ccd/slot keyword overrides let a caller supply a
-        # more authoritative source: the L3-detected CCD (RyzenSMU.set_topology), or
-        # a slot from an SMN core-disable fuse map on a platform where core_id is not
-        # already physical.
+        # Zen 3/4/5 per-core layout: CCD in bits [31:28], physical core-in-CCD
+        # in bits [23:20]. The core_id-derived defaults hold only for the
+        # gap-preserving physical numbering; RyzenSMU.set_topology discovers
+        # each core's true (ccd, slot) and passes both explicitly.
         detected_ccd = ccd if ccd is not None else core_id // 8
         core_in_ccd = slot if slot is not None else core_id % 8
         return (detected_ccd << 28) | (core_in_ccd << 20) | margin
