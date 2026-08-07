@@ -219,7 +219,7 @@ class TestEncodeDecodeZen3:
         assert (encoded_8 >> 20) & 0xF == 0
 
     def test_harvested_slot_and_ccd_override_core_id(self):
-        """Zen 3 must honor the topology-detected CCD and probed slot, not derive
+        """Zen 3 must honor the topology-detected CCD and discovered slot, not derive
         them from core_id. On a harvested/2-CCD part (5900X 6+6, 5600X 6-of-8) the
         kernel renumbers cores contiguously, so deriving the slot from core_id alone
         targets the WRONG physical SMU slot — a silent wrong-core write."""
@@ -347,7 +347,7 @@ class TestEncodeDecodeHarvested:
             assert decoded == -30
 
     def test_slot_honored_for_zen3(self):
-        """Zen 3 honors the probed physical slot (was a bug: it ignored it, so a
+        """Zen 3 honors the discovered physical slot (was a bug: it ignored it, so a
         harvested 5600X/5900X wrote the wrong core)."""
         gen = CPUGeneration.ZEN3_VERMEER
         enc_default = encode_co_arg(3, -10, gen)

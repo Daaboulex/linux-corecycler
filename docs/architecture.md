@@ -22,7 +22,7 @@ src/corecycler/
     backends/          Auto-registered stress backends (mprime, stress_ng, ycruncher, stressapptest)
   smu/               AMD SMU access (ryzen_smu)
     commands.py        Per-generation command IDs, encoding-scheme dispatch, harvested-core slots
-    driver.py          ryzen_smu sysfs: CO, PBO limits, boost, scalar, slot probing, system state
+    driver.py          ryzen_smu sysfs: CO, PBO limits, boost, scalar, core-slot map, system state
     pmtable.py         Version-aware PM table parsing: FCLK/UCLK/MCLK, voltages, ratio
   monitor/           Live hardware telemetry
     hwmon.py           k10temp/zenpower/coretemp temps + Vcore/Vsoc; Super I/O fallback (Zen 5)

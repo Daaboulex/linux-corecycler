@@ -46,13 +46,24 @@ class SMUCommandSet:
     encoding_scheme: str  # "none" | "zen3" | "zen4_5"
     # True where the CO core address space is verified to be uniform 8-slot
     # CCDs (one 8-core CCX per CCD): classic desktop/TR dies and monolithic
-    # 8-core-CCX APUs. Gates RyzenSMU's core-map discovery (slot probing and
+    # 8-core-CCX APUs. Gates RyzenSMU's core-map discovery (the fuse read and
     # its fail-closed refusals); False keeps the legacy core_id-derived
     # addressing untouched. Deliberately False for heterogeneous Zen4c/5c
     # parts (Phoenix2/Hawk Point 2, Strix Point, Krackan), for Strix Halo
     # (classic CCDs, but per-core CO tuning there is unverified with known
     # tool failures), and for any future generation until verified.
     uniform_8core_ccds: bool = False
+
+    # SMN address of CCD 0's core-disable fuse; CCD n sits at
+    # ``addr + (n << 25)`` and the low 8 bits mark the fused-off physical
+    # slots (bit set = slot disabled). This is the SMU's own record of which
+    # slots exist, and the only thing that resolves a renumbered core-id space
+    # (issue #11) -- the CO read answers on every in-range slot and proves
+    # nothing. None where no address is verified for the die, which fails
+    # per-core CO closed on a renumbered part rather than guessing: the APU
+    # dies (ryzen_monitor excludes Cezanne from the fuse path outright) and
+    # Shimada Peak, whose address ZenStates-Core itself marks uncertain.
+    core_fuse_addr: int | None = None
 
     # CO (Curve Optimizer / DldoPsmMargin) commands — None if generation lacks CO.
     # get_co_mailbox overrides the mailbox for the GET command only: the APU
@@ -121,7 +132,20 @@ class SMUCommandSet:
 # - Zen 5: -50 to +10 (firmware clamps at -50; -60 is a BIOS input ceiling only)
 #
 # Zen 2 has NO Curve Optimizer but does have PBO scalar/limits.
+#
+# Core-disable fuse addresses (core_fuse_addr): ZenStates-Core Cpu.cs
+# GetCpuTopology computes coreDisableMapAddress as 0x30081800 + a family
+# offset, except family 0x1A which carries its own address; ryzen_monitor's
+# get_processor_topology independently derives the same family 0x17/0x19
+# values, and ZenStates' own per-codename fuse table lists them verbatim.
 # ===========================================================================
+
+# family 0x19 offset 0x598 -- Vermeer, Warhol, Chagall, Storm Peak
+_FUSE_ZEN3_CLASS = 0x30081D98
+# family 0x19 offset 0x4D0 -- Raphael, Dragon Range
+_FUSE_RAPHAEL = 0x30081CD0
+# family 0x1A -- Granite Ridge
+_FUSE_GRANITE_RIDGE = 0x304A03DC
 
 COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
     # -----------------------------------------------------------------------
@@ -164,6 +188,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         mailbox="mp1",
         encoding_scheme="zen3",
         uniform_8core_ccds=True,
+        core_fuse_addr=_FUSE_ZEN3_CLASS,
         set_co_cmd=0x35,
         set_all_co_cmd=0x36,
         get_co_cmd=0x48,
@@ -195,6 +220,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         mailbox="mp1",
         encoding_scheme="zen3",
         uniform_8core_ccds=True,
+        core_fuse_addr=_FUSE_ZEN3_CLASS,
         set_co_cmd=0x35,
         set_all_co_cmd=0x36,
         get_co_cmd=0x48,
@@ -250,6 +276,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         mailbox="rsmu",
         encoding_scheme="zen4_5",
         uniform_8core_ccds=True,
+        core_fuse_addr=_FUSE_RAPHAEL,
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xD5,
@@ -311,6 +338,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         mailbox="rsmu",
         encoding_scheme="zen4_5",
         uniform_8core_ccds=True,
+        core_fuse_addr=_FUSE_ZEN3_CLASS,
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xD5,
@@ -339,6 +367,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         mailbox="rsmu",
         encoding_scheme="zen4_5",
         uniform_8core_ccds=True,
+        core_fuse_addr=_FUSE_GRANITE_RIDGE,
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xD5,

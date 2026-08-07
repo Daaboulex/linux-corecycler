@@ -40,15 +40,23 @@ the slot directly (`core id % 8`, CCD from L3 topology). Some BIOS/AGESA builds
 instead renumber core ids contiguously on harvested parts (reported on a 5600X,
 issue #11), which hides the fused-off slots. The driver detects this: a numbering
 that proves itself physical (holes, or only full 8-core CCDs) is used as-is with no
-SMU traffic, while an ambiguous CCD is probed once with the read-only CO query and
-its cores map onto the answering slots in ascending order -- the same
-order-preserving mapping Windows tools build from the SMN core-disable fuse (root-
-only here, since `ryzen_smu` exposes `smn` to root alone). If the probe cannot
-isolate the fused-off slots, per-core CO is disabled with an explicit reason (GUI
-banner, CLI stderr, tuner refuses to start) instead of ever writing to the wrong
-core. Discovery is gated per generation on the verified classic 8-slot-per-CCD
-layout; heterogeneous Zen 4c/5c dies (Phoenix2, Strix Point, Strix Halo) keep the
-legacy core-id addressing untouched.
+SMU traffic, while an ambiguous CCD has its **core-disable fuse** read over SMN --
+the SMU's own record of which of the 8 slots exist -- and its cores map onto the
+live slots in ascending order, the same order-preserving mapping the Windows tools
+build from that fuse. The CO read cannot stand in for the fuse: it answers on every
+in-range slot, fused-off ones included, which is what issue #11's 5600X reported
+(all eight slots answered on a six-core CCD).
+
+Reading an SMN register is a *write* of the address, so this needs write access to
+`/sys/kernel/ryzen_smu_drv/smn`, which `ryzen_smu` ships root-only -- the NixOS
+module grants it to the `corecycler` group alongside the mailbox files, and
+[installation.md](installation.md#ryzen_smu-kernel-module) has the equivalent unit
+for other distros. If the fuse cannot be read, has no verified address for the die
+(the APUs and Shimada Peak), or disagrees with the OS core count, per-core CO is
+disabled with an explicit reason (GUI banner, CLI stderr, tuner refuses to start)
+instead of ever writing to the wrong core. Discovery is gated per generation on the
+verified classic 8-slot-per-CCD layout; heterogeneous Zen 4c/5c dies (Phoenix2,
+Strix Point, Strix Halo) keep the legacy core-id addressing untouched.
 
 All CO-capable generations support PBO scalar read/write (1.0x to 10.0x) and OC
 mode enable/disable through their own command dialect; on APUs the PPT/TDC/EDC
