@@ -58,6 +58,14 @@ Note: Group read access to `/dev/cpu/N/msr` exposes ALL readable MSRs on all log
 - **MSR:** `MODE="0640"` — root read/write, group read-only, world none.
 - **SMU sysfs:** `0660 root:corecycler` — group read/write (enables CO writes without root).
 - Any user in the `corecycler` group can send arbitrary SMU commands, not limited to CO.
+- **SMN (`smn`):** also `0660 root:corecycler`. Reading an SMN register is a *write* of its
+  address, so read access is unobtainable without write access, and write access to that file
+  is arbitrary read/write of the SMN address space — a wider surface than the SMU mailbox
+  beside it, reaching data-fabric registers unrelated to CO. It is granted because the
+  per-CCD core-disable fuse is the only thing that identifies the fused-off physical core
+  slots on a harvested CPU whose firmware renumbers core ids; without it the tool refuses
+  per-core CO on those parts rather than applying it to the wrong core. Grant the group only
+  to a user already trusted with the SMU mailbox.
 
 ### System-Wide Side Effects
 

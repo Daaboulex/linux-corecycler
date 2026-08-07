@@ -236,10 +236,31 @@ ls /sys/kernel/ryzen_smu_drv/
 # Expected: mp1_smu_cmd  rsmu_cmd  smu_args  version  pm_table
 ```
 
-Reading/writing CO through sysfs needs root or a udev rule granting group access:
+Reading/writing CO through sysfs needs root, or group ownership of the four SMU
+files. A udev rule races the driver's own sysfs creation, so grant them from a
+oneshot ordered after the module load -- the same thing the NixOS module does:
 
 ```bash
-# /etc/udev/rules.d/99-ryzen-smu.rules
-KERNEL=="ryzen_smu_drv", SUBSYSTEM=="platform", ATTR{smu_args}="", \
-  RUN+="/bin/chmod 0660 /sys/kernel/ryzen_smu_drv/smu_args /sys/kernel/ryzen_smu_drv/rsmu_cmd /sys/kernel/ryzen_smu_drv/mp1_smu_cmd"
+sudo groupadd -f corecycler && sudo usermod -aG corecycler "$USER"
+
+# /etc/systemd/system/corecycler-smu-permissions.service
+[Unit]
+After=systemd-modules-load.service
+ConditionPathExists=/sys/kernel/ryzen_smu_drv/smu_args
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'cd /sys/kernel/ryzen_smu_drv && chgrp corecycler smu_args mp1_smu_cmd rsmu_cmd smn && chmod 0660 smu_args mp1_smu_cmd rsmu_cmd smn'
+
+[Install]
+WantedBy=multi-user.target
 ```
+
+`smn` is in that list because an SMN register read is a *write* of the address,
+and the SMU's core-disable fuse -- read over SMN -- is the only thing that says
+which physical core slots are fused off on a harvested CPU whose BIOS renumbers
+core ids. Without it, per-core CO is refused on those parts rather than applied
+to the wrong core. Granting the group write access to `smn` also grants it
+arbitrary SMN register access; it is the same trust boundary as the SMU mailbox
+files next to it, so grant it only to a user you would already trust with those.

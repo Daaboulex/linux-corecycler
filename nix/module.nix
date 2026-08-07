@@ -108,7 +108,7 @@ in
     deviceAccess = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Whether to grant the deviceAccessUser access to MSR devices and SMU sysfs via a dedicated group and udev rules. No sudo required for monitoring and CO access.";
+      description = "Whether to grant the deviceAccessUser access to MSR devices and SMU sysfs via a dedicated group, a udev rule for MSR and a systemd oneshot for the ryzen_smu files. No sudo required for monitoring and CO access. The oneshot includes `smn`, which is arbitrary SMN register access -- see SECURITY.md before enabling this for a user you would not trust with the SMU mailbox.";
     };
 
     deviceAccessUser = lib.mkOption {
@@ -206,6 +206,11 @@ in
               "/sys/kernel/ryzen_smu_drv/smu_args"
               "/sys/kernel/ryzen_smu_drv/mp1_smu_cmd"
               "/sys/kernel/ryzen_smu_drv/rsmu_cmd"
+              # An SMN read is a write of the address, so per-core Curve
+              # Optimizer on a harvested part with renumbered core ids needs
+              # this too: it is the only way to read the core-disable fuse
+              # that says which physical slots are fused off.
+              "/sys/kernel/ryzen_smu_drv/smn"
             ];
           in
           pkgs.writeShellScript "corecycler-smu-perms" ''

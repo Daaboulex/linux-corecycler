@@ -229,19 +229,39 @@ def _pin_desktop_pbo_command_ids() -> None:
 def _pin_core_slot_mapping() -> None:
     vermeer = get_commands(CPUGeneration.ZEN3_VERMEER)
     assert vermeer is not None and vermeer.uniform_8core_ccds
+    assert vermeer.core_fuse_addr == 0x30081D98
     smu = RyzenSMU(vermeer, Path("/nonexistent"))
     topo = MagicMock()
     topo.cores = {c: MagicMock(ccd=0) for c in range(6)}
-    live = {0, 1, 4, 5, 6, 7}
+    fused_off = {2, 3}
+    fuse_reads: list[int] = []
+    co_calls: list[int] = []
 
     def responder(cmd, args=(0, 0, 0, 0, 0, 0)):
-        slot = (args[0] >> 20) & 0xF
-        ok = cmd == vermeer.get_co_cmd and slot in live
-        return SMUResponse(success=ok, args=(0,) * 6, raw=b"")
+        co_calls.append(cmd)
+        return SMUResponse(success=True, args=(0,) * 6, raw=b"")
+
+    def read_smn(address: int) -> int:
+        fuse_reads.append(address)
+        return sum(1 << slot for slot in fused_off)
 
     smu._send_command = responder
+    smu.check_smn_readable = lambda: (True, "OK")
+    smu.read_smn = read_smn
     smu.set_topology(topo)
+    assert co_calls == []
+    assert fuse_reads == [vermeer.core_fuse_addr]
     assert smu.core_map == {0: (0, 0), 1: (0, 1), 2: (0, 4), 3: (0, 5), 4: (0, 6), 5: (0, 7)}
+    fused = {gen: cmds.core_fuse_addr for gen, cmds in COMMAND_SETS.items() if cmds.core_fuse_addr}
+    assert fused == {
+        CPUGeneration.ZEN3_VERMEER: 0x30081D98,
+        CPUGeneration.ZEN3_CHAGALL: 0x30081D98,
+        CPUGeneration.ZEN3D_WARHOL: 0x30081D98,
+        CPUGeneration.ZEN4_STORM_PEAK: 0x30081D98,
+        CPUGeneration.ZEN4_RAPHAEL: 0x30081CD0,
+        CPUGeneration.ZEN4_DRAGON_RANGE: 0x30081CD0,
+        CPUGeneration.ZEN5_GRANITE_RIDGE: 0x304A03DC,
+    }
     mapped = {gen for gen, cmds in COMMAND_SETS.items() if cmds.uniform_8core_ccds}
     assert mapped == {
         CPUGeneration.ZEN3_VERMEER,
@@ -359,13 +379,16 @@ CONTRACTS: list[Contract] = [
         name="smu-core-slot-mapping",
         kind="arch",
         source=(
-            "Issue #11 (5600X renumbered core ids) + ZenStates-Core Cpu.cs: SMU CO "
-            "addresses physical 8-slot CCDs including fused-off cores; enabled slots "
-            "pair with OS cores in ascending order (the fuse-map order Windows tools "
-            "use); a fused-off slot does not answer the CO read"
+            "Issue #11 (5600X renumbered core ids) + ZenStates-Core Cpu.cs "
+            "GetCpuTopology, corroborated by ryzen_monitor get_processor_topology: "
+            "SMU CO addresses physical 8-slot CCDs including fused-off cores, and "
+            "the per-CCD SMN core-disable fuse (CCD n at addr + (n << 25), low 8 "
+            "bits, set bit = fused off) names the live slots, which pair with OS "
+            "cores in ascending order. The CO read is NOT that signal -- it answers "
+            "on every in-range slot, which is what issue #11 reported"
         ),
         ring_a=_pin_core_slot_mapping,
         live_verifiable=True,
-        ring_b_test="test_hardware_contracts.py::test_core_slot_probe_matches_live_topology",
+        ring_b_test="test_hardware_contracts.py::test_core_slot_map_matches_the_live_core_disable_fuse",
     ),
 ]

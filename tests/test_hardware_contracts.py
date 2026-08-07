@@ -108,10 +108,12 @@ def test_proc_stat_cpu_line_matches_the_pinned_fields():
     assert idle == int(fields[4]) + int(fields[5])
 
 
-def test_core_slot_probe_matches_live_topology():
-    """The mapping's ground assumption, on real silicon: the SMU answers the CO
-    read for exactly the enabled physical slots of each CCD, and set_topology's
-    discovered map pairs the OS cores with those slots in ascending order."""
+def test_core_slot_map_matches_the_live_core_disable_fuse():
+    """The mapping's ground truth, on real silicon: this generation's
+    core-disable fuse address decodes to exactly the physical slots the
+    discovered map uses, per CCD. On a machine whose numbering proves itself
+    the map comes from the core ids and the fuse is read independently, so a
+    wrong fuse address for the die fails here rather than silently shipping."""
     require(_is_amd_zen(), "requires a real AMD Zen CPU")
     from corecycler.engine.topology import detect_topology
     from corecycler.smu.driver import RyzenSMU
@@ -121,9 +123,14 @@ def test_core_slot_probe_matches_live_topology():
     commands = get_commands(detect_generation(*info))
     require(commands is not None and commands.has_co, "requires a CO-capable generation")
     require(commands.uniform_8core_ccds, "requires a classic 8-slot-per-CCD die")
+    require(
+        commands.core_fuse_addr is not None,
+        "requires a verified core-disable fuse address for this die",
+    )
     require(RyzenSMU.is_available(), "requires the ryzen_smu module")
     smu = RyzenSMU(commands)
-    require(smu.check_writable()[0], "requires ryzen_smu mailbox access")
+    smn_ok, smn_msg = smu.check_smn_readable()
+    require(smn_ok, f"requires SMN access: {smn_msg}")
     topo = detect_topology()
     smu.set_topology(topo)
     assert smu.core_map_error is None, smu.core_map_error
@@ -134,5 +141,39 @@ def test_core_slot_probe_matches_live_topology():
     for _core_id, (ccd, slot) in sorted(core_map.items()):
         per_ccd.setdefault(ccd, []).append(slot)
     for ccd, mapped_slots in per_ccd.items():
-        answered = [s for s in range(8) if smu._probe_slot(ccd, s)]
-        assert answered == mapped_slots, (ccd, answered, mapped_slots)
+        fuse = smu.read_smn(commands.core_fuse_addr + (ccd << 25))
+        assert fuse is not None, f"CCD {ccd} core-disable fuse unreadable"
+        live = [s for s in range(8) if not (fuse >> s) & 1]
+        assert live == mapped_slots, (ccd, hex(fuse), live, mapped_slots)
+
+
+def test_co_read_answers_on_every_slot_so_it_cannot_find_fused_off_cores():
+    """Issue #11's falsified premise, pinned against real silicon: the CO read
+    is NOT a liveness probe. Every in-range slot of a CCD answers it, so a
+    harvested CCD cannot be resolved by asking the mailbox -- only by the
+    fuse. If a die ever did discriminate here this fails and says so."""
+    require(_is_amd_zen(), "requires a real AMD Zen CPU")
+    from corecycler.engine.topology import detect_topology
+    from corecycler.smu.commands import encode_co_arg
+    from corecycler.smu.driver import RyzenSMU
+
+    info = _read_cpuinfo()
+    assert info is not None
+    generation = detect_generation(*info)
+    commands = get_commands(generation)
+    require(commands is not None and commands.has_co, "requires a CO-capable generation")
+    require(commands.uniform_8core_ccds, "requires a classic 8-slot-per-CCD die")
+    require(RyzenSMU.is_available(), "requires the ryzen_smu module")
+    smu = RyzenSMU(commands)
+    require(smu.check_writable()[0], "requires ryzen_smu mailbox access")
+    ccds = {c.ccd for c in detect_topology().cores.values() if c.ccd is not None}
+    require(bool(ccds), "requires L3-detected CCDs")
+    for ccd in sorted(ccds):
+        answered = [
+            slot
+            for slot in range(8)
+            if smu._send_get_co(
+                encode_co_arg(0, 0, generation, ccd=ccd, slot=slot)
+            ).success
+        ]
+        assert answered == list(range(8)), (ccd, answered)

@@ -45,6 +45,10 @@ _PBO_LIMIT_MAX: int = 2000
 # legacy core_id-derived addressing.
 _SLOTS_PER_CCD: int = 8
 
+# CCD stride inside the core-disable fuse address space: CCD n's fuse sits at
+# ``core_fuse_addr + (n << 25)`` (ZenStates-Core Cpu.cs, ryzen_monitor).
+_CCD_FUSE_SHIFT: int = 25
+
 
 def _check_pbo_limit(name: str, value: int) -> None:
     """Fail closed on a malformed PBO limit before it is encoded and written."""
@@ -181,12 +185,12 @@ class RyzenSMU:
             fully-offlined core fakes a hole.
           - Every other harvested group is ambiguous (its slots form the
             0..n-1 prefix, it spans windows, or its holes are untrusted): the
-            CCD's 8 slots are probed with the read-only CO query and the
-            group's cores map onto the answering slots in ascending order (the
-            same order-preserving mapping the Windows tools build from the SMN
-            core-disable fuse, which needs root here since the ryzen_smu `smn`
-            file is root-only).
-          - A probe that cannot isolate the fused-off slots stores
+            CCD's core-disable fuse is read over SMN and the group's cores map
+            onto the live slots in ascending order (the same order-preserving
+            mapping the Windows tools build from that fuse). The CO read
+            cannot stand in for it -- it answers on every in-range slot,
+            fused-off ones included (issue #11).
+          - A fuse that cannot be read or disagrees with the OS core count stores
             ``core_map_error`` and every per-core CO operation refuses --
             failing closed beats tuning a different core than the one under
             test. While discovery runs, ``core_map_error`` holds a sentinel so
@@ -226,7 +230,7 @@ class RyzenSMU:
                 group_ids = groups[encode_ccd]
                 slots = self._derive_group_slots(group_ids, fully_online)
                 if slots is None:
-                    slots = self._probe_group_slots(encode_ccd, len(group_ids))
+                    slots = self._fuse_group_slots(encode_ccd, len(group_ids))
                 core_map.update(
                     (cid, (encode_ccd, slot))
                     for cid, slot in zip(group_ids, slots, strict=True)
@@ -242,7 +246,7 @@ class RyzenSMU:
     def _derive_group_slots(
         group_ids: list[int], holes_trusted: bool
     ) -> list[int] | None:
-        """Slots this group's numbering proves by itself; None means probe.
+        """Slots this group's numbering proves by itself; None means read the fuse.
 
         A full 8-core group is identity under any numbering scheme. Only a
         hole INTERNAL to the group's own 8-slot window proves physical
@@ -276,43 +280,85 @@ class RyzenSMU:
             return None
         return groups
 
-    def _probe_group_slots(self, encode_ccd: int, want: int) -> list[int]:
-        """Find this CCD's live physical slots by probing the read-only CO query.
+    def check_smn_readable(self) -> tuple[bool, str]:
+        """Whether the SMN node can be driven at all. Returns (ok, message).
 
-        The SMU itself is the authority on which slots exist: a fused-off slot
-        does not answer. Returns the answering slots (ascending) when exactly
-        ``want`` answer; raises CoreMapError otherwise.
+        Reading an SMN register means WRITING its address to ``smn`` and
+        reading the result back, so an SMN read needs write permission on a
+        file ryzen_smu ships root-only.
         """
-        present = [
-            slot
-            for slot in range(_SLOTS_PER_CCD)
-            if self._probe_slot(encode_ccd, slot)
-        ]
-        if len(present) == want:
-            return present
-        if not present:
-            ok, msg = self.check_writable()
-            hint = "" if ok else f" ({msg})"
-            raise CoreMapError(
-                f"core ids on this CPU are renumbered and no CCD-{encode_ccd} "
-                f"slot answered the CO read probe{hint} -- check ryzen_smu "
-                f"access, or run once with working SMU permissions"
-                f"{self._offline_hint}"
+        path = self.sysfs / "smn"
+        if not path.exists():
+            return False, f"sysfs file not found: {path}"
+        if not os.access(path, os.W_OK):
+            return False, (
+                f"no write permission on {path} — an SMN read is a write of the "
+                f"address, and ryzen_smu ships this file root-only; grant it to "
+                f"the corecycler group like the other SMU files, or run as root"
             )
-        raise CoreMapError(
-            f"core ids on this CPU are renumbered and the CO read probe could "
-            f"not isolate the fused-off slots: CCD {encode_ccd} has {want} OS "
-            f"cores but slots {present} answered -- per-core CO stays disabled "
-            f"instead of writing to the wrong cores; please report this output"
-            f"{self._offline_hint}"
-        )
+        return True, "OK"
 
-    def _probe_slot(self, encode_ccd: int, slot: int) -> bool:
-        """Whether one (CCD, slot) address answers the read-only CO query."""
-        arg = encode_co_arg(
-            0, 0, self.commands.generation, ccd=encode_ccd, slot=slot
+    def read_smn(self, address: int) -> int | None:
+        """Read one 32-bit SMN register, or None if the read did not happen.
+
+        The ryzen_smu ``smn`` node takes the address as a 4-byte write and
+        hands the value back on the next read. A failed read leaves the
+        driver's result register untouched, so a failure here must never
+        decay into the previous read's value: it returns None.
+        """
+        path = self.sysfs / "smn"
+        with self._smu_lock:
+            try:
+                path.write_bytes(struct.pack("<I", address))
+                return struct.unpack("<I", path.read_bytes()[:4])[0]
+            except (OSError, struct.error) as exc:
+                log.debug("SMN read of %#010x failed: %s", address, exc)
+                return None
+
+    def _fuse_group_slots(self, encode_ccd: int, want: int) -> list[int]:
+        """This CCD's live physical slots, from its SMN core-disable fuse.
+
+        The fuse is the SMU's own record of which of the 8 slots exist (a set
+        bit is a fused-off slot), and the only thing that resolves a renumbered
+        core-id space -- the CO read answers on every in-range slot and so
+        proves nothing (issue #11). Returns the live slots ascending when their
+        count matches the ``want`` cores the OS reports for this CCD; raises
+        CoreMapError, naming what to do about it, otherwise.
+        """
+        addr = self.commands.core_fuse_addr
+        if addr is None:
+            raise CoreMapError(
+                f"core ids on this CPU are renumbered and no core-disable fuse "
+                f"address is verified for {self.commands.generation.name}, so "
+                f"the fused-off slots cannot be located -- per-core CO stays "
+                f"disabled instead of writing to the wrong cores; please report "
+                f"this output{self._offline_hint}"
+            )
+        ok, msg = self.check_smn_readable()
+        if not ok:
+            raise CoreMapError(
+                f"core ids on this CPU are renumbered, so the SMU core-disable "
+                f"fuse has to be read to find the fused-off slots: {msg} -- "
+                f"per-core CO stays disabled until then"
+            )
+        fuse = self.read_smn(addr + (encode_ccd << _CCD_FUSE_SHIFT))
+        if fuse is None:
+            raise CoreMapError(
+                f"core ids on this CPU are renumbered and the CCD-{encode_ccd} "
+                f"core-disable fuse read failed on an otherwise writable smn "
+                f"file -- per-core CO stays disabled instead of writing to the "
+                f"wrong cores; please report this output"
+            )
+        live = [slot for slot in range(_SLOTS_PER_CCD) if not (fuse >> slot) & 1]
+        if len(live) == want:
+            return live
+        raise CoreMapError(
+            f"core ids on this CPU are renumbered and the CCD-{encode_ccd} "
+            f"core-disable fuse disagrees with the OS: fuse {fuse & 0xFF:#04x} "
+            f"leaves {len(live)} live slots {live} but the OS reports {want} "
+            f"cores -- per-core CO stays disabled instead of writing to the "
+            f"wrong cores; please report this output{self._offline_hint}"
         )
-        return self._send_get_co(arg).success
 
     @property
     def core_map(self) -> dict[int, tuple[int, int]] | None:

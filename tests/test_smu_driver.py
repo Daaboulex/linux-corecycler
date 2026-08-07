@@ -397,11 +397,11 @@ def _stateful_smu(smu, commands):
 
 class TestDeterministicSlotMapping:
     """A numbering that proves itself physical (holes at fused slots, or full
-    8-core CCDs) is mapped deterministically from core_id -- no probe. These
-    drive the REAL encode + write + read-back path and confirm a CO write lands
-    on the true physical (ccd, slot) on such parts. The ambiguous
-    contiguous-harvested numbering (renumbering BIOSes, issue #11) is probed
-    instead -- covered in test_smu_core_map.py."""
+    8-core CCDs) is mapped deterministically from core_id -- no SMU or SMN
+    traffic. These drive the REAL encode + write + read-back path and confirm a
+    CO write lands on the true physical (ccd, slot) on such parts. The ambiguous
+    contiguous-harvested numbering (renumbering BIOSes, issue #11) is resolved
+    from the SMN core-disable fuse instead -- covered in test_smu_core_map.py."""
 
     @staticmethod
     def _assert_maps_without_probing(smu_dir, cmds, cores):
@@ -413,7 +413,7 @@ class TestDeterministicSlotMapping:
             calls.append(cmd) or SMUResponse(success=True, args=(0,) * 6, raw=b"")
         )
         smu.set_topology(topo)
-        assert calls == [], "set_topology probed an unambiguous topology"
+        assert calls == [], "set_topology sent SMU traffic for an unambiguous topology"
         assert smu.core_map_error is None
         assert smu.core_map == {c: (c // 8, c % 8) for c in cores}
         assert smu._topology_ccd == {c: c // 8 for c in cores}

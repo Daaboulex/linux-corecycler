@@ -9,6 +9,31 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-08-07 core-slot discovery reads the fuse, not the CO mailbox)
+
+- The slot discovery added for issue #11 rested on a premise the reporting
+  5600X then falsified: it assumed a fused-off slot does not answer the CO
+  read, and all eight slots of that six-core CCD answered. The probe never had
+  any discriminating power, so a renumbered part could not be resolved at all
+  and per-core CO stayed disabled. It is replaced by the SMU's own record --
+  the per-CCD SMN **core-disable fuse** (CCD n at `core_fuse_addr + (n << 25)`,
+  low 8 bits, a set bit being a fused-off slot), the same ground truth
+  ZenStates-Core and ryzen_monitor read. Discovery now sends no CO traffic at
+  all, and the falsified premise is pinned as its own live contract so a die
+  that ever did discriminate would say so instead of being assumed.
+- Fuse addresses are declared per generation and only where grounded
+  (`0x30081D98` Vermeer/Warhol/Chagall/Storm Peak, `0x30081CD0` Raphael/Dragon
+  Range, `0x304A03DC` Granite Ridge). The APU dies and Shimada Peak carry none
+  — upstream excludes the former from the fuse path and marks the latter
+  uncertain — so a renumbered part there refuses by name rather than reading a
+  neighbouring generation's address and mapping cores from garbage.
+- Reading an SMN register is a *write* of its address, and `ryzen_smu` ships
+  `smn` root-only, so the NixOS module now grants it to the `corecycler` group
+  alongside the mailbox files and the driver names that exact gap when it is
+  missing. The non-NixOS recipe in installation.md is corrected with it: the
+  old udev rule chmod-ed 0660 without ever changing the group, which granted a
+  normal user nothing, and raced the driver's own sysfs creation.
+
 ### Fixed (2026-08-06 APU PBO commands, slot-proof soundness, wiring matrix)
 
 - APU PBO command ids were desktop-copied like the CO ids before them; they
