@@ -54,11 +54,43 @@ head -30 /proc/cpuinfo
 </details>
 
 <details>
+<summary>Core numbering (ALL cores -- needed for any Curve Optimizer issue)</summary>
+
+The SMU addresses physical core slots and counts the fused-off ones, so on a
+harvested CPU the whole core-id list is what shows whether your firmware leaves
+holes at the dead slots or renumbers around them. One core's entry cannot show
+that, which is why both commands below cover every core.
+
+```bash
+lscpu -e
+grep -E '^(processor|physical id|core id|cpu cores|apicid)' /proc/cpuinfo
+```
+
+</details>
+
+<details>
 <summary>SMU sysfs (if available)</summary>
+
+File ownership and mode matter as much as the listing: Curve Optimizer needs
+group access to `smu_args`, the mailbox file, and `smn`.
 
 ```bash
 ls -la /sys/kernel/ryzen_smu_drv/ 2>/dev/null
 cat /sys/kernel/ryzen_smu_drv/version 2>/dev/null
+```
+
+</details>
+
+<details>
+<summary>CoreCycler SMU log (if Curve Optimizer misbehaves)</summary>
+
+The driver says exactly why it refused, including what the core-disable fuse
+reported. Paste that rather than reading SMU registers by hand -- the fuse
+address differs per CPU generation and a wrong one returns a plausible but
+wrong answer.
+
+```bash
+grep -iE 'smu|core map' ~/.local/share/corecycler/logs/corecycler.log | tail -40
 ```
 
 </details>
