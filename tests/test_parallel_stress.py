@@ -80,6 +80,8 @@ def bad(core_id: int) -> StressResult:
 class TestLaneBuilding:
     def test_lanes_cover_every_core_with_sorted_cpus(self, tmp_path):
         runner = make_parallel(tmp_path)
+        runner.stress_config.threads = 2
+        runner._requested_threads = 2
         seen: list[tuple[int, tuple[int, ...], int]] = []
 
         def capture(sup, lanes, config_for, duration):
@@ -92,6 +94,20 @@ class TestLaneBuilding:
         assert seen == [(0, (0, 16), 2), (1, (1, 17), 2)]
         assert sorted(results) == [0, 1]
         assert runner.work_dir.is_dir()
+
+    def test_one_thread_lanes_use_one_logical_cpu_each(self, tmp_path):
+        runner = make_parallel(tmp_path)
+        seen: list[tuple[int, ...]] = []
+
+        def capture(sup, lanes, config_for, duration):
+            seen.extend(one.cpus for one in lanes)
+            for one in lanes:
+                config_for(one)
+            return {one.core_id: ok(one.core_id) for one in lanes}
+
+        ScriptedSupervisor.script = [capture]
+        runner.run()
+        assert seen == [(0,), (1,)]
 
     def test_a_core_outside_the_topology_fails_closed(self, tmp_path):
         runner = make_parallel(tmp_path, cores=[0, 9])
@@ -138,12 +154,15 @@ class TestLaneBuilding:
         assert runner._stop_event.is_set()
         assert type(runner).force_stop is type(runner).stop
 
-    def test_the_default_work_dir_is_not_the_repo(self):
+    def test_the_default_work_dir_is_per_user(self):
+        from corecycler.config.paths import resolve_work_dir
+
         runner = ParallelStress(
             topology=make_topo(),
             backend=RecordingBackend(),
             stress_config=StressConfig(),
             scheduler_config=SchedulerConfig(),
         )
-        assert runner.work_dir == Path("/tmp/corecycler")
+        assert runner.work_dir == resolve_work_dir()
+        assert "/tmp/corecycler" not in str(runner.work_dir)
         assert not (Path(__file__).parent.parent / "core_0").exists()

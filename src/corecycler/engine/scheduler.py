@@ -8,15 +8,17 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import Enum, auto
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+from corecycler.config.paths import resolve_work_dir
 from corecycler.engine import execution
 from corecycler.engine.backends.base import StressConfig, StressResult
 from corecycler.engine.detector import ErrorDetector, MCEEvent
 from corecycler.engine.execution import Lane, SuperviseHooks, Supervisor, ThermalWatch
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from corecycler.engine.backends.base import StressBackend
 
     from .topology import CPUTopology
@@ -77,8 +79,9 @@ class CoreScheduler:
         self.topology = topology
         self.backend = backend
         self.stress_config = copy.copy(stress_config)
+        self._requested_threads = max(1, self.stress_config.threads)
         self.config = scheduler_config
-        self.work_dir = work_dir or Path("/tmp/corecycler")
+        self.work_dir = work_dir or resolve_work_dir()
         self.detector = ErrorDetector()
 
         self.state = TestState.IDLE
@@ -215,7 +218,7 @@ class CoreScheduler:
             return None
         return Lane(
             core_id=core_id,
-            cpus=tuple(core_info.logical_cpus),
+            cpus=tuple(core_info.logical_cpus[: self._requested_threads]),
             work_dir=self.work_dir / f"core_{core_id}",
         )
 

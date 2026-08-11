@@ -34,6 +34,30 @@ def atomic_write(path: Path, content: str) -> None:
     fix_sudo_ownership(path.parent, path)
 
 
+def resolve_work_dir(configured: str = "") -> Path:
+    """The stress work root: configured path, else a per-user default.
+
+    The default is never a shared world-writable location — a root-owned
+    /tmp/corecycler left by one sudo run made every later plain run unable to
+    write its backend config."""
+    if configured:
+        return Path(configured)
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+    if runtime:
+        root = Path(runtime)
+        with contextlib.suppress(OSError):
+            if root.is_dir() and root.stat().st_uid == os.geteuid():
+                return root / "corecycler" / "work"
+    return user_home() / ".cache" / "corecycler" / "work"
+
+
+def ensure_work_dir(configured: str = "") -> Path:
+    work = resolve_work_dir(configured)
+    work.mkdir(parents=True, exist_ok=True)
+    fix_sudo_ownership(work.parent, work)
+    return work
+
+
 def fix_sudo_ownership(*paths: Path) -> None:
     """chown root-created state files/dirs back to the invoking user.
 
