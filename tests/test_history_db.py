@@ -810,3 +810,32 @@ class TestAdoptLegacyRootDb:
             assert not root_path.with_name("root.db-shm").exists()
         finally:
             dest.close()
+
+
+class TestRecoverableSessions:
+    """A stopped session keeps its work; only the automatic path filters it out."""
+
+    def _session(self, db, status):
+        sid = db.create_tuner_session("{}", "bios", "cpu")
+        db.update_tuner_session_status(sid, status)
+        return sid
+
+    def test_in_flight_sessions_are_resumable_and_recoverable(self, db):
+        ids = [self._session(db, s) for s in ("running", "paused", "validating")]
+        assert sorted(s.id for s in db.list_resumable_tuner_sessions()) == sorted(ids)
+        assert sorted(s.id for s in db.list_recoverable_tuner_sessions()) == sorted(ids)
+
+    def test_a_stopped_session_is_recoverable_but_never_automatic(self, db):
+        ids = [self._session(db, s) for s in ("quarantined", "aborted")]
+        assert db.list_resumable_tuner_sessions() == []
+        assert sorted(s.id for s in db.list_recoverable_tuner_sessions()) == sorted(ids)
+
+    def test_a_completed_session_is_neither(self, db):
+        self._session(db, "completed")
+        assert db.list_resumable_tuner_sessions() == []
+        assert db.list_recoverable_tuner_sessions() == []
+
+    def test_newest_first(self, db):
+        first = self._session(db, "quarantined")
+        second = self._session(db, "running")
+        assert [s.id for s in db.list_recoverable_tuner_sessions()] == [second, first]

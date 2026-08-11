@@ -9,6 +9,26 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-08-11 a stopped tuner session is never lost, only stopped)
+
+- A session that stopped early became invisible. `list_resumable_tuner_sessions`
+  returns only `running`, `paused` and `validating`, so a **quarantined**
+  session (the circuit breaker, after N crash-resumes with no surviving test
+  between) or an **aborted** one dropped out of the picker entirely -- while
+  every core's phase, baseline, best and confirmed offsets sat intact in the
+  database. Issue #13: days of tuning apparently gone, and the only way
+  forward was to start from zero.
+- The picker now lists every recoverable session, newest first, with when it
+  started, when it was last touched, its status and how many cores it had
+  confirmed. Automatic resume is unchanged and still refuses a quarantined
+  session: it is offered, never taken silently, and picking one asks first.
+- Re-opening a quarantined session re-engages on proven ground only. Every
+  offset that would reach the hardware -- the search position and the baseline
+  every other core is restored to -- drops to the most aggressive value that
+  session has actually SURVIVED, stock when it has survived none. Fail bounds,
+  best offsets and phases are kept, so the work is continued rather than
+  discarded, and the crash streak restarts.
+
 ### Fixed (2026-08-11 a backend is found where it actually is, on every distro)
 
 - `sudo` replaces PATH with the sudoers `secure_path` on Debian, Ubuntu, Mint,
