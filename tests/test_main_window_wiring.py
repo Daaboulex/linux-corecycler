@@ -281,6 +281,18 @@ class TestStartTest:
         assert window._worker is None
         assert "Failed to initialize scheduler" in no_modal.warning.call_args.args[2]
 
+    def test_an_uncreatable_work_dir_is_reported_not_crashed(self, window, monkeypatch, no_modal):
+        self._ready(window, monkeypatch)
+
+        def _denied(_configured):
+            raise PermissionError("read-only work root")
+
+        monkeypatch.setattr(mw, "ensure_work_dir", _denied)
+        window._start_test()
+        assert window._worker is None
+        assert "Work directory unavailable" in no_modal.warning.call_args.args[1]
+        assert "read-only work root" in no_modal.warning.call_args.args[2]
+
     def test_a_started_test_locks_the_ui_and_logs_history(self, window, monkeypatch):
         self._ready(window, monkeypatch)
         window._start_test()

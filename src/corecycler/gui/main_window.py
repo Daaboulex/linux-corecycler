@@ -382,7 +382,14 @@ class MainWindow(QMainWindow):
             idle_between_cores=profile.idle_between_cores,
         )
 
-        work_dir = ensure_work_dir(self._settings.work_dir)
+        try:
+            work_dir = ensure_work_dir(self._settings.work_dir)
+        except OSError as e:
+            QMessageBox.warning(
+                self, "Work directory unavailable",
+                f"Could not create the stress work directory: {e}",
+            )
+            return
         try:
             scheduler = CoreScheduler(
                 topology=self._topology,
