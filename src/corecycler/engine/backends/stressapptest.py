@@ -8,7 +8,6 @@ self-terminate before the scheduler stops it.
 
 from __future__ import annotations
 
-import shutil
 from typing import TYPE_CHECKING
 
 from corecycler.engine.backends import register_backend
@@ -23,16 +22,13 @@ if TYPE_CHECKING:
 class StressapptestBackend(StressBackend):
     name = "stressapptest"
 
-    def is_available(self) -> bool:
-        return shutil.which("stressapptest") is not None
-
     def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
         # stressapptest auto-detects available CPUs from its affinity mask.
         # taskset (applied by CoreScheduler) constrains it to the target core's
         # logical CPUs. No explicit thread count needed — it will use exactly
         # the CPUs available in its affinity set.
         return [
-            "stressapptest",
+            self.require_binary(),
             "-W",
             "-s", "86400",
         ]

@@ -283,11 +283,16 @@ class TestRunPreflightRefusals:
 
         monkeypatch.setattr("corecycler.engine.topology.detect_topology", _fake_topology)
         monkeypatch.setattr(cli, "_build_smu", lambda _t: object())
+        from corecycler.config.tools import Resolution
+
         backend = MagicMock()
         backend.is_available.return_value = False
+        backend.resolution.return_value = Resolution("mprime", None, "absent", "not found on PATH")
         monkeypatch.setattr("corecycler.engine.backends.get_backend", lambda _n: backend)
         assert self._run(db) == cli.EXIT_REFUSED
-        assert "is not installed" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "not found on PATH" in err
+        assert "CORECYCLER_MPRIME_BIN" in err
 
     def test_build_smu_returns_none_on_unsupported_cpu(self):
         from corecycler.engine.topology import CPUTopology
@@ -380,20 +385,81 @@ class TestNotifyOutcome:
     def test_disabled_by_setting(self, monkeypatch, capsys):
         from types import SimpleNamespace
 
-        from corecycler.config import settings as settings_mod
 
         monkeypatch.setattr(
-            settings_mod, "load_settings", lambda: SimpleNamespace(notify_on_completion=False)
+            cli, "load_settings", lambda: SimpleNamespace(notify_on_completion=False)
         )
         cli._notify_outcome(cli.EXIT_COMPLETED)
         assert capsys.readouterr().err == ""
 
     def test_failure_surfaces_on_stderr(self, monkeypatch, capsys):
-        from corecycler.config import settings as settings_mod
 
         def boom():
             raise RuntimeError("no settings")
 
-        monkeypatch.setattr(settings_mod, "load_settings", boom)
+        monkeypatch.setattr(cli, "load_settings", boom)
         cli._notify_outcome(cli.EXIT_COMPLETED)
         assert "notification failed" in capsys.readouterr().err
+
+
+class TestDoctor:
+    def _resolutions(self, present):
+        from corecycler.config import tools
+
+        return [
+            tools.Resolution(
+                key,
+                Path(f"/usr/bin/{key}") if key in present else None,
+                tools.ORIGIN_PATH if key in present else tools.ORIGIN_ABSENT,
+                None if key in present else "not found on PATH",
+            )
+            for key in tools.TOOLS
+        ]
+
+    def test_dispatches(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(cli, "cmd_doctor", lambda: seen.append("d") or 0)
+        assert cli.cli_main(["doctor"]) == 0
+        assert seen == ["d"]
+
+    def test_report_groups_tools_and_names_where_each_resolved(self):
+        lines = cli.doctor_lines(self._resolutions({"stress-ng", "taskset"}), [])
+        assert "backend" in lines
+        assert "core" in lines
+        assert "optional" in lines
+        assert any("stress-ng" in ln and "/usr/bin/stress-ng" in ln for ln in lines)
+        assert any("mprime" in ln and "not found on PATH" in ln for ln in lines)
+        assert lines[-1] == "doctor: ok"
+
+    def test_report_lists_a_candidate_for_an_absent_tool(
+        self, exec_tmp_path, tool_search_roots
+    ):
+        binary = exec_tmp_path / "y-cruncher" / "y-cruncher"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        tool_search_roots.append(exec_tmp_path)
+        lines = cli.doctor_lines(self._resolutions({"taskset"}), [])
+        assert f"    candidate: {binary}" in lines
+
+    def test_report_ends_in_the_unmet_requirements(self):
+        lines = cli.doctor_lines(self._resolutions(set()), ["taskset is required"])
+        assert lines[-1] == "doctor: FAILED -- taskset is required"
+
+    def test_root_is_told_that_sudo_scrubbed_the_path(self, monkeypatch):
+        from corecycler.config import tools
+
+        monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+        assert tools.SUDO_PATH_NOTE in cli.doctor_lines(self._resolutions({"taskset"}), [])
+
+    def test_a_usable_system_exits_zero(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            cli.tools, "report", lambda: self._resolutions({"stress-ng", "taskset"})
+        )
+        assert cli.cmd_doctor() == cli.EXIT_COMPLETED
+        assert "doctor: ok" in capsys.readouterr().out
+
+    def test_a_system_without_a_backend_is_refused(self, monkeypatch, capsys):
+        monkeypatch.setattr(cli.tools, "report", lambda: self._resolutions({"taskset"}))
+        assert cli.cmd_doctor() == cli.EXIT_REFUSED
+        assert "doctor: FAILED" in capsys.readouterr().out

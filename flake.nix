@@ -140,13 +140,14 @@
             # FOSS-only: stress-ng + stressapptest (no unfree software).
             default = mkCoreCycler { };
             # Full: includes mprime (unfree, fetched from a flaky external mirror,
-            # x86_64-only). meta.platforms reflects that so the standard's
-            # drvEvalCheck skips `full` on aarch64 (mprime has no aarch64 build),
+            # x86_64-only) and y-cruncher (unfree, x86_64-only). meta.platforms
+            # reflects that so the standard's drvEvalCheck skips `full` on aarch64,
             # while the FOSS `default` still builds on both arches.
             full =
               (mkCoreCycler {
                 backends = [
                   pkgs.mprime
+                  pkgs.y-cruncher
                   pkgs.stress-ng
                   pkgs.stressapptest
                 ];

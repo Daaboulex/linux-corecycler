@@ -17,24 +17,14 @@ if TYPE_CHECKING:
 class StressNgBackend(StressBackend):
     name = "stress-ng"
 
-    def __init__(self) -> None:
-        self._binary: str | None = None
-
-    def is_available(self) -> bool:
-        self._binary = self.find_binary("stress-ng")
-        return self._binary is not None
-
     def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
-        if not self._binary:
-            self.is_available()
-        if not self._binary:
-            raise RuntimeError("stress-ng binary not found")
+        binary = self.require_binary()
 
         # select stressor method based on mode
         method = _mode_to_method(config.mode)
 
         cmd = [
-            self._binary,
+            binary,
             "--cpu",
             str(config.threads),
             "--cpu-method",

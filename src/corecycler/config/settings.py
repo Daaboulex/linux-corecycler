@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from corecycler.engine.backends.base import FFTPreset, StressMode
 
-from .paths import fix_sudo_ownership, user_home
+from .paths import atomic_write, user_home
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -20,15 +20,6 @@ log = logging.getLogger(__name__)
 
 CONFIG_DIR = user_home() / ".config" / "corecycler"
 DEFAULT_PROFILE = CONFIG_DIR / "default.json"
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    """Write content atomically via temp file + rename."""
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(path)
-    # A sudo run must not leave user-visible config root-owned.
-    fix_sudo_ownership(path.parent, path)
 
 
 @dataclass(slots=True)
@@ -114,7 +105,7 @@ def save_settings(settings: AppSettings) -> None:
     settings_file = CONFIG_DIR / "settings.json"
 
     data = asdict(settings)
-    _atomic_write(settings_file, json.dumps(data, indent=2))
+    atomic_write(settings_file, json.dumps(data, indent=2))
 
 
 def load_profile(path: Path) -> TestProfile:
@@ -126,7 +117,7 @@ def load_profile(path: Path) -> TestProfile:
 def save_profile(profile: TestProfile, path: Path) -> None:
     """Save a test profile to a JSON file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(path, json.dumps(asdict(profile), indent=2))
+    atomic_write(path, json.dumps(asdict(profile), indent=2))
 
 
 def save_co_profile(
@@ -147,7 +138,7 @@ def save_co_profile(
         "offsets": {str(k): v for k, v in sorted(offsets.items())},
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(path, json.dumps(data, indent=2))
+    atomic_write(path, json.dumps(data, indent=2))
 
 
 def load_co_profile(path: Path) -> dict[int, int]:

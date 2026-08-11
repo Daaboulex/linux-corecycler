@@ -73,6 +73,8 @@ def db():
 @pytest.fixture(autouse=True)
 def no_modal(monkeypatch):
     monkeypatch.setattr(tt, "QMessageBox", MagicMock())
+    # A missing backend prompts for its path; default to the user declining.
+    monkeypatch.setattr(tt, "ensure_tool", lambda parent, key: False)
     return tt.QMessageBox
 
 
@@ -709,7 +711,14 @@ class TestBackendResolution:
             db=db, topology=_topo(), smu=_smu(), backend_factory=lambda _n: _backend(False)
         )
         assert tab._get_backend() is None
-        assert no_modal.warning.call_args.args[1] == "Backend Not Found"
+
+    def test_an_uninstalled_backend_is_kept_once_the_user_supplies_a_path(
+        self, db, no_modal, monkeypatch
+    ):
+        monkeypatch.setattr(tt, "ensure_tool", lambda parent, key: True)
+        chosen = _backend(False)
+        tab = _tab(db=db, topology=_topo(), smu=_smu(), backend_factory=lambda _n: chosen)
+        assert tab._get_backend() is chosen
 
 
 class TestStartupRecovery:

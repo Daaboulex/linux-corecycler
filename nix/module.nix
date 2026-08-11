@@ -44,7 +44,7 @@ in
     unfreeBackends = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Whether to include unfree backends (mprime). When false, only FOSS backends (stress-ng) are bundled.";
+      description = "Whether to include the unfree backends (mprime, y-cruncher). When false, only the FOSS backends (stress-ng, stressapptest) are bundled.";
     };
 
     # --- AMD SMU access ---

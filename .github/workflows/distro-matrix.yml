@@ -1,0 +1,89 @@
+# Distro dependency matrix -- the packaging half of the external-tool contract.
+#
+# Installs exactly what docs/installation.md tells users to install, in each
+# distro's own container, then asks `corecycler doctor` whether every tool
+# resolves. This is what notices a distro renaming, moving or dropping a
+# package, and it re-runs the issue #12 failure on every distro: a y-cruncher
+# tarball in $HOME with PATH scrubbed to sudo's secure_path must still be
+# discovered. Repo-local (NOT synced from nix-packaging-standard).
+name: Distro matrix
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/corecycler/config/tools.py'
+      - 'src/corecycler/cli.py'
+      - 'docs/installation.md'
+      - '.github/workflows/distro-matrix.yml'
+  pull_request:
+    paths:
+      - 'src/corecycler/config/tools.py'
+      - 'src/corecycler/cli.py'
+      - 'docs/installation.md'
+      - '.github/workflows/distro-matrix.yml'
+  schedule:
+    - cron: '0 5 * * 0' # Weekly: a distro can drop a package with no push here
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  doctor:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: debian:trixie
+            install: >-
+              apt-get update && apt-get install -y --no-install-recommends
+              python3 git ca-certificates stress-ng stressapptest dmidecode util-linux systemd
+            expect: stress-ng stressapptest dmidecode taskset dmesg journalctl
+          - image: ubuntu:24.04
+            install: >-
+              apt-get update && apt-get install -y --no-install-recommends
+              python3 git ca-certificates stress-ng stressapptest dmidecode util-linux systemd
+            expect: stress-ng stressapptest dmidecode taskset dmesg journalctl
+          - image: fedora:latest
+            install: >-
+              dnf install -y python3 git stress-ng stressapptest dmidecode util-linux systemd
+            expect: stress-ng stressapptest dmidecode taskset dmesg journalctl
+          # stressapptest is AUR-only on Arch, so it is not expected here.
+          - image: archlinux:latest
+            install: >-
+              pacman -Sy --noconfirm python git stress-ng dmidecode util-linux systemd
+            expect: stress-ng dmidecode taskset dmesg journalctl
+    container: ${{ matrix.image }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      SECURE_PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    steps:
+      - name: Install the documented dependencies
+        run: ${{ matrix.install }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Every documented tool resolves
+        run: |
+          set -euo pipefail
+          python3 src/corecycler/main.py doctor | tee doctor.txt
+          for tool in ${{ matrix.expect }}; do
+            if ! grep -Eq "^  ${tool} +path +/" doctor.txt; then
+              echo "::error::${tool} did not resolve on ${{ matrix.image }} after the documented install"
+              exit 1
+            fi
+          done
+
+      - name: An extracted tarball is discovered when sudo has scrubbed PATH
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/y-cruncher"
+          printf '#!/bin/sh\n' > "$HOME/y-cruncher/y-cruncher"
+          chmod +x "$HOME/y-cruncher/y-cruncher"
+          env -i HOME="$HOME" PATH="$SECURE_PATH" \
+            python3 src/corecycler/main.py doctor | tee scrubbed.txt
+          if ! grep -Fq "candidate: $HOME/y-cruncher/y-cruncher" scrubbed.txt; then
+            echo "::error::issue #12 regression on ${{ matrix.image }}: a y-cruncher tarball in \$HOME was not discovered"
+            exit 1
+          fi

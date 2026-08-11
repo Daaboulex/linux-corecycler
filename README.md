@@ -99,10 +99,12 @@ manual tuning workflow, the Auto-Tuner, and reading results -- is in
 ## Development
 
 ```bash
-nix develop          # Python 3.12 + pytest + ruff + hypothesis
-pytest               # run the suite
-ruff check src       # lint
-nix flake check      # build + every check (what CI runs)
+nix develop                                   # ruff, nixfmt, pre-commit
+ruff check src                                # lint
+nix develop '.#packages.x86_64-linux.default' \
+  --command python -m pytest -m 'not slow'    # the suite, in the build's own env
+nix flake check                               # build + every check (what CI runs)
+corecycler doctor                             # every external tool and how it resolved
 ```
 
 <!-- BEGIN generated:options -->

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -82,35 +81,23 @@ class TestFFTPreset:
         assert FFTPreset.CUSTOM.value == "custom"
 
 
-class TestBaseBackendFindBinary:
-    def test_find_binary_success(self):
-        """find_binary should return path when binary exists."""
+class TestBaseBackendBinaryResolution:
+    def test_is_available_caches_the_resolved_path(self, on_path):
+        on_path({"mprime": "/usr/bin/mprime"})
         backend = MprimeBackend()
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="/usr/bin/echo\n")
-            result = backend.find_binary("echo")
-        assert result == "/usr/bin/echo"
+        assert backend.is_available() is True
+        assert backend._binary == "/usr/bin/mprime"
 
-    def test_find_binary_not_found(self):
+    def test_resolution_reports_why_a_backend_is_absent(self, on_path):
+        on_path({})
+        resolution = MprimeBackend().resolution()
+        assert resolution.path is None
+        assert resolution.problem == "not found on PATH"
+
+    def test_require_binary_resolves_lazily(self, on_path):
+        on_path({"mprime": "/usr/bin/mprime"})
         backend = MprimeBackend()
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1, stdout="")
-            result = backend.find_binary("nonexistent_binary_xyz")
-        assert result is None
-
-    def test_find_binary_timeout(self):
-        import subprocess
-
-        backend = MprimeBackend()
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("which", 5)):
-            result = backend.find_binary("test")
-        assert result is None
-
-    def test_find_binary_file_not_found(self):
-        backend = MprimeBackend()
-        with patch("subprocess.run", side_effect=FileNotFoundError):
-            result = backend.find_binary("test")
-        assert result is None
+        assert backend.require_binary() == "/usr/bin/mprime"
 
     def test_default_get_supported_fft_presets(self):
         """Base class returns empty list by default."""
@@ -167,16 +154,15 @@ class TestMprimeBackend:
     def test_name(self):
         assert MprimeBackend.name == "mprime"
 
-    def test_is_available_found(self):
+    def test_is_available_found(self, on_path):
+        on_path({"mprime": "/usr/bin/mprime"})
         backend = MprimeBackend()
-        with patch.object(backend, "find_binary", return_value="/usr/bin/mprime"):
-            assert backend.is_available() is True
-            assert backend._binary == "/usr/bin/mprime"
+        assert backend.is_available() is True
+        assert backend._binary == "/usr/bin/mprime"
 
-    def test_is_available_not_found(self):
-        backend = MprimeBackend()
-        with patch.object(backend, "find_binary", return_value=None):
-            assert backend.is_available() is False
+    def test_is_available_not_found(self, on_path):
+        on_path({})
+        assert MprimeBackend().is_available() is False
 
     def test_get_command(self, tmp_path):
         backend = MprimeBackend()
@@ -185,13 +171,10 @@ class TestMprimeBackend:
         cmd = backend.get_command(cfg, tmp_path)
         assert cmd == ["/usr/bin/mprime", "-t", f"-W{tmp_path}"]
 
-    def test_get_command_no_binary_triggers_search(self, tmp_path):
+    def test_get_command_no_binary_triggers_search(self, tmp_path, on_path):
+        on_path({})
         backend = MprimeBackend()
-        backend._binary = None
-        with (
-            patch.object(backend, "find_binary", return_value=None),
-            pytest.raises(RuntimeError, match="mprime binary not found"),
-        ):
+        with pytest.raises(RuntimeError, match="mprime binary not found"):
             backend.get_command(StressConfig(), tmp_path)
 
     def test_get_supported_modes(self):
@@ -462,15 +445,13 @@ class TestStressNgBackend:
     def test_name(self):
         assert StressNgBackend.name == "stress-ng"
 
-    def test_is_available_found(self):
-        backend = StressNgBackend()
-        with patch.object(backend, "find_binary", return_value="/usr/bin/stress-ng"):
-            assert backend.is_available() is True
+    def test_is_available_found(self, on_path):
+        on_path({"stress-ng": "/usr/bin/stress-ng"})
+        assert StressNgBackend().is_available() is True
 
-    def test_is_available_not_found(self):
-        backend = StressNgBackend()
-        with patch.object(backend, "find_binary", return_value=None):
-            assert backend.is_available() is False
+    def test_is_available_not_found(self, on_path):
+        on_path({})
+        assert StressNgBackend().is_available() is False
 
     def test_get_command(self, tmp_path):
         backend = StressNgBackend()
@@ -495,13 +476,10 @@ class TestStressNgBackend:
         idx = cmd.index("--cpu-method")
         assert cmd[idx + 1] == "fft"
 
-    def test_get_command_no_binary_raises(self, tmp_path):
+    def test_get_command_no_binary_raises(self, tmp_path, on_path):
+        on_path({})
         backend = StressNgBackend()
-        backend._binary = None
-        with (
-            patch.object(backend, "find_binary", return_value=None),
-            pytest.raises(RuntimeError, match="stress-ng binary not found"),
-        ):
+        with pytest.raises(RuntimeError, match="stress-ng binary not found"):
             backend.get_command(StressConfig(), tmp_path)
 
     def test_get_supported_modes(self):
@@ -620,28 +598,21 @@ class TestYCruncherBackend:
     def test_name(self):
         assert YCruncherBackend.name == "y-cruncher"
 
-    def test_is_available_first_name(self):
+    def test_is_available_first_name(self, on_path):
+        on_path({"y-cruncher": "/bin/y-cruncher"})
         backend = YCruncherBackend()
-        with patch.object(
-            backend, "find_binary", side_effect=lambda n: "/bin/y-cruncher" if n == "y-cruncher" else None
-        ):
-            assert backend.is_available() is True
-            assert backend._binary == "/bin/y-cruncher"
+        assert backend.is_available() is True
+        assert backend._binary == "/bin/y-cruncher"
 
-    def test_is_available_second_name(self):
+    def test_is_available_second_name(self, on_path):
+        on_path({"y_cruncher": "/bin/y_cruncher"})
         backend = YCruncherBackend()
-        with patch.object(
-            backend,
-            "find_binary",
-            side_effect=lambda n: "/bin/y_cruncher" if n == "y_cruncher" else None,
-        ):
-            assert backend.is_available() is True
-            assert backend._binary == "/bin/y_cruncher"
+        assert backend.is_available() is True
+        assert backend._binary == "/bin/y_cruncher"
 
-    def test_is_available_not_found(self):
-        backend = YCruncherBackend()
-        with patch.object(backend, "find_binary", return_value=None):
-            assert backend.is_available() is False
+    def test_is_available_not_found(self, on_path):
+        on_path({})
+        assert YCruncherBackend().is_available() is False
 
     def test_get_command_sse_selects_scalar_algorithm(self, tmp_path):
         backend = YCruncherBackend()
@@ -687,13 +658,10 @@ class TestYCruncherBackend:
         cmd = backend.get_command(StressConfig(mode=StressMode.SSE, memory_mb=2048), tmp_path)
         assert "-M:2048M" in cmd
 
-    def test_get_command_no_binary_raises(self, tmp_path):
+    def test_get_command_no_binary_raises(self, tmp_path, on_path):
+        on_path({})
         backend = YCruncherBackend()
-        backend._binary = None
-        with (
-            patch.object(backend, "find_binary", return_value=None),
-            pytest.raises(RuntimeError, match="y-cruncher binary not found"),
-        ):
+        with pytest.raises(RuntimeError, match="y-cruncher binary not found"):
             backend.get_command(StressConfig(), tmp_path)
 
     def test_get_supported_modes(self):

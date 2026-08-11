@@ -611,6 +611,83 @@ def mock_ryzen_smu_sysfs(tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def tool_search_roots(monkeypatch):
+    """External-tool resolution must not depend on what the dev box installed.
+
+    Clears every CORECYCLER_<TOOL>_BIN override and the configured paths, and
+    owns the well-known search roots: they start empty, so a real ~/y-cruncher
+    on a developer's machine can never decide a test. A test that needs
+    discovery appends the roots it wants to the yielded list.
+    """
+    from corecycler.config import tools
+
+    for key in tools.TOOLS:
+        monkeypatch.delenv(tools.env_var(key), raising=False)
+    tools.set_configured_paths({})
+    roots: list = []
+    monkeypatch.setattr(tools, "search_roots", lambda: tuple(roots))
+    yield roots
+    tools.set_configured_paths({})
+
+
+@pytest.fixture(autouse=True)
+def no_blocking_dialogs(monkeypatch):
+    """A modal dialog in a test hangs the suite forever -- fail loudly instead.
+
+    Tests that exercise the missing-tool prompt patch ensure_tool, _run_dialog
+    or _browse themselves; anything else reaching the real Qt modal is a bug in
+    the test, and a named failure beats a stuck run.
+    """
+    try:
+        from corecycler.gui import tool_prompt
+    except ImportError:
+        return
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError(
+            "a test reached the real modal tool prompt -- patch "
+            "tool_prompt.ensure_tool (or _run_dialog/_browse) in that test"
+        )
+
+    monkeypatch.setattr(tool_prompt, "_run_dialog", refuse)
+    monkeypatch.setattr(tool_prompt, "_browse", refuse)
+
+
+@pytest.fixture
+def exec_tmp_path(tmp_path):
+    """A temp dir where a chmod +x file really is executable.
+
+    Tool resolution asks the kernel (os.access X_OK), which honours a noexec
+    mount -- and /tmp is noexec on some systems, so pytest's tmp_path cannot
+    hold a test binary there. Fall back to a scratch dir beside the repo.
+    """
+    import os
+    import tempfile
+
+    probe = tmp_path / ".exec-probe"
+    probe.write_text("")
+    probe.chmod(0o700)
+    executable = os.access(probe, os.X_OK)
+    probe.unlink()
+    if executable:
+        yield tmp_path
+        return
+    with tempfile.TemporaryDirectory(dir=Path.cwd(), prefix=".exec-scratch-") as scratch:
+        yield Path(scratch)
+
+
+@pytest.fixture
+def on_path(monkeypatch):
+    """Declare exactly which tool names PATH resolves, and to what."""
+    from corecycler.config import tools
+
+    def install(mapping: dict[str, str]):
+        monkeypatch.setattr(tools.shutil, "which", lambda name: mapping.get(name))
+
+    return install
+
+
+@pytest.fixture(autouse=True)
 def assume_rebooted(monkeypatch):
     """Resume-time crash detection is gated on an actual reboot since the
     session's last write (tuner.engine._rebooted_since). A test process never

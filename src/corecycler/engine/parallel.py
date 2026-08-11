@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from corecycler.config import tools
+
 from .backends.base import KILLED_BY_US_CODES, StressConfig, StressResult
 from .detector import ErrorDetector, MCEEvent
 from .scheduler import CoreScheduler, SchedulerConfig
@@ -105,7 +107,7 @@ class ParallelStress:
                 cfg.threads = len(lane.cpus)
                 lane.work_dir.mkdir(parents=True, exist_ok=True)
                 self.backend.prepare(lane.work_dir, cfg)
-                cmd = ["taskset", "-c", lane.cpu_list] + self.backend.get_command(cfg, lane.work_dir)
+                cmd = tools.taskset_prefix(lane.cpu_list) + self.backend.get_command(cfg, lane.work_dir)
                 try:
                     lane.proc = subprocess.Popen(
                         cmd,

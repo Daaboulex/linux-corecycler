@@ -1,8 +1,8 @@
 """Ring B live contract tests -- run the REAL hardware or tools and assert our
 readers/parsers still match reality. Marked slow + contract; the nix sandbox
-deselects `slow` so it never runs them here. They run on real hardware via the
-ryzen hardware-contract CI step (pytest -m contract, CORECYCLER_HW_CONTRACTS=1),
-where an absent resource fails loud instead of skipping green.
+deselects `slow` so it never runs them here. Run them on real AMD hardware with
+`CORECYCLER_HW_CONTRACTS=1 pytest -m contract`, where an absent resource fails
+loud instead of skipping green.
 """
 
 from __future__ import annotations

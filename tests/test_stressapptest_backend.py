@@ -7,11 +7,12 @@ from corecycler.engine.backends.stressapptest import StressapptestBackend
 
 
 class TestStressapptestBackend:
-    def test_command_generation(self, tmp_path):
+    def test_command_generation(self, tmp_path, on_path):
+        on_path({"stressapptest": "/usr/bin/stressapptest"})
         backend = StressapptestBackend()
         config = StressConfig(mode=StressMode.SSE)
         cmd = backend.get_command(config, tmp_path)
-        assert cmd[0] == "stressapptest"
+        assert cmd[0] == "/usr/bin/stressapptest"
         assert "-W" in cmd
         assert "-s" in cmd
         assert "86400" in cmd

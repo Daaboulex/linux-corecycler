@@ -49,6 +49,7 @@ from corecycler.gui.style import (
     COLOR_TEXT_DIM,
     COLOR_WARN_SOFT,
 )
+from corecycler.gui.tool_prompt import ensure_tool
 from corecycler.gui.tuner_tab import TunerTab
 from corecycler.gui.widgets.core_grid import CoreGridWidget
 from corecycler.history.context import detect_bios_change
@@ -353,13 +354,7 @@ class MainWindow(QMainWindow):
         if not backend:
             return
 
-        if not backend.is_available():
-            QMessageBox.warning(
-                self,
-                "Backend Not Found",
-                f"'{profile.backend}' is not installed or not on PATH.\n\n"
-                "Install it or select a different backend.",
-            )
+        if not backend.is_available() and not ensure_tool(self, profile.backend):
             return
 
         stress_config = StressConfig(
