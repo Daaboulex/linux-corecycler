@@ -52,6 +52,11 @@ python -m pytest -m "not slow" --cov=corecycler --cov-report=term-missing
 # Ring B live contract tests: real binaries and hardware, never in the sandbox.
 # Without the variable an absent resource skips; with it, it fails loudly.
 CORECYCLER_HW_CONTRACTS=1 python -m pytest -m contract
+
+# The privileged tier on top: MSR (CAP_SYS_RAWIO), dmidecode (root) and the SMU
+# mailbox (corecycler group). The self-hosted runner holds none of these, so it
+# skips them by name; run this yourself before trusting a hardware change.
+sudo -E env CORECYCLER_HW_CONTRACTS=1 CORECYCLER_HW_PRIVILEGED=1 python -m pytest -m contract
 ```
 
 **Line coverage may never drop below 100%** -- the package build enforces it, so a new

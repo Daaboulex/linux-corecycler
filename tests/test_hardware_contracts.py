@@ -1,8 +1,11 @@
 """Ring B live contract tests -- run the REAL hardware or tools and assert our
 readers/parsers still match reality. Marked slow + contract; the nix sandbox
-deselects `slow` so it never runs them here. Run them on real AMD hardware with
-`CORECYCLER_HW_CONTRACTS=1 pytest -m contract`, where an absent resource fails
-loud instead of skipping green.
+deselects `slow` so it never runs them here. The ryzen self-hosted runner runs
+them weekly (.github/workflows/hardware-contracts.yml) with
+CORECYCLER_HW_CONTRACTS=1, where an absent resource fails loud instead of
+skipping green. It is unprivileged, so the checks needing root, CAP_SYS_RAWIO
+or the corecycler group skip there by name; add CORECYCLER_HW_PRIVILEGED=1 as
+root to make those fatal too.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from corecycler.smu.commands import CPUGeneration, detect_generation, get_comman
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _contract_hw import require
+from _contract_hw import require, require_privileged
 
 pytestmark = [pytest.mark.slow, pytest.mark.contract]
 
@@ -65,7 +68,7 @@ def test_real_cpu_resolves_to_supported_generation():
 
 def test_msr_reads_are_plausible():
     reader = MSRReader()
-    require(
+    require_privileged(
         reader.is_available(),
         "requires CAP_SYS_RAWIO on /dev/cpu/0/msr: the kernel gates msr_open() on the "
         "capability, so a udev group grant alone opens the file mode but still EPERMs",
@@ -85,7 +88,7 @@ def test_dmidecode_parses_real_dimms():
     result = subprocess.run(
         ["dmidecode", "-t", "memory"], capture_output=True, text=True, timeout=15
     )
-    require(result.returncode == 0 and bool(result.stdout), "dmidecode -t memory needs root")
+    require_privileged(result.returncode == 0 and bool(result.stdout), "dmidecode -t memory needs root")
     dimms = parse_dmidecode_output(result.stdout)
     assert len(dimms) >= 1, "no DIMMs parsed from real dmidecode output"
     assert all(d.size_gb > 0 for d in dimms)
@@ -130,7 +133,7 @@ def test_core_slot_map_matches_the_live_core_disable_fuse():
     require(RyzenSMU.is_available(), "requires the ryzen_smu module")
     smu = RyzenSMU(commands)
     smn_ok, smn_msg = smu.check_smn_readable()
-    require(smn_ok, f"requires SMN access: {smn_msg}")
+    require_privileged(smn_ok, f"requires SMN access: {smn_msg}")
     topo = detect_topology()
     smu.set_topology(topo)
     assert smu.core_map_error is None, smu.core_map_error

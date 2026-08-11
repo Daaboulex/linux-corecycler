@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -133,16 +134,28 @@ class TestStressPhase:
 
 class TestAffinity:
     def test_a_pinned_child_reports_the_requested_cpus(self, tmp_path):
+        """The pin must land, observed in the steady state.
+
+        taskset narrows the mask only after the fork and its own exec, so the
+        scheduler's first poll can still read the mask the child inherited.
+        Sample until the pin appears, and let the deadline fail the test if it
+        never does.
+        """
         runner = _sched(tmp_path, FakeStress(BUSY), seconds_per_core=30)
         observed: dict[str, object] = {}
         original = CoreScheduler._verify_child_affinity
 
         def _capture(pid, expected, cpu_list, **kw):
             status = Path(f"/proc/{pid}/task/{pid}/status")
-            if status.exists():
-                for line in status.read_text().splitlines():
-                    if line.startswith("Cpus_allowed_list:"):
-                        observed["allowed"] = line.split(":", 1)[1].strip()
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if status.exists():
+                    for line in status.read_text().splitlines():
+                        if line.startswith("Cpus_allowed_list:"):
+                            observed["allowed"] = line.split(":", 1)[1].strip()
+                if observed.get("allowed") == cpu_list:
+                    break
+                time.sleep(0.02)
             runner._stop_event.set()
             return original(pid, expected, cpu_list, **kw)
 
