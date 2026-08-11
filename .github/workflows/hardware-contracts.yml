@@ -1,0 +1,47 @@
+# Ring B live contracts on real AMD Zen hardware (self-hosted ryzen runner).
+#
+# Everything the tests assume about this silicon, kernel and toolchain is
+# re-verified against the machine itself, where an absent resource FAILS
+# instead of skipping green. Deliberately never triggered by `pull_request`:
+# a fork must not be able to run code on a self-hosted runner. The runner is
+# unprivileged, so the checks needing root, CAP_SYS_RAWIO or the corecycler
+# group (MSR, dmidecode, SMU mailbox) skip here with their reason and are run
+# by hand: CORECYCLER_HW_PRIVILEGED=1 as root. Repo-local (NOT synced from
+# nix-packaging-standard).
+name: Hardware contracts
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/corecycler/**'
+      - 'tests/_contract_hw.py'
+      - 'tests/contract_inventory.py'
+      - 'tests/test_hardware_contracts.py'
+      - 'tests/test_tool_discovery_live.py'
+      - '.github/workflows/hardware-contracts.yml'
+  schedule:
+    - cron: '0 6 * * 0' # Weekly: silicon does not change, its kernel and tools do
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hardware-contracts
+  cancel-in-progress: false
+
+jobs:
+  ring-b:
+    if: github.repository == 'Daaboulex/linux-corecycler'
+    runs-on: [self-hosted, ryzen]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Live contracts against this machine
+        env:
+          CORECYCLER_HW_CONTRACTS: '1'
+        run: |
+          set -euo pipefail
+          nix develop '.#packages.x86_64-linux.default' \
+            --command python -m pytest -m contract -q -rs -p no:cacheprovider
