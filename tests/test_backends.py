@@ -17,7 +17,7 @@ from corecycler.engine.backends.base import (
     StressMode,
     StressResult,
 )
-from corecycler.engine.backends.mprime import FFT_RANGES, MODE_TO_TORTURE, MprimeBackend
+from corecycler.engine.backends.mprime import FFT_RANGES, MODE_TO_CPU_FLAGS, MprimeBackend
 from corecycler.engine.backends.stress_ng import StressNgBackend, _mode_to_method
 from corecycler.engine.backends.ycruncher import MODE_TO_ALGORITHMS, YCruncherBackend
 
@@ -236,21 +236,29 @@ class TestMprimeBackend:
         assert "MaxTortureFFT=8192" in content
 
     @pytest.mark.parametrize(
-        "mode,expected_torture",
+        "mode,expected_flags",
         [
-            (StressMode.SSE, 0),
-            (StressMode.AVX, 1),
-            (StressMode.AVX2, 2),
-            (StressMode.AVX512, 3),
+            (StressMode.SSE, {"CpuSupportsAVX": 0, "CpuSupportsFMA3": 0,
+                              "CpuSupportsAVX2": 0, "CpuSupportsAVX512F": 0}),
+            (StressMode.AVX, {"CpuSupportsAVX": 1, "CpuSupportsFMA3": 0,
+                              "CpuSupportsAVX2": 0, "CpuSupportsAVX512F": 0}),
+            (StressMode.AVX2, {"CpuSupportsAVX": 1, "CpuSupportsFMA3": 1,
+                               "CpuSupportsAVX2": 1, "CpuSupportsAVX512F": 0}),
+            (StressMode.AVX512, {"CpuSupportsAVX": 1, "CpuSupportsFMA3": 1,
+                                 "CpuSupportsAVX2": 1, "CpuSupportsAVX512F": 1}),
         ],
     )
-    def test_prepare_torture_type(self, tmp_path, mode, expected_torture):
+    def test_prepare_selects_the_instruction_set(self, tmp_path, mode, expected_flags):
         backend = MprimeBackend()
         cfg = StressConfig(mode=mode)
         backend.prepare(tmp_path, cfg)
 
-        content = (tmp_path / "local.txt").read_text()
-        assert f"TortureWeak={expected_torture}" in content
+        for name in ("local.txt", "prime.txt"):
+            content = (tmp_path / name).read_text()
+            for key, value in expected_flags.items():
+                assert f"{key}={value}" in content
+            assert "TortureWeak" not in content
+        assert "EnableSetAffinity=0" in (tmp_path / "prime.txt").read_text()
 
     def test_prepare_thread_count(self, tmp_path):
         backend = MprimeBackend()
@@ -276,7 +284,9 @@ class TestMprimeBackend:
         assert "StressTester=1" in content
         assert "MinTortureFFT=36" in content
         assert "TortureThreads=2" in content
-        assert "TortureWeak=2" in content
+        assert "CpuSupportsAVX2=1" in content
+        assert "CpuSupportsAVX512F=0" in content
+        assert "EnableSetAffinity=0" in content
         # ResultsFile=/LogFile= were never real Prime95 keys — output stays at
         # the defaults (results.txt / prime.log in the work dir)
         assert "ResultsFile" not in content
@@ -758,7 +768,7 @@ class TestYCruncherModeMapping:
 
 
 # ===========================================================================
-# FFT_RANGES and MODE_TO_TORTURE constants tests
+# FFT_RANGES and MODE_TO_CPU_FLAGS constants tests
 # ===========================================================================
 
 
@@ -774,15 +784,48 @@ class TestMprimeConstants:
             assert lo < hi, f"{preset}: {lo} >= {hi}"
             assert lo > 0
 
-    def test_mode_to_torture_completeness(self):
+    def test_every_mode_has_a_cpu_flag_set(self):
         for mode in [StressMode.SSE, StressMode.AVX, StressMode.AVX2, StressMode.AVX512]:
-            assert mode in MODE_TO_TORTURE
+            assert mode in MODE_TO_CPU_FLAGS
 
-    def test_mode_to_torture_values(self):
-        assert MODE_TO_TORTURE[StressMode.SSE] == 0
-        assert MODE_TO_TORTURE[StressMode.AVX] == 1
-        assert MODE_TO_TORTURE[StressMode.AVX2] == 2
-        assert MODE_TO_TORTURE[StressMode.AVX512] == 3
+    def test_each_mode_disables_everything_above_it(self):
+        order = [StressMode.SSE, StressMode.AVX, StressMode.AVX2, StressMode.AVX512]
+        gates = ["CpuSupportsAVX", "CpuSupportsAVX2", "CpuSupportsAVX512F"]
+        enabled = [
+            [gate for gate in gates if MODE_TO_CPU_FLAGS[mode][gate]] for mode in order
+        ]
+        assert enabled == [[], gates[:1], gates[:2], gates]
+        for mode in order:
+            assert MODE_TO_CPU_FLAGS[mode]["CpuSupportsFMA4"] == 0
+
+    def test_version_parse_reads_the_live_format(self):
+        line = "Mersenne Prime Test Program: Linux64,Untrusted Prime95,v31.4,build 2"
+        assert MprimeBackend.parse_version(line) == "31.4"
+        assert MprimeBackend.parse_version("no version here") is None
+
+    def test_installed_version_reads_the_binary(self, monkeypatch, tmp_path):
+        import subprocess
+        from types import SimpleNamespace
+
+        backend = MprimeBackend()
+        backend._binary = "/usr/bin/mprime"
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda *a, **k: SimpleNamespace(stdout="Prime95,v31.4,build 2", stderr=""),
+        )
+        assert backend.installed_version() == "31.4"
+
+    def test_installed_version_survives_a_broken_binary(self, monkeypatch):
+        import subprocess
+
+        backend = MprimeBackend()
+        backend._binary = "/usr/bin/mprime"
+
+        def boom(*a, **k):
+            raise OSError("exec failed")
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert backend.installed_version() is None
 
 
 class TestFailClosedResultsRead:

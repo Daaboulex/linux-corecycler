@@ -136,6 +136,36 @@ def _pin_zen5_co_range() -> None:
         assert cmds.co_range == (-50, 10), (gen.name, cmds.co_range)
 
 
+def _pin_mprime_31x_config_keys() -> None:
+    from corecycler.engine.backends.base import StressConfig, StressMode
+    from corecycler.engine.backends.mprime import MprimeBackend
+
+    expectations = {
+        StressMode.SSE: {"CpuSupportsAVX=0", "CpuSupportsAVX512F=0"},
+        StressMode.AVX: {"CpuSupportsAVX=1", "CpuSupportsAVX2=0", "CpuSupportsAVX512F=0"},
+        StressMode.AVX2: {"CpuSupportsAVX2=1", "CpuSupportsFMA3=1", "CpuSupportsAVX512F=0"},
+        StressMode.AVX512: {"CpuSupportsAVX2=1", "CpuSupportsAVX512F=1"},
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = MprimeBackend()
+        for mode, wanted in expectations.items():
+            backend.prepare(Path(tmp), StressConfig(mode=mode, threads=2))
+            local = (Path(tmp) / "local.txt").read_text()
+            prime = (Path(tmp) / "prime.txt").read_text()
+            for line in wanted:
+                assert line in local, (mode, line)
+                assert line in prime, (mode, line)
+            for content in (local, prime):
+                assert "TortureWeak" not in content
+                assert "CpuSupportsAVX512=" not in content
+                assert "NumCPUs=1" in content
+                assert "CoresPerTest=1" in content
+            assert "EnableSetAffinity=0" in prime
+    assert MprimeBackend.parse_version(
+        "Mersenne Prime Test Program: Linux64,Untrusted Prime95,v31.4,build 2"
+    ) == "31.4"
+
+
 def _pin_proc_cpus_allowed_list() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         task = Path(tmp) / "77" / "task" / "77"
@@ -335,6 +365,22 @@ CONTRACTS: list[Contract] = [
         ring_a=_pin_dmidecode_dimm_parse,
         live_verifiable=True,
         ring_b_test="test_hardware_contracts.py::test_dmidecode_parses_real_dimms",
+    ),
+    Contract(
+        name="mprime-31x-config-keys",
+        kind="tool",
+        source=(
+            "mprime 31.04 undoc.txt CpuSupports*/EnableSetAffinity, verified live "
+            "2026-08-11: SSE flags -> Pentium4 type-1 FFT, AVX -> AVX FFT, AVX2 -> "
+            "FMA3 FFT, AVX512F -> AVX-512 FFT; EnableSetAffinity=0 held every "
+            "thread on the placed CPUs; TortureWeak is not an mprime option"
+        ),
+        ring_a=_pin_mprime_31x_config_keys,
+        live_verifiable=True,
+        ring_b_test=(
+            "test_backend_versions.py"
+            "::test_each_mode_produces_its_own_fft_path"
+        ),
     ),
     Contract(
         name="proc-cpus-allowed-list",

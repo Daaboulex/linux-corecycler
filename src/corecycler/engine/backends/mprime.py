@@ -33,13 +33,32 @@ FFT_RANGES: dict[FFTPreset, tuple[int, int]] = {
     FFTPreset.HEAVY_SHORT: (4, 160),
 }
 
-# torture test type mapping for prime.txt
-MODE_TO_TORTURE: dict[StressMode, int] = {
-    StressMode.SSE: 0,    # no AVX
-    StressMode.AVX: 1,    # AVX
-    StressMode.AVX2: 2,   # AVX2 (FMA3)
-    StressMode.AVX512: 3, # AVX-512
+# Instruction-set selection, verified against mprime 31.04b02 live (2026-08-11):
+# these CpuSupports* overrides steer the FFT implementation (SSE -> Pentium4
+# type-1, AVX -> AVX, AVX2 -> FMA3, AVX512 -> AVX-512); TortureWeak is not an
+# mprime option. CpuSupportsAVX512F is the real key name, not CpuSupportsAVX512.
+MODE_TO_CPU_FLAGS: dict[StressMode, dict[str, int]] = {
+    StressMode.SSE: {
+        "CpuSupportsAVX": 0, "CpuSupportsFMA3": 0, "CpuSupportsFMA4": 0,
+        "CpuSupportsAVX2": 0, "CpuSupportsAVX512F": 0,
+    },
+    StressMode.AVX: {
+        "CpuSupportsAVX": 1, "CpuSupportsFMA3": 0, "CpuSupportsFMA4": 0,
+        "CpuSupportsAVX2": 0, "CpuSupportsAVX512F": 0,
+    },
+    StressMode.AVX2: {
+        "CpuSupportsAVX": 1, "CpuSupportsFMA3": 1, "CpuSupportsFMA4": 0,
+        "CpuSupportsAVX2": 1, "CpuSupportsAVX512F": 0,
+    },
+    StressMode.AVX512: {
+        "CpuSupportsAVX": 1, "CpuSupportsFMA3": 1, "CpuSupportsFMA4": 0,
+        "CpuSupportsAVX2": 1, "CpuSupportsAVX512F": 1,
+    },
 }
+
+VERIFIED_MPRIME_VERSIONS: frozenset[str] = frozenset({"31.4"})
+
+_VERSION_RE = re.compile(r"\bv(\d+\.\d+)")
 
 # Fatal error signatures, verified against the Prime95 30.19b20 source
 # (commonb.c SELFFAIL*/ERRMSG* constants; torture-test errors are written to
@@ -104,12 +123,12 @@ class MprimeBackend(StressBackend):
         else:
             fft_min, fft_max = FFT_RANGES.get(config.fft_preset, (4, 8192))
 
-        torture_type = MODE_TO_TORTURE.get(config.mode, 0)
+        cpu_flags = MODE_TO_CPU_FLAGS.get(config.mode, MODE_TO_CPU_FLAGS[StressMode.SSE])
+        flags_block = "".join(f"{key}={value}\n" for key, value in cpu_flags.items())
 
-        # write local.txt — mprime config
-        # NumCPUs=1 + CoresPerTest=1 are CRITICAL: mprime ignores TortureThreads
-        # and taskset, spawning workers per detected core with explicit
-        # sched_setaffinity() calls that override our taskset pinning.
+        # NumCPUs=1 + CoresPerTest=1 keep mprime to one worker instead of one
+        # per detected core; EnableSetAffinity=0 stops it re-pinning its
+        # threads to core 0's SMT pair, so the load stays where it was placed.
         local_txt = work_dir / "local.txt"
         local_txt.write_text(
             textwrap.dedent(f"""\
@@ -124,15 +143,10 @@ class MprimeBackend(StressBackend):
                 MaxTortureFFT={fft_max}
                 TortureHyperthreading={1 if config.threads > 1 else 0}
                 TortureThreads={config.threads}
-                CpuSupportsAVX=1
-                CpuSupportsAVX2=1
-                CpuSupportsAVX512=1
-                CpuSupportsFMA3=1
-                TortureWeak={torture_type}
             """)
+            + flags_block
         )
 
-        # write prime.txt — needed for mprime to not prompt
         prime_txt = work_dir / "prime.txt"
         prime_txt.write_text(
             textwrap.dedent(f"""\
@@ -145,13 +159,33 @@ class MprimeBackend(StressBackend):
                 MaxTortureFFT={fft_max}
                 TortureHyperthreading={1 if config.threads > 1 else 0}
                 TortureThreads={config.threads}
-                TortureWeak={torture_type}
             """)
+            + flags_block
+            + "EnableSetAffinity=0\n"
         )
         # Output files stay at Prime95's defaults (results.txt / prime.log in
         # the work dir). The real override keys are literally "results.txt="
         # and "prime.log=" (commonc.c); ResultsFile=/LogFile= are never read
         # by mprime.
+
+    @staticmethod
+    def parse_version(text: str) -> str | None:
+        match = _VERSION_RE.search(text)
+        return match.group(1) if match else None
+
+    def installed_version(self) -> str | None:
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                [self.require_binary(), "-v"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            return None
+        return self.parse_version(result.stdout + result.stderr)
 
     def assert_prepared(self, work_dir: Path) -> None:
         for name in ("local.txt", "prime.txt"):

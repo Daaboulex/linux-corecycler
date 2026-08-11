@@ -8,7 +8,6 @@ slot isolates a core, and how an apparatus fault refuses to move the search.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -587,7 +586,10 @@ def test_the_default_work_dir_is_outside_the_repo(db):
     instance = TunerEngine(
         db=db, topology=_topo(), smu=None, backend=_backend(), config=_config()
     )
-    assert instance._work_dir == Path("/tmp/corecycler/tuner")
+    from corecycler.config.paths import resolve_work_dir
+
+    assert instance._work_dir == resolve_work_dir() / "tuner"
+    assert "/tmp/corecycler" not in str(instance._work_dir)
     assert instance.session_id is None
     assert instance.core_states == {}
 

@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from corecycler.config.paths import user_home
+from corecycler.config.paths import ensure_work_dir, user_home
 from corecycler.config.settings import load_settings, save_settings
 from corecycler.engine.backends import get_backend, load_all
 from corecycler.engine.backends.base import StressConfig, StressResult
@@ -382,7 +382,7 @@ class MainWindow(QMainWindow):
             idle_between_cores=profile.idle_between_cores,
         )
 
-        work_dir = Path(self._settings.work_dir)
+        work_dir = ensure_work_dir(self._settings.work_dir)
         try:
             scheduler = CoreScheduler(
                 topology=self._topology,

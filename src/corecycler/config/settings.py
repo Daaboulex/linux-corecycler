@@ -56,7 +56,7 @@ class TestProfile:
 
 @dataclass(slots=True)
 class AppSettings:
-    work_dir: str = "/tmp/corecycler"
+    work_dir: str = ""
     theme: str = "system"
     poll_interval: float = 1.0
     show_smt_threads: bool = False
@@ -86,7 +86,14 @@ def load_settings() -> AppSettings:
 
     try:
         data = json.loads(settings_file.read_text())
-        profiles = [TestProfile(**p) for p in data.pop("profiles", [TestProfile()])]
+        raw_profiles = data.pop("profiles", None)
+        profiles = (
+            [TestProfile(**p) for p in raw_profiles]
+            if raw_profiles is not None
+            else [TestProfile()]
+        )
+        if data.get("work_dir") == "/tmp/corecycler":
+            data["work_dir"] = ""
         return AppSettings(**data, profiles=profiles)
     except (json.JSONDecodeError, TypeError, KeyError) as e:
         # Never silently reset: preserve the bad file for diagnosis and say why.

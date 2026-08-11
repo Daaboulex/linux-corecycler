@@ -134,14 +134,17 @@ class TestInit:
         sched = make_scheduler(tmp_path, cores_to_test=[1])
         assert sorted(sched.core_status) == [1]
 
-    def test_default_work_dir(self):
+    def test_default_work_dir_is_per_user(self):
+        from corecycler.config.paths import resolve_work_dir
+
         sched = CoreScheduler(
             topology=make_topo(),
             backend=RecordingBackend(),
             stress_config=StressConfig(),
             scheduler_config=SchedulerConfig(),
         )
-        assert sched.work_dir == Path("/tmp/corecycler")
+        assert sched.work_dir == resolve_work_dir()
+        assert "/tmp/corecycler" not in str(sched.work_dir)
 
     def test_callbacks_start_empty(self, tmp_path):
         sched = make_scheduler(tmp_path)
@@ -164,17 +167,48 @@ class TestRunOrchestration:
         assert all(s.iterations == 1 for s in sched.core_status.values())
         assert sched.work_dir.is_dir()
 
-    def test_threads_follow_the_lane_width(self, tmp_path):
+    def test_one_thread_means_one_logical_cpu(self, tmp_path):
         sched = make_scheduler(tmp_path)
-        seen: list[int] = []
+        seen: list[tuple[tuple[int, ...], int]] = []
 
         def capture(sup, lanes, config_for, duration):
-            seen.extend(config_for(one).threads for one in lanes)
+            seen.extend((one.cpus, config_for(one).threads) for one in lanes)
             return {one.core_id: ok(one.core_id) for one in lanes}
 
         ScriptedSupervisor.script = [capture, capture]
         sched.run()
-        assert seen == [2, 2]
+        assert seen == [((0,), 1), ((1,), 1)]
+
+    def test_two_threads_mean_both_smt_siblings(self, tmp_path):
+        sched = make_scheduler(tmp_path)
+        sched.stress_config.threads = 2
+        sched._requested_threads = 2
+        seen: list[tuple[tuple[int, ...], int]] = []
+
+        def capture(sup, lanes, config_for, duration):
+            seen.extend((one.cpus, config_for(one).threads) for one in lanes)
+            return {one.core_id: ok(one.core_id) for one in lanes}
+
+        ScriptedSupervisor.script = [capture, capture]
+        sched.run()
+        assert seen == [((0, 16), 2), ((1, 17), 2)]
+
+    def test_the_requested_width_survives_a_narrow_core(self, tmp_path):
+        topo = make_topo({0: (0,), 1: (1, 17)})
+        sched = make_scheduler(tmp_path, topo=topo)
+        sched.stress_config.threads = 2
+        sched._requested_threads = 2
+        seen: list[tuple[int, ...]] = []
+
+        def capture(sup, lanes, config_for, duration):
+            seen.extend(one.cpus for one in lanes)
+            for one in lanes:
+                config_for(one)
+            return {one.core_id: ok(one.core_id) for one in lanes}
+
+        ScriptedSupervisor.script = [capture, capture]
+        sched.run()
+        assert seen == [(0,), (1, 17)]
 
     def test_a_failed_core_is_recorded_and_the_run_continues(self, tmp_path):
         backend = RecordingBackend()

@@ -14,11 +14,11 @@ import json
 import logging
 import threading
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
+from corecycler.config.paths import resolve_work_dir
 from corecycler.engine.backends import get_backend, load_all
 from corecycler.engine.backends.base import StressConfig
 from corecycler.engine.detector import (
@@ -39,6 +39,8 @@ from .config import TunerConfig
 from .state import CoreState, TunerPhase
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from corecycler.engine.backends.base import StressBackend
     from corecycler.engine.topology import CPUTopology
     from corecycler.history.db import HistoryDB
@@ -411,7 +413,7 @@ class TunerEngine(QObject):
         self._smu = smu
         self._backend = backend
         self._config = config or TunerConfig()
-        self._work_dir = work_dir or Path("/tmp/corecycler/tuner")
+        self._work_dir = work_dir or resolve_work_dir() / "tuner"
 
         self._msr = MSRReader()
         self._boot_id = _read_boot_id()
@@ -3234,7 +3236,7 @@ class TunerEngine(QObject):
         stress_config = StressConfig(
             mode=self._get_stress_mode(),
             fft_preset=self._get_fft_preset(),
-            threads=0,
+            threads=2,
         )
         scheduler_config = SchedulerConfig(
             seconds_per_core=self._config.validate_duration_seconds,
@@ -3541,7 +3543,7 @@ class TunerEngine(QObject):
         stress_config = StressConfig(
             mode=self._get_stress_mode(),
             fft_preset=self._get_fft_preset(),
-            threads=0,  # per-lane SMT width is set by the runner
+            threads=2,
         )
         scheduler_config = SchedulerConfig(
             seconds_per_core=duration,
