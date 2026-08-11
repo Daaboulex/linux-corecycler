@@ -7,110 +7,80 @@ The tuner-side retry behavior is exercised in test_tuner_engine.py.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-from corecycler.engine.backends.base import StressConfig
-from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
-from corecycler.engine.topology import CPUTopology, PhysicalCore
+from corecycler.engine.execution import ThermalWatch
 from corecycler.tuner.config import TunerConfig
 
 
-def _topology(num_cores: int = 4) -> CPUTopology:
-    topo = CPUTopology()
-    topo.physical_cores = num_cores
-    topo.smt_enabled = False
-    topo.logical_cpus_count = num_cores
-    for i in range(num_cores):
-        topo.cores[i] = PhysicalCore(core_id=i, ccd=0, ccx=None, logical_cpus=(i,))
-    return topo
-
-
-def _scheduler(tmp_path, **cfg) -> CoreScheduler:
-    cfg.setdefault("max_temperature", 95.0)
-    return CoreScheduler(
-        topology=_topology(),
-        backend=MagicMock(),
-        stress_config=StressConfig(),
-        scheduler_config=SchedulerConfig(**cfg),
-        work_dir=tmp_path,
+def _watch(temps: list[float | None], **overrides) -> ThermalWatch:
+    feed = iter(temps)
+    kwargs = dict(
+        max_temperature=95.0,
+        grace_seconds=3.0,
+        hard_margin=8.0,
+        require_sensor=False,
+        read=lambda: next(feed),
     )
+    kwargs.update(overrides)
+    return ThermalWatch(**kwargs)
 
 
 class TestTemperatureDebounce:
-    """_check_temperature tolerates transient spikes, stops sustained over-temp."""
+    """A load-ramp spike must not trip; sustained over-temp must."""
 
-    def test_transient_spike_within_grace_does_not_trip(self, tmp_path):
-        sched = _scheduler(tmp_path, over_temp_grace_seconds=3.0)
-        clock = [0.0]
-        with (
-            patch.object(sched, "_read_cpu_temperature", return_value=100.0),
-            patch("time.monotonic", side_effect=lambda: clock[0]),
-        ):
-            assert sched._check_temperature() is True  # t=0: window opens
-            clock[0] = 1.0
-            assert sched._check_temperature() is True  # 1s < 3s grace
-            clock[0] = 2.5
-            assert sched._check_temperature() is True  # 2.5s < 3s grace
-        assert sched._thermal_tripped is False
-
-    def test_sustained_over_temp_trips_after_grace(self, tmp_path):
-        sched = _scheduler(tmp_path, over_temp_grace_seconds=3.0)
-        clock = [0.0]
-        with (
-            patch.object(sched, "_read_cpu_temperature", return_value=100.0),
-            patch("time.monotonic", side_effect=lambda: clock[0]),
-        ):
-            assert sched._check_temperature() is True  # window opens
-            clock[0] = 3.1
-            assert sched._check_temperature() is False  # sustained >= grace → trip
-        assert sched._thermal_tripped is True
-
-    def test_spike_then_recovery_resets_window(self, tmp_path):
-        sched = _scheduler(tmp_path, over_temp_grace_seconds=3.0)
-        temps = [100.0, 100.0, 80.0, 100.0]
-        idx = [0]
-        clock = [0.0]
-        with (
-            patch.object(sched, "_read_cpu_temperature", side_effect=lambda: temps[idx[0]]),
-            patch("time.monotonic", side_effect=lambda: clock[0]),
-        ):
-            idx[0], clock[0] = 0, 0.0
-            assert sched._check_temperature() is True  # window opens
-            idx[0], clock[0] = 1, 1.0
-            assert sched._check_temperature() is True
-            idx[0], clock[0] = 2, 2.0
-            assert sched._check_temperature() is True  # recovered → window reset
-            idx[0], clock[0] = 3, 2.5
-            assert sched._check_temperature() is True  # new window, 0s elapsed
-        assert sched._thermal_tripped is False
-
-    def test_hard_ceiling_trips_immediately(self, tmp_path):
-        sched = _scheduler(tmp_path, over_temp_grace_seconds=3.0, over_temp_hard_margin=8.0)
-        clock = [0.0]
-        with (
-            patch.object(sched, "_read_cpu_temperature", return_value=103.5),
-            patch("time.monotonic", side_effect=lambda: clock[0]),
-        ):
-            # 103.5 >= 95 + 8 = 103 → instant trip despite the grace window
-            assert sched._check_temperature() is False
-        assert sched._thermal_tripped is True
-
-    def test_hysteresis_governs_resume(self, tmp_path):
-        sched = _scheduler(tmp_path, over_temp_grace_seconds=0.0)
+    def test_transient_spike_within_grace_does_not_trip(self):
+        watch = _watch([100.0, 100.0, 100.0])
         clock = [0.0]
         with patch("time.monotonic", side_effect=lambda: clock[0]):
-            with patch.object(sched, "_read_cpu_temperature", return_value=100.0):
-                assert sched._check_temperature() is False  # grace 0 → trips now
-            with patch.object(sched, "_read_cpu_temperature", return_value=92.0):
-                assert sched._check_temperature() is False  # 92 > 90 → stay tripped
-            with patch.object(sched, "_read_cpu_temperature", return_value=89.0):
-                assert sched._check_temperature() is True  # 89 < 95-5 → resume
-        assert sched._thermal_tripped is False
+            assert watch.safe() is True
+            clock[0] = 1.0
+            assert watch.safe() is True
+            clock[0] = 2.5
+            assert watch.safe() is True
+        assert watch.tripped is False
 
-    def test_unreadable_temperature_does_not_block(self, tmp_path):
-        sched = _scheduler(tmp_path)
-        with patch.object(sched, "_read_cpu_temperature", return_value=None):
-            assert sched._check_temperature() is True
+    def test_sustained_over_temp_trips_after_grace(self):
+        watch = _watch([100.0, 100.0])
+        clock = [0.0]
+        with patch("time.monotonic", side_effect=lambda: clock[0]):
+            assert watch.safe() is True
+            clock[0] = 3.1
+            assert watch.safe() is False
+        assert watch.tripped is True
+
+    def test_spike_then_recovery_resets_window(self):
+        watch = _watch([100.0, 100.0, 80.0, 100.0])
+        clock = [0.0]
+        with patch("time.monotonic", side_effect=lambda: clock[0]):
+            assert watch.safe() is True
+            clock[0] = 1.0
+            assert watch.safe() is True
+            clock[0] = 2.0
+            assert watch.safe() is True
+            clock[0] = 2.5
+            assert watch.safe() is True
+        assert watch.tripped is False
+
+    def test_hard_ceiling_trips_immediately(self):
+        watch = _watch([103.5])
+        assert watch.safe() is False
+        assert watch.tripped is True
+
+    def test_hysteresis_governs_resume(self):
+        watch = _watch([100.0, 92.0, 89.0], grace_seconds=0.0)
+        assert watch.safe() is False
+        assert watch.safe() is False
+        assert watch.safe() is True
+        assert watch.tripped is False
+
+    def test_unreadable_temperature_does_not_block(self):
+        watch = _watch([None])
+        assert watch.safe() is True
+
+    def test_unreadable_temperature_blocks_when_the_sensor_is_required(self):
+        watch = _watch([None], require_sensor=True)
+        assert watch.safe() is False
 
 
 class TestThermalTunerConfig:

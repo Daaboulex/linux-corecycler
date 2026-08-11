@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import textwrap
 from typing import TYPE_CHECKING
@@ -151,6 +152,15 @@ class MprimeBackend(StressBackend):
         # the work dir). The real override keys are literally "results.txt="
         # and "prime.log=" (commonc.c); ResultsFile=/LogFile= are never read
         # by mprime.
+
+    def assert_prepared(self, work_dir: Path) -> None:
+        for name in ("local.txt", "prime.txt"):
+            path = work_dir / name
+            if not path.is_file() or not os.access(path, os.R_OK):
+                raise OSError(
+                    f"refusing to launch mprime: {path} is missing or unreadable, "
+                    "and mprime without config spawns one self-pinned worker per core"
+                )
 
     def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
         combined = stdout + "\n" + stderr

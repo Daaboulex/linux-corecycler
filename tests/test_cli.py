@@ -454,7 +454,9 @@ class TestDoctor:
 
     def test_a_usable_system_exits_zero(self, monkeypatch, capsys):
         monkeypatch.setattr(
-            cli.tools, "report", lambda: self._resolutions({"stress-ng", "taskset"})
+            cli.tools,
+            "report",
+            lambda: self._resolutions({"stress-ng", "systemd-run", "setpriv"}),
         )
         assert cli.cmd_doctor() == cli.EXIT_COMPLETED
         assert "doctor: ok" in capsys.readouterr().out

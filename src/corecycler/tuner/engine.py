@@ -27,6 +27,8 @@ from corecycler.engine.detector import (
     harvest_kernel_mce,
     last_boot_ended_cleanly,
 )
+from corecycler.engine.execution import busy_fraction as _busy_fraction
+from corecycler.engine.execution import cpu_times as _read_cpu_times
 from corecycler.engine.parallel import ParallelStress
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
 from corecycler.monitor.msr import MSRReader
@@ -101,30 +103,6 @@ def _read_boot_id() -> str:
             return f.read().strip()
     except OSError:
         return ""
-
-
-def _read_cpu_times(cpu_id: int) -> tuple[int, int] | None:
-    """(idle+iowait, total) jiffies for one logical CPU from /proc/stat."""
-    with contextlib.suppress(OSError, ValueError, IndexError), open("/proc/stat") as f:
-        prefix = f"cpu{cpu_id} "
-        for line in f:
-            if line.startswith(prefix):
-                vals = [int(x) for x in line.split()[1:]]
-                return vals[3] + vals[4], sum(vals)
-    return None
-
-
-def _busy_fraction(
-    prev: tuple[int, int] | None, now: tuple[int, int] | None
-) -> float | None:
-    """Busy fraction of the window between two /proc/stat samples."""
-    if prev is None or now is None:
-        return None
-    d_idle = now[0] - prev[0]
-    d_total = now[1] - prev[1]
-    if d_total <= 0:
-        return None
-    return 1.0 - (d_idle / d_total)
 
 
 def _pick_report(results: dict[int, list], primary: int) -> tuple[int, object | None]:

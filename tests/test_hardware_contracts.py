@@ -95,7 +95,7 @@ def test_dmidecode_parses_real_dimms():
 
 def test_proc_stat_cpu_line_matches_the_pinned_fields():
     """The stall watchdog reads idle+iowait from /proc/stat; drift here blinds it."""
-    from corecycler.engine.parallel import _cpu_times
+    from corecycler.engine.execution import cpu_times as _cpu_times
 
     require(Path("/proc/stat").exists(), "/proc/stat not readable")
     sample = _cpu_times(0)

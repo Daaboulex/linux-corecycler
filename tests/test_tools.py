@@ -180,30 +180,35 @@ class TestRequirements:
             for key in tools.TOOLS
         ]
 
-    def test_one_backend_and_taskset_is_enough(self):
-        assert tools.unmet_requirements(self._resolutions({"stress-ng", "taskset"})) == []
+    def test_one_backend_and_the_containment_tools_are_enough(self):
+        assert tools.unmet_requirements(
+            self._resolutions({"stress-ng", "systemd-run", "setpriv"})
+        ) == []
 
     def test_no_backend_is_unmet(self):
-        unmet = tools.unmet_requirements(self._resolutions({"taskset"}))
+        unmet = tools.unmet_requirements(self._resolutions({"systemd-run", "setpriv"}))
         assert len(unmet) == 1
         assert "no stress backend" in unmet[0]
 
-    def test_missing_taskset_is_unmet(self):
+    def test_missing_containment_tools_are_unmet(self):
         unmet = tools.unmet_requirements(self._resolutions({"mprime"}))
-        assert any(u.startswith("taskset is required") for u in unmet)
+        assert any(u.startswith("systemd-run is required") for u in unmet)
+        assert any(u.startswith("setpriv is required") for u in unmet)
 
     def test_optional_tools_are_never_unmet(self):
-        assert tools.unmet_requirements(self._resolutions({"mprime", "taskset"})) == []
+        assert tools.unmet_requirements(
+            self._resolutions({"mprime", "systemd-run", "setpriv"})
+        ) == []
 
 
 class TestCommandConstruction:
     def test_resolved_tools_run_by_absolute_path(self, on_path):
-        on_path({"taskset": "/usr/bin/taskset"})
-        assert tools.taskset_prefix("0,16") == ["/usr/bin/taskset", "-c", "0,16"]
+        on_path({"setpriv": "/usr/bin/setpriv"})
+        assert tools.command_name("setpriv") == "/usr/bin/setpriv"
 
     def test_absent_tool_keeps_its_name_so_exec_fails_naming_it(self, on_path):
         on_path({})
-        assert tools.command_name("taskset") == "taskset"
+        assert tools.command_name("setpriv") == "setpriv"
 
     def test_report_covers_every_tool(self, on_path):
         on_path({})

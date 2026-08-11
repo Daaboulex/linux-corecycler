@@ -1,1122 +1,408 @@
-"""Comprehensive tests for CoreScheduler."""
+"""Orchestration spec for CoreScheduler over the execution engine."""
 
 from __future__ import annotations
 
-import signal
-import subprocess
-import sys
+import threading
+import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from typing import ClassVar
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from corecycler.engine.backends.base import StressConfig, StressMode
-from corecycler.engine.scheduler import _STALL_GRACE_SECONDS, CoreScheduler, CoreTestStatus, SchedulerConfig, TestState
+from corecycler.engine import execution
+from corecycler.engine import scheduler as scheduler_mod
+from corecycler.engine.backends.base import StressConfig, StressResult
+from corecycler.engine.scheduler import (
+    CoreScheduler,
+    CoreTestStatus,
+    SchedulerConfig,
+    TestState,
+)
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 
-# ===========================================================================
-# Fixtures
-# ===========================================================================
+
+class RecordingBackend:
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.cleaned: list[tuple[Path, bool]] = []
+
+    def prepare(self, work_dir, config) -> None:
+        pass
+
+    def assert_prepared(self, work_dir) -> None:
+        pass
+
+    def cleanup(self, work_dir, *, preserve_on_error: bool = False) -> None:
+        self.cleaned.append((Path(work_dir), preserve_on_error))
 
 
-def make_topology(num_cores: int = 4, smt: bool = False) -> CPUTopology:
-    """Build a minimal CPUTopology for scheduler testing."""
+class ScriptedSupervisor:
+    script: ClassVar[list] = []
+    created: ClassVar[list] = []
+
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        ScriptedSupervisor.created.append(self)
+
+    def run(self, lanes, config_for, duration):
+        step = ScriptedSupervisor.script.pop(0)
+        return step(self, lanes, config_for, duration)
+
+
+@pytest.fixture(autouse=True)
+def scripted(monkeypatch):
+    ScriptedSupervisor.script = []
+    ScriptedSupervisor.created = []
+    monkeypatch.setattr(scheduler_mod, "Supervisor", ScriptedSupervisor)
+    return ScriptedSupervisor
+
+
+def make_topo(cores: dict[int, tuple[int, ...]] | None = None) -> CPUTopology:
     topo = CPUTopology()
-    topo.physical_cores = num_cores
-    topo.smt_enabled = smt
-    lcpus_per_core = 2 if smt else 1
-    topo.logical_cpus_count = num_cores * lcpus_per_core
-
-    for i in range(num_cores):
-        logical_ids = tuple(range(i * lcpus_per_core, (i + 1) * lcpus_per_core))
-        topo.cores[i] = PhysicalCore(
-            core_id=i,
-            ccd=i // 4,
-            ccx=None,
-            logical_cpus=logical_ids,
+    for core_id, cpus in (cores or {0: (0, 16), 1: (1, 17)}).items():
+        topo.cores[core_id] = PhysicalCore(
+            core_id=core_id, ccd=core_id // 8, ccx=None, logical_cpus=cpus
         )
-
     return topo
 
 
-@pytest.fixture
-def simple_topo():
-    return make_topology(4, smt=False)
+def make_scheduler(tmp_path, *, topo=None, backend=None, **config) -> CoreScheduler:
+    return CoreScheduler(
+        topology=topo or make_topo(),
+        backend=backend or RecordingBackend(),
+        stress_config=StressConfig(),
+        scheduler_config=SchedulerConfig(seconds_per_core=1, poll_interval=0.01, **config),
+        work_dir=tmp_path / "work",
+    )
 
 
-@pytest.fixture
-def smt_topo():
-    return make_topology(4, smt=True)
+def ok(core_id: int) -> StressResult:
+    return StressResult(core_id=core_id, passed=True, duration_seconds=0.1)
 
 
-# ===========================================================================
-# TestState enum
-# ===========================================================================
+def bad(core_id: int, msg: str = "mprime error: FATAL ERROR") -> StressResult:
+    return StressResult(
+        core_id=core_id, passed=False, duration_seconds=0.1,
+        error_message=msg, error_type=execution.classify_error(msg),
+    )
 
 
-class TestTestState:
-    def test_all_states(self):
-        assert TestState.IDLE
-        assert TestState.RUNNING
-        assert TestState.STOPPING
-        assert TestState.FINISHED
+def step_pass(sup, lanes, config_for, duration):
+    for one in lanes:
+        config_for(one)
+    return {one.core_id: ok(one.core_id) for one in lanes}
 
 
-# ===========================================================================
-# CoreTestStatus
-# ===========================================================================
+def step_fail(sup, lanes, config_for, duration):
+    return {one.core_id: bad(one.core_id) for one in lanes}
 
 
-class TestCoreTestStatus:
-    def test_defaults(self):
-        s = CoreTestStatus(core_id=5)
-        assert s.core_id == 5
-        assert s.ccd is None
-        assert s.state == "pending"
-        assert s.iterations == 0
-        assert s.errors == 0
-        assert s.last_error is None
-        assert s.elapsed_seconds == 0.0
-        assert s.current_fft is None
+def step_none(sup, lanes, config_for, duration):
+    return {one.core_id: None for one in lanes}
 
 
-# ===========================================================================
-# SchedulerConfig
-# ===========================================================================
+class TestDataShapes:
+    def test_states(self):
+        assert {s.name for s in TestState} == {"IDLE", "RUNNING", "STOPPING", "FINISHED"}
+
+    def test_status_defaults(self):
+        status = CoreTestStatus(core_id=3)
+        assert status.state == "pending"
+        assert status.iterations == 0
+        assert status.errors == 0
+        assert status.last_error is None
+
+    def test_config_defaults(self):
+        config = SchedulerConfig()
+        assert config.seconds_per_core == 360
+        assert config.cores_to_test is None
+        assert config.stop_on_error is False
+        assert config.cycle_count == 1
+        assert config.require_thermal_sensor is False
 
 
-class TestSchedulerConfig:
-    def test_defaults(self):
-        cfg = SchedulerConfig()
-        assert cfg.seconds_per_core == 360
-        assert cfg.cores_to_test is None
-        assert cfg.stop_on_error is False
-        assert cfg.cycle_count == 1
-        assert cfg.poll_interval == 1.0
-
-
-# ===========================================================================
-# CoreScheduler initialization
-# ===========================================================================
-
-
-class TestSchedulerInit:
-    def test_init_state(self, simple_topo, mock_backend, tmp_path):
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=SchedulerConfig(),
-            work_dir=tmp_path,
-        )
+class TestInit:
+    def test_initial_state_and_statuses(self, tmp_path):
+        sched = make_scheduler(tmp_path)
         assert sched.state == TestState.IDLE
-        assert len(sched.core_status) == 4
-        assert len(sched.results) == 4
-        for core_id in range(4):
-            assert core_id in sched.core_status
-            assert sched.core_status[core_id].state == "pending"
-            assert sched.results[core_id] == []
+        assert sorted(sched.core_status) == [0, 1]
+        assert sched.core_status[0].ccd == 0
+        assert sched.results == {0: [], 1: []}
 
-    def test_init_with_specific_cores(self, simple_topo, mock_backend, tmp_path):
-        cfg = SchedulerConfig(cores_to_test=[1, 3])
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
-        assert len(sched.core_status) == 2
-        assert 1 in sched.core_status
-        assert 3 in sched.core_status
-        assert 0 not in sched.core_status
+    def test_specific_cores_only(self, tmp_path):
+        sched = make_scheduler(tmp_path, cores_to_test=[1])
+        assert sorted(sched.core_status) == [1]
 
-    def test_default_work_dir(self, simple_topo, mock_backend):
+    def test_default_work_dir(self):
         sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
+            topology=make_topo(),
+            backend=RecordingBackend(),
             stress_config=StressConfig(),
             scheduler_config=SchedulerConfig(),
         )
         assert sched.work_dir == Path("/tmp/corecycler")
 
-    def test_ccd_assigned_in_status(self, simple_topo, mock_backend, tmp_path):
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=SchedulerConfig(),
-            work_dir=tmp_path,
-        )
-        for core_id in range(4):
-            assert sched.core_status[core_id].ccd == simple_topo.cores[core_id].ccd
-
-    def test_callbacks_initialized_empty(self, simple_topo, mock_backend, tmp_path):
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=SchedulerConfig(),
-            work_dir=tmp_path,
-        )
+    def test_callbacks_start_empty(self, tmp_path):
+        sched = make_scheduler(tmp_path)
         assert sched.on_core_start == []
-        assert sched.on_core_finish == []
-        assert sched.on_status_update == []
-        assert sched.on_cycle_complete == []
         assert sched.on_test_complete == []
 
-
-# ===========================================================================
-# _get_test_cores
-# ===========================================================================
-
-
-class TestGetTestCores:
-    def test_all_cores(self, simple_topo, mock_backend, tmp_path):
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=SchedulerConfig(),
-            work_dir=tmp_path,
-        )
-        assert sched._get_test_cores() == [0, 1, 2, 3]
-
-    def test_specific_cores(self, simple_topo, mock_backend, tmp_path):
-        cfg = SchedulerConfig(cores_to_test=[3, 1])
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
-        assert sched._get_test_cores() == [1, 3]  # sorted
+    def test_classify_delegates_to_the_engine(self):
+        message = "MCE during stress (CPU 0,16): bang"
+        assert CoreScheduler._classify_error(message) == execution.classify_error(message)
 
 
-# ===========================================================================
-# _classify_error
-# ===========================================================================
-
-
-class TestClassifyError:
-    @pytest.mark.parametrize(
-        "msg,expected",
-        [
-            ("MCE detected on CPU 0", "mce"),
-            ("machine check exception", "mce"),
-            ("Rounding was 0.5", "computation"),
-            ("FATAL ERROR in test", "computation"),
-            ("ILLEGAL SUMOUT", "computation"),
-            ("result mismatch", "computation"),
-            ("timeout after 600s", "timeout"),
-            ("process crash detected", "crash"),
-            ("signal 11 received", "crash"),
-            ("some unknown error", "unknown"),
-            (None, "unknown"),
-            ("", "unknown"),
-        ],
-    )
-    def test_classification(self, msg, expected):
-        assert CoreScheduler._classify_error(msg) == expected
-
-
-# ===========================================================================
-# run() integration tests with mocked subprocess
-# ===========================================================================
-
-
-class TestRun:
-    def test_basic_run(self, simple_topo, mock_backend, tmp_path):
-        """Full run through all cores should complete."""
-        cfg = SchedulerConfig(seconds_per_core=0.05, poll_interval=0.01)
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
-
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        mock_proc.communicate.return_value = ("passed", "")
-        mock_proc.returncode = -15
-        mock_proc.pid = 12345
-
-        with (
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch.object(sched.detector, "reset"),
-            patch.object(sched, "_check_temperature", return_value=True),
-            patch("os.getpgid", return_value=424242),
-            patch("os.killpg"),
-        ):
-            results = sched.run()
-
+class TestRunOrchestration:
+    def test_a_clean_run_records_a_pass_per_core(self, tmp_path):
+        sched = make_scheduler(tmp_path)
+        ScriptedSupervisor.script = [step_pass, step_pass]
+        results = sched.run()
         assert sched.state == TestState.FINISHED
-        assert len(results) == 4
-        for core_id in range(4):
-            assert len(results[core_id]) == 1
-            assert results[core_id][0].passed is True
+        assert [r[0].passed for r in results.values()] == [True, True]
+        assert all(s.state == "passed" for s in sched.core_status.values())
+        assert all(s.iterations == 1 for s in sched.core_status.values())
+        assert sched.work_dir.is_dir()
 
-    def test_instant_self_exit_is_startup_not_pass(self, simple_topo, mock_backend, tmp_path):
-        cfg = SchedulerConfig(seconds_per_core=1, poll_interval=0.01, cores_to_test=[0])
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
+    def test_threads_follow_the_lane_width(self, tmp_path):
+        sched = make_scheduler(tmp_path)
+        seen: list[int] = []
 
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
+        def capture(sup, lanes, config_for, duration):
+            seen.extend(config_for(one).threads for one in lanes)
+            return {one.core_id: ok(one.core_id) for one in lanes}
 
-        with (
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch.object(sched.detector, "reset"),
-            patch.object(sched, "_check_temperature", return_value=True),
-        ):
-            results = sched.run()
+        ScriptedSupervisor.script = [capture, capture]
+        sched.run()
+        assert seen == [2, 2]
 
+    def test_a_failed_core_is_recorded_and_the_run_continues(self, tmp_path):
+        backend = RecordingBackend()
+        sched = make_scheduler(tmp_path, backend=backend)
+        ScriptedSupervisor.script = [step_fail, step_pass]
+        results = sched.run()
         assert results[0][0].passed is False
-        assert results[0][0].error_type == "startup"
+        assert results[1][0].passed is True
+        assert sched.core_status[0].state == "failed"
+        assert sched.core_status[0].errors == 1
+        assert backend.cleaned[0][1] is True
+        assert backend.cleaned[1][1] is False
 
-    def test_callbacks_fire(self, simple_topo, mock_backend, tmp_path):
-        """Callbacks should be called during run."""
-        cfg = SchedulerConfig(seconds_per_core=1, poll_interval=0.01)
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
+    def test_stop_on_error_ends_the_run_at_the_failure(self, tmp_path):
+        sched = make_scheduler(tmp_path, stop_on_error=True)
+        ScriptedSupervisor.script = [step_fail]
+        results = sched.run()
+        assert results[0][0].passed is False
+        assert results[1] == []
+        assert sched.core_status[1].state == "pending"
 
-        core_starts = []
-        core_finishes = []
-        cycle_completes = []
-        test_completes = []
+    def test_an_interrupted_core_gets_no_invented_result(self, tmp_path):
+        sched = make_scheduler(tmp_path)
 
-        sched.on_core_start.append(lambda cid, cyc: core_starts.append((cid, cyc)))
-        sched.on_core_finish.append(lambda cid, res: core_finishes.append(cid))
-        sched.on_cycle_complete.append(lambda cyc: cycle_completes.append(cyc))
-        sched.on_test_complete.append(lambda res: test_completes.append(True))
+        def step_stop_then_none(sup, lanes, config_for, duration):
+            sup.kwargs["stop_event"].set()
+            return {one.core_id: None for one in lanes}
 
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0
-        mock_proc.communicate.return_value = ("passed", "")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
+        ScriptedSupervisor.script = [step_stop_then_none]
+        results = sched.run()
+        assert results[0] == []
+        assert results[1] == []
+        assert sched.core_status[0].state == "pending"
+        assert sched.core_status[0].iterations == 0
 
-        with (
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch.object(sched.detector, "reset"),
-        ):
-            sched.run()
+    def test_multiple_cycles_visit_every_core_again(self, tmp_path):
+        sched = make_scheduler(tmp_path, cycle_count=2)
+        ScriptedSupervisor.script = [step_pass] * 4
+        cycles: list[int] = []
+        sched.on_cycle_complete.append(cycles.append)
+        results = sched.run()
+        assert cycles == [0, 1]
+        assert [len(r) for r in results.values()] == [2, 2]
+        assert all(s.iterations == 2 for s in sched.core_status.values())
 
-        assert len(core_starts) == 4
-        assert len(core_finishes) == 4
-        assert cycle_completes == [0]
-        assert test_completes == [True]
+    def test_callbacks_fire_in_order(self, tmp_path):
+        sched = make_scheduler(tmp_path, cores_to_test=[0])
+        ScriptedSupervisor.script = [step_pass]
+        events: list[str] = []
+        sched.on_core_start.append(lambda cid, cyc: events.append(f"start:{cid}:{cyc}"))
+        sched.on_core_finish.append(lambda cid, res: events.append(f"finish:{cid}:{res.passed}"))
+        sched.on_test_complete.append(lambda res: events.append("complete"))
+        sched.run()
+        assert events == ["start:0:0", "finish:0:True", "complete"]
 
-    def test_multiple_cycles(self, simple_topo, mock_backend, tmp_path):
-        """cycle_count=2 should test each core twice."""
-        cfg = SchedulerConfig(seconds_per_core=1, poll_interval=0.01, cycle_count=2)
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
-
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
-
-        with (
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch.object(sched.detector, "reset"),
-        ):
-            results = sched.run()
-
-        for core_id in range(4):
-            assert len(results[core_id]) == 2
-
-    def test_backend_error_detected(self, simple_topo, mock_backend, tmp_path):
-        """Backend parse_output returning failure should mark core as failed."""
-        mock_backend.should_pass = False
-        mock_backend.error_message = "FATAL ERROR"
-
-        cfg = SchedulerConfig(seconds_per_core=0.05, poll_interval=0.01)
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
-
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        mock_proc.communicate.return_value = ("FATAL ERROR", "")
-        mock_proc.returncode = -15
-        mock_proc.pid = 12345
-
-        with (
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch.object(sched.detector, "reset"),
-            patch.object(sched, "_check_temperature", return_value=True),
-            patch("os.getpgid", return_value=424242),
-            patch("os.killpg"),
-        ):
-            results = sched.run()
-
-        for core_id in range(4):
-            assert results[core_id][0].passed is False
-            assert sched.core_status[core_id].errors > 0
-
-    def test_process_start_failure(self, simple_topo, mock_backend, tmp_path):
-        """OSError on Popen should be handled gracefully."""
-        cfg = SchedulerConfig(seconds_per_core=1, poll_interval=0.01)
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
-
-        with (
-            patch("subprocess.Popen", side_effect=OSError("No such file")),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch.object(sched.detector, "reset"),
-        ):
-            results = sched.run()
-
-        for core_id in range(4):
-            assert results[core_id][0].passed is False
-            assert "Failed to start" in results[core_id][0].error_message
-
-    def test_work_dir_created(self, simple_topo, mock_backend, tmp_path):
-        work = tmp_path / "deep" / "nested" / "work"
-        cfg = SchedulerConfig(seconds_per_core=1, poll_interval=0.01)
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=work,
-        )
-
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
-
-        with (
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch.object(sched.detector, "reset"),
-        ):
-            sched.run()
-
-        assert work.exists()
-
-    def test_backend_prepare_called(self, simple_topo, mock_backend, tmp_path):
-        cfg = SchedulerConfig(seconds_per_core=1, poll_interval=0.01)
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
-
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
-
-        with (
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch.object(sched.detector, "reset"),
-        ):
-            sched.run()
-
-        assert len(mock_backend.prepared_dirs) == 4
-        assert len(mock_backend.cleaned_dirs) == 4
-
-    def test_taskset_command(self, simple_topo, mock_backend, tmp_path):
-        """Command should be prefixed with taskset for CPU pinning."""
-        cfg = SchedulerConfig(seconds_per_core=1, poll_interval=0.01)
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
-
-        popen_calls = []
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
-
-        def capture_popen(cmd, **kwargs):
-            popen_calls.append(cmd)
-            return mock_proc
-
-        with (
-            patch("subprocess.Popen", side_effect=capture_popen),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch.object(sched.detector, "reset"),
-        ):
-            sched.run()
-
-        # First core (core 0, logical CPU 0) should get taskset -c 0
-        assert popen_calls[0][:3] == ["taskset", "-c", "0"]
-
-
-# ===========================================================================
-# stop() and force_stop()
-# ===========================================================================
-
-
-class TestStop:
-    def test_stop_sets_state(self, simple_topo, mock_backend, tmp_path):
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=SchedulerConfig(),
-            work_dir=tmp_path,
-        )
-        sched.stop()
-        assert sched._stop_requested is True
-        assert sched.state == TestState.STOPPING
-
-    def test_force_stop_sets_state(self, simple_topo, mock_backend, tmp_path):
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=SchedulerConfig(),
-            work_dir=tmp_path,
-        )
-        sched.force_stop()
-        assert sched._stop_requested is True
-        assert sched.state == TestState.STOPPING
-
-    def test_kill_current_no_process(self, simple_topo, mock_backend, tmp_path):
-        """_kill_current with no running process should not crash."""
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=SchedulerConfig(),
-            work_dir=tmp_path,
-        )
-        sched._process = None
-        sched._kill_current()  # should not raise
-
-    def test_kill_current_already_dead(self, simple_topo, mock_backend, tmp_path):
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=SchedulerConfig(),
-            work_dir=tmp_path,
-        )
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0  # already dead
-        sched._process = mock_proc
-        sched._kill_current()  # should not raise
-
-    def test_kill_current_sigterm(self, simple_topo, mock_backend, tmp_path):
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=SchedulerConfig(),
-            work_dir=tmp_path,
-        )
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None  # still running
-        mock_proc.pid = 12345
-        mock_proc.wait.return_value = None
-        sched._process = mock_proc
-
-        with patch("os.killpg") as mock_killpg, patch("os.getpgid", return_value=12345):
-            sched._kill_current()
-
-        mock_killpg.assert_called_with(12345, signal.SIGTERM)
-
-    def test_kill_current_escalates_to_sigkill(self, simple_topo, mock_backend, tmp_path):
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=SchedulerConfig(),
-            work_dir=tmp_path,
-        )
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        mock_proc.pid = 12345
-        mock_proc.wait.side_effect = [subprocess.TimeoutExpired("test", 3), None]
-        sched._process = mock_proc
-
-        with patch("os.killpg") as mock_killpg, patch("os.getpgid", return_value=12345):
-            sched._kill_current()
-
-        # Should have been called twice: SIGTERM then SIGKILL
-        calls = mock_killpg.call_args_list
-        assert len(calls) == 2
-        assert calls[0][0] == (12345, signal.SIGTERM)
-        assert calls[1][0] == (12345, signal.SIGKILL)
-
-    def test_kill_current_handles_process_gone(self, simple_topo, mock_backend, tmp_path):
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=SchedulerConfig(),
-            work_dir=tmp_path,
-        )
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        mock_proc.pid = 12345
-        sched._process = mock_proc
-
-        with patch("os.killpg", side_effect=ProcessLookupError), patch(
-            "os.getpgid", return_value=12345
-        ):
-            sched._kill_current()  # should not raise
-
-
-# ===========================================================================
-# Missing core handling
-# ===========================================================================
-
-
-class TestMissingCore:
-    def test_core_not_in_topology(self, mock_backend, tmp_path):
-        """If cores_to_test references a core not in topology, it should be skipped."""
-        topo = make_topology(4)
-        cfg = SchedulerConfig(
-            cores_to_test=[0, 99],  # 99 doesn't exist
-            seconds_per_core=1,
-            poll_interval=0.01,
-        )
-        sched = CoreScheduler(
-            topology=topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
-
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = -15
-        mock_proc.pid = 12345
-
-        with (
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch.object(sched.detector, "reset"),
-            patch.object(sched, "_check_temperature", return_value=True),
-            patch("os.getpgid", return_value=424242),
-            patch("os.killpg"),
-        ):
-            results = sched.run()
-
-        # Core 99 should be skipped
-        assert sched.core_status[99].state == "skipped"
+    def test_a_core_missing_from_the_topology_is_skipped(self, tmp_path):
+        sched = make_scheduler(tmp_path, topo=make_topo({0: (0, 16)}), cores_to_test=[0, 5])
+        ScriptedSupervisor.script = [step_pass]
+        results = sched.run()
+        assert sched.core_status[5].state == "skipped"
+        assert results[5] == []
         assert results[0][0].passed is True
 
+    def test_stop_sets_the_stopping_state(self, tmp_path):
+        sched = make_scheduler(tmp_path)
+        sched.stop()
+        assert sched.state == TestState.STOPPING
 
-# ===========================================================================
-# Signal marshalling audit (regression guard)
-# ===========================================================================
-
-
-class TestSignalMarshallingAudit:
-    """Ensure no Signal(dict) or Signal(list) exists in the codebase.
-
-    PySide6 cannot copy-convert these types across QThread boundaries.
-    All complex data must use Signal(str) with JSON serialization.
-    """
-
-    def test_no_signal_dict_in_codebase(self):
-        """Scan all .py files under src/ for Signal(dict) or Signal(list)."""
-        src_dir = Path(__file__).parent.parent / "src"
-        violations = []
-        for py_file in src_dir.rglob("*.py"):
-            content = py_file.read_text()
-            for i, line in enumerate(content.splitlines(), 1):
-                # Skip comments
-                stripped = line.lstrip()
-                if stripped.startswith("#"):
-                    continue
-                if "Signal(dict)" in line or "Signal(list)" in line:
-                    violations.append(f"{py_file.relative_to(src_dir)}:{i}: {line.strip()}")
-
-        assert violations == [], (
-            "Found Signal(dict) or Signal(list) — these crash across QThread boundaries.\n"
-            "Use Signal(str) with json.dumps/loads instead.\n"
-            + "\n".join(violations)
-        )
+    def test_force_stop_is_stop(self, tmp_path):
+        sched = make_scheduler(tmp_path)
+        sched.force_stop()
+        assert sched.state == TestState.STOPPING
+        assert sched._stop_requested
 
 
-# ===========================================================================
-# Stall grace period
-# ===========================================================================
+class TestIdleComposition:
+    def test_inter_core_idle_runs_between_cores(self, tmp_path, monkeypatch):
+        calls: list[str] = []
 
-
-class TestStallGracePeriod:
-    """Tests for the startup grace period in stall detection."""
-
-    def test_stall_grace_period_constant(self):
-        """_STALL_GRACE_SECONDS should be 5.0."""
-        assert _STALL_GRACE_SECONDS == 5.0
-
-    def test_no_stall_during_grace_period(self, simple_topo, mock_backend, tmp_path):
-        """During the grace period, near-zero CPU usage should NOT trigger a stall."""
-        cfg = SchedulerConfig(
-            seconds_per_core=3,  # run for 3s (within 5s grace)
-            poll_interval=0.1,
-            stall_timeout=1.0,  # would fire after 1s without grace
-        )
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
-
-        # Process that stays alive for the full duration
-        call_count = [0]
-        mock_proc = MagicMock()
-
-        def poll_side_effect():
-            call_count[0] += 1
-            # Exit after enough polls to fill 3 seconds
-            if call_count[0] > 30:
-                return 0
+        def fake_idle(**kwargs):
+            calls.append(kwargs["phase"])
             return None
 
-        mock_proc.poll.side_effect = poll_side_effect
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
+        monkeypatch.setattr(execution, "watch_idle", fake_idle)
+        sched = make_scheduler(tmp_path, idle_between_cores=0.01)
+        ScriptedSupervisor.script = [step_pass, step_pass]
+        sched.run()
+        assert calls == ["inter-core idle", "inter-core idle"]
 
-        with (
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch.object(sched, "_read_core_usage", return_value=0.0),
-            patch.object(sched, "_check_temperature", return_value=True),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch.object(sched.detector, "reset"),
-        ):
-            results = sched.run()
-
-        # Core 0 should pass -- stall should NOT have fired during grace period
+    def test_an_idle_error_is_recorded_without_a_verdict_change(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            execution, "watch_idle", lambda **kwargs: "MCE during inter-core idle: bang"
+        )
+        sched = make_scheduler(tmp_path, idle_between_cores=0.01)
+        ScriptedSupervisor.script = [step_pass, step_pass]
+        results = sched.run()
         assert results[0][0].passed is True
+        assert sched.core_status[0].errors == 1
+        assert "MCE" in sched.core_status[0].last_error
 
-    def test_stall_fires_after_grace_period(self, simple_topo, mock_backend, tmp_path):
-        """After the grace period, near-zero CPU usage should trigger a stall."""
-        cfg = SchedulerConfig(
-            seconds_per_core=60,  # long enough to exceed grace + stall timeout
-            poll_interval=0.01,
-            stall_timeout=2.0,
+    def test_an_idle_stability_error_fails_the_core(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            execution, "watch_idle", lambda **kwargs: "MCE during idle stability: bang"
         )
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
-
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None  # stays alive
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
-
-        stall_callbacks = []
-        sched.on_stall_detected.append(lambda cid: stall_callbacks.append(cid))
-
-        # Simulate time: start at 0, advance past grace + stall_timeout
-        # _read_core_usage always returns 0.0 (no CPU activity)
-        time_values = [0.0]  # mutable container for monotonic mock
-
-
-        def mock_monotonic():
-            # Advance time by 0.5s each call to speed through grace+stall
-            time_values[0] += 0.5
-            return time_values[0]
-
-        with (
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch.object(sched, "_read_core_usage", return_value=0.0),
-            patch.object(sched, "_check_temperature", return_value=True),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch.object(sched.detector, "reset"),
-            patch("time.monotonic", side_effect=mock_monotonic),
-            patch("time.sleep"),  # skip actual sleeping
-        ):
-            results = sched.run()
-
-        # Core 0 should FAIL with stall error
+        sched = make_scheduler(tmp_path, cores_to_test=[0], idle_stability_test=0.01)
+        ScriptedSupervisor.script = [step_pass]
+        results = sched.run()
         assert results[0][0].passed is False
-        assert "stall" in results[0][0].error_message.lower()
-        assert len(stall_callbacks) > 0
+        assert results[0][0].error_type == "mce"
 
 
-# ===========================================================================
-# Child TID affinity verification
-# ===========================================================================
+class TestVariableLoadComposition:
+    def test_a_variable_segment_failure_is_attributed(self, tmp_path):
+        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load=True)
+        ScriptedSupervisor.script = [step_pass, step_fail]
+        results = sched.run()
+        assert results[0][0].passed is False
+        assert "FATAL" in results[0][0].error_message
 
+    def test_a_clean_variable_phase_keeps_the_pass(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: None)
+        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load=True)
 
-class TestChildAffinityVerification:
-    """Tests for periodic child-thread affinity scanning and re-pinning."""
+        def quick_pass(sup, lanes, config_for, duration):
+            time.sleep(0.05)
+            return {one.core_id: ok(one.core_id) for one in lanes}
 
-    def test_verify_child_affinity_all_pinned(self, tmp_path):
-        """When all TIDs have correct Cpus_allowed_list, return True without re-pinning."""
-        pid = 9999
-        task_dir = tmp_path / "proc" / str(pid) / "task"
-        for tid in [9999, 10000, 10001]:
-            tid_dir = task_dir / str(tid)
-            tid_dir.mkdir(parents=True)
-            (tid_dir / "status").write_text(
-                "Name:\tstress\n"
-                "State:\tR (running)\n"
-                "Cpus_allowed_list:\t0,16\n"
-            )
-
-        with patch("os.sched_setaffinity") as mock_setaff:
-            result = CoreScheduler._verify_child_affinity(
-                pid, {0, 16}, "0,16", proc_base=tmp_path / "proc"
-            )
-
-        all_pinned, drift_count = result
-        assert all_pinned is True
-        assert drift_count == 0
-        mock_setaff.assert_not_called()
-
-    def test_verify_child_affinity_drifted_tid(self, tmp_path):
-        """When a TID has drifted, os.sched_setaffinity should re-pin it."""
-        pid = 9999
-        task_dir = tmp_path / "proc" / str(pid) / "task"
-
-        # TID 10000 is correctly pinned
-        tid_ok = task_dir / "10000"
-        tid_ok.mkdir(parents=True)
-        (tid_ok / "status").write_text("Cpus_allowed_list:\t0,16\n")
-
-        # TID 10001 has drifted to all CPUs
-        tid_bad = task_dir / "10001"
-        tid_bad.mkdir(parents=True)
-        (tid_bad / "status").write_text("Cpus_allowed_list:\t0-31\n")
-
-        with patch("os.sched_setaffinity") as mock_setaff:
-            result = CoreScheduler._verify_child_affinity(
-                pid, {0, 16}, "0,16", proc_base=tmp_path / "proc"
-            )
-
-        all_pinned, drift_count = result
-        # Should have called sched_setaffinity on the drifted TID
-        mock_setaff.assert_called_once_with(10001, {0, 16})
-        assert drift_count == 1
-
-    def test_verify_child_affinity_proc_unreadable(self):
-        """When /proc/pid/task/ is unreadable (OSError), return True (lenient)."""
-        with patch("os.sched_setaffinity") as mock_setaff:
-            result = CoreScheduler._verify_child_affinity(
-                99999, {0, 16}, "0,16", proc_base=Path("/nonexistent")
-            )
-        all_pinned, drift_count = result
-        assert all_pinned is True
-        assert drift_count == 0
-        mock_setaff.assert_not_called()
-
-    def test_affinity_check_periodic(self, simple_topo, mock_backend, tmp_path):
-        """Affinity verification should run multiple times during a >4s stress phase."""
-        cfg = SchedulerConfig(
-            seconds_per_core=60,
-            poll_interval=0.01,
-            stall_timeout=999,  # don't trigger stall
-            cores_to_test=[0],
-        )
-        sched = CoreScheduler(
-            topology=simple_topo,
-            backend=mock_backend,
-            stress_config=StressConfig(),
-            scheduler_config=cfg,
-            work_dir=tmp_path,
-        )
-
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
-
-        affinity_check_calls = []
-
-        def tracking_verify(*args, **kwargs):
-            affinity_check_calls.append(True)
-            return True, 0
-
-        # Simulate 6 seconds of wall time (0.5s per monotonic call)
-        time_values = [0.0]
-
-        def mock_monotonic():
-            time_values[0] += 0.5
-            return time_values[0]
-
-        with (
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch.object(CoreScheduler, "_verify_child_affinity", side_effect=tracking_verify),
-            patch.object(sched, "_read_core_usage", return_value=50.0),
-            patch.object(sched, "_check_temperature", return_value=True),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch.object(sched.detector, "reset"),
-            patch("time.monotonic", side_effect=mock_monotonic),
-            patch("time.sleep"),
-        ):
-            sched.run()
-
-        # With 6+ seconds and 2s interval, should have at least 2 affinity checks
-        assert len(affinity_check_calls) >= 2, (
-            f"Expected at least 2 affinity checks, got {len(affinity_check_calls)}"
-        )
-
-
-# ===========================================================================
-# Process cleanup — PR_SET_PDEATHSIG and kill escalation
-# ===========================================================================
-
-
-class TestProcessCleanup:
-    """Tests for preexec_fn PR_SET_PDEATHSIG and process group cleanup."""
-
-    def test_make_preexec_calls_setsid_and_pdeathsig(self):
-        """_make_preexec() returns a callable that calls both os.setsid() and prctl(PR_SET_PDEATHSIG, SIGKILL)."""
-        preexec = CoreScheduler._make_preexec()
-        assert callable(preexec)
-
-        with (
-            patch("os.setsid") as mock_setsid,
-            patch("ctypes.CDLL") as mock_cdll,
-            patch("ctypes.util.find_library", return_value="libc.so.6"),
-        ):
-            mock_libc = MagicMock()
-            mock_cdll.return_value = mock_libc
-
-            preexec()
-
-            mock_setsid.assert_called_once()
-            # PR_SET_PDEATHSIG = 1, signal.SIGKILL = 9
-            mock_libc.prctl.assert_called_once_with(1, signal.SIGKILL)
-
-    def test_no_bare_setsid_in_src(self):
-        """Scan all .py files under src/ for bare preexec_fn=os.setsid — assert zero matches."""
-        src_dir = Path(__file__).parent.parent / "src"
-        violations = []
-        for py_file in src_dir.rglob("*.py"):
-            content = py_file.read_text()
-            for i, line in enumerate(content.splitlines(), 1):
-                stripped = line.lstrip()
-                if stripped.startswith("#"):
-                    continue
-                if "preexec_fn=os.setsid" in line:
-                    violations.append(f"{py_file.relative_to(src_dir)}:{i}: {line.strip()}")
-
-        assert violations == [], (
-            "Found bare preexec_fn=os.setsid without PR_SET_PDEATHSIG.\n"
-            "All subprocess launches must use _make_preexec() or equivalent.\n"
-            + "\n".join(violations)
-        )
-
-
-# ===========================================================================
-# Cross-thread safety audit
-# ===========================================================================
-
-
-class TestCrossThreadSafety:
-    """Enforce that GUI code never directly accesses scheduler state across threads."""
-
-    def test_no_direct_core_status_access_in_gui(self):
-        """GUI files must not access scheduler.core_status directly — use signal/slot cache.
-
-        The one allowed exception is in _start_test() where scheduler.core_status is read
-        BEFORE the worker thread starts (no cross-thread race).
-        """
-        import re
-
-        gui_dir = Path(__file__).parent.parent / "src" / "corecycler" / "gui"
-        violations = []
-        for py_file in gui_dir.glob("*.py"):
-            text = py_file.read_text()
-            for i, line in enumerate(text.splitlines(), 1):
-                stripped = line.lstrip()
-                if stripped.startswith("#"):
-                    continue
-                if re.search(r"scheduler\.core_status", line):
-                    # Allow the init_cores() call in _start_test — happens before thread start
-                    if "init_cores" in line:
-                        continue
-                    violations.append(f"{py_file.name}:{i}: {line.strip()}")
-        assert violations == [], (
-            "Direct cross-thread scheduler.core_status access found:\n"
-            + "\n".join(violations)
-        )
-
-    def test_tuner_abort_stops_scheduler_before_terminate(self):
-        """TunerEngine.abort() must call force_stop() before terminate()."""
-        import re
-
-        engine_file = Path(__file__).parent.parent / "src" / "corecycler" / "tuner" / "engine.py"
-        text = engine_file.read_text()
-        abort_match = re.search(
-            r"def abort\(self\).*?(?=\n    def |\nclass |\Z)", text, re.DOTALL
-        )
-        assert abort_match, "TunerEngine.abort() method not found"
-        abort_body = abort_match.group()
-        force_pos = abort_body.find("force_stop")
-        term_pos = abort_body.find("terminate")
-        assert force_pos != -1, "abort() must call force_stop()"
-        assert term_pos != -1, "abort() must call terminate() as fallback"
-        assert force_pos < term_pos, "force_stop() must be called BEFORE terminate()"
-
-    def test_main_window_has_core_status_cache(self):
-        """MainWindow must use _core_status_cache for thread-safe status access."""
-        mw_file = Path(__file__).parent.parent / "src" / "corecycler" / "gui" / "main_window.py"
-        text = mw_file.read_text()
-        assert "_core_status_cache" in text, "MainWindow must define _core_status_cache"
-        assert "_core_status_cache: dict" in text or "_core_status_cache =" in text, \
-            "MainWindow must initialize _core_status_cache"
-
-
-# ===========================================================================
-# TestRapidTransitions
-# ===========================================================================
+        ScriptedSupervisor.script = [step_pass] + [quick_pass] * 40
+        sched.config.seconds_per_core = 0.3
+        results = sched.run()
+        assert results[0][0].passed is True
 
 
 class TestRapidTransitions:
-    def test_rapid_transitions_method_exists(self, mock_backend, topo_dual_ccd_x3d):
-        """Rapid transition method exists with correct signature."""
-        config = SchedulerConfig(seconds_per_core=30)
-        stress_config = StressConfig(mode=StressMode.SSE)
-        sched = CoreScheduler(topo_dual_ccd_x3d, mock_backend, stress_config, config, Path("/tmp"))
-        assert hasattr(sched, 'run_rapid_transitions')
-        import inspect
-        sig = inspect.signature(sched.run_rapid_transitions)
-        params = list(sig.parameters.keys())
-        assert "cores" in params
-        assert "total_duration" in params
-        assert "load_seconds" in params
-        assert "idle_seconds" in params
+    def test_cycles_run_and_report_a_pass(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: None)
+        sched = make_scheduler(tmp_path)
 
-    def test_rapid_transitions_returns_tuple(self, mock_backend, topo_dual_ccd_x3d, tmp_path):
-        """run_rapid_transitions returns (bool, str|None)."""
-        config = SchedulerConfig(seconds_per_core=30)
-        stress_config = StressConfig(mode=StressMode.SSE)
-        sched = CoreScheduler(topo_dual_ccd_x3d, mock_backend, stress_config, config, tmp_path)
+        def timed_pass(sup, lanes, config_for, duration):
+            time.sleep(0.03)
+            return {one.core_id: ok(one.core_id) for one in lanes}
 
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0
-        mock_proc.returncode = 0
-        mock_proc.wait.return_value = 0
-
-        with (
-            patch("subprocess.Popen", return_value=mock_proc),
-            # reset() shells out to dmesg — with Popen mocked globally that
-            # subprocess.run call would unpack a MagicMock; stub it out.
-            patch.object(sched.detector, "reset"),
-            patch.object(sched.detector, "check_mce", return_value=[]),
-            patch("time.sleep"),
-        ):
-            result = sched.run_rapid_transitions(
-                cores=[0],
-                total_duration=0.01,
-                load_seconds=0.005,
-                idle_seconds=0.005,
-            )
-
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        passed, error = result
-        assert isinstance(passed, bool)
-
-    def test_rapid_transitions_stop_requested_exits_early(self, mock_backend, topo_dual_ccd_x3d, tmp_path):
-        """run_rapid_transitions exits immediately when stop is requested."""
-        config = SchedulerConfig(seconds_per_core=30)
-        stress_config = StressConfig(mode=StressMode.SSE)
-        sched = CoreScheduler(topo_dual_ccd_x3d, mock_backend, stress_config, config, tmp_path)
-        sched._stop_event.set()
-
-        result = sched.run_rapid_transitions(
-            cores=[0],
-            total_duration=600.0,
-            load_seconds=10.0,
-            idle_seconds=5.0,
+        ScriptedSupervisor.script = [timed_pass] * 40
+        passed, error = sched.run_rapid_transitions(
+            [0, 1], total_duration=0.1, load_seconds=0.03, idle_seconds=0.01
         )
-        passed, error = result
-        assert passed is True  # stopped early without error
+        assert passed is True and error is None
+        assert sched.state == TestState.FINISHED
 
-    def test_rapid_transitions_mce_returns_failure(self, mock_backend, topo_dual_ccd_x3d, tmp_path):
-        """MCE during idle phase causes run_rapid_transitions to return failure."""
-        from corecycler.engine.detector import MCEEvent
+    def test_a_failure_names_its_cycle(self, tmp_path):
+        sched = make_scheduler(tmp_path)
 
-        config = SchedulerConfig(seconds_per_core=30)
-        stress_config = StressConfig(mode=StressMode.SSE)
-        sched = CoreScheduler(topo_dual_ccd_x3d, mock_backend, stress_config, config, tmp_path)
+        def timed_fail(sup, lanes, config_for, duration):
+            time.sleep(0.02)
+            return {one.core_id: bad(one.core_id, "mprime crashed with SIGSEGV (exit -11)")
+                    for one in lanes}
 
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0
-        mock_proc.returncode = 0
-        mock_proc.wait.return_value = 0
-
-        fake_mce = MCEEvent(timestamp=0.0, cpu=0, bank=0, message="test MCE", corrected=False)
-
-        with (
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch.object(sched.detector, "reset"),
-            patch.object(sched.detector, "check_mce", return_value=[fake_mce]),
-            patch("time.sleep"),
-        ):
-            result = sched.run_rapid_transitions(
-                cores=[0],
-                total_duration=1.0,
-                load_seconds=0.1,
-                idle_seconds=0.1,
-            )
-
-        passed, error = result
+        ScriptedSupervisor.script = [timed_fail]
+        passed, error = sched.run_rapid_transitions([0], total_duration=1.0, load_seconds=0.02)
         assert passed is False
-        assert error is not None
-        assert "MCE" in error
+        assert "rapid transition cycle 1" in error
+
+    def test_a_prior_stop_is_honored_without_running(self, tmp_path):
+        sched = make_scheduler(tmp_path)
+        sched.stop()
+        passed, error = sched.run_rapid_transitions([0], total_duration=5.0)
+        assert (passed, error) == (True, None)
+        assert ScriptedSupervisor.created == []
+
+    def test_unknown_cores_are_a_harness_error(self, tmp_path):
+        sched = make_scheduler(tmp_path, topo=make_topo({0: (0,)}))
+        passed, error = sched.run_rapid_transitions([7], total_duration=0.1)
+        assert passed is False
+        assert "harness error" in error
+
+    def test_an_idle_mce_ends_the_cycling(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            execution, "watch_idle",
+            lambda **kwargs: f"MCE during {kwargs['phase']}: bang",
+        )
+        sched = make_scheduler(tmp_path)
+
+        def timed_pass(sup, lanes, config_for, duration):
+            time.sleep(0.02)
+            return {one.core_id: ok(one.core_id) for one in lanes}
+
+        ScriptedSupervisor.script = [timed_pass]
+        passed, error = sched.run_rapid_transitions(
+            [0], total_duration=1.0, load_seconds=0.02, idle_seconds=0.02
+        )
+        assert passed is False
+        assert "idle phase of rapid transition cycle 1" in error
+
+
+class TestSignalMarshallingAudit:
+    """PySide6 cannot copy-convert dict/list Signals across QThread boundaries."""
+
+    def test_no_signal_dict_in_codebase(self):
+        src_dir = Path(__file__).parent.parent / "src"
+        violations = []
+        for py_file in src_dir.rglob("*.py"):
+            for i, line in enumerate(py_file.read_text().splitlines(), 1):
+                if line.lstrip().startswith("#"):
+                    continue
+                if "Signal(dict)" in line or "Signal(list)" in line:
+                    violations.append(f"{py_file.relative_to(src_dir)}:{i}: {line.strip()}")
+        assert violations == [], (
+            "Found Signal(dict) or Signal(list) — these crash across QThread boundaries.\n"
+            + "\n".join(violations)
+        )
+
+
+class TestStopThreadSafety:
+    def test_stop_from_another_thread_ends_a_running_cycle(self, tmp_path):
+        sched = make_scheduler(tmp_path, cores_to_test=[0, 1])
+
+        def slow_pass(sup, lanes, config_for, duration):
+            for _ in range(200):
+                if sup.kwargs["stop_event"].is_set():
+                    return {one.core_id: None for one in lanes}
+                time.sleep(0.01)
+            return {one.core_id: ok(one.core_id) for one in lanes}
+
+        ScriptedSupervisor.script = [slow_pass, slow_pass]
+        runner = threading.Thread(target=sched.run)
+        runner.start()
+        time.sleep(0.05)
+        sched.stop()
+        runner.join(timeout=5)
+        assert not runner.is_alive()
+        assert sched.state == TestState.FINISHED

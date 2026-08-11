@@ -29,6 +29,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from corecycler.engine.backends.base import FFTPreset, StressBackend, StressConfig, StressMode
+from corecycler.engine.execution import ThermalWatch
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
 from corecycler.history.db import HistoryDB
 from corecycler.tuner import engine as engine_mod
@@ -1043,15 +1044,19 @@ class TestThermalFailClosed:
             scheduler_config=SchedulerConfig(cores_to_test=[0], **cfg),
         )
 
-    def test_no_sensor_blocks_when_required(self, topo, mock_backend):
-        sched = self._scheduler(topo, mock_backend, require_thermal_sensor=True)
-        with patch.object(CoreScheduler, "_read_cpu_temperature", return_value=None):
-            assert sched._check_temperature() is False   # fail closed
+    def test_no_sensor_blocks_when_required(self):
+        watch = ThermalWatch(
+            max_temperature=95.0, grace_seconds=3.0, hard_margin=8.0,
+            require_sensor=True, read=lambda: None,
+        )
+        assert watch.safe() is False   # fail closed
 
-    def test_no_sensor_lenient_when_not_required(self, topo, mock_backend):
-        sched = self._scheduler(topo, mock_backend, require_thermal_sensor=False)
-        with patch.object(CoreScheduler, "_read_cpu_temperature", return_value=None):
-            assert sched._check_temperature() is True    # explicit opt-out
+    def test_no_sensor_lenient_when_not_required(self):
+        watch = ThermalWatch(
+            max_temperature=95.0, grace_seconds=3.0, hard_margin=8.0,
+            require_sensor=False, read=lambda: None,
+        )
+        assert watch.safe() is True    # explicit opt-out
 
     def test_tuner_default_requires_sensor(self, db, topo, smu, mock_backend):
         """The tuner drives the scheduler with the sensor required by default."""

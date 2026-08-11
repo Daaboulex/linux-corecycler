@@ -22,6 +22,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from corecycler.engine import execution
 from corecycler.engine.backends.base import StressConfig
 from corecycler.engine.backends.mprime import MprimeBackend
 from corecycler.engine.backends.stress_ng import StressNgBackend
@@ -158,15 +159,12 @@ class TestSchedulerProcessSafety:
         sched.force_stop()
         assert sched.state == TestState.STOPPING
 
-    def test_kill_escalation(self, mock_backend, tmp_path):
-        """Must send SIGTERM first, then SIGKILL if process doesn't die."""
-        sched = self._make_scheduler(mock_backend, tmp_path)
-
+    def test_kill_escalation(self):
+        """Must send SIGTERM first, then SIGKILL if the group ignores it."""
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
         mock_proc.pid = 99999
         mock_proc.wait.side_effect = [subprocess.TimeoutExpired("x", 3), None]
-        sched._process = mock_proc
 
         signals_sent = []
 
@@ -174,41 +172,35 @@ class TestSchedulerProcessSafety:
             signals_sent.append(sig)
 
         with patch("os.killpg", side_effect=fake_killpg), patch("os.getpgid", return_value=99999):
-            sched._kill_current()
+            execution.kill_process_group(mock_proc)
 
         assert signal.SIGTERM in signals_sent
         assert signal.SIGKILL in signals_sent
         assert signals_sent.index(signal.SIGTERM) < signals_sent.index(signal.SIGKILL)
 
-    def test_kill_handles_vanished_process(self, mock_backend, tmp_path):
+    def test_kill_handles_vanished_process(self):
         """Must handle ProcessLookupError (process already gone)."""
-        sched = self._make_scheduler(mock_backend, tmp_path)
-
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
         mock_proc.pid = 99999
-        sched._process = mock_proc
 
         with (
             patch("os.killpg", side_effect=ProcessLookupError),
             patch("os.getpgid", return_value=99999),
         ):
-            sched._kill_current()  # must not raise
+            execution.kill_process_group(mock_proc)
 
-    def test_kill_handles_os_error(self, mock_backend, tmp_path):
+    def test_kill_handles_os_error(self):
         """Must handle OSError gracefully."""
-        sched = self._make_scheduler(mock_backend, tmp_path)
-
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
         mock_proc.pid = 99999
-        sched._process = mock_proc
 
         with (
             patch("os.killpg", side_effect=OSError("Operation not permitted")),
             patch("os.getpgid", return_value=99999),
         ):
-            sched._kill_current()  # must not raise
+            execution.kill_process_group(mock_proc)
 
 
 # ===========================================================================
