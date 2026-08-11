@@ -49,7 +49,7 @@ from corecycler.gui.style import (
     status_label,
 )
 from corecycler.gui.tool_prompt import ensure_tool
-from corecycler.history.db import STOPPED_EARLY_STATUSES
+from corecycler.history.db import RESUMABLE_STATUSES
 from corecycler.history.timefmt import format_local
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
@@ -574,8 +574,8 @@ class TunerTab(QWidget):
         if not sessions:
             QMessageBox.information(self, "No Sessions", "No recoverable tuner sessions found.")
             return
-        if len(sessions) == 1 and sessions[0].status not in STOPPED_EARLY_STATUSES:
-            # Only one, and it stopped cleanly — resume it directly
+        if len(sessions) == 1 and sessions[0].status != "quarantined":
+            # Only one, and nothing about it needs a warning — resume it directly
             self._resume_session(sessions[0].id)
             return
 
@@ -598,7 +598,7 @@ class TunerTab(QWidget):
             last = format_local(sess.updated_at) if sess.updated_at else started
             label = (
                 f"#{sess.id}  started {started}  last {last}  "
-                f"[{sess.status}]  "
+                f"[{status_label(sess.status)}]  "
                 f"{confirmed}/{total} cores confirmed  "
                 f"({sess.cpu_model[:30] if sess.cpu_model else '?'})"
             )
@@ -622,7 +622,11 @@ class TunerTab(QWidget):
             return
         session_id = selected.data(Qt.ItemDataRole.UserRole)
         chosen = next((s for s in sessions if s.id == session_id), None)
-        if chosen is not None and chosen.status in STOPPED_EARLY_STATUSES and not self._confirm_quarantined(chosen):
+        if (
+            chosen is not None
+            and chosen.status == "quarantined"
+            and not self._confirm_quarantined(chosen)
+        ):
             return
         self._resume_session(session_id)
 
@@ -1142,18 +1146,24 @@ class TunerTab(QWidget):
             return
         sessions = self._db.list_recoverable_tuner_sessions()
         if sessions:
-            stopped = sum(1 for s in sessions if s.status in STOPPED_EARLY_STATUSES)
-            note = f" ({stopped} stopped early)" if stopped else ""
-            if len(sessions) == 1:
-                self._status_label.setText(
-                    f"Status: RECOVERABLE SESSION #{sessions[0].id}{note} "
+            in_flight = [s for s in sessions if s.status in RESUMABLE_STATUSES]
+            if len(in_flight) == 1:
+                text = (
+                    f"Status: RECOVERABLE SESSION #{in_flight[0].id} "
                     "\u2014 click Resume to continue"
                 )
-            else:
-                self._status_label.setText(
-                    f"Status: {len(sessions)} RECOVERABLE SESSIONS{note} "
+            elif in_flight:
+                text = (
+                    f"Status: {len(in_flight)} RECOVERABLE SESSIONS "
                     "\u2014 click Resume to pick one"
                 )
+            else:
+                last = sessions[0]
+                text = (
+                    f"Status: LAST SESSION #{last.id} ENDED "
+                    f"{status_label(last.status).upper()} \u2014 click Resume to re-open it"
+                )
+            self._status_label.setText(text)
             self._resume_btn.setEnabled(True)
 
     def set_test_running(self, running: bool) -> None:

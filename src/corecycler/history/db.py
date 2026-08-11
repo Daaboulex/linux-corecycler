@@ -28,8 +28,7 @@ LEGACY_ROOT_DB = Path("/root/.local/share/corecycler/history/history.db")
 log = logging.getLogger(__name__)
 
 RESUMABLE_STATUSES = ("running", "paused", "validating")
-STOPPED_EARLY_STATUSES = ("quarantined", "aborted")
-RECOVERABLE_STATUSES = (*RESUMABLE_STATUSES, *STOPPED_EARLY_STATUSES)
+RECOVERABLE_STATUSES = (*RESUMABLE_STATUSES, "quarantined", "aborted")
 
 
 def adopt_legacy_root_db(db: HistoryDB, root_db: Path = LEGACY_ROOT_DB) -> dict[str, int] | None:
@@ -1205,11 +1204,11 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
             return None
         return self._row_to_tuner_session(row)
 
-    def list_resumable_tuner_sessions(self) -> list[TunerSession]:
+    def list_resumable_tuner_sessions(self, *, limit: int = 50) -> list[TunerSession]:
         """Sessions safe to resume without being asked: the ones still in flight."""
-        return self._sessions_with_status(RESUMABLE_STATUSES)
+        return self._sessions_with_status(RESUMABLE_STATUSES, limit)
 
-    def list_recoverable_tuner_sessions(self) -> list[TunerSession]:
+    def list_recoverable_tuner_sessions(self, *, limit: int = 50) -> list[TunerSession]:
         """Sessions a user can still pick up by hand, newest first.
 
         Wider than the resumable set on purpose: a quarantined or aborted
@@ -1217,13 +1216,14 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
         hiding it is what turns a stopped run into hours of lost work. It is
         never resumed automatically -- only when the user names it.
         """
-        return self._sessions_with_status(RECOVERABLE_STATUSES)
+        return self._sessions_with_status(RECOVERABLE_STATUSES, limit)
 
-    def _sessions_with_status(self, statuses: tuple[str, ...]) -> list[TunerSession]:
+    def _sessions_with_status(self, statuses: tuple[str, ...], limit: int) -> list[TunerSession]:
         placeholders = ",".join("?" * len(statuses))
         rows = self.__conn.execute(
-            f"SELECT * FROM tuner_sessions WHERE status IN ({placeholders}) ORDER BY id DESC",
-            statuses,
+            f"SELECT * FROM tuner_sessions WHERE status IN ({placeholders}) "
+            "ORDER BY id DESC LIMIT ?",
+            (*statuses, limit),
         ).fetchall()
         return [self._row_to_tuner_session(r) for r in rows]
 

@@ -15,6 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from _contract_hw import require, require_privileged
 from contract_inventory import CONTRACTS
 
 
@@ -47,3 +48,38 @@ def test_no_dormant_drift_seam():
         text = path.read_text()
         for part in node.split("::"):
             assert part in text, f"{c.name}: Ring B node missing: {c.ring_b_test} ({part})"
+
+
+class TestTheNeverSilentSkipPolicy:
+    """The guard that decides whether a live check is enforced or waved through."""
+
+    def _hw(self, monkeypatch, *, contracts=False, privileged=False):
+        import _contract_hw
+
+        monkeypatch.setattr(_contract_hw, "HW_CONTRACTS", contracts)
+        monkeypatch.setattr(_contract_hw, "HW_PRIVILEGED", privileged)
+
+    def test_a_present_resource_is_never_in_the_way(self, monkeypatch):
+        self._hw(monkeypatch, contracts=True, privileged=True)
+        require(True, "present")
+        require_privileged(True, "present")
+
+    def test_an_absent_resource_skips_off_the_contract_machine(self, monkeypatch):
+        self._hw(monkeypatch)
+        with pytest.raises(pytest.skip.Exception):
+            require(False, "no msr")
+
+    def test_an_absent_resource_fails_loud_on_the_contract_machine(self, monkeypatch):
+        self._hw(monkeypatch, contracts=True)
+        with pytest.raises(pytest.fail.Exception, match="no msr"):
+            require(False, "no msr")
+
+    def test_a_privileged_resource_skips_until_the_run_holds_the_rights(self, monkeypatch):
+        self._hw(monkeypatch, contracts=True)
+        with pytest.raises(pytest.skip.Exception, match="privileged tier"):
+            require_privileged(False, "needs root")
+
+    def test_a_privileged_resource_fails_loud_under_its_own_flag(self, monkeypatch):
+        self._hw(monkeypatch, contracts=True, privileged=True)
+        with pytest.raises(pytest.fail.Exception, match="needs root"):
+            require_privileged(False, "needs root")

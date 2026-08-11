@@ -2054,6 +2054,29 @@ class TestReopeningAQuarantinedSession:
         assert cs.baseline_offset == -5
         assert cs.best_offset == -10
 
+    def test_best_is_pulled_back_too_because_validation_re_applies_it(
+        self, db, topo, smu, mock_backend
+    ):
+        """Validation writes best_offset to every core it is not testing."""
+        sid = self._quarantined(db, current=-30, baseline=0, survived=-10)
+        _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0])
+        assert db.get_tuner_core_states(sid)[0].best_offset == -10
+
+    def test_a_session_that_was_not_quarantined_is_left_alone(
+        self, db, topo, smu, mock_backend
+    ):
+        """Only the breaker's own sessions are pulled back; a pause is not one."""
+        cfg = TunerConfig(cores_to_test=[0], crash_penalty_steps=1, fine_step=1)
+        sid = tp.create_session(db, cfg, "", "")
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-22,
+            baseline_offset=-4, best_offset=-18, in_test=False,
+        ))
+        tp.update_session_status(db, sid, "paused")
+        _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0])
+        cs = db.get_tuner_core_states(sid)[0]
+        assert (cs.current_offset, cs.baseline_offset, cs.best_offset) == (-22, -4, -18)
+
     def test_the_session_re_opens_with_the_breaker_reset(self, db, topo, smu, mock_backend):
         sid = self._quarantined(db, current=-30, baseline=0, survived=-10)
         _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0])

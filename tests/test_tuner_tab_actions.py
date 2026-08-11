@@ -287,6 +287,15 @@ class TestResume:
         tab._on_resume()
         assert not eng.resume.called
 
+    def test_a_lone_aborted_session_resumes_without_a_warning(self, tab, monkeypatch, no_modal):
+        """Stopping a run is a human choice, not a hazard: no question to answer."""
+        sid = _seed_session(tab._db, "aborted")
+        eng = _engine(status="running")
+        monkeypatch.setattr(tt, "TunerEngine", MagicMock(return_value=eng))
+        tab._on_resume()
+        assert eng.resume.call_args.args[0] == sid
+        assert not no_modal.question.called
+
     def test_a_lone_quarantined_session_is_offered_not_auto_resumed(self, tab, monkeypatch):
         """One stopped session must still reach the picker, never a silent resume."""
         _seed_session(tab._db, "quarantined")
@@ -749,6 +758,29 @@ class TestBackendResolution:
         chosen = _backend(False)
         tab = _tab(db=db, topology=_topo(), smu=_smu(), backend_factory=lambda _n: chosen)
         assert tab._get_backend() is chosen
+
+
+class TestRecoveryBanner:
+    def test_an_in_flight_session_is_announced_as_recoverable(self, db):
+        sid = _seed_session(db, "paused")
+        tab = _tab(db=db, topology=_topo(), smu=_smu())
+        assert f"#{sid}" in tab._status_label.text()
+        assert "RECOVERABLE SESSION" in tab._status_label.text()
+
+    def test_a_stopped_session_is_named_not_called_in_flight(self, db):
+        """An ended run must not read as live work, and saying how it ended is
+        the whole point: that is what tells the user it can be re-opened."""
+        sid = _seed_session(db, "quarantined")
+        tab = _tab(db=db, topology=_topo(), smu=_smu())
+        text = tab._status_label.text()
+        assert f"LAST SESSION #{sid} ENDED QUARANTINED" in text
+        assert "RECOVERABLE SESSION" not in text
+
+    def test_live_work_outranks_an_older_stopped_session(self, db):
+        _seed_session(db, "quarantined")
+        sid = _seed_session(db, "paused")
+        tab = _tab(db=db, topology=_topo(), smu=_smu())
+        assert f"RECOVERABLE SESSION #{sid}" in tab._status_label.text()
 
 
 class TestStartupRecovery:
