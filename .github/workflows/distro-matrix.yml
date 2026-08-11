@@ -55,6 +55,10 @@ jobs:
               pacman -Sy --noconfirm python git stress-ng dmidecode util-linux systemd
             expect: stress-ng dmidecode taskset dmesg journalctl
     container: ${{ matrix.image }}
+    # A container the runner reads as bash-less gets `sh -e`, and dash has no pipefail.
+    defaults:
+      run:
+        shell: bash
     env:
       DEBIAN_FRONTEND: noninteractive
       SECURE_PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
