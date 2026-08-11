@@ -49,6 +49,7 @@ from corecycler.gui.style import (
     status_label,
 )
 from corecycler.gui.tool_prompt import ensure_tool
+from corecycler.history.db import STOPPED_EARLY_STATUSES
 from corecycler.history.timefmt import format_local
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
@@ -569,12 +570,12 @@ class TunerTab(QWidget):
         # Otherwise show session picker from DB
         if not self._db:
             return
-        sessions = self._db.list_resumable_tuner_sessions()
+        sessions = self._db.list_recoverable_tuner_sessions()
         if not sessions:
-            QMessageBox.information(self, "No Sessions", "No resumable tuner sessions found.")
+            QMessageBox.information(self, "No Sessions", "No recoverable tuner sessions found.")
             return
-        if len(sessions) == 1:
-            # Only one — resume it directly
+        if len(sessions) == 1 and sessions[0].status not in STOPPED_EARLY_STATUSES:
+            # Only one, and it stopped cleanly — resume it directly
             self._resume_session(sessions[0].id)
             return
 
@@ -593,9 +594,10 @@ class TunerTab(QWidget):
                 1 for cs in core_states.values()
                 if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
             )
-            date_str = format_local(sess.created_at) if sess.created_at else "?"
+            started = format_local(sess.created_at) if sess.created_at else "?"
+            last = format_local(sess.updated_at) if sess.updated_at else started
             label = (
-                f"#{sess.id}  {date_str}  "
+                f"#{sess.id}  started {started}  last {last}  "
                 f"[{sess.status}]  "
                 f"{confirmed}/{total} cores confirmed  "
                 f"({sess.cpu_model[:30] if sess.cpu_model else '?'})"
@@ -619,7 +621,26 @@ class TunerTab(QWidget):
         if selected is None:
             return
         session_id = selected.data(Qt.ItemDataRole.UserRole)
+        chosen = next((s for s in sessions if s.id == session_id), None)
+        if chosen is not None and chosen.status in STOPPED_EARLY_STATUSES and not self._confirm_quarantined(chosen):
+            return
         self._resume_session(session_id)
+
+    def _confirm_quarantined(self, session) -> bool:
+        """A quarantined session is only ever re-opened deliberately."""
+        return QMessageBox.question(
+            self,
+            "Session was quarantined",
+            f"Session #{session.id} was quarantined after "
+            f"{session.resume_crash_streak} crash-resumes: the machine kept dying "
+            "when its offsets were re-applied.\n\n"
+            "Resuming keeps everything it learned, but re-engages only offsets this "
+            "machine has already survived; anything unproven drops to stock. If it "
+            "quarantines again, the real limits are lower than the search assumed.\n\n"
+            "Resume it?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes
 
     def _resume_session(self, session_id: int) -> None:
         """Resume a specific tuner session by ID."""
@@ -1119,15 +1140,19 @@ class TunerTab(QWidget):
         """Check for active tuner sessions on startup."""
         if not self._db:
             return
-        sessions = self._db.list_resumable_tuner_sessions()
+        sessions = self._db.list_recoverable_tuner_sessions()
         if sessions:
+            stopped = sum(1 for s in sessions if s.status in STOPPED_EARLY_STATUSES)
+            note = f" ({stopped} stopped early)" if stopped else ""
             if len(sessions) == 1:
                 self._status_label.setText(
-                    f"Status: RECOVERABLE SESSION #{sessions[0].id} \u2014 click Resume to continue"
+                    f"Status: RECOVERABLE SESSION #{sessions[0].id}{note} "
+                    "\u2014 click Resume to continue"
                 )
             else:
                 self._status_label.setText(
-                    f"Status: {len(sessions)} RECOVERABLE SESSIONS \u2014 click Resume to pick one"
+                    f"Status: {len(sessions)} RECOVERABLE SESSIONS{note} "
+                    "\u2014 click Resume to pick one"
                 )
             self._resume_btn.setEnabled(True)
 

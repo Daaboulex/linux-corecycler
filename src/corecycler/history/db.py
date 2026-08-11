@@ -27,6 +27,10 @@ LEGACY_ROOT_DB = Path("/root/.local/share/corecycler/history/history.db")
 
 log = logging.getLogger(__name__)
 
+RESUMABLE_STATUSES = ("running", "paused", "validating")
+STOPPED_EARLY_STATUSES = ("quarantined", "aborted")
+RECOVERABLE_STATUSES = (*RESUMABLE_STATUSES, *STOPPED_EARLY_STATUSES)
+
 
 def adopt_legacy_root_db(db: HistoryDB, root_db: Path = LEGACY_ROOT_DB) -> dict[str, int] | None:
     """One-time adoption of a root-owned history database.
@@ -1202,10 +1206,24 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
         return self._row_to_tuner_session(row)
 
     def list_resumable_tuner_sessions(self) -> list[TunerSession]:
-        """Return all tuner sessions that can be resumed (paused, running, or validating)."""
+        """Sessions safe to resume without being asked: the ones still in flight."""
+        return self._sessions_with_status(RESUMABLE_STATUSES)
+
+    def list_recoverable_tuner_sessions(self) -> list[TunerSession]:
+        """Sessions a user can still pick up by hand, newest first.
+
+        Wider than the resumable set on purpose: a quarantined or aborted
+        session keeps every core's phase, baseline and proven offsets, so
+        hiding it is what turns a stopped run into hours of lost work. It is
+        never resumed automatically -- only when the user names it.
+        """
+        return self._sessions_with_status(RECOVERABLE_STATUSES)
+
+    def _sessions_with_status(self, statuses: tuple[str, ...]) -> list[TunerSession]:
+        placeholders = ",".join("?" * len(statuses))
         rows = self.__conn.execute(
-            "SELECT * FROM tuner_sessions WHERE status IN ('running','paused','validating') "
-            "ORDER BY id DESC"
+            f"SELECT * FROM tuner_sessions WHERE status IN ({placeholders}) ORDER BY id DESC",
+            statuses,
         ).fetchall()
         return [self._row_to_tuner_session(r) for r in rows]
 

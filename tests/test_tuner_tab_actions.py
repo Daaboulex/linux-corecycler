@@ -287,6 +287,36 @@ class TestResume:
         tab._on_resume()
         assert not eng.resume.called
 
+    def test_a_lone_quarantined_session_is_offered_not_auto_resumed(self, tab, monkeypatch):
+        """One stopped session must still reach the picker, never a silent resume."""
+        _seed_session(tab._db, "quarantined")
+        eng = _engine(status="running")
+        monkeypatch.setattr(tt, "TunerEngine", MagicMock(return_value=eng))
+        _accepting_dialog(monkeypatch, accept=False)
+        tab._on_resume()
+        assert not eng.resume.called
+
+    def test_a_quarantined_pick_asks_first(self, tab, monkeypatch, no_modal):
+        _seed_session(tab._db, "paused")
+        sid = _seed_session(tab._db, "quarantined")
+        eng = _engine(status="running")
+        monkeypatch.setattr(tt, "TunerEngine", MagicMock(return_value=eng))
+        _accepting_dialog(monkeypatch, accept=True)
+        no_modal.question.return_value = no_modal.StandardButton.No
+        tab._on_resume()
+        assert not eng.resume.called, "declining the warning must resume nothing"
+        assert str(sid) in no_modal.question.call_args.args[2]
+
+    def test_a_confirmed_quarantined_pick_resumes(self, tab, monkeypatch, no_modal):
+        _seed_session(tab._db, "paused")
+        sid = _seed_session(tab._db, "quarantined")
+        eng = _engine(status="running")
+        monkeypatch.setattr(tt, "TunerEngine", MagicMock(return_value=eng))
+        _accepting_dialog(monkeypatch, accept=True)
+        no_modal.question.return_value = no_modal.StandardButton.Yes
+        tab._on_resume()
+        assert eng.resume.call_args.args[0] == sid
+
     def test_an_empty_picker_selection_resumes_nothing(self, tab, monkeypatch):
         _seed_session(tab._db, "paused")
         _seed_session(tab._db, "paused")

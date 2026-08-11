@@ -646,6 +646,9 @@ class TunerEngine(QObject):
             for c, v in tp.journal_survived_values(self._db, self._session_id).items():
                 self._co_survived[c] = v
 
+        if session.status == "quarantined":
+            self._reengage_quarantined(session_id)
+
         # Evidence reconciliation before anything acts on the loaded state.
         self._reconcile_confirmed_evidence()
 
@@ -1573,6 +1576,44 @@ class TunerEngine(QObject):
                 crashed = sorted(set(crashed) | set(journal_crashed))
                 pending_hunt = False
         return crashed, pending_hunt
+
+    def _reengage_quarantined(self, session_id: int) -> None:
+        """Re-open a quarantined session on proven ground only.
+
+        The breaker closed this session because the machine kept dying on
+        re-engage, so nothing unproven may be applied again: every offset that
+        would reach the hardware (the search position and the baseline every
+        other core is restored to) drops to the most aggressive value this
+        session has actually SURVIVED, which is stock when it has survived
+        none. Search bookkeeping -- fail bounds, best, phase -- is left intact,
+        so the work done before the quarantine is kept, not discarded.
+
+        Only ever reached from an explicit resume of a named session: the
+        automatic paths still exclude quarantined sessions.
+        """
+        pulled: list[int] = []
+        for cs in self._core_states.values():
+            survived = self._co_survived.get(cs.core_id, 0)
+            changed = False
+            for attr in ("current_offset", "baseline_offset"):
+                if self._is_more_aggressive(getattr(cs, attr), survived):
+                    setattr(cs, attr, survived)
+                    changed = True
+            if changed:
+                pulled.append(cs.core_id)
+                tp.save_core_state(self._db, session_id, cs)
+        tp.set_resume_crash_streak(self._db, session_id, 0)
+        tp.update_session_status(self._db, session_id, "running")
+        self.log_message.emit(
+            "Re-opening a QUARANTINED session. "
+            + (
+                f"Cores {pulled} were holding offsets this machine never survived; "
+                "they restart from their proven value."
+                if pulled
+                else "Every core was already at a proven offset."
+            )
+            + " If it quarantines again, the real limits are lower than the search assumed."
+        )
 
     def _clear_all_in_test(self) -> None:
         """Clear and persist every in_test flag — the crash has been handled

@@ -611,8 +611,10 @@ class TestResumeCrashCircuitBreaker:
         assert eng.status == "quarantined"
         assert db.get_tuner_session(sid).status == "quarantined"
         assert smu.applied.get(0) == 0                     # forced to stock
-        # A quarantined session is not offered for resume (fail closed).
+        # A quarantined session is never resumed automatically (fail closed) --
+        # but it stays reachable by hand, or the run is lost with all its work.
         assert sid not in [s.id for s in db.list_resumable_tuner_sessions()]
+        assert sid in [s.id for s in db.list_recoverable_tuner_sessions()]
         # in_test is cleared in memory AND persisted for every core.
         assert all(not cs.in_test for cs in eng._core_states.values())
         assert all(not c.in_test for c in db.get_tuner_core_states(sid).values())
@@ -2013,3 +2015,59 @@ class TestInTestMarkDurability:
         eng._mark_cores_under_stress([0])
         assert flushed
         assert db.get_tuner_core_states(sid)[0].in_test
+
+
+class TestReopeningAQuarantinedSession:
+    """Picked by hand, a quarantined session continues on proven ground only."""
+
+    def _quarantined(self, db, *, current, baseline, survived=None):
+        cfg = TunerConfig(cores_to_test=[0], crash_penalty_steps=1, fine_step=1)
+        sid = tp.create_session(db, cfg, "", "")
+        tp.save_core_state(db, sid, CoreState(
+            core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM, current_offset=current,
+            baseline_offset=baseline, best_offset=current, in_test=False,
+        ))
+        if survived is not None:
+            db.journal_co_intent(sid, 0, survived, survived=True)
+        tp.set_resume_crash_streak(db, sid, 3)
+        tp.update_session_status(db, sid, "quarantined")
+        return sid
+
+    def test_an_unproven_offset_is_never_re_applied(self, db, topo, smu, mock_backend):
+        sid = self._quarantined(db, current=-30, baseline=-25, survived=-10)
+        _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0])
+        cs = db.get_tuner_core_states(sid)[0]
+        assert cs.current_offset == -10, "the search must restart from the survived value"
+        assert cs.baseline_offset == -10, "no core may be restored to an unproven baseline"
+
+    def test_with_nothing_survived_it_falls_back_to_stock(self, db, topo, smu, mock_backend):
+        sid = self._quarantined(db, current=-25, baseline=-20)
+        _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0])
+        cs = db.get_tuner_core_states(sid)[0]
+        assert (cs.current_offset, cs.baseline_offset) == (0, 0)
+
+    def test_proven_work_is_kept_not_discarded(self, db, topo, smu, mock_backend):
+        sid = self._quarantined(db, current=-10, baseline=-5, survived=-10)
+        _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0])
+        cs = db.get_tuner_core_states(sid)[0]
+        assert cs.current_offset == -10, "a proven offset must survive the re-open"
+        assert cs.baseline_offset == -5
+        assert cs.best_offset == -10
+
+    def test_the_session_re_opens_with_the_breaker_reset(self, db, topo, smu, mock_backend):
+        sid = self._quarantined(db, current=-30, baseline=0, survived=-10)
+        _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0])
+        session = db.get_tuner_session(sid)
+        assert session.status != "quarantined"
+        assert session.resume_crash_streak == 0
+        assert sid in [s.id for s in db.list_resumable_tuner_sessions()]
+
+    def test_re_opening_says_what_it_pulled_back(self, db, topo, smu, mock_backend):
+        sid = self._quarantined(db, current=-30, baseline=0, survived=-10)
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
+        said: list[str] = []
+        eng.log_message.connect(said.append)
+        with patch.object(eng, "_run_next"):
+            eng.resume(sid)
+        reopened = [m for m in said if "QUARANTINED" in m]
+        assert reopened and "[0]" in reopened[0]
