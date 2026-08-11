@@ -1,11 +1,10 @@
 """Ring B live contract tests -- run the REAL hardware or tools and assert our
 readers/parsers still match reality. Marked slow + contract; the nix sandbox
-deselects `slow` so it never runs them here. The ryzen self-hosted runner runs
-them weekly (.github/workflows/hardware-contracts.yml) with
-CORECYCLER_HW_CONTRACTS=1, where an absent resource fails loud instead of
-skipping green. It is unprivileged, so the checks needing root, CAP_SYS_RAWIO
-or the corecycler group skip there by name; add CORECYCLER_HW_PRIVILEGED=1 as
-root to make those fatal too.
+deselects `slow` so it never runs them here. Run them on real AMD hardware:
+`CORECYCLER_HW_CONTRACTS=1 pytest -m contract`, where an absent resource fails
+loud instead of skipping green. MSR (CAP_SYS_RAWIO), dmidecode (root) and the
+SMU mailbox (corecycler group) skip unless the run also holds those rights;
+add CORECYCLER_HW_PRIVILEGED=1 as root to make them fatal too.
 """
 
 from __future__ import annotations

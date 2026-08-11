@@ -54,8 +54,8 @@ python -m pytest -m "not slow" --cov=corecycler --cov-report=term-missing
 CORECYCLER_HW_CONTRACTS=1 python -m pytest -m contract
 
 # The privileged tier on top: MSR (CAP_SYS_RAWIO), dmidecode (root) and the SMU
-# mailbox (corecycler group). The self-hosted runner holds none of these, so it
-# skips them by name; run this yourself before trusting a hardware change.
+# mailbox (corecycler group). Without these rights those checks skip by name
+# rather than failing; run this before trusting a hardware change.
 sudo -E env CORECYCLER_HW_CONTRACTS=1 CORECYCLER_HW_PRIVILEGED=1 python -m pytest -m contract
 ```
 

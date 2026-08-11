@@ -9,10 +9,10 @@ Under the first, an absent hardware resource is a HARD FAILURE: a drift-check
 that silently green-skips on the very machine meant to run it would hide a gap
 (the owner's never-silent rule). Reading MSRs (CAP_SYS_RAWIO), dmidecode
 (root) and the SMU mailbox (the corecycler group) additionally need privileges
-that the self-hosted runner deliberately does not hold -- CI with SMU write
-access could set a Curve Optimizer offset -- so those checks are fatal only
-under the second flag, and otherwise skip naming exactly what is uncovered.
-Without either variable every absent resource skips with its reason.
+a plain run does not hold, so those checks are fatal only under the second
+flag and otherwise skip naming exactly what is uncovered -- a run without them
+is still worth having. Without either variable every absent resource skips
+with its reason.
 """
 
 from __future__ import annotations

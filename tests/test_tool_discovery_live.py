@@ -2,8 +2,7 @@
 
 Every tool the running system has on PATH must resolve through config.tools,
 and at least one stress backend must be present. Marked slow + contract; the
-nix sandbox deselects `slow`, so it runs on real machines -- the ryzen
-self-hosted runner weekly, or by hand:
+nix sandbox deselects `slow`, so it runs on real machines, by hand:
 
     CORECYCLER_HW_CONTRACTS=1 pytest -m contract
 
