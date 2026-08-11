@@ -161,6 +161,9 @@ class TestRunOrchestration:
         sched = make_scheduler(tmp_path)
         ScriptedSupervisor.script = [step_pass, step_pass]
         results = sched.run()
+        assert all(
+            sup.kwargs["stop_on_first_failure"] is False for sup in ScriptedSupervisor.created
+        )
         assert sched.state == TestState.FINISHED
         assert [r[0].passed for r in results.values()] == [True, True]
         assert all(s.state == "passed" for s in sched.core_status.values())

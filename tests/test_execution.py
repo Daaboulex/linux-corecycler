@@ -126,7 +126,7 @@ def make_supervisor(
     stall_timeout: float = 30.0,
     phase: str = "stress",
     hooks: SuperviseHooks | None = None,
-    watch_escapes: bool = False,
+    containment_for=None,
 ) -> tuple[Supervisor, threading.Event, list]:
     stop = stop_event or threading.Event()
     seen = observed if observed is not None else []
@@ -140,8 +140,7 @@ def make_supervisor(
         stall_timeout=stall_timeout,
         phase=phase,
         hooks=hooks,
-        containment_prefix=lambda cpus: [],
-        watch_escapes=watch_escapes,
+        containment_for=containment_for or (lambda cpus: None),
     )
     return supervisor, stop, seen
 
@@ -176,8 +175,7 @@ class TestLaunchRefusals:
         def refuse(cpus):
             raise containment.ContainmentUnavailable("no systemd-run")
 
-        supervisor, _, _ = make_supervisor(backend)
-        supervisor._contain = refuse
+        supervisor, _, _ = make_supervisor(backend, containment_for=refuse)
         verdict = run_one(supervisor, lane(tmp_path), 1.0)
         assert verdict is not None and verdict.error_type == "startup"
         assert "no systemd-run" in verdict.error_message
@@ -200,7 +198,8 @@ class TestVerdicts:
     def test_an_instant_nonzero_exit_proves_nothing(self, tmp_path):
         backend = FakeBackend(_child("import sys; sys.exit(3)"))
         supervisor, _, _ = make_supervisor(backend)
-        verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        with patch.object(execution, "STARTUP_WINDOW_SECONDS", 60.0):
+            verdict = run_one(supervisor, lane(tmp_path), 1.0)
         assert verdict is not None and not verdict.passed
         assert verdict.error_type == "startup"
         assert "verdict unavailable" in verdict.error_message or "at startup" in verdict.error_message
@@ -294,23 +293,23 @@ class TestMceAttribution:
         assert [e.cpu for e in seen] == [9]
 
     def test_an_unattributed_event_stops_the_batch_without_blame(self, tmp_path):
-        backend = FakeBackend(_child("import time; time.sleep(5)"))
+        backend = FakeBackend(_child("import time; time.sleep(60)"))
         detector = FakeDetector([[Event(cpu=-1)]])
         supervisor, _, _ = make_supervisor(backend, detector=detector)
         verdicts = supervisor.run(
             [lane(tmp_path, 0, (0,)), lane(tmp_path, 5, (5,))],
             lambda _lane: StressConfig(),
-            5.0,
+            60.0,
         )
         assert verdicts[0] is not None
         assert verdicts[0].error_type == "mce_unattributed"
         assert verdicts[5] is None
 
     def test_late_events_drained_at_teardown_still_flip_the_verdict(self, tmp_path):
-        backend = FakeBackend(_child("import time; time.sleep(0.4)"))
-        detector = FakeDetector([[], [Event(cpu=0)]])
-        supervisor, _, _ = make_supervisor(backend, detector=detector, poll_interval=0.5)
-        verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.15)
+        backend = FakeBackend(_child("import time; time.sleep(60)"))
+        detector = FakeDetector([[Event(cpu=0)]])
+        supervisor, _, _ = make_supervisor(backend, detector=detector, poll_interval=1.0)
+        verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.0)
         assert verdict is not None and not verdict.passed
         assert verdict.error_type == "mce"
 
@@ -357,22 +356,53 @@ class TestStallWatchdog:
         assert verdict is not None and verdict.passed
 
 
-class TestEscapeWatchdog:
-    def test_an_escaped_process_tree_is_a_containment_fault(self, tmp_path):
+class TestContainmentWatchdog:
+    def _contained(self, cpus):
+        return containment.Containment(prefix=[], unit="cc-test")
+
+    def test_a_widened_kernel_record_is_a_containment_fault(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
-        supervisor, _, _ = make_supervisor(backend, watch_escapes=True)
-        with patch.object(containment, "observed_tree_cpus", return_value={0, 3, 7}):
+        supervisor, _, _ = make_supervisor(backend, containment_for=self._contained)
+        with (
+            patch.object(containment, "payload_cgroup", return_value="/user.slice/cc-test.scope"),
+            patch.object(containment, "scope_effective_cpus", return_value={0, 3, 7}),
+        ):
             verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 5.0)
         assert verdict is not None and not verdict.passed
         assert verdict.error_type == "startup"
-        assert "escaped" in verdict.error_message
+        assert "containment fault" in verdict.error_message
 
-    def test_a_contained_tree_raises_no_alarm(self, tmp_path):
+    def test_a_matching_kernel_record_raises_no_alarm(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(0.4)"))
-        supervisor, _, _ = make_supervisor(backend, watch_escapes=True)
-        with patch.object(containment, "observed_tree_cpus", return_value={0}):
+        supervisor, _, _ = make_supervisor(backend, containment_for=self._contained)
+        with (
+            patch.object(containment, "payload_cgroup", return_value="/user.slice/cc-test.scope"),
+            patch.object(containment, "scope_effective_cpus", return_value={0}),
+        ):
             verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.15)
         assert verdict is not None and verdict.passed
+
+    def test_a_scope_that_never_adopts_the_payload_is_a_fault(self, tmp_path):
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
+        supervisor, _, _ = make_supervisor(backend, containment_for=self._contained)
+        with (
+            patch.object(containment, "payload_cgroup", return_value=None),
+            patch.object(execution, "CONTAINMENT_GRACE_SECONDS", 0.05),
+        ):
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 5.0)
+        assert verdict is not None and not verdict.passed
+        assert "never adopted" in verdict.error_message
+
+    def test_a_vanished_kernel_record_is_a_fault(self, tmp_path):
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
+        supervisor, _, _ = make_supervisor(backend, containment_for=self._contained)
+        with (
+            patch.object(containment, "payload_cgroup", return_value="/user.slice/cc-test.scope"),
+            patch.object(containment, "scope_effective_cpus", return_value=None),
+        ):
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 5.0)
+        assert verdict is not None and not verdict.passed
+        assert "vanished" in verdict.error_message
 
 
 class TestThermalGuard:
@@ -641,12 +671,14 @@ class TestContainment:
             patch.object(containment, "available_mechanism", return_value=containment.MECHANISM_USER),
         ):
             prefix = containment.contain((16, 0))
-        assert prefix[0] == str(systemd_run)
-        assert "--user" in prefix
-        assert "AllowedCPUs=0,16" in prefix
-        assert prefix[-1] == "--"
-        assert str(setpriv) in prefix
-        assert "--pdeathsig" in prefix
+        assert prefix.prefix[0] == str(systemd_run)
+        assert "--user" in prefix.prefix
+        assert "--unit" in prefix.prefix
+        assert prefix.unit.startswith("corecycler-")
+        assert "AllowedCPUs=0,16" in prefix.prefix
+        assert prefix.prefix[-1] == "--"
+        assert str(setpriv) in prefix.prefix
+        assert "--pdeathsig" in prefix.prefix
 
     def test_probe_failure_is_cached_but_refreshable(self):
         containment._probe_cache.clear()

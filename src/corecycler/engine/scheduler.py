@@ -174,7 +174,7 @@ class CoreScheduler:
             observed=self.observed_mce,
             poll_interval=self.config.poll_interval,
             stall_timeout=stall_timeout or self.config.stall_timeout,
-            stop_on_first_failure=True,
+            stop_on_first_failure=False,
             phase=phase,
             hooks=SuperviseHooks(
                 on_status=self._hook_status,

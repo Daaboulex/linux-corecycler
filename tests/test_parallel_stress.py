@@ -91,6 +91,7 @@ class TestLaneBuilding:
 
         ScriptedSupervisor.script = [capture]
         results = runner.run()
+        assert ScriptedSupervisor.created[0].kwargs["stop_on_first_failure"] is True
         assert seen == [(0, (0, 16), 2), (1, (1, 17), 2)]
         assert sorted(results) == [0, 1]
         assert runner.work_dir.is_dir()

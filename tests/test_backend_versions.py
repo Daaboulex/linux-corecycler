@@ -59,7 +59,7 @@ def test_each_mode_produces_its_own_fft_path(mode, tmp_path):
     backend.prepare(tmp_path, config)
     backend.assert_prepared(tmp_path)
     log_path = tmp_path / "startup.log"
-    cmd = containment.contain(CPUS) + backend.get_command(config, tmp_path)
+    cmd = containment.contain(CPUS).prefix + backend.get_command(config, tmp_path)
     with log_path.open("w") as sink:
         proc = subprocess.Popen(
             cmd,
