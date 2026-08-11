@@ -16,7 +16,7 @@ labels: bug
 - **BIOS version**:
 - **Kernel**: (output of `uname -r`)
 - **ryzen_smu version**: (if applicable — `cat /sys/kernel/ryzen_smu_drv/version`)
-- **CoreCycler version**: (`corecycler --version` or git commit)
+- **CoreCycler version**: (git commit, or the flake input revision)
 - **Install method**: (NixOS module / nix run / pip / from source)
 
 ## Description
@@ -40,6 +40,15 @@ What should have happened?
 
 ```text
 paste here
+```
+
+</details>
+
+<details>
+<summary>corecycler doctor (always, for a backend or missing-tool problem)</summary>
+
+```text
+corecycler doctor
 ```
 
 </details>

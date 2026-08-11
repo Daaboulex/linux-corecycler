@@ -7,10 +7,11 @@
 ```bash
 git clone https://github.com/Daaboulex/linux-corecycler.git
 cd linux-corecycler
-nix develop          # enters dev shell with all deps + pre-commit hooks
-pytest tests/ -v     # run all tests
-ruff check src/      # lint
-ruff format --check src/  # format check
+nix develop                  # ruff, nixfmt, pre-commit hooks
+ruff check src/              # the Python lint gate
+
+# The suite runs in the package build's own environment (the dev shell has no Python):
+nix develop '.#packages.x86_64-linux.default' --command python -m pytest -m 'not slow'
 ```
 
 ### Other Distros
@@ -27,28 +28,34 @@ pytest tests/ -v
 
 1. Fork the repo and create a feature branch (`feat/my-feature` or `fix/my-bug`)
 2. Make your changes
-3. Run the full test suite: `pytest tests/ -v`
-4. Run linting: `ruff check src/ && ruff format --check src/`
-5. Run flake check: `nix flake check --no-build` (NixOS only)
+3. Run the full test suite (see [Testing](#testing)) -- coverage must stay at 100%
+4. Run linting: `ruff check src/`
+5. Run flake check: `nix flake check` (NixOS only)
 6. Submit a PR against `main`
 
 ## Testing
 
 ### Running Tests
 
+Prefix each with `nix develop '.#packages.x86_64-linux.default' --command` on NixOS.
+
 ```bash
-# All tests
-pytest tests/ -v
+# Everything the gate runs
+python -m pytest -m "not slow" --cov=corecycler --cov-report=term --cov-fail-under=100
 
 # Specific module
-pytest tests/test_smu_commands.py -v
+python -m pytest tests/test_smu_commands.py -v
 
-# Skip slow tests (tuner engine, Hypothesis)
-pytest tests/ -v -m "not slow"
+# What is missing coverage
+python -m pytest -m "not slow" --cov=corecycler --cov-report=term-missing
 
-# With coverage
-pytest tests/ --cov=src --cov-report=term-missing
+# Ring B live contract tests: real binaries and hardware, never in the sandbox.
+# Without the variable an absent resource skips; with it, it fails loudly.
+CORECYCLER_HW_CONTRACTS=1 python -m pytest -m contract
 ```
+
+**Line coverage may never drop below 100%** -- the package build enforces it, so a new
+branch without a test fails the build, not review.
 
 ### Test Requirements
 
@@ -60,15 +67,20 @@ pytest tests/ --cov=src --cov-report=term-missing
 
 ### Test Categories
 
-| Category | Files | Needs PySide6 | Description |
-|----------|-------|---------------|-------------|
-| SMU commands | `test_smu_commands.py` | No | Encoding/decoding, generation detection |
-| SMU driver | `test_smu_driver.py` | No | CO read/write, slot probing, backup/restore |
-| Monitor | `test_monitor.py` | No | hwmon, frequency, power monitoring |
-| Topology | `test_topology.py` | No | CPU detection, CCD layout, X3D |
-| Tuner engine | `test_tuner_engine.py` | Yes | State machine, crash recovery, scheduling |
-| Backends | `test_backends.py` | Yes | Stress test command generation, output parsing |
-| History | `test_history_*.py` | Yes | SQLite persistence, export, context |
+PySide6 is needed for the whole suite, not only the GUI files: `conftest.py`'s autouse
+fixtures import the tuner engine, which imports Qt.
+
+| Category | Files | Description |
+|----------|-------|-------------|
+| SMU commands | `test_smu_commands.py` | Encoding/decoding, generation detection |
+| SMU driver | `test_smu_driver.py` | CO read/write, slot probing, backup/restore |
+| Monitor | `test_monitor.py` | hwmon, frequency, power monitoring |
+| Topology | `test_topology.py` | CPU detection, CCD layout, X3D |
+| Tuner engine | `test_tuner_engine.py` | State machine, crash recovery, scheduling |
+| Backends | `test_backends.py` | Stress test command generation, output parsing |
+| External tools | `test_tools.py`, `test_tool_prompt.py` | Binary resolution, the missing-tool prompt |
+| Contracts | `test_contracts.py`, `test_tool_discovery_live.py` | Drift pins (Ring A) and live checks (Ring B) |
+| History | `test_history_*.py` | SQLite persistence, export, context |
 
 ### Property-Based Tests (Hypothesis)
 
@@ -109,8 +121,10 @@ To run: `pytest tests/test_tuner_engine.py -k "Invariant" -v`
 ### Python
 
 - **Python 3.12+** required
-- **Ruff** for linting and formatting (`ruff check src/` + `ruff format src/`)
-- Line length: 100 characters
+- **Ruff** for linting (`ruff check src/`), configured in `pyproject.toml`. There is no
+  Python auto-formatter: `ruff format` is not part of the gate and running it would
+  reformat the tree
+- Line length: 120 characters
 - Type hints on all function signatures
 - Dataclasses with `slots=True` for data structures
 - `StrEnum` for enumerations (catches typos at import time)
@@ -120,21 +134,25 @@ To run: `pytest tests/test_tuner_engine.py -k "Invariant" -v`
 
 - `nixfmt` for formatting (enforced by pre-commit)
 - `lib.mkOption` not `with lib;`
-- Flake check must pass: `nix flake check --no-build`
+- Flake check must pass: `nix flake check`
 
 ## Adding a Stress Test Backend
 
-CoreCycler uses a backend registry. Adding a new backend is 3 steps:
+CoreCycler uses a backend registry. Adding a new backend is 4 steps:
 
 1. Create `src/corecycler/engine/backends/<name>.py`
 2. Subclass `StressBackend` from `base.py` and implement:
-   - `is_available() -> bool` — check if the tool is installed
    - `get_command(config, work_dir) -> list[str]` — build the
-     command line
+     command line (`self.require_binary()` gives the resolved path)
    - `parse_output(stdout, stderr, returncode) -> tuple[bool, str | None]`
      — detect pass/fail
    - `get_supported_modes() -> list[StressMode]` — SSE, AVX, AVX2, etc.
 3. Add `@register_backend("display-name")` decorator
+4. Add a matching `ExternalTool` entry to `TOOLS` in `src/corecycler/config/tools.py`,
+   which is how the binary is found and how `corecycler doctor` reports it. Locating a
+   binary lives there and nowhere else: PATH alone cannot find a tool under `sudo`
+   (secure_path) or one extracted from a tarball. The `external-tool-discovery`
+   contract fails if a registered backend has no entry.
 
 The GUI discovers backends automatically — no GUI code changes needed.
 

@@ -9,7 +9,10 @@
    it runs without root with reduced telemetry and a status-bar warning.
 2. The CPU topology (cores, CCDs, SMT, X3D) is detected automatically.
 3. In the Configuration tab, select a backend -- use stress-ng if mprime is not
-   installed.
+   installed. A backend that is not on PATH (mprime and y-cruncher are extracted
+   tarballs, and `sudo` drops your shell's PATH) is not a dead end: CoreCycler offers
+   any copy it finds and remembers the one you pick. `corecycler doctor` shows every
+   tool and where it resolved from.
 4. The default preset is **Standard** (10 min/core, 1 cycle); adjust or pick another.
 5. Click **Start Test** and watch the core grid: each core lights up as it is tested,
    turning green (passed) or red (failed). The Results tab shows per-core detail.

@@ -46,16 +46,19 @@ services.corecycler = {
 | `ryzenSmu` | bool | `true` | Load [ryzen_smu](https://github.com/amkillam/ryzen_smu) for CO read/write via SMU (Zen 1-5) |
 | `zenpower` | bool | `false` | Load [zenpower5](https://github.com/mattkeenan/zenpower5) instead of k10temp -- temps, SVI2 voltage (Zen 1-4), RAPL power. Blacklists k10temp |
 | `coretemp` | bool | `false` | Load in-tree coretemp for Intel CPU temperatures |
-| `nct6775` | bool | `false` | Load in-tree nct6775 for Nuvoton Super I/O (Vcore, fans, temps): ASUS, MSI, ASRock |
+| `nct6775` | bool | `false` | Load in-tree nct6775 for Nuvoton NCT6775-NCT6799 Super I/O (Vcore, fans, temps): ASUS, MSI, ASRock |
+| `nct6683` | bool | `false` | Load in-tree nct6683 for Nuvoton NCT6683/6686/6687 Super I/O: modern MSI (B550, B650, X570, X670) |
 | `it87` | bool | `false` | Load out-of-tree [it87](https://github.com/frankcrawford/it87) for ITE Super I/O (Gigabyte) |
 | `cpuid` | bool | `false` | Load in-tree cpuid module for `/dev/cpu/*/cpuid` |
 | `spd5118` | bool | `false` | Load spd5118 + i2c_dev for DDR5 DIMM temperature monitoring |
 | `deviceAccess` | bool | `true` | Grant `deviceAccessUser` access to MSR/SMU sysfs without sudo |
 | `deviceAccessUser` | string | `""` | Username for device access (required when `deviceAccess` is true) |
+| `autoResume.enable` | bool | `false` | Resume the active tuner session after login, sudo-less via the device-access group |
+| `autoResume.delaySeconds` | int | `120` | Settle time after login before that resume runs |
 
 Out-of-tree modules (ryzen_smu, zenpower5, it87) are built against your running kernel;
 both GCC and Clang/LTO kernels (e.g. CachyOS) are auto-detected. In-tree modules (msr,
-nct6775, coretemp, cpuid) load via `boot.kernelModules`.
+nct6775, nct6683, coretemp, cpuid, spd5118 + i2c_dev) load via `boot.kernelModules`.
 
 ### Package-only (no module)
 
@@ -91,7 +94,7 @@ Ubuntu / Fedora / Mint; `sudo` must then use the venv's python.
 ### Arch Linux
 
 ```bash
-sudo pacman -S python python-pyside6 stress-ng dmidecode
+sudo pacman -S python pyside6 stress-ng dmidecode
 yay -S stressapptest        # AUR -- not in the official repos
 yay -S mprime-bin           # AUR, optional -- unfree, best backend for CO tuning
 yay -S y-cruncher           # AUR, optional -- unfree, secondary validation
@@ -230,8 +233,9 @@ candidate it found but has not been told to use.
 
 A backend is located in this order, most explicit first:
 
-1. `CORECYCLER_<TOOL>_BIN` -- e.g. `CORECYCLER_Y_CRUNCHER_BIN=~/y-cruncher/y-cruncher`,
-   `CORECYCLER_MPRIME_BIN`, `CORECYCLER_STRESS_NG_BIN`.
+1. `CORECYCLER_<TOOL>_BIN` -- e.g.
+   `CORECYCLER_Y_CRUNCHER_BIN=/home/you/y-cruncher/y-cruncher`, `CORECYCLER_MPRIME_BIN`,
+   `CORECYCLER_STRESS_NG_BIN`.
 2. The path recorded in `~/.config/corecycler/tool-paths.json`, which the GUI writes
    when you pick a binary in the missing-backend dialog.
 3. `PATH`.

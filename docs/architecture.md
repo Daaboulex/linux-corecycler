@@ -13,12 +13,12 @@ their own process group for clean teardown.
 ```text
 src/corecycler/
   main.py            Entry point, dark theme, Qt setup
-  cli.py             Headless status/tune/resume commands (no display needed)
+  cli.py             Headless doctor/status/tune/resume commands (no display needed)
   notify.py          Desktop notifications via notify-send, best-effort
   engine/            Stress execution
     topology.py        CPU topology: cores, CCDs, L3 cache, X3D V-Cache detection
     scheduler.py       Per-core cycling, variable load, idle tests, process management
-    detector.py        MCE detection via sysfs machinecheck + dmesg
+    detector.py        MCE and kernel-error detection from dmesg + the systemd journal
     backends/          Auto-registered stress backends (mprime, stress_ng, ycruncher, stressapptest)
   smu/               AMD SMU access (ryzen_smu)
     commands.py        Per-generation command IDs, encoding-scheme dispatch, harvested-core slots
@@ -37,8 +37,10 @@ src/corecycler/
     state.py           TunerPhase StrEnum, CoreState / TunerSession dataclasses
     persistence.py     Session CRUD, core-state upsert, test log, CO write-ahead journal
     engine.py          TunerEngine: state machine, scheduling, crash recovery, staged validation (1-7)
-  gui/               Qt tabs (config, results, monitor, smu, tuner, memory, history) + core grid widget
-  config/            JSON settings and test-profile persistence (~/.config/corecycler/)
+  gui/               Qt tabs (config, results, monitor, smu, tuner, memory, history), core grid,
+                     and the missing-tool prompt that records a backend's path
+  config/            Settings and test profiles (~/.config/corecycler/), plus tools.py --
+                     the one resolver for every external binary (PATH is not enough)
 nix/                 NixOS module + kernel-module derivations (ryzen-smu, zenpower, it87)
 tests/               Pytest suite (unit, property/Hypothesis fuzz, fault-injection, hermetic GUI)
 ```
@@ -50,18 +52,26 @@ so no GUI file changes when a backend is added.
 ## Development
 
 ```bash
-nix develop          # or: pip install -e ".[dev]"
-pytest               # run the suite
-ruff check src && ruff format src
-nix flake check      # build + every check (what CI runs)
+nix develop                                   # ruff, nixfmt, pre-commit
+ruff check src                                # the Python lint gate
+nix develop '.#packages.x86_64-linux.default' \
+  --command python -m pytest -m 'not slow'    # the suite, in the build's own env
+nix flake check                               # build + every check (what CI runs)
 ```
+
+The dev shell carries the linters, not Python: the suite runs in the package build's
+environment, which is where the coverage gate (100%, no exceptions) runs it too.
 
 ### Adding a stress backend
 
 1. Create `src/corecycler/engine/backends/<name>.py`, subclassing `StressBackend` from `base.py`.
-2. Implement `is_available`, `get_command`, `parse_output`, `get_supported_modes`.
+2. Implement `get_command`, `parse_output` and `get_supported_modes`. `is_available` is
+   the base class's, resolving the binary through `config/tools.py`.
 3. Add the `@register_backend("display-name")` decorator -- it is discovered
    automatically; no GUI files need editing.
+4. Add an `ExternalTool` entry to `TOOLS` in `src/corecycler/config/tools.py` under the
+   same display name, so the binary can be resolved and reported by `corecycler doctor`.
+   The `external-tool-discovery` contract fails if a registered backend has no entry.
 
 ## Driver and kernel module sources
 
