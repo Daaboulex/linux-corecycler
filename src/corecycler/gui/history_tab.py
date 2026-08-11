@@ -417,10 +417,6 @@ class HistoryTab(QWidget):
         self._apply_view_mode()
 
     def _reload_data(self) -> None:
-        # Auto-clean orphaned contexts (0 runs)
-        if self._db:
-            self._db.delete_orphaned_contexts()
-
         self._runs = self._db.list_runs(limit=500)
         self._contexts = self._db.list_contexts()
 
