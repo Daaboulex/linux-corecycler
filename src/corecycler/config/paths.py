@@ -26,6 +26,14 @@ def user_home() -> Path:
     return Path.home()
 
 
+def atomic_write(path: Path, content: str) -> None:
+    """Write via temp file + rename, then hand the file back to the user."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+    fix_sudo_ownership(path.parent, path)
+
+
 def fix_sudo_ownership(*paths: Path) -> None:
     """chown root-created state files/dirs back to the invoking user.
 

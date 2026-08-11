@@ -72,19 +72,11 @@ class MprimeBackend(StressBackend):
     name = "mprime"
 
     def __init__(self) -> None:
-        self._binary: str | None = None
+        super().__init__()
         self._last_work_dir: Path | None = None
 
-    def is_available(self) -> bool:
-        self._binary = self.find_binary("mprime")
-        return self._binary is not None
-
     def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
-        if not self._binary:
-            self.is_available()
-        if not self._binary:
-            raise RuntimeError("mprime binary not found")
-        return [self._binary, "-t", "-W" + str(work_dir)]
+        return [self.require_binary(), "-t", "-W" + str(work_dir)]
 
     def get_supported_modes(self) -> list[StressMode]:
         return [StressMode.SSE, StressMode.AVX, StressMode.AVX2, StressMode.AVX512]

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
-import shutil
 import subprocess
+
+from corecycler.config import tools
 
 log = logging.getLogger(__name__)
 
@@ -21,10 +22,11 @@ def desktop_notify(title: str, body: str, *, urgency: str = "normal") -> bool:
     """
     if urgency not in _VALID_URGENCY:
         urgency = "normal"
-    binary = shutil.which("notify-send")
-    if binary is None:
-        log.debug("notify-send not on PATH — skipping desktop notification")
+    resolution = tools.resolve("notify-send")
+    if resolution.path is None:
+        log.debug("notify-send unavailable (%s) — skipping desktop notification", resolution.problem)
         return False
+    binary = str(resolution.path)
     try:
         result = subprocess.run(
             [binary, "--app-name", _APP_NAME, "--urgency", urgency, title, body],

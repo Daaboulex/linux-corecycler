@@ -9,6 +9,40 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-08-11 a backend is found where it actually is, on every distro)
+
+- `sudo` replaces PATH with the sudoers `secure_path` on Debian, Ubuntu, Mint,
+  Fedora and Arch, so a directory the user added to PATH in their shell is gone
+  inside `sudo corecycler` -- and mprime and y-cruncher ship as tarballs that
+  are never on PATH to begin with. Issue #12 reported exactly that: y-cruncher
+  on PATH, "not installed or not on PATH" in the dialog. Tool lookup is now one
+  resolver (`config.tools`) shared by every backend, taskset, dmesg,
+  journalctl, dmidecode and notify-send, resolving `CORECYCLER_<TOOL>_BIN`,
+  then the path recorded in `~/.config/corecycler/tool-paths.json`, then PATH --
+  and an explicit path that is not executable is refused with the reason instead
+  of silently falling back.
+- A missing backend is no longer a dead end: CoreCycler looks for an extracted
+  mprime or y-cruncher in the invoking user's `~`, `~/Downloads`, `/opt`,
+  `/usr/local`, `/usr/local/lib` and `/usr/lib`, and offers what it finds. It
+  never runs a scanned binary until the user picks it -- it runs as root, and
+  silently executing something found in `$HOME` is what `secure_path` exists to
+  prevent. The choice is recorded, so later runs resolve it without asking.
+- New `corecycler doctor`: every external tool, where it resolved from, and any
+  candidate found but not yet chosen. It replaces four different lookup paths
+  (a `which` subprocess, two `shutil.which` call sites, and bare-name exec) --
+  `which` is not even guaranteed present, being an update-alternatives symlink
+  on Debian-family systems and absent from minimal Fedora images.
+- New `distro-matrix` workflow: installs what `docs/installation.md` prescribes
+  inside debian:trixie, ubuntu:24.04, fedora:latest and archlinux:latest, then
+  asserts every tool resolves and that a y-cruncher tarball in `$HOME` is still
+  discovered with PATH scrubbed to `secure_path`. Discovery is a pinned drift
+  contract (`external-tool-discovery`) with a live Ring B test.
+- Corrected in the docs, each verified against the distro's own package index:
+  stressapptest is AUR-only on Arch (the documented `pacman -S` line failed),
+  it IS in Fedora's repos (no source build), and y-cruncher is packaged both in
+  nixpkgs and in the AUR. `packages.full` now bundles y-cruncher alongside
+  mprime.
+
 ### Fixed (2026-08-07 core-slot discovery reads the fuse, not the CO mailbox)
 
 - The slot discovery added for issue #11 rested on a premise the reporting

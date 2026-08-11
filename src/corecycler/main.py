@@ -141,7 +141,7 @@ def main() -> int:
 
         print(USAGE)
         return 0
-    if argv and argv[0] in ("status", "tune", "resume"):
+    if argv and argv[0] in ("doctor", "status", "tune", "resume"):
         from corecycler.cli import cli_main
 
         return cli_main(argv)
@@ -210,7 +210,10 @@ def main() -> int:
     # dark theme
     app.setStyleSheet(_dark_stylesheet(assets_dir))
 
+    from corecycler.config import tools
     from corecycler.gui.main_window import MainWindow
+
+    tools.load_configured_paths()
 
     window = MainWindow()
 

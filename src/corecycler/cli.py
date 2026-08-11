@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from corecycler.config import tools
+from corecycler.config.settings import load_settings
+
+if TYPE_CHECKING:
+    from corecycler.config.tools import Resolution
 
 EXIT_COMPLETED = 0
 EXIT_PAUSED = 3
@@ -17,6 +25,7 @@ EXIT_SIGNAL = 130
 USAGE = """\
 corecycler headless commands:
 
+  corecycler doctor               report every external tool and where it resolved
   corecycler status               list tuner sessions and their state
   corecycler tune [--config F]    start a NEW tuning session and run to the end
   corecycler resume [SESSION_ID]  resume a mid-run/paused session (newest if omitted)
@@ -31,6 +40,8 @@ Running the binary with no command opens the GUI.
 
 def cli_main(argv: list[str]) -> int:
     command = argv[0]
+    if command == "doctor":
+        return cmd_doctor()
     if command == "status":
         return cmd_status()
     if command == "tune":
@@ -57,6 +68,37 @@ def cli_main(argv: list[str]) -> int:
 
 
 _INVALID = object()
+
+
+def doctor_lines(resolutions: list[Resolution], unmet: list[str]) -> list[str]:
+    """The dependency report, one tool per line, grouped by how much it matters."""
+    width = max(len(r.key) for r in resolutions)
+    lines = ["corecycler doctor", ""]
+    for kind in (tools.BACKEND, tools.CORE, tools.OPTIONAL):
+        lines.append(kind)
+        for resolution in [r for r in resolutions if tools.TOOLS[r.key].kind == kind]:
+            detail = str(resolution.path) if resolution.path else resolution.problem
+            lines.append(f"  {resolution.key:<{width}}  {resolution.origin:<7} {detail}")
+            if resolution.path is None:
+                lines += [f"    candidate: {c}" for c in tools.discover(resolution.key)]
+        lines.append("")
+    if os.geteuid() == 0:
+        lines += [tools.SUDO_PATH_NOTE, ""]
+    lines.append(
+        "Pin a path with CORECYCLER_<TOOL>_BIN, or in the GUI when a backend is missing."
+    )
+    lines.append("")
+    lines += [f"doctor: FAILED -- {problem}" for problem in unmet] or ["doctor: ok"]
+    return lines
+
+
+def cmd_doctor() -> int:
+    tools.load_configured_paths()
+    resolutions = tools.report()
+    unmet = tools.unmet_requirements(resolutions)
+    for line in doctor_lines(resolutions, unmet):
+        print(line)
+    return EXIT_REFUSED if unmet else EXIT_COMPLETED
 
 
 def _flag_value(args: list[str], flag: str):
@@ -154,6 +196,7 @@ def cmd_run(
         return EXIT_REFUSED
 
     load_all()
+    tools.load_configured_paths()
     if db is None:
         db = HistoryDB()
     if engine_factory is not None:
@@ -178,8 +221,11 @@ def cmd_run(
             print(f"corecycler: unknown backend {config.backend!r}", file=sys.stderr)
             return EXIT_REFUSED
         if not backend.is_available():
+            resolution = backend.resolution()
             print(
-                f"corecycler: backend {config.backend!r} is not installed",
+                f"corecycler: backend {config.backend!r} {resolution.problem} -- "
+                f"install {tools.TOOLS[config.backend].package}, or set "
+                f"{tools.env_var(config.backend)}; run 'corecycler doctor' for the full report",
                 file=sys.stderr,
             )
             return EXIT_REFUSED
@@ -260,8 +306,6 @@ def _notify_outcome(code: int) -> None:
     if note is None:
         return
     try:
-        from corecycler.config.settings import load_settings
-
         if not load_settings().notify_on_completion:
             return
         from corecycler.notify import desktop_notify

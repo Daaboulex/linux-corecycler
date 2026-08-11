@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
-import shutil
 import subprocess
 
 from PySide6.QtCore import QThread, QTimer, Signal, Slot
@@ -25,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from corecycler.config import tools
 from corecycler.config.settings import load_settings
 from corecycler.engine.backends.base import KILLED_BY_US_CODES
 from corecycler.gui.style import BTN_RED, COLOR_MUTED, COLOR_MUTED_DARKER, COLOR_PASS, COLOR_WARN_SOFT
@@ -56,9 +56,12 @@ class _StressWorker(QThread):
                 # Limit to 75% of free memory to avoid "freepages < neededpages"
                 free_mb = _get_free_memory_mb()
                 mem_mb = max(256, int(free_mb * 0.75)) if free_mb else 1024
-                cmd = ["stressapptest", "-W", "-M", str(mem_mb), "-s", str(seconds)]
+                cmd = [tools.command_name("stressapptest"), "-W", "-M", str(mem_mb), "-s", str(seconds)]
             elif self._tool == "stress-ng --vm":
-                cmd = ["stress-ng", "--vm", "1", "--vm-bytes", "75%", "--verify", "--timeout", f"{seconds}s"]
+                cmd = [
+                    tools.command_name("stress-ng"), "--vm", "1", "--vm-bytes", "75%",
+                    "--verify", "--timeout", f"{seconds}s",
+                ]
             else:
                 self.done.emit(False, f"Unknown tool: {self._tool}")
                 return
@@ -307,14 +310,14 @@ class MemoryTab(QWidget):
 
     def _detect_available_tools(self) -> list[str]:
         """Detect which memory stress tools are installed."""
-        tools = []
-        if shutil.which("stressapptest"):
-            tools.append("stressapptest")
-        if shutil.which("stress-ng"):
-            tools.append("stress-ng --vm")
-        if not tools:
-            tools.append("(none installed)")
-        return tools
+        available = []
+        if tools.resolve("stressapptest").path:
+            available.append("stressapptest")
+        if tools.resolve("stress-ng").path:
+            available.append("stress-ng --vm")
+        if not available:
+            available.append("(none installed)")
+        return available
 
     def _load_dimm_info(self) -> None:
         self._dimms = read_dimm_info()
@@ -355,9 +358,8 @@ class MemoryTab(QWidget):
 
         # Update dependency status
         deps = []
-        deps.append("dmidecode: " + ("found" if shutil.which("dmidecode") else "missing"))
-        deps.append("stressapptest: " + ("found" if shutil.which("stressapptest") else "missing"))
-        deps.append("stress-ng: " + ("found" if shutil.which("stress-ng") else "missing"))
+        for key in ("dmidecode", "stressapptest", "stress-ng"):
+            deps.append(f"{key}: " + ("found" if tools.resolve(key).path else "missing"))
         deps.append("spd5118: " + ("available" if self._spd_reader.is_available() else "not loaded"))
         deps.append("ryzen_smu: " + ("available" if self._pm_reader.is_available() else "not loaded"))
         self._deps_label.setText("  |  ".join(deps))

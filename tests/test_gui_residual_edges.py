@@ -165,7 +165,7 @@ class TestMemoryStressLifecycle:
         monkeypatch.setattr(mem, "SPD5118Reader", lambda: _spd(False))
         monkeypatch.setattr(mem, "PMTableReader", lambda: _reader(False))
         monkeypatch.setattr(mem, "read_dimm_info", list)
-        monkeypatch.setattr(mem.shutil, "which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr(mem.tools.shutil, "which", lambda name: "/usr/bin/" + name)
         widget = mem.MemoryTab()
         widget._stress_tool.clear()
         widget._stress_tool.addItem("stressapptest")

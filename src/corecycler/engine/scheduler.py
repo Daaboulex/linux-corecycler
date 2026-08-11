@@ -16,6 +16,8 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from corecycler.config import tools
+
 from .backends.base import CRASH_SIGNALS, KILLED_BY_US_CODES, StressBackend, StressConfig, StressResult
 from .detector import ErrorDetector, MCEEvent
 
@@ -511,7 +513,7 @@ class CoreScheduler:
             if load_on:
                 # Run stress for one interval
                 cmd = self.backend.get_command(self.stress_config, core_work_dir)
-                full_cmd = ["taskset", "-c", cpu_list] + cmd
+                full_cmd = tools.taskset_prefix(cpu_list) + cmd
                 try:
                     self._we_killed_it = False
                     with self._process_lock:
@@ -713,7 +715,7 @@ class CoreScheduler:
         """
         # build command with taskset for CPU pinning (all SMT siblings)
         cmd = self.backend.get_command(self.stress_config, core_work_dir)
-        full_cmd = ["taskset", "-c", cpu_list] + cmd
+        full_cmd = tools.taskset_prefix(cpu_list) + cmd
 
         own_cpus = self._own_cpu_set(cpu_list)
         start_time = time.monotonic()
@@ -1041,7 +1043,7 @@ class CoreScheduler:
                 threads=len(cores),
             )
             self.backend.prepare(core_work_dir, stress_cfg)
-            cmd = ["taskset", "-c", cpu_list] + self.backend.get_command(stress_cfg, core_work_dir)
+            cmd = tools.taskset_prefix(cpu_list) + self.backend.get_command(stress_cfg, core_work_dir)
             proc = None
             try:
                 self._we_killed_it = False

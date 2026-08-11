@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, mock_open, patch
 
+from corecycler.config import tools
+from corecycler.engine.backends import BACKEND_REGISTRY, load_all
 from corecycler.engine.parallel import _cpu_times
 from corecycler.engine.scheduler import CoreScheduler
 from corecycler.monitor.memory import parse_dmidecode_output
@@ -278,6 +280,29 @@ def _pin_core_slot_mapping() -> None:
     }
 
 
+def _pin_external_tool_discovery() -> None:
+    assert tools.env_var("y-cruncher") == "CORECYCLER_Y_CRUNCHER_BIN"
+    assert tools.env_var("stress-ng") == "CORECYCLER_STRESS_NG_BIN"
+    scanned = {key for key, tool in tools.TOOLS.items() if tool.globs}
+    assert scanned == {"mprime", "y-cruncher"}, scanned
+    assert tools.TOOLS["y-cruncher"].names == ("y-cruncher", "y_cruncher")
+    for layout in (
+        "y-cruncher/y-cruncher",
+        "y-cruncher v0.8.7.9547-static/y-cruncher",
+        "y-cruncher v0.8.6.9545-dynamic/y-cruncher",
+    ):
+        assert any(
+            PurePath(layout).match(pattern) for pattern in tools.TOOLS["y-cruncher"].globs
+        ), layout
+    backends = {key for key, tool in tools.TOOLS.items() if tool.kind == tools.BACKEND}
+    assert backends == {"mprime", "y-cruncher", "stress-ng", "stressapptest"}
+    load_all()
+    assert set(BACKEND_REGISTRY) == backends, (
+        "every registered stress backend needs a config.tools entry, or it can never resolve"
+    )
+    assert {key for key, tool in tools.TOOLS.items() if tool.kind == tools.CORE} == {"taskset"}
+
+
 CONTRACTS: list[Contract] = [
     Contract(
         name="smu-co-bit-layout",
@@ -374,6 +399,23 @@ CONTRACTS: list[Contract] = [
         ),
         ring_a=_pin_desktop_pbo_command_ids,
         live_verifiable=False,
+    ),
+    Contract(
+        name="external-tool-discovery",
+        kind="os",
+        source=(
+            "sudoers secure_path (shipped set on Debian/Ubuntu/Mint, Fedora and Arch; "
+            "absent on NixOS) REPLACES PATH under sudo, and y-cruncher/mprime ship as "
+            "tarballs -- packaged as a /usr/bin symlink into /usr/lib (AUR) or a wrapper "
+            "(nixpkgs), extracted anywhere otherwise. Issue #12: y-cruncher on the user's "
+            "PATH was invisible to a sudo run"
+        ),
+        ring_a=_pin_external_tool_discovery,
+        live_verifiable=True,
+        ring_b_test=(
+            "test_tool_discovery_live.py"
+            "::test_every_tool_present_on_path_resolves_through_the_registry"
+        ),
     ),
     Contract(
         name="smu-core-slot-mapping",

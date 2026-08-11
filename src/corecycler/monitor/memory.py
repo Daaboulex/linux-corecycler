@@ -10,6 +10,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from corecycler.config import tools
+
 log = logging.getLogger(__name__)
 
 HWMON_BASE = Path("/sys/class/hwmon")
@@ -174,7 +176,7 @@ def read_dimm_info() -> list[DIMMInfo]:
     """Read DIMM info via dmidecode. Requires root."""
     try:
         result = subprocess.run(
-            ["dmidecode", "-t", "memory"],
+            [tools.command_name("dmidecode"), "-t", "memory"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0:

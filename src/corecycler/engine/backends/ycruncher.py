@@ -39,25 +39,11 @@ _ERROR_PATTERNS: tuple[str, ...] = (
 class YCruncherBackend(StressBackend):
     name = "y-cruncher"
 
-    def __init__(self) -> None:
-        self._binary: str | None = None
-
-    def is_available(self) -> bool:
-        for name in ("y-cruncher", "y_cruncher"):
-            self._binary = self.find_binary(name)
-            if self._binary:
-                return True
-        return False
-
     def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
-        if not self._binary:
-            self.is_available()
-        if not self._binary:
-            raise RuntimeError("y-cruncher binary not found")
-
+        binary = self.require_binary()
         memory_mib = config.memory_mb if config.memory_mb and config.memory_mb > 0 else _DEFAULT_MEMORY_MIB
         cmd = [
-            self._binary,
+            binary,
             *_HEADLESS_FLAGS,
             "stress",
             f"-M:{memory_mib}M",

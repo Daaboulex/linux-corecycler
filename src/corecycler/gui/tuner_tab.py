@@ -48,6 +48,7 @@ from corecycler.gui.style import (
     phase_label,
     status_label,
 )
+from corecycler.gui.tool_prompt import ensure_tool
 from corecycler.history.timefmt import format_local
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
@@ -1108,13 +1109,9 @@ class TunerTab(QWidget):
                 QMessageBox.warning(self, "Error", f"Unknown backend: {name}")
                 return None
 
-        if backend and not backend.is_available():
-            QMessageBox.warning(
-                self,
-                "Backend Not Found",
-                f"'{self._backend_combo.currentText()}' is not installed or not on PATH.\n\n"
-                "Install it or select a different backend.",
-            )
+        if backend and not backend.is_available() and not ensure_tool(
+            self, self._backend_combo.currentText()
+        ):
             return None
         return backend
 

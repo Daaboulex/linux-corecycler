@@ -22,12 +22,12 @@ def _tab():
 
 class TestToolDetection:
     def test_no_tools_reports_none_installed(self):
-        with patch("corecycler.gui.memory_tab.shutil.which", return_value=None):
+        with patch("corecycler.config.tools.shutil.which", return_value=None):
             tab = _tab()
             assert tab._detect_available_tools() == ["(none installed)"]
 
     def test_both_tools_detected(self):
-        with patch("corecycler.gui.memory_tab.shutil.which", lambda name: "/usr/bin/" + name):
+        with patch("corecycler.config.tools.shutil.which", lambda name: "/usr/bin/" + name):
             tab = _tab()
             tools = tab._detect_available_tools()
         assert "stressapptest" in tools

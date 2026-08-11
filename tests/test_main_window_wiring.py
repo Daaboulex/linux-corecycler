@@ -256,9 +256,19 @@ class TestStartTest:
 
     def test_an_uninstalled_backend_is_refused(self, window, monkeypatch, no_modal):
         self._ready(window, monkeypatch, available=False)
+        asked = []
+        monkeypatch.setattr(mw, "ensure_tool", lambda parent, key: asked.append(key) or False)
         window._start_test()
         assert window._worker is None
-        assert no_modal.warning.call_args.args[1] == "Backend Not Found"
+        assert len(asked) == 1, "the user must be offered a path before the test is refused"
+
+    def test_an_uninstalled_backend_starts_once_the_user_supplies_a_path(
+        self, window, monkeypatch, no_modal
+    ):
+        self._ready(window, monkeypatch, available=False)
+        monkeypatch.setattr(mw, "ensure_tool", lambda parent, key: True)
+        window._start_test()
+        assert window._worker is not None
 
     def test_a_scheduler_that_cannot_start_is_reported(self, window, monkeypatch, no_modal):
         self._ready(window, monkeypatch)

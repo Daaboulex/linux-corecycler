@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import contextlib
-import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
+from corecycler.config import tools
+
 if TYPE_CHECKING:
     from pathlib import Path
-    pass
 
 # Return codes indicating the process was intentionally killed by the scheduler
 KILLED_BY_US_CODES: frozenset[int] = frozenset({-9, -15, 137, 143})
@@ -75,9 +74,26 @@ class StressBackend(ABC):
 
     name: str = "base"
 
-    @abstractmethod
+    def __init__(self) -> None:
+        self._binary: str | None = None
+
     def is_available(self) -> bool:
-        """Check if the stress test binary is installed and runnable."""
+        """Locate the backend binary through the one resolver (see config.tools)."""
+        resolution = self.resolution()
+        self._binary = str(resolution.path) if resolution.path else None
+        return self._binary is not None
+
+    def resolution(self) -> tools.Resolution:
+        """Where this backend's binary resolved from, or why it did not."""
+        return tools.resolve(self.name)
+
+    def require_binary(self) -> str:
+        """The resolved binary path, or a RuntimeError naming the backend."""
+        if not self._binary:
+            self.is_available()
+        if not self._binary:
+            raise RuntimeError(f"{self.name} binary not found")
+        return self._binary
 
     @abstractmethod
     def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
@@ -126,14 +142,4 @@ class StressBackend(ABC):
         signal_name = CRASH_SIGNALS.get(returncode)
         if signal_name:
             return f"crash:{signal_name}"
-        return None
-
-    def find_binary(self, name: str) -> str | None:
-        """Find a binary on PATH."""
-        with contextlib.suppress(subprocess.TimeoutExpired, FileNotFoundError):
-            result = subprocess.run(
-                ["which", name], capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
         return None

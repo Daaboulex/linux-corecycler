@@ -16,6 +16,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from corecycler.config import tools
+
 log = logging.getLogger(__name__)
 
 
@@ -140,7 +142,7 @@ class ErrorDetector:
             # below err/warn and a level filter silently hides them; the line
             # classifier is the filter.
             result = subprocess.run(
-                ["dmesg", "--time-format=raw"],
+                [tools.command_name("dmesg"), "--time-format=raw"],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -193,7 +195,7 @@ def harvest_kernel_mce(
         # point of this harvest.
         result = subprocess.run(
             [
-                "journalctl", "-q", "--no-pager", "-o", "short-unix",
+                tools.command_name("journalctl"), "-q", "--no-pager", "-o", "short-unix",
                 "--since", since, "_TRANSPORT=kernel",
             ],
             capture_output=True,
@@ -243,7 +245,7 @@ def last_boot_ended_cleanly(timeout: float = 15.0) -> bool:
     try:
         result = subprocess.run(
             [
-                "journalctl", "-q", "--no-pager", "-b", "-1",
+                tools.command_name("journalctl"), "-q", "--no-pager", "-b", "-1",
                 "-n", "25", "-o", "cat",
             ],
             capture_output=True,
@@ -341,7 +343,7 @@ def _get_dmesg_raw_timestamp() -> float:
     """Get the latest dmesg raw monotonic timestamp for baseline filtering."""
     with contextlib.suppress(subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError):
         result = subprocess.run(
-            ["dmesg", "--time-format=raw"],
+            [tools.command_name("dmesg"), "--time-format=raw"],
             capture_output=True,
             text=True,
             timeout=5,

@@ -30,7 +30,7 @@ Fuller example (AMD Zen 5 desktop, Nuvoton Super I/O, DDR5 temps):
 services.corecycler = {
   enable = true;
   deviceAccessUser = "your-username";
-  unfreeBackends = true;   # include mprime (best for CO tuning)
+  unfreeBackends = true;   # include mprime (best for CO tuning) and y-cruncher
   zenpower = true;         # zenpower5: richer monitoring than k10temp
   nct6775 = true;          # Nuvoton Super I/O: motherboard Vcore fallback
   spd5118 = true;          # DDR5 DIMM temperatures via the SPD hub
@@ -42,7 +42,7 @@ services.corecycler = {
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `enable` | bool | `false` | Enable CoreCycler |
-| `unfreeBackends` | bool | `false` | Include mprime (unfree). When false, stress-ng and stressapptest are bundled |
+| `unfreeBackends` | bool | `false` | Include mprime and y-cruncher (unfree). When false, stress-ng and stressapptest are bundled |
 | `ryzenSmu` | bool | `true` | Load [ryzen_smu](https://github.com/amkillam/ryzen_smu) for CO read/write via SMU (Zen 1-5) |
 | `zenpower` | bool | `false` | Load [zenpower5](https://github.com/mattkeenan/zenpower5) instead of k10temp -- temps, SVI2 voltage (Zen 1-4), RAPL power. Blacklists k10temp |
 | `coretemp` | bool | `false` | Load in-tree coretemp for Intel CPU temperatures |
@@ -70,9 +70,9 @@ environment.systemPackages = [ inputs.corecycler.packages.${pkgs.system}.full ];
 | Variant | Backends | Unfree |
 |---|---|---|
 | `packages.default` | stress-ng, stressapptest | No |
-| `packages.full` | stress-ng, stressapptest, mprime | Yes (mprime) |
+| `packages.full` | stress-ng, stressapptest, mprime, y-cruncher | Yes (mprime, y-cruncher) |
 
-`packages.full` is built off-CI (mprime is unfree and not on `cache.nixos.org`, so CI
+`packages.full` is built off-CI (its unfree backends are not on `cache.nixos.org`, so CI
 only eval-gates it); build it yourself with `nix build .#full` and `allowUnfree`. Both
 variants bundle taskset (util-linux) for core pinning.
 
@@ -91,8 +91,10 @@ Ubuntu / Fedora / Mint; `sudo` must then use the venv's python.
 ### Arch Linux
 
 ```bash
-sudo pacman -S python python-pyside6 stress-ng stressapptest dmidecode
-yay -S mprime-bin   # AUR, optional -- unfree, best backend for CO tuning
+sudo pacman -S python python-pyside6 stress-ng dmidecode
+yay -S stressapptest        # AUR -- not in the official repos
+yay -S mprime-bin           # AUR, optional -- unfree, best backend for CO tuning
+yay -S y-cruncher           # AUR, optional -- unfree, secondary validation
 
 git clone https://github.com/amkillam/ryzen_smu.git
 cd ryzen_smu && make && sudo make install && sudo modprobe ryzen_smu
@@ -118,11 +120,7 @@ sudo .venv/bin/python src/corecycler/main.py
 ### Fedora
 
 ```bash
-sudo dnf install python3 stress-ng dmidecode kernel-devel gcc make
-
-# stressapptest builds from source (not in the default repos)
-git clone https://github.com/stressapptest/stressapptest.git
-cd stressapptest && ./configure && make && sudo make install && cd ..
+sudo dnf install python3 stress-ng stressapptest dmidecode kernel-devel gcc make
 
 git clone https://github.com/amkillam/ryzen_smu.git
 cd ryzen_smu && make && sudo make install && sudo modprobe ryzen_smu && cd ..
@@ -208,7 +206,7 @@ You need at least one. The Nix package bundles them automatically.
 |---|---|---|---|---|
 | mprime (Prime95 CLI) | Unfree (free to use) | Highest | CO tuning, finding per-core limits | `packages.full` only |
 | stress-ng | GPL-2.0 | Medium | General stability, quick screening | Both variants |
-| y-cruncher | Freeware | Medium-High | Secondary validation, AVX-heavy | Not bundled |
+| y-cruncher | Freeware | Medium-High | Secondary validation, AVX-heavy | `packages.full` only |
 | stressapptest | Apache-2.0 | High (memory) | DDR5/RAM stability, memory controller | Both variants |
 
 **mprime** is the most sensitive backend for CO tuning: its small-FFT workloads draw
@@ -217,10 +215,42 @@ hard crashes. It is unfree; `packages.full` includes it, or install separately:
 `pkgs.mprime` (NixOS, needs `allowUnfree`), `yay -S mprime-bin` (Arch), or download from
 [mersenne.org](https://www.mersenne.org/download/) and `install -m755 mprime /usr/local/bin/`.
 
-**stress-ng** and **stressapptest** install from each distro's repos
-(`apt`/`pacman`/`dnf`) and are bundled in both Nix variants. **y-cruncher** is not
-packaged in nixpkgs -- download from
-[numberworld.org](http://www.numberworld.org/y-cruncher/) and place on PATH.
+**stress-ng** installs from every distro's repos and is bundled in both Nix variants;
+**stressapptest** likewise, except on Arch where it is AUR-only. **y-cruncher** is
+packaged as `pkgs.y-cruncher` (bundled in `packages.full`) and as the AUR `y-cruncher`;
+everywhere else download the tarball from
+[numberworld.org](http://www.numberworld.org/y-cruncher/) and extract it anywhere --
+CoreCycler finds it (see [Where CoreCycler looks for a
+backend](#where-corecycler-looks-for-a-backend)).
+
+## Where CoreCycler looks for a backend
+
+`corecycler doctor` prints every external tool, where it resolved from, and any
+candidate it found but has not been told to use.
+
+A backend is located in this order, most explicit first:
+
+1. `CORECYCLER_<TOOL>_BIN` -- e.g. `CORECYCLER_Y_CRUNCHER_BIN=~/y-cruncher/y-cruncher`,
+   `CORECYCLER_MPRIME_BIN`, `CORECYCLER_STRESS_NG_BIN`.
+2. The path recorded in `~/.config/corecycler/tool-paths.json`, which the GUI writes
+   when you pick a binary in the missing-backend dialog.
+3. `PATH`.
+
+An explicit path that is not an executable file is refused with the reason -- it never
+silently falls back to a different binary.
+
+**Why a tool on your PATH can still be "not found": `sudo` replaces PATH.** Debian,
+Ubuntu, Linux Mint, Fedora and Arch all ship `Defaults secure_path=...` in
+`/etc/sudoers`, so a directory you added to PATH in your shell is gone inside
+`sudo corecycler`; a desktop launcher never sees a shell PATH at all. mprime and
+y-cruncher are extracted tarballs, so this is their normal state.
+
+CoreCycler therefore also looks for an extracted mprime or y-cruncher in the invoking
+user's `~`, `~/Downloads`, `/opt`, `/usr/local`, `/usr/local/lib` and `/usr/lib`, and
+offers what it finds. It never runs a binary found that way until you pick it: it runs
+as root, and silently executing something found in `$HOME` is exactly what `secure_path`
+exists to prevent. Once picked, the path is recorded and every later run resolves it
+without asking.
 
 ## ryzen_smu kernel module
 
