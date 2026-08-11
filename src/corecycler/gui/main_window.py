@@ -74,6 +74,7 @@ class TestWorker(QThread):
     thermal_throttled = Signal(float)
     stall_detected = Signal(int)
     phase_changed = Signal(int, str)
+    crashed = Signal(str)
 
     def __init__(self, scheduler: CoreScheduler) -> None:
         super().__init__()
@@ -97,7 +98,11 @@ class TestWorker(QThread):
         self.scheduler.on_phase_change = [self.phase_changed.emit]
 
     def run(self) -> None:
-        self.scheduler.run()
+        try:
+            self.scheduler.run()
+        except Exception as exc:
+            log.exception("Test worker crashed")
+            self.crashed.emit(str(exc))
 
 
 class MainWindow(QMainWindow):
@@ -111,6 +116,7 @@ class MainWindow(QMainWindow):
         self._settings = load_settings()
         self._topology: CPUTopology | None = None
         self._worker: TestWorker | None = None
+        self._closing = False
         self._test_start_time: float = 0
         self._hwmon = HWMonReader()
         self._msr = MSRReader()
@@ -404,6 +410,7 @@ class MainWindow(QMainWindow):
         self._worker.cycle_completed.connect(self._on_cycle_completed)
         self._worker.cycle_completed.connect(self._on_cycle_cached)
         self._worker.test_completed.connect(self._on_test_completed)
+        self._worker.crashed.connect(self._on_worker_crashed)
         self._worker.finished.connect(self._on_worker_finished)
 
         # History logger
@@ -570,9 +577,13 @@ class MainWindow(QMainWindow):
                 and all(isinstance(r, dict) and r.get("passed") for r in r_list)
             )
 
-        # Keys are stringified core_ids, values are lists of result dicts
-        total = len(results)
-        passed = sum(1 for r_list in results.values() if _all_passed(r_list))
+        # Keys are stringified core_ids, values are lists of result dicts.
+        # A core with no verdict (stopped before its test earned one) is not
+        # tested — counting it as failed would read as a silicon problem.
+        tested = {cid: r_list for cid, r_list in results.items()
+                  if isinstance(r_list, list) and r_list}
+        total = len(tested)
+        passed = sum(1 for r_list in tested.values() if _all_passed(r_list))
         failed = total - passed
         elapsed = time.monotonic() - self._test_start_time
 
@@ -596,17 +607,16 @@ class MainWindow(QMainWindow):
                     continue
         self._config_tab.set_failed_cores(failed_cores)
 
+    def _on_worker_crashed(self, message: str) -> None:
+        if self._closing:
+            return
+        self._status_msg.setText(f"Test worker crashed: {message}")
+
     def _on_worker_finished(self) -> None:
+        if self._closing:
+            return
         was_stopping = not self._stop_btn.isEnabled()
         self._cleanup_worker()
-
-        # Disconnect logger signals before discarding — prevents queued
-        # cross-thread signals from arriving after logger is gone.
-        if self._logger and self._worker is None:
-            # Worker already None from _cleanup_worker; signals are disconnected
-            # implicitly when the sender (worker) is destroyed. Any pending
-            # queued signals with a destroyed sender are discarded by Qt.
-            pass
         self._logger = None
         self._history_tab.refresh()
         if was_stopping:
@@ -851,6 +861,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         # Check if ANYTHING is running (manual test OR tuner OR memory stress)
+        self._closing = True
         manual_running = self._worker and self._worker.isRunning()
         tuner_running = self._tuner_tab.is_running
         memory_running = (
@@ -867,6 +878,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
+                self._closing = False
                 event.ignore()
                 return
 
@@ -886,10 +898,13 @@ class MainWindow(QMainWindow):
                     self._logger.on_test_stopped()
                 self._logger = None
 
-            # Disconnect thread-safety cache signals
+            # Disconnect thread-safety cache signals, and the finished handler:
+            # its queued delivery lands after this method closes the database.
             with contextlib.suppress(RuntimeError):
                 self._worker.status_updated.disconnect(self._on_status_cached)
                 self._worker.cycle_completed.disconnect(self._on_cycle_cached)
+            with contextlib.suppress(RuntimeError, TypeError):
+                self._worker.finished.disconnect(self._on_worker_finished)
 
             self._worker.scheduler.force_stop()
             if not self._worker.wait(5000):
@@ -903,9 +918,6 @@ class MainWindow(QMainWindow):
         # Stop memory stress test if running
         if hasattr(self, '_memory_tab'):
             self._memory_tab.force_stop()
-
-        # Qt discards queued signals from destroyed senders — force_stop()
-        # above stops and destroys workers, so no manual processEvents needed.
 
         # save window size
         self._settings.window_width = self.width()
