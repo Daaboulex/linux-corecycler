@@ -23,10 +23,8 @@ class StressapptestBackend(StressBackend):
     name = "stressapptest"
 
     def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
-        # stressapptest auto-detects available CPUs from its affinity mask.
-        # taskset (applied by CoreScheduler) constrains it to the target core's
-        # logical CPUs. No explicit thread count needed — it will use exactly
-        # the CPUs available in its affinity set.
+        # stressapptest sizes its worker pool from its affinity mask, which the
+        # engine's cgroup cpuset already clamps to the lane's CPUs.
         return [
             self.require_binary(),
             "-W",

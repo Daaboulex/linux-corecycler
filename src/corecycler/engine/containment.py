@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from corecycler.config import tools
@@ -28,6 +29,46 @@ _probe_cache: dict[str, str | None] = {}
 
 class ContainmentUnavailable(RuntimeError):
     """No kernel boundary can be established; launching uncontained is refused."""
+
+
+@dataclass(frozen=True, slots=True)
+class Containment:
+    prefix: list[str]
+    unit: str
+
+
+_unit_seq = 0
+
+
+def _next_unit() -> str:
+    global _unit_seq
+    _unit_seq += 1
+    return f"corecycler-{os.getpid()}-{_unit_seq}"
+
+
+def payload_cgroup(pid: int, unit: str, *, proc_base: Path | None = None) -> str | None:
+    """The payload's cgroup-v2 path once it has been placed into our scope.
+
+    None until the 0:: line ends with the named scope — before placement it
+    still shows the launcher's cgroup, which must never be judged."""
+    base = proc_base or Path("/proc")
+    try:
+        text = (base / str(pid) / "cgroup").read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("0::") and line.strip().endswith(f"/{unit}.scope"):
+            return line.strip()[3:]
+    return None
+
+
+def scope_effective_cpus(cgroup_path: str, *, cgroup_base: Path | None = None) -> set[int] | None:
+    base = cgroup_base or Path("/sys/fs/cgroup")
+    try:
+        text = (base / cgroup_path.lstrip("/") / "cpuset.cpus.effective").read_text()
+    except OSError:
+        return None
+    return _parse_cpu_ranges(text.strip())
 
 
 def cpu_list(cpus: set[int] | tuple[int, ...] | list[int]) -> str:
@@ -70,8 +111,8 @@ def available_mechanism(*, refresh: bool = False) -> str | None:
     return _probe_cache[key]
 
 
-def contain(cpus: set[int] | tuple[int, ...] | list[int]) -> list[str]:
-    """Command prefix that runs the payload inside an AllowedCPUs cpuset.
+def contain(cpus: set[int] | tuple[int, ...] | list[int]) -> Containment:
+    """Command prefix that runs the payload inside a named AllowedCPUs scope.
 
     Raises ContainmentUnavailable instead of ever returning a weaker prefix.
     """
@@ -87,15 +128,20 @@ def contain(cpus: set[int] | tuple[int, ...] | list[int]) -> list[str]:
     systemd_run = _systemd_run_path()
     if systemd_run is None:
         raise ContainmentUnavailable("systemd-run disappeared after probe")
+    unit = _next_unit()
     prefix = [systemd_run]
     if mechanism == MECHANISM_USER:
         prefix.append("--user")
-    prefix += ["--scope", "--quiet", "--collect", "-p", f"AllowedCPUs={cpu_list(cpuset)}"]
+    prefix += [
+        "--scope", "--quiet", "--collect",
+        "--unit", unit,
+        "-p", f"AllowedCPUs={cpu_list(cpuset)}",
+    ]
     setpriv = tools.resolve("setpriv")
     if setpriv.path is None:
         raise ContainmentUnavailable("setpriv is required and was not found (util-linux)")
     prefix += ["--", str(setpriv.path), "--pdeathsig", "SIGKILL", "--"]
-    return prefix
+    return Containment(prefix=prefix, unit=unit)
 
 
 def observed_tree_cpus(pid: int, *, proc_base: Path | None = None) -> set[int]:

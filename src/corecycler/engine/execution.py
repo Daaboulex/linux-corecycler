@@ -29,6 +29,7 @@ STALL_GRACE_SECONDS = 5.0
 ERROR_POLL_INTERVAL = 5.0
 WATCHDOG_INTERVAL = 2.0
 STARTUP_WINDOW_SECONDS = 2.0
+CONTAINMENT_GRACE_SECONDS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,8 @@ class _LaneRun:
     last_active: float = 0.0
     last_watchdog: float = 0.0
     prev_times: dict[int, tuple[int, int]] = field(default_factory=dict)
+    unit: str | None = None
+    cgroup: str | None = None
     stdout: str = ""
     stderr: str = ""
     drained: bool = False
@@ -230,8 +233,7 @@ class Supervisor:
         stop_on_first_failure: bool = True,
         phase: str = "stress",
         hooks: SuperviseHooks | None = None,
-        containment_prefix: Callable[[tuple[int, ...]], list[str]] | None = None,
-        watch_escapes: bool = True,
+        containment_for: Callable[[tuple[int, ...]], containment.Containment | None] | None = None,
     ) -> None:
         self.backend = backend
         self.detector = detector
@@ -243,8 +245,7 @@ class Supervisor:
         self.stop_on_first_failure = stop_on_first_failure
         self.phase = phase
         self.hooks = hooks or SuperviseHooks()
-        self._contain = containment_prefix or containment.contain
-        self.watch_escapes = watch_escapes
+        self._containment_for = containment_for or containment.contain
         self._we_killed = False
 
     def run(
@@ -271,7 +272,9 @@ class Supervisor:
         try:
             self.backend.prepare(lane.work_dir, cfg)
             self.backend.assert_prepared(lane.work_dir)
-            prefix = self._contain(lane.cpus)
+            contained = self._containment_for(lane.cpus)
+            prefix = contained.prefix if contained is not None else []
+            run.unit = contained.unit if contained is not None else None
             cmd = prefix + self.backend.get_command(cfg, lane.work_dir)
         except (OSError, RuntimeError) as exc:
             log.error("core %d: refusing stress launch: %s", lane.core_id, exc)
@@ -409,17 +412,11 @@ class Supervisor:
                     continue
                 self._fail(run, msg or f"stress exited with code {rc}", start)
                 return self.stop_on_first_failure
-            if self.watch_escapes and now - run.last_watchdog >= WATCHDOG_INTERVAL:
+            if run.unit is not None and now - run.last_watchdog >= WATCHDOG_INTERVAL:
                 run.last_watchdog = now
-                escaped = self._escaped_cpus(run)
-                if escaped:
-                    self._fail(
-                        run,
-                        f"stress process escaped its CPU boundary to {containment.cpu_list(escaped)} "
-                        f"(allowed {run.lane.cpu_list}) — containment fault, not a core verdict",
-                        start,
-                        error_type="startup",
-                    )
+                fault = self._containment_fault(run, now)
+                if fault:
+                    self._fail(run, fault, start, error_type="startup")
                     return True
             if now - start >= STALL_GRACE_SECONDS and self._is_stalled(run, now):
                 if self.hooks.on_stall:
@@ -435,14 +432,30 @@ class Supervisor:
                 return self.stop_on_first_failure
         return False
 
-    def _escaped_cpus(self, run: _LaneRun) -> set[int]:
-        if run.proc is None:
-            return set()
-        try:
-            observed = containment.observed_tree_cpus(run.proc.pid)
-        except OSError:
-            return set()
-        return observed - set(run.lane.cpus) if observed else set()
+    def _containment_fault(self, run: _LaneRun, now: float) -> str | None:
+        if run.proc is None or run.unit is None:
+            return None
+        if run.cgroup is None:
+            run.cgroup = containment.payload_cgroup(run.proc.pid, run.unit)
+        if run.cgroup is None:
+            if now - run.started_at > CONTAINMENT_GRACE_SECONDS:
+                return (
+                    f"scope {run.unit} never adopted the stress payload within "
+                    f"{CONTAINMENT_GRACE_SECONDS:.0f}s — containment fault, not a core verdict"
+                )
+            return None
+        effective = containment.scope_effective_cpus(run.cgroup)
+        if effective is None:
+            return (
+                f"the kernel record for scope {run.unit} vanished while the payload ran "
+                "— containment fault, not a core verdict"
+            )
+        if effective != set(run.lane.cpus):
+            return (
+                f"scope {run.unit} runs on CPUs {containment.cpu_list(effective)} "
+                f"instead of {run.lane.cpu_list} — containment fault, not a core verdict"
+            )
+        return None
 
     def _is_stalled(self, run: _LaneRun, now: float) -> bool:
         active = False

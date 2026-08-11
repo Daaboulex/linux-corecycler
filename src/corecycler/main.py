@@ -105,9 +105,8 @@ def _parse_auto_resume(argv: list[str]) -> int | None:
     return 120
 
 
-def main() -> int:
+def setup_logging() -> None:
     import logging
-    import os
 
     # Two log surfaces from one root: the human narrative at INFO on stderr,
     # and a rotating DEBUG file capturing what verdicts drop (detector polls,
@@ -134,6 +133,12 @@ def main() -> int:
     except OSError as e:
         print(f"corecycler: debug log unavailable: {e}", file=sys.stderr)
     logging.basicConfig(level=logging.DEBUG, handlers=handlers)
+
+
+def main() -> int:
+    import os
+
+    setup_logging()
 
     argv = sys.argv[1:]
     if argv and argv[0] in ("-h", "--help"):

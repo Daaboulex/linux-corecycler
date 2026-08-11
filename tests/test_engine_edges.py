@@ -175,8 +175,7 @@ def _idle_supervisor(backend=None, **overrides):
         stop_event=threading.Event(),
         observed=[],
         poll_interval=0.01,
-        containment_prefix=lambda cpus: [],
-        watch_escapes=False,
+        containment_for=lambda cpus: None,
     )
     kwargs.update(overrides)
     return execution.Supervisor(**kwargs)
@@ -222,27 +221,26 @@ class TestSupervisorInternalsEdges:
         decided.verdict = StressResult(core_id=0, passed=False, duration_seconds=0.1)
         assert supervisor._apply_mce_events([decided], time.monotonic()) is False
 
-    def test_escape_observation_handles_a_dead_process(self, tmp_path):
+    def test_containment_fault_ignores_a_dead_or_unverified_lane(self, tmp_path):
         supervisor = _idle_supervisor()
         ghost = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
-        assert supervisor._escaped_cpus(ghost) == set()
+        assert supervisor._containment_fault(ghost, time.monotonic()) is None
         ghost.proc = SimpleNamespace(pid=1)
-        with patch.object(containment, "observed_tree_cpus", side_effect=OSError):
-            assert supervisor._escaped_cpus(ghost) == set()
+        assert supervisor._containment_fault(ghost, time.monotonic()) is None
 
     def test_a_late_unattributed_event_lands_on_the_anchor(self, tmp_path):
         from test_execution import FakeBackend, FakeDetector
 
         backend = FakeBackend(
-            [sys.executable, "-c", "import time; time.sleep(0.3)"]
+            [sys.executable, "-c", "import time; time.sleep(60)"]
         )
         supervisor = _idle_supervisor(
             backend=backend,
-            detector=FakeDetector([[], [Event(cpu=-1)]]),
-            poll_interval=0.5,
+            detector=FakeDetector([[Event(cpu=-1)]]),
+            poll_interval=1.0,
         )
         lane = Lane(core_id=2, cpus=(2,), work_dir=tmp_path / "core_2")
-        verdict = supervisor.run([lane], lambda _lane: StressConfig(), 0.1)[2]
+        verdict = supervisor.run([lane], lambda _lane: StressConfig(), 0.0)[2]
         assert verdict is not None and not verdict.passed
         assert verdict.error_type == "mce_unattributed"
 

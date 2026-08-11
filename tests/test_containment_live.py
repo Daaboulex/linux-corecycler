@@ -27,7 +27,7 @@ def _require_mechanism() -> None:
 
 def test_a_contained_child_cannot_escape_its_cpuset():
     _require_mechanism()
-    prefix = containment.contain(ALLOWED)
+    prefix = containment.contain(ALLOWED).prefix
     probe = (
         "import json, os\n"
         "try:\n"
@@ -53,9 +53,9 @@ def test_a_contained_child_cannot_escape_its_cpuset():
 
 def test_the_watchdog_observation_matches_the_kernel_record():
     _require_mechanism()
-    prefix = containment.contain(ALLOWED)
+    contained = containment.contain(ALLOWED)
     proc = subprocess.Popen(
-        prefix + [sys.executable, "-c", "import time; time.sleep(10)"],
+        contained.prefix + [sys.executable, "-c", "import time; time.sleep(10)"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         preexec_fn=execution.make_preexec(),
@@ -72,5 +72,8 @@ def test_the_watchdog_observation_matches_the_kernel_record():
         assert observed <= set(ALLOWED), (
             f"observed CPUs {sorted(observed)} outside AllowedCPUs={ALLOWED}"
         )
+        cgroup = containment.payload_cgroup(proc.pid, contained.unit)
+        assert cgroup is not None, "payload never showed the named scope in /proc"
+        assert containment.scope_effective_cpus(cgroup) == set(ALLOWED)
     finally:
         execution.kill_process_group(proc)
