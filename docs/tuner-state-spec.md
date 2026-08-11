@@ -66,9 +66,10 @@ penalty never overshoots past stock (CO=0).
 
 Evidence outranks policy; a guess is never written. Priority order:
 
-1. Kernel-journal forensics (`journalctl -k` since the session's last
-   activity, cross-boot): penalize exactly the cores the kernel's MCE lines
-   name, anchored at their journaled resident values.
+1. Kernel-journal forensics (`journalctl _TRANSPORT=kernel` since the session's
+   last activity -- not `-k`, which implies the current boot and would hide the
+   crashed one): penalize exactly the cores the kernel's MCE lines name,
+   anchored at their journaled resident values.
 2. A persisted hunt slot (`tuner_sessions.hunting_core`): the box died while
    one core was stressed alone with every other core at stock — proof by
    isolation.
