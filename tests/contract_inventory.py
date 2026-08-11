@@ -19,9 +19,9 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, mock_open, patch
 
 from corecycler.config import tools
+from corecycler.engine import containment
 from corecycler.engine.backends import BACKEND_REGISTRY, load_all
-from corecycler.engine.parallel import _cpu_times
-from corecycler.engine.scheduler import CoreScheduler
+from corecycler.engine.execution import cpu_times as _cpu_times
 from corecycler.monitor.memory import parse_dmidecode_output
 from corecycler.monitor.msr import (
     MSR_APERF,
@@ -141,9 +141,7 @@ def _pin_proc_cpus_allowed_list() -> None:
         task = Path(tmp) / "77" / "task" / "77"
         task.mkdir(parents=True)
         (task / "status").write_text("Name:\tstress\nCpus_allowed_list:\t0-1,4\n")
-        assert CoreScheduler._verify_child_affinity(
-            77, {0, 1, 4}, "0,1,4", proc_base=Path(tmp)
-        ) == (True, 0)
+        assert containment.observed_tree_cpus(77, proc_base=Path(tmp)) == {0, 1, 4}
 
 
 def _pin_proc_stat_cpu_fields() -> None:
@@ -300,7 +298,10 @@ def _pin_external_tool_discovery() -> None:
     assert set(BACKEND_REGISTRY) == backends, (
         "every registered stress backend needs a config.tools entry, or it can never resolve"
     )
-    assert {key for key, tool in tools.TOOLS.items() if tool.kind == tools.CORE} == {"taskset"}
+    assert {key for key, tool in tools.TOOLS.items() if tool.kind == tools.CORE} == {
+        "systemd-run",
+        "setpriv",
+    }
 
 
 CONTRACTS: list[Contract] = [
@@ -342,8 +343,8 @@ CONTRACTS: list[Contract] = [
         ring_a=_pin_proc_cpus_allowed_list,
         live_verifiable=True,
         ring_b_test=(
-            "test_scheduler_exec_loops.py::TestAffinity"
-            "::test_a_pinned_child_reports_the_requested_cpus"
+            "test_containment_live.py"
+            "::test_a_contained_child_cannot_escape_its_cpuset"
         ),
     ),
     Contract(

@@ -2,11 +2,16 @@
 
 # Architecture
 
-CoreCycler is a PySide6 (Qt6) desktop app. Stress tests run in a `QThread` worker; the
-scheduler pins each stress process to both SMT siblings of the physical core under test
-(`taskset -c 0,16`, backend configured for 2 threads), monitors MCE during stress and
-idle phases, parses backend output, and emits Qt signals for the GUI. Processes run in
-their own process group for clean teardown.
+CoreCycler is a PySide6 (Qt6) desktop app. Stress tests run in a `QThread` worker; every
+stress process is launched inside a kernel cgroup cpuset covering the CPUs of the core
+under test (`systemd-run --scope -p AllowedCPUs=0,16`, payload lifetime bound via
+`setpriv --pdeathsig`), a boundary the backend cannot widen with `sched_setaffinity`. One
+supervised execution engine (`engine/execution.py`) monitors MCE during stress and idle
+phases, watches for containment escapes, stalls, and thermal trips, parses backend
+output, and refuses to launch when a backend's config is absent rather than letting the
+tool fall back to a full-machine default. Processes run in their own process group for
+clean teardown; a launch with no available cgroup mechanism is refused, never run
+uncontained.
 
 ## Source layout
 

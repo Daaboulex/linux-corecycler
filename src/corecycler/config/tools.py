@@ -104,10 +104,16 @@ TOOLS: dict[str, ExternalTool] = {
             names=("stressapptest",),
         ),
         ExternalTool(
-            key="taskset",
+            key="systemd-run",
+            kind=CORE,
+            package="systemd",
+            names=("systemd-run",),
+        ),
+        ExternalTool(
+            key="setpriv",
             kind=CORE,
             package="util-linux",
-            names=("taskset",),
+            names=("setpriv",),
         ),
         ExternalTool(
             key="dmidecode",
@@ -272,11 +278,6 @@ def command_name(key: str) -> str:
     """
     resolution = resolve(key)
     return str(resolution.path) if resolution.path else key
-
-
-def taskset_prefix(cpu_list: str) -> list[str]:
-    """The core-pinning prefix every stress command carries."""
-    return [command_name("taskset"), "-c", cpu_list]
 
 
 def _explicit(key: str, raw: str, origin: str, subject: str) -> Resolution:

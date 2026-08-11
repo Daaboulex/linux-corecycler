@@ -91,7 +91,7 @@
                 # trails the out-of-sandbox number.
                 pytestFlags = [
                   "--cov=corecycler"
-                  "--cov-report=term"
+                  "--cov-report=term-missing"
                   "--cov-fail-under=100"
                 ];
 
@@ -119,7 +119,7 @@
                       pkgs.lib.makeBinPath (
                         backends
                         ++ [
-                          pkgs.util-linux # for taskset
+                          pkgs.util-linux # for setpriv (containment payload lifetime)
                           pkgs.dmidecode # for DIMM info in Memory tab
                           pkgs.libnotify # for notify-send desktop notifications
                         ]

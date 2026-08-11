@@ -114,6 +114,13 @@ class StressBackend(ABC):
     def prepare(self, work_dir: Path, config: StressConfig) -> None:  # noqa: B027
         """Prepare working directory and config files before running. Override if needed."""
 
+    def assert_prepared(self, work_dir: Path) -> None:  # noqa: B027
+        """Raise OSError when the prepared state a launch depends on is not readable.
+
+        A backend that launches against absent config silently falls back to its
+        own defaults (mprime: one self-pinned worker per detected core), so the
+        launch must be refused instead. Override where config files exist."""
+
     def poll_errors(self, work_dir: Path) -> str | None:
         """Check for fatal errors mid-run (e.g. a results file the stress tool
         appends to while continuing). Returns an error message or None.

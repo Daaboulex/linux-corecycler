@@ -77,7 +77,9 @@ environment.systemPackages = [ inputs.corecycler.packages.${pkgs.system}.full ];
 
 `packages.full` is built off-CI (its unfree backends are not on `cache.nixos.org`, so CI
 only eval-gates it); build it yourself with `nix build .#full` and `allowUnfree`. Both
-variants bundle taskset (util-linux) for core pinning.
+variants bundle setpriv (util-linux); core pinning uses a systemd cgroup scope
+(`systemd-run -p AllowedCPUs=...`), so the host needs systemd — without it, stress
+launches are refused rather than run unpinned.
 
 ## Nix (any distro)
 
