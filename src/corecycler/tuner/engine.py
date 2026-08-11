@@ -1581,12 +1581,14 @@ class TunerEngine(QObject):
         """Re-open a quarantined session on proven ground only.
 
         The breaker closed this session because the machine kept dying on
-        re-engage, so nothing unproven may be applied again: every offset that
-        would reach the hardware (the search position and the baseline every
-        other core is restored to) drops to the most aggressive value this
-        session has actually SURVIVED, which is stock when it has survived
-        none. Search bookkeeping -- fail bounds, best, phase -- is left intact,
-        so the work done before the quarantine is kept, not discarded.
+        re-engage, so nothing unproven may be applied again. Every offset that
+        can reach the hardware drops to the most aggressive value this session
+        has actually SURVIVED, stock when it has survived none: the search
+        position, the baseline every other core is restored to, and best --
+        which validation writes to every core it is not testing. A value a
+        test passed at is journaled survived, so this demotes only what was
+        never proven; fail bounds and phases are untouched, and the work done
+        before the quarantine is continued rather than discarded.
 
         Only ever reached from an explicit resume of a named session: the
         automatic paths still exclude quarantined sessions.
@@ -1595,8 +1597,9 @@ class TunerEngine(QObject):
         for cs in self._core_states.values():
             survived = self._co_survived.get(cs.core_id, 0)
             changed = False
-            for attr in ("current_offset", "baseline_offset"):
-                if self._is_more_aggressive(getattr(cs, attr), survived):
+            for attr in ("current_offset", "baseline_offset", "best_offset"):
+                value = getattr(cs, attr)
+                if value is not None and self._is_more_aggressive(value, survived):
                     setattr(cs, attr, survived)
                     changed = True
             if changed:

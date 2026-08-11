@@ -135,8 +135,10 @@ configuration that crashes the machine. Three mechanisms enforce this:
 3. **Resume-crash circuit breaker** -- consecutive crash-resumes with no surviving test
    between them are counted (reset whenever any test completes). After
    `resume_crash_quarantine_threshold` (default 3), the tuner forces every core to CO=0,
-   marks the session `quarantined` (excluded from the resume picker), and surfaces an
-   honest "unsafe on this machine" verdict. A machine that keeps dying on resume is
+   marks the session `quarantined` (never resumed automatically, and re-opened by hand
+   only after a warning -- it then re-engages on offsets the machine has already
+   survived, stock where it survived none), and surfaces an honest "unsafe on this
+   machine" verdict. A machine that keeps dying on resume is
    bounded, not looped -- this holds during multi-core validation too.
 
 An interrupted session is detected on next launch and offered for resume; resume
