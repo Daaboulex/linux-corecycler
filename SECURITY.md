@@ -52,6 +52,23 @@ All MSR access is **read-only** (`O_RDONLY`). No MSR write path exists in the co
 
 Note: Group read access to `/dev/cpu/N/msr` exposes ALL readable MSRs on all logical CPUs, including speculation control state and microarchitectural configuration. This is an accepted trade-off for non-root monitoring.
 
+### External Binary Execution
+
+The tool executes third-party stress binaries (mprime, y-cruncher, stress-ng,
+stressapptest) plus `taskset`, `dmesg`, `journalctl`, `dmidecode` and `notify-send` --
+as root whenever CoreCycler itself is run under sudo.
+
+Each is resolved in one place (`config/tools.py`), most explicit first: the
+`CORECYCLER_<TOOL>_BIN` environment variable, then the path recorded in
+`~/.config/corecycler/tool-paths.json`, then PATH. The first two are user-writable, so
+whoever can write them chooses what root executes -- the same trust already implied by
+that user typing `sudo corecycler`.
+
+Binaries found by scanning the well-known extraction directories (`~`, `~/Downloads`,
+`/opt`, `/usr/local`, `/usr/local/lib`, `/usr/lib`) are only ever OFFERED. None is
+executed until the user designates it, because running a `$HOME` binary as root without
+being asked is exactly what sudo's `secure_path` exists to prevent.
+
 ### Privilege Model
 
 - A dedicated `corecycler` system group provides device access without sudo.

@@ -85,8 +85,9 @@ setup are in [docs/installation.md](docs/installation.md).
 
 Launch with `sudo corecycler` (root is recommended for full telemetry and SMU access).
 Pick a backend and preset in the Configuration tab and click **Start Test**, or use the
-**Auto-Tuner** tab to search every core's stable offset automatically. The full guide --
-manual tuning workflow, the Auto-Tuner, and reading results -- is in
+**Auto-Tuner** tab to search every core's stable offset automatically. If a backend is
+reported as not found, `corecycler doctor` prints where it looked and what it found. The
+full guide -- manual tuning workflow, the Auto-Tuner, and reading results -- is in
 [docs/usage.md](docs/usage.md).
 
 ## Documentation
