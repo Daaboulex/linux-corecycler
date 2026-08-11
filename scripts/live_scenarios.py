@@ -23,6 +23,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -37,6 +38,35 @@ def check(name: str, ok: bool, detail: object) -> None:
     EVIDENCE[name] = detail
     if not ok:
         FAILURES.append(f"{name}: {detail}")
+
+
+STRESS_BINARY_MARKERS = ("lib/y-cruncher", "/mprime", "/stress-ng", "/stressapptest")
+
+
+def kill_app_stress_tree() -> None:
+    import signal as _sig
+
+    from corecycler.engine.containment import _process_tree
+
+    for pid in _process_tree(os.getpid(), Path("/proc")):
+        if pid == os.getpid():
+            continue
+        try:
+            cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
+        except OSError:
+            continue
+        if any(marker in cmd for marker in STRESS_BINARY_MARKERS):
+            with contextlib.suppress(OSError, ProcessLookupError):
+                os.kill(pid, _sig.SIGKILL)
+
+
+def _hard_watchdog(seconds: float) -> None:
+    import signal as _sig
+
+    time.sleep(seconds)
+    sys.stderr.write(f"live_scenarios: watchdog fired after {seconds}s; killing stress tree\n")
+    kill_app_stress_tree()
+    os.kill(os.getpid(), _sig.SIGKILL)
 
 
 def campaign_home() -> Path:
@@ -227,6 +257,42 @@ class GuiDriver:
                     return True
         return False
 
+    def arm_modal_autoclick(self) -> dict:
+        from PySide6.QtCore import QTimer
+
+        state = {"done": False, "elapsed": 0.0}
+
+        def poll() -> None:
+            if self.click_yes_on_modal():
+                state["done"] = True
+                return
+            state["elapsed"] += 0.1
+            if state["elapsed"] < 15.0:
+                QTimer.singleShot(100, poll)
+
+        QTimer.singleShot(100, poll)
+        return state
+
+    def arm_warning_capture(self) -> dict:
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QMessageBox
+
+        state: dict = {"title": "", "text": "", "elapsed": 0.0}
+
+        def poll() -> None:
+            modal = self.app.activeModalWidget()
+            if isinstance(modal, QMessageBox):
+                state["title"] = modal.windowTitle()
+                state["text"] = modal.text()
+                modal.accept()
+                return
+            state["elapsed"] += 0.1
+            if state["elapsed"] < 15.0:
+                QTimer.singleShot(100, poll)
+
+        QTimer.singleShot(100, poll)
+        return state
+
     def worker_running(self) -> bool:
         worker = self.window._worker
         return bool(worker and worker.isRunning())
@@ -359,14 +425,10 @@ def scenario_gui_close(args) -> None:
     driver.start()
     driver.pump(args.after)
     check("worker_was_running", driver.worker_running(), "worker state before close")
+    clicked = driver.arm_modal_autoclick()
     driver.window.close()
-    clicked = False
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and not clicked:
-        driver.pump(0.2)
-        clicked = driver.click_yes_on_modal()
-    check("close_dialog_appeared_and_yes_clicked", clicked, clicked)
     driver.pump(3.0)
+    check("close_dialog_appeared_and_yes_clicked", clicked["done"], clicked)
     comm = BACKEND_COMMS[args.backend]
     deadline = time.monotonic() + 20
     while find_backend_pids(comm) and time.monotonic() < deadline:
@@ -385,20 +447,19 @@ def scenario_gui_refusal(args) -> None:
     )
     driver = GuiDriver()
     driver.pump(1.0)
+    warning = driver.arm_warning_capture()
     driver.start()
-    driver.pump(8.0)
-    deadline = time.monotonic() + 30
-    while driver.worker_running() and time.monotonic() < deadline:
-        driver.pump(0.25)
-    runs = history_rows()
-    cores = runs[-1]["cores"] if runs else []
+    driver.pump(3.0)
+    check("no_worker_started", not driver.worker_running(), driver.worker_running())
     check(
-        "every_core_refused_as_startup_fault",
-        bool(cores) and all(not c["passed"] and c["error_type"] == "startup" for c in cores),
-        cores,
+        "the_refusal_was_reported_to_the_user",
+        "Work directory unavailable" in warning.get("title", ""),
+        warning,
     )
     check("app_alive_after_refusal", driver.window.isVisible(), driver.window.isVisible())
+    check("no_history_run_recorded", history_rows() == [], history_rows())
     check("no_uncaught_exceptions", app_log_critical_lines() == [], app_log_critical_lines())
+    blocked.chmod(0o700)
     driver.window.close()
     driver.pump(0.5)
     blocked.chmod(0o700)
@@ -506,13 +567,19 @@ def main() -> int:
     parser.add_argument("--cores", type=int, nargs="+", default=[4, 5])
     parser.add_argument("--seconds", type=int, default=20)
     parser.add_argument("--after", type=float, default=8.0)
+    parser.add_argument("--watchdog", type=float, default=180.0)
     args = parser.parse_args()
 
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
     from corecycler.main import setup_logging
 
     setup_logging()
-    SCENARIOS[args.scenario](args)
+    watchdog = threading.Thread(target=_hard_watchdog, args=(args.watchdog,), daemon=True)
+    watchdog.start()
+    try:
+        SCENARIOS[args.scenario](args)
+    finally:
+        kill_app_stress_tree()
 
     verdict = {
         "scenario": args.scenario,
