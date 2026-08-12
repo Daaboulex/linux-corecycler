@@ -61,5 +61,8 @@ def test_a_stress_backend_is_installed():
 
 
 def test_core_tools_are_installed():
-    require("taskset" in _on_path(), "taskset (util-linux) is not installed")
-    assert tools.resolve("taskset").path is not None
+    present = _on_path()
+    core = [k for k, tool in tools.TOOLS.items() if tool.kind == tools.CORE]
+    missing = [k for k in core if k not in present]
+    require(not missing, f"core tools not installed: {', '.join(missing)}")
+    assert all(tools.resolve(k).path is not None for k in core)

@@ -39,21 +39,21 @@ jobs:
             install: >-
               apt-get update && apt-get install -y --no-install-recommends
               python3 git ca-certificates stress-ng stressapptest dmidecode util-linux systemd
-            expect: stress-ng stressapptest dmidecode taskset dmesg journalctl
+            expect: stress-ng stressapptest dmidecode systemd-run setpriv dmesg journalctl
           - image: ubuntu:24.04
             install: >-
               apt-get update && apt-get install -y --no-install-recommends
               python3 git ca-certificates stress-ng stressapptest dmidecode util-linux systemd
-            expect: stress-ng stressapptest dmidecode taskset dmesg journalctl
+            expect: stress-ng stressapptest dmidecode systemd-run setpriv dmesg journalctl
           - image: fedora:latest
             install: >-
               dnf install -y python3 git stress-ng stressapptest dmidecode util-linux systemd
-            expect: stress-ng stressapptest dmidecode taskset dmesg journalctl
+            expect: stress-ng stressapptest dmidecode systemd-run setpriv dmesg journalctl
           # stressapptest is AUR-only on Arch, so it is not expected here.
           - image: archlinux:latest
             install: >-
               pacman -Sy --noconfirm python git stress-ng dmidecode util-linux systemd
-            expect: stress-ng dmidecode taskset dmesg journalctl
+            expect: stress-ng dmidecode systemd-run setpriv dmesg journalctl
     container: ${{ matrix.image }}
     # A container the runner reads as bash-less gets `sh -e`, and dash has no pipefail.
     defaults:
