@@ -58,3 +58,6 @@ target/
 node_modules/
 .venv/
 venv/
+.session-handoff*.md
+.rumdl_cache/
+.mypy_cache/

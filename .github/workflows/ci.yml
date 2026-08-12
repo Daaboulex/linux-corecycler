@@ -25,24 +25,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  no-ai-files:
+  no-tracked-ignored-files:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Fail if AI artifacts are tracked
+      - name: Fail if a tracked file is gitignored
         run: |
-          set -e
-          FORBIDDEN='^(CLAUDE\.md|GEMINI\.md|AGENTS\.md|AI-progress\.json|AI-tasks\.json|\.session-handoff.*\.md|\.claude/|\.gemini/|\.codex/|\.ai-context/|\.cursor/|\.superpowers/|\.planning/|memory/|handoffs/|deferred-work\.jsonl|self-improvements-pending-.*\.jsonl)'
-          MATCHES=$(git ls-files | grep -E "$FORBIDDEN" || true)
-          if [ -n "$MATCHES" ]; then
-            echo "::error::Tracked AI artifacts detected. These must be gitignored, never committed:"
-            while IFS= read -r m; do echo "  - $m"; done <<<"$MATCHES"
+          set -eu
+          tracked_ignored=$(git ls-files -i -c --exclude-per-directory=.gitignore)
+          if [ -n "$tracked_ignored" ]; then
+            echo "::error::These tracked files match .gitignore and must not be committed:"
+            printf '%s\n' "$tracked_ignored" | while IFS= read -r f; do echo "  - $f"; done
             exit 1
           fi
-          echo "Clean — no AI artifacts tracked."
+          echo "Clean -- no tracked file is gitignored."
 
   build:
-    needs: no-ai-files
+    needs: no-tracked-ignored-files
     strategy:
       fail-fast: false
       matrix:
@@ -52,7 +51,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: DeterminateSystems/determinate-nix-action@d96678350ffd6a456235832eb11e1c491589b7bb # v3.21.8
         with:
-          extra-conf: lazy-trees = false
+          extra-conf: |
+            lazy-trees = false
+            keep-outputs = true
+            keep-derivations = true
+
+      - name: Cache the Nix store
+        id: nix-cache
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/flake.lock', '**/*.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-
+          gc-max-store-size-linux: 8G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-${{ runner.arch }}-
+          purge-last-accessed: P1DT12H
+          purge-primary-key: never
 
       # Large source builds (mesa, portmaster, scx) can exhaust the runner's
       # ~14 GB default disk mid-build ("No space left on device"). Drop
@@ -65,6 +79,23 @@ jobs:
             /opt/hostedtoolcache/CodeQL /usr/local/.ghcup || true
           sudo docker image prune --all --force >/dev/null 2>&1 || true
           df -h /
+
+      - name: Flag a build-the-world bump
+        if: steps.nix-cache.outputs.restored-key != ''
+        run: |
+          SYS=$(nix eval --impure --raw --expr 'builtins.currentSystem')
+          nix eval ".#checks.$SYS" --apply 'x: builtins.attrNames x != [ ]' 2>/dev/null | grep -qx true || exit 0
+          mapfile -t D < <(nix run --inputs-from . nixpkgs#nix-eval-jobs -- --flake ".#checks.$SYS" 2>/dev/null | jq -r '.drvPath')
+          [ ${#D[@]} -eq 0 ] && exit 0
+          B=$(nix build "${D[@]/%/^*}" --dry-run --narinfo-cache-negative-ttl 0 2>&1 | sed -n 's/^these \([0-9]\+\) derivations will be built.*/\1/p')
+          B=${B:-0}
+          echo "will build from source this run: $B"
+          if [ "$B" -gt 5000 ]; then
+            echo "::error::$B derivations would build from source -- a flake.lock bump moved far ahead of cache.nixos.org (runaway that would risk the 6h timeout). Investigate the lock, or wait for cache.nixos.org to catch up, before rerunning."
+            exit 1
+          elif [ "$B" -gt 500 ]; then
+            echo "::warning::$B derivations build from source -- a flake.lock bump moved ahead of cache.nixos.org. The store cache absorbs it after this run."
+          fi
 
       - name: Build + check every output declared for this system
         run: |
