@@ -9,6 +9,72 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-08-12 the GUI survives close, stop and refused starts mid-test)
+
+- Closing the window while a test ran crashed every time: the history database
+  closed first, then Qt delivered the worker's still-queued `finished` signal
+  into the dead connection (`sqlite3.ProgrammingError`, three times on
+  2026-08-11). The close path now disconnects the handler before stopping the
+  worker, late handlers return early once the window is closing, a worker
+  thread that crashes surfaces on the status bar instead of dying silently,
+  and the results summary counts only cores that earned a verdict -- a stopped
+  run no longer reads as failed silicon.
+- Stopping a memory-stress run could hang the app: `stop()` and the worker's
+  own `communicate()` waited on the same child and contended the waitpid lock,
+  so a tool that ignored SIGTERM was never escalated to SIGKILL. `stop()` now
+  only signals the process group and the worker stays the one reaper.
+- A stress work directory that cannot be created (a read-only parent, found
+  live on ryzen) is reported as "Work directory unavailable" with the real
+  error and no worker starts, instead of an uncaught `PermissionError` out of
+  the Start button.
+
+### Changed (2026-08-11 stress runs inside a kernel-enforced cgroup boundary)
+
+- Every stress process launches inside a transient systemd scope with
+  `AllowedCPUs` pinned to the core under test, its lifetime bound to the app
+  via `setpriv --pdeathsig`. A cgroup cpuset is a boundary the payload cannot
+  widen with `sched_setaffinity`, replacing the 2-second re-pin chase that let
+  mprime run its load on core 0 under the tested core's name (the all-32-CPU
+  escape reproduced live on 2026-08-11). `systemd-run` and `setpriv` are now
+  required tools in `corecycler doctor`; `taskset` is no longer used. When no
+  cgroup mechanism exists the launch is refused, never run uncontained, and
+  mprime refuses to start against a missing or unreadable config instead of
+  falling back to one self-pinned worker per core.
+- The escape watchdog judges the kernel's own record -- each scope's
+  `cpuset.cpus.effective`, not the `/proc` affinity mask, which shows every
+  CPU for a cpuset-confined process and could both false-pass and false-fault.
+  A scope that vanishes, never adopts the payload, or runs wider than its lane
+  fails as a containment fault, never as a core verdict.
+- Every stress path (solo cycling, variable load, rapid transitions, parallel
+  lanes, memory stress) runs through one supervised execution loop. Solo
+  cycling records a failed core's verdict and moves on instead of stopping the
+  whole run, an interrupted lane never invents a pass verdict, and a machine
+  check without core attribution stops the batch as unattributed instead of
+  blaming the tested core. Ring B gains live containment drift tests, and
+  `scripts/live_scenarios.py` drives the real GUI, workers, scopes and
+  database through scripted scenarios on real hardware.
+
+### Fixed (2026-08-11 mprime writes real options; per-user work root)
+
+- The instruction-set selector wrote a `TortureWeak` key that is not an mprime
+  option -- requesting SSE ran AVX-512 -- and forced every CpuSupports flag
+  with a misspelled `CpuSupportsAVX512`. The backend now writes the real
+  `CpuSupports*` overrides, verified live on 31.04b02 (SSE -> Pentium4 type-1
+  FFT, AVX -> AVX, AVX2 -> FMA3, AVX512 -> AVX-512), plus
+  `EnableSetAffinity=0`, which removes mprime's self-pinning at the source. A
+  version contract pins the verified set, with a Ring B drift test that fails
+  on an unverified mprime version.
+- `Threads=1|2` is honored as written: the scheduler no longer overwrites it
+  with the SMT width, so one thread means one logical CPU and two mean both
+  siblings; the tuner keeps full-core stress by requesting two explicitly.
+- The default work root moves from the shared `/tmp/corecycler` -- where one
+  sudo run's root-owned leftovers broke every later plain run -- to a per-user
+  `XDG_RUNTIME_DIR/corecycler/work` with a user-cache fallback; sudo ownership
+  is repaired on creation and the old default in saved settings migrates
+  automatically. A `settings.json` without a `profiles` key is no longer
+  misread as corrupt, which had silently moved the user's settings aside and
+  reset them.
+
 ### Fixed (2026-08-11 a stopped tuner session is never lost, only stopped)
 
 - A session that stopped early became invisible. `list_resumable_tuner_sessions`

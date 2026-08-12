@@ -19,6 +19,7 @@ nix develop '.#packages.x86_64-linux.default' --command python -m pytest -m 'not
 ```bash
 git clone https://github.com/Daaboulex/linux-corecycler.git
 cd linux-corecycler
+python3 -m venv .venv && source .venv/bin/activate   # PEP 668: system pip is managed
 pip install -e ".[dev]"   # installs pytest, ruff, hypothesis
 pip install PySide6       # Qt6 bindings (required for tuner engine tests)
 pytest tests/ -v
@@ -30,7 +31,7 @@ pytest tests/ -v
 2. Make your changes
 3. Run the full test suite (see [Testing](#testing)) -- coverage must stay at 100%
 4. Run linting: `ruff check src/`
-5. Run flake check: `nix flake check` (NixOS only)
+5. Run flake check: `nix flake check` (needs Nix)
 6. Submit a PR against `main`
 
 ## Testing
@@ -205,7 +206,7 @@ Scopes: `hwmon`, `smu`, `tuner`, `topology`, `backend`, `nix`, `ci`
 ## Review Process
 
 - Maintainer reviews all PRs
-- Pre-commit hooks must pass (format, lint, type check)
+- Pre-commit hooks must pass (format, lint, markdown, spelling)
 - All tests must pass in CI
 - Hardware changes need mock sysfs tests — never "works on my machine"
 - Safety-critical code (SMU writes, process management) gets extra scrutiny
