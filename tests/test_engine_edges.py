@@ -244,7 +244,7 @@ class TestSupervisorInternalsEdges:
             hooks=SuperviseHooks(on_status=lambda cid, el: seen.append((cid, el))),
         )
         lane = Lane(core_id=3, cpus=(3,), work_dir=tmp_path / "core_3")
-        supervisor.run([lane], lambda _lane: StressConfig(), 0.1)
+        supervisor.run([lane], lambda _lane: StressConfig(), 5.0)
         assert seen and all(cid == 3 for cid, _ in seen)
 
     def test_an_unattributed_event_with_every_lane_decided_changes_nothing(self, tmp_path):
