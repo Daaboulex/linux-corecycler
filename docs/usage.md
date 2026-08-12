@@ -180,13 +180,15 @@ NOT_STARTED -> COARSE_SEARCH -> FINE_SEARCH -> SETTLED -> CONFIRMING -> CONFIRME
 | FFT Preset | SMALL | SMALLEST/SMALL/LARGE/HUGE/ALL/MODERATE/HEAVY/HEAVY_SHORT | FFT size preset (mprime) |
 | Test Order | sequential | see below | Core testing order |
 | Stretch Threshold | 3.0% | 0-20% | Clock-stretch failure threshold (0 = off, requires root) |
-| Abort on Consecutive Failures | 0 | 0-10 | Abort if N cores fail at start_offset (0 = off) |
+| Abort on Consecutive Failures | 0 | >= 0 | Abort if N cores fail at start_offset (0 = off) |
 | Resume Crash Quarantine Threshold | 3 | 1-20 | Crash-resumes (no surviving test between) before forcing CO=0 and quarantining |
 | Allow Missing Thermal Sensor | false | true/false | Permit running with no readable temperature sensor (false = fail closed) |
 | Inherit Current CO | false | true/false | Read current SMU offsets as starting points |
 
-The Backoff Pre-Confirm Multiplier (2.0) and Midpoint Jump Threshold (3) use sensible
-defaults and are not exposed in the UI.
+Abort on Consecutive Failures, Resume Crash Quarantine Threshold and Allow Missing
+Thermal Sensor are not in the panel: set them in the JSON that `corecycler tune
+--config` loads. The Backoff Pre-Confirm Multiplier (2.0) and Midpoint Jump
+Threshold (3) use sensible defaults and are not exposed at all.
 
 ### How each backend uses Mode and FFT Preset
 
@@ -220,8 +222,8 @@ defaults and are not exposed in the UI.
 
 - **mprime, Small FFTs, SSE** is the gold standard for CO testing -- highest single-core
   clocks and the most sensitive error detection (rounding checks, SUMOUT verification).
-- The default `max_offset` of -50 suits Zen 4; Zen 5 can push to -60; Zen 3/3D are
-  clamped to -30 automatically.
+- The default `max_offset` of -50 suits Zen 4 and is Zen 5's firmware limit (a
+  deeper request is clamped); Zen 3/3D are clamped to -30 automatically.
 - A typical 16-core run takes ~2-4 hours plus several hours of staged validation (stages 1-7 include an all-core memory-load stage and a 30-minute real-world soak).
 - If many cores fail at the starting offset, enable **abort on consecutive failures**
   (e.g. 3) -- it usually means BIOS PBO needs adjusting first.

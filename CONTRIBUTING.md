@@ -120,7 +120,7 @@ To run: `pytest tests/test_tuner_engine.py -k "Invariant" -v`
 | `mock_sysfs` | Factory for fake sysfs trees | `conftest.py` |
 | `mock_backend` | Controllable stress backend | `conftest.py` |
 | `smu_dir` | Fake ryzen_smu sysfs | `test_smu_driver.py` |
-| `zen3_cmds` / `zen5_cmds` | SMU command set fixtures | `conftest.py`, `test_smu_driver.py` |
+| `zen3_cmds` / `zen5_cmds` | SMU command set fixtures | `test_smu_driver.py` |
 
 ## Code Style
 
@@ -201,7 +201,8 @@ docs: update hardware support table
 test(tuner): add crash-during-hardening gap test
 ```
 
-Scopes: `hwmon`, `smu`, `tuner`, `topology`, `backend`, `nix`, `ci`
+The scope names the area touched -- e.g. `tuner`, `smu`, `gui`, `engine`,
+`backends`, `history`, `topology`, `tests`, `ci`, `nix`.
 
 ## Review Process
 
