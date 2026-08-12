@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-REPO="$HOME/Documents/nix/repos/linux-corecycler"
-OUT="/nix/store/7wzxm14n5ah13cm611bsbcv5hb8vi1xm-corecycler-full-0.0.1"
-RESULT="${RESULT:-/run/user/1000/cc-result.json}"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUNTIME="${XDG_RUNTIME_DIR:-/tmp}"
+RESULT="${RESULT:-$RUNTIME/cc-result.json}"
+
+OUT="$(cd "$REPO" && NIXPKGS_ALLOW_UNFREE=1 nix build .#full --impure --no-link --print-out-paths 2>/dev/null)"
+if [ -z "$OUT" ]; then
+  echo '{"verdict":"ERROR","reason":"could not build .#full"}' >"$RESULT"
+  exit 1
+fi
 
 cleanup() {
   pkill -9 -f "lib/y-cruncher" 2>/dev/null
@@ -20,15 +26,15 @@ fi
 
 cleanup
 sleep 1
-rm -rf /run/user/1000/cc-live
-mkdir -p /run/user/1000/cc-live
+rm -rf $RUNTIME/cc-live
+mkdir -p $RUNTIME/cc-live
 
 mp=$(nix-store -qR "$OUT" | grep -m1 -- "-mprime-31")
 yc=$(nix-store -qR "$OUT" | grep -m1 -- "-y-cruncher-")
 sng=$(nix-store -qR "$OUT" | grep -m1 -- "-stress-ng-")
 sat=$(nix-store -qR "$OUT" | grep -m1 -- "-stressapptest-")
 
-export HOME=/run/user/1000/cc-live
+export HOME=$RUNTIME/cc-live
 export CORECYCLER_MPRIME_BIN="$mp/bin/mprime"
 export CORECYCLER_Y_CRUNCHER_BIN="$yc/bin/y-cruncher"
 export PATH="$sng/bin:$sat/bin:$PATH"
@@ -37,10 +43,10 @@ cd "$REPO" || exit 1
 rm -f "$RESULT"
 timeout 260 nix run nixpkgs#xvfb-run -- -a \
   nix develop .#packages.x86_64-linux.full -c \
-  python3 scripts/live_scenarios.py "$@" >"$RESULT" 2>/run/user/1000/cc-scenario.err
+  python3 scripts/live_scenarios.py "$@" >"$RESULT" 2>$RUNTIME/cc-scenario.err
 rc=$?
 if [ ! -s "$RESULT" ] || ! head -c1 "$RESULT" | grep -q '{'; then
-  echo "{\"verdict\":\"ERROR\",\"rc\":$rc,\"stderr_tail\":\"$(tail -c 300 /run/user/1000/cc-scenario.err | tr '\n' ' ' | sed 's/"/\x27/g')\"}" >"$RESULT"
+  echo "{\"verdict\":\"ERROR\",\"rc\":$rc,\"stderr_tail\":\"$(tail -c 300 $RUNTIME/cc-scenario.err | tr '\n' ' ' | sed 's/"/\x27/g')\"}" >"$RESULT"
 fi
 cleanup
 sleep 1
