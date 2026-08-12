@@ -1,5 +1,5 @@
 """End-to-end stale-results coverage on the REAL CoreScheduler subprocess path
-(taskset + fake mprime + the real MprimeBackend prepare/poll/parse/cleanup):
+(fake mprime + the real MprimeBackend prepare/poll/parse/cleanup):
 a preserved failure file must never be re-parsed as a later run's verdict, and
 an error landing only in results.txt is caught by the live poll, not at end.
 """
