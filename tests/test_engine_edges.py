@@ -98,6 +98,40 @@ class TestContainRefusals:
             containment.contain((0,))
 
 
+class TestPayloadCgroup:
+    def test_the_named_scope_cgroup_is_returned_once_adopted(self, tmp_path):
+        (tmp_path / "900").mkdir()
+        (tmp_path / "900" / "cgroup").write_text(
+            "0::/user.slice/user-1000.slice/app.slice/corecycler-1-1.scope\n"
+        )
+        assert containment.payload_cgroup(900, "corecycler-1-1", proc_base=tmp_path) == (
+            "/user.slice/user-1000.slice/app.slice/corecycler-1-1.scope"
+        )
+
+    def test_before_adoption_it_reports_none(self, tmp_path):
+        (tmp_path / "901").mkdir()
+        (tmp_path / "901" / "cgroup").write_text("0::/user.slice/session-3.scope\n")
+        assert containment.payload_cgroup(901, "corecycler-1-1", proc_base=tmp_path) is None
+
+    def test_an_unreadable_proc_reports_none(self, tmp_path):
+        assert containment.payload_cgroup(4242, "corecycler-1-1", proc_base=tmp_path) is None
+
+
+class TestScopeEffectiveCpus:
+    def test_the_effective_cpuset_is_parsed(self, tmp_path):
+        scope = tmp_path / "user.slice" / "corecycler-1-1.scope"
+        scope.mkdir(parents=True)
+        (scope / "cpuset.cpus.effective").write_text("4,20\n")
+        assert containment.scope_effective_cpus(
+            "/user.slice/corecycler-1-1.scope", cgroup_base=tmp_path
+        ) == {4, 20}
+
+    def test_a_missing_cpuset_file_reports_none(self, tmp_path):
+        assert containment.scope_effective_cpus(
+            "/user.slice/gone.scope", cgroup_base=tmp_path
+        ) is None
+
+
 class TestObservedTreeEdges:
     def test_a_tid_without_a_status_file_is_skipped(self, tmp_path):
         (tmp_path / "300" / "task" / "301").mkdir(parents=True)

@@ -127,6 +127,22 @@ def app_descendants() -> list[int]:
     return _process_tree(os.getpid(), Path("/proc"))
 
 
+def _comm(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/comm").read_text().strip()
+    except OSError:
+        return "?"
+
+
+def _proc_alive(pid: int) -> bool:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    state = stat[stat.rfind(")") + 2 : stat.rfind(")") + 3]
+    return state not in ("Z", "X")
+
+
 def find_backend_pids(comm: str) -> list[int]:
     ours = set(app_descendants())
     pids: list[int] = []
@@ -533,6 +549,52 @@ def scenario_engine_rapid(args) -> None:
     check("rapid_transitions_passed", passed and error is None, {"passed": passed, "error": error})
 
 
+def scenario_memory_stress(args) -> None:
+    write_settings({"backend": args.backend, "cores_to_test": args.cores})
+    driver = GuiDriver()
+    driver.pump(1.0)
+    tab = driver.window._memory_tab
+    combo_items = [tab._stress_tool.itemText(i) for i in range(tab._stress_tool.count())]
+    sys.stderr.write(f"memory combo items: {combo_items}\n")
+    EVIDENCE["memory_tools_offered"] = combo_items
+    tool = args.mem_tool
+    tab._stress_tool.setCurrentText(tool)
+    check("tool_is_available", tab._stress_tool.currentText() == tool, tab._stress_tool.currentText())
+    tab._stress_duration.setValue(tab._stress_duration.minimum())
+    driver.arm_modal_autoclick()
+    tab._stress_btn.click()
+    driver.pump(2.0)
+
+    def worker_running() -> bool:
+        return bool(tab._stress_worker and tab._stress_worker.isRunning())
+
+    saw = False
+    proc_seen = False
+    for _ in range(20):
+        saw = saw or worker_running()
+        if find_backend_pids("stressapptest") or find_backend_pids("stress-ng"):
+            proc_seen = True
+            break
+        driver.pump(0.25)
+    descendants = [(pid, _comm(pid)) for pid in app_descendants()]
+    sys.stderr.write(f"worker_running={worker_running()} proc_seen={proc_seen} "
+                     f"descendants={descendants}\n")
+    check("memory_worker_ran", saw, saw)
+    check("a_real_stress_process_appeared", proc_seen, proc_seen)
+    pids_before = set(find_backend_pids("stressapptest") + find_backend_pids("stress-ng"))
+    tab.force_stop()
+    deadline = time.monotonic() + 20
+    killed = False
+    while time.monotonic() < deadline:
+        driver.pump(0.25)
+        alive = {pid for pid in pids_before if _proc_alive(pid)}
+        if not alive:
+            killed = True
+            break
+    check("teardown_signalled_the_real_process", killed, sorted(pids_before))
+    check("no_uncaught_exceptions", app_log_critical_lines() == [], app_log_critical_lines())
+
+
 def scenario_cli_doctor(args) -> None:
     result = subprocess.run(
         [sys.executable, "-m", "corecycler.main", "doctor"],
@@ -555,6 +617,7 @@ SCENARIOS = {
     "parallel": scenario_engine_parallel,
     "rapid": scenario_engine_rapid,
     "doctor": scenario_cli_doctor,
+    "memory": scenario_memory_stress,
 }
 
 
@@ -568,6 +631,7 @@ def main() -> int:
     parser.add_argument("--seconds", type=int, default=20)
     parser.add_argument("--after", type=float, default=8.0)
     parser.add_argument("--watchdog", type=float, default=180.0)
+    parser.add_argument("--mem-tool", default="stressapptest")
     args = parser.parse_args()
 
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
