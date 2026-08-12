@@ -88,3 +88,55 @@ def test_each_mode_produces_its_own_fft_path(mode, tmp_path):
     finally:
         execution.kill_process_group(proc)
         backend.cleanup(tmp_path)
+
+
+def _flags_in_help(binary_key: str, names: tuple[str, ...], flags: set[str]) -> None:
+    from corecycler.config import tools
+
+    resolution = tools.resolve(binary_key)
+    if resolution.path is None:
+        pytest.skip(f"{binary_key} not installed on this host")
+    result = subprocess.run(
+        [str(resolution.path), "--help"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    help_text = result.stdout + result.stderr
+    missing = sorted(f for f in flags if f not in help_text)
+    assert not missing, (
+        f"{binary_key} {names} no longer documents {missing}; the backend's "
+        "command construction assumes these flags -- re-verify against its docs"
+    )
+
+
+def test_stress_ng_still_documents_every_flag_the_backend_uses():
+    _flags_in_help(
+        "stress-ng",
+        ("stress-ng",),
+        {
+            "--cpu", "--cpu-method", "--verify", "--metrics-brief", "--temp-path",
+            "--matrix", "--matrix-method", "--vm", "--vm-bytes", "--timeout",
+        },
+    )
+
+
+def test_stress_ng_still_offers_the_cpu_methods_the_modes_map_to():
+    from corecycler.config import tools
+    from corecycler.engine.backends.stress_ng import _mode_to_method
+
+    resolution = tools.resolve("stress-ng")
+    if resolution.path is None:
+        pytest.skip("stress-ng not installed on this host")
+    result = subprocess.run(
+        [str(resolution.path), "--cpu-method", "which"],
+        capture_output=True, text=True, timeout=30,
+    )
+    offered = set((result.stdout + result.stderr).split())
+    wanted = {_mode_to_method(m) for m in (StressMode.SSE, StressMode.AVX, StressMode.AVX2)}
+    missing = sorted(wanted - offered)
+    assert not missing, f"stress-ng no longer offers cpu-method(s) {missing}"
+
+
+def test_stressapptest_still_documents_every_flag_the_backend_uses():
+    _flags_in_help("stressapptest", ("stressapptest",), {"-M", "-s", "-W"})
