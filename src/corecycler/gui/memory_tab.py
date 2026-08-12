@@ -89,9 +89,14 @@ class _StressWorker(QThread):
 
     def stop(self) -> None:
         proc = self._process
-        if proc is None:
+        if proc is None or proc.poll() is not None:
             return
-        execution.kill_process_group(proc)
+        import contextlib
+        import os
+        import signal as sig
+
+        with contextlib.suppress(OSError, ProcessLookupError):
+            os.killpg(os.getpgid(proc.pid), sig.SIGKILL)
 
 
 def _get_free_memory_mb() -> int | None:
