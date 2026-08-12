@@ -262,6 +262,27 @@ class TestSupervisorInternalsEdges:
         ghost.proc = SimpleNamespace(pid=1)
         assert supervisor._containment_fault(ghost, time.monotonic()) is None
 
+    def test_a_matching_kernel_record_is_never_a_fault(self, tmp_path):
+        supervisor = _idle_supervisor()
+        run = _LaneRun(lane=Lane(core_id=0, cpus=(0, 16), work_dir=tmp_path))
+        run.proc = SimpleNamespace(pid=1234)
+        run.unit = "cc-test"
+        run.started_at = time.monotonic()
+        with (
+            patch.object(containment, "payload_cgroup", return_value="/user.slice/cc-test.scope"),
+            patch.object(containment, "scope_effective_cpus", return_value={0, 16}),
+        ):
+            assert supervisor._containment_fault(run, time.monotonic()) is None
+        assert run.cgroup == "/user.slice/cc-test.scope"
+
+    def test_a_busy_cpu_sample_is_never_a_stall(self, tmp_path):
+        supervisor = _idle_supervisor(stall_timeout=0.0)
+        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
+        with patch.object(execution, "cpu_times", side_effect=[(0, 100), (0, 200)]):
+            now = time.monotonic()
+            assert supervisor._is_stalled(run, now) is False
+            assert supervisor._is_stalled(run, now + 60.0) is False
+
     def test_a_late_unattributed_event_lands_on_the_anchor(self, tmp_path):
         from test_execution import FakeBackend, FakeDetector
 

@@ -337,23 +337,25 @@ class TestStallWatchdog:
         backend = FakeBackend(_child("import time; time.sleep(0.4)"))
         supervisor, _, _ = make_supervisor(backend, stall_timeout=0.05)
         with (
+            patch.object(execution, "STARTUP_WINDOW_SECONDS", 0.05),
             patch.object(execution, "STALL_GRACE_SECONDS", 0.0),
             patch.object(
                 execution, "cpu_times",
                 side_effect=[(0, i * 100) for i in range(1, 400)],
             ),
         ):
-            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.2)
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 5.0)
         assert verdict is not None and verdict.passed
 
     def test_an_unreadable_cpu_cannot_accuse_a_lane(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(0.4)"))
         supervisor, _, _ = make_supervisor(backend, stall_timeout=0.05)
         with (
+            patch.object(execution, "STARTUP_WINDOW_SECONDS", 0.05),
             patch.object(execution, "STALL_GRACE_SECONDS", 0.0),
             patch.object(execution, "cpu_times", return_value=None),
         ):
-            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.2)
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 5.0)
         assert verdict is not None and verdict.passed
 
 
@@ -377,10 +379,11 @@ class TestContainmentWatchdog:
         backend = FakeBackend(_child("import time; time.sleep(0.4)"))
         supervisor, _, _ = make_supervisor(backend, containment_for=self._contained)
         with (
+            patch.object(execution, "STARTUP_WINDOW_SECONDS", 0.05),
             patch.object(containment, "payload_cgroup", return_value="/user.slice/cc-test.scope"),
             patch.object(containment, "scope_effective_cpus", return_value={0}),
         ):
-            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.15)
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 5.0)
         assert verdict is not None and verdict.passed
 
     def test_a_scope_that_never_adopts_the_payload_is_a_fault(self, tmp_path):
