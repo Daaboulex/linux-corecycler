@@ -269,7 +269,7 @@ git clone https://github.com/amkillam/ryzen_smu.git
 cd ryzen_smu && make && sudo make install && sudo modprobe ryzen_smu
 
 ls /sys/kernel/ryzen_smu_drv/
-# Expected: mp1_smu_cmd  rsmu_cmd  smu_args  version  pm_table
+# Expected to include: mp1_smu_cmd  rsmu_cmd  smu_args  smn  version  pm_table
 ```
 
 Reading/writing CO through sysfs needs root, or group ownership of the four SMU

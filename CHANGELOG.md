@@ -255,8 +255,9 @@ core 7 (the deepest, most-proven offset) on the next resume.
   and CE/UE severity; both SMT siblings map to their physical core.
 - Crash blame is now evidence first, never a guess: on resume after a reboot
   the engine harvests the kernel journal since the session's last activity
-  (`journalctl -k`, cross-boot) and penalizes exactly the cores the kernel
-  named. With no forensics, a persisted isolated hunt slot convicts its core;
+  (`journalctl _TRANSPORT=kernel`, cross-boot) and penalizes exactly the
+  cores the kernel named. With no forensics, a persisted isolated hunt slot
+  convicts its core;
   a single in-test core in the search flow keeps direct blame; anything
   ambiguous (multi-core set, or any crash under validation) triggers the
   isolated crash hunt — each suspect alone at its tuned value, every other

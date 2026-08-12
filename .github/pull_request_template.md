@@ -7,8 +7,8 @@
 ## Checklist
 
 - [ ] Tests pass locally (`pytest tests/ -v`)
-- [ ] Linting passes (`ruff check src/ && ruff format --check src/`)
-- [ ] Flake check passes (`nix flake check --no-build`) — NixOS contributors
+- [ ] Linting passes (`ruff check src/`)
+- [ ] Flake check passes (`nix flake check --no-build`) — Nix users
 - [ ] New tests added for new functionality
 - [ ] README updated if user-facing changes
 - [ ] No AI context files tracked (CLAUDE.md, AI-progress.json, etc.)
