@@ -71,8 +71,9 @@
 
                 # The full unit/property suite gates the BUILD (offscreen Qt,
                 # HOME in the sandbox tmpdir). The e2e subprocess replays
-                # ("slow") stay outside the sandbox: they exercise taskset +
-                # wall-clock polling and belong to the dev loop, not the gate.
+                # ("slow") stay outside the sandbox: they exercise systemd-run
+                # scopes + wall-clock polling and belong to the dev loop, not
+                # the gate.
                 nativeCheckInputs = [
                   pythonPkgs.pytestCheckHook
                   pythonPkgs.hypothesis
@@ -87,7 +88,7 @@
 
                 # Coverage ratchet: line coverage may never fall below this floor.
                 # Raise the floor to the percentage this check prints whenever a
-                # batch lands. It is measured WITHOUT the slow/taskset tests, so it
+                # batch lands. It is measured WITHOUT the slow tests, so it
                 # trails the out-of-sandbox number.
                 pytestFlags = [
                   "--cov=corecycler"

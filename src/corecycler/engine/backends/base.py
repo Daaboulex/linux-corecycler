@@ -97,7 +97,7 @@ class StressBackend(ABC):
 
     @abstractmethod
     def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
-        """Build the command line for the stress test (without taskset prefix)."""
+        """Build the command line for the stress test (without the containment prefix)."""
 
     @abstractmethod
     def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:

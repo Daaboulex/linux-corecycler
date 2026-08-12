@@ -55,8 +55,8 @@ Note: Group read access to `/dev/cpu/N/msr` exposes ALL readable MSRs on all log
 ### External Binary Execution
 
 The tool executes third-party stress binaries (mprime, y-cruncher, stress-ng,
-stressapptest) plus `taskset`, `dmesg`, `journalctl`, `dmidecode` and `notify-send` --
-as root whenever CoreCycler itself is run under sudo.
+stressapptest) plus `systemd-run`, `setpriv`, `dmesg`, `journalctl`, `dmidecode`
+and `notify-send` -- as root whenever CoreCycler itself is run under sudo.
 
 Each is resolved in one place (`config/tools.py`), most explicit first: the
 `CORECYCLER_<TOOL>_BIN` environment variable, then the path recorded in
