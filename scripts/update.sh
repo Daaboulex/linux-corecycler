@@ -26,6 +26,57 @@ err() { echo "::error::$*"; }
 # [A-Za-z0-9_'-]; escaping is defensive, not strictly required, but cheap.
 re_esc() { printf '%s' "$1" | sed 's/[^[:alnum:]_]/\\&/g'; }
 
+# verify_artifact — build .#default and assert the configured artifact exists.
+# Shared by the nix-update shim (standard case) and the full path, so both honor
+# verify.binary / verify.check = elf | wrapper | desktop | eval identically.
+verify_artifact() {
+  local VERIFY_BINARY VERIFY_CHECK FOUND MISSING f
+  local -a VERIFY_ARGS
+  VERIFY_BINARY=$(echo "$CONFIG" | jq -r '.verify.binary // empty')
+  read -ra VERIFY_ARGS <<<"$(echo "$CONFIG" | jq -r '.verify.args // "--version"')"
+  VERIFY_CHECK=$(echo "$CONFIG" | jq -r '.verify.check // empty')
+  nix build .#default
+  if [ -n "$VERIFY_BINARY" ]; then
+    ./result/bin/"$VERIFY_BINARY" "${VERIFY_ARGS[@]}" 2>&1 || {
+      err "Binary verification failed"
+      output "error_type" "verification-error"
+      exit 1
+    }
+    if file ./result/bin/"$VERIFY_BINARY" 2>/dev/null | grep -q ELF; then
+      MISSING=$(ldd ./result/bin/"$VERIFY_BINARY" 2>&1 | grep "not found" || true)
+      [ -n "$MISSING" ] && {
+        err "Missing shared libraries: $MISSING"
+        output "error_type" "missing-deps"
+        exit 1
+      }
+    fi
+  elif [ "$VERIFY_CHECK" = "elf" ]; then
+    FOUND=""
+    while IFS= read -r f; do
+      if file "$f" 2>/dev/null | grep -q ELF; then
+        FOUND="$f"
+        break
+      fi
+    done < <(find result/bin/ result/lib/ -type f 2>/dev/null)
+    [ -z "$FOUND" ] && {
+      err "No ELF artifact found under result/bin or result/lib"
+      output "error_type" "verification-error"
+      exit 1
+    }
+  elif [ "$VERIFY_CHECK" = "wrapper" ]; then
+    FOUND=$(find result/bin/ \( -type f -o -type l \) 2>/dev/null | head -1 || true)
+    { [ -n "$FOUND" ] && [ -x "$FOUND" ]; } || {
+      err "No executable wrapper found under result/bin"
+      output "error_type" "verification-error"
+      exit 1
+    }
+  elif [ "$VERIFY_CHECK" = "desktop" ]; then
+    find result/share/applications/ -name "*.desktop" 2>/dev/null | head -1 | grep -q . ||
+      warn "No desktop file found"
+  fi
+  rm -f result
+}
+
 # --- Read config ---------------------------------------------------------
 if [ ! -f .github/update.json ]; then
   log "No .github/update.json — skipping update"
@@ -142,6 +193,54 @@ if [ -n "$CURRENT_VERSION" ]; then
   else
     log "Current version: $CURRENT_VERSION ($VERSION_ATTR in $VERSION_FILE)"
   fi
+fi
+
+# --- Standard case: nix-update shim -------------------------------------
+# nix-update (Mic92) does the whole standard bump -- detect the latest forge
+# release/commit, rewrite the version, and recompute EVERY fixed-output hash
+# (source, cargoHash/vendorStaging, vendorHash, npmDepsHash) -- for a plain
+# repo. The fleet-specific modes handled below do what nix-update cannot and
+# keep the full path: variantAssets (multi-arch prebuilt), pythonRequirements
+# (env+source), the unstable-date / rev-only version schemes, a tagFilter
+# namespace, and trackOnly. A plain repo is the shim: nix-update, then the
+# same verification chain. NIX_UPDATE lets the test suite stub the tool.
+NIX_UPDATE=${NIX_UPDATE:-"nix run --inputs-from . nixpkgs#nix-update --"}
+PYREQ_FILE_PRESENT=$(echo "$CONFIG" | jq -r '.pythonRequirements.file // empty')
+if [ -z "$VARIANT_ASSETS" ] && [ "$TRACK_ONLY" != "true" ] &&
+  [ -z "$PYREQ_FILE_PRESENT" ] && [ "$VERSION_SCHEME" = "literal" ] &&
+  [ "$TAG_FILTER" = ".*" ] && [ "$DECLARED_HASHES" -gt 0 ]; then
+  log "Standard case: delegating detection + hashes to nix-update"
+  if ! $NIX_UPDATE --flake default 2>&1; then
+    err "nix-update failed"
+    output "updated" "false"
+    output "error_type" "build-error"
+    exit 1
+  fi
+  NEW_VERSION=$(grep -oP "(?<![A-Za-z_])${VERSION_ATTR_RE}\s*[?=]\s*\"\K[^\"]+" \
+    "$VERSION_FILE" 2>/dev/null | head -1 || true)
+  output "new_version" "$NEW_VERSION"
+  if [ "$NEW_VERSION" = "$CURRENT_VERSION" ]; then
+    log "Already up to date ($CURRENT_VERSION)"
+    output "updated" "false"
+    exit 0
+  fi
+  log "Update found: $CURRENT_VERSION -> $NEW_VERSION (nix-update)"
+  output "updated" "true"
+  log "Step 1/2: nix flake check --no-build"
+  if ! nix flake check --no-build 2>&1; then
+    err "Eval check failed"
+    output "error_type" "eval-error"
+    exit 1
+  fi
+  log "Step 2/2: nix build + artifact verification"
+  if ! nix build .#default --no-link --print-build-logs --keep-going 2>&1; then
+    err "Build failed"
+    output "error_type" "build-error"
+    exit 1
+  fi
+  verify_artifact
+  log "Update verified: $CURRENT_VERSION -> $NEW_VERSION"
+  exit 0
 fi
 
 # --- Fetch latest upstream version --------------------------------------
@@ -718,61 +817,8 @@ if ! nix build .#default --no-link --print-build-logs --keep-going 2>&1; then
   exit 1
 fi
 
-VERIFY_BINARY=$(echo "$CONFIG" | jq -r '.verify.binary // empty')
-# Split verify.args on whitespace so a multi-token value ("db --version")
-# is passed as separate argv entries, not one argument.
-read -ra VERIFY_ARGS <<<"$(echo "$CONFIG" | jq -r '.verify.args // "--version"')"
-VERIFY_CHECK=$(echo "$CONFIG" | jq -r '.verify.check // empty')
-
 log "Step 3/3: artifact verification"
-nix build .#default
-if [ -n "$VERIFY_BINARY" ]; then
-  ./result/bin/"$VERIFY_BINARY" "${VERIFY_ARGS[@]}" 2>&1 || {
-    err "Binary verification failed"
-    output "error_type" "verification-error"
-    exit 1
-  }
-  if file ./result/bin/"$VERIFY_BINARY" 2>/dev/null | grep -q ELF; then
-    MISSING=$(ldd ./result/bin/"$VERIFY_BINARY" 2>&1 | grep "not found" || true)
-    [ -n "$MISSING" ] && {
-      err "Missing shared libraries: $MISSING"
-      output "error_type" "missing-deps"
-      exit 1
-    }
-  fi
-elif [ "$VERIFY_CHECK" = "elf" ]; then
-  # Find any real ELF in the build output. Three robustness points, each a
-  # bug we actually hit:
-  #   - Scan, don't single-pick: `find … | head -1` then require-ELF failed on
-  #     qemu's non-ELF qemu-ga (vfio-stealth-nix #5).
-  #   - if-block, not `grep && …`: a non-match must not make the loop exit
-  #     non-zero, or a no-ELF output aborts under set -e before the handler.
-  #   - process substitution, not `$(find | while)`: keeps FOUND in this shell
-  #     and stops a missing bin/ or lib/ (find exit!=0) from aborting the run.
-  FOUND=""
-  while IFS= read -r f; do
-    if file "$f" 2>/dev/null | grep -q ELF; then
-      FOUND="$f"
-      break
-    fi
-  done < <(find result/bin/ result/lib/ -type f 2>/dev/null)
-  [ -z "$FOUND" ] && {
-    err "No ELF artifact found under result/bin or result/lib"
-    output "error_type" "verification-error"
-    exit 1
-  }
-elif [ "$VERIFY_CHECK" = "wrapper" ]; then
-  FOUND=$(find result/bin/ \( -type f -o -type l \) 2>/dev/null | head -1 || true)
-  { [ -n "$FOUND" ] && [ -x "$FOUND" ]; } || {
-    err "No executable wrapper found under result/bin"
-    output "error_type" "verification-error"
-    exit 1
-  }
-elif [ "$VERIFY_CHECK" = "desktop" ]; then
-  find result/share/applications/ -name "*.desktop" 2>/dev/null | head -1 | grep -q . ||
-    warn "No desktop file found"
-fi
-rm -f result
+verify_artifact
 
 log "Update verified: $CURRENT_VERSION -> $LATEST_VERSION"
 exit 0
