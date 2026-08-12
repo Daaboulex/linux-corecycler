@@ -22,7 +22,10 @@ src/corecycler/
   notify.py          Desktop notifications via notify-send, best-effort
   engine/            Stress execution
     topology.py        CPU topology: cores, CCDs, L3 cache, X3D V-Cache detection
-    scheduler.py       Per-core cycling, variable load, idle tests, process management
+    scheduler.py       Per-core cycling, variable load, idle tests
+    parallel.py        All-core simultaneous lanes (validation stages)
+    execution.py       The one supervised loop: launch, poll, stall/thermal/MCE, verdicts
+    containment.py     systemd cgroup scopes (AllowedCPUs) and the kernel cpuset record
     detector.py        MCE and kernel-error detection from dmesg + the systemd journal
     backends/          Auto-registered stress backends (mprime, stress_ng, ycruncher, stressapptest)
   smu/               AMD SMU access (ryzen_smu)
@@ -56,27 +59,8 @@ so no GUI file changes when a backend is added.
 
 ## Development
 
-```bash
-nix develop                                   # ruff, nixfmt, pre-commit
-ruff check src                                # the Python lint gate
-nix develop '.#packages.x86_64-linux.default' \
-  --command python -m pytest -m 'not slow'    # the suite, in the build's own env
-nix flake check                               # build + every check (what CI runs)
-```
-
-The dev shell carries the linters, not Python: the suite runs in the package build's
-environment, which is where the coverage gate (100%, no exceptions) runs it too.
-
-### Adding a stress backend
-
-1. Create `src/corecycler/engine/backends/<name>.py`, subclassing `StressBackend` from `base.py`.
-2. Implement `get_command`, `parse_output` and `get_supported_modes`. `is_available` is
-   the base class's, resolving the binary through `config/tools.py`.
-3. Add the `@register_backend("display-name")` decorator -- it is discovered
-   automatically; no GUI files need editing.
-4. Add an `ExternalTool` entry to `TOOLS` in `src/corecycler/config/tools.py` under the
-   same display name, so the binary can be resolved and reported by `corecycler doctor`.
-   The `external-tool-discovery` contract fails if a registered backend has no entry.
+Dev environment, the test suite and gates, and how to add a stress backend:
+[CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Driver and kernel module sources
 

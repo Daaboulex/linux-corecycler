@@ -95,7 +95,7 @@ full guide -- manual tuning workflow, the Auto-Tuner, and reading results -- is 
 - [Installation](docs/installation.md) -- all distros, NixOS module options, backends, kernel modules.
 - [Hardware support](docs/hardware.md) -- per-generation Curve Optimizer / SMU support.
 - [Usage guide](docs/usage.md) -- presets, manual tuning, the Auto-Tuner, crash safety, reading results.
-- [Architecture](docs/architecture.md) -- source layout, development, driver sources.
+- [Architecture](docs/architecture.md) -- source layout, driver sources.
 
 ## Development
 

@@ -23,7 +23,7 @@
 |---|---|---|---|---|---|
 | Quick | 2 min | 1 | No | No | Fast screening, rough check |
 | Standard | 10 min | 1 | No | No | Initial CO tuning |
-| Thorough | 30 min | 2 | No | No | Validation after tuning |
+| Thorough | 30 min | 2 | No | 5s between | Validation after tuning |
 | Full Spectrum | 20 min | 3 | Yes | 60s + 10s between | Comprehensive stability proof |
 | Custom | User-defined | User-defined | Optional | Optional | Fine-tuned testing |
 
@@ -177,7 +177,7 @@ NOT_STARTED -> COARSE_SEARCH -> FINE_SEARCH -> SETTLED -> CONFIRMING -> CONFIRME
 | Auto Validate | true | true/false | Run staged multi-core validation (stages 1-7) after all cores confirm |
 | Backend | mprime | mprime/stress-ng/y-cruncher | Per-core stress backend (stressapptest is Memory tab only) |
 | Mode | SSE | SSE/AVX/AVX2/AVX512 | Stress instruction set |
-| FFT Preset | SMALL | SMALL/MEDIUM/LARGE/HEAVY/ALL | FFT size preset (mprime) |
+| FFT Preset | SMALL | SMALLEST/SMALL/LARGE/HUGE/ALL/MODERATE/HEAVY/HEAVY_SHORT | FFT size preset (mprime) |
 | Test Order | sequential | see below | Core testing order |
 | Stretch Threshold | 3.0% | 0-20% | Clock-stretch failure threshold (0 = off, requires root) |
 | Abort on Consecutive Failures | 0 | 0-10 | Abort if N cores fail at start_offset (0 = off) |
