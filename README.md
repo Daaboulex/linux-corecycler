@@ -121,7 +121,4 @@ This module declares options under `services.corecycler`; see the
 GPL-3.0-or-later. See [LICENSE](LICENSE).
 
 <!-- BEGIN generated:footer -->
----
-
-*Maintained as part of the [Daaboulex](https://github.com/Daaboulex) NixOS ecosystem.*
 <!-- END generated:footer -->
