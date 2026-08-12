@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -604,6 +605,40 @@ class TestHelpers:
         kill_process_group(proc)
         assert proc.poll() is not None
         assert time.monotonic() - start < 10
+
+    def test_kill_process_group_escalation_and_stream_close_deterministic(self, monkeypatch):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        stdout = MagicMock()
+        stderr = MagicMock()
+        proc = SimpleNamespace(
+            pid=4321,
+            stdout=stdout,
+            stderr=stderr,
+            poll=lambda: None,
+            wait=MagicMock(side_effect=[subprocess.TimeoutExpired("cmd", 3), None]),
+        )
+        sent: list = []
+        monkeypatch.setattr(execution.os, "getpgid", lambda _pid: 4321)
+        monkeypatch.setattr(execution.os, "killpg", lambda pgid, s: sent.append(s))
+        kill_process_group(proc)
+        assert signal.SIGTERM in sent and signal.SIGKILL in sent
+        stdout.close.assert_called_once()
+        stderr.close.assert_called_once()
+
+    def test_kill_process_group_handles_a_vanished_group(self, monkeypatch):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        wait = MagicMock(return_value=None)
+        proc = SimpleNamespace(pid=4321, stdout=None, stderr=None, poll=lambda: None, wait=wait)
+        monkeypatch.setattr(execution.os, "getpgid", MagicMock(side_effect=ProcessLookupError))
+        killpg = MagicMock()
+        monkeypatch.setattr(execution.os, "killpg", killpg)
+        kill_process_group(proc)
+        killpg.assert_not_called()
+        wait.assert_called_once_with(timeout=1)
 
     def test_reap_zombies_never_raises(self):
         execution.reap_zombies()

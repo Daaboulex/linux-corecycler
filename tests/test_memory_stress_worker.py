@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 import subprocess
 import sys as _sys
 from unittest.mock import MagicMock, mock_open, patch
@@ -144,28 +145,34 @@ class TestStressWorkerStop:
     def test_stop_after_exit_is_a_noop(self):
         proc = _proc()
         proc.poll.return_value = 0
+        signals: list = []
+        import os
+        old = os.killpg
+        os.killpg = lambda pgid, s: signals.append(s)
+        try:
+            self._worker(proc).stop()
+        finally:
+            os.killpg = old
+        assert signals == []
+
+    def test_stop_signals_the_group_with_sigkill(self, monkeypatch):
+        proc = _proc()
+        monkeypatch.setattr("os.getpgid", lambda _pid: 999)
+        signals: list = []
+        monkeypatch.setattr("os.killpg", lambda pgid, s: signals.append((pgid, s)))
+        self._worker(proc).stop()
+        assert signals == [(999, signal.SIGKILL)]
+
+    def test_stop_never_waits_on_the_process(self, monkeypatch):
+        proc = _proc()
+        monkeypatch.setattr("os.getpgid", lambda _pid: 999)
+        monkeypatch.setattr("os.killpg", lambda pgid, s: None)
         self._worker(proc).stop()
         proc.wait.assert_not_called()
+        proc.communicate.assert_not_called()
 
-    def test_stop_when_group_is_gone_waits_briefly(self, monkeypatch):
+    def test_stop_tolerates_a_vanished_group(self, monkeypatch):
         proc = _proc()
         monkeypatch.setattr("os.getpgid", MagicMock(side_effect=ProcessLookupError))
         self._worker(proc).stop()
-        proc.wait.assert_called_once()
-
-    def test_stop_terminates_group(self, monkeypatch):
-        proc = _proc()
-        monkeypatch.setattr("os.getpgid", lambda _pid: 999)
-        signals: list = []
-        monkeypatch.setattr("os.killpg", lambda pgid, s: signals.append(s))
-        self._worker(proc).stop()
-        assert len(signals) == 1
-
-    def test_stop_escalates_to_kill_on_timeout(self, monkeypatch):
-        proc = _proc()
-        proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 3), None]
-        monkeypatch.setattr("os.getpgid", lambda _pid: 999)
-        signals: list = []
-        monkeypatch.setattr("os.killpg", lambda pgid, s: signals.append(s))
-        self._worker(proc).stop()
-        assert len(signals) == 2
+        proc.wait.assert_not_called()
