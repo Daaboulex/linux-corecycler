@@ -289,6 +289,25 @@ class GuiDriver:
         QTimer.singleShot(100, poll)
         return state
 
+    def arm_modal_dismisser(self, duration: float = 120.0) -> dict:
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QMessageBox
+
+        state: dict = {"dismissed": 0, "titles": [], "elapsed": 0.0}
+
+        def poll() -> None:
+            modal = self.app.activeModalWidget()
+            if isinstance(modal, QMessageBox):
+                state["dismissed"] += 1
+                state["titles"].append(modal.windowTitle())
+                modal.accept()
+            state["elapsed"] += 0.1
+            if state["elapsed"] < duration:
+                QTimer.singleShot(100, poll)
+
+        QTimer.singleShot(100, poll)
+        return state
+
     def arm_warning_capture(self) -> dict:
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QMessageBox
@@ -561,7 +580,7 @@ def scenario_memory_stress(args) -> None:
     tab._stress_tool.setCurrentText(tool)
     check("tool_is_available", tab._stress_tool.currentText() == tool, tab._stress_tool.currentText())
     tab._stress_duration.setValue(tab._stress_duration.minimum())
-    driver.arm_modal_autoclick()
+    modals = driver.arm_modal_dismisser(150.0)
     tab._stress_btn.click()
     driver.pump(2.0)
 
@@ -582,16 +601,15 @@ def scenario_memory_stress(args) -> None:
     check("memory_worker_ran", saw, saw)
     check("a_real_stress_process_appeared", proc_seen, proc_seen)
     pids_before = set(find_backend_pids("stressapptest") + find_backend_pids("stress-ng"))
-    tab.force_stop()
-    deadline = time.monotonic() + 20
-    killed = False
-    while time.monotonic() < deadline:
+    tab._stop_btn.click()
+    deadline = time.monotonic() + 60
+    while worker_running() and time.monotonic() < deadline:
         driver.pump(0.25)
-        alive = {pid for pid in pids_before if _proc_alive(pid)}
-        if not alive:
-            killed = True
-            break
-    check("teardown_signalled_the_real_process", killed, sorted(pids_before))
+    check("memory_worker_stopped_cleanly", not worker_running(), worker_running())
+    driver.pump(2.0)
+    leftover = [pid for pid in pids_before if _proc_alive(pid)]
+    check("no_memory_process_survived_stop", leftover == [], leftover)
+    check("the_completion_dialog_was_shown_and_dismissed", modals["dismissed"] >= 1, modals)
     check("no_uncaught_exceptions", app_log_critical_lines() == [], app_log_critical_lines())
 
 
