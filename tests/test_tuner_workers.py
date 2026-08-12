@@ -224,12 +224,12 @@ class TestRapidTransitionWorker:
 
     def test_a_harness_exception_is_an_apparatus_fault(self):
         scheduler = MagicMock()
-        scheduler.run_rapid_transitions.side_effect = RuntimeError("taskset gone")
+        scheduler.run_rapid_transitions.side_effect = RuntimeError("containment gone")
         worker = _RapidTransitionWorker(2, 2, scheduler, cores=[0], duration=1.0)
         seen = _collect(worker)
         worker.run()
         assert seen[0][3] == "startup"
-        assert "taskset gone" in seen[0][2]
+        assert "containment gone" in seen[0][2]
 
 
 class TestParallelWorker:

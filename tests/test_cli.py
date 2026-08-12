@@ -423,7 +423,7 @@ class TestDoctor:
         assert seen == ["d"]
 
     def test_report_groups_tools_and_names_where_each_resolved(self):
-        lines = cli.doctor_lines(self._resolutions({"stress-ng", "taskset"}), [])
+        lines = cli.doctor_lines(self._resolutions({"stress-ng", "setpriv"}), [])
         assert "backend" in lines
         assert "core" in lines
         assert "optional" in lines
@@ -439,18 +439,18 @@ class TestDoctor:
         binary.write_text("#!/bin/sh\n")
         binary.chmod(0o755)
         tool_search_roots.append(exec_tmp_path)
-        lines = cli.doctor_lines(self._resolutions({"taskset"}), [])
+        lines = cli.doctor_lines(self._resolutions({"setpriv"}), [])
         assert f"    candidate: {binary}" in lines
 
     def test_report_ends_in_the_unmet_requirements(self):
-        lines = cli.doctor_lines(self._resolutions(set()), ["taskset is required"])
-        assert lines[-1] == "doctor: FAILED -- taskset is required"
+        lines = cli.doctor_lines(self._resolutions(set()), ["setpriv is required"])
+        assert lines[-1] == "doctor: FAILED -- setpriv is required"
 
     def test_root_is_told_that_sudo_scrubbed_the_path(self, monkeypatch):
         from corecycler.config import tools
 
         monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
-        assert tools.SUDO_PATH_NOTE in cli.doctor_lines(self._resolutions({"taskset"}), [])
+        assert tools.SUDO_PATH_NOTE in cli.doctor_lines(self._resolutions({"setpriv"}), [])
 
     def test_a_usable_system_exits_zero(self, monkeypatch, capsys):
         monkeypatch.setattr(
@@ -462,6 +462,6 @@ class TestDoctor:
         assert "doctor: ok" in capsys.readouterr().out
 
     def test_a_system_without_a_backend_is_refused(self, monkeypatch, capsys):
-        monkeypatch.setattr(cli.tools, "report", lambda: self._resolutions({"taskset"}))
+        monkeypatch.setattr(cli.tools, "report", lambda: self._resolutions({"setpriv"}))
         assert cli.cmd_doctor() == cli.EXIT_REFUSED
         assert "doctor: FAILED" in capsys.readouterr().out
