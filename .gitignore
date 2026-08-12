@@ -61,3 +61,8 @@ venv/
 .session-handoff*.md
 .rumdl_cache/
 .mypy_cache/
+/htmlcov/
+/coverage/
+/build/
+/dist/
+/target/
