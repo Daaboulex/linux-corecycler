@@ -9,7 +9,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     std = {
-      url = "github:Daaboulex/nix-packaging-standard?ref=v2.21.0";
+      url = "github:Daaboulex/nix-packaging-standard?ref=v2.22.1";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.git-hooks.follows = "git-hooks";
     };
@@ -168,7 +168,7 @@
 
         flake = {
           # NixOS module - kernel modules, device access, udev rules, package
-          nixosModules.default = import ./nix/module.nix { self = inputs.self; };
+          nixosModules.default = import ./nix/module.nix { inherit (inputs) self; };
 
           # Overlay - pkgs.linux-corecycler (FOSS) and pkgs.linux-corecycler-full
           overlays.default = final: _prev: {
@@ -226,7 +226,7 @@
             checks.module-eval-nixos = inputs.std.lib.nixosModuleCheck {
               inherit (inputs) nixpkgs;
               inherit system;
-              module = import ./nix/module.nix { self = inputs.self; };
+              module = import ./nix/module.nix { inherit (inputs) self; };
               config = {
                 nixpkgs.config.allowUnfree = true; # mprime backend is unfree
                 services.corecycler = {
