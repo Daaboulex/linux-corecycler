@@ -378,9 +378,7 @@ class TestDetectX3D:
             if pc not in seen:
                 seen.add(pc)
                 ccd = 0 if pc < 4 else 1
-                topo.cores[pc] = PhysicalCore(
-                    core_id=pc, ccd=ccd, ccx=None, logical_cpus=lcpu.core_cpus
-                )
+                topo.cores[pc] = PhysicalCore(core_id=pc, ccd=ccd, ccx=None, logical_cpus=lcpu.core_cpus)
 
         cpu_dir = tmp_path / "cpu"
         for core in topo.cores.values():
@@ -407,9 +405,7 @@ class TestDetectX3D:
             if pc not in seen:
                 seen.add(pc)
                 ccd = 0 if pc < 4 else 1
-                topo.cores[pc] = PhysicalCore(
-                    core_id=pc, ccd=ccd, ccx=None, logical_cpus=lcpu.core_cpus
-                )
+                topo.cores[pc] = PhysicalCore(core_id=pc, ccd=ccd, ccx=None, logical_cpus=lcpu.core_cpus)
 
         cpu_dir = tmp_path / "cpu"
         for core in topo.cores.values():
@@ -577,7 +573,9 @@ class TestTopologyEdgeCases:
             lcpu = topo.logical_map[pc]
             if lcpu.physical_core not in topo.cores:
                 topo.cores[lcpu.physical_core] = PhysicalCore(
-                    core_id=lcpu.physical_core, ccd=0, ccx=None,
+                    core_id=lcpu.physical_core,
+                    ccd=0,
+                    ccx=None,
                     logical_cpus=lcpu.core_cpus,
                 )
 
@@ -653,6 +651,7 @@ class TestTopologyEdgeCases:
     def test_harvested_cpu_core_ids_not_sequential(self):
         """Harvested CPU: core IDs skip numbers (0,1,2,3,4,5 + 8,9,10,11,12,13)."""
         from conftest import CPUINFO_ZEN5_9900X_HARVESTED
+
         topo = parse_cpuinfo_from_text(CPUINFO_ZEN5_9900X_HARVESTED)
         assert topo.physical_cores == 12
         assert topo.family == 26

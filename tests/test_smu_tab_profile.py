@@ -20,9 +20,7 @@ def _qapp():
 
 
 def _topo(model_name="Test", family=26, model=0x44, cores=8) -> CPUTopology:
-    topo = CPUTopology(
-        model_name=model_name, family=family, model=model, physical_cores=cores, ccds=1
-    )
+    topo = CPUTopology(model_name=model_name, family=family, model=model, physical_cores=cores, ccds=1)
     for cid in range(cores):
         topo.cores[cid] = PhysicalCore(core_id=cid, ccd=0, ccx=None, logical_cpus=(cid,))
     return topo

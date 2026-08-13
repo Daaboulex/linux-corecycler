@@ -30,8 +30,7 @@ from corecycler.engine.detector import (
 # Real AMD Zen 5 decoded MCA block (kernel: prefix stripped), one error event.
 ZEN_BLOCK_HEADER = "mce: [Hardware Error]: Machine check events logged"
 ZEN_BLOCK_STATUS = (
-    "[Hardware Error]: CPU:9 (1a:44:0) "
-    "MC0_STATUS[Over|CE|MiscV|AddrV|-|-|SyndV|CECC|-|-|-]: 0xdc204000000d0175"
+    "[Hardware Error]: CPU:9 (1a:44:0) MC0_STATUS[Over|CE|MiscV|AddrV|-|-|SyndV|CECC|-|-|-]: 0xdc204000000d0175"
 )
 ZEN_BLOCK_DETAILS = [
     "[Hardware Error]: Corrected error, no action required.",
@@ -41,8 +40,7 @@ ZEN_BLOCK_DETAILS = [
     "[Hardware Error]: cache level: L1, tx: DATA, mem-tx: EV",
 ]
 ZEN_UNCORRECTED_STATUS = (
-    "[Hardware Error]: CPU:12 (1a:44:0) "
-    "MC1_STATUS[Over|UE|MiscV|AddrV|PCC|-|SyndV|-|-|-|-]: 0xbc00000000010135"
+    "[Hardware Error]: CPU:12 (1a:44:0) MC1_STATUS[Over|UE|MiscV|AddrV|PCC|-|SyndV|-|-|-|-]: 0xbc00000000010135"
 )
 
 
@@ -53,9 +51,7 @@ ZEN_UNCORRECTED_STATUS = (
 
 class TestMCEEvent:
     def test_creation(self):
-        ev = MCEEvent(
-            timestamp=1234.5, cpu=3, bank=5, message="MCE bank 5 error", corrected=True
-        )
+        ev = MCEEvent(timestamp=1234.5, cpu=3, bank=5, message="MCE bank 5 error", corrected=True)
         assert ev.cpu == 3
         assert ev.bank == 5
         assert ev.corrected is True
@@ -71,9 +67,7 @@ class TestErrorState:
 
     def test_has_mce(self):
         state = ErrorState()
-        state.mce_events.append(
-            MCEEvent(timestamp=0, cpu=0, bank=0, message="test", corrected=True)
-        )
+        state.mce_events.append(MCEEvent(timestamp=0, cpu=0, bank=0, message="test", corrected=True))
         assert state.has_errors is True
 
     def test_has_computation_error(self):
@@ -133,9 +127,7 @@ class TestClassifyClassicFormats:
         assert ev.corrected is True
 
     def test_uncorrected_keyword(self):
-        ev = classify_mce_line(
-            "uncorrected mce CPU 2 Bank 3: fatal machine check exception"
-        )
+        ev = classify_mce_line("uncorrected mce CPU 2 Bank 3: fatal machine check exception")
         assert ev is not None
         assert ev.corrected is False
 
@@ -186,10 +178,8 @@ def _fresh_detector(baseline: float) -> ErrorDetector:
 
 class TestCheckMCE:
     def test_zen_block_detected_from_dmesg(self):
-        out = (
-            f"100.10 {ZEN_BLOCK_HEADER}\n"
-            f"100.11 {ZEN_BLOCK_STATUS}\n"
-            + "".join(f"100.12 {line}\n" for line in ZEN_BLOCK_DETAILS)
+        out = f"100.10 {ZEN_BLOCK_HEADER}\n100.11 {ZEN_BLOCK_STATUS}\n" + "".join(
+            f"100.12 {line}\n" for line in ZEN_BLOCK_DETAILS
         )
         det = _fresh_detector(baseline=100.0)
         with patch("subprocess.run", return_value=_dmesg_result(out)):
@@ -218,10 +208,7 @@ class TestCheckMCE:
         assert mock_run.call_count == 1
 
     def test_pre_baseline_lines_skipped(self):
-        out = (
-            f"99.00 {ZEN_BLOCK_STATUS}\n"
-            f"100.50 {ZEN_UNCORRECTED_STATUS}\n"
-        )
+        out = f"99.00 {ZEN_BLOCK_STATUS}\n100.50 {ZEN_UNCORRECTED_STATUS}\n"
         det = _fresh_detector(baseline=100.0)
         with patch("subprocess.run", return_value=_dmesg_result(out)):
             events = det.check_mce()
@@ -258,9 +245,7 @@ class TestCheckMCE:
 
     def test_reset_clears_seen_and_rebaselines(self):
         det = ErrorDetector()
-        with patch(
-            "corecycler.engine.detector._get_dmesg_raw_timestamp", return_value=500.0
-        ):
+        with patch("corecycler.engine.detector._get_dmesg_raw_timestamp", return_value=500.0):
             det._seen.add((1.0, 2, 3))
             det.reset()
         assert det._dmesg_baseline_ts == pytest.approx(500.0)
@@ -299,10 +284,7 @@ class TestHarvestKernelMCE:
         assert _iso_to_journal_since("2026-07-16T15:47:30") == "2026-07-16 15:47:30 UTC"
 
     def test_offset_timestamp_converted(self):
-        assert (
-            _iso_to_journal_since("2026-07-16T17:47:30+02:00")
-            == "2026-07-16 15:47:30 UTC"
-        )
+        assert _iso_to_journal_since("2026-07-16T17:47:30+02:00") == "2026-07-16 15:47:30 UTC"
 
     def test_bad_timestamp_fails_closed(self):
         events, ok = harvest_kernel_mce("not-a-timestamp")
@@ -385,16 +367,12 @@ class TestIsMCEErrorLine:
 class TestGetDmesgTimestamp:
     def test_normal(self):
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout="12345.678 first line\n12346.789 last line\n"
-            )
+            mock_run.return_value = MagicMock(returncode=0, stdout="12345.678 first line\n12346.789 last line\n")
             assert _get_dmesg_raw_timestamp() == pytest.approx(12346.789)
 
     def test_bracketed_timestamp(self):
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout="[12346.789] last line\n"
-            )
+            mock_run.return_value = MagicMock(returncode=0, stdout="[12346.789] last line\n")
             assert _get_dmesg_raw_timestamp() == pytest.approx(12346.789)
 
     def test_empty_output(self):

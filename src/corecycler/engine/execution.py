@@ -313,8 +313,7 @@ class Supervisor:
                 if first is not None:
                     self._fail(
                         first,
-                        f"CPU temperature exceeded {self.thermal.max_temperature} C "
-                        f"safety limit during {self.phase}",
+                        f"CPU temperature exceeded {self.thermal.max_temperature} C safety limit during {self.phase}",
                         start,
                     )
                 self.stop_event.set()
@@ -346,10 +345,7 @@ class Supervisor:
                         core_id=anchor.lane.core_id,
                         passed=False,
                         duration_seconds=time.monotonic() - start,
-                        error_message=(
-                            "Machine check without core attribution "
-                            f"during {self.phase}: {event.message}"
-                        ),
+                        error_message=(f"Machine check without core attribution during {self.phase}: {event.message}"),
                         error_type="mce_unattributed",
                     )
                     self.stop_event.set()
@@ -382,8 +378,7 @@ class Supervisor:
                 if not self._we_killed and rc in KILLED_BY_US_CODES:
                     self._fail(
                         run,
-                        f"Stress process killed externally (code {rc}) — "
-                        f"possible OOM or system issue",
+                        f"Stress process killed externally (code {rc}) — possible OOM or system issue",
                         start,
                         error_type="killed",
                     )
@@ -392,12 +387,13 @@ class Supervisor:
                     log.warning(
                         "Stress process for core %d exited in <%.0fs (code %d) — "
                         "binary may be missing or misconfigured",
-                        run.lane.core_id, STARTUP_WINDOW_SECONDS, rc,
+                        run.lane.core_id,
+                        STARTUP_WINDOW_SECONDS,
+                        rc,
                     )
                     self._fail(
                         run,
-                        f"stress exited at startup (code {rc}) with no work done — "
-                        "verdict unavailable",
+                        f"stress exited at startup (code {rc}) with no work done — verdict unavailable",
                         start,
                         error_type="startup",
                     )
@@ -547,10 +543,7 @@ class Supervisor:
                 core_id=run.lane.core_id,
                 passed=False,
                 duration_seconds=elapsed,
-                error_message=(
-                    f"Stress process killed externally (code {rc}) — "
-                    f"possible OOM or system issue"
-                ),
+                error_message=(f"Stress process killed externally (code {rc}) — possible OOM or system issue"),
                 error_type="killed",
             )
         if rc != 0 and rc not in KILLED_BY_US_CODES and elapsed < STARTUP_WINDOW_SECONDS:
@@ -600,10 +593,7 @@ def watch_idle(
     while time.monotonic() - start < duration and not stop_event.is_set():
         if not thermal.safe():
             stop_event.set()
-            return (
-                f"CPU temperature exceeded {thermal.max_temperature} C "
-                f"safety limit during {phase}"
-            )
+            return f"CPU temperature exceeded {thermal.max_temperature} C safety limit during {phase}"
         events = detector.check_mce()
         if events:
             observed.extend(events)
@@ -634,10 +624,19 @@ def classify_error(msg: str | None) -> str:
         return "thermal"
     if "stall" in msg_lower:
         return "stall"
-    if any(w in msg_lower for w in (
-        "rounding", "fatal", "illegal", "sumout", "mismatch",
-        "jacobi", "verification", "computation",
-    )):
+    if any(
+        w in msg_lower
+        for w in (
+            "rounding",
+            "fatal",
+            "illegal",
+            "sumout",
+            "mismatch",
+            "jacobi",
+            "verification",
+            "computation",
+        )
+    ):
         return "computation"
     if "timeout" in msg_lower:
         return "timeout"

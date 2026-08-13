@@ -74,9 +74,7 @@ class TestSMUColdTab:
 
         tab = SMUTab(_topo())
         tab._smu = _available_smu()
-        with patch.object(
-            QMessageBox, "warning", return_value=QMessageBox.StandardButton.Yes
-        ):
+        with patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.Yes):
             tab._reset_all_co()
             tab._apply_all_co()
             tab._apply_single(next(iter(tab._spinboxes)))
@@ -91,9 +89,7 @@ class TestSMUColdTab:
         tab = SMUTab(_topo())
         tab._smu = _available_smu()
         with (
-            patch.object(
-                QMessageBox, "warning", return_value=QMessageBox.StandardButton.No
-            ),
+            patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.No),
             patch.object(QMessageBox, "information", return_value=None),
             patch.object(QFileDialog, "getSaveFileName", return_value=("", "")),
             patch.object(QFileDialog, "getOpenFileName", return_value=("", "")),

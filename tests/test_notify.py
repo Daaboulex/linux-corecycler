@@ -18,8 +18,10 @@ class TestDesktopNotify:
             assert desktop_notify("t", "b") is False
 
     def test_success_returns_true_and_passes_args(self):
-        with patch("corecycler.config.tools.shutil.which", return_value="/usr/bin/notify-send"), \
-                patch("corecycler.notify.subprocess.run", return_value=MagicMock(returncode=0)) as run:
+        with (
+            patch("corecycler.config.tools.shutil.which", return_value="/usr/bin/notify-send"),
+            patch("corecycler.notify.subprocess.run", return_value=MagicMock(returncode=0)) as run,
+        ):
             assert desktop_notify("Title", "Body", urgency="critical") is True
         argv = run.call_args[0][0]
         assert argv[0] == "/usr/bin/notify-send"
@@ -27,23 +29,30 @@ class TestDesktopNotify:
         assert "Title" in argv and "Body" in argv
 
     def test_bad_urgency_falls_back_to_normal(self):
-        with patch("corecycler.config.tools.shutil.which", return_value="/usr/bin/notify-send"), \
-                patch("corecycler.notify.subprocess.run", return_value=MagicMock(returncode=0)) as run:
+        with (
+            patch("corecycler.config.tools.shutil.which", return_value="/usr/bin/notify-send"),
+            patch("corecycler.notify.subprocess.run", return_value=MagicMock(returncode=0)) as run,
+        ):
             desktop_notify("t", "b", urgency="bogus")
         assert "normal" in run.call_args[0][0]
 
     def test_nonzero_exit_returns_false(self):
-        with patch("corecycler.config.tools.shutil.which", return_value="/usr/bin/notify-send"), \
-                patch("corecycler.notify.subprocess.run", return_value=MagicMock(returncode=1)):
+        with (
+            patch("corecycler.config.tools.shutil.which", return_value="/usr/bin/notify-send"),
+            patch("corecycler.notify.subprocess.run", return_value=MagicMock(returncode=1)),
+        ):
             assert desktop_notify("t", "b") is False
 
     def test_subprocess_error_swallowed(self):
-        with patch("corecycler.config.tools.shutil.which", return_value="/usr/bin/notify-send"), \
-                patch("corecycler.notify.subprocess.run", side_effect=OSError("boom")):
+        with (
+            patch("corecycler.config.tools.shutil.which", return_value="/usr/bin/notify-send"),
+            patch("corecycler.notify.subprocess.run", side_effect=OSError("boom")),
+        ):
             assert desktop_notify("t", "b") is False
 
     def test_timeout_swallowed(self):
-        with patch("corecycler.config.tools.shutil.which", return_value="/usr/bin/notify-send"), \
-                patch("corecycler.notify.subprocess.run",
-                      side_effect=subprocess.TimeoutExpired("notify-send", 5)):
+        with (
+            patch("corecycler.config.tools.shutil.which", return_value="/usr/bin/notify-send"),
+            patch("corecycler.notify.subprocess.run", side_effect=subprocess.TimeoutExpired("notify-send", 5)),
+        ):
             assert desktop_notify("t", "b") is False

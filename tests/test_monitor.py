@@ -99,8 +99,8 @@ class TestHWMonReader:
 
     def test_read_temperatures(self, tmp_path):
         temps = [
-            ("Tctl", 65000),   # 65.0C
-            ("Tdie", 62000),   # 62.0C
+            ("Tctl", 65000),  # 65.0C
+            ("Tdie", 62000),  # 62.0C
             ("Tccd1", 60000),  # 60.0C
             ("Tccd2", 58000),  # 58.0C
         ]
@@ -115,8 +115,8 @@ class TestHWMonReader:
 
     def test_read_voltages(self, tmp_path):
         voltages = [
-            ("Vcore", 1350),    # 1.35V
-            ("Vsoc", 1100),     # 1.1V
+            ("Vcore", 1350),  # 1.35V
+            ("Vsoc", 1100),  # 1.1V
         ]
         hwmon_base = self._create_hwmon(tmp_path, "k10temp", voltages=voltages)
         with patch("corecycler.monitor.hwmon.HWMON_BASE", hwmon_base):
@@ -369,9 +369,7 @@ class TestFrequencyReader:
     def test_read_from_proc_directly(self, tmp_path):
         """Test _read_from_proc with actual mock file."""
         proc_file = tmp_path / "cpuinfo"
-        proc_file.write_text(
-            "processor\t: 0\ncpu MHz\t\t: 3700.5\n\nprocessor\t: 1\ncpu MHz\t\t: 3600.0\n"
-        )
+        proc_file.write_text("processor\t: 0\ncpu MHz\t\t: 3700.5\n\nprocessor\t: 1\ncpu MHz\t\t: 3600.0\n")
 
         with patch("corecycler.monitor.frequency.Path", return_value=proc_file):
             # Direct test using patched path
@@ -405,8 +403,10 @@ class TestFrequencyReader:
         (d / "scaling_cur_freq").write_text("bad")
 
         # Also mock _read_from_proc to prevent fallback to real /proc/cpuinfo
-        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", cpu_dir), \
-             patch("corecycler.monitor.frequency._read_from_proc", return_value={}):
+        with (
+            patch("corecycler.monitor.frequency.CPUFREQ_BASE", cpu_dir),
+            patch("corecycler.monitor.frequency._read_from_proc", return_value={}),
+        ):
             freqs = read_core_frequencies()
         # Should be empty (ValueError caught, fallback also empty)
         assert 0 not in freqs

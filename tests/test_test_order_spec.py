@@ -35,11 +35,16 @@ def make_engine(db, topo, order: str) -> TunerEngine:
     return TunerEngine(db=db, topology=topo, smu=None, backend=MagicMock(), config=cfg)
 
 
-def seed(eng, phases: dict[int, TunerPhase], cooldowns: dict[int, int] | None = None,
-         crash_counts: dict[int, int] | None = None) -> None:
+def seed(
+    eng,
+    phases: dict[int, TunerPhase],
+    cooldowns: dict[int, int] | None = None,
+    crash_counts: dict[int, int] | None = None,
+) -> None:
     eng._core_states = {
         c: CoreState(
-            core_id=c, phase=p,
+            core_id=c,
+            phase=p,
             crash_cooldown=(cooldowns or {}).get(c, 0),
             crash_count=(crash_counts or {}).get(c, 0),
         )
@@ -74,9 +79,11 @@ def ccd_of(eng, core: int) -> int:
 class TestGlobalInvariants:
     def test_never_picks_terminal_or_cooling(self, db, topo_dual_ccd_x3d, order):
         eng = make_engine(db, topo_dual_ccd_x3d, order)
-        seed(eng, {0: TERMINAL, 1: TunerPhase.HARDENED, 2: ACTIVE, 3: ACTIVE,
-                   4: ACTIVE, 5: TERMINAL, 6: ACTIVE, 7: ACTIVE},
-             cooldowns={2: 2, 6: 1})
+        seed(
+            eng,
+            {0: TERMINAL, 1: TunerPhase.HARDENED, 2: ACTIVE, 3: ACTIVE, 4: ACTIVE, 5: TERMINAL, 6: ACTIVE, 7: ACTIVE},
+            cooldowns={2: 2, 6: 1},
+        )
         for _ in range(20):
             core = step(eng)
             assert core is not None
@@ -94,9 +101,11 @@ class TestGlobalInvariants:
         """Invariant 4: pick None + non-terminal cores cooling -> draining
         cooldowns must eventually yield a pick (no deadlock while work remains)."""
         eng = make_engine(db, topo_dual_ccd_x3d, order)
-        seed(eng, {0: ACTIVE, 1: TERMINAL, 2: ACTIVE, 3: TERMINAL,
-                   4: TERMINAL, 5: TERMINAL, 6: TERMINAL, 7: TERMINAL},
-             cooldowns={0: 3, 2: 2})
+        seed(
+            eng,
+            {0: ACTIVE, 1: TERMINAL, 2: ACTIVE, 3: TERMINAL, 4: TERMINAL, 5: TERMINAL, 6: TERMINAL, 7: TERMINAL},
+            cooldowns={0: 3, 2: 2},
+        )
         assert eng._pick_next_core() is None
         for _ in range(10):  # the _run_next drain loop, bounded
             if eng._pick_next_core() is not None:
@@ -148,17 +157,37 @@ class TestRoundRobinSpec:
 class TestWeakestFirstSpec:
     def test_phase_priority(self, db, topo_dual_ccd_x3d):
         eng = make_engine(db, topo_dual_ccd_x3d, "weakest_first")
-        seed(eng, {0: TunerPhase.NOT_STARTED, 1: TunerPhase.COARSE_SEARCH,
-                   2: TunerPhase.FINE_SEARCH, 3: TunerPhase.CONFIRMING,
-                   4: TERMINAL, 5: TERMINAL, 6: TERMINAL, 7: TERMINAL})
+        seed(
+            eng,
+            {
+                0: TunerPhase.NOT_STARTED,
+                1: TunerPhase.COARSE_SEARCH,
+                2: TunerPhase.FINE_SEARCH,
+                3: TunerPhase.CONFIRMING,
+                4: TERMINAL,
+                5: TERMINAL,
+                6: TERMINAL,
+                7: TERMINAL,
+            },
+        )
         assert step(eng) == 2  # FINE_SEARCH (0) < CONFIRMING (1) < COARSE (2) < NOT_STARTED (4)
 
     def test_crash_count_deprioritizes(self, db, topo_dual_ccd_x3d):
         eng = make_engine(db, topo_dual_ccd_x3d, "weakest_first")
-        seed(eng, {0: TunerPhase.FINE_SEARCH, 1: TunerPhase.FINE_SEARCH,
-                   2: TERMINAL, 3: TERMINAL, 4: TERMINAL, 5: TERMINAL,
-                   6: TERMINAL, 7: TERMINAL},
-             crash_counts={0: 2})
+        seed(
+            eng,
+            {
+                0: TunerPhase.FINE_SEARCH,
+                1: TunerPhase.FINE_SEARCH,
+                2: TERMINAL,
+                3: TERMINAL,
+                4: TERMINAL,
+                5: TERMINAL,
+                6: TERMINAL,
+                7: TERMINAL,
+            },
+            crash_counts={0: 2},
+        )
         assert step(eng) == 1  # same phase, but core 0 carries 2*2 crash penalty
 
 
@@ -173,8 +202,7 @@ class TestCcdAlternatingSpec:
 
     def test_drains_remaining_ccd_when_other_done(self, db, topo_dual_ccd_x3d):
         eng = make_engine(db, topo_dual_ccd_x3d, "ccd_alternating")
-        seed(eng, {0: ACTIVE, 1: ACTIVE, 2: TERMINAL, 3: TERMINAL,
-                   4: TERMINAL, 5: TERMINAL, 6: TERMINAL, 7: TERMINAL})
+        seed(eng, {0: ACTIVE, 1: ACTIVE, 2: TERMINAL, 3: TERMINAL, 4: TERMINAL, 5: TERMINAL, 6: TERMINAL, 7: TERMINAL})
         eng._last_tested_core = 0
         assert ccd_of(eng, step(eng)) == 0  # only CCD0 has work — no deadlock
 
@@ -212,15 +240,14 @@ class TestInterruptionContract:
         for core in (0, 4, 1):
             self._log_real_test(db, sid, core)
         # synthetic crash row (duration NULL) must NOT move the cursor
-        tp.log_test_result(db, sid, 6, -20, "coarse", False,
-                           error_type="crash", duration=None)
+        tp.log_test_result(db, sid, 6, -20, "coarse", False, error_type="crash", duration=None)
 
         eng = make_engine(db, topo_dual_ccd_x3d, "ccd_round_robin")
         seed(eng, dict.fromkeys(range(8), ACTIVE))
         eng._session_id = sid
         eng._reconstruct_scheduling_position()
 
-        assert eng._last_tested_core == 1          # last REAL test
+        assert eng._last_tested_core == 1  # last REAL test
         assert eng._ccd_last_tested == {0: 1, 1: 4}
 
     def test_round_robin_continues_after_resume(self, db, topo_dual_ccd_x3d):

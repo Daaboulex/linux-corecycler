@@ -107,11 +107,11 @@ class TestCloseDuringTest:
         with pytest.raises(Exception, match="[Cc]losed"):
             db.list_runs(limit=1)
 
-    def test_close_stops_a_running_tuner_and_memory_stress(
-        self, window, no_modal, monkeypatch
-    ):
+    def test_close_stops_a_running_tuner_and_memory_stress(self, window, no_modal, monkeypatch):
         monkeypatch.setattr(
-            type(window._tuner_tab), "is_running", property(lambda self: True),
+            type(window._tuner_tab),
+            "is_running",
+            property(lambda self: True),
             raising=False,
         )
         tuner_stop = MagicMock()
@@ -132,9 +132,7 @@ class TestWorkerFinishAlive:
         monkeypatch.setattr(window._history_tab, "refresh", refresh)
         window._on_worker_finished()
         assert refresh.called
-        assert "complete" in window._status_msg.text().lower() or (
-            "stopped" in window._status_msg.text().lower()
-        )
+        assert "complete" in window._status_msg.text().lower() or ("stopped" in window._status_msg.text().lower())
 
     def test_a_crashing_scheduler_surfaces_instead_of_dying_silently(self):
         _qapp()
@@ -175,7 +173,8 @@ class TestHonestSummary:
         retest = MagicMock()
         monkeypatch.setattr(window._config_tab, "set_failed_cores", retest)
         kwargs = self._summary(
-            window, monkeypatch,
+            window,
+            monkeypatch,
             {"0": [{"passed": False, "error_message": "mprime error: FATAL"}], "1": []},
         )
         assert kwargs["total"] == 1

@@ -46,9 +46,7 @@ def test_a_contained_child_cannot_escape_its_cpuset():
     import json
 
     reported = json.loads(result.stdout.strip())
-    assert set(reported) <= set(ALLOWED), (
-        f"child widened its affinity to {reported} despite AllowedCPUs={ALLOWED}"
-    )
+    assert set(reported) <= set(ALLOWED), f"child widened its affinity to {reported} despite AllowedCPUs={ALLOWED}"
 
 
 def test_the_watchdog_observation_matches_the_kernel_record():
@@ -69,9 +67,7 @@ def test_the_watchdog_observation_matches_the_kernel_record():
                 break
             time.sleep(0.2)
         assert observed, "no thread of the contained tree was observable"
-        assert observed <= set(ALLOWED), (
-            f"observed CPUs {sorted(observed)} outside AllowedCPUs={ALLOWED}"
-        )
+        assert observed <= set(ALLOWED), f"observed CPUs {sorted(observed)} outside AllowedCPUs={ALLOWED}"
         cgroup = containment.payload_cgroup(proc.pid, contained.unit)
         assert cgroup is not None, "payload never showed the named scope in /proc"
         assert containment.scope_effective_cpus(cgroup) == set(ALLOWED)

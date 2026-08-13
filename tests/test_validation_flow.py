@@ -118,16 +118,20 @@ class TestIncrementalValidation:
 
 
 class TestValidationResumePosition:
-    def test_reenter_continues_at_persisted_stage_and_requeues_changed_cores(
-        self, db, topo_dual_ccd_x3d, mock_backend
-    ):
+    def test_reenter_continues_at_persisted_stage_and_requeues_changed_cores(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_validating(eng, db)
         sid = eng._session_id
         # Every core has a stage-1 pass at its current best...
         for core_id, offset in BEST.items():
             tp.log_test_result(
-                db, sid, core_id, offset, "validate_s1", passed=True, duration=300.0,
+                db,
+                sid,
+                core_id,
+                offset,
+                "validate_s1",
+                passed=True,
+                duration=300.0,
             )
         # ...except core 5, whose offset changed after a penalty (no pass at new best).
         eng._core_states[5].best_offset = BEST[5] + 1
@@ -143,15 +147,19 @@ class TestValidationResumePosition:
         assert eng._validation_requeue == [5]  # only the changed core re-tests
         assert eng._in_requeue is True
 
-    def test_malformed_requeue_cursor_fails_closed_to_empty(
-        self, db, topo_dual_ccd_x3d, mock_backend
-    ):
+    def test_malformed_requeue_cursor_fails_closed_to_empty(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_validating(eng, db)
         sid = eng._session_id
         for core_id, offset in BEST.items():
             tp.log_test_result(
-                db, sid, core_id, offset, "validate_s1", passed=True, duration=300.0,
+                db,
+                sid,
+                core_id,
+                offset,
+                "validate_s1",
+                passed=True,
+                duration=300.0,
             )
         db.set_validation_position(sid, 3, 0, 1, False, "not json")
         session = tp.get_session(db, sid)
@@ -181,9 +189,13 @@ class TestValidationResumePosition:
 class TestSpectrumAndSoak:
     def test_disabled_stages_chain_through_to_finalize(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = _make_engine(
-            db, topo_dual_ccd_x3d, mock_backend,
-            validate_transitions=False, validate_spectrum=False,
-            validate_memory=False, validate_soak=False,
+            db,
+            topo_dual_ccd_x3d,
+            mock_backend,
+            validate_transitions=False,
+            validate_spectrum=False,
+            validate_memory=False,
+            validate_soak=False,
         )
         _seed_validating(eng, db)
         eng._validation_core_order = sorted(BEST)
@@ -209,8 +221,7 @@ class TestSpectrumAndSoak:
 
         eng._run_validation_stage5()
 
-        assert calls == [(sorted(BEST)[2], eng._config.spectrum_slot_seconds,
-                          {"spectrum": True})]
+        assert calls == [(sorted(BEST)[2], eng._config.spectrum_slot_seconds, {"spectrum": True})]
 
     def test_stage5_pass_advances_and_fail_retries_slot(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
@@ -241,9 +252,7 @@ class TestSpectrumAndSoak:
         assert eng.status == "idle"
         assert tp.get_session(db, eng._session_id).status == "completed"
 
-    def test_soak_unattributed_event_pauses_not_finalizes(
-        self, db, topo_dual_ccd_x3d, mock_backend
-    ):
+    def test_soak_unattributed_event_pauses_not_finalizes(self, db, topo_dual_ccd_x3d, mock_backend):
         import json as _json
 
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
@@ -252,14 +261,21 @@ class TestSpectrumAndSoak:
         eng._validation_stage = 7
         eng._soaking = True
         eng._config.max_unattributed_crash_hunts = 1
-        payload = _json.dumps([
-            {"cpu": -1, "bank": 4, "corrected": False,
-             "message": "general MCE, no core named", "raw_ts": 1.0},
-        ])
+        payload = _json.dumps(
+            [
+                {"cpu": -1, "bank": 4, "corrected": False, "message": "general MCE, no core named", "raw_ts": 1.0},
+            ]
+        )
 
         eng._on_test_finished(
-            sorted(BEST)[0], False, "kernel error during soak", "mce",
-            10.0, 0.0, payload, "",
+            sorted(BEST)[0],
+            False,
+            "kernel error during soak",
+            "mce",
+            10.0,
+            0.0,
+            payload,
+            "",
         )
 
         assert eng._validation_dirty is True
@@ -267,9 +283,7 @@ class TestSpectrumAndSoak:
         assert eng.status == "paused"
         assert tp.get_session(db, eng._session_id).status != "completed"
 
-    def test_soak_event_demotes_named_core_and_exits_validation(
-        self, db, topo_dual_ccd_x3d, mock_backend
-    ):
+    def test_soak_event_demotes_named_core_and_exits_validation(self, db, topo_dual_ccd_x3d, mock_backend):
         import json as _json
 
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
@@ -279,14 +293,21 @@ class TestSpectrumAndSoak:
         eng._soaking = True
         eng._co_applied[5] = BEST[5]
         cpu = topo_dual_ccd_x3d.cores[5].logical_cpus[0]
-        payload = _json.dumps([
-            {"cpu": cpu, "bank": 0, "corrected": True, "message": "soak whisper",
-             "raw_ts": 1.0},
-        ])
+        payload = _json.dumps(
+            [
+                {"cpu": cpu, "bank": 0, "corrected": True, "message": "soak whisper", "raw_ts": 1.0},
+            ]
+        )
 
         eng._on_test_finished(
-            sorted(BEST)[0], False, "kernel error during soak", "mce",
-            10.0, 0.0, payload, "",
+            sorted(BEST)[0],
+            False,
+            "kernel error during soak",
+            "mce",
+            10.0,
+            0.0,
+            payload,
+            "",
         )
 
         cs = eng._core_states[5]
@@ -348,16 +369,12 @@ class TestMemoryValidationStage:
         eng._validation_core_order = sorted(BEST)
         return eng
 
-    def test_memory_stage_runs_with_memory_backend_when_available(
-        self, db, topo_dual_ccd_x3d, mock_backend
-    ):
+    def test_memory_stage_runs_with_memory_backend_when_available(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = self._seed(db, topo_dual_ccd_x3d, mock_backend)
         captured = {}
         eng._get_memory_backend = lambda: _FakeMemBackend()
-        eng._start_multi_core_worker = (
-            lambda cores, dur, backend=None: captured.update(
-                cores=list(cores), backend=backend
-            )
+        eng._start_multi_core_worker = lambda cores, dur, backend=None: captured.update(
+            cores=list(cores), backend=backend
         )
         eng._validation_stage = 6
 
@@ -376,9 +393,7 @@ class TestMemoryValidationStage:
         assert eng._validation_stage == 7  # soak is next
         assert tp.get_session(db, eng._session_id).validation_stage == 7
 
-    def test_memory_failure_backs_off_failing_core_and_requeues(
-        self, db, topo_dual_ccd_x3d, mock_backend
-    ):
+    def test_memory_failure_backs_off_failing_core_and_requeues(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = self._seed(db, topo_dual_ccd_x3d, mock_backend)
         eng._start_multi_core_worker = lambda *a, **k: None
         eng._validation_stage = 6
@@ -403,9 +418,7 @@ class TestMemoryValidationStage:
         assert ran == []  # memory did not run
         assert eng._validation_stage == 7  # jumped straight to soak
 
-    def test_memory_stage_skipped_when_no_tool_installed(
-        self, db, topo_dual_ccd_x3d, mock_backend
-    ):
+    def test_memory_stage_skipped_when_no_tool_installed(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = self._seed(db, topo_dual_ccd_x3d, mock_backend)
         ran = []
         eng._get_memory_backend = lambda: None  # stressapptest not installed
@@ -417,9 +430,7 @@ class TestMemoryValidationStage:
         assert ran == []  # skipped, not failed
         assert eng._validation_stage == 7  # advanced to soak
 
-    def test_get_memory_backend_returns_none_without_stressapptest(
-        self, db, topo_dual_ccd_x3d, mock_backend
-    ):
+    def test_get_memory_backend_returns_none_without_stressapptest(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         # In the test/sandbox environment stressapptest is not installed, so the
         # real availability check must yield None (not raise, not a CPU backend).

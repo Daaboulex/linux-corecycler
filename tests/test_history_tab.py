@@ -35,8 +35,14 @@ def db():
 def _seed_run(db, started_at, status="completed", cores_failed=0):
     return db.create_run(
         RunRecord(
-            started_at=started_at, status=status, backend="mprime", stress_mode="SSE",
-            cpu_model="Test 8C", total_cores=4, cores_passed=4 - cores_failed, cores_failed=cores_failed,
+            started_at=started_at,
+            status=status,
+            backend="mprime",
+            stress_mode="SSE",
+            cpu_model="Test 8C",
+            total_cores=4,
+            cores_passed=4 - cores_failed,
+            cores_failed=cores_failed,
         )
     )
 
@@ -148,19 +154,34 @@ def _seed_run_with_results(db, cores=2, failed=0):
 
     rid = db.create_run(
         RunRecord(
-            started_at="2026-07-20T10:00:00+00:00", finished_at="2026-07-20T11:00:00+00:00",
-            status="completed", backend="mprime", stress_mode="SSE", fft_preset="SMALL",
-            cpu_model="Test 8C", seconds_per_core=600, cycle_count=1,
-            total_cores=cores, cores_passed=cores - failed, cores_failed=failed,
+            started_at="2026-07-20T10:00:00+00:00",
+            finished_at="2026-07-20T11:00:00+00:00",
+            status="completed",
+            backend="mprime",
+            stress_mode="SSE",
+            fft_preset="SMALL",
+            cpu_model="Test 8C",
+            seconds_per_core=600,
+            cycle_count=1,
+            total_cores=cores,
+            cores_passed=cores - failed,
+            cores_failed=failed,
             bios_version="2402",
         )
     )
     for c in range(cores):
         db.insert_core_result(
             CoreResultRecord(
-                run_id=rid, core_id=c, ccd=0, cycle=0, started_at="2026-07-20T10:00:00+00:00",
-                passed=(c >= failed), elapsed_seconds=600.0, iterations_completed=5,
-                peak_freq_mhz=5200.0, max_temp_c=78.0,
+                run_id=rid,
+                core_id=c,
+                ccd=0,
+                cycle=0,
+                started_at="2026-07-20T10:00:00+00:00",
+                passed=(c >= failed),
+                elapsed_seconds=600.0,
+                iterations_completed=5,
+                peak_freq_mhz=5200.0,
+                max_temp_c=78.0,
                 error_message=None if c >= failed else "rounding error",
                 error_type=None if c >= failed else "computation",
             )
@@ -198,7 +219,8 @@ class TestTunerSessionDetail:
         sid = _seed_session(db, "completed")
         for c in range(3):
             tp.save_core_state(
-                db, sid,
+                db,
+                sid,
                 CoreState(core_id=c, phase=TunerPhase.HARDENED, current_offset=-30, best_offset=-30),
             )
         tab = _tab(db)

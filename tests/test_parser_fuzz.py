@@ -76,8 +76,7 @@ class TestCpuinfoParserRobust:
 
 
 class TestPmTableParserRobust:
-    @settings(max_examples=300, deadline=None,
-              suppress_health_check=[HealthCheck.function_scoped_fixture])
+    @settings(max_examples=300, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
     @given(raw=st.binary(max_size=3000), ver=st.binary(max_size=8))
     def test_read_never_crashes_on_garbage_bytes(self, raw, ver, tmp_path):
         (tmp_path / "pm_table").write_bytes(raw)
@@ -89,8 +88,7 @@ class TestPmTableParserRobust:
 
 class TestRatioMathRobust:
     @settings(max_examples=400, deadline=None)
-    @given(f=st.floats(allow_nan=True, allow_infinity=True),
-           u=st.floats(allow_nan=True, allow_infinity=True))
+    @given(f=st.floats(allow_nan=True, allow_infinity=True), u=st.floats(allow_nan=True, allow_infinity=True))
     def test_ratio_never_crashes(self, f, u):
         r = compute_fclk_uclk_ratio(f, u)
         assert r is None or (isinstance(r, tuple) and len(r) == 2)

@@ -61,9 +61,7 @@ def scripted(monkeypatch):
 def make_topo(cores: dict[int, tuple[int, ...]] | None = None) -> CPUTopology:
     topo = CPUTopology()
     for core_id, cpus in (cores or {0: (0, 16), 1: (1, 17)}).items():
-        topo.cores[core_id] = PhysicalCore(
-            core_id=core_id, ccd=core_id // 8, ccx=None, logical_cpus=cpus
-        )
+        topo.cores[core_id] = PhysicalCore(core_id=core_id, ccd=core_id // 8, ccx=None, logical_cpus=cpus)
     return topo
 
 
@@ -83,8 +81,11 @@ def ok(core_id: int) -> StressResult:
 
 def bad(core_id: int, msg: str = "mprime error: FATAL ERROR") -> StressResult:
     return StressResult(
-        core_id=core_id, passed=False, duration_seconds=0.1,
-        error_message=msg, error_type=execution.classify_error(msg),
+        core_id=core_id,
+        passed=False,
+        duration_seconds=0.1,
+        error_message=msg,
+        error_type=execution.classify_error(msg),
     )
 
 
@@ -161,9 +162,7 @@ class TestRunOrchestration:
         sched = make_scheduler(tmp_path)
         ScriptedSupervisor.script = [step_pass, step_pass]
         results = sched.run()
-        assert all(
-            sup.kwargs["stop_on_first_failure"] is False for sup in ScriptedSupervisor.created
-        )
+        assert all(sup.kwargs["stop_on_first_failure"] is False for sup in ScriptedSupervisor.created)
         assert sched.state == TestState.FINISHED
         assert [r[0].passed for r in results.values()] == [True, True]
         assert all(s.state == "passed" for s in sched.core_status.values())
@@ -302,9 +301,7 @@ class TestIdleComposition:
         assert calls == ["inter-core idle", "inter-core idle"]
 
     def test_an_idle_error_is_recorded_without_a_verdict_change(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            execution, "watch_idle", lambda **kwargs: "MCE during inter-core idle: bang"
-        )
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: "MCE during inter-core idle: bang")
         sched = make_scheduler(tmp_path, idle_between_cores=0.01)
         ScriptedSupervisor.script = [step_pass, step_pass]
         results = sched.run()
@@ -313,9 +310,7 @@ class TestIdleComposition:
         assert "MCE" in sched.core_status[0].last_error
 
     def test_an_idle_stability_error_fails_the_core(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            execution, "watch_idle", lambda **kwargs: "MCE during idle stability: bang"
-        )
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: "MCE during idle stability: bang")
         sched = make_scheduler(tmp_path, cores_to_test=[0], idle_stability_test=0.01)
         ScriptedSupervisor.script = [step_pass]
         results = sched.run()
@@ -355,9 +350,7 @@ class TestRapidTransitions:
             return {one.core_id: ok(one.core_id) for one in lanes}
 
         ScriptedSupervisor.script = [timed_pass] * 40
-        passed, error = sched.run_rapid_transitions(
-            [0, 1], total_duration=0.1, load_seconds=0.03, idle_seconds=0.01
-        )
+        passed, error = sched.run_rapid_transitions([0, 1], total_duration=0.1, load_seconds=0.03, idle_seconds=0.01)
         assert passed is True and error is None
         assert sched.state == TestState.FINISHED
 
@@ -366,8 +359,7 @@ class TestRapidTransitions:
 
         def timed_fail(sup, lanes, config_for, duration):
             time.sleep(0.02)
-            return {one.core_id: bad(one.core_id, "mprime crashed with SIGSEGV (exit -11)")
-                    for one in lanes}
+            return {one.core_id: bad(one.core_id, "mprime crashed with SIGSEGV (exit -11)") for one in lanes}
 
         ScriptedSupervisor.script = [timed_fail]
         passed, error = sched.run_rapid_transitions([0], total_duration=1.0, load_seconds=0.02)
@@ -389,7 +381,8 @@ class TestRapidTransitions:
 
     def test_an_idle_mce_ends_the_cycling(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            execution, "watch_idle",
+            execution,
+            "watch_idle",
             lambda **kwargs: f"MCE during {kwargs['phase']}: bang",
         )
         sched = make_scheduler(tmp_path)
@@ -399,9 +392,7 @@ class TestRapidTransitions:
             return {one.core_id: ok(one.core_id) for one in lanes}
 
         ScriptedSupervisor.script = [timed_pass]
-        passed, error = sched.run_rapid_transitions(
-            [0], total_duration=1.0, load_seconds=0.02, idle_seconds=0.02
-        )
+        passed, error = sched.run_rapid_transitions([0], total_duration=1.0, load_seconds=0.02, idle_seconds=0.02)
         assert passed is False
         assert "idle phase of rapid transition cycle 1" in error
 
@@ -419,8 +410,7 @@ class TestSignalMarshallingAudit:
                 if "Signal(dict)" in line or "Signal(list)" in line:
                     violations.append(f"{py_file.relative_to(src_dir)}:{i}: {line.strip()}")
         assert violations == [], (
-            "Found Signal(dict) or Signal(list) — these crash across QThread boundaries.\n"
-            + "\n".join(violations)
+            "Found Signal(dict) or Signal(list) — these crash across QThread boundaries.\n" + "\n".join(violations)
         )
 
 

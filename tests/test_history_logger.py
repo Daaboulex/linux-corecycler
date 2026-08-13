@@ -32,9 +32,7 @@ def topology():
     topo.ccds = 2
     topo.is_x3d = True
     for i in range(8):
-        topo.cores[i] = PhysicalCore(
-            core_id=i, ccd=i // 4, ccx=None, logical_cpus=(i, i + 8)
-        )
+        topo.cores[i] = PhysicalCore(core_id=i, ccd=i // 4, ccx=None, logical_cpus=(i, i + 8))
     return topo
 
 
@@ -165,8 +163,7 @@ class TestTestCompletion:
 
     def test_on_test_completed_malformed_payload_is_safe(self, db, logger):
         # Fail closed: a malformed or wrongly-shaped payload must not crash the slot.
-        for bad in ("", "not json", "[1,2,3]", "null", "42",
-                    '{"0": "x"}', '{"0": [42]}', '{"0": [{"no_passed": 1}]}'):
+        for bad in ("", "not json", "[1,2,3]", "null", "42", '{"0": "x"}', '{"0": [42]}', '{"0": [{"no_passed": 1}]}'):
             logger.on_test_completed(bad)  # must not raise
 
     def test_on_test_stopped(self, db, logger):

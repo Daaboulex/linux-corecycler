@@ -224,21 +224,14 @@ class TestVerdicts:
         assert verdict is not None and verdict.passed
 
     def test_a_live_error_file_beats_a_clean_exit(self, tmp_path):
-        backend = FakeBackend(
-            _child("import time; time.sleep(0.5)"), poll_error="fake error: SUMOUT"
-        )
+        backend = FakeBackend(_child("import time; time.sleep(0.5)"), poll_error="fake error: SUMOUT")
         supervisor, _, _ = make_supervisor(backend)
         verdict = run_one(supervisor, lane(tmp_path), 0.2)
         assert verdict is not None and not verdict.passed
         assert "SUMOUT" in verdict.error_message
 
     def test_an_external_kill_is_a_failure_not_a_verdict(self, tmp_path):
-        backend = FakeBackend(
-            _child(
-                "import os, signal, time; time.sleep(0.1); "
-                "os.kill(os.getpid(), signal.SIGKILL)"
-            )
-        )
+        backend = FakeBackend(_child("import os, signal, time; time.sleep(0.1); os.kill(os.getpid(), signal.SIGKILL)"))
         supervisor, _, _ = make_supervisor(backend)
         verdict = run_one(supervisor, lane(tmp_path), 4.0)
         assert verdict is not None and not verdict.passed
@@ -253,12 +246,7 @@ class TestVerdicts:
 
     def test_no_stress_process_outlives_the_run(self, tmp_path):
         marker = tmp_path / "pid"
-        backend = FakeBackend(
-            _child(
-                f"import os, time; open('{marker}', 'w').write(str(os.getpid())); "
-                "time.sleep(30)"
-            )
-        )
+        backend = FakeBackend(_child(f"import os, time; open('{marker}', 'w').write(str(os.getpid())); time.sleep(30)"))
         supervisor, stop, _ = make_supervisor(backend)
         threading.Timer(0.2, stop.set).start()
         run_one(supervisor, lane(tmp_path), 10.0)
@@ -322,7 +310,8 @@ class TestStallWatchdog:
         with (
             patch.object(execution, "STALL_GRACE_SECONDS", 0.0),
             patch.object(
-                execution, "cpu_times",
+                execution,
+                "cpu_times",
                 side_effect=[(i * 100, i * 100) for i in range(1, 400)],
             ),
         ):
@@ -340,7 +329,8 @@ class TestStallWatchdog:
             patch.object(execution, "STARTUP_WINDOW_SECONDS", 0.05),
             patch.object(execution, "STALL_GRACE_SECONDS", 0.0),
             patch.object(
-                execution, "cpu_times",
+                execution,
+                "cpu_times",
                 side_effect=[(0, i * 100) for i in range(1, 400)],
             ),
         ):
@@ -412,29 +402,41 @@ class TestContainmentWatchdog:
 class TestThermalGuard:
     def test_a_missing_sensor_fails_closed_when_required(self):
         watch = ThermalWatch(
-            max_temperature=95, grace_seconds=3, hard_margin=8,
-            require_sensor=True, read=lambda: None,
+            max_temperature=95,
+            grace_seconds=3,
+            hard_margin=8,
+            require_sensor=True,
+            read=lambda: None,
         )
         assert watch.safe() is False
 
     def test_a_missing_sensor_is_tolerated_when_optional(self):
         watch = ThermalWatch(
-            max_temperature=95, grace_seconds=3, hard_margin=8,
-            require_sensor=False, read=lambda: None,
+            max_temperature=95,
+            grace_seconds=3,
+            hard_margin=8,
+            require_sensor=False,
+            read=lambda: None,
         )
         assert watch.safe() is True
 
     def test_a_brief_overshoot_is_granted_grace(self):
         watch = ThermalWatch(
-            max_temperature=95, grace_seconds=60, hard_margin=8,
-            require_sensor=False, read=lambda: 96.0,
+            max_temperature=95,
+            grace_seconds=60,
+            hard_margin=8,
+            require_sensor=False,
+            read=lambda: 96.0,
         )
         assert watch.safe() is True
 
     def test_a_sustained_overshoot_trips(self):
         watch = ThermalWatch(
-            max_temperature=95, grace_seconds=0.0, hard_margin=8,
-            require_sensor=False, read=lambda: 96.0,
+            max_temperature=95,
+            grace_seconds=0.0,
+            hard_margin=8,
+            require_sensor=False,
+            read=lambda: 96.0,
         )
         assert watch.safe() is False
         assert watch.tripped
@@ -442,8 +444,11 @@ class TestThermalGuard:
     def test_recovery_before_grace_resets_the_window(self):
         temps = iter([96.0, 40.0, 96.0])
         watch = ThermalWatch(
-            max_temperature=95, grace_seconds=60, hard_margin=8,
-            require_sensor=False, read=lambda: next(temps),
+            max_temperature=95,
+            grace_seconds=60,
+            hard_margin=8,
+            require_sensor=False,
+            read=lambda: next(temps),
         )
         assert watch.safe() is True
         assert watch.safe() is True
@@ -452,8 +457,11 @@ class TestThermalGuard:
 
     def test_the_hard_ceiling_trips_immediately(self):
         watch = ThermalWatch(
-            max_temperature=95, grace_seconds=60, hard_margin=8,
-            require_sensor=False, read=lambda: 103.5,
+            max_temperature=95,
+            grace_seconds=60,
+            hard_margin=8,
+            require_sensor=False,
+            read=lambda: 103.5,
         )
         assert watch.safe() is False
         assert watch.tripped
@@ -461,8 +469,11 @@ class TestThermalGuard:
     def test_hysteresis_governs_resume(self):
         temps = iter([104.0, 91.0, 89.0])
         watch = ThermalWatch(
-            max_temperature=95, grace_seconds=0, hard_margin=8,
-            require_sensor=False, read=lambda: next(temps),
+            max_temperature=95,
+            grace_seconds=0,
+            hard_margin=8,
+            require_sensor=False,
+            read=lambda: next(temps),
         )
         assert watch.safe() is False
         assert watch.safe() is False
@@ -471,13 +482,14 @@ class TestThermalGuard:
     def test_a_trip_fails_the_batch_and_fires_the_hook(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(5)"))
         hot = ThermalWatch(
-            max_temperature=95, grace_seconds=0, hard_margin=8,
-            require_sensor=False, read=lambda: 104.0,
+            max_temperature=95,
+            grace_seconds=0,
+            hard_margin=8,
+            require_sensor=False,
+            read=lambda: 104.0,
         )
         seen_temps: list[float] = []
-        supervisor, _, _ = make_supervisor(
-            backend, thermal=hot, hooks=SuperviseHooks(on_thermal=seen_temps.append)
-        )
+        supervisor, _, _ = make_supervisor(backend, thermal=hot, hooks=SuperviseHooks(on_thermal=seen_temps.append))
         verdict = run_one(supervisor, lane(tmp_path), 5.0)
         assert verdict is not None and not verdict.passed
         assert verdict.error_type == "thermal"
@@ -538,23 +550,22 @@ class TestWatchIdle:
 
     def test_an_overheat_during_idle_is_reported(self):
         hot = ThermalWatch(
-            max_temperature=95, grace_seconds=0, hard_margin=8,
-            require_sensor=False, read=lambda: 104.0,
+            max_temperature=95,
+            grace_seconds=0,
+            hard_margin=8,
+            require_sensor=False,
+            read=lambda: 104.0,
         )
         error = watch_idle(**self._args(thermal=hot, duration=5.0))
         assert error is not None and "temperature" in error
 
     def test_an_own_cpu_mce_ends_the_idle(self):
-        error = watch_idle(
-            **self._args(detector=FakeDetector([[Event(cpu=0)]]), duration=5.0)
-        )
+        error = watch_idle(**self._args(detector=FakeDetector([[Event(cpu=0)]]), duration=5.0))
         assert error is not None and "MCE during idle stability" in error
 
     def test_a_foreign_mce_is_recorded_not_reported(self):
         seen: list = []
-        error = watch_idle(
-            **self._args(detector=FakeDetector([[Event(cpu=9)]]), observed=seen)
-        )
+        error = watch_idle(**self._args(detector=FakeDetector([[Event(cpu=9)]]), observed=seen))
         assert error is None
         assert [e.cpu for e in seen] == [9]
 
@@ -595,10 +606,7 @@ class TestHelpers:
 
     def test_kill_process_group_escalates_to_sigkill(self):
         proc = subprocess.Popen(
-            _child(
-                "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                "time.sleep(30)"
-            ),
+            _child("import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"),
             preexec_fn=execution.make_preexec(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -655,8 +663,7 @@ class TestClassifyError:
             ("Failed to start stress test: nope", "startup"),
             ("stress exited at startup (code 2) with no work done — verdict unavailable", "startup"),
             (
-                "stress process escaped its CPU boundary to 3 (allowed 0) — "
-                "containment fault, not a core verdict",
+                "stress process escaped its CPU boundary to 3 (allowed 0) — containment fault, not a core verdict",
                 "startup",
             ),
             ("Machine check without core attribution during stress: bang", "mce_unattributed"),

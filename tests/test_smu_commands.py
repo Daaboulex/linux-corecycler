@@ -32,10 +32,7 @@ class TestCommandSetCompleteness:
     generation (or routing model 0x70 to ZEN5_STRIX_HALO) can't ship that gap."""
 
     def test_every_non_unknown_generation_has_a_command_set(self):
-        missing = [
-            g.name for g in CPUGeneration
-            if g is not CPUGeneration.UNKNOWN and get_commands(g) is None
-        ]
+        missing = [g.name for g in CPUGeneration if g is not CPUGeneration.UNKNOWN and get_commands(g) is None]
         assert missing == [], f"generations with no SMU command set: {missing}"
 
     def test_unknown_has_no_command_set(self):
@@ -226,8 +223,8 @@ class TestEncodeDecodeZen3:
         # Logical core 6 is physically CCD1, slot 0 (5900X). Must encode CCD1/slot0,
         # NOT the core_id-derived CCD0/slot6.
         encoded = encode_co_arg(6, -30, self.gen, ccd=1, slot=0)
-        assert (encoded >> 28) & 0xF == 1   # CCD1, not CCD0
-        assert (encoded >> 20) & 0xF == 0   # slot 0, not slot 6
+        assert (encoded >> 28) & 0xF == 1  # CCD1, not CCD0
+        assert (encoded >> 20) & 0xF == 0  # slot 0, not slot 6
         assert (encoded & 0xFFFF) == (-30 & 0xFFFF)
         # And it must match the Zen 4/5 encoding for the same authoritative topology.
         assert encoded == encode_co_arg(6, -30, CPUGeneration.ZEN4_RAPHAEL, ccd=1, slot=0)

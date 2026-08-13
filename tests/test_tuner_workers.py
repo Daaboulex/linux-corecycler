@@ -103,9 +103,7 @@ class TestModuleHelpers:
 
     def test_events_serialise_with_their_bank_and_cpu(self):
         payload = json.loads(_serialize_mce([_mce(cpu=3)]))
-        assert payload == [
-            {"cpu": 3, "bank": 5, "corrected": True, "message": "corrected", "raw_ts": 0.0}
-        ]
+        assert payload == [{"cpu": 3, "bank": 5, "corrected": True, "message": "corrected", "raw_ts": 0.0}]
 
 
 class TestTunerWorker:
@@ -249,9 +247,7 @@ class TestParallelWorker:
         assert seen[0][1] is True
 
     def test_a_failing_lane_is_the_reported_core(self):
-        worker = self._worker(
-            {0: _result(0, True), 1: _result(1, False, "rounding", "computation")}
-        )
+        worker = self._worker({0: _result(0, True), 1: _result(1, False, "rounding", "computation")})
         seen = _collect(worker)
         worker.run()
         assert seen[0][0] == 1

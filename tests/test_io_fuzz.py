@@ -25,14 +25,17 @@ from corecycler.smu.driver import RyzenSMU  # noqa: E402
 
 _ZEN5 = SMUCommandSet(
     generation=CPUGeneration.ZEN5_GRANITE_RIDGE,
-    set_co_cmd=0x06, get_co_cmd=0xD5, set_all_co_cmd=0x07,
-    mailbox="rsmu", co_range=(-60, 10), encoding_scheme="zen4_5",
+    set_co_cmd=0x06,
+    get_co_cmd=0xD5,
+    set_all_co_cmd=0x07,
+    mailbox="rsmu",
+    co_range=(-60, 10),
+    encoding_scheme="zen4_5",
 )
 
 
 class TestSmuPrimitiveFailsClosed:
-    @settings(max_examples=300, deadline=None,
-              suppress_health_check=[HealthCheck.function_scoped_fixture])
+    @settings(max_examples=300, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
     @given(resp=st.binary(max_size=40))
     def test_send_command_never_crashes_on_any_response(self, resp, tmp_path):
         for name in ("smu_args", "rsmu_cmd", "mp1_smu_cmd"):

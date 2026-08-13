@@ -174,16 +174,17 @@ class TestDiscovery:
 class TestRequirements:
     def _resolutions(self, present):
         return [
-            tools.Resolution(key, Path(f"/usr/bin/{key}") if key in present else None,
-                             tools.ORIGIN_PATH if key in present else tools.ORIGIN_ABSENT,
-                             None if key in present else "not found on PATH")
+            tools.Resolution(
+                key,
+                Path(f"/usr/bin/{key}") if key in present else None,
+                tools.ORIGIN_PATH if key in present else tools.ORIGIN_ABSENT,
+                None if key in present else "not found on PATH",
+            )
             for key in tools.TOOLS
         ]
 
     def test_one_backend_and_the_containment_tools_are_enough(self):
-        assert tools.unmet_requirements(
-            self._resolutions({"stress-ng", "systemd-run", "setpriv"})
-        ) == []
+        assert tools.unmet_requirements(self._resolutions({"stress-ng", "systemd-run", "setpriv"})) == []
 
     def test_no_backend_is_unmet(self):
         unmet = tools.unmet_requirements(self._resolutions({"systemd-run", "setpriv"}))
@@ -196,9 +197,7 @@ class TestRequirements:
         assert any(u.startswith("setpriv is required") for u in unmet)
 
     def test_optional_tools_are_never_unmet(self):
-        assert tools.unmet_requirements(
-            self._resolutions({"mprime", "systemd-run", "setpriv"})
-        ) == []
+        assert tools.unmet_requirements(self._resolutions({"mprime", "systemd-run", "setpriv"})) == []
 
 
 class TestCommandConstruction:

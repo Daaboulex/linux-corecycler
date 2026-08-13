@@ -104,14 +104,27 @@ class TestStatus:
 
     def test_lists_sessions_with_done_counts(self, db, capsys):
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0, 1]), "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.HARDENED, current_offset=-10,
-            best_offset=-10, baseline_offset=0,
-        ))
-        tp.save_core_state(db, sid, CoreState(
-            core_id=1, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
-            baseline_offset=0,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.HARDENED,
+                current_offset=-10,
+                best_offset=-10,
+                baseline_offset=0,
+            ),
+        )
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=1,
+                phase=TunerPhase.COARSE_SEARCH,
+                current_offset=-5,
+                baseline_offset=0,
+            ),
+        )
         tp.update_session_status(db, sid, "paused")
         assert cli.cmd_status(db=db) == 0
         out = capsys.readouterr().out
@@ -172,8 +185,11 @@ class TestRunOutcomes:
 
     def test_unreadable_config_refused(self, db, tmp_path):
         code = cli.cmd_run(
-            str(tmp_path / "missing.json"), None, False,
-            engine_factory=lambda d, c: None, db=db,
+            str(tmp_path / "missing.json"),
+            None,
+            False,
+            engine_factory=lambda d, c: None,
+            db=db,
         )
         assert code == cli.EXIT_REFUSED
 
@@ -228,9 +244,7 @@ class TestBuildSmu:
         from corecycler.engine.topology import CPUTopology
 
         topo = CPUTopology(family=26, model=0x44, model_name="Test 9950X")
-        monkeypatch.setattr(
-            "corecycler.smu.driver.RyzenSMU.is_available", staticmethod(lambda *a, **k: False)
-        )
+        monkeypatch.setattr("corecycler.smu.driver.RyzenSMU.is_available", staticmethod(lambda *a, **k: False))
         assert cli._build_smu(topo) is None
 
 
@@ -245,10 +259,7 @@ def _fake_topology():
     from corecycler.engine.topology import CPUTopology, PhysicalCore
 
     topo = CPUTopology(model_name="AMD Ryzen 9 9950X3D 16-Core Processor", family=26, model=0x44)
-    topo.cores = {
-        cid: PhysicalCore(core_id=cid, ccd=cid // 8, ccx=None, logical_cpus=(cid,))
-        for cid in range(16)
-    }
+    topo.cores = {cid: PhysicalCore(core_id=cid, ccd=cid // 8, ccx=None, logical_cpus=(cid,)) for cid in range(16)}
     return topo
 
 
@@ -353,9 +364,7 @@ class TestRunEngineConstruction:
     def test_db_constructed_when_not_injected(self, monkeypatch):
         own = HistoryDB(":memory:")
         monkeypatch.setattr("corecycler.history.db.HistoryDB", lambda *a, **k: own)
-        code = cli.cmd_run(
-            None, None, False, engine_factory=lambda *_: FakeEngine("completes"), db=None
-        )
+        code = cli.cmd_run(None, None, False, engine_factory=lambda *_: FakeEngine("completes"), db=None)
         assert code == cli.EXIT_COMPLETED
 
     def test_real_engine_built_when_preflight_passes(self, db, monkeypatch):
@@ -385,10 +394,7 @@ class TestNotifyOutcome:
     def test_disabled_by_setting(self, monkeypatch, capsys):
         from types import SimpleNamespace
 
-
-        monkeypatch.setattr(
-            cli, "load_settings", lambda: SimpleNamespace(notify_on_completion=False)
-        )
+        monkeypatch.setattr(cli, "load_settings", lambda: SimpleNamespace(notify_on_completion=False))
         cli._notify_outcome(cli.EXIT_COMPLETED)
         assert capsys.readouterr().err == ""
 
@@ -431,9 +437,7 @@ class TestDoctor:
         assert any("mprime" in ln and "not found on PATH" in ln for ln in lines)
         assert lines[-1] == "doctor: ok"
 
-    def test_report_lists_a_candidate_for_an_absent_tool(
-        self, exec_tmp_path, tool_search_roots
-    ):
+    def test_report_lists_a_candidate_for_an_absent_tool(self, exec_tmp_path, tool_search_roots):
         binary = exec_tmp_path / "y-cruncher" / "y-cruncher"
         binary.parent.mkdir(parents=True)
         binary.write_text("#!/bin/sh\n")

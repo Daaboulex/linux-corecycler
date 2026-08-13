@@ -86,12 +86,7 @@ class TestWorker(QThread):
         self.scheduler.on_status_update = [lambda cid, st: self.status_updated.emit(cid, st)]
         self.scheduler.on_cycle_complete = [lambda cyc: self.cycle_completed.emit(cyc)]
         self.scheduler.on_test_complete = [
-            lambda res: self.test_completed.emit(
-                json.dumps({
-                    str(k): [asdict(r) for r in v]
-                    for k, v in res.items()
-                })
-            )
+            lambda res: self.test_completed.emit(json.dumps({str(k): [asdict(r) for r in v] for k, v in res.items()}))
         ]
         self.scheduler.on_thermal_throttle = [self.thermal_throttled.emit]
         self.scheduler.on_stall_detected = [self.stall_detected.emit]
@@ -145,9 +140,7 @@ class MainWindow(QMainWindow):
                         log.info("Recovered stale session id=%d started_at=%s, marked as crashed", run_id, started_at)
                 # Purge old runs
                 if self._settings.history_retention_days > 0:
-                    cutoff = datetime.now(UTC) - timedelta(
-                        days=self._settings.history_retention_days
-                    )
+                    cutoff = datetime.now(UTC) - timedelta(days=self._settings.history_retention_days)
                     self._history_db.purge_before(cutoff.isoformat())
                 # Check for BIOS version changes
                 self._bios_changed = False
@@ -308,8 +301,7 @@ class MainWindow(QMainWindow):
             missing.append("Curve Optimizer (SMU)")
         if missing:
             priv_label = QLabel(
-                "  ⚠ " + " and ".join(missing) + " unavailable — "
-                "check device permissions or run as root"
+                "  ⚠ " + " and ".join(missing) + " unavailable — check device permissions or run as root"
             )
             priv_label.setStyleSheet(f"color: {COLOR_WARN_SOFT}; font: 10px monospace;")
             self._status_bar.addPermanentWidget(priv_label)
@@ -325,12 +317,13 @@ class MainWindow(QMainWindow):
 
         # Check if memory stress is running
         if (
-            hasattr(self, '_memory_tab')
+            hasattr(self, "_memory_tab")
             and self._memory_tab._stress_worker
             and self._memory_tab._stress_worker.isRunning()
         ):
-            QMessageBox.warning(self, "Memory Stress Active",
-                "A memory stress test is running. Stop it before starting a core test.")
+            QMessageBox.warning(
+                self, "Memory Stress Active", "A memory stress test is running. Stop it before starting a core test."
+            )
             return
 
         # Warn if an active/paused tuner session exists — running a manual test
@@ -338,10 +331,12 @@ class MainWindow(QMainWindow):
         # should be aware their tuner session is waiting.
         if self._history_db:
             from corecycler.tuner import persistence as _tp
+
             active = _tp.get_active_session(self._history_db)
             if active:
                 reply = QMessageBox.question(
-                    self, "Active Tuner Session",
+                    self,
+                    "Active Tuner Session",
                     f"A tuner session is {active.status} "
                     f"(started {format_local(active.created_at, date_only=True)}).\n\n"
                     "Manual stress tests don't modify CO offsets, but you may want to "
@@ -386,7 +381,8 @@ class MainWindow(QMainWindow):
             work_dir = ensure_work_dir(self._settings.work_dir)
         except OSError as e:
             QMessageBox.warning(
-                self, "Work directory unavailable",
+                self,
+                "Work directory unavailable",
                 f"Could not create the stress work directory: {e}",
             )
             return
@@ -424,7 +420,7 @@ class MainWindow(QMainWindow):
         self._logger = None
         if self._settings.record_history and self._history_db and self._topology:
             try:
-                smu = self._smu_tab.smu if hasattr(self, '_smu_tab') else None
+                smu = self._smu_tab.smu if hasattr(self, "_smu_tab") else None
                 self._logger = TestRunLogger(self._history_db, self._topology, profile, smu=smu)
                 self._worker.core_started.connect(self._logger.on_core_started)
                 self._worker.core_finished.connect(self._logger.on_core_finished)
@@ -542,8 +538,7 @@ class MainWindow(QMainWindow):
             state = "PASS" if (result and result.passed) else "FAIL"
             self._results_tab.add_log(
                 core_id,
-                f"[{state}] Peak: {t['max_freq']:.0f} MHz, "
-                f"Max temp: {t['max_temp']:.1f}C{extra}",
+                f"[{state}] Peak: {t['max_freq']:.0f} MHz, Max temp: {t['max_temp']:.1f}C{extra}",
             )
 
             # Record peak telemetry in history
@@ -580,15 +575,15 @@ class MainWindow(QMainWindow):
 
         def _all_passed(r_list) -> bool:
             return (
-                isinstance(r_list, list) and bool(r_list)
+                isinstance(r_list, list)
+                and bool(r_list)
                 and all(isinstance(r, dict) and r.get("passed") for r in r_list)
             )
 
         # Keys are stringified core_ids, values are lists of result dicts.
         # A core with no verdict (stopped before its test earned one) is not
         # tested — counting it as failed would read as a silicon problem.
-        tested = {cid: r_list for cid, r_list in results.items()
-                  if isinstance(r_list, list) and r_list}
+        tested = {cid: r_list for cid, r_list in results.items() if isinstance(r_list, list) and r_list}
         total = len(tested)
         passed = sum(1 for r_list in tested.values() if _all_passed(r_list))
         failed = total - passed
@@ -682,8 +677,7 @@ class MainWindow(QMainWindow):
     def _on_memory_stress_done(self, passed: bool) -> None:
         """Reset cores to pending; release the other test starters."""
         self._start_btn.setEnabled(
-            (self._worker is None or not self._worker.isRunning())
-            and not self._tuner_tab.is_running
+            (self._worker is None or not self._worker.isRunning()) and not self._tuner_tab.is_running
         )
         self._tuner_tab.set_test_running(False)
         for core_id in self._core_grid._cells:
@@ -702,11 +696,7 @@ class MainWindow(QMainWindow):
         widget = self._tabs.widget(index)
         # Auto-refresh CO values when switching to Curve Optimizer tab (only
         # when tuner is idle — tuner sends live updates via update_current_co())
-        if (
-            widget is self._smu_tab
-            and hasattr(self._smu_tab, '_read_all_co')
-            and not self._tuner_tab.is_running
-        ):
+        if widget is self._smu_tab and hasattr(self._smu_tab, "_read_all_co") and not self._tuner_tab.is_running:
             self._smu_tab._read_all_co()
 
     def _update_elapsed(self) -> None:
@@ -781,14 +771,22 @@ class MainWindow(QMainWindow):
         vcore = hwmon_data.vcore_v
 
         self._core_grid.update_core_telemetry(
-            current_core, freq, temp, vcore, stretch_pct=stretch_pct,
+            current_core,
+            freq,
+            temp,
+            vcore,
+            stretch_pct=stretch_pct,
         )
 
         # Record telemetry sample in history
         if self._logger and self._settings.record_telemetry:
             with contextlib.suppress(Exception):  # don't spam logs every second
                 self._logger.record_telemetry_sample(
-                    current_core, freq, temp, vcore, effective_max_mhz=None,
+                    current_core,
+                    freq,
+                    temp,
+                    vcore,
+                    effective_max_mhz=None,
                 )
 
         # track peak telemetry per core for the log
@@ -821,9 +819,7 @@ class MainWindow(QMainWindow):
     def _save_profile(self) -> None:
         from corecycler.config.settings import save_profile
 
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Profile", str(user_home()), "JSON (*.json)"
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Save Profile", str(user_home()), "JSON (*.json)")
         if path:
             try:
                 profile = self._config_tab.get_profile()
@@ -834,9 +830,7 @@ class MainWindow(QMainWindow):
     def _load_profile(self) -> None:
         from corecycler.config.settings import load_profile
 
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load Profile", str(user_home()), "JSON (*.json)"
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Load Profile", str(user_home()), "JSON (*.json)")
         if path:
             try:
                 profile = load_profile(Path(path))
@@ -872,7 +866,7 @@ class MainWindow(QMainWindow):
         manual_running = self._worker and self._worker.isRunning()
         tuner_running = self._tuner_tab.is_running
         memory_running = (
-            hasattr(self, '_memory_tab')
+            hasattr(self, "_memory_tab")
             and self._memory_tab._stress_worker is not None
             and self._memory_tab._stress_worker.isRunning()
         )
@@ -923,7 +917,7 @@ class MainWindow(QMainWindow):
             self._tuner_tab.force_stop()
 
         # Stop memory stress test if running
-        if hasattr(self, '_memory_tab'):
+        if hasattr(self, "_memory_tab"):
             self._memory_tab.force_stop()
 
         # save window size

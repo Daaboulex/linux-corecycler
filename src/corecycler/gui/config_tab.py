@@ -35,15 +35,13 @@ TEST_MODE_INFO: dict[str, str] = {
     "STANDARD": "10 min/core, 1 cycle — good starting point for CO tuning",
     "THOROUGH": "30 min/core, 2 cycles — catches intermittent errors",
     "FULL_SPECTRUM": (
-        "Stress + variable load + idle stability, 3 cycles — "
-        "most comprehensive, tests all real-world scenarios"
+        "Stress + variable load + idle stability, 3 cycles — most comprehensive, tests all real-world scenarios"
     ),
 }
 
 
 class ConfigTab(QWidget):
     """Configuration panel for stress test settings."""
-
 
     def __init__(self, topology: CPUTopology | None = None) -> None:
         super().__init__()
@@ -230,8 +228,7 @@ class ConfigTab(QWidget):
 
         self._retest_failed_btn = QPushButton("Retest Failed Cores Only")
         self._retest_failed_btn.setToolTip(
-            "After a test run, populate the core selection with only the "
-            "cores that failed — skip already-stable cores."
+            "After a test run, populate the core selection with only the cores that failed — skip already-stable cores."
         )
         self._retest_failed_btn.setEnabled(False)
         self._retest_failed_btn.clicked.connect(self._on_retest_failed)
@@ -319,8 +316,7 @@ class ConfigTab(QWidget):
             if invalid:
                 max_id = max(valid_ids) if valid_ids else 0
                 self._cores_error_label.setText(
-                    f"Core(s) {', '.join(str(c) for c in invalid)} out of range "
-                    f"(valid: 0-{max_id})"
+                    f"Core(s) {', '.join(str(c) for c in invalid)} out of range (valid: 0-{max_id})"
                 )
                 self._cores_error_label.setVisible(True)
                 self._on_change()
@@ -357,12 +353,8 @@ class ConfigTab(QWidget):
             backend=self._backend_combo.currentText(),
             stress_mode=self._stress_mode_combo.currentText(),
             fft_preset=self._fft_combo.currentText(),
-            fft_min=(
-                self._fft_min_spin.value() if self._fft_combo.currentText() == "CUSTOM" else None
-            ),
-            fft_max=(
-                self._fft_max_spin.value() if self._fft_combo.currentText() == "CUSTOM" else None
-            ),
+            fft_min=(self._fft_min_spin.value() if self._fft_combo.currentText() == "CUSTOM" else None),
+            fft_max=(self._fft_max_spin.value() if self._fft_combo.currentText() == "CUSTOM" else None),
             threads=self._threads_spin.value(),
             seconds_per_core=self._time_spin.value(),
             cycle_count=self._cycles_spin.value(),
@@ -411,9 +403,7 @@ class ConfigTab(QWidget):
         self._retest_failed_btn.setEnabled(bool(failed_cores))
         if failed_cores:
             n = len(failed_cores)
-            self._retest_failed_btn.setText(
-                f"Retest {n} Failed Core{'s' if n != 1 else ''} Only"
-            )
+            self._retest_failed_btn.setText(f"Retest {n} Failed Core{'s' if n != 1 else ''} Only")
         else:
             self._retest_failed_btn.setText("Retest Failed Cores Only")
 

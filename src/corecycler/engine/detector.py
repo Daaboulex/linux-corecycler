@@ -159,7 +159,7 @@ class ErrorDetector:
                     continue
                 if raw_ts <= self._dmesg_baseline_ts:
                     continue
-                event = classify_mce_line(line[ts_match.end():])
+                event = classify_mce_line(line[ts_match.end() :])
                 if event is None:
                     continue
                 event.raw_ts = raw_ts
@@ -171,14 +171,15 @@ class ErrorDetector:
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError) as exc:
             log.debug("dmesg check failed: %s", exc)
             return events
-        log.debug("dmesg poll: %d new event(s)%s", len(events),
-                  "".join(f" [cpu={e.cpu} bank={e.bank} ce={e.corrected}]" for e in events))
+        log.debug(
+            "dmesg poll: %d new event(s)%s",
+            len(events),
+            "".join(f" [cpu={e.cpu} bank={e.bank} ce={e.corrected}]" for e in events),
+        )
         return events
 
 
-def harvest_kernel_mce(
-    since_utc_iso: str, timeout: float = 15.0
-) -> tuple[list[MCEEvent], bool]:
+def harvest_kernel_mce(since_utc_iso: str, timeout: float = 15.0) -> tuple[list[MCEEvent], bool]:
     """Read MCE/kernel-error events from the systemd journal since a UTC ISO
     timestamp — across reboots, so it covers the boot(s) a hard crash killed.
 
@@ -195,8 +196,14 @@ def harvest_kernel_mce(
         # point of this harvest.
         result = subprocess.run(
             [
-                tools.command_name("journalctl"), "-q", "--no-pager", "-o", "short-unix",
-                "--since", since, "_TRANSPORT=kernel",
+                tools.command_name("journalctl"),
+                "-q",
+                "--no-pager",
+                "-o",
+                "short-unix",
+                "--since",
+                since,
+                "_TRANSPORT=kernel",
             ],
             capture_output=True,
             text=True,
@@ -245,8 +252,15 @@ def last_boot_ended_cleanly(timeout: float = 15.0) -> bool:
     try:
         result = subprocess.run(
             [
-                tools.command_name("journalctl"), "-q", "--no-pager", "-b", "-1",
-                "-n", "25", "-o", "cat",
+                tools.command_name("journalctl"),
+                "-q",
+                "--no-pager",
+                "-b",
+                "-1",
+                "-n",
+                "25",
+                "-o",
+                "cat",
             ],
             capture_output=True,
             text=True,

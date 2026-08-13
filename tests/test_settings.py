@@ -386,5 +386,5 @@ class TestCorruptSettingsPreserved:
 
         loaded = settings_mod.load_settings()
         assert loaded.work_dir == settings_mod.AppSettings().work_dir  # defaults
-        assert not bad.exists()                                        # moved, not deleted
+        assert not bad.exists()  # moved, not deleted
         assert (tmp_path / "settings.json.corrupt").read_text() == "{not valid json"

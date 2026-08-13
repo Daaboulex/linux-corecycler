@@ -161,9 +161,7 @@ def _pin_mprime_31x_config_keys() -> None:
                 assert "NumCPUs=1" in content
                 assert "CoresPerTest=1" in content
             assert "EnableSetAffinity=0" in prime
-    assert MprimeBackend.parse_version(
-        "Mersenne Prime Test Program: Linux64,Untrusted Prime95,v31.4,build 2"
-    ) == "31.4"
+    assert MprimeBackend.parse_version("Mersenne Prime Test Program: Linux64,Untrusted Prime95,v31.4,build 2") == "31.4"
 
 
 def _pin_proc_cpus_allowed_list() -> None:
@@ -319,9 +317,7 @@ def _pin_external_tool_discovery() -> None:
         "y-cruncher v0.8.7.9547-static/y-cruncher",
         "y-cruncher v0.8.6.9545-dynamic/y-cruncher",
     ):
-        assert any(
-            PurePath(layout).match(pattern) for pattern in tools.TOOLS["y-cruncher"].globs
-        ), layout
+        assert any(PurePath(layout).match(pattern) for pattern in tools.TOOLS["y-cruncher"].globs), layout
     backends = {key for key, tool in tools.TOOLS.items() if tool.kind == tools.BACKEND}
     assert backends == {"mprime", "y-cruncher", "stress-ng", "stressapptest"}
     load_all()
@@ -377,10 +373,7 @@ CONTRACTS: list[Contract] = [
         ),
         ring_a=_pin_mprime_31x_config_keys,
         live_verifiable=True,
-        ring_b_test=(
-            "test_backend_versions.py"
-            "::test_each_mode_produces_its_own_fft_path"
-        ),
+        ring_b_test=("test_backend_versions.py::test_each_mode_produces_its_own_fft_path"),
     ),
     Contract(
         name="proc-cpus-allowed-list",
@@ -388,10 +381,7 @@ CONTRACTS: list[Contract] = [
         source="proc(5) /proc/<pid>/task/<tid>/status Cpus_allowed_list, comma list with a-b ranges",
         ring_a=_pin_proc_cpus_allowed_list,
         live_verifiable=True,
-        ring_b_test=(
-            "test_containment_live.py"
-            "::test_a_contained_child_cannot_escape_its_cpuset"
-        ),
+        ring_b_test=("test_containment_live.py::test_a_contained_child_cannot_escape_its_cpuset"),
     ),
     Contract(
         name="proc-stat-cpu-fields",
@@ -459,10 +449,7 @@ CONTRACTS: list[Contract] = [
         ),
         ring_a=_pin_external_tool_discovery,
         live_verifiable=True,
-        ring_b_test=(
-            "test_tool_discovery_live.py"
-            "::test_every_tool_present_on_path_resolves_through_the_registry"
-        ),
+        ring_b_test=("test_tool_discovery_live.py::test_every_tool_present_on_path_resolves_through_the_registry"),
     ),
     Contract(
         name="smu-core-slot-mapping",

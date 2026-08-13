@@ -79,9 +79,7 @@ class TestExplanation:
 class TestEnsureTool:
     def test_a_resolvable_tool_never_prompts(self, on_path, monkeypatch):
         on_path({"stress-ng": "/usr/bin/stress-ng"})
-        monkeypatch.setattr(
-            tool_prompt, "_ask", lambda *a: pytest.fail("prompted for a tool already on PATH")
-        )
+        monkeypatch.setattr(tool_prompt, "_ask", lambda *a: pytest.fail("prompted for a tool already on PATH"))
         assert tool_prompt.ensure_tool(None, "stress-ng") is True
 
     def test_using_the_candidate_records_it(self, on_path, candidate, config_dir, monkeypatch):
@@ -101,9 +99,7 @@ class TestEnsureTool:
         assert tool_prompt.ensure_tool(None, "y-cruncher") is False
         assert tools.configured_paths() == {}
 
-    def test_a_chosen_path_that_is_not_executable_is_reported(
-        self, on_path, tmp_path, config_dir, monkeypatch
-    ):
+    def test_a_chosen_path_that_is_not_executable_is_reported(self, on_path, tmp_path, config_dir, monkeypatch):
         on_path({})
         _qapp()
         plain = tmp_path / "not-a-binary"

@@ -238,14 +238,22 @@ class TestMprimeBackend:
     @pytest.mark.parametrize(
         "mode,expected_flags",
         [
-            (StressMode.SSE, {"CpuSupportsAVX": 0, "CpuSupportsFMA3": 0,
-                              "CpuSupportsAVX2": 0, "CpuSupportsAVX512F": 0}),
-            (StressMode.AVX, {"CpuSupportsAVX": 1, "CpuSupportsFMA3": 0,
-                              "CpuSupportsAVX2": 0, "CpuSupportsAVX512F": 0}),
-            (StressMode.AVX2, {"CpuSupportsAVX": 1, "CpuSupportsFMA3": 1,
-                               "CpuSupportsAVX2": 1, "CpuSupportsAVX512F": 0}),
-            (StressMode.AVX512, {"CpuSupportsAVX": 1, "CpuSupportsFMA3": 1,
-                                 "CpuSupportsAVX2": 1, "CpuSupportsAVX512F": 1}),
+            (
+                StressMode.SSE,
+                {"CpuSupportsAVX": 0, "CpuSupportsFMA3": 0, "CpuSupportsAVX2": 0, "CpuSupportsAVX512F": 0},
+            ),
+            (
+                StressMode.AVX,
+                {"CpuSupportsAVX": 1, "CpuSupportsFMA3": 0, "CpuSupportsAVX2": 0, "CpuSupportsAVX512F": 0},
+            ),
+            (
+                StressMode.AVX2,
+                {"CpuSupportsAVX": 1, "CpuSupportsFMA3": 1, "CpuSupportsAVX2": 1, "CpuSupportsAVX512F": 0},
+            ),
+            (
+                StressMode.AVX512,
+                {"CpuSupportsAVX": 1, "CpuSupportsFMA3": 1, "CpuSupportsAVX2": 1, "CpuSupportsAVX512F": 1},
+            ),
         ],
     )
     def test_prepare_selects_the_instruction_set(self, tmp_path, mode, expected_flags):
@@ -331,9 +339,9 @@ class TestMprimeBackend:
     @pytest.mark.parametrize(
         "line",
         [
-            "[Worker #1] Self-test 240K passed!",       # K-suffixed FFT (usual)
-            "Self-test 42 passed!",                     # sub-1K FFT
-            "Self-test 4K (thread 2 of 2) passed!",     # hyperthreaded variant
+            "[Worker #1] Self-test 240K passed!",  # K-suffixed FFT (usual)
+            "Self-test 42 passed!",  # sub-1K FFT
+            "Self-test 4K (thread 2 of 2) passed!",  # hyperthreaded variant
         ],
     )
     def test_parse_output_self_test_passed(self, line):
@@ -351,12 +359,10 @@ class TestMprimeBackend:
         assert msg is None
 
     def test_parse_output_benign_worker_stop_is_not_an_error(self):
-        """"Worker stopped." is Prime95's graceful-stop line (commonb.c:3143),
+        """ "Worker stopped." is Prime95's graceful-stop line (commonb.c:3143),
         not a fatal error."""
         backend = MprimeBackend()
-        passed, msg = backend.parse_output(
-            "[Worker #1] Self-test 240K passed!\n[Worker #1] Worker stopped.\n", "", -15
-        )
+        passed, msg = backend.parse_output("[Worker #1] Self-test 240K passed!\n[Worker #1] Worker stopped.\n", "", -15)
         assert passed
         assert msg is None
 
@@ -431,8 +437,7 @@ class TestMprimeBackend:
     def test_poll_errors_detects_fatal(self, tmp_path):
         backend = MprimeBackend()
         (tmp_path / "results.txt").write_text(
-            "[Worker #1] Self-test 240K passed!\n"
-            "FATAL ERROR: Rounding was 0.4999, expected less than 0.4\n"
+            "[Worker #1] Self-test 240K passed!\nFATAL ERROR: Rounding was 0.4999, expected less than 0.4\n"
         )
         msg = backend.poll_errors(tmp_path)
         assert msg is not None and "FATAL ERROR" in msg
@@ -702,9 +707,7 @@ class TestYCruncherBackend:
 
     def test_parse_error_encountered(self):
         backend = YCruncherBackend()
-        passed, msg = backend.parse_output(
-            "Iteration: 5\nError(s) encountered on logical core 3.\n", "", 0
-        )
+        passed, msg = backend.parse_output("Iteration: 5\nError(s) encountered on logical core 3.\n", "", 0)
         assert not passed
         assert "y-cruncher error" in msg
 
@@ -791,9 +794,7 @@ class TestMprimeConstants:
     def test_each_mode_disables_everything_above_it(self):
         order = [StressMode.SSE, StressMode.AVX, StressMode.AVX2, StressMode.AVX512]
         gates = ["CpuSupportsAVX", "CpuSupportsAVX2", "CpuSupportsAVX512F"]
-        enabled = [
-            [gate for gate in gates if MODE_TO_CPU_FLAGS[mode][gate]] for mode in order
-        ]
+        enabled = [[gate for gate in gates if MODE_TO_CPU_FLAGS[mode][gate]] for mode in order]
         assert enabled == [[], gates[:1], gates[:2], gates]
         for mode in order:
             assert MODE_TO_CPU_FLAGS[mode]["CpuSupportsFMA4"] == 0
@@ -810,7 +811,8 @@ class TestMprimeConstants:
         backend = MprimeBackend()
         backend._binary = "/usr/bin/mprime"
         monkeypatch.setattr(
-            subprocess, "run",
+            subprocess,
+            "run",
             lambda *a, **k: SimpleNamespace(stdout="Prime95,v31.4,build 2", stderr=""),
         )
         assert backend.installed_version() == "31.4"

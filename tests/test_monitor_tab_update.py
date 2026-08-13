@@ -47,13 +47,10 @@ def _hwmon_data(tctl=60.0, tccd=None, vcore=1.2):
 
 
 def _dual(actual=5000.0, ceiling=5200.0):
-    return {
-        cid: SimpleNamespace(actual_mhz=actual, effective_max_mhz=ceiling) for cid in range(4)
-    }
+    return {cid: SimpleNamespace(actual_mhz=actual, effective_max_mhz=ceiling) for cid in range(4)}
 
 
-def _drive(tab, monkeypatch, *, dual=None, simple=None, watts=None, msr_ok=False,
-           pkg=None, hwmon=None):
+def _drive(tab, monkeypatch, *, dual=None, simple=None, watts=None, msr_ok=False, pkg=None, hwmon=None):
     import corecycler.gui.monitor_tab as mt
 
     monkeypatch.setattr(mt, "read_core_frequencies_dual", lambda: dual if dual is not None else {})

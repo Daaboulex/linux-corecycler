@@ -101,9 +101,7 @@ class TestContainRefusals:
 class TestPayloadCgroup:
     def test_the_named_scope_cgroup_is_returned_once_adopted(self, tmp_path):
         (tmp_path / "900").mkdir()
-        (tmp_path / "900" / "cgroup").write_text(
-            "0::/user.slice/user-1000.slice/app.slice/corecycler-1-1.scope\n"
-        )
+        (tmp_path / "900" / "cgroup").write_text("0::/user.slice/user-1000.slice/app.slice/corecycler-1-1.scope\n")
         assert containment.payload_cgroup(900, "corecycler-1-1", proc_base=tmp_path) == (
             "/user.slice/user-1000.slice/app.slice/corecycler-1-1.scope"
         )
@@ -122,14 +120,10 @@ class TestScopeEffectiveCpus:
         scope = tmp_path / "user.slice" / "corecycler-1-1.scope"
         scope.mkdir(parents=True)
         (scope / "cpuset.cpus.effective").write_text("4,20\n")
-        assert containment.scope_effective_cpus(
-            "/user.slice/corecycler-1-1.scope", cgroup_base=tmp_path
-        ) == {4, 20}
+        assert containment.scope_effective_cpus("/user.slice/corecycler-1-1.scope", cgroup_base=tmp_path) == {4, 20}
 
     def test_a_missing_cpuset_file_reports_none(self, tmp_path):
-        assert containment.scope_effective_cpus(
-            "/user.slice/gone.scope", cgroup_base=tmp_path
-        ) is None
+        assert containment.scope_effective_cpus("/user.slice/gone.scope", cgroup_base=tmp_path) is None
 
 
 class TestObservedTreeEdges:
@@ -154,9 +148,7 @@ class TestObservedTreeEdges:
     def test_garbled_cpu_ranges_keep_the_readable_parts(self, tmp_path):
         target = tmp_path / "600"
         (target / "task" / "600").mkdir(parents=True)
-        (target / "task" / "600" / "status").write_text(
-            "Cpus_allowed_list:\t,bogus,3-z,7\n"
-        )
+        (target / "task" / "600" / "status").write_text("Cpus_allowed_list:\t,bogus,3-z,7\n")
         (target / "stat").write_text("600 (x) S 1 600 600 0 -1\n")
         assert containment.observed_tree_cpus(600, proc_base=tmp_path) == {7}
 
@@ -164,8 +156,11 @@ class TestObservedTreeEdges:
 class TestThermalEdges:
     def test_a_tripped_watch_stays_tripped_while_still_over(self):
         watch = ThermalWatch(
-            max_temperature=95, grace_seconds=0.0, hard_margin=8,
-            require_sensor=False, read=lambda: 96.0,
+            max_temperature=95,
+            grace_seconds=0.0,
+            hard_margin=8,
+            require_sensor=False,
+            read=lambda: 96.0,
         )
         assert watch.safe() is False
         assert watch.safe() is False
@@ -203,8 +198,11 @@ def _idle_supervisor(backend=None, **overrides):
         backend=backend or FakeBackend(),
         detector=FakeDetector(),
         thermal=ThermalWatch(
-            max_temperature=95, grace_seconds=3, hard_margin=8,
-            require_sensor=False, read=lambda: 40.0,
+            max_temperature=95,
+            grace_seconds=3,
+            hard_margin=8,
+            require_sensor=False,
+            read=lambda: 40.0,
         ),
         stop_event=threading.Event(),
         observed=[],
@@ -286,9 +284,7 @@ class TestSupervisorInternalsEdges:
     def test_a_late_unattributed_event_lands_on_the_anchor(self, tmp_path):
         from test_execution import FakeBackend, FakeDetector
 
-        backend = FakeBackend(
-            [sys.executable, "-c", "import time; time.sleep(60)"]
-        )
+        backend = FakeBackend([sys.executable, "-c", "import time; time.sleep(60)"])
         supervisor = _idle_supervisor(
             backend=backend,
             detector=FakeDetector([[Event(cpu=-1)]]),
@@ -367,8 +363,7 @@ class TestSchedulerHookGlue:
 
         def stop_after(sup, lanes, config_for, duration):
             sup.kwargs["stop_event"].set()
-            return {one.core_id: StressResult(core_id=one.core_id, passed=True, duration_seconds=0.1)
-                    for one in lanes}
+            return {one.core_id: StressResult(core_id=one.core_id, passed=True, duration_seconds=0.1) for one in lanes}
 
         scripted.script = [stop_after]
         results = sched.run()
@@ -392,9 +387,7 @@ class TestSchedulerHookGlue:
     def test_a_variable_idle_error_latches_the_stop(self, tmp_path, monkeypatch):
         from test_scheduler import ok
 
-        monkeypatch.setattr(
-            execution, "watch_idle", lambda **kwargs: "MCE during idle transition: bang"
-        )
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: "MCE during idle transition: bang")
         sched, scripted = self._scheduler(
             tmp_path, monkeypatch, cores_to_test=[0], variable_load=True, stop_on_error=True
         )
@@ -427,12 +420,8 @@ class TestSchedulerHookGlue:
     def test_an_idle_error_with_stop_on_error_latches_the_stop(self, tmp_path, monkeypatch):
         from test_scheduler import ok
 
-        monkeypatch.setattr(
-            execution, "watch_idle", lambda **kwargs: "MCE during inter-core idle: bang"
-        )
-        sched, scripted = self._scheduler(
-            tmp_path, monkeypatch, idle_between_cores=0.01, stop_on_error=True
-        )
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: "MCE during inter-core idle: bang")
+        sched, scripted = self._scheduler(tmp_path, monkeypatch, idle_between_cores=0.01, stop_on_error=True)
         scripted.script = [lambda sup, lanes, c, d: {0: ok(0)}]
         results = sched.run()
         assert results[0][0].passed is True
@@ -489,10 +478,7 @@ class TestRemainingLoopEdges:
         decided = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
         decided.verdict = StressResult(core_id=0, passed=True, duration_seconds=0.1)
         unstarted = _LaneRun(lane=Lane(core_id=1, cpus=(1,), work_dir=tmp_path))
-        assert (
-            supervisor._poll_exits_stalls_watchdog([decided, unstarted], time.monotonic())
-            is False
-        )
+        assert supervisor._poll_exits_stalls_watchdog([decided, unstarted], time.monotonic()) is False
 
     def test_final_verdict_attributes_a_parse_failure(self, tmp_path):
         from test_execution import FakeBackend

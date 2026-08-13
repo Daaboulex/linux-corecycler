@@ -236,10 +236,7 @@ def read_power_limits(
     decoded value yields None for that field — a wrong number stored as a
     limit would poison every context comparison built on it.
     """
-    reader = (
-        PMTableReader(num_cores, sysfs_path) if sysfs_path is not None
-        else PMTableReader(num_cores)
-    )
+    reader = PMTableReader(num_cores, sysfs_path) if sysfs_path is not None else PMTableReader(num_cores)
     data = reader.read()
     if data is None:
         return None, None, None
@@ -261,9 +258,7 @@ def read_power_limits(
 # ===========================================================================
 
 
-def compute_fclk_uclk_ratio(
-    fclk_mhz: float, uclk_mhz: float
-) -> tuple[int, int] | None:
+def compute_fclk_uclk_ratio(fclk_mhz: float, uclk_mhz: float) -> tuple[int, int] | None:
     """Compute FCLK:UCLK ratio as a simplified integer pair.
 
     Common AMD DDR5 ratios:
@@ -377,9 +372,7 @@ class PMTableReader:
             return None
         return None
 
-    def _parse_versioned(
-        self, data: PMTableData, raw: bytes, offsets: PMTableOffsets
-    ) -> None:
+    def _parse_versioned(self, data: PMTableData, raw: bytes, offsets: PMTableOffsets) -> None:
         """Parse memory controller clocks and voltages using version-specific offsets."""
         data.fclk_mhz = _read_float(raw, offsets.fclk)
         data.uclk_mhz = _read_float(raw, offsets.uclk)

@@ -26,11 +26,14 @@ if "PySide6" not in sys.modules:
         class _FakeSignal:
             def __init__(self, *args, **kwargs):
                 self._slots = []
+
             def emit(self, *args):
                 for slot in self._slots:
                     slot(*args)
+
             def connect(self, slot):
                 self._slots.append(slot)
+
             def disconnect(self, slot=None):
                 if slot is None:
                     self._slots.clear()
@@ -43,14 +46,19 @@ if "PySide6" not in sys.modules:
         class _FakeQThread:
             def __init__(self, *args, **kwargs):
                 pass
+
             def start(self):
                 pass
+
             def wait(self, *args):
                 return True
+
             def isRunning(self):
                 return False
+
             def terminate(self):
                 pass
+
             def deleteLater(self):
                 pass
 
@@ -63,7 +71,7 @@ if "PySide6" not in sys.modules:
         _qtcore.QThread = _FakeQThread
         _qtcore.QTimer = _FakeQTimer
         _qtcore.Signal = _FakeSignal
-        _qtcore.Slot = lambda *a, **k: (lambda f: f)
+        _qtcore.Slot = lambda *a, **k: lambda f: f
         _qt.QtCore = _qtcore
 
         sys.modules["PySide6"] = _qt
@@ -360,62 +368,82 @@ def _gen_cpuinfo(family: int, model: int, name: str, cores: list[tuple[int, int]
 
 # Zen 1 Summit Ridge (1700) — family 23, model 1, 8 cores single CCD
 CPUINFO_ZEN1_SUMMIT_RIDGE = _gen_cpuinfo(
-    23, 0x01, "AMD Ryzen 7 1700 Eight-Core Processor",
+    23,
+    0x01,
+    "AMD Ryzen 7 1700 Eight-Core Processor",
     [(i, 0) for i in range(8)],
 )
 
 # Zen+ Pinnacle Ridge (2600) — family 23, model 8, 6 cores
 CPUINFO_ZEN_PLUS = _gen_cpuinfo(
-    23, 0x08, "AMD Ryzen 5 2600 Six-Core Processor",
+    23,
+    0x08,
+    "AMD Ryzen 5 2600 Six-Core Processor",
     [(i, 0) for i in range(6)],
 )
 
 # Zen 3 Cezanne APU (5700G) — family 25, model 0x50, 8 cores single CCD
 CPUINFO_ZEN3_CEZANNE_APU = _gen_cpuinfo(
-    25, 0x50, "AMD Ryzen 7 5700G with Radeon Graphics",
+    25,
+    0x50,
+    "AMD Ryzen 7 5700G with Radeon Graphics",
     [(i, 0) for i in range(8)],
 )
 
 # Zen 4 X3D single-CCD (7800X3D) — family 25, model 0x61, 8 cores
 CPUINFO_ZEN4_7800X3D = _gen_cpuinfo(
-    25, 0x61, "AMD Ryzen 7 7800X3D 8-Core Processor",
+    25,
+    0x61,
+    "AMD Ryzen 7 7800X3D 8-Core Processor",
     [(i, 0) for i in range(8)],
 )
 
 # Zen 4 X3D dual-CCD (7950X3D) — family 25, model 0x61, 16 cores (8+8)
 CPUINFO_ZEN4_7950X3D = _gen_cpuinfo(
-    25, 0x61, "AMD Ryzen 9 7950X3D 16-Core Processor",
+    25,
+    0x61,
+    "AMD Ryzen 9 7950X3D 16-Core Processor",
     [(i, 0) for i in range(8)] + [(i, 0) for i in range(8)],
 )
 
 # Zen 4 Phoenix APU (7840U) — family 25, model 0x74, 8 cores
 CPUINFO_ZEN4_PHOENIX_APU = _gen_cpuinfo(
-    25, 0x74, "AMD Ryzen 7 7840U w/ Radeon 780M Graphics",
+    25,
+    0x74,
+    "AMD Ryzen 7 7840U w/ Radeon 780M Graphics",
     [(i, 0) for i in range(8)],
 )
 
 # Zen 4 Storm Peak ThreadRipper (7980X) — family 25, model 0x18, 64 cores (8 CCDs)
 CPUINFO_ZEN4_STORM_PEAK = _gen_cpuinfo(
-    25, 0x18, "AMD Ryzen Threadripper PRO 7980X 64-Core Processor",
+    25,
+    0x18,
+    "AMD Ryzen Threadripper PRO 7980X 64-Core Processor",
     [(i % 8, 0) for i in range(64)],
 )
 
 # Zen 5 harvested (9900X) — family 26, model 0x44, 12 cores (6+6)
 # Kernel renumbers: CCD0 cores 0-5, CCD1 cores 8-13 (skipping 6,7)
 CPUINFO_ZEN5_9900X_HARVESTED = _gen_cpuinfo(
-    26, 0x44, "AMD Ryzen 9 9900X 12-Core Processor",
+    26,
+    0x44,
+    "AMD Ryzen 9 9900X 12-Core Processor",
     [(i, 0) for i in range(6)] + [(i, 0) for i in range(8, 14)],
 )
 
 # Zen 5 Strix Point APU — family 26, model 0x24, 12 cores
 CPUINFO_ZEN5_STRIX_POINT = _gen_cpuinfo(
-    26, 0x24, "AMD Ryzen AI 9 HX 370",
+    26,
+    0x24,
+    "AMD Ryzen AI 9 HX 370",
     [(i, 0) for i in range(12)],
 )
 
 # Zen 5 Shimada Peak ThreadRipper — family 26, different SMU cmds
 CPUINFO_ZEN5_SHIMADA_PEAK = _gen_cpuinfo(
-    26, 0x44, "AMD Ryzen Threadripper 9980X 64-Core Processor",
+    26,
+    0x44,
+    "AMD Ryzen Threadripper 9980X 64-Core Processor",
     [(i % 8, 0) for i in range(64)],
 )
 
@@ -548,9 +576,7 @@ def mock_backend():
             self.commands_generated.append(cmd)
             return cmd
 
-        def parse_output(
-            self, stdout: str, stderr: str, returncode: int
-        ) -> tuple[bool, str | None]:
+        def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
             return self.should_pass, self.error_message
 
         def get_supported_modes(self) -> list[StressMode]:
@@ -710,9 +736,7 @@ def no_real_forensics(monkeypatch):
     """
     import corecycler.tuner.engine as engine_mod
 
-    monkeypatch.setattr(
-        engine_mod, "harvest_kernel_mce", lambda since, timeout=15.0: ([], True)
-    )
+    monkeypatch.setattr(engine_mod, "harvest_kernel_mce", lambda since, timeout=15.0: ([], True))
 
 
 @pytest.fixture(autouse=True)
@@ -723,6 +747,4 @@ def assume_clean_shutdown(monkeypatch):
     """
     import corecycler.tuner.engine as engine_mod
 
-    monkeypatch.setattr(
-        engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: True
-    )
+    monkeypatch.setattr(engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: True)

@@ -48,9 +48,7 @@ def scripted(monkeypatch):
 def make_topo(cores: dict[int, tuple[int, ...]] | None = None) -> CPUTopology:
     topo = CPUTopology()
     for core_id, cpus in (cores or {0: (16, 0), 1: (1, 17)}).items():
-        topo.cores[core_id] = PhysicalCore(
-            core_id=core_id, ccd=0, ccx=None, logical_cpus=cpus
-        )
+        topo.cores[core_id] = PhysicalCore(core_id=core_id, ccd=0, ccx=None, logical_cpus=cpus)
     return topo
 
 
@@ -59,9 +57,7 @@ def make_parallel(tmp_path, *, topo=None, backend=None, cores=None) -> ParallelS
         topology=topo or make_topo(),
         backend=backend or RecordingBackend(),
         stress_config=StressConfig(),
-        scheduler_config=SchedulerConfig(
-            seconds_per_core=1, poll_interval=0.01, cores_to_test=cores
-        ),
+        scheduler_config=SchedulerConfig(seconds_per_core=1, poll_interval=0.01, cores_to_test=cores),
         work_dir=tmp_path / "work",
     )
 
@@ -72,8 +68,11 @@ def ok(core_id: int) -> StressResult:
 
 def bad(core_id: int) -> StressResult:
     return StressResult(
-        core_id=core_id, passed=False, duration_seconds=0.1,
-        error_message="mprime error: FATAL ERROR", error_type="computation",
+        core_id=core_id,
+        passed=False,
+        duration_seconds=0.1,
+        error_message="mprime error: FATAL ERROR",
+        error_type="computation",
     )
 
 

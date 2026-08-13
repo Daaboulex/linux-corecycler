@@ -174,16 +174,19 @@ class TunerTab(QWidget):
         # Core status table
         self._core_table = QTableWidget()
         self._core_table.setColumnCount(7)
-        self._core_table.setHorizontalHeaderLabels([
-            "Core", "CCD", "Phase", "Current Offset", "Best Offset",
-            "Tests Run", "Last Result",
-        ])
-        self._core_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
+        self._core_table.setHorizontalHeaderLabels(
+            [
+                "Core",
+                "CCD",
+                "Phase",
+                "Current Offset",
+                "Best Offset",
+                "Tests Run",
+                "Last Result",
+            ]
         )
-        self._core_table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
+        self._core_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._core_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._core_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._core_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self._core_table.currentCellChanged.connect(self._on_core_selected)
@@ -216,12 +219,18 @@ class TunerTab(QWidget):
 
         self._log_table = QTableWidget()
         self._log_table.setColumnCount(7)
-        self._log_table.setHorizontalHeaderLabels([
-            "Time", "Core", "Offset", "Phase", "Result", "Duration", "Error",
-        ])
-        self._log_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
+        self._log_table.setHorizontalHeaderLabels(
+            [
+                "Time",
+                "Core",
+                "Offset",
+                "Phase",
+                "Result",
+                "Duration",
+                "Error",
+            ]
         )
+        self._log_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._log_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._log_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self._log_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -244,9 +253,7 @@ class TunerTab(QWidget):
         self._start_offset_spin = QSpinBox()
         self._start_offset_spin.setRange(-60, 30)
         self._start_offset_spin.setValue(0)
-        self._start_offset_spin.setToolTip(
-            "Starting CO value for all cores (0 = BIOS baseline)"
-        )
+        self._start_offset_spin.setToolTip("Starting CO value for all cores (0 = BIOS baseline)")
         search_layout.addRow("Start offset:", self._start_offset_spin)
 
         self._inherit_current_check = QCheckBox("Inherit current CO from SMU")
@@ -272,33 +279,25 @@ class TunerTab(QWidget):
         self._coarse_step_spin = QSpinBox()
         self._coarse_step_spin.setRange(1, 15)
         self._coarse_step_spin.setValue(5)
-        self._coarse_step_spin.setToolTip(
-            "Step size during coarse search phase (bigger = faster but less precise)"
-        )
+        self._coarse_step_spin.setToolTip("Step size during coarse search phase (bigger = faster but less precise)")
         search_layout.addRow("Coarse step:", self._coarse_step_spin)
 
         self._fine_step_spin = QSpinBox()
         self._fine_step_spin.setRange(1, 5)
         self._fine_step_spin.setValue(1)
-        self._fine_step_spin.setToolTip(
-            "Step size during fine search phase (1 = test every value)"
-        )
+        self._fine_step_spin.setToolTip("Step size during fine search phase (1 = test every value)")
         search_layout.addRow("Fine step:", self._fine_step_spin)
 
         self._max_offset_spin = QSpinBox()
         self._max_offset_spin.setRange(-60, 60)
         self._max_offset_spin.setValue(-50)
-        self._max_offset_spin.setToolTip(
-            "Most aggressive offset to try (auto-clamped to CPU generation range)"
-        )
+        self._max_offset_spin.setToolTip("Most aggressive offset to try (auto-clamped to CPU generation range)")
         search_layout.addRow("Max offset:", self._max_offset_spin)
 
         self._max_retries_spin = QSpinBox()
         self._max_retries_spin.setRange(0, 5)
         self._max_retries_spin.setValue(2)
-        self._max_retries_spin.setToolTip(
-            "How many times to retry confirmation before backing off"
-        )
+        self._max_retries_spin.setToolTip("How many times to retry confirmation before backing off")
         search_layout.addRow("Confirm retries:", self._max_retries_spin)
 
         self._stretch_threshold_spin = QDoubleSpinBox()
@@ -314,6 +313,7 @@ class TunerTab(QWidget):
 
         # Check MSR availability and warn if unavailable
         import os
+
         try:
             fd = os.open("/dev/cpu/0/msr", os.O_RDONLY)
             os.close(fd)
@@ -404,18 +404,14 @@ class TunerTab(QWidget):
         self._confirm_dur_spin.setRange(30, 1800)
         self._confirm_dur_spin.setValue(300)
         self._confirm_dur_spin.setSuffix("s")
-        self._confirm_dur_spin.setToolTip(
-            "Seconds per core for confirmation run (longer = higher confidence)"
-        )
+        self._confirm_dur_spin.setToolTip("Seconds per core for confirmation run (longer = higher confidence)")
         timing_layout.addRow("Confirm duration:", self._confirm_dur_spin)
 
         self._validate_dur_spin = QSpinBox()
         self._validate_dur_spin.setRange(30, 3600)
         self._validate_dur_spin.setValue(300)
         self._validate_dur_spin.setSuffix("s")
-        self._validate_dur_spin.setToolTip(
-            "Seconds per test during multi-core validation stages"
-        )
+        self._validate_dur_spin.setToolTip("Seconds per test during multi-core validation stages")
         timing_layout.addRow("Validate duration:", self._validate_dur_spin)
 
         right_col.addWidget(timing_group)
@@ -485,14 +481,11 @@ class TunerTab(QWidget):
             QMessageBox.warning(self, "Error", "Database or topology not available")
             return
 
-        if self._engine is not None and (
-            self._engine.status in ACTIVE_STATUSES or self._engine.status == "paused"
-        ):
+        if self._engine is not None and (self._engine.status in ACTIVE_STATUSES or self._engine.status == "paused"):
             QMessageBox.warning(
                 self,
                 "Session Active",
-                "A tuner session is already active or paused. Resume or abort it "
-                "before starting a new one.",
+                "A tuner session is already active or paused. Resume or abort it before starting a new one.",
             )
             return
 
@@ -529,9 +522,7 @@ class TunerTab(QWidget):
         config = self._get_config()
         errors = config.validate()
         if errors:
-            QMessageBox.warning(
-                self, "Invalid Configuration", "\n".join(errors)
-            )
+            QMessageBox.warning(self, "Invalid Configuration", "\n".join(errors))
             return
         self._engine = TunerEngine(
             db=self._db,
@@ -545,7 +536,8 @@ class TunerTab(QWidget):
         self._engine.start()
         if self._engine.status not in ACTIVE_STATUSES:
             QMessageBox.warning(
-                self, "Tuner Did Not Start",
+                self,
+                "Tuner Did Not Start",
                 "The engine refused to start — see the log for the reason.",
             )
             return
@@ -590,10 +582,7 @@ class TunerTab(QWidget):
         for sess in sessions:
             core_states = tp.load_core_states(self._db, sess.id)
             total = len(core_states)
-            confirmed = sum(
-                1 for cs in core_states.values()
-                if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
-            )
+            confirmed = sum(1 for cs in core_states.values() if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED))
             started = format_local(sess.created_at) if sess.created_at else "?"
             last = format_local(sess.updated_at) if sess.updated_at else started
             label = (
@@ -608,9 +597,7 @@ class TunerTab(QWidget):
         session_list.setCurrentRow(0)
         dlg_layout.addWidget(session_list)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         dlg_layout.addWidget(buttons)
@@ -622,29 +609,28 @@ class TunerTab(QWidget):
             return
         session_id = selected.data(Qt.ItemDataRole.UserRole)
         chosen = next((s for s in sessions if s.id == session_id), None)
-        if (
-            chosen is not None
-            and chosen.status == "quarantined"
-            and not self._confirm_quarantined(chosen)
-        ):
+        if chosen is not None and chosen.status == "quarantined" and not self._confirm_quarantined(chosen):
             return
         self._resume_session(session_id)
 
     def _confirm_quarantined(self, session) -> bool:
         """A quarantined session is only ever re-opened deliberately."""
-        return QMessageBox.question(
-            self,
-            "Session was quarantined",
-            f"Session #{session.id} was quarantined after "
-            f"{session.resume_crash_streak} crash-resumes: the machine kept dying "
-            "when its offsets were re-applied.\n\n"
-            "Resuming keeps everything it learned, but re-engages only offsets this "
-            "machine has already survived; anything unproven drops to stock. If it "
-            "quarantines again, the real limits are lower than the search assumed.\n\n"
-            "Resume it?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        ) == QMessageBox.StandardButton.Yes
+        return (
+            QMessageBox.question(
+                self,
+                "Session was quarantined",
+                f"Session #{session.id} was quarantined after "
+                f"{session.resume_crash_streak} crash-resumes: the machine kept dying "
+                "when its offsets were re-applied.\n\n"
+                "Resuming keeps everything it learned, but re-engages only offsets this "
+                "machine has already survived; anything unproven drops to stock. If it "
+                "quarantines again, the real limits are lower than the search assumed.\n\n"
+                "Resume it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
+        )
 
     def _resume_session(self, session_id: int) -> None:
         """Resume a specific tuner session by ID."""
@@ -689,7 +675,8 @@ class TunerTab(QWidget):
         self._engine.resume(session_id)
         if self._engine.status not in ACTIVE_STATUSES:
             QMessageBox.warning(
-                self, "Resume Did Not Start",
+                self,
+                "Resume Did Not Start",
                 "The engine did not resume — see the log for the reason.",
             )
             return
@@ -722,7 +709,8 @@ class TunerTab(QWidget):
         self._engine.validate_profile(self._engine.session_id)
         if self._engine.status not in ACTIVE_STATUSES:
             QMessageBox.warning(
-                self, "Validation Did Not Start",
+                self,
+                "Validation Did Not Start",
                 "The engine refused to validate — see the log for the reason.",
             )
             return
@@ -780,15 +768,17 @@ class TunerTab(QWidget):
     def _on_co_drift(self, drift_json: str) -> None:
         """Warn user that SMU CO values differ from session baselines."""
         drift = json.loads(drift_json)
-        lines = [f"Core {cid}: tuner last wrote {v['expected']}, found {v['actual']}"
-                 for cid, v in sorted(drift.items(), key=lambda x: int(x[0]))]
+        lines = [
+            f"Core {cid}: tuner last wrote {v['expected']}, found {v['actual']}"
+            for cid, v in sorted(drift.items(), key=lambda x: int(x[0]))
+        ]
         QMessageBox.warning(
-            self, "CO Drift Detected",
+            self,
+            "CO Drift Detected",
             "CO offsets in the SMU differ from what the tuner last wrote — "
             "something outside the tuner changed them (Curve Optimizer tab, "
             "another tool).\n\n"
-            "The session's own values will be re-applied before testing resumes.\n\n"
-            + "\n".join(lines),
+            "The session's own values will be re-applied before testing resumes.\n\n" + "\n".join(lines),
         )
 
     @Slot(int, str, int)
@@ -819,6 +809,7 @@ class TunerTab(QWidget):
         self._active_test_core = core_id
         self.tuner_core_testing.emit(core_id, "testing")
         import time
+
         self._test_start_time = time.monotonic()
         if not self._tuner_timer.isActive():
             self._tuner_timer.start(1000)
@@ -844,8 +835,7 @@ class TunerTab(QWidget):
         self._export_btn.setEnabled(bool(profile))
         self._notify(
             "Tuning complete",
-            f"{len(profile)} core(s) confirmed. Load the profile from the "
-            f"Curve Optimizer or History tab.",
+            f"{len(profile)} core(s) confirmed. Load the profile from the Curve Optimizer or History tab.",
         )
 
     def _notify(self, title: str, body: str, *, urgency: str = "normal") -> None:
@@ -902,8 +892,13 @@ class TunerTab(QWidget):
     def _on_validation_progress(self, stage: int, current: int, total: int) -> None:
         """Update status and progress labels during multi-core validation."""
         stage_names = {
-            1: "per-core", 2: "all-core", 3: "half-core",
-            4: "transitions", 5: "spectrum", 6: "memory", 7: "soak",
+            1: "per-core",
+            2: "all-core",
+            3: "half-core",
+            4: "transitions",
+            5: "spectrum",
+            6: "memory",
+            7: "soak",
         }
         stage_name = stage_names.get(stage, f"stage {stage}")
         self._status_label.setText(f"Status: Validating S{stage} ({stage_name})")
@@ -920,6 +915,7 @@ class TunerTab(QWidget):
     def _tick_tuner(self) -> None:
         if self._active_test_core is not None:
             import time
+
             elapsed = time.monotonic() - self._test_start_time
             self.tuner_core_elapsed.emit(self._active_test_core, elapsed)
         elif self._engine is None or self._engine.status == "idle":
@@ -1046,7 +1042,8 @@ class TunerTab(QWidget):
             return
 
         entries = tp.get_test_log(
-            self._db, self._engine.session_id,
+            self._db,
+            self._engine.session_id,
             core_id=self._selected_core,
         )
         for entry in entries:
@@ -1134,9 +1131,7 @@ class TunerTab(QWidget):
                 QMessageBox.warning(self, "Error", f"Unknown backend: {name}")
                 return None
 
-        if backend and not backend.is_available() and not ensure_tool(
-            self, self._backend_combo.currentText()
-        ):
+        if backend and not backend.is_available() and not ensure_tool(self, self._backend_combo.currentText()):
             return None
         return backend
 
@@ -1148,15 +1143,9 @@ class TunerTab(QWidget):
         if sessions:
             in_flight = [s for s in sessions if s.status in RESUMABLE_STATUSES]
             if len(in_flight) == 1:
-                text = (
-                    f"Status: RECOVERABLE SESSION #{in_flight[0].id} "
-                    "\u2014 click Resume to continue"
-                )
+                text = f"Status: RECOVERABLE SESSION #{in_flight[0].id} \u2014 click Resume to continue"
             elif in_flight:
-                text = (
-                    f"Status: {len(in_flight)} RECOVERABLE SESSIONS "
-                    "\u2014 click Resume to pick one"
-                )
+                text = f"Status: {len(in_flight)} RECOVERABLE SESSIONS \u2014 click Resume to pick one"
             else:
                 last = sessions[0]
                 text = (
@@ -1173,8 +1162,7 @@ class TunerTab(QWidget):
             self._start_btn.setToolTip("Manual test is running")
         else:
             has_active = self._engine is not None and (
-                self._engine.status == "paused"
-                or self._engine.status in ACTIVE_STATUSES
+                self._engine.status == "paused" or self._engine.status in ACTIVE_STATUSES
             )
             self._start_btn.setEnabled(not has_active)
             if has_active:

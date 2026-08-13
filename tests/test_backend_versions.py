@@ -82,9 +82,7 @@ def test_each_mode_produces_its_own_fft_path(mode, tmp_path):
         assert line, f"mprime printed no FFT line for {mode.name} within 20s"
         assert MODE_TO_FFT_MARKER[mode] in line, (mode.name, line)
         observed = containment.observed_tree_cpus(proc.pid)
-        assert observed and observed <= set(CPUS), (
-            f"{mode.name}: threads on {sorted(observed)}, allowed {CPUS}"
-        )
+        assert observed and observed <= set(CPUS), f"{mode.name}: threads on {sorted(observed)}, allowed {CPUS}"
     finally:
         execution.kill_process_group(proc)
         backend.cleanup(tmp_path)
@@ -115,8 +113,16 @@ def test_stress_ng_still_documents_every_flag_the_backend_uses():
         "stress-ng",
         ("stress-ng",),
         {
-            "--cpu", "--cpu-method", "--verify", "--metrics-brief", "--temp-path",
-            "--matrix", "--matrix-method", "--vm", "--vm-bytes", "--timeout",
+            "--cpu",
+            "--cpu-method",
+            "--verify",
+            "--metrics-brief",
+            "--temp-path",
+            "--matrix",
+            "--matrix-method",
+            "--vm",
+            "--vm-bytes",
+            "--timeout",
         },
     )
 
@@ -130,7 +136,9 @@ def test_stress_ng_still_offers_the_cpu_methods_the_modes_map_to():
         pytest.skip("stress-ng not installed on this host")
     result = subprocess.run(
         [str(resolution.path), "--cpu-method", "which"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     offered = set((result.stdout + result.stderr).split())
     wanted = {_mode_to_method(m) for m in (StressMode.SSE, StressMode.AVX, StressMode.AVX2)}

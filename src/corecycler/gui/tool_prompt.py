@@ -86,7 +86,6 @@ def explain(key: str, candidates: list[Path]) -> str:
     else:
         lines += [
             "",
-            f"Install {tools.TOOLS[key].package}, browse for the executable, "
-            f"or set {tools.env_var(key)}.",
+            f"Install {tools.TOOLS[key].package}, browse for the executable, or set {tools.env_var(key)}.",
         ]
     return "\n".join(lines)

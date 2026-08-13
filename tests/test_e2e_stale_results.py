@@ -72,12 +72,15 @@ class TestStaleResultsDisasterReplay:
         """mprime keeps running after a computation error (it lands only in
         results.txt). The live poll must fail the test within ~one poll
         interval, not burn the full duration."""
-        fake = _fake_mprime(exec_dir, """
+        fake = _fake_mprime(
+            exec_dir,
+            """
             echo "[Worker #1] Worker starting"
             sleep 1
             echo "FATAL ERROR: Rounding was 0.5, expected less than 0.4" >> results.txt
             sleep 60
-        """)
+        """,
+        )
         backend = MprimeBackend()
         backend._binary = str(fake)
 
@@ -87,8 +90,7 @@ class TestStaleResultsDisasterReplay:
         assert "FATAL ERROR" in (result.error_message or "")
         # caught by the 5 s live poll, not the 30 s deadline
         assert result.duration_seconds < 15, (
-            f"error detected only after {result.duration_seconds:.1f}s — "
-            f"live polling is not working"
+            f"error detected only after {result.duration_seconds:.1f}s — live polling is not working"
         )
 
     def test_failure_cannot_poison_the_next_run(self, tmp_path, exec_dir):
@@ -97,10 +99,13 @@ class TestStaleResultsDisasterReplay:
         work_dir = tmp_path / "work"
 
         # Run 1: genuine failure (error in results.txt).
-        fail_bin = _fake_mprime(exec_dir, """
+        fail_bin = _fake_mprime(
+            exec_dir,
+            """
             echo "FATAL ERROR: Rounding was 0.5, expected less than 0.4" >> results.txt
             sleep 60
-        """)
+        """,
+        )
         backend = MprimeBackend()
         backend._binary = str(fail_bin)
         first = _run_one(backend, work_dir, seconds=20)
@@ -112,17 +117,18 @@ class TestStaleResultsDisasterReplay:
         assert not (core_dir / "results.txt").exists()
 
         # Run 2: clean run in the SAME work dir.
-        clean_bin = _fake_mprime(exec_dir, """
+        clean_bin = _fake_mprime(
+            exec_dir,
+            """
             echo "[Worker #1] Self-test 240K passed!" >> results.txt
             echo "[Worker #1] Self-test 240K passed!"
             sleep 60
-        """)
+        """,
+        )
         backend._binary = str(clean_bin)
         second = _run_one(backend, work_dir, seconds=8)
 
-        assert second.passed is True, (
-            f"clean run poisoned by the previous failure: {second.error_message}"
-        )
+        assert second.passed is True, f"clean run poisoned by the previous failure: {second.error_message}"
 
     def test_planted_stale_results_file_cannot_fail_a_clean_run(self, tmp_path, exec_dir):
         """Belt and braces: even a results.txt left behind by an abort or hard
@@ -131,22 +137,20 @@ class TestStaleResultsDisasterReplay:
         work_dir = tmp_path / "work"
         core_dir = work_dir / "core_0"
         core_dir.mkdir(parents=True)
-        (core_dir / "results.txt").write_text(
-            "FATAL ERROR: Rounding was 0.5, expected less than 0.4\n"
-        )
+        (core_dir / "results.txt").write_text("FATAL ERROR: Rounding was 0.5, expected less than 0.4\n")
 
-        clean_bin = _fake_mprime(exec_dir, """
+        clean_bin = _fake_mprime(
+            exec_dir,
+            """
             echo "[Worker #1] Self-test 240K passed!" >> results.txt
             sleep 60
-        """)
+        """,
+        )
         backend = MprimeBackend()
         backend._binary = str(clean_bin)
         result = _run_one(backend, work_dir, seconds=8)
 
-        assert result.passed is True, (
-            f"stale pre-existing results.txt poisoned the verdict: "
-            f"{result.error_message}"
-        )
+        assert result.passed is True, f"stale pre-existing results.txt poisoned the verdict: {result.error_message}"
 
 
 @pytest.mark.slow
@@ -158,11 +162,14 @@ class TestUnreadableResultsFailsClosed:
         if os.geteuid() == 0:
             pytest.skip("root bypasses file permissions")
         # the fake makes results.txt unreadable before the deadline kill
-        fake = _fake_mprime(exec_dir, """
+        fake = _fake_mprime(
+            exec_dir,
+            """
             echo "data" >> results.txt
             chmod 000 results.txt
             sleep 60
-        """)
+        """,
+        )
         backend = MprimeBackend()
         backend._binary = str(fake)
         result = _run_one(backend, tmp_path / "work", seconds=8)

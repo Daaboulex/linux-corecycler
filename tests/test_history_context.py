@@ -82,9 +82,7 @@ class TestCaptureSystemContext:
         assert ctx.boost_limit_mhz is None
 
     def test_without_smu_no_bios(self, tmp_path):
-        ctx = capture_system_context(
-            smu=None, num_cores=0, bios_path=tmp_path / "missing"
-        )
+        ctx = capture_system_context(smu=None, num_cores=0, bios_path=tmp_path / "missing")
         assert ctx.bios_version == ""
         assert ctx.co_hash == ""
 
@@ -211,9 +209,7 @@ class TestPowerLimitsInContext:
         import corecycler.smu.pmtable as pmtable_mod
         from corecycler.history.context import capture_system_context
 
-        monkeypatch.setattr(
-            pmtable_mod, "read_power_limits", lambda n: (225.0, 190.0, 230.0)
-        )
+        monkeypatch.setattr(pmtable_mod, "read_power_limits", lambda n: (225.0, 190.0, 230.0))
         smu = MagicMock()
         smu.get_all_co_offsets.return_value = {0: -30}
         smu.get_pbo_scalar.return_value = 1.0

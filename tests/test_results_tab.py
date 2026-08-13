@@ -22,10 +22,7 @@ def _tab():
 
 
 def _statuses(n=4):
-    return {
-        i: CoreTestStatus(core_id=i, ccd=0 if i < 2 else 1, state="pending")
-        for i in range(n)
-    }
+    return {i: CoreTestStatus(core_id=i, ccd=0 if i < 2 else 1, state="pending") for i in range(n)}
 
 
 class TestResultsTab:

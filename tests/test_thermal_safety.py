@@ -102,10 +102,7 @@ class TestThermalTunerConfig:
         assert any("max_thermal_retries" in e for e in TunerConfig(max_thermal_retries=-1).validate())
 
     def test_negative_cooldown_rejected(self):
-        assert any(
-            "thermal_cooldown_seconds" in e
-            for e in TunerConfig(thermal_cooldown_seconds=-1).validate()
-        )
+        assert any("thermal_cooldown_seconds" in e for e in TunerConfig(thermal_cooldown_seconds=-1).validate())
 
     def test_valid_thermal_config_has_no_errors(self):
         cfg = TunerConfig(

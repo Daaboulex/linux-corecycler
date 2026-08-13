@@ -57,7 +57,9 @@ class TestRunLogger:
         context_id = find_or_create_context(db, ctx)
         log.info(
             "Tuning context %d: BIOS=%s, CO hash=%s",
-            context_id, ctx.bios_version, ctx.co_hash[:12] if ctx.co_hash else "none",
+            context_id,
+            ctx.bios_version,
+            ctx.co_hash[:12] if ctx.co_hash else "none",
         )
 
         # snapshot settings as JSON
@@ -174,8 +176,7 @@ class TestRunLogger:
         passed = sum(
             1
             for r_list in tested.values()
-            if isinstance(r_list, list) and r_list
-            and all(isinstance(r, dict) and r.get("passed") for r in r_list)
+            if isinstance(r_list, list) and r_list and all(isinstance(r, dict) and r.get("passed") for r in r_list)
         )
         failed = total - passed
         elapsed = time.monotonic() - self._start_time

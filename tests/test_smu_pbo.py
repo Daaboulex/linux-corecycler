@@ -37,8 +37,10 @@ class TestPboLimitGuards:
     @pytest.mark.parametrize("setter", LIMIT_SETTERS)
     def test_missing_command_returns_false_not_raises(self, setter):
         cmds = SMUCommandSet(
-            generation=CPUGeneration.UNKNOWN, co_range=(0, 0),
-            mailbox="rsmu", encoding_scheme="none",
+            generation=CPUGeneration.UNKNOWN,
+            co_range=(0, 0),
+            mailbox="rsmu",
+            encoding_scheme="none",
         )
         smu = RyzenSMU(cmds, dry_run=True)
         assert getattr(smu, setter)(200) is False

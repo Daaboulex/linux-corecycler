@@ -53,10 +53,7 @@ _CCD_FUSE_SHIFT: int = 25
 def _check_pbo_limit(name: str, value: int) -> None:
     """Fail closed on a malformed PBO limit before it is encoded and written."""
     if not _PBO_LIMIT_MIN <= value <= _PBO_LIMIT_MAX:
-        raise ValueError(
-            f"{name} limit {value} out of sane range "
-            f"[{_PBO_LIMIT_MIN}, {_PBO_LIMIT_MAX}]"
-        )
+        raise ValueError(f"{name} limit {value} out of sane range [{_PBO_LIMIT_MIN}, {_PBO_LIMIT_MAX}]")
 
 
 class CoreMapError(Exception):
@@ -219,11 +216,7 @@ class RyzenSMU:
             self._core_map_error = None
             return
         fully_online = getattr(topology, "cpus_all_online", True) is not False
-        self._offline_hint = (
-            ""
-            if fully_online
-            else " (some present CPUs are offline — online all cores for CO tuning)"
-        )
+        self._offline_hint = "" if fully_online else " (some present CPUs are offline — online all cores for CO tuning)"
         core_map: dict[int, tuple[int, int]] = {}
         try:
             for encode_ccd in sorted(groups):
@@ -231,10 +224,7 @@ class RyzenSMU:
                 slots = self._derive_group_slots(group_ids, fully_online)
                 if slots is None:
                     slots = self._fuse_group_slots(encode_ccd, len(group_ids))
-                core_map.update(
-                    (cid, (encode_ccd, slot))
-                    for cid, slot in zip(group_ids, slots, strict=True)
-                )
+                core_map.update((cid, (encode_ccd, slot)) for cid, slot in zip(group_ids, slots, strict=True))
         except CoreMapError as exc:
             self._core_map_error = str(exc)
             log.error("SMU core mapping unavailable: %s", exc)
@@ -243,9 +233,7 @@ class RyzenSMU:
         self._core_map_error = None
 
     @staticmethod
-    def _derive_group_slots(
-        group_ids: list[int], holes_trusted: bool
-    ) -> list[int] | None:
+    def _derive_group_slots(group_ids: list[int], holes_trusted: bool) -> list[int] | None:
         """Slots this group's numbering proves by itself; None means read the fuse.
 
         A full 8-core group is identity under any numbering scheme. Only a
@@ -499,9 +487,7 @@ class RyzenSMU:
                 raw=resp_args_raw,
             )
 
-    def _send_rsmu_command(
-        self, cmd: int, args: tuple[int, ...] = (0, 0, 0, 0, 0, 0)
-    ) -> SMUResponse:
+    def _send_rsmu_command(self, cmd: int, args: tuple[int, ...] = (0, 0, 0, 0, 0, 0)) -> SMUResponse:
         """Send an RSMU command regardless of the default mailbox.
 
         PBO limit commands use RSMU even on Zen 3 (which defaults to MP1 for CO).
@@ -574,10 +560,7 @@ class RyzenSMU:
 
         co_min, co_max = self.commands.co_range
         if not co_min <= value <= co_max:
-            raise ValueError(
-                f"CO value {value} out of range [{co_min}, {co_max}] "
-                f"for {self.commands.generation.name}"
-            )
+            raise ValueError(f"CO value {value} out of range [{co_min}, {co_max}] for {self.commands.generation.name}")
 
         # --- core-address guard (before dry-run: never simulate an
         # unaddressable write) ---
@@ -633,10 +616,7 @@ class RyzenSMU:
 
         co_min, co_max = self.commands.co_range
         if not co_min <= value <= co_max:
-            raise ValueError(
-                f"CO value {value} out of range [{co_min}, {co_max}] "
-                f"for {self.commands.generation.name}"
-            )
+            raise ValueError(f"CO value {value} out of range [{co_min}, {co_max}] for {self.commands.generation.name}")
 
         # The all-cores command takes no core address, but its read-back
         # verification does — with no usable core map the write would be
@@ -693,11 +673,7 @@ class RyzenSMU:
 
         CO values are VOLATILE — they reset to zero on reboot.
         """
-        core_ids = (
-            self._known_core_ids
-            if self._known_core_ids is not None
-            else range(num_cores)
-        )
+        core_ids = self._known_core_ids if self._known_core_ids is not None else range(num_cores)
         return {core_id: self.get_co_offset(core_id) for core_id in core_ids}
 
     # ------------------------------------------------------------------

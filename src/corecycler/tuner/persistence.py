@@ -71,16 +71,12 @@ def load_core_states(db: HistoryDB, session_id: int) -> dict[int, CoreState]:
 # ---------------------------------------------------------------------------
 
 
-def journal_co_intent(
-    db: HistoryDB, session_id: int, core_id: int, value: int, survived: bool
-) -> None:
+def journal_co_intent(db: HistoryDB, session_id: int, core_id: int, value: int, survived: bool) -> None:
     """Durably record a CO value before it is written to the SMU."""
     db.journal_co_intent(session_id, core_id, value, survived)
 
 
-def journal_mark_survived(
-    db: HistoryDB, session_id: int, exclude_cores: tuple[int, ...] | list[int] = ()
-) -> None:
+def journal_mark_survived(db: HistoryDB, session_id: int, exclude_cores: tuple[int, ...] | list[int] = ()) -> None:
     """Mark all resident CO values survived after a test completes without a crash.
 
     Cores in ``exclude_cores`` stay un-survived — fresh contrary evidence (a
@@ -125,9 +121,7 @@ def set_hunting_core(db: HistoryDB, session_id: int, core_id: int | None) -> Non
     db.set_hunting_core(session_id, core_id)
 
 
-def log_event(
-    db: HistoryDB, session_id: int, message: str, boot_id: str = "", severity: str = "info"
-) -> None:
+def log_event(db: HistoryDB, session_id: int, message: str, boot_id: str = "", severity: str = "info") -> None:
     db.insert_tuner_event(session_id, message, boot_id, severity)
 
 
@@ -180,16 +174,23 @@ def log_test_result(
     peak_stretch_pct: float | None = None,
 ) -> int:
     return db.insert_tuner_test_log(
-        session_id, core_id, offset, phase, passed,
-        error_msg, error_type, duration, run_id,
-        backend=backend, stress_mode=stress_mode, fft_preset=fft_preset,
+        session_id,
+        core_id,
+        offset,
+        phase,
+        passed,
+        error_msg,
+        error_type,
+        duration,
+        run_id,
+        backend=backend,
+        stress_mode=stress_mode,
+        fft_preset=fft_preset,
         peak_stretch_pct=peak_stretch_pct,
     )
 
 
-def get_test_log(
-    db: HistoryDB, session_id: int, core_id: int | None = None
-) -> list[dict]:
+def get_test_log(db: HistoryDB, session_id: int, core_id: int | None = None) -> list[dict]:
     return db.get_tuner_test_log(session_id, core_id)
 
 

@@ -48,8 +48,11 @@ class ResultsTab(QWidget):
         self._cycle_label = QLabel("")
 
         summary_widgets = [
-            self._total_label, self._passed_label, self._failed_label,
-            self._elapsed_label, self._cycle_label,
+            self._total_label,
+            self._passed_label,
+            self._failed_label,
+            self._elapsed_label,
+            self._cycle_label,
         ]
         for w in summary_widgets:
             w.setFont(QFont("monospace", 10))
@@ -63,9 +66,7 @@ class ResultsTab(QWidget):
         # results table
         self._table = QTableWidget()
         self._table.setColumnCount(7)
-        self._table.setHorizontalHeaderLabels(
-            ["Core", "CCD", "Status", "Errors", "Iterations", "Time", "Last Error"]
-        )
+        self._table.setHorizontalHeaderLabels(["Core", "CCD", "Status", "Errors", "Iterations", "Time", "Last Error"])
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -144,13 +145,9 @@ class ResultsTab(QWidget):
     def _set_row(self, row: int, core_id: int, status: CoreTestStatus) -> None:
         self._table.setItem(row, 0, _item(str(core_id), Qt.AlignmentFlag.AlignCenter))
         ccd_text = str(status.ccd) if status.ccd is not None else "-"
-        self._table.setItem(
-            row, 1, _item(ccd_text, Qt.AlignmentFlag.AlignCenter)
-        )
+        self._table.setItem(row, 1, _item(ccd_text, Qt.AlignmentFlag.AlignCenter))
 
-        status_item = _item(
-            state_label(status.state), Qt.AlignmentFlag.AlignCenter
-        )
+        status_item = _item(state_label(status.state), Qt.AlignmentFlag.AlignCenter)
         _, fg, _border = STATE_COLORS.get(status.state, STATE_COLORS["pending"])
         status_item.setForeground(QColor(fg))
         self._table.setItem(row, 2, status_item)

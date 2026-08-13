@@ -123,9 +123,7 @@ def setup_logging() -> None:
 
         log_dir = user_home() / ".local" / "share" / "corecycler" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
-            log_dir / "corecycler.log", maxBytes=5_000_000, backupCount=3
-        )
+        file_handler = RotatingFileHandler(log_dir / "corecycler.log", maxBytes=5_000_000, backupCount=3)
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(fmt)
         handlers.append(file_handler)
@@ -181,9 +179,7 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
 
     # high DPI support
-    QApplication.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-    )
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     app = QApplication(sys.argv)
     app.setApplicationName("CoreCycler")
