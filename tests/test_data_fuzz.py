@@ -30,28 +30,38 @@ class TestConfigJsonFailsClosed:
         cfg = TunerConfig.from_json(s)
         assert isinstance(cfg, TunerConfig)
 
-    @given(blob=st.one_of(st.lists(st.integers()), st.integers(), st.floats(allow_nan=False),
-                          st.booleans(), st.none()))
+    @given(blob=st.one_of(st.lists(st.integers()), st.integers(), st.floats(allow_nan=False), st.booleans(), st.none()))
     def test_non_object_json_yields_defaults(self, blob):
         import json
+
         cfg = TunerConfig.from_json(json.dumps(blob))
         assert cfg == TunerConfig()
 
     @settings(max_examples=200, deadline=None)
     @given(
-        coarse=st.integers(1, 15), fine=st.integers(1, 5), direction=st.sampled_from([-1, 1]),
-        start=st.integers(-60, 30), max_off=st.integers(-60, 30),
-        inherit=st.booleans(), auto_validate=st.booleans(),
-        order=st.sampled_from(["sequential", "round_robin", "weakest_first",
-                               "ccd_alternating", "ccd_round_robin"]),
+        coarse=st.integers(1, 15),
+        fine=st.integers(1, 5),
+        direction=st.sampled_from([-1, 1]),
+        start=st.integers(-60, 30),
+        max_off=st.integers(-60, 30),
+        inherit=st.booleans(),
+        auto_validate=st.booleans(),
+        order=st.sampled_from(["sequential", "round_robin", "weakest_first", "ccd_alternating", "ccd_round_robin"]),
         stretch=st.floats(0.0, 20.0, allow_nan=False, allow_infinity=False),
     )
-    def test_to_from_json_round_trips(self, coarse, fine, direction, start, max_off,
-                                      inherit, auto_validate, order, stretch):
+    def test_to_from_json_round_trips(
+        self, coarse, fine, direction, start, max_off, inherit, auto_validate, order, stretch
+    ):
         cfg = TunerConfig(
-            coarse_step=coarse, fine_step=min(fine, coarse), direction=direction,
-            start_offset=start, max_offset=max_off, inherit_current=inherit,
-            auto_validate=auto_validate, test_order=order, stretch_threshold_pct=stretch,
+            coarse_step=coarse,
+            fine_step=min(fine, coarse),
+            direction=direction,
+            start_offset=start,
+            max_offset=max_off,
+            inherit_current=inherit,
+            auto_validate=auto_validate,
+            test_order=order,
+            stretch_threshold_pct=stretch,
             cores_to_test=[0, 1, 2],
         )
         assert TunerConfig.from_json(cfg.to_json()) == cfg
@@ -75,8 +85,7 @@ def _core_state(data) -> CoreState:
         crash_count=data.draw(st.integers(0, 20)),
         crash_cooldown=data.draw(st.integers(0, 5)),
         thermal_aborts=data.draw(st.integers(0, 5)),
-        cumulative_test_time=data.draw(st.floats(0.0, 1e6, allow_nan=False,
-                                                 allow_infinity=False)),
+        cumulative_test_time=data.draw(st.floats(0.0, 1e6, allow_nan=False, allow_infinity=False)),
         hardening_tier_index=data.draw(st.integers(0, 4)),
     )
 

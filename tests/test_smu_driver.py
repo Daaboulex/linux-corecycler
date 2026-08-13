@@ -109,10 +109,12 @@ class TestSendCommand:
     @staticmethod
     def _patch_write(monkeypatch, smu_dir, cmd_name, status=1):
         _orig = Path.write_bytes
+
         def _sim(self_path, data):
             _orig(self_path, data)
             if self_path.name == cmd_name and self_path.parent == smu_dir:
                 _orig(self_path, struct.pack("<I", status))
+
         monkeypatch.setattr(Path, "write_bytes", _sim)
 
     def test_basic_send_success(self, smu_dir, zen5_cmds, monkeypatch):
@@ -193,27 +195,35 @@ class TestSetCOOffset:
         raw_rb = value & 0xFFFF
         readback = SMUResponse(success=True, args=(raw_rb, 0, 0, 0, 0, 0), raw=b"\x00" * 24)
         calls = [0]
+
         def side_effect(cmd, args=(0, 0, 0, 0, 0, 0)):
             calls[0] += 1
             return success if calls[0] == 1 else readback
+
         return side_effect
 
     def test_set_valid(self, smu_dir, zen5_cmds):
         smu = RyzenSMU(zen5_cmds, smu_dir)
-        with patch.object(smu, "_send_command", side_effect=self._mock_set_readback(-30)), \
-             patch.object(smu, "check_writable", return_value=(True, "OK")):
+        with (
+            patch.object(smu, "_send_command", side_effect=self._mock_set_readback(-30)),
+            patch.object(smu, "check_writable", return_value=(True, "OK")),
+        ):
             assert smu.set_co_offset(0, -30) is True
 
     def test_set_boundary_min(self, smu_dir, zen5_cmds):
         smu = RyzenSMU(zen5_cmds, smu_dir)
-        with patch.object(smu, "_send_command", side_effect=self._mock_set_readback(-60)), \
-             patch.object(smu, "check_writable", return_value=(True, "OK")):
+        with (
+            patch.object(smu, "_send_command", side_effect=self._mock_set_readback(-60)),
+            patch.object(smu, "check_writable", return_value=(True, "OK")),
+        ):
             assert smu.set_co_offset(0, -60) is True
 
     def test_set_boundary_max(self, smu_dir, zen5_cmds):
         smu = RyzenSMU(zen5_cmds, smu_dir)
-        with patch.object(smu, "_send_command", side_effect=self._mock_set_readback(10)), \
-             patch.object(smu, "check_writable", return_value=(True, "OK")):
+        with (
+            patch.object(smu, "_send_command", side_effect=self._mock_set_readback(10)),
+            patch.object(smu, "check_writable", return_value=(True, "OK")),
+        ):
             assert smu.set_co_offset(0, 10) is True
 
     def test_out_of_range_low(self, smu_dir, zen5_cmds):
@@ -239,8 +249,10 @@ class TestSetCOOffset:
     def test_smu_rejection(self, smu_dir, zen5_cmds):
         smu = RyzenSMU(zen5_cmds, smu_dir)
         fail = SMUResponse(success=False, args=(0,) * 6, raw=b"\x00" * 24)
-        with patch.object(smu, "_send_command", return_value=fail), \
-             patch.object(smu, "check_writable", return_value=(True, "OK")):
+        with (
+            patch.object(smu, "_send_command", return_value=fail),
+            patch.object(smu, "check_writable", return_value=(True, "OK")),
+        ):
             assert smu.set_co_offset(0, -10) is False
 
     def test_readback_mismatch(self, smu_dir, zen5_cmds):
@@ -248,11 +260,15 @@ class TestSetCOOffset:
         success = SMUResponse(success=True, args=(0,) * 6, raw=b"\x00" * 24)
         wrong = SMUResponse(success=True, args=(0,) * 6, raw=b"\x00" * 24)
         calls = [0]
+
         def se(cmd, args=(0, 0, 0, 0, 0, 0)):
             calls[0] += 1
             return success if calls[0] == 1 else wrong
-        with patch.object(smu, "_send_command", side_effect=se), \
-             patch.object(smu, "check_writable", return_value=(True, "OK")):
+
+        with (
+            patch.object(smu, "_send_command", side_effect=se),
+            patch.object(smu, "check_writable", return_value=(True, "OK")),
+        ):
             assert smu.set_co_offset(0, -10) is False
 
     def test_permission_denied(self, smu_dir, zen5_cmds):
@@ -446,8 +462,7 @@ class TestDeterministicSlotMapping:
         ccd0 = (0, 1, 4, 5, 6, 7)
         ccd1 = (8, 9, 10, 11, 14, 15)
         topo = MagicMock()
-        topo.cores = {**{c: MagicMock(ccd=0) for c in ccd0},
-                      **{c: MagicMock(ccd=1) for c in ccd1}}
+        topo.cores = {**{c: MagicMock(ccd=0) for c in ccd0}, **{c: MagicMock(ccd=1) for c in ccd1}}
         smu.set_topology(topo)
         writes, store = _stateful_smu(smu, zen5_cmds)
         for c in ccd0 + ccd1:
@@ -457,9 +472,7 @@ class TestDeterministicSlotMapping:
         for c in ccd1:
             assert store[(1, c % 8)] == -15
         # no cross-CCD or fused-slot bleed
-        assert {(ccd, slot) for ccd, slot, _v in writes} == (
-            {(0, c % 8) for c in ccd0} | {(1, c % 8) for c in ccd1}
-        )
+        assert {(ccd, slot) for ccd, slot, _v in writes} == ({(0, c % 8) for c in ccd0} | {(1, c % 8) for c in ccd1})
 
     def test_readback_of_written_core_matches(self, smu_dir, zen5_cmds):
         """get_co_offset re-derives the same physical slot, so a written value reads
@@ -483,9 +496,7 @@ class TestPBOLimitValidation:
     def smu(self, smu_dir):
         # Real Granite Ridge set has the PBO command ids; dry_run so a valid value
         # is accepted without touching hardware (the guard runs before dry_run).
-        return RyzenSMU(
-            get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE), smu_dir, dry_run=True
-        )
+        return RyzenSMU(get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE), smu_dir, dry_run=True)
 
     @pytest.mark.parametrize("setter", ["set_ppt_limit", "set_tdc_limit", "set_edc_limit"])
     def test_in_range_limit_accepted(self, smu, setter):
@@ -669,6 +680,7 @@ class TestDriverWriteReadBranches:
 
     def test_read_max_freq_sysfs_handles_error(self):
         from corecycler.smu.driver import _read_max_freq_sysfs
+
         with (
             patch("pathlib.Path.exists", return_value=True),
             patch("pathlib.Path.read_text", side_effect=OSError),

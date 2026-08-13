@@ -123,9 +123,7 @@ class TestCoreStates:
         # "cooling cannot sustain testing" abort silently never fires.
         cfg = TunerConfig()
         sid = create_session(db, cfg, "", "")
-        cs = CoreState(
-            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, thermal_aborts=2
-        )
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, thermal_aborts=2)
         save_core_state(db, sid, cs)
         loaded = load_core_states(db, sid)
         assert loaded[0].thermal_aborts == 2
@@ -173,9 +171,16 @@ class TestTestLog:
         sid = create_session(db, cfg, "", "")
 
         lid = log_test_result(
-            db, sid, 3, -20, "fine", False,
-            error_msg="computation error", error_type="computation",
-            duration=45.5, run_id=None,
+            db,
+            sid,
+            3,
+            -20,
+            "fine",
+            False,
+            error_msg="computation error",
+            error_type="computation",
+            duration=45.5,
+            run_id=None,
         )
         assert lid > 0
 
@@ -194,15 +199,36 @@ class TestBestProfile:
         cfg = TunerConfig()
         sid = create_session(db, cfg, "", "")
 
-        save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-30, best_offset=-30,
-        ))
-        save_core_state(db, sid, CoreState(
-            core_id=1, phase=TunerPhase.CONFIRMED, current_offset=-25, best_offset=-25,
-        ))
-        save_core_state(db, sid, CoreState(
-            core_id=2, phase=TunerPhase.FINE_SEARCH, current_offset=-20, best_offset=-15,
-        ))
+        save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.CONFIRMED,
+                current_offset=-30,
+                best_offset=-30,
+            ),
+        )
+        save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=1,
+                phase=TunerPhase.CONFIRMED,
+                current_offset=-25,
+                best_offset=-25,
+            ),
+        )
+        save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=2,
+                phase=TunerPhase.FINE_SEARCH,
+                current_offset=-20,
+                best_offset=-15,
+            ),
+        )
 
         profile = get_best_profile(db, sid)
         assert profile == {0: -30, 1: -25}
@@ -218,9 +244,7 @@ class TestBestProfile:
 class TestSchemaMigration:
     def test_fresh_db_has_tuner_tables(self, db):
         """Fresh v3 database should have all tuner tables."""
-        tables = db._execute_raw(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ).fetchall()
+        tables = db._execute_raw("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
         table_names = [t["name"] for t in tables]
         assert "tuner_sessions" in table_names
         assert "tuner_core_states" in table_names
@@ -292,9 +316,7 @@ class TestSchemaV11:
 
         db2 = HistoryDB(path)  # re-open triggers the v11 migration
         try:
-            assert db2._execute_raw(
-                "SELECT version FROM schema_version"
-            ).fetchone()[0] == HistoryDB.SCHEMA_VERSION
+            assert db2._execute_raw("SELECT version FROM schema_version").fetchone()[0] == HistoryDB.SCHEMA_VERSION
             db2.journal_co_intent(sid, 0, -25, survived=False)
             assert (0, -25) in db2.journal_suspects(sid)
             db2.set_resume_crash_streak(sid, 2)
@@ -306,9 +328,14 @@ class TestSchemaV11:
         db = HistoryDB(tmp_path / "test.db")
         try:
             sid = db.create_tuner_session("{}", "1.0", "TestCPU")
-            cs = CoreState(core_id=0, crash_count=2, crash_cooldown=1,
-                           thermal_aborts=3,
-                           cumulative_test_time=3600.5, hardening_tier_index=1)
+            cs = CoreState(
+                core_id=0,
+                crash_count=2,
+                crash_cooldown=1,
+                thermal_aborts=3,
+                cumulative_test_time=3600.5,
+                hardening_tier_index=1,
+            )
             db.upsert_tuner_core_state(sid, cs)
             states = db.get_tuner_core_states(sid)
             assert states[0].crash_count == 2
@@ -324,10 +351,18 @@ class TestSchemaV11:
         try:
             sid = db.create_tuner_session("{}", "1.0", "TestCPU")
             db.insert_tuner_test_log(
-                sid, core_id=0, offset=-30, phase="hardening_t1",
-                passed=True, error_msg=None, error_type=None,
-                duration=300.0, run_id=None,
-                backend="mprime", stress_mode="AVX2", fft_preset="SMALL",
+                sid,
+                core_id=0,
+                offset=-30,
+                phase="hardening_t1",
+                passed=True,
+                error_msg=None,
+                error_type=None,
+                duration=300.0,
+                run_id=None,
+                backend="mprime",
+                stress_mode="AVX2",
+                fft_preset="SMALL",
             )
             logs = db.get_tuner_test_log(sid)
             assert logs[0]["backend"] == "mprime"
@@ -343,7 +378,12 @@ class TestSchemaV13:
         try:
             sid = db.create_tuner_session("{}", "1.0", "TestCPU")
             db.insert_tuner_test_log(
-                sid, 0, -20, "confirm", True, peak_stretch_pct=1.7,
+                sid,
+                0,
+                -20,
+                "confirm",
+                True,
+                peak_stretch_pct=1.7,
             )
             db.insert_tuner_test_log(sid, 1, -20, "confirm", True)
             logs = db.get_tuner_test_log(sid)
@@ -391,8 +431,11 @@ class TestSchemaV13:
         db = HistoryDB(tmp_path / "test.db")
         try:
             ctx = TuningContextRecord(
-                bios_version="2101", co_hash="abc",
-                ppt_limit_w=225.0, tdc_limit_a=190.0, edc_limit_a=None,
+                bios_version="2101",
+                co_hash="abc",
+                ppt_limit_w=225.0,
+                tdc_limit_a=190.0,
+                edc_limit_a=None,
             )
             cid = db.create_context(ctx)
             loaded = db.get_context(cid)
@@ -410,12 +453,8 @@ class TestSchemaV13:
         db = HistoryDB(tmp_path / "test.db")
         try:
             sid = db.create_tuner_session("{}", "1.0", "TestCPU")
-            db.upsert_tuner_core_state(
-                sid, CoreState(core_id=0, phase=TunerPhase.HARDENED, best_offset=-41)
-            )
-            db.upsert_tuner_core_state(
-                sid, CoreState(core_id=1, phase=TunerPhase.CONFIRMED, best_offset=-30)
-            )
+            db.upsert_tuner_core_state(sid, CoreState(core_id=0, phase=TunerPhase.HARDENED, best_offset=-41))
+            db.upsert_tuner_core_state(sid, CoreState(core_id=1, phase=TunerPhase.CONFIRMED, best_offset=-30))
             assert db.get_tuner_best_profile(sid) == {0: -41, 1: -30}
         finally:
             db.close()

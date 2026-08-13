@@ -115,19 +115,19 @@ class TestPMTableReader:
         # Build 420 floats (enough for 16 cores with stride 10 starting at 100)
         floats = [0.0] * 420
 
-        floats[2] = 225.0    # PPT limit
-        floats[3] = 142.0    # PPT value / package power
-        floats[8] = 190.0    # TDC limit
-        floats[9] = 95.0     # TDC value
-        floats[11] = 70.0    # hotspot temperature
-        floats[63] = 230.0   # EDC limit
+        floats[2] = 225.0  # PPT limit
+        floats[3] = 142.0  # PPT value / package power
+        floats[8] = 190.0  # TDC limit
+        floats[9] = 95.0  # TDC value
+        floats[11] = 70.0  # hotspot temperature
+        floats[63] = 230.0  # EDC limit
 
         # Per-core data (core 0 at offset 100)
         floats[100] = 5700.0  # core 0 freq
-        floats[101] = 1.35    # core 0 voltage
-        floats[102] = 12.5    # core 0 power
-        floats[103] = 68.0    # core 0 temp
-        floats[104] = 95.0    # core 0 C0 residency
+        floats[101] = 1.35  # core 0 voltage
+        floats[102] = 12.5  # core 0 power
+        floats[103] = 68.0  # core 0 temp
+        floats[104] = 95.0  # core 0 C0 residency
 
         # Core 1 at offset 110
         floats[110] = 5500.0
@@ -284,7 +284,7 @@ class TestPMTableReader:
 
         # 201 floats + 2 extra bytes
         floats = [1.0] * 201
-        raw = struct.pack(f"<{len(floats)}f", *floats) + b"\xAA\xBB"
+        raw = struct.pack(f"<{len(floats)}f", *floats) + b"\xaa\xbb"
         (smu_dir / "pm_table").write_bytes(raw)
 
         reader = PMTableReader(sysfs_path=smu_dir)
@@ -319,14 +319,10 @@ def _make_smu_dir(
     if raw_bytes is not None:
         (smu_dir / "pm_table").write_bytes(raw_bytes)
     elif num_floats > 0:
-        (smu_dir / "pm_table").write_bytes(
-            struct.pack(f"<{num_floats}f", *([0.0] * num_floats))
-        )
+        (smu_dir / "pm_table").write_bytes(struct.pack(f"<{num_floats}f", *([0.0] * num_floats)))
 
     if version_int is not None:
-        (smu_dir / "pm_table_version").write_bytes(
-            struct.pack("<I", version_int)
-        )
+        (smu_dir / "pm_table_version").write_bytes(struct.pack("<I", version_int))
 
     return smu_dir
 
@@ -523,14 +519,10 @@ class TestVersionDispatch:
         assert result.mclk_mhz == pytest.approx(2400.0)
         assert result.vddcr_soc_v == pytest.approx(1.10)
 
-    @pytest.mark.parametrize(
-        "bad", [float("inf"), float("-inf"), float("nan"), 1e30, 50.0]
-    )
+    @pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan"), 1e30, 50.0])
     def test_implausible_clock_fails_closed(self, tmp_path, bad):
         """A garbage FCLK (wrong offset) downgrades the table to uncalibrated."""
-        raw = _build_versioned_pm_table(
-            0x540104, fclk=bad, uclk=2400.0, mclk=2400.0, vddcr_soc=1.10
-        )
+        raw = _build_versioned_pm_table(0x540104, fclk=bad, uclk=2400.0, mclk=2400.0, vddcr_soc=1.10)
         smu_dir = _make_smu_dir(tmp_path, version_int=0x00540104, raw_bytes=raw)
         result = PMTableReader(sysfs_path=smu_dir).read()
 
@@ -541,18 +533,14 @@ class TestVersionDispatch:
 
     def test_implausible_voltage_fails_closed(self, tmp_path):
         """A garbage VDDCR_SOC also fails closed."""
-        raw = _build_versioned_pm_table(
-            0x540104, fclk=2000.0, uclk=2400.0, mclk=2400.0, vddcr_soc=9.99e9
-        )
+        raw = _build_versioned_pm_table(0x540104, fclk=2000.0, uclk=2400.0, mclk=2400.0, vddcr_soc=9.99e9)
         smu_dir = _make_smu_dir(tmp_path, version_int=0x00540104, raw_bytes=raw)
         result = PMTableReader(sysfs_path=smu_dir).read()
         assert result.is_calibrated is False
 
     def test_verified_version_also_gated(self, tmp_path):
         """The plausibility gate protects verified entries too (defense in depth)."""
-        raw = _build_versioned_pm_table(
-            0x620205, fclk=1e30, uclk=3000.0, mclk=3000.0, vddcr_soc=1.25
-        )
+        raw = _build_versioned_pm_table(0x620205, fclk=1e30, uclk=3000.0, mclk=3000.0, vddcr_soc=1.25)
         smu_dir = _make_smu_dir(tmp_path, version_int=0x00620205, raw_bytes=raw)
         result = PMTableReader(sysfs_path=smu_dir).read()
         assert result.is_calibrated is False
@@ -625,7 +613,7 @@ class TestVersionDispatch:
         struct.pack_into("<f", raw, 0x11C, 1900.0)  # fclk
         struct.pack_into("<f", raw, 0x12C, 1900.0)  # uclk
         struct.pack_into("<f", raw, 0x13C, 1900.0)  # mclk
-        struct.pack_into("<f", raw, 0x14C, 1.1)      # vddcr_soc
+        struct.pack_into("<f", raw, 0x14C, 1.1)  # vddcr_soc
         smu_dir = _make_smu_dir(tmp_path, version_int=0x0062FFFF, raw_bytes=bytes(raw))
         reader = PMTableReader(sysfs_path=smu_dir)
         result = reader.read()
@@ -659,9 +647,7 @@ class TestVersionDispatch:
         # so some offsets will be out of range
         small_raw = bytearray(256)  # much smaller than 0x994
         struct.pack_into("<f", small_raw, 0x11C % 256, 2000.0)  # may or may not work
-        smu_dir = _make_smu_dir(
-            tmp_path, version_int=0x00620205, raw_bytes=bytes(small_raw)
-        )
+        smu_dir = _make_smu_dir(tmp_path, version_int=0x00620205, raw_bytes=bytes(small_raw))
         reader = PMTableReader(sysfs_path=smu_dir)
         result = reader.read()
 
@@ -672,14 +658,16 @@ class TestVersionDispatch:
 
     def test_legacy_core_data_still_parsed_with_version(self, tmp_path):
         """Legacy _parse_granite_ridge core data is still parsed when version is known."""
-        raw = bytearray(_build_versioned_pm_table(
-            0x620205,
-            fclk=2000.0,
-            uclk=3000.0,
-            mclk=3000.0,
-            vddcr_soc=1.25,
-            vdd_mem=1.395,
-        ))
+        raw = bytearray(
+            _build_versioned_pm_table(
+                0x620205,
+                fclk=2000.0,
+                uclk=3000.0,
+                mclk=3000.0,
+                vddcr_soc=1.25,
+                vdd_mem=1.395,
+            )
+        )
         # PPT limit at float index 2 (byte offset 8) — Zen 5 header layout
         struct.pack_into("<f", raw, 8, 225.0)
         # Core 0 freq at float index 100 (byte offset 400)
@@ -773,17 +761,13 @@ class TestReadPowerLimits:
     def test_implausible_values_fail_closed_per_field(self, tmp_path):
         from corecycler.smu.pmtable import read_power_limits
 
-        smu_dir = self._tree(
-            tmp_path, 0x00620205, self._floats(ppt=1e9, tdc=190.0, edc=5.0)
-        )
+        smu_dir = self._tree(tmp_path, 0x00620205, self._floats(ppt=1e9, tdc=190.0, edc=5.0))
         assert read_power_limits(16, smu_dir) == (None, 190.0, None)
 
     def test_zero_reads_as_absent(self, tmp_path):
         from corecycler.smu.pmtable import read_power_limits
 
-        smu_dir = self._tree(
-            tmp_path, 0x00620205, self._floats(ppt=0.0, tdc=0.0, edc=0.0)
-        )
+        smu_dir = self._tree(tmp_path, 0x00620205, self._floats(ppt=0.0, tdc=0.0, edc=0.0))
         assert read_power_limits(16, smu_dir) == (None, None, None)
 
     def test_missing_table_fails_closed(self, tmp_path):

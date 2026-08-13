@@ -73,12 +73,7 @@ def test_no_silent_blind_except():
         tree = ast.parse(path.read_text(), filename=str(path))
         exempt = _finalizer_handlers(tree)
         for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.ExceptHandler)
-                and node not in exempt
-                and _is_blind(node)
-                and not _surfaces(node)
-            ):
+            if isinstance(node, ast.ExceptHandler) and node not in exempt and _is_blind(node) and not _surfaces(node):
                 offenders.append(f"{path.relative_to(SRC.parent)}:{node.lineno}")
     assert not offenders, (
         "Blind except that does not surface the failure (silent swallow) -- re-raise, log it, "

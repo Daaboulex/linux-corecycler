@@ -92,8 +92,12 @@ class TestIsRunning:
     @pytest.mark.parametrize(
         "status,expected",
         [
-            ("running", True), ("validating", True), ("hunting", True),
-            ("paused", False), ("idle", False), ("quarantined", False),
+            ("running", True),
+            ("validating", True),
+            ("hunting", True),
+            ("paused", False),
+            ("idle", False),
+            ("quarantined", False),
         ],
     )
     def test_is_running_tracks_active_statuses(self, status, expected):

@@ -31,8 +31,7 @@ def _instances():
 
 class TestBackendParseRobust:
     @settings(max_examples=300, deadline=None)
-    @given(stdout=st.text(max_size=300), stderr=st.text(max_size=300),
-           rc=st.integers(min_value=-30, max_value=400))
+    @given(stdout=st.text(max_size=300), stderr=st.text(max_size=300), rc=st.integers(min_value=-30, max_value=400))
     def test_parse_never_raises_and_returns_bool(self, stdout, stderr, rc):
         for b in _instances():
             passed, msg = b.parse_output(stdout, stderr, rc)
@@ -40,8 +39,7 @@ class TestBackendParseRobust:
             assert msg is None or isinstance(msg, str)
 
     @settings(max_examples=200, deadline=None)
-    @given(stdout=st.text(max_size=200), stderr=st.text(max_size=200),
-           sig=st.sampled_from(sorted(CRASH_SIGNALS)))
+    @given(stdout=st.text(max_size=200), stderr=st.text(max_size=200), sig=st.sampled_from(sorted(CRASH_SIGNALS)))
     def test_crash_signal_is_never_reported_as_passed(self, stdout, stderr, sig):
         """A SIGSEGV/SIGABRT/SIGBUS exit is CO instability and must never read as
         pass, no matter what the surrounding output contains."""
@@ -50,11 +48,8 @@ class TestBackendParseRobust:
             assert passed is False, f"{b.name} reported a crash signal {sig} as passed"
 
     @settings(max_examples=100, deadline=None)
-    @given(prefix=st.text(max_size=100), suffix=st.text(max_size=100),
-           rc=st.sampled_from([-15, -9, 143, 137, 0]))
-    def test_stressapptest_detects_midrun_memory_errors_even_when_killed(
-        self, prefix, suffix, rc
-    ):
+    @given(prefix=st.text(max_size=100), suffix=st.text(max_size=100), rc=st.sampled_from([-15, -9, 143, 137, 0]))
+    def test_stressapptest_detects_midrun_memory_errors_even_when_killed(self, prefix, suffix, rc):
         """A killed stressapptest run that logged a memory error mid-run must fail,
         not pass — the final 'Status:' line is never reached."""
         b = StressapptestBackend()
@@ -70,9 +65,7 @@ class TestBackendParseRobust:
         b = MprimeBackend()
         out = "Self-test 5 passed\nSelf-test 6 passed\n"
         passed, _ = b.parse_output(out, "", sig)
-        assert passed is False, (
-            f"mprime passed a {CRASH_SIGNALS[sig]} crash after a passing iteration"
-        )
+        assert passed is False, f"mprime passed a {CRASH_SIGNALS[sig]} crash after a passing iteration"
 
     @pytest.mark.parametrize("sig", sorted(CRASH_SIGNALS))
     def test_stressapptest_crash_overrides_status_pass(self, sig):
@@ -81,6 +74,4 @@ class TestBackendParseRobust:
         PASS line followed by a crash-on-teardown is still instability, not a pass."""
         b = StressapptestBackend()
         passed, _ = b.parse_output("Status: PASS\n", "", sig)
-        assert passed is False, (
-            f"stressapptest passed a {CRASH_SIGNALS[sig]} crash despite Status: PASS"
-        )
+        assert passed is False, f"stressapptest passed a {CRASH_SIGNALS[sig]} crash despite Status: PASS"

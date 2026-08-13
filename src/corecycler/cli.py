@@ -84,9 +84,7 @@ def doctor_lines(resolutions: list[Resolution], unmet: list[str]) -> list[str]:
         lines.append("")
     if os.geteuid() == 0:
         lines += [tools.SUDO_PATH_NOTE, ""]
-    lines.append(
-        "Pin a path with CORECYCLER_<TOOL>_BIN, or in the GUI when a backend is missing."
-    )
+    lines.append("Pin a path with CORECYCLER_<TOOL>_BIN, or in the GUI when a backend is missing.")
     lines.append("")
     lines += [f"doctor: FAILED -- {problem}" for problem in unmet] or ["doctor: ok"]
     return lines
@@ -124,9 +122,7 @@ def cmd_status(db=None) -> int:
             return EXIT_COMPLETED
         for sess in sessions:
             states = tp.load_core_states(db, sess.id)
-            done = sum(
-                1 for cs in states.values() if cs.phase in ("confirmed", "hardened")
-            )
+            done = sum(1 for cs in states.values() if cs.phase in ("confirmed", "hardened"))
             print(
                 f"#{sess.id}  {sess.status:<12} {done}/{len(states)} cores done  "
                 f"created {sess.created_at[:19]}  {sess.cpu_model or ''}"
@@ -141,9 +137,7 @@ def _build_smu(topology):
     from corecycler.smu.commands import detect_generation, get_commands
     from corecycler.smu.driver import RyzenSMU, core_map_blocked
 
-    commands = get_commands(
-        detect_generation(topology.family, topology.model, topology.model_name)
-    )
+    commands = get_commands(detect_generation(topology.family, topology.model, topology.model_name))
     if commands is None or not commands.has_co or not RyzenSMU.is_available():
         return None
     smu = RyzenSMU(commands)
@@ -229,9 +223,7 @@ def cmd_run(
                 file=sys.stderr,
             )
             return EXIT_REFUSED
-        engine = TunerEngine(
-            db=db, topology=topology, smu=smu, backend=backend, config=config
-        )
+        engine = TunerEngine(db=db, topology=topology, smu=smu, backend=backend, config=config)
 
     outcome: dict[str, int] = {}
 

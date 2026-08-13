@@ -29,18 +29,13 @@ from corecycler.smu.commands import (  # noqa: E402
 )
 
 # Generations that support Curve Optimizer (have an encoding scheme != "none").
-_CO_GENS = [
-    g for g, cs in COMMAND_SETS.items()
-    if cs.encoding_scheme in ("zen3", "zen4_5")
-]
+_CO_GENS = [g for g, cs in COMMAND_SETS.items() if cs.encoding_scheme in ("zen3", "zen4_5")]
 _ALL_GENS = list(CPUGeneration)
 
 
 class TestCoArgRoundTrip:
     @settings(max_examples=400, deadline=None)
-    @given(gen=st.sampled_from(_CO_GENS),
-           core_id=st.integers(min_value=0, max_value=63),
-           value=st.data())
+    @given(gen=st.sampled_from(_CO_GENS), core_id=st.integers(min_value=0, max_value=63), value=st.data())
     def test_decode_inverts_encode_over_full_co_range(self, gen, core_id, value):
         """decode(encode(v)) == v for every value the generation supports."""
         co_min, co_max = COMMAND_SETS[gen].co_range
@@ -49,9 +44,11 @@ class TestCoArgRoundTrip:
         assert decode_co_arg(core_id, arg, gen) == v
 
     @settings(max_examples=400, deadline=None)
-    @given(gen=st.sampled_from(_CO_GENS),
-           core_id=st.integers(min_value=0, max_value=63),
-           v=st.integers(min_value=-32768, max_value=32767))
+    @given(
+        gen=st.sampled_from(_CO_GENS),
+        core_id=st.integers(min_value=0, max_value=63),
+        v=st.integers(min_value=-32768, max_value=32767),
+    )
     def test_decode_inverts_encode_over_full_int16(self, gen, core_id, v):
         """Round-trip holds across the entire 16-bit signed space, not just the
         documented CO range (defends against an out-of-range value leaking through)."""
@@ -64,10 +61,12 @@ class TestCoArgTargeting:
     wrong-core write is the worst failure mode and read-back cannot catch it."""
 
     @settings(max_examples=400, deadline=None)
-    @given(core_id=st.integers(min_value=0, max_value=63),
-           v=st.integers(min_value=-60, max_value=30),
-           ccd=st.one_of(st.none(), st.integers(min_value=0, max_value=7)),
-           slot=st.one_of(st.none(), st.integers(min_value=0, max_value=7)))
+    @given(
+        core_id=st.integers(min_value=0, max_value=63),
+        v=st.integers(min_value=-60, max_value=30),
+        ccd=st.one_of(st.none(), st.integers(min_value=0, max_value=7)),
+        slot=st.one_of(st.none(), st.integers(min_value=0, max_value=7)),
+    )
     def test_zen4_5_bits_address_the_right_core(self, core_id, v, ccd, slot):
         gen = CPUGeneration.ZEN5_GRANITE_RIDGE
         arg = encode_co_arg(core_id, v, gen, ccd=ccd, slot=slot)
@@ -83,8 +82,7 @@ class TestCoArgTargeting:
         assert (read_arg >> 20) == (arg >> 20), "read targets a different core than write"
 
     @settings(max_examples=200, deadline=None)
-    @given(core_id=st.integers(min_value=0, max_value=15),
-           v=st.integers(min_value=-30, max_value=30))
+    @given(core_id=st.integers(min_value=0, max_value=15), v=st.integers(min_value=-30, max_value=30))
     def test_zen3_bits_address_the_right_core(self, core_id, v):
         gen = CPUGeneration.ZEN3_VERMEER
         arg = encode_co_arg(core_id, v, gen)
@@ -95,9 +93,11 @@ class TestCoArgTargeting:
 
 class TestGenerationDetectionRobust:
     @settings(max_examples=500, deadline=None)
-    @given(family=st.integers(min_value=0, max_value=255),
-           model=st.integers(min_value=0, max_value=255),
-           name=st.text(max_size=40))
+    @given(
+        family=st.integers(min_value=0, max_value=255),
+        model=st.integers(min_value=0, max_value=255),
+        name=st.text(max_size=40),
+    )
     def test_detect_never_crashes_and_returns_valid_gen(self, family, model, name):
         gen = detect_generation(family, model, name)
         assert isinstance(gen, CPUGeneration)
@@ -109,11 +109,13 @@ class TestGenerationDetectionRobust:
 class TestNonCoGenerationsRejected:
     def test_zen2_encode_raises(self):
         import pytest
+
         with pytest.raises(ValueError):
             encode_co_arg(0, -10, CPUGeneration.ZEN2_MATISSE)
 
     def test_unknown_generation_encode_raises(self):
         import pytest
+
         with pytest.raises(ValueError):
             encode_co_arg(0, -10, CPUGeneration.UNKNOWN)
 
@@ -126,8 +128,7 @@ class TestOtherEncoders:
         assert 0 <= arg <= 0xFFFFF
 
     @settings(max_examples=200, deadline=None)
-    @given(scalar=st.floats(min_value=0.0, max_value=10.0,
-                            allow_nan=False, allow_infinity=False))
+    @given(scalar=st.floats(min_value=0.0, max_value=10.0, allow_nan=False, allow_infinity=False))
     def test_pbo_scalar_is_int(self, scalar):
         arg = encode_pbo_scalar_arg(scalar)
         assert isinstance(arg, int)

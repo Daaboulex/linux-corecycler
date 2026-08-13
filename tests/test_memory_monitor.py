@@ -399,16 +399,16 @@ def _make_ddr5_4800_eeprom() -> bytes:
     """Build a synthetic 48-byte DDR5-4800 EEPROM for testing."""
     data = bytearray(48)
     data[2] = 0x12  # DDR5
-    struct.pack_into('<H', data, 20, 416)    # tCK = 416ps (DDR5-4800)
-    struct.pack_into('<H', data, 30, 16666)  # tCL
-    struct.pack_into('<H', data, 32, 16666)  # tRCD
-    struct.pack_into('<H', data, 34, 16666)  # tRP
-    struct.pack_into('<H', data, 36, 32000)  # tRAS
-    struct.pack_into('<H', data, 38, 48666)  # tRC
-    struct.pack_into('<H', data, 40, 30000)  # tWR
-    struct.pack_into('<H', data, 42, 295)    # tRFC1 (ns)
-    struct.pack_into('<H', data, 44, 160)    # tRFC2 (ns) - in data but not decoded
-    struct.pack_into('<H', data, 46, 130)    # tRFCsb (ns)
+    struct.pack_into("<H", data, 20, 416)  # tCK = 416ps (DDR5-4800)
+    struct.pack_into("<H", data, 30, 16666)  # tCL
+    struct.pack_into("<H", data, 32, 16666)  # tRCD
+    struct.pack_into("<H", data, 34, 16666)  # tRP
+    struct.pack_into("<H", data, 36, 32000)  # tRAS
+    struct.pack_into("<H", data, 38, 48666)  # tRC
+    struct.pack_into("<H", data, 40, 30000)  # tWR
+    struct.pack_into("<H", data, 42, 295)  # tRFC1 (ns)
+    struct.pack_into("<H", data, 44, 160)  # tRFC2 (ns) - in data but not decoded
+    struct.pack_into("<H", data, 46, 130)  # tRFCsb (ns)
     return bytes(data)
 
 
@@ -462,18 +462,18 @@ class TestSPDTimingDecode:
         data = bytearray(48)
         data[2] = 0x12
         # Use tCK=500ps so we can control rounding
-        struct.pack_into('<H', data, 20, 500)  # tCK = 500ps
+        struct.pack_into("<H", data, 20, 500)  # tCK = 500ps
         # Set tCL to a value that gives an odd number of cycles
         # (14750 + 500 - 30) // 500 = 15220 // 500 = 30 (even, stays 30)
         # (15250 + 500 - 30) // 500 = 15720 // 500 = 31 (odd, rounds to 32)
-        struct.pack_into('<H', data, 30, 15250)  # tCL -> 31 -> rounds to 32
-        struct.pack_into('<H', data, 32, 15250)  # tRCD
-        struct.pack_into('<H', data, 34, 15250)  # tRP
-        struct.pack_into('<H', data, 36, 15250)  # tRAS
-        struct.pack_into('<H', data, 38, 15250)  # tRC
-        struct.pack_into('<H', data, 40, 15000)  # tWR
-        struct.pack_into('<H', data, 42, 200)    # tRFC1
-        struct.pack_into('<H', data, 46, 100)    # tRFCsb
+        struct.pack_into("<H", data, 30, 15250)  # tCL -> 31 -> rounds to 32
+        struct.pack_into("<H", data, 32, 15250)  # tRCD
+        struct.pack_into("<H", data, 34, 15250)  # tRP
+        struct.pack_into("<H", data, 36, 15250)  # tRAS
+        struct.pack_into("<H", data, 38, 15250)  # tRC
+        struct.pack_into("<H", data, 40, 15000)  # tWR
+        struct.pack_into("<H", data, 42, 200)  # tRFC1
+        struct.pack_into("<H", data, 46, 100)  # tRFCsb
         result = decode_spd_timings(bytes(data))
         assert result is not None
         assert result.tCL == 32  # odd 31 rounded up to even 32
@@ -577,9 +577,16 @@ class TestSPDTimingDisplay:
     def test_primary_label_format(self):
         """Primary label shows 'Primary: tCL-tRCD-tRP-tRAS-tRC' format."""
         spd = SPDTimingData(
-            tCK_ps=416, freq_mt=4800,
-            tCL=40, tRCD=40, tRP=40, tRAS=77, tRC=117,
-            tWR_ns=30.0, tRFC1_ns=295, tRFCsb_ns=130,
+            tCK_ps=416,
+            freq_mt=4800,
+            tCL=40,
+            tRCD=40,
+            tRP=40,
+            tRAS=77,
+            tRC=117,
+            tWR_ns=30.0,
+            tRFC1_ns=295,
+            tRFCsb_ns=130,
             dimm_index=0,
         )
         tab = self._make_spd_tab(spd)
@@ -589,9 +596,16 @@ class TestSPDTimingDisplay:
     def test_secondary_label_format(self):
         """Secondary label shows 'Secondary: tRFC1: 295ns  tRFCsb: 130ns  tWR: 30ns'."""
         spd = SPDTimingData(
-            tCK_ps=416, freq_mt=4800,
-            tCL=40, tRCD=40, tRP=40, tRAS=77, tRC=117,
-            tWR_ns=30.0, tRFC1_ns=295, tRFCsb_ns=130,
+            tCK_ps=416,
+            freq_mt=4800,
+            tCL=40,
+            tRCD=40,
+            tRP=40,
+            tRAS=77,
+            tRC=117,
+            tWR_ns=30.0,
+            tRFC1_ns=295,
+            tRFCsb_ns=130,
             dimm_index=0,
         )
         tab = self._make_spd_tab(spd)
@@ -610,9 +624,16 @@ class TestSPDTimingDisplay:
     def test_group_title_shows_dimm_number(self):
         """Group box title contains 'DIMM 1' when dimm_index=0."""
         spd = SPDTimingData(
-            tCK_ps=416, freq_mt=4800,
-            tCL=40, tRCD=40, tRP=40, tRAS=77, tRC=117,
-            tWR_ns=30.0, tRFC1_ns=295, tRFCsb_ns=130,
+            tCK_ps=416,
+            freq_mt=4800,
+            tCL=40,
+            tRCD=40,
+            tRP=40,
+            tRAS=77,
+            tRC=117,
+            tWR_ns=30.0,
+            tRFC1_ns=295,
+            tRFCsb_ns=130,
             dimm_index=0,
         )
         tab = self._make_spd_tab(spd)
@@ -622,9 +643,16 @@ class TestSPDTimingDisplay:
     def test_labels_visible_when_data_available(self):
         """Primary and secondary labels are visible when SPD data exists."""
         spd = SPDTimingData(
-            tCK_ps=416, freq_mt=4800,
-            tCL=40, tRCD=40, tRP=40, tRAS=77, tRC=117,
-            tWR_ns=30.0, tRFC1_ns=295, tRFCsb_ns=130,
+            tCK_ps=416,
+            freq_mt=4800,
+            tCL=40,
+            tRCD=40,
+            tRP=40,
+            tRAS=77,
+            tRC=117,
+            tWR_ns=30.0,
+            tRFC1_ns=295,
+            tRFCsb_ns=130,
             dimm_index=0,
         )
         tab = self._make_spd_tab(spd)
@@ -640,20 +668,19 @@ class TestColumnResize:
 
     def test_part_number_col_is_6(self):
         from corecycler.gui.memory_tab import PART_NUMBER_COL
+
         assert PART_NUMBER_COL == 6
 
 
 class TestMemoryDriftEdges:
     def test_empty_slot_skipped(self):
         """A DMI type 17 block with no installed module is skipped."""
-        text = (
-            "Handle 0x0001, DMI type 17, 92 bytes\nMemory Device\n"
-            "\tSize: No Module Installed\n\tLocator: DIMM 2\n"
-        )
+        text = "Handle 0x0001, DMI type 17, 92 bytes\nMemory Device\n\tSize: No Module Installed\n\tLocator: DIMM 2\n"
         assert parse_dmidecode_output(text) == []
 
     def test_read_dimm_info_tool_absent_returns_empty(self):
         from corecycler.monitor.memory import read_dimm_info
+
         with patch("corecycler.monitor.memory.subprocess.run", side_effect=FileNotFoundError):
             assert read_dimm_info() == []
 
@@ -709,20 +736,13 @@ class TestDimmInfoReader:
 
         from corecycler.monitor import memory as mem
 
-        monkeypatch.setattr(
-            sp, "run", lambda *_a, **_kw: SimpleNamespace(**result)
-        )
+        monkeypatch.setattr(sp, "run", lambda *_a, **_kw: SimpleNamespace(**result))
         return mem.read_dimm_info()
 
     def test_a_refusing_dmidecode_is_reported_and_still_parsed(self, monkeypatch, caplog):
-        sample = (
-            "Handle 0x0001, DMI type 17, 92 bytes\nMemory Device\n"
-            "\tSize: 32 GB\n\tLocator: DIMM 0\n\tType: DDR5\n"
-        )
+        sample = "Handle 0x0001, DMI type 17, 92 bytes\nMemory Device\n\tSize: 32 GB\n\tLocator: DIMM 0\n\tType: DDR5\n"
         with caplog.at_level("WARNING", logger="corecycler.monitor.memory"):
-            dimms = self._run(
-                monkeypatch, returncode=1, stdout=sample, stderr="Permission denied"
-            )
+            dimms = self._run(monkeypatch, returncode=1, stdout=sample, stderr="Permission denied")
         assert "dmidecode exited with code 1" in caplog.text
         assert len(dimms) == 1
         assert dimms[0].size_gb == 32

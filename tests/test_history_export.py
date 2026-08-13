@@ -61,12 +61,8 @@ def populated_db(db):
             )
         )
 
-    db.insert_event(
-        EventRecord(run_id=run_id, event_type="core_start", core_id=0, message="Core 0 started")
-    )
-    db.insert_event(
-        EventRecord(run_id=run_id, event_type="error", core_id=1, message="MCE detected")
-    )
+    db.insert_event(EventRecord(run_id=run_id, event_type="core_start", core_id=0, message="Core 0 started"))
+    db.insert_event(EventRecord(run_id=run_id, event_type="error", core_id=1, message="MCE detected"))
 
     db.insert_telemetry_batch(
         [
@@ -75,9 +71,7 @@ def populated_db(db):
         ]
     )
 
-    db.finish_run(
-        run_id, status="completed", total_cores=2, cores_passed=1, cores_failed=1, total_seconds=720.0
-    )
+    db.finish_run(run_id, status="completed", total_cores=2, cores_passed=1, cores_failed=1, total_seconds=720.0)
 
     return db, run_id
 
@@ -144,12 +138,8 @@ class TestBulkCsvExport:
         r1 = db.create_run(RunRecord(cpu_model="CPU1", backend="mprime"))
         r2 = db.create_run(RunRecord(cpu_model="CPU2", backend="stress-ng"))
 
-        db.insert_core_result(
-            CoreResultRecord(run_id=r1, core_id=0, passed=True, elapsed_seconds=600)
-        )
-        db.insert_core_result(
-            CoreResultRecord(run_id=r2, core_id=0, passed=False, elapsed_seconds=120)
-        )
+        db.insert_core_result(CoreResultRecord(run_id=r1, core_id=0, passed=True, elapsed_seconds=600))
+        db.insert_core_result(CoreResultRecord(run_id=r2, core_id=0, passed=False, elapsed_seconds=120))
 
         text = export_runs_bulk_csv(db, [r1, r2])
         reader = csv.DictReader(io.StringIO(text))
@@ -186,9 +176,7 @@ class TestJsonExportWithContext:
                 ppt_limit_w=225.0,
             )
         )
-        run_id = db.create_run(
-            RunRecord(cpu_model="AMD Ryzen 9 9950X3D", backend="mprime", context_id=ctx_id)
-        )
+        run_id = db.create_run(RunRecord(cpu_model="AMD Ryzen 9 9950X3D", backend="mprime", context_id=ctx_id))
         db.insert_core_result(CoreResultRecord(run_id=run_id, core_id=0, passed=True))
 
         data = json.loads(export_run_json(db, run_id))

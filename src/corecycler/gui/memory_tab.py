@@ -39,6 +39,7 @@ PART_NUMBER_COL = 6
 
 class _StressWorker(QThread):
     """Runs memory stress test in background."""
+
     done = Signal(bool, str)
 
     def __init__(self, tool: str, duration_minutes: int, parent=None) -> None:
@@ -51,6 +52,7 @@ class _StressWorker(QThread):
         import contextlib
         import os
         import signal as sig
+
         try:
             seconds = self._duration * 60
             if self._tool == "stressapptest":
@@ -60,16 +62,25 @@ class _StressWorker(QThread):
                 cmd = [tools.command_name("stressapptest"), "-W", "-M", str(mem_mb), "-s", str(seconds)]
             elif self._tool == "stress-ng --vm":
                 cmd = [
-                    tools.command_name("stress-ng"), "--vm", "1", "--vm-bytes", "75%",
-                    "--verify", "--timeout", f"{seconds}s",
+                    tools.command_name("stress-ng"),
+                    "--vm",
+                    "1",
+                    "--vm-bytes",
+                    "75%",
+                    "--verify",
+                    "--timeout",
+                    f"{seconds}s",
                 ]
             else:
                 self.done.emit(False, f"Unknown tool: {self._tool}")
                 return
 
             self._process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, preexec_fn=execution.make_preexec(),
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                preexec_fn=execution.make_preexec(),
             )
             try:
                 stdout, stderr = self._process.communicate(timeout=seconds + 60)
@@ -195,8 +206,7 @@ class MemoryTab(QWidget):
         # SPD Timings group box (DDR5 EEPROM data, cached at startup)
         self._spd_group = QGroupBox("SPD Timings — JEDEC Base Profile (DDR5)")
         self._spd_group.setToolTip(
-            "JEDEC base profile timings from SPD EEPROM. "
-            "XMP/EXPO overclocking profiles are not stored in SPD."
+            "JEDEC base profile timings from SPD EEPROM. XMP/EXPO overclocking profiles are not stored in SPD."
         )
         spd_layout = QVBoxLayout(self._spd_group)
         self._primary_label = QLabel("Primary: --")
@@ -228,11 +238,22 @@ class MemoryTab(QWidget):
 
         self._dimm_table = QTableWidget()
         self._dimm_table.setColumnCount(12)
-        self._dimm_table.setHorizontalHeaderLabels([
-            "Slot", "Size", "Type", "SPD Speed", "Running",
-            "Manufacturer", "Part Number", "Serial", "Rank",
-            "Form", "SPD Rated V", "Width",
-        ])
+        self._dimm_table.setHorizontalHeaderLabels(
+            [
+                "Slot",
+                "Size",
+                "Type",
+                "SPD Speed",
+                "Running",
+                "Manufacturer",
+                "Part Number",
+                "Serial",
+                "Rank",
+                "Form",
+                "SPD Rated V",
+                "Width",
+            ]
+        )
         header = self._dimm_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(PART_NUMBER_COL, QHeaderView.ResizeMode.Stretch)
@@ -308,9 +329,7 @@ class MemoryTab(QWidget):
                 f"{len(self._dimms)} DIMMs | {total_gb} GB {type_str} {speed_str} {ecc_str} {rank_str}".rstrip()
             )
         else:
-            self._summary_label.setText(
-                "No DIMM info available (dmidecode requires root)"
-            )
+            self._summary_label.setText("No DIMM info available (dmidecode requires root)")
 
         if self._spd_reader.is_available():
             temps = self._spd_reader.read_temperatures()
@@ -340,9 +359,7 @@ class MemoryTab(QWidget):
         if spd is None:
             self._primary_label.setVisible(False)
             self._secondary_label.setVisible(False)
-            self._spd_unavailable_label.setText(
-                "SPD Timings unavailable \u2014 spd5118 eeprom not exposed"
-            )
+            self._spd_unavailable_label.setText("SPD Timings unavailable \u2014 spd5118 eeprom not exposed")
             self._spd_unavailable_label.setVisible(True)
             self._spd_group.setTitle("SPD Timings — JEDEC Base Profile (DDR5)")
             return
@@ -354,9 +371,7 @@ class MemoryTab(QWidget):
         dimm_num = spd.dimm_index + 1
         self._spd_group.setTitle(f"SPD Timings — JEDEC Base Profile (DDR5) (DIMM {dimm_num})")
 
-        self._primary_label.setText(
-            f"Primary: {spd.tCL}-{spd.tRCD}-{spd.tRP}-{spd.tRAS}-{spd.tRC}"
-        )
+        self._primary_label.setText(f"Primary: {spd.tCL}-{spd.tRCD}-{spd.tRP}-{spd.tRAS}-{spd.tRC}")
 
         parts = []
         parts.append(f"tRFC1: {spd.tRFC1_ns}ns")
@@ -399,13 +414,10 @@ class MemoryTab(QWidget):
                 self._update_clock_labels(pm_data)
                 self._update_voltage_labels(pm_data)
                 if pm_data.is_verified:
-                    self._cal_label.setText(
-                        f"PM Table v{pm_data.pm_table_version:#010x} \u2014 Verified"
-                    )
+                    self._cal_label.setText(f"PM Table v{pm_data.pm_table_version:#010x} \u2014 Verified")
                 else:
                     self._cal_label.setText(
-                        f"PM Table v{pm_data.pm_table_version:#010x} "
-                        "\u2014 Calibrated (community-sourced, unverified)"
+                        f"PM Table v{pm_data.pm_table_version:#010x} \u2014 Calibrated (community-sourced, unverified)"
                     )
             elif pm_data is not None:
                 self._show_uncalibrated(pm_data)
@@ -456,17 +468,14 @@ class MemoryTab(QWidget):
         self._ratio_label.setStyleSheet("")
         self._vdd_label.setText("VDD: --")
         self._vddq_label.setText("VDDQ: --")
-        for lbl in (self._fclk_label, self._uclk_label, self._mclk_label,
-                     self._vdd_label, self._vddq_label):
+        for lbl in (self._fclk_label, self._uclk_label, self._mclk_label, self._vdd_label, self._vddq_label):
             lbl.setStyleSheet(f"color: {COLOR_MUTED};")
         self._cal_label.setText(
-            f"PM Table v{pm_data.pm_table_version:#010x} \u2014 Uncalibrated "
-            f"({len(pm_data.raw_floats)} floats)"
+            f"PM Table v{pm_data.pm_table_version:#010x} \u2014 Uncalibrated ({len(pm_data.raw_floats)} floats)"
         )
 
     def _set_clocks_unavailable(self) -> None:
-        for lbl in (self._fclk_label, self._uclk_label, self._mclk_label,
-                     self._vdd_label, self._vddq_label):
+        for lbl in (self._fclk_label, self._uclk_label, self._mclk_label, self._vdd_label, self._vddq_label):
             lbl.setText(lbl.text().split(":")[0] + ": --")
             lbl.setStyleSheet(f"color: {COLOR_MUTED};")
         self._ratio_label.setText("FCLK:UCLK --")
@@ -484,7 +493,8 @@ class MemoryTab(QWidget):
         tool = self._stress_tool.currentText()
         if tool == "(none installed)":
             QMessageBox.warning(
-                self, "Not Found",
+                self,
+                "Not Found",
                 "No memory stress tools installed.\nInstall stressapptest or stress-ng.",
             )
             return
@@ -524,5 +534,5 @@ class MemoryTab(QWidget):
         self._stress_status.setText(f"Result: {status}")
         self.memory_stress_done.emit(passed)
         # Strip ANSI escape sequences before displaying
-        clean_output = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', output[-500:])
+        clean_output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", output[-500:])
         QMessageBox.information(self, f"Memory Stress: {status}", clean_output)

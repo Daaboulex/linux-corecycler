@@ -25,7 +25,10 @@ def _topo(ccds=2, vcache_ccd=None):
     for cid in range(8):
         ccd = cid // per
         topo.cores[cid] = PhysicalCore(
-            core_id=cid, ccd=ccd, ccx=None, logical_cpus=(cid, cid + 8),
+            core_id=cid,
+            ccd=ccd,
+            ccx=None,
+            logical_cpus=(cid, cid + 8),
             has_vcache=(ccd == vcache_ccd),
         )
     return topo
@@ -84,8 +87,9 @@ class TestGrid:
     def test_telemetry_injection_while_testing(self):
         grid = _grid(_topo())
         grid.update_core_status(0, CoreTestStatus(core_id=0, state="testing"))
-        grid.update_core_telemetry(0, freq_mhz=5200, temp_c=78, vcore_v=1.234, stretch_pct=2.5,
-                                   co_offset=-30, tuner_phase="confirm")
+        grid.update_core_telemetry(
+            0, freq_mhz=5200, temp_c=78, vcore_v=1.234, stretch_pct=2.5, co_offset=-30, tuner_phase="confirm"
+        )
         assert "CO:-30" in grid._cells[0]._detail_label.text()
         assert "5200MHz" in grid._cells[0]._telemetry_label.text()
 

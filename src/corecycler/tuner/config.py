@@ -120,8 +120,7 @@ class TunerConfig:
         default_factory=lambda: [
             {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
             {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "LARGE"},
-            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL",
-             "profile": "spectrum"},
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL", "profile": "spectrum"},
         ]
     )
 
@@ -168,16 +167,13 @@ class TunerConfig:
         if not isinstance(d, dict):
             return cls()
         defaults = cls()
-        clean = {
-            k: v for k, v in d.items()
-            if k in cls.__slots__ and _json_value_ok(getattr(defaults, k), v)
-        }
+        clean = {k: v for k, v in d.items() if k in cls.__slots__ and _json_value_ok(getattr(defaults, k), v)}
         dropped = sorted(set(d) - set(clean))
         if dropped:
             # Falling back silently would hide a corrupt config — name it.
             logging.getLogger(__name__).warning(
-                "TunerConfig.from_json dropped unknown/invalid fields "
-                "(defaults used instead): %s", dropped,
+                "TunerConfig.from_json dropped unknown/invalid fields (defaults used instead): %s",
+                dropped,
             )
         return cls(**clean)
 
@@ -214,8 +210,7 @@ class TunerConfig:
             errors.append("apparatus_failure_streak must be 0-100 (0 disables)")
         if 0 < self.apparatus_failure_streak <= self.max_confirm_retries:
             errors.append(
-                "apparatus_failure_streak must exceed max_confirm_retries "
-                "(legitimate confirm retries would trip it)"
+                "apparatus_failure_streak must exceed max_confirm_retries (legitimate confirm retries would trip it)"
             )
         if not 1800 <= self.max_core_time_seconds <= 14400:
             errors.append("max_core_time_seconds must be 1800-14400")

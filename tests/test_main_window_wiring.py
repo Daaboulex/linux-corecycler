@@ -89,9 +89,7 @@ def _build(
     monkeypatch.setattr(mw, "HistoryDB", db_factory or (lambda: db))
     monkeypatch.setattr(mw, "adopt_legacy_root_db", adopt or (lambda _d: None))
     monkeypatch.setattr(mw, "detect_topology", lambda: topology or _topo())
-    monkeypatch.setattr(
-        mw, "detect_bios_change", bios if callable(bios) else (lambda _d: bios)
-    )
+    monkeypatch.setattr(mw, "detect_bios_change", bios if callable(bios) else (lambda _d: bios))
     monkeypatch.setattr(mw, "MSRReader", MagicMock)
     monkeypatch.setattr(mw, "HWMonReader", MagicMock)
     monkeypatch.setattr(mw, "read_core_frequencies", lambda: {0: 4500.0, 1: 4400.0})
@@ -166,9 +164,7 @@ class TestConstruction:
         assert win._history_tab._bios_warning == "BIOS changed: 2401 -> 2402"
         win._history_db = None
 
-    def test_adoption_and_bios_failures_do_not_stop_startup(
-        self, monkeypatch, tmp_path, db
-    ):
+    def test_adoption_and_bios_failures_do_not_stop_startup(self, monkeypatch, tmp_path, db):
         def _boom(_d):
             raise OSError("unreadable")
 
@@ -186,14 +182,10 @@ class TestConstruction:
         assert win._tabs.count() == 7
 
     def test_history_recording_can_be_switched_off(self, monkeypatch, tmp_path, db):
-        win = _build(
-            monkeypatch, tmp_path, db=db, settings=_settings(tmp_path, record_history=False)
-        )
+        win = _build(monkeypatch, tmp_path, db=db, settings=_settings(tmp_path, record_history=False))
         assert win._history_db is None
 
-    def test_a_readable_msr_is_left_out_of_the_privilege_warning(
-        self, monkeypatch, tmp_path, db
-    ):
+    def test_a_readable_msr_is_left_out_of_the_privilege_warning(self, monkeypatch, tmp_path, db):
         from PySide6.QtWidgets import QLabel
 
         real_open = os.open
@@ -205,9 +197,7 @@ class TestConstruction:
 
         monkeypatch.setattr(os, "open", fake_open)
         win = _build(monkeypatch, tmp_path, db=db)
-        warnings = [
-            label.text() for label in win._status_bar.findChildren(QLabel) if "unavailable" in label.text()
-        ]
+        warnings = [label.text() for label in win._status_bar.findChildren(QLabel) if "unavailable" in label.text()]
         assert not any("MSR" in text for text in warnings)
         win._history_db = None
 
@@ -236,9 +226,7 @@ class TestStartTest:
 
     def test_an_active_tuner_session_can_be_declined(self, window, monkeypatch, no_modal):
         self._ready(window, monkeypatch)
-        sid = tp.create_session(
-            window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test"
-        )
+        sid = tp.create_session(window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test")
         tp.update_session_status(window._history_db, sid, "running")
         no_modal.question.return_value = no_modal.StandardButton.No
         window._start_test()
@@ -262,9 +250,7 @@ class TestStartTest:
         assert window._worker is None
         assert len(asked) == 1, "the user must be offered a path before the test is refused"
 
-    def test_an_uninstalled_backend_starts_once_the_user_supplies_a_path(
-        self, window, monkeypatch, no_modal
-    ):
+    def test_an_uninstalled_backend_starts_once_the_user_supplies_a_path(self, window, monkeypatch, no_modal):
         self._ready(window, monkeypatch, available=False)
         monkeypatch.setattr(mw, "ensure_tool", lambda parent, key: True)
         window._start_test()
@@ -367,9 +353,7 @@ class TestCoreFinished:
         window._core_telemetry[0] = self._telemetry()
         logger = MagicMock()
         window._logger = logger
-        window._on_core_finished(
-            0, StressResult(core_id=0, passed=True, duration_seconds=10.0)
-        )
+        window._on_core_finished(0, StressResult(core_id=0, passed=True, duration_seconds=10.0))
         assert logger.update_core_telemetry_peaks.called
         assert 0 not in window._core_telemetry
 
@@ -379,9 +363,7 @@ class TestCoreFinished:
         logger.update_core_telemetry_peaks.side_effect = OSError("db gone")
         window._logger = logger
         with caplog.at_level("ERROR", logger="corecycler.gui.main_window"):
-            window._on_core_finished(
-                0, StressResult(core_id=0, passed=False, duration_seconds=1.0)
-            )
+            window._on_core_finished(0, StressResult(core_id=0, passed=False, duration_seconds=1.0))
         assert "Failed to record telemetry peaks" in caplog.text
 
 
@@ -480,9 +462,7 @@ class TestElapsedWatchdog:
 
 class TestProfileIo:
     def test_a_cancelled_save_writes_nothing(self, window, tmp_path):
-        with patch(
-            "corecycler.gui.main_window.QFileDialog.getSaveFileName", return_value=("", "")
-        ):
+        with patch("corecycler.gui.main_window.QFileDialog.getSaveFileName", return_value=("", "")):
             window._save_profile()
         assert not list(tmp_path.glob("*.json"))
 
@@ -512,9 +492,7 @@ class TestProfileIo:
 
     def test_a_cancelled_load_changes_nothing(self, window):
         before = window._config_tab.get_profile()
-        with patch(
-            "corecycler.gui.main_window.QFileDialog.getOpenFileName", return_value=("", "")
-        ):
+        with patch("corecycler.gui.main_window.QFileDialog.getOpenFileName", return_value=("", "")):
             window._load_profile()
         assert window._config_tab.get_profile() == before
 
@@ -554,9 +532,7 @@ class TestAutoResume:
         assert not window._tuner_tab._resume_session.called
 
     def test_an_active_engine_blocks_auto_resume(self, window, caplog):
-        sid = tp.create_session(
-            window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test"
-        )
+        sid = tp.create_session(window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test")
         tp.update_session_status(window._history_db, sid, "running")
         window._tuner_tab._engine = MagicMock(status="running")
         window._tuner_tab._resume_session = MagicMock()
@@ -566,9 +542,7 @@ class TestAutoResume:
         assert not window._tuner_tab._resume_session.called
 
     def test_a_mid_run_session_is_resumed(self, window):
-        sid = tp.create_session(
-            window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test"
-        )
+        sid = tp.create_session(window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test")
         tp.update_session_status(window._history_db, sid, "running")
         window._tuner_tab._engine = None
         window._tuner_tab._resume_session = MagicMock()

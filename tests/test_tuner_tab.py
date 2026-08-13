@@ -39,9 +39,7 @@ class TestTunerTabCreation:
 
     def test_db_schema_has_tuner_tables(self, db):
         """The DB fixture should have tuner tables from v3 schema."""
-        tables = db._execute_raw(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        tables = db._execute_raw("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         names = [t["name"] for t in tables]
         assert "tuner_sessions" in names
         assert "tuner_core_states" in names
@@ -61,13 +59,13 @@ class TestSelfPauseRecoverable:
         app = QApplication.instance() or QApplication([])
         assert app is not None
         tab = TunerTab(db=None, topology=None, smu=None)
-        tab._set_running_state(True)          # engine started: Resume disabled
+        tab._set_running_state(True)  # engine started: Resume disabled
         assert not tab._resume_btn.isEnabled()
 
-        tab._on_status_changed("paused")      # engine paused ITSELF
+        tab._on_status_changed("paused")  # engine paused ITSELF
         assert tab._resume_btn.isEnabled()
         assert not tab._pause_btn.isEnabled()
 
-        tab._on_status_changed("running")     # resumed again
+        tab._on_status_changed("running")  # resumed again
         assert not tab._resume_btn.isEnabled()
         assert tab._pause_btn.isEnabled()

@@ -39,20 +39,32 @@ FFT_RANGES: dict[FFTPreset, tuple[int, int]] = {
 # mprime option. CpuSupportsAVX512F is the real key name, not CpuSupportsAVX512.
 MODE_TO_CPU_FLAGS: dict[StressMode, dict[str, int]] = {
     StressMode.SSE: {
-        "CpuSupportsAVX": 0, "CpuSupportsFMA3": 0, "CpuSupportsFMA4": 0,
-        "CpuSupportsAVX2": 0, "CpuSupportsAVX512F": 0,
+        "CpuSupportsAVX": 0,
+        "CpuSupportsFMA3": 0,
+        "CpuSupportsFMA4": 0,
+        "CpuSupportsAVX2": 0,
+        "CpuSupportsAVX512F": 0,
     },
     StressMode.AVX: {
-        "CpuSupportsAVX": 1, "CpuSupportsFMA3": 0, "CpuSupportsFMA4": 0,
-        "CpuSupportsAVX2": 0, "CpuSupportsAVX512F": 0,
+        "CpuSupportsAVX": 1,
+        "CpuSupportsFMA3": 0,
+        "CpuSupportsFMA4": 0,
+        "CpuSupportsAVX2": 0,
+        "CpuSupportsAVX512F": 0,
     },
     StressMode.AVX2: {
-        "CpuSupportsAVX": 1, "CpuSupportsFMA3": 1, "CpuSupportsFMA4": 0,
-        "CpuSupportsAVX2": 1, "CpuSupportsAVX512F": 0,
+        "CpuSupportsAVX": 1,
+        "CpuSupportsFMA3": 1,
+        "CpuSupportsFMA4": 0,
+        "CpuSupportsAVX2": 1,
+        "CpuSupportsAVX512F": 0,
     },
     StressMode.AVX512: {
-        "CpuSupportsAVX": 1, "CpuSupportsFMA3": 1, "CpuSupportsFMA4": 0,
-        "CpuSupportsAVX2": 1, "CpuSupportsAVX512F": 1,
+        "CpuSupportsAVX": 1,
+        "CpuSupportsFMA3": 1,
+        "CpuSupportsFMA4": 0,
+        "CpuSupportsAVX2": 1,
+        "CpuSupportsAVX512F": 1,
     },
 }
 
@@ -68,15 +80,15 @@ FATAL_PATTERNS: list[str] = [
     # torture test (SELFFAIL*): covers "FATAL ERROR: Rounding was ...",
     # "FATAL ERROR: Final result was ..." and the <=30.8 "Resulting sum" form
     r"FATAL ERROR",
-    r"ERROR: ILLEGAL SUMOUT",                    # SELFFAIL1 / ERRMSG1A
-    r"Possible hardware failure",                # SELFFAIL4 / ERRMSG2
-    r"Hardware failure detected",                # SELFFAIL5 (FFT-size form >=30.7)
-    r"Maximum number of warnings exceeded",      # SELFFAIL6
-    r"TORTURE TEST FAILED",                      # SELFFAIL7 (>=30.19)
+    r"ERROR: ILLEGAL SUMOUT",  # SELFFAIL1 / ERRMSG1A
+    r"Possible hardware failure",  # SELFFAIL4 / ERRMSG2
+    r"Hardware failure detected",  # SELFFAIL5 (FFT-size form >=30.7)
+    r"Maximum number of warnings exceeded",  # SELFFAIL6
+    r"TORTURE TEST FAILED",  # SELFFAIL7 (>=30.19)
     # torture summary with a nonzero error count (stdout)
     r"Torture Test completed .* - [1-9]\d* errors",
     # production-work error lines that can also land in results.txt (ERRMSG1*)
-    r"ERROR: SUM\(INPUTS\) != SUM\(OUTPUTS\)",   # ERRMSG1B (<=30.8)
+    r"ERROR: SUM\(INPUTS\) != SUM\(OUTPUTS\)",  # ERRMSG1B (<=30.8)
     r"ERROR: Shift counter corrupt",
     r"ERROR: Illegal double encountered",
     r"ERROR: FFT data has been zeroed",
@@ -210,7 +222,6 @@ class MprimeBackend(StressBackend):
                     # unseen. This is an apparatus fault, not a verdict — the
                     # engine pauses on it instead of advancing the search.
                     return False, f"Failed to read results.txt ({e}) — verdict unavailable"
-
 
         for pattern in FATAL_PATTERNS:
             match = re.search(pattern, combined, re.IGNORECASE)

@@ -28,12 +28,11 @@ class StressapptestBackend(StressBackend):
         return [
             self.require_binary(),
             "-W",
-            "-s", "86400",
+            "-s",
+            "86400",
         ]
 
-    def parse_output(
-        self, stdout: str, stderr: str, returncode: int
-    ) -> tuple[bool, str | None]:
+    def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
         # The scheduler kills stressapptest (a 24h run) before its final
         # "Status: PASS/FAIL" summary line, so detect the memory-error signatures it
         # logs DURING the run. Checking only the final summary meant a killed run

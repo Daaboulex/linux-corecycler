@@ -48,10 +48,7 @@ class PowerMonitor:
                     name_text = name.read_text().strip().lower() if name.exists() else ""
                 except OSError:
                     continue
-                if (
-                    "package" in name_text
-                    and self._try_read(energy)
-                ):
+                if "package" in name_text and self._try_read(energy):
                     self._package_path = energy
                     return
 

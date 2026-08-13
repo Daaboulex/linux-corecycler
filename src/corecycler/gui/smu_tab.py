@@ -35,7 +35,6 @@ if TYPE_CHECKING:
 class SMUTab(QWidget):
     """Curve Optimizer read/write interface."""
 
-
     def __init__(self, topology: CPUTopology | None = None) -> None:
         super().__init__()
         self._topology = topology
@@ -58,8 +57,7 @@ class SMUTab(QWidget):
         # profile banner (shown when CO offsets are loaded from a tuner session)
         self._profile_banner = QLabel("")
         self._profile_banner.setStyleSheet(
-            f"background: {BG_SELECTED}; color: {COLOR_ACTIVE}; padding: 8px; "
-            "border-radius: 4px; font: 11px monospace;"
+            f"background: {BG_SELECTED}; color: {COLOR_ACTIVE}; padding: 8px; border-radius: 4px; font: 11px monospace;"
         )
         self._profile_banner.setVisible(False)
         layout.addWidget(self._profile_banner)
@@ -115,9 +113,7 @@ class SMUTab(QWidget):
         safety_layout = QHBoxLayout()
 
         self._backup_btn = QPushButton("Backup Current CO")
-        self._backup_btn.setToolTip(
-            "Save current CO values so they can be restored later this session"
-        )
+        self._backup_btn.setToolTip("Save current CO values so they can be restored later this session")
         self._backup_btn.clicked.connect(self._backup_co)
         safety_layout.addWidget(self._backup_btn)
 
@@ -128,9 +124,7 @@ class SMUTab(QWidget):
         safety_layout.addWidget(self._restore_btn)
 
         self._dry_run_cb = QCheckBox("Dry Run")
-        self._dry_run_cb.setToolTip(
-            "When checked, CO writes are logged but NOT applied to hardware"
-        )
+        self._dry_run_cb.setToolTip("When checked, CO writes are logged but NOT applied to hardware")
         self._dry_run_cb.toggled.connect(self._on_dry_run_toggled)
         safety_layout.addWidget(self._dry_run_cb)
 
@@ -208,9 +202,7 @@ class SMUTab(QWidget):
 
         # Disable CO buttons if SMU is not available, the generation lacks CO,
         # or the core map could not be discovered (writes would refuse anyway).
-        co_available = (
-            smu_available and has_co and core_map_blocked(self._smu) is None
-        )
+        co_available = smu_available and has_co and core_map_blocked(self._smu) is None
         self._apply_all_btn.setEnabled(co_available)
         self._reset_btn.setEnabled(co_available)
         self._backup_btn.setEnabled(co_available)
@@ -260,11 +252,7 @@ class SMUTab(QWidget):
             self._smu.dry_run = checked
 
         # visual feedback on write buttons
-        dry_style = (
-            f"QPushButton {{ border: 2px dashed {COLOR_ORANGE}; color: {COLOR_ORANGE}; }}"
-            if checked
-            else ""
-        )
+        dry_style = f"QPushButton {{ border: 2px dashed {COLOR_ORANGE}; color: {COLOR_ORANGE}; }}" if checked else ""
         self._apply_all_btn.setStyleSheet(dry_style)
         self._reset_btn.setStyleSheet(dry_style)
         self._apply_all_btn.setText("Apply All [DRY]" if checked else "Apply All New Values")
@@ -324,9 +312,9 @@ class SMUTab(QWidget):
             return
         if self._tuner_active:
             QMessageBox.warning(
-                self, "Tuner Running",
-                "The auto-tuner owns the SMU right now — CO writes are locked "
-                "until it stops.",
+                self,
+                "Tuner Running",
+                "The auto-tuner owns the SMU right now — CO writes are locked until it stops.",
             )
             return
 
@@ -353,15 +341,13 @@ class SMUTab(QWidget):
             return
         if self._tuner_active:
             QMessageBox.warning(
-                self, "Tuner Running",
-                "The auto-tuner owns the SMU right now — CO writes are locked "
-                "until it stops.",
+                self,
+                "Tuner Running",
+                "The auto-tuner owns the SMU right now — CO writes are locked until it stops.",
             )
             return
 
-        summary = ", ".join(
-            f"C{cid}={spin.value()}" for cid, spin in sorted(self._spinboxes.items())
-        )
+        summary = ", ".join(f"C{cid}={spin.value()}" for cid, spin in sorted(self._spinboxes.items()))
         if not self._confirm_co_write(f"Apply CO offsets to all cores:\n{summary}"):
             return
 
@@ -388,9 +374,9 @@ class SMUTab(QWidget):
             return
         if self._tuner_active:
             QMessageBox.warning(
-                self, "Tuner Running",
-                "The auto-tuner owns the SMU right now — CO writes are locked "
-                "until it stops.",
+                self,
+                "Tuner Running",
+                "The auto-tuner owns the SMU right now — CO writes are locked until it stops.",
             )
             return
 
@@ -443,9 +429,7 @@ class SMUTab(QWidget):
             self._read_all_co()
             QMessageBox.information(self, "Restored", "CO offsets restored from backup.")
         else:
-            QMessageBox.warning(
-                self, "Partial Failure", f"Failed to restore CO for cores: {failed}"
-            )
+            QMessageBox.warning(self, "Partial Failure", f"Failed to restore CO for cores: {failed}")
             self._read_all_co()
 
     def set_tuner_running(self, running: bool) -> None:
@@ -542,9 +526,7 @@ class SMUTab(QWidget):
 
         self.set_co_profile(profile)
         filename = Path(path).name
-        self._profile_banner.setText(
-            f"Loaded from {filename} \u2014 click 'Apply All New Values' to write to SMU"
-        )
+        self._profile_banner.setText(f"Loaded from {filename} \u2014 click 'Apply All New Values' to write to SMU")
 
     def set_co_profile(self, profile: dict[int, int]) -> None:
         """Populate CO spinboxes from a profile without applying to hardware."""
@@ -556,9 +538,7 @@ class SMUTab(QWidget):
                 continue
             spin.setValue(offset)
             if spin.value() != offset:
-                altered.append(
-                    f"core {core_id}: {offset} clamped to {spin.value()}"
-                )
+                altered.append(f"core {core_id}: {offset} clamped to {spin.value()}")
         count = len(profile)
         self._profile_banner.setText(
             f"Loaded {count} core(s) from tuner session \u2014 click 'Apply All New Values' to write to SMU"
@@ -566,9 +546,9 @@ class SMUTab(QWidget):
         self._profile_banner.setVisible(True)
         if altered:
             QMessageBox.warning(
-                self, "Profile Adjusted",
-                "Some loaded values could not be taken as-is:\n"
-                + "\n".join(altered),
+                self,
+                "Profile Adjusted",
+                "Some loaded values could not be taken as-is:\n" + "\n".join(altered),
             )
 
     # ------------------------------------------------------------------

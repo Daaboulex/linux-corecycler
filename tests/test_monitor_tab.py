@@ -107,9 +107,12 @@ class TestMonitorTab:
         tab._pmtable = MagicMock()
         tab._pmtable.is_available.return_value = True
         tab._pmtable.read.return_value = SimpleNamespace(
-            ppt_value_w=120.0, ppt_limit_w=200.0,
-            tdc_value_a=90.0, tdc_limit_a=180.0,
-            edc_value_a=110.0, edc_limit_a=230.0,
+            ppt_value_w=120.0,
+            ppt_limit_w=200.0,
+            tdc_value_a=90.0,
+            tdc_limit_a=180.0,
+            edc_value_a=110.0,
+            edc_limit_a=230.0,
         )
         tab._update_power_limits()
         assert "120" in tab._ppt_label.text() and "200" in tab._ppt_label.text()

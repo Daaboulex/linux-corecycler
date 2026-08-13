@@ -65,7 +65,7 @@ class FaultSMU:
         self.commands = SimpleNamespace(co_range=co_range)
         self.applied: dict[int, int] = {}
         self.writes: list[tuple[int, int]] = []
-        self.reject_set = False   # set_co_offset returns False (rejected / read-back mismatch)
+        self.reject_set = False  # set_co_offset returns False (rejected / read-back mismatch)
         self.raise_on_set = False  # set_co_offset raises (driver/permission fault)
 
     def set_co_offset(self, core_id: int, value: int) -> bool:
@@ -134,14 +134,21 @@ def smu():
 
 def make_engine(db, topo, smu, backend, **cfg_kwargs) -> TunerEngine:
     defaults = dict(
-        coarse_step=5, fine_step=1, max_offset=-30,
-        search_duration_seconds=1, confirm_duration_seconds=1,
+        coarse_step=5,
+        fine_step=1,
+        max_offset=-30,
+        search_duration_seconds=1,
+        confirm_duration_seconds=1,
         cores_to_test=[0],
     )
     defaults.update(cfg_kwargs)
     cfg = TunerConfig(**defaults)
     return TunerEngine(
-        db=db, topology=topo, smu=smu, backend=backend, config=cfg,
+        db=db,
+        topology=topo,
+        smu=smu,
+        backend=backend,
+        config=cfg,
     )
 
 
@@ -186,9 +193,7 @@ def _make_topo(n_cores: int, n_ccds: int):
     topo = CPUTopology()
     per_ccd = max(1, (n_cores + n_ccds - 1) // n_ccds)
     for i in range(n_cores):
-        topo.cores[i] = PhysicalCore(
-            core_id=i, ccd=min(i // per_ccd, n_ccds - 1), ccx=None, logical_cpus=(i,)
-        )
+        topo.cores[i] = PhysicalCore(core_id=i, ccd=min(i // per_ccd, n_ccds - 1), ccx=None, logical_cpus=(i,))
     topo.ccds = n_ccds
     return topo
 
@@ -249,9 +254,7 @@ SOAK_STAGE = 7
 
 
 def _mce_json(cpu):
-    return json.dumps([
-        {"cpu": cpu, "bank": 5, "corrected": True, "message": "corrected", "raw_ts": 0.0}
-    ])
+    return json.dumps([{"cpu": cpu, "bank": 5, "corrected": True, "message": "corrected", "raw_ts": 0.0}])
 
 
 _FAULTS = {
@@ -259,14 +262,14 @@ _FAULTS = {
     "apparatus": lambda core, cliffs: ("startup", ""),
     "killed": lambda core, cliffs: ("killed", ""),
     "foreign_mce": lambda core, cliffs: (
-        "mce", _mce_json(next((c for c in cliffs if c != core), core)),
+        "mce",
+        _mce_json(next((c for c in cliffs if c != core), core)),
     ),
     "unattributed_mce": lambda core, cliffs: ("mce", _mce_json(-1)),
 }
 
 
-def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=8000, abort_at=0,
-                     faults=None):
+def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=8000, abort_at=0, faults=None):
     """Drive the REAL multi-core validation flow to termination, every stage.
 
     Cores are seeded CONFIRMED at their individual stable limit, then validation
@@ -307,8 +310,9 @@ def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=8000, ab
     eng._get_memory_backend = lambda: object()
     eng._session_id = sid
     eng._core_states = {
-        c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=stable,
-                     best_offset=stable, baseline_offset=0)
+        c: CoreState(
+            core_id=c, phase=TunerPhase.CONFIRMED, current_offset=stable, best_offset=stable, baseline_offset=0
+        )
         for c, (stable, _crash) in cliffs.items()
     }
     for cs in eng._core_states.values():
@@ -334,15 +338,13 @@ def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=8000, ab
                 continue
             members = cset if cset is not None else [core]
             ok = stage == SOAK_STAGE or all(
-                eng._core_states[m].best_offset >= cliffs[m][0] + agg_margin
-                for m in members
+                eng._core_states[m].best_offset >= cliffs[m][0] + agg_margin for m in members
             )
             eng._on_test_finished(core, ok, "", "" if ok else "agg", 1.0, 0.0)
     return eng, steps
 
 
-def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000,
-                      reboot_interval=0, app_exit_interval=0):
+def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000, reboot_interval=0, app_exit_interval=0):
     """Drive the REAL tuner loop against a simulated CPU.
 
     Only the worker is replaced — by a stability oracle keyed on each core's
@@ -408,14 +410,14 @@ def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000,
             continue
         offset = cs.current_offset
         stable, crash = cliffs[core]
-        if offset >= stable:               # less aggressive than the cliff -> pass
+        if offset >= stable:  # less aggressive than the cliff -> pass
             e._on_test_finished(core, True, "", "", 1.0, 0.0)
-        elif offset <= crash:              # at/over the crash point -> hard crash
+        elif offset <= crash:  # at/over the crash point -> hard crash
             crashes += 1
             world["rebooted"] = True
             holder["eng"] = fresh()
             holder["eng"].resume(sid)
-        else:                              # between -> detected (soft) failure
+        else:  # between -> detected (soft) failure
             e._on_test_finished(core, False, "calc error", "computation", 1.0, 0.0)
     return holder["eng"], steps, crashes, sid
 
@@ -472,14 +474,14 @@ def drive_intermittent(db, topo, backend, cliffs, flaky, cfg_kw, baseline=0, cap
         offset = cs.current_offset
         stable, hard = cliffs[core]
 
-        if offset >= stable:                       # always stable
+        if offset >= stable:  # always stable
             e._on_test_finished(core, True, "", "", 1.0, 0.0)
-        elif offset <= hard:                       # always a hard crash
+        elif offset <= hard:  # always a hard crash
             do_crash(core, offset)
-        else:                                      # marginal: flaky
+        else:  # marginal: flaky
             visits[(core, offset)] = visits.get((core, offset), 0) + 1
             if visits[(core, offset)] >= flaky[core]:
-                do_crash(core, offset)             # crashed on a re-test
+                do_crash(core, offset)  # crashed on a re-test
             else:
                 e._on_test_finished(core, True, "", "", 1.0, 0.0)  # looked stable
     return holder["eng"], steps, crashes, crashed_at, sid
@@ -497,21 +499,28 @@ class TestJournalCatchesUnflaggedCrash:
         cfg = TunerConfig(cores_to_test=[0], crash_penalty_steps=3, fine_step=1)
         sid = tp.create_session(db, cfg, "", "")
         # Core was NOT mid-test (in_test=False) but -12 was resident when the box died.
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-12,
-            best_offset=-10, baseline_offset=0, in_test=False,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.FINE_SEARCH,
+                current_offset=-12,
+                best_offset=-10,
+                baseline_offset=0,
+                in_test=False,
+            ),
+        )
         db.journal_co_intent(sid, 0, -12, survived=False)  # resident, unsurvived -> suspect
 
-        eng = _resume_fresh(db, topo, smu, mock_backend, sid,
-                            cores_to_test=[0], crash_penalty_steps=3, fine_step=1)
+        eng = _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0], crash_penalty_steps=3, fine_step=1)
 
         cs = eng._core_states[0]
-        assert cs.crash_count == 1                      # penalized despite no in_test
-        assert cs.backoff_fail_bound == -12             # hard fail bound at the crashing value
-        assert cs.current_offset == -9                  # -12 backed off toward 0 by 3
+        assert cs.crash_count == 1  # penalized despite no in_test
+        assert cs.backoff_fail_bound == -12  # hard fail bound at the crashing value
+        assert cs.current_offset == -9  # -12 backed off toward 0 by 3
         assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM
-        assert cs.in_test is False                      # the suspect's in_test flag is cleared
+        assert cs.in_test is False  # the suspect's in_test flag is cleared
         # The journal-detected recovery is logged as a real crash (passed=False).
         logs = tp.get_test_log(db, sid, core_id=0)
         assert any(e.get("error_type") == "crash" and not e.get("passed") for e in logs)
@@ -537,14 +546,20 @@ class TestUnstableBaselineEscapes:
         cfg = TunerConfig(cores_to_test=[0], crash_penalty_steps=3, fine_step=1)
         sid = tp.create_session(db, cfg, "", "")
         # baseline == current == -20: the inherited baseline itself was resident and crashed.
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-20,
-            baseline_offset=-20, in_test=False,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.COARSE_SEARCH,
+                current_offset=-20,
+                baseline_offset=-20,
+                in_test=False,
+            ),
+        )
         db.journal_co_intent(sid, 0, -20, survived=False)
 
-        eng = _resume_fresh(db, topo, smu, mock_backend, sid,
-                            cores_to_test=[0], crash_penalty_steps=3, fine_step=1)
+        eng = _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0], crash_penalty_steps=3, fine_step=1)
 
         cs = eng._core_states[0]
         # Baseline re-anchored from -20 toward 0 (to -17); never clamps back to -20.
@@ -555,20 +570,34 @@ class TestUnstableBaselineEscapes:
     def test_repeated_baseline_crash_marches_to_zero(self, db, topo, smu, mock_backend):
         """Each resume that finds the baseline crashing moves it one penalty step
         closer to 0 -- it can never get stuck re-applying the same crashing value."""
-        cfg = TunerConfig(cores_to_test=[0], crash_penalty_steps=1, fine_step=1,
-                          resume_crash_quarantine_threshold=20)
+        cfg = TunerConfig(cores_to_test=[0], crash_penalty_steps=1, fine_step=1, resume_crash_quarantine_threshold=20)
         sid = tp.create_session(db, cfg, "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
-            baseline_offset=-5, in_test=False,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.COARSE_SEARCH,
+                current_offset=-5,
+                baseline_offset=-5,
+                in_test=False,
+            ),
+        )
         last = -5
         for _ in range(5):
             cs = db.get_tuner_core_states(sid)[0]
             db.journal_co_intent(sid, 0, cs.current_offset, survived=False)
-            eng = _resume_fresh(db, topo, smu, mock_backend, sid,
-                                cores_to_test=[0], crash_penalty_steps=1, fine_step=1,
-                                resume_crash_quarantine_threshold=20)
+            eng = _resume_fresh(
+                db,
+                topo,
+                smu,
+                mock_backend,
+                sid,
+                cores_to_test=[0],
+                crash_penalty_steps=1,
+                fine_step=1,
+                resume_crash_quarantine_threshold=20,
+            )
             cs = eng._core_states[0]
             # Strictly less aggressive each round, never past 0.
             assert cs.baseline_offset > last or cs.baseline_offset == 0
@@ -588,30 +617,45 @@ class TestResumeCrashCircuitBreaker:
         bounded -- after `threshold` crash-resumes the tuner forces every core to
         CO=0, quarantines the session, and stops, instead of looping forever."""
         threshold = 3
-        cfg = TunerConfig(cores_to_test=[0], resume_crash_quarantine_threshold=threshold,
-                          crash_penalty_steps=1, fine_step=1)
+        cfg = TunerConfig(
+            cores_to_test=[0], resume_crash_quarantine_threshold=threshold, crash_penalty_steps=1, fine_step=1
+        )
         sid = tp.create_session(db, cfg, "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-30,
-            baseline_offset=0, in_test=False,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.COARSE_SEARCH,
+                current_offset=-30,
+                baseline_offset=0,
+                in_test=False,
+            ),
+        )
 
         eng = None
         for i in range(threshold):
             cs = db.get_tuner_core_states(sid)[0]
             resident = cs.current_offset if cs.current_offset != 0 else -30
             db.journal_co_intent(sid, 0, resident, survived=False)  # crashed again
-            eng = _resume_fresh(db, topo, smu, mock_backend, sid,
-                                cores_to_test=[0],
-                                resume_crash_quarantine_threshold=threshold,
-                                crash_penalty_steps=1, fine_step=1)
+            eng = _resume_fresh(
+                db,
+                topo,
+                smu,
+                mock_backend,
+                sid,
+                cores_to_test=[0],
+                resume_crash_quarantine_threshold=threshold,
+                crash_penalty_steps=1,
+                fine_step=1,
+            )
             if eng.status == "quarantined":
                 assert i == threshold - 1  # not before the threshold
                 break
 
         assert eng.status == "quarantined"
         assert db.get_tuner_session(sid).status == "quarantined"
-        assert smu.applied.get(0) == 0                     # forced to stock
+        assert smu.applied.get(0) == 0  # forced to stock
         # A quarantined session is never resumed automatically (fail closed) --
         # but it stays reachable by hand, or the run is lost with all its work.
         assert sid not in [s.id for s in db.list_resumable_tuner_sessions()]
@@ -624,11 +668,17 @@ class TestResumeCrashCircuitBreaker:
         """A normal pause/resume with no crash never moves toward quarantine."""
         cfg = TunerConfig(cores_to_test=[0], resume_crash_quarantine_threshold=3)
         sid = tp.create_session(db, cfg, "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-8, in_test=False,
-        ))  # no journal suspect, not in_test
-        eng = _resume_fresh(db, topo, smu, mock_backend, sid,
-                            cores_to_test=[0], resume_crash_quarantine_threshold=3)
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.FINE_SEARCH,
+                current_offset=-8,
+                in_test=False,
+            ),
+        )  # no journal suspect, not in_test
+        eng = _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0], resume_crash_quarantine_threshold=3)
         assert eng.status != "quarantined"
         assert db.get_resume_crash_streak(sid) == 0
 
@@ -639,8 +689,7 @@ class TestResumeCrashCircuitBreaker:
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
         sid = tp.create_session(db, cfg, "", "")
         eng._session_id = sid
-        eng._core_states = {0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH,
-                                         current_offset=-5)}
+        eng._core_states = {0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5)}
         db.set_resume_crash_streak(sid, 2)
         with patch.object(eng, "_run_next"):
             eng._on_test_finished(0, True, "", "", 1.0, 0.0)
@@ -659,16 +708,13 @@ class TestValidationCrashArmsBreaker:
     def _seed_validating_at_stage2(self, db, smu, topo, backend, cliffs, **cfg):
         """Seed a confirmed profile and run the REAL stage-2 (all-core) launch,
         capturing the stressed set without starting a worker."""
-        sid = tp.create_session(
-            db, TunerConfig(cores_to_test=list(cliffs), **cfg), "", ""
-        )
+        sid = tp.create_session(db, TunerConfig(cores_to_test=list(cliffs), **cfg), "", "")
         eng = make_engine(db, topo, smu, backend, cores_to_test=list(cliffs), **cfg)
         launched: list[list[int]] = []
         eng._start_multi_core_worker = lambda cores, duration: launched.append(list(cores))
         eng._session_id = sid
         eng._core_states = {
-            c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=v,
-                         best_offset=v, baseline_offset=0)
+            c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=v, best_offset=v, baseline_offset=0)
             for c, v in cliffs.items()
         }
         # By the time validation runs, each core's confirmed offset is in the
@@ -684,25 +730,25 @@ class TestValidationCrashArmsBreaker:
         eng._run_validation_stage2()
         return eng, sid, launched
 
-    def test_validation_stage_flags_all_stressed_cores_in_test(
-        self, db, topo, smu, mock_backend
-    ):
+    def test_validation_stage_flags_all_stressed_cores_in_test(self, db, topo, smu, mock_backend):
         """A multi-core validation stage flags EVERY stressed core in_test and
         PERSISTS it before the worker — the CO journal is blind here (confirmed
         offsets journal survived=1), so in_test is the only signal that can
         attribute a validation crash."""
         cliffs = {0: -10, 1: -12, 2: -8, 3: -15}
         _eng, sid, launched = self._seed_validating_at_stage2(
-            db, smu, topo, mock_backend, cliffs,
+            db,
+            smu,
+            topo,
+            mock_backend,
+            cliffs,
         )
-        assert launched == [sorted(cliffs)]               # all cores stressed together
+        assert launched == [sorted(cliffs)]  # all cores stressed together
         persisted = db.get_tuner_core_states(sid)
         assert all(persisted[c].in_test for c in cliffs)  # all flagged + persisted
-        assert tp.journal_suspects(db, sid) == []         # journal cannot catch it
+        assert tp.journal_suspects(db, sid) == []  # journal cannot catch it
 
-    def test_in_test_validation_cores_are_attributed_as_crashes(
-        self, db, topo, smu, mock_backend
-    ):
+    def test_in_test_validation_cores_are_attributed_as_crashes(self, db, topo, smu, mock_backend):
         """Cores left in_test by a crashing validation worker are SEEN on the
         resume path — phase is irrelevant, only the in_test flag matters, and
         the journal cannot see it. A multi-core stress set cannot identify the
@@ -711,14 +757,20 @@ class TestValidationCrashArmsBreaker:
         arms (pending_hunt counts as a crash-resume)."""
         cliffs = {0: -10, 1: -12}
         eng, sid, _ = self._seed_validating_at_stage2(
-            db, smu, topo, mock_backend, cliffs, crash_penalty_steps=1, fine_step=1,
+            db,
+            smu,
+            topo,
+            mock_backend,
+            cliffs,
+            crash_penalty_steps=1,
+            fine_step=1,
         )
         assert tp.journal_suspects(db, sid) == []  # journal is blind to validation
         session = tp.get_session(db, sid)
         crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
-        assert crashed == []                             # nobody guessed at
-        assert pending_hunt is True                      # hunt requested instead
-        assert eng._core_states[0].crash_count == 0      # no innocent penalized
+        assert crashed == []  # nobody guessed at
+        assert pending_hunt is True  # hunt requested instead
+        assert eng._core_states[0].crash_count == 0  # no innocent penalized
         assert eng._core_states[1].crash_count == 0
         assert all(not eng._core_states[c].in_test for c in cliffs)  # flags cleared
 
@@ -727,7 +779,11 @@ class TestValidationCrashArmsBreaker:
         core, or a later resume would wrongly fire the breaker on a clean session."""
         cliffs = {0: -10, 1: -12}
         eng, sid, _ = self._seed_validating_at_stage2(
-            db, smu, topo, mock_backend, cliffs,
+            db,
+            smu,
+            topo,
+            mock_backend,
+            cliffs,
         )
         assert all(db.get_tuner_core_states(sid)[c].in_test for c in cliffs)
         with patch.object(eng, "_run_next"), patch.object(eng, "_run_validation_next"):
@@ -748,8 +804,9 @@ class TestSMUWriteFault:
         value is treated as suspect (fail closed) on the next resume."""
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
         eng._session_id = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
-        eng._core_states = {0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH,
-                                         current_offset=-10, baseline_offset=0)}
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, baseline_offset=0)
+        }
         smu.reject_set = True
         ok = eng._apply_co_isolation(0, -10)
         assert ok is False
@@ -760,8 +817,9 @@ class TestSMUWriteFault:
         """A driver exception on write is handled by the caller's pause path."""
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
         eng._session_id = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
-        eng._core_states = {0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH,
-                                         current_offset=-10, baseline_offset=0)}
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, baseline_offset=0)
+        }
         smu.raise_on_set = True
         ok = eng._apply_co_isolation(0, -10)
         assert ok is False
@@ -784,8 +842,8 @@ class TestWriteAheadJournal:
     def test_within_envelope_value_journaled_survived(self, db, topo, smu, mock_backend):
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
         eng._session_id = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
-        eng._co_survived[0] = -30                       # -30 already proven safe
-        eng._apply_co(0, -20)                           # less aggressive than proven
+        eng._co_survived[0] = -30  # -30 already proven safe
+        eng._apply_co(0, -20)  # less aggressive than proven
         assert db.journal_suspects(eng._session_id) == []  # not a suspect
 
     def test_zero_is_always_survived(self, db, topo, smu, mock_backend):
@@ -800,9 +858,15 @@ class TestWriteAheadJournal:
         the machine already survived is not re-flagged as a suspect."""
         cfg = TunerConfig(cores_to_test=[0])
         sid = tp.create_session(db, cfg, "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.COARSE_SEARCH,
+                current_offset=-10,
+            ),
+        )
         db.journal_co_intent(sid, 0, -30, survived=True)  # -30 proven safe a prior boot
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
         with patch.object(eng, "_run_next"):
@@ -835,9 +899,16 @@ class TestClosedLoopSimulation:
         # Per-core ground truth: offset >= stable passes; between stable and crash
         # is a detected (soft) failure; at/over crash the machine HARD-crashes.
         cliffs = {0: (-12, -15), 1: (-22, -25), 2: (-7, -10), 3: (-17, -20)}
-        cfg_kw = dict(cores_to_test=list(cliffs), test_order=order, coarse_step=5,
-                      fine_step=1, max_offset=-40, crash_penalty_steps=3,
-                      auto_validate=False, resume_crash_quarantine_threshold=50)
+        cfg_kw = dict(
+            cores_to_test=list(cliffs),
+            test_order=order,
+            coarse_step=5,
+            fine_step=1,
+            max_offset=-40,
+            crash_penalty_steps=3,
+            auto_validate=False,
+            resume_crash_quarantine_threshold=50,
+        )
         eng, steps, crashes, sid = drive_closed_loop(db, topo, mock_backend, cliffs, cfg_kw)
 
         assert steps < 6000, f"did not converge ({order})"
@@ -848,9 +919,7 @@ class TestClosedLoopSimulation:
         resident = eng._smu.applied
         for c, (_stable, crash) in cliffs.items():
             r = resident.get(c, 0)
-            assert not (r == crash or r < crash), (
-                f"[{order}] core {c} left resident at {r}, crashes at {crash}"
-            )
+            assert not (r == crash or r < crash), f"[{order}] core {c} left resident at {r}, crashes at {crash}"
 
 
 # ---------------------------------------------------------------------------
@@ -873,11 +942,22 @@ class TestIntermittentInstability:
         cliffs = {0: (-8, -20)}
         flaky = {0: 2}
         eng, steps, crashes, crashed_at, sid = drive_intermittent(
-            db, topo, mock_backend, cliffs, flaky,
-            dict(cores_to_test=[0], coarse_step=4, fine_step=1, max_offset=-40,
-                 crash_penalty_steps=3, auto_validate=False,
-                 resume_crash_quarantine_threshold=50,
-                 search_duration_seconds=1, confirm_duration_seconds=1),
+            db,
+            topo,
+            mock_backend,
+            cliffs,
+            flaky,
+            dict(
+                cores_to_test=[0],
+                coarse_step=4,
+                fine_step=1,
+                max_offset=-40,
+                crash_penalty_steps=3,
+                auto_validate=False,
+                resume_crash_quarantine_threshold=50,
+                search_duration_seconds=1,
+                confirm_duration_seconds=1,
+            ),
         )
         assert steps < 8000
         assert crashes >= 1, "the intermittent crash never fired -- the test is vacuous"
@@ -892,8 +972,7 @@ class TestIntermittentInstability:
     def test_safe_under_random_intermittent_instability(self, data):
         n_cores = data.draw(st.integers(min_value=1, max_value=4), label="n_cores")
         n_ccds = data.draw(st.sampled_from([1, 2]), label="n_ccds")
-        order = data.draw(st.sampled_from(
-            ["sequential", "round_robin", "ccd_round_robin"]), label="order")
+        order = data.draw(st.sampled_from(["sequential", "round_robin", "ccd_round_robin"]), label="order")
         coarse = data.draw(st.integers(min_value=2, max_value=6), label="coarse")
         fine = data.draw(st.integers(min_value=1, max_value=min(coarse, 3)), label="fine")
         cliffs: dict[int, tuple[int, int]] = {}
@@ -908,28 +987,28 @@ class TestIntermittentInstability:
         try:
             topo = _make_topo(n_cores, n_ccds)
             cfg_kw = dict(
-                cores_to_test=list(range(n_cores)), test_order=order,
-                coarse_step=coarse, fine_step=fine, max_offset=-50,
-                crash_penalty_steps=data.draw(st.integers(min_value=1, max_value=5),
-                                              label="penalty"),
-                auto_validate=False, resume_crash_quarantine_threshold=50,
-                search_duration_seconds=1, confirm_duration_seconds=1,
+                cores_to_test=list(range(n_cores)),
+                test_order=order,
+                coarse_step=coarse,
+                fine_step=fine,
+                max_offset=-50,
+                crash_penalty_steps=data.draw(st.integers(min_value=1, max_value=5), label="penalty"),
+                auto_validate=False,
+                resume_crash_quarantine_threshold=50,
+                search_duration_seconds=1,
+                confirm_duration_seconds=1,
             )
-            eng, steps, crashes, crashed_at, sid = drive_intermittent(
-                db, topo, _StubBackend(), cliffs, flaky, cfg_kw)
+            eng, steps, crashes, crashed_at, sid = drive_intermittent(db, topo, _StubBackend(), cliffs, flaky, cfg_kw)
 
             assert steps < 8000, f"no convergence: cliffs={cliffs} flaky={flaky}"
-            assert eng.status in ("idle", "quarantined"), (
-                f"stuck in {eng.status}: cliffs={cliffs} flaky={flaky}")
+            assert eng.status in ("idle", "quarantined"), f"stuck in {eng.status}: cliffs={cliffs} flaky={flaky}"
             resident = eng._smu.applied
             for c in cliffs:
                 if not crashed_at[c]:
                     continue
                 r = resident.get(c, 0)
                 worst = max(crashed_at[c])  # least-aggressive offset that crashed
-                assert r > worst, (
-                    f"core {c} resident {r} <= hard-crash offset {worst}: "
-                    f"cliffs={cliffs} flaky={flaky}")
+                assert r > worst, f"core {c} resident {r} <= hard-crash offset {worst}: cliffs={cliffs} flaky={flaky}"
         finally:
             db.close()
 
@@ -940,17 +1019,14 @@ class TestIntermittentInstability:
 
 
 class TestInterruptionSafety:
-    def test_abort_reverts_all_cores_not_just_the_tested_one(
-        self, db, topo, smu, mock_backend
-    ):
+    def test_abort_reverts_all_cores_not_just_the_tested_one(self, db, topo, smu, mock_backend):
         """abort() must revert EVERY core to baseline, so aborting during validation
         (where all confirmed cores are applied at once) never leaves the others at
         aggressive CO resident in the SMU."""
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0, 1, 2])
         eng._session_id = tp.create_session(db, TunerConfig(cores_to_test=[0, 1, 2]), "", "")
         eng._core_states = {
-            i: CoreState(core_id=i, phase=TunerPhase.CONFIRMED, current_offset=-20,
-                         best_offset=-20, baseline_offset=0)
+            i: CoreState(core_id=i, phase=TunerPhase.CONFIRMED, current_offset=-20, best_offset=-20, baseline_offset=0)
             for i in range(3)
         }
         for i in range(3):  # all three resident at an aggressive offset
@@ -974,16 +1050,23 @@ class TestPropertyFuzz:
     state (never stuck 'running'), and never leaves a resident CO at or beyond a
     core's crash point."""
 
-    @settings(max_examples=400, deadline=None,
-              suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=400, deadline=None, suppress_health_check=[HealthCheck.too_slow])
     @given(data=st.data())
     def test_tuner_robust_over_random_scenarios(self, data):
         n_cores = data.draw(st.integers(min_value=1, max_value=8), label="n_cores")
         n_ccds = data.draw(st.sampled_from([1, 2, 4]), label="n_ccds")
-        order = data.draw(st.sampled_from([
-            "sequential", "round_robin", "weakest_first",
-            "ccd_alternating", "ccd_round_robin",
-        ]), label="order")
+        order = data.draw(
+            st.sampled_from(
+                [
+                    "sequential",
+                    "round_robin",
+                    "weakest_first",
+                    "ccd_alternating",
+                    "ccd_round_robin",
+                ]
+            ),
+            label="order",
+        )
         coarse = data.draw(st.integers(min_value=2, max_value=8), label="coarse")
         fine = data.draw(st.integers(min_value=1, max_value=min(coarse, 3)), label="fine")
         penalty = data.draw(st.integers(min_value=1, max_value=5), label="penalty")
@@ -1001,25 +1084,33 @@ class TestPropertyFuzz:
         db = HistoryDB(":memory:")
         try:
             topo = _make_topo(n_cores, n_ccds)
-            tiers = ([{"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"}]
-                     if hardening else [])
+            tiers = [{"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"}] if hardening else []
             cfg_kw = dict(
-                cores_to_test=list(range(n_cores)), test_order=order,
-                coarse_step=coarse, fine_step=fine, max_offset=-60,
-                crash_penalty_steps=penalty, auto_validate=False,
-                resume_crash_quarantine_threshold=4, hardening_tiers=tiers,
-                search_duration_seconds=1, confirm_duration_seconds=1,
+                cores_to_test=list(range(n_cores)),
+                test_order=order,
+                coarse_step=coarse,
+                fine_step=fine,
+                max_offset=-60,
+                crash_penalty_steps=penalty,
+                auto_validate=False,
+                resume_crash_quarantine_threshold=4,
+                hardening_tiers=tiers,
+                search_duration_seconds=1,
+                confirm_duration_seconds=1,
             )
             eng, steps, crashes, sid = drive_closed_loop(
-                db, topo, _StubBackend(), cliffs, cfg_kw,
-                reboot_interval=reboot_interval, app_exit_interval=app_exit_interval)
-
-            assert steps < 6000, (
-                f"no convergence: order={order} cliffs={cliffs} reboot={reboot_interval}"
+                db,
+                topo,
+                _StubBackend(),
+                cliffs,
+                cfg_kw,
+                reboot_interval=reboot_interval,
+                app_exit_interval=app_exit_interval,
             )
+
+            assert steps < 6000, f"no convergence: order={order} cliffs={cliffs} reboot={reboot_interval}"
             assert eng.status in ("idle", "quarantined"), (
-                f"stuck in {eng.status}: order={order} cliffs={cliffs} "
-                f"hardening={hardening} reboot={reboot_interval}"
+                f"stuck in {eng.status}: order={order} cliffs={cliffs} hardening={hardening} reboot={reboot_interval}"
             )
             resident = eng._smu.applied
             for c, (_stable, crash) in cliffs.items():
@@ -1039,24 +1130,31 @@ class TestPropertyFuzz:
 class TestThermalFailClosed:
     def _scheduler(self, topo, backend, **cfg) -> CoreScheduler:
         return CoreScheduler(
-            topology=topo, backend=backend,
+            topology=topo,
+            backend=backend,
             stress_config=StressConfig(mode=StressMode.SSE, fft_preset=FFTPreset.SMALL),
             scheduler_config=SchedulerConfig(cores_to_test=[0], **cfg),
         )
 
     def test_no_sensor_blocks_when_required(self):
         watch = ThermalWatch(
-            max_temperature=95.0, grace_seconds=3.0, hard_margin=8.0,
-            require_sensor=True, read=lambda: None,
+            max_temperature=95.0,
+            grace_seconds=3.0,
+            hard_margin=8.0,
+            require_sensor=True,
+            read=lambda: None,
         )
-        assert watch.safe() is False   # fail closed
+        assert watch.safe() is False  # fail closed
 
     def test_no_sensor_lenient_when_not_required(self):
         watch = ThermalWatch(
-            max_temperature=95.0, grace_seconds=3.0, hard_margin=8.0,
-            require_sensor=False, read=lambda: None,
+            max_temperature=95.0,
+            grace_seconds=3.0,
+            hard_margin=8.0,
+            require_sensor=False,
+            read=lambda: None,
         )
-        assert watch.safe() is True    # explicit opt-out
+        assert watch.safe() is True  # explicit opt-out
 
     def test_tuner_default_requires_sensor(self, db, topo, smu, mock_backend):
         """The tuner drives the scheduler with the sensor required by default."""
@@ -1078,13 +1176,10 @@ class TestThermalFailClosed:
             def __init__(self, *, topology, backend, stress_config, scheduler_config, work_dir):
                 captured["cfg"] = scheduler_config
 
-        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0],
-                          allow_missing_thermal_sensor=allow_missing)
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0], allow_missing_thermal_sensor=allow_missing)
         eng._session_id = tp.create_session(db, eng._config, "", "")
-        eng._core_states = {0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH,
-                                         current_offset=-5)}
-        with patch.object(te, "CoreScheduler", _CapScheduler), \
-             patch.object(te, "_TunerWorker"):
+        eng._core_states = {0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5)}
+        with patch.object(te, "CoreScheduler", _CapScheduler), patch.object(te, "_TunerWorker"):
             eng._start_worker(0, 5)
         assert captured["cfg"].require_thermal_sensor is expect_required
 
@@ -1095,31 +1190,48 @@ class TestThermalFailClosed:
 
 
 class TestEveryStyleRecoversCrash:
-    @pytest.mark.parametrize("order", [
-        "sequential", "round_robin", "weakest_first",
-        "ccd_alternating", "ccd_round_robin",
-    ])
-    def test_style_penalizes_journal_suspect_on_resume(
-        self, db, topo, smu, mock_backend, order
-    ):
+    @pytest.mark.parametrize(
+        "order",
+        [
+            "sequential",
+            "round_robin",
+            "weakest_first",
+            "ccd_alternating",
+            "ccd_round_robin",
+        ],
+    )
+    def test_style_penalizes_journal_suspect_on_resume(self, db, topo, smu, mock_backend, order):
         """Regardless of test-order strategy, a journal-detected crash is penalized
         on resume and the crashing offset is never left re-applied."""
-        cfg = TunerConfig(cores_to_test=[0, 1], test_order=order,
-                          crash_penalty_steps=2, fine_step=1)
+        cfg = TunerConfig(cores_to_test=[0, 1], test_order=order, crash_penalty_steps=2, fine_step=1)
         sid = tp.create_session(db, cfg, "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-20,
-            baseline_offset=0, in_test=False,
-        ))
-        tp.save_core_state(db, sid, CoreState(
-            core_id=1, phase=TunerPhase.COARSE_SEARCH, current_offset=-5,
-            baseline_offset=0, in_test=False,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.COARSE_SEARCH,
+                current_offset=-20,
+                baseline_offset=0,
+                in_test=False,
+            ),
+        )
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=1,
+                phase=TunerPhase.COARSE_SEARCH,
+                current_offset=-5,
+                baseline_offset=0,
+                in_test=False,
+            ),
+        )
         db.journal_co_intent(sid, 0, -20, survived=False)
 
-        eng = _resume_fresh(db, topo, smu, mock_backend, sid,
-                            cores_to_test=[0, 1], test_order=order,
-                            crash_penalty_steps=2, fine_step=1)
+        eng = _resume_fresh(
+            db, topo, smu, mock_backend, sid, cores_to_test=[0, 1], test_order=order, crash_penalty_steps=2, fine_step=1
+        )
 
         cs0 = eng._core_states[0]
         assert cs0.crash_count == 1
@@ -1147,10 +1259,17 @@ class TestForwardCrashWriteAhead:
         cfg = TunerConfig(cores_to_test=[0], crash_penalty_steps=3, fine_step=1)
         sid = tp.create_session(db, cfg, "", "")
         # in_test=False on purpose: ONLY the journal can recover this, not the flag.
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-28,
-            baseline_offset=0, in_test=False,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.COARSE_SEARCH,
+                current_offset=-28,
+                baseline_offset=0,
+                in_test=False,
+            ),
+        )
 
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
         eng._session_id = sid
@@ -1164,13 +1283,12 @@ class TestForwardCrashWriteAhead:
 
         # A fresh engine (new process) recovers using ONLY the persisted journal.
         del eng
-        eng2 = make_engine(db, topo, CrashDuringWriteSMU(crash_at=None),
-                           mock_backend, cores_to_test=[0])
+        eng2 = make_engine(db, topo, CrashDuringWriteSMU(crash_at=None), mock_backend, cores_to_test=[0])
         with patch.object(eng2, "_run_next"):
             eng2.resume(sid)
         cs = eng2._core_states[0]
-        assert cs.crash_count == 1            # the dying write was recovered as a crash
-        assert cs.backoff_fail_bound == -28   # and bounded as never-retry
+        assert cs.crash_count == 1  # the dying write was recovered as a crash
+        assert cs.backoff_fail_bound == -28  # and bounded as never-retry
 
     def test_journal_is_durable_to_a_fresh_connection(self, tmp_path, topo, mock_backend):
         """The journal must be readable by a NEW connection (a fresh process after
@@ -1203,8 +1321,7 @@ class TestValidationFuzz:
     loop must always terminate and finalize, leaving every core validation-stable
     or backed off to baseline — never stuck looping."""
 
-    @settings(max_examples=200, deadline=None,
-              suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=200, deadline=None, suppress_health_check=[HealthCheck.too_slow])
     @given(data=st.data())
     def test_validation_terminates_and_settles_safely(self, data):
         n_cores = data.draw(st.integers(min_value=2, max_value=6), label="n_cores")
@@ -1227,13 +1344,20 @@ class TestValidationFuzz:
         try:
             topo = _make_topo(n_cores, n_ccds)
             cfg_kw = dict(
-                cores_to_test=list(range(n_cores)), test_order=order,
-                auto_validate=True, hardening_tiers=[],
-                validate_transitions=transitions, validate_spectrum=spectrum,
-                validate_memory=memory, validate_soak=soak,
-                fine_step=1, validate_duration_seconds=1, spectrum_slot_seconds=30,
+                cores_to_test=list(range(n_cores)),
+                test_order=order,
+                auto_validate=True,
+                hardening_tiers=[],
+                validate_transitions=transitions,
+                validate_spectrum=spectrum,
+                validate_memory=memory,
+                validate_soak=soak,
+                fine_step=1,
+                validate_duration_seconds=1,
+                spectrum_slot_seconds=30,
                 soak_duration_seconds=60,
-                search_duration_seconds=1, confirm_duration_seconds=1,
+                search_duration_seconds=1,
+                confirm_duration_seconds=1,
             )
             eng, steps = drive_validation(db, topo, _StubBackend(), cliffs, agg_margin, cfg_kw)
 
@@ -1259,8 +1383,7 @@ class TestAbortSafety:
     EVERY confirmed core has its offset applied at once, so reverting only the
     core under test would leave the rest undervolted with nothing driving them."""
 
-    @settings(max_examples=60, deadline=None,
-              suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=60, deadline=None, suppress_health_check=[HealthCheck.too_slow])
     @given(data=st.data())
     def test_abort_mid_validation_reverts_every_core(self, data):
         n_cores = data.draw(st.integers(min_value=2, max_value=5), label="n_cores")
@@ -1274,14 +1397,17 @@ class TestAbortSafety:
         try:
             topo = _make_topo(n_cores, 1)
             cfg_kw = dict(
-                cores_to_test=list(range(n_cores)), auto_validate=True,
-                hardening_tiers=[], fine_step=1, validate_duration_seconds=1,
-                spectrum_slot_seconds=30, soak_duration_seconds=60,
-                search_duration_seconds=1, confirm_duration_seconds=1,
+                cores_to_test=list(range(n_cores)),
+                auto_validate=True,
+                hardening_tiers=[],
+                fine_step=1,
+                validate_duration_seconds=1,
+                spectrum_slot_seconds=30,
+                soak_duration_seconds=60,
+                search_duration_seconds=1,
+                confirm_duration_seconds=1,
             )
-            eng, _steps = drive_validation(
-                db, topo, _StubBackend(), cliffs, 0, cfg_kw, abort_at=abort_at
-            )
+            eng, _steps = drive_validation(db, topo, _StubBackend(), cliffs, 0, cfg_kw, abort_at=abort_at)
 
             assert eng._abort_requested
             assert eng.status == "idle"
@@ -1308,8 +1434,7 @@ class TestValidationFaultInjection:
     under test, so none may make an offset MORE aggressive, and the flow must
     still reach a terminal state instead of looping on the fault."""
 
-    @settings(max_examples=120, deadline=None,
-              suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=120, deadline=None, suppress_health_check=[HealthCheck.too_slow])
     @given(data=st.data())
     def test_faults_never_deepen_an_offset_and_always_terminate(self, data):
         n_cores = data.draw(st.integers(min_value=2, max_value=4), label="n_cores")
@@ -1330,14 +1455,17 @@ class TestValidationFaultInjection:
         try:
             topo = _make_topo(n_cores, 1)
             cfg_kw = dict(
-                cores_to_test=list(range(n_cores)), auto_validate=True,
-                hardening_tiers=[], fine_step=1, validate_duration_seconds=1,
-                spectrum_slot_seconds=30, soak_duration_seconds=60,
-                search_duration_seconds=1, confirm_duration_seconds=1,
+                cores_to_test=list(range(n_cores)),
+                auto_validate=True,
+                hardening_tiers=[],
+                fine_step=1,
+                validate_duration_seconds=1,
+                spectrum_slot_seconds=30,
+                soak_duration_seconds=60,
+                search_duration_seconds=1,
+                confirm_duration_seconds=1,
             )
-            eng, steps = drive_validation(
-                db, topo, _StubBackend(), cliffs, 0, cfg_kw, faults=faults
-            )
+            eng, steps = drive_validation(db, topo, _StubBackend(), cliffs, 0, cfg_kw, faults=faults)
 
             assert steps < 8000, f"did not terminate: faults={faults}"
             assert eng.status in ("idle", "paused", "running", "quarantined"), eng.status
@@ -1345,8 +1473,7 @@ class TestValidationFaultInjection:
                 best = eng._core_states[c].best_offset
                 assert best is not None
                 assert best >= stable, (
-                    f"core {c} deepened to {best} below its seeded {stable} -- a fault "
-                    f"moved the search bound"
+                    f"core {c} deepened to {best} below its seeded {stable} -- a fault moved the search bound"
                 )
                 assert best > crash
                 assert best <= 0
@@ -1372,16 +1499,21 @@ class TestResumePathsValidateConfig:
         assert run_next.call_count == 0, "resume proceeded on an invalid config"
         assert any("Invalid tuner config" in m for m in logs)
 
-    def test_validate_profile_fails_closed_on_out_of_range_config(
-        self, db, topo, smu, mock_backend
-    ):
+    def test_validate_profile_fails_closed_on_out_of_range_config(self, db, topo, smu, mock_backend):
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0], coarse_step=0), "", "")
         # A CONFIRMED core so validate_profile clears its empty-profile guard and
         # reaches the config load/validate.
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.CONFIRMED,
-            current_offset=-10, best_offset=-10, baseline_offset=0,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.CONFIRMED,
+                current_offset=-10,
+                best_offset=-10,
+                baseline_offset=0,
+            ),
+        )
         eng = make_engine(db, topo, smu, mock_backend)
         logs: list[str] = []
         eng.log_message.connect(logs.append)
@@ -1393,10 +1525,18 @@ class TestResumePathsValidateConfig:
     def test_resume_still_proceeds_on_a_valid_config(self, db, topo, smu, mock_backend):
         """The guard is not over-eager: a valid config_json resumes normally."""
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.FINE_SEARCH,
-            current_offset=-10, best_offset=-8, baseline_offset=0, in_test=False,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.FINE_SEARCH,
+                current_offset=-10,
+                best_offset=-8,
+                baseline_offset=0,
+                in_test=False,
+            ),
+        )
         eng = make_engine(db, topo, smu, mock_backend)
         logs: list[str] = []
         eng.log_message.connect(logs.append)
@@ -1418,25 +1558,31 @@ class TestRebootGate:
     mid-test) — penalizing it would walk proven-good offsets away on every
     restart of the app."""
 
-    def test_no_reboot_clears_in_test_without_penalty(
-        self, db, topo, smu, mock_backend, monkeypatch
-    ):
+    def test_no_reboot_clears_in_test_without_penalty(self, db, topo, smu, mock_backend, monkeypatch):
         import corecycler.tuner.engine as engine_mod
+
         monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: False)
 
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-30,
-            baseline_offset=0, in_test=True,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.COARSE_SEARCH,
+                current_offset=-30,
+                baseline_offset=0,
+                in_test=True,
+            ),
+        )
         tp.journal_co_intent(db, sid, 0, -30, survived=False)
 
         eng = _resume_fresh(db, topo, smu, mock_backend, sid)
         cs = eng._core_states[0]
-        assert cs.crash_count == 0            # no penalty
-        assert cs.current_offset == -30       # offset untouched
+        assert cs.crash_count == 0  # no penalty
+        assert cs.current_offset == -30  # offset untouched
         assert cs.phase == TunerPhase.COARSE_SEARCH
-        assert not cs.in_test                 # stale flag cleared...
+        assert not cs.in_test  # stale flag cleared...
         assert not db.get_tuner_core_states(sid)[0].in_test  # ...and persisted
 
     def test_rebooted_since_reads_btime(self, tmp_path, assume_rebooted):
@@ -1459,9 +1605,7 @@ class TestRebootGate:
         # all must assume "rebooted" so crash detection still runs.
         assert _rebooted_since(None) is True
         assert _rebooted_since("not-a-timestamp") is True
-        assert _rebooted_since(
-            "2026-01-01T00:00:00+00:00", stat_path=str(tmp_path / "missing")
-        ) is True
+        assert _rebooted_since("2026-01-01T00:00:00+00:00", stat_path=str(tmp_path / "missing")) is True
         garbled = tmp_path / "garbled"
         garbled.write_text("btime notanumber\n")
         assert _rebooted_since("2026-01-01T00:00:00+00:00", stat_path=str(garbled)) is True
@@ -1481,20 +1625,22 @@ class TestCrashAtConfirmedValue:
         eng = make_engine(db, topo, smu, mock_backend, crash_penalty_steps=3, fine_step=1)
         eng._session_id = sid
         cs = CoreState(
-            core_id=0, phase=TunerPhase.HARDENED, current_offset=-42,
-            best_offset=-42, baseline_offset=-15, in_test=True,
+            core_id=0,
+            phase=TunerPhase.HARDENED,
+            current_offset=-42,
+            best_offset=-42,
+            baseline_offset=-15,
+            in_test=True,
         )
         eng._core_states = {0: cs}
 
-        crashed, pending_hunt = eng._attribute_crash_after_reboot(
-            tp.get_session(db, sid)
-        )
+        crashed, pending_hunt = eng._attribute_crash_after_reboot(tp.get_session(db, sid))
         assert crashed == [0]
         assert pending_hunt is False
         assert cs.phase == TunerPhase.BACKOFF_PRECONFIRM  # must re-earn confirmation
-        assert cs.current_offset == -39                   # penalized by 3 steps
-        assert cs.best_offset == -39                      # crashed -42 cannot stay best
-        assert cs.backoff_fail_bound == -42               # crashed value is a hard bound
+        assert cs.current_offset == -39  # penalized by 3 steps
+        assert cs.best_offset == -39  # crashed -42 cannot stay best
+        assert cs.backoff_fail_bound == -42  # crashed value is a hard bound
 
 
 # ---------------------------------------------------------------------------
@@ -1513,8 +1659,11 @@ class TestStartupFailureIsNotAVerdict:
         eng = make_engine(db, topo, smu, mock_backend)
         eng._session_id = sid
         cs = CoreState(
-            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10,
-            baseline_offset=0, in_test=True,
+            core_id=0,
+            phase=TunerPhase.COARSE_SEARCH,
+            current_offset=-10,
+            baseline_offset=0,
+            in_test=True,
         )
         eng._core_states = {0: cs}
         tp.save_core_state(db, sid, cs)
@@ -1524,13 +1673,12 @@ class TestStartupFailureIsNotAVerdict:
         tp.journal_co_intent(db, sid, 0, -10, survived=False)
 
         with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core") as adv:
-            eng._on_test_finished(0, False, "Failed to start stress test: boom",
-                                  "startup", 0.0, 0.0)
+            eng._on_test_finished(0, False, "Failed to start stress test: boom", "startup", 0.0, 0.0)
 
         assert eng._status == "paused"
         adv.assert_not_called()
-        assert tp.get_test_log(db, sid) == []          # no verdict recorded
-        assert smu.applied[0] == 0                     # offset reverted, not resident
+        assert tp.get_test_log(db, sid) == []  # no verdict recorded
+        assert smu.applied[0] == 0  # offset reverted, not resident
         assert not db.get_tuner_core_states(sid)[0].in_test  # persisted, no fake crash later
         # the never-run offset was NOT promoted to survived
         assert tp.journal_survived_values(db, sid).get(0) != -10
@@ -1544,8 +1692,7 @@ class TestStartupFailureIsNotAVerdict:
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=list(cliffs))
         eng._session_id = sid
         eng._core_states = {
-            c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=v,
-                         best_offset=v, baseline_offset=0)
+            c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=v, best_offset=v, baseline_offset=0)
             for c, v in cliffs.items()
         }
         eng._co_survived = dict(cliffs)
@@ -1558,11 +1705,9 @@ class TestStartupFailureIsNotAVerdict:
 
         assert eng._status == "paused"
         assert eng._core_states[1].best_offset == -12  # healthy core NOT backed off
-        assert all(r["passed"] is not False or r["error_type"] != "startup" or True
-                   for r in tp.get_test_log(db, sid))
+        assert all(r["passed"] is not False or r["error_type"] != "startup" or True for r in tp.get_test_log(db, sid))
         # no validate FAIL verdict was recorded
-        assert not [r for r in tp.get_test_log(db, sid)
-                    if r["phase"].startswith("validate")]
+        assert not [r for r in tp.get_test_log(db, sid) if r["phase"].startswith("validate")]
 
 
 # ---------------------------------------------------------------------------
@@ -1573,17 +1718,26 @@ class TestStartupFailureIsNotAVerdict:
 class TestApparatusBreaker:
     def _seed(self, db, topo, smu, backend, streak_threshold=5):
         sid = tp.create_session(
-            db, TunerConfig(cores_to_test=[0], apparatus_failure_streak=streak_threshold),
-            "", "",
+            db,
+            TunerConfig(cores_to_test=[0], apparatus_failure_streak=streak_threshold),
+            "",
+            "",
         )
         eng = make_engine(
-            db, topo, smu, backend,
+            db,
+            topo,
+            smu,
+            backend,
             apparatus_failure_streak=streak_threshold,
         )
         eng._session_id = sid
         cs = CoreState(
-            core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM, current_offset=-20,
-            best_offset=-20, baseline_offset=0, backoff_mode=True,
+            core_id=0,
+            phase=TunerPhase.BACKOFF_PRECONFIRM,
+            current_offset=-20,
+            best_offset=-20,
+            baseline_offset=0,
+            backoff_mode=True,
         )
         eng._core_states = {0: cs}
         return eng, sid, cs
@@ -1595,60 +1749,59 @@ class TestApparatusBreaker:
         eng, sid, cs = self._seed(db, topo, smu, mock_backend, streak_threshold=5)
         tp.log_test_result(db, sid, 0, -44, "confirm", True, duration=300.0)  # proven pass
         for off in (-24, -23, -22, -21):  # 4 prior fails
-            tp.log_test_result(db, sid, 0, off, "backoff_preconfirm", False,
-                               error_msg="mprime error: FATAL ERROR",
-                               error_type="computation", duration=122.0)
+            tp.log_test_result(
+                db,
+                sid,
+                0,
+                off,
+                "backoff_preconfirm",
+                False,
+                error_msg="mprime error: FATAL ERROR",
+                error_type="computation",
+                duration=122.0,
+            )
 
         with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core") as adv:
             # the 5th consecutive fail crosses the threshold
-            eng._on_test_finished(0, False, "mprime error: FATAL ERROR",
-                                  "computation", 122.0, 0.0)
+            eng._on_test_finished(0, False, "mprime error: FATAL ERROR", "computation", 122.0, 0.0)
 
         assert eng._status == "paused"
-        adv.assert_not_called()                       # verdict not walked into the search
-        assert cs.best_offset == -44                  # rolled back to proven evidence
+        adv.assert_not_called()  # verdict not walked into the search
+        assert cs.best_offset == -44  # rolled back to proven evidence
         assert cs.current_offset == -44
-        assert cs.phase == TunerPhase.CONFIRMING      # must re-earn confirmation
+        assert cs.phase == TunerPhase.CONFIRMING  # must re-earn confirmation
         assert cs.backoff_fail_bound is None and cs.backoff_pass_bound is None
         persisted = db.get_tuner_core_states(sid)[0]
-        assert persisted.best_offset == -44           # rollback is durable
+        assert persisted.best_offset == -44  # rollback is durable
 
     def test_below_threshold_does_not_trip(self, db, topo, smu, mock_backend):
         eng, sid, cs = self._seed(db, topo, smu, mock_backend, streak_threshold=5)
         for off in (-24, -23):
-            tp.log_test_result(db, sid, 0, off, "backoff_preconfirm", False,
-                               error_type="computation", duration=122.0)
+            tp.log_test_result(db, sid, 0, off, "backoff_preconfirm", False, error_type="computation", duration=122.0)
         with patch.object(eng, "_run_next"):
-            eng._on_test_finished(0, False, "mprime error: FATAL ERROR",
-                                  "computation", 122.0, 0.0)
-        assert eng._status != "paused"                # normal backoff continues
+            eng._on_test_finished(0, False, "mprime error: FATAL ERROR", "computation", 122.0, 0.0)
+        assert eng._status != "paused"  # normal backoff continues
 
     def test_pass_breaks_the_streak(self, db, topo, smu, mock_backend):
         eng, sid, cs = self._seed(db, topo, smu, mock_backend, streak_threshold=5)
         for off in (-24, -23, -22):
-            tp.log_test_result(db, sid, 0, off, "backoff_preconfirm", False,
-                               error_type="computation", duration=122.0)
+            tp.log_test_result(db, sid, 0, off, "backoff_preconfirm", False, error_type="computation", duration=122.0)
         tp.log_test_result(db, sid, 0, -21, "backoff_preconfirm", True, duration=122.0)
         for off in (-20,):
-            tp.log_test_result(db, sid, 0, off, "backoff_confirm", False,
-                               error_type="computation", duration=300.0)
+            tp.log_test_result(db, sid, 0, off, "backoff_confirm", False, error_type="computation", duration=300.0)
         with patch.object(eng, "_run_next"):
-            eng._on_test_finished(0, False, "mprime error: FATAL ERROR",
-                                  "computation", 300.0, 0.0)
-        assert eng._status != "paused"                # streak is 2, not 6
+            eng._on_test_finished(0, False, "mprime error: FATAL ERROR", "computation", 300.0, 0.0)
+        assert eng._status != "paused"  # streak is 2, not 6
 
     def test_synthetic_crash_rows_do_not_count(self, db, topo, smu, mock_backend):
         eng, sid, cs = self._seed(db, topo, smu, mock_backend, streak_threshold=3)
         # two real fails + two synthetic reboot rows (duration NULL)
         for off in (-24, -23):
-            tp.log_test_result(db, sid, 0, off, "backoff_preconfirm", False,
-                               error_type="computation", duration=122.0)
+            tp.log_test_result(db, sid, 0, off, "backoff_preconfirm", False, error_type="computation", duration=122.0)
         for off in (-22, -21):
-            tp.log_test_result(db, sid, 0, off, "coarse_search", False,
-                               error_type="crash", duration=None)
+            tp.log_test_result(db, sid, 0, off, "coarse_search", False, error_type="crash", duration=None)
         with patch.object(eng, "_run_next"):
-            eng._on_test_finished(0, False, "mprime error: FATAL ERROR",
-                                  "computation", 122.0, 0.0)
+            eng._on_test_finished(0, False, "mprime error: FATAL ERROR", "computation", 122.0, 0.0)
         # real-test streak is 3 (threshold) — trips; but the point is the
         # synthetic rows alone must not have tripped it earlier: recompute
         assert eng._status == "paused"
@@ -1664,60 +1817,77 @@ class TestRevertFailureFailsClosed:
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
         eng = make_engine(db, topo, smu, mock_backend)
         eng._session_id = sid
-        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH,
-                       current_offset=-20, baseline_offset=-10, in_test=True)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-20, baseline_offset=-10, in_test=True)
         eng._core_states = {0: cs}
-        eng._co_applied[0] = -20         # aggressive offset resident
-        smu.reject_set = True            # SMU refuses the baseline revert
+        eng._co_applied[0] = -20  # aggressive offset resident
+        smu.reject_set = True  # SMU refuses the baseline revert
 
         with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core") as adv:
             eng._on_test_finished(0, True, "", "", 60.0, 0.0)
 
-        assert eng._status == "paused"   # fail closed: offset still resident
+        assert eng._status == "paused"  # fail closed: offset still resident
         adv.assert_not_called()
 
     def test_resume_pauses_when_baseline_restore_fails(self, db, topo, smu, mock_backend):
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-20,
-            baseline_offset=-10,
-        ))
-        smu.reject_set = True            # every SMU write rejected
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.COARSE_SEARCH,
+                current_offset=-20,
+                baseline_offset=-10,
+            ),
+        )
+        smu.reject_set = True  # every SMU write rejected
         eng = _resume_fresh(db, topo, smu, mock_backend, sid)
-        assert eng._status == "paused"   # not "running" on a broken SMU
+        assert eng._status == "paused"  # not "running" on a broken SMU
 
 
 class TestNoRebootResidentOffset:
-    def test_no_reboot_writes_zero_baseline_instead_of_assuming_it(
-        self, db, topo, smu, mock_backend, monkeypatch
-    ):
+    def test_no_reboot_writes_zero_baseline_instead_of_assuming_it(self, db, topo, smu, mock_backend, monkeypatch):
         """Without a reboot the SMU is NOT zeroed: a core with baseline 0 that
         died mid-test still holds its test offset. Resume must WRITE the
         baseline back, never assume it (the stale-resident-offset hole)."""
         import corecycler.tuner.engine as engine_mod
+
         monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: False)
 
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-30,
-            baseline_offset=0, in_test=True,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.COARSE_SEARCH,
+                current_offset=-30,
+                baseline_offset=0,
+                in_test=True,
+            ),
+        )
         smu.applied[0] = -30  # what the dying app left resident in the SMU
 
         eng = _resume_fresh(db, topo, smu, mock_backend, sid)
 
-        assert (0, 0) in smu.writes          # baseline explicitly written
-        assert smu.applied[0] == 0           # aggressive offset no longer resident
+        assert (0, 0) in smu.writes  # baseline explicitly written
+        assert smu.applied[0] == 0  # aggressive offset no longer resident
         assert eng._co_applied[0] == 0
 
     def test_rebooted_zero_baseline_is_not_rewritten(self, db, topo, smu, mock_backend):
         """After a real reboot SMU SRAM is zeroed — writing 0 again would be a
         pointless hardware write (and journal churn)."""
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-30,
-            baseline_offset=0,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.COARSE_SEARCH,
+                current_offset=-30,
+                baseline_offset=0,
+            ),
+        )
         # autouse fixture patches _rebooted_since -> True (reboot world)
         eng = _resume_fresh(db, topo, smu, mock_backend, sid)
         assert (0, 0) not in smu.writes
@@ -1735,8 +1905,7 @@ def _seed_validating(db, topo, smu, backend, cliffs, **cfg):
     eng = make_engine(db, topo, smu, backend, cores_to_test=list(cliffs), **cfg)
     eng._session_id = sid
     eng._core_states = {
-        c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=v,
-                     best_offset=v, baseline_offset=0)
+        c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=v, best_offset=v, baseline_offset=0)
         for c, v in cliffs.items()
     }
     for cs in eng._core_states.values():
@@ -1755,23 +1924,24 @@ class TestApparatusFaultIsNotAVerdict:
     innocent core. An apparatus fault must retry without a verdict, bounded,
     and never move an offset."""
 
-    def test_stall_during_validation_retries_without_backoff(
-        self, db, topo, smu, mock_backend
-    ):
+    def test_stall_during_validation_retries_without_backoff(self, db, topo, smu, mock_backend):
         cliffs = {0: -10, 1: -12}
         eng, sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
         with patch.object(eng, "_run_validation_next") as nxt:
             eng._on_test_finished(
-                0, False,
+                0,
+                False,
                 "Stress test stalled on core 0 (CPU usage near 0 on CPUs 0,8 for 30s)",
-                "stall", 35.0, 0.0,
+                "stall",
+                35.0,
+                0.0,
             )
         assert eng._core_states[0].best_offset == -10  # nobody backed off
         assert eng._core_states[1].best_offset == -12
         assert eng._status == "validating"
         assert eng._apparatus_fault_streak == 1
         nxt.assert_called_once()
-        assert tp.get_test_log(db, sid) == []          # no verdict recorded
+        assert tp.get_test_log(db, sid) == []  # no verdict recorded
 
     def test_apparatus_faults_bounded_then_stop(self, db, topo, smu, mock_backend):
         cliffs = {0: -10}
@@ -1779,35 +1949,27 @@ class TestApparatusFaultIsNotAVerdict:
         eng._co_applied = dict(cliffs)
         smu.applied.update(cliffs)
         eng._apparatus_fault_streak = eng._config.max_apparatus_retries
-        eng._on_test_finished(
-            0, False, "Stress test stalled on core 0", "stall", 35.0, 0.0
-        )
-        assert eng._status == "idle"                   # abort: stop + revert
-        assert smu.applied[0] == 0                     # nothing aggressive resident
+        eng._on_test_finished(0, False, "Stress test stalled on core 0", "stall", 35.0, 0.0)
+        assert eng._status == "idle"  # abort: stop + revert
+        assert smu.applied[0] == 0  # nothing aggressive resident
         assert eng._core_states[0].best_offset == -10  # state untouched
 
-    def test_stall_in_search_flow_retries_same_offset(
-        self, db, topo, smu, mock_backend
-    ):
+    def test_stall_in_search_flow_retries_same_offset(self, db, topo, smu, mock_backend):
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
         eng = make_engine(db, topo, smu, mock_backend)
         eng._session_id = sid
-        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10,
-                       baseline_offset=0, in_test=True)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, baseline_offset=0, in_test=True)
         eng._core_states = {0: cs}
         eng._co_applied[0] = -10
         smu.applied[0] = -10
         eng._set_status("running")
-        with patch.object(eng, "_run_next") as nxt, \
-                patch.object(eng, "_advance_core") as adv:
-            eng._on_test_finished(
-                0, False, "Stress test stalled on core 0", "stall", 35.0, 0.0
-            )
+        with patch.object(eng, "_run_next") as nxt, patch.object(eng, "_advance_core") as adv:
+            eng._on_test_finished(0, False, "Stress test stalled on core 0", "stall", 35.0, 0.0)
         adv.assert_not_called()
         nxt.assert_called_once()
-        assert cs.current_offset == -10   # same offset re-earns next slot
+        assert cs.current_offset == -10  # same offset re-earns next slot
         assert cs.crash_count == 0
-        assert smu.applied[0] == 0        # not left resident between slots
+        assert smu.applied[0] == 0  # not left resident between slots
         assert tp.get_test_log(db, sid) == []
 
     def test_external_kill_is_apparatus_not_verdict(self, db, topo, smu, mock_backend):
@@ -1815,8 +1977,12 @@ class TestApparatusFaultIsNotAVerdict:
         eng, sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
         with patch.object(eng, "_run_validation_next") as nxt:
             eng._on_test_finished(
-                1, False, "Stress process killed externally (code -9)",
-                "killed", 12.0, 0.0,
+                1,
+                False,
+                "Stress process killed externally (code -9)",
+                "killed",
+                12.0,
+                0.0,
             )
         assert eng._core_states[1].best_offset == -12
         assert eng._apparatus_fault_streak == 1
@@ -1831,26 +1997,36 @@ class TestApparatusFaultIsNotAVerdict:
             eng._on_test_finished(0, True, "", "", 1.0, 0.0)
         assert eng._apparatus_fault_streak == 0
 
-    def test_unattributed_mce_blocks_survival_promotion(
-        self, db, topo, smu, mock_backend
-    ):
+    def test_unattributed_mce_blocks_survival_promotion(self, db, topo, smu, mock_backend):
         """A machine check naming no CPU taints every resident value — none may
         be promoted to survived off the back of that test."""
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
         eng = make_engine(db, topo, smu, mock_backend)
         eng._session_id = sid
-        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10,
-                       baseline_offset=0, in_test=True)
+        cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, baseline_offset=0, in_test=True)
         eng._core_states = {0: cs}
         tp.journal_co_intent(db, sid, 0, -10, survived=False)
-        mce_json = json.dumps([{
-            "cpu": -1, "bank": 3, "corrected": False, "message": "x", "raw_ts": 0.0,
-        }])
+        mce_json = json.dumps(
+            [
+                {
+                    "cpu": -1,
+                    "bank": 3,
+                    "corrected": False,
+                    "message": "x",
+                    "raw_ts": 0.0,
+                }
+            ]
+        )
         with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core"):
             eng._on_test_finished(
-                0, False,
+                0,
+                False,
                 "Machine check without core attribution during parallel stress: x",
-                "mce_unattributed", 5.0, 0.0, mce_json, "",
+                "mce_unattributed",
+                5.0,
+                0.0,
+                mce_json,
+                "",
             )
         assert tp.journal_survived_values(db, sid).get(0) != -10
 
@@ -1898,9 +2074,7 @@ class TestFailClosedFinalize:
         assert tp.get_session(db, sid).status != "completed"
         assert smu.applied[0] == 0 and smu.applied[1] == 0
 
-    def test_clean_finalize_completes_and_clears_incidents(
-        self, db, topo, smu, mock_backend
-    ):
+    def test_clean_finalize_completes_and_clears_incidents(self, db, topo, smu, mock_backend):
         cliffs = {0: -10, 1: -12}
         eng, sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
         tp.set_unattributed_crashes(db, sid, 2)
@@ -1924,10 +2098,17 @@ class TestUnattributedIncidentOnResume:
     def _seed(self, db, cliffs, unattributed=0):
         sid = tp.create_session(db, TunerConfig(cores_to_test=list(cliffs)), "", "")
         for c, v in cliffs.items():
-            tp.save_core_state(db, sid, CoreState(
-                core_id=c, phase=TunerPhase.CONFIRMED, current_offset=v,
-                best_offset=v, baseline_offset=0,
-            ))
+            tp.save_core_state(
+                db,
+                sid,
+                CoreState(
+                    core_id=c,
+                    phase=TunerPhase.CONFIRMED,
+                    current_offset=v,
+                    best_offset=v,
+                    baseline_offset=0,
+                ),
+            )
             tp.journal_co_intent(db, sid, c, v, survived=True)
             # evidence backing the CONFIRMED claim, or the resume-time
             # reconciler demotes the core and validation never re-enters
@@ -1937,28 +2118,22 @@ class TestUnattributedIncidentOnResume:
             tp.set_unattributed_crashes(db, sid, unattributed)
         return sid
 
-    def test_dirty_reboot_mid_validation_is_recorded(
-        self, db, topo, smu, mock_backend, monkeypatch
-    ):
+    def test_dirty_reboot_mid_validation_is_recorded(self, db, topo, smu, mock_backend, monkeypatch):
         import corecycler.tuner.engine as engine_mod
-        monkeypatch.setattr(
-            engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False
-        )
+
+        monkeypatch.setattr(engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False)
         sid = self._seed(db, {0: -10, 1: -12})
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0, 1])
         with patch.object(eng, "_run_next"), patch.object(eng, "_run_validation_next"):
             eng.resume(sid)
         assert tp.get_unattributed_crashes(db, sid) == 1
-        assert eng._validation_dirty is True   # clean pass owed again
-        assert eng._status == "validating"     # first incident continues
+        assert eng._validation_dirty is True  # clean pass owed again
+        assert eng._status == "validating"  # first incident continues
 
-    def test_repeat_dirty_reboots_pause_for_decision(
-        self, db, topo, smu, mock_backend, monkeypatch
-    ):
+    def test_repeat_dirty_reboots_pause_for_decision(self, db, topo, smu, mock_backend, monkeypatch):
         import corecycler.tuner.engine as engine_mod
-        monkeypatch.setattr(
-            engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False
-        )
+
+        monkeypatch.setattr(engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False)
         sid = self._seed(db, {0: -10}, unattributed=1)
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
         with patch.object(eng, "_run_next"), patch.object(eng, "_run_validation_next"):
@@ -1966,9 +2141,7 @@ class TestUnattributedIncidentOnResume:
         assert tp.get_unattributed_crashes(db, sid) == 2
         assert eng._status == "paused"
 
-    def test_clean_reboot_mid_validation_is_not_an_incident(
-        self, db, topo, smu, mock_backend
-    ):
+    def test_clean_reboot_mid_validation_is_not_an_incident(self, db, topo, smu, mock_backend):
         # autouse fixture: last_boot_ended_cleanly -> True (deliberate reboot)
         sid = self._seed(db, {0: -10, 1: -12})
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0, 1])
@@ -1977,20 +2150,23 @@ class TestUnattributedIncidentOnResume:
         assert tp.get_unattributed_crashes(db, sid) == 0
         assert eng._status == "validating"
 
-    def test_search_flow_reboot_is_not_an_incident(
-        self, db, topo, smu, mock_backend, monkeypatch
-    ):
+    def test_search_flow_reboot_is_not_an_incident(self, db, topo, smu, mock_backend, monkeypatch):
         """The incident class is validation-specific: a mid-search reboot is
         already covered by the journal/in_test detectors."""
         import corecycler.tuner.engine as engine_mod
-        monkeypatch.setattr(
-            engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False
-        )
+
+        monkeypatch.setattr(engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False)
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10,
-            baseline_offset=0,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.COARSE_SEARCH,
+                current_offset=-10,
+                baseline_offset=0,
+            ),
+        )
         eng = _resume_fresh(db, topo, smu, mock_backend, sid)
         assert tp.get_unattributed_crashes(db, sid) == 0
         assert eng._status == "running"
@@ -2002,19 +2178,22 @@ class TestUnattributedIncidentOnResume:
 
 
 class TestInTestMarkDurability:
-    def test_mark_cores_under_stress_forces_wal_flush(
-        self, db, topo, smu, mock_backend, monkeypatch
-    ):
+    def test_mark_cores_under_stress_forces_wal_flush(self, db, topo, smu, mock_backend, monkeypatch):
         """A freeze seconds after the mark ate the WAL frame in live operation
         (the CO journal checkpoint ran BEFORE the mark, so everything else
         survived) — the mark must be followed by its own checkpoint."""
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
         eng = make_engine(db, topo, smu, mock_backend)
         eng._session_id = sid
-        eng._core_states = {0: CoreState(
-            core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-5,
-            best_offset=-5, baseline_offset=0,
-        )}
+        eng._core_states = {
+            0: CoreState(
+                core_id=0,
+                phase=TunerPhase.CONFIRMED,
+                current_offset=-5,
+                best_offset=-5,
+                baseline_offset=0,
+            )
+        }
         flushed = []
         monkeypatch.setattr(db, "checkpoint", lambda: flushed.append(1))
         eng._mark_cores_under_stress([0])
@@ -2028,10 +2207,18 @@ class TestReopeningAQuarantinedSession:
     def _quarantined(self, db, *, current, baseline, survived=None):
         cfg = TunerConfig(cores_to_test=[0], crash_penalty_steps=1, fine_step=1)
         sid = tp.create_session(db, cfg, "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.BACKOFF_PRECONFIRM, current_offset=current,
-            baseline_offset=baseline, best_offset=current, in_test=False,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.BACKOFF_PRECONFIRM,
+                current_offset=current,
+                baseline_offset=baseline,
+                best_offset=current,
+                in_test=False,
+            ),
+        )
         if survived is not None:
             db.journal_co_intent(sid, 0, survived, survived=True)
         tp.set_resume_crash_streak(db, sid, 3)
@@ -2059,24 +2246,28 @@ class TestReopeningAQuarantinedSession:
         assert cs.baseline_offset == -5
         assert cs.best_offset == -10
 
-    def test_best_is_pulled_back_too_because_validation_re_applies_it(
-        self, db, topo, smu, mock_backend
-    ):
+    def test_best_is_pulled_back_too_because_validation_re_applies_it(self, db, topo, smu, mock_backend):
         """Validation writes best_offset to every core it is not testing."""
         sid = self._quarantined(db, current=-30, baseline=0, survived=-10)
         _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0])
         assert db.get_tuner_core_states(sid)[0].best_offset == -10
 
-    def test_a_session_that_was_not_quarantined_is_left_alone(
-        self, db, topo, smu, mock_backend
-    ):
+    def test_a_session_that_was_not_quarantined_is_left_alone(self, db, topo, smu, mock_backend):
         """Only the breaker's own sessions are pulled back; a pause is not one."""
         cfg = TunerConfig(cores_to_test=[0], crash_penalty_steps=1, fine_step=1)
         sid = tp.create_session(db, cfg, "", "")
-        tp.save_core_state(db, sid, CoreState(
-            core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-22,
-            baseline_offset=-4, best_offset=-18, in_test=False,
-        ))
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.FINE_SEARCH,
+                current_offset=-22,
+                baseline_offset=-4,
+                best_offset=-18,
+                in_test=False,
+            ),
+        )
         tp.update_session_status(db, sid, "paused")
         _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0])
         cs = db.get_tuner_core_states(sid)[0]

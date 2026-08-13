@@ -133,9 +133,13 @@ def contain(cpus: set[int] | tuple[int, ...] | list[int]) -> Containment:
     if mechanism == MECHANISM_USER:
         prefix.append("--user")
     prefix += [
-        "--scope", "--quiet", "--collect",
-        "--unit", unit,
-        "-p", f"AllowedCPUs={cpu_list(cpuset)}",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "--unit",
+        unit,
+        "-p",
+        f"AllowedCPUs={cpu_list(cpuset)}",
     ]
     setpriv = tools.resolve("setpriv")
     if setpriv.path is None:

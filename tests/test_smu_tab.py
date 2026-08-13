@@ -118,24 +118,16 @@ class TestCoreMapRefusal:
         import corecycler.gui.smu_tab as st
         from corecycler.smu.driver import SMUResponse
 
-        monkeypatch.setattr(
-            st.RyzenSMU, "is_available", staticmethod(lambda *a, **k: True)
-        )
+        monkeypatch.setattr(st.RyzenSMU, "is_available", staticmethod(lambda *a, **k: True))
         monkeypatch.setattr(
             st.RyzenSMU,
             "_send_command",
-            lambda self, cmd, args=(0,) * 6: SMUResponse(
-                success=False, args=(0,) * 6, raw=b""
-            ),
+            lambda self, cmd, args=(0,) * 6: SMUResponse(success=False, args=(0,) * 6, raw=b""),
         )
         _qapp()
-        topo = CPUTopology(
-            model_name="Test", family=26, model=0x44, physical_cores=6, ccds=1
-        )
+        topo = CPUTopology(model_name="Test", family=26, model=0x44, physical_cores=6, ccds=1)
         for cid in range(6):
-            topo.cores[cid] = PhysicalCore(
-                core_id=cid, ccd=0, ccx=None, logical_cpus=(cid,)
-            )
+            topo.cores[cid] = PhysicalCore(core_id=cid, ccd=0, ccx=None, logical_cpus=(cid,))
         tab = st.SMUTab(topo)
         assert tab._smu is not None
         assert tab._smu.core_map_error is not None

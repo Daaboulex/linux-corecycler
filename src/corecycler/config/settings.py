@@ -87,20 +87,14 @@ def load_settings() -> AppSettings:
     try:
         data = json.loads(settings_file.read_text())
         raw_profiles = data.pop("profiles", None)
-        profiles = (
-            [TestProfile(**p) for p in raw_profiles]
-            if raw_profiles is not None
-            else [TestProfile()]
-        )
+        profiles = [TestProfile(**p) for p in raw_profiles] if raw_profiles is not None else [TestProfile()]
         if data.get("work_dir") == "/tmp/corecycler":
             data["work_dir"] = ""
         return AppSettings(**data, profiles=profiles)
     except (json.JSONDecodeError, TypeError, KeyError) as e:
         # Never silently reset: preserve the bad file for diagnosis and say why.
         corrupt = settings_file.with_suffix(".json.corrupt")
-        log.warning(
-            "Settings file unreadable (%s) — moved to %s, using defaults", e, corrupt
-        )
+        log.warning("Settings file unreadable (%s) — moved to %s, using defaults", e, corrupt)
         with contextlib.suppress(OSError):
             settings_file.replace(corrupt)
         return AppSettings()

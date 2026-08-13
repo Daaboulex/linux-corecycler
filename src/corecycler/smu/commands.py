@@ -12,27 +12,27 @@ from enum import Enum, auto
 
 
 class CPUGeneration(Enum):
-    ZEN2_MATISSE = auto()       # 3000 series desktop (family 0x17, model 0x71)
-    ZEN2_CASTLE_PEAK = auto()   # 3000 TR (family 0x17, model 0x31) — same SMU as Matisse
-    ZEN3_VERMEER = auto()       # 5000 series desktop (family 0x19, model 0x20-0x2F)
-    ZEN3_CHAGALL = auto()       # 5000 TR + Milan (family 0x19, model 0x00-0x0F) — Vermeer SMU
-    ZEN3_CEZANNE = auto()       # 5000 APU (family 0x19, model 0x50-0x5F)
-    ZEN3_REMBRANDT = auto()     # 6000 APU (family 0x19, model 0x40-0x4F) —
-                                # Phoenix-class CO commands, get_co=0x2F
-    ZEN3D_WARHOL = auto()       # 5800X3D (family 0x19, model 0x20-0x21 + X3D name)
-    ZEN4_RAPHAEL = auto()       # 7000 desktop + Dragon Range (family 0x19, model 0x60-0x6F)
-    ZEN4_PHOENIX = auto()       # 7040/8040 APU (family 0x19, model 0x74 Phoenix,
-                                # 0x75 Hawk Point — classic monolithic 8-core CCX)
-    ZEN4_PHOENIX2 = auto()      # Small het APU (family 0x19, 0x78 Phoenix2 2+4c,
-                                # 0x7C Hawk Point 2) — Phoenix commands, no slot map
+    ZEN2_MATISSE = auto()  # 3000 series desktop (family 0x17, model 0x71)
+    ZEN2_CASTLE_PEAK = auto()  # 3000 TR (family 0x17, model 0x31) — same SMU as Matisse
+    ZEN3_VERMEER = auto()  # 5000 series desktop (family 0x19, model 0x20-0x2F)
+    ZEN3_CHAGALL = auto()  # 5000 TR + Milan (family 0x19, model 0x00-0x0F) — Vermeer SMU
+    ZEN3_CEZANNE = auto()  # 5000 APU (family 0x19, model 0x50-0x5F)
+    ZEN3_REMBRANDT = auto()  # 6000 APU (family 0x19, model 0x40-0x4F) —
+    # Phoenix-class CO commands, get_co=0x2F
+    ZEN3D_WARHOL = auto()  # 5800X3D (family 0x19, model 0x20-0x21 + X3D name)
+    ZEN4_RAPHAEL = auto()  # 7000 desktop + Dragon Range (family 0x19, model 0x60-0x6F)
+    ZEN4_PHOENIX = auto()  # 7040/8040 APU (family 0x19, model 0x74 Phoenix,
+    # 0x75 Hawk Point — classic monolithic 8-core CCX)
+    ZEN4_PHOENIX2 = auto()  # Small het APU (family 0x19, 0x78 Phoenix2 2+4c,
+    # 0x7C Hawk Point 2) — Phoenix commands, no slot map
     ZEN4_DRAGON_RANGE = auto()  # 7045 mobile — uses Raphael commands
-    ZEN4_STORM_PEAK = auto()    # Zen 4 TR (family 0x19, model 0x10-0x1F)
-    ZEN5_GRANITE_RIDGE = auto() # 9000 desktop + Fire Range (family 0x1A, model 0x40-0x4F)
-    ZEN5_STRIX_POINT = auto()   # Ryzen AI APU (family 0x1A, model 0x20-0x2F het 4+8c;
-                                # 0x60-0x6F Krackan Point 4+4c / 1+3c het routes here too)
-    ZEN5_STRIX_HALO = auto()    # Ryzen AI Max APU (family 0x1A, model 0x70-0x7F)
+    ZEN4_STORM_PEAK = auto()  # Zen 4 TR (family 0x19, model 0x10-0x1F)
+    ZEN5_GRANITE_RIDGE = auto()  # 9000 desktop + Fire Range (family 0x1A, model 0x40-0x4F)
+    ZEN5_STRIX_POINT = auto()  # Ryzen AI APU (family 0x1A, model 0x20-0x2F het 4+8c;
+    # 0x60-0x6F Krackan Point 4+4c / 1+3c het routes here too)
+    ZEN5_STRIX_HALO = auto()  # Ryzen AI Max APU (family 0x1A, model 0x70-0x7F)
     ZEN5_SHIMADA_PEAK = auto()  # Zen 5 TR (family 0x1A, model 0x00-0x0F, 9980X dump
-                                # B00F81; different RSMU addresses, get_co=0xA3)
+    # B00F81; different RSMU addresses, get_co=0xA3)
     UNKNOWN = auto()
 
 
@@ -452,9 +452,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
 }
 
 
-def _alias_commands(
-    source: CPUGeneration, target: CPUGeneration, **overrides
-) -> SMUCommandSet:
+def _alias_commands(source: CPUGeneration, target: CPUGeneration, **overrides) -> SMUCommandSet:
     """Create a command set for target that shares source's commands.
 
     All fields are copied from source except ``generation`` (set to target) and
@@ -474,9 +472,7 @@ def _alias_commands(
 COMMAND_SETS[CPUGeneration.ZEN2_CASTLE_PEAK] = _alias_commands(
     CPUGeneration.ZEN2_MATISSE, CPUGeneration.ZEN2_CASTLE_PEAK
 )
-COMMAND_SETS[CPUGeneration.ZEN3_CHAGALL] = _alias_commands(
-    CPUGeneration.ZEN3_VERMEER, CPUGeneration.ZEN3_CHAGALL
-)
+COMMAND_SETS[CPUGeneration.ZEN3_CHAGALL] = _alias_commands(CPUGeneration.ZEN3_VERMEER, CPUGeneration.ZEN3_CHAGALL)
 COMMAND_SETS[CPUGeneration.ZEN3_REMBRANDT] = _alias_commands(
     CPUGeneration.ZEN4_PHOENIX,
     CPUGeneration.ZEN3_REMBRANDT,
@@ -552,11 +548,7 @@ def detect_generation(family: int, model: int, model_name: str) -> CPUGeneration
         return CPUGeneration.ZEN5_SHIMADA_PEAK
 
     generation = next(
-        (
-            gen
-            for fam, lo, hi, gen in _MODEL_TABLE
-            if family == fam and lo <= model <= hi
-        ),
+        (gen for fam, lo, hi, gen in _MODEL_TABLE if family == fam and lo <= model <= hi),
         CPUGeneration.UNKNOWN,
     )
 
@@ -629,9 +621,7 @@ def encode_co_arg(
         core_in_ccd = slot if slot is not None else core_id % 8
         return (detected_ccd << 28) | (core_in_ccd << 20) | margin
 
-    raise ValueError(
-        f"Zen 2 ({generation.name}) does not support Curve Optimizer"
-    )
+    raise ValueError(f"Zen 2 ({generation.name}) does not support Curve Optimizer")
 
 
 def decode_co_arg(core_id: int, response: int, generation: CPUGeneration) -> int:

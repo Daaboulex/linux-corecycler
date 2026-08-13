@@ -147,6 +147,7 @@ class TestStressWorkerStop:
         proc.poll.return_value = 0
         signals: list = []
         import os
+
         old = os.killpg
         os.killpg = lambda pgid, s: signals.append(s)
         try:

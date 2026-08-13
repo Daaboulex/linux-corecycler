@@ -69,7 +69,7 @@ def decode_spd_timings(data: bytes, dimm_index: int = 0) -> SPDTimingData | None
     if data[2] != 0x12:  # DDR5 type identifier
         return None
 
-    tCK_ps = struct.unpack_from('<H', data, 20)[0]
+    tCK_ps = struct.unpack_from("<H", data, 20)[0]
     if tCK_ps == 0:
         return None
 
@@ -78,23 +78,30 @@ def decode_spd_timings(data: bytes, dimm_index: int = 0) -> SPDTimingData | None
     def _ps_to_ck(ps_val: int) -> int:
         return (ps_val + tCK_ps - DDR5_ROUNDING_FACTOR) // tCK_ps
 
-    tCL = _ps_to_ck(struct.unpack_from('<H', data, 30)[0])
+    tCL = _ps_to_ck(struct.unpack_from("<H", data, 30)[0])
     tCL += tCL % 2  # round to next even per JEDEC
-    tRCD = _ps_to_ck(struct.unpack_from('<H', data, 32)[0])
-    tRP = _ps_to_ck(struct.unpack_from('<H', data, 34)[0])
-    tRAS = _ps_to_ck(struct.unpack_from('<H', data, 36)[0])
-    tRC = _ps_to_ck(struct.unpack_from('<H', data, 38)[0])
+    tRCD = _ps_to_ck(struct.unpack_from("<H", data, 32)[0])
+    tRP = _ps_to_ck(struct.unpack_from("<H", data, 34)[0])
+    tRAS = _ps_to_ck(struct.unpack_from("<H", data, 36)[0])
+    tRC = _ps_to_ck(struct.unpack_from("<H", data, 38)[0])
 
-    tWR_ps = struct.unpack_from('<H', data, 40)[0]
+    tWR_ps = struct.unpack_from("<H", data, 40)[0]
     tWR_ns = tWR_ps / 1000.0
 
-    tRFC1_ns = struct.unpack_from('<H', data, 42)[0]
-    tRFCsb_ns = struct.unpack_from('<H', data, 46)[0]
+    tRFC1_ns = struct.unpack_from("<H", data, 42)[0]
+    tRFCsb_ns = struct.unpack_from("<H", data, 46)[0]
 
     return SPDTimingData(
-        tCK_ps=tCK_ps, freq_mt=freq_mt,
-        tCL=tCL, tRCD=tRCD, tRP=tRP, tRAS=tRAS, tRC=tRC,
-        tWR_ns=tWR_ns, tRFC1_ns=tRFC1_ns, tRFCsb_ns=tRFCsb_ns,
+        tCK_ps=tCK_ps,
+        freq_mt=freq_mt,
+        tCL=tCL,
+        tRCD=tRCD,
+        tRP=tRP,
+        tRAS=tRAS,
+        tRC=tRC,
+        tWR_ns=tWR_ns,
+        tRFC1_ns=tRFC1_ns,
+        tRFCsb_ns=tRFCsb_ns,
         dimm_index=dimm_index,
     )
 
@@ -150,24 +157,26 @@ def parse_dmidecode_output(text: str) -> list[DIMMInfo]:
             m = re.match(r"([\d.]+)", s)
             return float(m.group(1)) if m else 0.0
 
-        dimms.append(DIMMInfo(
-            locator=fields.get("Locator", ""),
-            bank_locator=fields.get("Bank Locator", ""),
-            size_gb=size_gb,
-            mem_type=fields.get("Type", ""),
-            speed_mt=speed,
-            configured_speed_mt=conf_speed,
-            manufacturer=fields.get("Manufacturer", ""),
-            part_number=fields.get("Part Number", "").strip(),
-            serial_number=fields.get("Serial Number", ""),
-            rank=rank,
-            form_factor=fields.get("Form Factor", ""),
-            configured_voltage=_parse_voltage(fields.get("Configured Voltage", "")),
-            min_voltage=_parse_voltage(fields.get("Minimum Voltage", "")),
-            max_voltage=_parse_voltage(fields.get("Maximum Voltage", "")),
-            data_width=int(m.group(1)) if (m := re.match(r"(\d+)", fields.get("Data Width", ""))) else 0,
-            total_width=int(m.group(1)) if (m := re.match(r"(\d+)", fields.get("Total Width", ""))) else 0,
-        ))
+        dimms.append(
+            DIMMInfo(
+                locator=fields.get("Locator", ""),
+                bank_locator=fields.get("Bank Locator", ""),
+                size_gb=size_gb,
+                mem_type=fields.get("Type", ""),
+                speed_mt=speed,
+                configured_speed_mt=conf_speed,
+                manufacturer=fields.get("Manufacturer", ""),
+                part_number=fields.get("Part Number", "").strip(),
+                serial_number=fields.get("Serial Number", ""),
+                rank=rank,
+                form_factor=fields.get("Form Factor", ""),
+                configured_voltage=_parse_voltage(fields.get("Configured Voltage", "")),
+                min_voltage=_parse_voltage(fields.get("Minimum Voltage", "")),
+                max_voltage=_parse_voltage(fields.get("Maximum Voltage", "")),
+                data_width=int(m.group(1)) if (m := re.match(r"(\d+)", fields.get("Data Width", ""))) else 0,
+                total_width=int(m.group(1)) if (m := re.match(r"(\d+)", fields.get("Total Width", ""))) else 0,
+            )
+        )
 
     return dimms
 
@@ -177,7 +186,9 @@ def read_dimm_info() -> list[DIMMInfo]:
     try:
         result = subprocess.run(
             [tools.command_name("dmidecode"), "-t", "memory"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode != 0:
             log.warning("dmidecode exited with code %d: %s", result.returncode, result.stderr.strip())

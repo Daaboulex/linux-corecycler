@@ -84,9 +84,7 @@ def test_msr_reads_are_plausible():
 
 def test_dmidecode_parses_real_dimms():
     require(shutil.which("dmidecode") is not None, "requires dmidecode")
-    result = subprocess.run(
-        ["dmidecode", "-t", "memory"], capture_output=True, text=True, timeout=15
-    )
+    result = subprocess.run(["dmidecode", "-t", "memory"], capture_output=True, text=True, timeout=15)
     require_privileged(result.returncode == 0 and bool(result.stdout), "dmidecode -t memory needs root")
     dimms = parse_dmidecode_output(result.stdout)
     assert len(dimms) >= 1, "no DIMMs parsed from real dmidecode output"
@@ -102,10 +100,7 @@ def test_proc_stat_cpu_line_matches_the_pinned_fields():
     require(sample is not None, "no cpu0 line in /proc/stat")
     idle, total = sample
     assert 0 < idle < total
-    fields = next(
-        line.split() for line in Path("/proc/stat").read_text().splitlines()
-        if line.startswith("cpu0 ")
-    )
+    fields = next(line.split() for line in Path("/proc/stat").read_text().splitlines() if line.startswith("cpu0 "))
     assert len(fields) >= 6
     assert idle == int(fields[4]) + int(fields[5])
 
@@ -172,10 +167,6 @@ def test_co_read_answers_on_every_slot_so_it_cannot_find_fused_off_cores():
     require(bool(ccds), "requires L3-detected CCDs")
     for ccd in sorted(ccds):
         answered = [
-            slot
-            for slot in range(8)
-            if smu._send_get_co(
-                encode_co_arg(0, 0, generation, ccd=ccd, slot=slot)
-            ).success
+            slot for slot in range(8) if smu._send_get_co(encode_co_arg(0, 0, generation, ccd=ccd, slot=slot)).success
         ]
         assert answered == list(range(8)), (ccd, answered)

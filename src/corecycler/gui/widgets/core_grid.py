@@ -100,12 +100,8 @@ class CoreCell(QWidget):
         if self._errors > 0:
             text += f" ({self._errors}e)"
         self._status_label.setText(text)
-        self._time_label.setText(
-            duration_str(self._elapsed) if self._elapsed > 0 else ""
-        )
-        self._detail_label.setText(
-            f"CO:{self._co_offset}" if self._co_offset is not None else ""
-        )
+        self._time_label.setText(duration_str(self._elapsed) if self._elapsed > 0 else "")
+        self._detail_label.setText(f"CO:{self._co_offset}" if self._co_offset is not None else "")
 
     def update_status(self, status: CoreTestStatus) -> None:
         self._errors = status.errors
@@ -164,6 +160,7 @@ class CoreCell(QWidget):
             f" QLabel {{ color: {fg}; background: transparent; }}"
         )
 
+
 class CoreGridWidget(QWidget):
     """Vertical list of CoreCells grouped by CCD."""
 
@@ -198,9 +195,7 @@ class CoreGridWidget(QWidget):
         for ccd_idx in sorted(ccd_groups.keys()):
             core_ids = ccd_groups[ccd_idx]
 
-            has_vcache = any(
-                topology.cores[cid].has_vcache for cid in core_ids if cid in topology.cores
-            )
+            has_vcache = any(topology.cores[cid].has_vcache for cid in core_ids if cid in topology.cores)
             vcache_str = " (V-Cache)" if has_vcache else ""
             ccd_label = QLabel(f"CCD {ccd_idx}{vcache_str}")
             ccd_label.setFont(font_mono(8, bold=True))

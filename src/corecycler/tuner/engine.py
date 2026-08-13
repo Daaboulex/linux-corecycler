@@ -127,16 +127,18 @@ def _serialize_mce(events: list[MCEEvent]) -> str:
     """JSON-encode observed MCE events for the worker's finished signal."""
     if not events:
         return ""
-    return json.dumps([
-        {
-            "cpu": e.cpu,
-            "bank": e.bank,
-            "corrected": e.corrected,
-            "message": e.message,
-            "raw_ts": e.raw_ts,
-        }
-        for e in events
-    ])
+    return json.dumps(
+        [
+            {
+                "cpu": e.cpu,
+                "bank": e.bank,
+                "corrected": e.corrected,
+                "message": e.message,
+                "raw_ts": e.raw_ts,
+            }
+            for e in events
+        ]
+    )
 
 
 class _TunerWorker(QThread):
@@ -198,17 +200,27 @@ class _TunerWorker(QThread):
             report_core, report = _pick_report(results, self._core_id)
             if report is not None:
                 self.finished.emit(
-                    report_core, report.passed,
-                    report.error_message or "", report.error_type or "", elapsed,
+                    report_core,
+                    report.passed,
+                    report.error_message or "",
+                    report.error_type or "",
+                    elapsed,
                     peak_stretch if report_core == self._core_id else 0.0,
-                    mce_json, "",
+                    mce_json,
+                    "",
                 )
             else:
                 # The scheduler produced no verdict for this core (stopped early,
                 # environment problem) — that is NOT a stability failure.
                 self.finished.emit(
-                    self._core_id, False, "No result returned", "startup", elapsed,
-                    peak_stretch, mce_json, "",
+                    self._core_id,
+                    False,
+                    "No result returned",
+                    "startup",
+                    elapsed,
+                    peak_stretch,
+                    mce_json,
+                    "",
                 )
         except Exception as e:
             # A Python exception in the harness is an app/environment fault,
@@ -216,9 +228,7 @@ class _TunerWorker(QThread):
             log.exception("Tuner worker crashed for core %d", self._core_id)
             self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0, "", "")
 
-    def _stretch_sampler(
-        self, samples: list[float], stop: threading.Event
-    ) -> None:
+    def _stretch_sampler(self, samples: list[float], stop: threading.Event) -> None:
         """Background thread: sample APERF/MPERF stretch during sustained load.
 
         Waits for warmup (turbo ramp + process startup), then re-primes
@@ -278,8 +288,14 @@ class _RapidTransitionWorker(_TunerWorker):
             )
             elapsed = time.monotonic() - start
             self.finished.emit(
-                self._core_id, passed, error or "", "", elapsed, 0.0,
-                _serialize_mce(self.scheduler.observed_mce), "",
+                self._core_id,
+                passed,
+                error or "",
+                "",
+                elapsed,
+                0.0,
+                _serialize_mce(self.scheduler.observed_mce),
+                "",
             )
         except Exception as e:
             log.exception("Rapid transition worker crashed for core %d", self._core_id)
@@ -305,32 +321,44 @@ class _ParallelWorker(_TunerWorker):
             elapsed = time.monotonic() - start
             results = {c: [r] for c, r in raw.items()}
             mce_json = _serialize_mce(self._scheduler.observed_mce)
-            results_json = json.dumps([
-                {
-                    "core": c,
-                    "passed": r.passed,
-                    "error_type": r.error_type,
-                    "error_message": r.error_message,
-                    "duration": r.duration_seconds,
-                }
-                for c, r in raw.items()
-            ])
+            results_json = json.dumps(
+                [
+                    {
+                        "core": c,
+                        "passed": r.passed,
+                        "error_type": r.error_type,
+                        "error_message": r.error_message,
+                        "duration": r.duration_seconds,
+                    }
+                    for c, r in raw.items()
+                ]
+            )
             report_core, report = _pick_report(results, self._core_id)
             if report is not None:
                 self.finished.emit(
-                    report_core, report.passed,
-                    report.error_message or "", report.error_type or "", elapsed,
-                    0.0, mce_json, results_json,
+                    report_core,
+                    report.passed,
+                    report.error_message or "",
+                    report.error_type or "",
+                    elapsed,
+                    0.0,
+                    mce_json,
+                    results_json,
                 )
             else:
                 self.finished.emit(
-                    self._core_id, False, "No result returned", "startup",
-                    elapsed, 0.0, mce_json, results_json,
+                    self._core_id,
+                    False,
+                    "No result returned",
+                    "startup",
+                    elapsed,
+                    0.0,
+                    mce_json,
+                    results_json,
                 )
         except Exception as e:
             log.exception("Parallel worker crashed for core %d", self._core_id)
             self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0, "", "")
-
 
 
 class _SoakWorker(QThread):
@@ -364,15 +392,21 @@ class _SoakWorker(QThread):
             elapsed = time.monotonic() - start
             if events:
                 self.finished.emit(
-                    self._core_id, False,
-                    f"kernel error during soak: {events[0].message}", "mce",
-                    elapsed, 0.0, _serialize_mce(events), "",
+                    self._core_id,
+                    False,
+                    f"kernel error during soak: {events[0].message}",
+                    "mce",
+                    elapsed,
+                    0.0,
+                    _serialize_mce(events),
+                    "",
                 )
             else:
                 self.finished.emit(self._core_id, True, "", "", elapsed, 0.0, "", "")
         except Exception as e:
             log.exception("Soak worker crashed")
             self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0, "", "")
+
 
 # ------------------------------------------------------------------
 # Engine
@@ -539,9 +573,7 @@ class TunerEngine(QObject):
                 val = self._smu.get_co_offset(core_id)
                 if val is not None:
                     current_offsets[core_id] = val
-            self.log_message.emit(
-                f"Inherited current CO offsets from SMU: {current_offsets}"
-            )
+            self.log_message.emit(f"Inherited current CO offsets from SMU: {current_offsets}")
 
         for core_id in cores:
             start = current_offsets.get(core_id, self._config.start_offset)
@@ -557,8 +589,10 @@ class TunerEngine(QObject):
             f"fine step {self._config.fine_step}"
         )
         if any(v is not None for v in (ctx.ppt_limit_w, ctx.tdc_limit_a, ctx.edc_limit_a)):
+
             def _fmt(v: float | None, unit: str) -> str:
                 return f"{v:.0f} {unit}" if v is not None else "unknown"
+
             self.log_message.emit(
                 f"PBO power limits (recorded in tuning context): "
                 f"PPT {_fmt(ctx.ppt_limit_w, 'W')}, "
@@ -576,8 +610,7 @@ class TunerEngine(QObject):
         # (false PASS at an untested offset) and orphan the worker thread.
         if self._worker is not None and self._worker.isRunning():
             self.log_message.emit(
-                "Resume ignored: the current test is still finishing "
-                "(pause takes effect after it completes)."
+                "Resume ignored: the current test is still finishing (pause takes effect after it completes)."
             )
             return
         self._abort_requested = False
@@ -692,12 +725,9 @@ class TunerEngine(QObject):
 
         if crashed or pending_hunt:
             for core_id in crashed:
-                self.log_message.emit(
-                    f"Core {core_id} crash detected — applied penalty backoff"
-                )
+                self.log_message.emit(f"Core {core_id} crash detected — applied penalty backoff")
             self._set_status(
-                f"resumed after crash (cores: {crashed})"
-                if crashed else "resumed after unattributed crash"
+                f"resumed after crash (cores: {crashed})" if crashed else "resumed after unattributed crash"
             )
             # Circuit breaker: a resume that finds a fresh crash means the machine
             # died again on re-engage. Count consecutive crash-resumes (reset to 0
@@ -743,9 +773,7 @@ class TunerEngine(QObject):
                 except Exception as e:
                     failed_cores.append(cs.core_id)
                     log.warning("Failed to restore baseline for core %d: %s", cs.core_id, e)
-                    self.log_message.emit(
-                        f"Baseline restore error for core {cs.core_id}: {e}"
-                    )
+                    self.log_message.emit(f"Baseline restore error for core {cs.core_id}: {e}")
             if failed_cores:
                 # Fail closed: continuing to test on a machine whose SMU cannot
                 # even restore proven baselines would produce garbage verdicts
@@ -796,9 +824,12 @@ class TunerEngine(QObject):
                 # The owed clean pass survives the pause: persist dirty with
                 # the session's own cursor (the engine's is not restored yet).
                 tp.set_validation_position(
-                    self._db, session_id,
-                    session.validation_stage, session.validation_index,
-                    session.validation_half, True,
+                    self._db,
+                    session_id,
+                    session.validation_stage,
+                    session.validation_index,
+                    session.validation_half,
+                    True,
                     session.validation_requeue or "[]",
                 )
                 self.pause()
@@ -816,15 +847,8 @@ class TunerEngine(QObject):
         # validation and should re-enter validation instead of per-core search.
         all_confirmed = all(cs.phase == TunerPhase.CONFIRMED for cs in self._core_states.values())
         if all_confirmed and self._config.auto_validate and len(self._core_states) > 1:
-            profile = {
-                cs.core_id: cs.best_offset
-                for cs in self._core_states.values()
-                if cs.best_offset is not None
-            }
-            self.log_message.emit(
-                f"Resumed session {session_id} — "
-                f"all cores confirmed, re-entering validation"
-            )
+            profile = {cs.core_id: cs.best_offset for cs in self._core_states.values() if cs.best_offset is not None}
+            self.log_message.emit(f"Resumed session {session_id} — all cores confirmed, re-entering validation")
             self._enter_auto_validation(profile, resume_from=session)
             if unattributed_incident and not self._validation_dirty:
                 # The incident invalidates any clean-pass credit: even if the
@@ -842,9 +866,7 @@ class TunerEngine(QObject):
         if self._session_id:
             session = tp.get_session(self._db, self._session_id)
             if session is not None and session.status == "quarantined":
-                self.log_message.emit(
-                    "Pause ignored: the session is quarantined and stays that way."
-                )
+                self.log_message.emit("Pause ignored: the session is quarantined and stays that way.")
                 return
         self._paused = True
         self._set_status("paused")
@@ -899,15 +921,11 @@ class TunerEngine(QObject):
     def validate_profile(self, session_id: int) -> None:
         """Re-test all confirmed values from a completed session."""
         if self._worker is not None and self._worker.isRunning():
-            self.log_message.emit(
-                "Validate ignored: a test is still running — wait for it to finish."
-            )
+            self.log_message.emit("Validate ignored: a test is still running — wait for it to finish.")
             return
         map_err = core_map_blocked(self._smu)
         if map_err is not None:
-            self.log_message.emit(
-                f"Cannot validate: per-core CO is unavailable — {map_err}"
-            )
+            self.log_message.emit(f"Cannot validate: per-core CO is unavailable — {map_err}")
             return
         self._abort_requested = False
         self._paused = False
@@ -951,9 +969,7 @@ class TunerEngine(QObject):
 
         self._set_status("validating")
         tp.update_session_status(self._db, session_id, "validating")
-        self.log_message.emit(
-            f"Validating {len(profile)} core(s) from session {session_id}"
-        )
+        self.log_message.emit(f"Validating {len(profile)} core(s) from session {session_id}")
         self._run_next()
 
     # ------------------------------------------------------------------
@@ -992,10 +1008,7 @@ class TunerEngine(QObject):
                 else:
                     cs.hardening_tier_index = next_tier
                     # Alternate between T1/T2 labels for any number of tiers
-                    cs.phase = (
-                        TunerPhase.HARDENING_T1 if next_tier % 2 == 0
-                        else TunerPhase.HARDENING_T2
-                    )
+                    cs.phase = TunerPhase.HARDENING_T1 if next_tier % 2 == 0 else TunerPhase.HARDENING_T2
             else:
                 # Back off linearly by fine_step
                 new_offset = cs.current_offset - (direction * cfg.fine_step)
@@ -1084,10 +1097,14 @@ class TunerEngine(QObject):
                     cs.best_offset = cs.current_offset
                     next_offset = cs.current_offset + direction * cfg.fine_step
                     # Stop if we'd reach or pass the coarse fail point
-                    if cs.coarse_fail_offset is not None and (
-                        (direction < 0 and next_offset <= cs.coarse_fail_offset)
-                        or (direction > 0 and next_offset >= cs.coarse_fail_offset)
-                    ) or self._exceeds_max(next_offset):
+                    if (
+                        cs.coarse_fail_offset is not None
+                        and (
+                            (direction < 0 and next_offset <= cs.coarse_fail_offset)
+                            or (direction > 0 and next_offset >= cs.coarse_fail_offset)
+                        )
+                        or self._exceeds_max(next_offset)
+                    ):
                         cs.phase = TunerPhase.SETTLED
                     else:
                         cs.current_offset = next_offset
@@ -1175,9 +1192,7 @@ class TunerEngine(QObject):
                     if cs.consecutive_backoff_fails >= cfg.midpoint_jump_threshold:
                         # Jump to midpoint between current and baseline
                         cs.backoff_fail_bound = cs.best_offset
-                        midpoint = cs.best_offset - direction * (
-                            abs(cs.best_offset - cs.baseline_offset) // 2
-                        )
+                        midpoint = cs.best_offset - direction * (abs(cs.best_offset - cs.baseline_offset) // 2)
                         floor = self._backoff_floor(cs, midpoint)
                         if floor is not None:
                             cs.phase = TunerPhase.CONFIRMED
@@ -1277,9 +1292,7 @@ class TunerEngine(QObject):
         else:
             cs.phase = TunerPhase.BACKOFF_PRECONFIRM
             cs.current_offset = step_back
-            if cs.best_offset is not None and self._is_more_aggressive(
-                cs.best_offset, step_back
-            ):
+            if cs.best_offset is not None and self._is_more_aggressive(cs.best_offset, step_back):
                 cs.best_offset = step_back
         return True
 
@@ -1321,9 +1334,7 @@ class TunerEngine(QObject):
             return pb
         return None
 
-    def _apply_crash_penalty(
-        self, cs: CoreState, *, steps: int | None = None, count_crash: bool = True
-    ) -> None:
+    def _apply_crash_penalty(self, cs: CoreState, *, steps: int | None = None, count_crash: bool = True) -> None:
         """Apply crash penalty: backoff + hard fail bound (+ cooldown).
 
         ``steps`` overrides crash_penalty_steps for evidence-grade reactions —
@@ -1338,14 +1349,10 @@ class TunerEngine(QObject):
         # this is the tightest SAFE bound, and it lets the backoff binary search
         # converge: a crash at a midpoint less aggressive than the old bound must
         # TIGHTEN it, otherwise the search oscillates forever.
-        if cs.backoff_fail_bound is None or not self._is_more_aggressive(
-            crashed_offset, cs.backoff_fail_bound
-        ):
+        if cs.backoff_fail_bound is None or not self._is_more_aggressive(crashed_offset, cs.backoff_fail_bound):
             cs.backoff_fail_bound = crashed_offset
         # Back off by crash_penalty_steps (or the caller's override)
-        penalty = (
-            steps if steps is not None else self._config.crash_penalty_steps
-        ) * self._config.fine_step
+        penalty = (steps if steps is not None else self._config.crash_penalty_steps) * self._config.fine_step
         new_offset = crashed_offset - (self._config.direction * penalty)
         # CO=0 (stock voltage) is the only axiomatically safe state. Never let a
         # backoff overshoot past 0 to the opposite, more-aggressive side.
@@ -1411,7 +1418,8 @@ class TunerEngine(QObject):
         if threshold <= 0 or self._session_id is None:
             return False
         rows = [
-            r for r in tp.get_test_log(self._db, self._session_id, core_id=core_id)
+            r
+            for r in tp.get_test_log(self._db, self._session_id, core_id=core_id)
             if r.get("duration_seconds") is not None
         ]
         streak = 0
@@ -1511,8 +1519,7 @@ class TunerEngine(QObject):
             forensic_events, forensic_ok = self._forensics(since)
             if not forensic_ok:
                 self.log_message.emit(
-                    "Kernel-journal forensics unavailable — falling back to "
-                    "in-test/journal attribution."
+                    "Kernel-journal forensics unavailable — falling back to in-test/journal attribution."
                 )
         forensic_by_core = self._events_by_core(forensic_events)
         if forensic_by_core:
@@ -1521,10 +1528,7 @@ class TunerEngine(QObject):
             if session.hunting_core is not None:
                 tp.set_hunting_core(self._db, session_id, None)
             tp.set_unattributed_crashes(self._db, session_id, 0)
-        elif (
-            session.hunting_core is not None
-            and session.hunting_core in self._core_states
-        ):
+        elif session.hunting_core is not None and session.hunting_core in self._core_states:
             culprit = self._core_states[session.hunting_core]
             self.log_message.emit(
                 f"Crash during isolated hunt slot — core {culprit.core_id} is "
@@ -1538,9 +1542,7 @@ class TunerEngine(QObject):
             in_test = [cs for cs in self._core_states.values() if cs.in_test]
             ambiguous = session.status == "validating" or len(in_test) > 1
             if in_test and not ambiguous:
-                crashed = self._penalize_cores(
-                    in_test, "single in-test core, isolation mode"
-                )
+                crashed = self._penalize_cores(in_test, "single in-test core, isolation mode")
             elif in_test:
                 self.log_message.emit(
                     f"Crash with {len(in_test)} core(s) under load in an "
@@ -1632,19 +1634,14 @@ class TunerEngine(QObject):
             out.setdefault(core, []).append(e)
         return out
 
-    def _penalize_forensic_cores(
-        self, by_core: dict[int, list[MCEEvent]]
-    ) -> list[int]:
+    def _penalize_forensic_cores(self, by_core: dict[int, list[MCEEvent]]) -> list[int]:
         """Crash-penalize exactly the cores the kernel journal named.
 
         The penalty anchors at the CO value the journal says was resident at
         crash time — not whatever offset the persisted search state happens to
         hold — so the fail bound lands on the value that actually died.
         """
-        journal = (
-            tp.journal_values(self._db, self._session_id)
-            if self._session_id is not None else {}
-        )
+        journal = tp.journal_values(self._db, self._session_id) if self._session_id is not None else {}
         crashed: list[int] = []
         for core_id in sorted(by_core):
             cs = self._core_states[core_id]
@@ -1652,14 +1649,19 @@ class TunerEngine(QObject):
             cs.current_offset = resident
             first = by_core[core_id][0]
             tp.log_test_result(
-                self._db, self._session_id, core_id, resident, cs.phase.value,
+                self._db,
+                self._session_id,
+                core_id,
+                resident,
+                cs.phase.value,
                 passed=False,
                 error_msg=(
                     f"Reboot after hard crash; kernel journal names this core "
                     f"({len(by_core[core_id])} MCE line(s), e.g. "
                     f"'{first.message[:120]}'). Offset {resident} was resident."
                 ),
-                error_type="crash", duration=None,
+                error_type="crash",
+                duration=None,
             )
             self._apply_crash_penalty(cs)
             tp.save_core_state(self._db, self._session_id, cs)
@@ -1682,10 +1684,7 @@ class TunerEngine(QObject):
                 crashed_offset,
                 cs.phase.value,
                 passed=False,
-                error_msg=(
-                    f"System reboot detected ({reason}). "
-                    f"Offset {crashed_offset} caused hard crash."
-                ),
+                error_msg=(f"System reboot detected ({reason}). Offset {crashed_offset} caused hard crash."),
                 error_type="crash",
                 duration=None,
             )
@@ -1693,8 +1692,7 @@ class TunerEngine(QObject):
             tp.save_core_state(self._db, self._session_id, cs)
             crashed.append(cs.core_id)
             logging.warning(
-                "Core %d: crash detected at offset %d — applied penalty, "
-                "new offset %d, crash_count=%d",
+                "Core %d: crash detected at offset %d — applied penalty, new offset %d, crash_count=%d",
                 cs.core_id,
                 crashed_offset,
                 cs.current_offset,
@@ -1724,21 +1722,28 @@ class TunerEngine(QObject):
             # time (the journal), which may differ from the persisted offset.
             cs.current_offset = value
             tp.log_test_result(
-                self._db, self._session_id, core_id, value, cs.phase.value,
+                self._db,
+                self._session_id,
+                core_id,
+                value,
+                cs.phase.value,
                 passed=False,
                 error_msg=(
                     f"Reboot detected. Offset {value} was resident (CO journal) "
                     f"and not proven survivable — treated as a hard crash."
                 ),
-                error_type="crash", duration=None,
+                error_type="crash",
+                duration=None,
             )
             self._apply_crash_penalty(cs)
             cs.in_test = False
             tp.save_core_state(self._db, self._session_id, cs)
             handled.append(core_id)
             logging.warning(
-                "Core %d: CO-journal crash suspect at offset %d — penalty applied, "
-                "new offset %d", core_id, value, cs.current_offset,
+                "Core %d: CO-journal crash suspect at offset %d — penalty applied, new offset %d",
+                core_id,
+                value,
+                cs.current_offset,
             )
         return handled
 
@@ -1792,9 +1797,7 @@ class TunerEngine(QObject):
             info = foreign[core_id]
             self._apply_mce_evidence(core_id, resident, info["corrected"], info["messages"])
 
-    def _apply_mce_evidence(
-        self, core_id: int, resident: int, corrected: bool, messages: list[str]
-    ) -> None:
+    def _apply_mce_evidence(self, core_id: int, resident: int, corrected: bool, messages: list[str]) -> None:
         """React to a kernel hardware-error report naming this core while
         ``resident`` was its live CO value.
 
@@ -1809,13 +1812,15 @@ class TunerEngine(QObject):
             return
         detail = messages[0] if messages else "kernel MCE"
         tp.log_test_result(
-            self._db, self._session_id, core_id, resident, "mce_evidence",
+            self._db,
+            self._session_id,
+            core_id,
+            resident,
+            "mce_evidence",
             passed=False,
-            error_msg=(
-                f"Kernel reported a hardware error on this core at resident "
-                f"offset {resident}: {detail}"
-            ),
-            error_type="mce", duration=None,
+            error_msg=(f"Kernel reported a hardware error on this core at resident offset {resident}: {detail}"),
+            error_type="mce",
+            duration=None,
         )
         if resident == 0:
             self.log_message.emit(
@@ -1846,13 +1851,10 @@ class TunerEngine(QObject):
         mce_rows = 0
         if self._session_id is not None:
             mce_rows = sum(
-                1 for r in tp.get_test_log(self._db, self._session_id, core_id=core_id)
-                if r.get("error_type") == "mce"
+                1 for r in tp.get_test_log(self._db, self._session_id, core_id=core_id) if r.get("error_type") == "mce"
             )
         cs = self._core_states[core_id]
-        aggressiveness = self._config.direction * (
-            cs.best_offset if cs.best_offset is not None else cs.baseline_offset
-        )
+        aggressiveness = self._config.direction * (cs.best_offset if cs.best_offset is not None else cs.baseline_offset)
         return (mce_rows, cs.crash_count, aggressiveness)
 
     def _start_hunt(self) -> None:
@@ -1893,15 +1895,13 @@ class TunerEngine(QObject):
                     ok = self._apply_co(other_id, 0)
                 except Exception as e:
                     self.log_message.emit(
-                        f"Hunt: failed to set core {other_id} to stock: {e}. "
-                        f"Pausing (SMU issue, not a verdict)."
+                        f"Hunt: failed to set core {other_id} to stock: {e}. Pausing (SMU issue, not a verdict)."
                     )
                     self.pause()
                     return
                 if not ok:
                     self.log_message.emit(
-                        f"Hunt: stock write rejected for core {other_id}. "
-                        f"Pausing (SMU issue, not a verdict)."
+                        f"Hunt: stock write rejected for core {other_id}. Pausing (SMU issue, not a verdict)."
                     )
                     self.pause()
                     return
@@ -1910,15 +1910,13 @@ class TunerEngine(QObject):
                 ok = self._apply_co(core_id, target)
             except Exception as e:
                 self.log_message.emit(
-                    f"Hunt: failed to set core {core_id} to {target}: {e}. "
-                    f"Pausing (SMU issue, not a verdict)."
+                    f"Hunt: failed to set core {core_id} to {target}: {e}. Pausing (SMU issue, not a verdict)."
                 )
                 self.pause()
                 return
             if not ok:
                 self.log_message.emit(
-                    f"Hunt: CO write rejected for core {core_id} at {target}. "
-                    f"Pausing (SMU issue, not a verdict)."
+                    f"Hunt: CO write rejected for core {core_id} at {target}. Pausing (SMU issue, not a verdict)."
                 )
                 self.pause()
                 return
@@ -1931,9 +1929,7 @@ class TunerEngine(QObject):
         tp.save_core_state(self._db, self._session_id, cs)
         self._last_tested_core = core_id
         self._emit_progress()
-        self.log_message.emit(
-            f"Hunt slot: core {core_id} at {target}, all other cores at stock"
-        )
+        self.log_message.emit(f"Hunt slot: core {core_id} at {target}, all other cores at stock")
         self._start_worker(core_id, self._config.hunt_slot_seconds, spectrum=True)
 
     def _end_hunt_fruitless(self) -> None:
@@ -1957,17 +1953,11 @@ class TunerEngine(QObject):
             "Crash hunt found no culprit — resuming validation; another "
             "unattributed crash will pause for your decision."
         )
-        profile = {
-            cs.core_id: cs.best_offset
-            for cs in self._core_states.values()
-            if cs.best_offset is not None
-        }
+        profile = {cs.core_id: cs.best_offset for cs in self._core_states.values() if cs.best_offset is not None}
         session = tp.get_session(self._db, self._session_id)
         self._enter_auto_validation(profile, resume_from=session)
 
-    def _on_hunt_slot_finished(
-        self, core_id: int, passed: bool, error_type: str, foreign: dict[int, dict]
-    ) -> None:
+    def _on_hunt_slot_finished(self, core_id: int, passed: bool, error_type: str, foreign: dict[int, dict]) -> None:
         if self._session_id is not None:
             tp.set_hunting_core(self._db, self._session_id, None)
         if foreign:
@@ -1984,8 +1974,7 @@ class TunerEngine(QObject):
             return
         resident = self._co_applied.get(core_id, cs.current_offset)
         self.log_message.emit(
-            f"Crash hunt: core {core_id} FAILED in isolation at {resident} "
-            f"({error_type or 'fail'}) — culprit found."
+            f"Crash hunt: core {core_id} FAILED in isolation at {resident} ({error_type or 'fail'}) — culprit found."
         )
         cs.current_offset = resident
         if error_type == "crash":
@@ -2039,7 +2028,9 @@ class TunerEngine(QObject):
         cs.backoff_mode = False
         logging.warning(
             "Core %d: time budget exceeded (%.0fs > %ds) — settled at %d",
-            cs.core_id, cs.cumulative_test_time, self._config.max_core_time_seconds,
+            cs.core_id,
+            cs.cumulative_test_time,
+            self._config.max_core_time_seconds,
             settled_offset,
         )
         return True
@@ -2047,7 +2038,8 @@ class TunerEngine(QObject):
     def _accumulate_test_time(self, cs: CoreState, duration: float) -> None:
         """Add test duration to core's cumulative time (search phases only)."""
         if cs.phase in (
-            TunerPhase.HARDENING_T1, TunerPhase.HARDENING_T2,
+            TunerPhase.HARDENING_T1,
+            TunerPhase.HARDENING_T2,
             TunerPhase.HARDENED,
         ):
             return
@@ -2110,10 +2102,7 @@ class TunerEngine(QObject):
         confirmation would restart the round and starve the high-id cores'
         cool-down fairness.
         """
-        active = sorted(
-            cid for cid, cs in self._core_states.items()
-            if self._is_core_available(cs)
-        )
+        active = sorted(cid for cid, cs in self._core_states.items() if self._is_core_available(cs))
         if not active:
             return None
         if self._last_tested_core is not None:
@@ -2132,10 +2121,14 @@ class TunerEngine(QObject):
             if not self._is_core_available(cs):
                 continue
             base_phase_score = {
-                TunerPhase.FINE_SEARCH: 0, TunerPhase.FAILED_CONFIRM: 0,
-                TunerPhase.BACKOFF_PRECONFIRM: 0, TunerPhase.BACKOFF_CONFIRMING: 1,
-                TunerPhase.CONFIRMING: 1, TunerPhase.COARSE_SEARCH: 2,
-                TunerPhase.SETTLED: 3, TunerPhase.NOT_STARTED: 4,
+                TunerPhase.FINE_SEARCH: 0,
+                TunerPhase.FAILED_CONFIRM: 0,
+                TunerPhase.BACKOFF_PRECONFIRM: 0,
+                TunerPhase.BACKOFF_CONFIRMING: 1,
+                TunerPhase.CONFIRMING: 1,
+                TunerPhase.COARSE_SEARCH: 2,
+                TunerPhase.SETTLED: 3,
+                TunerPhase.NOT_STARTED: 4,
                 TunerPhase.HARDENING_T1: 0,
                 TunerPhase.HARDENING_T2: 0,
             }.get(cs.phase, 5)
@@ -2243,10 +2236,7 @@ class TunerEngine(QObject):
         """
         if self._session_id is None:
             return
-        real = [
-            e for e in tp.get_test_log(self._db, self._session_id)
-            if e.get("duration_seconds") is not None
-        ]
+        real = [e for e in tp.get_test_log(self._db, self._session_id) if e.get("duration_seconds") is not None]
         if not real:
             return
         self._last_tested_core = real[-1]["core_id"]
@@ -2280,8 +2270,7 @@ class TunerEngine(QObject):
         while core_id is None:
             # Distinguish "all done" from "all active cores in cooldown"
             in_cooldown = any(
-                cs.crash_cooldown > 0
-                and cs.phase not in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
+                cs.crash_cooldown > 0 and cs.phase not in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
                 for cs in self._core_states.values()
             )
             if not in_cooldown:
@@ -2309,10 +2298,7 @@ class TunerEngine(QObject):
         if core_info and core_info.ccd is not None:
             self._ccd_last_tested[core_info.ccd] = core_id
         self._emit_progress()
-        self.log_message.emit(
-            f"Testing core {core_id} at offset {cs.current_offset} "
-            f"(phase: {cs.phase})"
-        )
+        self.log_message.emit(f"Testing core {core_id} at offset {cs.current_offset} (phase: {cs.phase})")
 
         # CO offset application — two modes:
         # 1. During validation: apply ALL confirmed offsets (testing interactions)
@@ -2329,8 +2315,10 @@ class TunerEngine(QObject):
 
         # Determine test duration based on phase
         if cs.phase in (
-            TunerPhase.CONFIRMING, TunerPhase.BACKOFF_CONFIRMING,
-            TunerPhase.HARDENING_T1, TunerPhase.HARDENING_T2,
+            TunerPhase.CONFIRMING,
+            TunerPhase.BACKOFF_CONFIRMING,
+            TunerPhase.HARDENING_T1,
+            TunerPhase.HARDENING_T2,
         ):
             duration = self._config.confirm_duration_seconds
         elif cs.phase == TunerPhase.BACKOFF_PRECONFIRM:
@@ -2354,9 +2342,7 @@ class TunerEngine(QObject):
         synchronously (which would recurse through _run_next on a core that
         always fails to start).
         """
-        QTimer.singleShot(
-            0, lambda: self._on_test_finished(core_id, False, message, "startup", 0.0, 0.0, "", "")
-        )
+        QTimer.singleShot(0, lambda: self._on_test_finished(core_id, False, message, "startup", 0.0, 0.0, "", ""))
 
     def _start_worker(self, core_id: int, duration: int, *, spectrum: bool = False) -> None:
         """Launch a _TunerWorker thread for the given core.
@@ -2377,6 +2363,7 @@ class TunerEngine(QObject):
             else (self._config.backend, self._config.stress_mode, self._config.fft_preset)
         )
         from corecycler.engine.backends.base import FFTPreset, StressMode
+
         try:
             _stress_mode = StressMode[stress_mode_str.upper()]
         except KeyError:
@@ -2420,7 +2407,9 @@ class TunerEngine(QObject):
 
         logical_cpu = core_info.logical_cpus[0] if core_info.logical_cpus else core_id
         self._worker = _TunerWorker(
-            core_id, logical_cpu, scheduler,
+            core_id,
+            logical_cpu,
+            scheduler,
             msr=self._msr if self._config.stretch_threshold_pct > 0 else None,
             parent=self,
         )
@@ -2469,9 +2458,7 @@ class TunerEngine(QObject):
 
         # Kernel events observed during the test that name OTHER cores are
         # evidence about those cores, independent of this test's verdict.
-        foreign = self._foreign_mce_by_core(
-            -1 if self._soaking else core_id, mce_json
-        )
+        foreign = self._foreign_mce_by_core(-1 if self._soaking else core_id, mce_json)
 
         # A start-time/environment failure (missing binary, scheduler
         # construction error, harness exception) is not a stability verdict —
@@ -2511,9 +2498,7 @@ class TunerEngine(QObject):
                     "test — resident offsets stay unproven for this run."
                 )
             else:
-                tp.journal_mark_survived(
-                    self._db, self._session_id, exclude_cores=sorted(foreign)
-                )
+                tp.journal_mark_survived(self._db, self._session_id, exclude_cores=sorted(foreign))
                 for c, v in tp.journal_survived_values(self._db, self._session_id).items():
                     if self._is_more_aggressive(v, self._co_survived.get(c, 0)):
                         self._co_survived[c] = v
@@ -2537,10 +2522,7 @@ class TunerEngine(QObject):
                 self._hunt_queue.insert(0, core_id)
                 if self._session_id is not None:
                     tp.set_hunting_core(self._db, self._session_id, None)
-                self.log_message.emit(
-                    f"Crash hunt: core {core_id} thermal stop — cooling down, "
-                    f"retrying the same slot"
-                )
+                self.log_message.emit(f"Crash hunt: core {core_id} thermal stop — cooling down, retrying the same slot")
                 QTimer.singleShot(
                     int(self._config.thermal_cooldown_seconds * 1000),
                     self._run_next_hunt_slot,
@@ -2576,7 +2558,9 @@ class TunerEngine(QObject):
             error_type = "clock_stretch"
             log.info(
                 "Core %d offset %d: stress passed but stretch %.1f%% exceeds threshold — marking FAIL",
-                core_id, cs.current_offset, peak_stretch_pct,
+                core_id,
+                cs.current_offset,
+                peak_stretch_pct,
             )
 
         # Determine log phase
@@ -2647,12 +2631,7 @@ class TunerEngine(QObject):
         # Search flow only: validation failures are legitimate consecutive
         # backoffs, hunt fails are single by design, and isolation passes are
         # not valid evidence for the all-offsets-live context.
-        if (
-            not passed
-            and self._validation_stage == 0
-            and not self._hunting
-            and self._apparatus_suspect(core_id)
-        ):
+        if not passed and self._validation_stage == 0 and not self._hunting and self._apparatus_suspect(core_id):
             return
 
         # Hunt slots have their own flow — a fail here is a FOUND CULPRIT.
@@ -2667,8 +2646,7 @@ class TunerEngine(QObject):
                 self._validation_dirty = True
                 self._save_validation_pos()
                 self.log_message.emit(
-                    "Soak found hardware evidence — leaving validation; the "
-                    "named core(s) re-earn confirmation first."
+                    "Soak found hardware evidence — leaving validation; the named core(s) re-earn confirmation first."
                 )
                 self._validation_stage_exit_to_search()
                 return
@@ -2747,7 +2725,9 @@ class TunerEngine(QObject):
         if not isinstance(entries, list):
             return
         backend, stress_mode, fft_preset = (
-            self._config.backend, self._config.stress_mode, self._config.fft_preset,
+            self._config.backend,
+            self._config.stress_mode,
+            self._config.fft_preset,
         )
         for e in entries:
             if not isinstance(e, dict):
@@ -2763,12 +2743,18 @@ class TunerEngine(QObject):
                 offset = cs.best_offset if cs.best_offset is not None else cs.current_offset
             duration = e.get("duration")
             tp.log_test_result(
-                self._db, self._session_id, core, offset, phase,
+                self._db,
+                self._session_id,
+                core,
+                offset,
+                phase,
                 bool(e.get("passed")),
                 error_msg=e.get("error_message"),
                 error_type=e.get("error_type"),
                 duration=float(duration) if isinstance(duration, (int, float)) else None,
-                backend=backend, stress_mode=stress_mode, fft_preset=fft_preset,
+                backend=backend,
+                stress_mode=stress_mode,
+                fft_preset=fft_preset,
             )
 
     def _handle_thermal_abort(self, core_id: int, cs: CoreState, duration: float) -> None:
@@ -2784,8 +2770,7 @@ class TunerEngine(QObject):
         cs.thermal_aborts += 1
         if not self._revert_core_to_baseline(core_id):
             self.log_message.emit(
-                f"Core {core_id}: SMU revert failed during thermal handling. "
-                f"Pausing (hardware-state fault)."
+                f"Core {core_id}: SMU revert failed during thermal handling. Pausing (hardware-state fault)."
             )
             self.pause()
             return
@@ -2818,9 +2803,7 @@ class TunerEngine(QObject):
         # Real wall-clock cooldown before retrying the same offset: crash_cooldown
         # is only a pick-counter and gives no cooling when this is the last active
         # core. QTimer also breaks the _on_test_finished call stack (re-entrancy).
-        QTimer.singleShot(
-            int(self._config.thermal_cooldown_seconds * 1000), self._run_next
-        )
+        QTimer.singleShot(int(self._config.thermal_cooldown_seconds * 1000), self._run_next)
 
     def _handle_validation_thermal_abort(self, core_id: int) -> None:
         """A thermal stop during validation is not a stability verdict.
@@ -2852,9 +2835,7 @@ class TunerEngine(QObject):
             self._run_validation_requeue if self._in_requeue else self._run_validation_next,
         )
 
-    def _handle_apparatus_fault(
-        self, core_id: int, error_msg: str, error_type: str, foreign: dict[int, dict]
-    ) -> None:
+    def _handle_apparatus_fault(self, core_id: int, error_msg: str, error_type: str, foreign: dict[int, dict]) -> None:
         """Retry the current step after a fault that proves nothing about the
         silicon; after max_apparatus_retries consecutive faults, stop honestly.
 
@@ -2904,8 +2885,7 @@ class TunerEngine(QObject):
         elif self._validation_stage > 0:
             QTimer.singleShot(
                 0,
-                self._run_validation_requeue if self._in_requeue
-                else self._run_validation_next,
+                self._run_validation_requeue if self._in_requeue else self._run_validation_next,
             )
         else:
             if not self._revert_core_to_baseline(core_id):
@@ -2929,19 +2909,14 @@ class TunerEngine(QObject):
         # confirmed-but-not-hardened core into hardening and keep going. Hardening
         # only ever exits to HARDENED (never back to CONFIRMED), so this converges.
         if self._config.hardening_tiers:
-            promoted = [
-                cs for cs in self._core_states.values()
-                if cs.phase == TunerPhase.CONFIRMED
-            ]
+            promoted = [cs for cs in self._core_states.values() if cs.phase == TunerPhase.CONFIRMED]
             for cs in promoted:
                 cs.phase = TunerPhase.HARDENING_T1
                 cs.hardening_tier_index = 0
                 if self._session_id is not None:
                     tp.save_core_state(self._db, self._session_id, cs)
             if promoted:
-                self.log_message.emit(
-                    f"Promoting {len(promoted)} confirmed core(s) to hardening"
-                )
+                self.log_message.emit(f"Promoting {len(promoted)} confirmed core(s) to hardening")
                 QTimer.singleShot(0, self._run_next)
                 return
 
@@ -2967,13 +2942,8 @@ class TunerEngine(QObject):
             and self._status != "validating"
             and len(profile) > 1  # single-core has nothing to cross-validate
         ):
-            self.log_message.emit(
-                f"All {len(profile)} cores confirmed — entering multi-core validation"
-            )
-            session = (
-                tp.get_session(self._db, self._session_id)
-                if self._session_id is not None else None
-            )
+            self.log_message.emit(f"All {len(profile)} cores confirmed — entering multi-core validation")
+            session = tp.get_session(self._db, self._session_id) if self._session_id is not None else None
             self._enter_auto_validation(profile, resume_from=session)
             return
 
@@ -3008,9 +2978,7 @@ class TunerEngine(QObject):
                     log.warning("Failed to apply confirmed offset for core %d: %s", core_id, e)
                     failed.append(core_id)
             if failed:
-                self.log_message.emit(
-                    f"WARNING: Could not apply confirmed offsets for cores {failed}"
-                )
+                self.log_message.emit(f"WARNING: Could not apply confirmed offsets for cores {failed}")
             else:
                 self.log_message.emit("Applied confirmed CO profile to SMU")
 
@@ -3025,10 +2993,9 @@ class TunerEngine(QObject):
         self._save_validation_pos()
         self._set_status("idle")
         self._emit_progress()
-        self.log_message.emit(
-            f"Tuner complete — {len(profile)} cores confirmed"
-        )
+        self.log_message.emit(f"Tuner complete — {len(profile)} cores confirmed")
         import json
+
         self.session_completed.emit(json.dumps(profile))
 
     # ------------------------------------------------------------------
@@ -3057,30 +3024,21 @@ class TunerEngine(QObject):
         # Stage-1 order is deterministic (sorted), so a restored index means
         # the same cores; halves are CCD-split (or even/odd), also stable.
         self._validation_core_order = sorted(profile.keys())
-        self._validation_halves = [
-            h for h in self._split_cores_into_halves(profile) if h
-        ]
+        self._validation_halves = [h for h in self._split_cores_into_halves(profile) if h]
         self._validation_thermal_aborts = 0
 
         if resume_from is not None and resume_from.validation_stage > 0:
             # Clamp below the terminal soak (7) and finalize sentinel (8): a
             # resume re-runs synthetic stages, never lands straight in the soak.
             self._validation_stage = min(resume_from.validation_stage, 6)
-            self._validation_core_index = max(
-                0, min(resume_from.validation_index, len(self._validation_core_order))
-            )
-            self._validation_half_index = max(
-                0, min(resume_from.validation_half, len(self._validation_halves))
-            )
+            self._validation_core_index = max(0, min(resume_from.validation_index, len(self._validation_core_order)))
+            self._validation_half_index = max(0, min(resume_from.validation_half, len(self._validation_halves)))
             self._validation_dirty = resume_from.validation_dirty
             try:
                 raw = json.loads(resume_from.validation_requeue)
             except (json.JSONDecodeError, TypeError):
                 raw = []  # fail closed: a corrupt cursor loses only the hint
-            requeue = [
-                c for c in raw
-                if isinstance(c, int) and c in self._core_states
-            ] if isinstance(raw, list) else []
+            requeue = [c for c in raw if isinstance(c, int) and c in self._core_states] if isinstance(raw, list) else []
             if self._validation_stage >= 2:
                 for c in self._validation_core_order:
                     if c not in requeue and not self._has_stage1_pass_at_current_best(c):
@@ -3123,8 +3081,10 @@ class TunerEngine(QObject):
         )
         log.debug(
             "validation cursor: stage=%d index=%d half=%d dirty=%s requeue=%s",
-            self._validation_stage, self._validation_core_index,
-            self._validation_half_index, self._validation_dirty,
+            self._validation_stage,
+            self._validation_core_index,
+            self._validation_half_index,
+            self._validation_dirty,
             self._validation_requeue,
         )
 
@@ -3219,9 +3179,7 @@ class TunerEngine(QObject):
         idle↔boost transitions that sustained stress tests miss.
         """
         cores = self._validation_core_order
-        self.log_message.emit(
-            f"Validation stage 4: rapid load/idle transitions on {len(cores)} cores"
-        )
+        self.log_message.emit(f"Validation stage 4: rapid load/idle transitions on {len(cores)} cores")
         self.validation_progress.emit(4, 0, 1)
 
         # Apply all confirmed offsets
@@ -3259,11 +3217,7 @@ class TunerEngine(QObject):
         self._last_tested_core = cores[0]
         self._mark_cores_under_stress(cores)
         core_info = self._topology.cores.get(cores[0])
-        logical_cpu = (
-            core_info.logical_cpus[0]
-            if core_info and core_info.logical_cpus
-            else cores[0]
-        )
+        logical_cpu = core_info.logical_cpus[0] if core_info and core_info.logical_cpus else cores[0]
         self._worker = _RapidTransitionWorker(
             cores[0],
             logical_cpu,
@@ -3340,13 +3294,9 @@ class TunerEngine(QObject):
                     QTimer.singleShot(0, self._run_validation_next)
                     return
                 profile = {
-                    cs.core_id: cs.best_offset
-                    for cs in self._core_states.values()
-                    if cs.best_offset is not None
+                    cs.core_id: cs.best_offset for cs in self._core_states.values() if cs.best_offset is not None
                 }
-                self.log_message.emit(
-                    "All validation stages passed in one clean pass"
-                )
+                self.log_message.emit("All validation stages passed in one clean pass")
                 self._validation_core_index = 0
                 self._validation_half_index = 0
                 self._finalize_session(profile)
@@ -3357,9 +3307,7 @@ class TunerEngine(QObject):
             # Stage 1 complete — advance to stage 2
             self._validation_stage = 2
             self._save_validation_pos()
-            self.log_message.emit(
-                "Validation stage 1 passed — stage 2: all-core coverage"
-            )
+            self.log_message.emit("Validation stage 1 passed — stage 2: all-core coverage")
             QTimer.singleShot(0, self._run_validation_next)
             return
 
@@ -3368,12 +3316,9 @@ class TunerEngine(QObject):
         offset = cs.best_offset if cs.best_offset is not None else cs.baseline_offset
 
         self.log_message.emit(
-            f"Validation 1/{len(self._validation_core_order)}: "
-            f"core {core_id} at offset {offset} (all offsets live)"
+            f"Validation 1/{len(self._validation_core_order)}: core {core_id} at offset {offset} (all offsets live)"
         )
-        self.validation_progress.emit(
-            1, self._validation_core_index, len(self._validation_core_order)
-        )
+        self.validation_progress.emit(1, self._validation_core_index, len(self._validation_core_order))
 
         # Apply all confirmed offsets
         if self._smu is not None and not self._apply_validation_offsets(core_id, offset):
@@ -3435,9 +3380,7 @@ class TunerEngine(QObject):
 
         self._last_tested_core = cores[0]
         self._mark_cores_under_stress(cores)
-        self._start_multi_core_worker(
-            cores, self._config.validate_duration_seconds, backend=backend
-        )
+        self._start_multi_core_worker(cores, self._config.validate_duration_seconds, backend=backend)
 
     def _run_validation_stage3(self) -> None:
         """Stage 3: alternating half-core load — catches voltage transients."""
@@ -3452,12 +3395,9 @@ class TunerEngine(QObject):
         half = self._validation_halves[self._validation_half_index]
         half_label = "A" if self._validation_half_index == 0 else "B"
         self.log_message.emit(
-            f"Validation stage 3{half_label}: cores {half} loaded "
-            f"simultaneously, the other half idle at their offsets"
+            f"Validation stage 3{half_label}: cores {half} loaded simultaneously, the other half idle at their offsets"
         )
-        self.validation_progress.emit(
-            3, self._validation_half_index, len(self._validation_halves)
-        )
+        self.validation_progress.emit(3, self._validation_half_index, len(self._validation_halves))
 
         # Apply all confirmed offsets (even idle cores hold their offsets)
         if self._smu is not None:
@@ -3515,9 +3455,7 @@ class TunerEngine(QObject):
         self._soaking = True
         self._mark_cores_under_stress(cores)
         self._last_tested_core = cores[0] if cores else None
-        self._worker = _SoakWorker(
-            cores[0] if cores else 0, self._config.soak_duration_seconds, parent=self
-        )
+        self._worker = _SoakWorker(cores[0] if cores else 0, self._config.soak_duration_seconds, parent=self)
         self._worker.finished.connect(self._on_test_finished)
         self._worker.start()
 
@@ -3533,9 +3471,7 @@ class TunerEngine(QObject):
             return None
         return backend if backend.is_available() else None
 
-    def _start_multi_core_worker(
-        self, cores: list[int], duration: int, backend=None
-    ) -> None:
+    def _start_multi_core_worker(self, cores: list[int], duration: int, backend=None) -> None:
         """Launch every core's stress process simultaneously (one pinned
         process per core) with per-core verdicts; the worker reports the
         first failing core, else the first core's pass. ``backend`` overrides
@@ -3631,11 +3567,7 @@ class TunerEngine(QObject):
         best_core = None
         best_abs = -1
         for cs in self._core_states.values():
-            if (
-                cs.best_offset is not None
-                and cs.best_offset != cs.baseline_offset
-                and abs(cs.best_offset) > best_abs
-            ):
+            if cs.best_offset is not None and cs.best_offset != cs.baseline_offset and abs(cs.best_offset) > best_abs:
                 best_abs = abs(cs.best_offset)
                 best_core = cs.core_id
         return best_core
@@ -3665,9 +3597,7 @@ class TunerEngine(QObject):
         if self._session_id:
             tp.save_core_state(self._db, self._session_id, cs)
 
-        self.log_message.emit(
-            f"Backed off core {core_id}: offset {cs.best_offset} (was {old_offset})"
-        )
+        self.log_message.emit(f"Backed off core {core_id}: offset {cs.best_offset} (was {old_offset})")
         self.core_state_changed.emit(cs.core_id, cs.phase, cs.current_offset)
         return True
 
@@ -3694,8 +3624,7 @@ class TunerEngine(QObject):
                 return
             self._save_validation_pos()
             self.log_message.emit(
-                f"Validation re-test: core {core_id} failed again — backed off "
-                f"one more step, retrying its solo slot"
+                f"Validation re-test: core {core_id} failed again — backed off one more step, retrying its solo slot"
             )
             QTimer.singleShot(0, self._run_validation_requeue)
             return
@@ -3709,10 +3638,7 @@ class TunerEngine(QObject):
                     # Stage 2 passed — advance to stage 3
                     self._validation_stage = 3
                     self._validation_half_index = 0
-                    self.log_message.emit(
-                        "Validation stage 2 passed — "
-                        "stage 3: alternating half-core load"
-                    )
+                    self.log_message.emit("Validation stage 2 passed — stage 3: alternating half-core load")
                 case 3:
                     self._validation_half_index += 1
                 case 4:
@@ -3812,10 +3738,7 @@ class TunerEngine(QObject):
         self.status_changed.emit(status)
 
     def _emit_progress(self) -> None:
-        done = sum(
-            1 for cs in self._core_states.values()
-            if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
-        )
+        done = sum(1 for cs in self._core_states.values() if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED))
         total = len(self._core_states)
         self.progress_updated.emit(done, total)
 
@@ -3859,8 +3782,7 @@ class TunerEngine(QObject):
                 success = self._apply_co(core_id, target)
             except Exception as e:
                 self.log_message.emit(
-                    f"Failed to apply validated offset for core {core_id}: {e}. "
-                    f"Reverting to baselines and pausing."
+                    f"Failed to apply validated offset for core {core_id}: {e}. Reverting to baselines and pausing."
                 )
                 self._revert_all_to_baseline()
                 self.pause()
@@ -3879,17 +3801,13 @@ class TunerEngine(QObject):
         try:
             success = self._apply_co(test_core_id, test_offset)
         except Exception as e:
-            self.log_message.emit(
-                f"Failed to set CO for core {test_core_id}: {e}. "
-                f"Reverting to baselines and pausing."
-            )
+            self.log_message.emit(f"Failed to set CO for core {test_core_id}: {e}. Reverting to baselines and pausing.")
             self._revert_all_to_baseline()
             self.pause()
             return False
         if not success:
             self.log_message.emit(
-                f"CO write failed for core {test_core_id} at {test_offset}. "
-                f"Reverting to baselines and pausing."
+                f"CO write failed for core {test_core_id} at {test_offset}. Reverting to baselines and pausing."
             )
             self._revert_all_to_baseline()
             self.pause()
@@ -3934,10 +3852,7 @@ class TunerEngine(QObject):
         try:
             success = self._apply_co(test_core_id, test_offset)
         except Exception as e:
-            self.log_message.emit(
-                f"Failed to set CO for core {test_core_id}: {e}. "
-                f"Pausing tuner."
-            )
+            self.log_message.emit(f"Failed to set CO for core {test_core_id}: {e}. Pausing tuner.")
             self.pause()
             return False
         if not success:
@@ -3969,16 +3884,13 @@ class TunerEngine(QObject):
         try:
             success = self._apply_co(core_id, cs.baseline_offset)
         except Exception as e:
-            self.log_message.emit(
-                f"Post-test baseline revert error for core {core_id}: {e}"
-            )
+            self.log_message.emit(f"Post-test baseline revert error for core {core_id}: {e}")
             return False
         if success:
             self._co_applied[core_id] = cs.baseline_offset
             return True
         self.log_message.emit(
-            f"Post-test baseline revert failed for core {core_id} "
-            f"(offset {cs.baseline_offset}) — read-back mismatch"
+            f"Post-test baseline revert failed for core {core_id} (offset {cs.baseline_offset}) — read-back mismatch"
         )
         return False
 
@@ -4000,6 +3912,7 @@ class TunerEngine(QObject):
 
     def _get_stress_mode(self):
         from corecycler.engine.backends.base import StressMode
+
         try:
             return StressMode[self._config.stress_mode.upper()]
         except KeyError:
@@ -4007,6 +3920,7 @@ class TunerEngine(QObject):
 
     def _get_fft_preset(self):
         from corecycler.engine.backends.base import FFTPreset
+
         try:
             return FFTPreset[self._config.fft_preset.upper()]
         except KeyError:

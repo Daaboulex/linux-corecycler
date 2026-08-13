@@ -296,9 +296,12 @@ class TestMonitorTabFallbacks:
         tab._pmtable = _reader(
             True,
             read=MagicMock(
-                ppt_value_w=0.0, ppt_limit_w=0.0,
-                tdc_value_a=0.0, tdc_limit_a=0.0,
-                edc_value_a=0.0, edc_limit_a=0.0,
+                ppt_value_w=0.0,
+                ppt_limit_w=0.0,
+                tdc_value_a=0.0,
+                tdc_limit_a=0.0,
+                edc_value_a=0.0,
+                edc_limit_a=0.0,
             ),
         )
         tab._update_power_limits()

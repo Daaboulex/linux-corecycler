@@ -80,9 +80,7 @@ class TestCoreStateSanity:
     def test_negative_accumulated_time_is_refused(self, db):
         sid = self._session(db)
         with pytest.raises(ValueError, match="cumulative_test_time"):
-            db.upsert_tuner_core_state(
-                sid, CoreState(core_id=0, cumulative_test_time=-1.0)
-            )
+            db.upsert_tuner_core_state(sid, CoreState(core_id=0, cumulative_test_time=-1.0))
 
 
 def _seed(path, *, runs=1, sessions=1):
@@ -102,12 +100,8 @@ def _seed(path, *, runs=1, sessions=1):
         )
     for _ in range(sessions):
         sid = tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test")
-        db.create_context(
-            TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash=f"seed{sid}")
-        )
-        tp.save_core_state(
-            db, sid, CoreState(core_id=0, phase=TunerPhase.CONFIRMED, best_offset=-20)
-        )
+        db.create_context(TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash=f"seed{sid}"))
+        tp.save_core_state(db, sid, CoreState(core_id=0, phase=TunerPhase.CONFIRMED, best_offset=-20))
         tp.journal_co_intent(db, sid, 0, -20, False)
         tp.log_test_result(db, sid, 0, -20, "confirm", True, duration=300.0)
     db.close()
@@ -132,15 +126,11 @@ class TestMerge:
         other = HistoryDB(other_path)
         ctx = TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash="same")
         cid = other.create_context(ctx)
-        other.create_run(
-            RunRecord(started_at="2026-07-20T10:00:00+00:00", status="completed", context_id=cid)
-        )
+        other.create_run(RunRecord(started_at="2026-07-20T10:00:00+00:00", status="completed", context_id=cid))
         other.close()
 
         target = HistoryDB(tmp_path / "target.db")
-        target.create_context(
-            TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash="same")
-        )
+        target.create_context(TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash="same"))
         counts = target.merge_from(other_path)
         assert counts["contexts"] == 0
         assert len(target.list_contexts()) == 1
@@ -165,12 +155,8 @@ class TestMerge:
 
 class TestContextIdentity:
     def test_the_same_profile_reuses_its_context(self, db):
-        first = db.create_context(
-            TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash="abc")
-        )
-        second = db.create_context(
-            TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash="abc")
-        )
+        first = db.create_context(TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash="abc"))
+        second = db.create_context(TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash="abc"))
         assert first == second
         assert len(db.list_contexts()) == 1
 
@@ -178,9 +164,7 @@ class TestContextIdentity:
 class TestFailClosedOnBadInput:
     def test_a_context_that_cannot_be_stored_is_refused_loudly(self, db):
         with pytest.raises(RuntimeError, match="database inconsistent"):
-            db.create_context(
-                TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash=None)
-            )
+            db.create_context(TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash=None))
 
     def test_a_merge_that_cannot_complete_leaves_nothing_behind(self, tmp_path):
         """All-or-nothing: a source holding a child row whose parent is gone
@@ -206,9 +190,7 @@ class TestFailClosedOnBadInput:
         path = tmp_path / "history.db"
         seeded = HistoryDB(path)
         for i in range(400):
-            seeded.create_run(
-                RunRecord(started_at=f"2026-07-20T10:00:{i % 60:02d}+00:00", status="completed")
-            )
+            seeded.create_run(RunRecord(started_at=f"2026-07-20T10:00:{i % 60:02d}+00:00", status="completed"))
         seeded.close()
 
         raw = bytearray(path.read_bytes())
@@ -221,6 +203,4 @@ class TestFailClosedOnBadInput:
 
 
 def _seed_run_only(db):
-    return db.create_run(
-        RunRecord(started_at="2026-07-20T10:00:00+00:00", status="completed")
-    )
+    return db.create_run(RunRecord(started_at="2026-07-20T10:00:00+00:00", status="completed"))

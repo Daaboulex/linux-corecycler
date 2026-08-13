@@ -152,12 +152,14 @@ class TestCpufreqSysfsReaders:
         monkeypatch.setattr(freq, "CPUFREQ_BASE", base)
         return freq
 
-    def test_the_hardware_frequency_is_preferred_over_the_governor_target(
-        self, tmp_path, monkeypatch
-    ):
-        freq = self._tree(tmp_path, monkeypatch, {
-            "cpu0": {"cpuinfo_cur_freq": "4200000\n", "scaling_cur_freq": "3000000\n"},
-        })
+    def test_the_hardware_frequency_is_preferred_over_the_governor_target(self, tmp_path, monkeypatch):
+        freq = self._tree(
+            tmp_path,
+            monkeypatch,
+            {
+                "cpu0": {"cpuinfo_cur_freq": "4200000\n", "scaling_cur_freq": "3000000\n"},
+            },
+        )
         assert freq.read_core_frequencies() == {0: 4200.0}
 
     def test_the_governor_target_is_the_fallback(self, tmp_path, monkeypatch):
@@ -165,36 +167,50 @@ class TestCpufreqSysfsReaders:
         assert freq.read_core_frequencies() == {1: 3600.0}
 
     def test_unreadable_and_non_cpu_entries_are_skipped(self, tmp_path, monkeypatch):
-        freq = self._tree(tmp_path, monkeypatch, {
-            "cpu0": {"scaling_cur_freq": "not a number\n"},
-            "cpu1": {},
-            "cpufreq": {"scaling_cur_freq": "3600000\n"},
-        })
+        freq = self._tree(
+            tmp_path,
+            monkeypatch,
+            {
+                "cpu0": {"scaling_cur_freq": "not a number\n"},
+                "cpu1": {},
+                "cpufreq": {"scaling_cur_freq": "3600000\n"},
+            },
+        )
         monkeypatch.setattr(freq, "_read_from_proc", dict)
         assert freq.read_core_frequencies() == {}
 
-    def test_the_dual_reader_pairs_actual_with_the_boost_ceiling(
-        self, tmp_path, monkeypatch
-    ):
-        freq = self._tree(tmp_path, monkeypatch, {
-            "cpu0": {"cpuinfo_avg_freq": "4100000\n", "scaling_max_freq": "5700000\n"},
-        })
+    def test_the_dual_reader_pairs_actual_with_the_boost_ceiling(self, tmp_path, monkeypatch):
+        freq = self._tree(
+            tmp_path,
+            monkeypatch,
+            {
+                "cpu0": {"cpuinfo_avg_freq": "4100000\n", "scaling_max_freq": "5700000\n"},
+            },
+        )
         reading = freq.read_core_frequencies_dual()[0]
         assert reading.actual_mhz == 4100.0
         assert reading.effective_max_mhz == 5700.0
 
     def test_the_dual_reader_needs_both_halves(self, tmp_path, monkeypatch):
-        freq = self._tree(tmp_path, monkeypatch, {
-            "cpu0": {"cpuinfo_cur_freq": "garbage\n"},
-            "cpu1": {"scaling_max_freq": "5700000\n"},
-            "cpuidle": {"scaling_cur_freq": "3600000\n"},
-        })
+        freq = self._tree(
+            tmp_path,
+            monkeypatch,
+            {
+                "cpu0": {"cpuinfo_cur_freq": "garbage\n"},
+                "cpu1": {"scaling_max_freq": "5700000\n"},
+                "cpuidle": {"scaling_cur_freq": "3600000\n"},
+            },
+        )
         assert freq.read_core_frequencies_dual() == {}
 
     def test_the_boost_and_floor_limits_are_read(self, tmp_path, monkeypatch):
-        freq = self._tree(tmp_path, monkeypatch, {
-            "cpu0": {"cpuinfo_max_freq": "5700000\n", "cpuinfo_min_freq": "550000\n"},
-        })
+        freq = self._tree(
+            tmp_path,
+            monkeypatch,
+            {
+                "cpu0": {"cpuinfo_max_freq": "5700000\n", "cpuinfo_min_freq": "550000\n"},
+            },
+        )
         assert freq.read_max_frequency(0) == 5700.0
         assert freq.read_min_frequency(0) == 550.0
 
@@ -240,10 +256,15 @@ class TestRaplPowerReader:
         assert reader._package_path.name == "energy_uj"
 
     def test_a_named_package_domain_is_found_by_scan(self, tmp_path, monkeypatch):
-        pw = self._rapl(tmp_path, monkeypatch, {
-            "intel-rapl:1": {"energy_uj": "2000\n", "name": "dram\n"},
-            "intel-rapl:2": {"energy_uj": "3000\n", "name": "package-0\n"},
-        }, sibling=True)
+        pw = self._rapl(
+            tmp_path,
+            monkeypatch,
+            {
+                "intel-rapl:1": {"energy_uj": "2000\n", "name": "dram\n"},
+                "intel-rapl:2": {"energy_uj": "3000\n", "name": "package-0\n"},
+            },
+            sibling=True,
+        )
         reader = pw.PowerMonitor()
         assert reader.is_available()
         assert reader._package_path.parent.name == "intel-rapl:2"
@@ -276,15 +297,19 @@ class TestRaplPowerReader:
 
 class TestHwmonPowerFallback:
     def test_a_labelled_package_input_is_the_fallback(self, tmp_path, monkeypatch):
-        pw = TestRaplPowerReader()._hwmon(tmp_path, monkeypatch, {
-            "hwmon0": {},
-            "hwmon1": {"name": "acpitz\n"},
-            "hwmon2": {
-                "name": "zenpower\n",
-                "power1_input": "42000000\n",
-                "power1_label": "Package Power\n",
+        pw = TestRaplPowerReader()._hwmon(
+            tmp_path,
+            monkeypatch,
+            {
+                "hwmon0": {},
+                "hwmon1": {"name": "acpitz\n"},
+                "hwmon2": {
+                    "name": "zenpower\n",
+                    "power1_input": "42000000\n",
+                    "power1_label": "Package Power\n",
+                },
             },
-        })
+        )
         reader = pw.PowerMonitor()
         assert reader.is_available()
         assert reader._hwmon_power_path.name == "power1_input"

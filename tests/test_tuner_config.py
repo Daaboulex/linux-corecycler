@@ -49,11 +49,11 @@ class TestTunerConfigDefaults:
         back to defaults, not raise later in validate()/the engine."""
         defaults = TunerConfig()
         cases = {
-            "hardening_tiers": None,      # unguarded: TypeError 'NoneType' not iterable
-            "cores_to_test": 42,          # unguarded: TypeError int has no len()
-            "coarse_step": "abc",         # unguarded: TypeError str < int
-            "auto_validate": 1,           # int for a bool field
-            "max_temperature_c": "hot",   # str for a float field
+            "hardening_tiers": None,  # unguarded: TypeError 'NoneType' not iterable
+            "cores_to_test": 42,  # unguarded: TypeError int has no len()
+            "coarse_step": "abc",  # unguarded: TypeError str < int
+            "auto_validate": 1,  # int for a bool field
+            "max_temperature_c": "hot",  # str for a float field
         }
         for field, bad in cases.items():
             cfg = TunerConfig.from_json(json.dumps({field: bad}))
@@ -64,10 +64,17 @@ class TestTunerConfigDefaults:
 
     def test_from_json_keeps_valid_typed_fields(self):
         """The type guard must not reject legitimate values."""
-        cfg = TunerConfig.from_json(json.dumps({
-            "coarse_step": 7, "cores_to_test": [0, 2], "auto_validate": False,
-            "max_temperature_c": 90.0, "hardening_tiers": [],
-        }))
+        cfg = TunerConfig.from_json(
+            json.dumps(
+                {
+                    "coarse_step": 7,
+                    "cores_to_test": [0, 2],
+                    "auto_validate": False,
+                    "max_temperature_c": 90.0,
+                    "hardening_tiers": [],
+                }
+            )
+        )
         assert cfg.coarse_step == 7
         assert cfg.cores_to_test == [0, 2]
         assert cfg.auto_validate is False
@@ -107,8 +114,7 @@ class TestNewConfigOptions:
         assert cfg.hardening_tiers == [
             {"backend": "mprime", "stress_mode": "AVX2", "fft_preset": "SMALL"},
             {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "LARGE"},
-            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL",
-             "profile": "spectrum"},
+            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL", "profile": "spectrum"},
         ]
 
     def test_max_core_time_default(self):
@@ -158,15 +164,17 @@ class TestNewConfigOptions:
         assert any("max_apparatus_retries" in e.lower() for e in errors)
 
     def test_spectrum_tier_profile_validated(self):
-        good = TunerConfig(hardening_tiers=[
-            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL",
-             "profile": "spectrum"},
-        ])
+        good = TunerConfig(
+            hardening_tiers=[
+                {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL", "profile": "spectrum"},
+            ]
+        )
         assert not any("profile" in e for e in good.validate())
-        bad = TunerConfig(hardening_tiers=[
-            {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL",
-             "profile": "bogus"},
-        ])
+        bad = TunerConfig(
+            hardening_tiers=[
+                {"backend": "mprime", "stress_mode": "SSE", "fft_preset": "SMALL", "profile": "bogus"},
+            ]
+        )
         assert any("profile" in e for e in bad.validate())
 
     def test_default_tiers_include_spectrum(self):

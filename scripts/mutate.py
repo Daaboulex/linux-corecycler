@@ -27,11 +27,16 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 _COMPARE_SWAP = {
-    ast.Lt: ast.LtE, ast.LtE: ast.Lt,
-    ast.Gt: ast.GtE, ast.GtE: ast.Gt,
-    ast.Eq: ast.NotEq, ast.NotEq: ast.Eq,
-    ast.Is: ast.IsNot, ast.IsNot: ast.Is,
-    ast.In: ast.NotIn, ast.NotIn: ast.In,
+    ast.Lt: ast.LtE,
+    ast.LtE: ast.Lt,
+    ast.Gt: ast.GtE,
+    ast.GtE: ast.Gt,
+    ast.Eq: ast.NotEq,
+    ast.NotEq: ast.Eq,
+    ast.Is: ast.IsNot,
+    ast.IsNot: ast.Is,
+    ast.In: ast.NotIn,
+    ast.NotIn: ast.In,
 }
 _BINOP_SWAP = {ast.Add: ast.Sub, ast.Sub: ast.Add}
 
@@ -53,8 +58,7 @@ def _inert(tree: ast.Module) -> set[int]:
         for decorator in getattr(node, "decorator_list", []):
             inert.update(id(sub) for sub in ast.walk(decorator))
         if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id.startswith("__") and t.id.endswith("__")
-            for t in node.targets
+            isinstance(t, ast.Name) and t.id.startswith("__") and t.id.endswith("__") for t in node.targets
         ):
             inert.update(id(sub) for sub in ast.walk(node.value))
     return inert
@@ -137,8 +141,18 @@ def _build(path: Path, index: int) -> Mutant | None:
 def _run(tests: list[str], timeout: int) -> bool:
     result = subprocess.run(
         [
-            sys.executable, "-m", "pytest", "-x", "-q", "--no-header",
-            "-p", "no:cacheprovider", "-m", "not slow", f"--timeout={timeout}", *tests,
+            sys.executable,
+            "-m",
+            "pytest",
+            "-x",
+            "-q",
+            "--no-header",
+            "-p",
+            "no:cacheprovider",
+            "-m",
+            "not slow",
+            f"--timeout={timeout}",
+            *tests,
         ],
         cwd=REPO,
         capture_output=True,

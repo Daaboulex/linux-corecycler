@@ -56,10 +56,7 @@ def _engine(status="running", session_id=1, cores=(0, 1)):
     eng = MagicMock()
     eng.status = status
     eng.session_id = session_id
-    eng.core_states = {
-        cid: CoreState(core_id=cid, phase=TunerPhase.COARSE_SEARCH, current_offset=-10)
-        for cid in cores
-    }
+    eng.core_states = {cid: CoreState(core_id=cid, phase=TunerPhase.COARSE_SEARCH, current_offset=-10) for cid in cores}
     return eng
 
 
@@ -162,9 +159,7 @@ class TestStart:
         assert not engine_cls.called
 
     def test_refuses_when_the_backend_is_missing(self, db, no_modal, monkeypatch):
-        tab = _tab(
-            db=db, topology=_topo(), smu=_smu(), backend_factory=lambda _n: _backend(False)
-        )
+        tab = _tab(db=db, topology=_topo(), smu=_smu(), backend_factory=lambda _n: _backend(False))
         engine_cls = MagicMock()
         monkeypatch.setattr(tt, "TunerEngine", engine_cls)
         no_modal.warning.return_value = no_modal.StandardButton.Yes
@@ -180,9 +175,7 @@ class TestStart:
         assert not engine_cls.called
         assert no_modal.warning.call_args.args[1] == "Invalid Configuration"
 
-    def test_an_engine_that_refuses_to_start_leaves_the_ui_idle(
-        self, tab, no_modal, monkeypatch
-    ):
+    def test_an_engine_that_refuses_to_start_leaves_the_ui_idle(self, tab, no_modal, monkeypatch):
         eng = _engine(status="idle")
         monkeypatch.setattr(tt, "TunerEngine", MagicMock(return_value=eng))
         no_modal.warning.return_value = no_modal.StandardButton.Yes
@@ -191,9 +184,7 @@ class TestStart:
         assert tab._start_btn.isEnabled()
         assert no_modal.warning.call_args.args[1] == "Tuner Did Not Start"
 
-    def test_a_started_engine_locks_the_ui_and_fills_the_table(
-        self, tab, no_modal, monkeypatch
-    ):
+    def test_a_started_engine_locks_the_ui_and_fills_the_table(self, tab, no_modal, monkeypatch):
         eng = _engine(status="running")
         monkeypatch.setattr(tt, "TunerEngine", MagicMock(return_value=eng))
         no_modal.warning.return_value = no_modal.StandardButton.Yes
@@ -348,9 +339,7 @@ class TestResumeSession:
         assert no_modal.warning.call_args.args[1] == "Error"
 
     def test_refuses_a_cold_start_without_a_backend(self, db, no_modal, monkeypatch):
-        tab = _tab(
-            db=db, topology=_topo(), smu=_smu(), backend_factory=lambda _n: _backend(False)
-        )
+        tab = _tab(db=db, topology=_topo(), smu=_smu(), backend_factory=lambda _n: _backend(False))
         engine_cls = MagicMock()
         monkeypatch.setattr(tt, "TunerEngine", engine_cls)
         tab._resume_session(1)
@@ -368,9 +357,7 @@ class TestResumeSession:
         assert tab._order_combo.currentText() == "round_robin"
         assert tab._core_table.rowCount() == 2
 
-    def test_an_engine_that_will_not_resume_leaves_the_ui_idle(
-        self, tab, no_modal, monkeypatch
-    ):
+    def test_an_engine_that_will_not_resume_leaves_the_ui_idle(self, tab, no_modal, monkeypatch):
         sid = _seed_session(tab._db, "paused")
         eng = _engine(status="paused", session_id=sid)
         monkeypatch.setattr(tt, "TunerEngine", MagicMock(return_value=eng))
@@ -409,9 +396,7 @@ class TestValidate:
         assert tab._start_btn.isEnabled()
 
     def test_refuses_without_a_backend(self, db, monkeypatch):
-        tab = _tab(
-            db=db, topology=_topo(), smu=_smu(), backend_factory=lambda _n: _backend(False)
-        )
+        tab = _tab(db=db, topology=_topo(), smu=_smu(), backend_factory=lambda _n: _backend(False))
         eng = _engine()
         tab._engine = eng
         tab._on_validate()
@@ -454,9 +439,7 @@ class TestExport:
             CoreState(core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-30, best_offset=-30),
         )
         tab._engine = _engine(session_id=sid)
-        with patch(
-            "corecycler.gui.tuner_tab.QFileDialog.getSaveFileName", return_value=("", "")
-        ):
+        with patch("corecycler.gui.tuner_tab.QFileDialog.getSaveFileName", return_value=("", "")):
             tab._on_export()
         assert list(tmp_path.iterdir()) == []
 
@@ -469,9 +452,7 @@ class TestExport:
         )
         tab._engine = _engine(session_id=sid)
         out = tmp_path / "profile.json"
-        with patch(
-            "corecycler.gui.tuner_tab.QFileDialog.getSaveFileName", return_value=(str(out), "")
-        ):
+        with patch("corecycler.gui.tuner_tab.QFileDialog.getSaveFileName", return_value=(str(out), "")):
             tab._on_export()
         assert json.loads(out.read_text())["offsets"] == {"0": -30}
         assert no_modal.information.called
@@ -588,9 +569,7 @@ def _mute_notify(monkeypatch, *, enabled=True):
     import corecycler.config.settings as settings
     import corecycler.notify as notify_mod
 
-    monkeypatch.setattr(
-        settings, "load_settings", lambda: MagicMock(notify_on_completion=enabled)
-    )
+    monkeypatch.setattr(settings, "load_settings", lambda: MagicMock(notify_on_completion=enabled))
     sent = MagicMock()
     monkeypatch.setattr(notify_mod, "desktop_notify", sent)
     return sent
@@ -746,14 +725,10 @@ class TestBackendResolution:
         assert tab._get_backend() is chosen
 
     def test_an_uninstalled_backend_is_refused(self, db, no_modal):
-        tab = _tab(
-            db=db, topology=_topo(), smu=_smu(), backend_factory=lambda _n: _backend(False)
-        )
+        tab = _tab(db=db, topology=_topo(), smu=_smu(), backend_factory=lambda _n: _backend(False))
         assert tab._get_backend() is None
 
-    def test_an_uninstalled_backend_is_kept_once_the_user_supplies_a_path(
-        self, db, no_modal, monkeypatch
-    ):
+    def test_an_uninstalled_backend_is_kept_once_the_user_supplies_a_path(self, db, no_modal, monkeypatch):
         monkeypatch.setattr(tt, "ensure_tool", lambda parent, key: True)
         chosen = _backend(False)
         tab = _tab(db=db, topology=_topo(), smu=_smu(), backend_factory=lambda _n: chosen)

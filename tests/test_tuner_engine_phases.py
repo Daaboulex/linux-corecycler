@@ -30,8 +30,12 @@ def db():
 
 def _topo(cores=4):
     topo = CPUTopology(
-        model_name="Test 8C", family=26, model=0x44, physical_cores=cores,
-        logical_cpus_count=cores, ccds=1,
+        model_name="Test 8C",
+        family=26,
+        model=0x44,
+        physical_cores=cores,
+        logical_cpus_count=cores,
+        ccds=1,
     )
     for cid in range(cores):
         topo.cores[cid] = PhysicalCore(core_id=cid, ccd=0, ccx=None, logical_cpus=(cid,))
@@ -249,11 +253,18 @@ class TestParallelRowLogging:
     def test_every_other_lane_is_recorded(self, engine):
         _confirm(engine, 1, -20)
         engine._co_applied[1] = -20
-        payload = json.dumps([
-            {"core": 0, "passed": True, "duration": 60.0},
-            {"core": 1, "passed": False, "error_message": "rounding",
-             "error_type": "computation", "duration": 12.0},
-        ])
+        payload = json.dumps(
+            [
+                {"core": 0, "passed": True, "duration": 60.0},
+                {
+                    "core": 1,
+                    "passed": False,
+                    "error_message": "rounding",
+                    "error_type": "computation",
+                    "duration": 12.0,
+                },
+            ]
+        )
         engine._log_parallel_rows(0, payload, "validate_s2")
         rows = self._rows(engine, 1)
         assert len(rows) == 1
@@ -263,12 +274,14 @@ class TestParallelRowLogging:
         assert self._rows(engine, 0) == []
 
     def test_unusable_entries_are_skipped(self, engine):
-        payload = json.dumps([
-            "not a dict",
-            {"core": "one", "passed": True},
-            {"core": 99, "passed": True},
-            {"core": 2, "passed": True, "duration": "soon"},
-        ])
+        payload = json.dumps(
+            [
+                "not a dict",
+                {"core": "one", "passed": True},
+                {"core": 99, "passed": True},
+                {"core": 2, "passed": True, "duration": "soon"},
+            ]
+        )
         engine._log_parallel_rows(0, payload, "validate_s2")
         rows = self._rows(engine, 2)
         assert len(rows) == 1
@@ -562,30 +575,22 @@ class TestStageOneEvidence:
 
     def test_a_logged_stage_one_pass_is_the_evidence(self, engine):
         _confirm(engine, 0, -20)
-        tp.log_test_result(
-            engine._db, engine._session_id, 0, -20, "validate_s1", True, duration=300.0
-        )
+        tp.log_test_result(engine._db, engine._session_id, 0, -20, "validate_s1", True, duration=300.0)
         assert engine._has_stage1_pass_at_current_best(0) is True
 
     def test_a_pass_at_a_different_offset_is_not_the_evidence(self, engine):
         _confirm(engine, 0, -20)
-        tp.log_test_result(
-            engine._db, engine._session_id, 0, -18, "validate_s1", True, duration=300.0
-        )
+        tp.log_test_result(engine._db, engine._session_id, 0, -18, "validate_s1", True, duration=300.0)
         assert engine._has_stage1_pass_at_current_best(0) is False
 
     def test_a_synthetic_row_is_not_the_evidence(self, engine):
         _confirm(engine, 0, -20)
-        tp.log_test_result(
-            engine._db, engine._session_id, 0, -20, "validate_s1", True, duration=None
-        )
+        tp.log_test_result(engine._db, engine._session_id, 0, -20, "validate_s1", True, duration=None)
         assert engine._has_stage1_pass_at_current_best(0) is False
 
 
 def test_the_default_work_dir_is_outside_the_repo(db):
-    instance = TunerEngine(
-        db=db, topology=_topo(), smu=None, backend=_backend(), config=_config()
-    )
+    instance = TunerEngine(db=db, topology=_topo(), smu=None, backend=_backend(), config=_config())
     from corecycler.config.paths import resolve_work_dir
 
     assert instance._work_dir == resolve_work_dir() / "tuner"
@@ -595,15 +600,11 @@ def test_the_default_work_dir_is_outside_the_repo(db):
 
 
 def _unattributed_payload():
-    return json.dumps([
-        {"cpu": -1, "bank": 0, "corrected": True, "message": "kernel oops", "raw_ts": 1.0}
-    ])
+    return json.dumps([{"cpu": -1, "bank": 0, "corrected": True, "message": "kernel oops", "raw_ts": 1.0}])
 
 
 def _foreign_payload(cpu):
-    return json.dumps([
-        {"cpu": cpu, "bank": 0, "corrected": True, "message": "corrected", "raw_ts": 1.0}
-    ])
+    return json.dumps([{"cpu": cpu, "bank": 0, "corrected": True, "message": "corrected", "raw_ts": 1.0}])
 
 
 class TestVerdictRouter:
@@ -649,9 +650,7 @@ class TestVerdictRouter:
         assert engine.status == "idle"
         assert engine._abort_requested
 
-    def test_a_pass_with_excess_clock_stretch_is_recorded_as_a_failure(
-        self, engine, monkeypatch
-    ):
+    def test_a_pass_with_excess_clock_stretch_is_recorded_as_a_failure(self, engine, monkeypatch):
         engine._config.stretch_threshold_pct = 3.0
         advanced = []
         monkeypatch.setattr(engine, "_advance_core", lambda cid, ok: advanced.append(ok))
@@ -661,9 +660,7 @@ class TestVerdictRouter:
     def test_a_passing_hunt_slot_routes_to_the_hunt_flow(self, engine, monkeypatch):
         engine._hunting = True
         seen = []
-        monkeypatch.setattr(
-            engine, "_on_hunt_slot_finished", lambda *a: seen.append(a)
-        )
+        monkeypatch.setattr(engine, "_on_hunt_slot_finished", lambda *a: seen.append(a))
         engine._on_test_finished(0, True, "", "", 1.0, 0.0)
         assert seen and seen[0][0] == 0
 
@@ -672,14 +669,10 @@ class TestVerdictRouter:
         engine._set_status("validating")
         rows = []
         monkeypatch.setattr(engine, "_log_parallel_rows", lambda *a: rows.append(a))
-        engine._on_test_finished(
-            0, True, "", "", 1.0, 0.0, "", json.dumps([{"core": 1, "passed": True}])
-        )
+        engine._on_test_finished(0, True, "", "", 1.0, 0.0, "", json.dumps([{"core": 1, "passed": True}]))
         assert rows and rows[0][2] == "validate_s2"
 
-    def test_a_core_over_its_time_budget_stops_without_advancing(
-        self, engine, monkeypatch
-    ):
+    def test_a_core_over_its_time_budget_stops_without_advancing(self, engine, monkeypatch):
         monkeypatch.setattr(engine, "_check_time_budget", lambda cs: True)
         advanced = []
         monkeypatch.setattr(engine, "_advance_core", lambda *a: advanced.append(a))
@@ -715,9 +708,7 @@ class TestSoakVerdict:
         self._soaking(engine)
         queued = []
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
-        engine._on_test_finished(
-            0, False, "kernel error", "mce", 1.0, 0.0, _unattributed_payload(), ""
-        )
+        engine._on_test_finished(0, False, "kernel error", "mce", 1.0, 0.0, _unattributed_payload(), "")
         assert engine._validation_dirty is True
         assert engine._soaking is False
         assert queued[0] == engine._run_validation_next
@@ -725,37 +716,27 @@ class TestSoakVerdict:
     def test_repeated_unattributed_events_pause_for_the_owner(self, engine):
         self._soaking(engine)
         engine._config.max_unattributed_crash_hunts = 1
-        engine._on_test_finished(
-            0, False, "kernel error", "mce", 1.0, 0.0, _unattributed_payload(), ""
-        )
+        engine._on_test_finished(0, False, "kernel error", "mce", 1.0, 0.0, _unattributed_payload(), "")
         assert engine.status == "paused"
 
     def test_a_soak_naming_another_core_leaves_validation(self, engine, monkeypatch):
         self._soaking(engine)
         _confirm(engine, 1, -20)
         exited = []
-        monkeypatch.setattr(
-            engine, "_validation_stage_exit_to_search", lambda: exited.append(True)
-        )
-        engine._on_test_finished(
-            0, False, "kernel error", "mce", 1.0, 0.0, _foreign_payload(1), ""
-        )
+        monkeypatch.setattr(engine, "_validation_stage_exit_to_search", lambda: exited.append(True))
+        engine._on_test_finished(0, False, "kernel error", "mce", 1.0, 0.0, _foreign_payload(1), "")
         assert exited == [True]
         assert engine._validation_dirty is True
 
 
 class TestApparatusFaultWithEvidence:
-    def test_kernel_evidence_during_validation_outranks_the_retry(
-        self, engine, monkeypatch
-    ):
+    def test_kernel_evidence_during_validation_outranks_the_retry(self, engine, monkeypatch):
         _confirm(engine, 1, -20)
         engine._validation_stage = 2
         engine._set_status("validating")
         queued = []
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
-        engine._handle_apparatus_fault(
-            0, "stalled", "stall", engine._foreign_mce_by_core(0, _foreign_payload(1))
-        )
+        engine._handle_apparatus_fault(0, "stalled", "stall", engine._foreign_mce_by_core(0, _foreign_payload(1)))
         assert engine._validation_stage == 0
         assert engine.status == "running"
         assert queued[0] == engine._run_next
@@ -784,17 +765,13 @@ class TestAbortTeardown:
 
 class TestWorkerLaunch:
     def _real_launch(self, engine, monkeypatch):
-        monkeypatch.setattr(
-            engine, "_start_worker", eng.TunerEngine._start_worker.__get__(engine)
-        )
+        monkeypatch.setattr(engine, "_start_worker", eng.TunerEngine._start_worker.__get__(engine))
         worker = MagicMock()
         factory = MagicMock(return_value=worker)
         monkeypatch.setattr(eng, "_TunerWorker", factory)
         return worker, factory
 
-    def test_an_unreadable_mode_or_preset_falls_back_to_a_safe_default(
-        self, engine, monkeypatch
-    ):
+    def test_an_unreadable_mode_or_preset_falls_back_to_a_safe_default(self, engine, monkeypatch):
         from corecycler.engine.backends.base import FFTPreset, StressMode
 
         worker, factory = self._real_launch(engine, monkeypatch)
@@ -889,9 +866,7 @@ class TestMemoryStageDispatch:
         self._ready(engine)
         monkeypatch.setattr(engine, "_get_memory_backend", lambda: MagicMock())
         launched = []
-        monkeypatch.setattr(
-            engine, "_start_multi_core_worker", lambda *a, **kw: launched.append(a)
-        )
+        monkeypatch.setattr(engine, "_start_multi_core_worker", lambda *a, **kw: launched.append(a))
         engine._smu.set_co_offset.return_value = False
         engine._run_validation_memory()
         assert launched == []
@@ -910,8 +885,12 @@ class TestStartRefusals:
 
         monkeypatch.setattr(pmtable, "read_power_limits", lambda _n: (225.0, 190.0, 230.0))
         instance = TunerEngine(
-            db=db, topology=_topo(), smu=_smu(), backend=_backend(),
-            config=_config(), work_dir=tmp_path,
+            db=db,
+            topology=_topo(),
+            smu=_smu(),
+            backend=_backend(),
+            config=_config(),
+            work_dir=tmp_path,
         )
         monkeypatch.setattr(instance, "_start_worker", MagicMock())
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: None)
@@ -1052,9 +1031,7 @@ class TestLifecycleGuards:
         _confirm(engine, 0, -20)
         engine._set_status("validating")
         engine._run_next()
-        assert engine._start_worker.call_args.args[1] == (
-            engine._config.validate_duration_seconds
-        )
+        assert engine._start_worker.call_args.args[1] == (engine._config.validate_duration_seconds)
 
     def test_an_unfinished_set_does_not_complete_the_session(self, engine, monkeypatch):
         finalized = []
@@ -1102,9 +1079,7 @@ class TestFinalizeAndBackoffExhaustion:
         engine._on_validation_test_finished(0, False)
         assert done == [True]
 
-    def test_a_requeued_core_that_fails_backs_off_and_retries_its_slot(
-        self, engine, monkeypatch
-    ):
+    def test_a_requeued_core_that_fails_backs_off_and_retries_its_slot(self, engine, monkeypatch):
         cs = _confirm(engine, 0, -20)
         cs.baseline_offset = 0
         engine._validation_stage = 1
@@ -1169,9 +1144,7 @@ class TestResumeGuards:
         engine.resume(sid)
         assert engine.status == "paused"
 
-    def test_an_abandoned_hunt_is_cleared_on_a_clean_restart(
-        self, engine, monkeypatch, assume_clean_shutdown
-    ):
+    def test_an_abandoned_hunt_is_cleared_on_a_clean_restart(self, engine, monkeypatch, assume_clean_shutdown):
         sid = engine._session_id
         _confirm(engine, 0, -20)
         tp.set_hunting_core(engine._db, sid, 0)
@@ -1181,9 +1154,7 @@ class TestResumeGuards:
         engine.resume(sid)
         assert tp.get_session(engine._db, sid).hunting_core is None
 
-    def test_an_unattributed_crash_starts_a_hunt_before_validation(
-        self, engine, monkeypatch
-    ):
+    def test_an_unattributed_crash_starts_a_hunt_before_validation(self, engine, monkeypatch):
         sid = engine._session_id
         for cid in (0, 1):
             cs = _confirm(engine, cid, -20)
@@ -1239,9 +1210,7 @@ class TestRemainingEvidencePaths:
     def test_a_lane_with_no_resident_value_falls_back_to_its_best(self, engine):
         _confirm(engine, 1, -20)
         engine._co_applied.pop(1, None)
-        engine._log_parallel_rows(
-            0, json.dumps([{"core": 1, "passed": True, "duration": 1.0}]), "validate_s2"
-        )
+        engine._log_parallel_rows(0, json.dumps([{"core": 1, "passed": True, "duration": 1.0}]), "validate_s2")
         rows = tp.get_test_log(engine._db, engine._session_id, core_id=1)
         assert rows[0]["offset_tested"] == -20
 

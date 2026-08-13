@@ -344,9 +344,7 @@ class TestContextMenus:
         cid = _seed_context(db, "2402", {"0": -20}, notes="old")
         _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
         tab = _grouped_tab(db)
-        with patch(
-            "corecycler.gui.history_tab.QInputDialog.getText", return_value=("fresh", True)
-        ):
+        with patch("corecycler.gui.history_tab.QInputDialog.getText", return_value=("fresh", True)):
             tab._add_context_note(tab._contexts[0])
         assert db.get_context(cid).notes == "fresh"
 
@@ -354,9 +352,7 @@ class TestContextMenus:
         cid = _seed_context(db, "2402", {"0": -20}, notes="old")
         _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
         tab = _grouped_tab(db)
-        with patch(
-            "corecycler.gui.history_tab.QInputDialog.getText", return_value=("fresh", False)
-        ):
+        with patch("corecycler.gui.history_tab.QInputDialog.getText", return_value=("fresh", False)):
             tab._add_context_note(tab._contexts[0])
         assert db.get_context(cid).notes == "old"
 
@@ -495,9 +491,7 @@ def _run_by_id(db, rid):
 
 class TestRunDetail:
     def test_detail_renders_context_events_and_telemetry(self, db):
-        cid = _seed_context(
-            db, "2402", {"0": -20, "1": -25}, notes="tuned", scalar=3.0, boost=5200
-        )
+        cid = _seed_context(db, "2402", {"0": -20, "1": -25}, notes="tuned", scalar=3.0, boost=5200)
         rid = _seed_detailed_run(db, cid)
         db.insert_event(
             EventRecord(
@@ -597,9 +591,7 @@ class TestTunerSessionDetail:
             CoreState(core_id=1, phase=TunerPhase.FINE_SEARCH, current_offset=-18, best_offset=None),
         )
         tp.log_test_result(db, sid, 0, -30, "confirm", True, duration=300.0)
-        tp.log_test_result(
-            db, sid, 1, -18, "coarse", False, error_msg="rounding error", duration=12.5
-        )
+        tp.log_test_result(db, sid, 1, -18, "coarse", False, error_msg="rounding error", duration=12.5)
         tab = _tab(db)
         tab._view_mode = tab.VIEW_TUNER
         tab.refresh()
@@ -653,9 +645,7 @@ class TestLoadCoProfile:
 
     def test_a_session_without_offsets_informs_the_user(self, db):
         sid = _seed_session(db)
-        tp.save_core_state(
-            db, sid, CoreState(core_id=0, phase=TunerPhase.NOT_STARTED, best_offset=None)
-        )
+        tp.save_core_state(db, sid, CoreState(core_id=0, phase=TunerPhase.NOT_STARTED, best_offset=None))
         tab = _tab(db)
         tab._view_mode = tab.VIEW_TUNER
         tab.refresh()
@@ -710,9 +700,7 @@ class TestDeleteSelected:
         tab = _grouped_tab(db)
         tab._context_table.selectRow(0)
         tab._runs_table.clearSelection()
-        with patch(
-            "corecycler.gui.history_tab.QMessageBox.question", return_value=_yes()
-        ) as ask:
+        with patch("corecycler.gui.history_tab.QMessageBox.question", return_value=_yes()) as ask:
             tab._delete_selected()
         assert "2 associated test run(s)" in ask.call_args.args[2]
         assert db.list_contexts() == []
@@ -872,11 +860,7 @@ class TestMalformedContextData:
         assert ht._co_summary('{"0": -20, "1": "x"}') == "mixed"
 
     def test_a_malformed_profile_does_not_break_the_context_table(self, db):
-        cid = db.create_context(
-            TuningContextRecord(
-                bios_version="2402", co_offsets_json="[1, 2, 3]", co_hash="broken"
-            )
-        )
+        cid = db.create_context(TuningContextRecord(bios_version="2402", co_offsets_json="[1, 2, 3]", co_hash="broken"))
         _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
         tab = _grouped_tab(db)
         assert tab._context_table.rowCount() == 1

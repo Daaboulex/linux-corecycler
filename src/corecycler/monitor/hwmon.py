@@ -14,11 +14,30 @@ HWMON_BASE = Path("/sys/class/hwmon")
 # Nuvoton NCT67xx: common on ASUS, MSI, ASRock boards
 # ITE IT868x/IT866x/IT871x: common on Gigabyte boards
 _SUPERIO_CHIPS = (
-    "nct6687", "nct6686", "nct6683",
-    "nct6799", "nct6798", "nct6797", "nct6796", "nct6795",
-    "nct6793", "nct6792", "nct6791", "nct6779", "nct6776", "nct6775",
-    "it8689", "it8688", "it8686", "it8665", "it8628", "it8625",
-    "it8720", "it8728", "it8771", "it8772",
+    "nct6687",
+    "nct6686",
+    "nct6683",
+    "nct6799",
+    "nct6798",
+    "nct6797",
+    "nct6796",
+    "nct6795",
+    "nct6793",
+    "nct6792",
+    "nct6791",
+    "nct6779",
+    "nct6776",
+    "nct6775",
+    "it8689",
+    "it8688",
+    "it8686",
+    "it8665",
+    "it8628",
+    "it8625",
+    "it8720",
+    "it8728",
+    "it8771",
+    "it8772",
 )
 
 
@@ -129,9 +148,7 @@ class HWMonReader:
                 with contextlib.suppress(ValueError, OSError):
                     label = label_file.read_text().strip().lower()
                     if "vcore" in label:
-                        vcore_input = label_file.with_name(
-                            label_file.name.replace("_label", "_input")
-                        )
+                        vcore_input = label_file.with_name(label_file.name.replace("_label", "_input"))
                         break
             if vcore_input is None:
                 vcore_input = self._superio_path / "in0_input"

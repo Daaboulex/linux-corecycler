@@ -96,8 +96,7 @@ def test_no_duplicate_function_bodies():
     dups = {fp: locs for fp, locs in _collect().items() if len(locs) > 1}
     assert not dups, (
         "Duplicated function bodies found (identical after renaming local "
-        "variables) -- extract a shared helper:\n"
-        + "\n".join("  == " + " | ".join(locs) for locs in dups.values())
+        "variables) -- extract a shared helper:\n" + "\n".join("  == " + " | ".join(locs) for locs in dups.values())
     )
 
 
@@ -109,20 +108,8 @@ def _fp_of(source: str) -> str | None:
 
 class TestGateCatchesRenamedCopies:
     def test_a_renamed_copy_collides(self):
-        original = (
-            "def a(items):\n"
-            "    total = 0\n"
-            "    for item in items:\n"
-            "        total += item\n"
-            "    return total\n"
-        )
-        renamed = (
-            "def b(values):\n"
-            "    acc = 0\n"
-            "    for value in values:\n"
-            "        acc += value\n"
-            "    return acc\n"
-        )
+        original = "def a(items):\n    total = 0\n    for item in items:\n        total += item\n    return total\n"
+        renamed = "def b(values):\n    acc = 0\n    for value in values:\n        acc += value\n    return acc\n"
         assert _fp_of(original) == _fp_of(renamed)
 
     def test_a_different_call_target_does_not_collide(self):

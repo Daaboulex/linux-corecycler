@@ -79,8 +79,7 @@ class TestOnTestCompletedFailsClosed:
         ns._config_tab.get_profile.return_value = MagicMock(cycle_count=1)
         ns._results_tab = MagicMock()
         ns._on_test_completed = types.MethodType(MainWindow._on_test_completed, ns)
-        for bad in ("", "not json", "[1,2,3]", "null", "42",
-                    '{"0": "x"}', '{"0": [42]}', '{"0": [{"no_passed": 1}]}'):
+        for bad in ("", "not json", "[1,2,3]", "null", "42", '{"0": "x"}', '{"0": [42]}', '{"0": [{"no_passed": 1}]}'):
             ns._on_test_completed(bad)  # must not raise
 
 
@@ -117,7 +116,8 @@ class TestCoreGridTelemetryFed:
         )
 
         ns._feed_core_grid_telemetry = types.MethodType(
-            MainWindow._feed_core_grid_telemetry, ns,
+            MainWindow._feed_core_grid_telemetry,
+            ns,
         )
         ns._feed_core_grid_telemetry()
 
@@ -163,7 +163,8 @@ class TestFeedTelemetryNoopWhenNoActiveCore:
         )
 
         ns._feed_core_grid_telemetry = types.MethodType(
-            MainWindow._feed_core_grid_telemetry, ns,
+            MainWindow._feed_core_grid_telemetry,
+            ns,
         )
         ns._feed_core_grid_telemetry()
 
@@ -174,9 +175,7 @@ class TestFeedTelemetryNoopWhenNoActiveCore:
 # Plan 06-02: MonitorTab poll_interval, staleness indicator, narrowed exceptions
 # ---------------------------------------------------------------------------
 
-_MONITOR_TAB_SRC = (
-    Path(__file__).resolve().parent.parent / "src" / "corecycler" / "gui" / "monitor_tab.py"
-)
+_MONITOR_TAB_SRC = Path(__file__).resolve().parent.parent / "src" / "corecycler" / "gui" / "monitor_tab.py"
 
 
 class _MockStyleLabel:
@@ -204,15 +203,11 @@ class TestMonitorTabUsesPollInterval:
         """MonitorTab.__init__ timer.start() must use poll_interval, not hardcoded 1000."""
         content = _MONITOR_TAB_SRC.read_text()
         # Find MonitorTab class, then its __init__ method
-        class_match = re.search(
-            r"class MonitorTab\(.*?\n((?:(?!^class ).*\n)*)", content, re.MULTILINE
-        )
+        class_match = re.search(r"class MonitorTab\(.*?\n((?:(?!^class ).*\n)*)", content, re.MULTILINE)
         assert class_match is not None, "Could not find MonitorTab class"
         class_body = class_match.group(1)
         # Find __init__ within MonitorTab
-        init_match = re.search(
-            r"def __init__\(.*?\n(?:(?!    def ).*\n)*", class_body
-        )
+        init_match = re.search(r"def __init__\(.*?\n(?:(?!    def ).*\n)*", class_body)
         assert init_match is not None, "Could not find __init__ in MonitorTab"
         init_body = init_match.group()
         assert "poll_interval" in init_body, (
@@ -224,13 +219,9 @@ class TestMonitorTabNarrowedException:
     def test_monitor_tab_narrowed_exception(self):
         """monitor_tab.py must use suppress(OSError, ...) not suppress(Exception)."""
         content = _MONITOR_TAB_SRC.read_text()
-        assert "suppress(Exception)" not in content, (
-            "monitor_tab.py still has overly broad suppress(Exception)"
-        )
+        assert "suppress(Exception)" not in content, "monitor_tab.py still has overly broad suppress(Exception)"
         # Should have narrowed exception handling for sysfs/procfs errors
-        assert "OSError" in content, (
-            "monitor_tab.py should handle OSError for sysfs/procfs failures"
-        )
+        assert "OSError" in content, "monitor_tab.py should handle OSError for sysfs/procfs failures"
 
 
 class TestStalenessIndicator:
@@ -282,13 +273,9 @@ class TestStalenessIndicator:
             tab._do_update()
 
         # After 3 failures, label should be grey
-        assert "color: #666" in tab._tctl_label.styleSheet(), (
-            "tctl label should turn grey after 3 consecutive failures"
-        )
+        assert "color: #666" in tab._tctl_label.styleSheet(), "tctl label should turn grey after 3 consecutive failures"
         # Last-known text must be preserved (not cleared)
-        assert "65.0" in tab._tctl_label.text(), (
-            "tctl label should preserve last-known value"
-        )
+        assert "65.0" in tab._tctl_label.text(), "tctl label should preserve last-known value"
 
 
 class TestStalenessRecovery:
@@ -370,17 +357,21 @@ class TestLoadToCOEnabledForHardened:
 
         ns = self._detail_ns()
         sess = types.SimpleNamespace(
-            id=1, config_json="{}", cpu_model="cpu", bios_version=None,
+            id=1,
+            config_json="{}",
+            cpu_model="cpu",
+            bios_version=None,
             created_at="2026-07-17T00:00:00+00:00",
         )
         states = {
-            i: CoreState(core_id=i, phase=p, current_offset=-10,
-                         best_offset=best_offset, baseline_offset=0)
+            i: CoreState(core_id=i, phase=p, current_offset=-10, best_offset=best_offset, baseline_offset=0)
             for i, p in enumerate(phases)
         }
-        with patch("corecycler.gui.history_tab.tp.load_core_states", return_value=states), \
-                patch("corecycler.gui.history_tab.tp.get_test_log", return_value=[]), \
-                patch("corecycler.gui.history_tab.tp.get_events", return_value=[]):
+        with (
+            patch("corecycler.gui.history_tab.tp.load_core_states", return_value=states),
+            patch("corecycler.gui.history_tab.tp.get_test_log", return_value=[]),
+            patch("corecycler.gui.history_tab.tp.get_events", return_value=[]),
+        ):
             MethodType(HistoryTab._show_tuner_session_detail, ns)(sess)
         return ns
 
@@ -426,9 +417,16 @@ class TestEngineInitiatedStops:
 
     def _ns(self):
         ns = types.SimpleNamespace()
-        for name in ("_start_btn", "_pause_btn", "_resume_btn", "_abort_btn",
-                     "_config_container", "_status_label", "_progress_label",
-                     "_tuner_timer"):
+        for name in (
+            "_start_btn",
+            "_pause_btn",
+            "_resume_btn",
+            "_abort_btn",
+            "_config_container",
+            "_status_label",
+            "_progress_label",
+            "_tuner_timer",
+        ):
             setattr(ns, name, MagicMock())
         ns.tuner_running_changed = MagicMock()
         ns._active_test_core = 3

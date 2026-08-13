@@ -70,7 +70,6 @@ class TestProcCpuinfoFreqRobust:
     @settings(max_examples=400, deadline=None)
     @given(text=st.text(max_size=600))
     def test_read_from_proc_never_crashes(self, text):
-        with patch("pathlib.Path.exists", return_value=True), \
-             patch("pathlib.Path.read_text", return_value=text):
+        with patch("pathlib.Path.exists", return_value=True), patch("pathlib.Path.read_text", return_value=text):
             result = freq_mod._read_from_proc()
         assert isinstance(result, dict)

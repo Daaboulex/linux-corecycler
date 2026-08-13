@@ -238,9 +238,7 @@ class CoreScheduler:
         start_time = time.monotonic()
         self._set_phase(core_id, "stress")
         supervisor = self._supervisor(f"stress (CPU {lane.cpu_list})")
-        verdict = supervisor.run(
-            [lane], lambda _lane: self.stress_config, float(self.config.seconds_per_core)
-        )[core_id]
+        verdict = supervisor.run([lane], lambda _lane: self.stress_config, float(self.config.seconds_per_core))[core_id]
 
         passed = True
         error_msg = None
@@ -258,9 +256,7 @@ class CoreScheduler:
                 self._stop_event.set()
 
         if passed and self.config.variable_load and not self._stop_event.is_set():
-            var_passed, var_error = self._run_variable_load(
-                lane, self.config.seconds_per_core / 3.0
-            )
+            var_passed, var_error = self._run_variable_load(lane, self.config.seconds_per_core / 3.0)
             if not var_passed:
                 passed = False
                 error_msg = var_error
@@ -268,9 +264,7 @@ class CoreScheduler:
                 status.last_error = error_msg
 
         if passed and self.config.idle_stability_test > 0 and not self._stop_event.is_set():
-            idle_error = self._idle_phase(
-                core_id, self.config.idle_stability_test, "idle stability"
-            )
+            idle_error = self._idle_phase(core_id, self.config.idle_stability_test, "idle stability")
             if idle_error:
                 passed = False
                 error_msg = idle_error
@@ -304,9 +298,7 @@ class CoreScheduler:
         while time.monotonic() < deadline and not self._stop_event.is_set():
             segment = min(interval, deadline - time.monotonic())
             if load_on:
-                verdict = supervisor.run(
-                    [lane], lambda _lane: self.stress_config, segment
-                )[lane.core_id]
+                verdict = supervisor.run([lane], lambda _lane: self.stress_config, segment)[lane.core_id]
                 if verdict is not None and not verdict.passed:
                     if self.config.stop_on_error:
                         self._stop_event.set()
@@ -400,9 +392,7 @@ class CoreScheduler:
                 )[lane.core_id]
                 elapsed += time.monotonic() - segment_start
                 if verdict is not None and not verdict.passed:
-                    return False, (
-                        f"Failure during rapid transition cycle {cycle}: {verdict.error_message}"
-                    )
+                    return False, (f"Failure during rapid transition cycle {cycle}: {verdict.error_message}")
                 if self._stop_event.is_set():
                     break
                 if elapsed < total_duration:

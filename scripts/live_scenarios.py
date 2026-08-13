@@ -233,14 +233,15 @@ def history_rows() -> list[dict]:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        runs = [dict(r) for r in conn.execute(
-            "SELECT id, status FROM runs ORDER BY id"
-        )]
+        runs = [dict(r) for r in conn.execute("SELECT id, status FROM runs ORDER BY id")]
         for run in runs:
-            run["cores"] = [dict(r) for r in conn.execute(
-                "SELECT core_id, passed, error_type FROM core_results WHERE run_id=?",
-                (run["id"],),
-            )]
+            run["cores"] = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT core_id, passed, error_type FROM core_results WHERE run_id=?",
+                    (run["id"],),
+                )
+            ]
         return runs
     finally:
         conn.close()
@@ -367,13 +368,15 @@ class GuiDriver:
 
 
 def scenario_gui_run(args) -> None:
-    write_settings({
-        "backend": args.backend,
-        "stress_mode": args.mode,
-        "threads": args.threads,
-        "seconds_per_core": args.seconds,
-        "cores_to_test": args.cores,
-    })
+    write_settings(
+        {
+            "backend": args.backend,
+            "stress_mode": args.mode,
+            "threads": args.threads,
+            "seconds_per_core": args.seconds,
+            "cores_to_test": args.cores,
+        }
+    )
     driver = GuiDriver()
     driver.pump(1.0)
     expected = expected_cpus(args.cores, args.threads)
@@ -387,8 +390,7 @@ def scenario_gui_run(args) -> None:
     check("worker_ran", report["saw_worker"], report)
     check(
         "every_scope_confined_to_expected_cpus",
-        report["scope_samples"] > 0
-        and report["samples_inside_expected"] == report["scope_samples"],
+        report["scope_samples"] > 0 and report["samples_inside_expected"] == report["scope_samples"],
         {"expected": sorted(expected), **report},
     )
     runs = history_rows()
@@ -401,8 +403,7 @@ def scenario_gui_run(args) -> None:
             last["cores"],
         )
         kernel_evidence = [
-            c for c in last["cores"]
-            if not c["passed"] and c["error_type"] in ("mce", "mce_unattributed")
+            c for c in last["cores"] if not c["passed"] and c["error_type"] in ("mce", "mce_unattributed")
         ]
         check(
             "every_verdict_honest",
@@ -417,12 +418,14 @@ def scenario_gui_run(args) -> None:
 
 
 def scenario_gui_stop(args) -> None:
-    write_settings({
-        "backend": args.backend,
-        "seconds_per_core": 300,
-        "threads": args.threads,
-        "cores_to_test": args.cores,
-    })
+    write_settings(
+        {
+            "backend": args.backend,
+            "seconds_per_core": 300,
+            "threads": args.threads,
+            "cores_to_test": args.cores,
+        }
+    )
     driver = GuiDriver()
     driver.pump(1.0)
     driver.start()
@@ -449,12 +452,14 @@ def scenario_gui_stop(args) -> None:
 
 
 def scenario_gui_close(args) -> None:
-    write_settings({
-        "backend": args.backend,
-        "seconds_per_core": 300,
-        "threads": args.threads,
-        "cores_to_test": args.cores,
-    })
+    write_settings(
+        {
+            "backend": args.backend,
+            "seconds_per_core": 300,
+            "threads": args.threads,
+            "cores_to_test": args.cores,
+        }
+    )
     driver = GuiDriver()
     driver.pump(1.0)
     driver.start()
@@ -512,9 +517,7 @@ def scenario_engine_parallel(args) -> None:
         topology=detect_topology(),
         backend=get_backend(args.backend),
         stress_config=StressConfig(mode=StressMode[args.mode], threads=args.threads),
-        scheduler_config=SchedulerConfig(
-            seconds_per_core=args.seconds, cores_to_test=args.cores, poll_interval=0.5
-        ),
+        scheduler_config=SchedulerConfig(seconds_per_core=args.seconds, cores_to_test=args.cores, poll_interval=0.5),
         work_dir=campaign_home() / "parallel-work",
     )
     import threading
@@ -596,8 +599,7 @@ def scenario_memory_stress(args) -> None:
             break
         driver.pump(0.25)
     descendants = [(pid, _comm(pid)) for pid in app_descendants()]
-    sys.stderr.write(f"worker_running={worker_running()} proc_seen={proc_seen} "
-                     f"descendants={descendants}\n")
+    sys.stderr.write(f"worker_running={worker_running()} proc_seen={proc_seen} descendants={descendants}\n")
     check("memory_worker_ran", saw, saw)
     check("a_real_stress_process_appeared", proc_seen, proc_seen)
     pids_before = set(find_backend_pids("stressapptest") + find_backend_pids("stress-ng"))
@@ -621,10 +623,14 @@ def scenario_cli_doctor(args) -> None:
         timeout=60,
         env={**os.environ, "PYTHONPATH": str(REPO / "src")},
     )
-    check("doctor_exit_zero", result.returncode == 0, {
-        "exit": result.returncode,
-        "tail": (result.stdout + result.stderr).strip().splitlines()[-6:],
-    })
+    check(
+        "doctor_exit_zero",
+        result.returncode == 0,
+        {
+            "exit": result.returncode,
+            "tail": (result.stdout + result.stderr).strip().splitlines()[-6:],
+        },
+    )
 
 
 SCENARIOS = {

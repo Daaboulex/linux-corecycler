@@ -314,9 +314,7 @@ class MonitorTab(QWidget):
         for i, label in enumerate(row0_labels):
             label.setStyleSheet("font: bold 11px monospace; padding: 2px;")
             values_layout.addWidget(label, 0, i)
-        for i, label in enumerate(
-            (self._ppt_label, self._tdc_label, self._edc_label)
-        ):
+        for i, label in enumerate((self._ppt_label, self._tdc_label, self._edc_label)):
             label.setStyleSheet("font: bold 11px monospace; padding: 2px;")
             values_layout.addWidget(label, 2, i)
 
@@ -355,9 +353,7 @@ class MonitorTab(QWidget):
         # per-core view (scrollable, hidden by default)
         self._per_core_scroll = QScrollArea()
         self._per_core_scroll.setWidgetResizable(True)
-        self._per_core_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        self._per_core_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._per_core_scroll.setStyleSheet("QScrollArea { border: none; }")
 
         per_core_container = QWidget()
@@ -432,13 +428,9 @@ class MonitorTab(QWidget):
         # frequencies — read both actual and boost ceiling per-core
         dual_freqs = read_core_frequencies_dual()
         # Extract simple freq dict for chart + fallback
-        freqs: dict[int, float] = {
-            cpu_id: r.actual_mhz for cpu_id, r in dual_freqs.items()
-        }
+        freqs: dict[int, float] = {cpu_id: r.actual_mhz for cpu_id, r in dual_freqs.items()}
         # Also extract per-core boost ceilings
-        eff_max_freqs: dict[int, float] = {
-            cpu_id: r.effective_max_mhz for cpu_id, r in dual_freqs.items()
-        }
+        eff_max_freqs: dict[int, float] = {cpu_id: r.effective_max_mhz for cpu_id, r in dual_freqs.items()}
         # Fallback to simple read if dual returned nothing
         if not freqs:
             freqs = read_core_frequencies()
@@ -485,9 +477,7 @@ class MonitorTab(QWidget):
                     if core.ccd == ccd_idx and core.has_vcache:
                         vcache_tag = " VC"
                         break
-            self._ccd_temp_labels[ccd_idx].setText(
-                f"CCD{ccd_idx}{vcache_tag}: {temp:.1f}°C"
-            )
+            self._ccd_temp_labels[ccd_idx].setText(f"CCD{ccd_idx}{vcache_tag}: {temp:.1f}°C")
         if hwmon_data.vcore_v is not None:
             self._vcore_label.setStyleSheet(self._NORMAL_STYLE)
             self._vcore_label.setText(f"Vcore: {hwmon_data.vcore_v:.4f}V")
@@ -558,9 +548,7 @@ class MonitorTab(QWidget):
                         ccd = core_info.ccd if core_info.ccd is not None else 0
                         core_temp = ccd_temps.get(ccd, tctl or 0)
                         # Sum usage across SMT siblings for this physical core
-                        core_usage = sum(
-                            usage_data.get(lc, 0) for lc in core_info.logical_cpus
-                        )
+                        core_usage = sum(usage_data.get(lc, 0) for lc in core_info.logical_cpus)
                         bar.update_data(
                             cpu_freq,
                             core_temp,

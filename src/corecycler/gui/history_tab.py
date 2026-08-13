@@ -52,7 +52,6 @@ if TYPE_CHECKING:
     from corecycler.history.db import HistoryDB, RunRecord, TuningContextRecord
 
 
-
 class HistoryTab(QWidget):
     """Tab showing historical test runs grouped by tuning context."""
 
@@ -386,9 +385,7 @@ class HistoryTab(QWidget):
         # remember which context was selected
         selected_ctx_id = None
         if self._view_mode == self.VIEW_GROUPED:
-            ctx_rows = sorted(
-                {idx.row() for idx in self._context_table.selectionModel().selectedRows()}
-            )
+            ctx_rows = sorted({idx.row() for idx in self._context_table.selectionModel().selectedRows()})
             if ctx_rows and ctx_rows[0] < len(self._contexts):
                 selected_ctx_id = self._contexts[ctx_rows[0]].id
 
@@ -432,16 +429,10 @@ class HistoryTab(QWidget):
         if self._view_mode == self.VIEW_TUNER:
             statuses = [s.status for s in self._tuner_sessions]
             self._total_label.setText(f"Sessions: {len(statuses)}")
-            self._completed_label.setText(
-                f"Completed: {statuses.count('completed')}"
-            )
-            self._crashed_label.setText(
-                f"Quarantined: {statuses.count('quarantined')}"
-            )
+            self._completed_label.setText(f"Completed: {statuses.count('completed')}")
+            self._crashed_label.setText(f"Quarantined: {statuses.count('quarantined')}")
             active = sum(1 for s in statuses if s in ("running", "validating"))
-            self._stopped_label.setText(
-                f"Active: {active}  Paused: {statuses.count('paused')}"
-            )
+            self._stopped_label.setText(f"Active: {active}  Paused: {statuses.count('paused')}")
         else:
             counts = self._db.get_status_counts() if self._db else {}
             total = sum(counts.values())
@@ -497,8 +488,10 @@ class HistoryTab(QWidget):
             # Color based on best pass rate
             has_failures = any(r.cores_failed > 0 for r in runs if r.status == "completed")
             all_pass = any(r.cores_failed == 0 and r.status == "completed" for r in runs)
-            row_color = COLOR_FAIL if has_failures and not all_pass else (
-                COLOR_WARN if has_failures else (COLOR_PASS if all_pass else COLOR_MUTED)
+            row_color = (
+                COLOR_FAIL
+                if has_failures and not all_pass
+                else (COLOR_WARN if has_failures else (COLOR_PASS if all_pass else COLOR_MUTED))
             )
 
             for col, (text, align) in enumerate(items):
@@ -589,9 +582,7 @@ class HistoryTab(QWidget):
     def _add_context_note(self, ctx: TuningContextRecord) -> None:
         if not self._db or ctx.id is None:
             return
-        text, ok = QInputDialog.getText(
-            self, "Context Note", "Note:", text=ctx.notes or ""
-        )
+        text, ok = QInputDialog.getText(self, "Context Note", "Note:", text=ctx.notes or "")
         if ok:
             self._db.update_context_notes(ctx.id, text)
             self._refresh_preserve_context()
@@ -824,8 +815,7 @@ class HistoryTab(QWidget):
                         stretch_pct = (1.0 - min_freq / eff_max) * 100.0
                         if stretch_pct > 5.0:
                             parts.append(
-                                f"    Clock stretch: {stretch_pct:.1f}% "
-                                f"(min {min_freq:.0f} vs max {eff_max:.0f})"
+                                f"    Clock stretch: {stretch_pct:.1f}% (min {min_freq:.0f} vs max {eff_max:.0f})"
                             )
                         else:
                             parts.append(f"    Clock stretch: none ({stretch_pct:.1f}%)")
@@ -861,9 +851,7 @@ class HistoryTab(QWidget):
         sessions = self._tuner_sessions
         self._runs_table.setSortingEnabled(False)
         self._runs_table.setColumnCount(7)
-        self._runs_table.setHorizontalHeaderLabels(
-            ["Date", "Status", "CPU", "Cores", "Confirmed", "Duration", "BIOS"]
-        )
+        self._runs_table.setHorizontalHeaderLabels(["Date", "Status", "CPU", "Cores", "Confirmed", "Duration", "BIOS"])
         header = self._runs_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -885,10 +873,7 @@ class HistoryTab(QWidget):
             # Count cores
             core_states = tp.load_core_states(self._db, sess.id)
             total = len(core_states)
-            confirmed = sum(
-                1 for cs in core_states.values()
-                if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
-            )
+            confirmed = sum(1 for cs in core_states.values() if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED))
 
             date_str = format_local(sess.created_at)
 
@@ -929,9 +914,7 @@ class HistoryTab(QWidget):
 
         self._selected_tuner_session = sess
         core_states = tp.load_core_states(self._db, sess.id)
-        has_offsets = any(
-            cs.best_offset is not None for cs in core_states.values()
-        )
+        has_offsets = any(cs.best_offset is not None for cs in core_states.values())
         self._tuner_actions_row.setVisible(True)
         self._load_co_btn.setEnabled(has_offsets)
         self._expand_detail()
@@ -1052,10 +1035,8 @@ class HistoryTab(QWidget):
         profile = tp.get_session_offsets(self._db, self._selected_tuner_session.id)
         if not profile:
             from PySide6.QtWidgets import QMessageBox
-            QMessageBox.information(
-                self, "No Profile",
-                "This tuner session has no CO offsets to load."
-            )
+
+            QMessageBox.information(self, "No Profile", "This tuner session has no CO offsets to load.")
             return
         self.load_profile_requested.emit(profile)
 
@@ -1120,9 +1101,7 @@ class HistoryTab(QWidget):
         if not self._db or run.id is None:
             return
 
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export JSON", f"run_{run.id}.json", "JSON (*.json)"
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Export JSON", f"run_{run.id}.json", "JSON (*.json)")
         if path:
             dlg = _ExportOptionsDialog(self)
             if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -1144,9 +1123,7 @@ class HistoryTab(QWidget):
         if not self._db or run.id is None:
             return
 
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export CSV", f"run_{run.id}.csv", "CSV (*.csv)"
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Export CSV", f"run_{run.id}.csv", "CSV (*.csv)")
         if path:
             export_run_csv_file(self._db, run.id, Path(path))
 
@@ -1158,9 +1135,7 @@ class HistoryTab(QWidget):
 
         displayed = getattr(self, "_displayed_runs", self._runs)
         run_ids = [displayed[r].id for r in rows if r < len(displayed) and displayed[r].id is not None]
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export CSV", "runs_comparison.csv", "CSV (*.csv)"
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Export CSV", "runs_comparison.csv", "CSV (*.csv)")
         if path:
             export_runs_bulk_csv_file(self._db, run_ids, Path(path))
 
@@ -1230,10 +1205,7 @@ class HistoryTab(QWidget):
             return
 
         # Count total associated runs for an explicit warning
-        total_runs = sum(
-            len(self._context_runs.get(cid, []))
-            for cid in ctx_ids
-        )
+        total_runs = sum(len(self._context_runs.get(cid, [])) for cid in ctx_ids)
 
         reply = QMessageBox.question(
             self,
@@ -1267,9 +1239,9 @@ class HistoryTab(QWidget):
 
         if active:
             QMessageBox.warning(
-                self, "Session Active",
-                f"Session(s) {active} are mid-run — abort them in the "
-                f"Auto-Tuner tab before deleting.",
+                self,
+                "Session Active",
+                f"Session(s) {active} are mid-run — abort them in the Auto-Tuner tab before deleting.",
             )
         if not session_ids:
             return
@@ -1337,9 +1309,7 @@ class HistoryTab(QWidget):
         self._core_results_table.setRowCount(len(sorted_cores))
 
         for row_idx, core_id in enumerate(sorted_cores):
-            self._core_results_table.setItem(
-                row_idx, 0, _item(str(core_id), Qt.AlignmentFlag.AlignCenter)
-            )
+            self._core_results_table.setItem(row_idx, 0, _item(str(core_id), Qt.AlignmentFlag.AlignCenter))
 
             for run_idx, (_run, results) in enumerate(run_data):
                 core_result = next((r for r in results if r.core_id == core_id), None)
@@ -1347,18 +1317,16 @@ class HistoryTab(QWidget):
 
                 if core_result:
                     result_text = (
-                        "PASS" if core_result.passed
-                        else ("FAIL" if core_result.passed is not None else "...")
+                        "PASS" if core_result.passed else ("FAIL" if core_result.passed is not None else "...")
                     )
                     result_item = _item(result_text, Qt.AlignmentFlag.AlignCenter)
                     color = (
-                        COLOR_PASS if core_result.passed
+                        COLOR_PASS
+                        if core_result.passed
                         else (COLOR_FAIL if core_result.passed is not None else COLOR_ACTIVE)
                     )
                     result_item.setForeground(QColor(color))
-                    dur_item = _item(
-                        duration_str(core_result.elapsed_seconds), Qt.AlignmentFlag.AlignCenter
-                    )
+                    dur_item = _item(duration_str(core_result.elapsed_seconds), Qt.AlignmentFlag.AlignCenter)
                 else:
                     result_item = _item("-", Qt.AlignmentFlag.AlignCenter)
                     dur_item = _item("-", Qt.AlignmentFlag.AlignCenter)
@@ -1372,8 +1340,7 @@ class HistoryTab(QWidget):
             passed = sum(1 for r in results if r.passed)
             failed = sum(1 for r in results if r.passed is False)
             lines.append(
-                f"  {label}:  {run.backend}/{run.stress_mode}  "
-                f"{passed}P/{failed}F  {duration_str(run.total_seconds)}"
+                f"  {label}:  {run.backend}/{run.stress_mode}  {passed}P/{failed}F  {duration_str(run.total_seconds)}"
             )
         self._events_log.setPlainText("\n".join(lines))
 

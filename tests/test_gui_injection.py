@@ -99,10 +99,16 @@ class TestTunerConfigPanel:
     def test_in_range_config_round_trips(self):
         tab = _tuner_tab()
         cfg = TunerConfig(
-            start_offset=-5, coarse_step=3, fine_step=1, max_offset=-40,
-            search_duration_seconds=60, confirm_duration_seconds=300,
-            validate_duration_seconds=300, max_confirm_retries=2,
-            inherit_current=True, auto_validate=False,
+            start_offset=-5,
+            coarse_step=3,
+            fine_step=1,
+            max_offset=-40,
+            search_duration_seconds=60,
+            confirm_duration_seconds=300,
+            validate_duration_seconds=300,
+            max_confirm_retries=2,
+            inherit_current=True,
+            auto_validate=False,
         )
         tab._apply_config_to_ui(cfg)
         out = tab._get_config()
@@ -122,8 +128,11 @@ class TestTunerConfigPanel:
         tab = _tuner_tab()
         tab._apply_config_to_ui(
             TunerConfig(
-                start_offset=start, coarse_step=coarse, fine_step=fine,
-                max_offset=maxoff, search_duration_seconds=search,
+                start_offset=start,
+                coarse_step=coarse,
+                fine_step=fine,
+                max_offset=maxoff,
+                search_duration_seconds=search,
             )
         )
         out = tab._get_config()
