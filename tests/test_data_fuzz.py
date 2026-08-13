@@ -97,5 +97,3 @@ class TestCoreStateRoundTrip:
             assert db.get_tuner_core_states(sid)[cs.core_id] == cs
         finally:
             db.close()
-
-

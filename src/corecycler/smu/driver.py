@@ -877,5 +877,3 @@ def _read_max_freq_sysfs() -> float | None:
         if path.exists():
             return int(path.read_text().strip()) / 1000.0
     return None
-
-
