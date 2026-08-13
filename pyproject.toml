@@ -10,9 +10,7 @@ readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.12"
 authors = [{ name = "Daaboulex" }]
-dependencies = [
-    "PySide6>=6.7",
-]
+dependencies = ["PySide6>=6.7"]
 
 [project.scripts]
 corecycler = "corecycler.main:main"
@@ -28,9 +26,9 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 markers = [
-    "slow: tests that take >5s (deselect with -m 'not slow')",
-    "hardware: tests that verify hardware-specific detection behavior",
-    "contract: Ring B live drift tests -- real binary/hardware, run outside the sandbox (pytest -m contract)",
+  "slow: tests that take >5s (deselect with -m 'not slow')",
+  "hardware: tests that verify hardware-specific detection behavior",
+  "contract: Ring B live drift tests -- real binary/hardware, run outside the sandbox (pytest -m contract)",
 ]
 
 [tool.ruff]
@@ -56,9 +54,9 @@ omit = ["*/main.py"]
 
 [tool.coverage.report]
 exclude_lines = [
-    "pragma: no cover",
-    "if TYPE_CHECKING:",
-    "raise NotImplementedError",
-    "@(abc\\.)?abstractmethod",
-    "if __name__ == .__main__.:",
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "@(abc\\.)?abstractmethod",
+  "if __name__ == .__main__.:",
 ]

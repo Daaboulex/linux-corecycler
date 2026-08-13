@@ -27,12 +27,12 @@ generate_content() {
     else
       # Fallback: grep for mkEnableOption/mkOption in nix files
       local opts
-      opts=$(grep -rh "mkEnableOption\|= lib.mkOption" ./*.nix ./**/*.nix 2>/dev/null \
-        | grep -v "^#" \
-        | sed 's/.*mkEnableOption "\([^"]*\)".*/| `enable` | bool | \1 |/' \
-        | sed 's/.*= lib.mkOption.*//' \
-        | grep -v "^$" \
-        | head -20)
+      opts=$(grep -rh "mkEnableOption\|= lib.mkOption" ./*.nix ./**/*.nix 2>/dev/null |
+        grep -v "^#" |
+        sed 's/.*mkEnableOption "\([^"]*\)".*/| `enable` | bool | \1 |/' |
+        sed 's/.*= lib.mkOption.*//' |
+        grep -v "^$" |
+        head -20)
       if [ -n "$opts" ]; then
         echo "## Options"
         echo ""
@@ -53,4 +53,4 @@ awk -v begin="$BEGIN_MARKER" -v end="$END_MARKER" -v content="$content" '
   $0 == begin { print; print content; skip=1; next }
   $0 == end { print; skip=0; next }
   !skip { print }
-' "$README" > "$README.tmp" && mv "$README.tmp" "$README"
+' "$README" >"$README.tmp" && mv "$README.tmp" "$README"

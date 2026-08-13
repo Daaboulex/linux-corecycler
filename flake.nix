@@ -9,7 +9,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     std = {
-      url = "github:Daaboulex/nix-packaging-standard?ref=v2.22.1";
+      url = "github:Daaboulex/nix-packaging-standard?ref=v2.23.0";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.git-hooks.follows = "git-hooks";
     };
@@ -201,6 +201,7 @@
 
             # Python lint gate — same config as pyproject [tool.ruff].
             pre-commit.settings.hooks.ruff.enable = true;
+            pre-commit.settings.hooks.taplo.excludes = [ "^pyproject\\.toml$" ];
 
             # Eval-only gate for the off-CI `full`: force its full build graph to
             # EVALUATE (catching dep/version/unfree breakage) without realizing the
