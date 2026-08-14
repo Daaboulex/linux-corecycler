@@ -55,20 +55,26 @@ jobs:
           fi
           git push
 
-      # Auto-close previous failure issues on success
+      # Auto-close previous failure issues on success. Keyed on exit_code alone:
+      # gating on `updated` too left a repo whose update was FIXED but whose
+      # upstream had not moved unable to ever clear its own ticket.
       - name: Close resolved issues
-        if: steps.update.outputs.updated == 'true' && steps.update.outputs.exit_code == '0'
+        if: steps.update.outputs.exit_code == '0'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
         # Pass outputs via env, never interpolate ${{ }} into the script body
         # (a value containing a quote/newline would break out of the JS).
         env:
           NEW_VERSION: ${{ steps.update.outputs.new_version }}
+          DID_UPDATE: ${{ steps.update.outputs.updated }}
         with:
           script: |
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,
               labels: 'update-failed', state: 'open'
             });
+            const body = process.env.DID_UPDATE === 'true'
+              ? `Resolved by auto-update to ${process.env.NEW_VERSION}.`
+              : 'Resolved: the update path now completes cleanly (upstream version unchanged).';
             for (const issue of issues.data) {
               await github.rest.issues.update({
                 owner: context.repo.owner, repo: context.repo.repo,
@@ -78,7 +84,7 @@ jobs:
               await github.rest.issues.createComment({
                 owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: issue.number,
-                body: `Resolved by auto-update to ${process.env.NEW_VERSION}.`
+                body
               });
             }
 
