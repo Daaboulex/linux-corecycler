@@ -32,12 +32,14 @@ jobs:
           transient_fetch_failure='crates\.io|error: cannot download|unable to download|http error 5[0-9][0-9]|status code: (403|429|5[0-9][0-9])|curl: \(|couldn.t resolve host|connection reset by peer|temporary failure in name resolution|operation timed out'
           run_update
           EXIT_CODE=$?
-          if [ "$EXIT_CODE" -ne 0 ] && grep -qiE "$transient_fetch_failure" /tmp/update.log; then
-            echo "::warning::Transient external-fetch failure during update; retrying once in 60s."
-            sleep 60
+          for backoff in 60 300 900; do
+            [ "$EXIT_CODE" -eq 0 ] && break
+            grep -qiE "$transient_fetch_failure" /tmp/update.log || break
+            echo "::warning::Transient external-fetch failure during update; retrying in ${backoff}s."
+            sleep "$backoff"
             run_update
             EXIT_CODE=$?
-          fi
+          done
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           if [ -f /tmp/update-outputs.env ]; then
             cat /tmp/update-outputs.env >> "$GITHUB_OUTPUT"
