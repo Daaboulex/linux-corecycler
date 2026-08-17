@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: DeterminateSystems/determinate-nix-action@d96678350ffd6a456235832eb11e1c491589b7bb # v3.21.8
+      - uses: DeterminateSystems/determinate-nix-action@61cbfe2efc2d4e7a8a6d56967c3c1058e846c858 # v3.21.9
         with:
           extra-conf: lazy-trees = false
 
@@ -88,7 +88,7 @@ jobs:
           # Retry once on a transient external-fetch failure (crates.io rate-limit,
           # registry/CDN blip) so maintenance doesn't open a spurious "broke build"
           # issue for an infra hiccup that has nothing to do with the lock bump.
-          if [ "$code" -ne 0 ] && grep -qiE 'crates\.io|error: cannot download|status code: (403|429)|curl: \(|couldn.t resolve host|connection reset by peer|temporary failure in name resolution|operation timed out' /tmp/lock-build.log; then
+          if [ "$code" -ne 0 ] && grep -qiE 'crates\.io|error: cannot download|unable to download|http error 5[0-9][0-9]|status code: (403|429|5[0-9][0-9])|curl: \(|couldn.t resolve host|connection reset by peer|temporary failure in name resolution|operation timed out' /tmp/lock-build.log; then
             echo "::warning::Transient external-fetch failure during maintenance build; retrying once in 60s."
             sleep 60
             build

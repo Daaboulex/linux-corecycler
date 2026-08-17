@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: DeterminateSystems/determinate-nix-action@d96678350ffd6a456235832eb11e1c491589b7bb # v3.21.8
+      - uses: DeterminateSystems/determinate-nix-action@61cbfe2efc2d4e7a8a6d56967c3c1058e846c858 # v3.21.9
         with:
           extra-conf: lazy-trees = false
 
@@ -25,8 +25,19 @@ jobs:
         id: update
         run: |
           set +e
-          bash scripts/update.sh 2>&1 | tee /tmp/update.log
-          EXIT_CODE=${PIPESTATUS[0]}  # update.sh's exit, NOT tee's (always 0)
+          run_update() {
+            bash scripts/update.sh 2>&1 | tee /tmp/update.log
+            return "${PIPESTATUS[0]}" # update.sh's exit, NOT tee's (always 0)
+          }
+          transient_fetch_failure='crates\.io|error: cannot download|unable to download|http error 5[0-9][0-9]|status code: (403|429|5[0-9][0-9])|curl: \(|couldn.t resolve host|connection reset by peer|temporary failure in name resolution|operation timed out'
+          run_update
+          EXIT_CODE=$?
+          if [ "$EXIT_CODE" -ne 0 ] && grep -qiE "$transient_fetch_failure" /tmp/update.log; then
+            echo "::warning::Transient external-fetch failure during update; retrying once in 60s."
+            sleep 60
+            run_update
+            EXIT_CODE=$?
+          fi
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           if [ -f /tmp/update-outputs.env ]; then
             cat /tmp/update-outputs.env >> "$GITHUB_OUTPUT"

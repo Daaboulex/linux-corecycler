@@ -138,16 +138,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1786707496,
-        "narHash": "sha256-qYQhV1trMhwk1/TQsycuD0eWSBm+ZaANd6FMwOMdhzQ=",
+        "lastModified": 1786972374,
+        "narHash": "sha256-QexfgbVqUQ3+H1mKZpFarlXycTgmYwjkYVOhcynCxiQ=",
         "owner": "Daaboulex",
         "repo": "nix-packaging-standard",
-        "rev": "9a8e274eafefd98fd2e7e23028b2d62669a9fce7",
+        "rev": "6d27813a48f8cf5279be86207cf80766617ec071",
         "type": "github"
       },
       "original": {
         "owner": "Daaboulex",
-        "ref": "v2.26.0",
+        "ref": "v2.27.0",
         "repo": "nix-packaging-standard",
         "type": "github"
       }
