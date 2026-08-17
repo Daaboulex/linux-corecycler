@@ -192,3 +192,44 @@ jobs:
                 '*Created by [update workflow](.github/workflows/update.yml)*'
               ].filter(Boolean).join('\n')
             });
+
+      # Exit 2 is a transient network failure: it resolves no issue, so it retires no branch.
+      - name: Retire attempt branches that no longer have an open issue
+        if: steps.update.outputs.exit_code == '0' || steps.update.outputs.exit_code == '1'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
+        env:
+          PKG: ${{ steps.update.outputs.package_name }}
+          KEEP: ${{ steps.update.outputs.exit_code == '1' && steps.update.outputs.new_version || '' }}
+        with:
+          script: |
+            const pkg = process.env.PKG;
+            if (!pkg) {
+              core.info('no package_name reported; leaving every branch alone');
+              return;
+            }
+            const keep = process.env.KEEP
+              ? `refs/heads/update/${pkg}-${process.env.KEEP}`
+              : '';
+            let refs = [];
+            try {
+              const res = await github.rest.git.listMatchingRefs({
+                owner: context.repo.owner, repo: context.repo.repo,
+                ref: `heads/update/${pkg}-`
+              });
+              refs = res.data;
+            } catch (e) {
+              core.info(`could not list attempt branches: ${e.message}`);
+              return;
+            }
+            for (const r of refs) {
+              if (r.ref === keep) continue;
+              try {
+                await github.rest.git.deleteRef({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  ref: r.ref.replace('refs/', '')
+                });
+                core.info(`retired ${r.ref}`);
+              } catch (e) {
+                core.info(`could not retire ${r.ref}: ${e.message}`);
+              }
+            }
