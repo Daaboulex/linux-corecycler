@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from corecycler.main import (
     _bus_is_usable,
     _private_config_home,
+    _private_runtime_dir,
     _session_appearance,
     _session_env,
     _wayland_socket,
@@ -147,6 +148,12 @@ class TestPrivateConfigHome:
 
     def test_each_run_gets_its_own_so_one_users_leftovers_never_reach_the_next(self):
         assert _private_config_home() != _private_config_home()
+
+    def test_a_runtime_dir_root_owns_is_offered_too(self):
+        runtime = _private_runtime_dir()
+        assert runtime is not None
+        assert runtime.stat().st_mode & 0o777 == 0o700
+        assert runtime != _private_config_home()
 
     def test_a_home_that_cannot_be_made_is_refused_rather_than_guessed(self, monkeypatch):
         import tempfile

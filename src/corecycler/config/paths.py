@@ -34,19 +34,31 @@ def atomic_write(path: Path, content: str) -> None:
     fix_sudo_ownership(path.parent, path)
 
 
+def invoking_uid() -> int:
+    """Uid of the user who started the run — SUDO_UID-aware under sudo."""
+    if os.geteuid() == 0:
+        sudo_uid = os.environ.get("SUDO_UID", "")
+        if sudo_uid.isdigit():
+            return int(sudo_uid)
+    return os.geteuid()
+
+
 def resolve_work_dir(configured: str = "") -> Path:
     """The stress work root: configured path, else a per-user default.
 
     The default is never a shared world-writable location — a root-owned
     /tmp/corecycler left by one sudo run made every later plain run unable to
-    write its backend config."""
+    write its backend config. The runtime directory is used only when it belongs
+    to the INVOKING user, like every other path here: under sudo it is root's
+    own private one, which is Qt's to keep its runtime files in, not a work root
+    the user could reach afterwards."""
     if configured:
         return Path(configured)
     runtime = os.environ.get("XDG_RUNTIME_DIR", "")
     if runtime:
         root = Path(runtime)
         with contextlib.suppress(OSError):
-            if root.is_dir() and root.stat().st_uid == os.geteuid():
+            if root.is_dir() and root.stat().st_uid == invoking_uid():
                 return root / "corecycler" / "work"
     return user_home() / ".cache" / "corecycler" / "work"
 
