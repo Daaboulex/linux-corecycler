@@ -17,7 +17,7 @@ uncontained.
 
 ```text
 src/corecycler/
-  main.py            Entry point, dark theme, Qt setup
+  main.py            Entry point, Qt setup, sudo session handshake
   cli.py             Headless doctor/status/tune/resume commands (no display needed)
   notify.py          Desktop notifications via notify-send, best-effort
   engine/            Stress execution
@@ -47,6 +47,8 @@ src/corecycler/
     engine.py          TunerEngine: state machine, scheduling, crash recovery, staged validation (1-7)
   gui/               Qt tabs (config, results, monitor, smu, tuner, memory, history), core grid,
                      and the missing-tool prompt that records a backend's path
+    style.py           Display standards: the desktop draws the widgets, this holds only the
+                       colors that carry meaning, resolved against its current color scheme
   config/            Settings and test profiles (~/.config/corecycler/), plus tools.py --
                      the one resolver for every external binary (PATH is not enough)
 nix/                 NixOS module + kernel-module derivations (ryzen-smu, zenpower, it87)

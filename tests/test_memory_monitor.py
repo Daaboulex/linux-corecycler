@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from corecycler.gui.style import theme
 from corecycler.monitor.memory import SPD5118Reader, SPDTimingData, decode_spd_timings, parse_dmidecode_output
 from corecycler.smu.pmtable import PMTableData, compute_fclk_uclk_ratio
 
@@ -273,7 +274,7 @@ class TestMemoryTabBehavior:
         assert "2000" in tab._uclk_label.text()
         assert "3000" in tab._mclk_label.text()
         assert "1:1" in tab._ratio_label.text()
-        assert "#4caf50" in tab._ratio_label.styleSheet()
+        assert theme.COLOR_PASS in tab._ratio_label.styleSheet()
 
     def test_update_clock_labels_1_to_2_ratio(self):
         tab = _make_headless_tab()
@@ -285,7 +286,7 @@ class TestMemoryTabBehavior:
         )
         tab._update_clock_labels(pm_data)
         assert "1:2" in tab._ratio_label.text()
-        assert "#ffb74d" in tab._ratio_label.styleSheet()
+        assert theme.COLOR_WARN_SOFT in tab._ratio_label.styleSheet()
 
     def test_show_uncalibrated_sets_dashes_and_label(self):
         tab = _make_headless_tab()
@@ -301,7 +302,7 @@ class TestMemoryTabBehavior:
         assert "--" in tab._vdd_label.text()
         assert "Uncalibrated" in tab._cal_label.text()
         assert "100 floats" in tab._cal_label.text()
-        assert "#888" in tab._fclk_label.styleSheet()
+        assert theme.COLOR_MUTED in tab._fclk_label.styleSheet()
 
     def test_set_clocks_unavailable_greys_out(self):
         tab = _make_headless_tab()
@@ -310,8 +311,8 @@ class TestMemoryTabBehavior:
         assert "--" in tab._uclk_label.text()
         assert "--" in tab._mclk_label.text()
         assert "--" in tab._ratio_label.text()
-        assert "#888" in tab._fclk_label.styleSheet()
-        assert "#888" in tab._ratio_label.styleSheet()
+        assert theme.COLOR_MUTED in tab._fclk_label.styleSheet()
+        assert theme.COLOR_MUTED in tab._ratio_label.styleSheet()
         assert tab._cal_label.text() == ""
 
     def test_update_live_data_calibrated_path(self):
@@ -369,7 +370,7 @@ class TestMemoryTabBehavior:
         tab._pm_reader.read.return_value = None
         tab._update_live_data()
         assert "--" in tab._fclk_label.text()
-        assert "#888" in tab._fclk_label.styleSheet()
+        assert theme.COLOR_MUTED in tab._fclk_label.styleSheet()
         assert tab._cal_label.text() == ""
 
     def test_update_live_data_recovery_after_failure(self):

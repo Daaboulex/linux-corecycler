@@ -9,18 +9,39 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
-### Fixed (2026-08-18 the desktop's own file dialog under sudo)
+### Changed (2026-08-18 the app renders in the desktop's own colors)
 
-- Under `sudo` the save/load dialog was Qt's plain widget fallback instead of
-  the desktop's file dialog. sudo's `env_reset` drops the desktop identity, so
-  Qt resolves the desktop to UNKNOWN and loads no platform theme at all
-  (`qtdiag` "kde,generic" becomes "unknown,generic", reproduced live). The
-  invoking user's identity -- desktop, session type, D-Bus session bus and an
-  explicit platform-theme choice -- is now read from that user's own graphical
-  session and set before Qt starts: an allowlist of keys taken from a process
-  holding a display connection, which is what `sudo -E` would have preserved.
-  Desktop notifications, which need the session bus, reach the session under
-  sudo for the same reason. Issue #14.
+- CoreCycler no longer paints its own chrome. The 250-line hardcoded dark
+  stylesheet is gone and every widget -- buttons, tabs, tables, scrollbars, and
+  the save/load dialog -- is drawn by the desktop, so a KDE session gets a
+  Breeze app and a GNOME session an Adwaita one. `gui/style.py` keeps only the
+  colors that carry meaning the desktop cannot supply (the core-grid legend,
+  status and phase colors, chart series) and resolves them against the current
+  color scheme, with panels, borders and dimmed text taken from the live
+  palette. A desktop that changes its scheme while the app runs is followed.
+  The six arrow SVGs the stylesheet needed are deleted with it.
+- Every color the app still chooses is gated on readability: state cells,
+  status and phase text carry 4.5:1 against their own background in both
+  schemes, dimmed text and chart series 3:1. Three colors that shipped below
+  that in the dark theme (failed cells, mem-stress cells, the deeper hardening
+  phase) were corrected.
+
+### Fixed (2026-08-18 the save/load dialog was unreadable, issue #14)
+
+- The dialog was the desktop's own all along; what was wrong was the app
+  painting a dark stylesheet over it while the palette stayed the desktop's, so
+  alternating rows, selection and icons kept colors that could not be read
+  against the forced ones. It needed neither KDE nor sudo to reproduce: with no
+  platform theme at all Qt's default palette is light, and the app's forced
+  `#ddd` text landed on a `#f7f7f7` row. Fixed by the change above. The
+  2026-08-18 identity recovery released earlier the same day did not fix it --
+  it addressed the desktop handshake, which was not what was broken.
+- Under `sudo` the desktop's appearance is now recovered read-only: the
+  invoking user's config search path (their `kdedefaults` and config home)
+  joins root's, so their color scheme and icon theme are read, while
+  `XDG_CONFIG_HOME` stays root's own, so nothing is written into their config.
+  Without it a root run renders in the toolkit's default light theme however
+  the user's desktop is set.
 
 ### Fixed (2026-08-12 the GUI survives close, stop and refused starts mid-test)
 

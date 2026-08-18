@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from corecycler.config.settings import TestProfile
 from corecycler.engine.backends.base import FFTPreset, StressMode
-from corecycler.gui.style import COLOR_FAIL, COLOR_MUTED
+from corecycler.gui.style import theme
 
 if TYPE_CHECKING:
     from corecycler.engine.topology import CPUTopology
@@ -74,7 +74,7 @@ class ConfigTab(QWidget):
 
         self._mode_desc = QLabel(TEST_MODE_INFO["STANDARD"])
         self._mode_desc.setWordWrap(True)
-        self._mode_desc.setStyleSheet(f"color: {COLOR_MUTED}; padding: 4px;")
+        self._mode_desc.setStyleSheet(f"color: {theme.COLOR_MUTED}; padding: 4px;")
         mode_layout.addWidget(self._mode_desc)
 
         layout.addWidget(mode_group)
@@ -222,7 +222,7 @@ class ConfigTab(QWidget):
         cores_layout.addWidget(self._cores_input)
 
         self._cores_error_label = QLabel("")
-        self._cores_error_label.setStyleSheet(f"color: {COLOR_FAIL}; font-size: 10px; padding: 2px;")
+        self._cores_error_label.setStyleSheet(f"color: {theme.COLOR_FAIL}; font-size: 10px; padding: 2px;")
         self._cores_error_label.setVisible(False)
         cores_layout.addWidget(self._cores_error_label)
 

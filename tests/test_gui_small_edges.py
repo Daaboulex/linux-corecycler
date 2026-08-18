@@ -72,9 +72,9 @@ class TestStyleCompletenessGuard:
     def test_state_color_label_mismatch_raises(self, monkeypatch):
         from corecycler.gui import style
 
-        trimmed = dict(style.STATE_COLORS)
-        trimmed.pop(next(iter(trimmed)))
-        monkeypatch.setattr(style, "STATE_COLORS", trimmed)
+        extra = dict(style.GRID_STATE_LABELS)
+        extra["brand-new-state"] = "Brand new"
+        monkeypatch.setattr(style, "GRID_STATE_LABELS", extra)
         with pytest.raises(AssertionError, match="disagree on states"):
             style._assert_complete()
 

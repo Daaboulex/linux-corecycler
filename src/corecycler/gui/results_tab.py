@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from corecycler.gui.style import COLOR_FAIL, COLOR_PASS, PENDING_VALUE, STATE_COLORS, duration_str, state_label
+from corecycler.gui.style import PENDING_VALUE, duration_str, state_label, theme
 from corecycler.gui.widgets import table_item as _item
 
 if TYPE_CHECKING:
@@ -41,9 +41,9 @@ class ResultsTab(QWidget):
 
         self._total_label = QLabel(f"Cores: {PENDING_VALUE}")
         self._passed_label = QLabel(f"Passed: {PENDING_VALUE}")
-        self._passed_label.setStyleSheet(f"color: {COLOR_PASS}; font-weight: bold;")
+        self._passed_label.setStyleSheet(f"color: {theme.COLOR_PASS}; font-weight: bold;")
         self._failed_label = QLabel(f"Failed: {PENDING_VALUE}")
-        self._failed_label.setStyleSheet(f"color: {COLOR_FAIL}; font-weight: bold;")
+        self._failed_label.setStyleSheet(f"color: {theme.COLOR_FAIL}; font-weight: bold;")
         self._elapsed_label = QLabel("Start a test to see results")
         self._cycle_label = QLabel("")
 
@@ -148,13 +148,13 @@ class ResultsTab(QWidget):
         self._table.setItem(row, 1, _item(ccd_text, Qt.AlignmentFlag.AlignCenter))
 
         status_item = _item(state_label(status.state), Qt.AlignmentFlag.AlignCenter)
-        _, fg, _border = STATE_COLORS.get(status.state, STATE_COLORS["pending"])
+        _, fg, _border = theme.STATE_COLORS.get(status.state, theme.STATE_COLORS["pending"])
         status_item.setForeground(QColor(fg))
         self._table.setItem(row, 2, status_item)
 
         errors_item = _item(str(status.errors), Qt.AlignmentFlag.AlignCenter)
         if status.errors > 0:
-            errors_item.setForeground(QColor(COLOR_FAIL))
+            errors_item.setForeground(QColor(theme.COLOR_FAIL))
         self._table.setItem(row, 3, errors_item)
 
         self._table.setItem(row, 4, _item(str(status.iterations), Qt.AlignmentFlag.AlignCenter))

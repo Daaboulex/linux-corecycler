@@ -29,20 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from corecycler.gui.style import (
-    COLOR_ACTIVE,
-    COLOR_FAIL,
-    COLOR_MUTED,
-    COLOR_PASS,
-    COLOR_TEXT_DIM,
-    COLOR_WARN,
-    PHASE_COLORS,
-    STATUS_COLORS,
-    duration_str,
-    font_mono,
-    phase_label,
-    span_str,
-)
+from corecycler.gui.style import duration_str, font_mono, phase_label, span_str, theme
 from corecycler.gui.widgets import table_item as _item
 from corecycler.history.timefmt import format_local
 from corecycler.tuner import persistence as tp
@@ -97,11 +84,11 @@ class HistoryTab(QWidget):
 
         self._total_label = QLabel("Test Runs: 0")
         self._completed_label = QLabel("Completed: 0")
-        self._completed_label.setStyleSheet(f"color: {COLOR_PASS}; font-weight: bold;")
+        self._completed_label.setStyleSheet(f"color: {theme.COLOR_PASS}; font-weight: bold;")
         self._crashed_label = QLabel("Crashed: 0")
-        self._crashed_label.setStyleSheet(f"color: {COLOR_FAIL}; font-weight: bold;")
+        self._crashed_label.setStyleSheet(f"color: {theme.COLOR_FAIL}; font-weight: bold;")
         self._stopped_label = QLabel("Stopped: 0")
-        self._stopped_label.setStyleSheet(f"color: {COLOR_WARN}; font-weight: bold;")
+        self._stopped_label.setStyleSheet(f"color: {theme.COLOR_WARN}; font-weight: bold;")
 
         for w in (self._total_label, self._completed_label, self._crashed_label, self._stopped_label):
             w.setFont(QFont("monospace", 10))
@@ -109,7 +96,7 @@ class HistoryTab(QWidget):
 
         self._bios_label = QLabel("")
         self._bios_label.setFont(font_mono(9))
-        self._bios_label.setStyleSheet(f"color: {COLOR_WARN}; font-weight: bold; padding-left: 8px;")
+        self._bios_label.setStyleSheet(f"color: {theme.COLOR_WARN}; font-weight: bold; padding-left: 8px;")
         self._bios_label.setVisible(False)
         summary_layout.addWidget(self._bios_label)
 
@@ -219,7 +206,7 @@ class HistoryTab(QWidget):
 
         self._detail_info = QLabel("Select a run to view details")
         self._detail_info.setFont(font_mono(9))
-        self._detail_info.setStyleSheet(f"color: {COLOR_MUTED}; padding: 2px;")
+        self._detail_info.setStyleSheet(f"color: {theme.COLOR_MUTED}; padding: 2px;")
         detail_layout.addWidget(self._detail_info)
 
         # Tuner session action buttons (hidden by default, shown for tuner sessions)
@@ -489,9 +476,9 @@ class HistoryTab(QWidget):
             has_failures = any(r.cores_failed > 0 for r in runs if r.status == "completed")
             all_pass = any(r.cores_failed == 0 and r.status == "completed" for r in runs)
             row_color = (
-                COLOR_FAIL
+                theme.COLOR_FAIL
                 if has_failures and not all_pass
-                else (COLOR_WARN if has_failures else (COLOR_PASS if all_pass else COLOR_MUTED))
+                else (theme.COLOR_WARN if has_failures else (theme.COLOR_PASS if all_pass else theme.COLOR_MUTED))
             )
 
             for col, (text, align) in enumerate(items):
@@ -499,7 +486,7 @@ class HistoryTab(QWidget):
                 if col == 4:
                     cell.setForeground(QColor(row_color))
                 if col == 0 and bios_changed:
-                    cell.setForeground(QColor(COLOR_WARN))
+                    cell.setForeground(QColor(theme.COLOR_WARN))
                     cell.setToolTip("BIOS version changed from previous context")
                 self._context_table.setItem(row, col, cell)
             row += 1
@@ -515,7 +502,7 @@ class HistoryTab(QWidget):
             ]
             for col, (text, align) in enumerate(items):
                 cell = _item(str(text), align)
-                cell.setForeground(QColor(COLOR_MUTED))
+                cell.setForeground(QColor(theme.COLOR_MUTED))
                 self._context_table.setItem(row, col, cell)
 
         # Auto-size context table height to fit rows (capped at 200px)
@@ -636,14 +623,14 @@ class HistoryTab(QWidget):
                 (bios_str, Qt.AlignmentFlag.AlignCenter),
             ]
 
-            status_color = STATUS_COLORS.get(run.status, COLOR_MUTED)
+            status_color = theme.STATUS_COLORS.get(run.status, theme.COLOR_MUTED)
 
             for col, (text, align) in enumerate(items):
                 item = _item(str(text), align)
                 if col == 5:
                     item.setForeground(QColor(status_color))
                 elif run.cores_failed > 0 and run.status == "completed":
-                    item.setForeground(QColor(COLOR_FAIL))
+                    item.setForeground(QColor(theme.COLOR_FAIL))
                 if col == 0:
                     item.setData(Qt.ItemDataRole.UserRole, row)
                 self._runs_table.setItem(row, col, item)
@@ -708,7 +695,7 @@ class HistoryTab(QWidget):
         if run.idle_stability_test > 0:
             info_parts.append(f"idle-test={run.idle_stability_test:.0f}s")
         self._detail_info.setText("  |  ".join(info_parts))
-        self._detail_info.setStyleSheet(f"color: {COLOR_TEXT_DIM}; padding: 2px;")
+        self._detail_info.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 2px;")
 
         # Core results
         results = self._db.get_core_results(run.id)
@@ -723,8 +710,8 @@ class HistoryTab(QWidget):
                 vcore_str = f"{r.min_vcore_v:.4f}-{r.max_vcore_v:.4f}V"
 
             result_text = "PASS" if r.passed else ("FAIL" if r.passed is not None else "...")
-            color_map = {"PASS": COLOR_PASS, "FAIL": COLOR_FAIL, "...": COLOR_ACTIVE}
-            result_color = color_map.get(result_text, COLOR_MUTED)
+            color_map = {"PASS": theme.COLOR_PASS, "FAIL": theme.COLOR_FAIL, "...": theme.COLOR_ACTIVE}
+            result_color = color_map.get(result_text, theme.COLOR_MUTED)
 
             row_items = [
                 (str(r.core_id), Qt.AlignmentFlag.AlignCenter),
@@ -742,7 +729,7 @@ class HistoryTab(QWidget):
                 if col == 3:
                     cell.setForeground(QColor(result_color))
                 elif r.passed is False:
-                    cell.setForeground(QColor(COLOR_FAIL))
+                    cell.setForeground(QColor(theme.COLOR_FAIL))
                 # Add tooltip on error column so full message is visible on hover
                 if col == 8 and r.error_message:
                     cell.setToolTip(r.error_message)
@@ -887,13 +874,13 @@ class HistoryTab(QWidget):
                 (sess.bios_version or "-", Qt.AlignmentFlag.AlignCenter),
             ]
 
-            status_color = STATUS_COLORS.get(sess.status, COLOR_MUTED)
+            status_color = theme.STATUS_COLORS.get(sess.status, theme.COLOR_MUTED)
             for col, (text, align) in enumerate(items):
                 cell = _item(str(text), align)
                 if col == 1:
                     cell.setForeground(QColor(status_color))
                 elif col == 4 and total > 0 and confirmed == total:
-                    cell.setForeground(QColor(COLOR_PASS))
+                    cell.setForeground(QColor(theme.COLOR_PASS))
                 if col == 0:
                     cell.setData(Qt.ItemDataRole.UserRole, row)
                 self._runs_table.setItem(row, col, cell)
@@ -934,7 +921,7 @@ class HistoryTab(QWidget):
         if sess.bios_version:
             info_parts.append(f"BIOS {sess.bios_version}")
         self._detail_info.setText("  |  ".join(info_parts))
-        self._detail_info.setStyleSheet(f"color: {COLOR_TEXT_DIM}; padding: 2px;")
+        self._detail_info.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 2px;")
 
         # Core states table
         core_states = tp.load_core_states(self._db, sess.id)
@@ -983,16 +970,16 @@ class HistoryTab(QWidget):
                 (str(cs.confirm_attempts), Qt.AlignmentFlag.AlignCenter),
             ]
 
-            color = PHASE_COLORS[cs.phase]
+            color = theme.PHASE_COLORS[cs.phase]
             for col, (text, align) in enumerate(row_items):
                 cell = _item(text, align)
                 if col == 1:
                     cell.setForeground(QColor(color))
                 elif col == 5:
                     if last_str == "PASS":
-                        cell.setForeground(QColor(COLOR_PASS))
+                        cell.setForeground(QColor(theme.COLOR_PASS))
                     elif last_str == "FAIL":
-                        cell.setForeground(QColor(COLOR_FAIL))
+                        cell.setForeground(QColor(theme.COLOR_FAIL))
                 self._core_results_table.setItem(row_idx, col, cell)
 
         self._auto_size_core_results_table()
@@ -1059,7 +1046,7 @@ class HistoryTab(QWidget):
 
     def _clear_detail(self) -> None:
         self._detail_info.setText("Select a run to view details")
-        self._detail_info.setStyleSheet(f"color: {COLOR_MUTED}; padding: 2px;")
+        self._detail_info.setStyleSheet(f"color: {theme.COLOR_MUTED}; padding: 2px;")
         self._core_results_table.setRowCount(0)
         self._events_log.clear()
         self._tuner_actions_row.setVisible(False)
@@ -1292,7 +1279,7 @@ class HistoryTab(QWidget):
         sorted_cores = sorted(all_cores)
 
         self._detail_info.setText(f"Comparing {len(run_data)} runs across {len(sorted_cores)} cores")
-        self._detail_info.setStyleSheet(f"color: {COLOR_ACTIVE}; padding: 2px;")
+        self._detail_info.setStyleSheet(f"color: {theme.COLOR_ACTIVE}; padding: 2px;")
 
         col_headers = ["Core"]
         for run, _ in run_data:
@@ -1321,9 +1308,9 @@ class HistoryTab(QWidget):
                     )
                     result_item = _item(result_text, Qt.AlignmentFlag.AlignCenter)
                     color = (
-                        COLOR_PASS
+                        theme.COLOR_PASS
                         if core_result.passed
-                        else (COLOR_FAIL if core_result.passed is not None else COLOR_ACTIVE)
+                        else (theme.COLOR_FAIL if core_result.passed is not None else theme.COLOR_ACTIVE)
                     )
                     result_item.setForeground(QColor(color))
                     dur_item = _item(duration_str(core_result.elapsed_seconds), Qt.AlignmentFlag.AlignCenter)

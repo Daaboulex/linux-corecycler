@@ -4,9 +4,11 @@
 
 ## Quick start
 
-1. Launch CoreCycler (`sudo corecycler` or `sudo python src/corecycler/main.py`). Root is
-   recommended for full monitoring (clock stretch, per-core power, Curve Optimizer);
-   it runs without root with reduced telemetry and a status-bar warning.
+1. Launch CoreCycler (`corecycler` or `python src/corecycler/main.py`). Full monitoring
+   (clock stretch, per-core power, Curve Optimizer) needs access to the MSR and SMU
+   devices: grant it to your user once ([Device access](installation.md#device-access))
+   or launch with `sudo`. Without either it runs with reduced telemetry and a status-bar
+   warning.
 2. The CPU topology (cores, CCDs, SMT, X3D) is detected automatically.
 3. In the Configuration tab, select a backend -- use stress-ng if mprime is not
    installed. A backend that is not on PATH (mprime and y-cruncher are extracted

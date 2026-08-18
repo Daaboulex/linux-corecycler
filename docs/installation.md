@@ -5,7 +5,8 @@
 The main [README](../README.md) covers the quick NixOS flake install. This page covers
 the full NixOS module, other distros, kernel modules, and stress backends.
 
-Run CoreCycler as root (`sudo`) for full functionality -- see [Running as root](#running-as-root).
+Full telemetry and the Curve Optimizer need access to MSR and SMU devices -- grant it to
+your user once and no `sudo` is needed, see [Device access](#device-access).
 
 ## NixOS module
 
@@ -148,14 +149,12 @@ sudo .venv/bin/python src/corecycler/main.py
 Install stress backends and kernel modules separately (below). Requires Python 3.12+
 and PySide6 >= 6.7.
 
-## Running as root
+## Device access
 
-```bash
-sudo corecycler          # Nix-installed
-sudo python src/corecycler/main.py  # from source
-```
+Stress testing and temperature monitoring work as your own user. Everything that reads a
+model-specific register or the SMU needs permission on those devices:
 
-| Feature | Without root | With root |
+| Feature | As your user | With device access, or as root |
 |---|---|---|
 | Stress testing (per-core cycling) | Full | Full |
 | Temperature, per-CCD temps, frequency | Full | Full |
@@ -166,20 +165,52 @@ sudo python src/corecycler/main.py  # from source
 | DIMM info (dmidecode) | Needs root | Full |
 | Curve Optimizer (SMU read/write) | Needs `/sys/kernel/ryzen_smu_drv` | Full |
 
-Without root the status bar warns and unavailable data shows "N/A" rather than stale
-values. On non-NixOS distros, grant non-root access by setting permissions on
-`/dev/cpu/*/msr` and `/sys/kernel/ryzen_smu_drv/*` (see the [udev rule](#ryzen_smu-kernel-module)),
-or just run as root.
+Without access the status bar warns and unavailable data shows "N/A" rather than stale
+values.
 
-Running as root is first-class: all persistent state (the history database at
+### Grant it to your user (no sudo)
+
+The better option: a GUI then runs as your own user, in your own session, with your own
+settings and file ownership.
+
+On NixOS the module does it -- set `deviceAccess = true` (the default) and
+`deviceAccessUser` to your username. On other distros, add the group, the MSR udev rule
+and the SMU permissions oneshot by hand; the recipe is under
+[ryzen_smu kernel module](#ryzen_smu-kernel-module), and the MSR half is:
+
+```bash
+sudo groupadd -f corecycler && sudo usermod -aG corecycler "$USER"
+echo 'SUBSYSTEM=="msr", KERNEL=="msr[0-9]*", GROUP="corecycler", MODE="0640"' \
+  | sudo tee /etc/udev/rules.d/99-corecycler-msr.rules
+sudo udevadm control --reload && sudo modprobe msr
+```
+
+Log out and back in for the group to take effect.
+
+### Or run as root
+
+```bash
+sudo corecycler          # Nix-installed
+sudo python src/corecycler/main.py  # from source
+```
+
+Running as root is supported: all persistent state (the history database at
 `~/.local/share/corecycler/history/history.db` and settings at
 `~/.config/corecycler/`) always resolves to the INVOKING user, so root and
 non-root runs share one database, and files a root run creates are handed back
 to the user. History that an older version wrote to `/root` is adopted into
 the user database once at startup (the source is renamed `*.adopted`). The
-graphical session handshake (Wayland socket / X11 authority) is derived from
-the invoking user's session automatically; when no display is reachable the
-app exits with an actionable message instead of aborting.
+graphical session handshake (Wayland socket / X11 authority) and the desktop's
+appearance are derived from the invoking user's session automatically -- the
+appearance read-only, so nothing is written into their configuration; when no
+display is reachable the app exits with an actionable message instead of
+aborting.
+
+Two things root cannot have, because they belong to your session and not to root: the
+desktop's D-Bus session bus refuses a connection from another user on most distributions,
+so notifications and portal settings may be unavailable, and Qt refuses your runtime
+directory it does not own, which it says once per lookup. Neither affects a test; both
+disappear on the device-access path above.
 
 On Zen 5, Vcore telemetry uses SVI3, which no Linux driver supports yet; the tool falls
 back to the motherboard Super I/O chip (Nuvoton NCT668x/NCT677x-NCT679x, ITE

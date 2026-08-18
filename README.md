@@ -83,7 +83,10 @@ setup are in [docs/installation.md](docs/installation.md).
 
 ## Usage
 
-Launch with `sudo corecycler` (root is recommended for full telemetry and SMU access).
+Launch with `corecycler`. Full telemetry and Curve Optimizer access need MSR and SMU
+permissions: grant them to your user once (`deviceAccessUser` on NixOS, a udev rule and a
+group elsewhere -- see [docs/installation.md](docs/installation.md#device-access)) and no
+`sudo` is needed. `sudo corecycler` also works and stays supported.
 Pick a backend and preset in the Configuration tab and click **Start Test**, or use the
 **Auto-Tuner** tab to search every core's stable offset automatically. If a backend is
 reported as not found, `corecycler doctor` prints where it looked and what it found. The

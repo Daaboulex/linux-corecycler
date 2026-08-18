@@ -19,19 +19,17 @@ _SESSION_IDENTITY_KEYS = (
     "KDE_FULL_SESSION",
     "DBUS_SESSION_BUS_ADDRESS",
     "QT_QPA_PLATFORMTHEME",
+    "XDG_CONFIG_DIRS",
 )
 
+_XDG_CONFIG_DIRS_DEFAULT = "/etc/xdg"
 
-def _session_identity(uid: int, proc_root: Path) -> dict[str, str]:
-    """Desktop identity of the invoking user's graphical session, read from /proc.
 
-    sudo's ``env_reset`` drops it, and with XDG_CURRENT_DESKTOP gone Qt reports
-    the desktop as UNKNOWN and loads no platform theme, so the save/load dialog
-    is Qt's own widget fallback instead of the desktop's file dialog (issue #14:
-    ``qtdiag`` "kde,generic" becomes "unknown,generic"). Only the allowlisted
-    keys are taken, and only from a process of that user holding a display
-    connection -- so a detached shell never answers, and nothing that redirects
-    where Qt loads code from is ever imported.
+def _session_env(uid: int, proc_root: Path) -> dict[str, str]:
+    """Environment of the invoking user's graphical session, read from /proc.
+
+    Only a process of that user holding a display connection answers, so a
+    detached shell never does.
     """
     for entry in sorted(proc_root.glob("[0-9]*"), key=lambda p: int(p.name)):
         try:
@@ -42,8 +40,35 @@ def _session_identity(uid: int, proc_root: Path) -> dict[str, str]:
             continue
         env = dict(v.split("=", 1) for v in raw.decode("utf-8", "replace").split("\0") if "=" in v)
         if env.get("XDG_CURRENT_DESKTOP") and (env.get("WAYLAND_DISPLAY") or env.get("DISPLAY")):
-            return {key: env[key] for key in _SESSION_IDENTITY_KEYS if env.get(key)}
+            return env
     return {}
+
+
+def _session_appearance(env: dict[str, str], home: Path, current: dict[str, str]) -> dict[str, str]:
+    """The environment root must apply to render in the invoking user's appearance.
+
+    sudo's ``env_reset`` drops the desktop identity and the config search path,
+    so a root run falls back to the toolkit's default light theme however the
+    user's desktop is set (issue #14). Their config home joins the SEARCH path
+    only: KConfig writes to XDG_CONFIG_HOME, which stays root's, so their
+    settings are read and never written. Nothing that redirects where Qt loads
+    code from is imported. A value already in the environment wins, except the
+    search path, which is merged so neither side's entries are lost.
+    """
+    if not env:
+        return {}
+    apply = {key: env[key] for key in _SESSION_IDENTITY_KEYS if env.get(key) and key not in current}
+    config_home = env.get("XDG_CONFIG_HOME") or str(home / ".config")
+    search: list[str] = []
+    for entry in (
+        *(env.get("XDG_CONFIG_DIRS") or _XDG_CONFIG_DIRS_DEFAULT).split(":"),
+        config_home,
+        *current.get("XDG_CONFIG_DIRS", "").split(":"),
+    ):
+        if entry and entry not in search:
+            search.append(entry)
+    apply["XDG_CONFIG_DIRS"] = ":".join(search)
+    return apply
 
 
 def _bootstrap_sudo_session() -> None:
@@ -52,10 +77,10 @@ def _bootstrap_sudo_session() -> None:
     sudo strips XDG_RUNTIME_DIR/XAUTHORITY (and often WAYLAND_DISPLAY), so Qt
     can neither reach the user's Wayland socket nor authenticate to X11 — it
     then qFatal-aborts (SIGABRT) at QApplication construction. It strips the
-    desktop identity too, which decides whether a dialog is the desktop's own
-    or Qt's fallback. Point both at the INVOKING user's session; root's uid
-    bypasses the socket permissions, so this is sufficient on both Wayland and
-    X11.
+    desktop identity and config search path too, which is what the desktop's
+    appearance is read from. Point all of it at the INVOKING user's session;
+    root's uid bypasses the socket permissions, so this is sufficient on both
+    Wayland and X11.
     """
     import logging
     import os
@@ -73,16 +98,16 @@ def _bootstrap_sudo_session() -> None:
                 if sock.is_socket():
                     os.environ["WAYLAND_DISPLAY"] = sock.name
                     break
-    if "XAUTHORITY" not in os.environ:
-        from corecycler.config.paths import user_home
+    from corecycler.config.paths import user_home
 
-        xauth = user_home() / ".Xauthority"
+    home = user_home()
+    if "XAUTHORITY" not in os.environ:
+        xauth = home / ".Xauthority"
         if xauth.exists():
             os.environ["XAUTHORITY"] = str(xauth)
-    identity = _session_identity(int(sudo_uid), Path("/proc"))
-    for key, value in identity.items():
-        os.environ.setdefault(key, value)
-    logging.getLogger(__name__).debug("sudo session identity: %s", identity or "none recovered")
+    appearance = _session_appearance(_session_env(int(sudo_uid), Path("/proc")), home, dict(os.environ))
+    os.environ.update(appearance)
+    logging.getLogger(__name__).debug("sudo session appearance: %s", appearance or "none recovered")
 
 
 def _install_exception_hooks(window) -> None:
@@ -250,11 +275,11 @@ def main() -> int:
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
-    # dark theme
-    app.setStyleSheet(_dark_stylesheet(assets_dir))
-
     from corecycler.config import tools
+    from corecycler.gui import style
     from corecycler.gui.main_window import MainWindow
+
+    style.follow(app)
 
     tools.load_configured_paths()
 
@@ -323,215 +348,6 @@ def _find_assets_dir() -> Path:
     if nix_assets.is_dir():
         return nix_assets
     return dev_assets  # fallback
-
-
-def _dark_stylesheet(assets_dir: Path) -> str:
-    # Qt QSS requires forward slashes even on Windows
-    a = str(assets_dir).replace("\\", "/")
-    return f"""
-        QMainWindow, QWidget {{
-            background-color: #1e1e1e;
-            color: #ddd;
-        }}
-        QTabWidget::pane {{
-            border: none;
-            border-top: 1px solid #333;
-            background: #1e1e1e;
-        }}
-        QTabBar {{
-            background: transparent;
-        }}
-        QTabBar::tab {{
-            background: transparent;
-            color: #888;
-            padding: 8px 18px;
-            border: none;
-            border-bottom: 2px solid transparent;
-            margin-right: 2px;
-        }}
-        QTabBar::tab:selected {{
-            color: #fff;
-            border-bottom: 2px solid #4fc3f7;
-        }}
-        QTabBar::tab:hover:!selected {{
-            color: #ccc;
-            border-bottom: 2px solid #555;
-        }}
-        QGroupBox {{
-            border: 1px solid #333;
-            border-radius: 4px;
-            margin-top: 12px;
-            padding-top: 12px;
-            font-weight: bold;
-            color: #aaa;
-        }}
-        QGroupBox::title {{
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 4px;
-        }}
-        QTableWidget {{
-            background-color: #252525;
-            alternate-background-color: #2a2a2a;
-            gridline-color: #333;
-            border: 1px solid #333;
-            color: #ddd;
-        }}
-        QTableWidget::item:selected {{
-            background-color: #1a3a5c;
-        }}
-        QHeaderView::section {{
-            background-color: #2d2d2d;
-            color: #aaa;
-            padding: 4px;
-            border: 1px solid #333;
-            font-weight: bold;
-        }}
-        QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{
-            background-color: #2d2d2d;
-            color: #ddd;
-            border: 1px solid #444;
-            border-radius: 3px;
-            padding: 4px 8px;
-        }}
-        QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
-            border-color: #4fc3f7;
-        }}
-        /* --- QComboBox dropdown --- */
-        QComboBox::drop-down {{
-            subcontrol-origin: padding;
-            subcontrol-position: top right;
-            width: 24px;
-            border-left: 1px solid #444;
-            border-top-right-radius: 3px;
-            border-bottom-right-radius: 3px;
-            background: #353535;
-        }}
-        QComboBox::drop-down:hover {{
-            background: #3d3d3d;
-        }}
-        QComboBox::down-arrow {{
-            image: url({a}/arrow-down.svg);
-            width: 10px;
-            height: 6px;
-        }}
-        QComboBox::down-arrow:hover {{
-            image: url({a}/arrow-down-hover.svg);
-        }}
-        QComboBox::down-arrow:disabled {{
-            image: url({a}/arrow-down-disabled.svg);
-        }}
-        /* --- QSpinBox / QDoubleSpinBox buttons --- */
-        QSpinBox::up-button, QDoubleSpinBox::up-button {{
-            subcontrol-origin: padding;
-            subcontrol-position: top right;
-            width: 20px;
-            border-left: 1px solid #444;
-            border-bottom: 1px solid #444;
-            border-top-right-radius: 3px;
-            background: #353535;
-        }}
-        QSpinBox::down-button, QDoubleSpinBox::down-button {{
-            subcontrol-origin: padding;
-            subcontrol-position: bottom right;
-            width: 20px;
-            border-left: 1px solid #444;
-            border-bottom-right-radius: 3px;
-            background: #353535;
-        }}
-        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
-        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
-            background: #3d3d3d;
-        }}
-        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
-            image: url({a}/arrow-up.svg);
-            width: 10px;
-            height: 6px;
-        }}
-        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
-            image: url({a}/arrow-down.svg);
-            width: 10px;
-            height: 6px;
-        }}
-        QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {{
-            image: url({a}/arrow-up-hover.svg);
-        }}
-        QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {{
-            image: url({a}/arrow-down-hover.svg);
-        }}
-        QSpinBox::up-arrow:disabled, QSpinBox::up-arrow:off,
-        QDoubleSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:off {{
-            image: url({a}/arrow-up-disabled.svg);
-        }}
-        QSpinBox::down-arrow:disabled, QSpinBox::down-arrow:off,
-        QDoubleSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:off {{
-            image: url({a}/arrow-down-disabled.svg);
-        }}
-        /* --- Buttons --- */
-        QPushButton, QToolButton {{
-            background-color: #2d2d2d;
-            color: #ddd;
-            border: 1px solid #444;
-            border-radius: 4px;
-            padding: 6px 12px;
-        }}
-        QPushButton:hover, QToolButton:hover {{
-            background-color: #353535;
-        }}
-        QPushButton:pressed, QToolButton:pressed {{
-            background-color: #1a1a1a;
-        }}
-        QPushButton:disabled, QToolButton:disabled {{
-            color: #555;
-            background-color: #222;
-        }}
-        QCheckBox {{
-            color: #ddd;
-            spacing: 8px;
-        }}
-        QCheckBox::indicator {{
-            width: 16px;
-            height: 16px;
-        }}
-        QPlainTextEdit {{
-            background-color: #1a1a1a;
-            color: #ddd;
-            border: 1px solid #333;
-        }}
-        QScrollBar:vertical {{
-            background: #1e1e1e;
-            width: 10px;
-        }}
-        QScrollBar::handle:vertical {{
-            background: #444;
-            border-radius: 5px;
-            min-height: 20px;
-        }}
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-            height: 0;
-        }}
-        QStatusBar {{
-            background: #252525;
-            color: #aaa;
-            border-top: 1px solid #333;
-        }}
-        QToolBar {{
-            background: #252525;
-            border-bottom: 1px solid #333;
-            spacing: 8px;
-            padding: 4px;
-        }}
-        QLabel {{
-            color: #ddd;
-        }}
-        QScrollArea {{
-            border: none;
-        }}
-        QSplitter::handle {{
-            background: #333;
-            height: 2px;
-        }}
-    """
 
 
 if __name__ == "__main__":
