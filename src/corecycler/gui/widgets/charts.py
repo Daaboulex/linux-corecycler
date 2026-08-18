@@ -7,7 +7,7 @@ from collections import deque
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from corecycler.gui.style import BG_PANEL_DARK, BORDER_DARKER, CHART_FREQ, COLOR_TEXT_BRIGHT
+from corecycler.gui.style import theme
 
 MAX_POINTS = 120  # 2 minutes at 1s interval
 
@@ -21,14 +21,15 @@ class LiveChart(QWidget):
         unit: str = "",
         min_val: float = 0,
         max_val: float = 100,
-        color: str = CHART_FREQ,
+        series: str = "CHART_FREQ",
     ) -> None:
         super().__init__()
         self.title = title
         self.unit = unit
         self.min_val = min_val
         self.max_val = max_val
-        self.color = QColor(color)
+        getattr(theme, series)
+        self.series = series
         self._data: deque[float] = deque(maxlen=MAX_POINTS)
         self._current: float = 0
 
@@ -53,10 +54,10 @@ class LiveChart(QWidget):
         h = self.height()
 
         # background
-        painter.fillRect(0, 0, w, h, QColor(BG_PANEL_DARK))
+        painter.fillRect(0, 0, w, h, QColor(theme.BG_PANEL_DARK))
 
         # border
-        painter.setPen(QPen(QColor(BORDER_DARKER), 1))
+        painter.setPen(QPen(QColor(theme.BORDER_DARKER), 1))
         painter.drawRect(0, 0, w - 1, h - 1)
 
         margin_top = 20
@@ -67,7 +68,7 @@ class LiveChart(QWidget):
         chart_w = w - margin_left - margin_right
 
         # title + current value
-        painter.setPen(QColor(COLOR_TEXT_BRIGHT))
+        painter.setPen(QColor(theme.COLOR_TEXT_BRIGHT))
         painter.setFont(QFont("monospace", 8))
         val_text = f"{self.title}: {self._current:.1f} {self.unit}"
         painter.drawText(margin_left + 2, 14, val_text)
@@ -95,7 +96,8 @@ class LiveChart(QWidget):
                 path.lineTo(x, y)
             last_x = x
 
-        painter.setPen(QPen(self.color, 2))
+        series_color = QColor(getattr(theme, self.series))
+        painter.setPen(QPen(series_color, 2))
         if n == 1:
             # single point — draw a visible dot
             painter.drawEllipse(path.currentPosition(), 3, 3)
@@ -108,7 +110,7 @@ class LiveChart(QWidget):
         fill_path.lineTo(margin_left, margin_top + chart_h)
         fill_path.closeSubpath()
 
-        fill_color = QColor(self.color)
+        fill_color = QColor(series_color)
         fill_color.setAlpha(30)
         painter.fillPath(fill_path, fill_color)
 

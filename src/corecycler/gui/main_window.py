@@ -39,16 +39,7 @@ from corecycler.gui.memory_tab import MemoryTab
 from corecycler.gui.monitor_tab import MonitorTab
 from corecycler.gui.results_tab import ResultsTab
 from corecycler.gui.smu_tab import SMUTab
-from corecycler.gui.style import (
-    BORDER_DIM,
-    BTN_GREEN,
-    BTN_RED,
-    COLOR_FAIL_DARK,
-    COLOR_MUTED,
-    COLOR_PASS_DARK,
-    COLOR_TEXT_DIM,
-    COLOR_WARN_SOFT,
-)
+from corecycler.gui.style import theme
 from corecycler.gui.tool_prompt import ensure_tool
 from corecycler.gui.tuner_tab import TunerTab
 from corecycler.gui.widgets.core_grid import CoreGridWidget
@@ -195,7 +186,7 @@ class MainWindow(QMainWindow):
             if self._topology.smt_enabled:
                 info_parts.append("SMT")
             info_label = QLabel(" | ".join(info_parts))
-            info_label.setStyleSheet(f"color: {COLOR_TEXT_DIM}; padding: 0 6px;")
+            info_label.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 0 6px;")
             left.addWidget(info_label)
 
         self._core_grid = CoreGridWidget(self._topology)
@@ -252,10 +243,10 @@ class MainWindow(QMainWindow):
         self._start_btn = QPushButton("▶ Start Test")
         self._start_btn.setFixedHeight(36)
         self._start_btn.setStyleSheet(
-            f"QPushButton {{ background: {BTN_GREEN}; color: white; padding: 0 16px; "
+            f"QPushButton {{ background: {theme.BTN_GREEN}; color: white; padding: 0 16px; "
             "border-radius: 4px; font-weight: bold; font-size: 13px; } "
-            f"QPushButton:hover {{ background: {COLOR_PASS_DARK}; }} "
-            f"QPushButton:disabled {{ background: {BORDER_DIM}; color: {COLOR_MUTED}; }}"
+            f"QPushButton:hover {{ background: {theme.COLOR_PASS_DARK}; }} "
+            f"QPushButton:disabled {{ background: {theme.BORDER_DIM}; color: {theme.COLOR_MUTED}; }}"
         )
         self._start_btn.clicked.connect(self._start_test)
         toolbar.addWidget(self._start_btn)
@@ -264,10 +255,10 @@ class MainWindow(QMainWindow):
         self._stop_btn.setFixedHeight(36)
         self._stop_btn.setEnabled(False)
         self._stop_btn.setStyleSheet(
-            f"QPushButton {{ background: {BTN_RED}; color: white; padding: 0 16px; "
+            f"QPushButton {{ background: {theme.BTN_RED}; color: white; padding: 0 16px; "
             "border-radius: 4px; font-weight: bold; font-size: 13px; } "
-            f"QPushButton:hover {{ background: {COLOR_FAIL_DARK}; }} "
-            f"QPushButton:disabled {{ background: {BORDER_DIM}; color: {COLOR_MUTED}; }}"
+            f"QPushButton:hover {{ background: {theme.COLOR_FAIL_DARK}; }} "
+            f"QPushButton:disabled {{ background: {theme.BORDER_DIM}; color: {theme.COLOR_MUTED}; }}"
         )
         self._stop_btn.clicked.connect(self._stop_test)
         toolbar.addWidget(self._stop_btn)
@@ -303,7 +294,7 @@ class MainWindow(QMainWindow):
             priv_label = QLabel(
                 "  ⚠ " + " and ".join(missing) + " unavailable — check device permissions or run as root"
             )
-            priv_label.setStyleSheet(f"color: {COLOR_WARN_SOFT}; font: 10px monospace;")
+            priv_label.setStyleSheet(f"color: {theme.COLOR_WARN_SOFT}; font: 10px monospace;")
             self._status_bar.addPermanentWidget(priv_label)
 
     def _setup_timer(self) -> None:

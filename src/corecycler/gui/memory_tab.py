@@ -28,7 +28,7 @@ from corecycler.config import tools
 from corecycler.config.settings import load_settings
 from corecycler.engine import execution
 from corecycler.engine.backends.base import KILLED_BY_US_CODES
-from corecycler.gui.style import BTN_RED, COLOR_MUTED, COLOR_MUTED_DARKER, COLOR_PASS, COLOR_WARN_SOFT
+from corecycler.gui.style import theme
 from corecycler.monitor.memory import DIMMInfo, SPD5118Reader, read_dimm_info
 from corecycler.smu.pmtable import PMTableReader, compute_fclk_uclk_ratio
 
@@ -181,12 +181,12 @@ class MemoryTab(QWidget):
 
         # Calibration status
         self._cal_label = QLabel("")
-        self._cal_label.setStyleSheet(f"color: {COLOR_MUTED}; font: 9px monospace;")
+        self._cal_label.setStyleSheet(f"color: {theme.COLOR_MUTED}; font: 9px monospace;")
         mc_layout.addWidget(self._cal_label)
 
         # Driver-missing message (hidden by default)
         self._mc_missing_label = QLabel("Requires ryzen_smu driver")
-        self._mc_missing_label.setStyleSheet(f"color: {COLOR_MUTED}; font: 10px monospace; padding: 8px;")
+        self._mc_missing_label.setStyleSheet(f"color: {theme.COLOR_MUTED}; font: 10px monospace; padding: 8px;")
         self._mc_missing_label.setVisible(False)
         mc_layout.addWidget(self._mc_missing_label)
 
@@ -214,7 +214,7 @@ class MemoryTab(QWidget):
         self._secondary_label = QLabel("Secondary: --")
         self._secondary_label.setFont(QFont("monospace", 10))
         self._spd_unavailable_label = QLabel("")
-        self._spd_unavailable_label.setStyleSheet(f"color: {COLOR_MUTED}; font: 10px monospace; padding: 4px;")
+        self._spd_unavailable_label.setStyleSheet(f"color: {theme.COLOR_MUTED}; font: 10px monospace; padding: 4px;")
         self._spd_unavailable_label.setVisible(False)
         spd_layout.addWidget(self._primary_label)
         spd_layout.addWidget(self._secondary_label)
@@ -227,7 +227,7 @@ class MemoryTab(QWidget):
 
         # Dependency status
         self._deps_label = QLabel("")
-        self._deps_label.setStyleSheet(f"color: {COLOR_MUTED}; font: 9px monospace;")
+        self._deps_label.setStyleSheet(f"color: {theme.COLOR_MUTED}; font: 9px monospace;")
         layout.addWidget(self._deps_label)
 
         self._temp_group = QGroupBox("DIMM Temperatures (SPD5118)")
@@ -287,8 +287,9 @@ class MemoryTab(QWidget):
         self._stop_btn = QPushButton("Stop")
         self._stop_btn.setEnabled(False)
         self._stop_btn.setStyleSheet(
-            f"QPushButton {{ background: {BTN_RED}; color: white; padding: 4px 10px; "
-            f"border-radius: 3px; }} QPushButton:disabled {{ background: {COLOR_MUTED_DARKER}; color: {COLOR_MUTED}; }}"
+            f"QPushButton {{ background: {theme.BTN_RED}; color: white; padding: 4px 10px; "
+            f"border-radius: 3px; }} QPushButton:disabled {{ background: {theme.COLOR_MUTED_DARKER}; "
+            f"color: {theme.COLOR_MUTED}; }}"
         )
         self._stop_btn.clicked.connect(self._stop_memory_stress)
         stress_layout.addWidget(self._stop_btn)
@@ -439,9 +440,9 @@ class MemoryTab(QWidget):
         if ratio is not None:
             self._ratio_label.setText(f"FCLK:UCLK {ratio[0]}:{ratio[1]}")
             if ratio == (1, 1):
-                self._ratio_label.setStyleSheet(f"color: {COLOR_PASS};")
+                self._ratio_label.setStyleSheet(f"color: {theme.COLOR_PASS};")
             else:
-                self._ratio_label.setStyleSheet(f"color: {COLOR_WARN_SOFT};")
+                self._ratio_label.setStyleSheet(f"color: {theme.COLOR_WARN_SOFT};")
         else:
             self._ratio_label.setText("FCLK:UCLK --")
             self._ratio_label.setStyleSheet("")
@@ -452,13 +453,13 @@ class MemoryTab(QWidget):
             self._vdd_label.setStyleSheet("")
         else:
             self._vdd_label.setText("VDD: --")
-            self._vdd_label.setStyleSheet(f"color: {COLOR_MUTED};")
+            self._vdd_label.setStyleSheet(f"color: {theme.COLOR_MUTED};")
         if pm_data.vddq_v > 0:
             self._vddq_label.setText(f"VDDQ: {pm_data.vddq_v:.3f}V")
             self._vddq_label.setStyleSheet("")
         else:
             self._vddq_label.setText("VDDQ: --")
-            self._vddq_label.setStyleSheet(f"color: {COLOR_MUTED};")
+            self._vddq_label.setStyleSheet(f"color: {theme.COLOR_MUTED};")
 
     def _show_uncalibrated(self, pm_data) -> None:
         self._fclk_label.setText("FCLK: --")
@@ -469,7 +470,7 @@ class MemoryTab(QWidget):
         self._vdd_label.setText("VDD: --")
         self._vddq_label.setText("VDDQ: --")
         for lbl in (self._fclk_label, self._uclk_label, self._mclk_label, self._vdd_label, self._vddq_label):
-            lbl.setStyleSheet(f"color: {COLOR_MUTED};")
+            lbl.setStyleSheet(f"color: {theme.COLOR_MUTED};")
         self._cal_label.setText(
             f"PM Table v{pm_data.pm_table_version:#010x} \u2014 Uncalibrated ({len(pm_data.raw_floats)} floats)"
         )
@@ -477,9 +478,9 @@ class MemoryTab(QWidget):
     def _set_clocks_unavailable(self) -> None:
         for lbl in (self._fclk_label, self._uclk_label, self._mclk_label, self._vdd_label, self._vddq_label):
             lbl.setText(lbl.text().split(":")[0] + ": --")
-            lbl.setStyleSheet(f"color: {COLOR_MUTED};")
+            lbl.setStyleSheet(f"color: {theme.COLOR_MUTED};")
         self._ratio_label.setText("FCLK:UCLK --")
-        self._ratio_label.setStyleSheet(f"color: {COLOR_MUTED};")
+        self._ratio_label.setStyleSheet(f"color: {theme.COLOR_MUTED};")
         self._cal_label.setText("")
 
     def set_test_running(self, running: bool) -> None:

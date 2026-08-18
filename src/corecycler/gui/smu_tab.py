@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from corecycler.config.paths import user_home
-from corecycler.gui.style import BG_SELECTED, COLOR_ACTIVE, COLOR_FAIL, COLOR_ORANGE, COLOR_PASS
+from corecycler.gui.style import theme
 from corecycler.smu.commands import SMUCommandSet, detect_generation, get_commands
 from corecycler.smu.driver import RyzenSMU, core_map_blocked
 
@@ -57,7 +57,8 @@ class SMUTab(QWidget):
         # profile banner (shown when CO offsets are loaded from a tuner session)
         self._profile_banner = QLabel("")
         self._profile_banner.setStyleSheet(
-            f"background: {BG_SELECTED}; color: {COLOR_ACTIVE}; padding: 8px; border-radius: 4px; font: 11px monospace;"
+            f"background: {theme.BG_SELECTED}; color: {theme.COLOR_ON_SELECTED}; "
+            f"padding: 8px; border-radius: 4px; font: 11px monospace;"
         )
         self._profile_banner.setVisible(False)
         layout.addWidget(self._profile_banner)
@@ -151,7 +152,7 @@ class SMUTab(QWidget):
             "Use BIOS for persistent values. Requires ryzen_smu kernel module and root access."
         )
         warn.setWordWrap(True)
-        warn.setStyleSheet(f"color: {COLOR_ORANGE}; padding: 8px;")
+        warn.setStyleSheet(f"color: {theme.COLOR_ORANGE}; padding: 8px;")
         co_layout.addWidget(warn)
 
         layout.addWidget(co_group)
@@ -174,14 +175,14 @@ class SMUTab(QWidget):
             map_err = core_map_blocked(self._smu)
             if map_err is not None:
                 self._status_label.setText("ryzen_smu: Connected (per-core CO unavailable)")
-                self._status_label.setStyleSheet(f"color: {COLOR_ORANGE};")
+                self._status_label.setStyleSheet(f"color: {theme.COLOR_ORANGE};")
                 self._status_label.setToolTip(map_err)
                 self._gen_label.setText(f"Generation: {gen.name}")
                 self._range_label.setText(f"CO disabled: {map_err}")
                 self._range_label.setWordWrap(True)
             else:
                 self._status_label.setText("ryzen_smu: Connected")
-                self._status_label.setStyleSheet(f"color: {COLOR_PASS};")
+                self._status_label.setStyleSheet(f"color: {theme.COLOR_PASS};")
                 self._gen_label.setText(f"Generation: {gen.name}")
                 co_min, co_max = self._commands.co_range
                 self._range_label.setText(f"CO Range: [{co_min}, {co_max}]")
@@ -189,16 +190,16 @@ class SMUTab(QWidget):
             self._smu = RyzenSMU(self._commands, dry_run=self._dry_run_cb.isChecked())
             self._smu.set_topology(topology)
             self._status_label.setText("ryzen_smu: Connected (no CO support)")
-            self._status_label.setStyleSheet(f"color: {COLOR_ORANGE};")
+            self._status_label.setStyleSheet(f"color: {theme.COLOR_ORANGE};")
             self._gen_label.setText(f"Generation: {gen.name}")
             self._range_label.setText("CO: Not supported on this generation")
         elif self._commands:
             self._status_label.setText("ryzen_smu: Driver not loaded")
-            self._status_label.setStyleSheet(f"color: {COLOR_FAIL};")
+            self._status_label.setStyleSheet(f"color: {theme.COLOR_FAIL};")
             self._gen_label.setText(f"Generation: {gen.name}")
         else:
             self._status_label.setText(f"Unsupported CPU generation: {gen.name}")
-            self._status_label.setStyleSheet(f"color: {COLOR_ORANGE};")
+            self._status_label.setStyleSheet(f"color: {theme.COLOR_ORANGE};")
 
         # Disable CO buttons if SMU is not available, the generation lacks CO,
         # or the core map could not be discovered (writes would refuse anyway).
@@ -252,7 +253,11 @@ class SMUTab(QWidget):
             self._smu.dry_run = checked
 
         # visual feedback on write buttons
-        dry_style = f"QPushButton {{ border: 2px dashed {COLOR_ORANGE}; color: {COLOR_ORANGE}; }}" if checked else ""
+        dry_style = (
+            f"QPushButton {{ border: 2px dashed {theme.COLOR_ORANGE}; color: {theme.COLOR_ORANGE}; }}"
+            if checked
+            else ""
+        )
         self._apply_all_btn.setStyleSheet(dry_style)
         self._reset_btn.setStyleSheet(dry_style)
         self._apply_all_btn.setText("Apply All [DRY]" if checked else "Apply All New Values")

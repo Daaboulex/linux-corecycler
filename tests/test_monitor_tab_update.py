@@ -90,13 +90,13 @@ class TestMonitorUpdateMatrix:
         tab = _tab()
         tab._power_fail_count = tab._STALE_THRESHOLD
         _drive(tab, monkeypatch, dual=_dual(), watts=None, msr_ok=True, pkg=None)
-        assert tab._power_label.styleSheet() == tab._STALE_STYLE
+        assert tab._power_label.styleSheet() == tab._stale_style()
 
     def test_no_power_source_marks_power_stale(self, monkeypatch):
         tab = _tab()
         tab._power_fail_count = tab._STALE_THRESHOLD
         _drive(tab, monkeypatch, dual=_dual(), watts=None, msr_ok=False)
-        assert tab._power_label.styleSheet() == tab._STALE_STYLE
+        assert tab._power_label.styleSheet() == tab._stale_style()
 
     def test_falls_back_to_simple_frequency_read(self, monkeypatch):
         import corecycler.gui.monitor_tab as mt
@@ -135,8 +135,8 @@ class TestMonitorUpdateMatrix:
             watts=50.0,
             hwmon=_hwmon_data(tctl=None, tccd={}, vcore=None),
         )
-        assert tab._tctl_label.styleSheet() == tab._STALE_STYLE
-        assert tab._vcore_label.styleSheet() == tab._STALE_STYLE
+        assert tab._tctl_label.styleSheet() == tab._stale_style()
+        assert tab._vcore_label.styleSheet() == tab._stale_style()
 
     def test_bars_update_without_topology(self, monkeypatch):
         tab = _tab()

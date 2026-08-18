@@ -7,15 +7,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from corecycler.gui.style import (
-    COLOR_TEXT_DIM,
-    STATE_COLORS,
-    duration_str,
-    font_mono,
-    phase_label,
-    scheduler_phase_label,
-    state_label,
-)
+from corecycler.gui.style import duration_str, font_mono, phase_label, scheduler_phase_label, state_label, theme
 
 if TYPE_CHECKING:
     from corecycler.engine.scheduler import CoreTestStatus
@@ -152,7 +144,7 @@ class CoreCell(QWidget):
             self._telemetry_label.setText("  ".join(parts))
 
     def _apply_state_style(self) -> None:
-        bg, fg, border = STATE_COLORS.get(self._state, STATE_COLORS["pending"])
+        bg, fg, border = theme.STATE_COLORS.get(self._state, theme.STATE_COLORS["pending"])
         border_width = "2px" if self._state in ("testing", "failed", "warned") else "1px"
         self.setStyleSheet(
             f"CoreCell {{ background-color: {bg}; border: {border_width} solid {border}; "
@@ -199,7 +191,7 @@ class CoreGridWidget(QWidget):
             vcache_str = " (V-Cache)" if has_vcache else ""
             ccd_label = QLabel(f"CCD {ccd_idx}{vcache_str}")
             ccd_label.setFont(font_mono(8, bold=True))
-            ccd_label.setStyleSheet(f"color: {COLOR_TEXT_DIM}; padding: 1px 4px;")
+            ccd_label.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 1px 4px;")
             ccd_label.setFixedHeight(18)
             self._layout.addWidget(ccd_label)
 

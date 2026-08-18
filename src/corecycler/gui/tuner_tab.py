@@ -35,19 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from corecycler.engine.backends.base import FFTPreset, StressMode
-from corecycler.gui.style import (
-    BTN_GREEN,
-    BTN_RED,
-    COLOR_FAIL,
-    COLOR_MUTED,
-    COLOR_PASS,
-    COLOR_TEXT_DIM,
-    PHASE_COLORS,
-    PHASE_TO_GRID,
-    button_qss,
-    phase_label,
-    status_label,
-)
+from corecycler.gui.style import PHASE_TO_GRID, button_qss, phase_label, status_label, theme
 from corecycler.gui.tool_prompt import ensure_tool
 from corecycler.history.db import RESUMABLE_STATUSES
 from corecycler.history.timefmt import format_local
@@ -113,7 +101,7 @@ class TunerTab(QWidget):
         status_layout.addWidget(self._status_label)
 
         self._progress_label = QLabel("")
-        self._progress_label.setStyleSheet(f"color: {COLOR_TEXT_DIM};")
+        self._progress_label.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM};")
         status_layout.addWidget(self._progress_label)
         status_layout.addStretch()
         layout.addLayout(status_layout)
@@ -137,7 +125,7 @@ class TunerTab(QWidget):
         # Action buttons
         btn_layout = QHBoxLayout()
         self._start_btn = QPushButton("Start Tuning")
-        self._start_btn.setStyleSheet(button_qss(BTN_GREEN))
+        self._start_btn.setStyleSheet(button_qss(theme.BTN_GREEN))
         self._start_btn.clicked.connect(self._on_start)
         btn_layout.addWidget(self._start_btn)
 
@@ -153,7 +141,7 @@ class TunerTab(QWidget):
 
         self._abort_btn = QPushButton("Abort")
         self._abort_btn.setEnabled(False)
-        self._abort_btn.setStyleSheet(button_qss(BTN_RED))
+        self._abort_btn.setStyleSheet(button_qss(theme.BTN_RED))
         self._abort_btn.clicked.connect(self._on_abort)
         btn_layout.addWidget(self._abort_btn)
 
@@ -206,7 +194,7 @@ class TunerTab(QWidget):
         log_header.addWidget(log_label)
 
         self._log_filter_label = QLabel("(all cores)")
-        self._log_filter_label.setStyleSheet(f"color: {COLOR_TEXT_DIM};")
+        self._log_filter_label.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM};")
         log_header.addWidget(self._log_filter_label)
         log_header.addStretch()
 
@@ -327,7 +315,7 @@ class TunerTab(QWidget):
                 "MSR access unavailable — clock stretch detection disabled.\n"
                 "Requires msr kernel module and read permission on /dev/cpu/*/msr."
             )
-            self._stretch_threshold_spin.setStyleSheet(f"color: {COLOR_MUTED};")
+            self._stretch_threshold_spin.setStyleSheet(f"color: {theme.COLOR_MUTED};")
 
         search_layout.addRow("Stretch threshold:", self._stretch_threshold_spin)
 
@@ -951,7 +939,7 @@ class TunerTab(QWidget):
             self._last_result(core_id),
         ]
 
-        color = QColor(PHASE_COLORS[cs.phase])
+        color = QColor(theme.PHASE_COLORS[cs.phase])
         for col, text in enumerate(items):
             item = QTableWidgetItem(text)
             item.setForeground(color)
@@ -1014,7 +1002,7 @@ class TunerTab(QWidget):
             f"{entry.get('duration_seconds', 0):.1f}s" if entry.get("duration_seconds") else "-",
             entry.get("error_message", "") or "",
         ]
-        color = QColor(COLOR_PASS) if passed else QColor(COLOR_FAIL)
+        color = QColor(theme.COLOR_PASS) if passed else QColor(theme.COLOR_FAIL)
         for col, text in enumerate(items):
             item = QTableWidgetItem(text)
             if col == 4:  # Result column
@@ -1059,7 +1047,7 @@ class TunerTab(QWidget):
                 f"{entry.get('duration_seconds', 0):.1f}s" if entry.get("duration_seconds") else "-",
                 entry.get("error_message", "") or "",
             ]
-            color = QColor(COLOR_PASS) if passed else QColor(COLOR_FAIL)
+            color = QColor(theme.COLOR_PASS) if passed else QColor(theme.COLOR_FAIL)
             for col_idx, text in enumerate(items):
                 item = QTableWidgetItem(text)
                 if col_idx == 4:

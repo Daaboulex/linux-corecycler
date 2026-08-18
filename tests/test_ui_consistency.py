@@ -266,14 +266,16 @@ class TestStalenessIndicator:
         # Access class constants
         tab._STALE_THRESHOLD = MonitorTab._STALE_THRESHOLD
         tab._NORMAL_STYLE = MonitorTab._NORMAL_STYLE
-        tab._STALE_STYLE = MonitorTab._STALE_STYLE
+        tab._stale_style = MonitorTab._stale_style
 
         # 3 consecutive failure reads
         for _ in range(3):
             tab._do_update()
 
         # After 3 failures, label should be grey
-        assert "color: #666" in tab._tctl_label.styleSheet(), "tctl label should turn grey after 3 consecutive failures"
+        assert tab._tctl_label.styleSheet() == MonitorTab._stale_style(), (
+            "tctl label should turn stale after 3 consecutive failures"
+        )
         # Last-known text must be preserved (not cleared)
         assert "65.0" in tab._tctl_label.text(), "tctl label should preserve last-known value"
 
@@ -311,7 +313,7 @@ class TestStalenessRecovery:
         tab._do_update = MethodType(MonitorTab._do_update, tab)
         tab._STALE_THRESHOLD = MonitorTab._STALE_THRESHOLD
         tab._NORMAL_STYLE = MonitorTab._NORMAL_STYLE
-        tab._STALE_STYLE = MonitorTab._STALE_STYLE
+        tab._stale_style = MonitorTab._stale_style
 
         # First, trigger staleness with 3 failures
         tab._hwmon.read.return_value = HWMonData(tctl_c=None, tccd_temps={}, vcore_v=None)
@@ -319,14 +321,14 @@ class TestStalenessRecovery:
         for _ in range(3):
             tab._do_update()
 
-        assert "color: #666" in tab._tctl_label.styleSheet()
+        assert tab._tctl_label.styleSheet() == MonitorTab._stale_style()
 
         # Now a successful read
         tab._hwmon.read.return_value = HWMonData(tctl_c=72.0, tccd_temps={}, vcore_v=1.30)
         tab._do_update()
 
         # Grey should be removed, fail count reset
-        assert "color: #666" not in tab._tctl_label.styleSheet(), (
+        assert tab._tctl_label.styleSheet() != MonitorTab._stale_style(), (
             "tctl label should recover from grey after successful read"
         )
         assert tab._hwmon_fail_count == 0, "fail count should be reset on success"
@@ -408,6 +410,42 @@ class TestNoStrayDisplayConstants:
                 if re.search(r"#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b", line):
                     offenders.append(f"{f.name}:{i}: {line.strip()[:60]}")
         assert not offenders, "hex colors outside gui/style.py:\n" + "\n".join(offenders)
+
+
+class TestColorsAreReadLiveNotFrozen:
+    """A color imported by value freezes at import time, so a desktop that changes
+    its color scheme is never followed. ``style.theme`` is the only way to read one."""
+
+    def test_no_gui_file_imports_a_color_by_value(self):
+        from PySide6.QtGui import QPalette
+
+        from corecycler.gui import style
+
+        colors = set(style.resolve(style.DARK, QPalette())) - {"scheme"}
+        gui = Path(__file__).parent.parent / "src" / "corecycler" / "gui"
+        offenders = []
+        for f in sorted(gui.rglob("*.py")):
+            if f.name == "style.py":
+                continue
+            text = f.read_text()
+            for block in re.findall(
+                r"from corecycler\.gui\.style import \(([^)]*)\)|"
+                r"from corecycler\.gui\.style import ([^\n(]+)",
+                text,
+            ):
+                imported = {n.strip() for n in (block[0] or block[1]).replace("\n", "").split(",")}
+                for name in sorted(imported & colors):
+                    offenders.append(f"{f.name}: {name}")
+        assert not offenders, "colors imported by value instead of via theme:\n" + "\n".join(offenders)
+
+    def test_the_gate_knows_what_a_color_is(self):
+        from PySide6.QtGui import QPalette
+
+        from corecycler.gui import style
+
+        colors = set(style.resolve(style.DARK, QPalette()))
+        assert {"COLOR_PASS", "STATE_COLORS", "BG_PANEL_DARK"} <= colors
+        assert "duration_str" not in colors
 
 
 class TestEngineInitiatedStops:

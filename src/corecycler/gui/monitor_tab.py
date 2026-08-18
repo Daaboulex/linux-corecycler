@@ -20,24 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from corecycler.config.settings import load_settings
-from corecycler.gui.style import (
-    BG_ACTIVE_TINT,
-    BG_PANEL,
-    BG_PANEL_DARK,
-    BG_SELECTED,
-    BORDER_DARKER,
-    CHART_FREQ,
-    CHART_POWER,
-    CHART_TEMP,
-    CHART_VOLT,
-    COLOR_ACTIVE,
-    COLOR_BLUE_DEEP,
-    COLOR_MUTED,
-    COLOR_MUTED_DARK,
-    COLOR_PASS,
-    COLOR_TEXT_DIM,
-    COLOR_WARN_SOFT,
-)
+from corecycler.gui.style import theme
 from corecycler.gui.widgets.charts import LiveChart
 from corecycler.monitor.cpu_usage import CPUUsageReader
 from corecycler.monitor.frequency import (
@@ -116,12 +99,12 @@ class CoreFreqBar(QWidget):
         w, h = self.width(), self.height()
 
         # background — highlighted if this core is being tested
-        bg = QColor(BG_ACTIVE_TINT) if self._is_active else QColor(BG_PANEL_DARK)
+        bg = QColor(theme.BG_ACTIVE_TINT) if self._is_active else QColor(theme.BG_PANEL_DARK)
         painter.fillRect(0, 0, w, h, bg)
 
         # label area
         label_w = 40
-        label_color = QColor(COLOR_ACTIVE) if self._is_active else QColor(COLOR_TEXT_DIM)
+        label_color = QColor(theme.COLOR_ACTIVE) if self._is_active else QColor(theme.COLOR_TEXT_DIM)
         painter.setPen(label_color)
         painter.setFont(QFont("monospace", 7, QFont.Weight.Bold))
         painter.drawText(4, 0, label_w - 4, h, Qt.AlignmentFlag.AlignVCenter, self._label)
@@ -135,14 +118,14 @@ class CoreFreqBar(QWidget):
 
             # color: blue at low, cyan at mid, green at high
             if fill_ratio < 0.5:
-                color = QColor(COLOR_BLUE_DEEP)
+                color = QColor(theme.COLOR_BLUE_DEEP)
             elif fill_ratio < 0.8:
-                color = QColor(COLOR_ACTIVE)
+                color = QColor(theme.COLOR_ACTIVE)
             else:
-                color = QColor(COLOR_PASS)
+                color = QColor(theme.COLOR_PASS)
 
             # bar background
-            painter.fillRect(bar_x, 3, bar_w, h - 6, QColor(BG_PANEL))
+            painter.fillRect(bar_x, 3, bar_w, h - 6, QColor(theme.BG_PANEL))
             # filled portion
             fill_w = int(bar_w * fill_ratio)
             if fill_w > 0:
@@ -152,7 +135,7 @@ class CoreFreqBar(QWidget):
             if self._eff_max > 0:
                 eff_ratio = min(self._eff_max / self._max_freq, 1.0)
                 marker_x = int(bar_x + bar_w * eff_ratio)
-                pen = QPen(QColor(COLOR_WARN_SOFT), 1, Qt.PenStyle.DashLine)
+                pen = QPen(QColor(theme.COLOR_WARN_SOFT), 1, Qt.PenStyle.DashLine)
                 painter.setPen(pen)
                 painter.drawLine(marker_x, 3, marker_x, h - 3)
 
@@ -179,46 +162,46 @@ class CoreFreqBar(QWidget):
         # Column definitions: (text, color, fixed_chars)
         # Usage
         usage_str = f"{self._usage_pct:3.0f}%"
-        usage_color = QColor(COLOR_PASS) if self._usage_pct > 50 else QColor(COLOR_MUTED)
+        usage_color = QColor(theme.COLOR_PASS) if self._usage_pct > 50 else QColor(theme.COLOR_MUTED)
 
         # Frequency — always unit-labelled; the boost ceiling shows only for a
         # live core (the dashed bar marker also shows it).
         freq_str = self._freq_text(self._freq, self._eff_max)
-        freq_color = QColor(COLOR_ACTIVE)
+        freq_color = QColor(theme.COLOR_ACTIVE)
 
         # Stretch — fixed slot, blank when idle (keeps alignment stable)
         if self._stretch_pct is not None and self._usage_pct > 5:
             stretch_str = f"S:{self._stretch_pct:4.1f}%"
             if self._stretch_pct > 3.0:
-                stretch_color = QColor(CHART_TEMP)
+                stretch_color = QColor(theme.CHART_TEMP)
             elif self._stretch_pct > 1.0:
-                stretch_color = QColor(COLOR_WARN_SOFT)
+                stretch_color = QColor(theme.COLOR_WARN_SOFT)
             else:
-                stretch_color = QColor(COLOR_MUTED_DARK)
+                stretch_color = QColor(theme.COLOR_MUTED_DARK)
         else:
             stretch_str = "       "  # 7 chars placeholder
-            stretch_color = QColor(COLOR_MUTED_DARK)
+            stretch_color = QColor(theme.COLOR_MUTED_DARK)
 
         # Power
         if self._core_watts is not None:
             watts_str = f"{self._core_watts:5.1f}W"
-            watts_color = QColor(COLOR_WARN_SOFT)
+            watts_color = QColor(theme.COLOR_WARN_SOFT)
         else:
             watts_str = "      "  # 6 chars placeholder
-            watts_color = QColor(COLOR_MUTED_DARK)
+            watts_color = QColor(theme.COLOR_MUTED_DARK)
 
         # Temperature
         if self._temp > 0:
             temp_str = f"{self._temp:3.0f}C"
             if self._temp >= 85:
-                temp_color = QColor(CHART_TEMP)
+                temp_color = QColor(theme.CHART_TEMP)
             elif self._temp >= 70:
-                temp_color = QColor(COLOR_WARN_SOFT)
+                temp_color = QColor(theme.COLOR_WARN_SOFT)
             else:
-                temp_color = QColor(COLOR_MUTED)
+                temp_color = QColor(theme.COLOR_MUTED)
         else:
             temp_str = "    "  # 4 chars placeholder
-            temp_color = QColor(COLOR_MUTED)
+            temp_color = QColor(theme.COLOR_MUTED)
 
         # Draw each column at fixed positions
         cols = [
@@ -236,7 +219,7 @@ class CoreFreqBar(QWidget):
             cx += tw + col_gap
 
         # border — highlighted if active
-        border_color = QColor(COLOR_ACTIVE) if self._is_active else QColor(BORDER_DARKER)
+        border_color = QColor(theme.COLOR_ACTIVE) if self._is_active else QColor(theme.BORDER_DARKER)
         border_width = 2 if self._is_active else 1
         painter.setPen(QPen(border_color, border_width))
         painter.drawRect(0, 0, w - 1, h - 1)
@@ -250,7 +233,10 @@ class MonitorTab(QWidget):
     # Staleness tracking — grey out labels after consecutive sensor read failures
     _STALE_THRESHOLD = 3
     _NORMAL_STYLE = "font: bold 11px monospace; padding: 2px;"
-    _STALE_STYLE = f"font: bold 11px monospace; padding: 2px; color: {COLOR_MUTED_DARK};"
+
+    @staticmethod
+    def _stale_style() -> str:
+        return f"font: bold 11px monospace; padding: 2px; color: {theme.COLOR_MUTED_DARK};"
 
     def __init__(self, topology=None) -> None:
         super().__init__()
@@ -325,7 +311,8 @@ class MonitorTab(QWidget):
         self._toggle_btn.setFixedSize(110, 36)
         self._toggle_btn.setStyleSheet(
             "QPushButton { padding: 6px; } "
-            f"QPushButton:checked {{ background: {BG_SELECTED}; border: 1px solid {COLOR_ACTIVE}; }}"
+            f"QPushButton:checked {{ background: {theme.BG_SELECTED}; "
+            f"color: {theme.COLOR_ON_SELECTED}; border: 1px solid {theme.COLOR_ACTIVE}; }}"
         )
         self._toggle_btn.toggled.connect(self._toggle_view)
         top_bar.addWidget(self._toggle_btn)
@@ -338,10 +325,10 @@ class MonitorTab(QWidget):
         charts_layout.setContentsMargins(0, 0, 0, 0)
         charts_layout.setSpacing(4)
 
-        self._freq_chart = LiveChart("Frequency", "MHz", 0, 6000, CHART_FREQ)
-        self._temp_chart = LiveChart("Temperature", "°C", 0, 100, CHART_TEMP)
-        self._power_chart = LiveChart("Package Power", "W", 0, 250, CHART_POWER)
-        self._voltage_chart = LiveChart("Vcore", "V", 0.5, 1.6, CHART_VOLT)
+        self._freq_chart = LiveChart("Frequency", "MHz", 0, 6000, "CHART_FREQ")
+        self._temp_chart = LiveChart("Temperature", "°C", 0, 100, "CHART_TEMP")
+        self._power_chart = LiveChart("Package Power", "W", 0, 250, "CHART_POWER")
+        self._voltage_chart = LiveChart("Vcore", "V", 0.5, 1.6, "CHART_VOLT")
 
         charts_layout.addWidget(self._freq_chart, 0, 0)
         charts_layout.addWidget(self._temp_chart, 0, 1)
@@ -393,7 +380,7 @@ class MonitorTab(QWidget):
                 vcache_str = " (V-Cache)" if any(c.has_vcache for c in cores) else ""
                 header = QLabel(f"CCD {ccd_idx}{vcache_str}")
                 header.setFont(QFont("monospace", 8, QFont.Weight.Bold))
-                header.setStyleSheet(f"color: {COLOR_TEXT_DIM}; padding: 1px 4px;")
+                header.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 1px 4px;")
                 header.setFixedHeight(16)
                 self._per_core_layout.addWidget(header)
 
@@ -456,7 +443,7 @@ class MonitorTab(QWidget):
         else:
             self._hwmon_fail_count += 1
             if self._hwmon_fail_count >= self._STALE_THRESHOLD:
-                self._tctl_label.setStyleSheet(self._STALE_STYLE)
+                self._tctl_label.setStyleSheet(self._stale_style())
             # Keep last-known text — don't clear it
         # Per-CCD temps — create labels dynamically on first appearance
         for tccd_idx in sorted(hwmon_data.tccd_temps):
@@ -484,7 +471,7 @@ class MonitorTab(QWidget):
             self._voltage_chart.add_value(hwmon_data.vcore_v)
         else:
             if self._hwmon_fail_count >= self._STALE_THRESHOLD:
-                self._vcore_label.setStyleSheet(self._STALE_STYLE)
+                self._vcore_label.setStyleSheet(self._stale_style())
 
         # power — sysfs RAPL (user-accessible) or MSR RAPL (root-only)
         watts = self._power.read_power_watts()
@@ -504,11 +491,11 @@ class MonitorTab(QWidget):
             else:
                 self._power_fail_count += 1
                 if self._power_fail_count >= self._STALE_THRESHOLD:
-                    self._power_label.setStyleSheet(self._STALE_STYLE)
+                    self._power_label.setStyleSheet(self._stale_style())
         else:
             self._power_fail_count += 1
             if self._power_fail_count >= self._STALE_THRESHOLD:
-                self._power_label.setStyleSheet(self._STALE_STYLE)
+                self._power_label.setStyleSheet(self._stale_style())
 
         # CPU usage from /proc/stat
         usage_data = self._cpu_usage.read()  # logical cpu → usage %
