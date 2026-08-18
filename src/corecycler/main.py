@@ -17,9 +17,9 @@ _SESSION_IDENTITY_KEYS = (
     "XDG_SESSION_TYPE",
     "DESKTOP_SESSION",
     "KDE_FULL_SESSION",
-    "DBUS_SESSION_BUS_ADDRESS",
     "QT_QPA_PLATFORMTHEME",
     "XDG_CONFIG_DIRS",
+    "DISPLAY",
 )
 
 _XDG_CONFIG_DIRS_DEFAULT = "/etc/xdg"
@@ -71,33 +71,72 @@ def _session_appearance(env: dict[str, str], home: Path, current: dict[str, str]
     return apply
 
 
+def _wayland_socket(run_dir: Path) -> str | None:
+    """The invoking user's Wayland socket as an ABSOLUTE path, or None.
+
+    An absolute WAYLAND_DISPLAY is connected to directly, so root needs no
+    XDG_RUNTIME_DIR of its own -- and Qt then never reports the user's runtime
+    directory as one it does not own, which it says once per lookup.
+    """
+    for sock in sorted(run_dir.glob("wayland-*")):
+        if sock.is_socket():
+            return str(sock)
+    return None
+
+
+def _bus_is_usable(address: str, uid: int) -> bool:
+    """Whether this process may actually connect to that D-Bus session bus.
+
+    A user's bus authenticates by peer credentials and commonly refuses another
+    uid, so root is handed an address it cannot use and every portal call then
+    fails loudly. Probe with the EXTERNAL handshake libdbus itself performs;
+    anything but an accepted greeting is a no.
+    """
+    import socket
+
+    endpoint = ""
+    for part in address.split(","):
+        if part.startswith("unix:path="):
+            endpoint = part[len("unix:path=") :]
+        elif part.startswith("unix:abstract="):
+            endpoint = "\0" + part[len("unix:abstract=") :]
+    if not endpoint:
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(2.0)
+            probe.connect(endpoint)
+            probe.sendall(b"\0AUTH EXTERNAL " + str(uid).encode().hex().encode() + b"\r\n")
+            return probe.recv(64).startswith(b"OK")
+    except (OSError, ValueError):
+        return False
+
+
 def _bootstrap_sudo_session() -> None:
     """Derive a usable session handshake for root under ``sudo``.
 
-    sudo strips XDG_RUNTIME_DIR/XAUTHORITY (and often WAYLAND_DISPLAY), so Qt
-    can neither reach the user's Wayland socket nor authenticate to X11 — it
-    then qFatal-aborts (SIGABRT) at QApplication construction. It strips the
-    desktop identity and config search path too, which is what the desktop's
-    appearance is read from. Point all of it at the INVOKING user's session;
-    root's uid bypasses the socket permissions, so this is sufficient on both
-    Wayland and X11.
+    sudo strips XAUTHORITY, DISPLAY and WAYLAND_DISPLAY, so Qt can neither
+    reach the user's Wayland socket nor authenticate to X11 — it then
+    qFatal-aborts (SIGABRT) at QApplication construction. It strips the desktop
+    identity and config search path too, which is what the desktop's appearance
+    is read from. Point all of it at the INVOKING user's session; root's uid
+    bypasses the socket permissions, so this is sufficient on both Wayland and
+    X11. A session bus address is kept only if root may really use it, so
+    nothing is handed a connection that can only fail.
     """
     import logging
     import os
 
+    log = logging.getLogger(__name__)
     if os.geteuid() != 0:
         return
     sudo_uid = os.environ.get("SUDO_UID", "")
     if not sudo_uid.isdigit():
         return
-    run_dir = Path(f"/run/user/{sudo_uid}")
-    if run_dir.is_dir():
-        os.environ.setdefault("XDG_RUNTIME_DIR", str(run_dir))
-        if "WAYLAND_DISPLAY" not in os.environ:
-            for sock in sorted(run_dir.glob("wayland-*")):
-                if sock.is_socket():
-                    os.environ["WAYLAND_DISPLAY"] = sock.name
-                    break
+    if "WAYLAND_DISPLAY" not in os.environ:
+        socket_path = _wayland_socket(Path(f"/run/user/{sudo_uid}"))
+        if socket_path:
+            os.environ["WAYLAND_DISPLAY"] = socket_path
     from corecycler.config.paths import user_home
 
     home = user_home()
@@ -105,9 +144,16 @@ def _bootstrap_sudo_session() -> None:
         xauth = home / ".Xauthority"
         if xauth.exists():
             os.environ["XAUTHORITY"] = str(xauth)
-    appearance = _session_appearance(_session_env(int(sudo_uid), Path("/proc")), home, dict(os.environ))
+    session = _session_env(int(sudo_uid), Path("/proc"))
+    appearance = _session_appearance(session, home, dict(os.environ))
     os.environ.update(appearance)
-    logging.getLogger(__name__).debug("sudo session appearance: %s", appearance or "none recovered")
+    log.debug("sudo session appearance: %s", appearance or "none recovered")
+    address = os.environ.get("DBUS_SESSION_BUS_ADDRESS") or session.get("DBUS_SESSION_BUS_ADDRESS", "")
+    if address and _bus_is_usable(address, os.geteuid()):
+        os.environ["DBUS_SESSION_BUS_ADDRESS"] = address
+    elif address:
+        os.environ.pop("DBUS_SESSION_BUS_ADDRESS", None)
+        log.debug("session bus %s refuses this user; dropped so nothing tries it", address)
 
 
 def _install_exception_hooks(window) -> None:

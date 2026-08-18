@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from corecycler.main import _session_appearance, _session_env
+from corecycler.main import _bus_is_usable, _session_appearance, _session_env, _wayland_socket
 
 SESSION = {
     "XDG_CURRENT_DESKTOP": "KDE",
@@ -23,6 +23,7 @@ SESSION = {
     "XDG_CONFIG_DIRS": "/home/rie/.config/kdedefaults:/etc/xdg",
     "XDG_CONFIG_HOME": "/home/rie/.config",
     "WAYLAND_DISPLAY": "wayland-0",
+    "DISPLAY": ":0",
     "SSH_AUTH_SOCK": "/run/user/1000/keyring/ssh",
     "QT_PLUGIN_PATH": "/home/rie/plugins",
     "LD_PRELOAD": "/home/rie/evil.so",
@@ -65,7 +66,8 @@ class TestWhatRootImports:
     def test_takes_the_desktop_identity(self):
         applied = _session_appearance(SESSION, HOME, {})
         assert applied["XDG_CURRENT_DESKTOP"] == "KDE"
-        assert applied["DBUS_SESSION_BUS_ADDRESS"] == SESSION["DBUS_SESSION_BUS_ADDRESS"]
+        assert applied["XDG_SESSION_TYPE"] == "wayland"
+        assert applied["DISPLAY"] == ":0"
 
     def test_leaves_behind_anything_that_could_redirect_code_loading(self):
         applied = _session_appearance(SESSION, HOME, {})
@@ -116,3 +118,77 @@ class TestWhatRootImports:
 
     def test_no_session_found_changes_nothing(self):
         assert _session_appearance({}, HOME, {"XDG_CONFIG_DIRS": "/etc/xdg"}) == {}
+
+    def test_the_session_bus_is_not_imported_blindly(self):
+        assert "DBUS_SESSION_BUS_ADDRESS" not in _session_appearance(SESSION, HOME, {})
+
+
+class TestWaylandSocket:
+    def test_hands_back_an_absolute_path_so_no_runtime_dir_is_needed(self, tmp_path):
+        import socket
+
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(tmp_path / "wayland-0"))
+            found = _wayland_socket(tmp_path)
+        assert found == str(tmp_path / "wayland-0")
+
+    def test_a_lock_file_beside_the_socket_is_not_mistaken_for_it(self, tmp_path):
+        import socket
+
+        (tmp_path / "wayland-0.lock").write_text("")
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(tmp_path / "wayland-1"))
+            assert _wayland_socket(tmp_path) == str(tmp_path / "wayland-1")
+
+    def test_no_socket_is_no_answer(self, tmp_path):
+        (tmp_path / "wayland-0.lock").write_text("")
+        assert _wayland_socket(tmp_path) is None
+
+
+class TestSessionBusProbe:
+    """A bus that refuses this uid must be reported unusable, not handed on:
+    every portal call on an unusable address fails loudly (issue #14)."""
+
+    @staticmethod
+    def _fake_bus(path, reply: bytes):
+        import socket
+        import threading
+
+        server = socket.socket(socket.AF_UNIX)
+        server.bind(str(path))
+        server.listen(1)
+
+        def serve():
+            conn, _ = server.accept()
+            with conn:
+                conn.recv(128)
+                conn.sendall(reply)
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        return server, thread
+
+    def test_an_accepted_handshake_is_usable(self, tmp_path):
+        server, thread = self._fake_bus(tmp_path / "bus", b"OK 1234deadbeef\r\n")
+        try:
+            assert _bus_is_usable(f"unix:path={tmp_path}/bus", os.getuid()) is True
+        finally:
+            thread.join(timeout=2)
+            server.close()
+
+    def test_a_refused_handshake_is_not_usable(self, tmp_path):
+        server, thread = self._fake_bus(tmp_path / "bus", b"REJECTED EXTERNAL\r\n")
+        try:
+            assert _bus_is_usable(f"unix:path={tmp_path}/bus", 0) is False
+        finally:
+            thread.join(timeout=2)
+            server.close()
+
+    def test_an_address_with_nothing_listening_is_not_usable(self, tmp_path):
+        assert _bus_is_usable(f"unix:path={tmp_path}/absent", os.getuid()) is False
+
+    def test_an_address_with_no_unix_endpoint_is_not_usable(self):
+        assert _bus_is_usable("tcp:host=localhost,port=1234", os.getuid()) is False
+
+    def test_an_empty_address_is_not_usable(self):
+        assert _bus_is_usable("", os.getuid()) is False

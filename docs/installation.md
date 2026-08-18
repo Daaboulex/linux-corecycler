@@ -213,11 +213,13 @@ appearance read-only, so nothing is written into their configuration; when no
 display is reachable the app exits with an actionable message instead of
 aborting.
 
-Two things root cannot have, because they belong to your session and not to root: your
-D-Bus session bus may refuse a connection from root (it does on CachyOS), so notifications
-and portal settings are then unavailable, and Qt will not use a runtime directory it does
-not own, which it says once per lookup. Neither affects a test; both disappear on the
-device-access path above.
+One thing depends on your distribution: a D-Bus session bus authenticates by peer
+credentials, and some refuse a connection from another user (CachyOS does). A run tests
+the bus before using it, so nothing is left calling an address it cannot reach; where the
+bus does refuse, desktop notifications are unavailable under sudo. Nothing else about a
+sudo run is second class: the Wayland socket is reached by its own path rather than
+through your runtime directory, which is what root borrowing that directory used to
+complain about once per lookup.
 
 On Zen 5, Vcore telemetry uses SVI3, which no Linux driver supports yet; the tool falls
 back to the motherboard Super I/O chip (Nuvoton NCT668x/NCT677x-NCT679x, ITE
