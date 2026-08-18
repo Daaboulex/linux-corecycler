@@ -50,7 +50,7 @@ def _session_appearance(env: dict[str, str], home: Path, current: dict[str, str]
     sudo's ``env_reset`` drops the desktop identity and the config search path,
     so a root run falls back to the toolkit's default light theme however the
     user's desktop is set (issue #14). Their config home joins the SEARCH path
-    only: KConfig writes to XDG_CONFIG_HOME, which stays root's, so their
+    only: KConfig writes to XDG_CONFIG_HOME, which stays root's own, so their
     settings are read and never written. Nothing that redirects where Qt loads
     code from is imported. A value already in the environment wins, except the
     search path, which is merged so neither side's entries are lost.
@@ -69,6 +69,26 @@ def _session_appearance(env: dict[str, str], home: Path, current: dict[str, str]
             search.append(entry)
     apply["XDG_CONFIG_DIRS"] = ":".join(search)
     return apply
+
+
+def _private_config_home() -> Path | None:
+    """An empty config home of root's own, so the invoking user's settings decide.
+
+    KConfig reads XDG_CONFIG_HOME before the search path, so a kdeglobals that any
+    earlier root run of a Qt or KDE app left in root's own config home picks the
+    color scheme and the recovered session settings are never reached. A fresh
+    directory per run also keeps one invoking user's leftovers off the next.
+    """
+    import atexit
+    import shutil
+    import tempfile
+
+    try:
+        target = Path(tempfile.mkdtemp(prefix="corecycler-config-"))
+    except OSError:
+        return None
+    atexit.register(shutil.rmtree, target, True)
+    return target
 
 
 def _wayland_socket(run_dir: Path) -> str | None:
@@ -147,7 +167,15 @@ def _bootstrap_sudo_session() -> None:
     session = _session_env(int(sudo_uid), Path("/proc"))
     appearance = _session_appearance(session, home, dict(os.environ))
     os.environ.update(appearance)
-    log.debug("sudo session appearance: %s", appearance or "none recovered")
+    if appearance:
+        private_config = _private_config_home()
+        if private_config:
+            os.environ["XDG_CONFIG_HOME"] = str(private_config)
+    log.debug(
+        "sudo session appearance: %s (config home %s)",
+        appearance or "none recovered",
+        os.environ.get("XDG_CONFIG_HOME", "root's own"),
+    )
     address = os.environ.get("DBUS_SESSION_BUS_ADDRESS") or session.get("DBUS_SESSION_BUS_ADDRESS", "")
     if address and _bus_is_usable(address, os.geteuid()):
         os.environ["DBUS_SESSION_BUS_ADDRESS"] = address
