@@ -11,15 +11,53 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-def _bootstrap_sudo_display() -> None:
-    """Derive a usable display handshake for root under ``sudo``.
+_SESSION_IDENTITY_KEYS = (
+    "XDG_CURRENT_DESKTOP",
+    "XDG_SESSION_DESKTOP",
+    "XDG_SESSION_TYPE",
+    "DESKTOP_SESSION",
+    "KDE_FULL_SESSION",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "QT_QPA_PLATFORMTHEME",
+)
+
+
+def _session_identity(uid: int, proc_root: Path) -> dict[str, str]:
+    """Desktop identity of the invoking user's graphical session, read from /proc.
+
+    sudo's ``env_reset`` drops it, and with XDG_CURRENT_DESKTOP gone Qt reports
+    the desktop as UNKNOWN and loads no platform theme, so the save/load dialog
+    is Qt's own widget fallback instead of the desktop's file dialog (issue #14:
+    ``qtdiag`` "kde,generic" becomes "unknown,generic"). Only the allowlisted
+    keys are taken, and only from a process of that user holding a display
+    connection -- so a detached shell never answers, and nothing that redirects
+    where Qt loads code from is ever imported.
+    """
+    for entry in sorted(proc_root.glob("[0-9]*"), key=lambda p: int(p.name)):
+        try:
+            if entry.stat().st_uid != uid:
+                continue
+            raw = (entry / "environ").read_bytes()
+        except OSError:
+            continue
+        env = dict(v.split("=", 1) for v in raw.decode("utf-8", "replace").split("\0") if "=" in v)
+        if env.get("XDG_CURRENT_DESKTOP") and (env.get("WAYLAND_DISPLAY") or env.get("DISPLAY")):
+            return {key: env[key] for key in _SESSION_IDENTITY_KEYS if env.get(key)}
+    return {}
+
+
+def _bootstrap_sudo_session() -> None:
+    """Derive a usable session handshake for root under ``sudo``.
 
     sudo strips XDG_RUNTIME_DIR/XAUTHORITY (and often WAYLAND_DISPLAY), so Qt
     can neither reach the user's Wayland socket nor authenticate to X11 — it
-    then qFatal-aborts (SIGABRT) at QApplication construction. Point the
-    handshake at the INVOKING user's session; root's uid bypasses the socket
-    permissions, so this is sufficient on both Wayland and X11.
+    then qFatal-aborts (SIGABRT) at QApplication construction. It strips the
+    desktop identity too, which decides whether a dialog is the desktop's own
+    or Qt's fallback. Point both at the INVOKING user's session; root's uid
+    bypasses the socket permissions, so this is sufficient on both Wayland and
+    X11.
     """
+    import logging
     import os
 
     if os.geteuid() != 0:
@@ -41,6 +79,10 @@ def _bootstrap_sudo_display() -> None:
         xauth = user_home() / ".Xauthority"
         if xauth.exists():
             os.environ["XAUTHORITY"] = str(xauth)
+    identity = _session_identity(int(sudo_uid), Path("/proc"))
+    for key, value in identity.items():
+        os.environ.setdefault(key, value)
+    logging.getLogger(__name__).debug("sudo session identity: %s", identity or "none recovered")
 
 
 def _install_exception_hooks(window) -> None:
@@ -149,13 +191,13 @@ def main() -> int:
 
         return cli_main(argv)
 
-    # Suppress Qt/KDE warnings when running under sudo (no D-Bus session)
+    # Silence the warning categories that fire for session services root cannot use
     os.environ.setdefault(
         "QT_LOGGING_RULES",
         "qt.qpa.services.warning=false;kf.windowsystem.warning=false",
     )
 
-    _bootstrap_sudo_display()
+    _bootstrap_sudo_session()
 
     # Preflight: with no display reachable Qt aborts the whole process
     # (SIGABRT) — fail closed with an actionable message instead. Skipped when

@@ -9,6 +9,19 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-08-18 the desktop's own file dialog under sudo)
+
+- Under `sudo` the save/load dialog was Qt's plain widget fallback instead of
+  the desktop's file dialog. sudo's `env_reset` drops the desktop identity, so
+  Qt resolves the desktop to UNKNOWN and loads no platform theme at all
+  (`qtdiag` "kde,generic" becomes "unknown,generic", reproduced live). The
+  invoking user's identity -- desktop, session type, D-Bus session bus and an
+  explicit platform-theme choice -- is now read from that user's own graphical
+  session and set before Qt starts: an allowlist of keys taken from a process
+  holding a display connection, which is what `sudo -E` would have preserved.
+  Desktop notifications, which need the session bus, reach the session under
+  sudo for the same reason. Issue #14.
+
 ### Fixed (2026-08-12 the GUI survives close, stop and refused starts mid-test)
 
 - Closing the window while a test ran crashed every time: the history database
