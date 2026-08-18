@@ -2,8 +2,8 @@
 
 Under sudo the desktop identity and the config search path are gone, so the
 toolkit renders in its default light theme however the user's desktop is set.
-Recovery is read-only: the config HOME stays root's, so their settings are read
-and never written.
+Recovery is read-only: the config HOME stays root's own, and empty, so their
+settings are read, never written, and never shadowed by what root's home holds.
 """
 
 from __future__ import annotations
@@ -11,10 +11,17 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from corecycler.main import _bus_is_usable, _session_appearance, _session_env, _wayland_socket
+from corecycler.main import (
+    _bus_is_usable,
+    _private_config_home,
+    _session_appearance,
+    _session_env,
+    _wayland_socket,
+)
 
 SESSION = {
     "XDG_CURRENT_DESKTOP": "KDE",
@@ -121,6 +128,31 @@ class TestWhatRootImports:
 
     def test_the_session_bus_is_not_imported_blindly(self):
         assert "DBUS_SESSION_BUS_ADDRESS" not in _session_appearance(SESSION, HOME, {})
+
+
+class TestPrivateConfigHome:
+    """Root's own config home shadows the whole search path: KConfig reads it first,
+    so a kdeglobals an earlier root run of any KDE app left there picks the color
+    scheme and the recovered session is never reached (issue #14, seen live)."""
+
+    def test_it_is_empty_so_nothing_left_there_before_can_decide(self):
+        home = _private_config_home()
+        assert home is not None
+        assert list(home.iterdir()) == []
+
+    def test_it_is_private_to_this_user(self):
+        home = _private_config_home()
+        assert home is not None
+        assert home.stat().st_mode & 0o777 == 0o700
+
+    def test_each_run_gets_its_own_so_one_users_leftovers_never_reach_the_next(self):
+        assert _private_config_home() != _private_config_home()
+
+    def test_a_home_that_cannot_be_made_is_refused_rather_than_guessed(self, monkeypatch):
+        import tempfile
+
+        monkeypatch.setattr(tempfile, "mkdtemp", MagicMock(side_effect=OSError("read-only")))
+        assert _private_config_home() is None
 
 
 class TestWaylandSocket:

@@ -26,6 +26,18 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
   that in the dark theme (failed cells, mem-stress cells, the deeper hardening
   phase) were corrected.
 
+### Fixed (2026-08-18 a sudo run took root's own KDE colors, issue #14)
+
+- A sudo run rendered light on a dark desktop even with the session's config
+  search path recovered. KConfig reads `XDG_CONFIG_HOME` before that path, so a
+  `kdeglobals` any earlier root run of a Qt or KDE app left in `/root/.config`
+  decided the color scheme, and because KConfig merges per key the result was a
+  half-and-half palette: root's window and view colors over the user's
+  everything else. A sudo run now gets an empty config home of its own, fresh
+  per run, so the recovered session is what decides and one invoking user's
+  leftovers never reach the next. Nothing is written into the user's config,
+  which was the reason the config home stayed root's in the first place.
+
 ### Fixed (2026-08-18 the save/load dialog was unreadable, issue #14)
 
 - The dialog was the desktop's own all along; what was wrong was the app
