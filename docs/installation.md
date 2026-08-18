@@ -164,11 +164,14 @@ model-specific register or the SMU needs permission on those devices:
 | Vcore voltage | Via Super I/O or zenpower | Same | Same |
 | DIMM info (dmidecode) | N/A | N/A | Full |
 | Curve Optimizer (SMU read/write) | N/A | Full | Full |
+| Kernel error detection (MCE via dmesg) | Needs `kernel.dmesg_restrict=0` | Full | Full |
 
-Device access covers the MSR devices and the SMU sysfs files. It cannot cover
-`dmidecode`, which reads the raw DMI table that only root may open, so the Memory tab's
-DIMM details are the one thing a root run still buys. Without access the status bar warns
-and unavailable data shows "N/A" rather than stale values.
+Two limits worth knowing. `dmidecode` reads the raw DMI table, which only root may open,
+so the Memory tab's DIMM details need a root run whatever else you grant. And MCE
+detection shells out to `dmesg`: where `kernel.dmesg_restrict` is 1, a non-root run reads
+nothing and reports no kernel errors, so the sysctl below is part of device access, not an
+extra. Without access the status bar warns and unavailable data shows "N/A" rather than
+stale values.
 
 ### Grant it to your user (no sudo)
 
@@ -176,18 +179,20 @@ The better option: a GUI then runs as your own user, in your own session, with y
 settings and file ownership.
 
 On NixOS the module does it -- set `deviceAccess = true` (the default) and
-`deviceAccessUser` to your username. On other distros, add the group, the MSR udev rule
-and the SMU permissions oneshot by hand; the recipe is under
-[ryzen_smu kernel module](#ryzen_smu-kernel-module), and the MSR half is:
+`deviceAccessUser` to your username. On other distros there are three parts. The group,
+the MSR udev rule and unrestricted `dmesg`:
 
 ```bash
 sudo groupadd -f corecycler && sudo usermod -aG corecycler "$USER"
 echo 'SUBSYSTEM=="msr", KERNEL=="msr[0-9]*", GROUP="corecycler", MODE="0640"' \
   | sudo tee /etc/udev/rules.d/99-corecycler-msr.rules
-sudo udevadm control --reload && sudo modprobe msr
+echo 'kernel.dmesg_restrict = 0' | sudo tee /etc/sysctl.d/99-corecycler-dmesg.conf
+sudo sysctl --system && sudo udevadm control --reload && sudo modprobe msr
 ```
 
-Log out and back in for the group to take effect.
+Then the SMU permissions oneshot, which is under
+[ryzen_smu kernel module](#ryzen_smu-kernel-module) because it has to be ordered after the
+module loads. Log out and back in for the group to take effect.
 
 ### Or run as root
 
