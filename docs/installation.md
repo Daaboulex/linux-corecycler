@@ -154,19 +154,21 @@ and PySide6 >= 6.7.
 Stress testing and temperature monitoring work as your own user. Everything that reads a
 model-specific register or the SMU needs permission on those devices:
 
-| Feature | As your user | With device access, or as root |
-|---|---|---|
-| Stress testing (per-core cycling) | Full | Full |
-| Temperature, per-CCD temps, frequency | Full | Full |
-| Package power | Via hwmon (zenpower) | Full |
-| Per-core power (RAPL MSR) | Needs `/dev/cpu/N/msr` | Full |
-| Clock stretch detection (APERF/MPERF) | Needs `/dev/cpu/N/msr` | Full |
-| Vcore voltage | Via Super I/O or zenpower | Via Super I/O or zenpower |
-| DIMM info (dmidecode) | Needs root | Full |
-| Curve Optimizer (SMU read/write) | Needs `/sys/kernel/ryzen_smu_drv` | Full |
+| Feature | Plain user | With device access | As root |
+|---|---|---|---|
+| Stress testing (per-core cycling) | Full | Full | Full |
+| Temperature, per-CCD temps, frequency | Full | Full | Full |
+| Package power | Via hwmon (zenpower) | Full | Full |
+| Per-core power (RAPL MSR) | N/A | Full | Full |
+| Clock stretch detection (APERF/MPERF) | N/A | Full | Full |
+| Vcore voltage | Via Super I/O or zenpower | Same | Same |
+| DIMM info (dmidecode) | N/A | N/A | Full |
+| Curve Optimizer (SMU read/write) | N/A | Full | Full |
 
-Without access the status bar warns and unavailable data shows "N/A" rather than stale
-values.
+Device access covers the MSR devices and the SMU sysfs files. It cannot cover
+`dmidecode`, which reads the raw DMI table that only root may open, so the Memory tab's
+DIMM details are the one thing a root run still buys. Without access the status bar warns
+and unavailable data shows "N/A" rather than stale values.
 
 ### Grant it to your user (no sudo)
 
@@ -206,11 +208,11 @@ appearance read-only, so nothing is written into their configuration; when no
 display is reachable the app exits with an actionable message instead of
 aborting.
 
-Two things root cannot have, because they belong to your session and not to root: the
-desktop's D-Bus session bus refuses a connection from another user on most distributions,
-so notifications and portal settings may be unavailable, and Qt refuses your runtime
-directory it does not own, which it says once per lookup. Neither affects a test; both
-disappear on the device-access path above.
+Two things root cannot have, because they belong to your session and not to root: your
+D-Bus session bus may refuse a connection from root (it does on CachyOS), so notifications
+and portal settings are then unavailable, and Qt will not use a runtime directory it does
+not own, which it says once per lookup. Neither affects a test; both disappear on the
+device-access path above.
 
 On Zen 5, Vcore telemetry uses SVI3, which no Linux driver supports yet; the tool falls
 back to the motherboard Super I/O chip (Nuvoton NCT668x/NCT677x-NCT679x, ITE
