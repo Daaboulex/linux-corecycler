@@ -26,6 +26,16 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
   that in the dark theme (failed cells, mem-stress cells, the deeper hardening
   phase) were corrected.
 
+### Fixed (2026-08-18 a sudo run keeps its own runtime directory)
+
+- Qt reported the runtime directory on every lookup, first as one root does not
+  own (it was the invoking user's, set so Qt could find the Wayland socket) and
+  then, once that was dropped, as one that is not set at all. Root now gets a
+  runtime directory of its own, made fresh per run as the base directory spec
+  requires, which is possible because the Wayland socket is named by its
+  absolute path and no longer resolved against it. The stress work root is
+  unchanged: it follows the invoking user, never whoever the euid happens to be.
+
 ### Fixed (2026-08-18 a sudo run took root's own KDE colors, issue #14)
 
 - A sudo run rendered light on a dark desktop even with the session's config

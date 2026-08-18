@@ -18,9 +18,23 @@ class TestResolveWorkDir:
 
     def test_a_foreign_runtime_dir_is_refused(self, tmp_path, monkeypatch):
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-        monkeypatch.setattr(paths.os, "geteuid", lambda: 999999)
+        monkeypatch.setattr(paths, "invoking_uid", lambda: 999999)
         resolved = paths.resolve_work_dir()
         assert resolved == paths.user_home() / ".cache" / "corecycler" / "work"
+
+    def test_roots_own_runtime_dir_under_sudo_is_not_a_work_root(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.setenv("SUDO_UID", str(tmp_path.stat().st_uid + 1))
+        monkeypatch.setattr(paths.os, "geteuid", lambda: 0)
+        resolved = paths.resolve_work_dir()
+        assert resolved == paths.user_home() / ".cache" / "corecycler" / "work"
+
+    def test_the_invoking_user_is_who_the_run_belongs_to(self, monkeypatch):
+        monkeypatch.setattr(paths.os, "geteuid", lambda: 0)
+        monkeypatch.setenv("SUDO_UID", "1000")
+        assert paths.invoking_uid() == 1000
+        monkeypatch.delenv("SUDO_UID")
+        assert paths.invoking_uid() == 0
 
     def test_no_runtime_dir_falls_back_to_the_user_cache(self, monkeypatch):
         monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)

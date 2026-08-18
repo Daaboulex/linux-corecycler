@@ -71,6 +71,20 @@ def _session_appearance(env: dict[str, str], home: Path, current: dict[str, str]
     return apply
 
 
+def _private_dir(prefix: str) -> Path | None:
+    """A directory of this process's own, private to it and gone when it exits."""
+    import atexit
+    import shutil
+    import tempfile
+
+    try:
+        target = Path(tempfile.mkdtemp(prefix=prefix))
+    except OSError:
+        return None
+    atexit.register(shutil.rmtree, target, True)
+    return target
+
+
 def _private_config_home() -> Path | None:
     """An empty config home of root's own, so the invoking user's settings decide.
 
@@ -79,24 +93,25 @@ def _private_config_home() -> Path | None:
     color scheme and the recovered session settings are never reached. A fresh
     directory per run also keeps one invoking user's leftovers off the next.
     """
-    import atexit
-    import shutil
-    import tempfile
+    return _private_dir("corecycler-config-")
 
-    try:
-        target = Path(tempfile.mkdtemp(prefix="corecycler-config-"))
-    except OSError:
-        return None
-    atexit.register(shutil.rmtree, target, True)
-    return target
+
+def _private_runtime_dir() -> Path | None:
+    """A runtime directory root actually owns, as the base directory spec requires.
+
+    Root has no runtime directory of its own, and borrowing the invoking user's is
+    exactly what Qt reports as a directory it does not own; leaving it unset makes
+    Qt say that too. Hand root one that meets the spec instead.
+    """
+    return _private_dir("corecycler-runtime-")
 
 
 def _wayland_socket(run_dir: Path) -> str | None:
     """The invoking user's Wayland socket as an ABSOLUTE path, or None.
 
-    An absolute WAYLAND_DISPLAY is connected to directly, so root needs no
-    XDG_RUNTIME_DIR of its own -- and Qt then never reports the user's runtime
-    directory as one it does not own, which it says once per lookup.
+    An absolute WAYLAND_DISPLAY is connected to directly rather than resolved
+    against XDG_RUNTIME_DIR, which is what frees root to have a runtime
+    directory of its own instead of borrowing the user's.
     """
     for sock in sorted(run_dir.glob("wayland-*")):
         if sock.is_socket():
@@ -141,8 +156,10 @@ def _bootstrap_sudo_session() -> None:
     identity and config search path too, which is what the desktop's appearance
     is read from. Point all of it at the INVOKING user's session; root's uid
     bypasses the socket permissions, so this is sufficient on both Wayland and
-    X11. A session bus address is kept only if root may really use it, so
-    nothing is handed a connection that can only fail.
+    X11. The Wayland socket is named by its absolute path, so root can be given
+    a runtime directory of its own rather than borrowing one it does not own. A
+    session bus address is kept only if root may really use it, so nothing is
+    handed a connection that can only fail.
     """
     import logging
     import os
@@ -153,10 +170,17 @@ def _bootstrap_sudo_session() -> None:
     sudo_uid = os.environ.get("SUDO_UID", "")
     if not sudo_uid.isdigit():
         return
-    if "WAYLAND_DISPLAY" not in os.environ:
-        socket_path = _wayland_socket(Path(f"/run/user/{sudo_uid}"))
+    user_run_dir = Path(f"/run/user/{sudo_uid}")
+    named = os.environ.get("WAYLAND_DISPLAY", "")
+    if not named:
+        socket_path = _wayland_socket(user_run_dir)
         if socket_path:
             os.environ["WAYLAND_DISPLAY"] = socket_path
+    elif not named.startswith("/") and (user_run_dir / named).is_socket():
+        os.environ["WAYLAND_DISPLAY"] = str(user_run_dir / named)
+    runtime_dir = _private_runtime_dir()
+    if runtime_dir and os.environ.get("WAYLAND_DISPLAY", "/").startswith("/"):
+        os.environ["XDG_RUNTIME_DIR"] = str(runtime_dir)
     from corecycler.config.paths import user_home
 
     home = user_home()
