@@ -26,6 +26,17 @@ err() { echo "::error::$*"; }
 # [A-Za-z0-9_'-]; escaping is defensive, not strictly required, but cheap.
 re_esc() { printf '%s' "$1" | sed 's/[^[:alnum:]_]/\\&/g'; }
 
+# read_current_rev — the package's own src rev, from either shape a repo may
+# carry it in: a `rev = "..."` Nix literal, or version.json's .rev key.
+read_current_rev() {
+  [ -f "$REV_FILE" ] || return 0
+  if [[ "$REV_FILE" == *.json ]]; then
+    jq -r '.rev // empty' "$REV_FILE" 2>/dev/null || true
+  else
+    grep -oP 'rev\s*=\s*"\K[^"]+' "$REV_FILE" 2>/dev/null | head -1 || true
+  fi
+}
+
 # verify_artifact — build .#default and assert the configured artifact exists.
 # Shared by the nix-update shim (standard case) and the full path, so both honor
 # verify.binary / verify.check = elf | wrapper | desktop | eval identically.
@@ -226,9 +237,9 @@ if [ -z "$VARIANT_ASSETS" ] && [ "$TRACK_ONLY" != "true" ] &&
   fi
   log "Update found: $CURRENT_VERSION -> $NEW_VERSION (nix-update)"
   output "updated" "true"
-  log "Step 1/2: nix flake check --no-build"
-  if ! nix flake check --no-build 2>&1; then
-    err "Eval check failed"
+  log "Step 1/2: nix flake check"
+  if ! nix flake check 2>&1; then
+    err "Check suite failed"
     output "error_type" "eval-error"
     exit 1
   fi
@@ -440,9 +451,11 @@ fi
 # Commit-tracked repos default to a bare 7-char SHA as the version, which
 # is not orderable by builtins.compareVersions. "unstable-date" instead
 # writes "<base>-unstable-<YYYY-MM-DD>" (the nixpkgs VCS-snapshot
-# convention). The base comes from update.json `versionBase`; the rev (the
-# real SHA) still tracks every commit. Comparison switches to the rev,
-# since the date string would otherwise differ every day and loop forever.
+# convention). The base is upstream's newest tagFilter-matching tag, refetched
+# on every bump so a new upstream release cannot leave it understating the
+# snapshot; update.json `versionBase` is the fallback for a tagless upstream.
+# The rev (the real SHA) still tracks every commit. Comparison switches to the
+# rev, since the date string would otherwise differ every day and loop forever.
 if [ "$VERSION_SCHEME" = "unstable-date" ]; then
   if [ -z "$FULL_REV" ]; then
     err "versionScheme 'unstable-date' requires a commit-tracked upstream type"
@@ -450,17 +463,30 @@ if [ "$VERSION_SCHEME" = "unstable-date" ]; then
     output "error_type" "config-error"
     exit 1
   fi
-  CURRENT_REV=""
-  [ -f "$REV_FILE" ] && CURRENT_REV=$(grep -oP 'rev\s*=\s*"\K[^"]+' "$REV_FILE" 2>/dev/null | head -1 || true)
+  CURRENT_REV=$(read_current_rev)
   if [ -n "$CURRENT_REV" ] && [ "$CURRENT_REV" = "$FULL_REV" ]; then
     log "Already up to date (rev $FULL_REV)"
     output "updated" "false"
     exit 0
   fi
-  BASE=$(echo "$CONFIG" | jq -r '.versionBase // empty')
+  BASE=""
+  if [ "$UPSTREAM_TYPE" = "github-commit" ]; then
+    RC=0
+    # shellcheck disable=SC2016  # $f is a jq variable (--arg f), not a shell one
+    fetch_paged_match \
+      "https://api.github.com/repos/$OWNER/$REPO/tags?per_page=100" \
+      'map(.name | select(test($f)))[0] // empty' || RC=$?
+    if [ "$RC" -eq 2 ]; then
+      warn "Failed to fetch tags from $OWNER/$REPO"
+      output "updated" "false"
+      exit 2
+    fi
+    [ -n "$PAGED_MATCH" ] && BASE="${PAGED_MATCH#v}"
+  fi
+  [ -z "$BASE" ] && BASE=$(echo "$CONFIG" | jq -r '.versionBase // empty')
   [ -z "$BASE" ] && BASE="${CURRENT_VERSION%%-unstable-*}"
   if [ -z "$BASE" ]; then
-    err "versionScheme 'unstable-date': no versionBase in update.json and current version is empty"
+    err "versionScheme 'unstable-date': upstream published no tag, update.json has no versionBase, and the current version is empty"
     output "updated" "false"
     output "error_type" "config-error"
     exit 1
@@ -483,12 +509,7 @@ if [ "$VERSION_SCHEME" = "rev-only" ]; then
     exit 1
   fi
   WRITE_VERSION=0
-  CURRENT_REV=""
-  if [[ "$REV_FILE" == *.json ]]; then
-    [ -f "$REV_FILE" ] && CURRENT_REV=$(jq -r '.rev // empty' "$REV_FILE" 2>/dev/null || true)
-  else
-    [ -f "$REV_FILE" ] && CURRENT_REV=$(grep -oP 'rev\s*=\s*"\K[^"]+' "$REV_FILE" 2>/dev/null | head -1 || true)
-  fi
+  CURRENT_REV=$(read_current_rev)
   if [ -n "$CURRENT_REV" ] && [ "$CURRENT_REV" = "$FULL_REV" ]; then
     log "Already up to date (rev $FULL_REV)"
     output "updated" "false"
@@ -800,9 +821,9 @@ if [ -n "$PYREQ_FILE" ]; then
 fi
 
 # --- Verification chain --------------------------------------------------
-log "Step 1/3: nix flake check --no-build"
-if ! nix flake check --no-build 2>&1; then
-  err "Eval check failed"
+log "Step 1/3: nix flake check"
+if ! nix flake check 2>&1; then
+  err "Check suite failed"
   output "error_type" "eval-error"
   exit 1
 fi

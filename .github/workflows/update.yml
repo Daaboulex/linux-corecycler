@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: DeterminateSystems/determinate-nix-action@61cbfe2efc2d4e7a8a6d56967c3c1058e846c858 # v3.21.9
+      - uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
         with:
           extra-conf: lazy-trees = false
 
@@ -194,8 +194,12 @@ jobs:
             });
 
       # Exit 2 is a transient network failure: it resolves no issue, so it retires no branch.
+      # Only the default branch retires: a run dispatched on an update/* branch is WORKING on
+      # that branch, and this job would delete the ref that same run just pushed to.
       - name: Retire attempt branches that no longer have an open issue
-        if: steps.update.outputs.exit_code == '0' || steps.update.outputs.exit_code == '1'
+        if: >-
+          github.ref_name == github.event.repository.default_branch
+          && (steps.update.outputs.exit_code == '0' || steps.update.outputs.exit_code == '1')
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
         env:
           PKG: ${{ steps.update.outputs.package_name }}
