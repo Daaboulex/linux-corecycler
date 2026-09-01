@@ -31,6 +31,8 @@ buildStdenv.mkDerivation {
     hash = "sha256-g0zVTDi5owa6XfQN8vlFwGX+gpRIg+5q1F4EuxAk9Sk=";
   };
 
+  patches = [ ./zenpower5-cpuid-include.patch ];
+
   # Clang rejects GCC-specific -Wimplicit-fallthrough=3 (with -Werror).
   # Replace with the clang-compatible form (no level suffix).
   postPatch = lib.optionalString kernelUsesLLVM ''

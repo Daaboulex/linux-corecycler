@@ -203,6 +203,10 @@
             pre-commit.settings.hooks.ruff.enable = true;
             pre-commit.settings.hooks.taplo.excludes = [ "^pyproject\\.toml$" ];
 
+            # A unified diff's blank context lines are a single space; trimming
+            # them makes the patch stop applying.
+            pre-commit.settings.hooks.trim-trailing-whitespace.excludes = [ "\\.patch$" ];
+
             # Eval-only gate for the off-CI `full`: force its full build graph to
             # EVALUATE (catching dep/version/unfree breakage) without realizing the
             # uncached, unfree mprime closure. The real build happens off-CI.
