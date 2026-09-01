@@ -27,14 +27,11 @@
         # Shared builder for a system: the FOSS `default` and the `full` (mprime,
         # unfree) variants from one mkCoreCycler. Used by both perSystem (default
         # -> a built check) and flake.packages (full -> an off-CI eval gate).
-        buildFor =
-          system:
+        # Keyed on a package set, so the overlay can build against the consumer's
+        # nixpkgs instead of handing back a build against the one pinned here.
+        buildWith =
+          pkgs:
           let
-            # mprime (the "full" backend) is unfree.
-            pkgs = import inputs.nixpkgs {
-              inherit system;
-              config.allowUnfree = true;
-            };
 
             # Default python3 (not a pinned minor): Hydra only builds/caches
             # pyside6 for the default interpreter, so pinning python312 forced a
@@ -160,6 +157,17 @@
                   };
                 });
           };
+
+        # This flake's own outputs opt in to unfree, because the `full` variant
+        # pulls mprime and y-cruncher. An overlay consumer gets their own policy.
+        buildFor =
+          system:
+          buildWith (
+            import inputs.nixpkgs {
+              inherit system;
+              config.allowUnfree = true;
+            }
+          );
       in
       {
         inherit systems;
@@ -172,8 +180,8 @@
 
           # Overlay - pkgs.linux-corecycler (FOSS) and pkgs.linux-corecycler-full
           overlays.default = final: _prev: {
-            linux-corecycler = inputs.self.packages.${final.stdenv.hostPlatform.system}.default;
-            linux-corecycler-full = inputs.self.packages.${final.stdenv.hostPlatform.system}.full;
+            linux-corecycler = (buildWith final).default;
+            linux-corecycler-full = (buildWith final).full;
           };
 
           # OFF-CI exception (standard README "declared == built"): `full` pulls
