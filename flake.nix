@@ -207,44 +207,70 @@
             # them makes the patch stop applying.
             pre-commit.settings.hooks.trim-trailing-whitespace.excludes = [ "\\.patch$" ];
 
-            # Eval-only gate for the off-CI `full`: force its full build graph to
-            # EVALUATE (catching dep/version/unfree breakage) without realizing the
-            # uncached, unfree mprime closure. The real build happens off-CI.
-            checks.full-eval = inputs.std.lib.drvEvalCheck {
-              pkgs = inputs.nixpkgs.legacyPackages.${system};
-              name = "corecycler-full-eval";
-              drv = b.full;
-            };
-
-            # Built-output ground truth: the wheel ships exactly one top-level
-            # package -- a flat module (cli.py) collides with any other app in a
-            # merged site-packages. tests/test_packaging.py is the fast pytest
-            # mirror of the same invariant.
-            checks.python-site-packages = inputs.std.lib.pythonSitePackagesCheck {
-              inherit (b) pkgs;
-              drv = b.default;
-              package = "corecycler";
-            };
-
-            # Force full evaluation of the NixOS module (options + assertions +
-            # every mkIf path) without building the closure.
-            checks.module-eval-nixos = inputs.std.lib.nixosModuleCheck {
-              inherit (inputs) nixpkgs;
-              inherit system;
-              module = import ./nix/module.nix { inherit (inputs) self; };
-              config = {
-                nixpkgs.config.allowUnfree = true; # mprime backend is unfree
-                services.corecycler = {
-                  enable = true;
-                  deviceAccessUser = "corecycler-test";
-                };
-                # the eval fixture must declare the user the module grants access to
-                users.users.corecycler-test = {
-                  isSystemUser = true;
-                  group = "corecycler-test";
-                };
-                users.groups.corecycler-test = { };
+            checks = {
+              # Eval-only gate for the off-CI `full`: force its full build graph to
+              # EVALUATE (catching dep/version/unfree breakage) without realizing the
+              # uncached, unfree mprime closure. The real build happens off-CI.
+              full-eval = inputs.std.lib.drvEvalCheck {
+                pkgs = inputs.nixpkgs.legacyPackages.${system};
+                name = "corecycler-full-eval";
+                drv = b.full;
               };
+
+              # Built-output ground truth: the wheel ships exactly one top-level
+              # package -- a flat module (cli.py) collides with any other app in a
+              # merged site-packages. tests/test_packaging.py is the fast pytest
+              # mirror of the same invariant.
+              python-site-packages = inputs.std.lib.pythonSitePackagesCheck {
+                inherit (b) pkgs;
+                drv = b.default;
+                package = "corecycler";
+              };
+
+              # Force full evaluation of the NixOS module (options + assertions +
+              # every mkIf path) without building the closure.
+              module-eval-nixos = inputs.std.lib.nixosModuleCheck {
+                inherit (inputs) nixpkgs;
+                inherit system;
+                module = import ./nix/module.nix { inherit (inputs) self; };
+                config = {
+                  nixpkgs.config.allowUnfree = true; # mprime backend is unfree
+                  services.corecycler = {
+                    enable = true;
+                    deviceAccessUser = "corecycler-test";
+                  };
+                  # the eval fixture must declare the user the module grants access to
+                  users.users.corecycler-test = {
+                    isSystemUser = true;
+                    group = "corecycler-test";
+                  };
+                  users.groups.corecycler-test = { };
+                };
+              };
+            }
+            // inputs.nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+              # The out-of-tree modules compile against the user's own kernel, so an
+              # upstream header move is a user-visible FTBFS nothing here would catch.
+              # Both ends of the range nixpkgs offers are built on purpose.
+              kernel-modules =
+                let
+                  sources = {
+                    ryzen-smu = ./nix/ryzen-smu.nix;
+                    zenpower = ./nix/zenpower.nix;
+                    it87 = ./nix/it87.nix;
+                  };
+                  forKernel =
+                    kernel:
+                    inputs.nixpkgs.lib.mapAttrs' (
+                      name: f:
+                      inputs.nixpkgs.lib.nameValuePair "${name}-${kernel.version}" (
+                        b.pkgs.callPackage f { inherit kernel; }
+                      )
+                    ) sources;
+                in
+                b.pkgs.linkFarm "corecycler-kernel-modules" (
+                  forKernel b.pkgs.linuxPackages.kernel // forKernel b.pkgs.linuxPackages_latest.kernel
+                );
             };
           };
       }
