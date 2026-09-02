@@ -45,6 +45,38 @@ jobs:
             cat /tmp/update-outputs.env >> "$GITHUB_OUTPUT"
           fi
 
+      # Exit 2 means "transient, retry next run", and a permanent failure
+      # reported that way keeps the run green forever (eden-nix#13: a 404 for
+      # two months). The Actions cache carries the count of consecutive exit-2
+      # runs across runs; a week of them is escalated below as `stalled`.
+      - name: Restore the transient-exit streak
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/update-streak
+          key: update-streak-${{ github.run_id }}
+          restore-keys: update-streak-
+      - name: Count consecutive transient exits
+        id: streak
+        env:
+          EXIT_CODE: ${{ steps.update.outputs.exit_code }}
+        run: |
+          n=0
+          if [ -f /tmp/update-streak ] && [[ "$(cat /tmp/update-streak)" =~ ^[0-9]+$ ]]; then
+            n=$(cat /tmp/update-streak)
+          fi
+          if [ "$EXIT_CODE" = "2" ]; then n=$((n + 1)); else n=0; fi
+          echo "$n" > /tmp/update-streak
+          echo "streak=$n" >> "$GITHUB_OUTPUT"
+          if [ "$n" -ge 7 ]; then
+            echo "::error::update.sh has exited 2 (transient, retry next run) on ${n} consecutive runs; a permanent failure is hiding behind the transient exit"
+            echo "stalled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save the transient-exit streak
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/update-streak
+          key: update-streak-${{ github.run_id }}
+
       # Silent success: commit + push
       - name: Push update
         if: steps.update.outputs.updated == 'true' && steps.update.outputs.exit_code == '0'
@@ -103,14 +135,15 @@ jobs:
 
       # Diagnostic issue on failure. Keyed on exit_code==1 alone (not on
       # `updated`) so config/version-read failures — which never reach the
-      # point of setting `updated` — still surface. exit 2 = network, no issue.
+      # point of setting `updated` — still surface. A single exit 2 is
+      # transient and files nothing; a week-long streak of them is `stalled`.
       - name: Create failure issue
-        if: steps.update.outputs.exit_code == '1'
+        if: steps.update.outputs.exit_code == '1' || steps.streak.outputs.stalled == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
         # Pass outputs via env, never interpolate ${{ }} into the script body
         # (a value containing a quote/newline would break out of the JS).
         env:
-          ERROR_TYPE: ${{ steps.update.outputs.error_type }}
+          ERROR_TYPE: ${{ steps.update.outputs.error_type || (steps.streak.outputs.stalled == 'true' && 'stalled') || '' }}
           OLD_VERSION: ${{ steps.update.outputs.old_version }}
           NEW_VERSION: ${{ steps.update.outputs.new_version }}
           UPSTREAM_URL: ${{ steps.update.outputs.upstream_url }}
@@ -144,9 +177,10 @@ jobs:
             const git = (...args) => execFileSync('git', args, { stdio: 'inherit' });
             const branch = `update/${pkg}-${newV}`;
             let branchPushed = false;
-            // remirror-needed (trackOnly) makes no file changes — skip the
-            // empty update branch; the issue itself is the notification.
-            if (errorType !== 'remirror-needed') {
+            // remirror-needed (trackOnly) makes no file changes, and a stalled
+            // streak has no attempt to recover — skip the empty update branch;
+            // the issue itself is the notification.
+            if (errorType !== 'remirror-needed' && errorType !== 'stalled') {
               try {
                 git('config', 'user.name', 'github-actions[bot]');
                 git('config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com');

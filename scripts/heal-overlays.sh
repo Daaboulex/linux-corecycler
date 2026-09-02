@@ -105,10 +105,14 @@ for f in "${files[@]}"; do
     # The probe target must always EVALUATE — a predicate that cannot even
     # instantiate is malformed, not "still needed", so it fails closed here
     # instead of silently pinning the fix forever.
-    if ! nix eval --raw --impure --expr \
-      "${probePkgs} ((import ./${f}).dropWhenBuilds pkgs).drvPath" \
-      >/dev/null 2>/tmp/heal-probe.err; then
+    if ! nix eval --json --impure --expr \
+      "${probePkgs} let d = (import ./${f}).dropWhenBuilds pkgs; in { drvPath = d.drvPath; fixedOutput = d ? outputHash; }" \
+      >/tmp/heal-probe.json 2>/tmp/heal-probe.err; then
       err "overlays/${name}.nix: dropWhenBuilds must evaluate to a derivation — fix the predicate ($(tail -1 /tmp/heal-probe.err))"
+      exit 1
+    fi
+    if jq -e '.fixedOutput' /tmp/heal-probe.json >/dev/null; then
+      err "overlays/${name}.nix: dropWhenBuilds names a fixed-output derivation (a fetch), which reads as built whenever its output is already in the store and so cannot observe the condition; test the eval-visible condition with dropWhen instead"
       exit 1
     fi
     # Now the real question: does it BUILD without the fix? A failure here is
