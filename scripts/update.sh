@@ -53,7 +53,8 @@ verify_artifact() {
       output "error_type" "verification-error"
       exit 1
     }
-    if file ./result/bin/"$VERIFY_BINARY" 2>/dev/null | grep -q ELF; then
+    ftype=$(file ./result/bin/"$VERIFY_BINARY" 2>/dev/null || true)
+    if grep -q ELF <<<"$ftype"; then
       MISSING=$(ldd ./result/bin/"$VERIFY_BINARY" 2>&1 | grep "not found" || true)
       [ -n "$MISSING" ] && {
         err "Missing shared libraries: $MISSING"
@@ -64,7 +65,8 @@ verify_artifact() {
   elif [ "$VERIFY_CHECK" = "elf" ]; then
     FOUND=""
     while IFS= read -r f; do
-      if file "$f" 2>/dev/null | grep -q ELF; then
+      ftype=$(file "$f" 2>/dev/null || true)
+      if grep -q ELF <<<"$ftype"; then
         FOUND="$f"
         break
       fi
@@ -82,8 +84,8 @@ verify_artifact() {
       exit 1
     }
   elif [ "$VERIFY_CHECK" = "desktop" ]; then
-    find result/share/applications/ -name "*.desktop" 2>/dev/null | head -1 | grep -q . ||
-      warn "No desktop file found"
+    desktop=$(find result/share/applications/ -name "*.desktop" 2>/dev/null | head -1 || true)
+    [ -n "$desktop" ] || warn "No desktop file found"
   fi
   rm -f result
 }
@@ -709,7 +711,7 @@ if [ "${#HF_FIELD[@]}" -gt 0 ]; then
   BUILD_OUTPUT=""
   for ((iter = 1; iter <= HASH_MAX; iter++)); do
     BUILD_OUTPUT=$(nix build .#default --no-link 2>&1 || true)
-    echo "$BUILD_OUTPUT" | grep -q 'hash mismatch in fixed-output' || break
+    grep -q 'hash mismatch in fixed-output' <<<"$BUILD_OUTPUT" || break
     BLOCK=$(echo "$BUILD_OUTPUT" | grep -A3 'hash mismatch in fixed-output derivation' | head -4)
     DRV=$(echo "$BLOCK" | grep -oP "derivation '\K[^']+" | head -1)
     GOT=$(echo "$BLOCK" | grep -oP 'got:\s+sha256-\K\S+' | head -1 || true)
@@ -765,7 +767,7 @@ if [ "${#HF_FIELD[@]}" -gt 0 ]; then
     log "Hash '${HF_FIELD[$IDX]}' (drv ${DRV##*/}): sha256-$GOT"
     set_hash "${HF_FIELD[$IDX]}" "${HF_FILE[$IDX]}" "sha256-$GOT"
   done
-  if echo "$BUILD_OUTPUT" | grep -q 'hash mismatch in fixed-output'; then
+  if grep -q 'hash mismatch in fixed-output' <<<"$BUILD_OUTPUT"; then
     err "Hash extraction did not converge after $HASH_MAX iterations"
     output "error_type" "hash-extraction"
     exit 1
