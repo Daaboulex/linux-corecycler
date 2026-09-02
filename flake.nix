@@ -158,16 +158,33 @@
                 });
           };
 
-        # This flake's own outputs opt in to unfree, because the `full` variant
-        # pulls mprime and y-cruncher. An overlay consumer gets their own policy.
+        glueOverlay = final: _prev: {
+          linux-corecycler = (buildWith final).default;
+          linux-corecycler-full = (buildWith final).full;
+        };
+        fixOverlays =
+          let
+            dir = ./overlays;
+            names = if builtins.pathExists dir then builtins.attrNames (builtins.readDir dir) else [ ];
+          in
+          map (n: (import (dir + "/${n}")).overlay) (
+            builtins.filter (inputs.nixpkgs.lib.hasSuffix ".nix") names
+          );
+
         buildFor =
           system:
-          buildWith (
-            import inputs.nixpkgs {
+          let
+            pkgs = import inputs.nixpkgs {
               inherit system;
               config.allowUnfree = true;
-            }
-          );
+              overlays = [ inputs.self.overlays.default ];
+            };
+          in
+          {
+            inherit pkgs;
+            default = pkgs.linux-corecycler;
+            full = pkgs.linux-corecycler-full;
+          };
       in
       {
         inherit systems;
@@ -178,10 +195,9 @@
           # NixOS module - kernel modules, device access, udev rules, package
           nixosModules.default = import ./nix/module.nix { inherit (inputs) self; };
 
-          # Overlay - pkgs.linux-corecycler (FOSS) and pkgs.linux-corecycler-full
-          overlays.default = final: _prev: {
-            linux-corecycler = (buildWith final).default;
-            linux-corecycler-full = (buildWith final).full;
+          overlays = {
+            default = inputs.nixpkgs.lib.composeManyExtensions ([ glueOverlay ] ++ fixOverlays);
+            probe = glueOverlay;
           };
 
           # OFF-CI exception (standard README "declared == built"): `full` pulls
