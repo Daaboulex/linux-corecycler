@@ -45,7 +45,8 @@ timeout 260 nix run nixpkgs#xvfb-run -- -a \
   nix develop .#packages.x86_64-linux.full -c \
   python3 scripts/live_scenarios.py "$@" >"$RESULT" 2>$RUNTIME/cc-scenario.err
 rc=$?
-if [ ! -s "$RESULT" ] || ! head -c1 "$RESULT" | grep -q '{'; then
+FIRST_BYTE=$(head -c1 "$RESULT" || true)
+if [ ! -s "$RESULT" ] || ! grep -q '{' <<<"$FIRST_BYTE"; then
   echo "{\"verdict\":\"ERROR\",\"rc\":$rc,\"stderr_tail\":\"$(tail -c 300 $RUNTIME/cc-scenario.err | tr '\n' ' ' | sed 's/"/\x27/g')\"}" >"$RESULT"
 fi
 cleanup
