@@ -478,8 +478,9 @@ fi
 # is not orderable by builtins.compareVersions. "unstable-date" instead
 # writes "<base>-unstable-<YYYY-MM-DD>" (the nixpkgs VCS-snapshot
 # convention). The base is upstream's newest tagFilter-matching tag, refetched
-# on every bump so a new upstream release cannot leave it understating the
-# snapshot; update.json `versionBase` is the fallback for a tagless upstream.
+# on every bump for a github-commit or git-ls-remote upstream, so a new release
+# cannot leave it understating the snapshot; update.json `versionBase` is the
+# fallback for a tagless upstream, and for a type that cannot list tags.
 # The rev (the real SHA) still tracks every commit. Comparison switches to the
 # rev, since the date string would otherwise differ every day and loop forever.
 if [ "$VERSION_SCHEME" = "unstable-date" ]; then
@@ -508,6 +509,19 @@ if [ "$VERSION_SCHEME" = "unstable-date" ]; then
       exit 2
     fi
     [ -n "$PAGED_MATCH" ] && BASE="${PAGED_MATCH#v}"
+  elif [ "$UPSTREAM_TYPE" = "git-ls-remote" ]; then
+    # ls-remote carries no dates, so the newest tag is the highest version
+    # rather than the most recently created one. The shape filter is what makes
+    # that safe: an upstream carrying a tag like test-tag2 or 0.0.3.git sorts it
+    # above every release, and the base would then be junk.
+    TAGS=$(fetch_latest "git ls-remote --tags --refs '$URL'") || {
+      warn "Failed to fetch tags from $URL"
+      output "updated" "false"
+      exit 2
+    }
+    BASE=$(echo "$TAGS" | sed 's|.*refs/tags/||; s/^v//' |
+      { grep -E "$TAG_FILTER" || true; } |
+      { grep -E '^[0-9]+(\.[0-9]+)*$' || true; } | sort -V | tail -1)
   fi
   [ -z "$BASE" ] && BASE=$(echo "$CONFIG" | jq -r '.versionBase // empty')
   [ -z "$BASE" ] && BASE="${CURRENT_VERSION%%-unstable-*}"
