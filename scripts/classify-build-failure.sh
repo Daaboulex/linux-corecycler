@@ -16,7 +16,8 @@ set -uo pipefail
 # Outputs (GITHUB_OUTPUT or stdout):
 #   class=<transient-infra|upstream-rerelease-hash-mismatch|nixpkgs-package-drop|
 #          missing-python-dep|requirements-coverage|
-#          python-metadata-version-mismatch|unclassified>
+#          python-metadata-version-mismatch|substitution-pattern-drift|
+#          unclassified>
 #   failed_attrs=<nix-fast-build failed attribute list, if present>
 #   failed_drvs=<up to 12 failing derivations, deduplicated>
 #
@@ -55,6 +56,11 @@ grep -q 'requirements not present in the env' "$LOG" && class=requirements-cover
 # The declared version contradicts the built wheel's METADATA -- a real
 # packaging defect with a documented remedy (pyprojectVersionPatchHook).
 grep -q 'METADATA specifies version' "$LOG" && class=python-metadata-version-mismatch
+
+# A --replace-fail target upstream has moved. The substitution is cut against
+# one release while src tracks a branch, so the pattern names text the source
+# no longer carries: the substitution is what needs fixing, not the build.
+grep -qE "ERROR: pattern .* doesn.t match anything in file" "$LOG" && class=substitution-pattern-drift
 
 out "class" "$class"
 out "failed_attrs" "${failed_attrs:-}"
