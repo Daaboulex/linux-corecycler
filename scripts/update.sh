@@ -20,6 +20,32 @@ log() { echo "==> $*"; }
 warn() { echo "::warning::$*"; }
 err() { echo "::error::$*"; }
 
+# check_suite — run the flake check the way the build step is run, and report
+# what actually failed. A flake check BUILDS its check derivations, so a
+# builder failure surfaces here and never reaches the build step below;
+# calling every red check an evaluation failure sends the reader to the wrong
+# place. --no-eval-cache stops a cached evaluation reporting green, and
+# --print-build-logs puts the builder's own output in the log the workflow
+# classifies.
+check_suite() {
+  local clog rc
+  clog=$(mktemp)
+  nix flake check --no-eval-cache --print-build-logs 2>&1 | tee "$clog"
+  rc=${PIPESTATUS[0]}
+  if [ "$rc" -eq 0 ]; then
+    rm -f "$clog"
+    return 0
+  fi
+  err "Check suite failed"
+  if grep -qE "Cannot build '/nix/store/[^']+\.drv'" "$clog"; then
+    output "error_type" "build-error"
+  else
+    output "error_type" "eval-error"
+  fi
+  rm -f "$clog"
+  return 1
+}
+
 # re_esc <str> — backslash-escape every regex metacharacter so a dynamic
 # string (a Nix identifier from update.json) is matched literally in
 # grep -P, sed -E, and plain sed expressions. Nix identifiers only contain
@@ -240,9 +266,7 @@ if [ -z "$VARIANT_ASSETS" ] && [ "$TRACK_ONLY" != "true" ] &&
   log "Update found: $CURRENT_VERSION -> $NEW_VERSION (nix-update)"
   output "updated" "true"
   log "Step 1/2: nix flake check"
-  if ! nix flake check 2>&1; then
-    err "Check suite failed"
-    output "error_type" "eval-error"
+  if ! check_suite; then
     exit 1
   fi
   log "Step 2/2: nix build + artifact verification"
@@ -824,9 +848,7 @@ fi
 
 # --- Verification chain --------------------------------------------------
 log "Step 1/3: nix flake check"
-if ! nix flake check 2>&1; then
-  err "Check suite failed"
-  output "error_type" "eval-error"
+if ! check_suite; then
   exit 1
 fi
 
