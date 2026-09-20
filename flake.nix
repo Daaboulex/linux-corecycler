@@ -207,10 +207,21 @@
           # into BUILT checks); CI eval-gates it with drvEvalCheck below instead of
           # realizing the unfree mprime closure.
           packages = builtins.listToAttrs (
-            map (system: {
-              name = system;
-              value.full = (buildFor system).full;
-            }) systems
+            map (
+              system:
+              let
+                b = buildFor system;
+              in
+              {
+                name = system;
+                value =
+                  inputs.nixpkgs.lib.optionalAttrs
+                    (inputs.nixpkgs.lib.meta.availableOn b.pkgs.stdenv.hostPlatform b.full)
+                    {
+                      inherit (b) full;
+                    };
+              }
+            ) systems
           );
         };
 
