@@ -1,9 +1,6 @@
-"""stressapptest stress backend — Google's memory stress testing tool.
+"""stressapptest stress backend: Google's memory stress testing tool.
 
-Note: Like all backends, stressapptest runs indefinitely and the
-CoreScheduler handles timing by killing the process after
-seconds_per_core. We pass -s 86400 (24h) so stressapptest doesn't
-self-terminate before the scheduler stops it.
+Like every backend it runs indefinitely (-s 86400) and the scheduler stops it.
 """
 
 from __future__ import annotations
@@ -17,33 +14,43 @@ from .base import CRASH_SIGNALS, KILLED_BY_US_CODES, StressBackend, StressConfig
 if TYPE_CHECKING:
     from pathlib import Path
 
+_PAGE_MB = 1
+_EMPTY_PAGES_NUMERATOR = 2
+_EMPTY_PAGES_DENOMINATOR = 5
+
+ALLOCATION_REFUSALS: tuple[str, ...] = (
+    "freepages < neededpages",
+    "not enough pages for io",
+    "failed to allocate memory",
+    "no memory found to test",
+)
+
 
 @register_backend("stressapptest")
 class StressapptestBackend(StressBackend):
     name = "stressapptest"
 
+    @staticmethod
+    def minimum_memory_mb(copy_threads: int) -> int:
+        if copy_threads < 1:
+            raise ValueError(f"stressapptest runs at least one copy thread, got {copy_threads}")
+        empty_pages_needed = -(-copy_threads // _EMPTY_PAGES_NUMERATOR)
+        return empty_pages_needed * _EMPTY_PAGES_DENOMINATOR * _PAGE_MB
+
     def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
-        # stressapptest sizes its worker pool from its affinity mask, which the
-        # engine's cgroup cpuset already clamps to the lane's CPUs.
-        return [
-            self.require_binary(),
-            "-W",
-            "-s",
-            "86400",
-        ]
+        cmd = [self.require_binary(), "-W", "-s", "86400", "-m", str(max(1, config.threads))]
+        if config.memory_mb is not None:
+            cmd += ["-M", str(config.memory_mb)]
+        return cmd
 
     def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
-        # The scheduler kills stressapptest (a 24h run) before its final
-        # "Status: PASS/FAIL" summary line, so detect the memory-error signatures it
-        # logs DURING the run. Checking only the final summary meant a killed run
-        # that had already found memory errors was reported as passed (false stable).
         lowered = (stdout + "\n" + stderr).lower()
+        for refusal in ALLOCATION_REFUSALS:
+            if refusal in lowered:
+                return False, f"stressapptest could not allocate its test memory ('{refusal}'): verdict unavailable"
         for signature in ("miscompare", "hardware error", "hardware incident", "status: fail"):
             if signature in lowered:
                 return False, f"stressapptest: '{signature}' — memory errors detected"
-        # A crash signal always wins, even over a final "Status: PASS": a clean run
-        # exits 0 or is killed by the scheduler, never with a crash code, so a crash
-        # exit is unambiguous instability and must never be masked by a printed PASS.
         if returncode in CRASH_SIGNALS:
             return False, f"stressapptest crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
         if "Status: PASS" in stdout:

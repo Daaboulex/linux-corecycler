@@ -9,6 +9,27 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-09-20 validation stage 6 sized its memory stressors against the whole machine, issue #17)
+
+- Stage 6 launched one stressapptest per core with no `-M`, so every instance
+  sized itself against all free memory and the kernel's OOM killer ended the
+  stage on any machine (a 5700X3D with 32 GB lost all eight). The engine now
+  reads one budget live at launch, `MemAvailable` capped by any cgroup memory
+  limit over the app minus a quarter kept for the OS and the app, splits it
+  equally, and hands each instance its share as `-M`; the numbers (total,
+  available, cgroup limit, headroom, per-instance size, instance count) are
+  logged before the stage starts. A share below stressapptest's own minimum
+  skips the stage with the numbers, the way a missing tool already did, never
+  as a verdict. Each instance also runs as many copy threads as its lane has
+  CPUs instead of one per CPU in the machine. The Memory tab's single-instance
+  run is sized by the same budget; its private 75 percent rule and 1 GB
+  fallback are gone.
+- stressapptest's own allocation refusal (`freepages < neededpages`, `not
+  enough pages for IO`, `failed to allocate memory`, `No memory found to
+  test`) is now an environment fault that pauses with the cause, never a
+  memory-error verdict, and an external kill during stage 6 names the budget
+  that was attempted.
+
 ### Changed (2026-08-18 the app renders in the desktop's own colors)
 
 - CoreCycler no longer paints its own chrome. The 250-line hardcoded dark
