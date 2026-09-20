@@ -542,6 +542,9 @@ class TestEngineSignals:
         tab._on_validation_progress(6, 2, 4)
         assert "memory" in tab._status_label.text()
         assert tab._progress_label.text() == "S6: 2/4"
+        tab._on_validation_progress(7, 0, 1)
+        assert "soak" in tab._status_label.text()
+        assert tab._progress_label.text() == "S7: 0/1"
 
     def test_log_messages_reach_the_logger(self, tab, caplog):
         with caplog.at_level("INFO", logger="corecycler.gui.tuner_tab"):

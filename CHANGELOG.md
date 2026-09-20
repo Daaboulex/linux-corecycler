@@ -29,6 +29,8 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
   test`) is now an environment fault that pauses with the cause, never a
   memory-error verdict, and an external kill during stage 6 names the budget
   that was attempted.
+- The real-world soak logged and reported itself as stage 6 while running as
+  stage 7, so the GUI showed "S6" twice; it now reports the cursor's stage.
 
 ### Changed (2026-08-18 the app renders in the desktop's own colors)
 

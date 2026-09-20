@@ -3469,15 +3469,15 @@ class TunerEngine(QObject):
         self._start_worker(core_id, self._config.spectrum_slot_seconds, spectrum=True)
 
     def _run_validation_soak(self) -> None:
-        """Stage 6: no synthetic load — watch the kernel error stream while
+        """Stage 7: no synthetic load — watch the kernel error stream while
         the machine is used normally. Zero events proves the profile."""
         cores = self._validation_core_order
         self.log_message.emit(
-            f"Validation stage 6: real-world soak — watching the kernel error "
+            f"Validation stage {self._validation_stage}: real-world soak — watching the kernel error "
             f"stream for {self._config.soak_duration_seconds}s with no synthetic "
             f"load. Use the machine normally; any hardware whisper fails it."
         )
-        self.validation_progress.emit(6, 0, 1)
+        self.validation_progress.emit(self._validation_stage, 0, 1)
         if self._smu is not None and cores:
             first = cores[0]
             cs = self._core_states[first]
