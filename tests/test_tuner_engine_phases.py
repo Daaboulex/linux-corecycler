@@ -356,6 +356,18 @@ class TestValidationSoak:
         assert engine._soaking is False
         assert engine.status == "paused"
 
+    def test_the_soak_reports_the_stage_the_cursor_runs_it_as(self, engine, monkeypatch):
+        worker = self._prepare(engine, monkeypatch)
+        stages = []
+        engine.validation_progress.connect(lambda s, c, t: stages.append((s, c, t)))
+        messages = []
+        engine.log_message.connect(messages.append)
+        engine._run_validation_next()
+        assert worker.start.called
+        assert stages == [(engine._validation_stage, 0, 1)]
+        assert stages[0][0] == 7
+        assert any(msg.startswith(f"Validation stage {engine._validation_stage}:") for msg in messages)
+
 
 class TestHuntSlots:
     def _hunting(self, engine, queue):
