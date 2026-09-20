@@ -373,8 +373,8 @@ class TestMemoryValidationStage:
         eng = self._seed(db, topo_dual_ccd_x3d, mock_backend)
         captured = {}
         eng._get_memory_backend = lambda: _FakeMemBackend()
-        eng._start_multi_core_worker = lambda cores, dur, backend=None: captured.update(
-            cores=list(cores), backend=backend
+        eng._start_multi_core_worker = lambda cores, dur, backend=None, memory_mb=None: captured.update(
+            cores=list(cores), backend=backend, memory_mb=memory_mb
         )
         eng._validation_stage = 6
 
@@ -382,6 +382,7 @@ class TestMemoryValidationStage:
 
         assert captured["cores"] == sorted(BEST)  # every core stressed together
         assert isinstance(captured["backend"], _FakeMemBackend)  # memory, not CPU
+        assert captured["memory_mb"] * len(BEST) <= 21504  # each lane gets its share of the budget
         assert eng._validation_stage == 6
 
     def test_memory_pass_advances_to_soak(self, db, topo_dual_ccd_x3d, mock_backend):

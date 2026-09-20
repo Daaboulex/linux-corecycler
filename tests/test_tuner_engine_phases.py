@@ -12,6 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from corecycler.engine.memory_budget import MemoryBudget
+from corecycler.engine.memory_budget import memory_budget as real_memory_budget
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.history.db import HistoryDB
 from corecycler.tuner import engine as eng
@@ -814,6 +816,22 @@ class TestMultiCoreLaunch:
         assert worker.start.called
         assert engine._worker is worker
 
+    def test_the_memory_share_reaches_every_lane_config(self, engine, monkeypatch):
+        built = []
+
+        def fake_runner(**kwargs):
+            built.append(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr(eng, "ParallelStress", fake_runner)
+        monkeypatch.setattr(eng, "_ParallelWorker", MagicMock(return_value=MagicMock()))
+        memory_backend = MagicMock()
+        engine._start_multi_core_worker([0, 1], 1, backend=memory_backend, memory_mb=2688)
+        assert built[0]["backend"] is memory_backend
+        assert built[0]["stress_config"].memory_mb == 2688
+        engine._start_multi_core_worker([0, 1], 1)
+        assert built[1]["stress_config"].memory_mb is None
+
     def test_an_unbuildable_runner_is_an_apparatus_fault(self, engine, monkeypatch):
         def _boom(**_kwargs):
             raise RuntimeError("no lanes")
@@ -845,6 +863,22 @@ class TestBaselineRevert:
         assert engine._revert_core_to_baseline(0) is False
 
 
+def _budget(instances, per_instance_mb, minimum_mb=5, usable_mb=None):
+    usable = usable_mb if usable_mb is not None else per_instance_mb * instances
+    return MemoryBudget(
+        total_mb=32768,
+        available_mb=28672,
+        cgroup_limit_mb=None,
+        cgroup_used_mb=None,
+        ceiling_mb=28672,
+        headroom_mb=28672 - usable,
+        usable_mb=usable,
+        instances=instances,
+        per_instance_mb=per_instance_mb,
+        minimum_per_instance_mb=minimum_mb,
+    )
+
+
 class TestMemoryStageDispatch:
     def _ready(self, engine):
         for cid in (0, 1):
@@ -852,6 +886,14 @@ class TestMemoryStageDispatch:
         engine._validation_core_order = [0, 1]
         engine._validation_stage = 6
         return engine
+
+    def _launch(self, engine, monkeypatch):
+        launched = []
+        monkeypatch.setattr(engine, "_get_memory_backend", lambda: MagicMock())
+        monkeypatch.setattr(engine, "_start_multi_core_worker", lambda *a, **kw: launched.append((a, kw)))
+        messages = []
+        engine.log_message.connect(messages.append)
+        return launched, messages
 
     def test_a_tool_that_vanished_skips_to_the_next_stage(self, engine, monkeypatch):
         self._ready(engine)
@@ -864,13 +906,86 @@ class TestMemoryStageDispatch:
 
     def test_a_failed_offset_write_stops_the_stage(self, engine, monkeypatch):
         self._ready(engine)
-        monkeypatch.setattr(engine, "_get_memory_backend", lambda: MagicMock())
-        launched = []
-        monkeypatch.setattr(engine, "_start_multi_core_worker", lambda *a, **kw: launched.append(a))
+        launched, _messages = self._launch(engine, monkeypatch)
         engine._smu.set_co_offset.return_value = False
         engine._run_validation_memory()
         assert launched == []
         assert engine.status == "paused"
+
+    def test_the_budget_is_read_for_the_lanes_and_logged_before_launch(self, engine, monkeypatch):
+        self._ready(engine)
+        launched, messages = self._launch(engine, monkeypatch)
+        asked = []
+
+        def fake_budget(instances, minimum_per_instance_mb, **_kw):
+            asked.append((instances, minimum_per_instance_mb))
+            return _budget(instances, 2688)
+
+        monkeypatch.setattr(eng, "memory_budget", fake_budget)
+        engine._run_validation_memory()
+        assert asked == [(2, eng.StressapptestBackend.minimum_memory_mb(1))]
+        assert launched[0][1]["memory_mb"] == 2688
+        budget_lines = [m for m in messages if "memory budget" in m]
+        assert len(budget_lines) == 1
+        assert "2 x 2688 MB" in budget_lines[0]
+        assert engine._memory_budget.per_instance_mb == 2688
+        assert engine._validation_stage == 6
+
+    def test_a_share_below_the_minimum_skips_with_the_numbers(self, engine, monkeypatch):
+        self._ready(engine)
+        launched, messages = self._launch(engine, monkeypatch)
+        monkeypatch.setattr(eng, "memory_budget", lambda *_a, **_kw: _budget(2, 3, minimum_mb=5))
+        engine._run_validation_memory()
+        assert launched == []
+        assert not engine._smu.set_co_offset.called
+        assert engine._validation_stage == 7
+        skip = next(m for m in messages if "skipped" in m)
+        assert "3 MB per instance" in skip
+        assert "minimum of 5 MB" in skip
+        assert "Not a stability verdict" in skip
+
+    def test_an_unreadable_budget_skips_with_the_reason(self, engine, monkeypatch):
+        self._ready(engine)
+        launched, messages = self._launch(engine, monkeypatch)
+
+        def refuse(*_a, **_kw):
+            raise eng.MemoryBudgetUnavailable("/proc/meminfo lacks MemAvailable")
+
+        monkeypatch.setattr(eng, "memory_budget", refuse)
+        engine._run_validation_memory()
+        assert launched == []
+        assert engine._validation_stage == 7
+        assert any("lacks MemAvailable" in m and "skipped" in m for m in messages)
+
+
+class TestKillNamesTheBudget:
+    def test_an_external_kill_in_the_memory_stage_names_the_budget(self, engine):
+        engine._validation_stage = 6
+        engine._memory_budget = _budget(8, 2688)
+        messages = []
+        engine.log_message.connect(messages.append)
+        engine._handle_apparatus_fault(0, "Stress process killed externally (code -9)", "killed", {})
+        fault = next(m for m in messages if "apparatus fault" in m)
+        assert "8 x 2688 MB" in fault
+        assert f"of {8 * 2688} MB usable" in fault
+
+    def test_a_stall_in_the_memory_stage_does_not(self, engine):
+        engine._validation_stage = 6
+        engine._memory_budget = _budget(8, 2688)
+        messages = []
+        engine.log_message.connect(messages.append)
+        engine._handle_apparatus_fault(0, "Stress test stalled on core 0", "stall", {})
+        fault = next(m for m in messages if "apparatus fault" in m)
+        assert "memory budget" not in fault
+
+    def test_a_kill_in_another_stage_does_not(self, engine):
+        engine._validation_stage = 2
+        engine._memory_budget = _budget(8, 2688)
+        messages = []
+        engine.log_message.connect(messages.append)
+        engine._handle_apparatus_fault(0, "Stress process killed externally (code -9)", "killed", {})
+        fault = next(m for m in messages if "apparatus fault" in m)
+        assert "memory budget" not in fault
 
 
 class TestStartRefusals:
@@ -1257,3 +1372,91 @@ class TestSearchArithmetic:
         assert cs.phase is TunerPhase.CONFIRMED
         assert cs.best_offset == 0
         assert cs.current_offset == 0
+
+
+class TestMemoryStageAcrossMachines:
+    """The real budget reader, fed injected /proc and cgroup trees, drives the real
+    stage-6 dispatch: every machine class launches within its share or skips with
+    the numbers, never on a guess about the box."""
+
+    MACHINES = [
+        pytest.param(8, 5, 4, id="8 GB laptop, 4 cores"),
+        pytest.param(16, 12, 6, id="16 GB desktop, 6 cores"),
+        pytest.param(32, 28, 8, id="32 GB, 8 cores (issue 17)"),
+        pytest.param(64, 56, 16, id="64 GB, 16 cores"),
+        pytest.param(128, 112, 32, id="128 GB, 32 cores"),
+        pytest.param(256, 224, 64, id="256 GB, 64 cores"),
+    ]
+
+    def _engine(self, db, tmp_path, monkeypatch, cores):
+        instance = TunerEngine(
+            db=db,
+            topology=_topo(cores),
+            smu=_smu(),
+            backend=_backend(),
+            config=_config(cores_to_test=list(range(cores))),
+            work_dir=tmp_path / "work",
+        )
+        monkeypatch.setattr(instance, "_start_worker", MagicMock())
+        monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: None)
+        instance.start()
+        for cid in range(cores):
+            _confirm(instance, cid, -20)
+        instance._validation_core_order = list(range(cores))
+        instance._validation_stage = 6
+        monkeypatch.setattr(instance, "_get_memory_backend", lambda: MagicMock())
+        launched = []
+        monkeypatch.setattr(instance, "_start_multi_core_worker", lambda *a, **kw: launched.append((a, kw)))
+        messages = []
+        instance.log_message.connect(messages.append)
+        return instance, launched, messages
+
+    def _inject(self, monkeypatch, tmp_path, total_gib, available_mib, cgroup_limit_gib=None):
+        from functools import partial
+
+        proc = tmp_path / "proc"
+        (proc / "self").mkdir(parents=True)
+        (proc / "meminfo").write_text(
+            f"MemTotal:       {total_gib * 1024 * 1024} kB\nMemAvailable:   {available_mib * 1024} kB\n"
+        )
+        (proc / "self" / "cgroup").write_text("0::/user.slice/user-1000.slice/user@1000.service/app.slice\n")
+        cgroup = tmp_path / "cgroup"
+        slice_dir = cgroup / "user.slice" / "user-1000.slice"
+        slice_dir.mkdir(parents=True)
+        if cgroup_limit_gib is not None:
+            (slice_dir / "memory.max").write_text(f"{cgroup_limit_gib * 1024**3}\n")
+            (slice_dir / "memory.current").write_text("0\n")
+        monkeypatch.setattr(eng, "memory_budget", partial(real_memory_budget, proc_base=proc, cgroup_base=cgroup))
+
+    @pytest.mark.parametrize(("total_gib", "available_gib", "cores"), MACHINES)
+    def test_every_machine_launches_within_its_share(self, db, tmp_path, monkeypatch, total_gib, available_gib, cores):
+        self._inject(monkeypatch, tmp_path, total_gib, available_gib * 1024)
+        engine, launched, messages = self._engine(db, tmp_path, monkeypatch, cores)
+        engine._run_validation_memory()
+        assert len(launched) == 1
+        share = launched[0][1]["memory_mb"]
+        assert share * cores <= available_gib * 1024 * 3 // 4
+        assert share >= eng.StressapptestBackend.minimum_memory_mb(1)
+        budget_line = next(m for m in messages if "memory budget" in m)
+        assert f"total {total_gib * 1024} MB" in budget_line
+        assert f"available {available_gib * 1024} MB" in budget_line
+        assert f"{cores} x {share} MB" in budget_line
+        assert engine._validation_stage == 6
+
+    def test_a_starved_machine_skips_with_the_numbers(self, db, tmp_path, monkeypatch):
+        self._inject(monkeypatch, tmp_path, 32, 40)
+        engine, launched, messages = self._engine(db, tmp_path, monkeypatch, 8)
+        engine._run_validation_memory()
+        assert launched == []
+        assert engine._validation_stage == 7
+        skip = next(m for m in messages if "skipped" in m)
+        assert "available 40 MB" in skip
+        assert "below stressapptest's minimum" in skip
+
+    def test_a_cgroup_limit_bounds_the_share_not_the_host(self, db, tmp_path, monkeypatch):
+        self._inject(monkeypatch, tmp_path, 256, 224 * 1024, cgroup_limit_gib=4)
+        engine, launched, messages = self._engine(db, tmp_path, monkeypatch, 8)
+        engine._run_validation_memory()
+        share = launched[0][1]["memory_mb"]
+        assert share * 8 <= 4 * 1024
+        assert "cgroup limit 4096 MB" in next(m for m in messages if "memory budget" in m)

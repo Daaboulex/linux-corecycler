@@ -93,8 +93,11 @@ The Auto-Tuner automates the entire PBO Curve Optimizer search via runtime SMU w
      and idle watch per core with all offsets live.
    - **Stage 6 -- all-core memory load** (`validate_memory`): one memory stressor
      (stressapptest) per core at once, all offsets live -- catches CO marginality
-     that only appears under memory-controller load. Skipped with a log if no memory
-     stress tool is installed.
+     that only appears under memory-controller load. Every instance gets an equal share
+     of one budget read live at launch: `MemAvailable`, capped by any cgroup memory
+     limit over the app, minus a quarter kept for the OS and the app; the numbers are
+     logged. Skipped with a log if no memory stress tool is installed or the share
+     falls below stressapptest's own minimum; neither is a stability verdict.
    - **Stage 7 -- real-world soak** (`validate_soak`): no synthetic load; the kernel
      error stream is watched for `soak_duration_seconds` while the machine is used
      normally. Any hardware event fails it.

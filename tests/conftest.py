@@ -740,6 +740,34 @@ def no_real_forensics(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def synthetic_memory_budget(monkeypatch):
+    """The memory stage sizes its stressors from the live machine
+    (tuner.engine.memory_budget reads /proc/meminfo and the cgroup tree). A
+    unit test never reads the real box: default to a 32 GB desktop with 28 GB
+    available; budget tests inject their own numbers.
+    """
+    import corecycler.tuner.engine as engine_mod
+    from corecycler.engine.memory_budget import MemoryBudget
+
+    def fake(instances, minimum_per_instance_mb, **_kw):
+        usable = 21504
+        return MemoryBudget(
+            total_mb=32768,
+            available_mb=28672,
+            cgroup_limit_mb=None,
+            cgroup_used_mb=None,
+            ceiling_mb=28672,
+            headroom_mb=7168,
+            usable_mb=usable,
+            instances=instances,
+            per_instance_mb=usable // instances,
+            minimum_per_instance_mb=minimum_per_instance_mb,
+        )
+
+    monkeypatch.setattr(engine_mod, "memory_budget", fake)
+
+
+@pytest.fixture(autouse=True)
 def assume_clean_shutdown(monkeypatch):
     """Resume probes the host journal to tell a freeze from a deliberate
     reboot (tuner.engine.last_boot_ended_cleanly). Default it to clean so the

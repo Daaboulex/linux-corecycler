@@ -21,6 +21,7 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from corecycler.config.paths import resolve_work_dir
 from corecycler.engine.backends import get_backend, load_all
 from corecycler.engine.backends.base import StressConfig
+from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.detector import (
     ErrorDetector,
     MCEEvent,
@@ -29,6 +30,7 @@ from corecycler.engine.detector import (
 )
 from corecycler.engine.execution import busy_fraction as _busy_fraction
 from corecycler.engine.execution import cpu_times as _read_cpu_times
+from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.engine.parallel import ParallelStress
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
 from corecycler.monitor.msr import MSRReader
@@ -42,6 +44,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from corecycler.engine.backends.base import StressBackend
+    from corecycler.engine.memory_budget import MemoryBudget
     from corecycler.engine.topology import CPUTopology
     from corecycler.history.db import HistoryDB
     from corecycler.smu.driver import RyzenSMU
@@ -484,6 +487,7 @@ class TunerEngine(QObject):
         # offsets it re-applies are journaled survived, so only in_test arms the
         # circuit breaker for a multi-core power-interaction crash).
         self._cores_under_stress: list[int] = []
+        self._memory_budget: MemoryBudget | None = None
 
         # Incremental validation: dirty = a back-off happened since the last
         # clean pass (DONE requires one full pass with dirty False); requeue =
@@ -2859,6 +2863,12 @@ class TunerEngine(QObject):
                 QTimer.singleShot(0, self._run_next)
                 return
 
+        if error_type == "killed" and self._validation_stage == 6 and self._memory_budget is not None:
+            budget = self._memory_budget
+            error_msg = (
+                f"{error_msg}; memory budget attempted: {budget.instances} x {budget.per_instance_mb} MB "
+                f"of {budget.usable_mb} MB usable"
+            )
         self._apparatus_fault_streak += 1
         limit = self._config.max_apparatus_retries
         if self._apparatus_fault_streak > limit:
@@ -3358,16 +3368,26 @@ class TunerEngine(QObject):
         cores = self._validation_core_order
         backend = self._get_memory_backend()
         if backend is None:
-            # Availability was checked before dispatch; a race is treated as a
-            # skip, never a silicon verdict.
-            self._validation_stage = 7
-            self._save_validation_pos()
-            QTimer.singleShot(0, self._run_validation_next)
+            self._skip_memory_stage("the memory stress tool vanished after dispatch")
             return
+        lane_threads = max(len(self._topology.cores[c].logical_cpus) for c in cores)
+        try:
+            budget = memory_budget(len(cores), StressapptestBackend.minimum_memory_mb(lane_threads))
+        except MemoryBudgetUnavailable as exc:
+            self._skip_memory_stage(f"memory budget unavailable ({exc})")
+            return
+        self.log_message.emit(f"Validation stage 6 memory budget: {budget.describe()}")
+        if not budget.fits:
+            self._skip_memory_stage(
+                f"{budget.per_instance_mb} MB per instance is below stressapptest's minimum of "
+                f"{budget.minimum_per_instance_mb} MB ({budget.describe()})"
+            )
+            return
+        self._memory_budget = budget
         self.log_message.emit(
             f"Validation stage 6: memory-load stress on all {len(cores)} cores "
             f"simultaneously ({self._config.validate_duration_seconds}s, "
-            f"all offsets applied)"
+            f"{budget.per_instance_mb} MB each, all offsets applied)"
         )
         self.validation_progress.emit(6, 0, 1)
 
@@ -3380,7 +3400,19 @@ class TunerEngine(QObject):
 
         self._last_tested_core = cores[0]
         self._mark_cores_under_stress(cores)
-        self._start_multi_core_worker(cores, self._config.validate_duration_seconds, backend=backend)
+        self._start_multi_core_worker(
+            cores,
+            self._config.validate_duration_seconds,
+            backend=backend,
+            memory_mb=budget.per_instance_mb,
+        )
+
+    def _skip_memory_stage(self, reason: str) -> None:
+        """A memory stage that cannot run is an apparatus condition, never a silicon verdict."""
+        self.log_message.emit(f"Validation stage 6 (memory load) skipped: {reason}. Not a stability verdict.")
+        self._validation_stage = 7
+        self._save_validation_pos()
+        QTimer.singleShot(0, self._run_validation_next)
 
     def _run_validation_stage3(self) -> None:
         """Stage 3: alternating half-core load — catches voltage transients."""
@@ -3471,15 +3503,19 @@ class TunerEngine(QObject):
             return None
         return backend if backend.is_available() else None
 
-    def _start_multi_core_worker(self, cores: list[int], duration: int, backend=None) -> None:
+    def _start_multi_core_worker(
+        self, cores: list[int], duration: int, backend=None, memory_mb: int | None = None
+    ) -> None:
         """Launch every core's stress process simultaneously (one pinned
         process per core) with per-core verdicts; the worker reports the
         first failing core, else the first core's pass. ``backend`` overrides
-        the configured CPU backend (the memory stage passes stressapptest)."""
+        the configured CPU backend (the memory stage passes stressapptest and
+        the per-instance ``memory_mb`` its budget allows)."""
         stress_config = StressConfig(
             mode=self._get_stress_mode(),
             fft_preset=self._get_fft_preset(),
             threads=2,
+            memory_mb=memory_mb,
         )
         scheduler_config = SchedulerConfig(
             seconds_per_core=duration,
