@@ -94,10 +94,12 @@ The Auto-Tuner automates the entire PBO Curve Optimizer search via runtime SMU w
    - **Stage 6 -- all-core memory load** (`validate_memory`): one memory stressor
      (stressapptest) per core at once, all offsets live -- catches CO marginality
      that only appears under memory-controller load. Every instance gets an equal share
-     of one budget read live at launch: `MemAvailable`, capped by any cgroup memory
-     limit over the app, minus a quarter kept for the OS and the app; the numbers are
-     logged. Skipped with a log if no memory stress tool is installed or the share
-     falls below stressapptest's own minimum; neither is a stability verdict.
+     of one budget read live at launch: `MemAvailable`, capped by what is left under any
+     cgroup memory limit (`memory.max` or `memory.high`) over the cgroup the stressors
+     run in, minus the larger of 1 GB and a tenth kept for the OS and the app; the
+     numbers are logged. Skipped with a log if no memory stress tool is installed or the
+     share falls below the 256 MB per-instance coverage floor; neither is a stability
+     verdict.
    - **Stage 7 -- real-world soak** (`validate_soak`): no synthetic load; the kernel
      error stream is watched for `soak_duration_seconds` while the machine is used
      normally. Any hardware event fails it.
@@ -180,7 +182,7 @@ NOT_STARTED -> COARSE_SEARCH -> FINE_SEARCH -> SETTLED -> CONFIRMING -> CONFIRME
 | Validate Duration | 300s | 30-3600s | Test duration per multi-core validation stage |
 | Max Confirm Retries | 2 | 0-5 | Retries before backing off from a value |
 | Auto Validate | true | true/false | Run staged multi-core validation (stages 1-7) after all cores confirm |
-| Backend | mprime | mprime/stress-ng/y-cruncher | Per-core stress backend (stressapptest is Memory tab only) |
+| Backend | mprime | mprime/stress-ng/y-cruncher | Per-core stress backend (stressapptest runs only the memory stage and the Memory tab) |
 | Mode | SSE | SSE/AVX/AVX2/AVX512 | Stress instruction set |
 | FFT Preset | SMALL | SMALLEST/SMALL/LARGE/HUGE/ALL/MODERATE/HEAVY/HEAVY_SHORT | FFT size preset (mprime) |
 | Test Order | sequential | see below | Core testing order |

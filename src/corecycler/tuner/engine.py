@@ -22,6 +22,7 @@ from corecycler.config.paths import resolve_work_dir
 from corecycler.engine.backends import get_backend, load_all
 from corecycler.engine.backends.base import StressConfig
 from corecycler.engine.backends.stressapptest import StressapptestBackend
+from corecycler.engine.containment import lane_cgroup_parent
 from corecycler.engine.detector import (
     ErrorDetector,
     MCEEvent,
@@ -3266,17 +3267,14 @@ class TunerEngine(QObject):
                     self._save_validation_pos()
                     QTimer.singleShot(0, self._run_validation_next)
             case 6:
-                if self._config.validate_memory and self._get_memory_backend() is not None:
-                    self._run_validation_memory()
-                else:
-                    if self._config.validate_memory:
-                        self.log_message.emit(
-                            "Validation stage 6 (memory load) skipped: no memory "
-                            "stress tool (stressapptest) is installed."
-                        )
+                if not self._config.validate_memory:
                     self._validation_stage = 7
                     self._save_validation_pos()
                     QTimer.singleShot(0, self._run_validation_next)
+                elif self._get_memory_backend() is None:
+                    self._skip_memory_stage("no memory stress tool (stressapptest) is installed")
+                else:
+                    self._run_validation_memory()
             case 7:
                 # A dirty pass skips the soak; the final clean pass earns it.
                 if self._config.validate_soak and not self._validation_dirty:
@@ -3372,14 +3370,18 @@ class TunerEngine(QObject):
             return
         lane_threads = max(len(self._topology.cores[c].logical_cpus) for c in cores)
         try:
-            budget = memory_budget(len(cores), StressapptestBackend.minimum_memory_mb(lane_threads))
+            budget = memory_budget(
+                len(cores),
+                StressapptestBackend.minimum_memory_mb(lane_threads),
+                lane_cgroup=lane_cgroup_parent(),
+            )
         except MemoryBudgetUnavailable as exc:
             self._skip_memory_stage(f"memory budget unavailable ({exc})")
             return
         self.log_message.emit(f"Validation stage 6 memory budget: {budget.describe()}")
         if not budget.fits:
             self._skip_memory_stage(
-                f"{budget.per_instance_mb} MB per instance is below stressapptest's minimum of "
+                f"{budget.per_instance_mb} MB per instance is below the per-instance floor of "
                 f"{budget.minimum_per_instance_mb} MB ({budget.describe()})"
             )
             return

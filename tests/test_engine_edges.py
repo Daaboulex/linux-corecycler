@@ -34,14 +34,14 @@ class Event:
 class TestContainmentProbe:
     def test_no_systemd_run_probes_to_nothing(self):
         with patch.object(containment, "_systemd_run_path", return_value=None):
-            assert containment._probe_mechanism() is None
+            assert containment._probe_mechanism() == containment.Probe(None, None)
 
     def test_a_probe_that_cannot_run_is_no_mechanism(self):
         with (
             patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
             patch.object(containment.subprocess, "run", side_effect=OSError("no dbus")),
         ):
-            assert containment._probe_mechanism() is None
+            assert containment._probe_mechanism() == containment.Probe(None, None)
 
     def test_a_probe_that_exits_nonzero_is_no_mechanism(self):
         failed = SimpleNamespace(returncode=1, stdout="", stderr="Failed to start scope")
@@ -49,25 +49,52 @@ class TestContainmentProbe:
             patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
             patch.object(containment.subprocess, "run", return_value=failed),
         ):
-            assert containment._probe_mechanism() is None
+            assert containment._probe_mechanism() == containment.Probe(None, None)
 
-    def test_a_green_probe_names_the_user_mechanism(self):
-        good = SimpleNamespace(returncode=0, stdout="", stderr="")
+    def test_a_green_probe_names_the_user_mechanism_and_the_lanes_cgroup(self):
+        good = SimpleNamespace(
+            returncode=0, stdout="0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u12.scope\n", stderr=""
+        )
         with (
             patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
-            patch.object(containment.subprocess, "run", return_value=good),
+            patch.object(containment.subprocess, "run", return_value=good) as run,
             patch.object(containment.os, "geteuid", return_value=1000),
         ):
-            assert containment._probe_mechanism() == containment.MECHANISM_USER
+            probe = containment._probe_mechanism()
+        assert probe.mechanism == containment.MECHANISM_USER
+        assert probe.lane_cgroup_parent == "/user.slice/user-1000.slice/user@1000.service/app.slice"
+        assert run.call_args[0][0][-2:] == ["cat", "/proc/self/cgroup"]
 
-    def test_a_green_probe_as_root_names_the_system_mechanism(self):
-        good = SimpleNamespace(returncode=0, stdout="", stderr="")
+    def test_a_green_probe_as_root_names_the_system_mechanism_and_the_system_slice(self):
+        good = SimpleNamespace(returncode=0, stdout="0::/system.slice/run-u5.scope\n", stderr="")
         with (
             patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
             patch.object(containment.subprocess, "run", return_value=good),
             patch.object(containment.os, "geteuid", return_value=0),
         ):
-            assert containment._probe_mechanism() == containment.MECHANISM_SYSTEM
+            probe = containment._probe_mechanism()
+        assert probe.mechanism == containment.MECHANISM_SYSTEM
+        assert probe.lane_cgroup_parent == "/system.slice"
+
+    def test_a_scope_at_the_root_names_the_root(self):
+        good = SimpleNamespace(returncode=0, stdout="0::/run-u5.scope\n", stderr="")
+        with (
+            patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
+            patch.object(containment.subprocess, "run", return_value=good),
+            patch.object(containment.os, "geteuid", return_value=0),
+        ):
+            assert containment._probe_mechanism().lane_cgroup_parent == "/"
+
+    def test_a_probe_without_a_unified_hierarchy_knows_no_lane_cgroup(self):
+        good = SimpleNamespace(returncode=0, stdout="12:cpuset:/system.slice/run-u5.scope\n", stderr="")
+        with (
+            patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
+            patch.object(containment.subprocess, "run", return_value=good),
+            patch.object(containment.os, "geteuid", return_value=0),
+        ):
+            probe = containment._probe_mechanism()
+        assert probe.mechanism == containment.MECHANISM_SYSTEM
+        assert probe.lane_cgroup_parent is None
 
 
 class TestContainRefusals:

@@ -754,14 +754,23 @@ class TestContainment:
 
         def fake_probe():
             calls.append(1)
-            return None
+            return containment.Probe(None, None)
 
         with patch.object(containment, "_probe_mechanism", side_effect=fake_probe):
             assert containment.available_mechanism() is None
             assert containment.available_mechanism() is None
             assert containment.available_mechanism(refresh=True) is None
+            assert containment.lane_cgroup_parent() is None
         containment._probe_cache.clear()
         assert len(calls) == 2
+
+    def test_the_lane_cgroup_comes_from_the_same_probe(self):
+        containment._probe_cache.clear()
+        probe = containment.Probe(containment.MECHANISM_SYSTEM, "/system.slice")
+        with patch.object(containment, "_probe_mechanism", return_value=probe):
+            assert containment.lane_cgroup_parent() == "/system.slice"
+            assert containment.available_mechanism() == containment.MECHANISM_SYSTEM
+        containment._probe_cache.clear()
 
     def test_observed_tree_includes_children(self, tmp_path):
         parent = tmp_path / "100"

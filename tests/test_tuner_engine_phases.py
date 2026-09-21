@@ -875,18 +875,20 @@ class TestBaselineRevert:
         assert engine._revert_core_to_baseline(0) is False
 
 
-def _budget(instances, per_instance_mb, minimum_mb=5, usable_mb=None):
+def _budget(instances, per_instance_mb, minimum_mb=256, usable_mb=None):
     usable = usable_mb if usable_mb is not None else per_instance_mb * instances
     return MemoryBudget(
         total_mb=32768,
         available_mb=28672,
         cgroup_limit_mb=None,
         cgroup_used_mb=None,
+        cgroup_limit_source=None,
         ceiling_mb=28672,
         headroom_mb=28672 - usable,
         usable_mb=usable,
         instances=instances,
         per_instance_mb=per_instance_mb,
+        launch_minimum_mb=5,
         minimum_per_instance_mb=minimum_mb,
     )
 
@@ -946,15 +948,49 @@ class TestMemoryStageDispatch:
     def test_a_share_below_the_minimum_skips_with_the_numbers(self, engine, monkeypatch):
         self._ready(engine)
         launched, messages = self._launch(engine, monkeypatch)
-        monkeypatch.setattr(eng, "memory_budget", lambda *_a, **_kw: _budget(2, 3, minimum_mb=5))
+        monkeypatch.setattr(eng, "memory_budget", lambda *_a, **_kw: _budget(2, 3, minimum_mb=256))
         engine._run_validation_memory()
         assert launched == []
         assert not engine._smu.set_co_offset.called
         assert engine._validation_stage == 7
         skip = next(m for m in messages if "skipped" in m)
         assert "3 MB per instance" in skip
-        assert "minimum of 5 MB" in skip
+        assert "floor of 256 MB" in skip
         assert "Not a stability verdict" in skip
+
+    def test_the_lanes_cgroup_is_handed_to_the_budget(self, engine, monkeypatch):
+        self._ready(engine)
+        self._launch(engine, monkeypatch)
+        asked = []
+
+        def fake_budget(instances, minimum, *, lane_cgroup=None, **_kw):
+            asked.append(lane_cgroup)
+            return _budget(instances, 2688)
+
+        monkeypatch.setattr(eng, "memory_budget", fake_budget)
+        monkeypatch.setattr(eng, "lane_cgroup_parent", lambda: "/system.slice")
+        engine._run_validation_memory()
+        assert asked == ["/system.slice"]
+
+    def test_a_missing_tool_skips_through_the_one_skip_path(self, engine, monkeypatch):
+        self._ready(engine)
+        monkeypatch.setattr(engine, "_get_memory_backend", lambda: None)
+        messages = []
+        engine.log_message.connect(messages.append)
+        engine._run_validation_next()
+        assert engine._validation_stage == 7
+        skip = next(m for m in messages if "skipped" in m)
+        assert "stressapptest" in skip
+        assert "Not a stability verdict" in skip
+
+    def test_a_disabled_stage_advances_without_a_skip_line(self, engine, monkeypatch):
+        self._ready(engine)
+        engine._config.validate_memory = False
+        messages = []
+        engine.log_message.connect(messages.append)
+        engine._run_validation_next()
+        assert engine._validation_stage == 7
+        assert not any("skipped" in m for m in messages)
 
     def test_an_unreadable_budget_skips_with_the_reason(self, engine, monkeypatch):
         self._ready(engine)
@@ -1447,8 +1483,10 @@ class TestMemoryStageAcrossMachines:
         engine._run_validation_memory()
         assert len(launched) == 1
         share = launched[0][1]["memory_mb"]
-        assert share * cores <= available_gib * 1024 * 3 // 4
-        assert share >= eng.StressapptestBackend.minimum_memory_mb(1)
+        available_mb = available_gib * 1024
+        assert share * cores + 1024 <= available_mb
+        assert share * cores <= available_mb * 9 // 10
+        assert share >= 256
         budget_line = next(m for m in messages if "memory budget" in m)
         assert f"total {total_gib * 1024} MB" in budget_line
         assert f"available {available_gib * 1024} MB" in budget_line
@@ -1463,7 +1501,17 @@ class TestMemoryStageAcrossMachines:
         assert engine._validation_stage == 7
         skip = next(m for m in messages if "skipped" in m)
         assert "available 40 MB" in skip
-        assert "below stressapptest's minimum" in skip
+        assert "below the per-instance floor" in skip
+
+    def test_a_small_box_whose_share_covers_nothing_skips(self, db, tmp_path, monkeypatch):
+        self._inject(monkeypatch, tmp_path, 4, 2 * 1024)
+        engine, launched, messages = self._engine(db, tmp_path, monkeypatch, 8)
+        engine._run_validation_memory()
+        assert launched == []
+        assert engine._validation_stage == 7
+        skip = next(m for m in messages if "skipped" in m)
+        assert "128 MB per instance" in skip
+        assert "floor of 256 MB" in skip
 
     def test_a_cgroup_limit_bounds_the_share_not_the_host(self, db, tmp_path, monkeypatch):
         self._inject(monkeypatch, tmp_path, 256, 224 * 1024, cgroup_limit_gib=4)

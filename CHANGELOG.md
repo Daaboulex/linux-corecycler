@@ -14,16 +14,19 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 - Stage 6 launched one stressapptest per core with no `-M`, so every instance
   sized itself against all free memory and the kernel's OOM killer ended the
   stage on any machine (a 5700X3D with 32 GB lost all eight). The engine now
-  reads one budget live at launch, `MemAvailable` capped by any cgroup memory
-  limit over the app minus a quarter kept for the OS and the app, splits it
-  equally, and hands each instance its share as `-M`; the numbers (total,
-  available, cgroup limit, headroom, per-instance size, instance count) are
-  logged before the stage starts. A share below stressapptest's own minimum
-  skips the stage with the numbers, the way a missing tool already did, never
-  as a verdict. Each instance also runs as many copy threads as its lane has
-  CPUs instead of one per CPU in the machine. The Memory tab's single-instance
-  run is sized by the same budget; its private 75 percent rule and 1 GB
-  fallback are gone.
+  reads one budget live at launch, `MemAvailable` capped by what is left under
+  any `memory.max` or `memory.high` over the cgroup the stressors run in (read
+  from the containment probe's own scope, since the lanes and the app sit in
+  different slices) minus the larger of 1 GB and a tenth kept for the OS and
+  the app, splits it equally, and hands each instance its share as `-M`; the
+  numbers (total, available, cgroup limit and where it came from, headroom,
+  per-instance size, instance count) are logged before the stage starts. A
+  share below the 256 MB per-instance coverage floor skips the stage with the
+  numbers, the way a missing tool already did, never as a verdict; a 200 MB box
+  no longer "passes" a stage that loaded nothing. Each instance also runs as
+  many copy threads as its lane has CPUs instead of one per CPU in the
+  machine. The Memory tab's single-instance run is sized by the same budget;
+  its private 75 percent rule and 1 GB fallback are gone.
 - stressapptest's own allocation refusal (`freepages < neededpages`, `not
   enough pages for IO`, `failed to allocate memory`, `No memory found to
   test`) is now an environment fault that pauses with the cause, never a
