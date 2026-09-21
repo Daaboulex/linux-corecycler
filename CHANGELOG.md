@@ -27,8 +27,10 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 - stressapptest's own allocation refusal (`freepages < neededpages`, `not
   enough pages for IO`, `failed to allocate memory`, `No memory found to
   test`) is now an environment fault that pauses with the cause, never a
-  memory-error verdict, and an external kill during stage 6 names the budget
-  that was attempted.
+  memory-error verdict; the supervisor consults the backend's parse even for
+  an exit inside the startup window, which used to replace every such message
+  with a generic one. An external kill during stage 6 names the budget that
+  was attempted.
 - The real-world soak logged and reported itself as stage 6 while running as
   stage 7, so the GUI showed "S6" twice; it now reports the cursor's stage.
 

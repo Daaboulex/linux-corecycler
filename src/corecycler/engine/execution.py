@@ -393,7 +393,9 @@ class Supervisor:
                     )
                     self._fail(
                         run,
-                        f"stress exited at startup (code {rc}) with no work done — verdict unavailable",
+                        self._startup_message(
+                            run, rc, f"stress exited at startup (code {rc}) with no work done — verdict unavailable"
+                        ),
                         start,
                         error_type="startup",
                     )
@@ -469,6 +471,13 @@ class Supervisor:
             run.last_active = now
             return False
         return now - run.last_active > self.stall_timeout
+
+    def _startup_message(self, run: _LaneRun, rc: int, fallback: str) -> str:
+        """A backend that names the environment fault in its output outranks the generic line."""
+        passed, msg = self.backend.parse_output(run.stdout or "", run.stderr or "", rc)
+        if not passed and msg and classify_error(msg) == "startup":
+            return msg
+        return fallback
 
     def _drain(self, run: _LaneRun) -> None:
         if run.drained or run.proc is None:
@@ -551,7 +560,7 @@ class Supervisor:
                 core_id=run.lane.core_id,
                 passed=False,
                 duration_seconds=elapsed,
-                error_message=f"stress exited with code {rc} at startup",
+                error_message=self._startup_message(run, rc, f"stress exited with code {rc} at startup"),
                 error_type="startup",
             )
         live_err = self.backend.poll_errors(run.lane.work_dir)
