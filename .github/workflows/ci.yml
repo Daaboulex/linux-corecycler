@@ -49,7 +49,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: DeterminateSystems/determinate-nix-action@021c8a1bd3570eb21f5c20a054812b0c4d9ca614 # v3.22.3
+      - uses: DeterminateSystems/determinate-nix-action@8d87e8d5e5b8a8309d4281094560f127d9a265f1 # v3.22.5
         with:
           extra-conf: |
             lazy-trees = false
@@ -84,7 +84,8 @@ jobs:
         if: steps.nix-cache.outputs.restored-key != ''
         run: |
           SYS=$(nix eval --impure --raw --expr 'builtins.currentSystem')
-          nix eval ".#checks.$SYS" --apply 'x: builtins.attrNames x != [ ]' 2>/dev/null | grep -qx true || exit 0
+          declared=$(nix eval ".#checks.$SYS" --apply 'x: builtins.attrNames x != [ ]' 2>/dev/null || true)
+          [ "$declared" = true ] || exit 0
           mapfile -t D < <(nix run --inputs-from . nixpkgs#nix-eval-jobs -- --flake ".#checks.$SYS" 2>/dev/null | jq -r '.drvPath')
           [ ${#D[@]} -eq 0 ] && exit 0
           B=$(nix build "${D[@]/%/^*}" --dry-run --narinfo-cache-negative-ttl 0 2>&1 | sed -n 's/^these \([0-9]\+\) derivations will be built.*/\1/p')
@@ -100,7 +101,8 @@ jobs:
       - name: Build + check every output declared for this system
         run: |
           SYS=$(nix eval --impure --raw --expr 'builtins.currentSystem')
-          if ! nix eval ".#checks.$SYS" --apply 'x: builtins.attrNames x != [ ]' 2>/dev/null | grep -qx true; then
+          declared=$(nix eval ".#checks.$SYS" --apply 'x: builtins.attrNames x != [ ]' 2>/dev/null || true)
+          if [ "$declared" != true ]; then
             echo "Flake declares no checks for $SYS — skipping (declared == built)."
             exit 0
           fi
