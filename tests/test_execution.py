@@ -16,6 +16,7 @@ import pytest
 from corecycler.config.tools import Resolution
 from corecycler.engine import containment, execution
 from corecycler.engine.backends.base import StressBackend, StressConfig, StressMode
+from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.execution import (
     Lane,
     SuperviseHooks,
@@ -204,6 +205,28 @@ class TestVerdicts:
         assert verdict is not None and not verdict.passed
         assert verdict.error_type == "startup"
         assert "verdict unavailable" in verdict.error_message or "at startup" in verdict.error_message
+
+    def test_an_instant_exit_that_names_its_environment_fault_keeps_the_name(self, tmp_path):
+        class SatParsing(FakeBackend):
+            parse_output = StressapptestBackend.parse_output
+
+        backend = SatParsing(
+            _child("import sys; sys.stderr.write('Process Error: freepages < neededpages.\\n'); sys.exit(1)")
+        )
+        supervisor, _, _ = make_supervisor(backend)
+        with patch.object(execution, "STARTUP_WINDOW_SECONDS", 60.0):
+            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        assert verdict is not None and not verdict.passed
+        assert verdict.error_type == "startup"
+        assert "freepages < neededpages" in verdict.error_message
+
+    def test_an_instant_exit_with_a_stability_message_keeps_the_generic_line(self, tmp_path):
+        backend = FakeBackend(_child("import sys; sys.exit(1)"), parse=(False, "fake error: FATAL"))
+        supervisor, _, _ = make_supervisor(backend)
+        with patch.object(execution, "STARTUP_WINDOW_SECONDS", 60.0):
+            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        assert verdict is not None and verdict.error_type == "startup"
+        assert "FATAL" not in verdict.error_message
 
     def test_a_parsed_failure_is_attributed(self, tmp_path):
         backend = FakeBackend(
