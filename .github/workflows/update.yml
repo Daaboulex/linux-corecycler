@@ -17,9 +17,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: DeterminateSystems/determinate-nix-action@021c8a1bd3570eb21f5c20a054812b0c4d9ca614 # v3.22.3
+      - uses: DeterminateSystems/determinate-nix-action@8d87e8d5e5b8a8309d4281094560f127d9a265f1 # v3.22.5
         with:
           extra-conf: lazy-trees = false
+
+      # The verification runs built binaries (verify.binary, a custom smoke
+      # test), and a buildFHSEnv wrapper starts bwrap in an unprivileged user
+      # namespace. Ubuntu 24.04's AppArmor denies that by default, and 26.04
+      # adds a second knob; each is opened only where it exists, and the
+      # postcondition is proven so a runner that still refuses fails here,
+      # named, and not as a smoke-test verdict on the package.
+      - name: Allow unprivileged user namespaces
+        run: |
+          for knob in kernel.apparmor_restrict_unprivileged_userns kernel.apparmor_restrict_unprivileged_unconfined; do
+            f="/proc/sys/${knob//.//}"
+            [ -e "$f" ] || continue
+            sudo sysctl -w "$knob=0"
+          done
+          unshare --user --map-root-user true || {
+            echo "::error::this runner refuses an unprivileged user namespace, so nothing wrapped in bwrap can be verified here"
+            exit 1
+          }
 
       - name: Run update
         id: update
@@ -220,7 +238,7 @@ jobs:
               '```bash',
               `git fetch && git checkout update/${pkg}-${newV}`,
               '# Fix the issue, then:',
-              'nix build --no-link && nix flake check --no-build',
+              'nix flake check --no-eval-cache && nix build --no-link',
               `git checkout main && git merge update/${pkg}-${newV}`,
               '```'
             ] : [];

@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: DeterminateSystems/determinate-nix-action@021c8a1bd3570eb21f5c20a054812b0c4d9ca614 # v3.22.3
+      - uses: DeterminateSystems/determinate-nix-action@8d87e8d5e5b8a8309d4281094560f127d9a265f1 # v3.22.5
         with:
           extra-conf: lazy-trees = false
 
@@ -74,7 +74,8 @@ jobs:
           # checks). Bare `nix build` assumes .#default, which module-only repos
           # (a NixOS/HM module, no package) do not have — that mismatch filed
           # spurious "broke build" maintenance issues on every run.
-          if ! nix eval ".#checks.$SYS" --apply 'x: builtins.attrNames x != [ ]' 2>/dev/null | grep -qx true; then
+          declared=$(nix eval ".#checks.$SYS" --apply 'x: builtins.attrNames x != [ ]' 2>/dev/null || true)
+          if [ "$declared" != true ]; then
             echo "Flake declares no checks for $SYS — lock bump verified by eval only."
             echo "exit_code=0" >> "$GITHUB_OUTPUT"
             exit 0

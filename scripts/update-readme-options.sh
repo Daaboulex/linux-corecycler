@@ -27,6 +27,7 @@ generate_content() {
     else
       # Fallback: grep for mkEnableOption/mkOption in nix files
       local opts
+      # shellcheck disable=SC2016
       opts=$(grep -rh "mkEnableOption\|= lib.mkOption" ./*.nix ./**/*.nix 2>/dev/null |
         grep -v "^#" |
         sed 's/.*mkEnableOption "\([^"]*\)".*/| `enable` | bool | \1 |/' |
