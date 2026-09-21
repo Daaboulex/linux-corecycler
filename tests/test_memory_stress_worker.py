@@ -15,17 +15,19 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
 
-def _budget(usable_mb: int, minimum_mb: int = 5) -> MemoryBudget:
+def _budget(usable_mb: int, minimum_mb: int = 256) -> MemoryBudget:
     return MemoryBudget(
         total_mb=16384,
         available_mb=12288,
         cgroup_limit_mb=None,
         cgroup_used_mb=None,
+        cgroup_limit_source=None,
         ceiling_mb=12288,
         headroom_mb=12288 - usable_mb,
         usable_mb=usable_mb,
         instances=1,
         per_instance_mb=usable_mb,
+        launch_minimum_mb=5,
         minimum_per_instance_mb=minimum_mb,
     )
 
@@ -105,11 +107,11 @@ class TestStressWorkerRun:
     def test_a_share_below_the_minimum_launches_nothing_and_names_the_numbers(self, monkeypatch):
         popen = MagicMock(return_value=_proc())
         monkeypatch.setattr("subprocess.Popen", popen)
-        results = _run_worker(monkeypatch, "stressapptest", budget=_budget(3, minimum_mb=5))
+        results = _run_worker(monkeypatch, "stressapptest", budget=_budget(3, minimum_mb=256))
         assert not popen.called
         assert results[0][0] is False
         assert "1 x 3 MB" in results[0][1]
-        assert "minimum 5 MB" in results[0][1]
+        assert "floor 256 MB" in results[0][1]
 
     def test_an_unreadable_budget_is_reported_not_guessed(self, monkeypatch):
         import corecycler.gui.memory_tab as mt

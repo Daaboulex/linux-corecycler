@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from corecycler.config import tools
+from corecycler.engine.memory_budget import unified_cgroup_path
 
 log = logging.getLogger(__name__)
 
@@ -23,8 +24,6 @@ MECHANISM_USER = "systemd-user-scope"
 MECHANISM_SYSTEM = "systemd-system-scope"
 
 _PROBE_TIMEOUT = 10.0
-
-_probe_cache: dict[str, str | None] = {}
 
 
 class ContainmentUnavailable(RuntimeError):
@@ -35,6 +34,15 @@ class ContainmentUnavailable(RuntimeError):
 class Containment:
     prefix: list[str]
     unit: str
+
+
+@dataclass(frozen=True, slots=True)
+class Probe:
+    mechanism: str | None
+    lane_cgroup_parent: str | None
+
+
+_probe_cache: dict[str, Probe] = {}
 
 
 _unit_seq = 0
@@ -80,35 +88,51 @@ def _systemd_run_path() -> str | None:
     return str(resolution.path) if resolution.path else None
 
 
-def _probe_mechanism() -> str | None:
+def _probe_mechanism() -> Probe:
     systemd_run = _systemd_run_path()
     if systemd_run is None:
-        return None
+        return Probe(None, None)
     user_mode = os.geteuid() != 0
     cmd = [systemd_run, "--scope", "--quiet", "--collect", "-p", "AllowedCPUs=0"]
     if user_mode:
         cmd.insert(1, "--user")
-    cmd += ["--", "true"]
+    cmd += ["--", "cat", "/proc/self/cgroup"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=_PROBE_TIMEOUT)
     except (subprocess.TimeoutExpired, OSError) as exc:
         log.warning("containment probe failed to run: %s", exc)
-        return None
+        return Probe(None, None)
     if result.returncode != 0:
         log.warning(
             "containment probe exited %d: %s",
             result.returncode,
             (result.stderr or result.stdout).strip()[:200],
         )
+        return Probe(None, None)
+    return Probe(MECHANISM_USER if user_mode else MECHANISM_SYSTEM, _parent_of(unified_cgroup_path(result.stdout)))
+
+
+def _parent_of(cgroup_path: str | None) -> str | None:
+    if cgroup_path is None:
         return None
-    return MECHANISM_USER if user_mode else MECHANISM_SYSTEM
+    parent = cgroup_path.rsplit("/", 1)[0]
+    return parent or "/"
 
 
-def available_mechanism(*, refresh: bool = False) -> str | None:
+def _probe(*, refresh: bool = False) -> Probe:
     key = f"euid={os.geteuid()}"
     if refresh or key not in _probe_cache:
         _probe_cache[key] = _probe_mechanism()
     return _probe_cache[key]
+
+
+def available_mechanism(*, refresh: bool = False) -> str | None:
+    return _probe(refresh=refresh).mechanism
+
+
+def lane_cgroup_parent() -> str | None:
+    """The cgroup a stress scope is created under, read from the probe scope itself."""
+    return _probe().lane_cgroup_parent
 
 
 def contain(cpus: set[int] | tuple[int, ...] | list[int]) -> Containment:

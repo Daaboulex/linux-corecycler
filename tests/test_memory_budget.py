@@ -13,6 +13,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from corecycler.engine.backends.base import StressConfig
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 
@@ -44,7 +45,7 @@ def _budget(machine, total_gib, available_gib, instances, **kw):
 
 
 SIZED_MACHINES = [
-    pytest.param(2, 1, 2, id="2 GB board, 2 cores"),
+    pytest.param(4, 3, 2, id="4 GB board, 2 cores"),
     pytest.param(8, 5, 4, id="8 GB laptop, 4 cores"),
     pytest.param(16, 12, 6, id="16 GB desktop, 6 cores"),
     pytest.param(32, 28, 8, id="32 GB, 8 cores (issue 17)"),
@@ -67,19 +68,29 @@ class TestEveryMachine:
         assert budget.available_mb == available_gib * 1024
 
     @pytest.mark.parametrize(("total_gib", "available_gib", "instances"), SIZED_MACHINES)
-    def test_headroom_grows_with_the_machine_and_leaves_most_memory_to_the_test(
+    def test_headroom_keeps_at_least_a_gigabyte_and_a_tenth_and_never_shrinks_on_a_bigger_box(
         self, machine, total_gib, available_gib, instances
     ):
         budget = _budget(machine, total_gib, available_gib, instances)
-        assert 0 < budget.headroom_mb < budget.usable_mb
+        assert budget.headroom_mb >= 1024
+        assert budget.headroom_mb >= budget.ceiling_mb // 10
+        assert budget.headroom_mb < budget.usable_mb
         smaller = _budget(machine, total_gib // 2, available_gib // 2, instances)
-        assert smaller.headroom_mb < budget.headroom_mb
+        assert smaller.headroom_mb <= budget.headroom_mb
 
-    def test_the_reporters_machine_gets_a_share_the_kernel_can_grant(self, machine):
+    def test_a_large_box_keeps_more_headroom_than_a_small_one(self, machine):
+        assert _budget(machine, 64, 56, 8).headroom_mb > _budget(machine, 16, 12, 8).headroom_mb
+
+    def test_the_reporters_machine_gets_a_share_the_kernel_can_grant(self, machine, tmp_path, on_path):
         budget = _budget(machine, 32, 28, 8)
-        assert budget.per_instance_mb == 2688
-        assert budget.headroom_mb == 7168
-        assert budget.per_instance_mb * 8 < budget.available_mb
+        share = budget.per_instance_mb
+        assert budget.fits
+        assert budget.headroom_mb >= 1024
+        assert budget.headroom_mb >= budget.ceiling_mb // 10
+        assert share * 8 + budget.headroom_mb <= budget.ceiling_mb < (share + 1) * 8 + budget.headroom_mb
+        on_path({"stressapptest": "/usr/bin/stressapptest"})
+        cmd = StressapptestBackend().get_command(StressConfig(threads=2, memory_mb=share), tmp_path)
+        assert cmd[cmd.index("-M") + 1] == str(share)
 
     def test_a_single_instance_gets_the_whole_usable_share(self, machine):
         budget = _budget(machine, 16, 12, 1)
@@ -89,10 +100,17 @@ class TestEveryMachine:
         bases = machine(meminfo=_meminfo(32 * KIB_PER_GIB, 40 * 1024))
         budget = memory_budget(8, StressapptestBackend.minimum_memory_mb(SMT_LANE_THREADS), **bases)
         assert not budget.fits
+        assert budget.usable_mb == 0
         assert budget.per_instance_mb < budget.minimum_per_instance_mb
         text = budget.describe()
         assert f"8 x {budget.per_instance_mb} MB" in text
-        assert f"minimum {budget.minimum_per_instance_mb} MB" in text
+        assert f"floor {budget.minimum_per_instance_mb} MB" in text
+
+    def test_a_share_that_covers_nothing_does_not_fit_even_though_stressapptest_would_launch(self, machine):
+        budget = _budget(machine, 4, 2, 8)
+        assert budget.per_instance_mb >= budget.launch_minimum_mb
+        assert budget.per_instance_mb < budget.minimum_per_instance_mb
+        assert not budget.fits
 
     def test_describe_names_every_number_a_log_reader_needs(self, machine):
         budget = _budget(machine, 32, 28, 8)
@@ -100,7 +118,9 @@ class TestEveryMachine:
         for number in (budget.total_mb, budget.available_mb, budget.headroom_mb, budget.usable_mb):
             assert f"{number} MB" in text
         assert "cgroup limit none" in text
-        assert "8 x 2688 MB" in text
+        assert f"8 x {budget.per_instance_mb} MB" in text
+        assert f"coverage floor {budget.minimum_per_instance_mb} MB" in text
+        assert f"stressapptest minimum {budget.launch_minimum_mb} MB" in text
 
 
 class TestCgroupLimit:
@@ -123,7 +143,38 @@ class TestCgroupLimit:
         assert budget.cgroup_used_mb == 2048
         assert budget.ceiling_mb == 6144
         assert budget.per_instance_mb * 16 <= 6144 - budget.headroom_mb
-        assert "cgroup limit 8192 MB (2048 MB in use)" in budget.describe()
+        assert "cgroup limit 8192 MB (memory.max at /user.slice/user-1000.slice, 2048 MB in use)" in budget.describe()
+
+    def test_a_high_watermark_below_the_hard_limit_is_the_bound(self, machine):
+        user_slice = {
+            "memory.max": f"{8 * 1024**3}\n",
+            "memory.high": f"{3 * 1024**3}\n",
+            "memory.current": f"{1024**3}\n",
+        }
+        cgroup = self._tree(**{"user.slice/user-1000.slice": user_slice})
+        budget = _budget(machine, 64, 56, 16, cgroup=cgroup)
+        assert budget.cgroup_limit_mb == 3072
+        assert budget.ceiling_mb == 2048
+        assert "memory.high at /user.slice/user-1000.slice" in budget.describe()
+
+    def test_the_lanes_cgroup_is_walked_not_the_apps(self, machine):
+        cgroup = self._tree(
+            **{
+                "user.slice/user-1000.slice": {"memory.max": f"{8 * 1024**3}\n", "memory.current": "0\n"},
+                "system.slice": {"memory.max": f"{2 * 1024**3}\n", "memory.current": "0\n"},
+            }
+        )
+        bases = machine(meminfo=_meminfo(64 * KIB_PER_GIB, 56 * KIB_PER_GIB), cgroup=cgroup)
+        lanes = memory_budget(16, 5, lane_cgroup="/system.slice", **bases)
+        app = memory_budget(16, 5, **bases)
+        assert lanes.cgroup_limit_mb == 2048
+        assert "memory.max at /system.slice" in lanes.describe()
+        assert app.cgroup_limit_mb == 8192
+
+    def test_lanes_at_the_root_see_only_the_root(self, machine):
+        cgroup = self._tree(**{"user.slice/user-1000.slice": {"memory.max": f"{8 * 1024**3}\n"}})
+        bases = machine(meminfo=_meminfo(64 * KIB_PER_GIB, 56 * KIB_PER_GIB), cgroup=cgroup)
+        assert memory_budget(16, 5, lane_cgroup="/", **bases).cgroup_limit_mb is None
 
     def test_the_tightest_ancestor_wins(self, machine):
         cgroup = self._tree(
@@ -182,6 +233,7 @@ class TestCgroupLimit:
         cgroup = {"memory.max": f"{3 * 1024**3}\n", "memory.current": "0\n"}
         budget = _budget(machine, 16, 12, 4, cgroup=cgroup, self_cgroup="0::/\n")
         assert budget.cgroup_limit_mb == 3072
+        assert budget.cgroup_limit_source == "memory.max at /"
 
 
 class TestRefusals:
@@ -245,10 +297,16 @@ class TestAnyMachine:
         else:
             assert budget.cgroup_limit_mb == limit_mib
             assert budget.ceiling_mb <= max(0, limit_mib - used_mib)
-        assert budget.usable_mb + budget.headroom_mb == budget.ceiling_mb
-        assert 0 <= budget.headroom_mb <= budget.ceiling_mb
-        assert budget.usable_mb >= budget.ceiling_mb // 2
+        assert budget.headroom_mb >= 1024
+        assert budget.headroom_mb >= budget.ceiling_mb // 10
+        if budget.usable_mb > 0:
+            assert budget.usable_mb + budget.headroom_mb == budget.ceiling_mb
+        else:
+            assert budget.ceiling_mb <= budget.headroom_mb
         assert budget.per_instance_mb * instances <= budget.usable_mb
         assert budget.usable_mb - budget.per_instance_mb * instances < instances
-        assert budget.fits == (budget.per_instance_mb >= minimum)
+        assert budget.minimum_per_instance_mb >= 256
+        assert budget.minimum_per_instance_mb >= minimum
+        assert budget.fits == (budget.per_instance_mb >= budget.minimum_per_instance_mb)
+        assert budget.fits is False or budget.per_instance_mb >= 256
         assert f"{instances} x {budget.per_instance_mb} MB" in budget.describe()

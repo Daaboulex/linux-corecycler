@@ -5,7 +5,7 @@ from __future__ import annotations
 import struct
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -740,31 +740,33 @@ def no_real_forensics(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def synthetic_memory_budget(monkeypatch):
+def synthetic_memory_budget(monkeypatch, tmp_path_factory):
     """The memory stage sizes its stressors from the live machine
-    (tuner.engine.memory_budget reads /proc/meminfo and the cgroup tree). A
-    unit test never reads the real box: default to a 32 GB desktop with 28 GB
-    available; budget tests inject their own numbers.
+    (tuner.engine.memory_budget reads /proc/meminfo and the cgroup tree, and
+    the containment probe launches a scope to learn the lanes' cgroup). A unit
+    test never reads the real box: the real budget reader runs against an
+    injected 32 GB desktop with 28 GB available and no cgroup limit, and the
+    lanes' cgroup is unknown. Budget tests inject their own machines. Returns
+    the injected bases and ``budget_for(instances, minimum)`` so a test can
+    derive its expectations from the same machine.
     """
     import corecycler.tuner.engine as engine_mod
-    from corecycler.engine.memory_budget import MemoryBudget
+    from corecycler.engine.memory_budget import memory_budget as real_budget
 
-    def fake(instances, minimum_per_instance_mb, **_kw):
-        usable = 21504
-        return MemoryBudget(
-            total_mb=32768,
-            available_mb=28672,
-            cgroup_limit_mb=None,
-            cgroup_used_mb=None,
-            ceiling_mb=28672,
-            headroom_mb=7168,
-            usable_mb=usable,
-            instances=instances,
-            per_instance_mb=usable // instances,
-            minimum_per_instance_mb=minimum_per_instance_mb,
-        )
+    root = tmp_path_factory.mktemp("synthetic-machine")
+    proc = root / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "meminfo").write_text(f"MemTotal:       {32 * 1024 * 1024} kB\nMemAvailable:   {28 * 1024 * 1024} kB\n")
+    (proc / "self" / "cgroup").write_text("0::/user.slice/user-1000.slice/user@1000.service/app.slice\n")
+    cgroup = root / "cgroup"
+    cgroup.mkdir()
+
+    def fake(instances, launch_minimum_mb, *, lane_cgroup=None, **_kw):
+        return real_budget(instances, launch_minimum_mb, lane_cgroup=lane_cgroup, proc_base=proc, cgroup_base=cgroup)
 
     monkeypatch.setattr(engine_mod, "memory_budget", fake)
+    monkeypatch.setattr(engine_mod, "lane_cgroup_parent", lambda: None)
+    return SimpleNamespace(proc_base=proc, cgroup_base=cgroup, budget_for=fake)
 
 
 @pytest.fixture(autouse=True)
