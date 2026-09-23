@@ -16,7 +16,7 @@ AMD-specific.
 | Zen 2 (Castle Peak) | 3960X, 3970X, 3990X | -- | RSMU | PPT/TDC/EDC | Read only | Threadripper, no CO |
 | Zen 3 (Vermeer) | 5600X, 5800X, 5900X, 5950X | -30 to +30 | MP1 | PPT/TDC/EDC | Read only | Full CO support |
 | Zen 3 (Chagall) | TR PRO 5965WX, 5995WX | -30 to +30 | MP1 | PPT/TDC/EDC | Read only | Threadripper PRO 5000, Vermeer SMU commands (model 0x08) |
-| Zen 3 (Cezanne) | 5600G, 5700G | -30 to +30 | MP1 set, RSMU get | PPT/TDC/EDC | Read only | APU command set (set 0x54/0x55, get 0xC3) |
+| Zen 3 (Cezanne) | 5600G, 5700G | -30 to +30 | MP1 set, RSMU get | PPT/TDC/EDC | Read only | APU command set (set 0x54/0x55, get 0xC3 taking the bare slot) |
 | Zen 3 (Rembrandt) | 6800U, 6900HX | -30 to +30 | MP1 set, RSMU get | PPT/TDC/EDC | Read/Write | APU, Phoenix-class CO commands (set 0x4B/0x4C, get 0x2F) |
 | Zen 3D (Warhol) | 5800X3D | -30 to +30 | MP1 | PPT/TDC/EDC | Read only | V-Cache; be conservative (>-25 risky) |
 | Zen 4 (Raphael) | 7600X, 7700X, 7900X, 7950X | -50 to +30 | RSMU | PPT/TDC/EDC | Read/Write | Extended negative range |

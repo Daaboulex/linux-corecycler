@@ -198,6 +198,7 @@ def _pin_apu_co_command_ids() -> None:
     assert rembrandt.get_co_cmd == 0x2F
     assert strix.get_co_cmd == 0xAF
     assert halo.get_co_cmd == 0xAF
+    assert {gen for gen, cmds in COMMAND_SETS.items() if cmds.get_co_by_slot} == {CPUGeneration.ZEN3_CEZANNE}
 
 
 def _pin_apu_pbo_command_ids() -> None:
@@ -407,7 +408,10 @@ CONTRACTS: list[Contract] = [
         name="apu-co-command-ids",
         kind="arch",
         source=(
-            "ZenStates-Core APUSettings1 (Cezanne: MP1 set 0x54/0x55, RSMU get 0xC3), "
+            "ZenStates-Core APUSettings1 (Cezanne: MP1 set 0x54/0x55, RSMU get 0xC3 "
+            "taking the bare slot, as its GetPsmMarginSingleCore does on APU SMU types "
+            "and ryzen_monitor_ng does on Cezanne; a 5600GE read 0 for the packed word, "
+            "issue #18), "
             "APUSettings1_Phoenix (Rembrandt/Phoenix/Phoenix2: MP1 0x4B/0x4C, RSMU get "
             "0xE1, Rembrandt 0x2F), APUSettings1_Strix (Strix/Krackan: RSMU get 0xAF); "
             "corroborated by RyzenAdj lib/api.c"

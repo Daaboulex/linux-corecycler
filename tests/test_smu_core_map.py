@@ -80,6 +80,8 @@ class _FakeSilicon:
         low = arg & 0xFFFF
         value = low - 0x10000 if low >= 0x8000 else low
         if cmd == self.commands.get_co_cmd:
+            if self.commands.get_co_by_slot:
+                ccd, slot = 0, arg
             self.get_calls.append((ccd, slot))
             stored = self.store.get((ccd, slot), 0) & 0xFFFF
             return SMUResponse(success=True, args=(stored,) + (0,) * 5, raw=b"")
@@ -234,6 +236,16 @@ class TestFuseFailClosed:
         assert reads == [_fuse_addr(CEZANNE, 0)]
         assert smu.set_co_offset(0, -5) is True
         assert silicon.writes == [(0, 2, -5)]
+        assert smu.get_co_offset(0) == -5
+        assert silicon.get_calls[-1] == (0, 2)
+
+    def test_cezanne_bare_slot_read_refuses_a_ccd_it_cannot_address(self):
+        smu = RyzenSMU(CEZANNE, MagicMock())
+        silicon = _FakeSilicon(smu, CEZANNE, {0: set(range(8))})
+        assert smu.get_co_offset(8) is None
+        assert silicon.get_calls == []
+        assert smu.get_co_offset(7) == 0
+        assert silicon.get_calls == [(0, 7)]
 
     def test_cezanne_die_wide_fuse_refuses_a_second_ccd(self):
         smu = RyzenSMU(CEZANNE, MagicMock())

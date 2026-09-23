@@ -9,6 +9,18 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-09-23 Cezanne CO read-back sends the bare slot, issue #18)
+
+- With its cores mapped, the 5600GE then failed every CO write on read-back
+  ("wrote 1, read back 0" on all six cores). Cezanne's RSMU `0xC3` read takes
+  the bare physical slot, the argument ZenStates-Core's
+  `GetPsmMarginSingleCore` sends on its APU SMU types and ryzen_monitor_ng
+  sends on Cezanne; CoreCycler sent the packed CCD/slot word the set command
+  takes, which differs from the bare slot for every slot but 0, and slot 0 is
+  fused off on this part. The read now sends the slot the set addressed, and refuses a core
+  whose address carries CCD or CCX bits a bare slot cannot express. Every
+  other generation sends the same read as before.
+
 ### Fixed (2026-09-23 per-core CO on harvested Cezanne APUs, issue #18)
 
 - A six-core Cezanne (5600GE) numbers its cores 0-5, which cannot say which two
