@@ -280,16 +280,21 @@ def _pin_core_slot_mapping() -> None:
     assert co_calls == []
     assert fuse_reads == [vermeer.core_fuse_addr]
     assert smu.core_map == {0: (0, 0), 1: (0, 1), 2: (0, 4), 3: (0, 5), 4: (0, 6), 5: (0, 7)}
-    fused = {gen: cmds.core_fuse_addr for gen, cmds in COMMAND_SETS.items() if cmds.core_fuse_addr}
-    assert fused == {
-        CPUGeneration.ZEN3_VERMEER: 0x30081D98,
-        CPUGeneration.ZEN3_CHAGALL: 0x30081D98,
-        CPUGeneration.ZEN3D_WARHOL: 0x30081D98,
-        CPUGeneration.ZEN4_STORM_PEAK: 0x30081D98,
-        CPUGeneration.ZEN4_RAPHAEL: 0x30081CD0,
-        CPUGeneration.ZEN4_DRAGON_RANGE: 0x30081CD0,
-        CPUGeneration.ZEN5_GRANITE_RIDGE: 0x304A03DC,
+    fused = {
+        gen: (cmds.core_fuse_addr, cmds.core_fuse_shift) for gen, cmds in COMMAND_SETS.items() if cmds.core_fuse_addr
     }
+    assert fused == {
+        CPUGeneration.ZEN3_VERMEER: (0x30081D98, 0),
+        CPUGeneration.ZEN3_CHAGALL: (0x30081D98, 0),
+        CPUGeneration.ZEN3D_WARHOL: (0x30081D98, 0),
+        CPUGeneration.ZEN3_CEZANNE: (0x5D448, 11),
+        CPUGeneration.ZEN4_STORM_PEAK: (0x30081D98, 0),
+        CPUGeneration.ZEN4_RAPHAEL: (0x30081CD0, 0),
+        CPUGeneration.ZEN4_DRAGON_RANGE: (0x30081CD0, 0),
+        CPUGeneration.ZEN5_GRANITE_RIDGE: (0x304A03DC, 0),
+    }
+    assert all(cmds.core_fuse_shift == 0 for cmds in COMMAND_SETS.values() if not cmds.core_fuse_addr)
+    assert {gen for gen, cmds in COMMAND_SETS.items() if cmds.core_fuse_die_wide} == {CPUGeneration.ZEN3_CEZANNE}
     mapped = {gen for gen, cmds in COMMAND_SETS.items() if cmds.uniform_8core_ccds}
     assert mapped == {
         CPUGeneration.ZEN3_VERMEER,
@@ -458,8 +463,9 @@ CONTRACTS: list[Contract] = [
             "Issue #11 (5600X renumbered core ids) + ZenStates-Core Cpu.cs "
             "GetCpuTopology, corroborated by ryzen_monitor get_processor_topology: "
             "SMU CO addresses physical 8-slot CCDs including fused-off cores, and "
-            "the per-CCD SMN core-disable fuse (CCD n at addr + (n << 25), low 8 "
-            "bits, set bit = fused off) names the live slots, which pair with OS "
+            "the per-CCD SMN core-disable fuse (CCD n at addr + (n << 25), 8 bits "
+            "from the die's shift, set bit = fused off; Cezanne 0x5D448 bits 18:11, "
+            "issue #18) names the live slots, which pair with OS "
             "cores in ascending order. The CO read is NOT that signal -- it answers "
             "on every in-range slot, which is what issue #11 reported"
         ),

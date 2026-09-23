@@ -45,14 +45,17 @@ the SMU's own record of which of the 8 slots exist -- and its cores map onto the
 live slots in ascending order, the same order-preserving mapping the Windows tools
 build from that fuse. The CO read cannot stand in for the fuse: it answers on every
 in-range slot, fused-off ones included, which is what issue #11's 5600X reported
-(all eight slots answered on a six-core CCD).
+(all eight slots answered on a six-core CCD). Cezanne keeps that map elsewhere, in
+bits 18:11 of SMN `0x5D448`; the desktop fuse address reads `0xFFFFFFFF` there. A
+5600GE (issue #18) confirmed it: the register fused off slots 0 and 1, the same two
+slots whose PM table rows read all zero, so its cores 0-5 are slots 2-7.
 
 Reading an SMN register is a *write* of the address, so this needs write access to
 `/sys/kernel/ryzen_smu_drv/smn`, which `ryzen_smu` ships root-only -- the NixOS
 module grants it to the `corecycler` group alongside the mailbox files, and
 [installation.md](installation.md#ryzen_smu-kernel-module) has the equivalent unit
 for other distros. If the fuse cannot be read, has no verified address for the die
-(the APUs and Shimada Peak), or disagrees with the OS core count, per-core CO is
+(the APUs other than Cezanne, and Shimada Peak), or disagrees with the OS core count, per-core CO is
 disabled with an explicit reason (GUI banner, CLI stderr, tuner refuses to start)
 instead of ever writing to the wrong core. Discovery is gated per generation on the
 verified classic 8-slot-per-CCD layout; heterogeneous Zen 4c/5c dies (Phoenix2,
