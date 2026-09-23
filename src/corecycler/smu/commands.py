@@ -71,11 +71,14 @@ class SMUCommandSet:
     # CO (Curve Optimizer / DldoPsmMargin) commands — None if generation lacks CO.
     # get_co_mailbox overrides the mailbox for the GET command only: the APU
     # classes set CO via MP1 but read it back via RSMU (ZenStates-Core
-    # APUSettings1*); None means the default mailbox.
+    # APUSettings1*); None means the default mailbox. get_co_by_slot: the read
+    # takes the bare physical slot, not the packed word the set takes
+    # (ZenStates-Core GetPsmMarginSingleCore on its APU SMU types).
     set_co_cmd: int | None = None
     set_all_co_cmd: int | None = None
     get_co_cmd: int | None = None
     get_co_mailbox: str | None = None
+    get_co_by_slot: bool = False
 
     # PBO power limits, all sent on the RSMU mailbox. Desktop dies use the
     # RSMU SetFastLimit(=PPT)/SetTDCVDDLimit/SetEDCVDDLimit/SetTctlMax ids.
@@ -262,6 +265,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         set_all_co_cmd=0x55,
         get_co_cmd=0xC3,
         get_co_mailbox="rsmu",
+        get_co_by_slot=True,
         set_ppt_cmd=0x33,
         set_tdc_cmd=0x38,
         set_edc_cmd=0x3A,

@@ -542,6 +542,16 @@ class RyzenSMU:
             return None
         ccd, slot = addr
         arg = encode_co_arg(core_id, 0, self.commands.generation, ccd=ccd, slot=slot)
+        if self.commands.get_co_by_slot:
+            if arg >> 24:
+                log.error(
+                    "CO read refused for core %d: %s reads CO by bare slot, which cannot carry the CCD/CCX bits of %#x",
+                    core_id,
+                    self.commands.generation.name,
+                    arg,
+                )
+                return None
+            arg >>= 20
         resp = self._send_get_co(arg)
         if not resp.success:
             return None
