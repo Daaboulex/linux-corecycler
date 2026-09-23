@@ -140,7 +140,7 @@ def test_core_slot_map_matches_the_live_core_disable_fuse():
     for ccd, mapped_slots in per_ccd.items():
         fuse = smu.read_smn(commands.core_fuse_addr + (ccd << 25))
         assert fuse is not None, f"CCD {ccd} core-disable fuse unreadable"
-        live = [s for s in range(8) if not (fuse >> s) & 1]
+        live = [s for s in range(8) if not (fuse >> (commands.core_fuse_shift + s)) & 1]
         assert live == mapped_slots, (ccd, hex(fuse), live, mapped_slots)
 
 

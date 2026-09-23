@@ -55,15 +55,18 @@ class SMUCommandSet:
     uniform_8core_ccds: bool = False
 
     # SMN address of CCD 0's core-disable fuse; CCD n sits at
-    # ``addr + (n << 25)`` and the low 8 bits mark the fused-off physical
-    # slots (bit set = slot disabled). This is the SMU's own record of which
-    # slots exist, and the only thing that resolves a renumbered core-id space
-    # (issue #11) -- the CO read answers on every in-range slot and proves
-    # nothing. None where no address is verified for the die, which fails
-    # per-core CO closed on a renumbered part rather than guessing: the APU
-    # dies (ryzen_monitor excludes Cezanne from the fuse path outright) and
-    # Shimada Peak, whose address ZenStates-Core itself marks uncertain.
+    # ``addr + (n << 25)`` and the 8 bits from ``core_fuse_shift`` up mark the
+    # fused-off physical slots (bit set = slot disabled). This is the SMU's
+    # own record of which slots exist, and the only thing that resolves a
+    # renumbered core-id space (issue #11) -- the CO read answers on every
+    # in-range slot and proves nothing. None where no address is verified for
+    # the die, which fails per-core CO closed on a renumbered part rather than
+    # guessing: the APU dies other than Cezanne, and Shimada Peak, whose
+    # address ZenStates-Core itself marks uncertain. A die-wide fuse has no
+    # CCD stride, so a topology showing a second CCD refuses.
     core_fuse_addr: int | None = None
+    core_fuse_shift: int = 0
+    core_fuse_die_wide: bool = False
 
     # CO (Curve Optimizer / DldoPsmMargin) commands — None if generation lacks CO.
     # get_co_mailbox overrides the mailbox for the GET command only: the APU
@@ -138,10 +141,15 @@ class SMUCommandSet:
 # offset, except family 0x1A which carries its own address; ryzen_monitor's
 # get_processor_topology independently derives the same family 0x17/0x19
 # values, and ZenStates' own per-codename fuse table lists them verbatim.
+# Cezanne is the exception: the family address reads 0xFFFFFFFF there, and
+# its map sits in bits 18:11 of 0x5D448 (ryzen_monitor_ng), confirmed on a
+# 5600GE against the PM table's all-zero core rows (issue #18).
 # ===========================================================================
 
 # family 0x19 offset 0x598 -- Vermeer, Warhol, Chagall, Storm Peak
 _FUSE_ZEN3_CLASS = 0x30081D98
+# Cezanne, bits 18:11
+_FUSE_CEZANNE = 0x5D448
 # family 0x19 offset 0x4D0 -- Raphael, Dragon Range
 _FUSE_RAPHAEL = 0x30081CD0
 # family 0x1A -- Granite Ridge
@@ -247,6 +255,9 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         mailbox="mp1",
         encoding_scheme="zen3",
         uniform_8core_ccds=True,
+        core_fuse_addr=_FUSE_CEZANNE,
+        core_fuse_shift=11,
+        core_fuse_die_wide=True,
         set_co_cmd=0x54,
         set_all_co_cmd=0x55,
         get_co_cmd=0xC3,

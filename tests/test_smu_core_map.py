@@ -32,6 +32,7 @@ from corecycler.smu.driver import RyzenSMU, SMUResponse, core_map_blocked
 VERMEER = get_commands(CPUGeneration.ZEN3_VERMEER)
 ZEN5 = get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE)
 CEZANNE = get_commands(CPUGeneration.ZEN3_CEZANNE)
+PHOENIX = get_commands(CPUGeneration.ZEN4_PHOENIX)
 
 _SMN_DENIED = "no write permission on /sys/kernel/ryzen_smu_drv/smn — root-only"
 
@@ -107,6 +108,7 @@ def _fuse_addr(commands, ccd: int) -> int:
 
 
 REPORTED_5600X_LIVE_SLOTS = {0, 1, 4, 5, 6, 7}
+REPORTED_5600GE_FUSE_WORD = 0x281C70
 
 
 class TestRenumberedHarvested:
@@ -211,11 +213,43 @@ class TestFuseFailClosed:
         assert silicon.fuse_reads == [_fuse_addr(VERMEER, 0)]
 
     def test_generation_without_a_verified_fuse_address_refuses(self):
-        smu, silicon = _mapped_smu(CEZANNE, {c: 0 for c in range(6)}, {0: REPORTED_5600X_LIVE_SLOTS})
-        assert CEZANNE.core_fuse_addr is None
+        smu, silicon = _mapped_smu(PHOENIX, {c: 0 for c in range(6)}, {0: REPORTED_5600X_LIVE_SLOTS})
+        assert PHOENIX.core_fuse_addr is None
         assert smu.core_map is None
-        assert "ZEN3_CEZANNE" in smu.core_map_error
+        assert "ZEN4_PHOENIX" in smu.core_map_error
         assert silicon.fuse_reads == []
+
+    def test_cezanne_5600ge_reported_fuse_word_puts_cores_on_slots_2_to_7(self):
+        smu = RyzenSMU(CEZANNE, MagicMock())
+        silicon = _FakeSilicon(smu, CEZANNE, {0: set(range(2, 8))})
+        reads: list[int] = []
+
+        def read_reported_word(address: int) -> int:
+            reads.append(address)
+            return REPORTED_5600GE_FUSE_WORD
+
+        smu.read_smn = read_reported_word
+        smu.set_topology(_topo({c: 0 for c in range(6)}))
+        assert smu.core_map_error is None
+        assert smu.core_map == {0: (0, 2), 1: (0, 3), 2: (0, 4), 3: (0, 5), 4: (0, 6), 5: (0, 7)}
+        assert reads == [_fuse_addr(CEZANNE, 0)]
+        assert smu.set_co_offset(0, -5) is True
+        assert silicon.writes == [(0, 2, -5)]
+
+    def test_cezanne_die_wide_fuse_refuses_a_second_ccd(self):
+        smu = RyzenSMU(CEZANNE, MagicMock())
+        _FakeSilicon(smu, CEZANNE, {0: set(range(2, 8))})
+        reads: list[int] = []
+
+        def read_reported_word(address: int) -> int:
+            reads.append(address)
+            return REPORTED_5600GE_FUSE_WORD
+
+        smu.read_smn = read_reported_word
+        smu.set_topology(_topo({c: c // 6 for c in range(12)}))
+        assert smu.core_map is None
+        assert "CCD 1" in smu.core_map_error
+        assert reads == [_fuse_addr(CEZANNE, 0)]
 
     def test_dry_run_refuses_an_unaddressable_write(self):
         smu, _silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: set(range(8))}, dry_run=True)
@@ -324,16 +358,19 @@ class TestGenerationGating:
     def test_only_verified_dies_carry_a_fuse_address(self):
         """A die with no grounded fuse address must fail closed, never guess a
         neighbouring generation's address."""
-        fused = {g: c.core_fuse_addr for g, c in COMMAND_SETS.items() if c.core_fuse_addr}
+        fused = {g: (c.core_fuse_addr, c.core_fuse_shift) for g, c in COMMAND_SETS.items() if c.core_fuse_addr}
         assert fused == {
-            CPUGeneration.ZEN3_VERMEER: 0x30081D98,
-            CPUGeneration.ZEN3_CHAGALL: 0x30081D98,
-            CPUGeneration.ZEN3D_WARHOL: 0x30081D98,
-            CPUGeneration.ZEN4_STORM_PEAK: 0x30081D98,
-            CPUGeneration.ZEN4_RAPHAEL: 0x30081CD0,
-            CPUGeneration.ZEN4_DRAGON_RANGE: 0x30081CD0,
-            CPUGeneration.ZEN5_GRANITE_RIDGE: 0x304A03DC,
+            CPUGeneration.ZEN3_VERMEER: (0x30081D98, 0),
+            CPUGeneration.ZEN3_CHAGALL: (0x30081D98, 0),
+            CPUGeneration.ZEN3D_WARHOL: (0x30081D98, 0),
+            CPUGeneration.ZEN3_CEZANNE: (0x5D448, 11),
+            CPUGeneration.ZEN4_STORM_PEAK: (0x30081D98, 0),
+            CPUGeneration.ZEN4_RAPHAEL: (0x30081CD0, 0),
+            CPUGeneration.ZEN4_DRAGON_RANGE: (0x30081CD0, 0),
+            CPUGeneration.ZEN5_GRANITE_RIDGE: (0x304A03DC, 0),
         }
+        assert all(c.core_fuse_shift == 0 for c in COMMAND_SETS.values() if not c.core_fuse_addr)
+        assert {g for g, c in COMMAND_SETS.items() if c.core_fuse_die_wide} == {CPUGeneration.ZEN3_CEZANNE}
 
 
 class TestKnownCoreDomain:

@@ -322,6 +322,13 @@ class RyzenSMU:
                 f"disabled instead of writing to the wrong cores; please report "
                 f"this output{self._offline_hint}"
             )
+        if encode_ccd and self.commands.core_fuse_die_wide:
+            raise CoreMapError(
+                f"the {self.commands.generation.name} core-disable fuse covers the "
+                f"whole die, but the topology shows CCD {encode_ccd} -- per-core CO "
+                f"stays disabled instead of writing to the wrong cores; please "
+                f"report this output"
+            )
         ok, msg = self.check_smn_readable()
         if not ok:
             raise CoreMapError(
@@ -337,12 +344,13 @@ class RyzenSMU:
                 f"file -- per-core CO stays disabled instead of writing to the "
                 f"wrong cores; please report this output"
             )
-        live = [slot for slot in range(_SLOTS_PER_CCD) if not (fuse >> slot) & 1]
+        disabled = (fuse >> self.commands.core_fuse_shift) & 0xFF
+        live = [slot for slot in range(_SLOTS_PER_CCD) if not (disabled >> slot) & 1]
         if len(live) == want:
             return live
         raise CoreMapError(
             f"core ids on this CPU are renumbered and the CCD-{encode_ccd} "
-            f"core-disable fuse disagrees with the OS: fuse {fuse & 0xFF:#04x} "
+            f"core-disable fuse disagrees with the OS: fuse {disabled:#04x} "
             f"leaves {len(live)} live slots {live} but the OS reports {want} "
             f"cores -- per-core CO stays disabled instead of writing to the "
             f"wrong cores; please report this output{self._offline_hint}"

@@ -9,6 +9,17 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-09-23 per-core CO on harvested Cezanne APUs, issue #18)
+
+- A six-core Cezanne (5600GE) numbers its cores 0-5, which cannot say which two
+  of the die's eight slots are fused off, and Cezanne had no verified fuse
+  address, so per-core CO refused. Its map is now read from bits 18:11 of SMN
+  `0x5D448` (ryzen_monitor_ng); the desktop family address `0x30081D98` reads
+  `0xFFFFFFFF` on this die. The reporter's dump confirmed it: the register
+  fused off slots 0 and 1, the same two slots whose PM table core rows read all
+  zero, so cores 0-5 now address slots 2-7. Every other generation reads the
+  same address and bits as before.
+
 ### Fixed (2026-09-20 validation stage 6 sized its memory stressors against the whole machine, issue #17)
 
 - Stage 6 launched one stressapptest per core with no `-M`, so every instance
