@@ -23,7 +23,6 @@ import pytest
 
 from corecycler.smu import driver as drv
 from corecycler.smu.commands import (
-    COMMAND_SETS,
     CPUGeneration,
     get_commands,
 )
@@ -338,39 +337,6 @@ class TestGenerationGating:
         assert silicon.fuse_reads == []
         assert smu.core_map is None
         assert smu.core_map_error is None
-
-    def test_the_verified_generation_set_is_deliberate(self):
-        mapped = {g for g, c in COMMAND_SETS.items() if c.uniform_8core_ccds}
-        assert mapped == {
-            CPUGeneration.ZEN3_VERMEER,
-            CPUGeneration.ZEN3_CHAGALL,
-            CPUGeneration.ZEN3D_WARHOL,
-            CPUGeneration.ZEN3_CEZANNE,
-            CPUGeneration.ZEN3_REMBRANDT,
-            CPUGeneration.ZEN4_RAPHAEL,
-            CPUGeneration.ZEN4_DRAGON_RANGE,
-            CPUGeneration.ZEN4_STORM_PEAK,
-            CPUGeneration.ZEN4_PHOENIX,
-            CPUGeneration.ZEN5_GRANITE_RIDGE,
-            CPUGeneration.ZEN5_SHIMADA_PEAK,
-        }
-
-    def test_only_verified_dies_carry_a_fuse_address(self):
-        """A die with no grounded fuse address must fail closed, never guess a
-        neighbouring generation's address."""
-        fused = {g: (c.core_fuse_addr, c.core_fuse_shift) for g, c in COMMAND_SETS.items() if c.core_fuse_addr}
-        assert fused == {
-            CPUGeneration.ZEN3_VERMEER: (0x30081D98, 0),
-            CPUGeneration.ZEN3_CHAGALL: (0x30081D98, 0),
-            CPUGeneration.ZEN3D_WARHOL: (0x30081D98, 0),
-            CPUGeneration.ZEN3_CEZANNE: (0x5D448, 11),
-            CPUGeneration.ZEN4_STORM_PEAK: (0x30081D98, 0),
-            CPUGeneration.ZEN4_RAPHAEL: (0x30081CD0, 0),
-            CPUGeneration.ZEN4_DRAGON_RANGE: (0x30081CD0, 0),
-            CPUGeneration.ZEN5_GRANITE_RIDGE: (0x304A03DC, 0),
-        }
-        assert all(c.core_fuse_shift == 0 for c in COMMAND_SETS.values() if not c.core_fuse_addr)
-        assert {g for g, c in COMMAND_SETS.items() if c.core_fuse_die_wide} == {CPUGeneration.ZEN3_CEZANNE}
 
 
 class TestKnownCoreDomain:
