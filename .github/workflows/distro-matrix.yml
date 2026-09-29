@@ -52,7 +52,7 @@ jobs:
           # stressapptest is AUR-only on Arch, so it is not expected here.
           - image: archlinux:latest
             install: >-
-              pacman -Sy --noconfirm python git stress-ng dmidecode util-linux systemd
+              pacman -Syu --noconfirm python git stress-ng dmidecode util-linux systemd
             expect: stress-ng dmidecode systemd-run setpriv dmesg journalctl
     container: ${{ matrix.image }}
     # A container the runner reads as bash-less gets `sh -e`, and dash has no pipefail.
