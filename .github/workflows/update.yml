@@ -15,6 +15,18 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
+    outputs:
+      exit_code: ${{ steps.update.outputs.exit_code }}
+      updated: ${{ steps.update.outputs.updated }}
+      old_version: ${{ steps.update.outputs.old_version }}
+      new_version: ${{ steps.update.outputs.new_version }}
+      package_name: ${{ steps.update.outputs.package_name }}
+      auto_added: ${{ steps.update.outputs.auto_added }}
+      upstream_url: ${{ steps.update.outputs.upstream_url }}
+      error_type: ${{ steps.update.outputs.error_type }}
+      stalled: ${{ steps.streak.outputs.stalled }}
+      sha: ${{ steps.candidate.outputs.sha }}
+      runners: ${{ steps.runners.outputs.runners }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: DeterminateSystems/determinate-nix-action@8d87e8d5e5b8a8309d4281094560f127d9a265f1 # v3.22.5
@@ -95,20 +107,118 @@ jobs:
           path: /tmp/update-streak
           key: update-streak-${{ github.run_id }}
 
+      - name: Record the candidate
+        id: candidate
+        if: steps.update.outputs.updated == 'true' || steps.update.outputs.exit_code == '1'
+        run: |
+          sha=$(git rev-parse HEAD)
+          git add -A ':!AI-*.json'
+          git diff --cached --binary > /tmp/candidate.patch
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Name a runner for every other declared system
+        id: runners
+        if: steps.update.outputs.updated == 'true' && steps.update.outputs.exit_code == '0'
+        run: |
+          built=$(nix eval --impure --raw --expr 'builtins.currentSystem')
+          runners=$(bash scripts/declared-runners.sh "$built")
+          echo "runners=$runners" >> "$GITHUB_OUTPUT"
+      - if: steps.candidate.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate
+          path: /tmp/candidate.patch
+          if-no-files-found: error
+      - name: Keep the update log for the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: log-update
+          path: /tmp/update.log
+
+  verify:
+    needs: update
+    if: needs.update.outputs.runners != '' && needs.update.outputs.runners != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.update.outputs.runners) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.update.outputs.sha }}
+      - uses: DeterminateSystems/determinate-nix-action@8d87e8d5e5b8a8309d4281094560f127d9a265f1 # v3.22.5
+        with:
+          extra-conf: lazy-trees = false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate
+          path: /tmp/candidate
+
+      - name: Apply the candidate
+        run: git apply --index /tmp/candidate/candidate.patch
+
+      - name: Build every check for this system
+        run: |
+          SYS=$(nix eval --impure --raw --expr 'builtins.currentSystem')
+          build() {
+            nix run --inputs-from . nixpkgs#nix-fast-build -- --skip-cached --no-nom --flake ".#checks.$SYS" 2>&1 | tee /tmp/update.log
+            return "${PIPESTATUS[0]}"
+          }
+          set +e
+          build
+          code=$?
+          transient='crates\.io|error: cannot download|unable to download|http error 5[0-9][0-9]|status code: (403|429|5[0-9][0-9])|curl: \(|couldn.t resolve host|connection reset by peer|temporary failure in name resolution|operation timed out'
+          for backoff in 60 300 900; do
+            [ "$code" -eq 0 ] && break
+            grep -qiE "$transient" /tmp/update.log || break
+            echo "::warning::Transient external-fetch failure during the update build; retrying in ${backoff}s."
+            sleep "$backoff"
+            build
+            code=$?
+          done
+          exit "$code"
+
+      - name: Keep the build log for the report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: log-${{ matrix.os }}
+          path: /tmp/update.log
+
+  publish:
+    needs: [update, verify]
+    if: >-
+      always()
+      && needs.update.result == 'success'
+      && needs.update.outputs.exit_code == '0'
+      && (needs.verify.result == 'success' || needs.verify.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.update.outputs.sha }}
+      - if: needs.update.outputs.updated == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate
+          path: /tmp/candidate
+
       # Silent success: commit + push
       - name: Push update
-        if: steps.update.outputs.updated == 'true' && steps.update.outputs.exit_code == '0'
+        if: needs.update.outputs.updated == 'true'
         # Outputs pass via env, never interpolated into the run-block shell
         # (an upstream tag with a quote or $(...) would otherwise inject).
         env:
-          OLDV: ${{ steps.update.outputs.old_version }}
-          NEWV: ${{ steps.update.outputs.new_version }}
-          PKG: ${{ steps.update.outputs.package_name }}
-          AUTO_ADDED: ${{ steps.update.outputs.auto_added }}
+          OLDV: ${{ needs.update.outputs.old_version }}
+          NEWV: ${{ needs.update.outputs.new_version }}
+          PKG: ${{ needs.update.outputs.package_name }}
+          AUTO_ADDED: ${{ needs.update.outputs.auto_added }}
+          BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          git apply --index /tmp/candidate/candidate.patch
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A ':!AI-*.json'
           git diff --cached --quiet && { echo "No changes to commit"; exit 0; }
           if [ -n "${AUTO_ADDED}" ]; then
             git commit -m "chore: update ${PKG} ${OLDV} -> ${NEWV}" \
@@ -116,19 +226,18 @@ jobs:
           else
             git commit -m "chore: update ${PKG} ${OLDV} -> ${NEWV}"
           fi
-          git push
+          git push origin "HEAD:refs/heads/$BRANCH"
 
       # Auto-close previous failure issues on success. Keyed on exit_code alone:
       # gating on `updated` too left a repo whose update was FIXED but whose
       # upstream had not moved unable to ever clear its own ticket.
       - name: Close resolved issues
-        if: steps.update.outputs.exit_code == '0'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
         # Pass outputs via env, never interpolate ${{ }} into the script body
         # (a value containing a quote/newline would break out of the JS).
         env:
-          NEW_VERSION: ${{ steps.update.outputs.new_version }}
-          DID_UPDATE: ${{ steps.update.outputs.updated }}
+          NEW_VERSION: ${{ needs.update.outputs.new_version }}
+          DID_UPDATE: ${{ needs.update.outputs.updated }}
         with:
           script: |
             const issues = await github.rest.issues.listForRepo({
@@ -151,29 +260,73 @@ jobs:
               });
             }
 
-      # Diagnostic issue on failure. Keyed on exit_code==1 alone (not on
-      # `updated`) so config/version-read failures — which never reach the
-      # point of setting `updated` — still surface. A single exit 2 is
-      # transient and files nothing; a week-long streak of them is `stalled`.
+  # Diagnostic issue on failure. Keyed on exit_code==1 alone (not on
+  # `updated`) so config/version-read failures — which never reach the
+  # point of setting `updated` — still surface. A single exit 2 is
+  # transient and files nothing; a week-long streak of them is `stalled`.
+  # An update that built here but fails on another declared system is a
+  # build-error too, and nothing of it is pushed.
+  report:
+    needs: [update, verify]
+    if: >-
+      always()
+      && needs.update.result == 'success'
+      && (needs.update.outputs.exit_code == '1'
+          || needs.update.outputs.stalled == 'true'
+          || needs.verify.result == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.update.outputs.sha }}
+      - if: needs.update.outputs.sha != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate
+          path: /tmp/candidate
+      - name: Apply the attempted update
+        if: needs.update.outputs.sha != ''
+        run: |
+          if [ -s /tmp/candidate/candidate.patch ]; then
+            git apply --index /tmp/candidate/candidate.patch
+          fi
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: log-*
+          path: /tmp/logs
+
+      - name: Gather the failure logs
+        run: |
+          : > /tmp/update.log
+          found=0
+          for f in /tmp/logs/log-update/update.log /tmp/logs/log-ubuntu-*/update.log; do
+            [ -f "$f" ] || continue
+            found=1
+            printf '=== %s\n' "$(basename "$(dirname "$f")")" >> /tmp/update.log
+            cat "$f" >> /tmp/update.log
+          done
+          if [ "$found" = 0 ]; then
+            echo "No job uploaded a log: the run failed before the update started." >> /tmp/update.log
+          fi
+
       # The updater's own log already holds the builder output; name the class
       # from it so the issue title says what broke, not merely that something
       # did. maintenance.yml has done this since the classifier existed.
       - name: Classify the failure
         id: classify
-        if: steps.update.outputs.exit_code == '1'
         run: bash scripts/classify-build-failure.sh /tmp/update.log
 
       - name: Create failure issue
-        if: steps.update.outputs.exit_code == '1' || steps.streak.outputs.stalled == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
         # Pass outputs via env, never interpolate ${{ }} into the script body
         # (a value containing a quote/newline would break out of the JS).
         env:
-          ERROR_TYPE: ${{ steps.update.outputs.error_type || (steps.streak.outputs.stalled == 'true' && 'stalled') || '' }}
-          OLD_VERSION: ${{ steps.update.outputs.old_version }}
-          NEW_VERSION: ${{ steps.update.outputs.new_version }}
-          UPSTREAM_URL: ${{ steps.update.outputs.upstream_url }}
-          PKG: ${{ steps.update.outputs.package_name }}
+          ERROR_TYPE: ${{ (needs.verify.result == 'failure' && 'build-error') || needs.update.outputs.error_type || (needs.update.outputs.stalled == 'true' && 'stalled') || '' }}
+          OTHER_SYSTEM_FAILED: ${{ needs.verify.result == 'failure' }}
+          OLD_VERSION: ${{ needs.update.outputs.old_version }}
+          NEW_VERSION: ${{ needs.update.outputs.new_version }}
+          UPSTREAM_URL: ${{ needs.update.outputs.upstream_url }}
+          PKG: ${{ needs.update.outputs.package_name }}
           FAIL_CLASS: ${{ steps.classify.outputs.class }}
           FAILED_ATTRS: ${{ steps.classify.outputs.failed_attrs }}
           FAILED_DRVS: ${{ steps.classify.outputs.failed_drvs }}
@@ -182,6 +335,17 @@ jobs:
             const fs = require('fs');
             const log = fs.readFileSync('/tmp/update.log', 'utf8');
             const lastLines = log.split('\n').slice(-100).join('\n');
+            const plain = log.replace(/\x1b\[[0-9;]*m/g, '').split('\n');
+            const at = plain.findIndex(l => /^(\S+> )?\s*error(\[E\d+\])?:/.test(l));
+            const firstError = at < 0 ? [] : [
+              '<details open><summary>First error</summary>',
+              '',
+              '```',
+              ...plain.slice(at, at + 25),
+              '```',
+              '</details>',
+              ''
+            ];
             const errorType = process.env.ERROR_TYPE || 'unknown';
             const oldV = process.env.OLD_VERSION || '?';
             const newV = process.env.NEW_VERSION || '?';
@@ -191,6 +355,11 @@ jobs:
             const failedAttrs = process.env.FAILED_ATTRS || '';
             const failedDrvs = process.env.FAILED_DRVS || '';
             const titleClass = (failClass && failClass !== 'unclassified') ? failClass : errorType;
+            const otherSystem = process.env.OTHER_SYSTEM_FAILED === 'true' ? [
+              'The update built on the update runner but failed on another declared',
+              'system; each log section below names the runner it came from.',
+              ''
+            ] : [];
             const failureBlock = (failedAttrs || failedDrvs) ? [
               '### Failing targets, the complete set',
               '',
@@ -253,7 +422,9 @@ jobs:
                 `**Failure**: \`${errorType}\``,
                 upstream ? `**Upstream**: ${upstream}` : '',
                 '',
+                ...otherSystem,
                 ...failureBlock,
+                ...firstError,
                 '### Build log (last 100 lines)',
                 '<details><summary>Click to expand</summary>',
                 '',
@@ -269,17 +440,22 @@ jobs:
               ].filter(Boolean).join('\n')
             });
 
+  retire:
+    needs: [update, verify, publish, report]
+    if: always() && needs.update.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
       # Exit 2 is a transient network failure: it resolves no issue, so it retires no branch.
       # Only the default branch retires: a run dispatched on an update/* branch is WORKING on
       # that branch, and this job would delete the ref that same run just pushed to.
       - name: Retire attempt branches that no longer have an open issue
         if: >-
           github.ref_name == github.event.repository.default_branch
-          && (steps.update.outputs.exit_code == '0' || steps.update.outputs.exit_code == '1')
+          && (needs.update.outputs.exit_code == '0' || needs.update.outputs.exit_code == '1')
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 (node24)
         env:
-          PKG: ${{ steps.update.outputs.package_name }}
-          KEEP: ${{ steps.update.outputs.exit_code == '1' && steps.update.outputs.new_version || '' }}
+          PKG: ${{ needs.update.outputs.package_name }}
+          KEEP: ${{ (needs.update.outputs.exit_code == '1' || needs.verify.result == 'failure') && needs.update.outputs.new_version || '' }}
         with:
           script: |
             const pkg = process.env.PKG;

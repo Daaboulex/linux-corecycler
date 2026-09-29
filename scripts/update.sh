@@ -193,6 +193,26 @@ if [ "$DECLARED_SOURCE_HASHES" -gt 1 ]; then
   output "error_type" "config-error"
   exit 1
 fi
+hash_field_files() {
+  local rc=0 found
+  found=$(grep -rlP "$(re_esc "$1")\s*[?=]\s*\"sha256-" --include='*.nix' .) || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    err "Hash field '$1': grep could not read the tree (exit $rc)"
+    output "error_type" "config-error"
+    exit 1
+  fi
+  printf '%s' "$found" | sort
+}
+mapfile -t BARE_HASH_FIELDS < <(echo "$CONFIG" | jq -r '.hashes // [] | .[] | select(type == "string")')
+for f in "${BARE_HASH_FIELDS[@]}"; do
+  bound=$(hash_field_files "$f")
+  if [[ "$bound" == *$'\n'* ]]; then
+    err "Hash field '$f' is set in more than one file ($(tr '\n' ' ' <<<"$bound")), so which one the updater rewrites depends on directory order; declare it as {\"field\": \"$f\", \"file\": \"<path>\"} in hashes[]"
+    output "updated" "false"
+    output "error_type" "config-error"
+    exit 1
+  fi
+done
 
 # --- Get current version -------------------------------------------------
 # trackOnly repos record the upstream marker (a commit) in trackFile, not a
@@ -712,8 +732,7 @@ mapfile -t HASH_ENTRIES < <(echo "$CONFIG" | jq -c '.hashes // [] | .[]')
 for entry in "${HASH_ENTRIES[@]}"; do
   if [ "$(echo "$entry" | jq -r 'type')" = "string" ]; then
     f=$(echo "$entry" | jq -r '.')
-    f_re=$(re_esc "$f")
-    file=$(grep -rlP "${f_re}\s*[?=]\s*\"sha256-" --include='*.nix' . 2>/dev/null | head -1 || true)
+    file=$(hash_field_files "$f")
   else
     f=$(echo "$entry" | jq -r '.field')
     file=$(echo "$entry" | jq -r '.file')
