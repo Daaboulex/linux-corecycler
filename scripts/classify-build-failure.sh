@@ -14,7 +14,7 @@ set -uo pipefail
 #   classify-build-failure.sh <logfile>
 #
 # Outputs (GITHUB_OUTPUT or stdout):
-#   class=<transient-infra|upstream-rerelease-hash-mismatch|nixpkgs-package-drop|
+#   class=<transient-infra|eval-error|sandbox-download|upstream-rerelease-hash-mismatch|nixpkgs-package-drop|
 #          missing-python-dep|requirements-coverage|
 #          python-metadata-version-mismatch|substitution-pattern-drift|
 #          unclassified>
@@ -45,6 +45,8 @@ grep -qiE "couldn.t resolve host|temporary failure in name resolution|connection
 # fetch/GC race, not our code): the same revision re-runs green, so it is
 # transient -- never a repo defect to chase.
 grep -qE "path '[^']+' is not valid|does not exist in the Nix store|no such path in the store" "$LOG" && class=transient-infra
+grep -qE 'nix_fast_build:EVAL: [0-9]+ successes, [1-9]|error: Failed assertions|while evaluating (the attribute|the option|derivation)' "$LOG" && class=eval-error
+grep -q 'file DOWNLOAD cannot compute hash on failed download' "$LOG" && class=sandbox-download
 grep -q 'hash mismatch in fixed-output' "$LOG" && class=upstream-rerelease-hash-mismatch
 grep -qE 'not supported for interpreter python|is marked as broken' "$LOG" && class=nixpkgs-package-drop
 grep -q 'ModuleNotFoundError' "$LOG" && class=missing-python-dep
