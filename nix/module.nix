@@ -192,7 +192,7 @@ in
     # A systemd oneshot is used because tmpfiles z-rules and udev module events
     # both race with sysfs creation in module_init(). ConditionPathExists +
     # After=systemd-modules-load.service guarantees paths exist.
-    systemd.services.corecycler-smu-permissions = lib.mkIf (cfg.deviceAccess && cfg.ryzenSmu) {
+    systemd.services.corecycler-smu-permissions = lib.mkIf cfg.deviceAccess {
       description = "Set ryzen_smu sysfs permissions for corecycler group";
       after = [ "systemd-modules-load.service" ];
       wantedBy = [ "multi-user.target" ];
