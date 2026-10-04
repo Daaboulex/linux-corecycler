@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from corecycler.engine.backends.base import Outcome, StressConfig, StressMode
 from corecycler.engine.backends.stressapptest import ALLOCATION_REFUSALS, StressapptestBackend
+from tests.test_execution import lane, make_supervisor, one_busy_cpu, run_one, scripted
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _sat_accepts(size_mb: int, copy_threads: int) -> bool:
@@ -112,6 +118,39 @@ class TestAllocationRefusal:
         stdout = "Hardware Error: miscompare at 0x1000\nProcess Error: failed to allocate memory\n"
         found = StressapptestBackend().findings(stdout, tmp_path)
         assert min(found, key=lambda signal: signal.outcome.rank).outcome is Outcome.COMPUTATION
+
+
+def _prints_on_sigterm(summary: str, code: int, marker: Path) -> str:
+    return (
+        "import signal, sys, time\n"
+        "def stop(*_):\n"
+        f"    sys.stdout.write({summary!r})\n"
+        "    sys.stdout.flush()\n"
+        f"    open({str(marker)!r}, 'w').close()\n"
+        f"    sys.exit({code})\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "while True:\n"
+        "    time.sleep(0.01)\n"
+    )
+
+
+class TestSummaryAfterTheStop:
+    def test_the_summary_printed_after_our_stop_is_read(self, tmp_path):
+        marker = tmp_path / "summary-written"
+        summary = "Report Error: miscompare : DIMM0 : 1 : 3s\nStatus: FAIL - test discovered HW problems\n"
+        supervisor, _, _ = make_supervisor(scripted(StressapptestBackend, _prints_on_sigterm(summary, 1, marker)))
+        verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        assert marker.exists()
+        assert verdict.outcome is Outcome.COMPUTATION
+        assert "miscompare" in verdict.detail
+
+    def test_a_clean_summary_after_our_stop_passes(self, tmp_path):
+        marker = tmp_path / "summary-written"
+        supervisor, _, _ = make_supervisor(scripted(StressapptestBackend, _prints_on_sigterm(CLEAN_SUMMARY, 0, marker)))
+        with one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        assert marker.exists()
+        assert verdict.outcome is Outcome.PASS
 
 
 class TestMinimumMemory:
