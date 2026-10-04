@@ -262,7 +262,7 @@ at once).
 
 | Error type | Meaning | Typical cause |
 |---|---|---|
-| MCE (Machine Check Exception) | Hardware-level CPU error (sysfs or dmesg) | CO too aggressive -- voltage too low for the requested frequency |
+| MCE (Machine Check Exception) | Hardware-level CPU error (kernel log) | CO too aggressive -- voltage too low for the requested frequency |
 | Computation | Stress test got a wrong result (rounding, sumout, mismatch) | CO too aggressive -- subtle numerical instability |
 | Idle instability | MCE during an idle/C-state transition | CO unstable during voltage ramp-up from deep sleep |
 | Load transition | Error during a variable-load stop/start | Voltage regulation insufficient during rapid load changes |

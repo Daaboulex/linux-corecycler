@@ -122,12 +122,6 @@ TOOLS: dict[str, ExternalTool] = {
             names=("dmidecode",),
         ),
         ExternalTool(
-            key="dmesg",
-            kind=OPTIONAL,
-            package="util-linux",
-            names=("dmesg",),
-        ),
-        ExternalTool(
             key="journalctl",
             kind=OPTIONAL,
             package="systemd",

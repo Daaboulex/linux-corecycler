@@ -22,7 +22,7 @@ from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.engine import TunerEngine
 from corecycler.tuner.state import TunerPhase
-from tests._reports import mce, report
+from tests._reports import mce, report, trouble, unblamed
 
 
 @pytest.fixture
@@ -688,7 +688,7 @@ class TestVerdictRouter:
         cs = engine._core_states[0]
         before = (cs.phase, cs.current_offset, cs.best_offset, cs.crash_count)
         engine._on_test_finished(
-            report(0, Outcome.UNATTRIBUTED_MCE, "Machine check without core attribution", events=(mce(-1),))
+            report(0, Outcome.UNATTRIBUTED_MCE, "Machine check without core attribution", events=(unblamed(),))
         )
         assert tp.get_test_log(engine._db, engine._session_id) == []
         assert (cs.phase, cs.current_offset, cs.best_offset, cs.crash_count) == before
@@ -809,9 +809,7 @@ class TestSoakVerdict:
         self._soaking(engine)
         queued = []
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
-        engine._on_test_finished(
-            report(0, Outcome.UNATTRIBUTED_MCE, "kernel error during soak", events=(mce(-1, message="kernel oops"),))
-        )
+        engine._on_test_finished(report(0, Outcome.UNATTRIBUTED_MCE, "kernel error during soak", events=(unblamed(),)))
         assert engine._validation_dirty is True
         assert engine._soaking is False
         assert queued[0] == engine._run_validation_next
@@ -819,9 +817,7 @@ class TestSoakVerdict:
     def test_repeated_unattributed_events_pause_for_the_owner(self, engine):
         self._soaking(engine)
         engine._config.max_unattributed_crash_hunts = 1
-        engine._on_test_finished(
-            report(0, Outcome.UNATTRIBUTED_MCE, "kernel error during soak", events=(mce(-1, message="kernel oops"),))
-        )
+        engine._on_test_finished(report(0, Outcome.UNATTRIBUTED_MCE, "kernel error during soak", events=(unblamed(),)))
         assert engine.status == "paused"
 
     def test_a_soak_naming_another_core_leaves_validation(self, engine, monkeypatch):
@@ -1189,13 +1185,10 @@ class TestConfigFallbacks:
 
 class TestEvidenceGuards:
     def test_events_naming_no_core_or_a_core_outside_the_tune_are_no_evidence(self, engine):
-        assert engine._foreign_mce_by_core(0, (mce(-1), mce(99))) == {}
+        assert engine._foreign_mce_by_core(0, (unblamed(), trouble(), mce(99))) == {}
 
     def test_an_event_on_an_untested_core_is_dropped(self, engine):
-        from corecycler.engine.detector import MCEEvent
-
-        events = [MCEEvent(timestamp=1.0, cpu=99, bank=0, message="x", corrected=True)]
-        assert engine._events_by_core(events) == {}
+        assert engine._events_by_core([mce(99, message="x")]) == {}
 
     def test_journal_suspects_need_a_session(self, engine):
         engine._session_id = None
@@ -1478,12 +1471,10 @@ class TestRemainingEvidencePaths:
         assert applied and 1 in applied[0]
 
     def test_forensics_that_name_a_core_end_an_open_hunt(self, engine, monkeypatch):
-        from corecycler.engine.detector import MCEEvent
-
         sid = engine._session_id
         _confirm(engine, 1, -20)
         tp.set_hunting_core(engine._db, sid, 1)
-        events = [MCEEvent(timestamp=1.0, cpu=1, bank=0, message="corrected", corrected=True)]
+        events = [mce(1)]
         monkeypatch.setattr(engine, "_forensics", lambda *_a, **_kw: (events, True))
         session = tp.get_session(engine._db, sid)
         engine._attribute_crash_after_reboot(session)

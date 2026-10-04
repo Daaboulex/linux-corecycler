@@ -9,13 +9,15 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from corecycler.engine import detector
 from corecycler.engine.backends.base import Outcome, StressResult
-from corecycler.engine.detector import MCEEvent
+from corecycler.engine.detector import CoreMachineCheck, KernelTrouble, UnblamedMachineCheck
 from corecycler.history.db import HistoryDB
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
@@ -48,13 +50,12 @@ class FakeSMU:
         return self.written.get(core_id, 0)
 
 
-def _event(cpu: int, corrected: bool = True) -> MCEEvent:
-    return MCEEvent(
-        timestamp=0.0,
+def _event(cpu: int, corrected: bool = True) -> CoreMachineCheck:
+    return CoreMachineCheck(
         cpu=cpu,
         bank=0,
-        message=CPU5_CORRECTED.format(cpu=cpu),
         corrected=corrected,
+        message=CPU5_CORRECTED.format(cpu=cpu),
         raw_ts=float(cpu),
     )
 
@@ -148,12 +149,37 @@ class TestForensicAttribution:
         """A kernel panic line with no CPU proves a crash, names no core."""
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         session = _seed_hardened_validating(eng, db, BEST, BASELINES)
-        eng._forensics = lambda since, timeout=15.0: ([_event(-1)], True)
+        panic = KernelTrouble(message="Kernel panic - not syncing: Fatal machine check", raw_ts=1.0)
+        eng._forensics = lambda since, timeout=15.0: ([panic], True)
 
         crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
 
         assert crashed == []
         assert pending_hunt is True  # fall through to the hunt
+
+    def test_a_shared_bank_in_the_journal_convicts_no_core(self, db, topo_dual_ccd_x3d, mock_backend):
+        eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
+        session = _seed_hardened_validating(eng, db, BEST, BASELINES)
+        cpu = topo_dual_ccd_x3d.cores[5].logical_cpus[0]
+        journal = "".join(
+            f"1789586704.0042{n} ryzen-9950x3d kernel: {line}\n"
+            for n, line in enumerate(
+                [
+                    "[Hardware Error]: Corrected error, no action required.",
+                    f"[Hardware Error]: CPU:{cpu} (1a:44:0) MC21_STATUS[Over|CE|MiscV|AddrV|-|-|SyndV|CECC|-|-|-]: "
+                    "0xdc2040000400011b",
+                    "[Hardware Error]: IPID: 0x0000009600050f00, Syndrome: 0x0000000000000001",
+                    "[Hardware Error]: Unified Memory Controller Ext. Error Code: 0",
+                ]
+            )
+        )
+        eng._forensics = detector.harvest_kernel_mce
+        with patch.object(detector.subprocess, "run", return_value=MagicMock(returncode=0, stdout=journal, stderr="")):
+            crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
+
+        assert crashed == []
+        assert pending_hunt is True
+        assert eng._core_states[5].crash_count == 0
 
     def test_no_forensics_multi_core_requests_hunt_not_guess(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
@@ -295,11 +321,12 @@ class TestForeignMceEvidence:
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_hardened_validating(eng, db, BEST, BASELINES)
         events = (
-            MCEEvent(timestamp=1.0, cpu=5, bank=0, message="a", corrected=True, raw_ts=1.0),
-            MCEEvent(timestamp=2.0, cpu=5, bank=0, message="b", corrected=False, raw_ts=2.0),
-            MCEEvent(timestamp=3.0, cpu=6, bank=0, message="c", corrected=True, raw_ts=3.0),
-            MCEEvent(timestamp=4.0, cpu=2, bank=0, message="own", corrected=True, raw_ts=4.0),
-            MCEEvent(timestamp=5.0, cpu=-1, bank=-1, message="panic", corrected=False, raw_ts=5.0),
+            CoreMachineCheck(cpu=5, bank=0, corrected=True, message="a", raw_ts=1.0),
+            CoreMachineCheck(cpu=5, bank=0, corrected=False, message="b", raw_ts=2.0),
+            CoreMachineCheck(cpu=6, bank=0, corrected=True, message="c", raw_ts=3.0),
+            CoreMachineCheck(cpu=2, bank=0, corrected=True, message="own", raw_ts=4.0),
+            UnblamedMachineCheck(logged_by_cpu=6, bank=21, corrected=False, message="umc", raw_ts=5.0),
+            KernelTrouble(message="panic", raw_ts=6.0),
         )
 
         foreign = eng._foreign_mce_by_core(tested_core=2, events=events)
@@ -433,10 +460,13 @@ class TestNarrativePersistence:
         eng.log_message.emit("nowhere to persist")  # must not raise
 
 
-def _mce_events(cpu: int) -> tuple[MCEEvent, ...]:
-    return (
-        MCEEvent(timestamp=1.0, cpu=cpu, bank=0, message=CPU5_CORRECTED.format(cpu=cpu), corrected=True, raw_ts=1.0),
-    )
+def _mce_events(cpu: int) -> tuple[CoreMachineCheck, ...]:
+    return (CoreMachineCheck(cpu=cpu, bank=0, corrected=True, message=CPU5_CORRECTED.format(cpu=cpu), raw_ts=1.0),)
+
+
+SHARED_BANK = (
+    UnblamedMachineCheck(logged_by_cpu=5, bank=21, corrected=True, message=CPU5_CORRECTED.format(cpu=5), raw_ts=1.0),
+)
 
 
 class TestUnattributedMcePayload:
@@ -449,10 +479,11 @@ class TestUnattributedMcePayload:
     a safe floor.
     """
 
-    def test_an_event_naming_no_cpu_is_detected(self):
+    def test_an_event_blaming_no_core_is_detected(self):
         from corecycler.tuner.engine import _has_unattributed_mce
 
-        assert _has_unattributed_mce(_mce_events(-1)) is True
+        assert _has_unattributed_mce(SHARED_BANK) is True
+        assert _has_unattributed_mce((KernelTrouble(message="Kernel panic - not syncing", raw_ts=1.0),)) is True
 
     def test_attributed_or_absent_events_are_not(self):
         from corecycler.tuner.engine import _has_unattributed_mce
@@ -480,5 +511,5 @@ class TestUnattributedMcePayload:
     def test_a_pass_carrying_an_unattributed_mce_marks_nothing_survived(
         self, db, topo_single_ccd, mock_backend, monkeypatch
     ):
-        calls = self._mark_survived_calls(db, topo_single_ccd, mock_backend, _mce_events(-1), monkeypatch)
+        calls = self._mark_survived_calls(db, topo_single_ccd, mock_backend, SHARED_BANK, monkeypatch)
         assert calls == []

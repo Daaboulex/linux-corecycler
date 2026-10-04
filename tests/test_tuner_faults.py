@@ -36,7 +36,7 @@ from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.engine import TunerEngine
 from corecycler.tuner.state import CoreState, TunerPhase
-from tests._reports import mce, report
+from tests._reports import mce, report, trouble, unblamed
 
 # ---------------------------------------------------------------------------
 # Fault-injectable fake SMU
@@ -262,7 +262,7 @@ _FAULTS = {
         Outcome.OWN_CORE_MCE,
         _mce_events(next((c for c in cliffs if c != core), core)),
     ),
-    "unattributed_mce": lambda core, cliffs: (Outcome.UNATTRIBUTED_MCE, _mce_events(-1)),
+    "unattributed_mce": lambda core, cliffs: (Outcome.UNATTRIBUTED_MCE, (unblamed(bank=5),)),
 }
 
 
@@ -1999,7 +1999,7 @@ class TestApparatusFaultIsNotAVerdict:
             Outcome.UNATTRIBUTED_MCE,
             "Machine check without core attribution during parallel stress: x",
             5.0,
-            events=(mce(-1, corrected=False, message="x", bank=3),),
+            events=(unblamed(corrected=False, message="x", bank=3),),
         )
         with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core"):
             eng._on_test_finished(unattributed)
@@ -2012,7 +2012,8 @@ class TestUnattributedMCEParsing:
 
         assert _has_unattributed_mce(()) is False
         assert _has_unattributed_mce((mce(3),)) is False
-        assert _has_unattributed_mce((mce(3), mce(-1))) is True
+        assert _has_unattributed_mce((mce(3), unblamed())) is True
+        assert _has_unattributed_mce((mce(3), trouble())) is True
 
 
 # ---------------------------------------------------------------------------

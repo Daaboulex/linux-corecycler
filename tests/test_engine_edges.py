@@ -21,16 +21,6 @@ from corecycler.engine.execution import Lane, SuperviseHooks, ThermalWatch, _Lan
 from corecycler.engine.scheduler import CoreScheduler
 
 
-class Event:
-    def __init__(self, cpu: int, message: str = "boom") -> None:
-        self.cpu = cpu
-        self.bank = 0
-        self.message = message
-        self.corrected = False
-        self.timestamp = 0.0
-        self.raw_ts = 0.0
-
-
 class TestContainmentProbe:
     def test_no_systemd_run_probes_to_nothing(self):
         with patch.object(containment, "_systemd_run_path", return_value=None):
@@ -282,12 +272,12 @@ class TestSupervisorInternalsEdges:
         assert run.last_active == now + 60.0
 
     def test_a_late_unattributed_event_reaches_every_lane(self, tmp_path):
-        from test_execution import FakeBackend, FakeDetector
+        from test_execution import FakeBackend, FakeDetector, unblamed
 
         backend = FakeBackend([sys.executable, "-c", "import time; time.sleep(60)"])
         supervisor = _idle_supervisor(
             backend=backend,
-            detector=FakeDetector([[Event(cpu=-1)]]),
+            detector=FakeDetector([[unblamed()]]),
             poll_interval=1.0,
         )
         lanes = [Lane(core_id=core, cpus=(core,), work_dir=tmp_path / f"core_{core}") for core in (2, 3)]

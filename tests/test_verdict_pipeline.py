@@ -45,14 +45,6 @@ sys.exit(2)
 """
 
 
-class QuietDetector:
-    def reset(self) -> None:
-        pass
-
-    def check_mce(self) -> list:
-        return []
-
-
 @pytest.fixture
 def engine(tmp_path, monkeypatch):
     db = HistoryDB(":memory:")
@@ -77,7 +69,6 @@ def _worker(backend, tmp_path, seconds: float) -> eng._TunerWorker:
         ),
         work_dir=tmp_path / "run",
     )
-    scheduler.detector = QuietDetector()
     return eng._TunerWorker(0, 0, scheduler)
 
 
@@ -175,7 +166,6 @@ def test_a_two_lane_mprime_batch_reaches_the_engine_with_every_lane(engine, tmp_
         scheduler_config=SchedulerConfig(seconds_per_core=5, cores_to_test=[0, 1], poll_interval=0.02),
         work_dir=tmp_path / "batch",
     )
-    runner.detector = QuietDetector()
     _deliver(engine, eng._ParallelWorker(0, 0, runner))
     assert logged == [(0, Outcome.CUT_SHORT), (1, Outcome.COMPUTATION)]
     reported = tp.get_test_log(engine._db, engine._session_id, core_id=1)[-1]

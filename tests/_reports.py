@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 from corecycler.engine.backends.base import Outcome, StressResult
-from corecycler.engine.detector import MCEEvent
+from corecycler.engine.detector import CoreMachineCheck, KernelEvent, KernelTrouble, UnblamedMachineCheck
 from corecycler.tuner.engine import WorkerReport
 
 
-def mce(cpu: int, *, corrected: bool = True, message: str = "corrected", bank: int = 0) -> MCEEvent:
-    return MCEEvent(timestamp=1.0, cpu=cpu, bank=bank, message=message, corrected=corrected, raw_ts=1.0)
+def mce(cpu: int, *, corrected: bool = True, message: str = "corrected", bank: int = 0) -> CoreMachineCheck:
+    return CoreMachineCheck(cpu=cpu, bank=bank, corrected=corrected, message=message, raw_ts=1.0)
+
+
+def unblamed(*, corrected: bool = True, message: str = "corrected", bank: int = 21) -> UnblamedMachineCheck:
+    return UnblamedMachineCheck(logged_by_cpu=0, bank=bank, corrected=corrected, message=message, raw_ts=1.0)
+
+
+def trouble(message: str = "Kernel panic - not syncing: Fatal machine check") -> KernelTrouble:
+    return KernelTrouble(message=message, raw_ts=1.0)
 
 
 def report(
@@ -18,7 +26,7 @@ def report(
     duration: float = 1.0,
     *,
     stretch: float = 0.0,
-    events: tuple[MCEEvent, ...] = (),
+    events: tuple[KernelEvent, ...] = (),
     others: tuple[StressResult, ...] = (),
 ) -> WorkerReport:
     lane = StressResult(core_id=core_id, outcome=outcome, detail=detail, duration_seconds=duration)

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from corecycler.config.paths import resolve_work_dir
 from corecycler.engine.backends.base import Outcome, StressResult
-from corecycler.engine.detector import ErrorDetector, MCEEvent
+from corecycler.engine.detector import ErrorDetector, KernelEvent
 from corecycler.engine.execution import Lane, Supervisor, ThermalWatch
 
 if TYPE_CHECKING:
@@ -45,7 +45,7 @@ class ParallelStress:
         self.config = scheduler_config
         self.work_dir = work_dir or resolve_work_dir()
         self.detector = ErrorDetector()
-        self.observed_mce: list[MCEEvent] = []
+        self.observed_mce: list[KernelEvent] = []
         self._stop_event = threading.Event()
 
     def stop(self) -> None:
@@ -56,7 +56,6 @@ class ParallelStress:
     def run(self) -> dict[int, StressResult]:
         self._stop_event.clear()
         self.observed_mce = []
-        self.detector.reset()
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
         cores = sorted(self.config.cores_to_test or self.topology.cores.keys())
@@ -89,7 +88,11 @@ class ParallelStress:
             stall_timeout=self.config.stall_timeout,
             phase="parallel stress",
         )
-        return supervisor.run(lanes, self.stress_config, float(self.config.seconds_per_core))
+        self.detector.reset()
+        try:
+            return supervisor.run(lanes, self.stress_config, float(self.config.seconds_per_core))
+        finally:
+            self.detector.close()
 
 
 def _refused(core_id: int, missing: list[int]) -> StressResult:

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from corecycler.engine.backends.base import Outcome, StressResult
-from corecycler.engine.detector import MCEEvent
+from corecycler.engine.detector import CoreMachineCheck, KernelRead, KernelTrouble, UnblamedMachineCheck
 from corecycler.tuner import engine as eng
 from corecycler.tuner.engine import (
     WorkerReport,
@@ -44,7 +44,13 @@ def _result(core_id=0, outcome=Outcome.PASS, detail=""):
 
 
 def _mce(cpu=0):
-    return MCEEvent(timestamp=1.0, cpu=cpu, bank=5, message="corrected", corrected=True)
+    return CoreMachineCheck(cpu=cpu, bank=5, corrected=True, message="corrected", raw_ts=1.0)
+
+
+def _quiet_detector(*reads):
+    detector = MagicMock()
+    detector.read_new.side_effect = [*reads, *[KernelRead((), None)] * 10]
+    return detector
 
 
 @pytest.fixture
@@ -286,8 +292,7 @@ class TestParallelWorker:
 class TestSoakWorker:
     def test_a_quiet_soak_passes(self, collect):
         worker = _SoakWorker(0, 0)
-        worker.detector = MagicMock()
-        worker.detector.check_mce.return_value = []
+        worker.detector = _quiet_detector()
         seen = collect(worker)
         worker.run()
         assert seen[0].result.outcome is Outcome.PASS
@@ -295,36 +300,57 @@ class TestSoakWorker:
 
     def test_a_kernel_event_naming_a_cpu_ends_the_soak(self, collect):
         worker = _SoakWorker(1, 60)
-        worker.detector = MagicMock()
-        worker.detector.check_mce.return_value = [_mce(cpu=1)]
+        worker.detector = _quiet_detector(KernelRead((_mce(cpu=1),), None))
         seen = collect(worker)
         worker.run()
         assert seen[0].result.outcome is Outcome.OWN_CORE_MCE
         assert "corrected" in seen[0].result.detail
         assert [event.cpu for event in seen[0].kernel_events] == [1]
 
-    def test_a_kernel_event_naming_no_cpu_is_unattributed(self, collect):
+    def test_a_kernel_event_blaming_no_core_is_unattributed(self, collect):
+        shared = UnblamedMachineCheck(logged_by_cpu=1, bank=21, corrected=True, message="umc", raw_ts=1.0)
         worker = _SoakWorker(1, 60)
-        worker.detector = MagicMock()
-        worker.detector.check_mce.return_value = [_mce(cpu=-1)]
+        worker.detector = _quiet_detector(KernelRead((shared,), None))
         seen = collect(worker)
         worker.run()
         assert seen[0].result.outcome is Outcome.UNATTRIBUTED_MCE
 
+    def test_kernel_trouble_ends_the_soak_as_its_own_type(self, collect):
+        lockup = KernelTrouble(message="watchdog: BUG: soft lockup - CPU#1 stuck for 22s! [x:1]", raw_ts=1.0)
+        worker = _SoakWorker(1, 60)
+        worker.detector = _quiet_detector(KernelRead((lockup,), None))
+        seen = collect(worker)
+        worker.run()
+        assert seen[0].result.outcome is Outcome.KERNEL_TROUBLE
+
+    def test_a_failed_soak_read_is_unverified_not_a_pass(self, collect):
+        worker = _SoakWorker(1, 60)
+        worker.detector = _quiet_detector(KernelRead((), "kernel log overran; records lost"))
+        seen = collect(worker)
+        worker.run()
+        assert seen[0].result.outcome is Outcome.UNVERIFIED
+        assert "records lost" in seen[0].result.detail
+
+    def test_the_last_soak_read_is_final_and_counts(self, collect):
+        worker = _SoakWorker(0, 0)
+        worker.detector = _quiet_detector(KernelRead((_mce(cpu=0),), None))
+        seen = collect(worker)
+        worker.run()
+        assert worker.detector.read_new.call_args.kwargs == {"final": True}
+        assert seen[0].result.outcome is Outcome.OWN_CORE_MCE
+
     def test_a_quiet_watch_polls_until_it_is_stopped(self, collect):
         worker = _SoakWorker(0, 600)
-        worker.detector = MagicMock()
-        worker.detector.check_mce.return_value = []
+        worker.detector = _quiet_detector()
         worker._stop = _Ticks([False, False, True])
         seen = collect(worker)
         worker.run()
         assert seen[0].result.outcome is Outcome.CUT_SHORT
-        assert worker.detector.check_mce.call_count == 3
+        assert worker.detector.read_new.call_count == 4
 
     def test_stopping_ends_the_watch_without_a_pass(self, collect):
         worker = _SoakWorker(0, 600)
-        worker.detector = MagicMock()
-        worker.detector.check_mce.return_value = []
+        worker.detector = _quiet_detector()
         worker.stop()
         seen = collect(worker)
         worker.run()

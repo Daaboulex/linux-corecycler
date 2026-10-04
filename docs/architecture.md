@@ -26,7 +26,7 @@ src/corecycler/
     parallel.py        All-core simultaneous lanes (validation stages)
     execution.py       The one supervised loop: launch, poll, stall/thermal/MCE, verdicts
     containment.py     systemd cgroup scopes (AllowedCPUs) and the kernel cpuset record
-    detector.py        MCE and kernel-error detection from dmesg + the systemd journal
+    detector.py        MCE and kernel-error records from /dev/kmsg + the systemd journal
     backends/          Auto-registered stress backends (mprime, stress_ng, ycruncher, stressapptest)
   smu/               AMD SMU access (ryzen_smu)
     commands.py        Per-generation command IDs, encoding-scheme dispatch, harvested-core slots

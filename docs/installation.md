@@ -164,14 +164,14 @@ model-specific register or the SMU needs permission on those devices:
 | Vcore voltage | Via Super I/O or zenpower | Same | Same |
 | DIMM info (dmidecode) | N/A | N/A | Full |
 | Curve Optimizer (SMU read/write) | N/A | Full | Full |
-| Kernel error detection (MCE via dmesg) | Needs `kernel.dmesg_restrict=0` | Full | Full |
+| Kernel error detection (MCE via /dev/kmsg) | Needs `kernel.dmesg_restrict=0` | Full | Full |
 
 Two limits worth knowing. `dmidecode` reads the raw DMI table, which only root may open,
 so the Memory tab's DIMM details need a root run whatever else you grant. And MCE
-detection shells out to `dmesg`: where `kernel.dmesg_restrict` is 1, a non-root run reads
-nothing and reports no kernel errors, so the sysctl below is part of device access, not an
-extra. Without access the status bar warns and unavailable data shows "N/A" rather than
-stale values.
+detection reads `/dev/kmsg`: where `kernel.dmesg_restrict` is 1, a non-root run cannot
+open it, so no test can pass and every result is "unverified". The sysctl below is part of
+device access, not an extra. Without access the status bar warns and unavailable data
+shows "N/A" rather than stale values.
 
 ### Grant it to your user (no sudo)
 

@@ -25,13 +25,16 @@ from corecycler.engine.backends.base import Outcome, OutcomeKind, StressConfig, 
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.containment import lane_cgroup_parent
 from corecycler.engine.detector import (
+    CoreMachineCheck,
     ErrorDetector,
-    MCEEvent,
+    KernelEvent,
+    KernelRead,
     harvest_kernel_mce,
     last_boot_ended_cleanly,
 )
 from corecycler.engine.execution import busy_fraction as _busy_fraction
 from corecycler.engine.execution import cpu_times as _read_cpu_times
+from corecycler.engine.execution import kernel_signal
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.engine.parallel import ParallelStress
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
@@ -58,7 +61,7 @@ log = logging.getLogger(__name__)
 class WorkerReport:
     lanes: tuple[StressResult, ...]
     peak_stretch_pct: float
-    kernel_events: tuple[MCEEvent, ...]
+    kernel_events: tuple[KernelEvent, ...]
 
     def __post_init__(self) -> None:
         if not self.lanes:
@@ -69,8 +72,8 @@ class WorkerReport:
         return min(self.lanes, key=lambda lane: (lane.outcome.rank, lane.core_id))
 
 
-def _has_unattributed_mce(events: tuple[MCEEvent, ...]) -> bool:
-    return any(event.cpu < 0 for event in events)
+def _has_unattributed_mce(events: tuple[KernelEvent, ...]) -> bool:
+    return any(not isinstance(event, CoreMachineCheck) for event in events)
 
 
 def _rebooted_since(iso_ts: str | None, stat_path: str = "/proc/stat") -> bool:
@@ -298,26 +301,34 @@ class _SoakWorker(QThread):
         try:
             self.detector.reset()
             start = time.monotonic()
-            events: list[MCEEvent] = []
+            reads: list[KernelRead] = []
             while time.monotonic() - start < self._duration and not self._stop.is_set():
-                events.extend(self.detector.check_mce())
-                if events:
+                reads.append(self.detector.read_new())
+                if reads[-1].events or reads[-1].problem is not None:
                     break
                 self._stop.wait(5.0)
+            reads.append(self.detector.read_new(final=True))
             elapsed = time.monotonic() - start
+            events = tuple(event for read in reads for event in read.events)
+            problems = [read.problem for read in reads if read.problem is not None]
             if events:
-                named = any(event.cpu >= 0 for event in events)
-                outcome = Outcome.OWN_CORE_MCE if named else Outcome.UNATTRIBUTED_MCE
-                detail = f"kernel error during soak: {events[0].message}"
+                soak_cpus = tuple(event.cpu for event in events if isinstance(event, CoreMachineCheck))
+                hits = [kernel_signal(event, soak_cpus, "soak") for event in events]
+                strongest = min((hit for hit in hits if hit is not None), key=lambda hit: hit.outcome.rank)
+                outcome, detail = strongest.outcome, strongest.text
             elif self._stop.is_set():
                 outcome, detail = Outcome.CUT_SHORT, "soak stopped before its end"
+            elif problems:
+                outcome, detail = Outcome.UNVERIFIED, f"{problems[0]} during soak: verdict unavailable"
             else:
                 outcome, detail = Outcome.PASS, ""
             result = StressResult(core_id=self._core_id, outcome=outcome, detail=detail, duration_seconds=elapsed)
-            self.finished.emit(WorkerReport(lanes=(result,), peak_stretch_pct=0.0, kernel_events=tuple(events)))
+            self.finished.emit(WorkerReport(lanes=(result,), peak_stretch_pct=0.0, kernel_events=events))
         except Exception as e:
             log.exception("Soak worker crashed")
             self.finished.emit(_not_started(self._core_id, str(e)))
+        finally:
+            self.detector.close()
 
 
 # ------------------------------------------------------------------
@@ -1426,7 +1437,7 @@ class TunerEngine(QObject):
         session_id = self._session_id
         crashed: list[int] = []
         pending_hunt = False
-        forensic_events: list[MCEEvent] = []
+        forensic_events: list[KernelEvent] = []
         since = self._db.latest_session_activity(session_id)
         if since:
             forensic_events, forensic_ok = self._forensics(since)
@@ -1530,16 +1541,11 @@ class TunerEngine(QObject):
                 mapping[lcpu] = core_id
         return mapping
 
-    def _events_by_core(self, events: list[MCEEvent]) -> dict[int, list[MCEEvent]]:
-        """Group kernel events by physical core; drop unattributable ones.
-
-        Events with no CPU (kernel panic traces) prove a crash happened but
-        name no core — they must not be turned into a per-core penalty.
-        """
+    def _events_by_core(self, events: list[KernelEvent]) -> dict[int, list[CoreMachineCheck]]:
         cpu_map = self._cpu_to_core()
-        out: dict[int, list[MCEEvent]] = {}
+        out: dict[int, list[CoreMachineCheck]] = {}
         for e in events:
-            if e.cpu < 0:
+            if not isinstance(e, CoreMachineCheck):
                 continue
             core = cpu_map.get(e.cpu)
             if core is None or core not in self._core_states:
@@ -1547,7 +1553,7 @@ class TunerEngine(QObject):
             out.setdefault(core, []).append(e)
         return out
 
-    def _penalize_forensic_cores(self, by_core: dict[int, list[MCEEvent]]) -> list[int]:
+    def _penalize_forensic_cores(self, by_core: dict[int, list[CoreMachineCheck]]) -> list[int]:
         """Crash-penalize exactly the cores the kernel journal named.
 
         The penalty anchors at the CO value the journal says was resident at
@@ -1664,7 +1670,7 @@ class TunerEngine(QObject):
     # Hardware-error evidence (cross-core MCE) and the isolated crash hunt
     # ------------------------------------------------------------------
 
-    def _foreign_mce_by_core(self, tested_core: int, events: tuple[MCEEvent, ...]) -> dict[int, dict]:
+    def _foreign_mce_by_core(self, tested_core: int, events: tuple[KernelEvent, ...]) -> dict[int, dict]:
         """Evidence about cores OTHER than the tested one, from the events the test observed.
 
         Returns {core_id: {"corrected": bool, "messages": [...]}} where
@@ -1673,6 +1679,8 @@ class TunerEngine(QObject):
         cpu_map = self._cpu_to_core()
         out: dict[int, dict] = {}
         for event in events:
+            if not isinstance(event, CoreMachineCheck):
+                continue
             core = cpu_map.get(event.cpu)
             if core is None or core == tested_core or core not in self._core_states:
                 continue

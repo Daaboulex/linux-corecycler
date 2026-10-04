@@ -4,7 +4,7 @@ These tests verify that:
 - The SMU driver gracefully handles missing ryzen_smu module
 - CO values are bounds-checked against generation limits
 - Scheduler kills processes cleanly on stop
-- Error detector doesn't crash on missing sysfs
+- Error detector reports an unreadable kernel log instead of crashing
 - Settings don't write to unexpected paths
 - Backend prepare doesn't clobber files outside work_dir
 """
@@ -14,7 +14,6 @@ from __future__ import annotations
 import os
 import signal
 import struct
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -197,49 +196,20 @@ class TestSchedulerProcessSafety:
         assert {r.levelname for r in caplog.records if "Operation not permitted" in r.getMessage()} == {"ERROR"}
 
 
-# ===========================================================================
-# Error detector safety — missing sysfs / dmesg
-# ===========================================================================
-
-
 class TestDetectorSafety:
-    def _fresh(self) -> ErrorDetector:
-        det = ErrorDetector()
-        det._dmesg_baseline_ts = 1.0
-        det._last_dmesg_time = 0.0
-        return det
+    def test_a_missing_kernel_log_is_reported_not_raised(self, tmp_path):
+        det = ErrorDetector(tmp_path / "no-kmsg")
+        det.reset()
+        read = det.read_new(final=True)
+        assert read.events == ()
+        assert "no-kmsg" in read.problem
 
-    def test_check_mce_no_dmesg(self):
-        """check_mce must not crash when dmesg is unavailable."""
-        det = self._fresh()
-        with patch("subprocess.run", side_effect=FileNotFoundError):
-            events = det.check_mce()
-        assert events == []
-
-    def test_check_mce_dmesg_permission_denied(self):
-        det = self._fresh()
-        with patch("subprocess.run", side_effect=OSError("Permission denied")):
-            events = det.check_mce()
-        assert events == []
-
-    def test_check_mce_dmesg_timeout(self):
-        det = self._fresh()
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("dmesg", 5)):
-            events = det.check_mce()
-        assert events == []
-
-    def test_reset_no_crash(self):
-        """reset() must not crash in any environment."""
-        det = ErrorDetector()
-        with patch("corecycler.engine.detector._get_dmesg_raw_timestamp", return_value=0.0):
-            det.reset()  # must not raise
-
-    def test_full_check_mce_graceful(self):
-        """check_mce with no baseline must be graceful and detect nothing."""
-        det = ErrorDetector()  # baseline 0.0 — cannot separate old from new
-        with patch("subprocess.run", side_effect=AssertionError("must not run")):
-            events = det.check_mce()
-        assert events == []
+    def test_a_kernel_log_that_is_a_directory_is_reported_not_raised(self, tmp_path):
+        det = ErrorDetector(tmp_path)
+        det.reset()
+        read = det.read_new(final=True)
+        assert read.events == ()
+        assert str(tmp_path) in read.problem
 
 
 # ===========================================================================

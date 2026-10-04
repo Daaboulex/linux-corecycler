@@ -17,13 +17,14 @@ from typing import TYPE_CHECKING
 
 from corecycler.engine import containment
 from corecycler.engine.backends.base import LaneSignal, Outcome, StressResult, read_text
+from corecycler.engine.detector import KernelTrouble, UnblamedMachineCheck
 
 if TYPE_CHECKING:
     import threading
     from collections.abc import Callable
 
     from corecycler.engine.backends.base import StressBackend, StressConfig
-    from corecycler.engine.detector import ErrorDetector, MCEEvent
+    from corecycler.engine.detector import ErrorDetector, KernelEvent
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ class _LaneRun:
     unit: str | None = None
     cgroup: str | None = None
     output: str = ""
+    kernel_problem: str | None = None
 
     @property
     def alive(self) -> bool:
@@ -219,8 +221,10 @@ def exit_signal(returncode: int, sent: signal.Signals | None) -> LaneSignal | No
     return LaneSignal(Outcome.UNEXPLAINED, f"stress exited with code {returncode}")
 
 
-def kernel_signal(event: MCEEvent, own_cpus: tuple[int, ...], phase: str) -> LaneSignal | None:
-    if event.cpu < 0:
+def kernel_signal(event: KernelEvent, own_cpus: tuple[int, ...], phase: str) -> LaneSignal | None:
+    if isinstance(event, KernelTrouble):
+        return LaneSignal(Outcome.KERNEL_TROUBLE, f"Kernel trouble during {phase}: {event.message}")
+    if isinstance(event, UnblamedMachineCheck):
         return LaneSignal(
             Outcome.UNATTRIBUTED_MCE, f"Machine check without core attribution during {phase}: {event.message}"
         )
@@ -252,7 +256,7 @@ class Supervisor:
         detector: ErrorDetector,
         thermal: ThermalWatch,
         stop_event: threading.Event,
-        observed: list[MCEEvent],
+        observed: list[KernelEvent],
         poll_interval: float = 1.0,
         stall_timeout: float = 30.0,
         phase: str = "stress",
@@ -283,7 +287,7 @@ class Supervisor:
         for run in runs:
             if run.proc is not None:
                 self._scan_output(run)
-        self._take_kernel_events(runs)
+        self._take_kernel_events(runs, final=True)
         return {run.lane.core_id: self._grade(run) for run in runs}
 
     def _launch(self, run: _LaneRun, cfg: StressConfig) -> bool:
@@ -377,11 +381,13 @@ class Supervisor:
                 )
             )
 
-    def _take_kernel_events(self, runs: list[_LaneRun]) -> None:
-        events = self.detector.check_mce()
-        self.observed.extend(events)
-        for event in events:
-            for run in runs:
+    def _take_kernel_events(self, runs: list[_LaneRun], *, final: bool = False) -> None:
+        read = self.detector.read_new(final=final)
+        self.observed.extend(read.events)
+        for run in runs:
+            if run.kernel_problem is None:
+                run.kernel_problem = read.problem
+            for event in read.events:
                 found = kernel_signal(event, run.lane.cpus, self.phase)
                 if found is not None:
                     run.signals.append(found)
@@ -510,6 +516,8 @@ class Supervisor:
             outcome, detail = Outcome.CUT_SHORT, f"stopped before the end of its {self.phase}: no verdict of its own"
         elif (no_work := _no_work_done(run)) is not None:
             outcome, detail = Outcome.NO_WORK_DONE, no_work
+        elif run.kernel_problem is not None:
+            outcome, detail = Outcome.UNVERIFIED, f"{run.kernel_problem} during {self.phase}: verdict unavailable"
         else:
             outcome, detail = Outcome.PASS, ""
         tail = _tail(run.output)
@@ -540,21 +548,25 @@ def watch_idle(
     thermal: ThermalWatch,
     detector: ErrorDetector,
     stop_event: threading.Event,
-    observed: list[MCEEvent],
+    observed: list[KernelEvent],
     phase: str,
     poll_interval: float = 0.5,
 ) -> LaneSignal | None:
     start = time.monotonic()
-    while time.monotonic() - start < duration and not stop_event.is_set():
-        if not thermal.safe():
+    while True:
+        final = time.monotonic() - start >= duration or stop_event.is_set()
+        if not final and not thermal.safe():
             return LaneSignal(
                 Outcome.THERMAL, f"CPU temperature exceeded {thermal.max_temperature} C safety limit during {phase}"
             )
-        events = detector.check_mce()
-        observed.extend(events)
-        found = [hit for hit in (kernel_signal(event, cpus, phase) for event in events) if hit is not None]
+        read = detector.read_new(final=final)
+        observed.extend(read.events)
+        found = [hit for hit in (kernel_signal(event, cpus, phase) for event in read.events) if hit is not None]
+        if read.problem is not None:
+            found.append(LaneSignal(Outcome.UNVERIFIED, f"{read.problem} during {phase}: verdict unavailable"))
         if found:
             return min(found, key=lambda hit: hit.outcome.rank)
+        if final:
+            return None
         remaining = duration - (time.monotonic() - start)
         stop_event.wait(min(poll_interval, max(0.0, remaining)))
-    return None

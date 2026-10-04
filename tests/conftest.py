@@ -742,6 +742,20 @@ def no_real_forensics(monkeypatch):
     monkeypatch.setattr(engine_mod, "harvest_kernel_mce", lambda since, timeout=15.0: ([], True))
 
 
+@pytest.fixture(scope="session")
+def empty_kernel_log(tmp_path_factory):
+    path = tmp_path_factory.mktemp("kernel-log") / "kmsg"
+    path.write_bytes(b"")
+    return path
+
+
+@pytest.fixture(autouse=True)
+def no_host_kernel_log(monkeypatch, empty_kernel_log):
+    from corecycler.engine import detector
+
+    monkeypatch.setattr(detector, "KMSG", empty_kernel_log)
+
+
 @pytest.fixture(autouse=True)
 def synthetic_memory_budget(monkeypatch, tmp_path_factory):
     """The memory stage sizes its stressors from the live machine

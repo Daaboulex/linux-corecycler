@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from corecycler.config.paths import resolve_work_dir
 from corecycler.engine import execution
 from corecycler.engine.backends.base import LaneSignal, Outcome, OutcomeKind, StressResult
-from corecycler.engine.detector import ErrorDetector, MCEEvent
+from corecycler.engine.detector import ErrorDetector, KernelEvent
 from corecycler.engine.execution import Lane, SuperviseHooks, Supervisor, ThermalWatch
 
 if TYPE_CHECKING:
@@ -86,7 +86,7 @@ class CoreScheduler:
 
         self.state = TestState.IDLE
         self.results: dict[int, list[StressResult]] = {}
-        self.observed_mce: list[MCEEvent] = []
+        self.observed_mce: list[KernelEvent] = []
         self.core_status: dict[int, CoreTestStatus] = {}
         self._current_core: int | None = None
         self._current_cycle: int = 0
@@ -150,6 +150,7 @@ class CoreScheduler:
                 for cb in self.on_cycle_complete:
                     cb(cycle)
         finally:
+            self.detector.close()
             self.state = TestState.FINISHED
             for cb in self.on_test_complete:
                 cb(self.results)
@@ -363,7 +364,6 @@ class CoreScheduler:
                 duration_seconds=0.0,
             )
         self.observed_mce = []
-        self.detector.reset()
         self._thermal = self._new_thermal()
 
         logical_ids = []
@@ -383,6 +383,7 @@ class CoreScheduler:
 
         elapsed = 0.0
         cycle = 0
+        self.detector.reset()
         try:
             while total_duration - elapsed >= load_seconds and not self._stop_event.is_set():
                 cycle += 1
@@ -409,6 +410,7 @@ class CoreScheduler:
                             core_id=anchor, outcome=idle.outcome, detail=idle.text, duration_seconds=elapsed
                         )
         finally:
+            self.detector.close()
             self.state = TestState.FINISHED
         if self._stop_event.is_set():
             return StressResult(

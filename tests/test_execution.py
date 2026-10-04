@@ -23,6 +23,7 @@ from corecycler.engine.backends.mprime import MprimeBackend
 from corecycler.engine.backends.stress_ng import StressNgBackend
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.backends.ycruncher import YCruncherBackend
+from corecycler.engine.detector import CoreMachineCheck, KernelRead, KernelTrouble, UnblamedMachineCheck
 from corecycler.engine.execution import (
     Lane,
     SuperviseHooks,
@@ -283,26 +284,31 @@ class FakeMprime(MprimeBackend):
 
 
 class FakeDetector:
-    def __init__(self, batches: list[list] | None = None) -> None:
-        self.batches = list(batches or [])
+    def __init__(self, reads: list | None = None, *, final_problem: str | None = None) -> None:
+        self.reads = [read if isinstance(read, KernelRead) else KernelRead(tuple(read), None) for read in reads or []]
+        self.final_problem = final_problem
+        self.finals: list[bool] = []
 
     def reset(self) -> None:
         pass
 
-    def check_mce(self):
-        if self.batches:
-            return self.batches.pop(0)
-        return []
+    def read_new(self, *, final: bool = False) -> KernelRead:
+        self.finals.append(final)
+        if self.reads:
+            return self.reads.pop(0)
+        return KernelRead((), self.final_problem if final else None)
 
 
-class Event:
-    def __init__(self, cpu: int, message: str = "boom") -> None:
-        self.cpu = cpu
-        self.bank = 0
-        self.message = message
-        self.corrected = False
-        self.timestamp = 0.0
-        self.raw_ts = 0.0
+def own(cpu: int, message: str = "boom") -> CoreMachineCheck:
+    return CoreMachineCheck(cpu=cpu, bank=0, corrected=False, message=message, raw_ts=0.0)
+
+
+def unblamed(message: str = "boom") -> UnblamedMachineCheck:
+    return UnblamedMachineCheck(logged_by_cpu=0, bank=21, corrected=True, message=message, raw_ts=0.0)
+
+
+def trouble(message: str = "watchdog: BUG: soft lockup - CPU#0 stuck for 22s! [mprime:1]") -> KernelTrouble:
+    return KernelTrouble(message=message, raw_ts=0.0)
 
 
 def cool_thermal() -> ThermalWatch:
@@ -467,14 +473,14 @@ class TestOutcomeGrading:
         assert "code 7" in verdict.detail
 
     def test_a_lanes_own_machine_check_outranks_a_thermal_trip(self, tmp_path):
-        detector = FakeDetector([[Event(cpu=0)]])
+        detector = FakeDetector([[own(0)]])
         supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), detector=detector, thermal=hot_thermal())
         verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.OWN_CORE_MCE
         assert "temperature" in verdict.detail
 
     def test_a_lanes_own_machine_check_outranks_an_unattributed_one_read_first(self, tmp_path):
-        detector = FakeDetector([[Event(cpu=-1), Event(cpu=0)]])
+        detector = FakeDetector([[unblamed(), own(0)]])
         supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), detector=detector)
         verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.OWN_CORE_MCE
@@ -484,14 +490,6 @@ class TestOutcomeGrading:
         verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.COMPUTATION
         assert "killed externally" in verdict.detail
-
-    def test_a_machine_check_naming_no_core_is_never_a_pass(self, tmp_path):
-        detector = FakeDetector([[Event(cpu=-1)]])
-        supervisor, _, seen = make_supervisor(FakeBackend(_child(BUSY)), detector=detector)
-        verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 2.0)
-        assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.UNATTRIBUTED_MCE] * 2
-        assert not any(verdict.passed for verdict in verdicts.values())
-        assert [event.cpu for event in seen] == [-1]
 
     def test_every_lane_gets_an_outcome_after_a_launch_failure(self, tmp_path):
         class RefusesLaneZero(FakeBackend):
@@ -847,7 +845,7 @@ class TestOutputFiles:
 class TestMceAttribution:
     def test_an_own_cpu_event_fails_the_lane(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(5)"))
-        detector = FakeDetector([[Event(cpu=16)]])
+        detector = FakeDetector([[own(16)]])
         supervisor, _, seen = make_supervisor(backend, detector=detector)
         verdict = run_one(supervisor, lane(tmp_path, cpus=(0, 16)), 5.0)
         assert verdict.outcome is Outcome.OWN_CORE_MCE
@@ -855,7 +853,7 @@ class TestMceAttribution:
 
     def test_a_foreign_event_is_evidence_not_a_verdict(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
-        detector = FakeDetector([[Event(cpu=9)]])
+        detector = FakeDetector([[own(9)]])
         supervisor, _, seen = make_supervisor(backend, detector=detector)
         with one_busy_cpu():
             verdict = run_one(supervisor, lane(tmp_path, cpus=(0, 16)), 0.5)
@@ -864,10 +862,53 @@ class TestMceAttribution:
 
     def test_late_events_read_after_the_teardown_still_grade_the_lane(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(60)"))
-        detector = FakeDetector([[Event(cpu=0)]])
+        detector = FakeDetector([[own(0)]])
         supervisor, _, _ = make_supervisor(backend, detector=detector, poll_interval=1.0)
         verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.0)
         assert verdict.outcome is Outcome.OWN_CORE_MCE
+
+    def test_the_read_after_the_teardown_is_final(self, tmp_path):
+        detector = FakeDetector()
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), detector=detector)
+        run_one(supervisor, lane(tmp_path), 0.3)
+        assert detector.finals[-1] is True
+        assert not any(detector.finals[:-1])
+
+    def test_a_failed_final_kernel_read_is_never_a_pass(self, tmp_path):
+        detector = FakeDetector(final_problem="kernel log overran; records lost")
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), detector=detector)
+        with one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path), 0.5)
+        assert verdict.outcome is Outcome.UNVERIFIED
+        assert "kernel log overran; records lost" in verdict.detail
+
+    def test_a_failed_kernel_read_during_the_run_is_never_a_pass(self, tmp_path):
+        detector = FakeDetector([KernelRead((), "kernel log /dev/kmsg unreadable: [Errno 1] Operation not permitted")])
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), detector=detector)
+        with one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path), 0.5)
+        assert verdict.outcome is Outcome.UNVERIFIED
+        assert "Operation not permitted" in verdict.detail
+
+    def test_a_lanes_own_machine_check_outranks_a_failed_read(self, tmp_path):
+        detector = FakeDetector([KernelRead((own(0),), "kernel log overran; records lost")])
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), detector=detector)
+        verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        assert verdict.outcome is Outcome.OWN_CORE_MCE
+
+    def test_a_shared_bank_error_during_a_batch_blames_no_lane(self, tmp_path):
+        shared = UnblamedMachineCheck(logged_by_cpu=0, bank=21, corrected=True, message="UMC", raw_ts=1.0)
+        detector = FakeDetector([[shared]])
+        supervisor, _, seen = make_supervisor(FakeBackend(_child(BUSY)), detector=detector)
+        verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 2.0)
+        assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.UNATTRIBUTED_MCE] * 2
+        assert seen == [shared]
+
+    def test_kernel_trouble_during_a_batch_is_its_own_type(self, tmp_path):
+        detector = FakeDetector([[trouble()]])
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), detector=detector)
+        verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 2.0)
+        assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.KERNEL_TROUBLE] * 2
 
 
 class TestStallWatchdog:
@@ -1145,23 +1186,41 @@ class TestWatchIdle:
         assert not stop.is_set()
 
     def test_an_own_cpu_mce_ends_the_idle(self):
-        found = watch_idle(**self._args(detector=FakeDetector([[Event(cpu=0)]]), duration=5.0))
+        found = watch_idle(**self._args(detector=FakeDetector([[own(0)]]), duration=5.0))
         assert found is not None and found.outcome is Outcome.OWN_CORE_MCE
         assert "MCE during idle stability" in found.text
 
     def test_an_unattributed_mce_keeps_its_own_type(self):
-        found = watch_idle(**self._args(detector=FakeDetector([[Event(cpu=-1)]]), duration=5.0))
+        found = watch_idle(**self._args(detector=FakeDetector([[unblamed()]]), duration=5.0))
         assert found is not None and found.outcome is Outcome.UNATTRIBUTED_MCE
 
     def test_the_strongest_event_of_a_read_is_reported(self):
-        found = watch_idle(**self._args(detector=FakeDetector([[Event(cpu=-1), Event(cpu=0)]]), duration=5.0))
+        found = watch_idle(**self._args(detector=FakeDetector([[unblamed(), own(0)]]), duration=5.0))
         assert found is not None and found.outcome is Outcome.OWN_CORE_MCE
 
     def test_a_foreign_mce_is_recorded_not_reported(self):
         seen: list = []
-        found = watch_idle(**self._args(detector=FakeDetector([[Event(cpu=9)]]), observed=seen))
+        found = watch_idle(**self._args(detector=FakeDetector([[own(9)]]), observed=seen))
         assert found is None
         assert [e.cpu for e in seen] == [9]
+
+    def test_an_idle_watch_reports_kernel_trouble_as_its_own_type(self):
+        found = watch_idle(**self._args(detector=FakeDetector([[trouble()]]), duration=5.0))
+        assert found is not None and found.outcome is Outcome.KERNEL_TROUBLE
+        assert "soft lockup" in found.text
+
+    def test_a_failed_idle_read_is_unverified(self):
+        detector = FakeDetector([KernelRead((), "kernel log overran; records lost")])
+        found = watch_idle(**self._args(detector=detector, duration=5.0))
+        assert found is not None and found.outcome is Outcome.UNVERIFIED
+        assert "records lost" in found.text
+
+    def test_the_last_idle_read_is_final(self):
+        detector = FakeDetector(final_problem="kernel log overran; records lost")
+        found = watch_idle(**self._args(detector=detector))
+        assert found is not None and found.outcome is Outcome.UNVERIFIED
+        assert detector.finals[-1] is True
+        assert not any(detector.finals[:-1])
 
 
 class TestHelpers:

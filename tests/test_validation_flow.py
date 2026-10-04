@@ -16,7 +16,7 @@ from corecycler.engine.backends.base import Outcome
 from corecycler.history.db import HistoryDB
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.state import TunerPhase
-from tests._reports import mce, report
+from tests._reports import mce, report, unblamed
 from tests.test_crash_attribution import (
     BASELINES,
     BEST,
@@ -261,7 +261,7 @@ class TestSpectrumAndSoak:
         eng._validation_stage = 7
         eng._soaking = True
         eng._config.max_unattributed_crash_hunts = 1
-        event = mce(-1, corrected=False, message="general MCE, no core named", bank=4)
+        event = unblamed(corrected=False, message="general MCE, no core named", bank=4)
 
         eng._on_test_finished(
             report(sorted(BEST)[0], Outcome.UNATTRIBUTED_MCE, "kernel error during soak", 10.0, events=(event,))
