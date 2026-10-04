@@ -271,6 +271,14 @@ class TestParallelRowLogging:
         assert len(rows) == 1
         assert (rows[0]["passed"], rows[0]["error_message"], rows[0]["error_type"]) == (1, None, None)
 
+    def test_a_cut_short_lane_writes_no_row(self, engine):
+        sent = report(
+            0, Outcome.COMPUTATION, "sumout", others=(self._lane(1, Outcome.CUT_SHORT, "stopped"), self._lane(2))
+        )
+        engine._log_parallel_rows(sent, "validate_s2")
+        assert [row["passed"] for row in self._rows(engine, 2)] == [1]
+        assert self._rows(engine, 1) == []
+
     def test_a_lane_for_an_unknown_core_is_skipped(self, engine):
         engine._log_parallel_rows(report(0, others=(self._lane(99),)), "validate_s2")
         assert self._rows(engine, 99) == []

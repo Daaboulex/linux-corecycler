@@ -94,6 +94,22 @@ if os.path.basename(os.path.dirname(os.getcwd())) == "core_0":
     sys.exit(3)
 """
 
+EVERY_LANE_FAILS_AND_RUNS_ON = """
+import time
+print("fake error: FATAL", flush=True)
+while True:
+    time.sleep(0.01)
+"""
+
+ONLY_CORE_1_IS_KILLED = """
+import os, signal, time
+if os.path.basename(os.path.dirname(os.getcwd())) == "core_1":
+    time.sleep(0.2)
+    os.kill(os.getpid(), signal.SIGKILL)
+while True:
+    time.sleep(0.01)
+"""
+
 FATAL_AT_ONCE = """
 import sys, time
 line = "FATAL ERROR: Rounding was 0.5, expected less than 0.4"
@@ -720,6 +736,29 @@ class TestTeardown:
             verdict = run_one(supervisor, lane(tmp_path), 1.0)
         assert verdict.outcome is Outcome.PASS
         assert verdict.duration_seconds < 1.5
+
+    def test_a_cut_lane_with_its_own_error_is_still_a_fail(self, tmp_path):
+        supervisor, _, _ = make_supervisor(ReadsFatal(_child(EVERY_LANE_FAILS_AND_RUNS_ON)))
+        with one_busy_cpu(), patch.object(execution, "OUTPUT_SCAN_INTERVAL", 0.2):
+            verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 5.0)
+        assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.COMPUTATION] * 2
+        assert max(verdicts[core].duration_seconds for core in (0, 1)) < 2.0
+
+    def test_a_stop_after_the_deadline_cuts_nothing(self, tmp_path):
+        backend = FakeBackend(_child(SLOW_TO_STOP.format(hold=0.6)))
+        supervisor, stop, _ = make_supervisor(backend)
+        threading.Timer(0.55, stop.set).start()
+        with one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path), 0.5)
+        assert stop.is_set()
+        assert verdict.outcome is Outcome.PASS
+
+    def test_an_outside_kill_on_one_lane_is_never_a_batch_pass(self, tmp_path):
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(ONLY_CORE_1_IS_KILLED)))
+        with one_busy_cpu():
+            verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 4.0)
+        assert verdicts[1].outcome is Outcome.OUTSIDE_KILL
+        assert verdicts[0].outcome is Outcome.CUT_SHORT
 
 
 class TestOutputFiles:

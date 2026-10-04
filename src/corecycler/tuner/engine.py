@@ -2559,7 +2559,7 @@ class TunerEngine(QObject):
         reported = report.result.core_id
         for lane in report.lanes:
             cs = self._core_states.get(lane.core_id)
-            if lane.core_id == reported or cs is None:
+            if lane.core_id == reported or cs is None or lane.outcome is Outcome.CUT_SHORT:
                 continue
             offset = self._co_applied.get(lane.core_id)
             if offset is None:

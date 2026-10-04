@@ -26,8 +26,8 @@ class ParallelStress:
     """Runs every configured core's stress process at the same time.
 
     A failure on any lane stops the whole batch and is attributed to exactly
-    that core; lanes without a verdict when the batch stops stay absent from
-    the results rather than being invented.
+    that core; every lane reaches the results, and a lane the stop cut before
+    it had a verdict of its own is CUT_SHORT, never a pass.
     """
 
     def __init__(
@@ -60,25 +60,17 @@ class ParallelStress:
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
         cores = sorted(self.config.cores_to_test or self.topology.cores.keys())
-        lanes: list[Lane] = []
-        for core_id in cores:
-            info = self.topology.cores.get(core_id)
-            if not info or not info.logical_cpus:
-                return {
-                    core_id: StressResult(
-                        core_id=core_id,
-                        outcome=Outcome.NOT_STARTED,
-                        detail=f"core {core_id} not in topology",
-                        duration_seconds=0.0,
-                    )
-                }
-            lanes.append(
-                Lane(
-                    core_id=core_id,
-                    cpus=tuple(sorted(info.logical_cpus)[: self._requested_threads]),
-                    work_dir=self.work_dir / f"core_{core_id}",
-                )
+        missing = [core for core in cores if not (info := self.topology.cores.get(core)) or not info.logical_cpus]
+        if missing:
+            return {core: _refused(core, missing) for core in cores}
+        lanes = [
+            Lane(
+                core_id=core_id,
+                cpus=tuple(sorted(self.topology.cores[core_id].logical_cpus)[: self._requested_threads]),
+                work_dir=self.work_dir / f"core_{core_id}",
             )
+            for core_id in cores
+        ]
         if not lanes:
             return {}
 
@@ -97,5 +89,13 @@ class ParallelStress:
             stall_timeout=self.config.stall_timeout,
             phase="parallel stress",
         )
-        graded = supervisor.run(lanes, self.stress_config, float(self.config.seconds_per_core))
-        return {core: result for core, result in graded.items() if result.outcome is not Outcome.CUT_SHORT}
+        return supervisor.run(lanes, self.stress_config, float(self.config.seconds_per_core))
+
+
+def _refused(core_id: int, missing: list[int]) -> StressResult:
+    named = ", ".join(str(core) for core in missing)
+    if core_id in missing:
+        outcome, detail = Outcome.NOT_STARTED, f"core {core_id} not in topology"
+    else:
+        outcome, detail = Outcome.CUT_SHORT, f"not run: the topology lacks core {named} of this batch"
+    return StressResult(core_id=core_id, outcome=outcome, detail=detail, duration_seconds=0.0)

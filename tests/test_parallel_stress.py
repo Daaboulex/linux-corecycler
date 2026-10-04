@@ -97,18 +97,19 @@ class TestLaneBuilding:
         runner.run()
         assert seen == [(0,), (1,)]
 
-    def test_a_core_outside_the_topology_is_not_started(self, tmp_path):
-        runner = make_parallel(tmp_path, cores=[0, 9])
-        results = runner.run()
-        assert list(results) == [9]
+    def test_a_core_outside_the_topology_refuses_every_lane(self, tmp_path):
+        results = make_parallel(tmp_path, cores=[0, 9]).run()
+        assert sorted(results) == [0, 9]
         assert results[9].outcome is Outcome.NOT_STARTED
+        assert results[0].outcome is Outcome.CUT_SHORT
+        assert "core 9" in results[0].detail
         assert ScriptedSupervisor.created == []
 
     def test_an_empty_topology_returns_empty_not_crash(self, tmp_path):
         runner = make_parallel(tmp_path, topo=CPUTopology())
         assert runner.run() == {}
 
-    def test_cut_short_lanes_stay_absent_from_the_results(self, tmp_path):
+    def test_a_cut_short_lane_reaches_the_results(self, tmp_path):
         runner = make_parallel(tmp_path)
 
         def one_fails_one_cut(sup, lanes, config, duration):
@@ -116,8 +117,7 @@ class TestLaneBuilding:
 
         ScriptedSupervisor.script = [one_fails_one_cut]
         results = runner.run()
-        assert list(results) == [0]
-        assert results[0].outcome is Outcome.COMPUTATION
+        assert [results[core].outcome for core in (0, 1)] == [Outcome.COMPUTATION, Outcome.CUT_SHORT]
 
     def test_a_reused_instance_starts_clean(self, tmp_path):
         runner = make_parallel(tmp_path)

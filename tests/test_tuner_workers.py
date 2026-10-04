@@ -259,6 +259,14 @@ class TestParallelWorker:
         assert seen[0].result.core_id == 1
         assert seen[0].result.outcome is Outcome.COMPUTATION
 
+    def test_an_outside_kill_batch_reports_the_kill(self, collect):
+        cut, killed = _result(0, Outcome.CUT_SHORT, "stopped"), _result(1, Outcome.OUTSIDE_KILL, "killed externally")
+        worker = self._worker({0: cut, 1: killed})
+        seen = collect(worker)
+        worker.run()
+        assert seen[0].result is killed
+        assert seen[0].lanes == (cut, killed)
+
     def test_an_empty_batch_is_cut_short(self, collect):
         worker = self._worker({})
         seen = collect(worker)
