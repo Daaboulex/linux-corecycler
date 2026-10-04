@@ -70,6 +70,39 @@ class TestStressapptestBackend:
         assert StressMode.SSE in modes
 
 
+CLEAN_SUMMARY = (
+    "Log: Thread 1 found 0 hardware incidents\n"
+    "Stats: Completed: 2048.00M in 9.99s 205.00MB/s, with 0 hardware incidents, 0 errors\n"
+    "Stats: Found 0 hardware incidents\n"
+    "Status: PASS - please verify no corrected errors\n"
+)
+
+
+class TestIncidentCount:
+    @pytest.mark.parametrize("returncode", [0, -15])
+    def test_a_clean_summary_with_zero_incidents_passes(self, returncode):
+        passed, err = StressapptestBackend().parse_output(CLEAN_SUMMARY, "", returncode)
+        assert (passed, err) == (True, None)
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "Stats: Found 2 hardware incidents",
+            "Log: Thread 3 found 1 hardware incidents",
+            "Stats: Completed: 2048.00M in 9.99s 205.00MB/s, with 12 hardware incidents, 0 errors",
+        ],
+    )
+    def test_a_nonzero_incident_count_is_a_failure(self, line):
+        passed, err = StressapptestBackend().parse_output(line + "\n", "", 0)
+        assert passed is False
+        assert "hardware incident" in err
+
+    def test_a_hardware_error_line_is_still_a_failure(self):
+        line = "Hardware Error: Pattern mismatch in block starting at sector 64 in DMA read\n"
+        passed, _ = StressapptestBackend().parse_output(line, "", 0)
+        assert passed is False
+
+
 class TestAllocationRefusal:
     @pytest.mark.parametrize("refusal", ALLOCATION_REFUSALS)
     def test_a_refusal_is_an_environment_fault_not_a_memory_verdict(self, refusal):

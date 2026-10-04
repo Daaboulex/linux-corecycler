@@ -5,6 +5,7 @@ Like every backend it runs indefinitely (-s 86400) and the scheduler stops it.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from corecycler.engine.backends import register_backend
@@ -24,6 +25,8 @@ ALLOCATION_REFUSALS: tuple[str, ...] = (
     "failed to allocate memory",
     "no memory found to test",
 )
+
+_NONZERO_INCIDENTS = re.compile(r"(?:found|with) [1-9]\d* hardware incidents?")
 
 
 @register_backend("stressapptest")
@@ -48,9 +51,11 @@ class StressapptestBackend(StressBackend):
         for refusal in ALLOCATION_REFUSALS:
             if refusal in lowered:
                 return False, f"stressapptest could not allocate its test memory ('{refusal}'): verdict unavailable"
-        for signature in ("miscompare", "hardware error", "hardware incident", "status: fail"):
+        for signature in ("miscompare", "hardware error", "status: fail"):
             if signature in lowered:
-                return False, f"stressapptest: '{signature}' — memory errors detected"
+                return False, f"stressapptest: '{signature}': memory errors detected"
+        if _NONZERO_INCIDENTS.search(lowered):
+            return False, "stressapptest: nonzero 'hardware incident' count: memory errors detected"
         if returncode in CRASH_SIGNALS:
             return False, f"stressapptest crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
         if "Status: PASS" in stdout:
