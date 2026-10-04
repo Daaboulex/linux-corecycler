@@ -211,27 +211,44 @@ class TestStretchSampler:
 
 
 class TestRapidTransitionWorker:
-    def _worker(self, result, *, mce=()):
+    def _worker(self, results, *, mce=()):
         scheduler = MagicMock()
-        scheduler.run_rapid_transitions.return_value = result
+        scheduler.run_rapid_transitions.return_value = results
         scheduler.observed_mce = list(mce)
         return _RapidTransitionWorker(2, 2, scheduler, cores=[0, 1, 2], duration=30.0)
 
-    def test_a_clean_run_reports_a_pass(self, collect):
-        worker = self._worker(_result(0))
+    def test_the_rapid_worker_reports_the_typed_outcome(self, collect):
+        too_hot = "CPU temperature exceeded 95.0 C safety limit"
+        thermal = {core: _result(core, Outcome.THERMAL, too_hot) for core in (2, 0)}
+        worker = self._worker(thermal, mce=[_mce(cpu=2)])
         seen = collect(worker)
         worker.run()
+        assert seen[0].lanes == (thermal[0], thermal[2])
+        assert seen[0].result.outcome is Outcome.THERMAL
+        assert [event.cpu for event in seen[0].kernel_events] == [2]
+
+    def test_every_lane_reaches_the_report_sorted_by_core(self, collect):
+        worker = self._worker({2: _result(2), 0: _result(0), 1: _result(1)})
+        seen = collect(worker)
+        worker.run()
+        assert [lane.core_id for lane in seen[0].lanes] == [0, 1, 2]
         assert seen[0].result.passed is True
         assert worker.scheduler.run_rapid_transitions.call_args.kwargs["cores"] == [0, 1, 2]
 
-    def test_the_rapid_worker_reports_the_typed_outcome(self, collect):
-        result = _result(0, Outcome.THERMAL, "CPU temperature exceeded 95.0 C safety limit")
-        worker = self._worker(result, mce=[_mce(cpu=2)])
+    def test_the_core_that_logged_a_machine_check_is_the_reported_lane(self, collect):
+        mce = _result(2, Outcome.OWN_CORE_MCE, "MCE during rapid transition: CPU:2")
+        worker = self._worker({0: _result(0, Outcome.CUT_SHORT, "stopped"), 2: mce, 1: _result(1, Outcome.CUT_SHORT)})
         seen = collect(worker)
         worker.run()
-        assert seen[0].result is result
-        assert seen[0].result.outcome is Outcome.THERMAL
-        assert [event.cpu for event in seen[0].kernel_events] == [2]
+        assert seen[0].result is mce
+        assert [lane.outcome for lane in seen[0].lanes] == [Outcome.CUT_SHORT, Outcome.CUT_SHORT, Outcome.OWN_CORE_MCE]
+
+    def test_an_empty_result_is_cut_short_for_its_core(self, collect):
+        worker = self._worker({})
+        seen = collect(worker)
+        worker.run()
+        assert seen[0].result.core_id == 2
+        assert seen[0].result.outcome is Outcome.CUT_SHORT
 
     def test_a_harness_exception_is_not_started(self, collect):
         scheduler = MagicMock()

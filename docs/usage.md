@@ -88,7 +88,8 @@ The Auto-Tuner automates the entire PBO Curve Optimizer search via runtime SMU w
    - **Stage 3 -- alternating half-core load**: half loaded, half idle, then swap
      (split by CCD when available). Catches boost-ramp voltage transients.
    - **Stage 4 -- rapid transitions** (`validate_transitions`): fast load/idle cycling
-     across all cores -- catches idle-to-boost instability.
+     on one CPU of every core at once, per-core verdicts -- catches idle-to-boost
+     instability.
    - **Stage 5 -- per-core spectrum** (`validate_spectrum`): bursts, load transitions
      and idle watch per core with all offsets live.
    - **Stage 6 -- all-core memory load** (`validate_memory`): one memory stressor

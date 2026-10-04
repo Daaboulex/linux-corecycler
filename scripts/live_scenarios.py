@@ -565,10 +565,14 @@ def scenario_engine_rapid(args) -> None:
         scheduler_config=SchedulerConfig(poll_interval=0.5),
         work_dir=campaign_home() / "rapid-work",
     )
-    passed, error = scheduler.run_rapid_transitions(
+    results = scheduler.run_rapid_transitions(
         args.cores, total_duration=args.seconds, load_seconds=4.0, idle_seconds=2.0
     )
-    check("rapid_transitions_passed", passed and error is None, {"passed": passed, "error": error})
+    check(
+        "rapid_transitions_passed",
+        sorted(results) == sorted(args.cores) and all(r.passed for r in results.values()),
+        {c: (r.outcome.value, r.detail) for c, r in results.items()},
+    )
 
 
 def scenario_memory_stress(args) -> None:

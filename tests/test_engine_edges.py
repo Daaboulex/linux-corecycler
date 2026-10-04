@@ -435,12 +435,11 @@ class TestSchedulerHookGlue:
         def stop_during(sup, lanes, config, duration):
             time.sleep(0.02)
             sup.kwargs["stop_event"].set()
-            return {lanes[0].core_id: cut(lanes[0].core_id)}
+            return {one.core_id: cut(one.core_id) for one in lanes}
 
         scripted.script = [stop_during]
-        result = sched.run_rapid_transitions([0], total_duration=5.0, load_seconds=0.02)
-        assert result.outcome is Outcome.CUT_SHORT
-        assert not result.passed
+        results = sched.run_rapid_transitions([0, 1], total_duration=5.0, load_seconds=0.02)
+        assert [results[core].outcome for core in (0, 1)] == [Outcome.CUT_SHORT, Outcome.CUT_SHORT]
 
     def test_a_stop_between_rapid_cycles_is_cut_short(self, tmp_path, monkeypatch):
         from test_scheduler import ok
@@ -451,9 +450,9 @@ class TestSchedulerHookGlue:
             kwargs["stop_event"].set()
 
         monkeypatch.setattr(execution, "watch_idle", stop_while_idle)
-        scripted.script = [lambda sup, lanes, c, d: {lanes[0].core_id: ok(lanes[0].core_id)}]
-        result = sched.run_rapid_transitions([0], total_duration=5.0, load_seconds=0.02)
-        assert result.outcome is Outcome.CUT_SHORT
+        scripted.script = [lambda sup, lanes, c, d: {one.core_id: ok(one.core_id) for one in lanes}]
+        results = sched.run_rapid_transitions([0, 1], total_duration=5.0, load_seconds=0.02)
+        assert [results[core].outcome for core in (0, 1)] == [Outcome.CUT_SHORT, Outcome.CUT_SHORT]
 
     def test_the_temperature_delegate_reads_through_the_engine(self, monkeypatch):
         monkeypatch.setattr(execution, "read_cpu_temperature", lambda: 33.5)

@@ -8,14 +8,13 @@ import threading
 from typing import TYPE_CHECKING
 
 from corecycler.config.paths import resolve_work_dir
-from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.detector import ErrorDetector, KernelEvent
-from corecycler.engine.execution import Lane, Supervisor, ThermalWatch
+from corecycler.engine.execution import Lane, Supervisor, ThermalWatch, refuse_if_missing
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from corecycler.engine.backends.base import StressBackend
+    from corecycler.engine.backends.base import StressBackend, StressResult
     from corecycler.engine.scheduler import SchedulerConfig
     from corecycler.engine.topology import CPUTopology
 
@@ -58,9 +57,8 @@ class ParallelStress:
         self.observed_mce = []
 
         cores = sorted(self.config.cores_to_test or self.topology.cores.keys())
-        missing = [core for core in cores if not (info := self.topology.cores.get(core)) or not info.logical_cpus]
-        if missing:
-            return {core: _refused(core, missing) for core in cores}
+        if refused := refuse_if_missing(self.topology, cores):
+            return refused
         lanes = [
             Lane(
                 core_id=core_id,
@@ -92,12 +90,3 @@ class ParallelStress:
             return supervisor.run(lanes, self.stress_config, float(self.config.seconds_per_core))
         finally:
             self.detector.close()
-
-
-def _refused(core_id: int, missing: list[int]) -> StressResult:
-    named = ", ".join(str(core) for core in missing)
-    if core_id in missing:
-        outcome, detail = Outcome.NOT_STARTED, f"core {core_id} not in topology"
-    else:
-        outcome, detail = Outcome.CUT_SHORT, f"not run: the topology lacks core {named} of this batch"
-    return StressResult(core_id=core_id, outcome=outcome, detail=detail, duration_seconds=0.0)

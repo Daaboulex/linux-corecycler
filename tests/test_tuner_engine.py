@@ -2043,23 +2043,19 @@ class TestValidationS4:
             engine._on_validation_test_finished(0, passed=True)
         assert engine._validation_stage == 5
 
-    def test_validation_fail_s4_backs_off(self):
-        """S4 failure backs off the most aggressive core."""
+    def test_validation_fail_s4_backs_off_the_failing_core(self):
         cfg = TunerConfig(validate_transitions=True, hardening_tiers=[])
         engine = make_test_engine(cfg)
         engine._validation_stage = 4
         engine._core_states = {
-            0: CoreState(core_id=0, phase=TunerPhase.HARDENED, best_offset=-10, baseline_offset=0, current_offset=-10),
+            0: CoreState(core_id=0, phase=TunerPhase.HARDENED, best_offset=-30, baseline_offset=0, current_offset=-30),
+            1: CoreState(core_id=1, phase=TunerPhase.HARDENED, best_offset=-10, baseline_offset=0, current_offset=-10),
         }
-        with (
-            patch.object(engine, "_find_most_aggressive_core", return_value=0),
-            patch("PySide6.QtCore.QTimer.singleShot"),
-        ):
-            engine._on_validation_test_finished(0, passed=False)
-        # Incremental semantics: the core is backed off and owes a solo
-        # re-test, then stage 4 itself reruns — no stage-1 restart.
-        assert engine._core_states[0].best_offset == -9
-        assert engine._validation_requeue == [0]
+        with patch("PySide6.QtCore.QTimer.singleShot"):
+            engine._on_validation_test_finished(1, passed=False)
+        assert engine._core_states[1].best_offset == -9
+        assert engine._core_states[0].best_offset == -30
+        assert engine._validation_requeue == [1]
         assert engine._validation_stage == 4
         assert engine._validation_dirty is True
 

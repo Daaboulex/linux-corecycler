@@ -130,6 +130,13 @@ def _cut_short(core_id: int, detail: str) -> StressResult:
     return StressResult(core_id=core_id, outcome=Outcome.CUT_SHORT, detail=detail, duration_seconds=0.0)
 
 
+def _batch_report(core_id: int, results: dict[int, StressResult], observed: list[KernelEvent]) -> WorkerReport:
+    lanes = tuple(results[core] for core in sorted(results)) or (
+        _cut_short(core_id, "the batch returned no lane result"),
+    )
+    return WorkerReport(lanes=lanes, peak_stretch_pct=0.0, kernel_events=tuple(observed))
+
+
 class _TunerWorker(QThread):
     """Runs one CoreScheduler test on a background thread.
 
@@ -228,7 +235,7 @@ class _TunerWorker(QThread):
 
 
 class _RapidTransitionWorker(_TunerWorker):
-    """Runs rapid transition validation on a background thread."""
+    """Runs rapid transition validation (one single-CPU lane per core) on a background thread."""
 
     def __init__(
         self,
@@ -245,10 +252,8 @@ class _RapidTransitionWorker(_TunerWorker):
 
     def run(self) -> None:
         try:
-            result = self.scheduler.run_rapid_transitions(cores=self._cores, total_duration=self._duration)
-            self.finished.emit(
-                WorkerReport(lanes=(result,), peak_stretch_pct=0.0, kernel_events=tuple(self.scheduler.observed_mce))
-            )
+            results = self.scheduler.run_rapid_transitions(cores=self._cores, total_duration=self._duration)
+            self.finished.emit(_batch_report(self._core_id, results, self.scheduler.observed_mce))
         except Exception as e:
             log.exception("Rapid transition worker crashed for core %d", self._core_id)
             self.finished.emit(_not_started(self._core_id, str(e)))
@@ -269,12 +274,7 @@ class _ParallelWorker(_TunerWorker):
     def run(self) -> None:
         try:
             results = self._scheduler.run()
-            lanes = tuple(results[core] for core in sorted(results)) or (
-                _cut_short(self._core_id, "the batch returned no lane result"),
-            )
-            self.finished.emit(
-                WorkerReport(lanes=lanes, peak_stretch_pct=0.0, kernel_events=tuple(self._scheduler.observed_mce))
-            )
+            self.finished.emit(_batch_report(self._core_id, results, self._scheduler.observed_mce))
         except Exception as e:
             log.exception("Parallel worker crashed for core %d", self._core_id)
             self.finished.emit(_not_started(self._core_id, str(e)))
@@ -2458,7 +2458,7 @@ class TunerEngine(QObject):
                 peak_stretch_pct=peak_stretch_pct if peak_stretch_pct > 0 else None,
             )
 
-        if self._session_id and self._validation_stage in (2, 3, 6):
+        if self._session_id and self._validation_stage in (2, 3, 4, 6):
             self._log_parallel_rows(report, log_phase)
 
         status_str = "PASS" if passed else "FAIL"
@@ -3025,11 +3025,12 @@ class TunerEngine(QObject):
         )
 
     def _run_validation_stage4(self) -> None:
-        """S4: Rapid transition stress — all cores, load/idle cycling.
+        """S4: rapid load/idle cycling on every confirmed core, all at once.
 
-        Runs rapid load/idle transitions on all confirmed cores using the
-        scheduler's run_rapid_transitions(). This catches instability during
-        idle↔boost transitions that sustained stress tests miss.
+        Each core runs its own single-CPU lane through the scheduler's
+        run_rapid_transitions(), so each core gets its own payload, load proof
+        and verdict, and a machine check is blamed on the core that logged it.
+        This catches idle-to-boost instability that sustained stress misses.
         """
         cores = self._validation_core_order
         self.log_message.emit(f"Validation stage 4: rapid load/idle transitions on {len(cores)} cores")
@@ -3399,7 +3400,7 @@ class TunerEngine(QObject):
         detector would see it and the quarantine breaker would never engage,
         re-applying the same profile into the same crash forever. The in_test flag
         is the one signal that attributes such a crash, so set it on the full
-        stressed set (a multi-core stage reports only its first core).
+        stressed set.
         """
         self._cores_under_stress = list(cores)
         marked = False
@@ -3438,19 +3439,6 @@ class TunerEngine(QObject):
             if self._session_id is not None:
                 tp.save_core_state(self._db, self._session_id, cs)
         self._cores_under_stress = []
-
-    def _find_most_aggressive_core(self) -> int | None:
-        """Find the confirmed core with the highest absolute offset that can be backed off.
-
-        Skips cores already at their baseline_offset (nothing to give).
-        """
-        best_core = None
-        best_abs = -1
-        for cs in self._core_states.values():
-            if cs.best_offset is not None and cs.best_offset != cs.baseline_offset and abs(cs.best_offset) > best_abs:
-                best_abs = abs(cs.best_offset)
-                best_core = cs.core_id
-        return best_core
 
     def _backoff_core(self, core_id: int) -> bool:
         """Back off a core's best_offset by one fine_step.
@@ -3534,16 +3522,7 @@ class TunerEngine(QObject):
             QTimer.singleShot(0, self._run_validation_next)
             return
 
-        # Validation failure — back off the FAILING core. Stages 2/3 report
-        # the failing core directly (per-core verdicts); stage 4's rapid
-        # transition worker only knows the batch, so fall back to the most
-        # aggressive offset there.
-        target: int | None = None
-        match self._validation_stage:
-            case 1 | 2 | 3 | 5 | 6:
-                target = core_id
-            case 4:
-                target = self._find_most_aggressive_core()
+        target = core_id if self._validation_stage in (1, 2, 3, 4, 5, 6) else None
 
         if target is None or not self._backoff_core(target):
             self._finalize_exhausted()

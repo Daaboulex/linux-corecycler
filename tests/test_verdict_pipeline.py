@@ -15,6 +15,7 @@ from corecycler.engine.backends.mprime import MprimeBackend
 from corecycler.engine.backends.stress_ng import StressNgBackend
 from corecycler.engine.parallel import ParallelStress
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
+from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.history.db import HistoryDB
 from corecycler.tuner import engine as eng
 from corecycler.tuner import persistence as tp
@@ -35,6 +36,19 @@ sys.exit(0)
 """
 
 BUSY = "while True: pass"
+
+MPRIME_TORTURE_THREADS = """
+import os, re
+text = open("prime.txt").read()
+def key(name):
+    return int(re.search(name + r"=(\\d+)", text).group(1))
+threads = max(1, min(key("TortureCores"), key("NumCPUs"))) * (2 if key("TortureHyperthreading") else 1)
+for _ in range(threads - 1):
+    if os.fork() == 0:
+        break
+while True:
+    pass
+"""
 
 STRESSOR_SEGV = """
 import sys
@@ -171,6 +185,41 @@ def test_a_two_lane_mprime_batch_reaches_the_engine_with_every_lane(engine, tmp_
     reported = tp.get_test_log(engine._db, engine._session_id, core_id=1)[-1]
     assert reported["error_type"] == "computation"
     assert tp.get_test_log(engine._db, engine._session_id, core_id=0) == []
+
+
+class RecordsItsTortureConfig(MprimeBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.prime_txt: list[str] = []
+
+    def prepare(self, work_dir: Path, config: StressConfig) -> None:
+        super().prepare(work_dir, config)
+        self.prime_txt.append((work_dir / "prime.txt").read_text())
+
+    def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
+        return [sys.executable, "-c", MPRIME_TORTURE_THREADS]
+
+
+def test_each_stage4_lane_runs_one_mprime_torture_worker_that_meets_its_load_floor(tmp_path, monkeypatch):
+    monkeypatch.setattr(execution, "read_cpu_temperature", lambda: 40.0)
+    cores = [0, 1, 2, 3]
+    topology = CPUTopology()
+    for core in cores:
+        topology.cores[core] = PhysicalCore(core_id=core, ccd=0, ccx=None, logical_cpus=(core, core + len(cores)))
+    backend = RecordsItsTortureConfig()
+    scheduler = CoreScheduler(
+        topology=topology,
+        backend=backend,
+        stress_config=StressConfig(threads=2),
+        scheduler_config=SchedulerConfig(cores_to_test=cores, poll_interval=0.02),
+        work_dir=tmp_path / "rapid",
+    )
+    with patch.object(containment, "contain", return_value=None):
+        results = scheduler.run_rapid_transitions(cores, total_duration=1.0, load_seconds=1.0)
+    assert len(backend.prime_txt) == len(cores)
+    for prime_txt in backend.prime_txt:
+        assert {"NumCPUs=1", "TortureCores=1", "TortureHyperthreading=0"} <= set(prime_txt.splitlines())
+    assert {core: result.outcome for core, result in results.items()} == dict.fromkeys(cores, Outcome.PASS)
 
 
 def test_a_stress_ng_stressor_crash_in_a_hunt_gets_the_crash_penalty(engine, tmp_path):

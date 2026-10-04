@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
     from corecycler.engine.backends.base import StressBackend, StressConfig
     from corecycler.engine.detector import ErrorDetector, KernelEvent
+    from corecycler.engine.topology import CPUTopology
 
 log = logging.getLogger(__name__)
 
@@ -231,6 +232,21 @@ def kernel_signal(event: KernelEvent, own_cpus: tuple[int, ...], phase: str) -> 
     if event.cpu in own_cpus:
         return LaneSignal(Outcome.OWN_CORE_MCE, f"MCE during {phase}: {event.message}")
     return None
+
+
+def refuse_if_missing(topology: CPUTopology, cores: list[int]) -> dict[int, StressResult]:
+    missing = [core for core in cores if not (info := topology.cores.get(core)) or not info.logical_cpus]
+    if not missing:
+        return {}
+    named = ", ".join(str(core) for core in missing)
+    refused: dict[int, StressResult] = {}
+    for core in cores:
+        if core in missing:
+            outcome, detail = Outcome.NOT_STARTED, f"core {core} not in topology"
+        else:
+            outcome, detail = Outcome.CUT_SHORT, f"not run: the topology lacks core {named} of this batch"
+        refused[core] = StressResult(core_id=core, outcome=outcome, detail=detail, duration_seconds=0.0)
+    return refused
 
 
 def _no_work_done(run: _LaneRun) -> str | None:

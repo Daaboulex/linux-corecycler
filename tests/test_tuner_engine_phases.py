@@ -132,20 +132,6 @@ class TestMemoryBackendDiscovery:
 
 
 class TestBackoffSelection:
-    def test_no_confirmed_core_has_nothing_to_give(self, engine):
-        assert engine._find_most_aggressive_core() is None
-
-    def test_a_core_at_its_baseline_has_nothing_to_give(self, engine):
-        cs = engine._core_states[1]
-        cs.best_offset = cs.baseline_offset
-        assert engine._find_most_aggressive_core() is None
-
-    def test_the_deepest_offset_gives_first(self, engine):
-        _confirm(engine, 0, -20)
-        _confirm(engine, 2, -35)
-        _confirm(engine, 3, -10)
-        assert engine._find_most_aggressive_core() == 2
-
     def test_a_core_without_a_best_offset_cannot_back_off(self, engine):
         assert engine._backoff_core(0) is False
 
@@ -323,6 +309,42 @@ class TestValidationStageFour:
         assert not worker.start.called
         assert failed[0][0] == 0
         assert "no work dir" in failed[0][1]
+
+
+class TestValidationStageFourRows:
+    def _deliver(self, engine, lanes, events=()):
+        for core in (0, 1, 2, 3):
+            _confirm(engine, core, -20)
+        engine._set_status("validating")
+        engine._validation_stage = 4
+        engine._validation_core_order = [0, 1, 2, 3]
+        scheduler = MagicMock()
+        scheduler.run_rapid_transitions.return_value = {lane.core_id: lane for lane in lanes}
+        scheduler.observed_mce = list(events)
+        worker = eng._RapidTransitionWorker(0, 0, scheduler, cores=[0, 1, 2, 3], duration=1.0)
+        worker.finished.connect(engine._on_test_finished)
+        try:
+            worker.run()
+        finally:
+            worker.finished.disconnect(engine._on_test_finished)
+        return [
+            (row["core_id"], row["phase"], row["passed"], row["error_type"])
+            for row in tp.get_test_log(engine._db, engine._session_id)
+        ]
+
+    def test_every_core_gets_one_validate_s4_row(self, engine):
+        lanes = [StressResult(core_id=core, outcome=Outcome.PASS, detail="", duration_seconds=9.0) for core in range(4)]
+        rows = self._deliver(engine, lanes)
+        assert sorted(rows) == [(core, "validate_s4", 1, None) for core in range(4)]
+
+    def test_a_machine_check_is_written_on_the_core_that_logged_it(self, engine):
+        lanes = [
+            StressResult(core_id=core, outcome=Outcome.CUT_SHORT, detail="stopped", duration_seconds=1.0)
+            for core in (0, 1, 3)
+        ]
+        lanes.append(StressResult(core_id=2, outcome=Outcome.OWN_CORE_MCE, detail="MCE", duration_seconds=1.0))
+        rows = self._deliver(engine, lanes, (mce(2, corrected=False, message="CPU:2 MC5_STATUS uncorrected"),))
+        assert rows == [(2, "validate_s4", 0, "mce")]
 
 
 class TestValidationSoak:
@@ -701,12 +723,15 @@ class TestVerdictRouter:
         engine._validation_stage = 4
         engine._validation_core_order = [0, 1]
         scheduler = MagicMock()
-        scheduler.run_rapid_transitions.return_value = StressResult(
-            core_id=0,
-            outcome=Outcome.THERMAL,
-            detail="CPU temperature exceeded 95.0 C safety limit during rapid transition",
-            duration_seconds=1.0,
-        )
+        scheduler.run_rapid_transitions.return_value = {
+            core: StressResult(
+                core_id=core,
+                outcome=Outcome.THERMAL,
+                detail="CPU temperature exceeded 95.0 C safety limit during rapid transition",
+                duration_seconds=1.0,
+            )
+            for core in (0, 1)
+        }
         scheduler.observed_mce = []
         worker = eng._RapidTransitionWorker(0, 0, scheduler, cores=[0, 1], duration=1.0)
         worker.finished.connect(engine._on_test_finished)
