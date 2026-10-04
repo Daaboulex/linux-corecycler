@@ -133,7 +133,6 @@ class CoreScheduler:
         self.observed_mce = []
         self.detector.reset()
         self._thermal = self._new_thermal()
-        self.work_dir.mkdir(parents=True, exist_ok=True)
 
         cores = self._get_test_cores()
         try:

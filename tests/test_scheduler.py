@@ -155,7 +155,6 @@ class TestRunOrchestration:
         assert [r[0].outcome for r in results.values()] == [Outcome.PASS, Outcome.PASS]
         assert all(s.state == "passed" for s in sched.core_status.values())
         assert all(s.iterations == 1 for s in sched.core_status.values())
-        assert sched.work_dir.is_dir()
 
     def test_one_thread_means_one_logical_cpu(self, tmp_path):
         sched = make_scheduler(tmp_path)

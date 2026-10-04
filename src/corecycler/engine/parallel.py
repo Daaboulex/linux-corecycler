@@ -56,7 +56,6 @@ class ParallelStress:
     def run(self) -> dict[int, StressResult]:
         self._stop_event.clear()
         self.observed_mce = []
-        self.work_dir.mkdir(parents=True, exist_ok=True)
 
         cores = sorted(self.config.cores_to_test or self.topology.cores.keys())
         missing = [core for core in cores if not (info := self.topology.cores.get(core)) or not info.logical_cpus]

@@ -83,7 +83,6 @@ class TestLaneBuilding:
         results = runner.run()
         assert seen == [(0, (0, 16)), (1, (1, 17))]
         assert sorted(results) == [0, 1]
-        assert runner.work_dir.is_dir()
 
     def test_one_thread_lanes_use_one_logical_cpu_each(self, tmp_path):
         runner = make_parallel(tmp_path)
