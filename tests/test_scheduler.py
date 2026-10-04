@@ -320,15 +320,24 @@ class TestIdleComposition:
 
 class TestVariableLoadComposition:
     def test_a_variable_segment_failure_is_attributed(self, tmp_path):
-        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load=True)
+        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load=True, variable_load_interval=0.1)
         ScriptedSupervisor.script = [step_pass, step_fail]
         results = sched.run()
         assert results[0][0].passed is False
         assert "FATAL" in results[0][0].error_message
 
+    def test_a_variable_phase_too_short_for_one_segment_is_no_work_done(self, tmp_path):
+        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load=True, stop_on_error=True)
+        ScriptedSupervisor.script = [step_pass]
+        results = sched.run()
+        assert results[0][0].passed is False
+        assert "no work done" in results[0][0].error_message
+        assert results[0][0].error_type == "startup"
+        assert sched._stop_requested
+
     def test_a_clean_variable_phase_keeps_the_pass(self, tmp_path, monkeypatch):
         monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: None)
-        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load=True)
+        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load=True, variable_load_interval=0.02)
 
         def quick_pass(sup, lanes, config_for, duration):
             time.sleep(0.05)
@@ -338,6 +347,24 @@ class TestVariableLoadComposition:
         sched.config.seconds_per_core = 0.3
         results = sched.run()
         assert results[0][0].passed is True
+
+    def test_the_variable_phase_never_launches_a_sliver_segment(self, tmp_path, monkeypatch):
+        def idle(**kwargs):
+            time.sleep(kwargs["duration"])
+
+        monkeypatch.setattr(execution, "watch_idle", idle)
+        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load_interval=0.4)
+        segments: list[float] = []
+
+        def timed_pass(sup, lanes, config_for, duration):
+            segments.append(duration)
+            time.sleep(duration)
+            return {one.core_id: ok(one.core_id) for one in lanes}
+
+        ScriptedSupervisor.script = [timed_pass] * 5
+        sched._run_variable_load(sched._lane_for(0), 1.0)
+        assert segments
+        assert min(segments) >= 0.4
 
 
 class TestRapidTransitions:
@@ -371,6 +398,14 @@ class TestRapidTransitions:
         sched.stop()
         passed, error = sched.run_rapid_transitions([0], total_duration=5.0)
         assert (passed, error) == (True, None)
+        assert ScriptedSupervisor.created == []
+
+    def test_a_run_too_short_for_one_load_segment_is_no_work_done(self, tmp_path):
+        sched = make_scheduler(tmp_path)
+        passed, error = sched.run_rapid_transitions([0], total_duration=0.01, load_seconds=0.02)
+        assert passed is False
+        assert "no work done" in error
+        assert execution.classify_error(error) == "startup"
         assert ScriptedSupervisor.created == []
 
     def test_unknown_cores_are_a_harness_error(self, tmp_path):

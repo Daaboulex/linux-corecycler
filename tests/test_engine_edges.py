@@ -300,13 +300,17 @@ class TestSupervisorInternalsEdges:
             assert supervisor._containment_fault(run, time.monotonic()) is None
         assert run.cgroup == "/user.slice/cc-test.scope"
 
-    def test_a_busy_cpu_sample_is_never_a_stall(self, tmp_path):
+    def test_a_busy_payload_sample_is_never_a_stall(self, tmp_path):
         supervisor = _idle_supervisor(stall_timeout=0.0)
         run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
-        with patch.object(execution, "cpu_times", side_effect=[(0, 100), (0, 200)]):
+        run.proc = SimpleNamespace(pid=4321)
+        with patch.object(containment, "process_group_cpu_seconds", side_effect=[0.0, 60.0, 60.0]):
             now = time.monotonic()
-            assert supervisor._is_stalled(run, now) is False
-            assert supervisor._is_stalled(run, now + 60.0) is False
+            supervisor._sample_cpu(run, now)
+            supervisor._sample_cpu(run, now + 60.0)
+            assert run.last_active == now + 60.0
+            supervisor._sample_cpu(run, now + 120.0)
+        assert run.last_active == now + 60.0
 
     def test_a_late_unattributed_event_lands_on_the_anchor(self, tmp_path):
         from test_execution import FakeBackend, FakeDetector
@@ -345,6 +349,20 @@ class TestSupervisorInternalsEdges:
         supervisor._we_killed = True
         verdict = supervisor._final_verdict(run, elapsed=5.0, interrupted=False)
         assert verdict is not None and "SUMOUT" in verdict.error_message
+
+    def test_no_load_window_ever_proves_load(self, tmp_path):
+        supervisor = _idle_supervisor()
+        supervisor._we_killed = True
+        no_deadline = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
+        no_deadline.proc = SimpleNamespace(returncode=-15)
+        no_deadline.cpu_seconds = 1e9
+        empty_window = _LaneRun(lane=Lane(core_id=1, cpus=(1,), work_dir=tmp_path), started_at=5.0, deadline=5.0)
+        empty_window.proc = SimpleNamespace(returncode=-15)
+        empty_window.cpu_seconds = 0.0
+        for run in (no_deadline, empty_window):
+            verdict = supervisor._final_verdict(run, elapsed=5.0, interrupted=False)
+            assert verdict is not None and not verdict.passed
+            assert "no work done" in verdict.error_message
 
     def test_classify_names_a_timeout(self):
         assert execution.classify_error("test timeout reached") == "timeout"
@@ -401,7 +419,7 @@ class TestSchedulerHookGlue:
         from test_scheduler import bad, ok
 
         sched, scripted = self._scheduler(
-            tmp_path, monkeypatch, cores_to_test=[0], variable_load=True, stop_on_error=True
+            tmp_path, monkeypatch, cores_to_test=[0], variable_load=True, variable_load_interval=0.1, stop_on_error=True
         )
         scripted.script = [
             lambda sup, lanes, c, d: {0: ok(0)},
@@ -416,7 +434,7 @@ class TestSchedulerHookGlue:
 
         monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: "MCE during idle transition: bang")
         sched, scripted = self._scheduler(
-            tmp_path, monkeypatch, cores_to_test=[0], variable_load=True, stop_on_error=True
+            tmp_path, monkeypatch, cores_to_test=[0], variable_load=True, variable_load_interval=0.1, stop_on_error=True
         )
         scripted.script = [
             lambda sup, lanes, c, d: {0: ok(0)},

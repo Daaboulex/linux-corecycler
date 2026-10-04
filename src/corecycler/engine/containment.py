@@ -79,6 +79,34 @@ def scope_effective_cpus(cgroup_path: str, *, cgroup_base: Path | None = None) -
     return _parse_cpu_ranges(text.strip())
 
 
+def scope_cpu_seconds(cgroup_path: str, *, cgroup_base: Path | None = None) -> float | None:
+    base = cgroup_base or Path("/sys/fs/cgroup")
+    try:
+        text = (base / cgroup_path.lstrip("/") / "cpu.stat").read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "usage_usec":
+            return int(value) / 1_000_000 if value.isdecimal() else None
+    return None
+
+
+def process_group_cpu_seconds(pgid: int, *, proc_base: Path | None = None) -> float | None:
+    base = proc_base or Path("/proc")
+    ticks: int | None = None
+    for stat_path in base.glob("[0-9]*/stat"):
+        try:
+            fields = stat_path.read_text().rpartition(")")[2].split()
+            if int(fields[2]) != pgid:
+                continue
+            utime, stime, cutime, cstime = (int(value) for value in fields[11:15])
+        except (OSError, ValueError, IndexError):
+            continue
+        ticks = (ticks or 0) + utime + stime + cutime + cstime
+    return None if ticks is None else ticks / os.sysconf("SC_CLK_TCK")
+
+
 def cpu_list(cpus: set[int] | tuple[int, ...] | list[int]) -> str:
     return ",".join(str(c) for c in sorted(set(cpus)))
 

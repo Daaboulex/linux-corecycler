@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 import signal
 import subprocess
@@ -31,6 +32,9 @@ from corecycler.engine.execution import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+BUSY = "while True: pass"
 
 
 def _child(code: str) -> list[str]:
@@ -147,6 +151,11 @@ def make_supervisor(
     return supervisor, stop, seen
 
 
+def one_busy_cpu(reader: str = "process_group_cpu_seconds"):
+    launched = time.monotonic()
+    return patch.object(containment, reader, side_effect=lambda _source: time.monotonic() - launched)
+
+
 def lane(tmp_path: Path, core_id: int = 0, cpus: tuple[int, ...] = (0,)) -> Lane:
     return Lane(core_id=core_id, cpus=cpus, work_dir=tmp_path / f"core_{core_id}")
 
@@ -192,9 +201,10 @@ class TestLaunchRefusals:
 
 class TestVerdicts:
     def test_a_process_killed_at_the_deadline_passes(self, tmp_path):
-        backend = FakeBackend(_child("import time; time.sleep(0.5)"))
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
         supervisor, _, _ = make_supervisor(backend)
-        verdict = run_one(supervisor, lane(tmp_path), 0.15)
+        with one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path), 0.5)
         assert verdict is not None and verdict.passed
 
     def test_an_instant_nonzero_exit_proves_nothing(self, tmp_path):
@@ -240,11 +250,21 @@ class TestVerdicts:
         assert "FATAL" in verdict.error_message
 
     def test_a_clean_exit_after_startup_passes(self, tmp_path):
+        backend = FakeBackend(_child("import time; time.sleep(1.5)"))
+        supervisor, _, _ = make_supervisor(backend)
+        with patch.object(execution, "STARTUP_WINDOW_SECONDS", 0.05), one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        assert verdict is not None and verdict.passed
+        assert verdict.duration_seconds < 2.0
+
+    def test_a_clean_exit_that_did_no_work_is_not_a_pass(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(0.3)"))
         supervisor, _, _ = make_supervisor(backend)
         with patch.object(execution, "STARTUP_WINDOW_SECONDS", 0.05):
             verdict = run_one(supervisor, lane(tmp_path), 2.0)
-        assert verdict is not None and verdict.passed
+        assert verdict is not None and not verdict.passed
+        assert "no work done" in verdict.error_message
+        assert verdict.duration_seconds < 2.0
 
     def test_a_live_error_file_beats_a_clean_exit(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(0.5)"), poll_error="fake error: SUMOUT")
@@ -286,6 +306,31 @@ class TestVerdicts:
         assert not alive
 
 
+class TestLoadProof:
+    def test_a_payload_that_never_loads_its_cpus_is_not_a_pass(self, tmp_path):
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
+        supervisor, _, _ = make_supervisor(backend)
+        verdict = run_one(supervisor, lane(tmp_path), 0.5)
+        assert verdict is not None and not verdict.passed
+        assert "no work done" in verdict.error_message
+        assert verdict.error_type == "startup"
+
+    def test_a_payload_that_loads_its_cpus_passes(self, tmp_path):
+        backend = FakeBackend(_child(BUSY))
+        supervisor, _, _ = make_supervisor(backend)
+        with patch.object(execution, "LOAD_FLOOR_FRACTION", 0.05):
+            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        assert verdict is not None and verdict.passed
+
+    def test_an_unreadable_payload_cpu_time_never_proves_load(self, tmp_path):
+        backend = FakeBackend(_child(BUSY))
+        supervisor, _, _ = make_supervisor(backend)
+        with patch.object(containment, "process_group_cpu_seconds", return_value=None):
+            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        assert verdict is not None and not verdict.passed
+        assert "no work done" in verdict.error_message
+
+
 class TestMceAttribution:
     def test_an_own_cpu_event_fails_the_lane(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(5)"))
@@ -297,10 +342,11 @@ class TestMceAttribution:
         assert len(seen) == 1
 
     def test_a_foreign_event_is_evidence_not_a_verdict(self, tmp_path):
-        backend = FakeBackend(_child("import time; time.sleep(0.4)"))
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
         detector = FakeDetector([[Event(cpu=9)]])
         supervisor, _, seen = make_supervisor(backend, detector=detector)
-        verdict = run_one(supervisor, lane(tmp_path, cpus=(0, 16)), 0.15)
+        with one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0, 16)), 0.5)
         assert verdict is not None and verdict.passed
         assert [e.cpu for e in seen] == [9]
 
@@ -330,14 +376,7 @@ class TestStallWatchdog:
     def test_an_idle_lane_is_failed_as_stalled(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
         supervisor, _, _ = make_supervisor(backend, stall_timeout=0.05)
-        with (
-            patch.object(execution, "STALL_GRACE_SECONDS", 0.0),
-            patch.object(
-                execution,
-                "cpu_times",
-                side_effect=[(i * 100, i * 100) for i in range(1, 400)],
-            ),
-        ):
+        with patch.object(execution, "STALL_GRACE_SECONDS", 0.0):
             stalls: list[int] = []
             supervisor.hooks = SuperviseHooks(on_stall=stalls.append)
             verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 5.0)
@@ -345,31 +384,33 @@ class TestStallWatchdog:
         assert verdict.error_type == "stall"
         assert stalls == [0]
 
-    def test_a_busy_lane_is_not_accused(self, tmp_path):
-        backend = FakeBackend(_child("import time; time.sleep(0.4)"))
-        supervisor, _, _ = make_supervisor(backend, stall_timeout=0.05)
+    def test_a_hung_payload_stalls_even_when_its_cpus_are_busy(self, tmp_path):
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
+        supervisor, _, _ = make_supervisor(backend, stall_timeout=0.2)
+        totals = itertools.count(100, 100)
         with (
-            patch.object(execution, "STARTUP_WINDOW_SECONDS", 0.05),
             patch.object(execution, "STALL_GRACE_SECONDS", 0.0),
-            patch.object(
-                execution,
-                "cpu_times",
-                side_effect=[(0, i * 100) for i in range(1, 400)],
-            ),
+            patch.object(execution, "cpu_times", side_effect=lambda _cpu: (0, next(totals))),
         ):
-            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 5.0)
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 3.0)
+        assert verdict is not None and verdict.error_type == "stall"
+
+    def test_a_busy_lane_is_not_accused(self, tmp_path):
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
+        supervisor, _, _ = make_supervisor(backend, stall_timeout=0.05)
+        with patch.object(execution, "STALL_GRACE_SECONDS", 0.0), one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.5)
         assert verdict is not None and verdict.passed
 
-    def test_an_unreadable_cpu_cannot_accuse_a_lane(self, tmp_path):
-        backend = FakeBackend(_child("import time; time.sleep(0.4)"))
+    def test_an_unreadable_payload_cpu_time_stalls_the_lane(self, tmp_path):
+        backend = FakeBackend(_child(BUSY))
         supervisor, _, _ = make_supervisor(backend, stall_timeout=0.05)
         with (
-            patch.object(execution, "STARTUP_WINDOW_SECONDS", 0.05),
             patch.object(execution, "STALL_GRACE_SECONDS", 0.0),
-            patch.object(execution, "cpu_times", return_value=None),
+            patch.object(containment, "process_group_cpu_seconds", return_value=None),
         ):
             verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 5.0)
-        assert verdict is not None and verdict.passed
+        assert verdict is not None and verdict.error_type == "stall"
 
 
 class TestContainmentWatchdog:
@@ -389,15 +430,16 @@ class TestContainmentWatchdog:
         assert "containment fault" in verdict.error_message
 
     def test_a_matching_kernel_record_raises_no_alarm(self, tmp_path):
-        backend = FakeBackend(_child("import time; time.sleep(0.4)"))
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
         supervisor, _, _ = make_supervisor(backend, containment_for=self._contained)
         with (
-            patch.object(execution, "STARTUP_WINDOW_SECONDS", 0.05),
             patch.object(containment, "payload_cgroup", return_value="/user.slice/cc-test.scope"),
             patch.object(containment, "scope_effective_cpus", return_value={0}),
+            one_busy_cpu("scope_cpu_seconds") as scope_reads,
         ):
-            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 5.0)
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.5)
         assert verdict is not None and verdict.passed
+        scope_reads.assert_called_with("/user.slice/cc-test.scope")
 
     def test_a_scope_that_never_adopts_the_payload_is_a_fault(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
@@ -692,7 +734,7 @@ class TestClassifyError:
             ("Machine check without core attribution during stress: bang", "mce_unattributed"),
             ("MCE during stress (CPU 0,16): bang", "mce"),
             ("CPU temperature exceeded 95.0 C safety limit during stress", "thermal"),
-            ("Stress test stalled on core 3 (CPU usage near 0 on CPUs 3,19 for 30s)", "stall"),
+            ("Stress test stalled on core 3 (payload CPU time near 0 on CPUs 3,19 for 30s)", "stall"),
             ("mprime error: FATAL ERROR: Rounding was 0.5", "computation"),
             ("Stress process killed externally (code 137) — possible OOM or system issue", "killed"),
             ("mprime crashed with SIGSEGV (exit -11)", "crash"),
@@ -785,3 +827,38 @@ class TestContainment:
 
     def test_an_unreadable_proc_observes_nothing(self, tmp_path):
         assert containment.observed_tree_cpus(4242, proc_base=tmp_path / "gone") == set()
+
+    def test_scope_cpu_seconds_reads_usage_usec(self, tmp_path):
+        scope = tmp_path / "user.slice" / "cc-test.scope"
+        scope.mkdir(parents=True)
+        (scope / "cpu.stat").write_text("usage_usec 2500000\nuser_usec 2000000\nsystem_usec 500000\n")
+        assert containment.scope_cpu_seconds("/user.slice/cc-test.scope", cgroup_base=tmp_path) == 2.5
+
+    def test_a_cpu_stat_without_usage_proves_nothing(self, tmp_path):
+        scope = tmp_path / "cc-test.scope"
+        scope.mkdir()
+        (scope / "cpu.stat").write_text("user_usec 2000000\nsystem_usec 500000\n")
+        assert containment.scope_cpu_seconds("/cc-test.scope", cgroup_base=tmp_path) is None
+        (scope / "cpu.stat").write_text("usage_usec many\n")
+        assert containment.scope_cpu_seconds("/cc-test.scope", cgroup_base=tmp_path) is None
+        assert containment.scope_cpu_seconds("/gone.scope", cgroup_base=tmp_path) is None
+
+    def test_process_group_cpu_seconds_sums_only_the_group(self, tmp_path):
+        def proc_stat(pid: int, comm: str, pgrp: int, ticks: tuple[int, int, int, int]) -> None:
+            (tmp_path / str(pid)).mkdir()
+            used = " ".join(str(t) for t in ticks)
+            (tmp_path / str(pid) / "stat").write_text(
+                f"{pid} ({comm}) R 1 {pgrp} {pgrp} 0 -1 4194304 0 0 0 0 {used} 20 0 1 0\n"
+            )
+
+        proc_stat(100, "mprime", 100, (300, 20, 50, 30))
+        proc_stat(101, "a) R 1 200 (b", 100, (100, 0, 0, 0))
+        proc_stat(200, "other", 200, (9000, 9000, 0, 0))
+        hz = os.sysconf("SC_CLK_TCK")
+        assert containment.process_group_cpu_seconds(100, proc_base=tmp_path) == pytest.approx(500 / hz)
+
+    def test_a_process_group_with_no_readable_member_proves_nothing(self, tmp_path):
+        (tmp_path / "300" / "stat").mkdir(parents=True)
+        (tmp_path / "301").mkdir()
+        (tmp_path / "301" / "stat").write_text("301 (short) R 1 300\n")
+        assert containment.process_group_cpu_seconds(300, proc_base=tmp_path) is None

@@ -11,9 +11,11 @@ import stat
 import tempfile
 import textwrap
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from corecycler.engine import execution
 from corecycler.engine.backends.mprime import MprimeBackend
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
 from corecycler.engine.topology import CPUTopology, PhysicalCore
@@ -61,7 +63,8 @@ def _run_one(backend: MprimeBackend, work_dir: Path, seconds: int = 12):
         ),
         work_dir=work_dir,
     )
-    results = scheduler.run()
+    with patch.object(execution, "LOAD_FLOOR_FRACTION", 0.05):
+        results = scheduler.run()
     assert results[0], "scheduler produced no result"
     return results[0][0]
 
@@ -122,7 +125,7 @@ class TestStaleResultsDisasterReplay:
             """
             echo "[Worker #1] Self-test 240K passed!" >> results.txt
             echo "[Worker #1] Self-test 240K passed!"
-            sleep 60
+            while :; do :; done
         """,
         )
         backend._binary = str(clean_bin)
@@ -143,7 +146,7 @@ class TestStaleResultsDisasterReplay:
             exec_dir,
             """
             echo "[Worker #1] Self-test 240K passed!" >> results.txt
-            sleep 60
+            while :; do :; done
         """,
         )
         backend = MprimeBackend()
@@ -167,7 +170,7 @@ class TestUnreadableResultsFailsClosed:
             """
             echo "data" >> results.txt
             chmod 000 results.txt
-            sleep 60
+            while :; do :; done
         """,
         )
         backend = MprimeBackend()
@@ -175,5 +178,6 @@ class TestUnreadableResultsFailsClosed:
         result = _run_one(backend, tmp_path / "work", seconds=8)
 
         assert result.passed is False
+        assert "results.txt" in (result.error_message or "")
         assert "verdict unavailable" in (result.error_message or "")
         assert result.error_type == "startup"  # engine pauses, never advances

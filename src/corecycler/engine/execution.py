@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import os
 import re
 import signal
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,6 +31,8 @@ ERROR_POLL_INTERVAL = 5.0
 WATCHDOG_INTERVAL = 2.0
 STARTUP_WINDOW_SECONDS = 2.0
 CONTAINMENT_GRACE_SECONDS = 5.0
+LOAD_FLOOR_FRACTION = 0.5
+STALL_BUSY_FRACTION = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,9 +52,11 @@ class _LaneRun:
     proc: subprocess.Popen | None = None
     verdict: StressResult | None = None
     started_at: float = 0.0
+    deadline: float = math.inf
     last_active: float = 0.0
     last_watchdog: float = 0.0
-    prev_times: dict[int, tuple[int, int]] = field(default_factory=dict)
+    cpu_seconds: float | None = None
+    cpu_sampled_at: float = 0.0
     unit: str | None = None
     cgroup: str | None = None
     stdout: str = ""
@@ -60,7 +65,7 @@ class _LaneRun:
 
     @property
     def running(self) -> bool:
-        return self.verdict is None and self.proc is not None and self.proc.poll() is None
+        return self.verdict is None and self.proc is not None and self.proc.returncode is None
 
 
 @dataclass(slots=True)
@@ -213,6 +218,17 @@ def busy_fraction(prev: tuple[int, int] | None, now: tuple[int, int] | None) -> 
     return 1.0 - ((now[0] - prev[0]) / d_total)
 
 
+def _no_work_done(run: _LaneRun) -> str | None:
+    floor = LOAD_FLOOR_FRACTION * len(run.lane.cpus) * (run.deadline - run.started_at)
+    if run.cpu_seconds is not None and 0 < floor <= run.cpu_seconds:
+        return None
+    used = "unreadable" if run.cpu_seconds is None else f"{run.cpu_seconds:.2f}s"
+    return (
+        f"payload CPU time {used} on CPUs {run.lane.cpu_list} did not reach the load floor of "
+        f"{floor:.2f}s: no work done, verdict unavailable"
+    )
+
+
 class Supervisor:
     """Runs one batch of contained lanes to per-lane honest verdicts.
 
@@ -254,8 +270,8 @@ class Supervisor:
         config_for: Callable[[Lane], StressConfig],
         duration: float,
     ) -> dict[int, StressResult | None]:
-        runs = [_LaneRun(lane=lane) for lane in lanes]
         start = time.monotonic()
+        runs = [_LaneRun(lane=lane, deadline=start + duration) for lane in lanes]
         self._we_killed = False
         try:
             for run in runs:
@@ -372,6 +388,7 @@ class Supervisor:
         for run in runs:
             if run.verdict is not None or run.proc is None:
                 continue
+            self._sample_cpu(run, now)
             rc = run.proc.poll()
             if rc is not None:
                 self._drain(run)
@@ -402,12 +419,16 @@ class Supervisor:
                     return True
                 passed, msg = self.backend.parse_output(run.stdout, run.stderr, rc)
                 if passed:
-                    run.verdict = StressResult(
-                        core_id=run.lane.core_id,
-                        passed=True,
-                        duration_seconds=now - start,
-                    )
-                    continue
+                    no_work = _no_work_done(run)
+                    if no_work is None:
+                        run.verdict = StressResult(
+                            core_id=run.lane.core_id,
+                            passed=True,
+                            duration_seconds=now - start,
+                        )
+                        continue
+                    self._fail(run, no_work, start, error_type="startup")
+                    return True
                 self._fail(run, msg or f"stress exited with code {rc}", start)
                 return self.stop_on_first_failure
             if run.unit is not None and now - run.last_watchdog >= WATCHDOG_INTERVAL:
@@ -416,13 +437,13 @@ class Supervisor:
                 if fault:
                     self._fail(run, fault, start, error_type="startup")
                     return True
-            if now - start >= STALL_GRACE_SECONDS and self._is_stalled(run, now):
+            if now - start >= STALL_GRACE_SECONDS and now - run.last_active > self.stall_timeout:
                 if self.hooks.on_stall:
                     self.hooks.on_stall(run.lane.core_id)
                 self._fail(
                     run,
                     f"Stress test stalled on core {run.lane.core_id} "
-                    f"(CPU usage near 0 on CPUs {run.lane.cpu_list} for "
+                    f"(payload CPU time near 0 on CPUs {run.lane.cpu_list} for "
                     f"{self.stall_timeout:.0f}s)",
                     start,
                     error_type="stall",
@@ -455,22 +476,18 @@ class Supervisor:
             )
         return None
 
-    def _is_stalled(self, run: _LaneRun, now: float) -> bool:
-        active = False
-        any_sample = False
-        for cpu in run.lane.cpus:
-            cur = cpu_times(cpu)
-            busy = busy_fraction(run.prev_times.get(cpu), cur)
-            if cur is not None:
-                run.prev_times[cpu] = cur
-            if busy is not None:
-                any_sample = True
-                if busy > 0.05:
-                    active = True
-        if active or not any_sample:
+    def _sample_cpu(self, run: _LaneRun, now: float) -> None:
+        if run.cgroup is not None:
+            seconds = containment.scope_cpu_seconds(run.cgroup)
+        else:
+            seconds = containment.process_group_cpu_seconds(run.proc.pid)
+        if seconds is None:
+            return
+        busy_floor = STALL_BUSY_FRACTION * len(run.lane.cpus) * (now - run.cpu_sampled_at)
+        if run.cpu_seconds is not None and seconds - run.cpu_seconds >= busy_floor:
             run.last_active = now
-            return False
-        return now - run.last_active > self.stall_timeout
+        run.cpu_seconds = seconds
+        run.cpu_sampled_at = now
 
     def _startup_message(self, run: _LaneRun, rc: int, fallback: str) -> str:
         """A backend that names the environment fault in its output outranks the generic line."""
@@ -508,7 +525,10 @@ class Supervisor:
 
     def _finish(self, runs: list[_LaneRun], start: float, duration: float) -> None:
         for run in runs:
-            if run.proc is not None and run.proc.poll() is None:
+            if run.proc is None or run.proc.returncode is not None:
+                continue
+            self._sample_cpu(run, time.monotonic())
+            if run.proc.poll() is None:
                 self._we_killed = True
         for run in runs:
             if run.proc is None:
@@ -583,6 +603,15 @@ class Supervisor:
             )
         if interrupted:
             return None
+        no_work = _no_work_done(run)
+        if no_work is not None:
+            return StressResult(
+                core_id=run.lane.core_id,
+                passed=False,
+                duration_seconds=elapsed,
+                error_message=no_work,
+                error_type="startup",
+            )
         return StressResult(core_id=run.lane.core_id, passed=True, duration_seconds=elapsed)
 
 

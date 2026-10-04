@@ -262,6 +262,8 @@ class CoreScheduler:
                 error_msg = var_error
                 status.errors += 1
                 status.last_error = error_msg
+                if self.config.stop_on_error:
+                    self._stop_event.set()
 
         if passed and self.config.idle_stability_test > 0 and not self._stop_event.is_set():
             idle_error = self._idle_phase(core_id, self.config.idle_stability_test, "idle stability")
@@ -295,13 +297,15 @@ class CoreScheduler:
         deadline = start + total_duration
         interval = self.config.variable_load_interval
         load_on = True
+        launched = False
         while time.monotonic() < deadline and not self._stop_event.is_set():
             segment = min(interval, deadline - time.monotonic())
             if load_on:
+                if segment < interval:
+                    break
+                launched = True
                 verdict = supervisor.run([lane], lambda _lane: self.stress_config, segment)[lane.core_id]
                 if verdict is not None and not verdict.passed:
-                    if self.config.stop_on_error:
-                        self._stop_event.set()
                     return False, verdict.error_message
             else:
                 idle_error = execution.watch_idle(
@@ -314,13 +318,16 @@ class CoreScheduler:
                     phase="idle transition",
                 )
                 if idle_error:
-                    if self.config.stop_on_error:
-                        self._stop_event.set()
                     return False, idle_error
             load_on = not load_on
             status = self.core_status.get(lane.core_id)
             if status:
                 status.elapsed_seconds = time.monotonic() - start
+        if not launched:
+            return False, (
+                f"variable load phase of {total_duration:.1f}s is shorter than one {interval:.1f}s load "
+                "segment: no work done, verdict unavailable"
+            )
         return True, None
 
     def _idle_phase(self, core_id: int, duration: float, phase_name: str) -> str | None:
@@ -376,7 +383,7 @@ class CoreScheduler:
         elapsed = 0.0
         cycle = 0
         try:
-            while elapsed < total_duration and not self._stop_event.is_set():
+            while total_duration - elapsed >= load_seconds and not self._stop_event.is_set():
                 cycle += 1
                 stress_cfg = StressConfig(
                     mode=self.stress_config.mode,
@@ -385,11 +392,7 @@ class CoreScheduler:
                 )
                 segment_start = time.monotonic()
                 supervisor = self._supervisor("rapid transition")
-                verdict = supervisor.run(
-                    [lane],
-                    lambda _lane, cfg=stress_cfg: cfg,
-                    min(load_seconds, total_duration - elapsed),
-                )[lane.core_id]
+                verdict = supervisor.run([lane], lambda _lane, cfg=stress_cfg: cfg, load_seconds)[lane.core_id]
                 elapsed += time.monotonic() - segment_start
                 if verdict is not None and not verdict.passed:
                     return False, (f"Failure during rapid transition cycle {cycle}: {verdict.error_message}")
@@ -412,6 +415,11 @@ class CoreScheduler:
         finally:
             self.backend.cleanup(core_work_dir)
             self.state = TestState.FINISHED
+        if cycle == 0:
+            return False, (
+                f"rapid transition run of {total_duration:.1f}s is shorter than one {load_seconds:.1f}s load "
+                "segment: no work done, verdict unavailable"
+            )
         return True, None
 
     @staticmethod
