@@ -196,7 +196,59 @@ class TestBaseBackendBinaryResolution:
 # ===========================================================================
 
 
+_ZEN1_FLAGS = (
+    "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht "
+    "syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl nonstop_tsc cpuid pni pclmulqdq "
+    "monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm svm abm sse4a "
+    "misalignsse 3dnowprefetch topoext perfctr_core cpb hw_pstate fsgsbase bmi1 avx2 smep bmi2 rdseed adx "
+    "smap clflushopt sha_ni xsaveopt xsavec xgetbv1 xsaves clzero arat npt overflow_recov succor smca"
+)
+_ZEN3_FLAGS = _ZEN1_FLAGS + " clwb wbnoinvd umip pku ospke vaes vpclmulqdq rdpid fsrm"
+_ZEN4_FLAGS = _ZEN3_FLAGS + (
+    " avx512f avx512dq avx512ifma avx512cd avx512bw avx512vl avx512_bf16 avx512vbmi avx512_vbmi2 gfni"
+    " avx512_vnni avx512_bitalg avx512_vpopcntdq"
+)
+_ZEN5_FLAGS = _ZEN4_FLAGS + " movdiri movdir64b avx512_vp2intersect"
+_HASWELL_FLAGS = (
+    "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse "
+    "sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc arch_perfmon rep_good nopl xtopology "
+    "nonstop_tsc cpuid aperfmperf pni pclmulqdq monitor vmx est ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic "
+    "movbe popcnt aes xsave avx f16c rdrand lahf_lm abm fsgsbase bmi1 avx2 smep bmi2 erms invpcid xsaveopt"
+)
+_ALDER_LAKE_FLAGS = _HASWELL_FLAGS + " adx rdseed smap clflushopt clwb sha_ni umip gfni vaes vpclmulqdq rdpid"
+
+
 class TestMprimeBackend:
+    @pytest.fixture(autouse=True)
+    def zen4_cpu(self, monkeypatch, tmp_path):
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN4_FLAGS)
+
+    @pytest.mark.parametrize(
+        ("mode", "flags", "missing"),
+        [
+            pytest.param(StressMode.AVX512, _ZEN3_FLAGS, "avx512f", id="avx512-on-zen3"),
+            pytest.param(StressMode.AVX2, _ZEN3_FLAGS.replace(" fma ", " "), "fma", id="avx2-without-fma"),
+        ],
+    )
+    def test_a_mode_whose_forced_flags_the_cpu_lacks_is_refused(self, tmp_path, monkeypatch, mode, flags, missing):
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", flags)
+        work = tmp_path / "run"
+        work.mkdir()
+        with pytest.raises(OSError, match=missing):
+            MprimeBackend().prepare(work, StressConfig(mode=mode))
+        assert not (work / "prime.txt").exists()
+
+    def test_avx512_runs_on_a_cpu_that_reports_it(self, tmp_path):
+        MprimeBackend().prepare(tmp_path, StressConfig(mode=StressMode.AVX512))
+        assert "CpuSupportsAVX512F=1" in (tmp_path / "prime.txt").read_text()
+
+    def test_sse_forces_no_flag_and_needs_none(self, tmp_path, monkeypatch):
+        cpuinfo = tmp_path / "cpuinfo"
+        cpuinfo.write_text("processor\t: 0\nFeatures\t: fp asimd\n")
+        monkeypatch.setattr(topology, "CPUINFO", cpuinfo)
+        MprimeBackend().prepare(tmp_path, StressConfig(mode=StressMode.SSE))
+        assert "CpuSupportsAVX=0" in (tmp_path / "prime.txt").read_text()
+
     def test_name(self):
         assert MprimeBackend.name == "mprime"
 
@@ -648,27 +700,6 @@ _YCRUNCHER_BINARIES = (
     "08-NHM ~ Ushio",
     "05-A64 ~ Kasumi",
 )
-
-_ZEN1_FLAGS = (
-    "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht "
-    "syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl nonstop_tsc cpuid pni pclmulqdq "
-    "monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm svm abm sse4a "
-    "misalignsse 3dnowprefetch topoext perfctr_core cpb hw_pstate fsgsbase bmi1 avx2 smep bmi2 rdseed adx "
-    "smap clflushopt sha_ni xsaveopt xsavec xgetbv1 xsaves clzero arat npt overflow_recov succor smca"
-)
-_ZEN3_FLAGS = _ZEN1_FLAGS + " clwb wbnoinvd umip pku ospke vaes vpclmulqdq rdpid fsrm"
-_ZEN4_FLAGS = _ZEN3_FLAGS + (
-    " avx512f avx512dq avx512ifma avx512cd avx512bw avx512vl avx512_bf16 avx512vbmi avx512_vbmi2 gfni"
-    " avx512_vnni avx512_bitalg avx512_vpopcntdq"
-)
-_ZEN5_FLAGS = _ZEN4_FLAGS + " movdiri movdir64b avx512_vp2intersect"
-_HASWELL_FLAGS = (
-    "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse "
-    "sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc arch_perfmon rep_good nopl xtopology "
-    "nonstop_tsc cpuid aperfmperf pni pclmulqdq monitor vmx est ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic "
-    "movbe popcnt aes xsave avx f16c rdrand lahf_lm abm fsgsbase bmi1 avx2 smep bmi2 erms invpcid xsaveopt"
-)
-_ALDER_LAKE_FLAGS = _HASWELL_FLAGS + " adx rdseed smap clflushopt clwb sha_ni umip gfni vaes vpclmulqdq rdpid"
 
 
 def _install(root: Path, names: tuple[str, ...] = _YCRUNCHER_BINARIES) -> Path:

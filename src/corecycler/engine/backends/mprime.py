@@ -7,6 +7,7 @@ import re
 import textwrap
 from typing import TYPE_CHECKING
 
+from corecycler.engine import topology
 from corecycler.engine.backends import register_backend
 
 from .base import (
@@ -67,6 +68,14 @@ MODE_TO_CPU_FLAGS: dict[StressMode, dict[str, int]] = {
     },
 }
 
+CPU_FLAG_FOR_KEY: dict[str, str] = {
+    "CpuSupportsAVX": "avx",
+    "CpuSupportsFMA3": "fma",
+    "CpuSupportsFMA4": "fma4",
+    "CpuSupportsAVX2": "avx2",
+    "CpuSupportsAVX512F": "avx512f",
+}
+
 VERIFIED_MPRIME_VERSIONS: frozenset[str] = frozenset({"31.4"})
 
 _VERSION_RE = re.compile(r"\bv(\d+\.\d+)")
@@ -113,6 +122,15 @@ class MprimeBackend(StressBackend):
             fft_min, fft_max = FFT_RANGES.get(config.fft_preset, (4, 8192))
 
         cpu_flags = MODE_TO_CPU_FLAGS.get(config.mode, MODE_TO_CPU_FLAGS[StressMode.SSE])
+        forced = [CPU_FLAG_FOR_KEY[key] for key, value in cpu_flags.items() if value == 1]
+        if forced:
+            _vendor, reported = topology.common_cpu_flags()
+            missing = sorted(flag for flag in forced if flag not in reported)
+            if missing:
+                raise OSError(
+                    f"mprime {config.mode} mode forces {', '.join(missing)}, which this CPU does not report; "
+                    "refusing to run it"
+                )
         flags_block = "".join(f"{key}={value}\n" for key, value in cpu_flags.items())
 
         local_txt = work_dir / "local.txt"

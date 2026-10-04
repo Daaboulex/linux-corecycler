@@ -88,13 +88,6 @@ def compute_binary(binaries_dir: Path, cpu_flags: frozenset[str], vendor: str) -
     return None
 
 
-def _cpu_vendor_and_flags() -> tuple[str, frozenset[str]]:
-    text = topology.CPUINFO.read_text()
-    vendor = re.search(r"^vendor_id[ \t]*:[ \t]*(\S+)", text, re.MULTILINE)
-    flag_sets = [frozenset(flags.split()) for flags in re.findall(r"^flags[ \t]*:(.*)$", text, re.MULTILINE)]
-    return (vendor[1] if vendor else "", frozenset.intersection(*flag_sets) if flag_sets else frozenset())
-
-
 def _binaries_dir(launcher: Path) -> Path:
     candidates = (launcher.parent / "Binaries", launcher.parent.parent / "lib" / "y-cruncher" / "Binaries")
     for candidate in candidates:
@@ -132,7 +125,7 @@ class YCruncherBackend(StressBackend):
         if not config.cpus:
             raise RuntimeError("y-cruncher pins one thread per lane CPU, and this lane names no CPUs")
         binaries = _binaries_dir(Path(self.require_binary()))
-        vendor, flags = _cpu_vendor_and_flags()
+        vendor, flags = topology.common_cpu_flags()
         compute = compute_binary(binaries, flags, vendor)
         if compute is None:
             raise OSError(f"no y-cruncher binary for this CPU ({vendor or 'unknown vendor'}) in {binaries}")

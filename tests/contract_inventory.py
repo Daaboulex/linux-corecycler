@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, mock_open, patch
 
 from corecycler.config import tools
-from corecycler.engine import containment
+from corecycler.engine import containment, topology
 from corecycler.engine.backends import BACKEND_REGISTRY, load_all
 from corecycler.engine.execution import cpu_times as _cpu_times
 from corecycler.monitor.memory import parse_dmidecode_output
@@ -146,7 +146,8 @@ def _pin_mprime_31x_config_keys() -> None:
         StressMode.AVX2: {"CpuSupportsAVX2=1", "CpuSupportsFMA3=1", "CpuSupportsAVX512F=0"},
         StressMode.AVX512: {"CpuSupportsAVX2=1", "CpuSupportsAVX512F=1"},
     }
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmp, patch.object(topology, "CPUINFO", Path(tmp) / "cpuinfo"):
+        (Path(tmp) / "cpuinfo").write_text("vendor_id\t: AuthenticAMD\nflags\t\t: avx fma avx2 avx512f\n")
         backend = MprimeBackend()
         for mode, wanted in expectations.items():
             backend.prepare(Path(tmp), StressConfig(mode=mode, threads=2))

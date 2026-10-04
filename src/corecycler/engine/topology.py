@@ -48,6 +48,13 @@ class CPUTopology:
     logical_map: dict[int, LogicalCPU] = field(default_factory=dict)
 
 
+def common_cpu_flags() -> tuple[str, frozenset[str]]:
+    text = CPUINFO.read_text()
+    vendor = re.search(r"^vendor_id[ \t]*:[ \t]*(\S+)", text, re.MULTILINE)
+    flag_sets = [frozenset(flags.split()) for flags in re.findall(r"^flags[ \t]*:(.*)$", text, re.MULTILINE)]
+    return (vendor[1] if vendor else "", frozenset.intersection(*flag_sets) if flag_sets else frozenset())
+
+
 def detect_topology() -> CPUTopology:
     topo = CPUTopology()
     _parse_cpuinfo(topo)
