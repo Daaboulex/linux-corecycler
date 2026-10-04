@@ -14,7 +14,7 @@ import json
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
@@ -912,6 +912,18 @@ class TunerEngine(QObject):
     # ------------------------------------------------------------------
     # State machine
     # ------------------------------------------------------------------
+
+    def _scheduler_config(self, duration: float, cores: list[int]) -> SchedulerConfig:
+        return SchedulerConfig(
+            seconds_per_core=duration,
+            cores_to_test=cores,
+            stop_on_error=True,
+            cycle_count=1,
+            max_temperature=self._config.max_temperature_c,
+            over_temp_grace_seconds=self._config.over_temp_grace_seconds,
+            over_temp_hard_margin=self._config.over_temp_hard_margin_c,
+            require_thermal_sensor=not self._config.allow_missing_thermal_sensor,
+        )
 
     def _get_active_stress_config(self, cs: CoreState) -> tuple[str, str, str]:
         """Return (backend, stress_mode, fft_preset) for the current core's phase."""
@@ -2297,15 +2309,8 @@ class TunerEngine(QObject):
             fft_preset=_fft_preset,
             threads=len(core_info.logical_cpus),
         )
-        scheduler_config = SchedulerConfig(
-            seconds_per_core=duration,
-            cores_to_test=[core_id],
-            stop_on_error=True,
-            cycle_count=1,
-            max_temperature=self._config.max_temperature_c,
-            over_temp_grace_seconds=self._config.over_temp_grace_seconds,
-            over_temp_hard_margin=self._config.over_temp_hard_margin_c,
-            require_thermal_sensor=not self._config.allow_missing_thermal_sensor,
+        scheduler_config = replace(
+            self._scheduler_config(duration, [core_id]),
             variable_load=spectrum,
             variable_load_interval=5.0 if spectrum else 15.0,
             idle_stability_test=15.0 if spectrum else 0.0,
@@ -3050,12 +3055,7 @@ class TunerEngine(QObject):
             fft_preset=self._get_fft_preset(),
             threads=2,
         )
-        scheduler_config = SchedulerConfig(
-            seconds_per_core=self._config.validate_duration_seconds,
-            cores_to_test=cores,
-            stop_on_error=True,
-            cycle_count=1,
-        )
+        scheduler_config = self._scheduler_config(self._config.validate_duration_seconds, cores)
         try:
             scheduler = CoreScheduler(
                 topology=self._topology,
@@ -3362,16 +3362,7 @@ class TunerEngine(QObject):
             threads=2,
             memory_mb=memory_mb,
         )
-        scheduler_config = SchedulerConfig(
-            seconds_per_core=duration,
-            cores_to_test=cores,
-            stop_on_error=True,
-            cycle_count=1,
-            max_temperature=self._config.max_temperature_c,
-            over_temp_grace_seconds=self._config.over_temp_grace_seconds,
-            over_temp_hard_margin=self._config.over_temp_hard_margin_c,
-            require_thermal_sensor=not self._config.allow_missing_thermal_sensor,
-        )
+        scheduler_config = self._scheduler_config(duration, cores)
 
         try:
             runner = ParallelStress(

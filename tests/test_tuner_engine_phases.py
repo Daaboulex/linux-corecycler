@@ -289,6 +289,19 @@ class TestValidationStageFour:
         assert stages == [(4, 0, 1)]
         assert engine._cores_under_stress == [0, 1, 2, 3]
 
+    def test_the_stage_runs_under_the_tuners_thermal_limits(self, engine, monkeypatch):
+        self._prepare(engine, monkeypatch)
+        engine._config.max_temperature_c = 81.0
+        engine._config.over_temp_grace_seconds = 7.0
+        engine._config.over_temp_hard_margin_c = 4.0
+        engine._config.allow_missing_thermal_sensor = False
+        engine._run_validation_stage4()
+        limits = eng._RapidTransitionWorker.call_args.args[2].config
+        assert limits.max_temperature == 81.0
+        assert limits.over_temp_grace_seconds == 7.0
+        assert limits.over_temp_hard_margin == 4.0
+        assert limits.require_thermal_sensor is True
+
     def test_a_failed_offset_write_stops_the_stage(self, engine, monkeypatch):
         worker = self._prepare(engine, monkeypatch)
         engine._smu.set_co_offset.return_value = False
