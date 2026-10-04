@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 
     from .base import FindingTable
 
-# FFT ranges in K for each preset (Prime95 30.x conventions)
 FFT_RANGES: dict[FFTPreset, tuple[int, int]] = {
     FFTPreset.SMALLEST: (4, 21),
     FFTPreset.SMALL: (36, 248),
@@ -37,10 +36,6 @@ FFT_RANGES: dict[FFTPreset, tuple[int, int]] = {
     FFTPreset.HEAVY_SHORT: (4, 160),
 }
 
-# Instruction-set selection, verified against mprime 31.04b02 live (2026-08-11):
-# these CpuSupports* overrides steer the FFT implementation (SSE -> Pentium4
-# type-1, AVX -> AVX, AVX2 -> FMA3, AVX512 -> AVX-512); TortureWeak is not an
-# mprime option. CpuSupportsAVX512F is the real key name, not CpuSupportsAVX512.
 MODE_TO_CPU_FLAGS: dict[StressMode, dict[str, int]] = {
     StressMode.SSE: {
         "CpuSupportsAVX": 0,
@@ -76,33 +71,26 @@ VERIFIED_MPRIME_VERSIONS: frozenset[str] = frozenset({"31.4"})
 
 _VERSION_RE = re.compile(r"\bv(\d+\.\d+)")
 
-# Fatal error signatures, verified against the Prime95 30.19b20 source
-# (commonb.c SELFFAIL*/ERRMSG* constants; torture-test errors are written to
-# BOTH stdout and results.txt via OutputBoth). "Worker stopped." is Prime95's
-# BENIGN graceful-stop line and must never be treated as an error.
-FATAL_PATTERNS: list[str] = [
-    # torture test (SELFFAIL*): covers "FATAL ERROR: Rounding was ...",
-    # "FATAL ERROR: Final result was ..." and the <=30.8 "Resulting sum" form
-    r"FATAL ERROR",
-    r"ERROR: ILLEGAL SUMOUT",  # SELFFAIL1 / ERRMSG1A
-    r"Possible hardware failure",  # SELFFAIL4 / ERRMSG2
-    r"Hardware failure detected",  # SELFFAIL5 (FFT-size form >=30.7)
-    r"Maximum number of warnings exceeded",  # SELFFAIL6
-    r"TORTURE TEST FAILED",  # SELFFAIL7 (>=30.19)
-    # torture summary with a nonzero error count (stdout)
-    r"Torture Test completed .* - [1-9]\d* errors",
-    # production-work error lines that can also land in results.txt (ERRMSG1*)
-    r"ERROR: SUM\(INPUTS\) != SUM\(OUTPUTS\)",  # ERRMSG1B (<=30.8)
-    r"ERROR: Shift counter corrupt",
-    r"ERROR: Illegal double encountered",
-    r"ERROR: FFT data has been zeroed",
-    r"ERROR: Jacobi error check failed",
-    # roundoff-timing warnings (commonb.c OutputBoth calls)
-    r"Warning: ILLEGAL SUMOUT",
-    r"Warning: SUMOUT MISMATCH",
-]
-
-FINDINGS: FindingTable = tuple((re.compile(pattern, re.IGNORECASE), Outcome.COMPUTATION) for pattern in FATAL_PATTERNS)
+# Prime95 30.19b20 commonb.c SELFFAIL1-7 and ERRMSG1-2 texts, printed to stdout and results.txt alike
+FINDINGS: FindingTable = tuple(
+    (re.compile(pattern, re.IGNORECASE), Outcome.COMPUTATION)
+    for pattern in (
+        r"FATAL ERROR",
+        r"ERROR: ILLEGAL SUMOUT",
+        r"Possible hardware failure",
+        r"Hardware failure detected",
+        r"Maximum number of warnings exceeded",
+        r"TORTURE TEST FAILED",
+        r"Torture Test completed .* - [1-9]\d* errors",
+        r"ERROR: SUM\(INPUTS\) != SUM\(OUTPUTS\)",
+        r"ERROR: Shift counter corrupt",
+        r"ERROR: Illegal double encountered",
+        r"ERROR: FFT data has been zeroed",
+        r"ERROR: Jacobi error check failed",
+        r"Warning: ILLEGAL SUMOUT",
+        r"Warning: SUMOUT MISMATCH",
+    )
+)
 
 
 @register_backend("mprime")
