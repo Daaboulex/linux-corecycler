@@ -216,7 +216,7 @@ def exit_signal(returncode: int, sent: signal.Signals | None) -> LaneSignal | No
         return LaneSignal(
             Outcome.OUTSIDE_KILL, f"Stress process killed externally (code {returncode}): possible OOM or system issue"
         )
-    return LaneSignal(Outcome.UNEXPLAINED, f"stress exited with code {returncode} and no recognised message")
+    return LaneSignal(Outcome.UNEXPLAINED, f"stress exited with code {returncode}")
 
 
 def kernel_signal(event: MCEEvent, own_cpus: tuple[int, ...], phase: str) -> LaneSignal | None:
