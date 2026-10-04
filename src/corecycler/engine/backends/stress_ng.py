@@ -1,4 +1,4 @@
-"""stress-ng stress test backend — always available on NixOS."""
+"""stress-ng stress test backend."""
 
 from __future__ import annotations
 
@@ -35,8 +35,6 @@ class StressNgBackend(StressBackend):
 
     def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
         binary = self.require_binary()
-
-        # select stressor method based on mode
         method = _mode_to_method(config.mode)
 
         cmd = [
@@ -45,16 +43,14 @@ class StressNgBackend(StressBackend):
             str(config.threads),
             "--cpu-method",
             method,
-            "--verify",  # verify computations for error detection
+            "--verify",
             "--abort",
             "--metrics-brief",
             "--temp-path",
             str(work_dir),
         ]
 
-        # Add matrix verification stressor alongside cpu for SSE mode.
-        # matrixprod has no built-in verification — adding matrix stressor
-        # with --verify provides actual computation checking.
+        # cpu-method matrixprod verifies nothing; the --matrix twin is the checked computation
         if method == "matrixprod":
             cmd += ["--matrix", str(config.threads), "--matrix-method", "prod"]
 
@@ -72,9 +68,7 @@ def _mode_to_method(mode: StressMode) -> str:
     match mode:
         case StressMode.SSE:
             return "matrixprod"
-        case StressMode.AVX:
+        case StressMode.AVX | StressMode.AVX2:
             return "fft"
-        case StressMode.AVX2:
-            return "fft"  # stress-ng doesn't distinguish AVX/AVX2 methods
         case _:
             return "matrixprod"
