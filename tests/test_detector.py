@@ -37,6 +37,7 @@ ZEN_BLOCK_DETAILS = [
     "[Hardware Error]: cache level: L1, tx: DATA, mem-tx: EV",
 ]
 ZEN_BLOCK = [ZEN_BLOCK_HEADER, ZEN_SEVERITY, ZEN_BLOCK_STATUS, *ZEN_BLOCK_DETAILS]
+LONE_DECODER_RECORD = [ZEN_SEVERITY, ZEN_BLOCK_STATUS, *ZEN_BLOCK_DETAILS[1:]]
 ZEN_UNCORRECTED_STATUS = (
     "[Hardware Error]: CPU:12 (1a:44:0) MC1_STATUS[Over|UE|MiscV|AddrV|PCC|-|SyndV|-|-|-|-]: 0xbc00000000010135"
 )
@@ -223,6 +224,13 @@ class TestRecordParser:
     def test_detail_lines_without_their_record_are_not_events(self):
         assert _parse([ZEN_SEVERITY, *ZEN_BLOCK_DETAILS]) == []
 
+    def test_an_unrelated_line_inside_a_record_does_not_close_it(self):
+        unrelated = "usb 1-1: new high-speed USB device number 2 using xhci_hcd"
+        assert _parse([ZEN_SEVERITY, ZEN_BLOCK_STATUS, unrelated, *ZEN_BLOCK_DETAILS[1:]]) == [("core", 9, 0, True)]
+
+    def test_a_severity_line_closes_the_record_before_it(self):
+        assert _parse([*ZEN_UNCORRECTED_BLOCK, ZEN_SEVERITY], final=False) == [("core", 12, 1, False)]
+
     def test_an_open_record_is_carried_until_the_final_parse(self):
         lines = [(2.5, line) for line in [ZEN_SEVERITY, ZEN_BLOCK_STATUS, ZEN_BLOCK_DETAILS[0]]]
         events, carry = parse_kernel_records(lines, final=False)
@@ -309,8 +317,25 @@ class TestKmsgReader:
     def test_a_record_split_across_reads_is_one_event(self, kmsg, detector):
         _append(kmsg, _kmsg(ZEN_BLOCK[:4], first_seq=100))
         assert detector.read_new().events == ()
-        _append(kmsg, _kmsg(ZEN_BLOCK[4:], first_seq=104))
+        _append(kmsg, _kmsg(ZEN_BLOCK[4:6], first_seq=104))
         assert [_shape(event) for event in detector.read_new(final=True).events] == [("core", 9, 0, True)]
+
+    def test_a_record_split_across_reads_is_reported_by_the_read_that_completes_it(self, kmsg, detector):
+        _append(kmsg, _kmsg(ZEN_BLOCK[:4], first_seq=100))
+        assert detector.read_new().events == ()
+        _append(kmsg, _kmsg(ZEN_BLOCK[4:], first_seq=104))
+        assert [_shape(event) for event in detector.read_new().events] == [("core", 9, 0, True)]
+
+    @pytest.mark.parametrize("last_line", [ZEN_BLOCK_DETAILS[-1], "[Hardware Error]: internal: HWA"])
+    def test_a_lone_decoder_record_is_reported_by_the_read_that_ends_it(self, kmsg, detector, last_line):
+        _append(kmsg, _kmsg([*LONE_DECODER_RECORD[:-1], last_line], first_seq=100))
+        assert [_shape(event) for event in detector.read_new().events] == [("core", 9, 0, True)]
+        assert detector.read_new(final=True).events == ()
+
+    def test_a_lone_fallback_record_is_reported_by_the_read_that_ends_it(self, kmsg, detector):
+        _append(kmsg, _kmsg(FALLBACK_RECORD, first_seq=100))
+        assert [_shape(event) for event in detector.read_new().events] == [("core", 7, 5, True)]
+        assert detector.read_new(final=True).events == ()
 
     def test_lost_records_make_the_read_incomplete(self, detector):
         detector.close()

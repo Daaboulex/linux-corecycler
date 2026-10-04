@@ -569,20 +569,23 @@ def watch_idle(
     poll_interval: float = 0.5,
 ) -> LaneSignal | None:
     start = time.monotonic()
+    found: list[LaneSignal] = []
     while True:
-        final = time.monotonic() - start >= duration or stop_event.is_set()
+        final = bool(found) or time.monotonic() - start >= duration or stop_event.is_set()
         if not final and not thermal.safe():
-            return LaneSignal(
-                Outcome.THERMAL, f"CPU temperature exceeded {thermal.max_temperature} C safety limit during {phase}"
+            final = True
+            found.append(
+                LaneSignal(
+                    Outcome.THERMAL, f"CPU temperature exceeded {thermal.max_temperature} C safety limit during {phase}"
+                )
             )
         read = detector.read_new(final=final)
         observed.extend(read.events)
-        found = [hit for hit in (kernel_signal(event, cpus, phase) for event in read.events) if hit is not None]
+        found.extend(hit for hit in (kernel_signal(event, cpus, phase) for event in read.events) if hit is not None)
         if read.problem is not None:
             found.append(LaneSignal(Outcome.UNVERIFIED, f"{read.problem} during {phase}: verdict unavailable"))
-        if found:
-            return min(found, key=lambda hit: hit.outcome.rank)
         if final:
-            return None
-        remaining = duration - (time.monotonic() - start)
-        stop_event.wait(min(poll_interval, max(0.0, remaining)))
+            return min(found, key=lambda hit: hit.outcome.rank, default=None)
+        if not found:
+            remaining = duration - (time.monotonic() - start)
+            stop_event.wait(min(poll_interval, max(0.0, remaining)))

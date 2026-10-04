@@ -42,6 +42,10 @@ _SEVERITIES: frozenset[str] = frozenset(
 _HARDWARE_ERROR = re.compile(r"(?:mce: )?\[Hardware Error\]: (.*)")
 _DECODER = re.compile(r"CPU:(\d+) \([0-9a-f]+:[0-9a-f]+:[0-9a-f]+\) MC(\d+)_STATUS\[[^\]]*\]: 0x([0-9a-f]{16})")
 _FALLBACK = re.compile(r"CPU (\d+): Machine Check(?: Exception)?: [0-9a-f]+ Bank (\d+): ([0-9a-f]{16})")
+_OPENERS_AND_LAST_LINES: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (_DECODER, ("cache level: ", "internal: ")),
+    (_FALLBACK, ("PROCESSOR ",)),
+)
 _DECODER_IPID = re.compile(r"IPID: 0x([0-9a-f]{16})")
 _FALLBACK_IPID = re.compile(r"TSC [0-9a-f]+ .*?\bIPID ([0-9a-f]+)")
 _BANK_NAME = re.compile(r"(.+) Ext\. Error Code: ")
@@ -105,6 +109,7 @@ class _OpenRecord:
     message: str
     raw_ts: float
     lines: list[tuple[float, str]]
+    last_line_starts: tuple[str, ...]
     ipid: int | None = None
     bank_name: str | None = None
 
@@ -127,18 +132,19 @@ class _OpenRecord:
 
 
 def _open_record(raw_ts: float, text: str, body: str) -> _OpenRecord | None:
-    opener = _DECODER.match(body) or _FALLBACK.match(body)
-    if opener is None:
-        return None
-    cpu, bank, status = opener.groups()
-    return _OpenRecord(
-        cpu=int(cpu),
-        bank=int(bank),
-        status=int(status, 16),
-        message=text.strip(),
-        raw_ts=raw_ts,
-        lines=[(raw_ts, text)],
-    )
+    for opener, last_line_starts in _OPENERS_AND_LAST_LINES:
+        if (opened := opener.match(body)) is not None:
+            cpu, bank, status = opened.groups()
+            return _OpenRecord(
+                cpu=int(cpu),
+                bank=int(bank),
+                status=int(status, 16),
+                message=text.strip(),
+                raw_ts=raw_ts,
+                lines=[(raw_ts, text)],
+                last_line_starts=last_line_starts,
+            )
+    return None
 
 
 def parse_kernel_records(
@@ -160,6 +166,9 @@ def parse_kernel_records(
             record = opened
         elif record is not None and hardware is not None:
             record.attach(raw_ts, text, body)
+            if body.startswith(record.last_line_starts):
+                events.append(record.event())
+                record = None
     if record is not None and final:
         events.append(record.event())
     return events, ([] if record is None or final else record.lines)

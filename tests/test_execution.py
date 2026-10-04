@@ -23,7 +23,13 @@ from corecycler.engine.backends.mprime import MprimeBackend
 from corecycler.engine.backends.stress_ng import StressNgBackend
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.backends.ycruncher import YCruncherBackend
-from corecycler.engine.detector import CoreMachineCheck, KernelRead, KernelTrouble, UnblamedMachineCheck
+from corecycler.engine.detector import (
+    CoreMachineCheck,
+    ErrorDetector,
+    KernelRead,
+    KernelTrouble,
+    UnblamedMachineCheck,
+)
 from corecycler.engine.execution import (
     Lane,
     SuperviseHooks,
@@ -34,6 +40,7 @@ from corecycler.engine.execution import (
     exit_signal,
     watch_idle,
 )
+from tests.test_detector import LONE_DECODER_RECORD, _append, _kmsg
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -345,7 +352,7 @@ def hot_thermal() -> ThermalWatch:
 def make_supervisor(
     backend: StressBackend,
     *,
-    detector: FakeDetector | None = None,
+    detector: FakeDetector | ErrorDetector | None = None,
     thermal: ThermalWatch | None = None,
     stop_event: threading.Event | None = None,
     observed: list | None = None,
@@ -877,6 +884,26 @@ class TestMceAttribution:
         assert verdict.outcome is Outcome.PASS
         assert [e.cpu for e in seen] == [9]
 
+    def test_a_lone_machine_check_stops_the_lane_through_the_real_reader(self, tmp_path):
+        kmsg = tmp_path / "kmsg"
+        kmsg.write_text("")
+        reader = ErrorDetector(kmsg)
+        reader.reset()
+
+        def log_the_record_once(_core: int, _elapsed: float) -> None:
+            if not kmsg.read_text():
+                _append(kmsg, _kmsg(LONE_DECODER_RECORD, first_seq=100))
+
+        supervisor, _, seen = make_supervisor(
+            FakeBackend(_child(BUSY)), detector=reader, hooks=SuperviseHooks(on_status=log_the_record_once)
+        )
+        with one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(9,)), 10.0)
+        reader.close()
+        assert verdict.outcome is Outcome.OWN_CORE_MCE
+        assert verdict.duration_seconds < 5.0
+        assert [type(event) for event in seen] == [CoreMachineCheck]
+
     def test_late_events_read_after_the_teardown_still_grade_the_lane(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(60)"))
         detector = FakeDetector([[own(0)]])
@@ -1191,9 +1218,11 @@ class TestWatchIdle:
     def test_a_stop_ends_the_idle_immediately(self):
         stop = threading.Event()
         stop.set()
+        detector = FakeDetector()
         start = time.monotonic()
-        assert watch_idle(**self._args(duration=5.0, stop_event=stop)) is None
+        assert watch_idle(**self._args(duration=5.0, stop_event=stop, detector=detector)) is None
         assert time.monotonic() - start < 1.0
+        assert detector.finals == [True]
 
     def test_an_overheat_during_idle_is_thermal_and_leaves_the_stop_to_the_caller(self):
         stop = threading.Event()
@@ -1201,6 +1230,20 @@ class TestWatchIdle:
         assert found is not None and found.outcome is Outcome.THERMAL
         assert "temperature" in found.text
         assert not stop.is_set()
+
+    def test_an_own_core_record_outranks_a_thermal_trip_during_idle(self):
+        detector = FakeDetector([[own(0)]])
+        seen: list = []
+        found = watch_idle(**self._args(thermal=hot_thermal(), detector=detector, observed=seen, duration=5.0))
+        assert found is not None and found.outcome is Outcome.OWN_CORE_MCE
+        assert [e.cpu for e in seen] == [0]
+        assert detector.finals == [True]
+
+    def test_a_signal_mid_idle_returns_only_after_a_final_read(self):
+        detector = FakeDetector([[trouble()], [own(0)]])
+        found = watch_idle(**self._args(detector=detector, duration=5.0))
+        assert found is not None and found.outcome is Outcome.OWN_CORE_MCE
+        assert detector.finals == [False, True]
 
     def test_an_own_cpu_mce_ends_the_idle(self):
         found = watch_idle(**self._args(detector=FakeDetector([[own(0)]]), duration=5.0))
