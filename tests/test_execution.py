@@ -849,6 +849,16 @@ class TestContainmentWatchdog:
         self._run_adopted(tmp_path)
         scope_kills.assert_called_once_with("/user.slice/cc-test.scope")
 
+    def test_a_scope_is_killed_even_when_no_watchdog_tick_saw_it(self, tmp_path, scope_kills):
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
+        supervisor, _, _ = make_supervisor(backend, containment_for=self._contained)
+        with (
+            patch.object(containment, "payload_cgroup", return_value="/user.slice/cc-test.scope"),
+            patch.object(execution.Supervisor, "_containment_fault", return_value=None),
+        ):
+            run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.3)
+        scope_kills.assert_called_once_with("/user.slice/cc-test.scope")
+
     def test_a_scope_that_cannot_be_killed_is_logged_as_an_error(self, tmp_path, scope_kills, caplog):
         scope_kills.side_effect = PermissionError("cgroup.kill: permission denied")
         self._run_adopted(tmp_path)

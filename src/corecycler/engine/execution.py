@@ -468,6 +468,8 @@ class Supervisor:
         for run in launched:
             if run.proc.returncode is not None:
                 continue
+            if run.unit is not None and run.cgroup is None:
+                run.cgroup = containment.payload_cgroup(run.proc.pid, run.unit)
             self._sample_cpu(run, stop)
             run.stopped_at = stop
             stopping.append(run)
