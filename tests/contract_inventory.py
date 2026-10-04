@@ -159,7 +159,7 @@ def _pin_mprime_31x_config_keys() -> None:
                 assert "TortureWeak" not in content
                 assert "CpuSupportsAVX512=" not in content
                 assert "NumCPUs=1" in content
-                assert "CoresPerTest=1" in content
+                assert "TortureCores=1" in content
             assert "EnableSetAffinity=0" in prime
     assert MprimeBackend.parse_version("Mersenne Prime Test Program: Linux64,Untrusted Prime95,v31.4,build 2") == "31.4"
 
@@ -375,7 +375,9 @@ CONTRACTS: list[Contract] = [
             "mprime 31.04 undoc.txt CpuSupports*/EnableSetAffinity, verified live "
             "2026-08-11: SSE flags -> Pentium4 type-1 FFT, AVX -> AVX FFT, AVX2 -> "
             "FMA3 FFT, AVX512F -> AVX-512 FFT; EnableSetAffinity=0 held every "
-            "thread on the placed CPUs; TortureWeak is not an mprime option"
+            "thread on the placed CPUs; TortureWeak is not an mprime option; "
+            "-t sizes its workers from TortureCores, never TortureThreads or "
+            "CoresPerTest (linux/prime.c, 30.19 and 31.07)"
         ),
         ring_a=_pin_mprime_31x_config_keys,
         live_verifiable=True,

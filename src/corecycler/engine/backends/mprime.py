@@ -119,7 +119,6 @@ class MprimeBackend(StressBackend):
         return list(FFTPreset)
 
     def prepare(self, work_dir: Path, config: StressConfig) -> None:
-        # determine FFT range
         if config.fft_preset == FFTPreset.CUSTOM and config.fft_min and config.fft_max:
             fft_min, fft_max = config.fft_min, config.fft_max
         else:
@@ -128,9 +127,6 @@ class MprimeBackend(StressBackend):
         cpu_flags = MODE_TO_CPU_FLAGS.get(config.mode, MODE_TO_CPU_FLAGS[StressMode.SSE])
         flags_block = "".join(f"{key}={value}\n" for key, value in cpu_flags.items())
 
-        # NumCPUs=1 + CoresPerTest=1 keep mprime to one worker instead of one
-        # per detected core; EnableSetAffinity=0 stops it re-pinning its
-        # threads to core 0's SMT pair, so the load stays where it was placed.
         local_txt = work_dir / "local.txt"
         local_txt.write_text(
             textwrap.dedent(f"""\
@@ -140,11 +136,10 @@ class MprimeBackend(StressBackend):
                 StressTester=1
                 UsePrimenet=0
                 NumCPUs=1
-                CoresPerTest=1
+                TortureCores=1
                 MinTortureFFT={fft_min}
                 MaxTortureFFT={fft_max}
                 TortureHyperthreading={1 if config.threads > 1 else 0}
-                TortureThreads={config.threads}
             """)
             + flags_block
         )
@@ -156,19 +151,14 @@ class MprimeBackend(StressBackend):
                 StressTester=1
                 UsePrimenet=0
                 NumCPUs=1
-                CoresPerTest=1
+                TortureCores=1
                 MinTortureFFT={fft_min}
                 MaxTortureFFT={fft_max}
                 TortureHyperthreading={1 if config.threads > 1 else 0}
-                TortureThreads={config.threads}
             """)
             + flags_block
             + "EnableSetAffinity=0\n"
         )
-        # Output files stay at Prime95's defaults (results.txt / prime.log in
-        # the work dir). The real override keys are literally "results.txt="
-        # and "prime.log=" (commonc.c); ResultsFile=/LogFile= are never read
-        # by mprime.
 
     @staticmethod
     def parse_version(text: str) -> str | None:

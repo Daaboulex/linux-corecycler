@@ -314,13 +314,15 @@ class TestMprimeBackend:
             assert "TortureWeak" not in content
         assert "EnableSetAffinity=0" in (tmp_path / "prime.txt").read_text()
 
-    def test_prepare_thread_count(self, tmp_path):
-        backend = MprimeBackend()
-        cfg = StressConfig(threads=4)
-        backend.prepare(tmp_path, cfg)
+    @pytest.mark.parametrize(("threads", "hyperthreading"), [(1, 0), (2, 1)])
+    def test_prepare_asks_for_one_worker_through_the_keys_t_reads(self, tmp_path, threads, hyperthreading):
+        MprimeBackend().prepare(tmp_path, StressConfig(threads=threads))
 
-        content = (tmp_path / "local.txt").read_text()
-        assert "TortureThreads=4" in content
+        for name in ("local.txt", "prime.txt"):
+            lines = (tmp_path / name).read_text().splitlines()
+            assert "TortureCores=1" in lines
+            assert f"TortureHyperthreading={hyperthreading}" in lines
+            assert not [line for line in lines if line.startswith(("TortureThreads=", "CoresPerTest="))]
 
     def test_prepare_creates_both_files(self, tmp_path):
         backend = MprimeBackend()
@@ -337,12 +339,10 @@ class TestMprimeBackend:
         assert "UsePrimenet=0" in content
         assert "StressTester=1" in content
         assert "MinTortureFFT=36" in content
-        assert "TortureThreads=2" in content
+        assert "TortureCores=1" in content
         assert "CpuSupportsAVX2=1" in content
         assert "CpuSupportsAVX512F=0" in content
         assert "EnableSetAffinity=0" in content
-        # ResultsFile=/LogFile= were never real Prime95 keys — output stays at
-        # the defaults (results.txt / prime.log in the work dir)
         assert "ResultsFile" not in content
         assert "LogFile" not in content
 
