@@ -384,6 +384,12 @@ class TestLaunchRefusals:
         supervisor.run([lane(tmp_path, 0, (0, 16)), lane(tmp_path, 1, (1,))], StressConfig(threads=8), 0.1)
         assert [config.threads for config in backend.configs] == [2, 1]
 
+    def test_each_lane_tells_its_backend_its_own_cpus(self, tmp_path):
+        backend = FakeBackend(_child(BUSY))
+        supervisor, _, _ = make_supervisor(backend)
+        supervisor.run([lane(tmp_path, 0, (0, 16)), lane(tmp_path, 1, (1,))], StressConfig(threads=8), 0.1)
+        assert [config.cpus for config in backend.configs] == [(0, 16), (1,)]
+
 
 class TestOutcomeGrading:
     def test_a_computation_error_before_an_instant_exit_is_a_fail(self, tmp_path):

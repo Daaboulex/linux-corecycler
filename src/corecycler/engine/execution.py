@@ -275,7 +275,7 @@ class Supervisor:
         runs = [_LaneRun(lane=lane, deadline=start + duration) for lane in lanes]
         try:
             for run in runs:
-                if not self._launch(run, replace(config, threads=len(run.lane.cpus))):
+                if not self._launch(run, replace(config, threads=len(run.lane.cpus), cpus=run.lane.cpus)):
                     break
             self._watch(runs, start, start + duration)
         finally:

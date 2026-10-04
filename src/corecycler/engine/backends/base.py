@@ -107,10 +107,11 @@ class FFTPreset(Enum):
 class StressConfig:
     mode: StressMode = StressMode.SSE
     fft_preset: FFTPreset = FFTPreset.SMALL
-    fft_min: int | None = None  # custom range
+    fft_min: int | None = None
     fft_max: int | None = None
     threads: int = 1
-    memory_mb: int | None = None  # for linpack-style tests
+    memory_mb: int | None = None
+    cpus: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
