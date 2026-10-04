@@ -6,11 +6,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from corecycler.engine.backends.base import Outcome
 from corecycler.history.db import HistoryDB
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.engine import TunerEngine
 from corecycler.tuner.state import CoreState, TunerPhase
+from tests._reports import report
 
 
 @pytest.fixture
@@ -1948,8 +1950,8 @@ def make_test_engine(cfg: TunerConfig) -> TunerEngine:
         def get_command(self, config, work_dir):
             return ["echo", "mock"]
 
-        def parse_output(self, stdout, stderr, returncode):
-            return True, None
+        def findings(self, output, work_dir):
+            return ()
 
         def get_supported_modes(self):
             return [StressMode.SSE]
@@ -2616,7 +2618,7 @@ class TestThermalAbort:
             patch.object(eng, "_run_next"),
             patch.object(eng, "_revert_core_to_baseline"),
         ):
-            eng._on_test_finished(0, True, "", "", 60.0, 0.0)
+            eng._on_test_finished(report(0, duration=60.0))
         assert cs.thermal_aborts == 0
 
     def test_on_test_finished_routes_thermal_to_handler(self, db, simple_topology, mock_smu, mock_backend):
@@ -2624,7 +2626,7 @@ class TestThermalAbort:
         cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10)
         eng._core_states = {0: cs}
         with patch.object(eng, "_handle_thermal_abort") as handler:
-            eng._on_test_finished(0, False, "CPU temperature exceeded 95 C", "thermal", 7.0, 0.0)
+            eng._on_test_finished(report(0, Outcome.THERMAL, "CPU temperature exceeded 95 C", 7.0))
         handler.assert_called_once_with(0, cs, 7.0)
 
     def test_stability_fail_is_not_treated_as_thermal(self, db, simple_topology, mock_smu, mock_backend):
@@ -2637,7 +2639,7 @@ class TestThermalAbort:
             patch.object(eng, "_run_next"),
             patch.object(eng, "_revert_core_to_baseline"),
         ):
-            eng._on_test_finished(0, False, "miscompare detected", "computation", 1.0, 0.0)
+            eng._on_test_finished(report(0, Outcome.COMPUTATION, "miscompare detected"))
         handler.assert_not_called()
         advance.assert_called_once_with(0, False)
 
@@ -2746,7 +2748,7 @@ class TestValidationThermal:
             patch.object(eng, "_handle_thermal_abort") as shandler,
             patch.object(eng, "_on_validation_test_finished") as vfin,
         ):
-            eng._on_test_finished(0, False, "CPU temperature exceeded 95 C", "thermal", 5.0, 0.0)
+            eng._on_test_finished(report(0, Outcome.THERMAL, "CPU temperature exceeded 95 C", 5.0))
         vhandler.assert_called_once_with(0)
         shandler.assert_not_called()
         vfin.assert_not_called()  # NOT treated as a validation failure
@@ -2813,7 +2815,7 @@ class TestEventLoopDeferral:
             patch.object(eng, "_revert_core_to_baseline"),
             patch.object(eng, "_run_next") as run_next,
         ):
-            eng._on_test_finished(0, True, "", "", 60.0, 0.0)
+            eng._on_test_finished(report(0, duration=60.0))
         run_next.assert_not_called()  # next test scheduled, not run inline
         qtimer.singleShot.assert_called_once_with(0, run_next)
 

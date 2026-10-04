@@ -150,8 +150,10 @@ CoreCycler uses a backend registry. Adding a new backend is 4 steps:
 2. Subclass `StressBackend` from `base.py` and implement:
    - `get_command(config, work_dir) -> list[str]` — build the
      command line (`self.require_binary()` gives the resolved path)
-   - `parse_output(stdout, stderr, returncode) -> tuple[bool, str | None]`
-     — detect pass/fail
+   - `findings(output, work_dir) -> tuple[LaneSignal, ...]`: map the tool's own text
+     (its output, plus any results file it keeps in `work_dir`) to typed `Outcome`s
+     through a `FindingTable` and `scan()`. Exit statuses, CPU time, kernel events and
+     the final verdict are the Supervisor's job, never the backend's
    - `get_supported_modes() -> list[StressMode]` — SSE, AVX, AVX2, etc.
 3. Add `@register_backend("display-name")` decorator
 4. Add a matching `ExternalTool` entry to `TOOLS` in `src/corecycler/config/tools.py`,

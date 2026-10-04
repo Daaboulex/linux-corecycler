@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from corecycler.engine.backends.base import StressConfig, StressMode
+from corecycler.engine.backends.base import Outcome, StressConfig, StressMode
 from corecycler.engine.backends.stressapptest import ALLOCATION_REFUSALS, StressapptestBackend
-from corecycler.engine.execution import classify_error
 
 
 def _sat_accepts(size_mb: int, copy_threads: int) -> bool:
@@ -45,24 +44,16 @@ class TestStressapptestBackend:
         cmd = backend.get_command(StressConfig(threads=0), tmp_path)
         assert cmd[cmd.index("-m") + 1] == "1"
 
-    def test_parse_pass(self):
-        backend = StressapptestBackend()
-        stdout = "Status: PASS - please pass all stress tests."
-        passed, err = backend.parse_output(stdout, "", 0)
-        assert passed is True
-        assert err is None
+    def test_a_passing_status_finds_nothing(self, tmp_path):
+        assert StressapptestBackend().findings("Status: PASS - please verify no corrected errors\n", tmp_path) == ()
 
-    def test_parse_fail(self):
-        backend = StressapptestBackend()
-        stdout = "Status: FAIL - memory errors detected."
-        passed, err = backend.parse_output(stdout, "", 1)
-        assert passed is False
-        assert "fail" in err.lower()
+    def test_a_hardware_problem_status_is_a_computation_error(self, tmp_path):
+        found = StressapptestBackend().findings("Status: FAIL - test discovered HW problems\n", tmp_path)
+        assert [signal.outcome for signal in found] == [Outcome.COMPUTATION]
 
-    def test_parse_killed_by_scheduler(self):
-        backend = StressapptestBackend()
-        passed, err = backend.parse_output("", "", -15)
-        assert passed is True
+    def test_a_procedural_error_status_is_unexplained_not_a_memory_verdict(self, tmp_path):
+        found = StressapptestBackend().findings("Status: FAIL - test encountered procedural errors\n", tmp_path)
+        assert [signal.outcome for signal in found] == [Outcome.UNEXPLAINED]
 
     def test_supported_modes(self):
         backend = StressapptestBackend()
@@ -79,10 +70,8 @@ CLEAN_SUMMARY = (
 
 
 class TestIncidentCount:
-    @pytest.mark.parametrize("returncode", [0, -15])
-    def test_a_clean_summary_with_zero_incidents_passes(self, returncode):
-        passed, err = StressapptestBackend().parse_output(CLEAN_SUMMARY, "", returncode)
-        assert (passed, err) == (True, None)
+    def test_a_clean_summary_with_zero_incidents_finds_nothing(self, tmp_path):
+        assert StressapptestBackend().findings(CLEAN_SUMMARY, tmp_path) == ()
 
     @pytest.mark.parametrize(
         "line",
@@ -92,36 +81,37 @@ class TestIncidentCount:
             "Stats: Completed: 2048.00M in 9.99s 205.00MB/s, with 12 hardware incidents, 0 errors",
         ],
     )
-    def test_a_nonzero_incident_count_is_a_failure(self, line):
-        passed, err = StressapptestBackend().parse_output(line + "\n", "", 0)
-        assert passed is False
-        assert "hardware incident" in err
+    def test_a_nonzero_incident_count_is_a_computation_error(self, line, tmp_path):
+        found = StressapptestBackend().findings(line + "\n", tmp_path)
+        assert [signal.outcome for signal in found] == [Outcome.COMPUTATION]
+        assert found[0].text == line
 
-    def test_a_hardware_error_line_is_still_a_failure(self):
+    def test_a_hardware_error_line_is_still_a_computation_error(self, tmp_path):
         line = "Hardware Error: Pattern mismatch in block starting at sector 64 in DMA read\n"
-        passed, _ = StressapptestBackend().parse_output(line, "", 0)
-        assert passed is False
+        found = StressapptestBackend().findings(line, tmp_path)
+        assert {signal.outcome for signal in found} == {Outcome.COMPUTATION}
 
 
 class TestAllocationRefusal:
     @pytest.mark.parametrize("refusal", ALLOCATION_REFUSALS)
-    def test_a_refusal_is_an_environment_fault_not_a_memory_verdict(self, refusal):
-        stdout = f"Log: Defaulting to 16 copy threads\nProcess Error: {refusal}.\nStatus: FAIL\n"
-        passed, err = StressapptestBackend().parse_output(stdout, "", 1)
-        assert passed is False
-        assert refusal in err
-        assert "memory errors" not in err
-        assert classify_error(err) == "startup"
+    def test_a_refusal_is_not_started_with_the_tools_text(self, refusal, tmp_path):
+        stdout = (
+            f"Log: Defaulting to 16 copy threads\nProcess Error: {refusal}.\n"
+            "Status: FAIL - test encountered procedural errors\n"
+        )
+        found = StressapptestBackend().findings(stdout, tmp_path)
+        strongest = min(found, key=lambda signal: signal.outcome.rank)
+        assert strongest.outcome is Outcome.NOT_STARTED
+        assert refusal in strongest.text.lower()
 
-    def test_a_refusal_on_stderr_is_seen_too(self):
-        passed, err = StressapptestBackend().parse_output("", "Process Error: freepages < neededpages.\n", 1)
-        assert passed is False
-        assert classify_error(err) == "startup"
+    def test_a_refusal_on_stderr_is_seen_too(self, tmp_path):
+        found = StressapptestBackend().findings("\nProcess Error: freepages < neededpages.\n", tmp_path)
+        assert [signal.outcome for signal in found] == [Outcome.NOT_STARTED]
 
-    def test_a_real_memory_error_is_still_a_verdict(self):
-        passed, err = StressapptestBackend().parse_output("Hardware Error: miscompare at 0x1000\n", "", 0)
-        assert passed is False
-        assert classify_error(err) != "startup"
+    def test_a_real_memory_error_outranks_a_refusal(self, tmp_path):
+        stdout = "Hardware Error: miscompare at 0x1000\nProcess Error: failed to allocate memory\n"
+        found = StressapptestBackend().findings(stdout, tmp_path)
+        assert min(found, key=lambda signal: signal.outcome.rank).outcome is Outcome.COMPUTATION
 
 
 class TestMinimumMemory:

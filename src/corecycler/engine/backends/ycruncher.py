@@ -7,10 +7,12 @@ from typing import TYPE_CHECKING
 
 from corecycler.engine.backends import register_backend
 
-from .base import CRASH_SIGNALS, KILLED_BY_US_CODES, StressBackend, StressConfig, StressMode
+from .base import LaneSignal, Outcome, StressBackend, StressConfig, StressMode, scan
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from .base import FindingTable
 
 _HEADLESS_FLAGS = ("skip-warnings", "pause:-2", "status:none")
 _DEFAULT_MEMORY_MIB = 1024
@@ -26,12 +28,15 @@ MODE_TO_ALGORITHMS: dict[StressMode, tuple[str, ...]] = {
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-_ERROR_PATTERNS: tuple[str, ...] = (
-    r"Error\(s\) encountered",
-    r"Coefficient is too large",
-    r"Invalid Parameter",
-    r"\bFAIL(?:ED)?\b",
-    r"(?<!Stop on )\bError\b(?!\s+Checking)",
+FINDINGS: FindingTable = tuple(
+    (re.compile(pattern, re.IGNORECASE), Outcome.COMPUTATION)
+    for pattern in (
+        r"Error\(s\) encountered",
+        r"Coefficient is too large",
+        r"Invalid Parameter",
+        r"\bFAIL(?:ED)?\b",
+        r"(?<!Stop on )\bError\b(?!\s+Checking)",
+    )
 )
 
 
@@ -58,24 +63,8 @@ class YCruncherBackend(StressBackend):
     def prepare(self, work_dir: Path, config: StressConfig) -> None:
         work_dir.mkdir(parents=True, exist_ok=True)
 
-    def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
-        combined = _ANSI_RE.sub("", stdout + "\n" + stderr)
-
-        for pattern in _ERROR_PATTERNS:
-            match = re.search(pattern, combined, re.IGNORECASE)
-            if match:
-                return False, f"y-cruncher error: {match.group(0)}"
-
-        if returncode in CRASH_SIGNALS:
-            return False, f"y-cruncher crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
-
-        if returncode in KILLED_BY_US_CODES:
-            return True, None
-
-        if returncode == 0:
-            return False, "y-cruncher exited on its own (code 0) without being stopped: verdict unavailable"
-
-        return False, f"y-cruncher exited with code {returncode}: verdict unavailable"
+    def findings(self, output: str, work_dir: Path) -> tuple[LaneSignal, ...]:
+        return scan(_ANSI_RE.sub("", output), FINDINGS)
 
     def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
         pass

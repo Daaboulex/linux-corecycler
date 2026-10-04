@@ -42,5 +42,6 @@ class TestConfiglessBackendsHaveNoGuard:
     def test_the_base_guard_accepts_anything(self, tmp_path):
         StressBackend.assert_prepared(StressNgBackend(), tmp_path)
 
-    def test_the_base_error_poll_reports_nothing(self, tmp_path):
-        assert StressNgBackend().poll_errors(tmp_path) is None
+    def test_a_configless_backend_reads_no_results_file(self, tmp_path):
+        (tmp_path / "results.txt").write_text("FATAL ERROR: Rounding was 0.5\n")
+        assert StressNgBackend().findings("", tmp_path) == ()

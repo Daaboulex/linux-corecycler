@@ -6,20 +6,20 @@ import copy
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from corecycler.config.paths import resolve_work_dir
 from corecycler.engine import execution
-from corecycler.engine.backends.base import StressConfig, StressResult
+from corecycler.engine.backends.base import LaneSignal, Outcome, OutcomeKind, StressResult
 from corecycler.engine.detector import ErrorDetector, MCEEvent
 from corecycler.engine.execution import Lane, SuperviseHooks, Supervisor, ThermalWatch
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from corecycler.engine.backends.base import StressBackend
+    from corecycler.engine.backends.base import StressBackend, StressConfig
 
     from .topology import CPUTopology
 
@@ -174,7 +174,6 @@ class CoreScheduler:
             observed=self.observed_mce,
             poll_interval=self.config.poll_interval,
             stall_timeout=stall_timeout or self.config.stall_timeout,
-            stop_on_first_failure=False,
             phase=phase,
             hooks=SuperviseHooks(
                 on_status=self._hook_status,
@@ -234,63 +233,40 @@ class CoreScheduler:
             status.state = "skipped"
             return
 
-        self.stress_config.threads = len(lane.cpus)
         start_time = time.monotonic()
         self._set_phase(core_id, "stress")
         supervisor = self._supervisor(f"stress (CPU {lane.cpu_list})")
-        verdict = supervisor.run([lane], lambda _lane: self.stress_config, float(self.config.seconds_per_core))[core_id]
-
-        passed = True
-        error_msg = None
-        if verdict is None:
+        result = supervisor.run([lane], self.stress_config, float(self.config.seconds_per_core))[core_id]
+        if result.passed and self.config.variable_load and not self._stop_event.is_set():
+            result = self._run_variable_load(lane, self.config.seconds_per_core / 3.0)
+        if result.outcome is Outcome.CUT_SHORT:
             status.state = "pending"
             status.current_phase = ""
             self.backend.cleanup(lane.work_dir, preserve_on_error=False)
             return
-        if not verdict.passed:
-            passed = False
-            error_msg = verdict.error_message
+        if not result.passed:
             status.errors += 1
-            status.last_error = error_msg
-            if self.config.stop_on_error:
-                self._stop_event.set()
-
-        if passed and self.config.variable_load and not self._stop_event.is_set():
-            var_passed, var_error = self._run_variable_load(lane, self.config.seconds_per_core / 3.0)
-            if not var_passed:
-                passed = False
-                error_msg = var_error
-                status.errors += 1
-                status.last_error = error_msg
-                if self.config.stop_on_error:
-                    self._stop_event.set()
-
-        if passed and self.config.idle_stability_test > 0 and not self._stop_event.is_set():
-            idle_error = self._idle_phase(core_id, self.config.idle_stability_test, "idle stability")
-            if idle_error:
-                passed = False
-                error_msg = idle_error
+            status.last_error = result.detail
+        elif self.config.idle_stability_test > 0 and not self._stop_event.is_set():
+            idle = self._idle_phase(core_id, self.config.idle_stability_test, "idle stability")
+            if idle is not None:
+                result = StressResult(core_id=core_id, outcome=idle.outcome, detail=idle.text, duration_seconds=0.0)
 
         elapsed = time.monotonic() - start_time
         status.elapsed_seconds = elapsed
         status.iterations += 1
-        status.state = "passed" if passed else "failed"
+        status.state = "passed" if result.passed else "failed"
         status.current_phase = ""
+        result = replace(result, duration_seconds=elapsed, iterations_completed=status.iterations)
+        if not result.passed and (self.config.stop_on_error or result.outcome.kind is OutcomeKind.ENVIRONMENT):
+            self._stop_event.set()
 
-        result = StressResult(
-            core_id=core_id,
-            passed=passed,
-            duration_seconds=elapsed,
-            error_message=error_msg,
-            error_type=self._classify_error(error_msg) if error_msg else None,
-            iterations_completed=status.iterations,
-        )
         self.results[core_id].append(result)
         for cb in self.on_core_finish:
             cb(core_id, result)
-        self.backend.cleanup(lane.work_dir, preserve_on_error=not passed)
+        self.backend.cleanup(lane.work_dir, preserve_on_error=not result.passed)
 
-    def _run_variable_load(self, lane: Lane, total_duration: float) -> tuple[bool, str | None]:
+    def _run_variable_load(self, lane: Lane, total_duration: float) -> StressResult:
         self._set_phase(lane.core_id, "variable load")
         supervisor = self._supervisor("variable load")
         start = time.monotonic()
@@ -304,11 +280,11 @@ class CoreScheduler:
                 if segment < interval:
                     break
                 launched = True
-                verdict = supervisor.run([lane], lambda _lane: self.stress_config, segment)[lane.core_id]
-                if verdict is not None and not verdict.passed:
-                    return False, verdict.error_message
+                result = supervisor.run([lane], self.stress_config, segment)[lane.core_id]
+                if not result.passed:
+                    return result
             else:
-                idle_error = execution.watch_idle(
+                idle = execution.watch_idle(
                     cpus=lane.cpus,
                     duration=segment,
                     thermal=self._thermal or self._new_thermal(),
@@ -317,24 +293,42 @@ class CoreScheduler:
                     observed=self.observed_mce,
                     phase="idle transition",
                 )
-                if idle_error:
-                    return False, idle_error
+                if idle is not None:
+                    return StressResult(
+                        core_id=lane.core_id,
+                        outcome=idle.outcome,
+                        detail=idle.text,
+                        duration_seconds=time.monotonic() - start,
+                    )
             load_on = not load_on
             status = self.core_status.get(lane.core_id)
             if status:
                 status.elapsed_seconds = time.monotonic() - start
-        if not launched:
-            return False, (
-                f"variable load phase of {total_duration:.1f}s is shorter than one {interval:.1f}s load "
-                "segment: no work done, verdict unavailable"
+        elapsed = time.monotonic() - start
+        if self._stop_event.is_set():
+            return StressResult(
+                core_id=lane.core_id,
+                outcome=Outcome.CUT_SHORT,
+                detail="variable load phase stopped before its end",
+                duration_seconds=elapsed,
             )
-        return True, None
+        if not launched:
+            return StressResult(
+                core_id=lane.core_id,
+                outcome=Outcome.NO_WORK_DONE,
+                detail=(
+                    f"variable load phase of {total_duration:.1f}s is shorter than one {interval:.1f}s load "
+                    "segment: no work done, verdict unavailable"
+                ),
+                duration_seconds=elapsed,
+            )
+        return StressResult(core_id=lane.core_id, outcome=Outcome.PASS, detail="", duration_seconds=elapsed)
 
-    def _idle_phase(self, core_id: int, duration: float, phase_name: str) -> str | None:
+    def _idle_phase(self, core_id: int, duration: float, phase_name: str) -> LaneSignal | None:
         self._set_phase(core_id, phase_name)
         core_info = self.topology.cores.get(core_id)
         cpus = tuple(core_info.logical_cpus) if core_info else ()
-        error = execution.watch_idle(
+        found = execution.watch_idle(
             cpus=cpus,
             duration=duration,
             thermal=self._thermal or self._new_thermal(),
@@ -343,14 +337,14 @@ class CoreScheduler:
             observed=self.observed_mce,
             phase=phase_name,
         )
-        if error:
+        if found is not None:
             status = self.core_status.get(core_id)
             if status:
                 status.errors += 1
-                status.last_error = error
-            if self.config.stop_on_error:
+                status.last_error = found.text
+            if self.config.stop_on_error or found.outcome.kind is OutcomeKind.ENVIRONMENT:
                 self._stop_event.set()
-        return error
+        return found
 
     def run_rapid_transitions(
         self,
@@ -358,12 +352,18 @@ class CoreScheduler:
         total_duration: float = 600.0,
         load_seconds: float = 10.0,
         idle_seconds: float = 5.0,
-    ) -> tuple[bool, str | None]:
+    ) -> StressResult:
         """Rapid load/idle cycling across cores — catches idle-to-boost instability."""
         self.state = TestState.RUNNING
+        anchor = min(cores)
         if self._stop_event.is_set():
             self.state = TestState.FINISHED
-            return True, None
+            return StressResult(
+                core_id=anchor,
+                outcome=Outcome.CUT_SHORT,
+                detail="rapid transition run stopped before its first load segment",
+                duration_seconds=0.0,
+            )
         self.observed_mce = []
         self.detector.reset()
         self._thermal = self._new_thermal()
@@ -377,30 +377,28 @@ class CoreScheduler:
                 logical_ids.append(core_info.logical_cpus[0])
         if not logical_ids:
             self.state = TestState.FINISHED
-            return False, "Rapid transition harness error: no requested core is in the topology"
-        lane = Lane(core_id=min(cores), cpus=tuple(sorted(logical_ids)), work_dir=core_work_dir)
+            return StressResult(
+                core_id=anchor,
+                outcome=Outcome.NOT_STARTED,
+                detail="Rapid transition harness error: no requested core is in the topology",
+                duration_seconds=0.0,
+            )
+        lane = Lane(core_id=anchor, cpus=tuple(sorted(logical_ids)), work_dir=core_work_dir)
 
         elapsed = 0.0
         cycle = 0
         try:
             while total_duration - elapsed >= load_seconds and not self._stop_event.is_set():
                 cycle += 1
-                stress_cfg = StressConfig(
-                    mode=self.stress_config.mode,
-                    fft_preset=self.stress_config.fft_preset,
-                    threads=len(cores),
-                )
                 segment_start = time.monotonic()
                 supervisor = self._supervisor("rapid transition")
-                verdict = supervisor.run([lane], lambda _lane, cfg=stress_cfg: cfg, load_seconds)[lane.core_id]
+                result = supervisor.run([lane], self.stress_config, load_seconds)[anchor]
                 elapsed += time.monotonic() - segment_start
-                if verdict is not None and not verdict.passed:
-                    return False, (f"Failure during rapid transition cycle {cycle}: {verdict.error_message}")
-                if self._stop_event.is_set():
-                    break
+                if not result.passed:
+                    return replace(result, detail=f"Failure during rapid transition cycle {cycle}: {result.detail}")
                 if elapsed < total_duration:
                     segment_start = time.monotonic()
-                    idle_error = execution.watch_idle(
+                    idle = execution.watch_idle(
                         cpus=lane.cpus,
                         duration=min(idle_seconds, total_duration - elapsed),
                         thermal=self._thermal,
@@ -410,21 +408,31 @@ class CoreScheduler:
                         phase=f"idle phase of rapid transition cycle {cycle}",
                     )
                     elapsed += time.monotonic() - segment_start
-                    if idle_error:
-                        return False, idle_error
+                    if idle is not None:
+                        return StressResult(
+                            core_id=anchor, outcome=idle.outcome, detail=idle.text, duration_seconds=elapsed
+                        )
         finally:
             self.backend.cleanup(core_work_dir)
             self.state = TestState.FINISHED
-        if cycle == 0:
-            return False, (
-                f"rapid transition run of {total_duration:.1f}s is shorter than one {load_seconds:.1f}s load "
-                "segment: no work done, verdict unavailable"
+        if self._stop_event.is_set():
+            return StressResult(
+                core_id=anchor,
+                outcome=Outcome.CUT_SHORT,
+                detail=f"rapid transition run stopped during cycle {cycle}",
+                duration_seconds=elapsed,
             )
-        return True, None
-
-    @staticmethod
-    def _classify_error(msg: str | None) -> str:
-        return execution.classify_error(msg)
+        if cycle == 0:
+            return StressResult(
+                core_id=anchor,
+                outcome=Outcome.NO_WORK_DONE,
+                detail=(
+                    f"rapid transition run of {total_duration:.1f}s is shorter than one {load_seconds:.1f}s load "
+                    "segment: no work done, verdict unavailable"
+                ),
+                duration_seconds=elapsed,
+            )
+        return StressResult(core_id=anchor, outcome=Outcome.PASS, detail="", duration_seconds=elapsed)
 
     @staticmethod
     def _read_cpu_temperature() -> float | None:

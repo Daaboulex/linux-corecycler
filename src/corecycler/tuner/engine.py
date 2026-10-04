@@ -14,13 +14,14 @@ import json
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
 from corecycler.config.paths import resolve_work_dir
 from corecycler.engine.backends import get_backend, load_all
-from corecycler.engine.backends.base import StressConfig
+from corecycler.engine.backends.base import Outcome, OutcomeKind, StressConfig, StressResult
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.containment import lane_cgroup_parent
 from corecycler.engine.detector import (
@@ -53,21 +54,23 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def _has_unattributed_mce(mce_json: str) -> bool:
-    """True when the worker's MCE payload holds an event naming no CPU.
+@dataclass(frozen=True, slots=True)
+class WorkerReport:
+    lanes: tuple[StressResult, ...]
+    peak_stretch_pct: float
+    kernel_events: tuple[MCEEvent, ...]
 
-    Fail closed at the payload level only: a malformed payload is no evidence
-    (matching _foreign_mce_by_core); an explicit cpu == -1 event is.
-    """
-    if not mce_json:
-        return False
-    try:
-        raw = json.loads(mce_json)
-    except (json.JSONDecodeError, TypeError):
-        return False
-    if not isinstance(raw, list):
-        return False
-    return any(isinstance(item, dict) and item.get("cpu") == -1 for item in raw)
+    def __post_init__(self) -> None:
+        if not self.lanes:
+            raise ValueError("a report names at least one lane")
+
+    @property
+    def result(self) -> StressResult:
+        return min(self.lanes, key=lambda lane: (lane.outcome.rank, lane.core_id))
+
+
+def _has_unattributed_mce(events: tuple[MCEEvent, ...]) -> bool:
+    return any(event.cpu < 0 for event in events)
 
 
 def _rebooted_since(iso_ts: str | None, stat_path: str = "/proc/stat") -> bool:
@@ -111,38 +114,16 @@ def _read_boot_id() -> str:
         return ""
 
 
-def _pick_report(results: dict[int, list], primary: int) -> tuple[int, object | None]:
-    """Choose which core's verdict a multi-core scheduler run reports.
-
-    The primary core is the default, but a failure on ANY core in the batch
-    outranks the primary's pass.
-    """
-    primary_results = results.get(primary, [])
-    report = primary_results[0] if primary_results else None
-    if report is None or report.passed:
-        for cid in sorted(results):
-            rs = results[cid]
-            if rs and not rs[0].passed:
-                return cid, rs[0]
-    return primary, report
-
-
-def _serialize_mce(events: list[MCEEvent]) -> str:
-    """JSON-encode observed MCE events for the worker's finished signal."""
-    if not events:
-        return ""
-    return json.dumps(
-        [
-            {
-                "cpu": e.cpu,
-                "bank": e.bank,
-                "corrected": e.corrected,
-                "message": e.message,
-                "raw_ts": e.raw_ts,
-            }
-            for e in events
-        ]
+def _not_started(core_id: int, detail: str) -> WorkerReport:
+    return WorkerReport(
+        lanes=(StressResult(core_id=core_id, outcome=Outcome.NOT_STARTED, detail=detail, duration_seconds=0.0),),
+        peak_stretch_pct=0.0,
+        kernel_events=(),
     )
+
+
+def _cut_short(core_id: int, detail: str) -> StressResult:
+    return StressResult(core_id=core_id, outcome=Outcome.CUT_SHORT, detail=detail, duration_seconds=0.0)
 
 
 class _TunerWorker(QThread):
@@ -156,9 +137,7 @@ class _TunerWorker(QThread):
     turbo ramp-up, and C-state transitions before load reaches 100%.
     """
 
-    # core_id, passed, error_msg, error_type, duration, peak_stretch_pct,
-    # mce_json, results_json (per-core verdicts of a multi-core run)
-    finished = Signal(int, bool, str, str, float, float, str, str)
+    finished = Signal(object)
 
     def __init__(
         self,
@@ -192,45 +171,22 @@ class _TunerWorker(QThread):
                 )
                 sampler.start()
 
-            start = time.monotonic()
             results = self._scheduler.run()
-            elapsed = time.monotonic() - start
-
-            # Stop sampler and collect results
             stop_event.set()
             peak_stretch = max(stretch_samples) if stretch_samples else 0.0
-
-            mce_json = _serialize_mce(self._scheduler.observed_mce)
-            report_core, report = _pick_report(results, self._core_id)
-            if report is not None:
-                self.finished.emit(
-                    report_core,
-                    report.passed,
-                    report.error_message or "",
-                    report.error_type or "",
-                    elapsed,
-                    peak_stretch if report_core == self._core_id else 0.0,
-                    mce_json,
-                    "",
+            lanes = tuple(found[0] for _core, found in sorted(results.items()) if found)
+            if not results.get(self._core_id):
+                lanes += (_cut_short(self._core_id, "the scheduler returned no result for this core"),)
+            self.finished.emit(
+                WorkerReport(
+                    lanes=lanes,
+                    peak_stretch_pct=peak_stretch,
+                    kernel_events=tuple(self._scheduler.observed_mce),
                 )
-            else:
-                # The scheduler produced no verdict for this core (stopped early,
-                # environment problem) — that is NOT a stability failure.
-                self.finished.emit(
-                    self._core_id,
-                    False,
-                    "No result returned",
-                    "startup",
-                    elapsed,
-                    peak_stretch,
-                    mce_json,
-                    "",
-                )
+            )
         except Exception as e:
-            # A Python exception in the harness is an app/environment fault,
-            # not CPU instability — must not advance the search state machine.
             log.exception("Tuner worker crashed for core %d", self._core_id)
-            self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0, "", "")
+            self.finished.emit(_not_started(self._core_id, str(e)))
 
     def _stretch_sampler(self, samples: list[float], stop: threading.Event) -> None:
         """Background thread: sample APERF/MPERF stretch during sustained load.
@@ -285,25 +241,13 @@ class _RapidTransitionWorker(_TunerWorker):
 
     def run(self) -> None:
         try:
-            start = time.monotonic()
-            passed, error = self.scheduler.run_rapid_transitions(
-                cores=self._cores,
-                total_duration=self._duration,
-            )
-            elapsed = time.monotonic() - start
+            result = self.scheduler.run_rapid_transitions(cores=self._cores, total_duration=self._duration)
             self.finished.emit(
-                self._core_id,
-                passed,
-                error or "",
-                "",
-                elapsed,
-                0.0,
-                _serialize_mce(self.scheduler.observed_mce),
-                "",
+                WorkerReport(lanes=(result,), peak_stretch_pct=0.0, kernel_events=tuple(self.scheduler.observed_mce))
             )
         except Exception as e:
             log.exception("Rapid transition worker crashed for core %d", self._core_id)
-            self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0, "", "")
+            self.finished.emit(_not_started(self._core_id, str(e)))
 
 
 class _ParallelWorker(_TunerWorker):
@@ -320,55 +264,22 @@ class _ParallelWorker(_TunerWorker):
 
     def run(self) -> None:
         try:
-            start = time.monotonic()
-            raw = self._scheduler.run()
-            elapsed = time.monotonic() - start
-            results = {c: [r] for c, r in raw.items()}
-            mce_json = _serialize_mce(self._scheduler.observed_mce)
-            results_json = json.dumps(
-                [
-                    {
-                        "core": c,
-                        "passed": r.passed,
-                        "error_type": r.error_type,
-                        "error_message": r.error_message,
-                        "duration": r.duration_seconds,
-                    }
-                    for c, r in raw.items()
-                ]
+            results = self._scheduler.run()
+            lanes = tuple(results[core] for core in sorted(results)) or (
+                _cut_short(self._core_id, "the batch returned no lane result"),
             )
-            report_core, report = _pick_report(results, self._core_id)
-            if report is not None:
-                self.finished.emit(
-                    report_core,
-                    report.passed,
-                    report.error_message or "",
-                    report.error_type or "",
-                    elapsed,
-                    0.0,
-                    mce_json,
-                    results_json,
-                )
-            else:
-                self.finished.emit(
-                    self._core_id,
-                    False,
-                    "No result returned",
-                    "startup",
-                    elapsed,
-                    0.0,
-                    mce_json,
-                    results_json,
-                )
+            self.finished.emit(
+                WorkerReport(lanes=lanes, peak_stretch_pct=0.0, kernel_events=tuple(self._scheduler.observed_mce))
+            )
         except Exception as e:
             log.exception("Parallel worker crashed for core %d", self._core_id)
-            self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0, "", "")
+            self.finished.emit(_not_started(self._core_id, str(e)))
 
 
 class _SoakWorker(QThread):
     """Watches the kernel error stream with no load; any event ends the soak."""
 
-    finished = Signal(int, bool, str, str, float, float, str, str)
+    finished = Signal(object)
 
     def __init__(self, core_id: int, duration: int, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -395,21 +306,18 @@ class _SoakWorker(QThread):
                 self._stop.wait(5.0)
             elapsed = time.monotonic() - start
             if events:
-                self.finished.emit(
-                    self._core_id,
-                    False,
-                    f"kernel error during soak: {events[0].message}",
-                    "mce",
-                    elapsed,
-                    0.0,
-                    _serialize_mce(events),
-                    "",
-                )
+                named = any(event.cpu >= 0 for event in events)
+                outcome = Outcome.OWN_CORE_MCE if named else Outcome.UNATTRIBUTED_MCE
+                detail = f"kernel error during soak: {events[0].message}"
+            elif self._stop.is_set():
+                outcome, detail = Outcome.CUT_SHORT, "soak stopped before its end"
             else:
-                self.finished.emit(self._core_id, True, "", "", elapsed, 0.0, "", "")
+                outcome, detail = Outcome.PASS, ""
+            result = StressResult(core_id=self._core_id, outcome=outcome, detail=detail, duration_seconds=elapsed)
+            self.finished.emit(WorkerReport(lanes=(result,), peak_stretch_pct=0.0, kernel_events=tuple(events)))
         except Exception as e:
             log.exception("Soak worker crashed")
-            self.finished.emit(self._core_id, False, str(e), "startup", 0.0, 0.0, "", "")
+            self.finished.emit(_not_started(self._core_id, str(e)))
 
 
 # ------------------------------------------------------------------
@@ -1756,38 +1664,22 @@ class TunerEngine(QObject):
     # Hardware-error evidence (cross-core MCE) and the isolated crash hunt
     # ------------------------------------------------------------------
 
-    def _foreign_mce_by_core(self, tested_core: int, mce_json: str) -> dict[int, dict]:
-        """Parse the worker's observed-MCE payload into evidence about cores
-        OTHER than the tested one. Fail closed: malformed JSON is no evidence.
+    def _foreign_mce_by_core(self, tested_core: int, events: tuple[MCEEvent, ...]) -> dict[int, dict]:
+        """Evidence about cores OTHER than the tested one, from the events the test observed.
 
         Returns {core_id: {"corrected": bool, "messages": [...]}} where
         corrected is False when ANY event for that core was uncorrected.
         """
-        if not mce_json:
-            return {}
-        try:
-            raw = json.loads(mce_json)
-        except (json.JSONDecodeError, TypeError):
-            return {}
-        if not isinstance(raw, list):
-            return {}
         cpu_map = self._cpu_to_core()
         out: dict[int, dict] = {}
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            cpu = item.get("cpu")
-            if not isinstance(cpu, int) or cpu < 0:
-                continue
-            core = cpu_map.get(cpu)
+        for event in events:
+            core = cpu_map.get(event.cpu)
             if core is None or core == tested_core or core not in self._core_states:
                 continue
             entry = out.setdefault(core, {"corrected": True, "messages": []})
-            if not item.get("corrected", False):
+            if not event.corrected:
                 entry["corrected"] = False
-            msg = item.get("message")
-            if isinstance(msg, str):
-                entry["messages"].append(msg)
+            entry["messages"].append(event.message)
         return out
 
     def _apply_foreign_evidence(self, foreign: dict[int, dict]) -> None:
@@ -1962,7 +1854,7 @@ class TunerEngine(QObject):
         session = tp.get_session(self._db, self._session_id)
         self._enter_auto_validation(profile, resume_from=session)
 
-    def _on_hunt_slot_finished(self, core_id: int, passed: bool, error_type: str, foreign: dict[int, dict]) -> None:
+    def _on_hunt_slot_finished(self, core_id: int, passed: bool, outcome: Outcome, foreign: dict[int, dict]) -> None:
         if self._session_id is not None:
             tp.set_hunting_core(self._db, self._session_id, None)
         if foreign:
@@ -1979,10 +1871,10 @@ class TunerEngine(QObject):
             return
         resident = self._co_applied.get(core_id, cs.current_offset)
         self.log_message.emit(
-            f"Crash hunt: core {core_id} FAILED in isolation at {resident} ({error_type or 'fail'}) — culprit found."
+            f"Crash hunt: core {core_id} FAILED in isolation at {resident} ({outcome}). Culprit found."
         )
         cs.current_offset = resident
-        if error_type == "crash":
+        if outcome is Outcome.CPU_SIGNAL:
             self._apply_crash_penalty(cs)
         else:
             self._apply_crash_penalty(cs, steps=1, count_crash=False)
@@ -2347,7 +2239,8 @@ class TunerEngine(QObject):
         synchronously (which would recurse through _run_next on a core that
         always fails to start).
         """
-        QTimer.singleShot(0, lambda: self._on_test_finished(core_id, False, message, "startup", 0.0, 0.0, "", ""))
+        report = _not_started(core_id, message)
+        QTimer.singleShot(0, lambda: self._on_test_finished(report))
 
     def _start_worker(self, core_id: int, duration: int, *, spectrum: bool = False) -> None:
         """Launch a _TunerWorker thread for the given core.
@@ -2422,82 +2315,40 @@ class TunerEngine(QObject):
         self._worker.start()
         self.worker_started.emit(core_id)
 
-    @Slot(int, bool, str, str, float, float, str, str)
-    def _on_test_finished(
-        self,
-        core_id: int,
-        passed: bool,
-        error_msg: str,
-        error_type: str,
-        duration: float,
-        peak_stretch_pct: float,
-        mce_json: str = "",
-        results_json: str = "",
-    ) -> None:
+    @Slot(object)
+    def _on_test_finished(self, report: WorkerReport) -> None:
         """Process test result — log, advance state machine, continue."""
-        # Check abort FIRST — if abort() already ran, don't touch any state.
-        # The signal may fire after abort() disconnected it (Qt queued delivery).
         if self._abort_requested:
-            # Still clean up the worker if it exists
             if self._worker is not None:
                 self._worker.wait(1000)
                 self._worker.deleteLater()
                 self._worker = None
             return
 
-        # Clean up worker reference
         if self._worker is not None:
             self._worker.wait(1000)
             self._worker.deleteLater()
             self._worker = None
 
+        result = report.result
+        core_id = result.core_id
         cs = self._core_states.get(core_id)
         if cs is None:
             return
 
         cs.in_test = False
-        # A validation worker marks its whole stressed set in_test; the box
-        # survived this result, so clear and persist all of them (not just the
-        # reported core) before advancing.
         self._clear_cores_under_stress()
+        foreign = self._foreign_mce_by_core(-1 if self._soaking else core_id, report.kernel_events)
+        outcome, detail, duration = result.outcome, result.detail, result.duration_seconds
 
-        # Kernel events observed during the test that name OTHER cores are
-        # evidence about those cores, independent of this test's verdict.
-        foreign = self._foreign_mce_by_core(-1 if self._soaking else core_id, mce_json)
-
-        # A start-time/environment failure (missing binary, scheduler
-        # construction error, harness exception) is not a stability verdict —
-        # and nothing RAN, so it proves nothing about the resident offsets:
-        # it must be handled BEFORE the journal is marked survived or the
-        # crash-resume streak is reset. Persist the cleared in_test flag and
-        # revert the never-tested offset, then pause with the reason.
-        if not passed and error_type == "startup":
+        if outcome.kind is OutcomeKind.APPARATUS:
             if self._session_id:
                 tp.save_core_state(self._db, self._session_id, cs)
-            if self._status == "validating":
-                self._revert_all_to_baseline()
-            else:
-                self._revert_core_to_baseline(core_id)
-            self.log_message.emit(
-                f"Core {core_id}: test could not run — {error_msg}. "
-                f"Pausing (environment issue, not a stability verdict)."
-            )
-            self.pause()
+            self._handle_apparatus_fault(core_id, detail, outcome, foreign)
             return
 
-        # Reaching this handler proves the machine survived the test — a hard
-        # system crash would have killed the process before the worker's finished
-        # signal could be delivered. So every CO value resident during this test
-        # is now proven not-a-hard-crash: mark the journal survived, widen the
-        # proven-safe envelope, and reset the resume-crash circuit breaker because
-        # forward progress was made. (Holds for thermal stops and detected stress
-        # failures too — both mean the box lived.)
         if self._session_id is not None:
-            # Cores the kernel just named stay un-survived: surviving the test
-            # does not clear an error the hardware reported minutes ago. A
-            # machine check that names NO core taints every resident value —
-            # fail closed and leave the whole set unproven for this test.
-            if _has_unattributed_mce(mce_json):
+            if _has_unattributed_mce(report.kernel_events):
                 self.log_message.emit(
                     "Machine check without core attribution observed during the "
                     "test — resident offsets stay unproven for this run."
@@ -2510,11 +2361,7 @@ class TunerEngine(QObject):
             if tp.get_resume_crash_streak(self._db, self._session_id) != 0:
                 tp.set_resume_crash_streak(self._db, self._session_id, 0)
 
-        # A thermal stop is not a stability verdict — advancing the state machine
-        # or logging a fail here would push the offset the wrong way on a thermal
-        # transient. Cool down and retry. Handled for the search flow,
-        # validation, and hunt slots alike.
-        if not passed and error_type == "thermal":
+        if outcome is Outcome.THERMAL:
             if self._hunting:
                 self._validation_thermal_aborts += 1
                 if self._validation_thermal_aborts > self._config.max_thermal_retries:
@@ -2538,37 +2385,26 @@ class TunerEngine(QObject):
                 self._handle_validation_thermal_abort(core_id)
             return
 
-        # An apparatus fault is not a stability verdict: a stall means the load
-        # never ran on the core, an external kill means something else stopped
-        # the process, an unattributable machine check names nobody. Moving a
-        # CO offset on any of them punishes an innocent core (85 back-offs in
-        # one night came through the stall path). Retry without a verdict,
-        # bounded, then stop honestly.
-        if not passed and error_type in ("stall", "killed", "mce_unattributed"):
-            self._handle_apparatus_fault(core_id, error_msg, error_type, foreign)
+        if outcome in (Outcome.UNATTRIBUTED_MCE, Outcome.KERNEL_TROUBLE) and not self._soaking:
+            self._handle_apparatus_fault(core_id, detail, outcome, foreign)
             return
 
-        # Reached only on a non-thermal outcome → the thermal-retry streak for
-        # this core is broken; reset so the cap counts CONSECUTIVE thermal stops
-        # at one offset, not lifetime thermals across the whole search.
         cs.thermal_aborts = 0
         self._apparatus_fault_streak = 0
 
-        # Clock stretch check — if stress test "passed" but core was stretching
-        # badly, treat it as a failure (CO too aggressive, voltage drooping)
+        peak_stretch_pct = report.peak_stretch_pct
         threshold = self._config.stretch_threshold_pct
-        if passed and threshold > 0 and peak_stretch_pct > threshold:
-            passed = False
-            error_msg = f"clock stretch {peak_stretch_pct:.1f}% > {threshold:.1f}% threshold"
-            error_type = "clock_stretch"
+        if outcome is Outcome.PASS and threshold > 0 and peak_stretch_pct > threshold:
+            outcome = Outcome.CLOCK_STRETCH
+            detail = f"clock stretch {peak_stretch_pct:.1f}% > {threshold:.1f}% threshold"
             log.info(
                 "Core %d offset %d: stress passed but stretch %.1f%% exceeds threshold — marking FAIL",
                 core_id,
                 cs.current_offset,
                 peak_stretch_pct,
             )
+        passed = outcome is Outcome.PASS
 
-        # Determine log phase
         phase_map = {
             TunerPhase.COARSE_SEARCH: "coarse",
             TunerPhase.FINE_SEARCH: "fine",
@@ -2583,8 +2419,6 @@ class TunerEngine(QObject):
         else:
             log_phase = phase_map.get(cs.phase, "validate" if self._status == "validating" else cs.phase)
 
-        # Log to DB (soak is a session-level watch, not one core's test — its
-        # record is the narrative plus any mce_evidence rows)
         if self._session_id and not self._soaking:
             backend, stress_mode, fft_preset = self._get_active_stress_config(cs)
             tp.log_test_result(
@@ -2594,8 +2428,8 @@ class TunerEngine(QObject):
                 cs.current_offset,
                 log_phase,
                 passed,
-                error_msg=error_msg or None,
-                error_type=error_type or None,
+                error_msg=None if passed else detail,
+                error_type=None if passed else outcome.value,
                 duration=duration,
                 backend=backend,
                 stress_mode=stress_mode,
@@ -2603,14 +2437,14 @@ class TunerEngine(QObject):
                 peak_stretch_pct=peak_stretch_pct if peak_stretch_pct > 0 else None,
             )
 
-        if results_json and self._session_id and self._validation_stage in (2, 3, 6):
-            self._log_parallel_rows(core_id, results_json, log_phase)
+        if self._session_id and self._validation_stage in (2, 3, 6):
+            self._log_parallel_rows(report, log_phase)
 
         status_str = "PASS" if passed else "FAIL"
         stretch_info = f" stretch:{peak_stretch_pct:.1f}%" if peak_stretch_pct > 0 else ""
         self.log_message.emit(
             f"Core {core_id} offset {cs.current_offset}: {status_str}{stretch_info}"
-            + (f" ({error_msg})" if error_msg else "")
+            + (f" ({detail})" if detail else "")
         )
         self.test_completed.emit(core_id, cs.current_offset, passed)
 
@@ -2641,7 +2475,7 @@ class TunerEngine(QObject):
 
         # Hunt slots have their own flow — a fail here is a FOUND CULPRIT.
         if self._hunting:
-            self._on_hunt_slot_finished(core_id, passed, error_type, foreign)
+            self._on_hunt_slot_finished(core_id, passed, outcome, foreign)
             return
 
         if self._soaking:
@@ -2720,46 +2554,29 @@ class TunerEngine(QObject):
         # into _on_test_finished.
         QTimer.singleShot(0, self._run_next)
 
-    def _log_parallel_rows(self, reported: int, results_json: str, phase: str) -> None:
-        """Record every lane's verdict from a simultaneous stage, not only the
-        reported core's. Fail closed: a malformed payload records nothing."""
-        try:
-            entries = json.loads(results_json)
-        except (json.JSONDecodeError, TypeError):
-            return
-        if not isinstance(entries, list):
-            return
-        backend, stress_mode, fft_preset = (
-            self._config.backend,
-            self._config.stress_mode,
-            self._config.fft_preset,
-        )
-        for e in entries:
-            if not isinstance(e, dict):
+    def _log_parallel_rows(self, report: WorkerReport, phase: str) -> None:
+        """Record every lane's verdict from a simultaneous stage, not only the reported core's."""
+        reported = report.result.core_id
+        for lane in report.lanes:
+            cs = self._core_states.get(lane.core_id)
+            if lane.core_id == reported or cs is None:
                 continue
-            core = e.get("core")
-            if not isinstance(core, int) or core == reported:
-                continue
-            cs = self._core_states.get(core)
-            if cs is None:
-                continue
-            offset = self._co_applied.get(core)
+            offset = self._co_applied.get(lane.core_id)
             if offset is None:
                 offset = cs.best_offset if cs.best_offset is not None else cs.current_offset
-            duration = e.get("duration")
             tp.log_test_result(
                 self._db,
                 self._session_id,
-                core,
+                lane.core_id,
                 offset,
                 phase,
-                bool(e.get("passed")),
-                error_msg=e.get("error_message"),
-                error_type=e.get("error_type"),
-                duration=float(duration) if isinstance(duration, (int, float)) else None,
-                backend=backend,
-                stress_mode=stress_mode,
-                fft_preset=fft_preset,
+                lane.passed,
+                error_msg=None if lane.passed else lane.detail,
+                error_type=None if lane.passed else lane.outcome.value,
+                duration=lane.duration_seconds,
+                backend=self._config.backend,
+                stress_mode=self._config.stress_mode,
+                fft_preset=self._config.fft_preset,
             )
 
     def _handle_thermal_abort(self, core_id: int, cs: CoreState, duration: float) -> None:
@@ -2840,9 +2657,9 @@ class TunerEngine(QObject):
             self._run_validation_requeue if self._in_requeue else self._run_validation_next,
         )
 
-    def _handle_apparatus_fault(self, core_id: int, error_msg: str, error_type: str, foreign: dict[int, dict]) -> None:
+    def _handle_apparatus_fault(self, core_id: int, detail: str, outcome: Outcome, foreign: dict[int, dict]) -> None:
         """Retry the current step after a fault that proves nothing about the
-        silicon; after max_apparatus_retries consecutive faults, stop honestly.
+        silicon; after max_apparatus_retries consecutive faults, revert and pause.
 
         No CO offset moves here: the search bounds, validation back-offs and
         crash penalties all stay untouched. Hardware evidence about OTHER
@@ -2864,28 +2681,32 @@ class TunerEngine(QObject):
                 QTimer.singleShot(0, self._run_next)
                 return
 
-        if error_type == "killed" and self._validation_stage == 6 and self._memory_budget is not None:
+        if outcome is Outcome.OUTSIDE_KILL and self._validation_stage == 6 and self._memory_budget is not None:
             budget = self._memory_budget
-            error_msg = (
-                f"{error_msg}; memory budget attempted: {budget.instances} x {budget.per_instance_mb} MB "
+            detail = (
+                f"{detail}; memory budget attempted: {budget.instances} x {budget.per_instance_mb} MB "
                 f"of {budget.usable_mb} MB usable"
             )
         self._apparatus_fault_streak += 1
         limit = self._config.max_apparatus_retries
         if self._apparatus_fault_streak > limit:
+            streak = self._apparatus_fault_streak
+            self._apparatus_fault_streak = 0
+            if self._status == "validating":
+                self._revert_all_to_baseline()
+            else:
+                self._revert_core_to_baseline(core_id)
             self.log_message.emit(
-                f"Stress apparatus failed {self._apparatus_fault_streak} times in "
-                f"a row ({error_type}: {error_msg}) — the environment cannot run "
-                f"this test, and repeating it would prove nothing. Stopping with "
-                f"offsets reverted to baseline; fix the cause (backend install, "
-                f"foreign load, permissions), then Resume."
+                f"Stress apparatus failed {streak} times in a row ({outcome}: {detail}). "
+                "The environment cannot run this test, and repeating it would prove nothing. "
+                "Pausing with offsets reverted to baseline. Fix the cause (backend install, "
+                "foreign load, permissions), then Resume."
             )
-            self.abort()
+            self.pause()
             return
 
         self.log_message.emit(
-            f"Core {core_id}: apparatus fault ({error_msg}) — retrying the same "
-            f"step without a verdict "
+            f"Core {core_id}: apparatus fault ({detail}). Retrying the same step without a verdict "
             f"({self._apparatus_fault_streak}/{limit})"
         )
         if self._hunting:

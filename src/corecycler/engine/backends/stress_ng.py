@@ -7,10 +7,25 @@ from typing import TYPE_CHECKING
 
 from corecycler.engine.backends import register_backend
 
-from .base import CRASH_SIGNALS, KILLED_BY_US_CODES, StressBackend, StressConfig, StressMode
+from .base import LaneSignal, Outcome, StressBackend, StressConfig, StressMode, scan
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from .base import FindingTable
+
+FINDINGS: FindingTable = tuple(
+    (re.compile(pattern, re.IGNORECASE), Outcome.COMPUTATION)
+    for pattern in (
+        r"[1-9]\d*\s+FAILED",
+        r"\bFAIL\b(?!\w)",
+        r"verification error",
+        r"computation mismatch",
+        r"error.*incorrect",
+        r"killed by signal \d+",
+        r"out of memory",
+    )
+)
 
 
 @register_backend("stress-ng")
@@ -49,34 +64,8 @@ class StressNgBackend(StressBackend):
     def prepare(self, work_dir: Path, config: StressConfig) -> None:
         work_dir.mkdir(parents=True, exist_ok=True)
 
-    def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
-        combined = stdout + "\n" + stderr
-
-        # stress-ng verification failures
-        # Note: avoid matching "0 FAILED" in metrics output (false positive)
-        error_patterns = [
-            r"[1-9]\d*\s+FAILED",  # "N FAILED" where N > 0
-            r"\bFAIL\b(?!\w)",  # standalone FAIL (not part of FAILED)
-            r"verification error",
-            r"computation mismatch",
-            r"error.*incorrect",
-            r"killed by signal \d+",
-            r"out of memory",
-        ]
-        for pattern in error_patterns:
-            match = re.search(pattern, combined, re.IGNORECASE)
-            if match:
-                return False, f"stress-ng error: {match.group(0)}"
-
-        # killed by us (timeout) = passed, but only if no error patterns matched above
-        if returncode in KILLED_BY_US_CODES or returncode == 0:
-            return True, None
-
-        # SIGSEGV/SIGABRT/SIGBUS = likely CO instability crash
-        if returncode in CRASH_SIGNALS:
-            return False, f"stress-ng crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
-
-        return False, f"stress-ng exited with code {returncode}"
+    def findings(self, output: str, work_dir: Path) -> tuple[LaneSignal, ...]:
+        return scan(output, FINDINGS)
 
     def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
         pass

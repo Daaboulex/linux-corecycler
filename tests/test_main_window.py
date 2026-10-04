@@ -147,12 +147,6 @@ class TestGridAndCacheSlots:
 
     def test_core_finished_failed_adds_error(self):
         ns = _mw(_core_status_cache={4: MagicMock(state="failed")})
-        result = MagicMock(passed=False, error_message="rounding")
+        result = MagicMock(passed=False, detail="rounding")
         _call("_on_core_finished", ns, 4, result)
         ns._results_tab.add_error.assert_called_with(4, "rounding")
-
-    def test_core_finished_unknown_error_message(self):
-        ns = _mw(_core_status_cache={0: MagicMock(state="failed")})
-        result = MagicMock(passed=False, error_message=None)
-        _call("_on_core_finished", ns, 0, result)
-        ns._results_tab.add_error.assert_called_with(0, "Unknown error")

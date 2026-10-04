@@ -19,7 +19,7 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
 from corecycler.config.settings import AppSettings, save_profile
-from corecycler.engine.backends.base import StressResult
+from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.scheduler import CoreTestStatus
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.gui import main_window as mw
@@ -122,7 +122,7 @@ class TestWorkerBridge:
         worker.cycle_completed.connect(lambda cyc: seen.setdefault("cycle", cyc))
         worker.test_completed.connect(lambda payload: seen.setdefault("done", payload))
 
-        result = StressResult(core_id=0, passed=True, duration_seconds=1.0)
+        result = StressResult(core_id=0, outcome=Outcome.PASS, detail="", duration_seconds=1.0)
         scheduler.on_core_start[0](0, 1)
         scheduler.on_core_finish[0](0, result)
         scheduler.on_status_update[0](0, CoreTestStatus(core_id=0))
@@ -134,6 +134,20 @@ class TestWorkerBridge:
         assert seen["status"] == 0
         assert seen["cycle"] == 2
         assert json.loads(seen["done"])["0"][0]["passed"] is True
+
+    def test_a_failed_result_keeps_its_outcome_and_evidence_in_the_payload(self, tmp_path):
+        _qapp()
+        scheduler = MagicMock()
+        worker = mw.TestWorker(scheduler)
+        seen = []
+        worker.test_completed.connect(seen.append)
+        failed = StressResult(
+            core_id=1, outcome=Outcome.COMPUTATION, detail="rounding", duration_seconds=2.0, evidence_dir=tmp_path
+        )
+        scheduler.on_test_complete[0]({1: [failed]})
+        row = json.loads(seen[0])["1"][0]
+        assert (row["passed"], row["outcome"], row["detail"]) == (False, "computation", "rounding")
+        assert row["evidence_dir"] == str(tmp_path)
 
     def test_run_delegates_to_the_scheduler(self):
         _qapp()
@@ -353,7 +367,7 @@ class TestCoreFinished:
         window._core_telemetry[0] = self._telemetry()
         logger = MagicMock()
         window._logger = logger
-        window._on_core_finished(0, StressResult(core_id=0, passed=True, duration_seconds=10.0))
+        window._on_core_finished(0, StressResult(core_id=0, outcome=Outcome.PASS, detail="", duration_seconds=10.0))
         assert logger.update_core_telemetry_peaks.called
         assert 0 not in window._core_telemetry
 
@@ -363,7 +377,9 @@ class TestCoreFinished:
         logger.update_core_telemetry_peaks.side_effect = OSError("db gone")
         window._logger = logger
         with caplog.at_level("ERROR", logger="corecycler.gui.main_window"):
-            window._on_core_finished(0, StressResult(core_id=0, passed=False, duration_seconds=1.0))
+            window._on_core_finished(
+                0, StressResult(core_id=0, outcome=Outcome.COMPUTATION, detail="rounding", duration_seconds=1.0)
+            )
         assert "Failed to record telemetry peaks" in caplog.text
 
 

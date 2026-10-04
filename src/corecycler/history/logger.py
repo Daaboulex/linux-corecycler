@@ -123,8 +123,8 @@ class TestRunLogger:
             result_id,
             finished_at=HistoryDB._now_iso(),
             passed=result.passed,
-            error_message=result.error_message,
-            error_type=result.error_type,
+            error_message=None if result.passed else result.detail,
+            error_type=None if result.passed else result.outcome.value,
             elapsed_seconds=result.duration_seconds,
             iterations_completed=result.iterations_completed,
         )
@@ -132,8 +132,8 @@ class TestRunLogger:
         event_type = "core_finish" if result.passed else "error"
         state = "PASS" if result.passed else "FAIL"
         msg = f"Core {core_id} {state}"
-        if result.error_message:
-            msg += f": {result.error_message}"
+        if not result.passed:
+            msg += f": {result.detail}"
 
         self._db.insert_event(
             EventRecord(

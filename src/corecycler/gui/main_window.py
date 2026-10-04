@@ -77,7 +77,11 @@ class TestWorker(QThread):
         self.scheduler.on_status_update = [lambda cid, st: self.status_updated.emit(cid, st)]
         self.scheduler.on_cycle_complete = [lambda cyc: self.cycle_completed.emit(cyc)]
         self.scheduler.on_test_complete = [
-            lambda res: self.test_completed.emit(json.dumps({str(k): [asdict(r) for r in v] for k, v in res.items()}))
+            lambda res: self.test_completed.emit(
+                json.dumps(
+                    {str(k): [{**asdict(r), "passed": r.passed} for r in v] for k, v in res.items()}, default=str
+                )
+            )
         ]
         self.scheduler.on_thermal_throttle = [self.thermal_throttled.emit]
         self.scheduler.on_stall_detected = [self.stall_detected.emit]
@@ -513,7 +517,7 @@ class MainWindow(QMainWindow):
             self._results_tab.update_core(core_id, status)
 
         if result and not result.passed:
-            self._results_tab.add_error(core_id, result.error_message or "Unknown error")
+            self._results_tab.add_error(core_id, result.detail)
 
         # log telemetry summary for this core
         t = self._core_telemetry.pop(core_id, None)

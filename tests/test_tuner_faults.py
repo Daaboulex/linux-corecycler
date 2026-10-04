@@ -19,7 +19,6 @@ the tuner suite).
 
 from __future__ import annotations
 
-import json
 from datetime import UTC
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -28,7 +27,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from corecycler.engine.backends.base import FFTPreset, StressBackend, StressConfig, StressMode
+from corecycler.engine.backends.base import FFTPreset, Outcome, StressBackend, StressConfig, StressMode
 from corecycler.engine.execution import ThermalWatch
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
 from corecycler.history.db import HistoryDB
@@ -37,6 +36,7 @@ from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.engine import TunerEngine
 from corecycler.tuner.state import CoreState, TunerPhase
+from tests._reports import mce, report
 
 # ---------------------------------------------------------------------------
 # Fault-injectable fake SMU
@@ -173,8 +173,8 @@ class _StubBackend(StressBackend):
     def get_command(self, config, work_dir):
         return ["true"]
 
-    def parse_output(self, stdout, stderr, returncode):
-        return True, None
+    def findings(self, output, work_dir):
+        return ()
 
     def get_supported_modes(self):
         return [StressMode.SSE]
@@ -253,19 +253,19 @@ def _stub_soak_worker(pending, stage_of):
 SOAK_STAGE = 7
 
 
-def _mce_json(cpu):
-    return json.dumps([{"cpu": cpu, "bank": 5, "corrected": True, "message": "corrected", "raw_ts": 0.0}])
+def _mce_events(cpu):
+    return (mce(cpu, bank=5),)
 
 
 _FAULTS = {
-    "thermal": lambda core, cliffs: ("thermal", ""),
-    "apparatus": lambda core, cliffs: ("startup", ""),
-    "killed": lambda core, cliffs: ("killed", ""),
+    "thermal": lambda core, cliffs: (Outcome.THERMAL, ()),
+    "apparatus": lambda core, cliffs: (Outcome.NOT_STARTED, ()),
+    "killed": lambda core, cliffs: (Outcome.OUTSIDE_KILL, ()),
     "foreign_mce": lambda core, cliffs: (
-        "mce",
-        _mce_json(next((c for c in cliffs if c != core), core)),
+        Outcome.OWN_CORE_MCE,
+        _mce_events(next((c for c in cliffs if c != core), core)),
     ),
-    "unattributed_mce": lambda core, cliffs: ("mce", _mce_json(-1)),
+    "unattributed_mce": lambda core, cliffs: (Outcome.UNATTRIBUTED_MCE, _mce_events(-1)),
 }
 
 
@@ -333,14 +333,14 @@ def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=8000, ab
             core, cset, stage = pending.pop(0)
             fault = faults.get(steps) if faults else None
             if fault is not None:
-                error_type, mce_json = _FAULTS[fault](core, cliffs)
-                eng._on_test_finished(core, False, fault, error_type, 1.0, 0.0, mce_json, "")
+                outcome, events = _FAULTS[fault](core, cliffs)
+                eng._on_test_finished(report(core, outcome, fault, events=events))
                 continue
             members = cset if cset is not None else [core]
             ok = stage == SOAK_STAGE or all(
                 eng._core_states[m].best_offset >= cliffs[m][0] + agg_margin for m in members
             )
-            eng._on_test_finished(core, ok, "", "" if ok else "agg", 1.0, 0.0)
+            eng._on_test_finished(report(core) if ok else report(core, Outcome.COMPUTATION, "agg"))
     return eng, steps
 
 
@@ -411,14 +411,14 @@ def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000, r
         offset = cs.current_offset
         stable, crash = cliffs[core]
         if offset >= stable:  # less aggressive than the cliff -> pass
-            e._on_test_finished(core, True, "", "", 1.0, 0.0)
+            e._on_test_finished(report(core))
         elif offset <= crash:  # at/over the crash point -> hard crash
             crashes += 1
             world["rebooted"] = True
             holder["eng"] = fresh()
             holder["eng"].resume(sid)
         else:  # between -> detected (soft) failure
-            e._on_test_finished(core, False, "calc error", "computation", 1.0, 0.0)
+            e._on_test_finished(report(core, Outcome.COMPUTATION, "calc error"))
     return holder["eng"], steps, crashes, sid
 
 
@@ -475,7 +475,7 @@ def drive_intermittent(db, topo, backend, cliffs, flaky, cfg_kw, baseline=0, cap
         stable, hard = cliffs[core]
 
         if offset >= stable:  # always stable
-            e._on_test_finished(core, True, "", "", 1.0, 0.0)
+            e._on_test_finished(report(core))
         elif offset <= hard:  # always a hard crash
             do_crash(core, offset)
         else:  # marginal: flaky
@@ -483,7 +483,7 @@ def drive_intermittent(db, topo, backend, cliffs, flaky, cfg_kw, baseline=0, cap
             if visits[(core, offset)] >= flaky[core]:
                 do_crash(core, offset)  # crashed on a re-test
             else:
-                e._on_test_finished(core, True, "", "", 1.0, 0.0)  # looked stable
+                e._on_test_finished(report(core))  # looked stable
     return holder["eng"], steps, crashes, crashed_at, sid
 
 
@@ -692,7 +692,7 @@ class TestResumeCrashCircuitBreaker:
         eng._core_states = {0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5)}
         db.set_resume_crash_streak(sid, 2)
         with patch.object(eng, "_run_next"):
-            eng._on_test_finished(0, True, "", "", 1.0, 0.0)
+            eng._on_test_finished(report(0))
         assert db.get_resume_crash_streak(sid) == 0
 
 
@@ -787,7 +787,7 @@ class TestValidationCrashArmsBreaker:
         )
         assert all(db.get_tuner_core_states(sid)[c].in_test for c in cliffs)
         with patch.object(eng, "_run_next"), patch.object(eng, "_run_validation_next"):
-            eng._on_test_finished(sorted(cliffs)[0], True, "", "", 1.0, 0.0)
+            eng._on_test_finished(report(sorted(cliffs)[0]))
         assert eng._cores_under_stress == []
         assert all(not db.get_tuner_core_states(sid)[c].in_test for c in cliffs)
 
@@ -1649,12 +1649,12 @@ class TestCrashAtConfirmedValue:
 
 
 class TestStartupFailureIsNotAVerdict:
-    def test_startup_failure_pauses_reverts_and_persists(self, db, topo, smu, mock_backend):
-        """A missing binary / scheduler construction error must pause the tuner
-        WITHOUT: advancing the state machine, leaving the aggressive offset
-        resident, leaving in_test=1 persisted (a later reboot+resume would
-        fabricate a crash verdict), or marking the never-tested offset as
-        survived in the journal."""
+    def test_a_not_started_fault_is_retried_then_pauses_reverted_and_persisted(self, db, topo, smu, mock_backend):
+        """A missing binary / scheduler construction error is retried without
+        a verdict, and after max_apparatus_retries it pauses. Neither path may:
+        advance the state machine, leave the aggressive offset resident, leave
+        in_test=1 persisted (a later reboot+resume would fabricate a crash
+        verdict), or mark the never-tested offset as survived in the journal."""
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
         eng = make_engine(db, topo, smu, mock_backend)
         eng._session_id = sid
@@ -1667,26 +1667,30 @@ class TestStartupFailureIsNotAVerdict:
         )
         eng._core_states = {0: cs}
         tp.save_core_state(db, sid, cs)
-        # the offset was applied (and journaled un-survived) before the worker
         eng._co_applied[0] = -10
         smu.applied[0] = -10
         tp.journal_co_intent(db, sid, 0, -10, survived=False)
 
-        with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core") as adv:
-            eng._on_test_finished(0, False, "Failed to start stress test: boom", "startup", 0.0, 0.0)
+        fault = report(0, Outcome.NOT_STARTED, "Failed to start stress test: boom", 0.0)
+        with patch.object(eng, "_run_next") as nxt, patch.object(eng, "_advance_core") as adv:
+            eng._on_test_finished(fault)
+            assert eng._status != "paused"
+            nxt.assert_called_once()
+            eng._apparatus_fault_streak = eng._config.max_apparatus_retries
+            eng._on_test_finished(fault)
 
         assert eng._status == "paused"
         adv.assert_not_called()
-        assert tp.get_test_log(db, sid) == []  # no verdict recorded
-        assert smu.applied[0] == 0  # offset reverted, not resident
-        assert not db.get_tuner_core_states(sid)[0].in_test  # persisted, no fake crash later
-        # the never-run offset was NOT promoted to survived
+        assert tp.get_test_log(db, sid) == []
+        assert smu.applied[0] == 0
+        assert not db.get_tuner_core_states(sid)[0].in_test
         assert tp.journal_survived_values(db, sid).get(0) != -10
 
     def test_validation_env_failure_pauses_without_backoff(self, db, topo, smu, mock_backend):
-        """Scheduler construction failure during a validation stage must route
-        through the startup path — not be logged as a validate FAIL that backs
-        off the most aggressive (healthy) core."""
+        """Scheduler construction failure during a validation stage is an
+        apparatus fault: the stage is retried, then the session pauses. It is
+        never logged as a validate FAIL that backs off the most aggressive
+        (healthy) core."""
         cliffs = {0: -10, 1: -12}
         sid = tp.create_session(db, TunerConfig(cores_to_test=list(cliffs)), "", "")
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=list(cliffs))
@@ -1700,13 +1704,12 @@ class TestStartupFailureIsNotAVerdict:
         eng._validation_stage = 2
         eng._validation_core_order = sorted(cliffs)
 
-        with patch("corecycler.tuner.engine.ParallelStress", side_effect=RuntimeError("boom")):
+        with patch("corecycler.tuner.engine.ParallelStress", side_effect=RuntimeError("boom")) as runner:
             eng._run_validation_stage2()
 
         assert eng._status == "paused"
-        assert eng._core_states[1].best_offset == -12  # healthy core NOT backed off
-        assert all(r["passed"] is not False or r["error_type"] != "startup" or True for r in tp.get_test_log(db, sid))
-        # no validate FAIL verdict was recorded
+        assert runner.call_count == eng._config.max_apparatus_retries + 1
+        assert eng._core_states[1].best_offset == -12
         assert not [r for r in tp.get_test_log(db, sid) if r["phase"].startswith("validate")]
 
 
@@ -1763,7 +1766,7 @@ class TestApparatusBreaker:
 
         with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core") as adv:
             # the 5th consecutive fail crosses the threshold
-            eng._on_test_finished(0, False, "mprime error: FATAL ERROR", "computation", 122.0, 0.0)
+            eng._on_test_finished(report(0, Outcome.COMPUTATION, "mprime error: FATAL ERROR", 122.0))
 
         assert eng._status == "paused"
         adv.assert_not_called()  # verdict not walked into the search
@@ -1779,7 +1782,7 @@ class TestApparatusBreaker:
         for off in (-24, -23):
             tp.log_test_result(db, sid, 0, off, "backoff_preconfirm", False, error_type="computation", duration=122.0)
         with patch.object(eng, "_run_next"):
-            eng._on_test_finished(0, False, "mprime error: FATAL ERROR", "computation", 122.0, 0.0)
+            eng._on_test_finished(report(0, Outcome.COMPUTATION, "mprime error: FATAL ERROR", 122.0))
         assert eng._status != "paused"  # normal backoff continues
 
     def test_pass_breaks_the_streak(self, db, topo, smu, mock_backend):
@@ -1790,7 +1793,7 @@ class TestApparatusBreaker:
         for off in (-20,):
             tp.log_test_result(db, sid, 0, off, "backoff_confirm", False, error_type="computation", duration=300.0)
         with patch.object(eng, "_run_next"):
-            eng._on_test_finished(0, False, "mprime error: FATAL ERROR", "computation", 300.0, 0.0)
+            eng._on_test_finished(report(0, Outcome.COMPUTATION, "mprime error: FATAL ERROR", 300.0))
         assert eng._status != "paused"  # streak is 2, not 6
 
     def test_synthetic_crash_rows_do_not_count(self, db, topo, smu, mock_backend):
@@ -1801,7 +1804,7 @@ class TestApparatusBreaker:
         for off in (-22, -21):
             tp.log_test_result(db, sid, 0, off, "coarse_search", False, error_type="crash", duration=None)
         with patch.object(eng, "_run_next"):
-            eng._on_test_finished(0, False, "mprime error: FATAL ERROR", "computation", 122.0, 0.0)
+            eng._on_test_finished(report(0, Outcome.COMPUTATION, "mprime error: FATAL ERROR", 122.0))
         # real-test streak is 3 (threshold) — trips; but the point is the
         # synthetic rows alone must not have tripped it earlier: recompute
         assert eng._status == "paused"
@@ -1823,7 +1826,7 @@ class TestRevertFailureFailsClosed:
         smu.reject_set = True  # SMU refuses the baseline revert
 
         with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core") as adv:
-            eng._on_test_finished(0, True, "", "", 60.0, 0.0)
+            eng._on_test_finished(report(0, duration=60.0))
 
         assert eng._status == "paused"  # fail closed: offset still resident
         adv.assert_not_called()
@@ -1927,32 +1930,27 @@ class TestApparatusFaultIsNotAVerdict:
     def test_stall_during_validation_retries_without_backoff(self, db, topo, smu, mock_backend):
         cliffs = {0: -10, 1: -12}
         eng, sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
+        stalled = "Stress test stalled on core 0 (CPU usage near 0 on CPUs 0,8 for 30s)"
         with patch.object(eng, "_run_validation_next") as nxt:
-            eng._on_test_finished(
-                0,
-                False,
-                "Stress test stalled on core 0 (CPU usage near 0 on CPUs 0,8 for 30s)",
-                "stall",
-                35.0,
-                0.0,
-            )
-        assert eng._core_states[0].best_offset == -10  # nobody backed off
+            eng._on_test_finished(report(0, Outcome.STALL, stalled, 35.0))
+        assert eng._core_states[0].best_offset == -10
         assert eng._core_states[1].best_offset == -12
         assert eng._status == "validating"
         assert eng._apparatus_fault_streak == 1
         nxt.assert_called_once()
-        assert tp.get_test_log(db, sid) == []  # no verdict recorded
+        assert tp.get_test_log(db, sid) == []
 
-    def test_apparatus_faults_bounded_then_stop(self, db, topo, smu, mock_backend):
+    def test_apparatus_faults_bounded_then_pause(self, db, topo, smu, mock_backend):
         cliffs = {0: -10}
         eng, sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
         eng._co_applied = dict(cliffs)
         smu.applied.update(cliffs)
         eng._apparatus_fault_streak = eng._config.max_apparatus_retries
-        eng._on_test_finished(0, False, "Stress test stalled on core 0", "stall", 35.0, 0.0)
-        assert eng._status == "idle"  # abort: stop + revert
-        assert smu.applied[0] == 0  # nothing aggressive resident
-        assert eng._core_states[0].best_offset == -10  # state untouched
+        eng._on_test_finished(report(0, Outcome.STALL, "Stress test stalled on core 0", 35.0))
+        assert eng._status == "paused"
+        assert tp.get_session(db, sid).status == "paused"
+        assert smu.applied[0] == 0
+        assert eng._core_states[0].best_offset == -10
 
     def test_stall_in_search_flow_retries_same_offset(self, db, topo, smu, mock_backend):
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
@@ -1964,26 +1962,19 @@ class TestApparatusFaultIsNotAVerdict:
         smu.applied[0] = -10
         eng._set_status("running")
         with patch.object(eng, "_run_next") as nxt, patch.object(eng, "_advance_core") as adv:
-            eng._on_test_finished(0, False, "Stress test stalled on core 0", "stall", 35.0, 0.0)
+            eng._on_test_finished(report(0, Outcome.STALL, "Stress test stalled on core 0", 35.0))
         adv.assert_not_called()
         nxt.assert_called_once()
-        assert cs.current_offset == -10  # same offset re-earns next slot
+        assert cs.current_offset == -10
         assert cs.crash_count == 0
-        assert smu.applied[0] == 0  # not left resident between slots
+        assert smu.applied[0] == 0
         assert tp.get_test_log(db, sid) == []
 
     def test_external_kill_is_apparatus_not_verdict(self, db, topo, smu, mock_backend):
         cliffs = {0: -10, 1: -12}
         eng, sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
         with patch.object(eng, "_run_validation_next") as nxt:
-            eng._on_test_finished(
-                1,
-                False,
-                "Stress process killed externally (code -9)",
-                "killed",
-                12.0,
-                0.0,
-            )
+            eng._on_test_finished(report(1, Outcome.OUTSIDE_KILL, "Stress process killed externally (code -9)", 12.0))
         assert eng._core_states[1].best_offset == -12
         assert eng._apparatus_fault_streak == 1
         nxt.assert_called_once()
@@ -1994,7 +1985,7 @@ class TestApparatusFaultIsNotAVerdict:
         eng, _sid = _seed_validating(db, topo, smu, mock_backend, cliffs)
         eng._apparatus_fault_streak = 2
         with patch.object(eng, "_run_validation_next"):
-            eng._on_test_finished(0, True, "", "", 1.0, 0.0)
+            eng._on_test_finished(report(0))
         assert eng._apparatus_fault_streak == 0
 
     def test_unattributed_mce_blocks_survival_promotion(self, db, topo, smu, mock_backend):
@@ -2006,40 +1997,25 @@ class TestApparatusFaultIsNotAVerdict:
         cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, baseline_offset=0, in_test=True)
         eng._core_states = {0: cs}
         tp.journal_co_intent(db, sid, 0, -10, survived=False)
-        mce_json = json.dumps(
-            [
-                {
-                    "cpu": -1,
-                    "bank": 3,
-                    "corrected": False,
-                    "message": "x",
-                    "raw_ts": 0.0,
-                }
-            ]
+        unattributed = report(
+            0,
+            Outcome.UNATTRIBUTED_MCE,
+            "Machine check without core attribution during parallel stress: x",
+            5.0,
+            events=(mce(-1, corrected=False, message="x", bank=3),),
         )
         with patch.object(eng, "_run_next"), patch.object(eng, "_advance_core"):
-            eng._on_test_finished(
-                0,
-                False,
-                "Machine check without core attribution during parallel stress: x",
-                "mce_unattributed",
-                5.0,
-                0.0,
-                mce_json,
-                "",
-            )
+            eng._on_test_finished(unattributed)
         assert tp.journal_survived_values(db, sid).get(0) != -10
 
 
 class TestUnattributedMCEParsing:
-    def test_payload_shapes(self):
+    def test_event_shapes(self):
         from corecycler.tuner.engine import _has_unattributed_mce
 
-        assert _has_unattributed_mce("") is False
-        assert _has_unattributed_mce("not json") is False
-        assert _has_unattributed_mce(json.dumps({"cpu": -1})) is False
-        assert _has_unattributed_mce(json.dumps([{"cpu": 3}])) is False
-        assert _has_unattributed_mce(json.dumps([{"cpu": 3}, {"cpu": -1}])) is True
+        assert _has_unattributed_mce(()) is False
+        assert _has_unattributed_mce((mce(3),)) is False
+        assert _has_unattributed_mce((mce(3), mce(-1))) is True
 
 
 # ---------------------------------------------------------------------------

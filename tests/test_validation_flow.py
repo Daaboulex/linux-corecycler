@@ -12,9 +12,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from corecycler.engine.backends.base import Outcome
 from corecycler.history.db import HistoryDB
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.state import TunerPhase
+from tests._reports import mce, report
 from tests.test_crash_attribution import (
     BASELINES,
     BEST,
@@ -245,7 +247,7 @@ class TestSpectrumAndSoak:
         eng._validation_stage = 7
         eng._soaking = True
 
-        eng._on_test_finished(sorted(BEST)[0], True, "", "", 10.0, 0.0, "", "")
+        eng._on_test_finished(report(sorted(BEST)[0], duration=10.0))
 
         assert eng._validation_stage == 8
         eng._run_validation_next()
@@ -253,29 +255,16 @@ class TestSpectrumAndSoak:
         assert tp.get_session(db, eng._session_id).status == "completed"
 
     def test_soak_unattributed_event_pauses_not_finalizes(self, db, topo_dual_ccd_x3d, mock_backend):
-        import json as _json
-
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_validating(eng, db)
         eng._validation_core_order = sorted(BEST)
         eng._validation_stage = 7
         eng._soaking = True
         eng._config.max_unattributed_crash_hunts = 1
-        payload = _json.dumps(
-            [
-                {"cpu": -1, "bank": 4, "corrected": False, "message": "general MCE, no core named", "raw_ts": 1.0},
-            ]
-        )
+        event = mce(-1, corrected=False, message="general MCE, no core named", bank=4)
 
         eng._on_test_finished(
-            sorted(BEST)[0],
-            False,
-            "kernel error during soak",
-            "mce",
-            10.0,
-            0.0,
-            payload,
-            "",
+            report(sorted(BEST)[0], Outcome.UNATTRIBUTED_MCE, "kernel error during soak", 10.0, events=(event,))
         )
 
         assert eng._validation_dirty is True
@@ -284,8 +273,6 @@ class TestSpectrumAndSoak:
         assert tp.get_session(db, eng._session_id).status != "completed"
 
     def test_soak_event_demotes_named_core_and_exits_validation(self, db, topo_dual_ccd_x3d, mock_backend):
-        import json as _json
-
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_validating(eng, db)
         eng._validation_core_order = sorted(BEST)
@@ -293,21 +280,15 @@ class TestSpectrumAndSoak:
         eng._soaking = True
         eng._co_applied[5] = BEST[5]
         cpu = topo_dual_ccd_x3d.cores[5].logical_cpus[0]
-        payload = _json.dumps(
-            [
-                {"cpu": cpu, "bank": 0, "corrected": True, "message": "soak whisper", "raw_ts": 1.0},
-            ]
-        )
 
         eng._on_test_finished(
-            sorted(BEST)[0],
-            False,
-            "kernel error during soak",
-            "mce",
-            10.0,
-            0.0,
-            payload,
-            "",
+            report(
+                sorted(BEST)[0],
+                Outcome.OWN_CORE_MCE,
+                "kernel error during soak",
+                10.0,
+                events=(mce(cpu, message="soak whisper"),),
+            )
         )
 
         cs = eng._core_states[5]

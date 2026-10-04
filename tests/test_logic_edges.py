@@ -8,27 +8,9 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from corecycler.engine.backends.base import StressBackend, StressConfig
-from corecycler.engine.backends.mprime import MprimeBackend
+from corecycler.engine.backends.base import StressConfig
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.tuner import persistence
-
-
-class TestClassifyExitCode:
-    def test_killed_by_us(self):
-        assert StressBackend.classify_exit_code(-15) == "killed_by_us"
-
-    def test_crash_signal(self):
-        assert StressBackend.classify_exit_code(-11) == "crash:SIGSEGV"
-
-    def test_normal_exit_is_none(self):
-        assert StressBackend.classify_exit_code(0) is None
-
-
-class TestMprimePollErrorsUnreadable:
-    def test_unreadable_results_returns_none(self, tmp_path):
-        (tmp_path / "results.txt").mkdir()  # exists() True, read_text() raises OSError
-        assert MprimeBackend().poll_errors(tmp_path) is None
 
 
 class TestStressapptestPrepareCleanup:

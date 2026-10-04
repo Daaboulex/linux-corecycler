@@ -8,7 +8,7 @@ import threading
 from typing import TYPE_CHECKING
 
 from corecycler.config.paths import resolve_work_dir
-from corecycler.engine.backends.base import StressResult
+from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.detector import ErrorDetector, MCEEvent
 from corecycler.engine.execution import Lane, Supervisor, ThermalWatch
 
@@ -67,10 +67,9 @@ class ParallelStress:
                 return {
                     core_id: StressResult(
                         core_id=core_id,
-                        passed=False,
+                        outcome=Outcome.NOT_STARTED,
+                        detail=f"core {core_id} not in topology",
                         duration_seconds=0.0,
-                        error_message=f"core {core_id} not in topology",
-                        error_type="startup",
                     )
                 }
             lanes.append(
@@ -96,24 +95,11 @@ class ParallelStress:
             observed=self.observed_mce,
             poll_interval=self.config.poll_interval,
             stall_timeout=self.config.stall_timeout,
-            stop_on_first_failure=True,
             phase="parallel stress",
         )
-
-        def config_for(lane: Lane):
-            cfg = copy.copy(self.stress_config)
-            cfg.threads = len(lane.cpus)
-            return cfg
-
-        verdicts = supervisor.run(lanes, config_for, float(self.config.seconds_per_core))
-
-        results: dict[int, StressResult] = {}
+        graded = supervisor.run(lanes, self.stress_config, float(self.config.seconds_per_core))
+        results = {core: result for core, result in graded.items() if result.outcome is not Outcome.CUT_SHORT}
         for lane in lanes:
-            verdict = verdicts.get(lane.core_id)
-            if verdict is not None:
-                results[lane.core_id] = verdict
-            self.backend.cleanup(
-                lane.work_dir,
-                preserve_on_error=verdict is not None and not verdict.passed,
-            )
+            failed = lane.core_id in results and not results[lane.core_id].passed
+            self.backend.cleanup(lane.work_dir, preserve_on_error=failed)
         return results

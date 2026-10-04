@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from corecycler.engine.backends.base import Outcome, OutcomeKind, StressResult
 from corecycler.engine.memory_budget import MemoryBudget
 from corecycler.engine.memory_budget import memory_budget as real_memory_budget
 from corecycler.engine.topology import CPUTopology, PhysicalCore
@@ -21,6 +22,7 @@ from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.engine import TunerEngine
 from corecycler.tuner.state import TunerPhase
+from tests._reports import mce, report
 
 
 @pytest.fixture
@@ -244,50 +246,34 @@ class TestParallelRowLogging:
     def _rows(self, engine, core_id):
         return tp.get_test_log(engine._db, engine._session_id, core_id=core_id)
 
-    def test_a_malformed_payload_records_nothing(self, engine):
-        engine._log_parallel_rows(0, "not json", "validate_s2")
-        assert self._rows(engine, 1) == []
-
-    def test_a_non_list_payload_records_nothing(self, engine):
-        engine._log_parallel_rows(0, json.dumps({"core": 1}), "validate_s2")
-        assert self._rows(engine, 1) == []
+    def _lane(self, core_id, outcome=Outcome.PASS, detail="", duration=1.0):
+        return StressResult(core_id=core_id, outcome=outcome, detail=detail, duration_seconds=duration)
 
     def test_every_other_lane_is_recorded(self, engine):
         _confirm(engine, 1, -20)
         engine._co_applied[1] = -20
-        payload = json.dumps(
-            [
-                {"core": 0, "passed": True, "duration": 60.0},
-                {
-                    "core": 1,
-                    "passed": False,
-                    "error_message": "rounding",
-                    "error_type": "computation",
-                    "duration": 12.0,
-                },
-            ]
+        sent = report(
+            0, Outcome.COMPUTATION, "sumout", 60.0, others=(self._lane(1, Outcome.COMPUTATION, "rounding", 12.0),)
         )
-        engine._log_parallel_rows(0, payload, "validate_s2")
+        engine._log_parallel_rows(sent, "validate_s2")
         rows = self._rows(engine, 1)
         assert len(rows) == 1
         assert rows[0]["passed"] == 0
         assert rows[0]["offset_tested"] == -20
         assert rows[0]["error_message"] == "rounding"
+        assert rows[0]["error_type"] == "computation"
+        assert rows[0]["duration_seconds"] == 12.0
         assert self._rows(engine, 0) == []
 
-    def test_unusable_entries_are_skipped(self, engine):
-        payload = json.dumps(
-            [
-                "not a dict",
-                {"core": "one", "passed": True},
-                {"core": 99, "passed": True},
-                {"core": 2, "passed": True, "duration": "soon"},
-            ]
-        )
-        engine._log_parallel_rows(0, payload, "validate_s2")
+    def test_a_passing_lane_records_no_failure_text(self, engine):
+        engine._log_parallel_rows(report(0, others=(self._lane(2),)), "validate_s2")
         rows = self._rows(engine, 2)
         assert len(rows) == 1
-        assert rows[0]["duration_seconds"] is None
+        assert (rows[0]["passed"], rows[0]["error_message"], rows[0]["error_type"]) == (1, None, None)
+
+    def test_a_lane_for_an_unknown_core_is_skipped(self, engine):
+        engine._log_parallel_rows(report(0, others=(self._lane(99),)), "validate_s2")
+        assert self._rows(engine, 99) == []
 
 
 class TestValidationStageFour:
@@ -437,7 +423,7 @@ class TestHuntSlots:
         self._hunting(engine, [0, 1])
         queued = []
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
-        engine._on_hunt_slot_finished(0, True, "", {})
+        engine._on_hunt_slot_finished(0, True, Outcome.PASS, {})
         assert queued
         assert engine._hunting is True
 
@@ -445,14 +431,14 @@ class TestHuntSlots:
         self._hunting(engine, [0])
         queued = []
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
-        engine._on_hunt_slot_finished(99, False, "crash", {})
+        engine._on_hunt_slot_finished(99, False, Outcome.CPU_SIGNAL, {})
         assert queued
         assert engine._hunting is True
 
     def test_a_failing_slot_names_the_culprit(self, engine):
         self._hunting(engine, [0])
         engine._co_applied[0] = -20
-        engine._on_hunt_slot_finished(0, False, "crash", {})
+        engine._on_hunt_slot_finished(0, False, Outcome.CPU_SIGNAL, {})
         assert engine._hunting is False
         assert engine.status == "running"
         assert engine._core_states[0].crash_count == 1
@@ -460,7 +446,7 @@ class TestHuntSlots:
     def test_a_non_crash_failure_costs_one_step(self, engine):
         self._hunting(engine, [0])
         engine._co_applied[0] = -20
-        engine._on_hunt_slot_finished(0, False, "computation", {})
+        engine._on_hunt_slot_finished(0, False, Outcome.COMPUTATION, {})
         assert engine._core_states[0].crash_count == 0
         assert engine._hunting is False
 
@@ -469,27 +455,46 @@ class TestApparatusFault:
     def test_a_fault_retries_the_same_step(self, engine, monkeypatch):
         queued = []
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
-        engine._handle_apparatus_fault(0, "backend missing", "startup", {})
+        engine._handle_apparatus_fault(0, "backend missing", Outcome.NOT_STARTED, {})
         assert engine._apparatus_fault_streak == 1
         assert queued
 
-    def test_repeated_faults_stop_the_session(self, engine):
+    def test_the_end_of_a_streak_reverts_the_core_and_pauses_with_the_reason(self, engine, monkeypatch):
+        messages = []
+        engine.log_message.connect(messages.append)
+        engine._co_applied[0] = -20
+        queued = []
+        monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
         engine._apparatus_fault_streak = engine._config.max_apparatus_retries
-        engine._handle_apparatus_fault(0, "backend missing", "startup", {})
-        assert engine.status in ("idle", "aborted")
+        engine._handle_apparatus_fault(
+            0, "stress exited with code 2; last output: no such file", Outcome.UNEXPLAINED, {}
+        )
+        assert engine.status == "paused"
+        assert not engine._abort_requested
+        assert queued == []
+        assert engine._co_applied[0] == engine._core_states[0].baseline_offset
+        assert any("unexplained" in m and "no such file" in m and "Resume" in m for m in messages)
+        assert engine._apparatus_fault_streak == 0
+
+    def test_a_streak_whose_revert_fails_still_pauses(self, engine):
+        engine._co_applied[0] = -20
+        engine._smu.set_co_offset.return_value = False
+        engine._apparatus_fault_streak = engine._config.max_apparatus_retries
+        engine._handle_apparatus_fault(0, "stalled", Outcome.STALL, {})
+        assert engine.status == "paused"
 
     def test_a_fault_during_a_hunt_requeues_the_slot(self, engine, monkeypatch):
         engine._hunting = True
         engine._hunt_queue = []
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, _fn: None)
-        engine._handle_apparatus_fault(0, "backend missing", "startup", {})
+        engine._handle_apparatus_fault(0, "backend missing", Outcome.NOT_STARTED, {})
         assert engine._hunt_queue == [0]
 
     def test_a_fault_during_validation_reruns_the_stage(self, engine, monkeypatch):
         engine._validation_stage = 1
         queued = []
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
-        engine._handle_apparatus_fault(0, "backend missing", "startup", {})
+        engine._handle_apparatus_fault(0, "backend missing", Outcome.NOT_STARTED, {})
         assert queued[0] == engine._run_validation_next
 
     def test_a_fault_during_a_requeue_reruns_the_requeue(self, engine, monkeypatch):
@@ -497,14 +502,14 @@ class TestApparatusFault:
         engine._in_requeue = True
         queued = []
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
-        engine._handle_apparatus_fault(0, "backend missing", "startup", {})
+        engine._handle_apparatus_fault(0, "backend missing", Outcome.NOT_STARTED, {})
         assert queued[0] == engine._run_validation_requeue
 
     def test_a_failed_revert_after_a_fault_pauses(self, engine, monkeypatch):
         engine._co_applied[0] = -20
         engine._smu.set_co_offset.return_value = False
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, _fn: None)
-        engine._handle_apparatus_fault(0, "backend missing", "startup", {})
+        engine._handle_apparatus_fault(0, "backend missing", Outcome.NOT_STARTED, {})
         assert engine.status == "paused"
 
 
@@ -613,14 +618,6 @@ def test_the_default_work_dir_is_outside_the_repo(db):
     assert instance.core_states == {}
 
 
-def _unattributed_payload():
-    return json.dumps([{"cpu": -1, "bank": 0, "corrected": True, "message": "kernel oops", "raw_ts": 1.0}])
-
-
-def _foreign_payload(cpu):
-    return json.dumps([{"cpu": cpu, "bank": 0, "corrected": True, "message": "corrected", "raw_ts": 1.0}])
-
-
 class TestVerdictRouter:
     """_on_test_finished is the one door every verdict enters by, and most of
     what arrives is NOT a stability verdict: an aborted run, a thermal stop, an
@@ -632,27 +629,91 @@ class TestVerdictRouter:
         engine._worker = worker
         engine._abort_requested = True
         engine._core_states[0].in_test = True
-        engine._on_test_finished(0, True, "", "", 1.0, 0.0)
+        engine._on_test_finished(report(0))
         assert worker.deleteLater.called
         assert engine._worker is None
         assert engine._core_states[0].in_test is True
 
     def test_a_result_for_an_unknown_core_is_dropped(self, engine):
-        engine._on_test_finished(99, True, "", "", 1.0, 0.0)
+        engine._on_test_finished(report(99))
         assert engine._worker is None
+        assert tp.get_test_log(engine._db, engine._session_id) == []
 
     def test_a_finished_worker_is_retired(self, engine):
         worker = MagicMock()
         engine._worker = worker
-        engine._on_test_finished(0, True, "", "", 1.0, 0.0)
+        engine._on_test_finished(report(0))
         assert worker.wait.called
         assert worker.deleteLater.called
         assert engine._worker is None
 
+    @pytest.mark.parametrize("outcome", list(Outcome))
+    def test_every_outcome_reaches_its_branch(self, engine, monkeypatch, outcome):
+        branches = []
+        monkeypatch.setattr(engine, "_advance_core", lambda _cid, ok: branches.append(("advance", ok)))
+        monkeypatch.setattr(engine, "_handle_thermal_abort", lambda *_a: branches.append(("thermal",)))
+        monkeypatch.setattr(
+            engine, "_handle_apparatus_fault", lambda _cid, _detail, fault, _foreign: branches.append(("fault", fault))
+        )
+        marked = []
+        monkeypatch.setattr(tp, "journal_mark_survived", lambda *a, **_k: marked.append(a))
+        engine._on_test_finished(report(0, outcome, "what the lane saw"))
+        if outcome is Outcome.THERMAL:
+            expected = ("thermal",)
+        elif outcome.kind in (OutcomeKind.APPARATUS, OutcomeKind.ENVIRONMENT):
+            expected = ("fault", outcome)
+        else:
+            expected = ("advance", outcome is Outcome.PASS)
+        assert branches == [expected]
+        assert (marked == []) is (outcome.kind is OutcomeKind.APPARATUS)
+
+    def test_an_unexplained_exit_is_retried_without_a_fail_row(self, engine, monkeypatch):
+        queued = []
+        monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
+        engine._on_test_finished(report(0, Outcome.UNEXPLAINED, "stress exited with code 7"))
+        assert tp.get_test_log(engine._db, engine._session_id) == []
+        assert engine._apparatus_fault_streak == 1
+        assert engine.status != "paused"
+        assert queued == [engine._run_next]
+
+    def test_an_unattributed_machine_check_moves_no_offset_and_writes_no_fail_row(self, engine):
+        cs = engine._core_states[0]
+        before = (cs.phase, cs.current_offset, cs.best_offset, cs.crash_count)
+        engine._on_test_finished(
+            report(0, Outcome.UNATTRIBUTED_MCE, "Machine check without core attribution", events=(mce(-1),))
+        )
+        assert tp.get_test_log(engine._db, engine._session_id) == []
+        assert (cs.phase, cs.current_offset, cs.best_offset, cs.crash_count) == before
+        assert tp.journal_survived_values(engine._db, engine._session_id).get(0) != cs.current_offset
+
+    def test_a_stage4_thermal_stop_takes_the_thermal_path(self, engine):
+        for core in (0, 1):
+            _confirm(engine, core, -20)
+        engine._set_status("validating")
+        engine._validation_stage = 4
+        engine._validation_core_order = [0, 1]
+        scheduler = MagicMock()
+        scheduler.run_rapid_transitions.return_value = StressResult(
+            core_id=0,
+            outcome=Outcome.THERMAL,
+            detail="CPU temperature exceeded 95.0 C safety limit during rapid transition",
+            duration_seconds=1.0,
+        )
+        scheduler.observed_mce = []
+        worker = eng._RapidTransitionWorker(0, 0, scheduler, cores=[0, 1], duration=1.0)
+        worker.finished.connect(engine._on_test_finished)
+        try:
+            worker.run()
+        finally:
+            worker.finished.disconnect(engine._on_test_finished)
+        assert engine._validation_thermal_aborts == 1
+        assert [engine._core_states[core].best_offset for core in (0, 1)] == [-20, -20]
+        assert tp.get_test_log(engine._db, engine._session_id) == []
+
     def test_a_thermal_stop_during_a_hunt_retries_the_same_slot(self, engine):
         engine._hunting = True
         engine._hunt_queue = []
-        engine._on_test_finished(0, False, "too hot", "thermal", 1.0, 0.0)
+        engine._on_test_finished(report(0, Outcome.THERMAL, "too hot"))
         assert engine._hunt_queue == [0]
         assert engine._validation_thermal_aborts == 1
         assert engine._hunting is True
@@ -660,7 +721,7 @@ class TestVerdictRouter:
     def test_repeated_thermal_stops_end_the_hunt_honestly(self, engine):
         engine._hunting = True
         engine._validation_thermal_aborts = engine._config.max_thermal_retries
-        engine._on_test_finished(0, False, "too hot", "thermal", 1.0, 0.0)
+        engine._on_test_finished(report(0, Outcome.THERMAL, "too hot"))
         assert engine.status == "idle"
         assert engine._abort_requested
 
@@ -668,37 +729,55 @@ class TestVerdictRouter:
         engine._config.stretch_threshold_pct = 3.0
         advanced = []
         monkeypatch.setattr(engine, "_advance_core", lambda cid, ok: advanced.append(ok))
-        engine._on_test_finished(0, True, "", "", 1.0, 9.5)
+        engine._on_test_finished(report(0, stretch=9.5))
         assert advanced == [False]
+        row = tp.get_test_log(engine._db, engine._session_id, core_id=0)[-1]
+        assert row["error_type"] == "clock_stretch"
+        assert "9.5%" in row["error_message"]
 
     def test_a_passing_hunt_slot_routes_to_the_hunt_flow(self, engine, monkeypatch):
         engine._hunting = True
         seen = []
         monkeypatch.setattr(engine, "_on_hunt_slot_finished", lambda *a: seen.append(a))
-        engine._on_test_finished(0, True, "", "", 1.0, 0.0)
+        engine._on_test_finished(report(0))
         assert seen and seen[0][0] == 0
+        assert seen[0][2] is Outcome.PASS
 
     def test_a_multi_core_stage_records_every_lane(self, engine, monkeypatch):
         engine._validation_stage = 2
         engine._set_status("validating")
         rows = []
         monkeypatch.setattr(engine, "_log_parallel_rows", lambda *a: rows.append(a))
-        engine._on_test_finished(0, True, "", "", 1.0, 0.0, "", json.dumps([{"core": 1, "passed": True}]))
-        assert rows and rows[0][2] == "validate_s2"
+        other = StressResult(core_id=1, outcome=Outcome.PASS, detail="", duration_seconds=1.0)
+        sent = report(0, others=(other,))
+        engine._on_test_finished(sent)
+        assert rows == [(sent, "validate_s2")]
 
     def test_a_core_over_its_time_budget_stops_without_advancing(self, engine, monkeypatch):
         monkeypatch.setattr(engine, "_check_time_budget", lambda cs: True)
         advanced = []
         monkeypatch.setattr(engine, "_advance_core", lambda *a: advanced.append(a))
-        engine._on_test_finished(0, True, "", "", 1.0, 0.0)
+        engine._on_test_finished(report(0))
         assert advanced == []
 
-    def test_a_startup_fault_during_validation_reverts_every_core(self, engine):
+    def test_a_not_started_fault_during_validation_is_retried_then_pauses_with_every_core_reverted(
+        self, engine, monkeypatch
+    ):
         _confirm(engine, 1, -20)
+        engine._co_applied[1] = -20
         engine._set_status("validating")
-        engine._on_test_finished(0, False, "backend missing", "startup", 1.0, 0.0)
+        engine._validation_stage = 1
+        queued = []
+        monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
+        engine._on_test_finished(report(0, Outcome.NOT_STARTED, "backend missing"))
+        assert engine.status == "validating"
+        assert queued == [engine._run_validation_next]
+        assert engine._co_applied[1] == -20
+        engine._apparatus_fault_streak = engine._config.max_apparatus_retries
+        engine._on_test_finished(report(0, Outcome.NOT_STARTED, "backend missing; last output: no such file"))
         assert engine.status == "paused"
         assert engine._co_applied[1] == engine._core_states[1].baseline_offset
+        assert engine._apparatus_fault_streak == 0
 
 
 class TestSoakVerdict:
@@ -713,7 +792,7 @@ class TestSoakVerdict:
         self._soaking(engine)
         queued = []
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
-        engine._on_test_finished(0, True, "", "", 1.0, 0.0)
+        engine._on_test_finished(report(0))
         assert engine._validation_stage == 8
         assert engine._soaking is False
         assert queued[0] == engine._run_validation_next
@@ -722,7 +801,9 @@ class TestSoakVerdict:
         self._soaking(engine)
         queued = []
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
-        engine._on_test_finished(0, False, "kernel error", "mce", 1.0, 0.0, _unattributed_payload(), "")
+        engine._on_test_finished(
+            report(0, Outcome.UNATTRIBUTED_MCE, "kernel error during soak", events=(mce(-1, message="kernel oops"),))
+        )
         assert engine._validation_dirty is True
         assert engine._soaking is False
         assert queued[0] == engine._run_validation_next
@@ -730,7 +811,9 @@ class TestSoakVerdict:
     def test_repeated_unattributed_events_pause_for_the_owner(self, engine):
         self._soaking(engine)
         engine._config.max_unattributed_crash_hunts = 1
-        engine._on_test_finished(0, False, "kernel error", "mce", 1.0, 0.0, _unattributed_payload(), "")
+        engine._on_test_finished(
+            report(0, Outcome.UNATTRIBUTED_MCE, "kernel error during soak", events=(mce(-1, message="kernel oops"),))
+        )
         assert engine.status == "paused"
 
     def test_a_soak_naming_another_core_leaves_validation(self, engine, monkeypatch):
@@ -738,7 +821,7 @@ class TestSoakVerdict:
         _confirm(engine, 1, -20)
         exited = []
         monkeypatch.setattr(engine, "_validation_stage_exit_to_search", lambda: exited.append(True))
-        engine._on_test_finished(0, False, "kernel error", "mce", 1.0, 0.0, _foreign_payload(1), "")
+        engine._on_test_finished(report(0, Outcome.OWN_CORE_MCE, "kernel error during soak", events=(mce(1),)))
         assert exited == [True]
         assert engine._validation_dirty is True
 
@@ -750,7 +833,7 @@ class TestApparatusFaultWithEvidence:
         engine._set_status("validating")
         queued = []
         monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
-        engine._handle_apparatus_fault(0, "stalled", "stall", engine._foreign_mce_by_core(0, _foreign_payload(1)))
+        engine._handle_apparatus_fault(0, "stalled", Outcome.STALL, engine._foreign_mce_by_core(0, (mce(1),)))
         assert engine._validation_stage == 0
         assert engine.status == "running"
         assert queued[0] == engine._run_next
@@ -1012,7 +1095,7 @@ class TestKillNamesTheBudget:
         engine._memory_budget = _budget(8, 2688)
         messages = []
         engine.log_message.connect(messages.append)
-        engine._handle_apparatus_fault(0, "Stress process killed externally (code -9)", "killed", {})
+        engine._handle_apparatus_fault(0, "Stress process killed externally (code -9)", Outcome.OUTSIDE_KILL, {})
         fault = next(m for m in messages if "apparatus fault" in m)
         assert "8 x 2688 MB" in fault
         assert f"of {8 * 2688} MB usable" in fault
@@ -1022,7 +1105,7 @@ class TestKillNamesTheBudget:
         engine._memory_budget = _budget(8, 2688)
         messages = []
         engine.log_message.connect(messages.append)
-        engine._handle_apparatus_fault(0, "Stress test stalled on core 0", "stall", {})
+        engine._handle_apparatus_fault(0, "Stress test stalled on core 0", Outcome.STALL, {})
         fault = next(m for m in messages if "apparatus fault" in m)
         assert "memory budget" not in fault
 
@@ -1031,7 +1114,7 @@ class TestKillNamesTheBudget:
         engine._memory_budget = _budget(8, 2688)
         messages = []
         engine.log_message.connect(messages.append)
-        engine._handle_apparatus_fault(0, "Stress process killed externally (code -9)", "killed", {})
+        engine._handle_apparatus_fault(0, "Stress process killed externally (code -9)", Outcome.OUTSIDE_KILL, {})
         fault = next(m for m in messages if "apparatus fault" in m)
         assert "memory budget" not in fault
 
@@ -1097,8 +1180,8 @@ class TestConfigFallbacks:
 
 
 class TestEvidenceGuards:
-    def test_a_non_object_entry_in_the_payload_is_skipped(self, engine):
-        assert engine._foreign_mce_by_core(0, json.dumps(["junk"])) == {}
+    def test_events_naming_no_core_or_a_core_outside_the_tune_are_no_evidence(self, engine):
+        assert engine._foreign_mce_by_core(0, (mce(-1), mce(99))) == {}
 
     def test_an_event_on_an_untested_core_is_dropped(self, engine):
         from corecycler.engine.detector import MCEEvent
@@ -1373,7 +1456,8 @@ class TestRemainingEvidencePaths:
     def test_a_lane_with_no_resident_value_falls_back_to_its_best(self, engine):
         _confirm(engine, 1, -20)
         engine._co_applied.pop(1, None)
-        engine._log_parallel_rows(0, json.dumps([{"core": 1, "passed": True, "duration": 1.0}]), "validate_s2")
+        lane = StressResult(core_id=1, outcome=Outcome.PASS, detail="", duration_seconds=1.0)
+        engine._log_parallel_rows(report(0, others=(lane,)), "validate_s2")
         rows = tp.get_test_log(engine._db, engine._session_id, core_id=1)
         assert rows[0]["offset_tested"] == -20
 
@@ -1382,7 +1466,7 @@ class TestRemainingEvidencePaths:
         _confirm(engine, 1, -20)
         applied = []
         monkeypatch.setattr(engine, "_apply_foreign_evidence", lambda f: applied.append(f))
-        engine._on_hunt_slot_finished(0, True, "", {1: {"messages": ["x"], "corrected": True}})
+        engine._on_hunt_slot_finished(0, True, Outcome.PASS, {1: {"messages": ["x"], "corrected": True}})
         assert applied and 1 in applied[0]
 
     def test_forensics_that_name_a_core_end_an_open_hunt(self, engine, monkeypatch):

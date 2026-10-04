@@ -10,10 +10,12 @@ from typing import TYPE_CHECKING
 
 from corecycler.engine.backends import register_backend
 
-from .base import CRASH_SIGNALS, KILLED_BY_US_CODES, StressBackend, StressConfig, StressMode
+from .base import LaneSignal, Outcome, StressBackend, StressConfig, StressMode, scan
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from .base import FindingTable
 
 _PAGE_MB = 1
 _EMPTY_PAGES_NUMERATOR = 2
@@ -26,7 +28,14 @@ ALLOCATION_REFUSALS: tuple[str, ...] = (
     "no memory found to test",
 )
 
-_NONZERO_INCIDENTS = re.compile(r"(?:found|with) [1-9]\d* hardware incidents?")
+FINDINGS: FindingTable = (
+    (re.compile(r"miscompare", re.IGNORECASE), Outcome.COMPUTATION),
+    (re.compile(r"hardware error", re.IGNORECASE), Outcome.COMPUTATION),
+    (re.compile(r"Status: FAIL - test discovered HW problems"), Outcome.COMPUTATION),
+    (re.compile(r"(?:found|with) [1-9]\d* hardware incidents?", re.IGNORECASE), Outcome.COMPUTATION),
+    (re.compile(r"Status: FAIL - test encountered procedural errors"), Outcome.UNEXPLAINED),
+    *((re.compile(re.escape(refusal), re.IGNORECASE), Outcome.NOT_STARTED) for refusal in ALLOCATION_REFUSALS),
+)
 
 
 @register_backend("stressapptest")
@@ -46,25 +55,8 @@ class StressapptestBackend(StressBackend):
             cmd += ["-M", str(config.memory_mb)]
         return cmd
 
-    def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
-        lowered = (stdout + "\n" + stderr).lower()
-        for refusal in ALLOCATION_REFUSALS:
-            if refusal in lowered:
-                return False, f"stressapptest could not allocate its test memory ('{refusal}'): verdict unavailable"
-        for signature in ("miscompare", "hardware error", "status: fail"):
-            if signature in lowered:
-                return False, f"stressapptest: '{signature}': memory errors detected"
-        if _NONZERO_INCIDENTS.search(lowered):
-            return False, "stressapptest: nonzero 'hardware incident' count: memory errors detected"
-        if returncode in CRASH_SIGNALS:
-            return False, f"stressapptest crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
-        if "Status: PASS" in stdout:
-            return True, None
-        if returncode in KILLED_BY_US_CODES:
-            return True, None
-        if returncode != 0:
-            return False, f"stressapptest exited with code {returncode}"
-        return True, None
+    def findings(self, output: str, work_dir: Path) -> tuple[LaneSignal, ...]:
+        return scan(output, FINDINGS)
 
     def get_supported_modes(self) -> list[StressMode]:
         return [StressMode.SSE]

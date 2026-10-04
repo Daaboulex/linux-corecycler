@@ -8,7 +8,7 @@ from typing import ClassVar
 import pytest
 
 from corecycler.engine import parallel as parallel_mod
-from corecycler.engine.backends.base import StressConfig, StressResult
+from corecycler.engine.backends.base import Outcome, StressConfig, StressResult
 from corecycler.engine.parallel import ParallelStress
 from corecycler.engine.scheduler import SchedulerConfig
 from corecycler.engine.topology import CPUTopology, PhysicalCore
@@ -32,9 +32,9 @@ class ScriptedSupervisor:
         self.kwargs = kwargs
         ScriptedSupervisor.created.append(self)
 
-    def run(self, lanes, config_for, duration):
+    def run(self, lanes, config, duration):
         step = ScriptedSupervisor.script.pop(0)
-        return step(self, lanes, config_for, duration)
+        return step(self, lanes, config, duration)
 
 
 @pytest.fixture(autouse=True)
@@ -62,18 +62,16 @@ def make_parallel(tmp_path, *, topo=None, backend=None, cores=None) -> ParallelS
     )
 
 
+def lane_result(core_id: int, outcome: Outcome = Outcome.PASS, detail: str = "") -> StressResult:
+    return StressResult(core_id=core_id, outcome=outcome, detail=detail, duration_seconds=0.1)
+
+
 def ok(core_id: int) -> StressResult:
-    return StressResult(core_id=core_id, passed=True, duration_seconds=0.1)
+    return lane_result(core_id)
 
 
 def bad(core_id: int) -> StressResult:
-    return StressResult(
-        core_id=core_id,
-        passed=False,
-        duration_seconds=0.1,
-        error_message="mprime error: FATAL ERROR",
-        error_type="computation",
-    )
+    return lane_result(core_id, Outcome.COMPUTATION, "mprime error: FATAL ERROR")
 
 
 class TestLaneBuilding:
@@ -81,17 +79,15 @@ class TestLaneBuilding:
         runner = make_parallel(tmp_path)
         runner.stress_config.threads = 2
         runner._requested_threads = 2
-        seen: list[tuple[int, tuple[int, ...], int]] = []
+        seen: list[tuple[int, tuple[int, ...]]] = []
 
-        def capture(sup, lanes, config_for, duration):
-            for one in lanes:
-                seen.append((one.core_id, one.cpus, config_for(one).threads))
+        def capture(sup, lanes, config, duration):
+            seen.extend((one.core_id, one.cpus) for one in lanes)
             return {one.core_id: ok(one.core_id) for one in lanes}
 
         ScriptedSupervisor.script = [capture]
         results = runner.run()
-        assert ScriptedSupervisor.created[0].kwargs["stop_on_first_failure"] is True
-        assert seen == [(0, (0, 16), 2), (1, (1, 17), 2)]
+        assert seen == [(0, (0, 16)), (1, (1, 17))]
         assert sorted(results) == [0, 1]
         assert runner.work_dir.is_dir()
 
@@ -99,37 +95,37 @@ class TestLaneBuilding:
         runner = make_parallel(tmp_path)
         seen: list[tuple[int, ...]] = []
 
-        def capture(sup, lanes, config_for, duration):
+        def capture(sup, lanes, config, duration):
             seen.extend(one.cpus for one in lanes)
-            for one in lanes:
-                config_for(one)
             return {one.core_id: ok(one.core_id) for one in lanes}
 
         ScriptedSupervisor.script = [capture]
         runner.run()
         assert seen == [(0,), (1,)]
 
-    def test_a_core_outside_the_topology_fails_closed(self, tmp_path):
+    def test_a_core_outside_the_topology_is_not_started(self, tmp_path):
         runner = make_parallel(tmp_path, cores=[0, 9])
         results = runner.run()
         assert list(results) == [9]
-        assert results[9].error_type == "startup"
+        assert results[9].outcome is Outcome.NOT_STARTED
         assert ScriptedSupervisor.created == []
 
     def test_an_empty_topology_returns_empty_not_crash(self, tmp_path):
         runner = make_parallel(tmp_path, topo=CPUTopology())
         assert runner.run() == {}
 
-    def test_interrupted_lanes_stay_absent_from_the_results(self, tmp_path):
-        runner = make_parallel(tmp_path)
+    def test_cut_short_lanes_stay_absent_from_the_results(self, tmp_path):
+        backend = RecordingBackend()
+        runner = make_parallel(tmp_path, backend=backend)
 
-        def one_fails_one_interrupted(sup, lanes, config_for, duration):
-            return {0: bad(0), 1: None}
+        def one_fails_one_cut(sup, lanes, config, duration):
+            return {0: bad(0), 1: lane_result(1, Outcome.CUT_SHORT, "stopped")}
 
-        ScriptedSupervisor.script = [one_fails_one_interrupted]
+        ScriptedSupervisor.script = [one_fails_one_cut]
         results = runner.run()
         assert list(results) == [0]
-        assert results[0].passed is False
+        assert results[0].outcome is Outcome.COMPUTATION
+        assert {path.name: flag for path, flag in backend.cleaned} == {"core_0": True, "core_1": False}
 
     def test_cleanup_preserves_only_failed_lanes(self, tmp_path):
         backend = RecordingBackend()

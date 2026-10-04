@@ -57,8 +57,14 @@ penalty never overshoots past stock (CO=0).
 ## Verdict classes that never enter this state machine
 
 - `thermal` — cool down and retry the same offset (no transition).
-- `startup` — environment fault: revert the offset, persist `in_test=0`,
-  pause. Never logged as a verdict, never marks the journal survived.
+- Apparatus outcomes (`startup`, `stall`, `killed`, `did_not_stop`,
+  `containment_broke`, `unexplained`, `no_work_done`, `unverified`,
+  `cut_short`): persist `in_test=0` and retry the same step up to
+  `max_apparatus_retries`; at the end of the streak revert the tested core
+  (every core in validation) and pause with the reason and the tool's last
+  output lines. Never logged as a verdict, never marks the journal survived.
+- A machine check naming no core (`mce_unattributed`): the resident offsets
+  stay unsurvived and the step is retried the same way, outside the soak.
 - Apparatus-breaker trips (implausible fail streaks, search flow only) —
   roll back to the most aggressive proven pass, re-enter CONFIRMING, pause.
 

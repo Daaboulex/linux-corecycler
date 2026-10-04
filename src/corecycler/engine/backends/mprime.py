@@ -10,16 +10,20 @@ from typing import TYPE_CHECKING
 from corecycler.engine.backends import register_backend
 
 from .base import (
-    CRASH_SIGNALS,
-    KILLED_BY_US_CODES,
     FFTPreset,
+    LaneSignal,
+    Outcome,
     StressBackend,
     StressConfig,
     StressMode,
+    read_text,
+    scan,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from .base import FindingTable
 
 # FFT ranges in K for each preset (Prime95 30.x conventions)
 FFT_RANGES: dict[FFTPreset, tuple[int, int]] = {
@@ -98,14 +102,12 @@ FATAL_PATTERNS: list[str] = [
     r"Warning: SUMOUT MISMATCH",
 ]
 
+FINDINGS: FindingTable = tuple((re.compile(pattern, re.IGNORECASE), Outcome.COMPUTATION) for pattern in FATAL_PATTERNS)
+
 
 @register_backend("mprime")
 class MprimeBackend(StressBackend):
     name = "mprime"
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._last_work_dir: Path | None = None
 
     def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
         return [self.require_binary(), "-t", "-W" + str(work_dir)]
@@ -118,12 +120,6 @@ class MprimeBackend(StressBackend):
 
     def prepare(self, work_dir: Path, config: StressConfig) -> None:
         work_dir.mkdir(parents=True, exist_ok=True)
-        self._last_work_dir = work_dir
-
-        # A stale results.txt from an earlier run (abort, hard crash, or a
-        # preserved failure that was never renamed) would be re-read by
-        # parse_output/poll_errors and turn every subsequent test into a
-        # false FAIL at full duration. Each run must start with a clean slate.
         for leftover in ("results.txt", "prime.log", "prime.spl"):
             p = work_dir / leftover
             if p.exists():
@@ -208,70 +204,15 @@ class MprimeBackend(StressBackend):
                     "and mprime without config spawns one self-pinned worker per core"
                 )
 
-    def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
-        combined = stdout + "\n" + stderr
-
-        # also check results.txt if available (mprime writes errors there)
-        if self._last_work_dir:
-            results_file = self._last_work_dir / "results.txt"
-            if results_file.exists():
-                try:
-                    combined += "\n" + results_file.read_text()
-                except OSError as e:
-                    # Fail closed: without results.txt a real error could pass
-                    # unseen. This is an apparatus fault, not a verdict — the
-                    # engine pauses on it instead of advancing the search.
-                    return False, f"Failed to read results.txt ({e}) — verdict unavailable"
-
-        for pattern in FATAL_PATTERNS:
-            match = re.search(pattern, combined, re.IGNORECASE)
-            if match:
-                return False, f"mprime error: {match.group(0)}"
-
-        # A crash signal means the worker died from instability — this OVERRIDES any
-        # earlier "Self-test N passed" line in the output (the process passed some
-        # iterations and then crashed, which is still a failure). Checked before the
-        # success patterns so a crash is never masked by a prior pass.
-        if returncode in CRASH_SIGNALS:
-            return False, f"mprime crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
-
-        # if process was killed (by us, timeout) with no errors, consider it passed
-        if returncode in KILLED_BY_US_CODES:
-            return True, None
-
-        # Successful iterations — the real line is "Self-test 4K passed!"
-        # (K-suffixed FFT size, optional "(thread N of M)"), commonb.c SELFPASS.
-        if re.search(r"Self-test \d+K?.* passed!", combined):
-            return True, None
-        if re.search(r"Torture Test completed \d+ tests", combined):
-            return True, None
-
-        # unknown state — check return code
-        if returncode != 0:
-            return False, f"mprime exited with code {returncode}"
-
-        return True, None
-
-    def poll_errors(self, work_dir: Path) -> str | None:
-        """Scan results.txt for fatal errors while the test is running.
-
-        mprime torture tests keep running after a computation error (the error
-        lands only in results.txt), so without live polling a soft failure is
-        detected only at the end-of-test parse — burning the full test duration.
-        prepare() guarantees the file belongs to the current run.
-        """
-        results_file = work_dir / "results.txt"
-        if not results_file.exists():
-            return None
+    def findings(self, output: str, work_dir: Path) -> tuple[LaneSignal, ...]:
         try:
-            content = results_file.read_text()
-        except OSError:
-            return None
-        for pattern in FATAL_PATTERNS:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                return f"mprime error: {match.group(0)}"
-        return None
+            results = read_text(work_dir / "results.txt")
+        except FileNotFoundError:
+            results = ""
+        except OSError as exc:
+            unreadable = LaneSignal(Outcome.UNVERIFIED, f"results.txt unreadable ({exc}): verdict unavailable")
+            return (*scan(output, FINDINGS), unreadable)
+        return scan(output + "\n" + results, FINDINGS)
 
     def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
         # On failure, preserve results.txt/prime.log for post-mortem — but RENAMED,

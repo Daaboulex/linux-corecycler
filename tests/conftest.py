@@ -27,6 +27,15 @@ if "PySide6" not in sys.modules:
             def __init__(self, *args, **kwargs):
                 self._slots = []
 
+            def __set_name__(self, owner, name):
+                self._name = name
+
+            def __get__(self, instance, owner=None):
+                if instance is None:
+                    return self
+                bound = instance.__dict__[self._name] = _FakeSignal()
+                return bound
+
             def emit(self, *args):
                 for slot in self._slots:
                     slot(*args)
@@ -561,8 +570,6 @@ def mock_backend():
         name = "mock"
 
         def __init__(self):
-            self.should_pass = True
-            self.error_message = None
             self.prepared_dirs: list[Path] = []
             self.cleaned_dirs: list[Path] = []
             self.commands_generated: list[list[str]] = []
@@ -576,8 +583,8 @@ def mock_backend():
             self.commands_generated.append(cmd)
             return cmd
 
-        def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
-            return self.should_pass, self.error_message
+        def findings(self, output: str, work_dir: Path) -> tuple:
+            return ()
 
         def get_supported_modes(self) -> list[StressMode]:
             return [StressMode.SSE, StressMode.AVX, StressMode.AVX2]

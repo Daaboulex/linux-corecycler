@@ -1,5 +1,5 @@
 """End-to-end stale-results coverage on the REAL CoreScheduler subprocess path
-(fake mprime + the real MprimeBackend prepare/poll/parse/cleanup):
+(fake mprime + the real MprimeBackend prepare/findings/cleanup):
 a preserved failure file must never be re-parsed as a later run's verdict, and
 an error landing only in results.txt is caught by the live poll, not at end.
 """
@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from corecycler.engine import execution
+from corecycler.engine.backends.base import Outcome
 from corecycler.engine.backends.mprime import MprimeBackend
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
 from corecycler.engine.topology import CPUTopology, PhysicalCore
@@ -90,7 +91,8 @@ class TestStaleResultsDisasterReplay:
         result = _run_one(backend, tmp_path / "work", seconds=30)
 
         assert result.passed is False
-        assert "FATAL ERROR" in (result.error_message or "")
+        assert result.outcome is Outcome.COMPUTATION
+        assert "FATAL ERROR" in result.detail
         # caught by the 5 s live poll, not the 30 s deadline
         assert result.duration_seconds < 15, (
             f"error detected only after {result.duration_seconds:.1f}s — live polling is not working"
@@ -131,7 +133,7 @@ class TestStaleResultsDisasterReplay:
         backend._binary = str(clean_bin)
         second = _run_one(backend, work_dir, seconds=8)
 
-        assert second.passed is True, f"clean run poisoned by the previous failure: {second.error_message}"
+        assert second.passed is True, f"clean run poisoned by the previous failure: {second.detail}"
 
     def test_planted_stale_results_file_cannot_fail_a_clean_run(self, tmp_path, exec_dir):
         """Belt and braces: even a results.txt left behind by an abort or hard
@@ -153,14 +155,14 @@ class TestStaleResultsDisasterReplay:
         backend._binary = str(clean_bin)
         result = _run_one(backend, work_dir, seconds=8)
 
-        assert result.passed is True, f"stale pre-existing results.txt poisoned the verdict: {result.error_message}"
+        assert result.passed is True, f"stale pre-existing results.txt poisoned the verdict: {result.detail}"
 
 
 @pytest.mark.slow
 class TestUnreadableResultsFailsClosed:
     def test_unreadable_results_is_an_apparatus_fault_not_a_pass(self, tmp_path, exec_dir):
         """If results.txt cannot be read at the final parse, the verdict is
-        unavailable — that must surface as a startup-class failure, never a
+        unavailable, and that must surface as an apparatus outcome, never a
         silent pass."""
         if os.geteuid() == 0:
             pytest.skip("root bypasses file permissions")
@@ -178,6 +180,6 @@ class TestUnreadableResultsFailsClosed:
         result = _run_one(backend, tmp_path / "work", seconds=8)
 
         assert result.passed is False
-        assert "results.txt" in (result.error_message or "")
-        assert "verdict unavailable" in (result.error_message or "")
-        assert result.error_type == "startup"  # engine pauses, never advances
+        assert "results.txt" in result.detail
+        assert "verdict unavailable" in result.detail
+        assert result.outcome is Outcome.UNVERIFIED

@@ -21,8 +21,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from corecycler.engine.backends.base import KILLED_BY_US_CODES, StressConfig, StressMode
+from corecycler.engine.backends.base import KILLED_BY_US_CODES, Outcome, StressConfig, StressMode
 from corecycler.engine.backends.ycruncher import MODE_TO_ALGORITHMS, YCruncherBackend
+from corecycler.engine.execution import exit_signal
 
 pytestmark = pytest.mark.slow
 
@@ -113,13 +114,12 @@ class TestYCruncherBinaryContract:
         rc, out = _stress(["NOSUCHTEST"], 3)
         assert "Invalid Parameter" in out
 
-    def test_parse_output_agrees_with_real_killed_run(self):
+    def test_findings_and_exit_agree_with_a_real_killed_run(self):
         rc, out = _stress(["BKT"], 5)
-        passed, msg = YCruncherBackend().parse_output(out, "", rc)
-        assert passed, msg
+        assert YCruncherBackend().findings(out, Path(_WORKDIR)) == ()
+        assert exit_signal(rc, signal.SIGTERM) is None
 
-    def test_parse_output_fails_a_real_invalid_parameter(self):
+    def test_findings_fail_a_real_invalid_parameter(self):
         rc, out = _stress(["NOSUCHTEST"], 3)
-        passed, msg = YCruncherBackend().parse_output(out, "", rc)
-        assert not passed
-        assert "Invalid Parameter" in msg
+        found = YCruncherBackend().findings(out, Path(_WORKDIR))
+        assert any(hit.outcome is Outcome.COMPUTATION and "Invalid Parameter" in hit.text for hit in found)

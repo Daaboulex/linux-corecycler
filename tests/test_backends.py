@@ -10,8 +10,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from corecycler.engine.backends.base import (
-    KILLED_BY_US_CODES,
     FFTPreset,
+    LaneSignal,
+    Outcome,
+    OutcomeKind,
     StressBackend,
     StressConfig,
     StressMode,
@@ -52,11 +54,53 @@ class TestStressConfig:
 
 class TestStressResult:
     def test_defaults(self):
-        r = StressResult(core_id=0, passed=True, duration_seconds=60.0)
-        assert r.error_message is None
-        assert r.error_type is None
+        r = StressResult(core_id=0, outcome=Outcome.PASS, detail="", duration_seconds=60.0)
+        assert r.evidence_dir is None
         assert r.iterations_completed == 0
-        assert r.last_fft_size is None
+
+    @pytest.mark.parametrize("outcome", list(Outcome))
+    def test_only_the_pass_outcome_passes(self, outcome):
+        result = StressResult(core_id=0, outcome=outcome, detail="x", duration_seconds=1.0)
+        assert result.passed is (outcome is Outcome.PASS)
+
+    def test_a_result_is_immutable(self):
+        import dataclasses
+
+        result = StressResult(core_id=0, outcome=Outcome.COMPUTATION, detail="x", duration_seconds=1.0)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            result.outcome = Outcome.PASS
+
+
+class TestOutcome:
+    def test_stored_rows_keep_their_vocabulary(self):
+        stored = {
+            Outcome.CPU_SIGNAL: "crash",
+            Outcome.OWN_CORE_MCE: "mce",
+            Outcome.UNATTRIBUTED_MCE: "mce_unattributed",
+            Outcome.THERMAL: "thermal",
+            Outcome.OUTSIDE_KILL: "killed",
+            Outcome.STALL: "stall",
+            Outcome.NOT_STARTED: "startup",
+            Outcome.COMPUTATION: "computation",
+            Outcome.CLOCK_STRETCH: "clock_stretch",
+        }
+        assert {outcome: outcome.value for outcome in stored} == stored
+        assert all(outcome == value for outcome, value in stored.items())
+
+    def test_every_value_is_distinct(self):
+        assert len({outcome.value for outcome in Outcome}) == len(Outcome)
+
+    def test_silicon_outranks_environment_outranks_apparatus_outranks_pass(self):
+        order = [OutcomeKind.SILICON, OutcomeKind.ENVIRONMENT, OutcomeKind.APPARATUS, OutcomeKind.PASS]
+        by_rank = sorted(Outcome, key=lambda outcome: outcome.rank)
+        assert [order.index(outcome.kind) for outcome in by_rank] == sorted(
+            order.index(outcome.kind) for outcome in Outcome
+        )
+        assert by_rank[-1] is Outcome.PASS
+
+    def test_a_pass_is_never_a_signal(self):
+        with pytest.raises(ValueError, match="never a signal"):
+            LaneSignal(Outcome.PASS, "")
 
 
 class TestStressMode:
@@ -111,8 +155,8 @@ class TestBaseBackendBinaryResolution:
             def get_command(self, config, work_dir):
                 return []
 
-            def parse_output(self, stdout, stderr, returncode):
-                return True, None
+            def findings(self, output, work_dir):
+                return ()
 
             def get_supported_modes(self):
                 return []
@@ -132,8 +176,8 @@ class TestBaseBackendBinaryResolution:
             def get_command(self, config, work_dir):
                 return []
 
-            def parse_output(self, stdout, stderr, returncode):
-                return True, None
+            def findings(self, output, work_dir):
+                return ()
 
             def get_supported_modes(self):
                 return []
@@ -306,7 +350,7 @@ class TestMprimeBackend:
         backend.prepare(work, StressConfig())
         assert work.exists()
 
-    # --- parse_output tests ---
+    # --- output findings ---
 
     @pytest.mark.parametrize(
         "output",
@@ -324,65 +368,23 @@ class TestMprimeBackend:
             "Warning: SUMOUT MISMATCH",
         ],
     )
-    def test_parse_output_fatal_errors(self, output):
-        backend = MprimeBackend()
-        passed, msg = backend.parse_output(output, "", 1)
-        assert not passed
-        assert msg is not None
-        assert "mprime error" in msg
-
-    def test_parse_output_error_in_stderr(self):
-        backend = MprimeBackend()
-        passed, msg = backend.parse_output("", "FATAL ERROR: test", 1)
-        assert not passed
+    def test_every_fatal_signature_is_a_computation_error(self, output, tmp_path):
+        found = MprimeBackend().findings(f"[Worker #1] Self-test 240K passed!\n{output}\n", tmp_path)
+        assert found and {signal.outcome for signal in found} == {Outcome.COMPUTATION}
+        assert found[0].text == output
 
     @pytest.mark.parametrize(
-        "line",
+        "output",
         [
-            "[Worker #1] Self-test 240K passed!",  # K-suffixed FFT (usual)
-            "Self-test 42 passed!",  # sub-1K FFT
-            "Self-test 4K (thread 2 of 2) passed!",  # hyperthreaded variant
+            "[Worker #1] Self-test 240K passed!",
+            "Self-test 42 passed!",
+            "Self-test 4K (thread 2 of 2) passed!",
+            "Torture Test completed 20 tests in 15 minutes - 0 errors, 0 warnings.",
+            "[Worker #1] Self-test 240K passed!\n[Worker #1] Worker stopped.",
         ],
     )
-    def test_parse_output_self_test_passed(self, line):
-        backend = MprimeBackend()
-        passed, msg = backend.parse_output(line + "\n", "", 0)
-        assert passed
-        assert msg is None
-
-    def test_parse_output_torture_summary_clean(self):
-        backend = MprimeBackend()
-        passed, msg = backend.parse_output(
-            "Torture Test completed 20 tests in 15 minutes - 0 errors, 0 warnings.", "", 0
-        )
-        assert passed
-        assert msg is None
-
-    def test_parse_output_benign_worker_stop_is_not_an_error(self):
-        """ "Worker stopped." is Prime95's graceful-stop line (commonb.c:3143),
-        not a fatal error."""
-        backend = MprimeBackend()
-        passed, msg = backend.parse_output("[Worker #1] Self-test 240K passed!\n[Worker #1] Worker stopped.\n", "", -15)
-        assert passed
-        assert msg is None
-
-    @pytest.mark.parametrize("code", sorted(KILLED_BY_US_CODES))
-    def test_parse_output_killed_signals(self, code):
-        backend = MprimeBackend()
-        passed, msg = backend.parse_output("", "", code)
-        assert passed
-
-    def test_parse_output_unknown_error_code(self):
-        backend = MprimeBackend()
-        passed, msg = backend.parse_output("", "", 42)
-        assert not passed
-        assert "exited with code 42" in msg
-
-    def test_parse_output_clean_exit_no_output(self):
-        backend = MprimeBackend()
-        passed, msg = backend.parse_output("", "", 0)
-        assert passed
-        assert msg is None
+    def test_clean_lines_find_nothing(self, output, tmp_path):
+        assert MprimeBackend().findings(output + "\n", tmp_path) == ()
 
     # --- cleanup tests ---
 
@@ -432,23 +434,43 @@ class TestMprimeBackend:
         backend.prepare(tmp_path, StressConfig())
         assert (tmp_path / "failed-results.txt").exists()
 
-    # --- live error polling ---
+    # --- results file ---
 
-    def test_poll_errors_detects_fatal(self, tmp_path):
-        backend = MprimeBackend()
+    def test_a_fatal_line_in_results_txt_is_a_computation_error(self, tmp_path):
         (tmp_path / "results.txt").write_text(
             "[Worker #1] Self-test 240K passed!\nFATAL ERROR: Rounding was 0.4999, expected less than 0.4\n"
         )
-        msg = backend.poll_errors(tmp_path)
-        assert msg is not None and "FATAL ERROR" in msg
+        found = MprimeBackend().findings("", tmp_path)
+        assert [signal.outcome for signal in found] == [Outcome.COMPUTATION]
+        assert "Rounding was 0.4999" in found[0].text
 
-    def test_poll_errors_clean_run(self, tmp_path):
-        backend = MprimeBackend()
+    def test_a_clean_results_txt_finds_nothing(self, tmp_path):
         (tmp_path / "results.txt").write_text("[Worker #1] Self-test 240K passed!\n")
-        assert backend.poll_errors(tmp_path) is None
+        assert MprimeBackend().findings("", tmp_path) == ()
 
-    def test_poll_errors_no_file(self, tmp_path):
-        assert MprimeBackend().poll_errors(tmp_path) is None
+    def test_no_results_txt_finds_nothing(self, tmp_path):
+        assert MprimeBackend().findings("", tmp_path) == ()
+
+    def test_each_mprime_lane_reads_its_own_results(self, tmp_path):
+        backend = MprimeBackend()
+        a, b = tmp_path / "a", tmp_path / "b"
+        backend.prepare(a, StressConfig())
+        backend.prepare(b, StressConfig())
+        (b / "results.txt").write_text("FATAL ERROR: Rounding was 0.5, expected less than 0.4\n")
+        assert backend.findings("", a) == ()
+        assert [signal.outcome for signal in backend.findings("", b)] == [Outcome.COMPUTATION]
+
+    def test_a_bad_byte_in_results_txt_still_shows_the_error(self, tmp_path):
+        (tmp_path / "results.txt").write_bytes(b"\xffFATAL ERROR: x\n")
+        found = MprimeBackend().findings("", tmp_path)
+        assert [signal.outcome for signal in found] == [Outcome.COMPUTATION]
+        assert "FATAL ERROR: x" in found[0].text
+
+    def test_an_unreadable_results_txt_is_unverified(self, tmp_path):
+        (tmp_path / "results.txt").mkdir()
+        found = MprimeBackend().findings("FATAL ERROR: Rounding was 0.5", tmp_path)
+        assert {signal.outcome for signal in found} == {Outcome.COMPUTATION, Outcome.UNVERIFIED}
+        assert any("results.txt unreadable" in signal.text for signal in found)
 
 
 # ===========================================================================
@@ -511,7 +533,7 @@ class TestStressNgBackend:
         backend.prepare(work, StressConfig())
         assert work.exists()
 
-    # --- parse_output ---
+    # --- findings ---
 
     @pytest.mark.parametrize(
         "output",
@@ -520,31 +542,15 @@ class TestStressNgBackend:
             "verification error on cpu 0",
             "computation mismatch detected",
             "error: incorrect result",
+            "stress-ng: fail:  [1] cpu: verification failed",
         ],
     )
-    def test_parse_output_errors(self, output):
-        backend = StressNgBackend()
-        passed, msg = backend.parse_output(output, "", 1)
-        assert not passed
-        assert "stress-ng error" in msg
+    def test_a_failure_line_is_a_computation_error(self, output, tmp_path):
+        found = StressNgBackend().findings(output, tmp_path)
+        assert found and {signal.outcome for signal in found} == {Outcome.COMPUTATION}
 
-    def test_parse_output_error_in_stderr(self):
-        backend = StressNgBackend()
-        passed, msg = backend.parse_output("", "FAILED test", 1)
-        assert not passed
-
-    @pytest.mark.parametrize("code", sorted(KILLED_BY_US_CODES) + [0])
-    def test_parse_output_success_codes(self, code):
-        backend = StressNgBackend()
-        passed, msg = backend.parse_output("completed", "", code)
-        assert passed
-        assert msg is None
-
-    def test_parse_output_unknown_exit_code(self):
-        backend = StressNgBackend()
-        passed, msg = backend.parse_output("", "", 99)
-        assert not passed
-        assert "exited with code 99" in msg
+    def test_a_zero_failure_count_finds_nothing(self, tmp_path):
+        assert StressNgBackend().findings("cpu 0 FAILED\ncompleted\n", tmp_path) == ()
 
     def test_cleanup_noop(self, tmp_path):
         backend = StressNgBackend()
@@ -687,60 +693,23 @@ class TestYCruncherBackend:
         assert StressMode.AVX2 in modes
         assert StressMode.AVX512 in modes
 
-    def test_parse_real_pass_output_not_false_flagged(self):
-        backend = YCruncherBackend()
-        passed, msg = backend.parse_output(_CAPTURED_PASS_OUTPUT, "", -15)
-        assert passed, msg
-        assert msg is None
+    def test_real_pass_output_finds_nothing(self, tmp_path):
+        assert YCruncherBackend().findings(_CAPTURED_PASS_OUTPUT, tmp_path) == ()
 
-    @pytest.mark.parametrize("code", sorted(KILLED_BY_US_CODES))
-    def test_parse_killed_is_pass(self, code):
-        backend = YCruncherBackend()
-        passed, _msg = backend.parse_output(_CAPTURED_PASS_OUTPUT, "", code)
-        assert passed
-
-    def test_parse_self_exit_zero_is_anomaly_not_silent_pass(self):
-        backend = YCruncherBackend()
-        passed, msg = backend.parse_output(_CAPTURED_PASS_OUTPUT, "", 0)
-        assert not passed
-        assert "verdict unavailable" in msg
-
-    def test_parse_error_encountered(self):
-        backend = YCruncherBackend()
-        passed, msg = backend.parse_output("Iteration: 5\nError(s) encountered on logical core 3.\n", "", 0)
-        assert not passed
-        assert "y-cruncher error" in msg
-
-    def test_parse_coefficient_too_large(self):
-        backend = YCruncherBackend()
-        passed, msg = backend.parse_output("Coefficient is too large\n", "", 0)
-        assert not passed
-        assert "Coefficient is too large" in msg
-
-    def test_parse_invalid_parameter(self):
-        backend = YCruncherBackend()
-        passed, msg = backend.parse_output(_CAPTURED_INVALID_PARAM_OUTPUT, "", 0)
-        assert not passed
-        assert "Invalid Parameter" in msg
-
-    def test_parse_ansi_codes_stripped(self):
-        backend = YCruncherBackend()
-        passed, _msg = backend.parse_output("\x1b[01;31mCoefficient is too large\x1b[0m\n", "", 0)
-        assert not passed
-
-    @pytest.mark.parametrize("code", [-11, -6, -4])
-    def test_parse_crash_signal_fails(self, code):
-        backend = YCruncherBackend()
-        passed, msg = backend.parse_output("", "", code)
-        assert not passed
-        assert "crashed" in msg
-
-    def test_parse_unknown_exit_code_is_apparatus_fault(self):
-        backend = YCruncherBackend()
-        passed, msg = backend.parse_output("", "", 7)
-        assert not passed
-        assert "exited with code 7" in msg
-        assert "verdict unavailable" in msg
+    @pytest.mark.parametrize(
+        ("output", "named"),
+        [
+            ("Iteration: 5\nError(s) encountered on logical core 3.\n", "Error(s) encountered"),
+            ("Coefficient is too large\n", "Coefficient is too large"),
+            (_CAPTURED_INVALID_PARAM_OUTPUT, "Invalid Parameter"),
+            ("\x1b[01;31mCoefficient is too large\x1b[0m\n", "Coefficient is too large"),
+        ],
+    )
+    def test_an_error_line_is_a_computation_error(self, output, named, tmp_path):
+        found = YCruncherBackend().findings(output, tmp_path)
+        assert found and {signal.outcome for signal in found} == {Outcome.COMPUTATION}
+        assert any(named in signal.text for signal in found)
+        assert not any("\x1b" in signal.text for signal in found)
 
     def test_prepare(self, tmp_path):
         backend = YCruncherBackend()
@@ -828,23 +797,3 @@ class TestMprimeConstants:
 
         monkeypatch.setattr(subprocess, "run", boom)
         assert backend.installed_version() is None
-
-
-class TestFailClosedResultsRead:
-    def test_unreadable_results_txt_is_not_a_pass(self, tmp_path):
-        """Without results.txt a real error could pass unseen — an unreadable
-        file must produce an apparatus-fault verdict (engine pauses on it),
-        never a silent pass."""
-        import os
-
-        backend = MprimeBackend()
-        backend._last_work_dir = tmp_path
-        results = tmp_path / "results.txt"
-        results.write_text("FATAL ERROR: Rounding was 0.5, expected less than 0.4")
-        os.chmod(results, 0o000)
-        try:
-            passed, msg = backend.parse_output("", "", -15)
-            assert passed is False
-            assert "verdict unavailable" in msg
-        finally:
-            os.chmod(results, 0o644)  # let tmp_path cleanup succeed

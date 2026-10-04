@@ -7,7 +7,7 @@ import json
 import pytest
 
 from corecycler.config.settings import TestProfile
-from corecycler.engine.backends.base import StressResult
+from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.scheduler import CoreTestStatus
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.history.db import HistoryDB
@@ -87,7 +87,8 @@ class TestCoreLifecycle:
 
         result = StressResult(
             core_id=5,
-            passed=True,
+            outcome=Outcome.PASS,
+            detail="",
             duration_seconds=600.0,
             iterations_completed=1,
         )
@@ -97,6 +98,8 @@ class TestCoreLifecycle:
         assert len(results) == 1
         assert results[0].passed is True
         assert results[0].elapsed_seconds == 600.0
+        assert results[0].error_message is None
+        assert results[0].error_type is None
         assert results[0].finished_at is not None
 
     def test_core_finished_with_error(self, db, logger):
@@ -104,10 +107,9 @@ class TestCoreLifecycle:
 
         result = StressResult(
             core_id=2,
-            passed=False,
+            outcome=Outcome.OWN_CORE_MCE,
+            detail="MCE detected on CPU 4",
             duration_seconds=120.0,
-            error_message="MCE detected on CPU 4",
-            error_type="mce",
         )
         logger.on_core_finished(2, result)
 
@@ -122,7 +124,7 @@ class TestCoreLifecycle:
 
     def test_core_finished_without_start_is_noop(self, db, logger):
         """If on_core_finished is called without on_core_started, no crash."""
-        result = StressResult(core_id=99, passed=True, duration_seconds=1.0)
+        result = StressResult(core_id=99, outcome=Outcome.PASS, detail="", duration_seconds=1.0)
         logger.on_core_finished(99, result)
         assert db.get_core_results(logger.run_id) == []
 

@@ -14,11 +14,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.detector import MCEEvent
 from corecycler.history.db import HistoryDB
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
-from corecycler.tuner.engine import TunerEngine, _pick_report
+from corecycler.tuner.engine import TunerEngine, WorkerReport
 from corecycler.tuner.state import CoreState, TunerPhase
 
 # Real kernel MCE line shape (kernel: prefix stripped).
@@ -279,7 +280,7 @@ class TestCrashHunt:
         eng._hunting = True
         eng._co_applied[5] = -30
 
-        eng._on_hunt_slot_finished(5, passed=False, error_type="mce", foreign={})
+        eng._on_hunt_slot_finished(5, passed=False, outcome=Outcome.OWN_CORE_MCE, foreign={})
 
         cs = eng._core_states[5]
         assert cs.backoff_fail_bound == -30
@@ -290,30 +291,27 @@ class TestCrashHunt:
 
 
 class TestForeignMceEvidence:
-    def test_parse_groups_by_core_and_severity(self, db, topo_dual_ccd_x3d, mock_backend):
+    def test_events_group_by_core_and_severity(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_hardened_validating(eng, db, BEST, BASELINES)
-        payload = json.dumps(
-            [
-                {"cpu": 5, "bank": 0, "corrected": True, "message": "a", "raw_ts": 1.0},
-                {"cpu": 5, "bank": 0, "corrected": False, "message": "b", "raw_ts": 2.0},
-                {"cpu": 6, "bank": 0, "corrected": True, "message": "c", "raw_ts": 3.0},
-                {"cpu": 2, "bank": 0, "corrected": True, "message": "own", "raw_ts": 4.0},
-                {"cpu": -1, "bank": -1, "corrected": False, "message": "panic", "raw_ts": 5.0},
-            ]
+        events = (
+            MCEEvent(timestamp=1.0, cpu=5, bank=0, message="a", corrected=True, raw_ts=1.0),
+            MCEEvent(timestamp=2.0, cpu=5, bank=0, message="b", corrected=False, raw_ts=2.0),
+            MCEEvent(timestamp=3.0, cpu=6, bank=0, message="c", corrected=True, raw_ts=3.0),
+            MCEEvent(timestamp=4.0, cpu=2, bank=0, message="own", corrected=True, raw_ts=4.0),
+            MCEEvent(timestamp=5.0, cpu=-1, bank=-1, message="panic", corrected=False, raw_ts=5.0),
         )
 
-        foreign = eng._foreign_mce_by_core(tested_core=2, mce_json=payload)
+        foreign = eng._foreign_mce_by_core(tested_core=2, events=events)
 
         assert sorted(foreign) == [5, 6]
         assert foreign[5]["corrected"] is False  # any uncorrected wins
+        assert foreign[5]["messages"] == ["a", "b"]
         assert foreign[6]["corrected"] is True
 
-    def test_malformed_payload_is_no_evidence(self, db, topo_dual_ccd_x3d, mock_backend):
+    def test_no_events_are_no_evidence(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
-        assert eng._foreign_mce_by_core(0, "not json") == {}
-        assert eng._foreign_mce_by_core(0, "") == {}
-        assert eng._foreign_mce_by_core(0, json.dumps({"cpu": 1})) == {}
+        assert eng._foreign_mce_by_core(0, ()) == {}
 
     def test_corrected_evidence_backs_off_one_step_and_reearns(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend, fine_step=1)
@@ -377,38 +375,6 @@ class TestForeignMceEvidence:
         assert (5, -30) in db.journal_suspects(sid)
 
 
-class TestPickReport:
-    def _result(self, core_id: int, passed: bool):
-        return SimpleNamespace(core_id=core_id, passed=passed)
-
-    def test_primary_pass_with_no_other_failures(self):
-        results = {0: [self._result(0, True)], 1: [self._result(1, True)]}
-        core, report = _pick_report(results, primary=0)
-        assert core == 0
-        assert report.passed is True
-
-    def test_failure_on_any_core_outranks_primary_pass(self):
-        """A failure on any core in the batch must outrank the primary's pass."""
-        results = {
-            0: [self._result(0, True)],
-            5: [self._result(5, False)],
-            7: [self._result(7, True)],
-        }
-        core, report = _pick_report(results, primary=0)
-        assert core == 5
-        assert report.passed is False
-
-    def test_primary_failure_is_reported_directly(self):
-        results = {0: [self._result(0, False)], 5: [self._result(5, False)]}
-        core, report = _pick_report(results, primary=0)
-        assert core == 0
-
-    def test_no_results_returns_none(self):
-        core, report = _pick_report({}, primary=3)
-        assert core == 3
-        assert report is None
-
-
 class TestDriftAgainstJournal:
     def test_no_false_drift_when_smu_holds_tuner_written_values(self, db, topo_dual_ccd_x3d, mock_backend, monkeypatch):
         """Reopening mid-validation: the SMU holding exactly what the tuner
@@ -467,9 +433,9 @@ class TestNarrativePersistence:
         eng.log_message.emit("nowhere to persist")  # must not raise
 
 
-def _mce_payload(cpu: int) -> str:
-    return json.dumps(
-        [{"cpu": cpu, "bank": 0, "corrected": True, "message": CPU5_CORRECTED.format(cpu=cpu), "raw_ts": 1.0}]
+def _mce_events(cpu: int) -> tuple[MCEEvent, ...]:
+    return (
+        MCEEvent(timestamp=1.0, cpu=cpu, bank=0, message=CPU5_CORRECTED.format(cpu=cpu), corrected=True, raw_ts=1.0),
     )
 
 
@@ -483,20 +449,18 @@ class TestUnattributedMcePayload:
     a safe floor.
     """
 
-    def test_a_payload_naming_no_cpu_is_detected(self):
+    def test_an_event_naming_no_cpu_is_detected(self):
         from corecycler.tuner.engine import _has_unattributed_mce
 
-        assert _has_unattributed_mce(_mce_payload(-1)) is True
+        assert _has_unattributed_mce(_mce_events(-1)) is True
 
-    def test_an_attributed_or_absent_payload_is_not(self):
+    def test_attributed_or_absent_events_are_not(self):
         from corecycler.tuner.engine import _has_unattributed_mce
 
-        assert _has_unattributed_mce(_mce_payload(5)) is False
-        assert _has_unattributed_mce("") is False
-        assert _has_unattributed_mce("not json") is False
-        assert _has_unattributed_mce(json.dumps({"cpu": -1})) is False
+        assert _has_unattributed_mce(_mce_events(5)) is False
+        assert _has_unattributed_mce(()) is False
 
-    def _mark_survived_calls(self, db, topo_single_ccd, mock_backend, mce_json, monkeypatch):
+    def _mark_survived_calls(self, db, topo_single_ccd, mock_backend, events, monkeypatch):
         eng = _make_engine(db, topo_single_ccd, mock_backend)
         sid = eng._session_id
         cs = CoreState(core_id=0, phase=TunerPhase.CONFIRMING, current_offset=-20, best_offset=-20, baseline_offset=0)
@@ -506,14 +470,15 @@ class TestUnattributedMcePayload:
         db.journal_co_intent(sid, 0, -20, survived=False)
         calls = []
         monkeypatch.setattr(tp, "journal_mark_survived", lambda *a, **kw: calls.append(kw))
-        eng._on_test_finished(0, True, "", "", 1.0, 0.0, mce_json, "")
+        result = StressResult(core_id=0, outcome=Outcome.PASS, detail="", duration_seconds=1.0)
+        eng._on_test_finished(WorkerReport(lanes=(result,), peak_stretch_pct=0.0, kernel_events=events))
         return calls
 
     def test_a_clean_pass_marks_the_resident_set_survived(self, db, topo_single_ccd, mock_backend, monkeypatch):
-        assert self._mark_survived_calls(db, topo_single_ccd, mock_backend, "", monkeypatch)
+        assert self._mark_survived_calls(db, topo_single_ccd, mock_backend, (), monkeypatch)
 
     def test_a_pass_carrying_an_unattributed_mce_marks_nothing_survived(
         self, db, topo_single_ccd, mock_backend, monkeypatch
     ):
-        calls = self._mark_survived_calls(db, topo_single_ccd, mock_backend, _mce_payload(-1), monkeypatch)
+        calls = self._mark_survived_calls(db, topo_single_ccd, mock_backend, _mce_events(-1), monkeypatch)
         assert calls == []

@@ -1,28 +1,26 @@
 """Tuner worker threads and their module helpers, run synchronously.
 
 Every worker's run() body is invoked directly — never via start() — against a
-stand-in scheduler, so the verdict-reporting, MCE serialisation and
-crash-is-an-apparatus-fault decisions are checked without launching a single
-stress process.
+stand-in scheduler, so the report each worker emits is checked without
+launching a single stress process.
 """
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock
 
 import pytest
 
-from corecycler.engine.backends.base import StressResult
+from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.detector import MCEEvent
 from corecycler.tuner import engine as eng
 from corecycler.tuner.engine import (
+    WorkerReport,
     _busy_fraction,
     _ParallelWorker,
     _RapidTransitionWorker,
     _read_boot_id,
     _read_cpu_times,
-    _serialize_mce,
     _SoakWorker,
     _TunerWorker,
 )
@@ -41,24 +39,28 @@ class _Ticks:
         return not self._answers
 
 
-def _result(core_id=0, passed=True, error=None, error_type=None):
-    return StressResult(
-        core_id=core_id,
-        passed=passed,
-        duration_seconds=1.0,
-        error_message=error,
-        error_type=error_type,
-    )
+def _result(core_id=0, outcome=Outcome.PASS, detail=""):
+    return StressResult(core_id=core_id, outcome=outcome, detail=detail, duration_seconds=1.0)
 
 
 def _mce(cpu=0):
     return MCEEvent(timestamp=1.0, cpu=cpu, bank=5, message="corrected", corrected=True)
 
 
-def _collect(worker):
-    seen = []
-    worker.finished.connect(lambda *args: seen.append(args))
-    return seen
+@pytest.fixture
+def collect():
+    connected = []
+
+    def _collect(worker):
+        seen = []
+        slot = seen.append
+        worker.finished.connect(slot)
+        connected.append((worker, slot))
+        return seen
+
+    yield _collect
+    for worker, slot in connected:
+        worker.finished.disconnect(slot)
 
 
 class TestModuleHelpers:
@@ -98,12 +100,19 @@ class TestModuleHelpers:
         assert _busy_fraction((10, 100), (10, 200)) == pytest.approx(1.0)
         assert _busy_fraction((10, 100), (110, 200)) == pytest.approx(0.0)
 
-    def test_no_events_serialise_to_nothing(self):
-        assert _serialize_mce([]) == ""
 
-    def test_events_serialise_with_their_bank_and_cpu(self):
-        payload = json.loads(_serialize_mce([_mce(cpu=3)]))
-        assert payload == [{"cpu": 3, "bank": 5, "corrected": True, "message": "corrected", "raw_ts": 0.0}]
+class TestWorkerReport:
+    def test_a_report_without_a_lane_is_refused(self):
+        with pytest.raises(ValueError, match="at least one lane"):
+            WorkerReport(lanes=(), peak_stretch_pct=0.0, kernel_events=())
+
+    def test_the_report_names_the_strongest_lane(self):
+        lanes = (_result(0, Outcome.STALL, "stalled"), _result(1, Outcome.COMPUTATION, "rounding"))
+        assert WorkerReport(lanes=lanes, peak_stretch_pct=0.0, kernel_events=()).result.core_id == 1
+
+    def test_equal_outcomes_report_the_lowest_core(self):
+        lanes = (_result(3, Outcome.COMPUTATION, "a"), _result(1, Outcome.COMPUTATION, "b"))
+        assert WorkerReport(lanes=lanes, peak_stretch_pct=0.0, kernel_events=()).result.core_id == 1
 
 
 class TestTunerWorker:
@@ -113,49 +122,48 @@ class TestTunerWorker:
         scheduler.observed_mce = list(mce)
         return _TunerWorker(0, 0, scheduler, msr=msr)
 
-    def test_a_passing_core_reports_its_own_verdict(self):
-        worker = self._worker({0: [_result(0, True)]}, mce=[_mce()])
-        seen = _collect(worker)
+    def test_the_report_carries_the_schedulers_result_unchanged(self, collect):
+        result = _result(0)
+        worker = self._worker({0: [result]}, mce=[_mce()])
+        seen = collect(worker)
         worker.run()
-        core_id, passed, message, error_type, _elapsed, stretch, mce_json, _rows = seen[0]
-        assert (core_id, passed, message, error_type) == (0, True, "", "")
-        assert stretch == 0.0
-        assert json.loads(mce_json)[0]["cpu"] == 0
+        report = seen[0]
+        assert report.result is result
+        assert report.peak_stretch_pct == 0.0
+        assert [event.cpu for event in report.kernel_events] == [0]
 
-    def test_a_failure_on_another_core_outranks_the_primary_pass(self):
-        worker = self._worker({0: [_result(0, True)], 1: [_result(1, False, "mce", "mce")]})
-        seen = _collect(worker)
+    def test_a_failure_on_another_core_outranks_the_primary_pass(self, collect):
+        worker = self._worker({0: [_result(0)], 1: [_result(1, Outcome.OWN_CORE_MCE, "mce")]})
+        seen = collect(worker)
         worker.run()
-        assert seen[0][0] == 1
-        assert seen[0][1] is False
-        assert seen[0][5] == 0.0
+        assert seen[0].result.core_id == 1
+        assert seen[0].result.outcome is Outcome.OWN_CORE_MCE
 
-    def test_no_verdict_is_an_apparatus_fault_not_instability(self):
+    def test_a_run_with_no_result_reports_cut_short(self, collect):
         worker = self._worker({})
-        seen = _collect(worker)
+        seen = collect(worker)
         worker.run()
-        assert seen[0][1] is False
-        assert seen[0][2] == "No result returned"
-        assert seen[0][3] == "startup"
+        assert seen[0].result.core_id == 0
+        assert seen[0].result.outcome is Outcome.CUT_SHORT
 
-    def test_a_harness_exception_is_an_apparatus_fault(self):
+    def test_a_harness_exception_is_not_started(self, collect):
         scheduler = MagicMock()
         scheduler.run.side_effect = RuntimeError("work dir vanished")
         worker = _TunerWorker(0, 0, scheduler)
-        seen = _collect(worker)
+        seen = collect(worker)
         worker.run()
-        assert seen[0][3] == "startup"
-        assert "work dir vanished" in seen[0][2]
+        assert seen[0].result.outcome is Outcome.NOT_STARTED
+        assert "work dir vanished" in seen[0].result.detail
 
-    def test_a_live_msr_contributes_a_peak_stretch(self, monkeypatch):
+    def test_a_live_msr_contributes_a_peak_stretch(self, collect, monkeypatch):
         monkeypatch.setattr(eng, "_STRETCH_WARMUP_SECONDS", 0)
         msr = MagicMock()
         msr.is_available.return_value = True
         msr.read_clock_stretch.return_value = {}
-        worker = self._worker({0: [_result(0, True)]}, msr=msr)
-        seen = _collect(worker)
+        worker = self._worker({0: [_result(0)]}, msr=msr)
+        seen = collect(worker)
         worker.run()
-        assert seen[0][1] is True
+        assert seen[0].result.passed is True
 
     def test_the_scheduler_is_exposed_to_subclasses(self):
         scheduler = MagicMock()
@@ -197,37 +205,37 @@ class TestStretchSampler:
 
 
 class TestRapidTransitionWorker:
-    def _worker(self, verdict, *, mce=()):
+    def _worker(self, result, *, mce=()):
         scheduler = MagicMock()
-        scheduler.run_rapid_transitions.return_value = verdict
+        scheduler.run_rapid_transitions.return_value = result
         scheduler.observed_mce = list(mce)
         return _RapidTransitionWorker(2, 2, scheduler, cores=[0, 1, 2], duration=30.0)
 
-    def test_a_clean_run_reports_a_pass(self):
-        worker = self._worker((True, None))
-        seen = _collect(worker)
+    def test_a_clean_run_reports_a_pass(self, collect):
+        worker = self._worker(_result(0))
+        seen = collect(worker)
         worker.run()
-        assert seen[0][0] == 2
-        assert seen[0][1] is True
-        assert seen[0][2] == ""
+        assert seen[0].result.passed is True
         assert worker.scheduler.run_rapid_transitions.call_args.kwargs["cores"] == [0, 1, 2]
 
-    def test_a_reported_failure_carries_its_message(self):
-        worker = self._worker((False, "transition crash"), mce=[_mce(cpu=2)])
-        seen = _collect(worker)
+    def test_the_rapid_worker_reports_the_typed_outcome(self, collect):
+        result = _result(0, Outcome.THERMAL, "CPU temperature exceeded 95.0 C safety limit")
+        worker = self._worker(result, mce=[_mce(cpu=2)])
+        seen = collect(worker)
         worker.run()
-        assert seen[0][1] is False
-        assert seen[0][2] == "transition crash"
-        assert json.loads(seen[0][6])[0]["cpu"] == 2
+        assert seen[0].result is result
+        assert seen[0].result.outcome is Outcome.THERMAL
+        assert [event.cpu for event in seen[0].kernel_events] == [2]
 
-    def test_a_harness_exception_is_an_apparatus_fault(self):
+    def test_a_harness_exception_is_not_started(self, collect):
         scheduler = MagicMock()
         scheduler.run_rapid_transitions.side_effect = RuntimeError("containment gone")
         worker = _RapidTransitionWorker(2, 2, scheduler, cores=[0], duration=1.0)
-        seen = _collect(worker)
+        seen = collect(worker)
         worker.run()
-        assert seen[0][3] == "startup"
-        assert "containment gone" in seen[0][2]
+        assert seen[0].result.outcome is Outcome.NOT_STARTED
+        assert seen[0].result.core_id == 2
+        assert "containment gone" in seen[0].result.detail
 
 
 class TestParallelWorker:
@@ -237,87 +245,91 @@ class TestParallelWorker:
         runner.observed_mce = list(mce)
         return _ParallelWorker(0, 0, runner)
 
-    def test_every_lane_verdict_reaches_the_results_payload(self):
-        worker = self._worker({0: _result(0, True), 1: _result(1, True)})
-        seen = _collect(worker)
+    def test_every_lane_reaches_the_report(self, collect):
+        worker = self._worker({1: _result(1), 0: _result(0)})
+        seen = collect(worker)
         worker.run()
-        rows = json.loads(seen[0][7])
-        assert {r["core"] for r in rows} == {0, 1}
-        assert all(r["passed"] for r in rows)
-        assert seen[0][1] is True
+        assert [lane.core_id for lane in seen[0].lanes] == [0, 1]
+        assert seen[0].result.passed is True
 
-    def test_a_failing_lane_is_the_reported_core(self):
-        worker = self._worker({0: _result(0, True), 1: _result(1, False, "rounding", "computation")})
-        seen = _collect(worker)
+    def test_a_failing_lane_is_the_reported_core(self, collect):
+        worker = self._worker({0: _result(0), 1: _result(1, Outcome.COMPUTATION, "rounding")})
+        seen = collect(worker)
         worker.run()
-        assert seen[0][0] == 1
-        assert seen[0][3] == "computation"
+        assert seen[0].result.core_id == 1
+        assert seen[0].result.outcome is Outcome.COMPUTATION
 
-    def test_an_empty_batch_is_an_apparatus_fault(self):
+    def test_an_empty_batch_is_cut_short(self, collect):
         worker = self._worker({})
-        seen = _collect(worker)
+        seen = collect(worker)
         worker.run()
-        assert seen[0][2] == "No result returned"
-        assert seen[0][3] == "startup"
-        assert json.loads(seen[0][7]) == []
+        assert seen[0].result.core_id == 0
+        assert seen[0].result.outcome is Outcome.CUT_SHORT
 
-    def test_a_harness_exception_is_an_apparatus_fault(self):
+    def test_a_harness_exception_is_not_started(self, collect):
         runner = MagicMock()
         runner.run.side_effect = RuntimeError("lane setup failed")
         worker = _ParallelWorker(0, 0, runner)
-        seen = _collect(worker)
+        seen = collect(worker)
         worker.run()
-        assert seen[0][3] == "startup"
+        assert seen[0].result.outcome is Outcome.NOT_STARTED
 
 
 class TestSoakWorker:
-    def test_a_quiet_soak_passes(self):
+    def test_a_quiet_soak_passes(self, collect):
         worker = _SoakWorker(0, 0)
         worker.detector = MagicMock()
         worker.detector.check_mce.return_value = []
-        seen = _collect(worker)
+        seen = collect(worker)
         worker.run()
-        assert seen[0][1] is True
-        assert seen[0][2] == ""
+        assert seen[0].result.outcome is Outcome.PASS
+        assert seen[0].kernel_events == ()
 
-    def test_a_kernel_event_ends_the_soak(self):
+    def test_a_kernel_event_naming_a_cpu_ends_the_soak(self, collect):
         worker = _SoakWorker(1, 60)
         worker.detector = MagicMock()
         worker.detector.check_mce.return_value = [_mce(cpu=1)]
-        seen = _collect(worker)
+        seen = collect(worker)
         worker.run()
-        assert seen[0][1] is False
-        assert seen[0][3] == "mce"
-        assert "corrected" in seen[0][2]
-        assert json.loads(seen[0][6])[0]["cpu"] == 1
+        assert seen[0].result.outcome is Outcome.OWN_CORE_MCE
+        assert "corrected" in seen[0].result.detail
+        assert [event.cpu for event in seen[0].kernel_events] == [1]
 
-    def test_a_quiet_watch_polls_until_its_duration_ends(self):
+    def test_a_kernel_event_naming_no_cpu_is_unattributed(self, collect):
+        worker = _SoakWorker(1, 60)
+        worker.detector = MagicMock()
+        worker.detector.check_mce.return_value = [_mce(cpu=-1)]
+        seen = collect(worker)
+        worker.run()
+        assert seen[0].result.outcome is Outcome.UNATTRIBUTED_MCE
+
+    def test_a_quiet_watch_polls_until_it_is_stopped(self, collect):
         worker = _SoakWorker(0, 600)
         worker.detector = MagicMock()
         worker.detector.check_mce.return_value = []
         worker._stop = _Ticks([False, False, True])
-        seen = _collect(worker)
+        seen = collect(worker)
         worker.run()
-        assert seen[0][1] is True
+        assert seen[0].result.outcome is Outcome.CUT_SHORT
         assert worker.detector.check_mce.call_count == 3
 
-    def test_stopping_ends_the_watch(self):
+    def test_stopping_ends_the_watch_without_a_pass(self, collect):
         worker = _SoakWorker(0, 600)
         worker.detector = MagicMock()
         worker.detector.check_mce.return_value = []
         worker.stop()
-        seen = _collect(worker)
+        seen = collect(worker)
         worker.run()
-        assert seen[0][1] is True
+        assert seen[0].result.outcome is Outcome.CUT_SHORT
 
-    def test_a_broken_detector_is_an_apparatus_fault(self):
+    def test_a_broken_detector_is_not_started(self, collect):
         worker = _SoakWorker(0, 10)
         worker.detector = MagicMock()
         worker.detector.reset.side_effect = OSError("journal closed")
-        seen = _collect(worker)
+        seen = collect(worker)
         worker.run()
-        assert seen[0][3] == "startup"
-        assert "journal closed" in seen[0][2]
+        assert seen[0].result.outcome is Outcome.NOT_STARTED
+        assert "journal closed" in seen[0].result.detail
 
     def test_abort_reaches_the_worker_through_the_scheduler_alias(self):
         worker = _SoakWorker(0, 10)
