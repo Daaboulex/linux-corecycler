@@ -30,6 +30,7 @@ from corecycler.engine.detector import (
     KernelEvent,
     KernelRead,
     harvest_kernel_mce,
+    kernel_log_problem,
     last_boot_ended_cleanly,
 )
 from corecycler.engine.execution import busy_fraction as _busy_fraction
@@ -471,6 +472,10 @@ class TunerEngine(QObject):
         if map_err is not None:
             self.log_message.emit(f"Cannot start: per-core CO is unavailable — {map_err}")
             return
+        log_problem = kernel_log_problem()
+        if log_problem is not None:
+            self.log_message.emit(f"Cannot start: {log_problem}")
+            return
 
         # Capture system context
         num_cores = len(self._topology.cores)
@@ -571,6 +576,10 @@ class TunerEngine(QObject):
         map_err = core_map_blocked(self._smu)
         if map_err is not None:
             self.log_message.emit(f"Cannot resume: per-core CO is unavailable — {map_err}")
+            return
+        log_problem = kernel_log_problem()
+        if log_problem is not None:
+            self.log_message.emit(f"Cannot resume: {log_problem}")
             return
 
         self._core_states = tp.load_core_states(self._db, session_id)
@@ -850,6 +859,10 @@ class TunerEngine(QObject):
         map_err = core_map_blocked(self._smu)
         if map_err is not None:
             self.log_message.emit(f"Cannot validate: per-core CO is unavailable — {map_err}")
+            return
+        log_problem = kernel_log_problem()
+        if log_problem is not None:
+            self.log_message.emit(f"Cannot validate: {log_problem}")
             return
         self._abort_requested = False
         self._paused = False

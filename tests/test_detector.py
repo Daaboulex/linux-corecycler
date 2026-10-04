@@ -20,6 +20,7 @@ from corecycler.engine.detector import (
     _iso_to_journal_since,
     bank_is_core,
     harvest_kernel_mce,
+    kernel_log_problem,
     last_boot_ended_cleanly,
     parse_kernel_records,
 )
@@ -478,3 +479,35 @@ class TestLastBootEndedCleanly:
             assert last_boot_ended_cleanly() is False
         with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="")):
             assert last_boot_ended_cleanly() is False
+
+
+THIS_BOOT_KERNEL_LINE = "1791148722.100000 host kernel: Linux version 7.2.9\n"
+
+
+class TestKernelLogProblem:
+    def test_a_readable_log_and_journal_are_no_problem(self, kmsg):
+        with patch("subprocess.run", return_value=_completed(THIS_BOOT_KERNEL_LINE)) as run:
+            assert kernel_log_problem(kmsg) is None
+        args = run.call_args[0][0]
+        assert args[args.index("-b") + 1] == "0"
+        assert "_TRANSPORT=kernel" in args
+
+    def test_an_unopenable_kernel_log_is_a_problem(self, tmp_path):
+        with patch("subprocess.run", return_value=_completed(THIS_BOOT_KERNEL_LINE)):
+            assert "absent" in kernel_log_problem(tmp_path / "absent")
+
+    def test_a_failing_journal_is_a_problem(self, kmsg):
+        with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="Permission denied")):
+            assert "Permission denied" in kernel_log_problem(kmsg)
+
+    def test_a_journal_with_no_kernel_record_this_boot_is_a_problem(self, kmsg):
+        with patch("subprocess.run", return_value=_completed("")):
+            assert "no kernel record" in kernel_log_problem(kmsg)
+
+    @pytest.mark.parametrize(
+        "failure",
+        [FileNotFoundError(errno.ENOENT, "No such file or directory"), subprocess.TimeoutExpired("journalctl", 15)],
+    )
+    def test_a_journal_that_cannot_run_is_a_problem(self, kmsg, failure):
+        with patch("subprocess.run", side_effect=failure):
+            assert "journal" in kernel_log_problem(kmsg)

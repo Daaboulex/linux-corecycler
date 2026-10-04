@@ -1603,3 +1603,54 @@ class TestMemoryStageAcrossMachines:
         share = launched[0][1]["memory_mb"]
         assert share * 8 <= 4 * 1024
         assert "cgroup limit 4096 MB" in next(m for m in messages if "memory budget" in m)
+
+
+class TestKernelLogGate:
+    PROBLEM = "the kernel log /dev/kmsg cannot be read: denied"
+
+    def _messages(self, instance):
+        seen: list[str] = []
+        instance.log_message.connect(seen.append)
+        return seen
+
+    @pytest.mark.parametrize("problem", [None, PROBLEM])
+    def test_an_unreadable_kernel_log_refuses_the_session(self, db, tmp_path, monkeypatch, problem):
+        monkeypatch.setattr(eng, "kernel_log_problem", lambda: problem)
+        instance = TunerEngine(
+            db=db, topology=_topo(), smu=_smu(), backend=_backend(), config=_config(), work_dir=tmp_path
+        )
+        monkeypatch.setattr(instance, "_start_worker", MagicMock())
+        seen = self._messages(instance)
+        instance.start()
+        sessions = db.list_tuner_sessions()
+        if problem is None:
+            assert len(sessions) == 1
+        else:
+            assert sessions == []
+            assert seen == [f"Cannot start: {problem}"]
+
+    @pytest.mark.parametrize("problem", [None, PROBLEM])
+    def test_resume_refuses_before_forensics_on_an_unreadable_journal(self, engine, monkeypatch, problem):
+        harvested: list[str] = []
+
+        def harvest(since, timeout=15.0):
+            harvested.append(since)
+            return [], True
+
+        engine._forensics = harvest
+        monkeypatch.setattr(eng, "kernel_log_problem", lambda: problem)
+        seen = self._messages(engine)
+        engine.resume(engine._session_id)
+        if problem is None:
+            assert len(harvested) == 1
+        else:
+            assert harvested == []
+            assert seen == [f"Cannot resume: {problem}"]
+
+    def test_validate_profile_refuses_on_an_unreadable_kernel_log(self, engine, monkeypatch):
+        _confirm(engine, 0, -20)
+        monkeypatch.setattr(eng, "kernel_log_problem", lambda: self.PROBLEM)
+        seen = self._messages(engine)
+        engine.validate_profile(engine._session_id)
+        assert seen == [f"Cannot validate: {self.PROBLEM}"]
+        assert engine.status != "validating"

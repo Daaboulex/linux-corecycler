@@ -269,6 +269,40 @@ def harvest_kernel_mce(since_utc_iso: str, timeout: float = 15.0) -> tuple[list[
     return events, True
 
 
+def kernel_log_problem(kmsg: Path | None = None, timeout: float = 15.0) -> str | None:
+    path = KMSG if kmsg is None else kmsg
+    try:
+        os.close(os.open(path, os.O_RDONLY | os.O_NONBLOCK))
+    except OSError as exc:
+        return f"the kernel log {path} cannot be read: {exc}"
+    try:
+        result = subprocess.run(
+            [
+                tools.command_name("journalctl"),
+                "-q",
+                "--no-pager",
+                "-o",
+                "short-unix",
+                "-b",
+                "0",
+                "-n",
+                "1",
+                "_TRANSPORT=kernel",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return f"the kernel journal cannot be read: {exc}"
+    if result.returncode != 0:
+        reason = result.stderr.strip()[:200]
+        return f"the kernel journal cannot be read: journalctl exited {result.returncode}: {reason}"
+    if not result.stdout.strip():
+        return "the kernel journal shows no kernel record for this boot, so it cannot be read"
+    return None
+
+
 def last_boot_ended_cleanly(timeout: float = 15.0) -> bool:
     try:
         result = subprocess.run(

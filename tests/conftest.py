@@ -742,6 +742,13 @@ def no_real_forensics(monkeypatch):
     monkeypatch.setattr(engine_mod, "harvest_kernel_mce", lambda since, timeout=15.0: ([], True))
 
 
+@pytest.fixture(autouse=True)
+def readable_kernel_log(monkeypatch):
+    import corecycler.tuner.engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "kernel_log_problem", lambda: None)
+
+
 @pytest.fixture(scope="session")
 def empty_kernel_log(tmp_path_factory):
     path = tmp_path_factory.mktemp("kernel-log") / "kmsg"
