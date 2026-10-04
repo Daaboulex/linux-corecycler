@@ -24,17 +24,11 @@ from corecycler.engine.topology import CPUTopology, PhysicalCore
 class RecordingBackend:
     name = "fake"
 
-    def __init__(self) -> None:
-        self.cleaned: list[tuple[Path, bool]] = []
-
     def prepare(self, work_dir, config) -> None:
         pass
 
     def assert_prepared(self, work_dir) -> None:
         pass
-
-    def cleanup(self, work_dir, *, preserve_on_error: bool = False) -> None:
-        self.cleaned.append((Path(work_dir), preserve_on_error))
 
 
 class ScriptedSupervisor:
@@ -205,8 +199,7 @@ class TestRunOrchestration:
         assert seen == [((0,), 2), ((1, 17), 2)]
 
     def test_a_failed_core_is_recorded_and_the_run_continues(self, tmp_path):
-        backend = RecordingBackend()
-        sched = make_scheduler(tmp_path, backend=backend)
+        sched = make_scheduler(tmp_path)
         ScriptedSupervisor.script = [step_fail, step_pass]
         results = sched.run()
         assert results[0][0].outcome is Outcome.COMPUTATION
@@ -214,8 +207,15 @@ class TestRunOrchestration:
         assert sched.core_status[0].state == "failed"
         assert sched.core_status[0].errors == 1
         assert sched.core_status[0].last_error == "mprime error: FATAL ERROR"
-        assert backend.cleaned[0][1] is True
-        assert backend.cleaned[1][1] is False
+
+    def test_a_failed_cores_evidence_dir_reaches_the_result(self, tmp_path):
+        sched = make_scheduler(tmp_path, cores_to_test=[0])
+        evidence = tmp_path / "work" / "core_0" / "run-20261004T000000000000"
+        kept = StressResult(
+            core_id=0, outcome=Outcome.COMPUTATION, detail="fail", duration_seconds=0.1, evidence_dir=evidence
+        )
+        ScriptedSupervisor.script = [lambda sup, lanes, c, d: {0: kept}]
+        assert sched.run()[0][0].evidence_dir == evidence
 
     def test_stop_on_error_ends_the_run_at_the_failure(self, tmp_path):
         sched = make_scheduler(tmp_path, stop_on_error=True)

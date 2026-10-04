@@ -1,4 +1,4 @@
-"""Edge coverage for backend helpers and tuner persistence wrappers."""
+"""Edge coverage for the tuner persistence wrappers."""
 
 from __future__ import annotations
 
@@ -8,19 +8,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from corecycler.engine.backends.base import StressConfig
-from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.tuner import persistence
-
-
-class TestStressapptestPrepareCleanup:
-    def test_prepare_creates_work_dir(self, tmp_path):
-        work = tmp_path / "sat"
-        StressapptestBackend().prepare(work, StressConfig())
-        assert work.exists()
-
-    def test_cleanup_noop(self, tmp_path):
-        StressapptestBackend().cleanup(tmp_path)
 
 
 class TestPersistenceWrappers:

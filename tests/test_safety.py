@@ -29,8 +29,6 @@ from test_execution import DEAF_TO_SIGTERM, FakeBackend, _child, lane, make_supe
 from corecycler.engine import execution
 from corecycler.engine.backends.base import StressConfig
 from corecycler.engine.backends.mprime import MprimeBackend
-from corecycler.engine.backends.stress_ng import StressNgBackend
-from corecycler.engine.backends.ycruncher import YCruncherBackend
 from corecycler.engine.detector import ErrorDetector
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig, TestState
 from corecycler.engine.topology import CPUTopology, PhysicalCore
@@ -299,6 +297,7 @@ class TestBackendSafety:
     def test_mprime_prepare_stays_in_work_dir(self, tmp_path):
         """mprime prepare must only create files within work_dir."""
         work = tmp_path / "work"
+        work.mkdir()
         backend = MprimeBackend()
         backend.prepare(work, StressConfig())
 
@@ -309,38 +308,6 @@ class TestBackendSafety:
         # Nothing outside work dir
         sibling = tmp_path / "sibling.txt"
         assert not sibling.exists()
-
-    def test_mprime_cleanup_only_removes_known_files(self, tmp_path):
-        """Cleanup must only remove mprime-specific files."""
-        backend = MprimeBackend()
-        backend.prepare(tmp_path, StressConfig())
-
-        # Add an external file
-        (tmp_path / "user_data.txt").write_text("important")
-
-        backend.cleanup(tmp_path)
-
-        # mprime files should be gone
-        assert not (tmp_path / "prime.txt").exists()
-        assert not (tmp_path / "local.txt").exists()
-
-        # external file must survive
-        assert (tmp_path / "user_data.txt").exists()
-        assert (tmp_path / "user_data.txt").read_text() == "important"
-
-    def test_stress_ng_prepare_stays_in_work_dir(self, tmp_path):
-        work = tmp_path / "work"
-        backend = StressNgBackend()
-        backend.prepare(work, StressConfig())
-        assert work.exists()
-        # stress-ng prepare only creates the directory
-        assert list(work.iterdir()) == []
-
-    def test_ycruncher_prepare_stays_in_work_dir(self, tmp_path):
-        work = tmp_path / "work"
-        backend = YCruncherBackend()
-        backend.prepare(work, StressConfig())
-        assert work.exists()
 
     def test_mprime_prepare_doesnt_clobber_existing(self, tmp_path):
         """Prepare should not delete existing files in work_dir."""

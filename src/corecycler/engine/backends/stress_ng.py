@@ -61,14 +61,8 @@ class StressNgBackend(StressBackend):
     def get_supported_modes(self) -> list[StressMode]:
         return [StressMode.SSE, StressMode.AVX, StressMode.AVX2]
 
-    def prepare(self, work_dir: Path, config: StressConfig) -> None:
-        work_dir.mkdir(parents=True, exist_ok=True)
-
     def findings(self, output: str, work_dir: Path) -> tuple[LaneSignal, ...]:
         return scan(output, FINDINGS)
-
-    def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
-        pass
 
 
 def _mode_to_method(mode: StressMode) -> str:

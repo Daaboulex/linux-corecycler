@@ -6,15 +6,17 @@ import contextlib
 import logging
 import math
 import os
+import shutil
 import signal
 import subprocess
 import time
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from corecycler.engine import containment
-from corecycler.engine.backends.base import LaneSignal, Outcome, StressResult
+from corecycler.engine.backends.base import LaneSignal, Outcome, StressResult, read_text
 
 if TYPE_CHECKING:
     import threading
@@ -33,9 +35,10 @@ LOAD_FLOOR_FRACTION = 0.5
 STALL_BUSY_FRACTION = 0.05
 STOP_GRACE_SECONDS = 3.0
 KILL_WAIT_SECONDS = 2.0
-DRAIN_SECONDS = 2.0
 SIGNAL_EXIT_BASE = 128
 DETAIL_TAIL_LINES = 5
+STDOUT_LOG = "stdout.log"
+STDERR_LOG = "stderr.log"
 CPU_SIGNALS: frozenset[signal.Signals] = frozenset({signal.SIGILL, signal.SIGBUS, signal.SIGFPE, signal.SIGSEGV})
 _SHOWS_LAST_OUTPUT: frozenset[Outcome] = frozenset({Outcome.NOT_STARTED, Outcome.UNEXPLAINED, Outcome.NO_WORK_DONE})
 
@@ -54,6 +57,7 @@ class Lane:
 @dataclass(slots=True)
 class _LaneRun:
     lane: Lane
+    run_dir: Path | None = None
     proc: subprocess.Popen | None = None
     started_at: float = 0.0
     deadline: float = math.inf
@@ -67,8 +71,7 @@ class _LaneRun:
     cpu_sampled_at: float = 0.0
     unit: str | None = None
     cgroup: str | None = None
-    stdout: str = ""
-    stderr: str = ""
+    output: str = ""
 
     @property
     def alive(self) -> bool:
@@ -277,31 +280,38 @@ class Supervisor:
             self._watch(runs, start, start + duration)
         finally:
             self._stop_all(runs)
+        for run in runs:
+            if run.proc is not None:
+                self._scan_output(run)
         self._take_kernel_events(runs)
         return {run.lane.core_id: self._grade(run) for run in runs}
 
     def _launch(self, run: _LaneRun, cfg: StressConfig) -> bool:
         lane = run.lane
+        run_dir = lane.work_dir / f"run-{datetime.now(UTC):%Y%m%dT%H%M%S%f}"
         try:
-            self.backend.prepare(lane.work_dir, cfg)
-            self.backend.assert_prepared(lane.work_dir)
+            run_dir.mkdir(parents=True)
+            run.run_dir = run_dir
+            self.backend.prepare(run_dir, cfg)
+            self.backend.assert_prepared(run_dir)
             contained = self._containment_for(lane.cpus)
             prefix = contained.prefix if contained is not None else []
             run.unit = contained.unit if contained is not None else None
-            cmd = prefix + self.backend.get_command(cfg, lane.work_dir)
+            cmd = prefix + self.backend.get_command(cfg, run_dir)
         except (OSError, RuntimeError) as exc:
             log.error("core %d: refusing stress launch: %s", lane.core_id, exc)
             run.signals.append(LaneSignal(Outcome.NOT_STARTED, f"Failed to start stress test: {exc}"))
             return False
         try:
-            run.proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=str(lane.work_dir),
-                preexec_fn=make_preexec(),
-            )
+            with (run_dir / STDOUT_LOG).open("wb") as stdout, (run_dir / STDERR_LOG).open("wb") as stderr:
+                run.proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout,
+                    stderr=stderr,
+                    cwd=run_dir,
+                    preexec_fn=make_preexec(),
+                )
         except (OSError, RuntimeError, TypeError) as exc:
             log.error("core %d: stress process failed to start: %s", lane.core_id, exc)
             run.signals.append(LaneSignal(Outcome.NOT_STARTED, f"Failed to start stress test: {exc}"))
@@ -334,7 +344,7 @@ class Supervisor:
                 last_scan = now
                 for run in runs:
                     if run.alive:
-                        run.findings = self.backend.findings("", run.lane.work_dir)
+                        self._scan_output(run)
             if any(run.faulted for run in runs) or not any(run.alive for run in runs):
                 return
             for run in runs:
@@ -347,6 +357,7 @@ class Supervisor:
         if run.proc.poll() is not None:
             run.stopped_at = now
             self._note_exit(run)
+            self._scan_output(run)
             return
         if run.unit is not None and now - run.last_watchdog >= WATCHDOG_INTERVAL:
             run.last_watchdog = now
@@ -375,19 +386,22 @@ class Supervisor:
                 if found is not None:
                     run.signals.append(found)
 
-    def _note_exit(self, run: _LaneRun) -> None:
-        if run.proc.returncode is not None:
-            try:
-                run.stdout, run.stderr = run.proc.communicate(timeout=DRAIN_SECONDS)
-            except (subprocess.TimeoutExpired, ValueError, OSError) as exc:
-                log.error("core %d: stress output unreadable: %s", run.lane.core_id, exc)
-                run.signals.append(
-                    LaneSignal(Outcome.UNVERIFIED, f"stress output unreadable ({exc}): verdict unavailable")
-                )
-            found = exit_signal(run.proc.returncode, run.sent)
-            if found is not None:
-                run.signals.append(found)
-        run.findings = self.backend.findings(run.stdout + "\n" + run.stderr, run.lane.work_dir)
+    @staticmethod
+    def _note_exit(run: _LaneRun) -> None:
+        if run.proc.returncode is None:
+            return
+        found = exit_signal(run.proc.returncode, run.sent)
+        if found is not None:
+            run.signals.append(found)
+
+    def _scan_output(self, run: _LaneRun) -> None:
+        unreadable: tuple[LaneSignal, ...] = ()
+        try:
+            run.output = read_text(run.run_dir / STDOUT_LOG) + "\n" + read_text(run.run_dir / STDERR_LOG)
+        except OSError as exc:
+            log.error("core %d: stress output unreadable: %s", run.lane.core_id, exc)
+            unreadable = (LaneSignal(Outcome.UNVERIFIED, f"stress output unreadable ({exc}): verdict unavailable"),)
+        run.findings = (*self.backend.findings(run.output, run.run_dir), *unreadable)
 
     def _containment_fault(self, run: _LaneRun, now: float) -> str | None:
         if run.proc is None or run.unit is None:
@@ -496,10 +510,25 @@ class Supervisor:
             outcome, detail = Outcome.NO_WORK_DONE, no_work
         else:
             outcome, detail = Outcome.PASS, ""
-        tail = _tail(run.stdout + "\n" + run.stderr)
+        tail = _tail(run.output)
         if outcome in _SHOWS_LAST_OUTPUT and tail:
             detail = f"{detail}; last output: {tail}"
-        return StressResult(core_id=run.lane.core_id, outcome=outcome, detail=detail, duration_seconds=run.duration())
+        evidence_dir = run.run_dir
+        if outcome is Outcome.PASS:
+            evidence_dir = None
+            try:
+                shutil.rmtree(run.run_dir)
+            except OSError as exc:
+                log.error("core %d: removing the passed run dir %s failed: %s", run.lane.core_id, run.run_dir, exc)
+        if evidence_dir is not None:
+            detail = f"{detail}; evidence: {evidence_dir}"
+        return StressResult(
+            core_id=run.lane.core_id,
+            outcome=outcome,
+            detail=detail,
+            duration_seconds=run.duration(),
+            evidence_dir=evidence_dir,
+        )
 
 
 def watch_idle(

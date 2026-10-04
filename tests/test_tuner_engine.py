@@ -1959,9 +1959,6 @@ def make_test_engine(cfg: TunerConfig) -> TunerEngine:
         def prepare(self, work_dir, config):
             work_dir.mkdir(parents=True, exist_ok=True)
 
-        def cleanup(self, work_dir, *, preserve_on_error=False):
-            pass
-
     backend = _MockBackend()
     return TunerEngine(db=db, topology=topo, smu=smu, backend=backend, config=cfg)
 

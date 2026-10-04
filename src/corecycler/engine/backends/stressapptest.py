@@ -60,9 +60,3 @@ class StressapptestBackend(StressBackend):
 
     def get_supported_modes(self) -> list[StressMode]:
         return [StressMode.SSE]
-
-    def prepare(self, work_dir: Path, config: StressConfig) -> None:
-        work_dir.mkdir(parents=True, exist_ok=True)
-
-    def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
-        pass

@@ -119,12 +119,6 @@ class MprimeBackend(StressBackend):
         return list(FFTPreset)
 
     def prepare(self, work_dir: Path, config: StressConfig) -> None:
-        work_dir.mkdir(parents=True, exist_ok=True)
-        for leftover in ("results.txt", "prime.log", "prime.spl"):
-            p = work_dir / leftover
-            if p.exists():
-                p.unlink()
-
         # determine FFT range
         if config.fft_preset == FFTPreset.CUSTOM and config.fft_min and config.fft_max:
             fft_min, fft_max = config.fft_min, config.fft_max
@@ -213,17 +207,3 @@ class MprimeBackend(StressBackend):
             unreadable = LaneSignal(Outcome.UNVERIFIED, f"results.txt unreadable ({exc}): verdict unavailable")
             return (*scan(output, FINDINGS), unreadable)
         return scan(output + "\n" + results, FINDINGS)
-
-    def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
-        # On failure, preserve results.txt/prime.log for post-mortem — but RENAMED,
-        # so a later run in the same work dir can never re-parse the old error as
-        # its own.
-        if preserve_on_error:
-            for f in ("results.txt", "prime.log"):
-                p = work_dir / f
-                if p.exists():
-                    p.replace(work_dir / f"failed-{f}")
-        for f in ("prime.txt", "local.txt", "prime.log", "results.txt", "prime.spl"):
-            p = work_dir / f
-            if p.exists():
-                p.unlink()

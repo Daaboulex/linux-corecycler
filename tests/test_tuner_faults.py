@@ -182,9 +182,6 @@ class _StubBackend(StressBackend):
     def prepare(self, work_dir, config):
         pass
 
-    def cleanup(self, work_dir, *, preserve_on_error: bool = False):
-        pass
-
 
 def _make_topo(n_cores: int, n_ccds: int):
     """Build a CPUTopology with n_cores spread across n_ccds (no sysfs needed)."""

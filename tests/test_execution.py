@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import itertools
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from corecycler.config.tools import Resolution
 from corecycler.engine import containment, execution
 from corecycler.engine.backends.base import LaneSignal, Outcome, StressBackend, StressConfig, StressMode
 from corecycler.engine.backends.mprime import MprimeBackend
+from corecycler.engine.backends.stress_ng import StressNgBackend
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.execution import (
     Lane,
@@ -82,9 +84,9 @@ sys.exit(0)
 """
 
 CORE_0_FAILS_ONCE_CORE_1_IS_READY = """
-import os, sys, time
-if os.path.basename(os.getcwd()) == "core_0":
-    while not os.path.exists("../core_1/ready"):
+import glob, os, sys, time
+if os.path.basename(os.path.dirname(os.getcwd())) == "core_0":
+    while not glob.glob("../../core_1/run-*/ready"):
         time.sleep(0.01)
     time.sleep(0.1)
     print("fake error: FATAL", flush=True)
@@ -121,9 +123,66 @@ while time.monotonic() - started < 0.3:
 sys.exit(7)
 """
 
+FAIL_LINE = "stress-ng: fail:  [1] cpu: verification failed"
+
+PRINTS_A_FAIL_THEN_RUNS = f"""
+import time
+print({FAIL_LINE!r}, flush=True)
+time.sleep(30)
+"""
+
+FAILS_AT_ONCE = f"""
+import sys
+print({FAIL_LINE!r}, flush=True)
+sys.exit(2)
+"""
+
+MISCOMPARE_MID_RUN = """
+import time
+time.sleep(0.2)
+print("Report Error: miscompare : DIMM0 : 1 : 3s", flush=True)
+time.sleep(60)
+"""
+
+FLOODS_ITS_OUTPUT = """
+import sys, time
+sys.stdout.write("x" * 300_000)
+sys.stdout.flush()
+open(sys.argv[1], "w").close()
+time.sleep(30)
+"""
+
+BAD_BYTE_THEN_FAIL = """
+import sys
+sys.stdout.buffer.write(b"\\xffstress-ng: fail:  [1] cpu: x\\n")
+sys.stdout.flush()
+sys.exit(2)
+"""
+
+LEADER_FAILS_WHILE_A_CHILD_HOLDS_THE_OUTPUT = f"""
+import os, sys, time
+if os.fork() == 0:
+    time.sleep(30)
+    os._exit(0)
+print({FAIL_LINE!r}, flush=True)
+sys.exit(2)
+"""
+
+WRITES_IN_ITS_CWD = 'import time; open("scratch", "w").close(); time.sleep(30)'
+
+REMOVES_ITS_OWN_LOG = 'import os, time; os.remove("stdout.log"); time.sleep(30)'
+
 
 def _child(code: str) -> list[str]:
     return [sys.executable, "-c", code]
+
+
+def scripted(backend: type[StressBackend], code: str) -> StressBackend:
+    class Scripted(backend):
+        def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
+            return _child(code)
+
+    return Scripted()
 
 
 def gone(pid: int) -> bool:
@@ -161,7 +220,6 @@ class FakeBackend(StressBackend):
         self.assert_exc = assert_exc
         self.prepared: list[Path] = []
         self.configs: list[StressConfig] = []
-        self.cleaned: list[tuple[Path, bool]] = []
 
     def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
         self.configs.append(config)
@@ -176,15 +234,11 @@ class FakeBackend(StressBackend):
     def prepare(self, work_dir: Path, config: StressConfig) -> None:
         if self.prepare_exc is not None:
             raise self.prepare_exc
-        work_dir.mkdir(parents=True, exist_ok=True)
         self.prepared.append(work_dir)
 
     def assert_prepared(self, work_dir: Path) -> None:
         if self.assert_exc is not None:
             raise self.assert_exc
-
-    def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
-        self.cleaned.append((work_dir, preserve_on_error))
 
 
 class ReadsFatal(FakeBackend):
@@ -387,7 +441,7 @@ class TestOutcomeGrading:
     def test_every_lane_gets_an_outcome_after_a_launch_failure(self, tmp_path):
         class RefusesLaneZero(FakeBackend):
             def prepare(self, work_dir: Path, config: StressConfig) -> None:
-                if work_dir.name == "core_0":
+                if work_dir.parent.name == "core_0":
                     raise OSError("read-only work dir")
                 super().prepare(work_dir, config)
 
@@ -401,17 +455,6 @@ class TestOutcomeGrading:
         verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.COMPUTATION
         assert "Rounding" in verdict.detail
-
-    def test_output_a_child_still_holds_is_never_a_pass(self, tmp_path):
-        supervisor, _, _ = make_supervisor(FakeBackend(_child(LEAVES_A_CHILD)))
-        one = lane(tmp_path)
-        with one_busy_cpu():
-            verdict = run_one(supervisor, one, 0.3)
-        stray = int((one.work_dir / "stray.pid").read_text())
-        with contextlib.suppress(ProcessLookupError):
-            os.kill(stray, signal.SIGKILL)
-        assert verdict.outcome is Outcome.UNVERIFIED
-        assert "output unreadable" in verdict.detail
 
     @pytest.mark.parametrize(
         ("returncode", "sent", "expected"),
@@ -596,7 +639,7 @@ class TestTeardown:
         stopped: list[float] = []
 
         def stop_once_every_lane_ignores_sigterm() -> None:
-            within(10.0, lambda: all((one.work_dir / "ready").exists() for one in lanes))
+            within(10.0, lambda: all(any(one.work_dir.glob("run-*/ready")) for one in lanes))
             stopped.append(time.monotonic())
             stop.set()
 
@@ -613,9 +656,8 @@ class TestTeardown:
     def test_a_payload_child_does_not_outlive_its_lane(self, tmp_path):
         backend = FakeBackend(_child(LEAVES_A_CHILD))
         supervisor, _, _ = make_supervisor(backend)
-        one = lane(tmp_path)
-        run_one(supervisor, one, 5.0)
-        stray = int((one.work_dir / "stray.pid").read_text())
+        verdict = run_one(supervisor, lane(tmp_path), 5.0)
+        stray = int((verdict.evidence_dir / "stray.pid").read_text())
         try:
             assert within(1.0, lambda: gone(stray))
         finally:
@@ -645,6 +687,78 @@ class TestTeardown:
             verdict = run_one(supervisor, lane(tmp_path), 1.0)
         assert verdict.outcome is Outcome.PASS
         assert verdict.duration_seconds < 1.5
+
+
+class TestOutputFiles:
+    def test_output_printed_before_the_deadline_is_graded(self, tmp_path):
+        supervisor, _, _ = make_supervisor(scripted(StressNgBackend, PRINTS_A_FAIL_THEN_RUNS))
+        with one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path), 0.5)
+        assert verdict.outcome is Outcome.COMPUTATION
+        assert "verification failed" in verdict.detail
+
+    def test_an_error_printed_mid_run_stops_the_test_within_one_scan(self, tmp_path):
+        supervisor, _, _ = make_supervisor(scripted(StressapptestBackend, MISCOMPARE_MID_RUN))
+        started = time.monotonic()
+        with patch.object(execution, "OUTPUT_SCAN_INTERVAL", 0.2):
+            verdict = run_one(supervisor, lane(tmp_path), 30.0)
+        assert time.monotonic() - started < 3.0
+        assert verdict.outcome is Outcome.COMPUTATION
+        assert "miscompare" in verdict.detail
+
+    def test_output_beyond_the_pipe_capacity_never_blocks_the_payload(self, tmp_path):
+        marker = tmp_path / "wrote-it-all"
+        supervisor, _, _ = make_supervisor(FakeBackend([*_child(FLOODS_ITS_OUTPUT), str(marker)]))
+        run_one(supervisor, lane(tmp_path), 1.0)
+        assert marker.exists()
+
+    def test_a_bad_byte_does_not_erase_the_output(self, tmp_path):
+        supervisor, _, _ = make_supervisor(scripted(StressNgBackend, BAD_BYTE_THEN_FAIL))
+        verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        assert verdict.outcome is Outcome.COMPUTATION
+        assert "fail" in verdict.detail
+
+    def test_a_child_holding_the_output_cannot_hide_the_leaders_text(self, tmp_path):
+        supervisor, _, _ = make_supervisor(scripted(StressNgBackend, LEADER_FAILS_WHILE_A_CHILD_HOLDS_THE_OUTPUT))
+        verdict = run_one(supervisor, lane(tmp_path), 5.0)
+        assert verdict.outcome is Outcome.COMPUTATION
+        assert "verification failed" in verdict.detail
+
+    def test_a_failed_tests_logs_stay_and_a_passed_tests_go(self, tmp_path):
+        failing = lane(tmp_path, 0)
+        supervisor, _, _ = make_supervisor(scripted(StressNgBackend, FAILS_AT_ONCE))
+        failed = run_one(supervisor, failing, 2.0)
+        assert failed.outcome is Outcome.COMPUTATION
+        assert failed.evidence_dir is not None
+        assert failed.evidence_dir.parent == failing.work_dir
+        assert re.fullmatch(r"run-\d{8}T\d{12}", failed.evidence_dir.name)
+        assert FAIL_LINE in (failed.evidence_dir / execution.STDOUT_LOG).read_text()
+        assert f"evidence: {failed.evidence_dir}" in failed.detail
+        passing = lane(tmp_path, 1, (1,))
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(WRITES_IN_ITS_CWD)))
+        with one_busy_cpu():
+            passed = run_one(supervisor, passing, 0.5)
+        assert passed.outcome is Outcome.PASS
+        assert passed.evidence_dir is None
+        assert "evidence" not in passed.detail
+        assert list(passing.work_dir.rglob("*")) == []
+
+    def test_an_unreadable_output_log_is_never_a_pass(self, tmp_path):
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(REMOVES_ITS_OWN_LOG)))
+        with one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path), 0.5)
+        assert verdict.outcome is Outcome.UNVERIFIED
+        assert "stdout.log" in verdict.detail
+
+    def test_a_passed_run_dir_that_cannot_be_removed_is_logged_as_an_error(self, tmp_path, caplog):
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(WRITES_IN_ITS_CWD)))
+        with (
+            one_busy_cpu(),
+            patch.object(execution.shutil, "rmtree", side_effect=PermissionError("run dir: permission denied")),
+        ):
+            verdict = run_one(supervisor, lane(tmp_path), 0.5)
+        assert verdict.outcome is Outcome.PASS
+        assert {r.levelname for r in caplog.records if "permission denied" in r.getMessage()} == {"ERROR"}
 
 
 class TestMceAttribution:

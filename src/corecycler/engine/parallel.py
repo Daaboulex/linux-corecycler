@@ -98,8 +98,4 @@ class ParallelStress:
             phase="parallel stress",
         )
         graded = supervisor.run(lanes, self.stress_config, float(self.config.seconds_per_core))
-        results = {core: result for core, result in graded.items() if result.outcome is not Outcome.CUT_SHORT}
-        for lane in lanes:
-            failed = lane.core_id in results and not results[lane.core_id].passed
-            self.backend.cleanup(lane.work_dir, preserve_on_error=failed)
-        return results
+        return {core: result for core, result in graded.items() if result.outcome is not Outcome.CUT_SHORT}

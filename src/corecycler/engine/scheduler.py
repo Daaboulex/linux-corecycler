@@ -242,7 +242,6 @@ class CoreScheduler:
         if result.outcome is Outcome.CUT_SHORT:
             status.state = "pending"
             status.current_phase = ""
-            self.backend.cleanup(lane.work_dir, preserve_on_error=False)
             return
         if not result.passed:
             status.errors += 1
@@ -264,7 +263,6 @@ class CoreScheduler:
         self.results[core_id].append(result)
         for cb in self.on_core_finish:
             cb(core_id, result)
-        self.backend.cleanup(lane.work_dir, preserve_on_error=not result.passed)
 
     def _run_variable_load(self, lane: Lane, total_duration: float) -> StressResult:
         self._set_phase(lane.core_id, "variable load")
@@ -367,8 +365,6 @@ class CoreScheduler:
         self.observed_mce = []
         self.detector.reset()
         self._thermal = self._new_thermal()
-        core_work_dir = self.work_dir / "rapid_transition"
-        core_work_dir.mkdir(parents=True, exist_ok=True)
 
         logical_ids = []
         for c in cores:
@@ -383,7 +379,7 @@ class CoreScheduler:
                 detail="Rapid transition harness error: no requested core is in the topology",
                 duration_seconds=0.0,
             )
-        lane = Lane(core_id=anchor, cpus=tuple(sorted(logical_ids)), work_dir=core_work_dir)
+        lane = Lane(core_id=anchor, cpus=tuple(sorted(logical_ids)), work_dir=self.work_dir / "rapid_transition")
 
         elapsed = 0.0
         cycle = 0
@@ -413,7 +409,6 @@ class CoreScheduler:
                             core_id=anchor, outcome=idle.outcome, detail=idle.text, duration_seconds=elapsed
                         )
         finally:
-            self.backend.cleanup(core_work_dir)
             self.state = TestState.FINISHED
         if self._stop_event.is_set():
             return StressResult(

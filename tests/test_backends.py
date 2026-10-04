@@ -164,8 +164,8 @@ class TestBaseBackendBinaryResolution:
         backend = DummyBackend()
         assert backend.get_supported_fft_presets() == []
 
-    def test_default_prepare_and_cleanup(self, tmp_path):
-        """Base class prepare/cleanup are no-ops."""
+    def test_default_prepare_is_a_noop(self, tmp_path):
+        """Base class prepare is a no-op."""
 
         class DummyBackend(StressBackend):
             name = "dummy"
@@ -184,9 +184,8 @@ class TestBaseBackendBinaryResolution:
 
         backend = DummyBackend()
         cfg = StressConfig()
-        # should not raise
         backend.prepare(tmp_path, cfg)
-        backend.cleanup(tmp_path)
+        assert list(tmp_path.iterdir()) == []
 
 
 # ===========================================================================
@@ -344,12 +343,6 @@ class TestMprimeBackend:
         assert "ResultsFile" not in content
         assert "LogFile" not in content
 
-    def test_prepare_creates_work_dir(self, tmp_path):
-        backend = MprimeBackend()
-        work = tmp_path / "sub" / "dir"
-        backend.prepare(work, StressConfig())
-        assert work.exists()
-
     # --- output findings ---
 
     @pytest.mark.parametrize(
@@ -386,54 +379,6 @@ class TestMprimeBackend:
     def test_clean_lines_find_nothing(self, output, tmp_path):
         assert MprimeBackend().findings(output + "\n", tmp_path) == ()
 
-    # --- cleanup tests ---
-
-    def test_cleanup_removes_files(self, tmp_path):
-        backend = MprimeBackend()
-        for f in ("prime.txt", "local.txt", "prime.log", "results.txt", "prime.spl"):
-            (tmp_path / f).write_text("data")
-        backend.cleanup(tmp_path)
-        for f in ("prime.txt", "local.txt", "prime.log", "results.txt", "prime.spl"):
-            assert not (tmp_path / f).exists()
-
-    def test_cleanup_ignores_missing_files(self, tmp_path):
-        backend = MprimeBackend()
-        # should not raise
-        backend.cleanup(tmp_path)
-
-    def test_cleanup_preserves_other_files(self, tmp_path):
-        backend = MprimeBackend()
-        (tmp_path / "important.dat").write_text("keep me")
-        backend.cleanup(tmp_path)
-        assert (tmp_path / "important.dat").exists()
-
-    def test_cleanup_on_error_renames_postmortem_files(self, tmp_path):
-        """A preserved results.txt must be RENAMED, never left in place: mprime
-        appends to results.txt, so a stale FATAL ERROR would be re-parsed by
-        every later run in this work dir as its own failure."""
-        backend = MprimeBackend()
-        (tmp_path / "results.txt").write_text("FATAL ERROR: Rounding was 0.5")
-        (tmp_path / "prime.log").write_text("log")
-        backend.cleanup(tmp_path, preserve_on_error=True)
-        assert not (tmp_path / "results.txt").exists()
-        assert not (tmp_path / "prime.log").exists()
-        assert "FATAL ERROR" in (tmp_path / "failed-results.txt").read_text()
-        assert (tmp_path / "failed-prime.log").read_text() == "log"
-
-    def test_prepare_removes_stale_run_files(self, tmp_path):
-        """prepare() must clean leftovers (abort/hard crash skips cleanup) so a
-        new run never inherits the previous run's errors or savefile."""
-        backend = MprimeBackend()
-        for f in ("results.txt", "prime.log", "prime.spl"):
-            (tmp_path / f).write_text("stale")
-        backend.prepare(tmp_path, StressConfig())
-        for f in ("results.txt", "prime.log", "prime.spl"):
-            assert not (tmp_path / f).exists()
-        # the failed-* post-mortem copies are kept
-        (tmp_path / "failed-results.txt").write_text("post-mortem")
-        backend.prepare(tmp_path, StressConfig())
-        assert (tmp_path / "failed-results.txt").exists()
-
     # --- results file ---
 
     def test_a_fatal_line_in_results_txt_is_a_computation_error(self, tmp_path):
@@ -454,6 +399,8 @@ class TestMprimeBackend:
     def test_each_mprime_lane_reads_its_own_results(self, tmp_path):
         backend = MprimeBackend()
         a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
         backend.prepare(a, StressConfig())
         backend.prepare(b, StressConfig())
         (b / "results.txt").write_text("FATAL ERROR: Rounding was 0.5, expected less than 0.4\n")
@@ -527,12 +474,6 @@ class TestStressNgBackend:
         assert StressMode.AVX2 in modes
         assert StressMode.AVX512 not in modes
 
-    def test_prepare(self, tmp_path):
-        backend = StressNgBackend()
-        work = tmp_path / "work"
-        backend.prepare(work, StressConfig())
-        assert work.exists()
-
     # --- findings ---
 
     @pytest.mark.parametrize(
@@ -551,12 +492,6 @@ class TestStressNgBackend:
 
     def test_a_zero_failure_count_finds_nothing(self, tmp_path):
         assert StressNgBackend().findings("cpu 0 FAILED\ncompleted\n", tmp_path) == ()
-
-    def test_cleanup_noop(self, tmp_path):
-        backend = StressNgBackend()
-        (tmp_path / "test.dat").write_text("data")
-        backend.cleanup(tmp_path)
-        assert (tmp_path / "test.dat").exists()
 
 
 class TestModeToMethod:
@@ -710,16 +645,6 @@ class TestYCruncherBackend:
         assert found and {signal.outcome for signal in found} == {Outcome.COMPUTATION}
         assert any(named in signal.text for signal in found)
         assert not any("\x1b" in signal.text for signal in found)
-
-    def test_prepare(self, tmp_path):
-        backend = YCruncherBackend()
-        work = tmp_path / "ycruncher_work"
-        backend.prepare(work, StressConfig())
-        assert work.exists()
-
-    def test_cleanup_noop(self, tmp_path):
-        backend = YCruncherBackend()
-        backend.cleanup(tmp_path)
 
 
 class TestYCruncherModeMapping:

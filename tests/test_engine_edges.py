@@ -234,9 +234,6 @@ class _ExitedProc:
     def __init__(self, returncode: int) -> None:
         self.returncode = returncode
 
-    def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-        return "", ""
-
 
 class TestSupervisorInternalsEdges:
     def test_status_hooks_report_running_lanes(self, tmp_path):
@@ -322,14 +319,20 @@ class TestSupervisorInternalsEdges:
         supervisor = _idle_supervisor(
             backend=FakeBackend(found=(LaneSignal(Outcome.COMPUTATION, "fake error: FATAL"),))
         )
-        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), stopped_at=5.0, sent=signal.SIGKILL)
+        run = _LaneRun(
+            lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), run_dir=tmp_path, stopped_at=5.0, sent=signal.SIGKILL
+        )
+        (tmp_path / execution.STDOUT_LOG).write_bytes(b"")
+        (tmp_path / execution.STDERR_LOG).write_bytes(b"")
         run.proc = _ExitedProc(-9)
         run.signals.append(LaneSignal(Outcome.DID_NOT_STOP, "stress process did not stop"))
         supervisor._note_exit(run)
+        supervisor._scan_output(run)
         verdict = supervisor._grade(run)
         assert verdict.outcome is Outcome.COMPUTATION
         assert "FATAL" in verdict.detail
         assert "did not stop" in verdict.detail
+        assert verdict.evidence_dir == tmp_path
 
     def test_no_load_window_ever_proves_load(self, tmp_path):
         supervisor = _idle_supervisor()

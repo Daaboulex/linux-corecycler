@@ -178,11 +178,3 @@ class StressBackend(ABC):
         A backend that launches against absent config silently falls back to its
         own defaults (mprime: one self-pinned worker per detected core), so the
         launch must be refused instead. Override where config files exist."""
-
-    def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:  # noqa: B027
-        """Clean up after test run. Override if needed.
-
-        Args:
-            preserve_on_error: If True, keep diagnostic files (results, logs)
-                for post-mortem analysis of failures.
-        """

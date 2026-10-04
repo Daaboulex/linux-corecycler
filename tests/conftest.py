@@ -571,7 +571,6 @@ def mock_backend():
 
         def __init__(self):
             self.prepared_dirs: list[Path] = []
-            self.cleaned_dirs: list[Path] = []
             self.commands_generated: list[list[str]] = []
             self._available = True
 
@@ -592,9 +591,6 @@ def mock_backend():
         def prepare(self, work_dir: Path, config: StressConfig) -> None:
             work_dir.mkdir(parents=True, exist_ok=True)
             self.prepared_dirs.append(work_dir)
-
-        def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
-            self.cleaned_dirs.append(work_dir)
 
     return ControllableMockBackend()
 

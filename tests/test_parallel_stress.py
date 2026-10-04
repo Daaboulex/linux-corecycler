@@ -17,12 +17,6 @@ from corecycler.engine.topology import CPUTopology, PhysicalCore
 class RecordingBackend:
     name = "fake"
 
-    def __init__(self) -> None:
-        self.cleaned: list[tuple[Path, bool]] = []
-
-    def cleanup(self, work_dir, *, preserve_on_error: bool = False) -> None:
-        self.cleaned.append((Path(work_dir), preserve_on_error))
-
 
 class ScriptedSupervisor:
     script: ClassVar[list] = []
@@ -115,8 +109,7 @@ class TestLaneBuilding:
         assert runner.run() == {}
 
     def test_cut_short_lanes_stay_absent_from_the_results(self, tmp_path):
-        backend = RecordingBackend()
-        runner = make_parallel(tmp_path, backend=backend)
+        runner = make_parallel(tmp_path)
 
         def one_fails_one_cut(sup, lanes, config, duration):
             return {0: bad(0), 1: lane_result(1, Outcome.CUT_SHORT, "stopped")}
@@ -125,15 +118,6 @@ class TestLaneBuilding:
         results = runner.run()
         assert list(results) == [0]
         assert results[0].outcome is Outcome.COMPUTATION
-        assert {path.name: flag for path, flag in backend.cleaned} == {"core_0": True, "core_1": False}
-
-    def test_cleanup_preserves_only_failed_lanes(self, tmp_path):
-        backend = RecordingBackend()
-        runner = make_parallel(tmp_path, backend=backend)
-        ScriptedSupervisor.script = [lambda sup, lanes, c, d: {0: bad(0), 1: ok(1)}]
-        runner.run()
-        preserve = {path.name: flag for path, flag in backend.cleaned}
-        assert preserve == {"core_0": True, "core_1": False}
 
     def test_a_reused_instance_starts_clean(self, tmp_path):
         runner = make_parallel(tmp_path)

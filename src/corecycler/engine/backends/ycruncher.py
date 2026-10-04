@@ -60,11 +60,5 @@ class YCruncherBackend(StressBackend):
     def get_supported_modes(self) -> list[StressMode]:
         return [StressMode.SSE, StressMode.AVX, StressMode.AVX2, StressMode.AVX512]
 
-    def prepare(self, work_dir: Path, config: StressConfig) -> None:
-        work_dir.mkdir(parents=True, exist_ok=True)
-
     def findings(self, output: str, work_dir: Path) -> tuple[LaneSignal, ...]:
         return scan(_ANSI_RE.sub("", output), FINDINGS)
-
-    def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
-        pass

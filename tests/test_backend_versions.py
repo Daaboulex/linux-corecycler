@@ -87,7 +87,6 @@ def test_each_mode_produces_its_own_fft_path(mode, tmp_path):
     finally:
         os.killpg(proc.pid, signal.SIGKILL)
         proc.wait(timeout=10)
-        backend.cleanup(tmp_path)
 
 
 def _flags_in_help(binary_key: str, names: tuple[str, ...], flags: set[str]) -> None:

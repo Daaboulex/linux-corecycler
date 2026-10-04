@@ -1,6 +1,6 @@
 """End-to-end stale-results coverage on the REAL CoreScheduler subprocess path
-(fake mprime + the real MprimeBackend prepare/findings/cleanup):
-a preserved failure file must never be re-parsed as a later run's verdict, and
+(fake mprime + the real MprimeBackend prepare/findings):
+a failed run's kept evidence must never be re-parsed as a later run's verdict, and
 an error landing only in results.txt is caught by the live poll, not at end.
 """
 
@@ -100,7 +100,7 @@ class TestStaleResultsDisasterReplay:
 
     def test_failure_cannot_poison_the_next_run(self, tmp_path, exec_dir):
         """After a genuine failure, a CLEAN run in the same per-core work dir
-        must PASS — the preserved results.txt must not poison it."""
+        must PASS: the failed run's kept results.txt must not poison it."""
         work_dir = tmp_path / "work"
 
         # Run 1: genuine failure (error in results.txt).
@@ -116,10 +116,9 @@ class TestStaleResultsDisasterReplay:
         first = _run_one(backend, work_dir, seconds=20)
         assert first.passed is False
 
-        core_dir = work_dir / "core_0"
-        # post-mortem preserved under a name no parser ever reads again
-        assert (core_dir / "failed-results.txt").exists()
-        assert not (core_dir / "results.txt").exists()
+        assert first.evidence_dir is not None
+        assert first.evidence_dir.parent == work_dir / "core_0"
+        assert "FATAL ERROR" in (first.evidence_dir / "results.txt").read_text()
 
         # Run 2: clean run in the SAME work dir.
         clean_bin = _fake_mprime(
@@ -136,9 +135,9 @@ class TestStaleResultsDisasterReplay:
         assert second.passed is True, f"clean run poisoned by the previous failure: {second.detail}"
 
     def test_planted_stale_results_file_cannot_fail_a_clean_run(self, tmp_path, exec_dir):
-        """Belt and braces: even a results.txt left behind by an abort or hard
-        crash (cleanup never ran) must not leak into the next verdict —
-        prepare() starts every run from a clean slate."""
+        """Belt and braces: even a results.txt left in the per-core work dir
+        by an older version must not leak into the next verdict: every run
+        starts in a fresh run dir."""
         work_dir = tmp_path / "work"
         core_dir = work_dir / "core_0"
         core_dir.mkdir(parents=True)
