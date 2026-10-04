@@ -17,11 +17,12 @@ from unittest.mock import patch
 import pytest
 
 from corecycler.config.tools import Resolution
-from corecycler.engine import containment, execution
+from corecycler.engine import containment, execution, topology
 from corecycler.engine.backends.base import LaneSignal, Outcome, StressBackend, StressConfig, StressMode
 from corecycler.engine.backends.mprime import MprimeBackend
 from corecycler.engine.backends.stress_ng import StressNgBackend
 from corecycler.engine.backends.stressapptest import StressapptestBackend
+from corecycler.engine.backends.ycruncher import YCruncherBackend
 from corecycler.engine.execution import (
     Lane,
     SuperviseHooks,
@@ -167,6 +168,10 @@ if os.fork() == 0:
 print({FAIL_LINE!r}, flush=True)
 sys.exit(2)
 """
+
+SEGFAULTS = "import os, signal, time; time.sleep(0.05); os.kill(os.getpid(), signal.SIGSEGV)"
+
+LAUNCHER_AFTER_ITS_CHILD_SEGFAULTED = "import sys; sys.exit(11)"
 
 WRITES_IN_ITS_CWD = 'import time; open("scratch", "w").close(); time.sleep(30)'
 
@@ -401,6 +406,28 @@ class TestOutcomeGrading:
     def test_a_cpu_signal_death_at_once_is_silicon(self, tmp_path):
         code = "import os, signal, time; time.sleep(0.05); os.kill(os.getpid(), signal.SIGSEGV)"
         supervisor, _, _ = make_supervisor(FakeBackend(_child(code)))
+        verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        assert verdict.outcome is Outcome.CPU_SIGNAL
+        assert "SIGSEGV" in verdict.detail
+
+    def test_a_compute_crash_is_silicon(self, tmp_path, monkeypatch):
+        root = tmp_path / "y-cruncher"
+        (root / "Binaries").mkdir(parents=True)
+        compute = root / "Binaries" / "05-A64 ~ Kasumi"
+        compute.write_text("")
+        (root / "y-cruncher").write_text("")
+        cpuinfo = tmp_path / "cpuinfo"
+        cpuinfo.write_text("processor\t: 0\nvendor_id\t: AuthenticAMD\nflags\t\t: fpu lm pni\n")
+        monkeypatch.setattr(topology, "CPUINFO", cpuinfo)
+
+        class CrashesInCompute(YCruncherBackend):
+            def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
+                started = super().get_command(config, work_dir)[0]
+                return _child(SEGFAULTS if started == str(compute) else LAUNCHER_AFTER_ITS_CHILD_SEGFAULTED)
+
+        backend = CrashesInCompute()
+        backend._binary = str(root / "y-cruncher")
+        supervisor, _, _ = make_supervisor(backend)
         verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.CPU_SIGNAL
         assert "SIGSEGV" in verdict.detail

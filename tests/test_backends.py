@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -9,6 +10,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from corecycler.engine import topology
+from corecycler.engine.backends import ycruncher
 from corecycler.engine.backends.base import (
     FFTPreset,
     LaneSignal,
@@ -625,6 +628,80 @@ Invalid Parameter: SSE
 Press ENTER to continue . . .
 """
 
+_CAPTURED_ALGORITHM_FAILURE = """\
+Exception Encountered: AlgorithmFailedException
+In Function: FFTv4::fixup_bottom()
+Bottom word mismatch.
+"""
+
+_YCRUNCHER_BINARIES = (
+    "24-ZN5 ~ Komari",
+    "22-ZN4 ~ Kizuna",
+    "19-ZN2 ~ Kagari",
+    "17-ZN1 ~ Yukina",
+    "12-BD2 ~ Miyu",
+    "18-CNL ~ Shinoa",
+    "17-SKX ~ Kotori",
+    "14-BDW ~ Kurumi",
+    "13-HSW ~ Airi",
+    "11-SNB ~ Hina",
+    "08-NHM ~ Ushio",
+    "05-A64 ~ Kasumi",
+)
+
+_ZEN1_FLAGS = (
+    "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht "
+    "syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl nonstop_tsc cpuid pni pclmulqdq "
+    "monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm svm abm sse4a "
+    "misalignsse 3dnowprefetch topoext perfctr_core cpb hw_pstate fsgsbase bmi1 avx2 smep bmi2 rdseed adx "
+    "smap clflushopt sha_ni xsaveopt xsavec xgetbv1 xsaves clzero arat npt overflow_recov succor smca"
+)
+_ZEN3_FLAGS = _ZEN1_FLAGS + " clwb wbnoinvd umip pku ospke vaes vpclmulqdq rdpid fsrm"
+_ZEN4_FLAGS = _ZEN3_FLAGS + (
+    " avx512f avx512dq avx512ifma avx512cd avx512bw avx512vl avx512_bf16 avx512vbmi avx512_vbmi2 gfni"
+    " avx512_vnni avx512_bitalg avx512_vpopcntdq"
+)
+_ZEN5_FLAGS = _ZEN4_FLAGS + " movdiri movdir64b avx512_vp2intersect"
+_HASWELL_FLAGS = (
+    "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse "
+    "sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc arch_perfmon rep_good nopl xtopology "
+    "nonstop_tsc cpuid aperfmperf pni pclmulqdq monitor vmx est ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic "
+    "movbe popcnt aes xsave avx f16c rdrand lahf_lm abm fsgsbase bmi1 avx2 smep bmi2 erms invpcid xsaveopt"
+)
+_ALDER_LAKE_FLAGS = _HASWELL_FLAGS + " adx rdseed smap clflushopt clwb sha_ni umip gfni vaes vpclmulqdq rdpid"
+
+
+def _install(root: Path, names: tuple[str, ...] = _YCRUNCHER_BINARIES) -> Path:
+    (root / "Binaries").mkdir(parents=True)
+    for name in names:
+        (root / "Binaries" / name).write_text("")
+    launcher = root / "y-cruncher"
+    launcher.write_text("")
+    return launcher
+
+
+def _on_cpu(monkeypatch, tmp_path: Path, vendor: str, *flag_lines: str) -> None:
+    cpuinfo = tmp_path / "cpuinfo"
+    cpuinfo.write_text(
+        "".join(
+            f"processor\t: {n}\nvendor_id\t: {vendor}\nflags\t\t: {flags}\n\n" for n, flags in enumerate(flag_lines)
+        )
+    )
+    monkeypatch.setattr(topology, "CPUINFO", cpuinfo)
+
+
+def _prepared(launcher: Path, tmp_path: Path, config: StressConfig | None = None) -> tuple[YCruncherBackend, Path]:
+    backend = YCruncherBackend()
+    backend._binary = str(launcher)
+    work_dir = tmp_path / "run"
+    work_dir.mkdir(exist_ok=True)
+    backend.prepare(work_dir, config or StressConfig(cpus=(3,)))
+    return backend, work_dir
+
+
+def _config_fields(work_dir: Path) -> dict[str, str]:
+    return dict(re.findall(r"^\s*(\w+) : (.+)$", (work_dir / "stress.cfg").read_text(), re.MULTILINE))
+
 
 class TestYCruncherBackend:
     def test_name(self):
@@ -646,55 +723,155 @@ class TestYCruncherBackend:
         on_path({})
         assert YCruncherBackend().is_available() is False
 
-    def test_get_command_sse_selects_scalar_algorithm(self, tmp_path):
-        backend = YCruncherBackend()
-        backend._binary = "/bin/y-cruncher"
-        cmd = backend.get_command(StressConfig(mode=StressMode.SSE), tmp_path)
-        assert cmd == [
-            "/bin/y-cruncher",
+    def test_prepare_picks_the_best_binary_this_cpu_can_run(self, tmp_path, monkeypatch):
+        launcher = _install(tmp_path / "yc")
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS)
+        backend, work_dir = _prepared(launcher, tmp_path)
+        command = backend.get_command(StressConfig(cpus=(3,)), work_dir)
+        assert command[0] == str(launcher.parent / "Binaries" / "19-ZN2 ~ Kagari")
+
+    def test_prepare_refuses_when_no_binary_fits(self, tmp_path, monkeypatch):
+        launcher = _install(tmp_path / "yc", ("24-ZN5 ~ Komari", "22-ZN4 ~ Kizuna"))
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS)
+        with pytest.raises(OSError, match="no y-cruncher binary for this CPU"):
+            _prepared(launcher, tmp_path)
+
+    def test_the_config_names_exactly_the_lane_cpus(self, tmp_path, monkeypatch):
+        launcher = _install(tmp_path / "yc")
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS)
+        _, work_dir = _prepared(launcher, tmp_path, StressConfig(cpus=(3, 19)))
+        assert _config_fields(work_dir)["LogicalCores"] == "[3 19]"
+
+    def test_the_command_starts_the_compute_binary_not_the_launcher(self, tmp_path, monkeypatch):
+        launcher = _install(tmp_path / "yc")
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS)
+        backend, work_dir = _prepared(launcher, tmp_path)
+        assert backend.get_command(StressConfig(cpus=(3,)), work_dir) == [
+            str(launcher.parent / "Binaries" / "19-ZN2 ~ Kagari"),
             "skip-warnings",
             "pause:-2",
+            "colors:0",
             "status:none",
-            "stress",
-            "-M:1024M",
-            "-D:30",
-            "BKT",
+            "config",
+            str(work_dir / "stress.cfg"),
         ]
 
-    def test_get_command_avx2_enables_all_algorithms(self, tmp_path):
-        backend = YCruncherBackend()
-        backend._binary = "/bin/y-cruncher"
-        cmd = backend.get_command(StressConfig(mode=StressMode.AVX2), tmp_path)
-        assert cmd == [
-            "/bin/y-cruncher",
-            "skip-warnings",
-            "pause:-2",
-            "status:none",
-            "stress",
-            "-M:1024M",
-            "-D:30",
-        ]
+    @pytest.mark.parametrize(
+        ("vendor", "flags", "absent", "expected"),
+        [
+            pytest.param("AuthenticAMD", _ZEN5_FLAGS, (), "24-ZN5 ~ Komari", id="zen5-gets-the-vp2intersect-build"),
+            pytest.param("AuthenticAMD", _ZEN4_FLAGS, (), "22-ZN4 ~ Kizuna", id="zen4-lacks-vp2intersect"),
+            pytest.param("AuthenticAMD", _ZEN1_FLAGS, (), "17-ZN1 ~ Yukina", id="zen1-lacks-rdpid"),
+            pytest.param("GenuineIntel", _ZEN5_FLAGS, (), "18-CNL ~ Shinoa", id="intel-never-gets-an-amd-build"),
+            pytest.param("GenuineIntel", _HASWELL_FLAGS, (), "13-HSW ~ Airi", id="haswell-lacks-adx"),
+            pytest.param("GenuineIntel", _ALDER_LAKE_FLAGS, (), "14-BDW ~ Kurumi", id="gfni-without-avx512"),
+            pytest.param(
+                "AuthenticAMD", _ZEN3_FLAGS, ("19-ZN2 ~ Kagari",), "17-ZN1 ~ Yukina", id="absent-best-falls-to-next"
+            ),
+            pytest.param("HygonGenuine", _ZEN3_FLAGS, (), None, id="unknown-vendor-gets-none"),
+            pytest.param("AuthenticAMD", "fpu vme de pse tsc", (), None, id="no-x64-gets-none"),
+        ],
+    )
+    def test_compute_binary_walks_the_launchers_order(self, tmp_path, vendor, flags, absent, expected):
+        launcher = _install(tmp_path / "yc", tuple(name for name in _YCRUNCHER_BINARIES if name not in absent))
+        binaries = launcher.parent / "Binaries"
+        found = ycruncher.compute_binary(binaries, frozenset(flags.split()), vendor)
+        assert found == (None if expected is None else binaries / expected)
 
-    def test_get_command_is_headless_never_blocks(self, tmp_path):
-        backend = YCruncherBackend()
-        backend._binary = "/bin/y-cruncher"
-        cmd = backend.get_command(StressConfig(mode=StressMode.AVX), tmp_path)
-        assert "skip-warnings" in cmd
-        assert "pause:-2" in cmd
-        assert cmd.index("skip-warnings") < cmd.index("stress")
-        assert cmd.index("pause:-2") < cmd.index("stress")
+    def test_only_flags_every_cpu_reports_count(self, tmp_path, monkeypatch):
+        launcher = _install(tmp_path / "yc")
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS, _ZEN1_FLAGS)
+        backend, work_dir = _prepared(launcher, tmp_path)
+        assert Path(backend.get_command(StressConfig(cpus=(3,)), work_dir)[0]).name == "17-ZN1 ~ Yukina"
 
-    def test_get_command_memory_override(self, tmp_path):
-        backend = YCruncherBackend()
-        backend._binary = "/bin/y-cruncher"
-        cmd = backend.get_command(StressConfig(mode=StressMode.SSE, memory_mb=2048), tmp_path)
-        assert "-M:2048M" in cmd
+    def test_a_cpuinfo_without_flags_starts_nothing(self, tmp_path, monkeypatch):
+        launcher = _install(tmp_path / "yc")
+        cpuinfo = tmp_path / "cpuinfo"
+        cpuinfo.write_text("processor\t: 0\nvendor_id\t: AuthenticAMD\nFeatures\t: fp asimd\n")
+        monkeypatch.setattr(topology, "CPUINFO", cpuinfo)
+        with pytest.raises(OSError, match="no y-cruncher binary for this CPU"):
+            _prepared(launcher, tmp_path)
 
-    def test_get_command_no_binary_raises(self, tmp_path, on_path):
+    def test_an_unreadable_cpuinfo_starts_nothing(self, tmp_path, monkeypatch):
+        launcher = _install(tmp_path / "yc")
+        monkeypatch.setattr(topology, "CPUINFO", tmp_path / "absent-cpuinfo")
+        with pytest.raises(OSError, match="absent-cpuinfo"):
+            _prepared(launcher, tmp_path)
+
+    def test_prepare_finds_the_binaries_of_a_nixpkgs_install(self, tmp_path, monkeypatch):
+        root = tmp_path / "store-path"
+        _install(root / "lib" / "y-cruncher")
+        wrapper = root / "bin" / "y-cruncher"
+        wrapper.parent.mkdir()
+        wrapper.write_text("")
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS)
+        backend, work_dir = _prepared(wrapper, tmp_path)
+        command = backend.get_command(StressConfig(cpus=(3,)), work_dir)
+        assert command[0] == str(root / "lib" / "y-cruncher" / "Binaries" / "19-ZN2 ~ Kagari")
+
+    def test_prepare_names_both_places_when_no_binaries_dir_exists(self, tmp_path, monkeypatch):
+        launcher = tmp_path / "bin" / "y-cruncher"
+        launcher.parent.mkdir()
+        launcher.write_text("")
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS)
+        with pytest.raises(OSError) as refused:
+            _prepared(launcher, tmp_path)
+        assert str(tmp_path / "bin" / "Binaries") in str(refused.value)
+        assert str(tmp_path / "lib" / "y-cruncher" / "Binaries") in str(refused.value)
+
+    def test_prepare_refuses_a_lane_without_cpus(self, tmp_path, monkeypatch):
+        launcher = _install(tmp_path / "yc")
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS)
+        with pytest.raises(RuntimeError, match="CPUs"):
+            _prepared(launcher, tmp_path, StressConfig(cpus=()))
+        assert not (tmp_path / "run" / "stress.cfg").exists()
+
+    def test_prepare_without_a_launcher_raises(self, tmp_path, on_path):
         on_path({})
-        backend = YCruncherBackend()
         with pytest.raises(RuntimeError, match="y-cruncher binary not found"):
-            backend.get_command(StressConfig(), tmp_path)
+            YCruncherBackend().prepare(tmp_path, StressConfig(cpus=(3,)))
+
+    def test_the_command_needs_a_prepared_binary(self, tmp_path):
+        backend = YCruncherBackend()
+        backend._binary = "/bin/y-cruncher"
+        with pytest.raises(RuntimeError, match="prepare"):
+            backend.get_command(StressConfig(cpus=(3,)), tmp_path)
+
+    def test_the_config_runs_until_stopped_and_stops_at_the_first_error(self, tmp_path, monkeypatch):
+        launcher = _install(tmp_path / "yc")
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS)
+        _, work_dir = _prepared(launcher, tmp_path)
+        fields = _config_fields(work_dir)
+        assert fields["Action"] == '"StressTest"'
+        assert fields["SecondsTotal"] == "0"
+        assert fields["StopOnError"] == '"true"'
+        assert fields["AllocateLocally"] == '"true"'
+
+    @pytest.mark.parametrize(("memory_mb", "expected_bytes"), [(2048, 2048 * 2**20), (512, 512 * 2**20)])
+    def test_the_config_holds_the_requested_memory(self, tmp_path, monkeypatch, memory_mb, expected_bytes):
+        launcher = _install(tmp_path / "yc")
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS)
+        _, work_dir = _prepared(launcher, tmp_path, StressConfig(cpus=(3,), memory_mb=memory_mb))
+        assert int(_config_fields(work_dir)["TotalMemory"]) == expected_bytes
+
+    @pytest.mark.parametrize("memory_mb", [None, 0])
+    def test_an_unset_memory_still_names_a_budget(self, tmp_path, monkeypatch, memory_mb):
+        launcher = _install(tmp_path / "yc")
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS)
+        _, work_dir = _prepared(launcher, tmp_path, StressConfig(cpus=(3,), memory_mb=memory_mb))
+        assert int(_config_fields(work_dir)["TotalMemory"]) >= 2**20
+
+    @pytest.mark.parametrize("mode", list(StressMode))
+    def test_the_config_runs_the_modes_tests(self, tmp_path, monkeypatch, mode):
+        launcher = _install(tmp_path / "yc")
+        _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS)
+        _, work_dir = _prepared(launcher, tmp_path, StressConfig(mode=mode, cpus=(3,)))
+        listed = re.search(r"Tests : \[(.*?)\]", (work_dir / "stress.cfg").read_text(), re.DOTALL)
+        if MODE_TO_ALGORITHMS[mode]:
+            assert listed is not None
+            assert re.findall(r'"(\w+)"', listed[1]) == list(MODE_TO_ALGORITHMS[mode])
+        else:
+            assert listed is None
 
     def test_get_supported_modes(self):
         backend = YCruncherBackend()
@@ -712,8 +889,10 @@ class TestYCruncherBackend:
         [
             ("Iteration: 5\nError(s) encountered on logical core 3.\n", "Error(s) encountered"),
             ("Coefficient is too large\n", "Coefficient is too large"),
-            (_CAPTURED_INVALID_PARAM_OUTPUT, "Invalid Parameter"),
             ("\x1b[01;31mCoefficient is too large\x1b[0m\n", "Coefficient is too large"),
+            ("Running SFTv4: Failed  Test Speed:  5.2 * 10^08  bits / sec\n", "Running SFTv4: Failed"),
+            ("Stress test failed with 1 error.\n", "Stress test failed with 1 error"),
+            ("Exception Encountered: StressTestFailedException\n", "StressTestFailedException"),
         ],
     )
     def test_an_error_line_is_a_computation_error(self, output, named, tmp_path):
@@ -721,6 +900,25 @@ class TestYCruncherBackend:
         assert found and {signal.outcome for signal in found} == {Outcome.COMPUTATION}
         assert any(named in signal.text for signal in found)
         assert not any("\x1b" in signal.text for signal in found)
+
+    def test_an_exception_encountered_line_is_a_computation_error(self, tmp_path):
+        found = YCruncherBackend().findings(_CAPTURED_ALGORITHM_FAILURE, tmp_path)
+        assert {signal.outcome for signal in found} == {Outcome.COMPUTATION}
+        assert any("AlgorithmFailedException" in signal.text for signal in found)
+
+    def test_a_config_error_in_an_exception_block_is_not_a_computation_error(self, tmp_path):
+        output = "Exception Encountered: InvalidParametersException\nIn Function: core_to_node()\nInvalid core id\n"
+        found = YCruncherBackend().findings(output, tmp_path)
+        assert [signal.outcome for signal in found] == [Outcome.NOT_STARTED]
+
+    def test_invalid_parameter_is_not_started(self, tmp_path):
+        found = YCruncherBackend().findings(_CAPTURED_INVALID_PARAM_OUTPUT, tmp_path)
+        assert [signal.outcome for signal in found] == [Outcome.NOT_STARTED]
+        assert "Invalid Parameter: SSE" in found[0].text
+
+    def test_an_invalid_core_id_is_not_started(self, tmp_path):
+        found = YCruncherBackend().findings("Invalid core id\n", tmp_path)
+        assert [signal.outcome for signal in found] == [Outcome.NOT_STARTED]
 
 
 class TestYCruncherModeMapping:
