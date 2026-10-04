@@ -50,6 +50,17 @@ while True:
     time.sleep(0.01)
 """
 
+MARKS_OUR_SIGTERM_THEN_HOLDS = """
+import signal, time
+hit = []
+def on_term(*_):
+    open("termed", "w").close()
+    hit.append(time.monotonic())
+signal.signal(signal.SIGTERM, on_term)
+while not hit or time.monotonic() - hit[0] < 0.6:
+    time.sleep(0.01)
+"""
+
 SLOW_TO_STOP = """
 import signal, time
 hit = []
@@ -748,11 +759,17 @@ class TestTeardown:
         assert verdicts[1].duration_seconds < 5.0
 
     def test_a_stop_after_the_deadline_cuts_nothing(self, tmp_path):
-        backend = FakeBackend(_child(SLOW_TO_STOP.format(hold=0.6)))
+        backend = FakeBackend(_child(MARKS_OUR_SIGTERM_THEN_HOLDS))
         supervisor, stop, _ = make_supervisor(backend)
-        threading.Timer(0.55, stop.set).start()
+        one = lane(tmp_path)
+
+        def stop_once_our_sigterm_landed() -> None:
+            within(10.0, lambda: any(one.work_dir.glob("run-*/termed")))
+            stop.set()
+
+        threading.Thread(target=stop_once_our_sigterm_landed, daemon=True).start()
         with one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path), 0.5)
+            verdict = run_one(supervisor, one, 2.0)
         assert stop.is_set()
         assert verdict.outcome is Outcome.PASS
 
