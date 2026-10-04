@@ -14,18 +14,19 @@ if TYPE_CHECKING:
 
     from .base import FindingTable
 
-FINDINGS: FindingTable = tuple(
-    (re.compile(pattern, re.IGNORECASE), Outcome.COMPUTATION)
-    for pattern in (
-        r"[1-9]\d*\s+FAILED",
-        r"\bFAIL\b(?!\w)",
-        r"verification error",
-        r"computation mismatch",
-        r"error.*incorrect",
-        r"killed by signal \d+",
-        r"out of memory",
-    )
+FINDINGS: FindingTable = (
+    (re.compile(r"stress-ng: fail:(?!.*out of memory)"), Outcome.COMPUTATION),
+    (re.compile(r"\(stressor failed\)"), Outcome.COMPUTATION),
+    (re.compile(r"aborted early, no system resources"), Outcome.NOT_STARTED),
+    (re.compile(r"choice '[^']*' not known"), Outcome.NOT_STARTED),
 )
+
+STRESSOR_SIGNAL: FindingTable = (
+    (re.compile(r"stressor terminated with unexpected signal (?:4|7|8|11)\b"), Outcome.CPU_SIGNAL),
+    (re.compile(r"stressor terminated with unexpected signal \d+"), Outcome.UNEXPLAINED),
+)
+
+FAILURE_SUMMARY: FindingTable = ((re.compile(r"unsuccessful run completed"), Outcome.COMPUTATION),)
 
 
 @register_backend("stress-ng")
@@ -45,6 +46,7 @@ class StressNgBackend(StressBackend):
             "--cpu-method",
             method,
             "--verify",  # verify computations for error detection
+            "--abort",
             "--metrics-brief",
             "--temp-path",
             str(work_dir),
@@ -62,7 +64,8 @@ class StressNgBackend(StressBackend):
         return [StressMode.SSE, StressMode.AVX, StressMode.AVX2]
 
     def findings(self, output: str, work_dir: Path) -> tuple[LaneSignal, ...]:
-        return scan(output, FINDINGS)
+        signalled = scan(output, STRESSOR_SIGNAL)
+        return (*scan(output, FINDINGS), *(signalled or scan(output, FAILURE_SUMMARY)))
 
 
 def _mode_to_method(mode: StressMode) -> str:

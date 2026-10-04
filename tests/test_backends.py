@@ -425,6 +425,27 @@ class TestMprimeBackend:
 # ===========================================================================
 
 
+def _ng_summary(passed: str, failed: str, skipped: str, verdict: str) -> str:
+    return "".join(
+        f"stress-ng: info:  [100] {line}\n"
+        for line in (
+            f"skipped: {skipped}",
+            f"passed: {passed}",
+            f"failed: {failed}",
+            "metrics untrustworthy: 0",
+            f"{verdict} run completed in 0.52 secs",
+        )
+    )
+
+
+NG_CLEAN_STOP = _ng_summary("2: cpu (1) matrix (1)", "0", "0", "successful")
+NG_ONE_FAILED = _ng_summary("1: matrix (1)", "1: cpu (1)", "0", "unsuccessful")
+
+
+def _strongest(found: tuple[LaneSignal, ...]) -> LaneSignal | None:
+    return min(found, key=lambda signal: signal.outcome.rank, default=None)
+
+
 class TestStressNgBackend:
     def test_name(self):
         assert StressNgBackend.name == "stress-ng"
@@ -474,24 +495,79 @@ class TestStressNgBackend:
         assert StressMode.AVX2 in modes
         assert StressMode.AVX512 not in modes
 
+    def test_the_command_ends_every_stressor_when_one_fails(self, tmp_path):
+        backend = StressNgBackend()
+        backend._binary = "/usr/bin/stress-ng"
+        assert "--abort" in backend.get_command(StressConfig(), tmp_path)
+
     # --- findings ---
 
     @pytest.mark.parametrize(
-        "output",
+        "line",
         [
-            "3 FAILED during stress test",
-            "verification error on cpu 0",
-            "computation mismatch detected",
-            "error: incorrect result",
-            "stress-ng: fail:  [1] cpu: verification failed",
+            "stress-ng: fail:  [101] cpu: sqrt error detected on sqrt(48271)",
+            "stress-ng: fail:  [102] matrix: prod: data difference between identical matrix computations",
         ],
     )
-    def test_a_failure_line_is_a_computation_error(self, output, tmp_path):
-        found = StressNgBackend().findings(output, tmp_path)
-        assert found and {signal.outcome for signal in found} == {Outcome.COMPUTATION}
+    def test_a_verify_failure_is_a_computation_error(self, line, tmp_path):
+        found = StressNgBackend().findings(line + "\n" + NG_ONE_FAILED, tmp_path)
+        assert _strongest(found).outcome is Outcome.COMPUTATION
+        assert line in {signal.text for signal in found}
 
-    def test_a_zero_failure_count_finds_nothing(self, tmp_path):
-        assert StressNgBackend().findings("cpu 0 FAILED\ncompleted\n", tmp_path) == ()
+    def test_a_clean_stop_finds_nothing(self, tmp_path):
+        assert StressNgBackend().findings(NG_CLEAN_STOP, tmp_path) == ()
+
+    @pytest.mark.parametrize("number,name", [(4, "SIGILL"), (7, "SIGBUS"), (8, "SIGFPE"), (11, "SIGSEGV")])
+    def test_a_stressor_signal_line_is_a_cpu_signal(self, number, name, tmp_path):
+        line = f"stress-ng: info:  [101] stressor terminated with unexpected signal {number} '{name}'"
+        found = StressNgBackend().findings(line + "\n" + NG_ONE_FAILED, tmp_path)
+        assert _strongest(found) == LaneSignal(Outcome.CPU_SIGNAL, line)
+
+    def test_an_abort_signal_line_is_unexplained_never_silicon(self, tmp_path):
+        line = "stress-ng: info:  [101] stressor terminated with unexpected signal 6 'SIGABRT'"
+        found = StressNgBackend().findings(f"{line}\nbacktrace:\n  stress-ng(+0x1c2f4)\n{NG_ONE_FAILED}", tmp_path)
+        assert _strongest(found) == LaneSignal(Outcome.UNEXPLAINED, line)
+        assert not [signal for signal in found if signal.outcome.kind is OutcomeKind.SILICON]
+
+    def test_a_failed_stressor_read_before_the_summary_is_a_computation_error(self, tmp_path):
+        line = "stress-ng: error: [100] cpu: [101] terminated with an error, exit status=2 (stressor failed)"
+        assert StressNgBackend().findings(line + "\n", tmp_path) == (LaneSignal(Outcome.COMPUTATION, line),)
+
+    def test_the_failure_summary_alone_is_a_computation_error(self, tmp_path):
+        found = StressNgBackend().findings(NG_ONE_FAILED, tmp_path)
+        assert found == (
+            LaneSignal(Outcome.COMPUTATION, "stress-ng: info:  [100] unsuccessful run completed in 0.52 secs"),
+        )
+
+    @pytest.mark.parametrize(
+        "skip",
+        [
+            "stress-ng: info:  [101] cpu: failed to mmap 4096 bytes, errno=12 (Cannot allocate memory), "
+            "skipping stressor\nstress-ng: warn:  [100] cpu: [101] aborted early, no system resources\n"
+            + _ng_summary("1: matrix (1)", "0", "1: cpu (1)", "successful"),
+            "stress-ng: fail:  [102] matrix: matrix allocation failed, out of memory (12.0M mem free, 0 swap free), "
+            "errno=12 (Cannot allocate memory)\nstress-ng: warn:  [100] matrix: [102] aborted early, no system "
+            "resources\n" + _ng_summary("1: cpu (1)", "0", "1: matrix (1)", "successful"),
+        ],
+        ids=["cpu-mmap-refused", "matrix-out-of-memory"],
+    )
+    def test_no_system_resources_is_not_started_never_a_computation_error(self, skip, tmp_path):
+        found = StressNgBackend().findings(skip, tmp_path)
+        assert [signal.outcome for signal in found] == [Outcome.NOT_STARTED]
+        assert "aborted early, no system resources" in found[0].text
+
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            "option cpu-method choice 'fft' not known, choices are: ackermann apery bitops",
+            "option matrix-method choice 'prod' not known, there are none available (stressor unimplemented)",
+        ],
+        ids=["method-not-built", "stressor-unimplemented"],
+    )
+    def test_an_unavailable_method_is_not_started(self, refusal, tmp_path):
+        assert StressNgBackend().findings("\n" + refusal + "\n", tmp_path) == (
+            LaneSignal(Outcome.NOT_STARTED, refusal),
+        )
 
 
 class TestModeToMethod:

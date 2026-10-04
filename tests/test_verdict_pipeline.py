@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 import time
 from unittest.mock import MagicMock, patch
 
@@ -11,10 +10,12 @@ import pytest
 from corecycler.engine import containment, execution
 from corecycler.engine.backends.base import Outcome, StressConfig
 from corecycler.engine.backends.mprime import MprimeBackend
+from corecycler.engine.backends.stress_ng import StressNgBackend
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
 from corecycler.history.db import HistoryDB
 from corecycler.tuner import engine as eng
 from corecycler.tuner import persistence as tp
+from tests.test_execution import scripted
 from tests.test_tuner_engine_phases import _backend, _config, _smu, _topo
 
 FATAL_AT_ONCE = """
@@ -28,14 +29,13 @@ sys.exit(0)
 
 BUSY = "while True: pass"
 
-
-class FakeMprime(MprimeBackend):
-    def __init__(self, code: str) -> None:
-        super().__init__()
-        self.code = code
-
-    def get_command(self, config, work_dir):
-        return [sys.executable, "-c", self.code]
+STRESSOR_SEGV = """
+import sys
+print("stress-ng: info:  [101] stressor terminated with unexpected signal 11 'SIGSEGV'", flush=True)
+print("stress-ng: info:  [100] failed: 1: cpu (1)", flush=True)
+print("stress-ng: info:  [100] unsuccessful run completed in 0.05 secs", flush=True)
+sys.exit(2)
+"""
 
 
 class QuietDetector:
@@ -89,7 +89,7 @@ def _last_row(engine) -> dict:
 
 def test_an_mprime_fatal_error_in_the_first_second_reaches_the_engine_as_a_computation_fail(engine, tmp_path):
     tested = engine._core_states[0].current_offset
-    _deliver(engine, _worker(FakeMprime(FATAL_AT_ONCE), tmp_path, 5))
+    _deliver(engine, _worker(scripted(MprimeBackend, FATAL_AT_ONCE), tmp_path, 5))
     row = _last_row(engine)
     assert not row["passed"]
     assert row["error_type"] == "computation"
@@ -100,7 +100,7 @@ def test_an_mprime_fatal_error_in_the_first_second_reaches_the_engine_as_a_compu
 
 def test_a_loaded_mprime_run_reaches_the_engine_as_a_pass(engine, tmp_path, monkeypatch):
     monkeypatch.setattr(execution, "LOAD_FLOOR_FRACTION", 0.05)
-    _deliver(engine, _worker(FakeMprime(BUSY), tmp_path, 1))
+    _deliver(engine, _worker(scripted(MprimeBackend, BUSY), tmp_path, 1))
     row = _last_row(engine)
     assert row["passed"]
     assert row["error_type"] is None
@@ -125,7 +125,7 @@ def test_the_report_crosses_the_worker_thread_as_one_object(engine, tmp_path):
             self.taken.append((report, qtcore.QThread.currentThread() == app.thread()))
 
     receiver = Receiver()
-    worker = _worker(FakeMprime(FATAL_AT_ONCE), tmp_path, 5)
+    worker = _worker(scripted(MprimeBackend, FATAL_AT_ONCE), tmp_path, 5)
     worker.finished.connect(receiver.take)
     worker.finished.connect(engine._on_test_finished)
     with patch.object(containment, "contain", return_value=None):
@@ -141,3 +141,15 @@ def test_the_report_crosses_the_worker_thread_as_one_object(engine, tmp_path):
     assert report.result.outcome is Outcome.COMPUTATION
     assert on_the_receivers_thread
     assert _last_row(engine)["error_type"] == "computation"
+
+
+def test_a_stress_ng_stressor_crash_in_a_hunt_gets_the_crash_penalty(engine, tmp_path):
+    engine._hunting = True
+    engine._set_status("hunting")
+    cs = engine._core_states[0]
+    crashes, resident = cs.crash_count, engine._co_applied.get(0, cs.current_offset)
+    _deliver(engine, _worker(scripted(StressNgBackend, STRESSOR_SEGV), tmp_path, 5))
+    assert cs.crash_count == crashes + 1
+    assert _last_row(engine)["error_type"] == "crash"
+    config = engine._config
+    assert cs.current_offset == resident - config.direction * config.crash_penalty_steps * config.fine_step

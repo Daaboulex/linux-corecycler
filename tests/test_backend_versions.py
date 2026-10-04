@@ -114,6 +114,7 @@ def test_stress_ng_still_documents_every_flag_the_backend_uses():
         "stress-ng",
         ("stress-ng",),
         {
+            "--abort",
             "--cpu",
             "--cpu-method",
             "--verify",
