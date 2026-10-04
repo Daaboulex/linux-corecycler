@@ -7,6 +7,8 @@ matches the kernel's own record.
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import sys
 import time
@@ -72,4 +74,5 @@ def test_the_watchdog_observation_matches_the_kernel_record():
         assert cgroup is not None, "payload never showed the named scope in /proc"
         assert containment.scope_effective_cpus(cgroup) == set(ALLOWED)
     finally:
-        execution.kill_process_group(proc)
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate(timeout=10)

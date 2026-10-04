@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import os
 import signal
@@ -26,19 +27,88 @@ from corecycler.engine.execution import (
     busy_fraction,
     classify_error,
     cpu_times,
-    kill_process_group,
     watch_idle,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 
 BUSY = "while True: pass"
 
+DEAF_TO_SIGTERM = """
+import signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+open("ready", "w").close()
+while True:
+    time.sleep(0.01)
+"""
+
+SLOW_TO_STOP = """
+import signal, time
+hit = []
+signal.signal(signal.SIGTERM, lambda *_: hit.append(time.monotonic()))
+open("ready", "w").close()
+while not hit or time.monotonic() - hit[0] < {hold}:
+    time.sleep(0.01)
+"""
+
+KILLS_ITS_LEADER_ON_SIGTERM = """
+import os, signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+leader = os.getpid()
+if os.fork() == 0:
+    hit = []
+    signal.signal(signal.SIGTERM, lambda *_: hit.append(1))
+    while not hit:
+        time.sleep(0.01)
+    time.sleep(0.3)
+    os.kill(leader, signal.SIGKILL)
+    os._exit(0)
+while True:
+    time.sleep(0.01)
+"""
+
+LEAVES_A_CHILD = """
+import os, sys, time
+if os.fork() == 0:
+    open("stray.pid", "w").write(str(os.getpid()))
+    time.sleep(30)
+    os._exit(0)
+time.sleep(0.1)
+sys.exit(0)
+"""
+
+CORE_0_EXITS_THREE_ONCE_CORE_1_IS_READY = """
+import os, sys, time
+if os.path.basename(os.getcwd()) == "core_0":
+    while not os.path.exists("../core_1/ready"):
+        time.sleep(0.01)
+    time.sleep(0.1)
+    sys.exit(3)
+"""
+
 
 def _child(code: str) -> list[str]:
     return [sys.executable, "-c", code]
+
+
+def gone(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat") as stat:
+            return stat.read().rpartition(")")[2].split()[0] == "Z"
+    except FileNotFoundError:
+        return True
+
+
+def within(seconds: float, condition: Callable[[], bool]) -> bool:
+    deadline = time.monotonic() + seconds
+    while not condition():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
+    return True
 
 
 class FakeBackend(StressBackend):
@@ -86,6 +156,11 @@ class FakeBackend(StressBackend):
 
     def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
         self.cleaned.append((work_dir, preserve_on_error))
+
+
+class FailsOnExitThree(FakeBackend):
+    def parse_output(self, stdout: str, stderr: str, returncode: int):
+        return (False, "fake error: FATAL") if returncode == 3 else (True, None)
 
 
 class FakeDetector:
@@ -331,6 +406,83 @@ class TestLoadProof:
         assert "no work done" in verdict.error_message
 
 
+class TestTeardown:
+    def test_an_outside_kill_during_our_stop_is_not_ours(self, tmp_path):
+        backend = FakeBackend(_child(KILLS_ITS_LEADER_ON_SIGTERM))
+        supervisor, _, _ = make_supervisor(backend)
+        with one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        assert verdict is not None and not verdict.passed
+        assert verdict.error_type == "killed"
+        assert "externally" in verdict.error_message
+
+    def test_a_payload_that_needs_sigkill_never_passes(self, tmp_path):
+        backend = FakeBackend(_child(DEAF_TO_SIGTERM))
+        supervisor, _, _ = make_supervisor(backend)
+        with patch.object(execution, "STOP_GRACE_SECONDS", 0.2), one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        assert verdict is not None and not verdict.passed
+        assert "did not stop" in verdict.error_message
+        assert classify_error(verdict.error_message) == verdict.error_type == "killed"
+
+    def test_stopping_takes_one_grace_whatever_the_lane_count(self, tmp_path):
+        backend = FakeBackend(_child(DEAF_TO_SIGTERM))
+        supervisor, stop, _ = make_supervisor(backend)
+        lanes = [lane(tmp_path, core, (core,)) for core in range(4)]
+        stopped: list[float] = []
+
+        def stop_once_every_lane_ignores_sigterm() -> None:
+            within(10.0, lambda: all((one.work_dir / "ready").exists() for one in lanes))
+            stopped.append(time.monotonic())
+            stop.set()
+
+        with (
+            patch.object(execution, "STOP_GRACE_SECONDS", 0.5),
+            patch.object(execution, "KILL_WAIT_SECONDS", 0.5),
+        ):
+            threading.Thread(target=stop_once_every_lane_ignores_sigterm, daemon=True).start()
+            verdicts = supervisor.run(lanes, lambda _lane: StressConfig(), 30.0)
+        returned = time.monotonic()
+        assert returned - stopped[0] < 1.5
+        assert [verdict.error_type if verdict else None for verdict in verdicts.values()] == ["killed"] * 4
+
+    def test_a_payload_child_does_not_outlive_its_lane(self, tmp_path):
+        backend = FakeBackend(_child(LEAVES_A_CHILD))
+        supervisor, _, _ = make_supervisor(backend)
+        one = lane(tmp_path)
+        run_one(supervisor, one, 5.0)
+        stray = int((one.work_dir / "stray.pid").read_text())
+        try:
+            assert within(1.0, lambda: gone(stray))
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(stray, signal.SIGKILL)
+
+    def test_the_supervisor_never_reaps_a_child_it_did_not_start(self, tmp_path):
+        unrelated = subprocess.Popen(_child("import sys; sys.exit(7)"))
+        os.waitid(os.P_PID, unrelated.pid, os.WEXITED | os.WNOWAIT)
+        supervisor, _, _ = make_supervisor(FakeBackend())
+        run_one(supervisor, lane(tmp_path), 0.2)
+        assert unrelated.wait(timeout=5) == 7
+
+    def test_a_lane_stopped_before_the_deadline_is_not_graded_after_the_teardown(self, tmp_path):
+        backend = FailsOnExitThree(_child(CORE_0_EXITS_THREE_ONCE_CORE_1_IS_READY + SLOW_TO_STOP.format(hold=2.0)))
+        supervisor, _, _ = make_supervisor(backend)
+        lanes = [lane(tmp_path, 0, (0,)), lane(tmp_path, 1, (1,))]
+        with patch.object(execution, "STARTUP_WINDOW_SECONDS", 0.05), one_busy_cpu():
+            verdicts = supervisor.run(lanes, lambda _lane: StressConfig(), 1.5)
+        assert verdicts[0] is not None and "FATAL" in verdicts[0].error_message
+        assert verdicts[1] is None
+
+    def test_a_lane_carries_its_own_time_not_the_teardowns(self, tmp_path):
+        backend = FakeBackend(_child(SLOW_TO_STOP.format(hold=1.0)))
+        supervisor, _, _ = make_supervisor(backend)
+        with one_busy_cpu():
+            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        assert verdict is not None and verdict.passed
+        assert verdict.duration_seconds < 1.5
+
+
 class TestMceAttribution:
     def test_an_own_cpu_event_fails_the_lane(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(5)"))
@@ -414,8 +566,32 @@ class TestStallWatchdog:
 
 
 class TestContainmentWatchdog:
+    @pytest.fixture(autouse=True)
+    def scope_kills(self):
+        with patch.object(containment, "kill_scope") as kill_scope:
+            yield kill_scope
+
     def _contained(self, cpus):
         return containment.Containment(prefix=[], unit="cc-test")
+
+    def _run_adopted(self, tmp_path):
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
+        supervisor, _, _ = make_supervisor(backend, containment_for=self._contained)
+        with (
+            patch.object(containment, "payload_cgroup", return_value="/user.slice/cc-test.scope"),
+            patch.object(containment, "scope_effective_cpus", return_value={0}),
+        ):
+            return run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.3)
+
+    def test_a_known_scope_is_killed_when_the_lane_stops(self, tmp_path, scope_kills):
+        self._run_adopted(tmp_path)
+        scope_kills.assert_called_once_with("/user.slice/cc-test.scope")
+
+    def test_a_scope_that_cannot_be_killed_is_logged_as_an_error(self, tmp_path, scope_kills, caplog):
+        scope_kills.side_effect = PermissionError("cgroup.kill: permission denied")
+        verdict = self._run_adopted(tmp_path)
+        assert verdict is not None
+        assert {r.levelname for r in caplog.records if "permission denied" in r.getMessage()} == {"ERROR"}
 
     def test_a_widened_kernel_record_is_a_containment_fault(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
@@ -653,72 +829,6 @@ class TestHelpers:
     def test_busy_fraction_is_the_non_idle_share(self):
         assert busy_fraction((0, 0), (50, 100)) == 0.5
 
-    def test_kill_process_group_terminates_a_group(self):
-        proc = subprocess.Popen(
-            _child("import time; time.sleep(30)"),
-            preexec_fn=execution.make_preexec(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        kill_process_group(proc)
-        assert proc.poll() is not None
-
-    def test_kill_process_group_tolerates_an_already_dead_process(self):
-        proc = subprocess.Popen(_child("pass"), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        proc.wait(timeout=5)
-        kill_process_group(proc)
-        assert proc.poll() is not None
-
-    def test_kill_process_group_escalates_to_sigkill(self):
-        proc = subprocess.Popen(
-            _child("import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"),
-            preexec_fn=execution.make_preexec(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        time.sleep(0.2)
-        start = time.monotonic()
-        kill_process_group(proc)
-        assert proc.poll() is not None
-        assert time.monotonic() - start < 10
-
-    def test_kill_process_group_escalation_and_stream_close_deterministic(self, monkeypatch):
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock
-
-        stdout = MagicMock()
-        stderr = MagicMock()
-        proc = SimpleNamespace(
-            pid=4321,
-            stdout=stdout,
-            stderr=stderr,
-            poll=lambda: None,
-            wait=MagicMock(side_effect=[subprocess.TimeoutExpired("cmd", 3), None]),
-        )
-        sent: list = []
-        monkeypatch.setattr(execution.os, "getpgid", lambda _pid: 4321)
-        monkeypatch.setattr(execution.os, "killpg", lambda pgid, s: sent.append(s))
-        kill_process_group(proc)
-        assert signal.SIGTERM in sent and signal.SIGKILL in sent
-        stdout.close.assert_called_once()
-        stderr.close.assert_called_once()
-
-    def test_kill_process_group_handles_a_vanished_group(self, monkeypatch):
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock
-
-        wait = MagicMock(return_value=None)
-        proc = SimpleNamespace(pid=4321, stdout=None, stderr=None, poll=lambda: None, wait=wait)
-        monkeypatch.setattr(execution.os, "getpgid", MagicMock(side_effect=ProcessLookupError))
-        killpg = MagicMock()
-        monkeypatch.setattr(execution.os, "killpg", killpg)
-        kill_process_group(proc)
-        killpg.assert_not_called()
-        wait.assert_called_once_with(timeout=1)
-
-    def test_reap_zombies_never_raises(self):
-        execution.reap_zombies()
-
 
 class TestClassifyError:
     @pytest.mark.parametrize(
@@ -856,6 +966,21 @@ class TestContainment:
         proc_stat(200, "other", 200, (9000, 9000, 0, 0))
         hz = os.sysconf("SC_CLK_TCK")
         assert containment.process_group_cpu_seconds(100, proc_base=tmp_path) == pytest.approx(500 / hz)
+
+    def test_kill_scope_writes_cgroup_kill(self, tmp_path):
+        scope = tmp_path / "user.slice" / "cc-test.scope"
+        scope.mkdir(parents=True)
+        (scope / "cgroup.kill").write_text("")
+        containment.kill_scope("/user.slice/cc-test.scope", cgroup_base=tmp_path)
+        assert (scope / "cgroup.kill").read_text() == "1"
+
+    def test_kill_scope_of_a_vanished_scope_is_done(self, tmp_path):
+        assert containment.kill_scope("/user.slice/gone.scope", cgroup_base=tmp_path) is None
+
+    def test_kill_scope_surfaces_any_other_failure(self, tmp_path):
+        (tmp_path / "cc-test.scope" / "cgroup.kill").mkdir(parents=True)
+        with pytest.raises(IsADirectoryError):
+            containment.kill_scope("/cc-test.scope", cgroup_base=tmp_path)
 
     def test_a_process_group_with_no_readable_member_proves_nothing(self, tmp_path):
         (tmp_path / "300" / "stat").mkdir(parents=True)

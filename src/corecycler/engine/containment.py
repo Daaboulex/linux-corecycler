@@ -9,6 +9,7 @@ binds to the app.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import subprocess
@@ -90,6 +91,12 @@ def scope_cpu_seconds(cgroup_path: str, *, cgroup_base: Path | None = None) -> f
         if key == "usage_usec":
             return int(value) / 1_000_000 if value.isdecimal() else None
     return None
+
+
+def kill_scope(cgroup_path: str, *, cgroup_base: Path | None = None) -> None:
+    base = cgroup_base or Path("/sys/fs/cgroup")
+    with contextlib.suppress(FileNotFoundError):
+        (base / cgroup_path.lstrip("/") / "cgroup.kill").write_text("1")
 
 
 def process_group_cpu_seconds(pgid: int, *, proc_base: Path | None = None) -> float | None:

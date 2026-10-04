@@ -8,6 +8,7 @@ re-proven before its verdicts are trusted.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import time
 
@@ -84,7 +85,8 @@ def test_each_mode_produces_its_own_fft_path(mode, tmp_path):
         observed = containment.observed_tree_cpus(proc.pid)
         assert observed and observed <= set(CPUS), f"{mode.name}: threads on {sorted(observed)}, allowed {CPUS}"
     finally:
-        execution.kill_process_group(proc)
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=10)
         backend.cleanup(tmp_path)
 
 

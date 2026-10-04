@@ -11,6 +11,7 @@ These tests verify that:
 
 from __future__ import annotations
 
+import os
 import signal
 import struct
 import subprocess
@@ -21,6 +22,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent))
+
+from test_execution import DEAF_TO_SIGTERM, FakeBackend, _child, lane, make_supervisor, one_busy_cpu, run_one
 
 from corecycler.engine import execution
 from corecycler.engine.backends.base import StressConfig
@@ -159,48 +163,40 @@ class TestSchedulerProcessSafety:
         sched.force_stop()
         assert sched.state == TestState.STOPPING
 
-    def test_kill_escalation(self):
-        """Must send SIGTERM first, then SIGKILL if the group ignores it."""
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        mock_proc.pid = 99999
-        mock_proc.wait.side_effect = [subprocess.TimeoutExpired("x", 3), None]
-
+    def test_kill_escalation(self, tmp_path):
         signals_sent = []
+        real_killpg = os.killpg
 
-        def fake_killpg(pgid, sig):
+        def recording_killpg(pgid, sig):
             signals_sent.append(sig)
+            real_killpg(pgid, sig)
 
-        with patch("os.killpg", side_effect=fake_killpg), patch("os.getpgid", return_value=99999):
-            execution.kill_process_group(mock_proc)
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(DEAF_TO_SIGTERM)))
+        with (
+            patch.object(execution, "STOP_GRACE_SECONDS", 0.2),
+            patch("os.killpg", side_effect=recording_killpg),
+            one_busy_cpu(),
+        ):
+            verdict = run_one(supervisor, lane(tmp_path), 1.0)
 
         assert signal.SIGTERM in signals_sent
         assert signal.SIGKILL in signals_sent
         assert signals_sent.index(signal.SIGTERM) < signals_sent.index(signal.SIGKILL)
+        assert verdict is not None and not verdict.passed
 
-    def test_kill_handles_vanished_process(self):
-        """Must handle ProcessLookupError (process already gone)."""
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        mock_proc.pid = 99999
+    def test_kill_handles_vanished_process(self, tmp_path, caplog):
+        supervisor, _, _ = make_supervisor(FakeBackend(_child("import time; time.sleep(0.3)")))
+        with patch("os.killpg", side_effect=ProcessLookupError):
+            verdict = run_one(supervisor, lane(tmp_path), 0.1)
+        assert verdict is not None
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
 
-        with (
-            patch("os.killpg", side_effect=ProcessLookupError),
-            patch("os.getpgid", return_value=99999),
-        ):
-            execution.kill_process_group(mock_proc)
-
-    def test_kill_handles_os_error(self):
-        """Must handle OSError gracefully."""
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        mock_proc.pid = 99999
-
-        with (
-            patch("os.killpg", side_effect=OSError("Operation not permitted")),
-            patch("os.getpgid", return_value=99999),
-        ):
-            execution.kill_process_group(mock_proc)
+    def test_kill_handles_os_error(self, tmp_path, caplog):
+        supervisor, _, _ = make_supervisor(FakeBackend(_child("import time; time.sleep(0.3)")))
+        with patch("os.killpg", side_effect=PermissionError("Operation not permitted")):
+            verdict = run_one(supervisor, lane(tmp_path), 0.1)
+        assert verdict is not None
+        assert {r.levelname for r in caplog.records if "Operation not permitted" in r.getMessage()} == {"ERROR"}
 
 
 # ===========================================================================

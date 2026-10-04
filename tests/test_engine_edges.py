@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import subprocess
+import signal
 import sys
 import threading
 import time
@@ -208,16 +208,6 @@ class TestTemperatureSourceEdges:
             assert execution.read_cpu_temperature() == 51.0
 
 
-class TestReapEdges:
-    def test_an_unwaited_child_is_reaped(self):
-        proc = subprocess.Popen(["true"])
-        deadline = time.monotonic() + 5
-        while proc.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.01)
-        execution.reap_zombies()
-        execution.reap_zombies()
-
-
 def _idle_supervisor(backend=None, **overrides):
     from test_execution import FakeBackend, FakeDetector
 
@@ -250,14 +240,14 @@ class TestSupervisorInternalsEdges:
         decided.verdict = StressResult(core_id=0, passed=True, duration_seconds=0.1)
         open_run = _LaneRun(lane=Lane(core_id=1, cpus=(1,), work_dir=tmp_path))
         open_run.proc = SimpleNamespace(returncode=None)
-        assert supervisor._poll_backend_errors([decided, open_run], time.monotonic()) is True
+        assert supervisor._poll_backend_errors([decided, open_run]) is True
         assert open_run.verdict is not None and not open_run.verdict.passed
         assert decided.verdict.passed is True
 
     def test_a_clean_error_poll_reports_nothing(self, tmp_path):
         supervisor = _idle_supervisor()
         open_run = _LaneRun(lane=Lane(core_id=1, cpus=(1,), work_dir=tmp_path))
-        assert supervisor._poll_backend_errors([open_run], time.monotonic()) is False
+        assert supervisor._poll_backend_errors([open_run]) is False
 
     def test_status_hooks_report_running_lanes(self, tmp_path):
         from test_execution import FakeBackend
@@ -278,7 +268,7 @@ class TestSupervisorInternalsEdges:
         supervisor = _idle_supervisor(detector=FakeDetector([[Event(cpu=-1)]]))
         decided = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
         decided.verdict = StressResult(core_id=0, passed=False, duration_seconds=0.1)
-        assert supervisor._apply_mce_events([decided], time.monotonic()) is False
+        assert supervisor._apply_mce_events([decided]) is False
 
     def test_containment_fault_ignores_a_dead_or_unverified_lane(self, tmp_path):
         supervisor = _idle_supervisor()
@@ -326,41 +316,77 @@ class TestSupervisorInternalsEdges:
         assert verdict is not None and not verdict.passed
         assert verdict.error_type == "mce_unattributed"
 
-    def test_final_verdict_flags_an_external_kill(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("returncode", "sent"),
+        [(-9, None), (-15, None), (137, None), (143, None), (-9, signal.SIGTERM), (137, signal.SIGTERM)],
+    )
+    def test_final_verdict_flags_an_external_kill(self, tmp_path, returncode, sent):
         supervisor = _idle_supervisor()
-        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
-        run.proc = SimpleNamespace(returncode=-9)
-        verdict = supervisor._final_verdict(run, elapsed=5.0, interrupted=False)
+        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), stopped_at=5.0, sent=sent)
+        run.proc = SimpleNamespace(returncode=returncode)
+        verdict = supervisor._final_verdict(run)
         assert verdict is not None and verdict.error_type == "killed"
+        assert "externally" in verdict.error_message
+
+    @pytest.mark.parametrize("returncode", [-15, 143])
+    def test_final_verdict_reads_our_own_sigterm_as_ours(self, tmp_path, returncode):
+        supervisor = _idle_supervisor()
+        run = _LaneRun(
+            lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), deadline=10.0, stopped_at=5.0, sent=signal.SIGTERM
+        )
+        run.proc = SimpleNamespace(returncode=returncode)
+        assert supervisor._final_verdict(run) is None
+
+    def test_a_lane_never_reaped_after_sigkill_did_not_stop(self, tmp_path):
+        supervisor = _idle_supervisor()
+        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), stopped_at=5.0, sent=signal.SIGKILL)
+        run.proc = SimpleNamespace(returncode=None)
+        verdict = supervisor._final_verdict(run)
+        assert verdict is not None and verdict.error_type == "killed"
+        assert "did not stop" in verdict.error_message
+
+    def test_a_killed_lane_keeps_the_failure_its_output_holds(self, tmp_path):
+        from test_execution import FakeBackend
+
+        supervisor = _idle_supervisor(backend=FakeBackend(parse=(False, "fake error: FATAL")))
+        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), stopped_at=5.0, sent=signal.SIGKILL)
+        run.proc = SimpleNamespace(returncode=-9)
+        verdict = supervisor._final_verdict(run)
+        assert verdict is not None and verdict.error_type == "computation"
+        assert "FATAL" in verdict.error_message
 
     def test_final_verdict_flags_an_instant_nonzero_exit(self, tmp_path):
         supervisor = _idle_supervisor()
-        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
+        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), started_at=0.0, stopped_at=0.5)
         run.proc = SimpleNamespace(returncode=4)
-        verdict = supervisor._final_verdict(run, elapsed=0.5, interrupted=False)
+        verdict = supervisor._final_verdict(run)
         assert verdict is not None and verdict.error_type == "startup"
 
     def test_final_verdict_prefers_the_live_error_file(self, tmp_path):
         from test_execution import FakeBackend
 
         supervisor = _idle_supervisor(backend=FakeBackend(poll_error="fake error: SUMOUT"))
-        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
+        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), stopped_at=5.0)
         run.proc = SimpleNamespace(returncode=0)
-        supervisor._we_killed = True
-        verdict = supervisor._final_verdict(run, elapsed=5.0, interrupted=False)
+        verdict = supervisor._final_verdict(run)
         assert verdict is not None and "SUMOUT" in verdict.error_message
 
     def test_no_load_window_ever_proves_load(self, tmp_path):
         supervisor = _idle_supervisor()
-        supervisor._we_killed = True
-        no_deadline = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
-        no_deadline.proc = SimpleNamespace(returncode=-15)
+        no_deadline = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), stopped_at=5.0)
+        no_deadline.proc = SimpleNamespace(returncode=0)
         no_deadline.cpu_seconds = 1e9
-        empty_window = _LaneRun(lane=Lane(core_id=1, cpus=(1,), work_dir=tmp_path), started_at=5.0, deadline=5.0)
+        empty_window = _LaneRun(
+            lane=Lane(core_id=1, cpus=(1,), work_dir=tmp_path),
+            started_at=5.0,
+            deadline=5.0,
+            stopped_at=5.0,
+            sent=signal.SIGTERM,
+        )
         empty_window.proc = SimpleNamespace(returncode=-15)
         empty_window.cpu_seconds = 0.0
         for run in (no_deadline, empty_window):
-            verdict = supervisor._final_verdict(run, elapsed=5.0, interrupted=False)
+            verdict = supervisor._final_verdict(run)
             assert verdict is not None and not verdict.passed
             assert "no work done" in verdict.error_message
 
@@ -495,15 +521,6 @@ class TestRemainingLoopEdges:
         with patch.object(execution, "Path", lambda _p: tmp_path):
             assert execution.read_cpu_temperature() is None
 
-    def test_reap_leaves_a_live_child_alone(self):
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
-        try:
-            execution.reap_zombies()
-            assert proc.poll() is None
-        finally:
-            proc.kill()
-            proc.wait(timeout=5)
-
     def test_the_in_loop_error_poll_fails_the_lane_mid_run(self, tmp_path):
         from test_execution import FakeBackend
 
@@ -529,8 +546,8 @@ class TestRemainingLoopEdges:
         from test_execution import FakeBackend
 
         supervisor = _idle_supervisor(backend=FakeBackend(parse=(False, "fake error: BAD")))
-        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
+        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), stopped_at=5.0)
         run.proc = SimpleNamespace(returncode=0)
-        verdict = supervisor._final_verdict(run, elapsed=5.0, interrupted=False)
+        verdict = supervisor._final_verdict(run)
         assert verdict is not None and not verdict.passed
         assert "BAD" in verdict.error_message
