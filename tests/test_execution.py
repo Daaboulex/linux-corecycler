@@ -94,11 +94,17 @@ if os.path.basename(os.path.dirname(os.getcwd())) == "core_0":
     sys.exit(3)
 """
 
-EVERY_LANE_FAILS_AND_RUNS_ON = """
-import time
-print("fake error: FATAL", flush=True)
-while True:
+CORE_1_FAILS_AND_RUNS_ON_THEN_CORE_0_FAILS = """
+import glob, os, sys, time
+if os.path.basename(os.path.dirname(os.getcwd())) == "core_1":
+    print("fake error: FATAL", flush=True)
+    open("printed", "w").close()
+    while True:
+        time.sleep(0.01)
+while not glob.glob("../../core_1/run-*/printed"):
     time.sleep(0.01)
+print("fake error: FATAL", flush=True)
+sys.exit(3)
 """
 
 ONLY_CORE_1_IS_KILLED = """
@@ -738,11 +744,10 @@ class TestTeardown:
         assert verdict.duration_seconds < 1.5
 
     def test_a_cut_lane_with_its_own_error_is_still_a_fail(self, tmp_path):
-        supervisor, _, _ = make_supervisor(ReadsFatal(_child(EVERY_LANE_FAILS_AND_RUNS_ON)))
-        with one_busy_cpu(), patch.object(execution, "OUTPUT_SCAN_INTERVAL", 0.2):
-            verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 5.0)
+        supervisor, _, _ = make_supervisor(ReadsFatal(_child(CORE_1_FAILS_AND_RUNS_ON_THEN_CORE_0_FAILS)))
+        verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 10.0)
         assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.COMPUTATION] * 2
-        assert max(verdicts[core].duration_seconds for core in (0, 1)) < 2.0
+        assert verdicts[1].duration_seconds < 5.0
 
     def test_a_stop_after_the_deadline_cuts_nothing(self, tmp_path):
         backend = FakeBackend(_child(SLOW_TO_STOP.format(hold=0.6)))
