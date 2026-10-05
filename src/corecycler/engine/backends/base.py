@@ -92,14 +92,14 @@ class StressMode(Enum):
 
 
 class FFTPreset(Enum):
-    SMALLEST = "smallest"  # 4K-21K
-    SMALL = "small"  # 36K-248K
-    LARGE = "large"  # 426K-8192K
-    HUGE = "huge"  # 8960K-65536K
-    ALL = "all"  # 4K-65536K
-    MODERATE = "moderate"  # 1344K-4096K
-    HEAVY = "heavy"  # 4K-1344K
-    HEAVY_SHORT = "heavy_short"  # 4K-160K
+    SMALLEST = "smallest"
+    SMALL = "small"
+    LARGE = "large"
+    HUGE = "huge"
+    ALL = "all"
+    MODERATE = "moderate"
+    HEAVY = "heavy"
+    HEAVY_SHORT = "heavy_short"
     CUSTOM = "custom"
 
 
@@ -129,7 +129,7 @@ class StressResult:
 
 
 class StressBackend(ABC):
-    """Base class for stress test backends (mprime, y-cruncher, stress-ng)."""
+    """Base class for every stress test backend."""
 
     name: str = "base"
 

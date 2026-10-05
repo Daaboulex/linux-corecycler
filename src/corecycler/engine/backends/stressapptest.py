@@ -1,6 +1,6 @@
 """stressapptest stress backend: Google's memory stress testing tool.
 
-Like every backend it runs indefinitely (-s 86400) and the scheduler stops it.
+Like every backend it runs indefinitely (-s 86400) and the Supervisor stops it.
 """
 
 from __future__ import annotations

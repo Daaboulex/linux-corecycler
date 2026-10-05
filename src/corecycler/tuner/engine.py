@@ -100,14 +100,9 @@ def _rebooted_since(iso_ts: str | None, stat_path: str = "/proc/stat") -> bool:
     return True
 
 
-# ------------------------------------------------------------------
-# Worker thread — runs a single core test without blocking the GUI
-# ------------------------------------------------------------------
-
-
-_STRETCH_WARMUP_SECONDS = 5  # skip startup noise (process exec, turbo ramp)
-_STRETCH_SAMPLE_INTERVAL = 5  # seconds between APERF/MPERF samples
-_STRETCH_MIN_BUSY = 0.9  # a sample window counts only under sustained load
+_STRETCH_WARMUP_SECONDS = 5
+_STRETCH_SAMPLE_INTERVAL = 5
+_STRETCH_MIN_BUSY = 0.9
 
 
 def _read_boot_id() -> str:
@@ -170,7 +165,6 @@ class _TunerWorker(QThread):
 
     def run(self) -> None:
         try:
-            # Start background stretch sampler (if MSR available)
             stretch_samples: list[float] = []
             stop_event = threading.Event()
 
@@ -213,25 +207,18 @@ class _TunerWorker(QThread):
         if not msr:
             return
 
-        # Wait for warmup — let stress process start and turbo stabilise
         if stop.wait(_STRETCH_WARMUP_SECONDS):
-            return  # test ended before warmup finished (very short test)
+            return
 
-        # Prime fresh baseline AFTER warmup (discards startup noise)
         msr.read_clock_stretch([cpu])
         busy_prev = _read_cpu_times(cpu)
 
-        # Sample at intervals until test ends
         while not stop.wait(_STRETCH_SAMPLE_INTERVAL):
             readings = msr.read_clock_stretch([cpu])
             busy_now = _read_cpu_times(cpu)
             busy = _busy_fraction(busy_prev, busy_now)
             busy_prev = busy_now
             reading = readings.get(cpu)
-            # A window without sustained load measures boost/idle behavior,
-            # not clock stretch — discard it rather than report a number
-            # that is not evidence (the MSR read above still advanced the
-            # baseline, so the next window stays self-contained).
             if reading and (busy is None or busy >= _STRETCH_MIN_BUSY):
                 samples.append(reading.stretch_pct)
 
@@ -293,7 +280,7 @@ class _SoakWorker(QThread):
         self._duration = float(duration)
         self._stop = threading.Event()
         self.detector = ErrorDetector()
-        self.scheduler = self  # abort() drives workers via scheduler.force_stop
+        self.scheduler = self
 
     def stop(self) -> None:
         self._stop.set()
@@ -3366,8 +3353,8 @@ class TunerEngine(QObject):
         self, cores: list[int], duration: int, backend=None, memory_mb: int | None = None
     ) -> None:
         """Launch every core's stress process simultaneously (one pinned
-        process per core) with per-core verdicts; the worker reports the
-        first failing core, else the first core's pass. ``backend`` overrides
+        process per core) with per-core verdicts; the worker reports every
+        lane, and its result is the strongest lane's verdict. ``backend`` overrides
         the configured CPU backend (the memory stage passes stressapptest and
         the per-instance ``memory_mb`` its budget allows)."""
         stress_config = StressConfig(

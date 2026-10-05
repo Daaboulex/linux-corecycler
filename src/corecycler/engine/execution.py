@@ -443,19 +443,19 @@ class Supervisor:
             if now - run.started_at > CONTAINMENT_GRACE_SECONDS:
                 return (
                     f"scope {run.contained.unit} never adopted the stress payload within "
-                    f"{CONTAINMENT_GRACE_SECONDS:.0f}s — containment fault, not a core verdict"
+                    f"{CONTAINMENT_GRACE_SECONDS:.0f}s: containment fault, not a core verdict"
                 )
             return None
         effective = containment.scope_effective_cpus(run.cgroup)
         if effective is None:
             return (
-                f"the kernel record for scope {run.contained.unit} vanished while the payload ran "
-                "— containment fault, not a core verdict"
+                f"the kernel record for scope {run.contained.unit} vanished while the payload ran: "
+                "containment fault, not a core verdict"
             )
         if effective != set(run.lane.cpus):
             return (
                 f"scope {run.contained.unit} runs on CPUs {containment.cpu_list(effective)} "
-                f"instead of {run.lane.cpu_list} — containment fault, not a core verdict"
+                f"instead of {run.lane.cpu_list}: containment fault, not a core verdict"
             )
         return None
 

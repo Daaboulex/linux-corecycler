@@ -1,4 +1,4 @@
-"""Stress test backend registry — auto-discovers available backends."""
+"""Stress test backend registry: load_all imports each backend module, which registers itself."""
 
 from __future__ import annotations
 
@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from corecycler.engine.backends.base import StressBackend
 
-# Registry: display_name -> backend class
-# Populated by register_backend() calls in each backend module.
 BACKEND_REGISTRY: dict[str, type[StressBackend]] = {}
 
 
