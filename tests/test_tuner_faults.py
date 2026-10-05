@@ -1808,6 +1808,29 @@ def _validating_on_this_boot(db, cliffs) -> int:
     return sid
 
 
+class TestValidateRefusesAnUnreadableSession:
+    def test_a_corrupt_journal_value_refuses_validation_and_changes_nothing(self, db, topo, smu, mock_backend):
+        sid = _session_on_this_boot(
+            db,
+            [CoreState(core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-20, best_offset=-20)],
+            status="completed",
+        )
+        journaled(db, sid, 0, -150, survived=True)
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
+        said: list[str] = []
+        eng.log_message.connect(said.append)
+        with patch.object(eng, "_run_next"):
+            eng.validate_profile(sid)
+        assert [line for line in said if line.startswith("Cannot validate")] == [
+            f"Cannot validate: session {sid} is unreadable: core 0 has CO journal value -150, "
+            "not an integer in the sane CO range -100..100"
+        ]
+        assert (tp.get_session(db, sid).status, db.get_tuner_core_states(sid)[0].phase) == (
+            "completed",
+            TunerPhase.CONFIRMED,
+        )
+
+
 class TestEnvelopePerSession:
     def _resumed_with_a_deep_envelope(self, db, topo, smu, mock_backend):
         deep = _session_on_this_boot(db, [CoreState(core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-30)])

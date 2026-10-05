@@ -835,6 +835,12 @@ class TunerEngine(QObject):
         if self._boot_problem is not None:
             self.log_message.emit(f"Cannot validate: {self._boot_problem}")
             return
+        try:
+            tp.load_core_states(self._db, session_id)
+            tp.check_journal(self._db, session_id)
+        except CorruptSessionError as exc:
+            self.log_message.emit(f"Cannot validate: {exc}")
+            return
         self._abort_requested = False
         self._paused = False
         self._validation_stage = 0
