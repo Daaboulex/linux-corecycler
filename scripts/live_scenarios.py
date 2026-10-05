@@ -410,6 +410,11 @@ def scenario_gui_run(args) -> None:
             all(c["passed"] or c["error_type"] for c in last["cores"]),
             last["cores"],
         )
+        check(
+            "every_core_passed_at_the_machines_own_settings",
+            all(c["passed"] for c in last["cores"]),
+            last["cores"],
+        )
         if kernel_evidence:
             EVIDENCE["kernel_events_finding"] = kernel_evidence
     check("no_uncaught_exceptions", app_log_critical_lines() == [], app_log_critical_lines())
