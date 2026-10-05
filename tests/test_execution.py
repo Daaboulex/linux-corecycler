@@ -6,6 +6,7 @@ import contextlib
 import itertools
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -1175,6 +1176,93 @@ class TestTheScopeIsKnownFromLaunch:
         assert "/elsewhere.slice/" in verdict.detail
 
 
+OOM_EVENTS = "low 0\nhigh 0\nmax 0\noom {kills}\noom_kill {kills}\noom_group_kill 0\n"
+
+
+class TestOomKillsInTheScope:
+    SCOPE = "/user.slice/cc-test.scope"
+
+    @pytest.fixture
+    def scope_dir(self, tmp_path):
+        cgroup_fs = tmp_path / "cgroup"
+        scope = cgroup_fs / self.SCOPE.lstrip("/")
+        scope.mkdir(parents=True)
+        (scope / "cgroup.procs").write_text("")
+        kills, exists = containment.scope_oom_kills, containment.scope_exists
+        with (
+            patch.object(containment, "scope_oom_kills", side_effect=lambda path: kills(path, cgroup_base=cgroup_fs)),
+            patch.object(containment, "scope_exists", side_effect=lambda path: exists(path, cgroup_base=cgroup_fs)),
+            patch.object(containment, "payload_cgroup", return_value=self.SCOPE),
+            patch.object(containment, "scope_effective_cpus", return_value={0}),
+            patch.object(containment, "kill_scope"),
+        ):
+            yield scope
+
+    def _run(self, tmp_path, duration: float = 0.5):
+        backend = FakeBackend(_child("import time; time.sleep(60)"))
+        supervisor, _, _ = make_supervisor(
+            backend,
+            containment_for=lambda cpus: containment.Containment(prefix=[], unit="cc-test", scope=self.SCOPE),
+        )
+        with one_busy_cpu("scope_cpu_seconds"):
+            return run_one(supervisor, lane(tmp_path / "lanes", cpus=(0,)), duration)
+
+    def test_an_oom_kill_in_the_lanes_scope_is_an_outside_kill_that_stops_the_lane(self, tmp_path, scope_dir):
+        (scope_dir / "memory.events").write_text(OOM_EVENTS.format(kills=1))
+        verdict = self._run(tmp_path, duration=30.0)
+        assert verdict.outcome is Outcome.OUTSIDE_KILL
+        assert "the kernel's OOM killer killed 1 process(es) in this lane's scope" in verdict.detail
+        assert verdict.duration_seconds < 5.0
+
+    def test_a_scope_with_no_oom_kill_passes(self, tmp_path, scope_dir):
+        (scope_dir / "memory.events").write_text(OOM_EVENTS.format(kills=0))
+        assert self._run(tmp_path).outcome is Outcome.PASS
+
+    def test_a_count_that_appears_only_at_the_stop_is_read_before_the_stop_empties_the_scope(self, tmp_path, scope_dir):
+        (scope_dir / "memory.events").write_text(OOM_EVENTS.format(kills=0))
+        stop_all, signal_group = execution.Supervisor._stop_all, execution.Supervisor._signal_group
+
+        def killed_as_the_stop_begins(supervisor, runs):
+            (scope_dir / "memory.events").write_text(OOM_EVENTS.format(kills=2))
+            stop_all(supervisor, runs)
+
+        def collected_once_our_stop_empties_it(supervisor, run, sig):
+            if sig == signal.SIGTERM and scope_dir.exists():
+                shutil.rmtree(scope_dir)
+            signal_group(supervisor, run, sig)
+
+        with (
+            patch.object(execution.Supervisor, "_stop_all", killed_as_the_stop_begins),
+            patch.object(execution.Supervisor, "_signal_group", collected_once_our_stop_empties_it),
+        ):
+            verdict = self._run(tmp_path)
+        assert verdict.outcome is Outcome.OUTSIDE_KILL
+        assert "killed 2 process(es)" in verdict.detail
+
+    def test_a_kill_the_watchdog_counted_stays_counted_when_the_counter_restarts(self, tmp_path, scope_dir):
+        (scope_dir / "memory.events").write_text(OOM_EVENTS.format(kills=3))
+        stop_all = execution.Supervisor._stop_all
+
+        def restarted_as_the_stop_begins(supervisor, runs):
+            (scope_dir / "memory.events").write_text(OOM_EVENTS.format(kills=0))
+            stop_all(supervisor, runs)
+
+        with patch.object(execution.Supervisor, "_stop_all", restarted_as_the_stop_begins):
+            verdict = self._run(tmp_path, duration=30.0)
+        assert verdict.outcome is Outcome.OUTSIDE_KILL
+        assert "killed 3 process(es)" in verdict.detail
+
+    def test_an_unreadable_count_in_a_live_scope_is_never_a_pass(self, tmp_path, scope_dir):
+        verdict = self._run(tmp_path)
+        assert verdict.outcome is Outcome.UNVERIFIED
+        assert "memory.events" in verdict.detail
+        assert "verdict unavailable" in verdict.detail
+
+    def test_a_scope_already_gone_is_no_read_problem(self, tmp_path, scope_dir):
+        shutil.rmtree(scope_dir)
+        assert self._run(tmp_path).outcome is Outcome.PASS
+
+
 class TestThermalGuard:
     def test_a_missing_sensor_fails_closed_when_required(self):
         watch = ThermalWatch(
@@ -1508,6 +1596,51 @@ class TestContainment:
         (scope / "cpu.stat").write_text("usage_usec many\n")
         assert containment.scope_cpu_seconds("/cc-test.scope", cgroup_base=tmp_path) is None
         assert containment.scope_cpu_seconds("/gone.scope", cgroup_base=tmp_path) is None
+
+    def test_scope_oom_kills_reads_the_oom_kill_counter(self, tmp_path):
+        scope = tmp_path / "user.slice" / "cc-test.scope"
+        scope.mkdir(parents=True)
+        (scope / "memory.events").write_text("low 0\nhigh 0\nmax 4\noom 3\noom_kill 2\noom_group_kill 1\n")
+        assert containment.scope_oom_kills("/user.slice/cc-test.scope", cgroup_base=tmp_path) == 2
+
+    def test_a_memory_events_without_a_kill_count_proves_nothing(self, tmp_path):
+        scope = tmp_path / "cc-test.scope"
+        scope.mkdir()
+        (scope / "memory.events").write_text("low 0\nhigh 0\nmax 0\noom 0\noom_group_kill 0\n")
+        assert containment.scope_oom_kills("/cc-test.scope", cgroup_base=tmp_path) is None
+        (scope / "memory.events").write_text("oom_kill many\n")
+        assert containment.scope_oom_kills("/cc-test.scope", cgroup_base=tmp_path) is None
+        assert containment.scope_oom_kills("/gone.scope", cgroup_base=tmp_path) is None
+
+    def test_a_scope_exists_while_its_cgroup_procs_reads(self, tmp_path):
+        scope = tmp_path / "cc-test.scope"
+        scope.mkdir()
+        (scope / "cgroup.procs").write_text("")
+        assert containment.scope_exists("/cc-test.scope", cgroup_base=tmp_path) is True
+        assert containment.scope_exists("/gone.scope", cgroup_base=tmp_path) is False
+
+    @pytest.mark.parametrize(
+        ("subtree_control", "refused"),
+        [("cpu io memory pids\n", False), ("cpu io pids\n", True), ("", True), (None, True)],
+    )
+    def test_the_lane_cgroup_must_give_its_scopes_the_memory_controller(self, tmp_path, subtree_control, refused):
+        parent = tmp_path / "user.slice" / "app.slice"
+        parent.mkdir(parents=True)
+        if subtree_control is not None:
+            (parent / "cgroup.subtree_control").write_text(subtree_control)
+        with patch.object(containment, "lane_cgroup_parent", return_value="/user.slice/app.slice"):
+            problem = containment.memory_accounting_problem(cgroup_base=tmp_path)
+        if refused:
+            assert "/user.slice/app.slice" in problem
+            assert "OOM kill" in problem
+        else:
+            assert problem is None
+
+    def test_an_unknown_lane_cgroup_cannot_count_oom_kills(self, tmp_path):
+        with patch.object(containment, "lane_cgroup_parent", return_value=None):
+            problem = containment.memory_accounting_problem(cgroup_base=tmp_path)
+        assert "no cgroup v2 path" in problem
+        assert "OOM kill" in problem
 
     def test_process_group_cpu_seconds_sums_only_the_group(self, tmp_path):
         def proc_stat(pid: int, comm: str, pgrp: int, ticks: tuple[int, int, int, int]) -> None:

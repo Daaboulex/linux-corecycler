@@ -74,7 +74,8 @@ class _LaneRun:
     contained: containment.Containment | None = None
     cgroup: str | None = None
     output: str = ""
-    kernel_problem: str | None = None
+    read_problem: str | None = None
+    oom_kills: int = 0
 
     @property
     def alive(self) -> bool:
@@ -82,7 +83,7 @@ class _LaneRun:
 
     @property
     def faulted(self) -> bool:
-        return bool(self.signals or self.findings)
+        return bool(self.signals or self.findings or self.oom_kills)
 
     def duration(self) -> float:
         if self.proc is None:
@@ -380,6 +381,7 @@ class Supervisor:
             return
         if run.contained is not None and now - run.last_watchdog >= WATCHDOG_INTERVAL:
             run.last_watchdog = now
+            self._read_oom_kills(run)
             fault = self._containment_fault(run, now)
             if fault:
                 run.signals.append(LaneSignal(Outcome.CONTAINMENT_BROKE, fault))
@@ -400,8 +402,8 @@ class Supervisor:
         read = self.detector.read_new(final=final)
         self.observed.extend(read.events)
         for run in runs:
-            if run.kernel_problem is None:
-                run.kernel_problem = read.problem
+            if run.read_problem is None:
+                run.read_problem = read.problem
             for event in read.events:
                 found = kernel_signal(event, run.lane.cpus, self.phase)
                 if found is not None:
@@ -423,6 +425,14 @@ class Supervisor:
             log.error("core %d: stress output unreadable: %s", run.lane.core_id, exc)
             unreadable = (LaneSignal(Outcome.UNVERIFIED, f"stress output unreadable ({exc}): verdict unavailable"),)
         run.findings = (*self.backend.findings(run.output, run.run_dir), *unreadable)
+
+    @staticmethod
+    def _read_oom_kills(run: _LaneRun) -> None:
+        kills = containment.scope_oom_kills(run.contained.scope)
+        if kills is not None:
+            run.oom_kills = max(run.oom_kills, kills)
+        elif run.read_problem is None and containment.scope_exists(run.contained.scope):
+            run.read_problem = f"the memory.events of live scope {run.contained.unit} cannot be read for its OOM kills"
 
     def _containment_fault(self, run: _LaneRun, now: float) -> str | None:
         if run.proc is None or run.contained is None:
@@ -498,6 +508,8 @@ class Supervisor:
         stopping: list[_LaneRun] = []
         live: list[_LaneRun] = []
         for run in launched:
+            if run.contained is not None:
+                self._read_oom_kills(run)
             if run.proc.returncode is not None:
                 continue
             if run.contained is not None and run.cgroup is None and not run.faulted:
@@ -537,15 +549,17 @@ class Supervisor:
             self._note_exit(run)
 
     def _grade(self, run: _LaneRun) -> StressResult:
-        signals = sorted([*run.signals, *run.findings], key=lambda found: found.outcome.rank)
+        killed = f"the kernel's OOM killer killed {run.oom_kills} process(es) in this lane's scope"
+        oom = [LaneSignal(Outcome.OUTSIDE_KILL, killed)] if run.oom_kills else []
+        signals = sorted([*run.signals, *run.findings, *oom], key=lambda found: found.outcome.rank)
         if signals:
             outcome, detail = signals[0].outcome, "; also: ".join(found.text for found in signals)
         elif run.proc is None or (run.sent is not None and run.stopped_at < run.deadline):
             outcome, detail = Outcome.CUT_SHORT, f"stopped before the end of its {self.phase}: no verdict of its own"
         elif (no_work := _no_work_done(run)) is not None:
             outcome, detail = Outcome.NO_WORK_DONE, no_work
-        elif run.kernel_problem is not None:
-            outcome, detail = Outcome.UNVERIFIED, f"{run.kernel_problem} during {self.phase}: verdict unavailable"
+        elif run.read_problem is not None:
+            outcome, detail = Outcome.UNVERIFIED, f"{run.read_problem} during {self.phase}: verdict unavailable"
         else:
             outcome, detail = Outcome.PASS, ""
         tail = _tail(run.output)

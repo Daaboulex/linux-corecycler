@@ -23,7 +23,7 @@ from corecycler.config.paths import resolve_work_dir
 from corecycler.engine.backends import get_backend, load_all
 from corecycler.engine.backends.base import Outcome, OutcomeKind, StressConfig, StressResult
 from corecycler.engine.backends.stressapptest import StressapptestBackend
-from corecycler.engine.containment import lane_cgroup_parent
+from corecycler.engine.containment import lane_cgroup_parent, memory_accounting_problem
 from corecycler.engine.detector import (
     CoreMachineCheck,
     ErrorDetector,
@@ -478,6 +478,10 @@ class TunerEngine(QObject):
         if log_problem is not None:
             self.log_message.emit(f"Cannot start: {log_problem}")
             return
+        oom_problem = memory_accounting_problem()
+        if oom_problem is not None:
+            self.log_message.emit(f"Cannot start: {oom_problem}")
+            return
 
         # Capture system context
         num_cores = len(self._topology.cores)
@@ -582,6 +586,10 @@ class TunerEngine(QObject):
         log_problem = kernel_log_problem()
         if log_problem is not None:
             self.log_message.emit(f"Cannot resume: {log_problem}")
+            return
+        oom_problem = memory_accounting_problem()
+        if oom_problem is not None:
+            self.log_message.emit(f"Cannot resume: {oom_problem}")
             return
 
         self._core_states = tp.load_core_states(self._db, session_id)
@@ -865,6 +873,10 @@ class TunerEngine(QObject):
         log_problem = kernel_log_problem()
         if log_problem is not None:
             self.log_message.emit(f"Cannot validate: {log_problem}")
+            return
+        oom_problem = memory_accounting_problem()
+        if oom_problem is not None:
+            self.log_message.emit(f"Cannot validate: {oom_problem}")
             return
         self._abort_requested = False
         self._paused = False

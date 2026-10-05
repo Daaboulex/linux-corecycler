@@ -749,6 +749,13 @@ def readable_kernel_log(monkeypatch):
     monkeypatch.setattr(engine_mod, "kernel_log_problem", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def lanes_count_oom_kills(monkeypatch):
+    import corecycler.tuner.engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "memory_accounting_problem", lambda: None)
+
+
 @pytest.fixture(scope="session")
 def empty_kernel_log(tmp_path_factory):
     path = tmp_path_factory.mktemp("kernel-log") / "kmsg"

@@ -8,10 +8,12 @@ slot isolates a core, and how an apparatus fault refuses to move the search.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+from corecycler.engine import containment
 from corecycler.engine.backends.base import Outcome, OutcomeKind, StressResult
 from corecycler.engine.memory_budget import MemoryBudget
 from corecycler.engine.memory_budget import memory_budget as real_memory_budget
@@ -1692,3 +1694,74 @@ class TestKernelLogGate:
         engine.validate_profile(engine._session_id)
         assert seen == [f"Cannot validate: {self.PROBLEM}"]
         assert engine.status != "validating"
+
+
+class TestMemoryAccountingGate:
+    LANE_PARENT = "/user.slice/app.slice"
+    DELEGATED = "cpu io memory pids\n"
+    UNDELEGATED = "cpu io pids\n"
+
+    @pytest.fixture
+    def lane_parent(self, tmp_path, monkeypatch):
+        cgroup_fs = tmp_path / "cgroup"
+        parent = cgroup_fs / self.LANE_PARENT.lstrip("/")
+        parent.mkdir(parents=True)
+        real = containment.memory_accounting_problem
+        monkeypatch.setattr(containment, "lane_cgroup_parent", lambda: self.LANE_PARENT)
+        monkeypatch.setattr(eng, "memory_accounting_problem", lambda: real(cgroup_base=cgroup_fs))
+        return SimpleNamespace(
+            controllers=parent / "cgroup.subtree_control", problem=lambda: real(cgroup_base=cgroup_fs)
+        )
+
+    def _messages(self, instance):
+        seen: list[str] = []
+        instance.log_message.connect(seen.append)
+        return seen
+
+    @pytest.mark.parametrize("controllers", [DELEGATED, UNDELEGATED])
+    def test_start_refuses_a_lane_cgroup_without_the_memory_controller(
+        self, db, tmp_path, monkeypatch, lane_parent, controllers
+    ):
+        lane_parent.controllers.write_text(controllers)
+        instance = TunerEngine(
+            db=db, topology=_topo(), smu=_smu(), backend=_backend(), config=_config(), work_dir=tmp_path
+        )
+        monkeypatch.setattr(instance, "_start_worker", MagicMock())
+        seen = self._messages(instance)
+        instance.start()
+        sessions = db.list_tuner_sessions()
+        if controllers == self.DELEGATED:
+            assert lane_parent.problem() is None
+            assert len(sessions) == 1
+        else:
+            assert sessions == []
+            assert seen == [f"Cannot start: {lane_parent.problem()}"]
+            assert "memory" in seen[0]
+
+    @pytest.mark.parametrize("controllers", [DELEGATED, UNDELEGATED])
+    def test_resume_refuses_before_forensics_without_the_memory_controller(self, engine, lane_parent, controllers):
+        lane_parent.controllers.write_text(controllers)
+        harvested: list[str] = []
+
+        def harvest(since, timeout=15.0):
+            harvested.append(since)
+            return [], True
+
+        engine._forensics = harvest
+        seen = self._messages(engine)
+        engine.resume(engine._session_id)
+        assert len(engine._db.list_tuner_sessions()) == 1
+        if controllers == self.DELEGATED:
+            assert len(harvested) == 1
+        else:
+            assert harvested == []
+            assert seen == [f"Cannot resume: {lane_parent.problem()}"]
+
+    def test_validate_profile_refuses_without_the_memory_controller(self, engine, lane_parent):
+        _confirm(engine, 0, -20)
+        lane_parent.controllers.write_text(self.UNDELEGATED)
+        seen = self._messages(engine)
+        engine.validate_profile(engine._session_id)
+        assert seen == [f"Cannot validate: {lane_parent.problem()}"]
+        assert engine.status != "validating"
+        assert len(engine._db.list_tuner_sessions()) == 1

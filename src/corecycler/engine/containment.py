@@ -94,6 +94,28 @@ def scope_cpu_seconds(cgroup_path: str, *, cgroup_base: Path | None = None) -> f
     return None
 
 
+def scope_oom_kills(cgroup_path: str, *, cgroup_base: Path | None = None) -> int | None:
+    base = cgroup_base or Path("/sys/fs/cgroup")
+    try:
+        text = (base / cgroup_path.lstrip("/") / "memory.events").read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "oom_kill":
+            return int(value) if value.isdecimal() else None
+    return None
+
+
+def scope_exists(cgroup_path: str, *, cgroup_base: Path | None = None) -> bool:
+    base = cgroup_base or Path("/sys/fs/cgroup")
+    try:
+        (base / cgroup_path.lstrip("/") / "cgroup.procs").read_text()
+    except OSError:
+        return False
+    return True
+
+
 def kill_scope(cgroup_path: str, *, cgroup_base: Path | None = None) -> None:
     base = cgroup_base or Path("/sys/fs/cgroup")
     with contextlib.suppress(FileNotFoundError):
@@ -169,6 +191,24 @@ def available_mechanism(*, refresh: bool = False) -> str | None:
 def lane_cgroup_parent() -> str | None:
     """The cgroup a stress scope is created under, read from the probe scope itself."""
     return _probe().lane_cgroup_parent
+
+
+def memory_accounting_problem(*, cgroup_base: Path | None = None) -> str | None:
+    unseen = "so an OOM kill inside a stress lane could not be seen"
+    parent = lane_cgroup_parent()
+    if parent is None:
+        return f"the containment probe found no cgroup v2 path for the stress lanes, {unseen}"
+    path = (cgroup_base or Path("/sys/fs/cgroup")) / parent.lstrip("/") / "cgroup.subtree_control"
+    try:
+        controllers = path.read_text().split()
+    except OSError as exc:
+        return f"the lane cgroup {parent} cannot be read ({exc}), {unseen}"
+    if "memory" not in controllers:
+        return (
+            f"the lane cgroup {parent} does not give its scopes the memory controller "
+            f"(its cgroup.subtree_control lists: {' '.join(controllers) or 'nothing'}), {unseen}"
+        )
+    return None
 
 
 def contain(cpus: set[int] | tuple[int, ...] | list[int]) -> Containment:

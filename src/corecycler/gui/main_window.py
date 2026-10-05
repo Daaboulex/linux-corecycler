@@ -31,6 +31,7 @@ from corecycler.config.paths import ensure_work_dir, user_home
 from corecycler.config.settings import load_settings, save_settings
 from corecycler.engine.backends import get_backend, load_all
 from corecycler.engine.backends.base import StressConfig, StressResult
+from corecycler.engine.containment import memory_accounting_problem
 from corecycler.engine.scheduler import CoreScheduler, CoreTestStatus, SchedulerConfig
 from corecycler.engine.topology import CPUTopology, detect_topology
 from corecycler.gui.config_tab import ConfigTab
@@ -319,6 +320,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, "Memory Stress Active", "A memory stress test is running. Stop it before starting a core test."
             )
+            return
+        oom_problem = memory_accounting_problem()
+        if oom_problem is not None:
+            QMessageBox.warning(self, "OOM Kills Cannot Be Seen", f"Cannot start: {oom_problem}")
             return
 
         # Warn if an active/paused tuner session exists — running a manual test

@@ -93,6 +93,7 @@ def _build(
     monkeypatch.setattr(mw, "MSRReader", MagicMock)
     monkeypatch.setattr(mw, "HWMonReader", MagicMock)
     monkeypatch.setattr(mw, "read_core_frequencies", lambda: {0: 4500.0, 1: 4400.0})
+    monkeypatch.setattr(mw, "memory_accounting_problem", lambda: None)
     return mw.MainWindow()
 
 
@@ -237,6 +238,14 @@ class TestStartTest:
         window._start_test()
         assert window._worker is None
         assert no_modal.warning.call_args.args[1] == "Memory Stress Active"
+
+    def test_a_host_whose_lanes_cannot_count_oom_kills_is_refused(self, window, monkeypatch, no_modal):
+        self._ready(window, monkeypatch)
+        problem = "the lane cgroup /user.slice/app.slice does not give its scopes the memory controller"
+        monkeypatch.setattr(mw, "memory_accounting_problem", lambda: problem)
+        window._start_test()
+        assert window._worker is None
+        assert no_modal.warning.call_args.args[2] == f"Cannot start: {problem}"
 
     def test_an_active_tuner_session_can_be_declined(self, window, monkeypatch, no_modal):
         self._ready(window, monkeypatch)
