@@ -121,6 +121,20 @@ class _CheckpointFails:
         self.real.close()
 
 
+class _InterruptsAt:
+    def __init__(self, real: sqlite3.Connection, marker: str) -> None:
+        self.real = real
+        self.marker = marker
+
+    def execute(self, sql, *args):
+        if sql.lstrip().startswith(self.marker):
+            raise KeyboardInterrupt
+        return self.real.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+
+
 class TestDurability:
     def test_a_failing_close_checkpoint_still_closes_and_says_why(self, tmp_path):
         db = HistoryDB(tmp_path / "history.db")
@@ -324,6 +338,21 @@ class TestFailClosedOnBadInput:
             target.merge_from(source)
         assert len(target.list_runs()) == before
         assert target.list_tuner_sessions() == []
+        target.close()
+
+    def test_an_interrupted_merge_leaves_the_target_as_it_was_and_usable(self, tmp_path):
+        source = tmp_path / "other.db"
+        _seed(source)
+        target = HistoryDB(tmp_path / "target.db")
+        _seed_run_only(target)
+        real = target._HistoryDB__conn
+        target._HistoryDB__conn = _InterruptsAt(real, "INSERT INTO tuner_sessions")
+        with pytest.raises(KeyboardInterrupt):
+            target.merge_from(source)
+        target._HistoryDB__conn = real
+        attached = [row[1] for row in real.execute("PRAGMA database_list").fetchall()]
+        assert (real.in_transaction, "src" in attached) == (False, False)
+        assert (len(target.list_runs()), target.list_contexts()) == (1, [])
         target.close()
 
     def test_a_corrupted_page_is_refused_at_open(self, tmp_path):

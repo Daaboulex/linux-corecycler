@@ -1816,150 +1816,146 @@ WHERE boot_id = ''
         conn.execute("ATTACH DATABASE ? AS src", (str(other_path),))
         counts = {"contexts": 0, "runs": 0, "tuner_sessions": 0}
         try:
-            conn.execute("BEGIN")
-            maps: dict[str, dict[int, int]] = {}
+            with self.transaction():
+                maps: dict[str, dict[int, int]] = {}
 
-            ctx_map: dict[int, int] = {}
-            for row in conn.execute("SELECT * FROM src.tuning_contexts ORDER BY id").fetchall():
-                cur = conn.execute(
-                    """\
-                    INSERT OR IGNORE INTO tuning_contexts
-                        (created_at, bios_version, co_offsets_json, co_hash,
-                         pbo_scalar, boost_limit_mhz, notes,
-                         ppt_limit_w, tdc_limit_a, edc_limit_a)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)
-                    """,
+                ctx_map: dict[int, int] = {}
+                for row in conn.execute("SELECT * FROM src.tuning_contexts ORDER BY id").fetchall():
+                    cur = conn.execute(
+                        """\
+                        INSERT OR IGNORE INTO tuning_contexts
+                            (created_at, bios_version, co_offsets_json, co_hash,
+                             pbo_scalar, boost_limit_mhz, notes,
+                             ppt_limit_w, tdc_limit_a, edc_limit_a)
+                        VALUES (?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            row["created_at"],
+                            row["bios_version"],
+                            row["co_offsets_json"],
+                            row["co_hash"],
+                            row["pbo_scalar"],
+                            row["boost_limit_mhz"],
+                            row["notes"],
+                            row["ppt_limit_w"],
+                            row["tdc_limit_a"],
+                            row["edc_limit_a"],
+                        ),
+                    )
+                    if cur.rowcount > 0:
+                        ctx_map[row["id"]] = cur.lastrowid
+                        counts["contexts"] += 1
+                    else:  # already present — dedup to the existing context
+                        existing = conn.execute(
+                            "SELECT id FROM tuning_contexts WHERE co_hash=? AND bios_version=?",
+                            (row["co_hash"], row["bios_version"]),
+                        ).fetchone()
+                        ctx_map[row["id"]] = existing["id"]
+                maps["tuning_contexts"] = ctx_map
+
+                def copy_parent(table: str, cols: tuple[str, ...]) -> dict[int, int]:
+                    id_map: dict[int, int] = {}
+                    for row in conn.execute(f"SELECT * FROM src.{table} ORDER BY id").fetchall():
+                        vals = []
+                        for c in cols:
+                            v = row[c]
+                            if c == "context_id" and v is not None:
+                                v = ctx_map.get(v)  # orphan context -> ungrouped
+                            vals.append(v)
+                        placeholders = ",".join("?" * len(cols))
+                        cur = conn.execute(
+                            f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
+                            vals,
+                        )
+                        id_map[row["id"]] = cur.lastrowid
+                    return id_map
+
+                maps["runs"] = copy_parent(
+                    "runs",
                     (
-                        row["created_at"],
-                        row["bios_version"],
-                        row["co_offsets_json"],
-                        row["co_hash"],
-                        row["pbo_scalar"],
-                        row["boost_limit_mhz"],
-                        row["notes"],
-                        row["ppt_limit_w"],
-                        row["tdc_limit_a"],
-                        row["edc_limit_a"],
+                        "started_at",
+                        "finished_at",
+                        "status",
+                        "cpu_model",
+                        "physical_cores",
+                        "logical_cpus",
+                        "ccds",
+                        "is_x3d",
+                        "backend",
+                        "stress_mode",
+                        "fft_preset",
+                        "seconds_per_core",
+                        "cycle_count",
+                        "stop_on_error",
+                        "variable_load",
+                        "idle_stability_test",
+                        "max_temperature",
+                        "settings_json",
+                        "context_id",
+                        "bios_version",
+                        "total_cores",
+                        "cores_passed",
+                        "cores_failed",
+                        "total_seconds",
                     ),
                 )
-                if cur.rowcount > 0:
-                    ctx_map[row["id"]] = cur.lastrowid
-                    counts["contexts"] += 1
-                else:  # already present — dedup to the existing context
-                    existing = conn.execute(
-                        "SELECT id FROM tuning_contexts WHERE co_hash=? AND bios_version=?",
-                        (row["co_hash"], row["bios_version"]),
-                    ).fetchone()
-                    ctx_map[row["id"]] = existing["id"]
-            maps["tuning_contexts"] = ctx_map
+                counts["runs"] = len(maps["runs"])
 
-            def copy_parent(table: str, cols: tuple[str, ...]) -> dict[int, int]:
-                id_map: dict[int, int] = {}
-                for row in conn.execute(f"SELECT * FROM src.{table} ORDER BY id").fetchall():
-                    vals = []
-                    for c in cols:
-                        v = row[c]
-                        if c == "context_id" and v is not None:
-                            v = ctx_map.get(v)  # orphan context -> ungrouped
-                        vals.append(v)
-                    placeholders = ",".join("?" * len(cols))
-                    cur = conn.execute(
-                        f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
-                        vals,
-                    )
-                    id_map[row["id"]] = cur.lastrowid
-                return id_map
-
-            maps["runs"] = copy_parent(
-                "runs",
-                (
-                    "started_at",
-                    "finished_at",
-                    "status",
-                    "cpu_model",
-                    "physical_cores",
-                    "logical_cpus",
-                    "ccds",
-                    "is_x3d",
-                    "backend",
-                    "stress_mode",
-                    "fft_preset",
-                    "seconds_per_core",
-                    "cycle_count",
-                    "stop_on_error",
-                    "variable_load",
-                    "idle_stability_test",
-                    "max_temperature",
-                    "settings_json",
-                    "context_id",
-                    "bios_version",
-                    "total_cores",
-                    "cores_passed",
-                    "cores_failed",
-                    "total_seconds",
-                ),
-            )
-            counts["runs"] = len(maps["runs"])
-
-            maps["tuner_sessions"] = copy_parent(
-                "tuner_sessions",
-                (
-                    "created_at",
-                    "updated_at",
-                    "status",
-                    "bios_version",
-                    "cpu_model",
-                    "config_json",
-                    "context_id",
-                    "resume_crash_streak",
-                    "notes",
-                    "unattributed_crashes",
-                    "hunting_core",
-                    "validation_stage",
-                    "validation_index",
-                    "validation_half",
-                    "validation_dirty",
-                    "validation_requeue",
-                    "boot_id",
-                ),
-            )
-            counts["tuner_sessions"] = len(maps["tuner_sessions"])
-
-            for table, cols, remaps in self._MERGE_TABLES:
-                for row in conn.execute(f"SELECT * FROM src.{table} ORDER BY id").fetchall():
-                    vals = []
-                    skip = False
-                    for c in cols:
-                        v = row[c]
-                        if c in remaps and v is not None:
-                            v = maps[remaps[c]].get(v)
-                            if v is None and c != "run_id":
-                                skip = True  # orphaned child of a missing parent
-                                break
-                        vals.append(v)
-                    if skip:
-                        continue
-                    placeholders = ",".join("?" * len(cols))
-                    conn.execute(
-                        f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
-                        vals,
-                    )
-
-            # journal has no id column — copy keyed rows directly
-            for row in conn.execute("SELECT * FROM src.tuner_co_journal ORDER BY session_id, core_id").fetchall():
-                new_sid = maps["tuner_sessions"].get(row["session_id"])
-                if new_sid is None:
-                    continue
-                conn.execute(
-                    "INSERT INTO tuner_co_journal (session_id, core_id, value, survived, updated_at) "
-                    "VALUES (?,?,?,?,?)",
-                    (new_sid, row["core_id"], row["value"], row["survived"], row["updated_at"]),
+                maps["tuner_sessions"] = copy_parent(
+                    "tuner_sessions",
+                    (
+                        "created_at",
+                        "updated_at",
+                        "status",
+                        "bios_version",
+                        "cpu_model",
+                        "config_json",
+                        "context_id",
+                        "resume_crash_streak",
+                        "notes",
+                        "unattributed_crashes",
+                        "hunting_core",
+                        "validation_stage",
+                        "validation_index",
+                        "validation_half",
+                        "validation_dirty",
+                        "validation_requeue",
+                        "boot_id",
+                    ),
                 )
+                counts["tuner_sessions"] = len(maps["tuner_sessions"])
 
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
+                for table, cols, remaps in self._MERGE_TABLES:
+                    for row in conn.execute(f"SELECT * FROM src.{table} ORDER BY id").fetchall():
+                        vals = []
+                        skip = False
+                        for c in cols:
+                            v = row[c]
+                            if c in remaps and v is not None:
+                                v = maps[remaps[c]].get(v)
+                                if v is None and c != "run_id":
+                                    skip = True  # orphaned child of a missing parent
+                                    break
+                            vals.append(v)
+                        if skip:
+                            continue
+                        placeholders = ",".join("?" * len(cols))
+                        conn.execute(
+                            f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
+                            vals,
+                        )
+
+                # journal has no id column — copy keyed rows directly
+                for row in conn.execute("SELECT * FROM src.tuner_co_journal ORDER BY session_id, core_id").fetchall():
+                    new_sid = maps["tuner_sessions"].get(row["session_id"])
+                    if new_sid is None:
+                        continue
+                    conn.execute(
+                        "INSERT INTO tuner_co_journal (session_id, core_id, value, survived, updated_at) "
+                        "VALUES (?,?,?,?,?)",
+                        (new_sid, row["core_id"], row["value"], row["survived"], row["updated_at"]),
+                    )
+
         finally:
             conn.execute("DETACH DATABASE src")
         return counts
