@@ -831,6 +831,7 @@ class TestYCruncherBackend:
             ),
             pytest.param("AuthenticAMD", _BULLDOZER_FLAGS, (), "11-SNB ~ Hina", id="bulldozer-lacks-fma3"),
             pytest.param("AuthenticAMD", _without(_ZEN1_FLAGS, "avx2"), (), "12-BD2 ~ Miyu", id="zen1-without-avx2"),
+            pytest.param("AuthenticAMD", _without(_ZEN1_FLAGS, "adx"), (), "12-BD2 ~ Miyu", id="zen1-without-adx"),
             pytest.param("AuthenticAMD", _without(_ZEN1_FLAGS, "avx"), (), "08-NHM ~ Ushio", id="zen1-without-avx"),
             pytest.param(
                 "AuthenticAMD", _ZEN3_FLAGS, ("19-ZN2 ~ Kagari",), "17-ZN1 ~ Yukina", id="absent-best-falls-to-next"
