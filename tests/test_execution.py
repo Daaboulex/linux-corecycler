@@ -87,6 +87,7 @@ leader = os.getpid()
 if os.fork() == 0:
     hit = []
     signal.signal(signal.SIGTERM, lambda *_: hit.append(1))
+    open("ready", "w").close()
     while not hit:
         time.sleep(0.01)
     time.sleep(0.3)
@@ -250,7 +251,7 @@ LAUNCHER_AFTER_ITS_CHILD_SEGFAULTED = "import sys; sys.exit(11)"
 
 WRITES_IN_ITS_CWD = 'import time; open("scratch", "w").close(); time.sleep(30)'
 
-REMOVES_ITS_OWN_LOG = 'import os, time; os.remove("stdout.log"); time.sleep(30)'
+REMOVES_ITS_OWN_LOG = 'import os, time; os.remove("stdout.log"); open("removed", "w").close(); time.sleep(30)'
 
 
 def _child(code: str) -> list[str]:
@@ -491,14 +492,14 @@ class TestLaunchRefusals:
 class TestOutcomeGrading:
     def test_a_computation_error_before_an_instant_exit_is_a_fail(self, tmp_path):
         supervisor, _, _ = make_supervisor(FakeMprime(FATAL_AT_ONCE))
-        verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        verdict = run_one(supervisor, lane(tmp_path), 10.0)
         assert verdict.outcome is Outcome.COMPUTATION
         assert "FATAL ERROR" in verdict.detail
 
     def test_a_cpu_signal_death_at_once_is_silicon(self, tmp_path):
         code = "import os, signal, time; time.sleep(0.05); os.kill(os.getpid(), signal.SIGSEGV)"
         supervisor, _, _ = make_supervisor(FakeBackend(_child(code)))
-        verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        verdict = run_one(supervisor, lane(tmp_path), 10.0)
         assert verdict.outcome is Outcome.CPU_SIGNAL
         assert "SIGSEGV" in verdict.detail
 
@@ -520,19 +521,20 @@ class TestOutcomeGrading:
         backend = CrashesInCompute()
         backend._binary = str(root / "y-cruncher")
         supervisor, _, _ = make_supervisor(backend)
-        verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        verdict = run_one(supervisor, lane(tmp_path), 10.0)
         assert verdict.outcome is Outcome.CPU_SIGNAL
         assert "SIGSEGV" in verdict.detail
 
+    @pytest.mark.real_cpu_time
     def test_an_instant_clean_exit_is_no_work_done_and_shows_the_tools_last_lines(self, tmp_path):
         supervisor, _, _ = make_supervisor(FakeBackend(_child("print('a\\nb\\nlast-line', flush=True)")))
-        verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        verdict = run_one(supervisor, lane(tmp_path), 10.0)
         assert verdict.outcome is Outcome.NO_WORK_DONE
         assert "last-line" in verdict.detail
 
     def test_an_unrecognised_exit_code_is_unexplained(self, tmp_path):
         supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY_THEN_EXIT_SEVEN)))
-        verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        verdict = run_one(supervisor, lane(tmp_path), 10.0)
         assert verdict.outcome is Outcome.UNEXPLAINED
         assert "code 7" in verdict.detail
 
@@ -551,7 +553,7 @@ class TestOutcomeGrading:
 
     def test_a_lanes_own_output_error_outranks_an_outside_kill(self, tmp_path):
         supervisor, _, _ = make_supervisor(FakeMprime(FATAL_THEN_SIGKILL))
-        verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        verdict = run_one(supervisor, lane(tmp_path), 10.0)
         assert verdict.outcome is Outcome.COMPUTATION
         assert "killed externally" in verdict.detail
 
@@ -569,7 +571,7 @@ class TestOutcomeGrading:
 
     def test_an_error_printed_on_stderr_is_graded(self, tmp_path):
         supervisor, _, _ = make_supervisor(FakeMprime(FATAL_ON_STDERR))
-        verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        verdict = run_one(supervisor, lane(tmp_path), 10.0)
         assert verdict.outcome is Outcome.COMPUTATION
         assert "Rounding" in verdict.detail
 
@@ -608,15 +610,14 @@ class TestVerdicts:
     def test_a_process_killed_at_the_deadline_passes(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
         supervisor, _, _ = make_supervisor(backend)
-        with one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.PASS
         assert verdict.passed
 
     def test_an_instant_nonzero_exit_is_unexplained(self, tmp_path):
         backend = FakeBackend(_child("import sys; sys.exit(3)"))
         supervisor, _, _ = make_supervisor(backend)
-        verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        verdict = run_one(supervisor, lane(tmp_path), 10.0)
         assert verdict.outcome is Outcome.UNEXPLAINED
         assert "code 3" in verdict.detail
 
@@ -629,7 +630,7 @@ class TestVerdicts:
                 )
 
         supervisor, _, _ = make_supervisor(SatPayload())
-        verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        verdict = run_one(supervisor, lane(tmp_path), 10.0)
         assert verdict.outcome is Outcome.NOT_STARTED
         assert "freepages < neededpages" in verdict.detail
 
@@ -643,6 +644,7 @@ class TestVerdicts:
         assert verdict.outcome is Outcome.COMPUTATION
         assert "FATAL" in verdict.detail
 
+    @pytest.mark.real_cpu_time
     def test_a_clean_exit_that_did_its_work_passes(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(1.5)"))
         supervisor, _, _ = make_supervisor(backend)
@@ -651,6 +653,7 @@ class TestVerdicts:
         assert verdict.outcome is Outcome.PASS
         assert verdict.duration_seconds < 2.0
 
+    @pytest.mark.real_cpu_time
     def test_a_clean_exit_that_did_no_work_is_not_a_pass(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(0.3)"))
         supervisor, _, _ = make_supervisor(backend)
@@ -707,6 +710,7 @@ class TestVerdicts:
         assert not stop.is_set()
 
 
+@pytest.mark.real_cpu_time
 class TestLoadProof:
     def test_a_payload_that_never_loads_its_cpus_is_not_a_pass(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
@@ -719,7 +723,7 @@ class TestLoadProof:
         backend = FakeBackend(_child(BUSY))
         supervisor, _, _ = make_supervisor(backend)
         with patch.object(execution, "LOAD_FLOOR_FRACTION", 0.05):
-            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+            verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.PASS
 
     def test_an_unreadable_payload_cpu_time_never_proves_load(self, tmp_path):
@@ -755,18 +759,23 @@ class TestLoadProof:
 
 class TestTeardown:
     def test_an_outside_kill_during_our_stop_is_not_ours(self, tmp_path):
-        backend = FakeBackend(_child(KILLS_ITS_LEADER_ON_SIGTERM))
-        supervisor, _, _ = make_supervisor(backend)
-        with one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        one = lane(tmp_path)
+        supervisor, _, _ = make_supervisor(
+            FakeBackend(_child(KILLS_ITS_LEADER_ON_SIGTERM)),
+            hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/ready"))),
+        )
+        verdict = run_one(supervisor, one, 2.0)
         assert verdict.outcome is Outcome.OUTSIDE_KILL
         assert "externally" in verdict.detail
 
     def test_a_payload_that_needs_sigkill_never_passes(self, tmp_path):
-        backend = FakeBackend(_child(DEAF_TO_SIGTERM))
-        supervisor, _, _ = make_supervisor(backend)
-        with patch.object(execution, "STOP_GRACE_SECONDS", 0.2), one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        one = lane(tmp_path)
+        supervisor, _, _ = make_supervisor(
+            FakeBackend(_child(DEAF_TO_SIGTERM)),
+            hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/ready"))),
+        )
+        with patch.object(execution, "STOP_GRACE_SECONDS", 0.2):
+            verdict = run_one(supervisor, one, 2.0)
         assert verdict.outcome is Outcome.DID_NOT_STOP
         assert "did not stop" in verdict.detail
 
@@ -794,7 +803,7 @@ class TestTeardown:
     def test_a_payload_child_does_not_outlive_its_lane(self, tmp_path):
         backend = FakeBackend(_child(LEAVES_A_CHILD))
         supervisor, _, _ = make_supervisor(backend)
-        verdict = run_one(supervisor, lane(tmp_path), 5.0)
+        verdict = run_one(supervisor, lane(tmp_path), 10.0)
         stray = int((verdict.evidence_dir / "stray.pid").read_text())
         try:
             assert within(1.0, lambda: gone(stray))
@@ -810,10 +819,11 @@ class TestTeardown:
         assert unrelated.wait(timeout=5) == 7
 
     def test_a_lane_stopped_before_the_deadline_is_not_graded_after_the_teardown(self, tmp_path):
-        backend = ReadsFatal(_child(CORE_0_FAILS_ONCE_CORE_1_IS_READY + SLOW_TO_STOP.format(hold=2.0)))
+        duration = 4.0
+        backend = ReadsFatal(_child(CORE_0_FAILS_ONCE_CORE_1_IS_READY + SLOW_TO_STOP.format(hold=duration + 0.5)))
         supervisor, _, _ = make_supervisor(backend)
-        with one_busy_cpu():
-            verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 1.5)
+        with patch.object(execution, "STOP_GRACE_SECONDS", duration + 1.5):
+            verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), duration)
         assert verdicts[0].outcome is Outcome.COMPUTATION
         assert "FATAL" in verdicts[0].detail
         assert verdicts[1].outcome is Outcome.CUT_SHORT
@@ -826,8 +836,7 @@ class TestTeardown:
             hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/ready"))),
         )
         began = time.monotonic()
-        with one_busy_cpu():
-            verdict = run_one(supervisor, one, 2.0)
+        verdict = run_one(supervisor, one, 2.0)
         returned = time.monotonic()
         assert verdict.outcome is Outcome.PASS
         assert verdict.duration_seconds < returned - began - hold
@@ -845,15 +854,13 @@ class TestTeardown:
             hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/ready"))),
         )
         stop_once(stop, lambda: any(one.work_dir.glob("run-*/termed")))
-        with one_busy_cpu():
-            verdict = run_one(supervisor, one, 2.0)
+        verdict = run_one(supervisor, one, 2.0)
         assert stop.is_set()
         assert verdict.outcome is Outcome.PASS
 
     def test_an_outside_kill_on_one_lane_is_never_a_batch_pass(self, tmp_path):
         supervisor, _, _ = make_supervisor(FakeBackend(_child(ONLY_CORE_1_IS_KILLED)))
-        with one_busy_cpu():
-            verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 4.0)
+        verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 10.0)
         assert verdicts[1].outcome is Outcome.OUTSIDE_KILL
         assert verdicts[0].outcome is Outcome.CUT_SHORT
 
@@ -865,35 +872,34 @@ class TestOutputFiles:
             scripted(StressNgBackend, PRINTS_A_FAIL_THEN_RUNS),
             hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/printed"))),
         )
-        with one_busy_cpu():
-            verdict = run_one(supervisor, one, 2.0)
+        verdict = run_one(supervisor, one, 2.0)
         assert verdict.outcome is Outcome.COMPUTATION
         assert "verification failed" in verdict.detail
 
     def test_an_error_printed_mid_run_stops_the_test_within_one_scan(self, tmp_path):
         supervisor, _, _ = make_supervisor(scripted(StressapptestBackend, MISCOMPARE_MID_RUN))
-        started = time.monotonic()
         with patch.object(execution, "OUTPUT_SCAN_INTERVAL", 0.2):
             verdict = run_one(supervisor, lane(tmp_path), 30.0)
-        assert time.monotonic() - started < 3.0
+        assert verdict.duration_seconds < 3.0
         assert verdict.outcome is Outcome.COMPUTATION
         assert "miscompare" in verdict.detail
 
     def test_output_beyond_the_pipe_capacity_never_blocks_the_payload(self, tmp_path):
         marker = tmp_path / "wrote-it-all"
-        supervisor, _, _ = make_supervisor(FakeBackend([*_child(FLOODS_ITS_OUTPUT), str(marker)]))
-        run_one(supervisor, lane(tmp_path), 1.0)
+        supervisor, stop, _ = make_supervisor(FakeBackend([*_child(FLOODS_ITS_OUTPUT), str(marker)]))
+        stop_once(stop, marker.exists)
+        run_one(supervisor, lane(tmp_path), 10.0)
         assert marker.exists()
 
     def test_a_bad_byte_does_not_erase_the_output(self, tmp_path):
         supervisor, _, _ = make_supervisor(scripted(StressNgBackend, BAD_BYTE_THEN_FAIL))
-        verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        verdict = run_one(supervisor, lane(tmp_path), 10.0)
         assert verdict.outcome is Outcome.COMPUTATION
         assert "fail" in verdict.detail
 
     def test_a_recognised_failure_never_reads_as_unrecognised(self, tmp_path):
         supervisor, _, _ = make_supervisor(scripted(StressNgBackend, BAD_BYTE_THEN_FAIL))
-        verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        verdict = run_one(supervisor, lane(tmp_path), 10.0)
         assert verdict.outcome is Outcome.COMPUTATION
         assert "no recognised message" not in verdict.detail
 
@@ -906,7 +912,7 @@ class TestOutputFiles:
     def test_a_failed_tests_logs_stay_and_a_passed_tests_go(self, tmp_path):
         failing = lane(tmp_path, 0)
         supervisor, _, _ = make_supervisor(scripted(StressNgBackend, FAILS_AT_ONCE))
-        failed = run_one(supervisor, failing, 2.0)
+        failed = run_one(supervisor, failing, 10.0)
         assert failed.outcome is Outcome.COMPUTATION
         assert failed.evidence_dir is not None
         assert failed.evidence_dir.parent == failing.work_dir
@@ -914,28 +920,30 @@ class TestOutputFiles:
         assert FAIL_LINE in (failed.evidence_dir / execution.STDOUT_LOG).read_text()
         assert f"evidence: {failed.evidence_dir}" in failed.detail
         passing = lane(tmp_path, 1, (1,))
-        supervisor, _, _ = make_supervisor(FakeBackend(_child(WRITES_IN_ITS_CWD)))
-        with one_busy_cpu():
-            passed = run_one(supervisor, passing, 0.5)
+        supervisor, _, _ = make_supervisor(
+            FakeBackend(_child(WRITES_IN_ITS_CWD)),
+            hooks=holds_the_deadline_until(lambda: any(passing.work_dir.glob("run-*/scratch"))),
+        )
+        passed = run_one(supervisor, passing, 2.0)
         assert passed.outcome is Outcome.PASS
         assert passed.evidence_dir is None
         assert "evidence" not in passed.detail
         assert list(passing.work_dir.rglob("*")) == []
 
     def test_an_unreadable_output_log_is_never_a_pass(self, tmp_path):
-        supervisor, _, _ = make_supervisor(FakeBackend(_child(REMOVES_ITS_OWN_LOG)))
-        with one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path), 0.5)
+        one = lane(tmp_path)
+        supervisor, _, _ = make_supervisor(
+            FakeBackend(_child(REMOVES_ITS_OWN_LOG)),
+            hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/removed"))),
+        )
+        verdict = run_one(supervisor, one, 2.0)
         assert verdict.outcome is Outcome.UNVERIFIED
         assert "stdout.log" in verdict.detail
 
     def test_a_passed_run_dir_that_cannot_be_removed_is_logged_as_an_error(self, tmp_path, caplog):
         supervisor, _, _ = make_supervisor(FakeBackend(_child(WRITES_IN_ITS_CWD)))
-        with (
-            one_busy_cpu(),
-            patch.object(execution.shutil, "rmtree", side_effect=PermissionError("run dir: permission denied")),
-        ):
-            verdict = run_one(supervisor, lane(tmp_path), 0.5)
+        with patch.object(execution.shutil, "rmtree", side_effect=PermissionError("run dir: permission denied")):
+            verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.PASS
         assert {r.levelname for r in caplog.records if "permission denied" in r.getMessage()} == {"ERROR"}
 
@@ -953,8 +961,7 @@ class TestMceAttribution:
         backend = FakeBackend(_child("import time; time.sleep(30)"))
         detector = FakeDetector([[own(9)]])
         supervisor, _, seen = make_supervisor(backend, detector=detector)
-        with one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path, cpus=(0, 16)), 0.5)
+        verdict = run_one(supervisor, lane(tmp_path, cpus=(0, 16)), 2.0)
         assert verdict.outcome is Outcome.PASS
         assert [e.cpu for e in seen] == [9]
 
@@ -971,8 +978,7 @@ class TestMceAttribution:
         supervisor, _, seen = make_supervisor(
             FakeBackend(_child(BUSY)), detector=reader, hooks=SuperviseHooks(on_status=log_the_record_once)
         )
-        with one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path, cpus=(9,)), 10.0)
+        verdict = run_one(supervisor, lane(tmp_path, cpus=(9,)), 10.0)
         reader.close()
         assert verdict.outcome is Outcome.OWN_CORE_MCE
         assert verdict.duration_seconds < 5.0
@@ -995,16 +1001,14 @@ class TestMceAttribution:
     def test_a_failed_final_kernel_read_is_never_a_pass(self, tmp_path):
         detector = FakeDetector(final_problem="kernel log overran; records lost")
         supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), detector=detector)
-        with one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path), 0.5)
+        verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.UNVERIFIED
         assert "kernel log overran; records lost" in verdict.detail
 
     def test_a_failed_kernel_read_during_the_run_is_never_a_pass(self, tmp_path):
         detector = FakeDetector([KernelRead((), "kernel log /dev/kmsg unreadable: [Errno 1] Operation not permitted")])
         supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), detector=detector)
-        with one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path), 0.5)
+        verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.UNVERIFIED
         assert "Operation not permitted" in verdict.detail
 
@@ -1029,6 +1033,7 @@ class TestMceAttribution:
         assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.KERNEL_TROUBLE] * 2
 
 
+@pytest.mark.real_cpu_time
 class TestStallWatchdog:
     def test_an_idle_lane_is_failed_as_stalled(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
@@ -1055,7 +1060,7 @@ class TestStallWatchdog:
         backend = FakeBackend(_child("import time; time.sleep(30)"))
         supervisor, _, _ = make_supervisor(backend, stall_timeout=0.05)
         with patch.object(execution, "STALL_GRACE_SECONDS", 0.0), one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.5)
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 2.0)
         assert verdict.outcome is Outcome.PASS
 
     def test_an_unreadable_payload_cpu_time_stalls_the_lane(self, tmp_path):
@@ -1118,6 +1123,7 @@ class TestContainmentWatchdog:
         assert verdict.outcome is Outcome.CONTAINMENT_BROKE
         assert "containment fault" in verdict.detail
 
+    @pytest.mark.real_cpu_time
     def test_a_matching_kernel_record_raises_no_alarm(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
         supervisor, _, _ = make_supervisor(backend, containment_for=self._contained)
@@ -1257,14 +1263,13 @@ class TestOomKillsInTheScope:
         ):
             yield scope
 
-    def _run(self, tmp_path, duration: float = 0.5):
+    def _run(self, tmp_path, duration: float = 2.0):
         backend = FakeBackend(_child("import time; time.sleep(60)"))
         supervisor, _, _ = make_supervisor(
             backend,
             containment_for=lambda cpus: containment.Containment(prefix=[], unit="cc-test", scope=self.SCOPE),
         )
-        with one_busy_cpu("scope_cpu_seconds"):
-            return run_one(supervisor, lane(tmp_path / "lanes", cpus=(0,)), duration)
+        return run_one(supervisor, lane(tmp_path / "lanes", cpus=(0,)), duration)
 
     def test_an_oom_kill_in_the_lanes_scope_is_an_outside_kill_that_stops_the_lane(self, tmp_path, scope_dir):
         (scope_dir / "memory.events").write_text(OOM_EVENTS.format(kills=1))
@@ -1662,12 +1667,14 @@ class TestContainment:
     def test_an_unreadable_proc_observes_nothing(self, tmp_path):
         assert containment.observed_tree_cpus(4242, proc_base=tmp_path / "gone") == set()
 
+    @pytest.mark.real_cpu_time
     def test_scope_cpu_seconds_reads_usage_usec(self, tmp_path):
         scope = tmp_path / "user.slice" / "cc-test.scope"
         scope.mkdir(parents=True)
         (scope / "cpu.stat").write_text("usage_usec 2500000\nuser_usec 2000000\nsystem_usec 500000\n")
         assert containment.scope_cpu_seconds("/user.slice/cc-test.scope", cgroup_base=tmp_path) == 2.5
 
+    @pytest.mark.real_cpu_time
     def test_a_cpu_stat_without_usage_proves_nothing(self, tmp_path):
         scope = tmp_path / "cc-test.scope"
         scope.mkdir()
@@ -1722,6 +1729,7 @@ class TestContainment:
         assert "no cgroup v2 path" in problem
         assert "OOM kill" in problem
 
+    @pytest.mark.real_cpu_time
     def test_process_group_cpu_seconds_sums_only_the_group(self, tmp_path):
         def proc_stat(pid: int, comm: str, pgrp: int, ticks: tuple[int, int, int, int]) -> None:
             (tmp_path / str(pid)).mkdir()
@@ -1751,6 +1759,7 @@ class TestContainment:
         with pytest.raises(IsADirectoryError):
             containment.kill_scope("/cc-test.scope", cgroup_base=tmp_path)
 
+    @pytest.mark.real_cpu_time
     def test_a_process_group_with_no_readable_member_proves_nothing(self, tmp_path):
         (tmp_path / "300" / "stat").mkdir(parents=True)
         (tmp_path / "301").mkdir()

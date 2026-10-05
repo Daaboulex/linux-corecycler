@@ -259,6 +259,7 @@ class TestSupervisorInternalsEdges:
             assert supervisor._containment_fault(run, time.monotonic()) is None
         assert run.cgroup == "/user.slice/cc-test.scope"
 
+    @pytest.mark.real_cpu_time
     def test_a_busy_payload_sample_is_never_a_stall(self, tmp_path):
         supervisor = _idle_supervisor(stall_timeout=0.0)
         run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
@@ -324,6 +325,7 @@ class TestSupervisorInternalsEdges:
         assert "did not stop" in verdict.detail
         assert verdict.evidence_dir == tmp_path
 
+    @pytest.mark.real_cpu_time
     def test_no_load_window_ever_proves_load(self, tmp_path):
         supervisor = _idle_supervisor()
         no_deadline = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), stopped_at=5.0)

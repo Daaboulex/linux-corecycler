@@ -23,7 +23,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from test_execution import DEAF_TO_SIGTERM, FakeBackend, _child, lane, make_supervisor, one_busy_cpu, run_one
+from test_execution import (
+    DEAF_TO_SIGTERM,
+    FakeBackend,
+    _child,
+    holds_the_deadline_until,
+    lane,
+    make_supervisor,
+    run_one,
+)
 
 from corecycler.engine import execution
 from corecycler.engine.backends.base import StressConfig
@@ -168,13 +176,16 @@ class TestSchedulerProcessSafety:
             signals_sent.append(sig)
             real_killpg(pgid, sig)
 
-        supervisor, _, _ = make_supervisor(FakeBackend(_child(DEAF_TO_SIGTERM)))
+        one = lane(tmp_path)
+        supervisor, _, _ = make_supervisor(
+            FakeBackend(_child(DEAF_TO_SIGTERM)),
+            hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/ready"))),
+        )
         with (
             patch.object(execution, "STOP_GRACE_SECONDS", 0.2),
             patch("os.killpg", side_effect=recording_killpg),
-            one_busy_cpu(),
         ):
-            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+            verdict = run_one(supervisor, one, 2.0)
 
         assert signal.SIGTERM in signals_sent
         assert signal.SIGKILL in signals_sent

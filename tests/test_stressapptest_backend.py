@@ -12,7 +12,6 @@ from tests.test_execution import (
     holds_the_deadline_until,
     lane,
     make_supervisor,
-    one_busy_cpu,
     run_one,
     scripted,
     stop_once,
@@ -162,8 +161,7 @@ class TestSummaryAfterTheStop:
             scripted(StressapptestBackend, _prints_on_sigterm(CLEAN_SUMMARY, 0, marker)),
             hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/ready"))),
         )
-        with one_busy_cpu():
-            verdict = run_one(supervisor, one, 2.0)
+        verdict = run_one(supervisor, one, 2.0)
         assert marker.exists()
         assert verdict.outcome is Outcome.PASS
 

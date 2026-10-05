@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import struct
 import sys
+import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
@@ -86,7 +87,9 @@ if "PySide6" not in sys.modules:
         sys.modules["PySide6"] = _qt
         sys.modules["PySide6.QtCore"] = _qtcore
 
+from corecycler.engine import containment
 from corecycler.engine.backends.base import StressBackend, StressConfig, StressMode
+from corecycler.engine.execution import Supervisor
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.smu.commands import CPUGeneration, SMUCommandSet
 
@@ -758,3 +761,39 @@ def synthetic_memory_budget(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(engine_mod, "memory_budget", fake)
     monkeypatch.setattr(engine_mod, "lane_cgroup_parent", lambda: None)
     return SimpleNamespace(proc_base=proc, cgroup_base=cgroup, budget_for=fake)
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_cpu_time: the payload's CPU time is read from the machine, not faked by payloads_load_every_lane_cpu",
+    )
+
+
+@pytest.fixture(autouse=True)
+def payloads_load_every_lane_cpu(request, monkeypatch):
+    if request.node.get_closest_marker("real_cpu_time"):
+        return
+    launched = []
+    launch = Supervisor._launch
+
+    def recorded(self, run, config):
+        launched.append(run)
+        return launch(self, run, config)
+
+    def busy_since_launch(launched_as):
+        def read(source):
+            owners = [run for run in launched if launched_as(run, source)]
+            if not owners:
+                raise AssertionError(f"no lane was launched as {source!r}: a test reading CPU time is real_cpu_time")
+            return len(owners[-1].lane.cpus) * (time.monotonic() - owners[-1].started_at)
+
+        return read
+
+    monkeypatch.setattr(Supervisor, "_launch", recorded)
+    monkeypatch.setattr(
+        containment,
+        "process_group_cpu_seconds",
+        busy_since_launch(lambda run, pid: run.proc is not None and run.proc.pid == pid),
+    )
+    monkeypatch.setattr(containment, "scope_cpu_seconds", busy_since_launch(lambda run, cgroup: run.cgroup == cgroup))

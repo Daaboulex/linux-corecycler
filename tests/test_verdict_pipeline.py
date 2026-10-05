@@ -20,7 +20,7 @@ from corecycler.history.db import HistoryDB
 from corecycler.tuner import engine as eng
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.state import TunerPhase
-from tests.test_execution import scripted
+from tests.test_execution import scripted, within
 from tests.test_tuner_engine_phases import _backend, _config, _smu, _topo
 
 if TYPE_CHECKING:
@@ -38,16 +38,14 @@ sys.exit(0)
 BUSY = "while True: pass"
 
 MPRIME_TORTURE_THREADS = """
-import os, re
+import re, time
 text = open("prime.txt").read()
 def key(name):
     return int(re.search(name + r"=(\\d+)", text).group(1))
 threads = max(1, min(key("TortureCores"), key("NumCPUs"))) * (2 if key("TortureHyperthreading") else 1)
-for _ in range(threads - 1):
-    if os.fork() == 0:
-        break
+open("../threads", "w").write(str(threads))
 while True:
-    pass
+    time.sleep(0.05)
 """
 
 STRESSOR_SEGV = """
@@ -110,9 +108,8 @@ def test_an_mprime_fatal_error_in_the_first_second_reaches_the_engine_as_a_compu
     assert engine._core_states[0].coarse_fail_offset == tested
 
 
-def test_a_loaded_mprime_run_reaches_the_engine_as_a_pass(engine, tmp_path, monkeypatch):
-    monkeypatch.setattr(execution, "LOAD_FLOOR_FRACTION", 0.05)
-    _deliver(engine, _worker(scripted(MprimeBackend, BUSY), tmp_path, 1))
+def test_a_loaded_mprime_run_reaches_the_engine_as_a_pass(engine, tmp_path):
+    _deliver(engine, _worker(scripted(MprimeBackend, BUSY), tmp_path, 2))
     row = _last_row(engine)
     assert row["passed"]
     assert row["error_type"] is None
@@ -214,11 +211,22 @@ def test_each_stage4_lane_runs_one_mprime_torture_worker_that_meets_its_load_flo
         scheduler_config=SchedulerConfig(cores_to_test=cores, poll_interval=0.02),
         work_dir=tmp_path / "rapid",
     )
+    written = [tmp_path / "rapid" / "rapid_transition" / f"core_{core}" / "threads" for core in cores]
+
+    def holds_the_deadline_until_every_lane_started(_core: int, _status) -> None:
+        within(10.0, lambda: all(path.exists() for path in written))
+
+    scheduler.on_status_update.append(holds_the_deadline_until_every_lane_started)
     with patch.object(containment, "contain", return_value=None):
-        results = scheduler.run_rapid_transitions(cores, total_duration=1.0, load_seconds=1.0)
+        results = scheduler.run_rapid_transitions(cores, total_duration=4.0, load_seconds=4.0)
     assert len(backend.prime_txt) == len(cores)
     for prime_txt in backend.prime_txt:
         assert {"NumCPUs=1", "TortureCores=1", "TortureHyperthreading=0"} <= set(prime_txt.splitlines())
+    started = {
+        int(path.parent.name.removeprefix("core_")): int(path.read_text())
+        for path in (tmp_path / "rapid").glob("rapid_transition/core_*/threads")
+    }
+    assert started == dict.fromkeys(cores, 1)
     assert {core: result.outcome for core, result in results.items()} == dict.fromkeys(cores, Outcome.PASS)
 
 

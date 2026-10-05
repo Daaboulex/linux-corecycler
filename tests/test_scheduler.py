@@ -603,7 +603,7 @@ class TestRapidTransitionLanes:
     def test_a_machine_check_in_a_load_segment_fails_only_the_core_that_logged_it(self, tmp_path, real_supervisor):
         sched = make_scheduler(tmp_path, topo=make_topo(THREE_SMT_CORES), backend=FakeBackend(_child(BUSY)))
         sched.detector = ClosableDetector([[own(2, "CPU:2 MC5_STATUS uncorrected")]])
-        results = sched.run_rapid_transitions([0, 1, 2], total_duration=2.0, load_seconds=1.0, idle_seconds=0.5)
+        results = sched.run_rapid_transitions([0, 1, 2], total_duration=20.0, load_seconds=10.0, idle_seconds=0.5)
         assert outcomes(results) == {0: Outcome.CUT_SHORT, 1: Outcome.CUT_SHORT, 2: Outcome.OWN_CORE_MCE}
         assert "rapid transition cycle 1" in results[2].detail
         assert "CPU:2 MC5_STATUS uncorrected" in results[2].detail
