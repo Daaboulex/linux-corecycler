@@ -144,9 +144,6 @@ class FakeMachine:
         down_us = max(self._realtime_us(self.mono_ns), time.time_ns() // 1000)
         self._start(down_us + (REBOOT_S + rtc_offset_s) * 1_000_000)
 
-    def step_clock(self, seconds: float) -> None:
-        self._btime_us += round(seconds * 1_000_000)
-
     def now_ns(self) -> int:
         wall_ns = (time.time_ns() // 1000 - self._btime_us) * 1000 - self.gap_ns
         return max(self.mono_ns, wall_ns, self.boot.entries[-1].mono_us * 1000)

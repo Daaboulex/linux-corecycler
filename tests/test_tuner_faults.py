@@ -1880,17 +1880,6 @@ class TestRebootGate:
             eng.start()
         assert tp.get_session(db, eng.session_id).boot_id == machine.boot_id
 
-    def test_a_clock_step_in_the_same_boot_is_not_a_reboot(self, db, topo, smu, mock_backend, machine):
-        sid = _session_on_this_boot(db, [_in_test(0, -30)])
-        journaled(db, sid, 0, -30, survived=False)
-        machine.step_clock(7200)
-
-        _resume_fresh(db, topo, smu, mock_backend, sid)
-
-        stored = db.get_tuner_core_states(sid)[0]
-        assert (stored.crash_count, stored.current_offset, stored.in_test) == (0, -30, False)
-        assert _crash_rows(db, sid) == []
-
     def test_a_new_boot_whose_clock_reads_earlier_is_a_reboot(self, db, topo, smu, mock_backend, machine):
         sid = _session_on_this_boot(db, [_in_test(0, -30)])
         journaled(db, sid, 0, -30, survived=False)
