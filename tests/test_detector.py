@@ -560,6 +560,15 @@ class TestHarvestAfter:
         machine.reboot(clean=False)
         assert _cpus(harvest_after(dead, 0, next_boot=False)) == [2]
 
+    @pytest.mark.parametrize(
+        "stored", ["-1", "0", "all", "9C2F9903AD5C4BDA916BA213C34DBA2A", "9c2f9903-ad5c-4bda-916b-a213c34dba2a"]
+    )
+    def test_a_stored_boot_id_that_is_not_a_boot_id_is_refused_before_journalctl(self, machine, stored):
+        assert boot_end(stored) == BootEnd(clean=False, problem=f"the session's boot id {stored!r} is not a boot id")
+        assert harvest_after(stored, 0, next_boot=True) == KernelRead(
+            (), f"the session's boot id {stored!r} is not a boot id"
+        )
+
     def test_an_unrecorded_boot_reads_nothing(self):
         assert harvest_after("", 0, next_boot=True) == KernelRead((), "the session's boot is not recorded")
 

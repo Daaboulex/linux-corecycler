@@ -60,6 +60,7 @@ _TROUBLE = re.compile(
 )
 _KMSG_RECORD = re.compile(r"(\d+),\d+,(\d+),[^;]*;(.*)")
 _BOOT_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+_STORED_BOOT_ID = re.compile(r"[0-9a-f]{32}")
 _KERNEL_RECORDS = ("-o", "json", "--output-fields=MESSAGE", "_TRANSPORT=kernel", f"SYSLOG_FACILITY={KERNEL_FACILITY}")
 _USERSPACE = ("_TRANSPORT=driver", "_TRANSPORT=journal", "_TRANSPORT=stdout", "_TRANSPORT=syslog")
 _NOT_OPEN = "kernel log not open: read before reset"
@@ -322,9 +323,17 @@ def _journal_entries(args: list[str], timeout: float) -> tuple[list[_JournalEntr
         return [], f"journalctl {' '.join(args)} printed an unreadable entry: {exc!r}"
 
 
-def boot_end(boot_id: str, timeout: float = 15.0) -> BootEnd:
+def _boot_problem(boot_id: str) -> str | None:
     if not boot_id:
-        return BootEnd(clean=False, problem="the session's boot is not recorded")
+        return "the session's boot is not recorded"
+    if _STORED_BOOT_ID.fullmatch(boot_id) is None:
+        return f"the session's boot id {boot_id!r} is not a boot id"
+    return None
+
+
+def boot_end(boot_id: str, timeout: float = 15.0) -> BootEnd:
+    if (problem := _boot_problem(boot_id)) is not None:
+        return BootEnd(clean=False, problem=problem)
     last, problem = _journal_entries(["-b", boot_id, "-n", "1", "-o", "json"], timeout)
     clean = len(last) == 1 and (last[0].identifier, last[0].message) == (JOURNALD, JOURNAL_STOPPED)
     return BootEnd(clean=clean, problem=problem)
@@ -367,8 +376,8 @@ def harvest_after(
     before_mono_ns: int | None = None,
     timeout: float = 15.0,
 ) -> KernelRead:
-    if not boot_id:
-        return KernelRead((), "the session's boot is not recorded")
+    if (problem := _boot_problem(boot_id)) is not None:
+        return KernelRead((), problem)
     events: list[KernelEvent] = []
     problems: list[str | None] = []
     if after_us is None:
