@@ -24,7 +24,7 @@ from corecycler.engine.backends.base import (
 )
 from corecycler.engine.backends.mprime import FFT_RANGES, MODE_TO_CPU_FLAGS, MprimeBackend
 from corecycler.engine.backends.stress_ng import StressNgBackend, _mode_to_method
-from corecycler.engine.backends.ycruncher import MODE_TO_ALGORITHMS, YCruncherBackend
+from corecycler.engine.backends.ycruncher import ALL_TESTS, MODE_TO_ALGORITHMS, YCruncherBackend
 
 # ===========================================================================
 # Base class tests
@@ -935,11 +935,10 @@ class TestYCruncherBackend:
         _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS)
         _, work_dir = _prepared(launcher, tmp_path, StressConfig(mode=mode, cpus=(3,)))
         listed = re.search(r"Tests : \[(.*?)\]", (work_dir / "stress.cfg").read_text(), re.DOTALL)
-        if MODE_TO_ALGORITHMS[mode]:
-            assert listed is not None
-            assert re.findall(r'"(\w+)"', listed[1]) == list(MODE_TO_ALGORITHMS[mode])
-        else:
-            assert listed is None
+        assert listed is not None
+        named = re.findall(r'"(\w+)"', listed[1])
+        assert named == list(MODE_TO_ALGORITHMS[mode])
+        assert named and set(named) <= set(ALL_TESTS)
 
     def test_get_supported_modes(self):
         backend = YCruncherBackend()
@@ -997,13 +996,13 @@ class TestYCruncherModeMapping:
     def test_sse_is_scalar_only(self):
         assert MODE_TO_ALGORITHMS[StressMode.SSE] == ("BKT",)
 
-    def test_avx2_enables_all_by_default(self):
-        assert MODE_TO_ALGORITHMS[StressMode.AVX2] == ()
+    @pytest.mark.parametrize("mode", [StressMode.AVX2, StressMode.AVX512, StressMode.CUSTOM])
+    def test_a_mode_without_its_own_list_names_every_test(self, mode):
+        assert MODE_TO_ALGORITHMS[mode] == ALL_TESTS
 
-    def test_algorithms_are_valid_ycruncher_names(self):
-        valid = {"BKT", "BBP", "SFTv4", "SNT", "SVT", "FFTv4", "NTT63", "N63", "VSTv3", "VT3"}
+    def test_every_mode_names_only_tests_the_binary_offers(self):
         for algos in MODE_TO_ALGORITHMS.values():
-            assert set(algos) <= valid
+            assert algos and set(algos) <= set(ALL_TESTS)
 
 
 # ===========================================================================

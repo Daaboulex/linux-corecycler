@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from corecycler.engine.backends.base import Outcome, StressConfig, StressMode, read_text
-from corecycler.engine.backends.ycruncher import CONFIG_FILE, YCruncherBackend
+from corecycler.engine.backends.ycruncher import ALL_TESTS, CONFIG_FILE, YCruncherBackend
 from corecycler.engine.execution import exit_signal
 from tests._contract_hw import require
 
@@ -134,6 +134,17 @@ def test_a_core_id_beyond_the_machine_is_not_started(tmp_path):
     config = StressConfig(mode=StressMode.SSE, cpus=((os.cpu_count() or 0) + 64,), memory_mb=200)
     run = _run(_command(tmp_path, config), tmp_path, _STARTUP_SECONDS)
     assert _outcomes(run, tmp_path) == {Outcome.NOT_STARTED}, run.output
+
+
+def test_the_binary_offers_exactly_the_tests_we_name(tmp_path):
+    backend = _backend()
+    backend.prepare(tmp_path, StressConfig(mode=StressMode.SSE, cpus=_two_cpus(), memory_mb=200))
+    compute = backend.get_command(StressConfig(cpus=_two_cpus()), tmp_path)[0]
+    run = _run([compute, "skip-warnings", "colors:0", "stress", "-M:64m", "-D:1"], tmp_path, _STARTUP_SECONDS)
+    offered = tuple(
+        tag for number, tag in re.findall(r"^\s*(\d+)\s+(\w+)\s{2,}\S", run.output, re.M) if int(number) >= 11
+    )
+    assert offered == ALL_TESTS, run.output
 
 
 def test_the_backend_picks_the_binary_the_launcher_picks(tmp_path):

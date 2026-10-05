@@ -19,12 +19,14 @@ _STARTUP_OPTIONS = ("skip-warnings", "pause:-2", "colors:0", "status:none")
 _DEFAULT_MEMORY_MIB = 1024
 _PER_TEST_SECONDS = 30
 
+ALL_TESTS: tuple[str, ...] = ("BKT", "BBP", "SFTv4", "SNT", "SVT", "FFTv4", "N63", "VT3")
+
 MODE_TO_ALGORITHMS: dict[StressMode, tuple[str, ...]] = {
     StressMode.SSE: ("BKT",),
     StressMode.AVX: ("BKT", "BBP", "SFTv4", "SNT", "SVT"),
-    StressMode.AVX2: (),
-    StressMode.AVX512: (),
-    StressMode.CUSTOM: (),
+    StressMode.AVX2: ALL_TESTS,
+    StressMode.AVX512: ALL_TESTS,
+    StressMode.CUSTOM: ALL_TESTS,
 }
 
 _A64 = frozenset({"lm", "pni"})
@@ -109,7 +111,9 @@ def _stress_config(config: StressConfig) -> str:
         f"        SecondsPerTest : {_PER_TEST_SECONDS}",
         "        SecondsTotal : 0",
         '        StopOnError : "true"',
-        *(["        Tests : [", *(f'            "{tag}"' for tag in tests), "        ]"] if tests else []),
+        "        Tests : [",
+        *(f'            "{tag}"' for tag in tests),
+        "        ]",
         "    }",
         "}",
     ]
