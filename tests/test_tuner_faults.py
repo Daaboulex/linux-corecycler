@@ -1808,6 +1808,35 @@ def _validating_on_this_boot(db, cliffs) -> int:
     return sid
 
 
+class TestEnvelopePerSession:
+    def _resumed_with_a_deep_envelope(self, db, topo, smu, mock_backend):
+        deep = _session_on_this_boot(db, [CoreState(core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-30)])
+        journaled(db, deep, 0, -30, survived=True)
+        tp.update_session_status(db, deep, "paused")
+        eng = _resume_fresh(db, topo, smu, mock_backend, deep, cores_to_test=[0])
+        assert eng._co_survived == {0: -30}
+        tp.update_session_status(db, deep, "completed")
+        return eng
+
+    def test_validating_another_session_uses_that_sessions_envelope(self, db, topo, smu, mock_backend):
+        eng = self._resumed_with_a_deep_envelope(db, topo, smu, mock_backend)
+        shallow = _session_on_this_boot(
+            db,
+            [CoreState(core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-20, best_offset=-20)],
+            status="completed",
+        )
+        journaled(db, shallow, 0, -10, survived=True)
+        with patch.object(eng, "_run_next"):
+            eng.validate_profile(shallow)
+        assert eng._co_survived == {0: -10}
+
+    def test_a_new_session_starts_with_no_envelope(self, db, topo, smu, mock_backend):
+        eng = self._resumed_with_a_deep_envelope(db, topo, smu, mock_backend)
+        with patch.object(eng, "_run_next"):
+            eng.start()
+        assert eng._co_survived == {}
+
+
 class TestCorruptJournal:
     def test_a_journal_value_outside_the_sane_range_refuses_the_resume(self, db, topo, smu, mock_backend, machine):
         sid = _session_on_this_boot(db, [_in_test(0, -10)])

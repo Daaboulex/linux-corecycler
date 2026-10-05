@@ -480,9 +480,9 @@ class TunerEngine(QObject):
             boot_id=self._boot_id,
         )
 
-        # Initialize core states
         cores = self._get_cores_to_test()
         self._core_states = {}
+        self._co_survived = {}
 
         # Read current CO offsets from SMU if inheriting
         current_offsets: dict[int, int] = {}
@@ -876,8 +876,8 @@ class TunerEngine(QObject):
                     return
                 tp.stamp_session_boot(self._db, session_id, self._boot_id)
 
-        # Reset confirmed cores to "confirming" for re-validation
         self._core_states = tp.load_core_states(self._db, session_id)
+        self._co_survived = tp.journal_proven_values(self._db, session_id, self._config.direction)
         # Reset CO tracking — SMU state is unknown, force fresh writes
         self._co_applied = {core_id: None for core_id in self._core_states}
         for core_id, offset in profile.items():
