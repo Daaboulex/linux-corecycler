@@ -1808,6 +1808,24 @@ def _validating_on_this_boot(db, cliffs) -> int:
     return sid
 
 
+class TestCorruptJournal:
+    def test_a_journal_value_outside_the_sane_range_refuses_the_resume(self, db, topo, smu, mock_backend, machine):
+        sid = _session_on_this_boot(db, [_in_test(0, -10)])
+        journaled(db, sid, 0, -150, survived=False)
+        dead = machine.boot_id
+        machine.reboot(clean=False)
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
+        said: list[str] = []
+        eng.log_message.connect(said.append)
+        with patch.object(eng, "_run_next"):
+            eng.resume(sid)
+        assert [line for line in said if line.startswith("Cannot resume")] == [
+            f"Cannot resume: session {sid} is unreadable: core 0 has CO journal value -150, "
+            "not an integer in the sane CO range -100..100"
+        ]
+        assert (_crash_rows(db, sid), tp.get_session(db, sid).boot_id) == ([], dead)
+
+
 class TestRebootGate:
     def test_no_reboot_clears_in_test_without_penalty(self, db, topo, smu, mock_backend):
         sid = _session_on_this_boot(db, [_in_test(0, -30)])

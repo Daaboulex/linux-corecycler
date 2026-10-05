@@ -152,6 +152,10 @@ def journal_mark_survived(
     db.journal_mark_survived(session_id, boot_id=boot_id, exclude_cores=exclude_cores)
 
 
+def check_journal(db: HistoryDB, session_id: int) -> None:
+    db.check_journal(session_id)
+
+
 def journal_rows(db: HistoryDB, session_id: int, boot_id: str) -> list[JournalRow]:
     return db.journal_rows(session_id, boot_id)
 

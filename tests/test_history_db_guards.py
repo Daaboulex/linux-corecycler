@@ -216,6 +216,12 @@ class TestCoreStateSanity:
         with pytest.raises(ValueError, match="negative"):
             db.upsert_tuner_core_state(sid, CoreState(core_id=0, crash_count=-1))
 
+    def test_a_journal_value_that_is_not_a_whole_offset_is_refused_on_read(self, db):
+        sid = self._session(db)
+        db.journal_co_intent(sid, 0, 5.5, False, boot_id="0" * 32, mono_ns=1)
+        with pytest.raises(CorruptSessionError, match="core 0 has CO journal value 5.5, not an integer"):
+            db.journal_proven_values(sid, -1)
+
     def test_negative_accumulated_time_is_refused(self, db):
         sid = self._session(db)
         with pytest.raises(ValueError, match="cumulative_test_time"):

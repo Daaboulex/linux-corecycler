@@ -43,6 +43,7 @@ from corecycler.engine.execution import kernel_signal
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.engine.parallel import ParallelStress
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
+from corecycler.history.db import CorruptSessionError
 from corecycler.monitor.msr import MSRReader
 from corecycler.smu.driver import core_map_blocked
 
@@ -577,7 +578,12 @@ class TunerEngine(QObject):
             self.log_message.emit(f"Cannot resume: {self._boot_problem}")
             return
 
-        states = tp.load_core_states(self._db, session_id)
+        try:
+            states = tp.load_core_states(self._db, session_id)
+            tp.check_journal(self._db, session_id)
+        except CorruptSessionError as exc:
+            self.log_message.emit(f"Cannot resume: {exc}")
+            return
         streak = 0 if session.status == "quarantined" else session.resume_crash_streak
         plan: tp.AttributionPlan | None = None
         if session.boot_id == self._boot_id:

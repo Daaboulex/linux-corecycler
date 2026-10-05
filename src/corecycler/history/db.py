@@ -1406,7 +1406,22 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             (session_id, boot_id, *exclude_cores),
         )
 
+    def check_journal(self, session_id: int) -> None:
+        lo, hi = self._CO_SANE_RANGE
+        row = self.__conn.execute(
+            "SELECT core_id, value FROM tuner_co_journal WHERE session_id=? "
+            "AND (typeof(value) <> 'integer' OR value NOT BETWEEN ? AND ?) ORDER BY id LIMIT 1",
+            (session_id, lo, hi),
+        ).fetchone()
+        if row is not None:
+            raise CorruptSessionError(
+                session_id,
+                f"core {row['core_id']} has CO journal value {row['value']!r}, "
+                f"not an integer in the sane CO range {lo}..{hi}",
+            )
+
     def journal_rows(self, session_id: int, boot_id: str) -> list[JournalRow]:
+        self.check_journal(session_id)
         rows = self.__conn.execute(
             "SELECT * FROM tuner_co_journal WHERE session_id=? AND boot_id=? ORDER BY id", (session_id, boot_id)
         ).fetchall()
@@ -1427,6 +1442,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         return None if row is None else self._row_to_journal_row(row)
 
     def journal_proven_values(self, session_id: int, direction: int) -> dict[int, int]:
+        self.check_journal(session_id)
         rows = self.__conn.execute(
             """\
             SELECT core_id, ? * MAX(? * value) AS value FROM tuner_co_journal
@@ -1441,6 +1457,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         core, survived or not. This is what the SMU is EXPECTED to hold; drift
         detection compares live hardware against it (not against baselines,
         which validation deliberately leaves behind)."""
+        self.check_journal(session_id)
         rows = self.__conn.execute(
             """\
             SELECT j.core_id, j.value FROM tuner_co_journal j
