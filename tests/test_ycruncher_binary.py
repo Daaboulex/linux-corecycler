@@ -49,8 +49,9 @@ def _command(work_dir: Path, config: StressConfig) -> list[str]:
     return backend.get_command(config, work_dir)
 
 
-def _thread_cpus(pid: int) -> frozenset[int]:
-    return frozenset().union(*(os.sched_getaffinity(int(task.name)) for task in Path(f"/proc/{pid}/task").iterdir()))
+def _compute_thread_cpus(pid: int) -> frozenset[int]:
+    compute = [int(task.name) for task in Path(f"/proc/{pid}/task").iterdir() if int(task.name) != pid]
+    return frozenset().union(*(os.sched_getaffinity(tid) for tid in compute))
 
 
 def _run(command: list[str], work_dir: Path, seconds: float) -> _Run:
@@ -67,7 +68,7 @@ def _run(command: list[str], work_dir: Path, seconds: float) -> _Run:
     try:
         time.sleep(seconds)
         alive = proc.poll() is None
-        thread_cpus = _thread_cpus(proc.pid) if alive else frozenset()
+        thread_cpus = _compute_thread_cpus(proc.pid) if alive else frozenset()
         proc.send_signal(signal.SIGTERM)
         returncode = proc.wait(timeout=_STOP_SECONDS)
     finally:
