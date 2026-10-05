@@ -1,0 +1,257 @@
+from __future__ import annotations
+
+import bisect
+import json
+import re
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from subprocess import CompletedProcess
+from typing import TYPE_CHECKING
+
+from corecycler.engine import detector
+from corecycler.tuner import engine as engine_mod
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
+
+    import pytest
+
+FAR_FUTURE_S = 10 * 365 * 24 * 3600
+REBOOT_S = 60
+UPTIME_S = 3600
+HOST = "fake-host"
+JOURNAL_DIR = "/var/log/journal"
+BOOT_LINE = "Linux version 7.2.9"
+JOURNAL_STOPPED = "Journal stopped"
+_BOOT_ID = re.compile(r"[0-9a-f]{32}")
+_BOOT_OFFSET = re.compile(r"[+-]?\d+")
+_SINCE = "%Y-%m-%d %H:%M:%S UTC"
+
+
+@dataclass(frozen=True, slots=True)
+class Entry:
+    mono_us: int
+    realtime_us: int
+    message: str
+    identifier: str
+
+    @property
+    def transport(self) -> str:
+        return "kernel" if self.identifier == "kernel" else "driver"
+
+
+@dataclass(slots=True)
+class Boot:
+    id: str
+    entries: list[Entry] = field(default_factory=list)
+
+    def kernel_entries(self) -> list[Entry]:
+        return [entry for entry in self.entries if entry.transport == "kernel"]
+
+
+class _Refused(Exception):
+    pass
+
+
+def core_bank_record(cpu: int, *, corrected: bool = True) -> list[str]:
+    if corrected:
+        return [
+            "[Hardware Error]: Corrected error, no action required.",
+            f"[Hardware Error]: CPU:{cpu} (1a:44:0) MC0_STATUS[Over|CE|MiscV|AddrV|-|-|SyndV|CECC|-|-|-]: "
+            "0xdc204000000d0175",
+            "[Hardware Error]: IPID: 0x000000b000000000, Syndrome: 0x000000021a17010a",
+            "[Hardware Error]: Load Store Unit Ext. Error Code: 13",
+            "[Hardware Error]: cache level: L1, tx: DATA, mem-tx: EV",
+        ]
+    return [
+        "[Hardware Error]: System Fatal error.",
+        f"[Hardware Error]: CPU:{cpu} (1a:44:0) MC1_STATUS[Over|UE|MiscV|AddrV|PCC|-|SyndV|-|-|-|-]: "
+        "0xbc00000000010135",
+        "[Hardware Error]: IPID: 0x000100b000000000",
+        "[Hardware Error]: Instruction Fetch Unit Ext. Error Code: 5",
+    ]
+
+
+def _short_unix(entries: Iterable[Entry]) -> str:
+    return "".join(
+        f"{entry.realtime_us // 1_000_000}.{entry.realtime_us % 1_000_000:06d} {HOST} kernel: {entry.message}\n"
+        for entry in entries
+    )
+
+
+def _json_lines(rows: Iterable[dict]) -> str:
+    return "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows)
+
+
+class FakeMachine:
+    def __init__(self, home: Path) -> None:
+        self.kmsg_path = home / "kmsg"
+        self.boot_id_path = home / "boot_id"
+        self.stat_path = home / "stat"
+        self.kmsg_path.write_bytes(b"")
+        self.boots: list[Boot] = []
+        self.journal_readable = True
+        self._start(time.time_ns() // 1000 - UPTIME_S * 1_000_000)
+        self.mono_ns = UPTIME_S * 1_000_000_000
+
+    @property
+    def boot(self) -> Boot:
+        return self.boots[-1]
+
+    @property
+    def boot_id(self) -> str:
+        return self.boot.id
+
+    @property
+    def btime(self) -> int:
+        return self._btime_us // 1_000_000
+
+    def reboot(self, *, clean: bool, rtc_offset_s: int = 0) -> None:
+        if clean:
+            self._log(JOURNAL_STOPPED, self.mono_ns, None, "systemd-journald")
+        down_us = max(self._realtime_us(self.mono_ns), time.time_ns() // 1000)
+        self._start(down_us + (REBOOT_S + rtc_offset_s) * 1_000_000)
+
+    def same_boot(self) -> None:
+        self.mono_ns = max(self.mono_ns, UPTIME_S * 1_000_000_000)
+        self._btime_us = time.time_ns() // 1000 - (self.mono_ns + self.gap_ns) // 1000
+        self._write_files()
+
+    def step_clock(self, seconds: float) -> None:
+        self._btime_us += round(seconds * 1_000_000)
+        self._write_files()
+
+    def kernel(self, message: str, *, mono_s: float, realtime: float | None = None) -> None:
+        mono_ns = round(mono_s * 1_000_000_000)
+        self.mono_ns = max(self.mono_ns, mono_ns)
+        self._log(message, mono_ns, realtime, "kernel")
+
+    def crash_after(self, *records: list[str]) -> None:
+        for line in (line for record in records for line in record):
+            self.kernel(line, mono_s=self.mono_ns / 1_000_000_000 + 1)
+        self.reboot(clean=False)
+
+    def sleep(self, seconds: float) -> None:
+        self.gap_ns += round(seconds * 1_000_000_000)
+
+    def advance(self, seconds: float) -> None:
+        self.mono_ns += round(seconds * 1_000_000_000)
+
+    def forget_boot(self, boot_id: str) -> None:
+        if boot_id == self.boot_id:
+            raise AssertionError("the running boot's journal is never rotated away")
+        held = [boot for boot in self.boots if boot.id == boot_id]
+        if not held:
+            raise AssertionError(f"the journal holds no boot {boot_id}")
+        self.boots.remove(held[0])
+
+    def clock_ns(self, clock: int) -> int:
+        if clock == time.CLOCK_MONOTONIC:
+            return self.mono_ns
+        if clock == time.CLOCK_BOOTTIME:
+            return self.mono_ns + self.gap_ns
+        raise AssertionError(f"the fake machine keeps no clock {clock}")
+
+    def journalctl(self, args: list[str], timeout: float) -> CompletedProcess[str]:
+        argv = ["journalctl", "-q", "--no-pager", *args]
+        try:
+            served = self._serve(args)
+        except _Refused as refusal:
+            return CompletedProcess(argv, 1, "", f"{refusal}\n")
+        return CompletedProcess(argv, 0, served, "")
+
+    def _serve(self, args: list[str]) -> str:
+        if not self.journal_readable:
+            raise _Refused(f"Failed to open {JOURNAL_DIR}: Permission denied")
+        match args:
+            case ["-o", "short-unix", "--since", since, "_TRANSPORT=kernel"]:
+                floor_us = int(datetime.strptime(since, _SINCE).replace(tzinfo=UTC).timestamp()) * 1_000_000
+                return _short_unix(
+                    entry for boot in self.boots for entry in boot.kernel_entries() if entry.realtime_us >= floor_us
+                )
+            case ["-b", "-1", "-n", "25", "-o", "cat"]:
+                if len(self.boots) < 2:
+                    raise _Refused("No journal boot entry found for the specified boot (-1).")
+                return "".join(f"{entry.message}\n" for entry in self.boots[-2].entries[-25:])
+            case ["-b", boot_id, "-n", "1", "-o", "json"]:
+                boot = self._held(boot_id)
+                return _json_lines(
+                    {
+                        "__REALTIME_TIMESTAMP": str(entry.realtime_us),
+                        "__MONOTONIC_TIMESTAMP": str(entry.mono_us),
+                        "_BOOT_ID": boot.id,
+                        "_TRANSPORT": entry.transport,
+                        "SYSLOG_IDENTIFIER": entry.identifier,
+                        "MESSAGE": entry.message,
+                    }
+                    for entry in boot.entries[-1:]
+                )
+            case ["-b", boot_id, "-o", "json", "--output-fields=MESSAGE", "_TRANSPORT=kernel"]:
+                boot = self._held(boot_id)
+                return _json_lines(
+                    {
+                        "__REALTIME_TIMESTAMP": str(entry.realtime_us),
+                        "__MONOTONIC_TIMESTAMP": str(entry.mono_us),
+                        "_BOOT_ID": boot.id,
+                        "MESSAGE": entry.message,
+                    }
+                    for entry in boot.kernel_entries()
+                )
+            case ["--list-boots", "-o", "json"]:
+                last = len(self.boots) - 1
+                listed = [
+                    {
+                        "index": index - last,
+                        "boot_id": boot.id,
+                        "first_entry": boot.entries[0].realtime_us,
+                        "last_entry": boot.entries[-1].realtime_us,
+                    }
+                    for index, boot in enumerate(self.boots)
+                ]
+                return json.dumps(listed, separators=(",", ":")) + "\n"
+            case ["-o", "short-unix", "-b", "0", "-n", "1", "_TRANSPORT=kernel"]:
+                return _short_unix(self.boot.kernel_entries()[-1:])
+        raise AssertionError(f"the fake journal serves no form {args}")
+
+    def _held(self, boot_id: str) -> Boot:
+        if _BOOT_ID.fullmatch(boot_id) is None:
+            if _BOOT_OFFSET.fullmatch(boot_id) is not None:
+                raise AssertionError(f"the fake journal serves boot ids here, not the offset {boot_id}")
+            raise _Refused(f"Failed to add match '{boot_id}': Invalid argument")
+        for boot in self.boots:
+            if boot.id == boot_id:
+                return boot
+        raise _Refused(f"No journal boot entry found for the specified boot ({boot_id}+0).")
+
+    def _start(self, btime_us: int) -> None:
+        self.boots.append(Boot(uuid.uuid4().hex))
+        self.mono_ns = 0
+        self.gap_ns = 0
+        self._btime_us = btime_us
+        self._log(BOOT_LINE, 0, None, "kernel")
+        self._write_files()
+
+    def _realtime_us(self, mono_ns: int) -> int:
+        return self._btime_us + (mono_ns + self.gap_ns) // 1000
+
+    def _log(self, message: str, mono_ns: int, realtime: float | None, identifier: str) -> None:
+        realtime_us = self._realtime_us(mono_ns) if realtime is None else round(realtime * 1_000_000)
+        entry = Entry(mono_us=mono_ns // 1000, realtime_us=realtime_us, message=message, identifier=identifier)
+        bisect.insort(self.boot.entries, entry, key=lambda held: held.mono_us)
+
+    def _write_files(self) -> None:
+        self.boot_id_path.write_text(f"{uuid.UUID(self.boot_id)}\n")
+        self.stat_path.write_text(f"cpu  1 2 3 4 5 6 7 0 0 0\nbtime {self.btime}\nprocesses 5\n")
+
+
+def installed(home: Path, monkeypatch: pytest.MonkeyPatch) -> FakeMachine:
+    machine = FakeMachine(home)
+    machine.reboot(clean=True, rtc_offset_s=FAR_FUTURE_S)
+    monkeypatch.setattr(detector, "KMSG", machine.kmsg_path)
+    monkeypatch.setattr(detector, "_journalctl", machine.journalctl)
+    monkeypatch.setattr(detector, "_clock_ns", machine.clock_ns)
+    monkeypatch.setattr(engine_mod, "PROC_STAT", machine.stat_path)
+    return machine

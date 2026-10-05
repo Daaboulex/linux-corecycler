@@ -19,7 +19,9 @@ the tuner suite).
 
 from __future__ import annotations
 
+import tempfile
 from datetime import UTC
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -36,6 +38,7 @@ from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.engine import TunerEngine
 from corecycler.tuner.state import CoreState, TunerPhase
+from tests._machine import installed
 from tests._reports import mce, report, trouble, unblamed
 
 # ---------------------------------------------------------------------------
@@ -341,7 +344,9 @@ def drive_validation(db, topo, backend, cliffs, agg_margin, cfg_kw, cap=8000, ab
     return eng, steps
 
 
-def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000, reboot_interval=0, app_exit_interval=0):
+def drive_closed_loop(
+    db, topo, backend, machine, cliffs, cfg_kw, baseline=0, cap=6000, reboot_interval=0, app_exit_interval=0
+):
     """Drive the REAL tuner loop against a simulated CPU.
 
     Only the worker is replaced — by a stability oracle keyed on each core's
@@ -355,11 +360,6 @@ def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000, r
     no-reboot world, which must clear in_test WITHOUT a crash penalty and write
     baselines back explicitly. Returns (final_engine, steps, crashes, sid).
     """
-    import corecycler.tuner.engine as engine_mod
-
-    world = {"rebooted": True}
-    engine_mod._rebooted_since = lambda *a, **k: world["rebooted"]
-
     sid = tp.create_session(db, TunerConfig(**cfg_kw), "", "")
     pending: list[int] = []
 
@@ -387,7 +387,7 @@ def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000, r
             # Power-loss reboot unrelated to the test: discard the engine; the
             # in-flight offset is journaled, so a fresh engine recovers it.
             pending.clear()
-            world["rebooted"] = True
+            machine.reboot(clean=False)
             holder["eng"] = fresh()
             holder["eng"].resume(sid)
             continue
@@ -395,10 +395,9 @@ def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000, r
             # Plain app exit: same persisted state, NO reboot — resume must not
             # penalize anything and must restore baselines explicitly.
             pending.clear()
-            world["rebooted"] = False
+            machine.same_boot()
             holder["eng"] = fresh()
             holder["eng"].resume(sid)
-            world["rebooted"] = True
             continue
         core = pending.pop(0)
         e = holder["eng"]
@@ -411,7 +410,7 @@ def drive_closed_loop(db, topo, backend, cliffs, cfg_kw, baseline=0, cap=6000, r
             e._on_test_finished(report(core))
         elif offset <= crash:  # at/over the crash point -> hard crash
             crashes += 1
-            world["rebooted"] = True
+            machine.reboot(clean=False)
             holder["eng"] = fresh()
             holder["eng"].resume(sid)
         else:  # between -> detected (soft) failure
@@ -521,6 +520,32 @@ class TestJournalCatchesUnflaggedCrash:
         # The journal-detected recovery is logged as a real crash (passed=False).
         logs = tp.get_test_log(db, sid, core_id=0)
         assert any(e.get("error_type") == "crash" and not e.get("passed") for e in logs)
+
+    def test_a_journal_suspect_is_penalized_at_its_journal_value_not_its_current_offset(
+        self, db, topo, smu, mock_backend
+    ):
+        cfg = TunerConfig(cores_to_test=[0], crash_penalty_steps=3, fine_step=1)
+        sid = tp.create_session(db, cfg, "", "")
+        tp.save_core_state(
+            db,
+            sid,
+            CoreState(
+                core_id=0,
+                phase=TunerPhase.FINE_SEARCH,
+                current_offset=-20,
+                baseline_offset=0,
+                in_test=False,
+            ),
+        )
+        db.journal_co_intent(sid, 0, -10, survived=False)
+
+        eng = _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0], crash_penalty_steps=3, fine_step=1)
+
+        cs = eng._core_states[0]
+        assert cs.backoff_fail_bound == -10
+        assert cs.current_offset == -7
+        crashes = [row["offset_tested"] for row in tp.get_test_log(db, sid, core_id=0) if row["error_type"] == "crash"]
+        assert crashes == [-10]
 
     def test_zero_value_is_never_a_suspect(self, db, topo, smu, mock_backend):
         """CO=0 (stock) is axiomatically safe and must never be treated as a crash."""
@@ -892,7 +917,7 @@ class TestClosedLoopSimulation:
     a core settled on an offset that hard-crashes the box."""
 
     @pytest.mark.parametrize("order", ["sequential", "round_robin", "ccd_round_robin"])
-    def test_converges_safely_under_injected_crashes(self, db, topo, mock_backend, order):
+    def test_converges_safely_under_injected_crashes(self, db, topo, mock_backend, machine, order):
         # Per-core ground truth: offset >= stable passes; between stable and crash
         # is a detected (soft) failure; at/over crash the machine HARD-crashes.
         cliffs = {0: (-12, -15), 1: (-22, -25), 2: (-7, -10), 3: (-17, -20)}
@@ -906,7 +931,7 @@ class TestClosedLoopSimulation:
             auto_validate=False,
             resume_crash_quarantine_threshold=50,
         )
-        eng, steps, crashes, sid = drive_closed_loop(db, topo, mock_backend, cliffs, cfg_kw)
+        eng, steps, crashes, sid = drive_closed_loop(db, topo, mock_backend, machine, cliffs, cfg_kw)
 
         assert steps < 6000, f"did not converge ({order})"
         assert crashes >= 1, "no hard crash was exercised — simulation is vacuous"
@@ -1095,15 +1120,17 @@ class TestPropertyFuzz:
                 search_duration_seconds=1,
                 confirm_duration_seconds=1,
             )
-            eng, steps, crashes, sid = drive_closed_loop(
-                db,
-                topo,
-                _StubBackend(),
-                cliffs,
-                cfg_kw,
-                reboot_interval=reboot_interval,
-                app_exit_interval=app_exit_interval,
-            )
+            with tempfile.TemporaryDirectory() as home, pytest.MonkeyPatch.context() as patcher:
+                eng, steps, crashes, sid = drive_closed_loop(
+                    db,
+                    topo,
+                    _StubBackend(),
+                    installed(Path(home), patcher),
+                    cliffs,
+                    cfg_kw,
+                    reboot_interval=reboot_interval,
+                    app_exit_interval=app_exit_interval,
+                )
 
             assert steps < 6000, f"no convergence: order={order} cliffs={cliffs} reboot={reboot_interval}"
             assert eng.status in ("idle", "quarantined"), (
@@ -1555,10 +1582,8 @@ class TestRebootGate:
     mid-test) — penalizing it would walk proven-good offsets away on every
     restart of the app."""
 
-    def test_no_reboot_clears_in_test_without_penalty(self, db, topo, smu, mock_backend, monkeypatch):
-        import corecycler.tuner.engine as engine_mod
-
-        monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: False)
+    def test_no_reboot_clears_in_test_without_penalty(self, db, topo, smu, mock_backend, machine):
+        machine.same_boot()
 
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
         tp.save_core_state(
@@ -1582,30 +1607,24 @@ class TestRebootGate:
         assert not cs.in_test  # stale flag cleared...
         assert not db.get_tuner_core_states(sid)[0].in_test  # ...and persisted
 
-    def test_rebooted_since_reads_btime(self, tmp_path, assume_rebooted):
-        from datetime import datetime, timedelta
+    def test_rebooted_since_reads_btime(self, machine):
+        from datetime import datetime
 
-        _rebooted_since = assume_rebooted  # the real function (autouse patch stashes it)
-        now = datetime.now(UTC)
-        stat = tmp_path / "stat"
-        boot_epoch = int(now.timestamp())
-        stat.write_text(f"cpu  1 2 3 4\nbtime {boot_epoch}\nprocesses 5\n")
+        def at(epoch: int) -> str:
+            return datetime.fromtimestamp(epoch, UTC).isoformat()
 
-        before_boot = (now - timedelta(hours=1)).isoformat()
-        after_boot = (now + timedelta(hours=1)).isoformat()
-        assert _rebooted_since(before_boot, stat_path=str(stat)) is True
-        assert _rebooted_since(after_boot, stat_path=str(stat)) is False
+        assert engine_mod._rebooted_since(at(machine.btime - 3600)) is True
+        assert engine_mod._rebooted_since(at(machine.btime + 3600)) is False
 
-    def test_rebooted_since_fails_closed(self, tmp_path, assume_rebooted):
-        _rebooted_since = assume_rebooted  # the real function
-        # No timestamp, unparsable timestamp, missing/garbled stat file:
-        # all must assume "rebooted" so crash detection still runs.
-        assert _rebooted_since(None) is True
-        assert _rebooted_since("not-a-timestamp") is True
-        assert _rebooted_since("2026-01-01T00:00:00+00:00", stat_path=str(tmp_path / "missing")) is True
+    def test_rebooted_since_fails_closed(self, tmp_path, monkeypatch):
+        assert engine_mod._rebooted_since(None) is True
+        assert engine_mod._rebooted_since("not-a-timestamp") is True
+        monkeypatch.setattr(engine_mod, "PROC_STAT", tmp_path / "missing")
+        assert engine_mod._rebooted_since("2026-01-01T00:00:00+00:00") is True
         garbled = tmp_path / "garbled"
         garbled.write_text("btime notanumber\n")
-        assert _rebooted_since("2026-01-01T00:00:00+00:00", stat_path=str(garbled)) is True
+        monkeypatch.setattr(engine_mod, "PROC_STAT", garbled)
+        assert engine_mod._rebooted_since("2026-01-01T00:00:00+00:00") is True
 
 
 # ---------------------------------------------------------------------------
@@ -1846,13 +1865,11 @@ class TestRevertFailureFailsClosed:
 
 
 class TestNoRebootResidentOffset:
-    def test_no_reboot_writes_zero_baseline_instead_of_assuming_it(self, db, topo, smu, mock_backend, monkeypatch):
+    def test_no_reboot_writes_zero_baseline_instead_of_assuming_it(self, db, topo, smu, mock_backend, machine):
         """Without a reboot the SMU is NOT zeroed: a core with baseline 0 that
         died mid-test still holds its test offset. Resume must WRITE the
         baseline back, never assume it (the stale-resident-offset hole)."""
-        import corecycler.tuner.engine as engine_mod
-
-        monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: False)
+        machine.same_boot()
 
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
         tp.save_core_state(
@@ -1888,7 +1905,6 @@ class TestNoRebootResidentOffset:
                 baseline_offset=0,
             ),
         )
-        # autouse fixture patches _rebooted_since -> True (reboot world)
         eng = _resume_fresh(db, topo, smu, mock_backend, sid)
         assert (0, 0) not in smu.writes
         assert eng._co_applied[0] == 0
@@ -2092,10 +2108,8 @@ class TestUnattributedIncidentOnResume:
             tp.set_unattributed_crashes(db, sid, unattributed)
         return sid
 
-    def test_dirty_reboot_mid_validation_is_recorded(self, db, topo, smu, mock_backend, monkeypatch):
-        import corecycler.tuner.engine as engine_mod
-
-        monkeypatch.setattr(engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False)
+    def test_dirty_reboot_mid_validation_is_recorded(self, db, topo, smu, mock_backend, machine):
+        machine.reboot(clean=False)
         sid = self._seed(db, {0: -10, 1: -12})
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0, 1])
         with patch.object(eng, "_run_next"), patch.object(eng, "_run_validation_next"):
@@ -2104,10 +2118,8 @@ class TestUnattributedIncidentOnResume:
         assert eng._validation_dirty is True  # clean pass owed again
         assert eng._status == "validating"  # first incident continues
 
-    def test_repeat_dirty_reboots_pause_for_decision(self, db, topo, smu, mock_backend, monkeypatch):
-        import corecycler.tuner.engine as engine_mod
-
-        monkeypatch.setattr(engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False)
+    def test_repeat_dirty_reboots_pause_for_decision(self, db, topo, smu, mock_backend, machine):
+        machine.reboot(clean=False)
         sid = self._seed(db, {0: -10}, unattributed=1)
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
         with patch.object(eng, "_run_next"), patch.object(eng, "_run_validation_next"):
@@ -2116,7 +2128,6 @@ class TestUnattributedIncidentOnResume:
         assert eng._status == "paused"
 
     def test_clean_reboot_mid_validation_is_not_an_incident(self, db, topo, smu, mock_backend):
-        # autouse fixture: last_boot_ended_cleanly -> True (deliberate reboot)
         sid = self._seed(db, {0: -10, 1: -12})
         eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0, 1])
         with patch.object(eng, "_run_next"), patch.object(eng, "_run_validation_next"):
@@ -2124,12 +2135,10 @@ class TestUnattributedIncidentOnResume:
         assert tp.get_unattributed_crashes(db, sid) == 0
         assert eng._status == "validating"
 
-    def test_search_flow_reboot_is_not_an_incident(self, db, topo, smu, mock_backend, monkeypatch):
+    def test_search_flow_reboot_is_not_an_incident(self, db, topo, smu, mock_backend, machine):
         """The incident class is validation-specific: a mid-search reboot is
         already covered by the journal/in_test detectors."""
-        import corecycler.tuner.engine as engine_mod
-
-        monkeypatch.setattr(engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: False)
+        machine.reboot(clean=False)
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
         tp.save_core_state(
             db,

@@ -15,6 +15,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
@@ -47,8 +48,6 @@ from .config import TunerConfig
 from .state import CoreState, TunerPhase
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from corecycler.engine.backends.base import StressBackend
     from corecycler.engine.memory_budget import MemoryBudget
     from corecycler.engine.topology import CPUTopology
@@ -56,6 +55,8 @@ if TYPE_CHECKING:
     from corecycler.smu.driver import RyzenSMU
 
 log = logging.getLogger(__name__)
+
+PROC_STAT = Path("/proc/stat")
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +78,7 @@ def _has_unattributed_mce(events: tuple[KernelEvent, ...]) -> bool:
     return any(not isinstance(event, CoreMachineCheck) for event in events)
 
 
-def _rebooted_since(iso_ts: str | None, stat_path: str = "/proc/stat") -> bool:
+def _rebooted_since(iso_ts: str | None) -> bool:
     """True when the machine booted AFTER the given ISO timestamp.
 
     Resume uses this to tell a hard crash (reboot happened — penalize the
@@ -93,7 +94,7 @@ def _rebooted_since(iso_ts: str | None, stat_path: str = "/proc/stat") -> bool:
         last_write = datetime.fromisoformat(iso_ts).timestamp()
     except ValueError:
         return True
-    with contextlib.suppress(OSError, ValueError, IndexError), open(stat_path) as f:
+    with contextlib.suppress(OSError, ValueError, IndexError), open(PROC_STAT) as f:
         for line in f:
             if line.startswith("btime "):
                 return float(line.split()[1]) > last_write

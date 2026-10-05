@@ -24,6 +24,7 @@ from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.engine import TunerEngine
 from corecycler.tuner.state import TunerPhase
+from tests._machine import core_bank_record
 from tests._reports import mce, report, trouble, unblamed
 
 
@@ -1431,17 +1432,17 @@ class TestResumeGuards:
         engine.resume(sid)
         assert engine.status == "paused"
 
-    def test_an_abandoned_hunt_is_cleared_on_a_clean_restart(self, engine, monkeypatch, assume_clean_shutdown):
+    def test_an_abandoned_hunt_is_cleared_on_a_clean_restart(self, engine, machine):
         sid = engine._session_id
         _confirm(engine, 0, -20)
         tp.set_hunting_core(engine._db, sid, 0)
         tp.update_session_status(engine._db, sid, "paused")
-        monkeypatch.setattr(eng, "_rebooted_since", lambda *_a, **_kw: False)
+        machine.same_boot()
         engine._worker = None
         engine.resume(sid)
         assert tp.get_session(engine._db, sid).hunting_core is None
 
-    def test_an_unattributed_crash_starts_a_hunt_before_validation(self, engine, monkeypatch):
+    def test_an_unattributed_crash_starts_a_hunt_before_validation(self, engine, monkeypatch, machine):
         sid = engine._session_id
         for cid in (0, 1):
             cs = _confirm(engine, cid, -20)
@@ -1449,8 +1450,7 @@ class TestResumeGuards:
             tp.save_core_state(engine._db, sid, cs)
         tp.update_session_status(engine._db, sid, "validating")
         tp.journal_mark_survived(engine._db, sid)
-        monkeypatch.setattr(eng, "_rebooted_since", lambda *_a, **_kw: True)
-        monkeypatch.setattr(engine, "_forensics", lambda *_a, **_kw: ([], True))
+        machine.reboot(clean=False)
         hunts = []
         monkeypatch.setattr(engine, "_start_hunt", lambda: hunts.append(True))
         engine._worker = None
@@ -1510,12 +1510,11 @@ class TestRemainingEvidencePaths:
         engine._on_hunt_slot_finished(0, True, Outcome.PASS, {1: {"messages": ["x"], "corrected": True}})
         assert applied and 1 in applied[0]
 
-    def test_forensics_that_name_a_core_end_an_open_hunt(self, engine, monkeypatch):
+    def test_forensics_that_name_a_core_end_an_open_hunt(self, engine, machine):
         sid = engine._session_id
         _confirm(engine, 1, -20)
         tp.set_hunting_core(engine._db, sid, 1)
-        events = [mce(1)]
-        monkeypatch.setattr(engine, "_forensics", lambda *_a, **_kw: (events, True))
+        machine.crash_after(core_bank_record(1))
         session = tp.get_session(engine._db, sid)
         engine._attribute_crash_after_reboot(session)
         assert tp.get_session(engine._db, sid).hunting_core is None
@@ -1645,17 +1644,31 @@ class TestMemoryStageAcrossMachines:
         assert "cgroup limit 4096 MB" in next(m for m in messages if "memory budget" in m)
 
 
+def _harvest_spy(instance) -> list[str]:
+    harvested: list[str] = []
+    real = instance._forensics
+
+    def harvest(since, timeout=15.0):
+        harvested.append(since)
+        return real(since, timeout)
+
+    instance._forensics = harvest
+    return harvested
+
+
 class TestKernelLogGate:
-    PROBLEM = "the kernel log /dev/kmsg cannot be read: denied"
+    PROBLEM = (
+        "the kernel journal cannot be read: journalctl exited 1: Failed to open /var/log/journal: Permission denied"
+    )
 
     def _messages(self, instance):
         seen: list[str] = []
         instance.log_message.connect(seen.append)
         return seen
 
-    @pytest.mark.parametrize("problem", [None, PROBLEM])
-    def test_an_unreadable_kernel_log_refuses_the_session(self, db, tmp_path, monkeypatch, problem):
-        monkeypatch.setattr(eng, "kernel_log_problem", lambda: problem)
+    @pytest.mark.parametrize("readable", [True, False])
+    def test_an_unreadable_kernel_log_refuses_the_session(self, db, tmp_path, monkeypatch, machine, readable):
+        machine.journal_readable = readable
         instance = TunerEngine(
             db=db, topology=_topo(), smu=_smu(), backend=_backend(), config=_config(), work_dir=tmp_path
         )
@@ -1663,33 +1676,27 @@ class TestKernelLogGate:
         seen = self._messages(instance)
         instance.start()
         sessions = db.list_tuner_sessions()
-        if problem is None:
+        if readable:
             assert len(sessions) == 1
         else:
             assert sessions == []
-            assert seen == [f"Cannot start: {problem}"]
+            assert seen == [f"Cannot start: {self.PROBLEM}"]
 
-    @pytest.mark.parametrize("problem", [None, PROBLEM])
-    def test_resume_refuses_before_forensics_on_an_unreadable_journal(self, engine, monkeypatch, problem):
-        harvested: list[str] = []
-
-        def harvest(since, timeout=15.0):
-            harvested.append(since)
-            return [], True
-
-        engine._forensics = harvest
-        monkeypatch.setattr(eng, "kernel_log_problem", lambda: problem)
+    @pytest.mark.parametrize("readable", [True, False])
+    def test_resume_refuses_before_forensics_on_an_unreadable_journal(self, engine, machine, readable):
+        harvested = _harvest_spy(engine)
+        machine.journal_readable = readable
         seen = self._messages(engine)
         engine.resume(engine._session_id)
-        if problem is None:
+        if readable:
             assert len(harvested) == 1
         else:
             assert harvested == []
-            assert seen == [f"Cannot resume: {problem}"]
+            assert seen == [f"Cannot resume: {self.PROBLEM}"]
 
-    def test_validate_profile_refuses_on_an_unreadable_kernel_log(self, engine, monkeypatch):
+    def test_validate_profile_refuses_on_an_unreadable_kernel_log(self, engine, machine):
         _confirm(engine, 0, -20)
-        monkeypatch.setattr(eng, "kernel_log_problem", lambda: self.PROBLEM)
+        machine.journal_readable = False
         seen = self._messages(engine)
         engine.validate_profile(engine._session_id)
         assert seen == [f"Cannot validate: {self.PROBLEM}"]
@@ -1741,13 +1748,7 @@ class TestMemoryAccountingGate:
     @pytest.mark.parametrize("controllers", [DELEGATED, UNDELEGATED])
     def test_resume_refuses_before_forensics_without_the_memory_controller(self, engine, lane_parent, controllers):
         lane_parent.controllers.write_text(controllers)
-        harvested: list[str] = []
-
-        def harvest(since, timeout=15.0):
-            harvested.append(since)
-            return [], True
-
-        engine._forensics = harvest
+        harvested = _harvest_spy(engine)
         seen = self._messages(engine)
         engine.resume(engine._session_id)
         assert len(engine._db.list_tuner_sessions()) == 1

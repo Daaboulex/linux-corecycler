@@ -8,6 +8,7 @@ from __future__ import annotations
 import errno
 import os
 import subprocess
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,7 +19,9 @@ from corecycler.engine.detector import (
     ErrorDetector,
     KernelTrouble,
     UnblamedMachineCheck,
+    _clock_ns,
     _iso_to_journal_since,
+    _journalctl,
     bank_is_core,
     harvest_kernel_mce,
     kernel_log_problem,
@@ -472,6 +475,12 @@ def _completed(stdout: str) -> MagicMock:
     return MagicMock(returncode=0, stdout=stdout, stderr="")
 
 
+@pytest.fixture
+def real_journal(monkeypatch):
+    monkeypatch.setattr(detector_mod, "_journalctl", _journalctl)
+
+
+@pytest.mark.usefixtures("real_journal")
 class TestHarvestKernelMCE:
     def test_parses_records_across_the_journal(self):
         with patch("subprocess.run", return_value=_completed(JOURNAL_FIXTURE)):
@@ -531,6 +540,7 @@ class TestHarvestKernelMCE:
         assert [event.raw_ts for event in events] == [1700000000.5]
 
 
+@pytest.mark.usefixtures("real_journal")
 class TestLastBootEndedCleanly:
     def test_clean_shutdown_detected(self):
         with patch("subprocess.run", return_value=_completed("some line\nJournal stopped\n")):
@@ -556,6 +566,7 @@ class TestLastBootEndedCleanly:
 THIS_BOOT_KERNEL_LINE = "1791148722.100000 host kernel: Linux version 7.2.9\n"
 
 
+@pytest.mark.usefixtures("real_journal")
 class TestKernelLogProblem:
     def test_a_readable_log_and_journal_are_no_problem(self, kmsg):
         with patch("subprocess.run", return_value=_completed(THIS_BOOT_KERNEL_LINE)) as run:
@@ -583,3 +594,11 @@ class TestKernelLogProblem:
     def test_a_journal_that_cannot_run_is_a_problem(self, kmsg, failure):
         with patch("subprocess.run", side_effect=failure):
             assert "journal" in kernel_log_problem(kmsg)
+
+
+@pytest.mark.parametrize(
+    "clock", [time.CLOCK_MONOTONIC, time.CLOCK_PROCESS_CPUTIME_ID], ids=["monotonic", "process-cputime"]
+)
+def test_the_clock_seam_reads_the_clock_it_is_given(clock):
+    before = time.clock_gettime_ns(clock)
+    assert before <= _clock_ns(clock) <= time.clock_gettime_ns(clock)

@@ -9,13 +9,11 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from corecycler.engine import detector
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.detector import CoreMachineCheck, KernelTrouble, UnblamedMachineCheck
 from corecycler.history.db import HistoryDB
@@ -23,6 +21,7 @@ from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.engine import TunerEngine, WorkerReport
 from corecycler.tuner.state import CoreState, TunerPhase
+from tests._machine import core_bank_record
 
 # Real kernel MCE line shape (kernel: prefix stripped).
 CPU5_CORRECTED = (
@@ -48,16 +47,6 @@ class FakeSMU:
 
     def get_co_offset(self, core_id: int) -> int:
         return self.written.get(core_id, 0)
-
-
-def _event(cpu: int, corrected: bool = True) -> CoreMachineCheck:
-    return CoreMachineCheck(
-        cpu=cpu,
-        bank=0,
-        corrected=corrected,
-        message=CPU5_CORRECTED.format(cpu=cpu),
-        raw_ts=float(cpu),
-    )
 
 
 def _make_engine(db, topo, mock_backend, **cfg_kwargs):
@@ -110,14 +99,10 @@ BASELINES = {c: (-15 if c < 4 else -6) for c in BEST}
 class TestForensicAttribution:
     """Kernel-journal evidence names the culprits; policy guesses never run."""
 
-    def test_replay_field_incident_penalizes_kernel_named_cores(self, db, topo_dual_ccd_x3d, mock_backend):
+    def test_replay_field_incident_penalizes_kernel_named_cores(self, db, topo_dual_ccd_x3d, mock_backend, machine):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         session = _seed_hardened_validating(eng, db, BEST, BASELINES)
-        # The kernel named cores 5 and 6 (corrected LS MCEs) before the freeze.
-        eng._forensics = lambda since, timeout=15.0: (
-            [_event(5), _event(5), _event(6)],
-            True,
-        )
+        machine.crash_after(core_bank_record(5), core_bank_record(5), core_bank_record(6))
 
         crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
 
@@ -133,58 +118,53 @@ class TestForensicAttribution:
         assert eng._core_states[7].phase == TunerPhase.HARDENED
         assert all(not cs.in_test for cs in eng._core_states.values())
 
-    def test_sibling_cpu_maps_to_its_physical_core(self, db, topo_dual_ccd_x3d, mock_backend):
+    def test_sibling_cpu_maps_to_its_physical_core(self, db, topo_dual_ccd_x3d, mock_backend, machine):
         """An MCE on the second SMT sibling is evidence about the same core."""
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         session = _seed_hardened_validating(eng, db, BEST, BASELINES)
         sibling = topo_dual_ccd_x3d.cores[3].logical_cpus[1]
-        eng._forensics = lambda since, timeout=15.0: ([_event(sibling)], True)
+        machine.crash_after(core_bank_record(sibling, corrected=False))
 
         crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
 
         assert crashed == [3]
         assert pending_hunt is False
 
-    def test_unattributable_events_do_not_penalize(self, db, topo_dual_ccd_x3d, mock_backend):
+    def test_unattributable_events_do_not_penalize(self, db, topo_dual_ccd_x3d, mock_backend, machine):
         """A kernel panic line with no CPU proves a crash, names no core."""
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         session = _seed_hardened_validating(eng, db, BEST, BASELINES)
-        panic = KernelTrouble(message="Kernel panic - not syncing: Fatal machine check", raw_ts=1.0)
-        eng._forensics = lambda since, timeout=15.0: ([panic], True)
+        machine.crash_after(["Kernel panic - not syncing: Fatal machine check"])
 
         crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
 
         assert crashed == []
         assert pending_hunt is True  # fall through to the hunt
 
-    def test_a_shared_bank_in_the_journal_convicts_no_core(self, db, topo_dual_ccd_x3d, mock_backend):
+    def test_a_shared_bank_in_the_journal_convicts_no_core(self, db, topo_dual_ccd_x3d, mock_backend, machine):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         session = _seed_hardened_validating(eng, db, BEST, BASELINES)
         cpu = topo_dual_ccd_x3d.cores[5].logical_cpus[0]
-        journal = "".join(
-            f"1789586704.0042{n} ryzen-9950x3d kernel: {line}\n"
-            for n, line in enumerate(
-                [
-                    "[Hardware Error]: Corrected error, no action required.",
-                    f"[Hardware Error]: CPU:{cpu} (1a:44:0) MC21_STATUS[Over|CE|MiscV|AddrV|-|-|SyndV|CECC|-|-|-]: "
-                    "0xdc2040000400011b",
-                    "[Hardware Error]: IPID: 0x0000009600050f00, Syndrome: 0x0000000000000001",
-                    "[Hardware Error]: Unified Memory Controller Ext. Error Code: 0",
-                ]
-            )
+        machine.crash_after(
+            [
+                "[Hardware Error]: Corrected error, no action required.",
+                f"[Hardware Error]: CPU:{cpu} (1a:44:0) MC21_STATUS[Over|CE|MiscV|AddrV|-|-|SyndV|CECC|-|-|-]: "
+                "0xdc2040000400011b",
+                "[Hardware Error]: IPID: 0x0000009600050f00, Syndrome: 0x0000000000000001",
+                "[Hardware Error]: Unified Memory Controller Ext. Error Code: 0",
+            ]
         )
-        eng._forensics = detector.harvest_kernel_mce
-        with patch.object(detector.subprocess, "run", return_value=MagicMock(returncode=0, stdout=journal, stderr="")):
-            crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
+
+        crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
 
         assert crashed == []
         assert pending_hunt is True
         assert eng._core_states[5].crash_count == 0
 
-    def test_no_forensics_multi_core_requests_hunt_not_guess(self, db, topo_dual_ccd_x3d, mock_backend):
+    def test_no_forensics_multi_core_requests_hunt_not_guess(self, db, topo_dual_ccd_x3d, mock_backend, machine):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         session = _seed_hardened_validating(eng, db, BEST, BASELINES)
-        eng._forensics = lambda since, timeout=15.0: ([], True)
+        machine.crash_after()
 
         crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
 
@@ -193,25 +173,26 @@ class TestForensicAttribution:
         assert all(cs.crash_count == 0 for cs in eng._core_states.values())
         assert all(not cs.in_test for cs in eng._core_states.values())
 
-    def test_forensics_unavailable_fails_closed_to_hunt(self, db, topo_dual_ccd_x3d, mock_backend):
+    def test_forensics_unavailable_fails_closed_to_hunt(self, db, topo_dual_ccd_x3d, mock_backend, machine):
         """journalctl missing is NOT a clean bill — the hunt still runs."""
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         session = _seed_hardened_validating(eng, db, BEST, BASELINES)
-        eng._forensics = lambda since, timeout=15.0: ([], False)
+        machine.crash_after()
+        machine.journal_readable = False
 
         crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
 
         assert crashed == []
         assert pending_hunt is True
 
-    def test_persisted_hunt_slot_is_proof_by_isolation(self, db, topo_dual_ccd_x3d, mock_backend):
+    def test_persisted_hunt_slot_is_proof_by_isolation(self, db, topo_dual_ccd_x3d, mock_backend, machine):
         """A crash while one core was hunted alone (others at stock) convicts it."""
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_hardened_validating(eng, db, BEST, BASELINES)
         db.set_hunting_core(eng._session_id, 5)
         db.set_unattributed_crashes(eng._session_id, 1)
         session = tp.get_session(db, eng._session_id)
-        eng._forensics = lambda since, timeout=15.0: ([], True)
+        machine.crash_after()
 
         crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
 
@@ -221,7 +202,7 @@ class TestForensicAttribution:
         assert tp.get_unattributed_crashes(db, eng._session_id) == 0
         assert tp.get_session(db, eng._session_id).hunting_core is None
 
-    def test_single_in_test_search_flow_keeps_direct_blame(self, db, topo_dual_ccd_x3d, mock_backend):
+    def test_single_in_test_search_flow_keeps_direct_blame(self, db, topo_dual_ccd_x3d, mock_backend, machine):
         """Isolation mode: one core away from baseline — attribution is sound."""
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         cs = CoreState(
@@ -233,7 +214,7 @@ class TestForensicAttribution:
         eng._core_states = {2: cs}
         tp.save_core_state(db, eng._session_id, cs)
         session = tp.get_session(db, eng._session_id)  # status: running
-        eng._forensics = lambda since, timeout=15.0: ([], True)
+        machine.crash_after()
 
         crashed, pending_hunt = eng._attribute_crash_after_reboot(session)
 
@@ -403,11 +384,9 @@ class TestForeignMceEvidence:
 
 
 class TestDriftAgainstJournal:
-    def test_no_false_drift_when_smu_holds_tuner_written_values(self, db, topo_dual_ccd_x3d, mock_backend, monkeypatch):
+    def test_no_false_drift_when_smu_holds_tuner_written_values(self, db, topo_dual_ccd_x3d, mock_backend, machine):
         """Reopening mid-validation: the SMU holding exactly what the tuner
         wrote (the confirmed offsets) is not drift."""
-        import corecycler.tuner.engine as engine_mod
-
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_hardened_validating(eng, db, BEST, BASELINES)
         for cs in eng._core_states.values():
@@ -415,7 +394,7 @@ class TestDriftAgainstJournal:
             tp.save_core_state(db, eng._session_id, cs)
         for core_id, offset in BEST.items():
             eng._smu.written[core_id] = offset  # SMU == tuner's last write
-        monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: False)
+        machine.same_boot()
 
         eng._start_worker = lambda *a, **k: None  # no real worker threads
         drift_reports: list[str] = []
@@ -424,9 +403,7 @@ class TestDriftAgainstJournal:
 
         assert drift_reports == []
 
-    def test_third_party_change_is_reported_against_last_write(self, db, topo_dual_ccd_x3d, mock_backend, monkeypatch):
-        import corecycler.tuner.engine as engine_mod
-
+    def test_third_party_change_is_reported_against_last_write(self, db, topo_dual_ccd_x3d, mock_backend, machine):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_hardened_validating(eng, db, BEST, BASELINES)
         for cs in eng._core_states.values():
@@ -435,7 +412,7 @@ class TestDriftAgainstJournal:
         for core_id, offset in BEST.items():
             eng._smu.written[core_id] = offset
         eng._smu.written[3] = -10  # someone changed core 3 behind our back
-        monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: False)
+        machine.same_boot()
 
         eng._start_worker = lambda *a, **k: None  # no real worker threads
         drift_reports: list[str] = []

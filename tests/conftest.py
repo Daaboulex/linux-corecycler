@@ -717,36 +717,10 @@ def on_path(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def assume_rebooted(monkeypatch):
-    """Resume-time crash detection is gated on an actual reboot since the
-    session's last write (tuner.engine._rebooted_since). A test process never
-    rebooted, so default the gate to "rebooted" here; tests covering the
-    no-reboot path override it explicitly.
-    """
-    import corecycler.tuner.engine as engine_mod
+def machine(monkeypatch, tmp_path_factory):
+    from tests._machine import installed
 
-    real = engine_mod._rebooted_since
-    monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: True)
-    return real
-
-
-@pytest.fixture(autouse=True)
-def no_real_forensics(monkeypatch):
-    """Resume runs a kernel-journal harvest (journalctl) on the host. Tests
-    must stay hermetic: a dev machine's real journal could contain real MCE
-    lines and nondeterministically penalize cores mid-test. Default to a
-    clean, available harvest; forensics tests set engine._forensics directly.
-    """
-    import corecycler.tuner.engine as engine_mod
-
-    monkeypatch.setattr(engine_mod, "harvest_kernel_mce", lambda since, timeout=15.0: ([], True))
-
-
-@pytest.fixture(autouse=True)
-def readable_kernel_log(monkeypatch):
-    import corecycler.tuner.engine as engine_mod
-
-    monkeypatch.setattr(engine_mod, "kernel_log_problem", lambda: None)
+    return installed(tmp_path_factory.mktemp("machine"), monkeypatch)
 
 
 @pytest.fixture(autouse=True)
@@ -754,20 +728,6 @@ def lanes_count_oom_kills(monkeypatch):
     import corecycler.tuner.engine as engine_mod
 
     monkeypatch.setattr(engine_mod, "memory_accounting_problem", lambda: None)
-
-
-@pytest.fixture(scope="session")
-def empty_kernel_log(tmp_path_factory):
-    path = tmp_path_factory.mktemp("kernel-log") / "kmsg"
-    path.write_bytes(b"")
-    return path
-
-
-@pytest.fixture(autouse=True)
-def no_host_kernel_log(monkeypatch, empty_kernel_log):
-    from corecycler.engine import detector
-
-    monkeypatch.setattr(detector, "KMSG", empty_kernel_log)
 
 
 @pytest.fixture(autouse=True)
@@ -798,14 +758,3 @@ def synthetic_memory_budget(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(engine_mod, "memory_budget", fake)
     monkeypatch.setattr(engine_mod, "lane_cgroup_parent", lambda: None)
     return SimpleNamespace(proc_base=proc, cgroup_base=cgroup, budget_for=fake)
-
-
-@pytest.fixture(autouse=True)
-def assume_clean_shutdown(monkeypatch):
-    """Resume probes the host journal to tell a freeze from a deliberate
-    reboot (tuner.engine.last_boot_ended_cleanly). Default it to clean so the
-    unattributed-incident gate stays quiet; incident tests override with False.
-    """
-    import corecycler.tuner.engine as engine_mod
-
-    monkeypatch.setattr(engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: True)

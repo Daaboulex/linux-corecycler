@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -244,26 +245,25 @@ class ErrorDetector:
         return KernelRead(tuple(events), problems[0] if problems else None)
 
 
+def _clock_ns(clock: int) -> int:
+    return time.clock_gettime_ns(clock)
+
+
+def _journalctl(args: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [tools.command_name("journalctl"), "-q", "--no-pager", *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
 def harvest_kernel_mce(since_utc_iso: str, timeout: float = 15.0) -> tuple[list[KernelEvent], bool]:
     since = _iso_to_journal_since(since_utc_iso)
     if since is None:
         return [], False
     try:
-        result = subprocess.run(
-            [
-                tools.command_name("journalctl"),
-                "-q",
-                "--no-pager",
-                "-o",
-                "short-unix",
-                "--since",
-                since,
-                "_TRANSPORT=kernel",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        result = _journalctl(["-o", "short-unix", "--since", since, "_TRANSPORT=kernel"], timeout)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError) as exc:
         log.warning("kernel-journal harvest failed: %s", exc)
         return [], False
@@ -290,23 +290,7 @@ def kernel_log_problem(kmsg: Path | None = None, timeout: float = 15.0) -> str |
     except OSError as exc:
         return f"the kernel log {path} cannot be read: {exc}"
     try:
-        result = subprocess.run(
-            [
-                tools.command_name("journalctl"),
-                "-q",
-                "--no-pager",
-                "-o",
-                "short-unix",
-                "-b",
-                "0",
-                "-n",
-                "1",
-                "_TRANSPORT=kernel",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        result = _journalctl(["-o", "short-unix", "-b", "0", "-n", "1", "_TRANSPORT=kernel"], timeout)
     except (subprocess.TimeoutExpired, OSError) as exc:
         return f"the kernel journal cannot be read: {exc}"
     if result.returncode != 0:
@@ -319,22 +303,7 @@ def kernel_log_problem(kmsg: Path | None = None, timeout: float = 15.0) -> str |
 
 def last_boot_ended_cleanly(timeout: float = 15.0) -> bool:
     try:
-        result = subprocess.run(
-            [
-                tools.command_name("journalctl"),
-                "-q",
-                "--no-pager",
-                "-b",
-                "-1",
-                "-n",
-                "25",
-                "-o",
-                "cat",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        result = _journalctl(["-b", "-1", "-n", "25", "-o", "cat"], timeout)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError) as exc:
         log.warning("clean-shutdown probe failed: %s", exc)
         return False
