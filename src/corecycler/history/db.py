@@ -1920,7 +1920,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         one transaction, rolled back on any error.
         """
         other_path = Path(other_path)
-        HistoryDB(other_path).close()  # migrate source to the current schema
+        HistoryDB(other_path).close()
         conn = self.__conn
         conn.execute("ATTACH DATABASE ? AS src", (str(other_path),))
         counts = {"contexts": 0, "runs": 0, "tuner_sessions": 0}
@@ -1954,7 +1954,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
                     if cur.rowcount > 0:
                         ctx_map[row["id"]] = cur.lastrowid
                         counts["contexts"] += 1
-                    else:  # already present — dedup to the existing context
+                    else:
                         existing = conn.execute(
                             "SELECT id FROM tuning_contexts WHERE co_hash=? AND bios_version=?",
                             (row["co_hash"], row["bios_version"]),
@@ -1969,7 +1969,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
                         for c in cols:
                             v = row[c]
                             if c == "context_id" and v is not None:
-                                v = ctx_map.get(v)  # orphan context -> ungrouped
+                                v = ctx_map.get(v)
                             vals.append(v)
                         placeholders = ",".join("?" * len(cols))
                         cur = conn.execute(
@@ -2044,7 +2044,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
                             if c in remaps and v is not None:
                                 v = maps[remaps[c]].get(v)
                                 if v is None and c != "run_id":
-                                    skip = True  # orphaned child of a missing parent
+                                    skip = True
                                     break
                             vals.append(v)
                         if skip:
