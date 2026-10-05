@@ -141,9 +141,7 @@ def test_the_binary_offers_exactly_the_tests_we_name(tmp_path):
     backend.prepare(tmp_path, StressConfig(mode=StressMode.SSE, cpus=_two_cpus(), memory_mb=200))
     compute = backend.get_command(StressConfig(cpus=_two_cpus()), tmp_path)[0]
     run = _run([compute, "skip-warnings", "colors:0", "stress", "-M:64m", "-D:1"], tmp_path, _STARTUP_SECONDS)
-    offered = tuple(
-        tag for number, tag in re.findall(r"^\s*(\d+)\s+(\w+)\s{2,}\S", run.output, re.M) if int(number) >= 11
-    )
+    offered = tuple(tag for number, tag in re.findall(r"^\s*(\d+)\s+(\w+)\s+\S", run.output, re.M) if int(number) >= 11)
     assert offered == ALL_TESTS, run.output
 
 
