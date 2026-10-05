@@ -11,6 +11,8 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -44,7 +46,6 @@ from tests.test_detector import LONE_DECODER_RECORD, _append, _kmsg
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
 
 BUSY = "while True: pass"
@@ -101,6 +102,20 @@ if os.fork() == 0:
     os._exit(0)
 time.sleep(0.1)
 sys.exit(0)
+"""
+
+EXITS_AT_ONCE_LEAVING_A_CHILD_IN_ITS_OWN_GROUP = """
+import os, time
+if os.fork() == 0:
+    os.setsid()
+    with open("stray.tmp", "w") as out:
+        out.write(str(os.getpid()))
+    os.rename("stray.tmp", "stray.pid")
+    time.sleep(30)
+    os._exit(0)
+while not os.path.exists("stray.pid"):
+    time.sleep(0.01)
+time.sleep(0.4)
 """
 
 CORE_0_FAILS_ONCE_CORE_1_IS_READY = """
@@ -1002,7 +1017,7 @@ class TestContainmentWatchdog:
             yield kill_scope
 
     def _contained(self, cpus):
-        return containment.Containment(prefix=[], unit="cc-test")
+        return containment.Containment(prefix=[], unit="cc-test", scope="/user.slice/cc-test.scope")
 
     def _run_adopted(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
@@ -1077,6 +1092,87 @@ class TestContainmentWatchdog:
             verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 5.0)
         assert verdict.outcome is Outcome.CONTAINMENT_BROKE
         assert "vanished" in verdict.detail
+
+
+def found_elsewhere(_pid: int, unit: str) -> str:
+    return f"/elsewhere.slice/{unit}.scope"
+
+
+class TestTheScopeIsKnownFromLaunch:
+    LANE_PARENT = "/user.slice/app.slice"
+
+    @pytest.fixture
+    def contained_by_the_probe(self):
+        probe = containment.Probe(containment.MECHANISM_USER, self.LANE_PARENT)
+
+        def found(key):
+            return Resolution(key=key, path=Path("/probed") / key, origin="path")
+
+        with (
+            patch.object(containment, "_probe", return_value=probe),
+            patch.object(containment.tools, "resolve", side_effect=found),
+        ):
+            yield lambda cpus: replace(containment.contain(cpus), prefix=[])
+
+    def test_a_leader_gone_before_any_watchdog_saw_its_scope_still_has_the_scope_killed(
+        self, tmp_path, contained_by_the_probe
+    ):
+        cgroup_fs = tmp_path / "cgroup"
+        scopes: list[Path] = []
+        kill_scope = containment.kill_scope
+
+        def contained(cpus):
+            launched = contained_by_the_probe(cpus)
+            scopes.append(cgroup_fs / self.LANE_PARENT.lstrip("/") / f"{launched.unit}.scope")
+            scopes[-1].mkdir(parents=True)
+            (scopes[-1] / "cgroup.kill").write_text("")
+            return launched
+
+        def cgroup_kill(cgroup_path):
+            kill_scope(cgroup_path, cgroup_base=cgroup_fs)
+            if (scopes[0] / "cgroup.kill").read_text() == "1":
+                for member in (tmp_path / "lanes").glob("core_0/run-*/stray.pid"):
+                    os.kill(int(member.read_text()), signal.SIGKILL)
+
+        backend = FakeBackend(_child(EXITS_AT_ONCE_LEAVING_A_CHILD_IN_ITS_OWN_GROUP))
+        supervisor, _, _ = make_supervisor(backend, containment_for=contained)
+        try:
+            with patch.object(containment, "kill_scope", side_effect=cgroup_kill):
+                run_one(supervisor, lane(tmp_path / "lanes", cpus=(0,)), 5.0)
+            stray = int(next((tmp_path / "lanes").glob("core_0/run-*/stray.pid")).read_text())
+            assert (scopes[0] / "cgroup.kill").read_text() == "1"
+            assert within(2.0, lambda: gone(stray))
+        finally:
+            for member in (tmp_path / "lanes").glob("core_0/run-*/stray.pid"):
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(int(member.read_text()), signal.SIGKILL)
+
+    def test_a_payload_found_in_a_scope_other_than_the_launched_one_is_a_containment_fault(
+        self, tmp_path, contained_by_the_probe
+    ):
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
+        supervisor, _, _ = make_supervisor(backend, containment_for=contained_by_the_probe)
+        with (
+            patch.object(containment, "payload_cgroup", side_effect=found_elsewhere),
+            patch.object(containment, "scope_effective_cpus", return_value={0}),
+            patch.object(containment, "kill_scope"),
+        ):
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 1.0)
+        assert verdict.outcome is Outcome.CONTAINMENT_BROKE
+        assert "/elsewhere.slice/" in verdict.detail
+        assert self.LANE_PARENT in verdict.detail
+
+    def test_a_payload_first_found_elsewhere_at_the_stop_is_a_containment_fault(self, tmp_path, contained_by_the_probe):
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
+        supervisor, _, _ = make_supervisor(backend, containment_for=contained_by_the_probe)
+        with (
+            patch.object(containment, "payload_cgroup", side_effect=found_elsewhere),
+            patch.object(execution.Supervisor, "_containment_fault", return_value=None),
+            patch.object(containment, "kill_scope"),
+        ):
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.3)
+        assert verdict.outcome is Outcome.CONTAINMENT_BROKE
+        assert "/elsewhere.slice/" in verdict.detail
 
 
 class TestThermalGuard:
@@ -1317,31 +1413,48 @@ class TestContainment:
         ):
             containment.contain((0,))
 
-    def test_contain_builds_a_user_scope_prefix(self, tmp_path):
-        systemd_run = tmp_path / "systemd-run"
-        systemd_run.write_text("#!/bin/sh\n")
-        systemd_run.chmod(0o755)
-        setpriv = tmp_path / "setpriv"
-        setpriv.write_text("#!/bin/sh\n")
-        setpriv.chmod(0o755)
+    @pytest.fixture
+    def user_tools(self, tmp_path):
+        found = {"systemd-run": tmp_path / "systemd-run", "setpriv": tmp_path / "setpriv"}
+        for tool in found.values():
+            tool.write_text("#!/bin/sh\n")
+            tool.chmod(0o755)
 
         def fake_resolve(key):
-            path = {"systemd-run": systemd_run, "setpriv": setpriv}.get(key)
-            return Resolution(key=key, path=path, origin="path")
+            return Resolution(key=key, path=found.get(key), origin="path")
 
         with (
             patch.object(containment.tools, "resolve", side_effect=fake_resolve),
             patch.object(containment, "available_mechanism", return_value=containment.MECHANISM_USER),
         ):
+            yield found
+
+    def test_contain_builds_a_user_scope_prefix(self, user_tools):
+        with patch.object(containment, "lane_cgroup_parent", return_value="/user.slice/app.slice"):
             prefix = containment.contain((16, 0))
-        assert prefix.prefix[0] == str(systemd_run)
+        assert prefix.prefix[0] == str(user_tools["systemd-run"])
         assert "--user" in prefix.prefix
         assert "--unit" in prefix.prefix
         assert prefix.unit.startswith("corecycler-")
         assert "AllowedCPUs=0,16" in prefix.prefix
         assert prefix.prefix[-1] == "--"
-        assert str(setpriv) in prefix.prefix
+        assert str(user_tools["setpriv"]) in prefix.prefix
         assert "--pdeathsig" in prefix.prefix
+
+    @pytest.mark.parametrize(
+        ("lane_parent", "scope_parent"), [("/user.slice/app.slice", "/user.slice/app.slice/"), ("/", "/")]
+    )
+    def test_contain_names_the_scope_under_the_probed_lane_cgroup(self, user_tools, lane_parent, scope_parent):
+        with patch.object(containment, "lane_cgroup_parent", return_value=lane_parent):
+            contained = containment.contain((0,))
+        assert contained.scope == f"{scope_parent}{contained.unit}.scope"
+
+    def test_contain_refuses_when_the_probe_knows_no_lane_cgroup(self, user_tools):
+        with (
+            patch.object(containment, "lane_cgroup_parent", return_value=None),
+            pytest.raises(containment.ContainmentUnavailable, match="no cgroup v2 path"),
+        ):
+            containment.contain((0,))
 
     def test_probe_failure_is_cached_but_refreshable(self):
         containment._probe_cache.clear()

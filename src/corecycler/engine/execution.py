@@ -71,7 +71,7 @@ class _LaneRun:
     last_watchdog: float = 0.0
     cpu_seconds: float | None = None
     cpu_sampled_at: float = 0.0
-    unit: str | None = None
+    contained: containment.Containment | None = None
     cgroup: str | None = None
     output: str = ""
     kernel_problem: str | None = None
@@ -314,9 +314,8 @@ class Supervisor:
             run.run_dir = run_dir
             self.backend.prepare(run_dir, cfg)
             self.backend.assert_prepared(run_dir)
-            contained = self._containment_for(lane.cpus)
-            prefix = contained.prefix if contained is not None else []
-            run.unit = contained.unit if contained is not None else None
+            run.contained = self._containment_for(lane.cpus)
+            prefix = run.contained.prefix if run.contained is not None else []
             cmd = prefix + self.backend.get_command(cfg, run_dir)
         except (OSError, RuntimeError) as exc:
             log.error("core %d: refusing stress launch: %s", lane.core_id, exc)
@@ -379,7 +378,7 @@ class Supervisor:
             self._note_exit(run)
             self._scan_output(run)
             return
-        if run.unit is not None and now - run.last_watchdog >= WATCHDOG_INTERVAL:
+        if run.contained is not None and now - run.last_watchdog >= WATCHDOG_INTERVAL:
             run.last_watchdog = now
             fault = self._containment_fault(run, now)
             if fault:
@@ -426,28 +425,39 @@ class Supervisor:
         run.findings = (*self.backend.findings(run.output, run.run_dir), *unreadable)
 
     def _containment_fault(self, run: _LaneRun, now: float) -> str | None:
-        if run.proc is None or run.unit is None:
+        if run.proc is None or run.contained is None:
             return None
-        if run.cgroup is None:
-            run.cgroup = containment.payload_cgroup(run.proc.pid, run.unit)
+        if run.cgroup is None and (moved := self._learn_scope(run)) is not None:
+            return moved
         if run.cgroup is None:
             if now - run.started_at > CONTAINMENT_GRACE_SECONDS:
                 return (
-                    f"scope {run.unit} never adopted the stress payload within "
+                    f"scope {run.contained.unit} never adopted the stress payload within "
                     f"{CONTAINMENT_GRACE_SECONDS:.0f}s — containment fault, not a core verdict"
                 )
             return None
         effective = containment.scope_effective_cpus(run.cgroup)
         if effective is None:
             return (
-                f"the kernel record for scope {run.unit} vanished while the payload ran "
+                f"the kernel record for scope {run.contained.unit} vanished while the payload ran "
                 "— containment fault, not a core verdict"
             )
         if effective != set(run.lane.cpus):
             return (
-                f"scope {run.unit} runs on CPUs {containment.cpu_list(effective)} "
+                f"scope {run.contained.unit} runs on CPUs {containment.cpu_list(effective)} "
                 f"instead of {run.lane.cpu_list} — containment fault, not a core verdict"
             )
+        return None
+
+    @staticmethod
+    def _learn_scope(run: _LaneRun) -> str | None:
+        learned = containment.payload_cgroup(run.proc.pid, run.contained.unit)
+        if learned is not None and learned != run.contained.scope:
+            return (
+                f"the payload of scope {run.contained.unit} sits in {learned}, not in {run.contained.scope} "
+                "where it was launched: containment fault, not a core verdict"
+            )
+        run.cgroup = learned
         return None
 
     def _sample_cpu(self, run: _LaneRun, now: float) -> None:
@@ -473,9 +483,9 @@ class Supervisor:
 
     def _kill_scope(self, run: _LaneRun) -> None:
         try:
-            containment.kill_scope(run.cgroup)
+            containment.kill_scope(run.contained.scope)
         except OSError as exc:
-            log.error("core %d: killing scope %s failed: %s", run.lane.core_id, run.cgroup, exc)
+            log.error("core %d: killing scope %s failed: %s", run.lane.core_id, run.contained.scope, exc)
 
     @staticmethod
     def _reap(run: _LaneRun, deadline: float) -> None:
@@ -490,8 +500,10 @@ class Supervisor:
         for run in launched:
             if run.proc.returncode is not None:
                 continue
-            if run.unit is not None and run.cgroup is None:
-                run.cgroup = containment.payload_cgroup(run.proc.pid, run.unit)
+            if run.contained is not None and run.cgroup is None and not run.faulted:
+                moved = self._learn_scope(run)
+                if moved is not None:
+                    run.signals.append(LaneSignal(Outcome.CONTAINMENT_BROKE, moved))
             self._sample_cpu(run, stop)
             run.stopped_at = stop
             stopping.append(run)
@@ -515,7 +527,7 @@ class Supervisor:
                 )
             if alive or run.cgroup is None:
                 self._signal_group(run, signal.SIGKILL)
-            if run.cgroup is not None:
+            if run.contained is not None:
                 self._kill_scope(run)
         kill_deadline = time.monotonic() + KILL_WAIT_SECONDS
         for run in launched:

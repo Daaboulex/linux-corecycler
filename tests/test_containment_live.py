@@ -72,6 +72,7 @@ def test_the_watchdog_observation_matches_the_kernel_record():
         assert observed <= set(ALLOWED), f"observed CPUs {sorted(observed)} outside AllowedCPUs={ALLOWED}"
         cgroup = containment.payload_cgroup(proc.pid, contained.unit)
         assert cgroup is not None, "payload never showed the named scope in /proc"
+        assert cgroup == contained.scope, f"the kernel placed the scope at {cgroup}, not at {contained.scope}"
         assert containment.scope_effective_cpus(cgroup) == set(ALLOWED)
     finally:
         os.killpg(proc.pid, signal.SIGKILL)

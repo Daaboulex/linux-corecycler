@@ -250,7 +250,7 @@ class TestSupervisorInternalsEdges:
         supervisor = _idle_supervisor()
         run = _LaneRun(lane=Lane(core_id=0, cpus=(0, 16), work_dir=tmp_path))
         run.proc = SimpleNamespace(pid=1234)
-        run.unit = "cc-test"
+        run.contained = containment.Containment(prefix=[], unit="cc-test", scope="/user.slice/cc-test.scope")
         run.started_at = time.monotonic()
         with (
             patch.object(containment, "payload_cgroup", return_value="/user.slice/cc-test.scope"),

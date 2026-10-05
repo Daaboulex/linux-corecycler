@@ -35,6 +35,7 @@ class ContainmentUnavailable(RuntimeError):
 class Containment:
     prefix: list[str]
     unit: str
+    scope: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,7 +172,7 @@ def lane_cgroup_parent() -> str | None:
 
 
 def contain(cpus: set[int] | tuple[int, ...] | list[int]) -> Containment:
-    """Command prefix that runs the payload inside a named AllowedCPUs scope.
+    """Command prefix that runs the payload inside a named AllowedCPUs scope, and that scope's cgroup path.
 
     Raises ContainmentUnavailable instead of ever returning a weaker prefix.
     """
@@ -204,7 +205,13 @@ def contain(cpus: set[int] | tuple[int, ...] | list[int]) -> Containment:
     if setpriv.path is None:
         raise ContainmentUnavailable("setpriv is required and was not found (util-linux)")
     prefix += ["--", str(setpriv.path), "--pdeathsig", "SIGKILL", "--"]
-    return Containment(prefix=prefix, unit=unit)
+    parent = lane_cgroup_parent()
+    if parent is None:
+        raise ContainmentUnavailable(
+            "the containment probe found no cgroup v2 path for its scope, so a stress scope could not be "
+            "found or killed; refusing to launch"
+        )
+    return Containment(prefix=prefix, unit=unit, scope=f"{parent.rstrip('/')}/{unit}.scope")
 
 
 def observed_tree_cpus(pid: int, *, proc_base: Path | None = None) -> set[int]:
