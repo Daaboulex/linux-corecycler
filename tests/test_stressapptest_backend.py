@@ -8,7 +8,15 @@ import pytest
 
 from corecycler.engine.backends.base import Outcome, StressConfig, StressMode
 from corecycler.engine.backends.stressapptest import ALLOCATION_REFUSALS, StressapptestBackend
-from tests.test_execution import lane, make_supervisor, one_busy_cpu, run_one, scripted
+from tests.test_execution import (
+    holds_the_deadline_until,
+    lane,
+    make_supervisor,
+    one_busy_cpu,
+    run_one,
+    scripted,
+    stop_once,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -129,6 +137,7 @@ def _prints_on_sigterm(summary: str, code: int, marker: Path) -> str:
         f"    open({str(marker)!r}, 'w').close()\n"
         f"    sys.exit({code})\n"
         "signal.signal(signal.SIGTERM, stop)\n"
+        "open('ready', 'w').close()\n"
         "while True:\n"
         "    time.sleep(0.01)\n"
     )
@@ -138,17 +147,23 @@ class TestSummaryAfterTheStop:
     def test_the_summary_printed_after_our_stop_is_read(self, tmp_path):
         marker = tmp_path / "summary-written"
         summary = "Report Error: miscompare : DIMM0 : 1 : 3s\nStatus: FAIL - test discovered HW problems\n"
-        supervisor, _, _ = make_supervisor(scripted(StressapptestBackend, _prints_on_sigterm(summary, 1, marker)))
-        verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        one = lane(tmp_path)
+        supervisor, stop, _ = make_supervisor(scripted(StressapptestBackend, _prints_on_sigterm(summary, 1, marker)))
+        stop_once(stop, lambda: any(one.work_dir.glob("run-*/ready")))
+        verdict = run_one(supervisor, one, 30.0)
         assert marker.exists()
         assert verdict.outcome is Outcome.COMPUTATION
         assert "miscompare" in verdict.detail
 
     def test_a_clean_summary_after_our_stop_passes(self, tmp_path):
         marker = tmp_path / "summary-written"
-        supervisor, _, _ = make_supervisor(scripted(StressapptestBackend, _prints_on_sigterm(CLEAN_SUMMARY, 0, marker)))
+        one = lane(tmp_path)
+        supervisor, _, _ = make_supervisor(
+            scripted(StressapptestBackend, _prints_on_sigterm(CLEAN_SUMMARY, 0, marker)),
+            hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/ready"))),
+        )
         with one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+            verdict = run_one(supervisor, one, 2.0)
         assert marker.exists()
         assert verdict.outcome is Outcome.PASS
 

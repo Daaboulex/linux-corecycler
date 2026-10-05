@@ -66,6 +66,7 @@ def on_term(*_):
     open("termed", "w").close()
     hit.append(time.monotonic())
 signal.signal(signal.SIGTERM, on_term)
+open("ready", "w").close()
 while not hit or time.monotonic() - hit[0] < 0.6:
     time.sleep(0.01)
 """
@@ -93,6 +94,14 @@ if os.fork() == 0:
     os._exit(0)
 while True:
     time.sleep(0.01)
+"""
+
+WRITES_ITS_PID_THEN_RUNS = """
+import os, sys, time
+with open(sys.argv[1] + ".tmp", "w") as out:
+    out.write(str(os.getpid()))
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+time.sleep(30)
 """
 
 LEAVES_A_CHILD = """
@@ -142,6 +151,14 @@ print("fake error: FATAL", flush=True)
 sys.exit(3)
 """
 
+CORE_0_ENDS_AT_ONCE = """
+import os, sys, time
+if os.path.basename(os.path.dirname(os.getcwd())) == "core_0":
+    sys.exit(0)
+while True:
+    time.sleep(0.01)
+"""
+
 ONLY_CORE_1_IS_KILLED = """
 import os, signal, time
 if os.path.basename(os.path.dirname(os.getcwd())) == "core_1":
@@ -186,6 +203,7 @@ FAIL_LINE = "stress-ng: fail:  [1] cpu: verification failed"
 PRINTS_A_FAIL_THEN_RUNS = f"""
 import time
 print({FAIL_LINE!r}, flush=True)
+open("printed", "w").close()
 time.sleep(30)
 """
 
@@ -262,6 +280,18 @@ def within(seconds: float, condition: Callable[[], bool]) -> bool:
             return False
         time.sleep(0.02)
     return True
+
+
+def stop_once(stop: threading.Event, condition: Callable[[], bool]) -> None:
+    def watch() -> None:
+        within(10.0, condition)
+        stop.set()
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def holds_the_deadline_until(condition: Callable[[], bool]) -> SuperviseHooks:
+    return SuperviseHooks(on_status=lambda _core, _elapsed: within(10.0, condition))
 
 
 class FakeBackend(StressBackend):
@@ -579,7 +609,7 @@ class TestVerdicts:
         backend = FakeBackend(_child("import time; time.sleep(30)"))
         supervisor, _, _ = make_supervisor(backend)
         with one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path), 0.5)
+            verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.PASS
         assert verdict.passed
 
@@ -655,9 +685,8 @@ class TestVerdicts:
 
     def test_no_stress_process_outlives_the_run(self, tmp_path):
         marker = tmp_path / "pid"
-        backend = FakeBackend(_child(f"import os, time; open('{marker}', 'w').write(str(os.getpid())); time.sleep(30)"))
-        supervisor, stop, _ = make_supervisor(backend)
-        threading.Timer(0.2, stop.set).start()
+        supervisor, stop, _ = make_supervisor(FakeBackend([*_child(WRITES_ITS_PID_THEN_RUNS), str(marker)]))
+        stop_once(stop, marker.exists)
         run_one(supervisor, lane(tmp_path), 10.0)
         pid = int(marker.read_text())
         deadline = time.monotonic() + 3
@@ -700,6 +729,28 @@ class TestLoadProof:
             verdict = run_one(supervisor, lane(tmp_path), 1.0)
         assert verdict.outcome is Outcome.NO_WORK_DONE
         assert "unreadable" in verdict.detail
+
+    def test_the_cpu_time_the_payload_used_up_to_our_stop_counts(self, tmp_path):
+        duration = 2.0
+        past_the_deadline = threading.Event()
+
+        def wait_out_the_deadline(_core: int, elapsed: float) -> None:
+            time.sleep(max(0.0, duration - elapsed))
+            past_the_deadline.set()
+
+        def busy_for_the_window_once_past_the_deadline(pid: int) -> float | None:
+            if gone(pid):
+                return None
+            return duration if past_the_deadline.is_set() else 0.0
+
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
+        supervisor, _, _ = make_supervisor(backend, hooks=SuperviseHooks(on_status=wait_out_the_deadline))
+        with patch.object(
+            containment, "process_group_cpu_seconds", side_effect=busy_for_the_window_once_past_the_deadline
+        ):
+            verdict = run_one(supervisor, lane(tmp_path), duration)
+        assert past_the_deadline.is_set()
+        assert verdict.outcome is Outcome.PASS
 
 
 class TestTeardown:
@@ -768,12 +819,18 @@ class TestTeardown:
         assert verdicts[1].outcome is Outcome.CUT_SHORT
 
     def test_a_lane_carries_its_own_time_not_the_teardowns(self, tmp_path):
-        backend = FakeBackend(_child(SLOW_TO_STOP.format(hold=1.0)))
-        supervisor, _, _ = make_supervisor(backend)
+        hold = 1.0
+        one = lane(tmp_path)
+        supervisor, _, _ = make_supervisor(
+            FakeBackend(_child(SLOW_TO_STOP.format(hold=hold))),
+            hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/ready"))),
+        )
+        began = time.monotonic()
         with one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+            verdict = run_one(supervisor, one, 2.0)
+        returned = time.monotonic()
         assert verdict.outcome is Outcome.PASS
-        assert verdict.duration_seconds < 1.5
+        assert verdict.duration_seconds < returned - began - hold
 
     def test_a_cut_lane_with_its_own_error_is_still_a_fail(self, tmp_path):
         supervisor, _, _ = make_supervisor(ReadsFatal(_child(CORE_1_FAILS_AND_RUNS_ON_THEN_CORE_0_FAILS)))
@@ -782,15 +839,12 @@ class TestTeardown:
         assert verdicts[1].duration_seconds < 5.0
 
     def test_a_stop_after_the_deadline_cuts_nothing(self, tmp_path):
-        backend = FakeBackend(_child(MARKS_OUR_SIGTERM_THEN_HOLDS))
-        supervisor, stop, _ = make_supervisor(backend)
         one = lane(tmp_path)
-
-        def stop_once_our_sigterm_landed() -> None:
-            within(10.0, lambda: any(one.work_dir.glob("run-*/termed")))
-            stop.set()
-
-        threading.Thread(target=stop_once_our_sigterm_landed, daemon=True).start()
+        supervisor, stop, _ = make_supervisor(
+            FakeBackend(_child(MARKS_OUR_SIGTERM_THEN_HOLDS)),
+            hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/ready"))),
+        )
+        stop_once(stop, lambda: any(one.work_dir.glob("run-*/termed")))
         with one_busy_cpu():
             verdict = run_one(supervisor, one, 2.0)
         assert stop.is_set()
@@ -806,9 +860,13 @@ class TestTeardown:
 
 class TestOutputFiles:
     def test_output_printed_before_the_deadline_is_graded(self, tmp_path):
-        supervisor, _, _ = make_supervisor(scripted(StressNgBackend, PRINTS_A_FAIL_THEN_RUNS))
+        one = lane(tmp_path)
+        supervisor, _, _ = make_supervisor(
+            scripted(StressNgBackend, PRINTS_A_FAIL_THEN_RUNS),
+            hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/printed"))),
+        )
         with one_busy_cpu():
-            verdict = run_one(supervisor, lane(tmp_path), 0.5)
+            verdict = run_one(supervisor, one, 2.0)
         assert verdict.outcome is Outcome.COMPUTATION
         assert "verification failed" in verdict.detail
 
@@ -1065,11 +1123,12 @@ class TestContainmentWatchdog:
         supervisor, _, _ = make_supervisor(backend, containment_for=self._contained)
         with (
             patch.object(containment, "payload_cgroup", return_value="/user.slice/cc-test.scope"),
-            patch.object(containment, "scope_effective_cpus", return_value={0}),
+            patch.object(containment, "scope_effective_cpus", return_value={0}) as records,
             one_busy_cpu("scope_cpu_seconds") as scope_reads,
         ):
-            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.5)
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 2.0)
         assert verdict.outcome is Outcome.PASS
+        records.assert_called_with("/user.slice/cc-test.scope")
         scope_reads.assert_called_with("/user.slice/cc-test.scope")
 
     def test_a_scope_that_never_adopts_the_payload_is_a_fault(self, tmp_path):
@@ -1352,6 +1411,27 @@ class TestThermalGuard:
         verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 5.0)
         assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.THERMAL] * 2
         assert seen_temps == [104.0]
+
+    def test_a_trip_reaches_a_lane_that_had_already_ended(self, tmp_path):
+        alive_by_tick: dict[float, set[int]] = {}
+
+        def hot_once_core_0_has_ended() -> float:
+            return 104.0 if alive_by_tick and alive_by_tick[max(alive_by_tick)] == {1} else 40.0
+
+        thermal = ThermalWatch(
+            max_temperature=95,
+            grace_seconds=0,
+            hard_margin=8,
+            require_sensor=False,
+            read=hot_once_core_0_has_ended,
+        )
+        supervisor, _, _ = make_supervisor(
+            FakeBackend(_child(CORE_0_ENDS_AT_ONCE)),
+            thermal=thermal,
+            hooks=SuperviseHooks(on_status=lambda core, elapsed: alive_by_tick.setdefault(elapsed, set()).add(core)),
+        )
+        verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 10.0)
+        assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.THERMAL] * 2
 
 
 class TestTemperatureSource:

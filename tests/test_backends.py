@@ -216,6 +216,17 @@ _HASWELL_FLAGS = (
     "movbe popcnt aes xsave avx f16c rdrand lahf_lm abm fsgsbase bmi1 avx2 smep bmi2 erms invpcid xsaveopt"
 )
 _ALDER_LAKE_FLAGS = _HASWELL_FLAGS + " adx rdseed smap clflushopt clwb sha_ni umip gfni vaes vpclmulqdq rdpid"
+_SKYLAKE_X_FLAGS = _HASWELL_FLAGS + " adx rdseed smap clflushopt clwb avx512f avx512dq avx512cd avx512bw avx512vl"
+_BULLDOZER_FLAGS = (
+    "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht "
+    "syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl nonstop_tsc cpuid pni pclmulqdq "
+    "monitor ssse3 cx16 sse4_1 sse4_2 popcnt aes xsave avx lahf_lm svm abm sse4a misalignsse 3dnowprefetch "
+    "xop fma4 topoext perfctr_core"
+)
+
+
+def _without(flags: str, *absent: str) -> str:
+    return " ".join(flag for flag in flags.split() if flag not in absent)
 
 
 class TestMprimeBackend:
@@ -412,7 +423,11 @@ class TestMprimeBackend:
             "TORTURE TEST FAILED on worker #2.",
             "Torture Test completed 20 tests in 2 hours, 15 minutes - 1 errors, 0 warnings.",
             "ERROR: SUM(INPUTS) != SUM(OUTPUTS), 1.5 != 1.6",
+            "ERROR: Shift counter corrupt.",
+            "ERROR: Illegal double encountered.",
+            "ERROR: FFT data has been zeroed!",
             "ERROR: Jacobi error check failed!",
+            "Warning: ILLEGAL SUMOUT",
             "Warning: SUMOUT MISMATCH",
         ],
     )
@@ -554,6 +569,20 @@ class TestStressNgBackend:
         backend = StressNgBackend()
         backend._binary = "/usr/bin/stress-ng"
         assert "--abort" in backend.get_command(StressConfig(), tmp_path)
+
+    @pytest.mark.parametrize("mode", [StressMode.SSE, StressMode.AVX, StressMode.AVX2])
+    def test_one_cpu_stressor_runs_per_lane_cpu(self, tmp_path, mode):
+        backend = StressNgBackend()
+        backend._binary = "/usr/bin/stress-ng"
+        cmd = backend.get_command(StressConfig(mode=mode, threads=3, cpus=(0, 1, 2)), tmp_path)
+        assert cmd[cmd.index("--cpu") + 1] == "3"
+
+    def test_sse_adds_the_checked_matrix_twin_one_per_lane_cpu(self, tmp_path):
+        backend = StressNgBackend()
+        backend._binary = "/usr/bin/stress-ng"
+        cmd = backend.get_command(StressConfig(mode=StressMode.SSE, threads=3, cpus=(0, 1, 2)), tmp_path)
+        assert "--matrix" in cmd
+        assert cmd[cmd.index("--matrix") + 1] == "3"
 
     # --- findings ---
 
@@ -796,6 +825,13 @@ class TestYCruncherBackend:
             pytest.param("GenuineIntel", _ZEN5_FLAGS, (), "18-CNL ~ Shinoa", id="intel-never-gets-an-amd-build"),
             pytest.param("GenuineIntel", _HASWELL_FLAGS, (), "13-HSW ~ Airi", id="haswell-lacks-adx"),
             pytest.param("GenuineIntel", _ALDER_LAKE_FLAGS, (), "14-BDW ~ Kurumi", id="gfni-without-avx512"),
+            pytest.param("GenuineIntel", _SKYLAKE_X_FLAGS, (), "17-SKX ~ Kotori", id="skylake-x-lacks-ifma-and-vbmi"),
+            pytest.param(
+                "GenuineIntel", _without(_HASWELL_FLAGS, "avx2"), (), "11-SNB ~ Hina", id="haswell-without-avx2"
+            ),
+            pytest.param("AuthenticAMD", _BULLDOZER_FLAGS, (), "11-SNB ~ Hina", id="bulldozer-lacks-fma3"),
+            pytest.param("AuthenticAMD", _without(_ZEN1_FLAGS, "avx2"), (), "12-BD2 ~ Miyu", id="zen1-without-avx2"),
+            pytest.param("AuthenticAMD", _without(_ZEN1_FLAGS, "avx"), (), "08-NHM ~ Ushio", id="zen1-without-avx"),
             pytest.param(
                 "AuthenticAMD", _ZEN3_FLAGS, ("19-ZN2 ~ Kagari",), "17-ZN1 ~ Yukina", id="absent-best-falls-to-next"
             ),
