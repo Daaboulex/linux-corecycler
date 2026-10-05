@@ -19,6 +19,7 @@ the tuner suite).
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import time
@@ -74,6 +75,7 @@ class FaultSMU:
         self.raise_on_set = False  # set_co_offset raises (driver/permission fault)
         self.rejecting_cores: set[int] = set()
         self.raising_cores: set[int] = set()
+        self.unreadable_cores: set[int] = set()
 
     def set_co_offset(self, core_id: int, value: int) -> bool:
         self.writes.append((core_id, value))
@@ -84,11 +86,13 @@ class FaultSMU:
         self.applied[core_id] = value
         return True
 
-    def get_co_offset(self, core_id: int) -> int:
+    def get_co_offset(self, core_id: int) -> int | None:
+        if core_id in self.unreadable_cores:
+            return None
         return self.applied.get(core_id, 0)
 
-    def get_all_co_offsets(self, num_cores: int) -> dict[int, int]:
-        return {c: self.applied.get(c, 0) for c in range(num_cores)}
+    def get_all_co_offsets(self, num_cores: int) -> dict[int, int | None]:
+        return {c: self.get_co_offset(c) for c in range(num_cores)}
 
     def get_pbo_scalar(self) -> float:
         return 1.0
@@ -2292,7 +2296,7 @@ class TestJournalPerBoot:
         with patch.object(eng, "_run_next"):
             eng._on_test_finished(report(0))
 
-        assert eng._co_survived == {0: -10}
+        assert eng._co_survived == {0: -10, 1: 0}
         assert [(row.core_id, row.survived) for row in tp.journal_rows(db, sid, dead)] == [(1, False)]
 
     def test_suspects_come_from_the_dead_boot_only(self, db, topo, smu, mock_backend, machine):
@@ -2758,9 +2762,7 @@ class TestNoRebootResidentOffset:
         assert smu.applied[0] == 0  # aggressive offset no longer resident
         assert eng._co_applied[0] == 0
 
-    def test_rebooted_zero_baseline_is_not_rewritten(self, db, topo, smu, mock_backend, machine):
-        """After a real reboot SMU SRAM is zeroed — writing 0 again would be a
-        pointless hardware write (and journal churn)."""
+    def test_rebooted_zero_baseline_is_written_not_assumed(self, db, topo, smu, mock_backend, machine):
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "", boot_id=this_boot())
         tp.save_core_state(
             db,
@@ -2773,9 +2775,139 @@ class TestNoRebootResidentOffset:
             ),
         )
         machine.reboot(clean=False)
+        smu.applied[0] = -15
         eng = _resume_fresh(db, topo, smu, mock_backend, sid)
-        assert (0, 0) not in smu.writes
+        assert (0, 0) in smu.writes
+        assert smu.applied[0] == 0
         assert eng._co_applied[0] == 0
+
+
+class TestEveryBaselineAfterAReboot:
+    def test_after_a_reboot_every_baseline_is_written_read_back_and_journaled(
+        self, db, topo, smu, mock_backend, machine
+    ):
+        sid = _session_on_this_boot(
+            db,
+            [
+                CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-20),
+                CoreState(core_id=1, phase=TunerPhase.COARSE_SEARCH, current_offset=-20, baseline_offset=-5),
+            ],
+        )
+        machine.reboot(clean=True)
+        smu.applied.update({0: -15, 1: -15})
+
+        eng = _resume_fresh(db, topo, smu, mock_backend, sid)
+
+        assert smu.writes == [(0, 0), (1, -5)]
+        assert [smu.get_co_offset(core_id) for core_id in (0, 1)] == [0, -5]
+        assert eng._co_applied == {0: 0, 1: -5}
+        assert [(row.core_id, row.value, row.confirmed) for row in tp.journal_rows(db, sid, machine.boot_id)] == [
+            (0, 0, True),
+            (1, -5, True),
+        ]
+
+    def test_the_hunt_writes_stock_to_every_other_core_after_a_reboot(self, db, topo, smu, mock_backend, machine):
+        sid = _validating_on_this_boot(db, {0: -12, 1: -10})
+        for cs in tp.load_core_states(db, sid).values():
+            cs.in_test = True
+            tp.save_core_state(db, sid, cs)
+        machine.reboot(clean=False)
+        smu.applied[1] = -15
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0, 1])
+        launched: list[tuple[int, list[tuple[int, int]]]] = []
+        eng._start_worker = lambda core_id, *_args, **_kwargs: launched.append((core_id, list(smu.writes)))
+
+        eng.resume(sid)
+
+        assert launched == [(0, [(0, 0), (1, 0), (0, -12)])]
+        assert smu.applied == {0: -12, 1: 0}
+
+
+def _started(db, topo, smu, backend) -> TunerEngine:
+    eng = make_engine(db, topo, smu, backend)
+    with patch.object(eng, "_run_next"):
+        eng.start()
+    return eng
+
+
+class TestCurveOptimizerFoundAtStart:
+    def test_start_warns_with_the_bios_curve_optimizer_values(self, db, topo, smu, mock_backend):
+        smu.applied[0] = -15
+        smu.unreadable_cores = {2}
+        eng = make_engine(db, topo, smu, mock_backend)
+        said: list[str] = []
+        eng.log_message.connect(said.append)
+
+        with patch.object(eng, "_run_next"):
+            eng.start()
+
+        context_id = tp.get_session(db, eng.session_id).context_id
+        warning = (
+            f"The Curve Optimizer found at Start (tuning context {context_id}) is not stock on cores {{0: -15}} "
+            "and could not be read on cores [2]; the session continues."
+        )
+        assert [line for line in said if line.startswith("The Curve Optimizer found at Start")] == [warning]
+        assert warning in [event["message"] for event in tp.get_events(db, eng.session_id)]
+        assert json.loads(db.get_context(context_id).co_offsets_json) == {"0": -15, "1": 0, "3": 0}
+        assert eng.status == "running"
+
+    def test_start_says_nothing_of_a_stock_curve_optimizer(self, db, topo, smu, mock_backend):
+        eng = make_engine(db, topo, smu, mock_backend)
+        said: list[str] = []
+        eng.log_message.connect(said.append)
+
+        with patch.object(eng, "_run_next"):
+            eng.start()
+
+        assert [line for line in said if "Curve Optimizer found at Start" in line] == []
+
+    @pytest.mark.parametrize(
+        ("resident", "drift"),
+        [(-15, []), (-7, [{"0": {"expected": 0, "actual": -7, "cause": "outside"}}])],
+        ids=["the-recorded-value", "another-value"],
+    )
+    def test_bios_values_recorded_at_start_are_not_drift_after_a_reboot(
+        self, db, topo, smu, mock_backend, machine, resident, drift
+    ):
+        smu.applied[0] = -15
+        sid = _started(db, topo, smu, mock_backend).session_id
+        machine.reboot(clean=True)
+        smu.applied[0] = resident
+        eng = make_engine(db, topo, smu, mock_backend)
+        reports: list[str] = []
+        eng.co_drift_detected.connect(reports.append)
+
+        with patch.object(eng, "_run_next"):
+            eng.resume(sid)
+
+        assert [json.loads(sent) for sent in reports] == drift
+
+    @pytest.mark.parametrize(
+        "stored",
+        ["not json", "-15", "[-15]", '{"0": "-15"}', '{"0": true}', '{"zero": -15}'],
+        ids=["not-json", "a-number", "a-list", "a-text-value", "a-boolean-value", "a-text-core"],
+    )
+    def test_an_unreadable_record_of_the_start_values_refuses_resume(
+        self, db, topo, smu, mock_backend, machine, stored
+    ):
+        sid = _started(db, topo, smu, mock_backend).session_id
+        before = tp.get_session(db, sid)
+        db._execute_raw("UPDATE tuning_contexts SET co_offsets_json=? WHERE id=?", (stored, before.context_id))
+        machine.reboot(clean=True)
+        eng = make_engine(db, topo, smu, mock_backend)
+        said: list[str] = []
+        eng.log_message.connect(said.append)
+
+        with patch.object(eng, "_run_next") as run_next:
+            eng.resume(sid)
+
+        assert said[-1] == (
+            f"Cannot resume: session {sid} is unreadable: the Curve Optimizer recorded at Start, {stored!r}, "
+            "is not a map of core to integer offset"
+        )
+        assert run_next.call_count == 0
+        assert smu.writes == []
+        assert tp.get_session(db, sid).boot_id == before.boot_id
 
 
 # ---------------------------------------------------------------------------

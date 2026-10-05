@@ -546,6 +546,17 @@ class TunerEngine(QObject):
                 f"TDC {_fmt(ctx.tdc_limit_a, 'A')}, "
                 f"EDC {_fmt(ctx.edc_limit_a, 'A')}"
             )
+        found = ctx.co_offsets()
+        not_stock = {core_id: found[core_id] for core_id in sorted(self._topology.cores) if found.get(core_id, 0)}
+        unread = [core_id for core_id in sorted(self._topology.cores) if core_id not in found]
+        if not_stock or unread:
+            findings = ([f"is not stock on cores {not_stock}"] if not_stock else []) + (
+                [f"could not be read on cores {unread}"] if unread else []
+            )
+            self.log_message.emit(
+                f"The Curve Optimizer found at Start (tuning context {context_id}) "
+                f"{' and '.join(findings)}; the session continues."
+            )
 
         self._run_next()
 
@@ -610,6 +621,7 @@ class TunerEngine(QObject):
         try:
             states = tp.load_core_states(self._db, session_id)
             tp.check_journal(self._db, session_id)
+            found_at_start = tp.start_co_offsets(self._db, session_id)
         except CorruptSessionError as exc:
             self.log_message.emit(f"Cannot resume: {exc}")
             return
@@ -657,7 +669,7 @@ class TunerEngine(QObject):
                 actual = self._smu.get_co_offset(cs.core_id)
                 held = last_writes.get(cs.core_id)
                 expected = cs.baseline_offset if held is None else held.last.value
-                if actual is None or actual == expected or (rebooted and actual == 0):
+                if actual is None or actual == expected or (rebooted and actual in (0, found_at_start.get(cs.core_id))):
                     continue
                 unconfirmed = not rebooted and held is not None and not held.last.confirmed
                 drift[cs.core_id] = {
@@ -688,23 +700,11 @@ class TunerEngine(QObject):
                 self._quarantine_session(plan.resume_crash_streak)
                 return
 
-        # Step 2: Restore all cores to their baseline offsets.
-        # After a crash and reboot, SMU SRAM is zeroed. Apply the known-stable
-        # baselines (captured from BIOS/inherit_current at session start) so the
-        # CPU runs at its proven-stable config. _run_next() will apply the test
-        # offset only to the core being tested.
         if self._smu is not None:
             failed_cores: list[int] = []
             baselines: dict[int, int] = {}
             for cs in self._core_states.values():
                 baselines[cs.core_id] = cs.baseline_offset
-                if cs.baseline_offset == 0 and rebooted:
-                    # Reboot zeroes SMU SRAM, so 0 is already resident. Without
-                    # a reboot the SMU holds whatever was live at app exit (a
-                    # mid-test offset, e.g.) — it must be written back like any
-                    # other baseline, never assumed.
-                    self._co_applied[cs.core_id] = 0
-                    continue
                 try:
                     success = self._apply_co(cs.core_id, cs.baseline_offset)
                     if success:

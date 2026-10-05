@@ -9,6 +9,7 @@ close() runs one more PASSIVE checkpoint and logs that.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import sqlite3
@@ -159,6 +160,12 @@ class TuningContextRecord:
     ppt_limit_w: float | None = None
     tdc_limit_a: float | None = None
     edc_limit_a: float | None = None
+
+    def co_offsets(self) -> dict[int, int]:
+        stored = json.loads(self.co_offsets_json)
+        if not isinstance(stored, dict) or any(type(value) is not int for value in stored.values()):
+            raise ValueError(f"not a map of core to integer offset: {self.co_offsets_json!r}")
+        return {int(core): value for core, value in stored.items()}
 
 
 @dataclass(slots=True)
@@ -1225,6 +1232,23 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         if row is None:
             return None
         return self._row_to_context(row)
+
+    def start_co_offsets(self, session_id: int) -> dict[int, int]:
+        row = self.__conn.execute(
+            "SELECT c.* FROM tuning_contexts c JOIN tuner_sessions s ON s.context_id = c.id WHERE s.id=?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return {}
+        context = self._row_to_context(row)
+        try:
+            return context.co_offsets()
+        except ValueError as exc:
+            raise CorruptSessionError(
+                session_id,
+                f"the Curve Optimizer recorded at Start, {context.co_offsets_json!r}, "
+                "is not a map of core to integer offset",
+            ) from exc
 
     def get_context_by_hash(self, co_hash: str, bios_version: str) -> TuningContextRecord | None:
         """Find an existing context matching the given CO hash and BIOS version."""

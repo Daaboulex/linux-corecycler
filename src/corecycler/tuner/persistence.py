@@ -159,6 +159,10 @@ def check_journal(db: HistoryDB, session_id: int) -> None:
     db.check_journal(session_id)
 
 
+def start_co_offsets(db: HistoryDB, session_id: int) -> dict[int, int]:
+    return db.start_co_offsets(session_id)
+
+
 def journal_rows(db: HistoryDB, session_id: int, boot_id: str) -> list[JournalRow]:
     return db.journal_rows(session_id, boot_id)
 
