@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes.util
 import itertools
 import os
 import re
@@ -1571,6 +1572,40 @@ class TestWatchIdle:
         assert found is not None and found.outcome is Outcome.UNVERIFIED
         assert detector.finals[-1] is True
         assert not any(detector.finals[:-1])
+
+
+class TestPreexec:
+    def test_the_preexec_resolves_no_library_after_the_fork(self, monkeypatch):
+        preexec = execution.make_preexec()
+
+        def resolved_after_the_fork(_name):
+            raise AssertionError("find_library ran in the forked child")
+
+        monkeypatch.setattr(ctypes.util, "find_library", resolved_after_the_fork)
+        done = subprocess.run(_child("print(1)"), preexec_fn=preexec, capture_output=True, text=True, check=False)
+        assert done.stdout == "1\n"
+
+    def test_a_failed_parent_death_signal_raises_in_the_child(self, monkeypatch):
+        class RefusesPrctl:
+            def prctl(self, *_args):
+                return -1
+
+        monkeypatch.setattr(execution, "_libc", RefusesPrctl)
+        preexec = execution.make_preexec()
+        monkeypatch.setattr(os, "setsid", lambda: None)
+        with pytest.raises(OSError, match="PR_SET_PDEATHSIG"):
+            preexec()
+
+    def test_a_failed_parent_death_signal_refuses_the_launch(self, tmp_path, monkeypatch):
+        class RefusesPrctl:
+            def prctl(self, *_args):
+                return -1
+
+        monkeypatch.setattr(execution, "_libc", RefusesPrctl)
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)))
+        verdict = run_one(supervisor, lane(tmp_path), 2.0)
+        assert verdict.outcome is Outcome.NOT_STARTED
+        assert "Failed to start stress test" in verdict.detail
 
 
 class TestHelpers:

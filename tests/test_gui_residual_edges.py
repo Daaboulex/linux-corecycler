@@ -207,12 +207,15 @@ class TestMemoryStressLifecycle:
         assert worker.terminate.called
 
     def test_the_child_isolates_itself_and_dies_with_its_parent(self, tab, monkeypatch):
-        import ctypes
-        import ctypes.util
         import os
         import signal
         import subprocess
 
+        from corecycler.engine import execution
+
+        libc = MagicMock()
+        libc.prctl.return_value = 0
+        monkeypatch.setattr(execution, "_libc", lambda: libc)
         proc = MagicMock()
         proc.communicate.return_value = ("ok", "")
         proc.returncode = 0
@@ -223,10 +226,7 @@ class TestMemoryStressLifecycle:
 
         preexec = popen.call_args.kwargs["preexec_fn"]
         sessions = []
-        libc = MagicMock()
         monkeypatch.setattr(os, "setsid", lambda: sessions.append(True))
-        monkeypatch.setattr(ctypes, "CDLL", lambda *_a, **_kw: libc)
-        monkeypatch.setattr(ctypes.util, "find_library", lambda _n: "libc.so.6")
         preexec()
         assert sessions == [True]
         assert libc.prctl.call_args.args == (1, signal.SIGKILL)

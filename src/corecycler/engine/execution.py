@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
+import ctypes.util
+import functools
 import logging
 import math
 import os
@@ -176,15 +179,21 @@ def read_cpu_temperature() -> float | None:
     return None
 
 
+_PR_SET_PDEATHSIG = 1
+
+
+@functools.cache
+def _libc() -> ctypes.CDLL:
+    return ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+
 def make_preexec():
+    libc = _libc()
+
     def _preexec():
         os.setsid()
-        import ctypes
-        import ctypes.util
-
-        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
-        PR_SET_PDEATHSIG = 1
-        libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+        if libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL) != 0:
+            raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
 
     return _preexec
 
@@ -332,7 +341,7 @@ class Supervisor:
                     cwd=run_dir,
                     preexec_fn=make_preexec(),
                 )
-        except (OSError, RuntimeError, TypeError) as exc:
+        except (OSError, RuntimeError, TypeError, subprocess.SubprocessError) as exc:
             log.error("core %d: stress process failed to start: %s", lane.core_id, exc)
             run.signals.append(LaneSignal(Outcome.NOT_STARTED, f"Failed to start stress test: {exc}"))
             return False
