@@ -237,19 +237,18 @@ class CoreScheduler:
         self._set_phase(core_id, "stress")
         supervisor = self._supervisor(f"stress (CPU {lane.cpu_list})")
         result = supervisor.run([lane], self.stress_config, float(self.config.seconds_per_core))[core_id]
-        if result.passed and self.config.variable_load and not self._stop_event.is_set():
+        if result.passed and self.config.variable_load:
             result = self._run_variable_load(lane, self.config.seconds_per_core / 3.0)
+        if result.passed and self.config.idle_stability_test > 0:
+            result = self._run_idle_stability(core_id, result)
         if result.outcome is Outcome.CUT_SHORT:
+            log.info("core %d: %s", core_id, result.detail)
             status.state = "pending"
             status.current_phase = ""
             return
         if not result.passed:
             status.errors += 1
             status.last_error = result.detail
-        elif self.config.idle_stability_test > 0 and not self._stop_event.is_set():
-            idle = self._idle_phase(core_id, self.config.idle_stability_test, "idle stability")
-            if idle is not None:
-                result = StressResult(core_id=core_id, outcome=idle.outcome, detail=idle.text, duration_seconds=0.0)
 
         elapsed = time.monotonic() - start_time
         status.elapsed_seconds = elapsed
@@ -304,12 +303,7 @@ class CoreScheduler:
                 status.elapsed_seconds = time.monotonic() - start
         elapsed = time.monotonic() - start
         if self._stop_event.is_set():
-            return StressResult(
-                core_id=lane.core_id,
-                outcome=Outcome.CUT_SHORT,
-                detail="variable load phase stopped before its end",
-                duration_seconds=elapsed,
-            )
+            return _phase_cut(lane.core_id, "variable load", elapsed)
         if not launched:
             return StressResult(
                 core_id=lane.core_id,
@@ -322,11 +316,30 @@ class CoreScheduler:
             )
         return StressResult(core_id=lane.core_id, outcome=Outcome.PASS, detail="", duration_seconds=elapsed)
 
-    def _idle_phase(self, core_id: int, duration: float, phase_name: str) -> LaneSignal | None:
+    def _run_idle_stability(self, core_id: int, passed: StressResult) -> StressResult:
+        phase = "idle stability"
+        found = None if self._stop_event.is_set() else self._watch_idle(core_id, self.config.idle_stability_test, phase)
+        if found is not None:
+            return StressResult(core_id=core_id, outcome=found.outcome, detail=found.text, duration_seconds=0.0)
+        if self._stop_event.is_set():
+            return _phase_cut(core_id, phase, 0.0)
+        return passed
+
+    def _idle_phase(self, core_id: int, duration: float, phase_name: str) -> None:
+        found = self._watch_idle(core_id, duration, phase_name)
+        if found is not None:
+            status = self.core_status.get(core_id)
+            if status:
+                status.errors += 1
+                status.last_error = found.text
+            if self.config.stop_on_error or found.outcome.kind is OutcomeKind.ENVIRONMENT:
+                self._stop_event.set()
+
+    def _watch_idle(self, core_id: int, duration: float, phase_name: str) -> LaneSignal | None:
         self._set_phase(core_id, phase_name)
         core_info = self.topology.cores.get(core_id)
         cpus = tuple(core_info.logical_cpus) if core_info else ()
-        found = execution.watch_idle(
+        return execution.watch_idle(
             cpus=cpus,
             duration=duration,
             thermal=self._thermal or self._new_thermal(),
@@ -335,14 +348,6 @@ class CoreScheduler:
             observed=self.observed_mce,
             phase=phase_name,
         )
-        if found is not None:
-            status = self.core_status.get(core_id)
-            if status:
-                status.errors += 1
-                status.last_error = found.text
-            if self.config.stop_on_error or found.outcome.kind is OutcomeKind.ENVIRONMENT:
-                self._stop_event.set()
-        return found
 
     def run_rapid_transitions(
         self,
@@ -420,6 +425,15 @@ class CoreScheduler:
     @staticmethod
     def _read_cpu_temperature() -> float | None:
         return execution.read_cpu_temperature()
+
+
+def _phase_cut(core_id: int, phase: str, duration: float) -> StressResult:
+    return StressResult(
+        core_id=core_id,
+        outcome=Outcome.CUT_SHORT,
+        detail=f"{phase} phase stopped before its end: no verdict of its own",
+        duration_seconds=duration,
+    )
 
 
 def _every_core(cores: list[int], outcome: Outcome, detail: str, duration: float) -> dict[int, StressResult]:

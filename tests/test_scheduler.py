@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from pathlib import Path
@@ -88,6 +89,11 @@ def step_pass(sup, lanes, config, duration):
 
 def step_fail(sup, lanes, config, duration):
     return {one.core_id: bad(one.core_id) for one in lanes}
+
+
+def pass_then_stop(sup, lanes, config, duration):
+    sup.kwargs["stop_event"].set()
+    return {one.core_id: ok(one.core_id) for one in lanes}
 
 
 def returns(outcome: Outcome, detail: str):
@@ -356,6 +362,14 @@ class TestIdleComposition:
         assert results[0][0].outcome is Outcome.OWN_CORE_MCE
         assert results[0][0].detail == "MCE during idle stability: bang"
 
+    def test_a_quiet_idle_stability_keeps_the_pass(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: None)
+        sched = make_scheduler(tmp_path, cores_to_test=[0], idle_stability_test=0.01)
+        ScriptedSupervisor.script = [step_pass]
+        results = sched.run()
+        assert [result.outcome for result in results[0]] == [Outcome.PASS]
+        assert sched.core_status[0].state == "passed"
+
     def test_an_idle_phase_failure_keeps_its_own_outcome(self, tmp_path, monkeypatch):
         found = LaneSignal(Outcome.UNATTRIBUTED_MCE, "Machine check without core attribution during idle stability")
         monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: found)
@@ -406,11 +420,6 @@ class TestVariableLoadComposition:
     def test_a_stop_during_the_variable_phase_is_cut_short_not_a_pass(self, tmp_path, monkeypatch):
         monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: None)
         sched = make_scheduler(tmp_path, variable_load_interval=0.02)
-
-        def pass_then_stop(sup, lanes, config, duration):
-            sup.kwargs["stop_event"].set()
-            return {one.core_id: ok(one.core_id) for one in lanes}
-
         ScriptedSupervisor.script = [pass_then_stop]
         result = sched._run_variable_load(sched._lane_for(0), 1.0)
         assert result.outcome is Outcome.CUT_SHORT
@@ -432,6 +441,58 @@ class TestVariableLoadComposition:
         sched._run_variable_load(sched._lane_for(0), 1.0)
         assert segments
         assert min(segments) >= 0.4
+
+
+class TestAStopBeforeTheLastPhase:
+    def test_a_stop_during_idle_stability_leaves_the_core_without_a_verdict(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(execution, "read_cpu_temperature", lambda: 40.0)
+        sched = make_scheduler(tmp_path, cores_to_test=[0], idle_stability_test=10.0)
+        ScriptedSupervisor.script = [step_pass]
+        timers: list[threading.Timer] = []
+
+        def stop_into_the_idle(core_id, phase):
+            if phase == "idle stability":
+                timers.append(threading.Timer(0.5, sched.stop))
+                timers[-1].start()
+
+        finished: list[StressResult] = []
+        sched.on_phase_change.append(stop_into_the_idle)
+        sched.on_core_finish.append(lambda core_id, result: finished.append(result))
+        start = time.monotonic()
+        with caplog.at_level(logging.INFO, logger=scheduler_mod.log.name):
+            results = sched.run()
+        assert len(timers) == 1
+        assert time.monotonic() - start < 5.0
+        assert results[0] == []
+        assert finished == []
+        assert sched.core_status[0].state == "pending"
+        assert any("idle stability phase stopped before its end" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize(
+        ("later", "skipped"),
+        [
+            ({"variable_load": True, "idle_stability_test": 5.0}, "variable load"),
+            ({"variable_load": True}, "variable load"),
+            ({"idle_stability_test": 5.0}, "idle stability"),
+        ],
+    )
+    def test_a_stop_that_skips_the_later_phases_leaves_the_core_without_a_verdict(
+        self, tmp_path, caplog, later, skipped
+    ):
+        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load_interval=0.1, **later)
+        ScriptedSupervisor.script = [pass_then_stop]
+        with caplog.at_level(logging.INFO, logger=scheduler_mod.log.name):
+            results = sched.run()
+        assert results[0] == []
+        assert sched.core_status[0].state == "pending"
+        assert any(f"{skipped} phase stopped before its end" in r.getMessage() for r in caplog.records)
+
+    def test_a_stop_after_the_only_configured_phase_keeps_the_pass(self, tmp_path):
+        sched = make_scheduler(tmp_path, cores_to_test=[0])
+        ScriptedSupervisor.script = [pass_then_stop]
+        results = sched.run()
+        assert [result.outcome for result in results[0]] == [Outcome.PASS]
+        assert sched.core_status[0].state == "passed"
 
 
 THREE_SMT_CORES = {0: (0, 16), 1: (1, 17), 2: (2, 18)}
