@@ -20,6 +20,7 @@ from corecycler.history.db import HistoryDB
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.state import CoreState, TunerPhase
+from tests._machine import this_boot
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -103,7 +104,7 @@ class TestStatus:
         assert "no tuner sessions" in capsys.readouterr().out
 
     def test_lists_sessions_with_done_counts(self, db, capsys):
-        sid = tp.create_session(db, TunerConfig(cores_to_test=[0, 1]), "", "")
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0, 1]), "", "", boot_id=this_boot())
         tp.save_core_state(
             db,
             sid,
@@ -134,7 +135,7 @@ class TestStatus:
 
 
 def _unreadable_session(db, status="paused"):
-    sid = tp.create_session(db, TunerConfig(), "", "")
+    sid = tp.create_session(db, TunerConfig(), "", "", boot_id=this_boot())
     tp.save_core_state(db, sid, CoreState(core_id=0))
     tp.update_session_status(db, sid, status)
     db._execute_raw("UPDATE tuner_core_states SET phase='future_phase' WHERE session_id=?", (sid,))
@@ -143,7 +144,7 @@ def _unreadable_session(db, status="paused"):
 
 class TestUnreadableSession:
     def test_status_lists_it_as_unreadable_and_the_rest_as_usual(self, db, capsys):
-        readable = tp.create_session(db, TunerConfig(), "", "")
+        readable = tp.create_session(db, TunerConfig(), "", "", boot_id=this_boot())
         unreadable = _unreadable_session(db)
         assert cli.cmd_status(db=db) == cli.EXIT_COMPLETED
         lines = capsys.readouterr().out.splitlines()
@@ -382,7 +383,7 @@ class TestRunStatusAndSignal:
         assert made[0].status == "idle"
 
     def test_auto_resume_falls_back_to_first_resumable(self, db):
-        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "", boot_id=this_boot())
         tp.update_session_status(db, sid, "paused")
         made = []
 

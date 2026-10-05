@@ -5,13 +5,40 @@ All functions delegate to public HistoryDB methods.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from corecycler.history.db import HistoryDB
 
     from .config import TunerConfig
     from .state import CoreState, TunerSession
+
+
+@dataclass(frozen=True, slots=True)
+class LogRow:
+    core_id: int
+    offset: int
+    phase: str
+    error_msg: str
+    error_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class AttributionPlan:
+    boot_id: str
+    rows: tuple[LogRow, ...]
+    states: tuple[CoreState, ...]
+    unattributed_crashes: int
+    resume_crash_streak: int
+    validation_dirty: bool
+    quarantine: bool
+    crashed: tuple[int, ...]
+    pending_hunt: bool
+    incident: bool
+    messages: tuple[str, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -25,9 +52,40 @@ def create_session(
     bios_version: str,
     cpu_model: str,
     context_id: int | None = None,
+    *,
+    boot_id: str,
 ) -> int:
     """Create a new tuner session. Returns the session id."""
-    return db.create_tuner_session(config.to_json(), bios_version, cpu_model, context_id)
+    return db.create_tuner_session(config.to_json(), bios_version, cpu_model, context_id, boot_id=boot_id)
+
+
+def stamp_session_boot(db: HistoryDB, session_id: int, boot_id: str) -> None:
+    db.stamp_session_boot(session_id, boot_id)
+
+
+def commit_attribution(db: HistoryDB, session_id: int, plan: AttributionPlan) -> None:
+    with db.transaction():
+        for row in plan.rows:
+            db.insert_tuner_test_log(
+                session_id, row.core_id, row.offset, row.phase, False, row.error_msg, row.error_type, None, None
+            )
+        for cs in plan.states:
+            db.upsert_tuner_core_state(session_id, cs)
+        db.set_unattributed_crashes(session_id, plan.unattributed_crashes)
+        db.set_resume_crash_streak(session_id, plan.resume_crash_streak)
+        db.set_validation_dirty(session_id, plan.validation_dirty)
+        db.set_hunting_core(session_id, None)
+        if plan.quarantine:
+            db.update_tuner_session_status(session_id, "quarantined")
+        db.stamp_session_boot(session_id, plan.boot_id)
+
+
+def commit_same_boot(db: HistoryDB, session_id: int, cleared: Iterable[CoreState], resume_crash_streak: int) -> None:
+    with db.transaction():
+        for cs in cleared:
+            db.upsert_tuner_core_state(session_id, cs)
+        db.set_hunting_core(session_id, None)
+        db.set_resume_crash_streak(session_id, resume_crash_streak)
 
 
 def update_session_status(db: HistoryDB, session_id: int, status: str) -> None:

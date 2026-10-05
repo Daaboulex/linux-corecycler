@@ -19,6 +19,7 @@ from corecycler.history.db import HistoryDB
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.state import CoreState, TunerPhase
+from tests._machine import this_boot
 
 
 @pytest.fixture
@@ -53,7 +54,7 @@ def _engine(sid, states):
 
 
 def _sid(db):
-    return tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test 8C")
+    return tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test 8C", boot_id=this_boot())
 
 
 class TestCoreRow:

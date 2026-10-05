@@ -25,6 +25,7 @@ from corecycler.history.db import HistoryDB
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.state import CoreState, TunerPhase
+from tests._machine import this_boot
 
 
 def _qapp():
@@ -86,7 +87,7 @@ def tab(db):
 
 
 def _seed_session(db, status="paused"):
-    sid = tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test 8C")
+    sid = tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test 8C", boot_id=this_boot())
     tp.update_session_status(db, sid, status)
     return sid
 
@@ -391,7 +392,7 @@ class TestResumeSession:
 
     def test_the_saved_config_is_mirrored_into_the_panel(self, tab, monkeypatch):
         cfg = TunerConfig(coarse_step=3, fine_step=2, max_offset=-42, test_order="round_robin")
-        sid = tp.create_session(tab._db, cfg, bios_version="2402", cpu_model="Test 8C")
+        sid = tp.create_session(tab._db, cfg, bios_version="2402", cpu_model="Test 8C", boot_id=this_boot())
         tp.log_event(tab._db, sid, "info", "story line")
         eng = _engine(status="running", session_id=sid)
         monkeypatch.setattr(tt, "TunerEngine", MagicMock(return_value=eng))

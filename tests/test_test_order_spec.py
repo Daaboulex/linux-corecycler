@@ -16,6 +16,7 @@ from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.engine import TunerEngine
 from corecycler.tuner.state import CoreState, TunerPhase
+from tests._machine import this_boot
 
 ORDERS = ["sequential", "round_robin", "weakest_first", "ccd_alternating", "ccd_round_robin"]
 
@@ -236,7 +237,7 @@ class TestInterruptionContract:
         tp.log_test_result(db, sid, core, offset, "coarse", True, duration=60.0)
 
     def test_cursors_rebuilt_from_test_log(self, db, topo_dual_ccd_x3d):
-        sid = tp.create_session(db, TunerConfig(), "", "")
+        sid = tp.create_session(db, TunerConfig(), "", "", boot_id=this_boot())
         for core in (0, 4, 1):
             self._log_real_test(db, sid, core)
         # synthetic crash row (duration NULL) must NOT move the cursor
@@ -251,7 +252,7 @@ class TestInterruptionContract:
         assert eng._ccd_last_tested == {0: 1, 1: 4}
 
     def test_round_robin_continues_after_resume(self, db, topo_dual_ccd_x3d):
-        sid = tp.create_session(db, TunerConfig(), "", "")
+        sid = tp.create_session(db, TunerConfig(), "", "", boot_id=this_boot())
         for core in (0, 1, 2):
             self._log_real_test(db, sid, core)
         eng = make_engine(db, topo_dual_ccd_x3d, "round_robin")
@@ -261,7 +262,7 @@ class TestInterruptionContract:
         assert step(eng) == 3  # continues after core 2, not back at core 0
 
     def test_no_test_log_leaves_cursors_unset(self, db, topo_dual_ccd_x3d):
-        sid = tp.create_session(db, TunerConfig(), "", "")
+        sid = tp.create_session(db, TunerConfig(), "", "", boot_id=this_boot())
         eng = make_engine(db, topo_dual_ccd_x3d, "round_robin")
         seed(eng, dict.fromkeys(range(8), ACTIVE))
         eng._session_id = sid

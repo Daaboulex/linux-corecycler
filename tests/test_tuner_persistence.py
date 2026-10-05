@@ -19,6 +19,7 @@ from corecycler.tuner.persistence import (
     update_session_status,
 )
 from corecycler.tuner.state import CoreState, TunerPhase
+from tests._machine import this_boot
 
 
 @pytest.fixture
@@ -32,7 +33,7 @@ def db():
 class TestTunerSessions:
     def test_create_and_get_session(self, db):
         cfg = TunerConfig(coarse_step=10)
-        sid = create_session(db, cfg, "BIOS-1.0", "Ryzen 9 9950X3D")
+        sid = create_session(db, cfg, "BIOS-1.0", "Ryzen 9 9950X3D", boot_id=this_boot())
         assert sid > 0
 
         s = get_session(db, sid)
@@ -45,28 +46,28 @@ class TestTunerSessions:
 
     def test_update_session_status(self, db):
         cfg = TunerConfig()
-        sid = create_session(db, cfg, "", "")
+        sid = create_session(db, cfg, "", "", boot_id=this_boot())
         update_session_status(db, sid, "paused")
         s = get_session(db, sid)
         assert s.status == "paused"
 
     def test_get_latest_session(self, db):
         cfg = TunerConfig()
-        create_session(db, cfg, "", "CPU1")
-        sid2 = create_session(db, cfg, "", "CPU2")
+        create_session(db, cfg, "", "CPU1", boot_id=this_boot())
+        sid2 = create_session(db, cfg, "", "CPU2", boot_id=this_boot())
         latest = get_latest_session(db)
         assert latest.id == sid2
 
     def test_get_active_session_running(self, db):
         cfg = TunerConfig()
-        sid = create_session(db, cfg, "", "")
+        sid = create_session(db, cfg, "", "", boot_id=this_boot())
         active = get_active_session(db)
         assert active is not None
         assert active.id == sid
 
     def test_get_active_session_paused(self, db):
         cfg = TunerConfig()
-        sid = create_session(db, cfg, "", "")
+        sid = create_session(db, cfg, "", "", boot_id=this_boot())
         update_session_status(db, sid, "paused")
         active = get_active_session(db)
         assert active is not None
@@ -74,7 +75,7 @@ class TestTunerSessions:
 
     def test_get_active_session_none_when_completed(self, db):
         cfg = TunerConfig()
-        sid = create_session(db, cfg, "", "")
+        sid = create_session(db, cfg, "", "", boot_id=this_boot())
         update_session_status(db, sid, "completed")
         active = get_active_session(db)
         assert active is None
@@ -86,7 +87,7 @@ class TestTunerSessions:
 class TestCoreStates:
     def test_save_and_load(self, db):
         cfg = TunerConfig()
-        sid = create_session(db, cfg, "", "")
+        sid = create_session(db, cfg, "", "", boot_id=this_boot())
 
         cs0 = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5, best_offset=0)
         cs1 = CoreState(core_id=1, phase=TunerPhase.NOT_STARTED)
@@ -102,7 +103,7 @@ class TestCoreStates:
 
     def test_upsert_updates_existing(self, db):
         cfg = TunerConfig()
-        sid = create_session(db, cfg, "", "")
+        sid = create_session(db, cfg, "", "", boot_id=this_boot())
 
         cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-5)
         save_core_state(db, sid, cs)
@@ -122,7 +123,7 @@ class TestCoreStates:
         # The thermal retry cap must survive pause/resume/reboot, otherwise the
         # "cooling cannot sustain testing" abort silently never fires.
         cfg = TunerConfig()
-        sid = create_session(db, cfg, "", "")
+        sid = create_session(db, cfg, "", "", boot_id=this_boot())
         cs = CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, thermal_aborts=2)
         save_core_state(db, sid, cs)
         loaded = load_core_states(db, sid)
@@ -130,7 +131,7 @@ class TestCoreStates:
 
     def test_load_empty(self, db):
         cfg = TunerConfig()
-        sid = create_session(db, cfg, "", "")
+        sid = create_session(db, cfg, "", "", boot_id=this_boot())
         loaded = load_core_states(db, sid)
         assert loaded == {}
 
@@ -138,7 +139,7 @@ class TestCoreStates:
 class TestTestLog:
     def test_log_and_query(self, db):
         cfg = TunerConfig()
-        sid = create_session(db, cfg, "", "")
+        sid = create_session(db, cfg, "", "", boot_id=this_boot())
 
         log_test_result(db, sid, 0, -5, "coarse", True, duration=60.0)
         log_test_result(db, sid, 0, -10, "coarse", True, duration=60.0)
@@ -153,7 +154,7 @@ class TestTestLog:
 
     def test_log_filter_by_core(self, db):
         cfg = TunerConfig()
-        sid = create_session(db, cfg, "", "")
+        sid = create_session(db, cfg, "", "", boot_id=this_boot())
 
         log_test_result(db, sid, 0, -5, "coarse", True)
         log_test_result(db, sid, 1, -5, "coarse", True)
@@ -168,7 +169,7 @@ class TestTestLog:
 
     def test_log_all_fields(self, db):
         cfg = TunerConfig()
-        sid = create_session(db, cfg, "", "")
+        sid = create_session(db, cfg, "", "", boot_id=this_boot())
 
         lid = log_test_result(
             db,
@@ -197,7 +198,7 @@ class TestTestLog:
 class TestBestProfile:
     def test_confirmed_cores_only(self, db):
         cfg = TunerConfig()
-        sid = create_session(db, cfg, "", "")
+        sid = create_session(db, cfg, "", "", boot_id=this_boot())
 
         save_core_state(
             db,
@@ -235,7 +236,7 @@ class TestBestProfile:
 
     def test_empty_when_no_confirmed(self, db):
         cfg = TunerConfig()
-        sid = create_session(db, cfg, "", "")
+        sid = create_session(db, cfg, "", "", boot_id=this_boot())
         save_core_state(db, sid, CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH))
         profile = get_best_profile(db, sid)
         assert profile == {}
@@ -269,7 +270,7 @@ class TestSchemaV11:
         fresh database (exercises _DDL_FRESH + the new accessors)."""
         db = HistoryDB(tmp_path / "test.db")
         try:
-            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
             # New sessions start with a zeroed circuit breaker.
             assert db.get_resume_crash_streak(sid) == 0
             # Aggressive value -> suspect; 0 -> survived.
@@ -292,7 +293,7 @@ class TestSchemaV11:
         the fresh-schema path."""
         path = tmp_path / "mig.db"
         db = HistoryDB(path)
-        sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+        sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
         # Emulate a v10 database: roll the version back, drop the v11 table,
         # and drop every column later migrations add (a fresh DB already has
         # them; leaving them would collide with the v13 ALTERs on re-open).
@@ -309,6 +310,7 @@ class TestSchemaV11:
             ("tuner_sessions", "validation_half"),
             ("tuner_sessions", "validation_dirty"),
             ("tuner_sessions", "validation_requeue"),
+            ("tuner_sessions", "boot_id"),
             ("tuner_test_log", "peak_stretch_pct"),
         ):
             db._execute_raw(f"ALTER TABLE {table} DROP COLUMN {column}")
@@ -327,7 +329,7 @@ class TestSchemaV11:
     def test_core_state_crash_fields_persist(self, tmp_path):
         db = HistoryDB(tmp_path / "test.db")
         try:
-            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
             cs = CoreState(
                 core_id=0,
                 crash_count=2,
@@ -349,7 +351,7 @@ class TestSchemaV11:
     def test_test_log_has_backend_fields(self, tmp_path):
         db = HistoryDB(tmp_path / "test.db")
         try:
-            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
             db.insert_tuner_test_log(
                 sid,
                 core_id=0,
@@ -376,7 +378,7 @@ class TestSchemaV13:
     def test_peak_stretch_round_trips(self, tmp_path):
         db = HistoryDB(tmp_path / "test.db")
         try:
-            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
             db.insert_tuner_test_log(
                 sid,
                 0,
@@ -395,7 +397,7 @@ class TestSchemaV13:
     def test_unattributed_crash_counter_round_trips(self, tmp_path):
         db = HistoryDB(tmp_path / "test.db")
         try:
-            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
             assert db.get_unattributed_crashes(sid) == 0
             db.set_unattributed_crashes(sid, 2)
             assert db.get_unattributed_crashes(sid) == 2
@@ -406,7 +408,7 @@ class TestSchemaV13:
     def test_hunting_core_round_trips_and_clears(self, tmp_path):
         db = HistoryDB(tmp_path / "test.db")
         try:
-            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
             assert db.get_tuner_session(sid).hunting_core is None
             db.set_hunting_core(sid, 5)
             assert db.get_tuner_session(sid).hunting_core == 5
@@ -418,7 +420,7 @@ class TestSchemaV13:
     def test_journal_values_returns_last_write_survived_or_not(self, tmp_path):
         db = HistoryDB(tmp_path / "test.db")
         try:
-            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
             db.journal_co_intent(sid, 0, -41, survived=True)
             db.journal_co_intent(sid, 1, -30, survived=False)
             assert db.journal_values(sid) == {0: -41, 1: -30}
@@ -452,7 +454,7 @@ class TestSchemaV13:
 
         db = HistoryDB(tmp_path / "test.db")
         try:
-            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
             db.upsert_tuner_core_state(sid, CoreState(core_id=0, phase=TunerPhase.HARDENED, best_offset=-41))
             db.upsert_tuner_core_state(sid, CoreState(core_id=1, phase=TunerPhase.CONFIRMED, best_offset=-30))
             assert db.get_tuner_best_profile(sid) == {0: -41, 1: -30}
@@ -464,7 +466,7 @@ class TestSchemaV15Narrative:
     def test_events_round_trip_newest_last(self, tmp_path):
         db = HistoryDB(tmp_path / "test.db")
         try:
-            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
             for i in range(5):
                 db.insert_tuner_event(sid, f"line {i}", boot_id="boot-a")
             events = db.get_tuner_events(sid, limit=3)
@@ -480,7 +482,7 @@ class TestSchemaV15Narrative:
         db = HistoryDB(tmp_path / "test.db")
         try:
             assert tp.pick_auto_resume_session(db) is None
-            sid = db.create_tuner_session("{}", "1.0", "TestCPU")
+            sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
             assert tp.pick_auto_resume_session(db).id == sid  # running
             db.update_tuner_session_status(sid, "validating")
             assert tp.pick_auto_resume_session(db).id == sid
@@ -488,5 +490,51 @@ class TestSchemaV15Narrative:
             assert tp.pick_auto_resume_session(db) is None  # human choice
             db.update_tuner_session_status(sid, "quarantined")
             assert tp.pick_auto_resume_session(db) is None
+        finally:
+            db.close()
+
+
+class TestSchemaV16SessionBoot:
+    LAST_STATE_WRITE = "2026-10-01T11:30:00+00:00"
+    EVENTS = (
+        ("0a1b2c3d-0000-4000-8000-00000000000a", "2026-10-01T10:00:00+00:00"),
+        ("0a1b2c3d-0000-4000-8000-00000000000b", "2026-10-01T11:00:00+00:00"),
+        ("0a1b2c3d-0000-4000-8000-00000000000c", "2026-10-02T09:00:00+00:00"),
+    )
+
+    def _v15_file(self, path):
+        db = HistoryDB(path)
+        first = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id="")
+        second = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id="")
+        db.upsert_tuner_core_state(first, CoreState(core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-10))
+        for boot, stamp in self.EVENTS:
+            db.insert_tuner_event(first, f"a line written in boot {boot}", boot_id=boot)
+            db._execute_raw("UPDATE tuner_events SET timestamp=? WHERE id=(SELECT MAX(id) FROM tuner_events)", (stamp,))
+        db._execute_raw("UPDATE tuner_sessions SET updated_at=?", (self.LAST_STATE_WRITE,))
+        db._execute_raw("UPDATE tuner_core_states SET updated_at=?", (self.LAST_STATE_WRITE,))
+        db._execute_raw("UPDATE schema_version SET version=15")
+        db._execute_raw("ALTER TABLE tuner_sessions DROP COLUMN boot_id")
+        db.close()
+        return first, second
+
+    def test_v15_sessions_take_the_newest_event_boot_or_none(self, tmp_path, topo_single_ccd, mock_backend):
+        from unittest.mock import patch
+
+        from corecycler.tuner.engine import TunerEngine
+
+        path = tmp_path / "v15.db"
+        first, second = self._v15_file(path)
+
+        db = HistoryDB(path)
+        try:
+            assert db.get_tuner_session(first).boot_id == "0a1b2c3d00004000800000000000000b"
+            assert db.get_tuner_session(second).boot_id == ""
+            engine = TunerEngine(db=db, topology=topo_single_ccd, smu=None, backend=mock_backend, config=TunerConfig())
+            said: list[str] = []
+            engine.log_message.connect(said.append)
+            with patch.object(engine, "_run_next"):
+                engine.resume(second)
+            assert any("the session's boot is not recorded" in line for line in said)
+            assert db.get_tuner_session(second).boot_id == engine._boot_id
         finally:
             db.close()

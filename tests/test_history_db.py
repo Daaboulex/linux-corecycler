@@ -14,6 +14,7 @@ from corecycler.history.db import (
     TelemetrySample,
     TuningContextRecord,
 )
+from tests._machine import this_boot
 
 
 @pytest.fixture
@@ -306,8 +307,8 @@ class TestTunerSessionMethods:
     """Verify public tuner methods that both Grouped and Tuner views use."""
 
     def test_list_tuner_sessions(self, db):
-        sid1 = db.create_tuner_session("{}", "BIOS-1", "CPU1")
-        sid2 = db.create_tuner_session("{}", "BIOS-1", "CPU1")
+        sid1 = db.create_tuner_session("{}", "BIOS-1", "CPU1", boot_id=this_boot())
+        sid2 = db.create_tuner_session("{}", "BIOS-1", "CPU1", boot_id=this_boot())
         sessions = db.list_tuner_sessions()
         assert len(sessions) == 2
         assert sessions[0].id == sid2  # newest first
@@ -315,14 +316,14 @@ class TestTunerSessionMethods:
 
     def test_list_tuner_sessions_limit(self, db):
         for _ in range(5):
-            db.create_tuner_session("{}", "", "")
+            db.create_tuner_session("{}", "", "", boot_id=this_boot())
         sessions = db.list_tuner_sessions(limit=3)
         assert len(sessions) == 3
 
     def test_delete_context_cascade(self, db):
         ctx_id = db.create_context(TuningContextRecord(bios_version="v1"))
         db.create_run(RunRecord(cpu_model="test", context_id=ctx_id))
-        sid = db.create_tuner_session("{}", "v1", "test", context_id=ctx_id)
+        sid = db.create_tuner_session("{}", "v1", "test", context_id=ctx_id, boot_id=this_boot())
 
         db.delete_context_cascade(ctx_id)
 
@@ -647,7 +648,7 @@ class TestMergeFrom:
         src.insert_event(EventRecord(run_id=rid, event_type="core_start", core_id=3))
         src.insert_telemetry_batch([TelemetrySample(run_id=rid, core_id=3, freq_mhz=5300.0)])
         # a tuner session with state, log, and journal
-        sid = src.create_tuner_session("{}", "2401", "9950X3D", context_id=src_ctx)
+        sid = src.create_tuner_session("{}", "2401", "9950X3D", context_id=src_ctx, boot_id=this_boot())
         from corecycler.tuner.state import CoreState, TunerPhase
 
         src.upsert_tuner_core_state(
@@ -940,7 +941,7 @@ class TestRecoverableSessions:
     """A stopped session keeps its work; only the automatic path filters it out."""
 
     def _session(self, db, status):
-        sid = db.create_tuner_session("{}", "bios", "cpu")
+        sid = db.create_tuner_session("{}", "bios", "cpu", boot_id=this_boot())
         db.update_tuner_session_status(sid, status)
         return sid
 

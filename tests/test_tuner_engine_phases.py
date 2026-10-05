@@ -104,6 +104,18 @@ def engine(db, tmp_path, monkeypatch):
     return instance
 
 
+def _restarted(instance, tmp_path, monkeypatch) -> TunerEngine:
+    fresh = TunerEngine(
+        db=instance._db, topology=_topo(), smu=_smu(), backend=_backend(), config=_config(), work_dir=tmp_path
+    )
+    monkeypatch.setattr(fresh, "_start_worker", MagicMock())
+    return fresh
+
+
+def _harvested_boots(machine) -> list[str]:
+    return [args[1] for args in machine.served if "SYSLOG_FACILITY=0" in args]
+
+
 def _confirm(instance, core_id, offset):
     cs = instance._core_states[core_id]
     cs.phase = TunerPhase.CONFIRMED
@@ -1229,15 +1241,14 @@ class TestEvidenceGuards:
         assert engine._foreign_mce_by_core(0, (unblamed(), trouble(), mce(99))) == {}
 
     def test_an_event_on_an_untested_core_is_dropped(self, engine):
-        assert engine._events_by_core([mce(99, message="x")]) == {}
+        assert engine._events_by_core((mce(99, message="x"),), engine._core_states) == {}
 
-    def test_journal_suspects_need_a_session(self, engine):
-        engine._session_id = None
-        assert engine._handle_journal_suspects(set()) == []
-
-    def test_a_suspect_for_an_unknown_core_is_skipped(self, engine):
-        engine._db.journal_co_intent(engine._session_id, 99, -20, survived=False)
-        assert 99 not in engine._handle_journal_suspects(set())
+    def test_a_suspect_for_an_unknown_core_is_skipped(self, engine, machine, tmp_path, monkeypatch):
+        sid = engine._session_id
+        engine._db.journal_co_intent(sid, 99, -20, survived=False)
+        machine.reboot(clean=False)
+        _restarted(engine, tmp_path, monkeypatch).resume(sid)
+        assert [row["core_id"] for row in tp.get_test_log(engine._db, sid) if row["error_type"] == "crash"] == [0]
 
     def test_foreign_evidence_for_an_unknown_core_is_skipped(self, engine):
         engine._apply_foreign_evidence({99: {"messages": ["x"], "corrected": True}})
@@ -1432,17 +1443,16 @@ class TestResumeGuards:
         engine.resume(sid)
         assert engine.status == "paused"
 
-    def test_an_abandoned_hunt_is_cleared_on_a_clean_restart(self, engine, machine):
+    def test_an_abandoned_hunt_is_cleared_on_a_clean_restart(self, engine):
         sid = engine._session_id
         _confirm(engine, 0, -20)
         tp.set_hunting_core(engine._db, sid, 0)
         tp.update_session_status(engine._db, sid, "paused")
-        machine.same_boot()
         engine._worker = None
         engine.resume(sid)
         assert tp.get_session(engine._db, sid).hunting_core is None
 
-    def test_an_unattributed_crash_starts_a_hunt_before_validation(self, engine, monkeypatch, machine):
+    def test_an_unattributed_crash_starts_a_hunt_before_validation(self, engine, monkeypatch, machine, tmp_path):
         sid = engine._session_id
         for cid in (0, 1):
             cs = _confirm(engine, cid, -20)
@@ -1451,10 +1461,10 @@ class TestResumeGuards:
         tp.update_session_status(engine._db, sid, "validating")
         tp.journal_mark_survived(engine._db, sid)
         machine.reboot(clean=False)
+        restarted = _restarted(engine, tmp_path, monkeypatch)
         hunts = []
-        monkeypatch.setattr(engine, "_start_hunt", lambda: hunts.append(True))
-        engine._worker = None
-        engine.resume(sid)
+        monkeypatch.setattr(restarted, "_start_hunt", lambda: hunts.append(True))
+        restarted.resume(sid)
         assert hunts == [True]
 
 
@@ -1510,14 +1520,14 @@ class TestRemainingEvidencePaths:
         engine._on_hunt_slot_finished(0, True, Outcome.PASS, {1: {"messages": ["x"], "corrected": True}})
         assert applied and 1 in applied[0]
 
-    def test_forensics_that_name_a_core_end_an_open_hunt(self, engine, machine):
+    def test_forensics_that_name_a_core_end_an_open_hunt(self, engine, machine, tmp_path, monkeypatch):
         sid = engine._session_id
         _confirm(engine, 1, -20)
         tp.set_hunting_core(engine._db, sid, 1)
         machine.crash_after(core_bank_record(1))
-        session = tp.get_session(engine._db, sid)
-        engine._attribute_crash_after_reboot(session)
+        _restarted(engine, tmp_path, monkeypatch).resume(sid)
         assert tp.get_session(engine._db, sid).hunting_core is None
+        assert [row["core_id"] for row in tp.get_test_log(engine._db, sid) if row["error_type"] == "crash"] == [1]
 
 
 class TestSearchArithmetic:
@@ -1644,18 +1654,6 @@ class TestMemoryStageAcrossMachines:
         assert "cgroup limit 4096 MB" in next(m for m in messages if "memory budget" in m)
 
 
-def _harvest_spy(instance) -> list[str]:
-    harvested: list[str] = []
-    real = instance._forensics
-
-    def harvest(since, timeout=15.0):
-        harvested.append(since)
-        return real(since, timeout)
-
-    instance._forensics = harvest
-    return harvested
-
-
 class TestKernelLogGate:
     PROBLEM = (
         "the kernel journal cannot be read: journalctl exited 1: Failed to open /var/log/journal: Permission denied"
@@ -1683,15 +1681,19 @@ class TestKernelLogGate:
             assert seen == [f"Cannot start: {self.PROBLEM}"]
 
     @pytest.mark.parametrize("readable", [True, False])
-    def test_resume_refuses_before_forensics_on_an_unreadable_journal(self, engine, machine, readable):
-        harvested = _harvest_spy(engine)
+    def test_resume_refuses_before_forensics_on_an_unreadable_journal(
+        self, engine, machine, readable, tmp_path, monkeypatch
+    ):
+        dead = machine.boot_id
+        machine.reboot(clean=False)
+        restarted = _restarted(engine, tmp_path, monkeypatch)
         machine.journal_readable = readable
-        seen = self._messages(engine)
-        engine.resume(engine._session_id)
+        seen = self._messages(restarted)
+        restarted.resume(engine._session_id)
         if readable:
-            assert len(harvested) == 1
+            assert _harvested_boots(machine) == [dead, machine.boot_id]
         else:
-            assert harvested == []
+            assert _harvested_boots(machine) == []
             assert seen == [f"Cannot resume: {self.PROBLEM}"]
 
     def test_validate_profile_refuses_on_an_unreadable_kernel_log(self, engine, machine):
@@ -1746,16 +1748,20 @@ class TestMemoryAccountingGate:
             assert "memory" in seen[0]
 
     @pytest.mark.parametrize("controllers", [DELEGATED, UNDELEGATED])
-    def test_resume_refuses_before_forensics_without_the_memory_controller(self, engine, lane_parent, controllers):
+    def test_resume_refuses_before_forensics_without_the_memory_controller(
+        self, engine, lane_parent, controllers, machine, tmp_path, monkeypatch
+    ):
         lane_parent.controllers.write_text(controllers)
-        harvested = _harvest_spy(engine)
-        seen = self._messages(engine)
-        engine.resume(engine._session_id)
+        dead = machine.boot_id
+        machine.reboot(clean=False)
+        restarted = _restarted(engine, tmp_path, monkeypatch)
+        seen = self._messages(restarted)
+        restarted.resume(engine._session_id)
         assert len(engine._db.list_tuner_sessions()) == 1
         if controllers == self.DELEGATED:
-            assert len(harvested) == 1
+            assert _harvested_boots(machine) == [dead, machine.boot_id]
         else:
-            assert harvested == []
+            assert _harvested_boots(machine) == []
             assert seen == [f"Cannot resume: {lane_parent.problem()}"]
 
     def test_validate_profile_refuses_without_the_memory_controller(self, engine, lane_parent):

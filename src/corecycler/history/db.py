@@ -181,7 +181,7 @@ class TelemetrySample:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 15
+    SCHEMA_VERSION = 16
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -377,7 +377,8 @@ CREATE TABLE IF NOT EXISTS tuner_sessions (
     validation_index    INTEGER NOT NULL DEFAULT 0,
     validation_half     INTEGER NOT NULL DEFAULT 0,
     validation_dirty    INTEGER NOT NULL DEFAULT 0,
-    validation_requeue  TEXT    NOT NULL DEFAULT '[]'
+    validation_requeue  TEXT    NOT NULL DEFAULT '[]',
+    boot_id             TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS tuner_core_states (
@@ -719,6 +720,27 @@ CREATE TABLE IF NOT EXISTS tuner_events (
 CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
 """
 
+    @staticmethod
+    def _migrate_v16(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(conn, "tuner_sessions", [("boot_id", "TEXT NOT NULL DEFAULT ''")])
+        conn.execute(HistoryDB._SESSION_BOOT_FROM_EVENTS)
+
+    _SESSION_BOOT_FROM_EVENTS = """\
+UPDATE tuner_sessions SET boot_id = COALESCE((
+    SELECT replace(e.boot_id, '-', '') FROM tuner_events e
+    WHERE e.session_id = tuner_sessions.id AND e.boot_id <> ''
+      AND e.timestamp <= (
+          SELECT MAX(ts) FROM (
+              SELECT tuner_sessions.updated_at AS ts
+              UNION ALL SELECT updated_at FROM tuner_core_states WHERE session_id = tuner_sessions.id
+              UNION ALL SELECT updated_at FROM tuner_co_journal WHERE session_id = tuner_sessions.id
+              UNION ALL SELECT tested_at FROM tuner_test_log WHERE session_id = tuner_sessions.id
+          )
+      )
+    ORDER BY e.id DESC LIMIT 1), '')
+WHERE boot_id = ''
+"""
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
@@ -734,6 +756,7 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
         13: _migrate_v13,
         14: _migrate_v14,
         15: _DDL_MIGRATE_V15,
+        16: _migrate_v16,
     }
 
     # ------------------------------------------------------------------
@@ -1190,6 +1213,8 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
         bios_version: str,
         cpu_model: str,
         context_id: int | None = None,
+        *,
+        boot_id: str,
     ) -> int:
         """Create a new tuner session. Returns the session id."""
         now = self._now_iso()
@@ -1197,12 +1222,24 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
             """\
             INSERT INTO tuner_sessions
                 (created_at, updated_at, status, bios_version, cpu_model,
-                 config_json, context_id, notes)
-            VALUES (?,?,?,?,?,?,?,?)
+                 config_json, context_id, notes, boot_id)
+            VALUES (?,?,?,?,?,?,?,?,?)
             """,
-            (now, now, "running", bios_version, cpu_model, config_json, context_id, ""),
+            (now, now, "running", bios_version, cpu_model, config_json, context_id, "", boot_id),
         )
         return cur.lastrowid
+
+    def stamp_session_boot(self, session_id: int, boot_id: str) -> None:
+        self.__conn.execute(
+            "UPDATE tuner_sessions SET boot_id=?, updated_at=? WHERE id=?",
+            (boot_id, self._now_iso(), session_id),
+        )
+
+    def set_validation_dirty(self, session_id: int, dirty: bool) -> None:
+        self.__conn.execute(
+            "UPDATE tuner_sessions SET validation_dirty=?, updated_at=? WHERE id=?",
+            (int(dirty), self._now_iso(), session_id),
+        )
 
     def update_tuner_session_status(self, session_id: int, status: str) -> None:
         self.__conn.execute(
@@ -1336,12 +1373,8 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
         return {r["core_id"]: r["value"] for r in rows}
 
     def latest_session_activity(self, session_id: int) -> str | None:
-        """Most recent write timestamp across all of a session's state.
-
-        Used on resume to decide whether the machine rebooted since the session
-        last ran — the difference between a hard crash (penalize the resident
-        offsets) and a plain app exit (penalizing would corrupt the search).
-        """
+        """Most recent write timestamp across all of a session's state: the
+        wall-clock bound after which the dead boot's kernel records are read."""
         row = self.__conn.execute(
             """\
             SELECT MAX(ts) FROM (
@@ -1670,6 +1703,7 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
             validation_half=row["validation_half"] or 0,
             validation_dirty=bool(row["validation_dirty"]),
             validation_requeue=row["validation_requeue"] or "[]",
+            boot_id=row["boot_id"],
         )
 
     def _execute_raw(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -1886,6 +1920,7 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
                     "validation_half",
                     "validation_dirty",
                     "validation_requeue",
+                    "boot_id",
                 ),
             )
             counts["tuner_sessions"] = len(maps["tuner_sessions"])

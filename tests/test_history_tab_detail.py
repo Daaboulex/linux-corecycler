@@ -30,6 +30,7 @@ from corecycler.history.db import (
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.state import CoreState, TunerPhase
+from tests._machine import this_boot
 
 
 def _qapp():
@@ -104,7 +105,7 @@ def _seed_run(db, started_at, *, status="completed", cores_failed=0, context_id=
 
 
 def _seed_session(db, status="completed"):
-    sid = tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test 8C")
+    sid = tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test 8C", boot_id=this_boot())
     tp.update_session_status(db, sid, status)
     return sid
 

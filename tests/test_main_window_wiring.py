@@ -27,6 +27,7 @@ from corecycler.gui import main_window as mw
 from corecycler.history.db import HistoryDB, RunRecord
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
+from tests._machine import this_boot
 
 
 def _qapp():
@@ -267,7 +268,9 @@ class TestStartTest:
 
     def test_an_active_tuner_session_can_be_declined(self, window, monkeypatch, no_modal):
         self._ready(window, monkeypatch)
-        sid = tp.create_session(window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test")
+        sid = tp.create_session(
+            window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test", boot_id=this_boot()
+        )
         tp.update_session_status(window._history_db, sid, "running")
         no_modal.question.return_value = no_modal.StandardButton.No
         window._start_test()
@@ -575,7 +578,9 @@ class TestAutoResume:
         assert not window._tuner_tab._resume_session.called
 
     def test_an_active_engine_blocks_auto_resume(self, window, caplog):
-        sid = tp.create_session(window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test")
+        sid = tp.create_session(
+            window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test", boot_id=this_boot()
+        )
         tp.update_session_status(window._history_db, sid, "running")
         window._tuner_tab._engine = MagicMock(status="running")
         window._tuner_tab._resume_session = MagicMock()
@@ -585,7 +590,9 @@ class TestAutoResume:
         assert not window._tuner_tab._resume_session.called
 
     def test_a_mid_run_session_is_resumed(self, window):
-        sid = tp.create_session(window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test")
+        sid = tp.create_session(
+            window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test", boot_id=this_boot()
+        )
         tp.update_session_status(window._history_db, sid, "running")
         window._tuner_tab._engine = None
         window._tuner_tab._resume_session = MagicMock()

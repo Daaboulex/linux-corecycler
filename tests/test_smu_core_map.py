@@ -27,6 +27,7 @@ from corecycler.smu.commands import (
     get_commands,
 )
 from corecycler.smu.driver import RyzenSMU, SMUResponse, core_map_blocked
+from tests._machine import this_boot
 
 VERMEER = get_commands(CPUGeneration.ZEN3_VERMEER)
 ZEN5 = get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE)
@@ -421,7 +422,7 @@ class TestTunerRefusesUnmappedSMU:
         from corecycler.tuner import persistence as tp
         from corecycler.tuner.config import TunerConfig
 
-        session_id = tp.create_session(db, TunerConfig(), "bios-1.0", "Test", None)
+        session_id = tp.create_session(db, TunerConfig(), "bios-1.0", "Test", None, boot_id=this_boot())
         messages: list[str] = []
         engine.log_message.connect(messages.append)
         engine.resume(session_id)

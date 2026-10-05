@@ -80,3 +80,4 @@ class TunerSession:
     validation_half: int = 0
     validation_dirty: bool = False
     validation_requeue: str = "[]"  # JSON list of cores owing a solo re-test
+    boot_id: str = ""

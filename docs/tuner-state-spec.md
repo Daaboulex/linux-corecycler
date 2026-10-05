@@ -68,14 +68,26 @@ penalty never overshoots past stock (CO=0).
 - Apparatus-breaker trips (implausible fail streaks, search flow only) —
   roll back to the most aggressive proven pass, re-enter CONFIRMING, pause.
 
-## Crash attribution on resume (`_attribute_crash_after_reboot`)
+## Crash attribution on resume (`_decide_attribution`)
+
+A resume compares the session's recorded boot id with the current one. In the
+same boot nothing crashed: every in-test flag is cleared with no penalty. After
+a reboot the journal is asked how the session's boot ended. A boot whose last
+entry is systemd-journald's "Journal stopped" shut down cleanly: nothing is
+attributed as a crash, the flags clear, and that boot's machine checks back
+their cores off as evidence that never counts a crash. Any other end, or a
+journal that cannot say, is a crash and goes through the order below. The
+whole decision commits in one transaction together with the session's new
+boot id, so a dead boot is attributed exactly once; a failed commit changes
+nothing and the resume stops.
 
 Evidence outranks policy; a guess is never written. Priority order:
 
-1. Kernel-journal forensics (`journalctl _TRANSPORT=kernel` since the session's
-   last activity -- not `-k`, which implies the current boot and would hide the
-   crashed one): penalize exactly the cores the kernel's MCE lines name,
-   anchored at their journaled resident values.
+1. Kernel-journal forensics (`journalctl -b <session boot> _TRANSPORT=kernel
+   SYSLOG_FACILITY=0` after the session's last activity, plus the next boot's
+   kernel records logged before its first userspace entry): penalize exactly
+   the cores the kernel's MCE lines name, anchored at their journaled resident
+   values.
 2. A persisted hunt slot (`tuner_sessions.hunting_core`): the box died while
    one core was stressed alone with every other core at stock — proof by
    isolation.

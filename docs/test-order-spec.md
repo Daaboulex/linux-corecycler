@@ -54,6 +54,6 @@ CONFIRMING = 1, COARSE_SEARCH = 2, SETTLED = 3, NOT_STARTED = 4.
   continues where it stopped instead of restarting at core 0.
 - Synthetic crash-recovery rows (logged with `duration_seconds = NULL`) never
   move the cursors — they record a reboot, not a test.
-- Crash penalties on resume only apply when the machine actually rebooted
-  since the session's last persisted write (`_rebooted_since`); a plain app
-  exit mid-test clears `in_test` without a penalty and without moving offsets.
+- Crash penalties on resume only apply when the session's recorded boot id is
+  not the current boot's; a plain app exit mid-test clears `in_test` without a
+  penalty and without moving offsets.

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import io
-import logging
+import json
 import os
 import re
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,12 +17,13 @@ from corecycler.config import tools
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-log = logging.getLogger(__name__)
-
 KMSG = Path("/dev/kmsg")
+BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 KMSG_READ_SIZE = 8192
 KMSG_MAX_READS = 4096
 KERNEL_FACILITY = 0
+JOURNALD = "systemd-journald"
+JOURNAL_STOPPED = "Journal stopped"
 STATUS_UC = 1 << 61
 STATUS_DEFERRED = 1 << 44
 CORE_BANK_TYPES: frozenset[tuple[int, int]] = frozenset(
@@ -59,7 +59,9 @@ _TROUBLE = re.compile(
     r"|kernel BUG at "
 )
 _KMSG_RECORD = re.compile(r"(\d+),\d+,(\d+),[^;]*;(.*)")
-_JOURNAL_LINE = re.compile(r"\s*(\d+(?:\.\d+)?)\s+\S+\s+kernel:\s?(.*)")
+_BOOT_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+_KERNEL_RECORDS = ("-o", "json", "--output-fields=MESSAGE", "_TRANSPORT=kernel", f"SYSLOG_FACILITY={KERNEL_FACILITY}")
+_USERSPACE = ("_TRANSPORT=driver", "_TRANSPORT=journal", "_TRANSPORT=stdout", "_TRANSPORT=syslog")
 _NOT_OPEN = "kernel log not open: read before reset"
 _FLOOD = "kernel log flood: records left unread"
 
@@ -95,6 +97,20 @@ KernelEvent = CoreMachineCheck | UnblamedMachineCheck | KernelTrouble
 class KernelRead:
     events: tuple[KernelEvent, ...]
     problem: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class BootEnd:
+    clean: bool
+    problem: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _JournalEntry:
+    mono_us: int
+    realtime_us: int
+    message: str
+    identifier: str | None
 
 
 def bank_is_core(ipid: int | None, bank_name: str | None) -> bool:
@@ -258,29 +274,106 @@ def _journalctl(args: list[str], timeout: float) -> subprocess.CompletedProcess[
     )
 
 
-def harvest_kernel_mce(since_utc_iso: str, timeout: float = 15.0) -> tuple[list[KernelEvent], bool]:
-    since = _iso_to_journal_since(since_utc_iso)
-    if since is None:
-        return [], False
+def read_boot_id() -> str:
+    raw = BOOT_ID_PATH.read_text().strip()
+    if _BOOT_ID.fullmatch(raw) is None:
+        raise ValueError(f"{BOOT_ID_PATH} holds {raw[:60]!r}, not a boot id")
+    return raw.replace("-", "")
+
+
+def _journal_text(args: list[str], timeout: float) -> tuple[str, str | None]:
+    command = " ".join(["journalctl", *args])
     try:
-        result = _journalctl(["-o", "short-unix", "--since", since, "_TRANSPORT=kernel"], timeout)
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError) as exc:
-        log.warning("kernel-journal harvest failed: %s", exc)
-        return [], False
+        result = _journalctl(args, timeout)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return "", f"{command} failed: {exc}"
     if result.returncode != 0:
-        log.warning(
-            "journalctl exited %d during harvest: %s",
-            result.returncode,
-            result.stderr.strip()[:200],
-        )
-        return [], False
-    lines = [
-        (float(line.group(1)), line.group(2))
-        for line in map(_JOURNAL_LINE.fullmatch, result.stdout.splitlines())
-        if line is not None
-    ]
-    events, _open = parse_kernel_records(lines, final=True)
-    return events, True
+        return "", f"{command} exited {result.returncode}: {result.stderr.strip()[:200]}"
+    return result.stdout, None
+
+
+def _message(value: object) -> str:
+    if isinstance(value, list):
+        return bytes(value).decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return value
+    raise TypeError(f"MESSAGE is a {type(value).__name__}")
+
+
+def _journal_entries(args: list[str], timeout: float) -> tuple[list[_JournalEntry], str | None]:
+    text, problem = _journal_text(args, timeout)
+    if problem is not None:
+        return [], problem
+    try:
+        return [
+            _JournalEntry(
+                mono_us=int(entry["__MONOTONIC_TIMESTAMP"]),
+                realtime_us=int(entry["__REALTIME_TIMESTAMP"]),
+                message=_message(entry["MESSAGE"]),
+                identifier=entry.get("SYSLOG_IDENTIFIER"),
+            )
+            for entry in map(json.loads, filter(None, text.splitlines()))
+        ], None
+    except (KeyError, TypeError, ValueError) as exc:
+        return [], f"journalctl {' '.join(args)} printed an unreadable entry: {exc!r}"
+
+
+def boot_end(boot_id: str, timeout: float = 15.0) -> BootEnd:
+    if not boot_id:
+        return BootEnd(clean=False, problem="the session's boot is not recorded")
+    last, problem = _journal_entries(["-b", boot_id, "-n", "1", "-o", "json"], timeout)
+    clean = len(last) == 1 and (last[0].identifier, last[0].message) == (JOURNALD, JOURNAL_STOPPED)
+    return BootEnd(clean=clean, problem=problem)
+
+
+def _next_boot(boot_id: str, timeout: float) -> tuple[str | None, str | None]:
+    text, problem = _journal_text(["--list-boots", "-o", "json"], timeout)
+    if problem is not None:
+        return None, problem
+    try:
+        listed = [boot["boot_id"] for boot in sorted(json.loads(text), key=lambda boot: boot["index"])]
+    except (KeyError, TypeError, ValueError) as exc:
+        return None, f"journalctl --list-boots printed an unreadable list: {exc!r}"
+    if boot_id not in listed:
+        return None, f"boot {boot_id} is not in the journal's boot list, so the boot after it cannot be named"
+    later = listed[listed.index(boot_id) + 1 :]
+    return (later[0] if later else None), None
+
+
+def _before_userspace(boot_id: str, timeout: float) -> tuple[list[_JournalEntry], str | None]:
+    first, problem = _journal_entries(
+        ["-b", boot_id, "-n", "+1", "-o", "json", "--output-fields=MESSAGE", *_USERSPACE], timeout
+    )
+    if problem is not None:
+        return [], problem
+    records, problem = _journal_entries(["-b", boot_id, *_KERNEL_RECORDS], timeout)
+    return [record for record in records if not first or record.mono_us < first[0].mono_us], problem
+
+
+def _events(entries: Iterable[_JournalEntry]) -> list[KernelEvent]:
+    events, _open = parse_kernel_records(((entry.realtime_us / 1e6, entry.message) for entry in entries), final=True)
+    return events
+
+
+def harvest_after(boot_id: str, after_us: int | None, *, next_boot: bool, timeout: float = 15.0) -> KernelRead:
+    if not boot_id:
+        return KernelRead((), "the session's boot is not recorded")
+    events: list[KernelEvent] = []
+    problems: list[str | None] = []
+    if after_us is None:
+        problems.append("the session's last write time is unreadable")
+    else:
+        dead, problem = _journal_entries(["-b", boot_id, *_KERNEL_RECORDS], timeout)
+        events += _events(entry for entry in dead if entry.realtime_us > after_us)
+        problems.append(problem)
+    if next_boot:
+        following, problem = _next_boot(boot_id, timeout)
+        problems.append(problem)
+        if following is not None:
+            early, problem = _before_userspace(following, timeout)
+            events += _events(early)
+            problems.append(problem)
+    return KernelRead(tuple(events), "; ".join(filter(None, problems)) or None)
 
 
 def kernel_log_problem(kmsg: Path | None = None, timeout: float = 15.0) -> str | None:
@@ -299,24 +392,3 @@ def kernel_log_problem(kmsg: Path | None = None, timeout: float = 15.0) -> str |
     if not result.stdout.strip():
         return "the kernel journal shows no kernel record for this boot, so it cannot be read"
     return None
-
-
-def last_boot_ended_cleanly(timeout: float = 15.0) -> bool:
-    try:
-        result = _journalctl(["-b", "-1", "-n", "25", "-o", "cat"], timeout)
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError) as exc:
-        log.warning("clean-shutdown probe failed: %s", exc)
-        return False
-    if result.returncode != 0:
-        return False
-    return "Journal stopped" in result.stdout or "Shutting down." in result.stdout
-
-
-def _iso_to_journal_since(iso_ts: str) -> str | None:
-    try:
-        dt = datetime.fromisoformat(iso_ts)
-    except (ValueError, TypeError):
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")

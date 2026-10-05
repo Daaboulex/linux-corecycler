@@ -97,7 +97,7 @@ class TestCoreStateRoundTrip:
         cs = _core_state(data)
         db = HistoryDB(":memory:")
         try:
-            sid = db.create_tuner_session("{}", "", "TestCPU")
+            sid = db.create_tuner_session("{}", "", "TestCPU", boot_id="")
             db.upsert_tuner_core_state(sid, cs)
             loaded = db.get_tuner_core_states(sid)[cs.core_id]
             assert loaded == cs, f"round-trip lost a field: {cs} -> {loaded}"

@@ -24,6 +24,7 @@ from corecycler.history.db import (
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.state import CoreState, TunerPhase
+from tests._machine import this_boot
 
 
 @pytest.fixture
@@ -139,7 +140,7 @@ class TestDurability:
     def test_a_reader_holding_a_snapshot_does_not_stall_a_co_write(self, tmp_path):
         path = tmp_path / "history.db"
         db = HistoryDB(path)
-        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "", boot_id=this_boot())
         reader = _reader_holding_a_snapshot(path)
         started = time.monotonic()
         tp.journal_co_intent(db, sid, 0, -5, False)
@@ -157,7 +158,7 @@ class TestDurability:
         path = tmp_path / "history.db"
         db = HistoryDB(path)
         reader = _reader_holding_a_snapshot(path)
-        tp.create_session(db, TunerConfig(), "", "")
+        tp.create_session(db, TunerConfig(), "", "", boot_id=this_boot())
         caplog.set_level(logging.INFO, logger="corecycler.history.db")
         started = time.monotonic()
         db.close()
@@ -189,7 +190,7 @@ class TestMissingRows:
 
 class TestCoreStateSanity:
     def _session(self, db):
-        return tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test")
+        return tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test", boot_id=this_boot())
 
     def test_an_offset_outside_the_sane_range_is_refused(self, db):
         sid = self._session(db)
@@ -238,7 +239,7 @@ def _seed(path, *, runs=1, sessions=1):
             CoreResultRecord(run_id=rid, core_id=0, started_at="2026-07-20T10:00:00+00:00", passed=True)
         )
     for _ in range(sessions):
-        sid = tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test")
+        sid = tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test", boot_id=this_boot())
         db.create_context(TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash=f"seed{sid}"))
         tp.save_core_state(db, sid, CoreState(core_id=0, phase=TunerPhase.CONFIRMED, best_offset=-20))
         tp.journal_co_intent(db, sid, 0, -20, False)

@@ -8,6 +8,7 @@ launching a single stress process.
 from __future__ import annotations
 
 import threading
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,11 +18,12 @@ from corecycler.engine.detector import CoreMachineCheck, KernelRead, KernelTroub
 from corecycler.tuner import engine as eng
 from corecycler.tuner.engine import (
     WorkerReport,
+    _boot_identity,
     _busy_fraction,
     _ParallelWorker,
     _RapidTransitionWorker,
-    _read_boot_id,
     _read_cpu_times,
+    _realtime_us,
     _SoakWorker,
     _TunerWorker,
 )
@@ -71,15 +73,24 @@ def collect():
 
 
 class TestModuleHelpers:
-    def test_a_missing_boot_id_reads_as_empty(self, monkeypatch):
-        def _boom(*_args, **_kwargs):
-            raise OSError("no procfs")
+    def test_an_unreadable_boot_identity_is_a_problem_not_a_boot(self, machine):
+        machine.boot_id_path.unlink()
+        boot, problem = _boot_identity()
+        assert boot == ""
+        assert problem.startswith("boot identity unreadable: ")
 
-        monkeypatch.setattr("builtins.open", _boom)
-        assert _read_boot_id() == ""
+    def test_a_readable_boot_identity_is_the_boot(self, machine):
+        assert _boot_identity() == (machine.boot_id, None)
 
-    def test_a_real_boot_id_is_returned(self):
-        assert isinstance(_read_boot_id(), str)
+    def test_a_write_time_without_a_zone_is_read_as_utc(self, monkeypatch):
+        monkeypatch.setenv("TZ", "XYZ-2")
+        time.tzset()
+        try:
+            naive = _realtime_us("2026-10-05T06:00:00")
+        finally:
+            monkeypatch.undo()
+            time.tzset()
+        assert naive == _realtime_us("2026-10-05T06:00:00+00:00")
 
     def test_cpu_times_read_a_real_cpu(self):
         sample = _read_cpu_times(0)

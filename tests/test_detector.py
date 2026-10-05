@@ -6,6 +6,7 @@ The AMD Zen fixtures below are REAL kernel lines, verbatim.
 from __future__ import annotations
 
 import errno
+import json
 import os
 import subprocess
 import time
@@ -15,19 +16,22 @@ import pytest
 
 from corecycler.engine import detector as detector_mod
 from corecycler.engine.detector import (
+    BootEnd,
     CoreMachineCheck,
     ErrorDetector,
+    KernelRead,
     KernelTrouble,
     UnblamedMachineCheck,
     _clock_ns,
-    _iso_to_journal_since,
     _journalctl,
     bank_is_core,
-    harvest_kernel_mce,
+    boot_end,
+    harvest_after,
     kernel_log_problem,
-    last_boot_ended_cleanly,
     parse_kernel_records,
+    read_boot_id,
 )
+from tests._machine import core_bank_record
 
 ZEN_BLOCK_HEADER = "mce: [Hardware Error]: Machine check events logged"
 ZEN_SEVERITY = "[Hardware Error]: Corrected error, no action required."
@@ -460,17 +464,6 @@ class TestKmsgReader:
         assert "reset" in detector.read_new().problem
 
 
-JOURNAL_FIXTURE = (
-    "1789586704.004237 ryzen-9950x3d kernel: mce: [Hardware Error]: Machine check events logged\n"
-    "1789586704.007652 ryzen-9950x3d kernel: [Hardware Error]: Corrected error, no action required.\n"
-    f"1789586704.007690 ryzen-9950x3d kernel: {ZEN_BLOCK_STATUS}\n"
-    "1789586704.010577 ryzen-9950x3d kernel: [Hardware Error]: Error Addr: 0x00000002a90b5060\n"
-    "1789586704.010600 ryzen-9950x3d kernel: [Hardware Error]: IPID: 0x000000b000000000, Syndrome: 0x000000021a17010a\n"
-    f"1789586855.556237 ryzen-9950x3d kernel: {ZEN_UNCORRECTED_STATUS}\n"
-    "1789586900.000001 ryzen-9950x3d systemd[1]: Started some service.\n"
-)
-
-
 def _completed(stdout: str) -> MagicMock:
     return MagicMock(returncode=0, stdout=stdout, stderr="")
 
@@ -480,87 +473,192 @@ def real_journal(monkeypatch):
     monkeypatch.setattr(detector_mod, "_journalctl", _journalctl)
 
 
+def _cpus(read: KernelRead) -> list[int]:
+    return [event.cpu for event in read.events]
+
+
+class TestReadBootId:
+    def test_the_boot_id_is_read_in_the_form_journalctl_takes(self, machine):
+        boot = read_boot_id()
+        assert boot == machine.boot_id
+        assert machine.journalctl(["-b", boot, "-n", "1", "-o", "json"], 1).returncode == 0
+
+    def test_an_unreadable_boot_id_file_raises(self, machine):
+        machine.boot_id_path.unlink()
+        with pytest.raises(OSError):
+            read_boot_id()
+
+    @pytest.mark.parametrize("content", ["", "not-a-boot-id\n", "0123456789abcdef0123456789abcdef\n"])
+    def test_a_malformed_boot_id_raises(self, machine, content):
+        machine.boot_id_path.write_text(content)
+        with pytest.raises(ValueError, match="not a boot id"):
+            read_boot_id()
+
+
+class TestBootEnd:
+    def test_a_boot_journald_stopped_ended_cleanly(self, machine):
+        dead = machine.boot_id
+        machine.reboot(clean=True)
+        assert boot_end(dead) == BootEnd(clean=True, problem=None)
+
+    def test_a_boot_that_ends_without_journald_stopping_is_dirty(self, machine):
+        dead = machine.boot_id
+        machine.reboot(clean=False)
+        assert boot_end(dead) == BootEnd(clean=False, problem=None)
+
+    @pytest.mark.parametrize("last_line", ["Shutting down.", "Journal stopped"])
+    def test_a_shutdown_line_not_from_journald_is_not_clean(self, machine, last_line):
+        dead = machine.boot_id
+        machine.kernel_now([last_line])
+        machine.reboot(clean=False)
+        assert boot_end(dead) == BootEnd(clean=False, problem=None)
+
+    def test_an_unrecorded_boot_is_a_problem(self):
+        assert boot_end("") == BootEnd(clean=False, problem="the session's boot is not recorded")
+
+    def test_a_boot_the_journal_no_longer_holds_is_a_problem(self, machine):
+        dead = machine.boot_id
+        machine.reboot(clean=True)
+        machine.forget_boot(dead)
+        end = boot_end(dead)
+        assert end.clean is False
+        assert f"No journal boot entry found for the specified boot ({dead}+0)." in end.problem
+
+
+class TestHarvestAfter:
+    def test_the_dead_boot_is_read_after_the_last_write_only(self, machine):
+        dead = machine.boot_id
+        machine.kernel_now(core_bank_record(1))
+        last_write_us = machine.boot.entries[-1].realtime_us
+        machine.kernel_now(core_bank_record(2))
+        machine.reboot(clean=False)
+        assert (_cpus(read := harvest_after(dead, last_write_us, next_boot=False)), read.problem) == ([2], None)
+
+    def test_the_next_boot_is_read_only_before_its_first_userspace_entry(self, machine):
+        dead = machine.boot_id
+        machine.reboot(clean=False)
+        for line in core_bank_record(1, corrected=False):
+            machine.kernel(line, mono_s=1)
+        for line in core_bank_record(2, corrected=False):
+            machine.kernel(line, mono_s=5)
+        machine.reboot(clean=False)
+        for line in core_bank_record(3, corrected=False):
+            machine.kernel(line, mono_s=1)
+        assert (_cpus(read := harvest_after(dead, 0, next_boot=True)), read.problem) == ([1], None)
+
+    def test_a_clean_end_reads_the_dead_boot_alone(self, machine):
+        dead = machine.boot_id
+        machine.reboot(clean=True)
+        for line in core_bank_record(1, corrected=False):
+            machine.kernel(line, mono_s=1)
+        assert harvest_after(dead, 0, next_boot=False) == KernelRead((), None)
+
+    def test_a_record_a_user_process_wrote_to_the_kernel_log_is_not_read(self, machine):
+        dead = machine.boot_id
+        machine.kernel_now(core_bank_record(1), facility=1)
+        machine.kernel_now(core_bank_record(2))
+        machine.reboot(clean=False)
+        assert _cpus(harvest_after(dead, 0, next_boot=False)) == [2]
+
+    def test_an_unrecorded_boot_reads_nothing(self):
+        assert harvest_after("", 0, next_boot=True) == KernelRead((), "the session's boot is not recorded")
+
+    def test_an_unreadable_last_write_still_reads_the_next_boot(self, machine):
+        dead = machine.boot_id
+        machine.reboot(clean=False)
+        for line in core_bank_record(1, corrected=False):
+            machine.kernel(line, mono_s=1)
+        read = harvest_after(dead, None, next_boot=True)
+        assert (_cpus(read), read.problem) == ([1], "the session's last write time is unreadable")
+
+    def test_a_rotated_dead_boot_names_no_next_boot_to_read(self, machine):
+        dead = machine.boot_id
+        machine.reboot(clean=False)
+        for line in core_bank_record(1, corrected=False):
+            machine.kernel(line, mono_s=1)
+        machine.forget_boot(dead)
+        read = harvest_after(dead, 0, next_boot=True)
+        assert _cpus(read) == []
+        assert f"No journal boot entry found for the specified boot ({dead}+0)." in read.problem
+        assert f"boot {dead} is not in the journal's boot list, so the boot after it cannot be named" in read.problem
+
+    def test_the_newest_boot_has_no_next_boot_to_read(self, machine):
+        assert harvest_after(machine.boot_id, 0, next_boot=True) == KernelRead((), None)
+
+
+def _entry(message, *, mono_us=5, identifier="kernel") -> str:
+    return json.dumps(
+        {
+            "__MONOTONIC_TIMESTAMP": str(mono_us),
+            "__REALTIME_TIMESTAMP": "1791148722100000",
+            "SYSLOG_IDENTIFIER": identifier,
+            "MESSAGE": message,
+        }
+    )
+
+
 @pytest.mark.usefixtures("real_journal")
-class TestHarvestKernelMCE:
-    def test_parses_records_across_the_journal(self):
-        with patch("subprocess.run", return_value=_completed(JOURNAL_FIXTURE)):
-            events, ok = harvest_kernel_mce("2026-07-16T15:47:30+00:00")
-        assert ok is True
-        assert [_shape(event) for event in events] == [("core", 9, 0, True), ("unblamed", 12, 1, False)]
-        assert events[0].raw_ts == pytest.approx(1789586704.007690)
+class TestJournalReadFailures:
+    DEAD = "0123456789abcdef0123456789abcdef"
+    NEXT = "fedcba9876543210fedcba9876543210"
+    LISTING = json.dumps([{"index": 0, "boot_id": NEXT}, {"index": -1, "boot_id": DEAD}])
 
-    def test_since_is_passed_in_utc(self):
-        with patch("subprocess.run", return_value=_completed("")) as mock_run:
-            _, ok = harvest_kernel_mce("2026-07-16T15:47:30+00:00")
-        assert ok is True
-        args = mock_run.call_args[0][0]
-        assert args[args.index("--since") + 1] == "2026-07-16 15:47:30 UTC"
+    @pytest.mark.parametrize(
+        "failure",
+        [FileNotFoundError(errno.ENOENT, "No such file or directory"), subprocess.TimeoutExpired("journalctl", 15)],
+    )
+    def test_a_journal_that_cannot_run_is_a_problem(self, failure):
+        with patch("subprocess.run", side_effect=failure):
+            end = boot_end(self.DEAD)
+            read = harvest_after(self.DEAD, 0, next_boot=True)
+        assert end.problem.startswith(f"journalctl -b {self.DEAD} -n 1 -o json failed: ")
+        assert read.events == ()
+        assert "journalctl --list-boots -o json failed: " in read.problem
 
-    def test_naive_timestamp_treated_as_utc(self):
-        assert _iso_to_journal_since("2026-07-16T15:47:30") == "2026-07-16 15:47:30 UTC"
+    @pytest.mark.parametrize(
+        "stdout",
+        [
+            "{not json\n",
+            '["an array"]\n',
+            '{"__MONOTONIC_TIMESTAMP": "1", "__REALTIME_TIMESTAMP": "2"}\n',
+            _entry("x", mono_us="soon") + "\n",
+            _entry({"not": "a message"}) + "\n",
+            _entry([300]) + "\n",
+        ],
+        ids=["not-json", "not-an-object", "no-message", "bad-stamp", "message-object", "message-out-of-range"],
+    )
+    def test_an_unreadable_entry_is_a_problem(self, stdout):
+        with patch("subprocess.run", return_value=_completed(stdout)):
+            end = boot_end(self.DEAD)
+        assert end.clean is False
+        assert "printed an unreadable entry" in end.problem
 
-    def test_offset_timestamp_converted(self):
-        assert _iso_to_journal_since("2026-07-16T17:47:30+02:00") == "2026-07-16 15:47:30 UTC"
+    def test_a_message_held_as_bytes_is_decoded(self):
+        stopped = _entry(list(b"Journal stopped"), identifier="systemd-journald")
+        with patch("subprocess.run", return_value=_completed(stopped + "\n")):
+            assert boot_end(self.DEAD) == BootEnd(clean=True, problem=None)
 
-    def test_bad_timestamp_fails_closed(self):
-        events, ok = harvest_kernel_mce("not-a-timestamp")
-        assert events == []
-        assert ok is False
+    @pytest.mark.parametrize("listing", ["{oops", '{"index": 0}', '[{"index": 0}]'])
+    def test_an_unreadable_boot_list_is_a_problem(self, listing):
+        with patch("subprocess.run", side_effect=[_completed(""), _completed(listing)]):
+            read = harvest_after(self.DEAD, 0, next_boot=True)
+        assert "journalctl --list-boots printed an unreadable list" in read.problem
 
-    def test_journalctl_missing_fails_closed(self):
-        with patch("subprocess.run", side_effect=FileNotFoundError):
-            events, ok = harvest_kernel_mce("2026-07-16T15:47:30+00:00")
-        assert events == []
-        assert ok is False
+    def test_a_next_boot_the_journal_cannot_read_is_a_problem(self):
+        refused = MagicMock(returncode=1, stdout="", stderr="Permission denied")
+        with patch("subprocess.run", side_effect=[_completed(""), _completed(self.LISTING), refused]):
+            read = harvest_after(self.DEAD, 0, next_boot=True)
+        assert read.problem.startswith(f"journalctl -b {self.NEXT} -n +1 -o json")
+        assert read.problem.endswith("exited 1: Permission denied")
 
-    def test_journalctl_error_fails_closed(self):
-        with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="boom")):
-            events, ok = harvest_kernel_mce("2026-07-16T15:47:30+00:00")
-        assert events == []
-        assert ok is False
-
-    def test_empty_journal_is_ok_and_empty(self):
-        with patch("subprocess.run", return_value=_completed("")):
-            events, ok = harvest_kernel_mce("2026-07-16T15:47:30+00:00")
-        assert events == []
-        assert ok is True
-
-    def test_non_kernel_lines_ignored(self):
-        out = f"1789586900.1 host systemd[1]: {SOFT_LOCKUP[0]}\n"
-        with patch("subprocess.run", return_value=_completed(out)):
-            events, ok = harvest_kernel_mce("2026-07-16T15:47:30+00:00")
-        assert events == []
-        assert ok is True
-
-    def test_a_malformed_journal_timestamp_skips_its_line(self):
-        out = f"1.2.3 host kernel: {SOFT_LOCKUP[0]}\n1700000000.5 host kernel: {SOFT_LOCKUP[0]}\n"
-        with patch("subprocess.run", return_value=_completed(out)):
-            events, ok = harvest_kernel_mce("2026-07-24T00:00:00")
-        assert ok is True
-        assert [event.raw_ts for event in events] == [1700000000.5]
-
-
-@pytest.mark.usefixtures("real_journal")
-class TestLastBootEndedCleanly:
-    def test_clean_shutdown_detected(self):
-        with patch("subprocess.run", return_value=_completed("some line\nJournal stopped\n")):
-            assert last_boot_ended_cleanly() is True
-
-    def test_pid1_shutdown_marker_detected(self):
-        with patch("subprocess.run", return_value=_completed("unmounting\nShutting down.\n")):
-            assert last_boot_ended_cleanly() is True
-
-    def test_abrupt_end_is_dirty(self):
-        with patch("subprocess.run", return_value=_completed("lmstudio.service: Failed with result 'exit-code'.\n")):
-            assert last_boot_ended_cleanly() is False
-
-    def test_unreadable_journal_fails_closed(self):
-        with patch("subprocess.run", side_effect=FileNotFoundError):
-            assert last_boot_ended_cleanly() is False
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("journalctl", 5)):
-            assert last_boot_ended_cleanly() is False
-        with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="")):
-            assert last_boot_ended_cleanly() is False
+    def test_a_next_boot_with_no_userspace_entry_is_read_whole(self):
+        records = "".join(_entry(line, mono_us=900_000_000) + "\n" for line in core_bank_record(4, corrected=False))
+        with patch(
+            "subprocess.run",
+            side_effect=[_completed(""), _completed(self.LISTING), _completed(""), _completed(records)],
+        ):
+            read = harvest_after(self.DEAD, 0, next_boot=True)
+        assert (_cpus(read), read.problem) == ([4], None)
 
 
 THIS_BOOT_KERNEL_LINE = "1791148722.100000 host kernel: Linux version 7.2.9\n"

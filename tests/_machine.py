@@ -6,12 +6,10 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from subprocess import CompletedProcess
 from typing import TYPE_CHECKING
 
 from corecycler.engine import detector
-from corecycler.tuner import engine as engine_mod
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -19,16 +17,19 @@ if TYPE_CHECKING:
 
     import pytest
 
-FAR_FUTURE_S = 10 * 365 * 24 * 3600
 REBOOT_S = 60
 UPTIME_S = 3600
+USERSPACE_S = 2
 HOST = "fake-host"
 JOURNAL_DIR = "/var/log/journal"
 BOOT_LINE = "Linux version 7.2.9"
+JOURNAL_STARTED = "Journal started"
 JOURNAL_STOPPED = "Journal stopped"
+JOURNALD = "systemd-journald"
+DAEMON_FACILITY = 3
 _BOOT_ID = re.compile(r"[0-9a-f]{32}")
 _BOOT_OFFSET = re.compile(r"[+-]?\d+")
-_SINCE = "%Y-%m-%d %H:%M:%S UTC"
+_MATCHED_FIELDS = frozenset({"_TRANSPORT", "SYSLOG_FACILITY"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,19 +38,20 @@ class Entry:
     realtime_us: int
     message: str
     identifier: str
+    facility: int
 
     @property
     def transport(self) -> str:
         return "kernel" if self.identifier == "kernel" else "driver"
+
+    def field(self, name: str) -> str:
+        return self.transport if name == "_TRANSPORT" else str(self.facility)
 
 
 @dataclass(slots=True)
 class Boot:
     id: str
     entries: list[Entry] = field(default_factory=list)
-
-    def kernel_entries(self) -> list[Entry]:
-        return [entry for entry in self.entries if entry.transport == "kernel"]
 
 
 class _Refused(Exception):
@@ -75,6 +77,10 @@ def core_bank_record(cpu: int, *, corrected: bool = True) -> list[str]:
     ]
 
 
+def this_boot() -> str:
+    return uuid.UUID(detector.BOOT_ID_PATH.read_text().strip()).hex
+
+
 def _short_unix(entries: Iterable[Entry]) -> str:
     return "".join(
         f"{entry.realtime_us // 1_000_000}.{entry.realtime_us % 1_000_000:06d} {HOST} kernel: {entry.message}\n"
@@ -86,14 +92,33 @@ def _json_lines(rows: Iterable[dict]) -> str:
     return "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows)
 
 
+def _matching(entries: list[Entry], matches: list[str]) -> list[Entry]:
+    wanted: dict[str, set[str]] = {}
+    for match in matches:
+        name, _, value = match.partition("=")
+        if name not in _MATCHED_FIELDS:
+            raise AssertionError(f"the fake journal matches no field in {match!r}")
+        wanted.setdefault(name, set()).add(value)
+    return [entry for entry in entries if all(entry.field(name) in values for name, values in wanted.items())]
+
+
+def _message_row(boot: Boot, entry: Entry) -> dict:
+    return {
+        "__REALTIME_TIMESTAMP": str(entry.realtime_us),
+        "__MONOTONIC_TIMESTAMP": str(entry.mono_us),
+        "_BOOT_ID": boot.id,
+        "MESSAGE": entry.message,
+    }
+
+
 class FakeMachine:
     def __init__(self, home: Path) -> None:
         self.kmsg_path = home / "kmsg"
         self.boot_id_path = home / "boot_id"
-        self.stat_path = home / "stat"
         self.kmsg_path.write_bytes(b"")
         self.boots: list[Boot] = []
         self.journal_readable = True
+        self.served: list[list[str]] = []
         self._start(time.time_ns() // 1000 - UPTIME_S * 1_000_000)
         self.mono_ns = UPTIME_S * 1_000_000_000
 
@@ -105,33 +130,31 @@ class FakeMachine:
     def boot_id(self) -> str:
         return self.boot.id
 
-    @property
-    def btime(self) -> int:
-        return self._btime_us // 1_000_000
-
     def reboot(self, *, clean: bool, rtc_offset_s: int = 0) -> None:
         if clean:
-            self._log(JOURNAL_STOPPED, self.mono_ns, None, "systemd-journald")
+            self._log(JOURNAL_STOPPED, self.now_ns(), None, JOURNALD, DAEMON_FACILITY)
         down_us = max(self._realtime_us(self.mono_ns), time.time_ns() // 1000)
         self._start(down_us + (REBOOT_S + rtc_offset_s) * 1_000_000)
 
-    def same_boot(self) -> None:
-        self.mono_ns = max(self.mono_ns, UPTIME_S * 1_000_000_000)
-        self._btime_us = time.time_ns() // 1000 - (self.mono_ns + self.gap_ns) // 1000
-        self._write_files()
-
     def step_clock(self, seconds: float) -> None:
         self._btime_us += round(seconds * 1_000_000)
-        self._write_files()
 
-    def kernel(self, message: str, *, mono_s: float, realtime: float | None = None) -> None:
+    def now_ns(self) -> int:
+        wall_ns = (time.time_ns() // 1000 - self._btime_us) * 1000 - self.gap_ns
+        return max(self.mono_ns, wall_ns, self.boot.entries[-1].mono_us * 1000)
+
+    def kernel(self, message: str, *, mono_s: float, realtime: float | None = None, facility: int = 0) -> None:
         mono_ns = round(mono_s * 1_000_000_000)
         self.mono_ns = max(self.mono_ns, mono_ns)
-        self._log(message, mono_ns, realtime, "kernel")
+        self._log(message, mono_ns, realtime, "kernel", facility)
+
+    def kernel_now(self, *records: list[str], facility: int = 0) -> None:
+        start_s = self.now_ns() / 1_000_000_000
+        for offset_s, line in enumerate((line for record in records for line in record), start=1):
+            self.kernel(line, mono_s=start_s + offset_s, facility=facility)
 
     def crash_after(self, *records: list[str]) -> None:
-        for line in (line for record in records for line in record):
-            self.kernel(line, mono_s=self.mono_ns / 1_000_000_000 + 1)
+        self.kernel_now(*records)
         self.reboot(clean=False)
 
     def sleep(self, seconds: float) -> None:
@@ -157,6 +180,7 @@ class FakeMachine:
 
     def journalctl(self, args: list[str], timeout: float) -> CompletedProcess[str]:
         argv = ["journalctl", "-q", "--no-pager", *args]
+        self.served.append(list(args))
         try:
             served = self._serve(args)
         except _Refused as refusal:
@@ -167,39 +191,23 @@ class FakeMachine:
         if not self.journal_readable:
             raise _Refused(f"Failed to open {JOURNAL_DIR}: Permission denied")
         match args:
-            case ["-o", "short-unix", "--since", since, "_TRANSPORT=kernel"]:
-                floor_us = int(datetime.strptime(since, _SINCE).replace(tzinfo=UTC).timestamp()) * 1_000_000
-                return _short_unix(
-                    entry for boot in self.boots for entry in boot.kernel_entries() if entry.realtime_us >= floor_us
-                )
-            case ["-b", "-1", "-n", "25", "-o", "cat"]:
-                if len(self.boots) < 2:
-                    raise _Refused("No journal boot entry found for the specified boot (-1).")
-                return "".join(f"{entry.message}\n" for entry in self.boots[-2].entries[-25:])
             case ["-b", boot_id, "-n", "1", "-o", "json"]:
                 boot = self._held(boot_id)
                 return _json_lines(
                     {
-                        "__REALTIME_TIMESTAMP": str(entry.realtime_us),
-                        "__MONOTONIC_TIMESTAMP": str(entry.mono_us),
-                        "_BOOT_ID": boot.id,
+                        **_message_row(boot, entry),
                         "_TRANSPORT": entry.transport,
                         "SYSLOG_IDENTIFIER": entry.identifier,
-                        "MESSAGE": entry.message,
+                        "SYSLOG_FACILITY": str(entry.facility),
                     }
                     for entry in boot.entries[-1:]
                 )
-            case ["-b", boot_id, "-o", "json", "--output-fields=MESSAGE", "_TRANSPORT=kernel"]:
+            case ["-b", boot_id, "-o", "json", "--output-fields=MESSAGE", *matches]:
                 boot = self._held(boot_id)
-                return _json_lines(
-                    {
-                        "__REALTIME_TIMESTAMP": str(entry.realtime_us),
-                        "__MONOTONIC_TIMESTAMP": str(entry.mono_us),
-                        "_BOOT_ID": boot.id,
-                        "MESSAGE": entry.message,
-                    }
-                    for entry in boot.kernel_entries()
-                )
+                return _json_lines(_message_row(boot, entry) for entry in _matching(boot.entries, matches))
+            case ["-b", boot_id, "-n", "+1", "-o", "json", "--output-fields=MESSAGE", *matches]:
+                boot = self._held(boot_id)
+                return _json_lines(_message_row(boot, entry) for entry in _matching(boot.entries, matches)[:1])
             case ["--list-boots", "-o", "json"]:
                 last = len(self.boots) - 1
                 listed = [
@@ -213,7 +221,7 @@ class FakeMachine:
                 ]
                 return json.dumps(listed, separators=(",", ":")) + "\n"
             case ["-o", "short-unix", "-b", "0", "-n", "1", "_TRANSPORT=kernel"]:
-                return _short_unix(self.boot.kernel_entries()[-1:])
+                return _short_unix(_matching(self.boot.entries, ["_TRANSPORT=kernel"])[-1:])
         raise AssertionError(f"the fake journal serves no form {args}")
 
     def _held(self, boot_id: str) -> Boot:
@@ -231,27 +239,25 @@ class FakeMachine:
         self.mono_ns = 0
         self.gap_ns = 0
         self._btime_us = btime_us
-        self._log(BOOT_LINE, 0, None, "kernel")
-        self._write_files()
+        self._log(BOOT_LINE, 0, None, "kernel", 0)
+        self._log(JOURNAL_STARTED, USERSPACE_S * 1_000_000_000, None, JOURNALD, DAEMON_FACILITY)
+        self.boot_id_path.write_text(f"{uuid.UUID(self.boot_id)}\n")
 
     def _realtime_us(self, mono_ns: int) -> int:
         return self._btime_us + (mono_ns + self.gap_ns) // 1000
 
-    def _log(self, message: str, mono_ns: int, realtime: float | None, identifier: str) -> None:
+    def _log(self, message: str, mono_ns: int, realtime: float | None, identifier: str, facility: int) -> None:
         realtime_us = self._realtime_us(mono_ns) if realtime is None else round(realtime * 1_000_000)
-        entry = Entry(mono_us=mono_ns // 1000, realtime_us=realtime_us, message=message, identifier=identifier)
+        entry = Entry(
+            mono_us=mono_ns // 1000, realtime_us=realtime_us, message=message, identifier=identifier, facility=facility
+        )
         bisect.insort(self.boot.entries, entry, key=lambda held: held.mono_us)
-
-    def _write_files(self) -> None:
-        self.boot_id_path.write_text(f"{uuid.UUID(self.boot_id)}\n")
-        self.stat_path.write_text(f"cpu  1 2 3 4 5 6 7 0 0 0\nbtime {self.btime}\nprocesses 5\n")
 
 
 def installed(home: Path, monkeypatch: pytest.MonkeyPatch) -> FakeMachine:
     machine = FakeMachine(home)
-    machine.reboot(clean=True, rtc_offset_s=FAR_FUTURE_S)
     monkeypatch.setattr(detector, "KMSG", machine.kmsg_path)
+    monkeypatch.setattr(detector, "BOOT_ID_PATH", machine.boot_id_path)
     monkeypatch.setattr(detector, "_journalctl", machine.journalctl)
     monkeypatch.setattr(detector, "_clock_ns", machine.clock_ns)
-    monkeypatch.setattr(engine_mod, "PROC_STAT", machine.stat_path)
     return machine
