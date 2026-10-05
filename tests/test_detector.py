@@ -19,7 +19,8 @@ from corecycler.engine.detector import (
     BootEnd,
     CoreMachineCheck,
     ErrorDetector,
-    KernelRead,
+    HarvestFrom,
+    JournalHarvest,
     KernelTrouble,
     UnblamedMachineCheck,
     _clock_ns,
@@ -463,6 +464,26 @@ class TestKmsgReader:
         detector.close()
         assert "reset" in detector.read_new().problem
 
+    def test_a_whole_read_stamps_the_moment_it_started(self, machine, detector):
+        detector.read_new()
+        assert detector.read_started_ns == machine.mono_ns
+        machine.advance(5)
+        detector.read_new()
+        assert detector.read_started_ns == machine.mono_ns
+
+    def test_a_read_that_reports_a_problem_keeps_the_last_whole_reads_stamp(self, machine, kmsg, detector):
+        detector.read_new()
+        whole = machine.mono_ns
+        machine.advance(5)
+        _append(kmsg, "not a kmsg record\n")
+        assert detector.read_new().problem is not None
+        assert detector.read_started_ns == whole
+
+    def test_a_kernel_log_never_opened_was_never_read(self, kmsg):
+        reader = ErrorDetector(kmsg)
+        assert reader.read_new().problem is not None
+        assert reader.read_started_ns is None
+
 
 def _completed(stdout: str) -> MagicMock:
     return MagicMock(returncode=0, stdout=stdout, stderr="")
@@ -473,8 +494,11 @@ def real_journal(monkeypatch):
     monkeypatch.setattr(detector_mod, "_journalctl", _journalctl)
 
 
-def _cpus(read: KernelRead) -> list[int]:
-    return [event.cpu for event in read.events]
+WHOLE_BOOT = HarvestFrom(mono_ns=None, realtime_us=None)
+
+
+def _cpus(events) -> list[int]:
+    return [event.cpu for event in events]
 
 
 class TestReadBootId:
@@ -526,13 +550,35 @@ class TestBootEnd:
 
 
 class TestHarvestAfter:
-    def test_the_dead_boot_is_read_after_the_last_write_only(self, machine):
+    def test_the_dead_boot_is_read_after_its_monotonic_bound_whatever_the_wall_clock_says(self, machine):
+        dead = machine.boot_id
+        machine.kernel_now(core_bank_record(1))
+        bound = machine.mono_ns
+        for line in core_bank_record(2):
+            machine.kernel(line, mono_s=bound / 1e9 + 1, realtime=1.0)
+        machine.reboot(clean=False)
+        read = harvest_after(dead, HarvestFrom(mono_ns=bound, realtime_us=None), next_boot=False)
+        assert (_cpus(read.dead_boot), read.problem) == ([2], None)
+
+    def test_without_a_monotonic_bound_the_dead_boot_is_read_after_its_wall_clock_bound(self, machine):
         dead = machine.boot_id
         machine.kernel_now(core_bank_record(1))
         last_write_us = machine.boot.entries[-1].realtime_us
         machine.kernel_now(core_bank_record(2))
         machine.reboot(clean=False)
-        assert (_cpus(read := harvest_after(dead, last_write_us, next_boot=False)), read.problem) == ([2], None)
+        read = harvest_after(dead, HarvestFrom(mono_ns=None, realtime_us=last_write_us), next_boot=False)
+        assert (_cpus(read.dead_boot), read.problem) == ([2], None)
+
+    def test_each_half_keeps_its_records_apart_stamped_by_their_boots_clock(self, machine):
+        dead = machine.boot_id
+        for line in core_bank_record(1):
+            machine.kernel(line, mono_s=4000)
+        machine.reboot(clean=False)
+        for line in core_bank_record(2, corrected=False):
+            machine.kernel(line, mono_s=1)
+        read = harvest_after(dead, WHOLE_BOOT, next_boot=True)
+        assert [(event.cpu, event.raw_ts) for event in read.dead_boot] == [(1, 4000.0)]
+        assert [(event.cpu, event.raw_ts) for event in read.next_boot] == [(2, 1.0)]
 
     def test_the_next_boot_is_read_only_before_its_first_userspace_entry(self, machine):
         dead = machine.boot_id
@@ -544,33 +590,36 @@ class TestHarvestAfter:
         machine.reboot(clean=False)
         for line in core_bank_record(3, corrected=False):
             machine.kernel(line, mono_s=1)
-        assert (_cpus(read := harvest_after(dead, 0, next_boot=True)), read.problem) == ([1], None)
+        read = harvest_after(dead, WHOLE_BOOT, next_boot=True)
+        assert (read.dead_boot, _cpus(read.next_boot), read.problem) == ((), [1], None)
 
     def test_a_clean_end_reads_the_dead_boot_alone(self, machine):
         dead = machine.boot_id
         machine.reboot(clean=True)
         for line in core_bank_record(1, corrected=False):
             machine.kernel(line, mono_s=1)
-        assert harvest_after(dead, 0, next_boot=False) == KernelRead((), None)
+        assert harvest_after(dead, WHOLE_BOOT, next_boot=False) == JournalHarvest((), (), None)
 
     def test_a_record_a_user_process_wrote_to_the_kernel_log_is_not_read(self, machine):
         dead = machine.boot_id
         machine.kernel_now(core_bank_record(1), facility=1)
         machine.kernel_now(core_bank_record(2))
         machine.reboot(clean=False)
-        assert _cpus(harvest_after(dead, 0, next_boot=False)) == [2]
+        assert _cpus(harvest_after(dead, WHOLE_BOOT, next_boot=False).dead_boot) == [2]
 
     @pytest.mark.parametrize(
         "stored", ["-1", "0", "all", "9C2F9903AD5C4BDA916BA213C34DBA2A", "9c2f9903-ad5c-4bda-916b-a213c34dba2a"]
     )
     def test_a_stored_boot_id_that_is_not_a_boot_id_is_refused_before_journalctl(self, machine, stored):
         assert boot_end(stored) == BootEnd(clean=False, problem=f"the session's boot id {stored!r} is not a boot id")
-        assert harvest_after(stored, 0, next_boot=True) == KernelRead(
-            (), f"the session's boot id {stored!r} is not a boot id"
+        assert harvest_after(stored, WHOLE_BOOT, next_boot=True) == JournalHarvest(
+            (), (), f"the session's boot id {stored!r} is not a boot id"
         )
 
     def test_an_unrecorded_boot_reads_nothing(self):
-        assert harvest_after("", 0, next_boot=True) == KernelRead((), "the session's boot is not recorded")
+        assert harvest_after("", WHOLE_BOOT, next_boot=True) == JournalHarvest(
+            (), (), "the session's boot is not recorded"
+        )
 
     def test_an_unreadable_last_write_still_reads_the_next_boot(self, machine):
         dead = machine.boot_id
@@ -578,7 +627,11 @@ class TestHarvestAfter:
         for line in core_bank_record(1, corrected=False):
             machine.kernel(line, mono_s=1)
         read = harvest_after(dead, None, next_boot=True)
-        assert (_cpus(read), read.problem) == ([1], "the session's last write time is unreadable")
+        assert (read.dead_boot, _cpus(read.next_boot), read.problem) == (
+            (),
+            [1],
+            "the session's last write time is unreadable",
+        )
 
     def test_a_rotated_dead_boot_names_no_next_boot_to_read(self, machine):
         dead = machine.boot_id
@@ -586,13 +639,13 @@ class TestHarvestAfter:
         for line in core_bank_record(1, corrected=False):
             machine.kernel(line, mono_s=1)
         machine.forget_boot(dead)
-        read = harvest_after(dead, 0, next_boot=True)
-        assert _cpus(read) == []
+        read = harvest_after(dead, WHOLE_BOOT, next_boot=True)
+        assert (read.dead_boot, read.next_boot) == ((), ())
         assert f"No journal boot entry found for the specified boot ({dead}+0)." in read.problem
         assert f"boot {dead} is not in the journal's boot list, so the boot after it cannot be named" in read.problem
 
     def test_the_newest_boot_has_no_next_boot_to_read(self, machine):
-        assert harvest_after(machine.boot_id, 0, next_boot=True) == KernelRead((), None)
+        assert harvest_after(machine.boot_id, WHOLE_BOOT, next_boot=True) == JournalHarvest((), (), None)
 
 
 def _entry(message, *, mono_us=5, identifier="kernel") -> str:
@@ -619,9 +672,9 @@ class TestJournalReadFailures:
     def test_a_journal_that_cannot_run_is_a_problem(self, failure):
         with patch("subprocess.run", side_effect=failure):
             end = boot_end(self.DEAD)
-            read = harvest_after(self.DEAD, 0, next_boot=True)
+            read = harvest_after(self.DEAD, WHOLE_BOOT, next_boot=True)
         assert end.problem.startswith(f"journalctl -b {self.DEAD} -n 1 -o json failed: ")
-        assert read.events == ()
+        assert (read.dead_boot, read.next_boot) == ((), ())
         assert "journalctl --list-boots -o json failed: " in read.problem
 
     @pytest.mark.parametrize(
@@ -650,13 +703,13 @@ class TestJournalReadFailures:
     @pytest.mark.parametrize("listing", ["{oops", '{"index": 0}', '[{"index": 0}]'])
     def test_an_unreadable_boot_list_is_a_problem(self, listing):
         with patch("subprocess.run", side_effect=[_completed(""), _completed(listing)]):
-            read = harvest_after(self.DEAD, 0, next_boot=True)
+            read = harvest_after(self.DEAD, WHOLE_BOOT, next_boot=True)
         assert "journalctl --list-boots printed an unreadable list" in read.problem
 
     def test_a_next_boot_the_journal_cannot_read_is_a_problem(self):
         refused = MagicMock(returncode=1, stdout="", stderr="Permission denied")
         with patch("subprocess.run", side_effect=[_completed(""), _completed(self.LISTING), refused]):
-            read = harvest_after(self.DEAD, 0, next_boot=True)
+            read = harvest_after(self.DEAD, WHOLE_BOOT, next_boot=True)
         assert read.problem.startswith(f"journalctl -b {self.NEXT} -n +1 -o json")
         assert read.problem.endswith("exited 1: Permission denied")
 
@@ -666,8 +719,8 @@ class TestJournalReadFailures:
             "subprocess.run",
             side_effect=[_completed(""), _completed(self.LISTING), _completed(""), _completed(records)],
         ):
-            read = harvest_after(self.DEAD, 0, next_boot=True)
-        assert (_cpus(read), read.problem) == ([4], None)
+            read = harvest_after(self.DEAD, WHOLE_BOOT, next_boot=True)
+        assert (read.dead_boot, _cpus(read.next_boot), read.problem) == ((), [4], None)
 
 
 THIS_BOOT_KERNEL_LINE = "1791148722.100000 host kernel: Linux version 7.2.9\n"

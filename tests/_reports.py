@@ -28,6 +28,9 @@ def report(
     stretch: float = 0.0,
     events: tuple[KernelEvent, ...] = (),
     others: tuple[StressResult, ...] = (),
+    kernel_read_ns: int | None = None,
 ) -> WorkerReport:
     lane = StressResult(core_id=core_id, outcome=outcome, detail=detail, duration_seconds=duration)
-    return WorkerReport(lanes=(lane, *others), peak_stretch_pct=stretch, kernel_events=events)
+    return WorkerReport(
+        lanes=(lane, *others), peak_stretch_pct=stretch, kernel_events=events, kernel_read_ns=kernel_read_ns
+    )

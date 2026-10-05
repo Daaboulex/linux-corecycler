@@ -56,6 +56,12 @@ _PHASE_TO_GRID = PHASE_TO_GRID
 
 ACTIVE_STATUSES = ("running", "validating", "hunting")
 
+_DRIFT_CAUSES = {
+    "outside": "tuner last wrote {expected}, found {actual}; something outside the tuner changed it "
+    "(Curve Optimizer tab, another tool)",
+    "incomplete": "the tuner's last write to core {core} ({expected}) did not complete; found {actual}",
+}
+
 
 class TunerTab(QWidget):
     """Auto-Tuner tab for the main window."""
@@ -767,18 +773,16 @@ class TunerTab(QWidget):
 
     @Slot(str)
     def _on_co_drift(self, drift_json: str) -> None:
-        """Warn user that SMU CO values differ from session baselines."""
+        """Warn that SMU CO values differ from the tuner's last write, saying per core why."""
         drift = json.loads(drift_json)
         lines = [
-            f"Core {cid}: tuner last wrote {v['expected']}, found {v['actual']}"
+            f"Core {cid}: " + _DRIFT_CAUSES[v["cause"]].format(core=cid, expected=v["expected"], actual=v["actual"])
             for cid, v in sorted(drift.items(), key=lambda x: int(x[0]))
         ]
         QMessageBox.warning(
             self,
             "CO Drift Detected",
-            "CO offsets in the SMU differ from what the tuner last wrote — "
-            "something outside the tuner changed them (Curve Optimizer tab, "
-            "another tool).\n\n"
+            "CO offsets in the SMU differ from what the tuner last wrote.\n\n"
             "The session's own values will be re-applied before testing resumes.\n\n" + "\n".join(lines),
         )
 

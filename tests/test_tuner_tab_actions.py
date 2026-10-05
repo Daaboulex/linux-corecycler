@@ -530,9 +530,16 @@ class TestEngineSignals:
         assert tab._engine is None
 
     def test_co_drift_is_reported_per_core(self, tab, no_modal):
-        tab._on_co_drift(json.dumps({"0": {"expected": -30, "actual": -10}}))
+        tab._on_co_drift(json.dumps({"0": {"expected": -30, "actual": -10, "cause": "outside"}}))
         body = no_modal.warning.call_args.args[2]
         assert "Core 0: tuner last wrote -30, found -10" in body
+        assert "something outside the tuner changed it" in body
+
+    def test_an_incomplete_write_is_worded_as_the_tuners_own(self, tab, no_modal):
+        tab._on_co_drift(json.dumps({"0": {"expected": -12, "actual": -8, "cause": "incomplete"}}))
+        body = no_modal.warning.call_args.args[2]
+        assert "Core 0: the tuner's last write to core 0 (-12) did not complete; found -8" in body
+        assert "outside" not in body
 
     def test_the_active_core_stays_highlighted_on_a_state_change(self, tab):
         tab._engine = _engine()

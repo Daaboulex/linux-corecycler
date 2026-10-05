@@ -1288,8 +1288,14 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
 
     def stamp_session_boot(self, session_id: int, boot_id: str) -> None:
         self.__conn.execute(
-            "UPDATE tuner_sessions SET boot_id=?, updated_at=? WHERE id=?",
+            "UPDATE tuner_sessions SET boot_id=?, kernel_read_ns=NULL, updated_at=? WHERE id=?",
             (boot_id, self._now_iso(), session_id),
+        )
+
+    def set_kernel_read(self, session_id: int, kernel_read_ns: int) -> None:
+        self.__conn.execute(
+            "UPDATE tuner_sessions SET kernel_read_ns=?, updated_at=? WHERE id=?",
+            (kernel_read_ns, self._now_iso(), session_id),
         )
 
     def set_validation_dirty(self, session_id: int, dirty: bool) -> None:
@@ -1452,21 +1458,14 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         ).fetchall()
         return {r["core_id"]: r["value"] for r in rows}
 
-    def journal_values(self, session_id: int) -> dict[int, int]:
-        """Return ``{core_id: value}`` — the last CO value the tuner wrote per
-        core, survived or not. This is what the SMU is EXPECTED to hold; drift
-        detection compares live hardware against it (not against baselines,
-        which validation deliberately leaves behind)."""
-        self.check_journal(session_id)
-        rows = self.__conn.execute(
+    def journal_retract(self, session_id: int, core_id: int, value: int, direction: int) -> None:
+        self.__conn.execute(
             """\
-            SELECT j.core_id, j.value FROM tuner_co_journal j
-            WHERE j.session_id=? AND j.id = (
-                SELECT MAX(k.id) FROM tuner_co_journal k WHERE k.session_id=j.session_id AND k.core_id=j.core_id)
+            UPDATE tuner_co_journal SET retracted=1
+            WHERE session_id=? AND core_id=? AND survived=1 AND retracted=0 AND ? * value >= ? * ?
             """,
-            (session_id,),
-        ).fetchall()
-        return {r["core_id"]: r["value"] for r in rows}
+            (session_id, core_id, direction, direction, value),
+        )
 
     @staticmethod
     def _row_to_journal_row(row: sqlite3.Row) -> JournalRow:
@@ -1482,22 +1481,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             retracted=bool(row["retracted"]),
             written_at=row["written_at"],
         )
-
-    def latest_session_activity(self, session_id: int) -> str | None:
-        """Most recent write timestamp across all of a session's state: the
-        wall-clock bound after which the dead boot's kernel records are read."""
-        row = self.__conn.execute(
-            """\
-            SELECT MAX(ts) FROM (
-                SELECT updated_at AS ts FROM tuner_sessions WHERE id=?
-                UNION ALL SELECT updated_at FROM tuner_core_states WHERE session_id=?
-                UNION ALL SELECT written_at FROM tuner_co_journal WHERE session_id=?
-                UNION ALL SELECT tested_at FROM tuner_test_log WHERE session_id=?
-            )
-            """,
-            (session_id, session_id, session_id, session_id),
-        ).fetchone()
-        return row[0] if row else None
 
     def get_unattributed_crashes(self, session_id: int) -> int:
         row = self.__conn.execute(
@@ -1815,6 +1798,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             validation_dirty=bool(row["validation_dirty"]),
             validation_requeue=row["validation_requeue"] or "[]",
             boot_id=row["boot_id"],
+            kernel_read_ns=row["kernel_read_ns"],
         )
 
     def _execute_raw(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:

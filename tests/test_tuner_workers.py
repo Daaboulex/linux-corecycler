@@ -211,6 +211,13 @@ class TestTunerWorker:
         scheduler = MagicMock()
         assert _TunerWorker(0, 0, scheduler).scheduler is scheduler
 
+    def test_the_report_carries_when_the_final_kernel_read_started(self, collect):
+        worker = self._worker({0: [_result(0)]})
+        worker.scheduler.detector.read_started_ns = 7_000_000
+        seen = collect(worker)
+        worker.run()
+        assert seen[0].kernel_read_ns == 7_000_000
+
 
 class TestStretchSampler:
     def _worker(self, msr):
@@ -286,6 +293,13 @@ class TestRapidTransitionWorker:
         assert seen[0].result.core_id == 2
         assert seen[0].result.outcome is Outcome.CUT_SHORT
 
+    def test_the_report_carries_when_the_final_kernel_read_started(self, collect):
+        worker = self._worker({2: _result(2)})
+        worker.scheduler.detector.read_started_ns = 7_000_000
+        seen = collect(worker)
+        worker.run()
+        assert seen[0].kernel_read_ns == 7_000_000
+
     def test_a_harness_exception_is_not_started(self, collect):
         scheduler = MagicMock()
         scheduler.run_rapid_transitions.side_effect = RuntimeError("containment gone")
@@ -333,6 +347,13 @@ class TestParallelWorker:
         assert seen[0].result.core_id == 0
         assert seen[0].result.outcome is Outcome.CUT_SHORT
 
+    def test_the_report_carries_when_the_final_kernel_read_started(self, collect):
+        worker = self._worker({0: _result(0)})
+        worker.scheduler.detector.read_started_ns = 7_000_000
+        seen = collect(worker)
+        worker.run()
+        assert seen[0].kernel_read_ns == 7_000_000
+
     def test_a_harness_exception_is_not_started(self, collect):
         runner = MagicMock()
         runner.run.side_effect = RuntimeError("lane setup failed")
@@ -350,6 +371,14 @@ class TestSoakWorker:
         worker.run()
         assert seen[0].result.outcome is Outcome.PASS
         assert seen[0].kernel_events == ()
+
+    def test_the_report_carries_when_the_final_kernel_read_started(self, collect):
+        worker = _SoakWorker(0, 0)
+        worker.detector = _quiet_detector()
+        worker.detector.read_started_ns = 7_000_000
+        seen = collect(worker)
+        worker.run()
+        assert seen[0].kernel_read_ns == 7_000_000
 
     def test_a_kernel_event_naming_a_cpu_ends_the_soak(self, collect):
         worker = _SoakWorker(1, 60)

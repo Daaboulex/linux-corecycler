@@ -349,6 +349,7 @@ class TestValidationStageFourRows:
         scheduler = MagicMock()
         scheduler.run_rapid_transitions.return_value = {lane.core_id: lane for lane in lanes}
         scheduler.observed_mce = list(events)
+        scheduler.detector.read_started_ns = None
         worker = eng._RapidTransitionWorker(0, 0, scheduler, cores=[0, 1, 2, 3], duration=1.0)
         worker.finished.connect(engine._on_test_finished)
         try:
@@ -762,6 +763,7 @@ class TestVerdictRouter:
             for core in (0, 1)
         }
         scheduler.observed_mce = []
+        scheduler.detector.read_started_ns = None
         worker = eng._RapidTransitionWorker(0, 0, scheduler, cores=[0, 1], duration=1.0)
         worker.finished.connect(engine._on_test_finished)
         try:

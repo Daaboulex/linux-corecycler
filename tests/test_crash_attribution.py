@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,7 @@ from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.engine import TunerEngine, WorkerReport
 from corecycler.tuner.state import CoreState, TunerPhase
 from tests._machine import core_bank_record, journaled, this_boot
+from tests._reports import mce, report
 
 # Real kernel MCE line shape (kernel: prefix stripped).
 CPU5_CORRECTED = (
@@ -407,6 +409,8 @@ class TestDriftAgainstJournal:
     def test_third_party_change_is_reported_against_last_write(self, db, topo_dual_ccd_x3d, mock_backend):
         eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
         _seed_hardened_validating(eng, db, BEST, BASELINES)
+        for row in tp.journal_rows(db, eng._session_id, this_boot()):
+            db.journal_confirm(row.id)
         for cs in eng._core_states.values():
             cs.in_test = False
             tp.save_core_state(db, eng._session_id, cs)
@@ -416,12 +420,83 @@ class TestDriftAgainstJournal:
 
         eng._start_worker = lambda *a, **k: None  # no real worker threads
         drift_reports: list[str] = []
+        said: list[str] = []
         eng.co_drift_detected.connect(drift_reports.append)
+        eng.log_message.connect(said.append)
         eng.resume(eng._session_id)
 
         assert len(drift_reports) == 1
         drift = json.loads(drift_reports[0])
-        assert drift == {"3": {"expected": BEST[3], "actual": -10}}
+        assert drift == {"3": {"expected": BEST[3], "actual": -10, "cause": "outside"}}
+        assert any("something outside the tuner changed cores [3]" in line for line in said)
+
+    def test_an_unconfirmed_last_write_is_reported_as_incomplete(self, db, topo_dual_ccd_x3d, mock_backend):
+        eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend, cores_to_test=[0])
+        tp.save_core_state(db, eng._session_id, CoreState(core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-12))
+        assert eng._apply_co(0, -8)
+        eng._smu.set_co_offset = lambda _core_id, _value: False
+        assert eng._apply_co(0, -12) is False
+
+        eng._start_worker = lambda *a, **k: None
+        drift_reports: list[str] = []
+        said: list[str] = []
+        eng.co_drift_detected.connect(drift_reports.append)
+        eng.log_message.connect(said.append)
+        eng.resume(eng._session_id)
+
+        assert [json.loads(sent) for sent in drift_reports] == [
+            {"0": {"expected": -12, "actual": -8, "cause": "incomplete"}}
+        ]
+        drift_lines = [line for line in said if line.startswith("CO drift detected")]
+        assert len(drift_lines) == 1
+        assert "the tuner's last write did not complete on cores [0]" in drift_lines[0]
+        assert "outside" not in drift_lines[0]
+
+    def test_after_a_reboot_an_unfinished_write_never_explains_the_smu(
+        self, db, topo_dual_ccd_x3d, mock_backend, machine
+    ):
+        eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend, cores_to_test=[0])
+        sid = eng._session_id
+        tp.save_core_state(db, sid, CoreState(core_id=0, phase=TunerPhase.FINE_SEARCH, current_offset=-12))
+        assert eng._apply_co(0, -8)
+        eng._smu.set_co_offset = lambda _core_id, _value: False
+        assert eng._apply_co(0, -12) is False
+        machine.reboot(clean=True)
+        fresh = TunerEngine(
+            db=db, topology=topo_dual_ccd_x3d, smu=FakeSMU(), backend=mock_backend, config=TunerConfig()
+        )
+        fresh._smu.written[0] = -5
+        fresh._run_next = lambda: None
+        drift_reports: list[str] = []
+        fresh.co_drift_detected.connect(drift_reports.append)
+
+        fresh.resume(sid)
+
+        assert [json.loads(sent) for sent in drift_reports] == [
+            {"0": {"expected": -12, "actual": -5, "cause": "outside"}}
+        ]
+
+
+class TestHarvestThreshold:
+    def test_machine_checks_read_live_are_not_harvested_again(self, db, topo_dual_ccd_x3d, mock_backend, machine):
+        eng = _make_engine(db, topo_dual_ccd_x3d, mock_backend)
+        sid = _seed_proven_validating(eng, db)
+        eng._validation_stage = 2
+        eng._run_next = lambda: None
+        cpu = topo_dual_ccd_x3d.cores[5].logical_cpus[0]
+        for line in core_bank_record(cpu):
+            machine.kernel(line, mono_s=machine.mono_ns / 1e9 + 1, realtime=time.time())
+        machine.advance(1)
+
+        eng._on_test_finished(report(0, events=(mce(cpu),), kernel_read_ns=machine.mono_ns))
+        assert eng._core_states[5].current_offset == BEST[5] + 1
+        eng.pause()
+        machine.reboot(clean=True)
+
+        eng, _said, _hunts = _resumed(db, topo_dual_ccd_x3d, mock_backend, sid)
+
+        assert eng._core_states[5].current_offset == BEST[5] + 1
+        assert [row["core_id"] for row in tp.get_test_log(db, sid) if row["error_type"] == "mce"] == [5]
 
 
 class TestNarrativePersistence:

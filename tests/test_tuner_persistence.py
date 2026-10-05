@@ -424,14 +424,15 @@ class TestSchemaV13:
         finally:
             db.close()
 
-    def test_journal_values_returns_last_write_survived_or_not(self, tmp_path):
+    def test_the_last_write_per_core_is_read_survived_or_not(self, tmp_path):
         db = HistoryDB(tmp_path / "test.db")
         try:
             sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
             journaled(db, sid, 0, -30)
             journaled(db, sid, 1, -30)
             journaled(db, sid, 0, -41, survived=True)
-            assert db.journal_values(sid) == {0: -41, 1: -30}
+            resident = resident_at_death(db.journal_rows(sid, this_boot()))
+            assert {core_id: held.last.value for core_id, held in resident.items()} == {0: -41, 1: -30}
         finally:
             db.close()
 
@@ -643,3 +644,14 @@ class TestJournalProof:
         resident = resident_at_death(db.journal_rows(sid, this_boot()))
         assert crash_suspects(resident, 1) == {1: 3}
         assert db.journal_proven_values(sid, 1) == {0: 8}
+
+    @pytest.mark.parametrize("direction", [-1, 1])
+    def test_a_retraction_takes_the_value_and_everything_beyond_it_in_the_sessions_direction(self, db, direction):
+        sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
+        for value in (3, 5, 8):
+            journaled(db, sid, 0, direction * value, survived=True)
+        journaled(db, sid, 1, direction * 8, survived=True)
+
+        db.journal_retract(sid, 0, direction * 5, direction)
+
+        assert db.journal_proven_values(sid, direction) == {0: direction * 3, 1: direction * 8}

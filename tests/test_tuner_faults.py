@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1914,7 +1916,8 @@ class TestRebootGate:
 
     def test_an_unreadable_last_write_time_still_attributes_from_the_flags(self, db, topo, smu, mock_backend, machine):
         sid = _session_on_this_boot(db, [_in_test(0, -30)])
-        db._execute_raw("UPDATE tuner_sessions SET updated_at='unreadable' WHERE id=?", (sid,))
+        journaled(db, sid, 0, -30, survived=False)
+        db._execute_raw("UPDATE tuner_co_journal SET mono_ns=NULL, written_at='unreadable' WHERE session_id=?", (sid,))
         machine.reboot(clean=False)
         eng = make_engine(db, topo, smu, mock_backend)
         said: list[str] = []
@@ -2304,6 +2307,102 @@ class TestJournalPerBoot:
 
         assert [(row["core_id"], row["offset_tested"]) for row in _crash_rows(db, sid)] == [(1, -15)]
         assert db.get_tuner_core_states(sid)[1].backoff_fail_bound == -15
+
+
+def _wall_seconds(row) -> float:
+    return datetime.fromisoformat(row.written_at).timestamp()
+
+
+def _fine(core_id: int, offset: int) -> CoreState:
+    return CoreState(core_id=core_id, phase=TunerPhase.FINE_SEARCH, current_offset=offset, best_offset=offset)
+
+
+class TestRetraction:
+    def test_a_crash_retracts_its_value_and_everything_more_aggressive(self, db, topo, smu, mock_backend, machine):
+        sid = _session_on_this_boot(db, [_in_test(0, -11)])
+        for value in (-11, -15, -11):
+            journaled(db, sid, 0, value, survived=True)
+        machine.reboot(clean=False)
+
+        eng = _resume_fresh(db, topo, smu, mock_backend, sid)
+        assert eng._apply_co(0, -13)
+
+        assert [row["offset_tested"] for row in _crash_rows(db, sid)] == [-11]
+        assert tp.journal_proven_values(db, sid, -1).get(0, 0) >= -10
+        assert [row.survived for row in tp.journal_rows(db, sid, machine.boot_id) if row.value == -13] == [False]
+
+
+class TestHarvestAfterEachCoresLastWrite:
+    def test_the_harvest_skips_records_before_the_last_write_after_a_clock_step_back(
+        self, db, topo, smu, mock_backend, machine
+    ):
+        sid = _session_on_this_boot(db, [_fine(1, -20)])
+        journaled(db, sid, 1, -20, survived=True)
+        stepped_back = _wall_seconds(tp.journal_rows(db, sid, machine.boot_id)[-1]) + 30
+        for line in core_bank_record(1):
+            machine.kernel(line, mono_s=100, realtime=stepped_back)
+        machine.reboot(clean=False)
+
+        _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[1])
+
+        stored = db.get_tuner_core_states(sid)[1]
+        assert (stored.current_offset, stored.crash_count) == (-20, 0)
+        assert tp.get_test_log(db, sid) == []
+
+    def test_a_record_about_one_core_outlives_a_later_write_to_another(self, db, topo, smu, mock_backend, machine):
+        sid = _session_on_this_boot(db, [_fine(0, -10), _fine(1, -20)])
+        journaled(db, sid, 1, -20, survived=True)
+        for line in core_bank_record(1):
+            machine.kernel(line, mono_s=machine.mono_ns / 1e9 + 1, realtime=time.time())
+        machine.advance(5)
+        journaled(db, sid, 0, -10, survived=True)
+        machine.reboot(clean=True)
+
+        _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[0, 1])
+
+        stored = db.get_tuner_core_states(sid)
+        assert (stored[0].current_offset, stored[1].current_offset) == (-10, -19)
+        assert [(row["core_id"], row["error_type"]) for row in tp.get_test_log(db, sid)] == [(1, "mce")]
+
+    def test_a_migrated_dead_boot_is_read_after_its_last_write_time(self, db, topo, smu, mock_backend, machine):
+        sid = _session_on_this_boot(db, [_fine(1, -20)])
+        journaled(db, sid, 1, -20, survived=True)
+        db._execute_raw("UPDATE tuner_co_journal SET mono_ns=NULL WHERE session_id=?", (sid,))
+        written = _wall_seconds(tp.journal_rows(db, sid, machine.boot_id)[-1])
+        for offset_s, corrected in ((-60, False), (60, True)):
+            for line in core_bank_record(1, corrected=corrected):
+                machine.kernel(line, mono_s=machine.mono_ns / 1e9 + 1, realtime=written + offset_s)
+        machine.reboot(clean=True)
+
+        _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[1])
+
+        assert db.get_tuner_core_states(sid)[1].current_offset == -19
+        assert [row["error_type"] for row in tp.get_test_log(db, sid)] == ["mce"]
+
+    def test_a_dead_boots_harvest_is_bounded_by_that_boots_last_kernel_read(self, db, topo, smu, mock_backend, machine):
+        sid = _session_on_this_boot(db, [_fine(1, -20)])
+        db._execute_raw("UPDATE tuner_sessions SET kernel_read_ns=? WHERE id=?", (machine.mono_ns, sid))
+        machine.reboot(clean=False)
+        eng = _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[1])
+        assert eng._apply_co(1, -20)
+        machine.kernel_now(core_bank_record(1))
+        machine.reboot(clean=True)
+
+        _resume_fresh(db, topo, smu, mock_backend, sid, cores_to_test=[1])
+
+        assert db.get_tuner_core_states(sid)[1].current_offset == -19
+
+    def test_a_test_end_without_a_kernel_read_keeps_the_last_one(self, db, topo, smu, mock_backend, machine):
+        sid = _search_session(db, {0: -10})
+        eng = make_engine(db, topo, smu, mock_backend)
+        eng._session_id = sid
+        eng._core_states = tp.load_core_states(db, sid)
+
+        with patch.object(eng, "_run_next"):
+            eng._on_test_finished(report(0, kernel_read_ns=4_000_000_000_000))
+            eng._on_test_finished(report(0, Outcome.NOT_STARTED, "the stress tool did not start"))
+
+        assert tp.get_session(db, sid).kernel_read_ns == 4_000_000_000_000
 
 
 class TestTwoSessionsInOneBoot:

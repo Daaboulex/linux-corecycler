@@ -29,6 +29,7 @@ from corecycler.engine.containment import lane_cgroup_parent, memory_accounting_
 from corecycler.engine.detector import (
     CoreMachineCheck,
     ErrorDetector,
+    HarvestFrom,
     KernelEvent,
     KernelRead,
     boot_end,
@@ -55,7 +56,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from corecycler.engine.backends.base import StressBackend
-    from corecycler.engine.detector import BootEnd
+    from corecycler.engine.detector import BootEnd, JournalHarvest
     from corecycler.engine.memory_budget import MemoryBudget
     from corecycler.engine.topology import CPUTopology
     from corecycler.history.db import HistoryDB, JournalRow
@@ -71,6 +72,7 @@ class WorkerReport:
     lanes: tuple[StressResult, ...]
     peak_stretch_pct: float
     kernel_events: tuple[KernelEvent, ...]
+    kernel_read_ns: int | None = None
 
     def __post_init__(self) -> None:
         if not self.lanes:
@@ -102,6 +104,15 @@ def _realtime_us(iso_ts: str | None) -> int | None:
     return round(moment.timestamp() * 1_000_000)
 
 
+def _harvest_from(kernel_read_ns: int | None, rows: list[JournalRow]) -> HarvestFrom | None:
+    if kernel_read_ns is not None:
+        return HarvestFrom(mono_ns=kernel_read_ns, realtime_us=None)
+    unstamped = [_realtime_us(row.written_at) for row in rows if row.mono_ns is None]
+    if None in unstamped:
+        return None
+    return HarvestFrom(mono_ns=None, realtime_us=max(unstamped, default=None))
+
+
 _STRETCH_WARMUP_SECONDS = 5
 _STRETCH_SAMPLE_INTERVAL = 5
 _STRETCH_MIN_BUSY = 0.9
@@ -119,11 +130,13 @@ def _cut_short(core_id: int, detail: str) -> StressResult:
     return StressResult(core_id=core_id, outcome=Outcome.CUT_SHORT, detail=detail, duration_seconds=0.0)
 
 
-def _batch_report(core_id: int, results: dict[int, StressResult], observed: list[KernelEvent]) -> WorkerReport:
+def _batch_report(
+    core_id: int, results: dict[int, StressResult], observed: list[KernelEvent], kernel_read_ns: int | None
+) -> WorkerReport:
     lanes = tuple(results[core] for core in sorted(results)) or (
         _cut_short(core_id, "the batch returned no lane result"),
     )
-    return WorkerReport(lanes=lanes, peak_stretch_pct=0.0, kernel_events=tuple(observed))
+    return WorkerReport(lanes=lanes, peak_stretch_pct=0.0, kernel_events=tuple(observed), kernel_read_ns=kernel_read_ns)
 
 
 class _TunerWorker(QThread):
@@ -183,6 +196,7 @@ class _TunerWorker(QThread):
                     lanes=lanes,
                     peak_stretch_pct=peak_stretch,
                     kernel_events=tuple(self._scheduler.observed_mce),
+                    kernel_read_ns=self._scheduler.detector.read_started_ns,
                 )
             )
         except Exception as e:
@@ -236,7 +250,11 @@ class _RapidTransitionWorker(_TunerWorker):
     def run(self) -> None:
         try:
             results = self.scheduler.run_rapid_transitions(cores=self._cores, total_duration=self._duration)
-            self.finished.emit(_batch_report(self._core_id, results, self.scheduler.observed_mce))
+            self.finished.emit(
+                _batch_report(
+                    self._core_id, results, self.scheduler.observed_mce, self.scheduler.detector.read_started_ns
+                )
+            )
         except Exception as e:
             log.exception("Rapid transition worker crashed for core %d", self._core_id)
             self.finished.emit(_not_started(self._core_id, str(e)))
@@ -257,7 +275,11 @@ class _ParallelWorker(_TunerWorker):
     def run(self) -> None:
         try:
             results = self._scheduler.run()
-            self.finished.emit(_batch_report(self._core_id, results, self._scheduler.observed_mce))
+            self.finished.emit(
+                _batch_report(
+                    self._core_id, results, self._scheduler.observed_mce, self._scheduler.detector.read_started_ns
+                )
+            )
         except Exception as e:
             log.exception("Parallel worker crashed for core %d", self._core_id)
             self.finished.emit(_not_started(self._core_id, str(e)))
@@ -307,7 +329,14 @@ class _SoakWorker(QThread):
             else:
                 outcome, detail = Outcome.PASS, ""
             result = StressResult(core_id=self._core_id, outcome=outcome, detail=detail, duration_seconds=elapsed)
-            self.finished.emit(WorkerReport(lanes=(result,), peak_stretch_pct=0.0, kernel_events=events))
+            self.finished.emit(
+                WorkerReport(
+                    lanes=(result,),
+                    peak_stretch_pct=0.0,
+                    kernel_events=events,
+                    kernel_read_ns=self.detector.read_started_ns,
+                )
+            )
         except Exception as e:
             log.exception("Soak worker crashed")
             self.finished.emit(_not_started(self._core_id, str(e)))
@@ -585,6 +614,7 @@ class TunerEngine(QObject):
             self.log_message.emit(f"Cannot resume: {exc}")
             return
         streak = 0 if session.status == "quarantined" else session.resume_crash_streak
+        journal = tp.journal_rows(self._db, session_id, session.boot_id)
         plan: tp.AttributionPlan | None = None
         if session.boot_id == self._boot_id:
             cleared = [replace(cs, in_test=False) for cs in states.values() if cs.in_test]
@@ -595,21 +625,13 @@ class TunerEngine(QObject):
             taken_over = tp.journal_taken_over(self._db, session_id, session.boot_id)
             harvest = harvest_after(
                 session.boot_id,
-                _realtime_us(self._db.latest_session_activity(session_id)),
+                _harvest_from(session.kernel_read_ns, journal),
                 next_boot=taken_over is None and not end.clean,
                 before_mono_ns=None if taken_over is None else taken_over.mono_ns,
             )
-            plan = self._decide_attribution(
-                session,
-                states,
-                tp.journal_rows(self._db, session_id, session.boot_id),
-                taken_over,
-                end,
-                harvest,
-                streak,
-            )
+            plan = self._decide_attribution(session, states, journal, taken_over, end, harvest, streak)
             try:
-                tp.commit_attribution(self._db, session_id, plan)
+                tp.commit_attribution(self._db, session_id, plan, self._config.direction)
             except sqlite3.Error as exc:
                 log.error("the attribution of session %d could not be saved", session_id, exc_info=True)
                 self.log_message.emit(f"Cannot resume: the attribution could not be saved ({exc}); nothing changed.")
@@ -628,29 +650,29 @@ class TunerEngine(QObject):
 
         self._reconcile_confirmed_evidence()
 
-        # Check for CO drift — warn only when the SMU differs from what the
-        # TUNER last wrote (the CO journal); validation deliberately leaves the
-        # confirmed offsets applied, so a baseline comparison would flag the
-        # tuner's own work. Real drift = a third party (Curve Optimizer tab,
-        # another tool) changed the values behind our back.
         if self._smu is not None:
-            expected_values = tp.journal_values(self._db, session_id)
-            drift: dict[int, dict[str, int]] = {}
+            last_writes = tp.resident_at_death(journal)
+            drift: dict[int, dict[str, int | str]] = {}
             for cs in self._core_states.values():
                 actual = self._smu.get_co_offset(cs.core_id)
-                expected = expected_values.get(cs.core_id, cs.baseline_offset)
-                if actual is None or actual == expected:
+                held = last_writes.get(cs.core_id)
+                expected = cs.baseline_offset if held is None else held.last.value
+                if actual is None or actual == expected or (rebooted and actual == 0):
                     continue
-                # After a reboot, actual == 0 is the EXPECTED state (SMU SRAM
-                # is zeroed), not drift.
-                if rebooted and actual == 0:
-                    continue
-                drift[cs.core_id] = {"expected": expected, "actual": actual}
+                unconfirmed = not rebooted and held is not None and not held.last.confirmed
+                drift[cs.core_id] = {
+                    "expected": expected,
+                    "actual": actual,
+                    "cause": "incomplete" if unconfirmed else "outside",
+                }
             if drift:
+                outside = sorted(core_id for core_id, found in drift.items() if found["cause"] == "outside")
+                incomplete = sorted(core_id for core_id, found in drift.items() if found["cause"] == "incomplete")
                 self.log_message.emit(
-                    f"CO drift detected on {len(drift)} core(s) — SMU values differ "
-                    f"from the tuner's last write; something outside the tuner "
-                    f"changed them. The session's values will be re-applied."
+                    f"CO drift detected on {len(drift)} core(s): SMU values differ from the tuner's last write"
+                    + (f"; something outside the tuner changed cores {outside}" if outside else "")
+                    + (f"; the tuner's last write did not complete on cores {incomplete}" if incomplete else "")
+                    + ". The session's values will be re-applied."
                 )
                 self.co_drift_detected.emit(json.dumps(drift))
 
@@ -1446,17 +1468,18 @@ class TunerEngine(QObject):
         journal: list[JournalRow],
         taken_over: JournalRow | None,
         end: BootEnd,
-        harvest: KernelRead,
+        harvest: JournalHarvest,
         streak: int,
     ) -> tp.AttributionPlan:
         work = {core_id: replace(cs, in_test=False) for core_id, cs in states.items()}
         in_test = sorted(core_id for core_id, cs in states.items() if cs.in_test)
-        named = self._events_by_core(harvest.events, work)
         residents = tp.resident_at_death(journal)
+        named = self._events_by_core(self._after_last_write(harvest.dead_boot, residents) + harvest.next_boot, work)
         attributable = taken_over is None and not end.clean
         rows: list[tp.LogRow] = []
         messages: list[str] = []
         crashed: list[int] = []
+        retractions: list[tuple[int, int]] = []
         pending_hunt = False
         unattributed = session.unattributed_crashes
         if taken_over is not None:
@@ -1481,6 +1504,7 @@ class TunerEngine(QObject):
             rows.append(tp.LogRow(core_id, offset, cs.phase.value, reason, "crash"))
             self._apply_crash_penalty(cs)
             crashed.append(core_id)
+            retractions.append((core_id, offset))
 
         if not attributable:
             for core_id in sorted(named):
@@ -1551,6 +1575,7 @@ class TunerEngine(QObject):
             boot_id=self._boot_id,
             rows=tuple(rows),
             states=tuple(work.values()),
+            retractions=tuple(retractions),
             unattributed_crashes=unattributed + 1 if incident else unattributed,
             resume_crash_streak=streak,
             validation_dirty=session.validation_dirty or incident,
@@ -1608,6 +1633,17 @@ class TunerEngine(QObject):
             for lcpu in info.logical_cpus:
                 mapping[lcpu] = core_id
         return mapping
+
+    def _after_last_write(
+        self, events: tuple[KernelEvent, ...], residents: dict[int, tp.Resident]
+    ) -> tuple[KernelEvent, ...]:
+        cpu_map = self._cpu_to_core()
+        kept: list[KernelEvent] = []
+        for event in events:
+            held = residents.get(cpu_map.get(event.cpu)) if isinstance(event, CoreMachineCheck) else None
+            if held is None or held.last.mono_ns is None or event.raw_ts > held.last.mono_ns / 1e9:
+                kept.append(event)
+        return tuple(kept)
 
     def _events_by_core(
         self, events: tuple[KernelEvent, ...], cores: dict[int, CoreState]
@@ -2309,6 +2345,8 @@ class TunerEngine(QObject):
 
         cs.in_test = False
         self._clear_cores_under_stress()
+        if self._session_id is not None and report.kernel_read_ns is not None:
+            tp.set_kernel_read(self._db, self._session_id, report.kernel_read_ns)
         foreign = self._foreign_mce_by_core(-1 if self._soaking else core_id, report.kernel_events)
         outcome, detail, duration = result.outcome, result.detail, result.duration_seconds
 

@@ -88,10 +88,13 @@ nothing and the resume stops.
 Evidence outranks policy; a guess is never written. Priority order:
 
 1. Kernel-journal forensics (`journalctl -b <session boot> _TRANSPORT=kernel
-   SYSLOG_FACILITY=0` after the session's last activity, plus the next boot's
-   kernel records logged before its first userspace entry): penalize exactly
-   the cores the kernel's MCE lines name, anchored at their last write in the
-   dead boot.
+   SYSLOG_FACILITY=0`, plus the next boot's kernel records logged before its
+   first userspace entry): penalize exactly the cores the kernel's MCE lines
+   name, anchored at their last write in the dead boot. In the dead boot a
+   record is read only when its monotonic stamp is later than the session's
+   last live kernel read in that boot, and a record naming a core also later
+   than that core's last CO write there; journal rows written before the
+   monotonic stamp existed bound it by their write time instead.
 2. A persisted hunt slot (`tuner_sessions.hunting_core`): the box died while
    one core was stressed alone with every other core at stock — proof by
    isolation.
@@ -105,6 +108,11 @@ Evidence outranks policy; a guess is never written. Priority order:
    first (prior MCE rows, crash history, deepest undervolt). A slot failure
    convicts its core. After `max_unattributed_crash_hunts` fruitless hunts
    in a row the session pauses for the owner.
+
+Every conviction retracts the value it convicts and every more aggressive
+value of that core from the proven set, in the same transaction: the value
+that crashed the machine, and anything beyond it, must survive a test again
+before it counts as proven.
 
 Cross-core MCE evidence during a live test uses `_apply_crash_penalty` with
 `steps=1, count_crash=False` for corrected errors (one-step backoff, re-earn

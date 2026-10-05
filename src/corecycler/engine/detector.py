@@ -114,6 +114,24 @@ class _JournalEntry:
     identifier: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class HarvestFrom:
+    mono_ns: int | None
+    realtime_us: int | None
+
+    def precedes(self, entry: _JournalEntry) -> bool:
+        if self.mono_ns is not None:
+            return entry.mono_us * 1000 > self.mono_ns
+        return self.realtime_us is None or entry.realtime_us > self.realtime_us
+
+
+@dataclass(frozen=True, slots=True)
+class JournalHarvest:
+    dead_boot: tuple[KernelEvent, ...]
+    next_boot: tuple[KernelEvent, ...]
+    problem: str | None
+
+
 def bank_is_core(ipid: int | None, bank_name: str | None) -> bool:
     if ipid is not None:
         high = ipid >> 32
@@ -214,6 +232,7 @@ class ErrorDetector:
         self._file: io.FileIO | None = None
         self._unopened = _NOT_OPEN
         self._carry: list[tuple[float, str]] = []
+        self.read_started_ns: int | None = None
 
     def reset(self) -> None:
         self.close()
@@ -234,6 +253,7 @@ class ErrorDetector:
     def read_new(self, *, final: bool = False) -> KernelRead:
         if self._file is None:
             return KernelRead((), self._unopened)
+        started_ns = monotonic_ns()
         lines = list(self._carry)
         problems: list[str] = []
         overran = False
@@ -259,6 +279,8 @@ class ErrorDetector:
             if final:
                 problems.append(_FLOOD)
         events, self._carry = parse_kernel_records(lines, final=final)
+        if not problems:
+            self.read_started_ns = started_ns
         return KernelRead(tuple(events), problems[0] if problems else None)
 
 
@@ -363,31 +385,32 @@ def _before_userspace(boot_id: str, timeout: float) -> tuple[list[_JournalEntry]
     return [record for record in records if not first or record.mono_us < first[0].mono_us], problem
 
 
-def _events(entries: Iterable[_JournalEntry]) -> list[KernelEvent]:
-    events, _open = parse_kernel_records(((entry.realtime_us / 1e6, entry.message) for entry in entries), final=True)
-    return events
+def _events(entries: Iterable[_JournalEntry]) -> tuple[KernelEvent, ...]:
+    events, _open = parse_kernel_records(((entry.mono_us / 1e6, entry.message) for entry in entries), final=True)
+    return tuple(events)
 
 
 def harvest_after(
     boot_id: str,
-    after_us: int | None,
+    after: HarvestFrom | None,
     *,
     next_boot: bool,
     before_mono_ns: int | None = None,
     timeout: float = 15.0,
-) -> KernelRead:
+) -> JournalHarvest:
     if (problem := _boot_problem(boot_id)) is not None:
-        return KernelRead((), problem)
-    events: list[KernelEvent] = []
+        return JournalHarvest((), (), problem)
+    dead_boot: tuple[KernelEvent, ...] = ()
+    later: tuple[KernelEvent, ...] = ()
     problems: list[str | None] = []
-    if after_us is None:
+    if after is None:
         problems.append("the session's last write time is unreadable")
     else:
         dead, problem = _journal_entries(["-b", boot_id, *_KERNEL_RECORDS], timeout)
-        events += _events(
+        dead_boot = _events(
             entry
             for entry in dead
-            if entry.realtime_us > after_us and (before_mono_ns is None or entry.mono_us * 1000 < before_mono_ns)
+            if after.precedes(entry) and (before_mono_ns is None or entry.mono_us * 1000 < before_mono_ns)
         )
         problems.append(problem)
     if next_boot:
@@ -395,9 +418,9 @@ def harvest_after(
         problems.append(problem)
         if following is not None:
             early, problem = _before_userspace(following, timeout)
-            events += _events(early)
+            later = _events(early)
             problems.append(problem)
-    return KernelRead(tuple(events), "; ".join(filter(None, problems)) or None)
+    return JournalHarvest(dead_boot, later, "; ".join(filter(None, problems)) or None)
 
 
 def kernel_log_problem(kmsg: Path | None = None, timeout: float = 15.0) -> str | None:

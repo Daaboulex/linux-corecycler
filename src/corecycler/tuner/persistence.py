@@ -37,6 +37,7 @@ class AttributionPlan:
     boot_id: str
     rows: tuple[LogRow, ...]
     states: tuple[CoreState, ...]
+    retractions: tuple[tuple[int, int], ...]
     unattributed_crashes: int
     resume_crash_streak: int
     validation_dirty: bool
@@ -69,7 +70,7 @@ def stamp_session_boot(db: HistoryDB, session_id: int, boot_id: str) -> None:
     db.stamp_session_boot(session_id, boot_id)
 
 
-def commit_attribution(db: HistoryDB, session_id: int, plan: AttributionPlan) -> None:
+def commit_attribution(db: HistoryDB, session_id: int, plan: AttributionPlan, direction: int) -> None:
     with db.transaction():
         for row in plan.rows:
             db.insert_tuner_test_log(
@@ -77,6 +78,8 @@ def commit_attribution(db: HistoryDB, session_id: int, plan: AttributionPlan) ->
             )
         for cs in plan.states:
             db.upsert_tuner_core_state(session_id, cs)
+        for core_id, value in plan.retractions:
+            db.journal_retract(session_id, core_id, value, direction)
         db.set_unattributed_crashes(session_id, plan.unattributed_crashes)
         db.set_resume_crash_streak(session_id, plan.resume_crash_streak)
         db.set_validation_dirty(session_id, plan.validation_dirty)
@@ -199,9 +202,8 @@ def set_resume_crash_streak(db: HistoryDB, session_id: int, value: int) -> None:
     db.set_resume_crash_streak(session_id, value)
 
 
-def journal_values(db: HistoryDB, session_id: int) -> dict[int, int]:
-    """Return {core_id: value} — the last CO value the tuner wrote per core."""
-    return db.journal_values(session_id)
+def set_kernel_read(db: HistoryDB, session_id: int, kernel_read_ns: int) -> None:
+    db.set_kernel_read(session_id, kernel_read_ns)
 
 
 def get_unattributed_crashes(db: HistoryDB, session_id: int) -> int:
