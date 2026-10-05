@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys as _sys
 from unittest.mock import MagicMock, patch
 
@@ -195,6 +196,23 @@ class TestConstruction:
         win = _build(monkeypatch, tmp_path, db_factory=_boom)
         assert win._history_db is None
         assert win._tabs.count() == 7
+
+    def test_a_database_from_a_newer_build_is_refused_on_screen(self, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QLabel
+
+        path = tmp_path / "history.db"
+        HistoryDB(path).close()
+        newer = HistoryDB.SCHEMA_VERSION + 1
+        raw = sqlite3.connect(path)
+        raw.execute("UPDATE schema_version SET version=?", (newer,))
+        raw.commit()
+        raw.close()
+
+        win = _build(monkeypatch, tmp_path, db_factory=lambda: HistoryDB(path))
+
+        shown = [label.text() for label in win._status_bar.findChildren(QLabel)]
+        assert win._history_db is None
+        assert any(f"version {newer}" in text for text in shown)
 
     def test_history_recording_can_be_switched_off(self, monkeypatch, tmp_path, db):
         win = _build(monkeypatch, tmp_path, db=db, settings=_settings(tmp_path, record_history=False))

@@ -33,6 +33,20 @@ RESUMABLE_STATUSES = ("running", "paused", "validating")
 RECOVERABLE_STATUSES = (*RESUMABLE_STATUSES, "quarantined", "aborted")
 
 
+class SchemaTooNewError(RuntimeError):
+    def __init__(self, path: Path, found: int, supported: int) -> None:
+        super().__init__(
+            f"History database {path} has schema version {found}; this build reads up to version {supported}. "
+            "A newer corecycler wrote it: run that build again, or move the file aside to start a new history."
+        )
+
+
+class CorruptSessionError(ValueError):
+    def __init__(self, session_id: int, detail: str) -> None:
+        super().__init__(f"session {session_id} is unreadable: {detail}")
+        self.detail = detail
+
+
 def adopt_legacy_root_db(db: HistoryDB, root_db: Path = LEGACY_ROOT_DB) -> dict[str, int] | None:
     """One-time adoption of a root-owned history database.
 
@@ -172,25 +186,26 @@ class HistoryDB:
         if str(self._db_path) != ":memory:":
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self.__conn = sqlite3.connect(
-            str(self._db_path),
-            isolation_level=None,  # autocommit
-        )
-        self.__conn.row_factory = sqlite3.Row
-        self.__conn.execute("PRAGMA journal_mode=WAL")
-        self.__conn.execute("PRAGMA synchronous=FULL")
-        self.__conn.execute("PRAGMA foreign_keys=ON")
-        # Sudo and non-sudo runs share ONE database; a second writer must wait
-        # for the WAL lock instead of failing with "database is locked".
-        self.__conn.execute("PRAGMA busy_timeout=5000")
-        # Fail closed on a corrupted file BEFORE migrations touch it.
-        check = self.__conn.execute("PRAGMA quick_check").fetchone()[0]
-        if check != "ok":
-            raise RuntimeError(
-                f"History database failed integrity check ({check}): {self._db_path}. "
-                f"Move the file aside and restart to rebuild."
-            )
-        self._create_schema()
+        self.__conn = sqlite3.connect(str(self._db_path), autocommit=True)
+        try:
+            self.__conn.row_factory = sqlite3.Row
+            self.__conn.execute("PRAGMA journal_mode=WAL")
+            self.__conn.execute("PRAGMA synchronous=FULL")
+            self.__conn.execute("PRAGMA foreign_keys=ON")
+            # Sudo and non-sudo runs share ONE database; a second writer must wait
+            # for the WAL lock instead of failing with "database is locked".
+            self.__conn.execute("PRAGMA busy_timeout=5000")
+            # Fail closed on a corrupted file BEFORE migrations touch it.
+            check = self.__conn.execute("PRAGMA quick_check").fetchone()[0]
+            if check != "ok":
+                raise RuntimeError(
+                    f"History database failed integrity check ({check}): {self._db_path}. "
+                    f"Move the file aside and restart to rebuild."
+                )
+            self._create_schema()
+        except BaseException:
+            self.__conn.close()
+            raise
         if str(self._db_path) != ":memory:":
             # A sudo run must not leave the shared DB (or its WAL sidecars)
             # root-owned, or the next non-sudo run cannot write it.
@@ -209,21 +224,28 @@ class HistoryDB:
     def _create_schema(self) -> None:
         cur = self.__conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
         if cur.fetchone() is None:
-            # Fresh database — create everything at current version
             self.__conn.executescript(self._DDL_FRESH)
             return
 
-        # Existing database — check version and migrate
         version = self.__conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        if version > self.SCHEMA_VERSION:
+            raise SchemaTooNewError(self._db_path, version, self.SCHEMA_VERSION)
         for target_version in range(version + 1, self.SCHEMA_VERSION + 1):
             migration = self._MIGRATIONS.get(target_version)
             if migration is None:
                 raise RuntimeError(f"Missing migration for version {target_version}")
-            if callable(migration):
-                migration(self.__conn)
-            else:
-                self.__conn.executescript(migration)
-            self.__conn.execute("UPDATE schema_version SET version=?", (target_version,))
+            self.__conn.execute("BEGIN IMMEDIATE")
+            try:
+                if callable(migration):
+                    migration(self.__conn)
+                else:
+                    self.__conn.executescript(migration)
+                self.__conn.execute("UPDATE schema_version SET version=?", (target_version,))
+                self.__conn.execute("COMMIT")
+            except BaseException:
+                if self.__conn.in_transaction:
+                    self.__conn.execute("ROLLBACK")
+                raise
 
     # Full schema for fresh databases (current version)
     _DDL_FRESH = (
@@ -484,16 +506,22 @@ CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC);
     def _migrate_v4(conn: sqlite3.Connection) -> None:
         HistoryDB._add_columns(conn, "telemetry_samples", [("effective_max_mhz", "REAL")])
 
-    # Migration from v4 to v5 — deduplicate tuning contexts, add UNIQUE constraint
-    _DDL_MIGRATE_V5 = """\
--- Deduplicate existing rows: keep the oldest (smallest id) for each (co_hash, bios_version)
-DELETE FROM tuning_contexts
-WHERE id NOT IN (
-    SELECT MIN(id) FROM tuning_contexts GROUP BY co_hash, bios_version
-);
--- Add UNIQUE constraint via index (SQLite cannot ALTER TABLE ADD CONSTRAINT)
-CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_hash, bios_version);
-"""
+    @staticmethod
+    def _migrate_v5(conn: sqlite3.Connection) -> None:
+        duplicates = (
+            "SELECT id FROM tuning_contexts WHERE id NOT IN "
+            "(SELECT MIN(id) FROM tuning_contexts GROUP BY co_hash, bios_version)"
+        )
+        for table in ("runs", "tuner_sessions"):
+            conn.execute(
+                f"UPDATE {table} SET context_id = (SELECT MIN(kept.id) FROM tuning_contexts kept "
+                "JOIN tuning_contexts dup ON kept.co_hash = dup.co_hash AND kept.bios_version = dup.bios_version "
+                f"WHERE dup.id = {table}.context_id) WHERE context_id IN ({duplicates})"
+            )
+        conn.execute(f"DELETE FROM tuning_contexts WHERE id IN ({duplicates})")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_hash, bios_version)"
+        )
 
     # Migration from v5 to v6 — add baseline_offset for CO isolation during tuning
     @staticmethod
@@ -580,7 +608,6 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
     # NULLs the code papers over with `or 0`). One canonical schema everywhere;
     # tests/test_history_db.py::TestFreshEqualsMigrated enforces it stays that way.
     _DDL_MIGRATE_V12 = """\
-BEGIN IMMEDIATE;
 CREATE TABLE tuner_core_states_v12 (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id          INTEGER NOT NULL REFERENCES tuner_sessions(id) ON DELETE CASCADE,
@@ -622,7 +649,6 @@ SELECT
 FROM tuner_core_states;
 DROP TABLE tuner_core_states;
 ALTER TABLE tuner_core_states_v12 RENAME TO tuner_core_states;
-COMMIT;
 """
 
     # v12 -> v13: power-limit capture on tuning contexts (PPT/TDC/EDC are part
@@ -681,7 +707,7 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
         4: _migrate_v4,
-        5: _DDL_MIGRATE_V5,
+        5: _migrate_v5,
         6: _migrate_v6,
         7: _migrate_v7,
         8: _migrate_v8,
@@ -1491,9 +1517,15 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
         ).fetchall()
         result: dict[int, _CoreState] = {}
         for r in rows:
+            try:
+                phase = _TunerPhase(r["phase"])
+            except ValueError as e:
+                raise CorruptSessionError(
+                    session_id, f"core {r['core_id']} has phase {r['phase']!r}, which this build does not know"
+                ) from e
             loaded = _CoreState(
                 core_id=r["core_id"],
-                phase=_TunerPhase(r["phase"]),
+                phase=phase,
                 current_offset=r["current_offset"],
                 best_offset=r["best_offset"],
                 coarse_fail_offset=r["coarse_fail_offset"],
@@ -1510,7 +1542,10 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
                 cumulative_test_time=r["cumulative_test_time"] or 0.0,
                 hardening_tier_index=r["hardening_tier_index"] or 0,
             )
-            self._check_core_state_sane(loaded)  # fail closed on a corrupted row
+            try:
+                self._check_core_state_sane(loaded)
+            except ValueError as e:
+                raise CorruptSessionError(session_id, str(e)) from e
             result[loaded.core_id] = loaded
         return result
 

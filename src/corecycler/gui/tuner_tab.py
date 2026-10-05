@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 from corecycler.engine.backends.base import FFTPreset, StressMode
 from corecycler.gui.style import PHASE_TO_GRID, button_qss, phase_label, status_label, theme
 from corecycler.gui.tool_prompt import ensure_tool
-from corecycler.history.db import RESUMABLE_STATUSES
+from corecycler.history.db import RESUMABLE_STATUSES, CorruptSessionError
 from corecycler.history.timefmt import format_local
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
@@ -568,15 +568,21 @@ class TunerTab(QWidget):
 
         session_list = QListWidget()
         for sess in sessions:
-            core_states = tp.load_core_states(self._db, sess.id)
-            total = len(core_states)
-            confirmed = sum(1 for cs in core_states.values() if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED))
+            try:
+                core_states = tp.load_core_states(self._db, sess.id)
+            except CorruptSessionError as e:
+                progress = f"unreadable: {e.detail}"
+            else:
+                confirmed = sum(
+                    1 for cs in core_states.values() if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
+                )
+                progress = f"{confirmed}/{len(core_states)} cores confirmed"
             started = format_local(sess.created_at) if sess.created_at else "?"
             last = format_local(sess.updated_at) if sess.updated_at else started
             label = (
                 f"#{sess.id}  started {started}  last {last}  "
                 f"[{status_label(sess.status)}]  "
-                f"{confirmed}/{total} cores confirmed  "
+                f"{progress}  "
                 f"({sess.cpu_model[:30] if sess.cpu_model else '?'})"
             )
             item = QListWidgetItem(label)
@@ -631,6 +637,13 @@ class TunerTab(QWidget):
                 "Load the module with: sudo modprobe ryzen_smu",
             )
             return
+
+        if self._db:
+            try:
+                tp.load_core_states(self._db, session_id)
+            except CorruptSessionError as e:
+                QMessageBox.warning(self, "Session Unreadable", f"Cannot resume: {e}")
+                return
 
         # Create engine if needed (cold start resume)
         if self._engine is None:

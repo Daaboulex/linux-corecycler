@@ -231,6 +231,36 @@ class TestTunerSessionDetail:
         assert tab._selected_tuner_session is not None
 
 
+class TestUnreadableSession:
+    def test_a_session_with_an_unknown_phase_is_shown_as_unreadable(self, db):
+        from corecycler.tuner.state import CoreState, TunerPhase
+
+        readable = _seed_session(db, "completed")
+        tp.save_core_state(
+            db, readable, CoreState(core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-20, best_offset=-20)
+        )
+        unreadable = _seed_session(db, "paused")
+        tp.save_core_state(db, unreadable, CoreState(core_id=0, best_offset=-15))
+        db._execute_raw("UPDATE tuner_core_states SET phase='future_phase' WHERE session_id=?", (unreadable,))
+
+        tab = _tab(db)
+
+        assert tab._view_mode == tab.VIEW_TUNER
+        confirmed_cells = [tab._runs_table.item(row, 4) for row in range(tab._runs_table.rowCount())]
+        assert sorted(cell.text() for cell in confirmed_cells) == ["1/1", "unreadable"]
+        flagged = next(cell for cell in confirmed_cells if cell.text() == "unreadable")
+        assert "future_phase" in flagged.toolTip()
+        assert tab._selected_tuner_session.id == unreadable
+        assert "unreadable" in tab._detail_info.text()
+        assert "future_phase" in tab._detail_info.text()
+        assert not tab._load_co_btn.isEnabled()
+
+        tab._show_tuner_session_detail(db.get_tuner_session(readable))
+        assert "unreadable" not in tab._detail_info.text()
+        assert tab._core_results_table.rowCount() == 1
+        assert tab._load_co_btn.isEnabled()
+
+
 class TestToggles:
     def test_toggle_between_views(self, db):
         _seed_run_with_results(db, cores=1)

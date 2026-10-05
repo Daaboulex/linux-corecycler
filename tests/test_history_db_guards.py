@@ -15,8 +15,10 @@ import pytest
 
 from corecycler.history.db import (
     CoreResultRecord,
+    CorruptSessionError,
     HistoryDB,
     RunRecord,
+    SchemaTooNewError,
     TuningContextRecord,
 )
 from corecycler.tuner import persistence as tp
@@ -38,7 +40,35 @@ class TestOpenGuards:
         with pytest.raises((RuntimeError, sqlite3.DatabaseError)):
             HistoryDB(path)
 
-    def test_a_future_schema_version_is_refused(self, tmp_path):
+    def test_a_newer_schema_is_refused_and_left_as_it_was(self, tmp_path):
+        path = tmp_path / "history.db"
+        HistoryDB(path).close()
+        newer = HistoryDB.SCHEMA_VERSION + 1
+        _set_schema_version(path, newer)
+        with pytest.raises(SchemaTooNewError) as refused:
+            HistoryDB(path)
+        assert f"version {newer}" in str(refused.value)
+        assert f"version {HistoryDB.SCHEMA_VERSION}" in str(refused.value)
+        assert _schema_version(path) == newer
+
+    def test_a_refused_open_closes_its_connection(self, tmp_path, monkeypatch):
+        path = tmp_path / "history.db"
+        HistoryDB(path).close()
+        _set_schema_version(path, HistoryDB.SCHEMA_VERSION + 1)
+        opened = []
+        real_connect = sqlite3.connect
+
+        def recording_connect(*args, **kwargs):
+            opened.append(real_connect(*args, **kwargs))
+            return opened[-1]
+
+        monkeypatch.setattr(sqlite3, "connect", recording_connect)
+        with pytest.raises(SchemaTooNewError):
+            HistoryDB(path)
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            opened[0].execute("SELECT 1")
+
+    def test_a_version_without_a_migration_is_refused(self, tmp_path):
         path = tmp_path / "history.db"
         HistoryDB(path).close()
         conn = sqlite3.connect(path)
@@ -52,6 +82,20 @@ class TestOpenGuards:
                 HistoryDB(path)
         finally:
             HistoryDB._MIGRATIONS = original
+
+
+def _set_schema_version(path, version):
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE schema_version SET version=?", (version,))
+    conn.commit()
+    conn.close()
+
+
+def _schema_version(path):
+    conn = sqlite3.connect(path)
+    version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+    conn.close()
+    return version
 
 
 def _reader_holding_a_snapshot(path):
@@ -161,6 +205,21 @@ class TestCoreStateSanity:
         sid = self._session(db)
         with pytest.raises(ValueError, match="cumulative_test_time"):
             db.upsert_tuner_core_state(sid, CoreState(core_id=0, cumulative_test_time=-1.0))
+
+    @pytest.mark.parametrize(
+        ("column", "value", "cause"),
+        [("phase", "future_phase", "future_phase"), ("current_offset", -9999, "current_offset=-9999")],
+    )
+    def test_an_unreadable_row_names_its_session_and_its_cause(self, db, column, value, cause):
+        sid = self._session(db)
+        tp.save_core_state(db, sid, CoreState(core_id=3))
+        db._execute_raw(f"UPDATE tuner_core_states SET {column}=? WHERE session_id=?", (value, sid))
+        with pytest.raises(CorruptSessionError) as refused:
+            db.get_tuner_core_states(sid)
+        assert cause in refused.value.detail
+        assert "core 3" in refused.value.detail
+        assert f"session {sid}" in str(refused.value)
+        assert refused.value.detail in str(refused.value)
 
 
 def _seed(path, *, runs=1, sessions=1):

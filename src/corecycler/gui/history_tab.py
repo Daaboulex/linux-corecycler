@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from corecycler.gui.style import duration_str, font_mono, phase_label, span_str, theme
 from corecycler.gui.widgets import table_item as _item
+from corecycler.history.db import CorruptSessionError
 from corecycler.history.timefmt import format_local
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.state import TunerPhase, TunerSession
@@ -857,10 +858,18 @@ class HistoryTab(QWidget):
             if not self._db:
                 continue
 
-            # Count cores
-            core_states = tp.load_core_states(self._db, sess.id)
-            total = len(core_states)
-            confirmed = sum(1 for cs in core_states.values() if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED))
+            try:
+                core_states = tp.load_core_states(self._db, sess.id)
+            except CorruptSessionError as e:
+                cores_text, confirmed_text, unreadable = "?", "unreadable", f"unreadable: {e.detail}"
+                all_confirmed = False
+            else:
+                total = len(core_states)
+                confirmed = sum(
+                    1 for cs in core_states.values() if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
+                )
+                cores_text, confirmed_text, unreadable = str(total), f"{confirmed}/{total}", None
+                all_confirmed = total > 0 and confirmed == total
 
             date_str = format_local(sess.created_at)
 
@@ -868,8 +877,8 @@ class HistoryTab(QWidget):
                 (date_str, Qt.AlignmentFlag.AlignLeft),
                 (sess.status.capitalize(), Qt.AlignmentFlag.AlignCenter),
                 (sess.cpu_model[:30] if sess.cpu_model else "-", Qt.AlignmentFlag.AlignLeft),
-                (str(total), Qt.AlignmentFlag.AlignCenter),
-                (f"{confirmed}/{total}", Qt.AlignmentFlag.AlignCenter),
+                (cores_text, Qt.AlignmentFlag.AlignCenter),
+                (confirmed_text, Qt.AlignmentFlag.AlignCenter),
                 (span_str(sess.created_at, sess.updated_at), Qt.AlignmentFlag.AlignCenter),
                 (sess.bios_version or "-", Qt.AlignmentFlag.AlignCenter),
             ]
@@ -879,7 +888,10 @@ class HistoryTab(QWidget):
                 cell = _item(str(text), align)
                 if col == 1:
                     cell.setForeground(QColor(status_color))
-                elif col == 4 and total > 0 and confirmed == total:
+                elif col == 4 and unreadable is not None:
+                    cell.setForeground(QColor(theme.COLOR_FAIL))
+                    cell.setToolTip(unreadable)
+                elif col == 4 and all_confirmed:
                     cell.setForeground(QColor(theme.COLOR_PASS))
                 if col == 0:
                     cell.setData(Qt.ItemDataRole.UserRole, row)
@@ -900,11 +912,19 @@ class HistoryTab(QWidget):
             return
 
         self._selected_tuner_session = sess
-        core_states = tp.load_core_states(self._db, sess.id)
-        has_offsets = any(cs.best_offset is not None for cs in core_states.values())
         self._tuner_actions_row.setVisible(True)
-        self._load_co_btn.setEnabled(has_offsets)
         self._expand_detail()
+        try:
+            core_states = tp.load_core_states(self._db, sess.id)
+        except CorruptSessionError as e:
+            self._load_co_btn.setEnabled(False)
+            self._detail_info.setText(f"Session #{sess.id} unreadable: {e.detail}")
+            self._detail_info.setStyleSheet(f"color: {theme.COLOR_FAIL}; padding: 2px;")
+            self._core_results_table.setRowCount(0)
+            self._events_log.setPlainText(str(e))
+            return
+        has_offsets = any(cs.best_offset is not None for cs in core_states.values())
+        self._load_co_btn.setEnabled(has_offsets)
 
         # Info line
         try:
@@ -923,8 +943,6 @@ class HistoryTab(QWidget):
         self._detail_info.setText("  |  ".join(info_parts))
         self._detail_info.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 2px;")
 
-        # Core states table
-        core_states = tp.load_core_states(self._db, sess.id)
         test_log = tp.get_test_log(self._db, sess.id)
 
         # Count tests per core

@@ -109,7 +109,7 @@ def _flag_value(args: list[str], flag: str):
 
 
 def cmd_status(db=None) -> int:
-    from corecycler.history.db import HistoryDB
+    from corecycler.history.db import CorruptSessionError, HistoryDB
     from corecycler.tuner import persistence as tp
 
     own_db = db is None
@@ -121,12 +121,14 @@ def cmd_status(db=None) -> int:
             print("no tuner sessions")
             return EXIT_COMPLETED
         for sess in sessions:
-            states = tp.load_core_states(db, sess.id)
-            done = sum(1 for cs in states.values() if cs.phase in ("confirmed", "hardened"))
-            print(
-                f"#{sess.id}  {sess.status:<12} {done}/{len(states)} cores done  "
-                f"created {sess.created_at[:19]}  {sess.cpu_model or ''}"
-            )
+            try:
+                states = tp.load_core_states(db, sess.id)
+            except CorruptSessionError as e:
+                progress = f"unreadable: {e.detail}"
+            else:
+                done = sum(1 for cs in states.values() if cs.phase in ("confirmed", "hardened"))
+                progress = f"{done}/{len(states)} cores done"
+            print(f"#{sess.id}  {sess.status:<12} {progress}  created {sess.created_at[:19]}  {sess.cpu_model or ''}")
         return EXIT_COMPLETED
     finally:
         if own_db:
@@ -172,7 +174,7 @@ def cmd_run(
 
     from corecycler.engine.backends import get_backend, load_all
     from corecycler.engine.topology import detect_topology
-    from corecycler.history.db import HistoryDB
+    from corecycler.history.db import CorruptSessionError, HistoryDB
     from corecycler.tuner import persistence as tp
     from corecycler.tuner.config import TunerConfig
     from corecycler.tuner.engine import TunerEngine
@@ -256,9 +258,7 @@ def cmd_run(
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    if resume_id is not None:
-        engine.resume(resume_id)
-    elif auto_resume:
+    if resume_id is None and auto_resume:
         session = tp.pick_auto_resume_session(db)
         if session is None:
             sessions = db.list_resumable_tuner_sessions()
@@ -266,9 +266,16 @@ def cmd_run(
                 print("corecycler: no resumable session", file=sys.stderr)
                 return EXIT_REFUSED
             session = sessions[0]
-        engine.resume(session.id)
-    else:
+        resume_id = session.id
+    if resume_id is None:
         engine.start()
+    else:
+        try:
+            tp.load_core_states(db, resume_id)
+        except CorruptSessionError as e:
+            print(f"corecycler: cannot resume: {e}", file=sys.stderr)
+            return EXIT_REFUSED
+        engine.resume(resume_id)
 
     if "exit" in outcome:
         return outcome["exit"]

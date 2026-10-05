@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from corecycler.history.db import (
@@ -716,6 +718,88 @@ class TestMigrationCrashSafety:
             assert version == HistoryDB.SCHEMA_VERSION
         finally:
             db.close()
+
+
+def _half_done_migration(conn):
+    conn.execute("CREATE TABLE half_done (x INTEGER)")
+    conn.execute("SELECT no_such_function()")
+
+
+class TestMigrationAtomicity:
+    @pytest.mark.parametrize(
+        "migration",
+        [_half_done_migration, "CREATE TABLE half_done (x INTEGER);\nSELECT no_such_function();"],
+        ids=["callable", "script"],
+    )
+    def test_a_failed_migration_leaves_the_database_as_it_was(self, tmp_path, monkeypatch, migration):
+        path = tmp_path / "history.db"
+        HistoryDB(path).close()
+        previous = HistoryDB.SCHEMA_VERSION - 1
+        conn = sqlite3.connect(path)
+        conn.execute("UPDATE schema_version SET version=?", (previous,))
+        conn.commit()
+        conn.close()
+        monkeypatch.setitem(HistoryDB._MIGRATIONS, HistoryDB.SCHEMA_VERSION, migration)
+
+        with pytest.raises(sqlite3.OperationalError, match="no such function"):
+            HistoryDB(path)
+
+        conn = sqlite3.connect(path)
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        half_done = conn.execute("SELECT count(*) FROM sqlite_master WHERE name='half_done'").fetchone()[0]
+        conn.close()
+        assert version == previous
+        assert half_done == 0
+
+
+class TestMigrationV5:
+    def test_a_duplicate_context_still_referenced_moves_onto_the_kept_one(self, tmp_path, monkeypatch):
+        path = tmp_path / "v4.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(_V1_SCHEMA)
+        conn.close()
+        with monkeypatch.context() as at_v4:
+            at_v4.setattr(HistoryDB, "SCHEMA_VERSION", 4)
+            HistoryDB(path).close()
+
+        conn = sqlite3.connect(path)
+
+        def context(co_hash):
+            return conn.execute(
+                "INSERT INTO tuning_contexts (created_at, bios_version, co_hash) VALUES (?,?,?)",
+                ("2025-01-01T00:00:00+00:00", "2401", co_hash),
+            ).lastrowid
+
+        def run(context_id):
+            return conn.execute(
+                "INSERT INTO runs (started_at, context_id) VALUES (?,?)",
+                ("2025-01-02T00:00:00+00:00", context_id),
+            ).lastrowid
+
+        kept = context("same")
+        duplicate = context("same")
+        other = context("other")
+        run_on_duplicate = run(duplicate)
+        run_on_other = run(other)
+        session_on_duplicate = conn.execute(
+            "INSERT INTO tuner_sessions (created_at, updated_at, context_id) VALUES (?,?,?)",
+            ("2025-01-03T00:00:00+00:00", "2025-01-03T00:00:00+00:00", duplicate),
+        ).lastrowid
+        conn.commit()
+        conn.close()
+
+        db = HistoryDB(path)
+        try:
+            version = db._execute_raw("SELECT version FROM schema_version").fetchone()[0]
+            contexts = sorted(c.id for c in db.list_contexts())
+            runs = {r.id: r.context_id for r in db.list_runs()}
+            session = db.get_tuner_session(session_on_duplicate)
+        finally:
+            db.close()
+        assert version == HistoryDB.SCHEMA_VERSION
+        assert contexts == sorted([kept, other])
+        assert runs == {run_on_duplicate: kept, run_on_other: other}
+        assert session.context_id == kept
 
 
 class TestAdoptLegacyRootDb:

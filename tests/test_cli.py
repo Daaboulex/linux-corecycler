@@ -133,6 +133,42 @@ class TestStatus:
         assert "1/2 cores done" in out
 
 
+def _unreadable_session(db, status="paused"):
+    sid = tp.create_session(db, TunerConfig(), "", "")
+    tp.save_core_state(db, sid, CoreState(core_id=0))
+    tp.update_session_status(db, sid, status)
+    db._execute_raw("UPDATE tuner_core_states SET phase='future_phase' WHERE session_id=?", (sid,))
+    return sid
+
+
+class TestUnreadableSession:
+    def test_status_lists_it_as_unreadable_and_the_rest_as_usual(self, db, capsys):
+        readable = tp.create_session(db, TunerConfig(), "", "")
+        unreadable = _unreadable_session(db)
+        assert cli.cmd_status(db=db) == cli.EXIT_COMPLETED
+        lines = capsys.readouterr().out.splitlines()
+        flagged = next(line for line in lines if line.startswith(f"#{unreadable} "))
+        assert "unreadable" in flagged
+        assert "future_phase" in flagged
+        assert any(line.startswith(f"#{readable} ") and "0/0 cores done" in line for line in lines)
+
+    @pytest.mark.parametrize("by_id", [True, False], ids=["by-id", "auto"])
+    def test_resuming_it_is_refused_with_the_same_text(self, db, capsys, by_id):
+        unreadable = _unreadable_session(db, status="running")
+        made: list[FakeEngine] = []
+
+        def factory(_db, _config):
+            made.append(FakeEngine("completes"))
+            return made[-1]
+
+        code = cli.cmd_run(None, unreadable if by_id else None, not by_id, engine_factory=factory, db=db)
+        assert code == cli.EXIT_REFUSED
+        assert made[0].resumed_with is None
+        refusal = capsys.readouterr().err
+        assert f"session {unreadable}" in refusal
+        assert "future_phase" in refusal
+
+
 class TestRunOutcomes:
     def _run(self, db, behavior, **kw):
         made = []

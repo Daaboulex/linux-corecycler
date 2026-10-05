@@ -327,6 +327,50 @@ class TestResume:
         assert not eng.resume.called
 
 
+def _unreadable_session(db):
+    sid = _seed_session(db, "paused")
+    tp.save_core_state(db, sid, CoreState(core_id=0))
+    db._execute_raw("UPDATE tuner_core_states SET phase='future_phase' WHERE session_id=?", (sid,))
+    return sid
+
+
+def _listing_dialog(monkeypatch, labels):
+    real = tt.QDialog
+
+    class _Dialog(real):
+        def exec(self):
+            from PySide6.QtWidgets import QListWidget
+
+            widget = self.findChild(QListWidget)
+            labels.extend(widget.item(row).text() for row in range(widget.count()))
+            return real.DialogCode.Rejected
+
+    monkeypatch.setattr(tt, "QDialog", _Dialog)
+
+
+class TestUnreadableSession:
+    def test_the_picker_lists_it_as_unreadable(self, tab, monkeypatch):
+        readable = _seed_session(tab._db, "paused")
+        unreadable = _unreadable_session(tab._db)
+        labels: list[str] = []
+        _listing_dialog(monkeypatch, labels)
+        tab._on_resume()
+        flagged = next(label for label in labels if label.startswith(f"#{unreadable} "))
+        assert "unreadable" in flagged
+        assert "future_phase" in flagged
+        assert any(label.startswith(f"#{readable} ") and "0/0 cores confirmed" in label for label in labels)
+
+    def test_resuming_it_is_refused_with_the_same_text(self, tab, monkeypatch, no_modal):
+        unreadable = _unreadable_session(tab._db)
+        engine_cls = MagicMock()
+        monkeypatch.setattr(tt, "TunerEngine", engine_cls)
+        tab._resume_session(unreadable)
+        assert not engine_cls.called
+        refusal = no_modal.warning.call_args.args[2]
+        assert f"session {unreadable}" in refusal
+        assert "future_phase" in refusal
+
+
 class TestResumeSession:
     def test_refuses_without_smu(self, db, no_modal):
         tab = _tab(db=db, topology=_topo(), smu=_smu(available=False))

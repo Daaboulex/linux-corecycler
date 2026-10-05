@@ -119,6 +119,7 @@ class MainWindow(QMainWindow):
 
         # History database
         self._history_db: HistoryDB | None = None
+        self._history_problem: str | None = None
         if self._settings.record_history:
             try:
                 self._history_db = HistoryDB()
@@ -151,9 +152,10 @@ class MainWindow(QMainWindow):
                         log.info("BIOS version changed: %s -> %s", old, current)
                 except Exception:
                     log.debug("Failed to detect BIOS change", exc_info=True)
-            except Exception:
+            except Exception as e:
                 log.exception("Failed to initialize history database")
                 self._history_db = None
+                self._history_problem = f"History is off: {e}"
 
         self._detect_cpu()
         self._setup_ui()
@@ -301,6 +303,10 @@ class MainWindow(QMainWindow):
             )
             priv_label.setStyleSheet(f"color: {theme.COLOR_WARN_SOFT}; font: 10px monospace;")
             self._status_bar.addPermanentWidget(priv_label)
+        if self._history_problem is not None:
+            history_label = QLabel(f"  {self._history_problem}")
+            history_label.setStyleSheet(f"color: {theme.COLOR_FAIL}; font: 10px monospace;")
+            self._status_bar.addPermanentWidget(history_label)
 
     def _setup_timer(self) -> None:
         self._elapsed_timer = QTimer(self)
