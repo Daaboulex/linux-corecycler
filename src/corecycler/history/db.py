@@ -8,6 +8,7 @@ close() runs one more PASSIVE checkpoint and logs that.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sqlite3
@@ -19,6 +20,8 @@ from typing import TYPE_CHECKING
 from corecycler.config.paths import fix_sudo_ownership, user_home
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from corecycler.tuner.state import CoreState, TunerSession
 
 DATA_DIR = user_home() / ".local" / "share" / "corecycler" / "history"
@@ -224,7 +227,8 @@ class HistoryDB:
     def _create_schema(self) -> None:
         cur = self.__conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
         if cur.fetchone() is None:
-            self.__conn.executescript(self._DDL_FRESH)
+            with self.transaction() as conn:
+                conn.executescript(self._DDL_FRESH)
             return
 
         version = self.__conn.execute("SELECT version FROM schema_version").fetchone()[0]
@@ -234,18 +238,30 @@ class HistoryDB:
             migration = self._MIGRATIONS.get(target_version)
             if migration is None:
                 raise RuntimeError(f"Missing migration for version {target_version}")
-            self.__conn.execute("BEGIN IMMEDIATE")
-            try:
+            with self.transaction() as conn:
                 if callable(migration):
-                    migration(self.__conn)
+                    migration(conn)
                 else:
-                    self.__conn.executescript(migration)
-                self.__conn.execute("UPDATE schema_version SET version=?", (target_version,))
-                self.__conn.execute("COMMIT")
-            except BaseException:
-                if self.__conn.in_transaction:
-                    self.__conn.execute("ROLLBACK")
-                raise
+                    conn.executescript(migration)
+                if not conn.in_transaction:
+                    raise RuntimeError(f"Migration to version {target_version} ended its own transaction")
+                conn.execute("UPDATE schema_version SET version=?", (target_version,))
+
+    @contextlib.contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        conn = self.__conn
+        if conn.in_transaction:
+            raise RuntimeError("HistoryDB.transaction() does not nest")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+            if not conn.in_transaction:
+                raise RuntimeError("The transaction ended before its commit")
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
 
     # Full schema for fresh databases (current version)
     _DDL_FRESH = (

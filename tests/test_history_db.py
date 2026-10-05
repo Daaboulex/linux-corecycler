@@ -751,6 +751,72 @@ class TestMigrationAtomicity:
         assert version == previous
         assert half_done == 0
 
+    def test_a_failed_first_creation_leaves_no_tables_and_the_next_open_builds_them_all(self, tmp_path, monkeypatch):
+        path = tmp_path / "history.db"
+        complete = HistoryDB._DDL_FRESH
+        monkeypatch.setattr(HistoryDB, "_DDL_FRESH", complete + "\nSELECT no_such_function();")
+
+        with pytest.raises(sqlite3.OperationalError, match="no such function"):
+            HistoryDB(path)
+
+        conn = sqlite3.connect(path)
+        left = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        conn.close()
+        assert left == []
+
+        monkeypatch.setattr(HistoryDB, "_DDL_FRESH", complete)
+        HistoryDB(path).close()
+        conn = sqlite3.connect(path)
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        sessions = conn.execute("SELECT count(*) FROM tuner_sessions").fetchone()[0]
+        conn.close()
+        assert version == HistoryDB.SCHEMA_VERSION
+        assert sessions == 0
+
+    def test_a_migration_that_commits_on_its_own_does_not_move_the_version(self, tmp_path, monkeypatch):
+        path = tmp_path / "history.db"
+        HistoryDB(path).close()
+        previous = HistoryDB.SCHEMA_VERSION - 1
+        conn = sqlite3.connect(path)
+        conn.execute("UPDATE schema_version SET version=?", (previous,))
+        conn.commit()
+        conn.close()
+        own_commit = "CREATE TABLE IF NOT EXISTS early (x INTEGER);\nCOMMIT;"
+        monkeypatch.setitem(HistoryDB._MIGRATIONS, HistoryDB.SCHEMA_VERSION, own_commit)
+
+        with pytest.raises(RuntimeError, match=f"version {HistoryDB.SCHEMA_VERSION} ended its own transaction"):
+            HistoryDB(path)
+
+        conn = sqlite3.connect(path)
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        conn.close()
+        assert version == previous
+
+
+class TestTransaction:
+    def test_a_nested_transaction_is_refused_and_the_outer_one_rolls_back(self, tmp_path):
+        db = HistoryDB(tmp_path / "history.db")
+        try:
+            with pytest.raises(RuntimeError, match="does not nest"), db.transaction() as conn:
+                conn.execute("CREATE TABLE outer_work (x INTEGER)")
+                with db.transaction():
+                    pass
+            with db.transaction() as conn:
+                left = conn.execute("SELECT count(*) FROM sqlite_master WHERE name='outer_work'").fetchone()[0]
+            assert left == 0
+        finally:
+            db.close()
+
+    def test_a_body_that_ends_the_transaction_is_refused(self, tmp_path):
+        db = HistoryDB(tmp_path / "history.db")
+        try:
+            with pytest.raises(RuntimeError, match="ended before its commit"), db.transaction() as conn:
+                conn.execute("COMMIT")
+            with db.transaction() as conn:
+                assert conn.in_transaction
+        finally:
+            db.close()
+
 
 class TestMigrationV5:
     def test_a_duplicate_context_still_referenced_moves_onto_the_kept_one(self, tmp_path, monkeypatch):
