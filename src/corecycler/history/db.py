@@ -1,7 +1,9 @@
 """Crash-safe test history database using SQLite WAL mode.
 
-Every write is an auto-commit transaction.  WAL + synchronous=NORMAL gives
-process-crash safety with good performance — data survives kill -9 and OOM.
+WAL + synchronous=FULL syncs every commit before it returns, so a committed
+row survives a power loss or a freeze, not only kill -9 and OOM. SQLite's
+automatic PASSIVE checkpoint bounds the WAL; Python cannot read its result, so
+close() runs one more PASSIVE checkpoint and logs that.
 """
 
 from __future__ import annotations
@@ -166,6 +168,7 @@ class HistoryDB:
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
+        self._closed = False
         if str(self._db_path) != ":memory:":
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -175,7 +178,7 @@ class HistoryDB:
         )
         self.__conn.row_factory = sqlite3.Row
         self.__conn.execute("PRAGMA journal_mode=WAL")
-        self.__conn.execute("PRAGMA synchronous=NORMAL")
+        self.__conn.execute("PRAGMA synchronous=FULL")
         self.__conn.execute("PRAGMA foreign_keys=ON")
         # Sudo and non-sudo runs share ONE database; a second writer must wait
         # for the WAL lock instead of failing with "database is locked".
@@ -1223,8 +1226,9 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
         exact (core, value) that was live at crash time. ``survived`` is True only
         when ``value`` is within the core's already-proven-safe envelope (0 is
         always safe); a value in new, more-aggressive territory is journaled
-        un-survived until a test completes with it resident. A WAL checkpoint
-        forces the record to durable storage before the caller touches hardware.
+        un-survived until a test completes with it resident. The commit is
+        synced before this returns, so the record is durable before the caller
+        touches hardware.
         """
         now = self._now_iso()
         self.__conn.execute(
@@ -1238,17 +1242,6 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
             """,
             (session_id, core_id, value, int(survived), now),
         )
-        # Force the intent to disk before the caller writes the value to hardware.
-        self.__conn.execute("PRAGMA wal_checkpoint(FULL)")
-
-    def checkpoint(self) -> None:
-        """Flush the WAL to the main database file.
-
-        For writes that must survive a hard crash moments later (the in-test
-        marks before a validation worker starts): a committed WAL frame alone
-        can still be lost to a freeze if the kernel never flushed it.
-        """
-        self.__conn.execute("PRAGMA wal_checkpoint(FULL)")
 
     def journal_mark_survived(self, session_id: int, exclude_cores: tuple[int, ...] | list[int] = ()) -> None:
         """Mark every resident CO value for the session as survived.
@@ -1375,7 +1368,6 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
             "UPDATE tuner_sessions SET hunting_core=?, updated_at=? WHERE id=?",
             (core_id, self._now_iso(), session_id),
         )
-        self.__conn.execute("PRAGMA wal_checkpoint(FULL)")
 
     def get_resume_crash_streak(self, session_id: int) -> int:
         row = self.__conn.execute("SELECT resume_crash_streak FROM tuner_sessions WHERE id=?", (session_id,)).fetchone()
@@ -1923,7 +1915,14 @@ CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
         self.__conn.execute("VACUUM")
 
     def close(self) -> None:
-        self.__conn.close()
+        if self._closed:
+            return
+        try:
+            busy, wal_frames, checkpointed = self.__conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            log.info("WAL checkpoint at close: busy=%d log=%d checkpointed=%d", busy, wal_frames, checkpointed)
+        finally:
+            self.__conn.close()
+            self._closed = True
         if str(self._db_path) != ":memory:":
             # WAL sidecars may have been recreated (root-owned) during the run.
             fix_sudo_ownership(

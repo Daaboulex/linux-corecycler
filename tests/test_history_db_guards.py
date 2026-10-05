@@ -7,7 +7,9 @@ raise or return a safe default, never quietly hand back nonsense.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+import time
 
 import pytest
 
@@ -50,6 +52,84 @@ class TestOpenGuards:
                 HistoryDB(path)
         finally:
             HistoryDB._MIGRATIONS = original
+
+
+def _reader_holding_a_snapshot(path):
+    reader = sqlite3.connect(path, isolation_level=None)
+    reader.execute("BEGIN")
+    reader.execute("SELECT * FROM tuner_sessions").fetchall()
+    return reader
+
+
+class _CheckpointFails:
+    def __init__(self, real: sqlite3.Connection) -> None:
+        self.real = real
+        self.closed = False
+
+    def execute(self, sql, *args):
+        if sql.startswith("PRAGMA wal_checkpoint"):
+            raise sqlite3.OperationalError("disk I/O error")
+        return self.real.execute(sql, *args)
+
+    def close(self) -> None:
+        self.closed = True
+        self.real.close()
+
+
+class TestDurability:
+    def test_a_failing_close_checkpoint_still_closes_and_says_why(self, tmp_path):
+        db = HistoryDB(tmp_path / "history.db")
+        failing = _CheckpointFails(db._HistoryDB__conn)
+        db._HistoryDB__conn = failing
+        with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+            db.close()
+        assert failing.closed is True
+        db.close()
+
+    def test_every_commit_is_synced(self, tmp_path):
+        db = HistoryDB(tmp_path / "history.db")
+        synchronous = db._HistoryDB__conn.execute("PRAGMA synchronous").fetchone()[0]
+        db.close()
+        assert synchronous == 2
+
+    def test_a_reader_holding_a_snapshot_does_not_stall_a_co_write(self, tmp_path):
+        path = tmp_path / "history.db"
+        db = HistoryDB(path)
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        reader = _reader_holding_a_snapshot(path)
+        started = time.monotonic()
+        tp.journal_co_intent(db, sid, 0, -5, False)
+        elapsed = time.monotonic() - started
+        reader.execute("ROLLBACK")
+        reader.close()
+        fresh = sqlite3.connect(path)
+        rows = fresh.execute("SELECT core_id, value FROM tuner_co_journal WHERE session_id=?", (sid,)).fetchall()
+        fresh.close()
+        db.close()
+        assert elapsed < 1.0
+        assert rows == [(0, -5)]
+
+    def test_closing_logs_the_checkpoint_result(self, tmp_path, caplog):
+        path = tmp_path / "history.db"
+        db = HistoryDB(path)
+        reader = _reader_holding_a_snapshot(path)
+        tp.create_session(db, TunerConfig(), "", "")
+        caplog.set_level(logging.INFO, logger="corecycler.history.db")
+        started = time.monotonic()
+        db.close()
+        elapsed = time.monotonic() - started
+        reader.close()
+        closing = [r for r in caplog.records if r.name == "corecycler.history.db" and r.funcName == "close"]
+        assert elapsed < 1.0
+        assert len(closing) == 1
+        busy, wal_frames, checkpointed = closing[0].args
+        assert busy == 0
+        assert 0 <= checkpointed < wal_frames
+
+    def test_a_second_close_is_a_no_op(self, tmp_path):
+        db = HistoryDB(tmp_path / "history.db")
+        db.close()
+        db.close()
 
 
 class TestMissingRows:

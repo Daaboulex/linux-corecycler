@@ -3396,7 +3396,6 @@ class TunerEngine(QObject):
         stressed set.
         """
         self._cores_under_stress = list(cores)
-        marked = False
         for core_id in cores:
             cs = self._core_states.get(core_id)
             if cs is None:
@@ -3404,14 +3403,6 @@ class TunerEngine(QObject):
             cs.in_test = True
             if self._session_id is not None:
                 tp.save_core_state(self._db, self._session_id, cs)
-                marked = True
-        if marked:
-            # The mark is the ONE signal that attributes a hard crash during
-            # validation; a WAL commit alone can be lost to a freeze (the CO
-            # journal's checkpoint runs BEFORE this write, so everything up to
-            # it survives while the mark evaporates — observed live). Force it
-            # to disk before any stress starts.
-            tp.checkpoint(self._db)
 
     def _clear_cores_under_stress(self) -> None:
         """Clear and persist in_test for every core marked under validation stress.

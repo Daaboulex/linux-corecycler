@@ -2155,35 +2155,6 @@ class TestUnattributedIncidentOnResume:
         assert eng._status == "running"
 
 
-# ---------------------------------------------------------------------------
-# The in_test mark must be durable, not merely committed
-# ---------------------------------------------------------------------------
-
-
-class TestInTestMarkDurability:
-    def test_mark_cores_under_stress_forces_wal_flush(self, db, topo, smu, mock_backend, monkeypatch):
-        """A freeze seconds after the mark ate the WAL frame in live operation
-        (the CO journal checkpoint ran BEFORE the mark, so everything else
-        survived) — the mark must be followed by its own checkpoint."""
-        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
-        eng = make_engine(db, topo, smu, mock_backend)
-        eng._session_id = sid
-        eng._core_states = {
-            0: CoreState(
-                core_id=0,
-                phase=TunerPhase.CONFIRMED,
-                current_offset=-5,
-                best_offset=-5,
-                baseline_offset=0,
-            )
-        }
-        flushed = []
-        monkeypatch.setattr(db, "checkpoint", lambda: flushed.append(1))
-        eng._mark_cores_under_stress([0])
-        assert flushed
-        assert db.get_tuner_core_states(sid)[0].in_test
-
-
 class TestReopeningAQuarantinedSession:
     """Picked by hand, a quarantined session continues on proven ground only."""
 
