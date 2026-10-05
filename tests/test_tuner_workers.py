@@ -7,6 +7,7 @@ launching a single stress process.
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -160,6 +161,30 @@ class TestTunerWorker:
         worker.run()
         assert seen[0].result.outcome is Outcome.NOT_STARTED
         assert "work dir vanished" in seen[0].result.detail
+
+    def test_a_scheduler_that_raises_stops_the_stretch_sampler(self, collect, monkeypatch):
+        monkeypatch.setattr(eng, "_STRETCH_WARMUP_SECONDS", 0.05)
+        monkeypatch.setattr(eng, "_STRETCH_SAMPLE_INTERVAL", 0.05)
+        samplers: list[threading.Thread] = []
+
+        class Recorded(threading.Thread):
+            def start(self) -> None:
+                samplers.append(self)
+                super().start()
+
+        monkeypatch.setattr(eng.threading, "Thread", Recorded)
+        msr = MagicMock()
+        msr.is_available.return_value = True
+        msr.read_clock_stretch.return_value = {}
+        scheduler = MagicMock()
+        scheduler.run.side_effect = RuntimeError("scheduler blew up")
+        worker = _TunerWorker(0, 0, scheduler, msr=msr)
+        seen = collect(worker)
+        worker.run()
+        assert seen[0].result.outcome is Outcome.NOT_STARTED
+        assert len(samplers) == 1
+        samplers[0].join(timeout=1.0)
+        assert not samplers[0].is_alive()
 
     def test_a_live_msr_contributes_a_peak_stretch(self, collect, monkeypatch):
         monkeypatch.setattr(eng, "_STRETCH_WARMUP_SECONDS", 0)

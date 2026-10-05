@@ -182,8 +182,10 @@ class _TunerWorker(QThread):
                 )
                 sampler.start()
 
-            results = self._scheduler.run()
-            stop_event.set()
+            try:
+                results = self._scheduler.run()
+            finally:
+                stop_event.set()
             peak_stretch = max(stretch_samples) if stretch_samples else 0.0
             lanes = tuple(found[0] for _core, found in sorted(results.items()) if found)
             if not results.get(self._core_id):
