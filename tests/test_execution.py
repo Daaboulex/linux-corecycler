@@ -7,6 +7,7 @@ import ctypes.util
 import itertools
 import os
 import re
+import resource
 import shutil
 import signal
 import subprocess
@@ -1579,6 +1580,23 @@ class TestPreexec:
         done = subprocess.run(_child("print(1)"), preexec_fn=preexec, capture_output=True, text=True, check=False)
         assert done.stdout == "1\n"
 
+    def test_a_payload_may_not_take_realtime_priority(self):
+        done = subprocess.run(
+            _child("import resource; print(resource.getrlimit(resource.RLIMIT_RTPRIO))"),
+            preexec_fn=execution.make_preexec(),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert done.stdout == "(0, 0)\n"
+
+    def test_the_preexec_drops_the_realtime_limit_to_zero(self, monkeypatch):
+        limits = []
+        monkeypatch.setattr(os, "setsid", lambda: None)
+        monkeypatch.setattr(resource, "setrlimit", lambda which, value: limits.append((which, value)))
+        execution.make_preexec()()
+        assert limits == [(resource.RLIMIT_RTPRIO, (0, 0))]
+
     def test_a_failed_parent_death_signal_raises_in_the_child(self, monkeypatch):
         class RefusesPrctl:
             def prctl(self, *_args):
@@ -1587,6 +1605,7 @@ class TestPreexec:
         monkeypatch.setattr(execution, "_libc", RefusesPrctl)
         preexec = execution.make_preexec()
         monkeypatch.setattr(os, "setsid", lambda: None)
+        monkeypatch.setattr(resource, "setrlimit", lambda _which, _value: None)
         with pytest.raises(OSError, match="PR_SET_PDEATHSIG"):
             preexec()
 

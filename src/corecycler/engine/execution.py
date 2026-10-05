@@ -9,6 +9,7 @@ import functools
 import logging
 import math
 import os
+import resource
 import shutil
 import signal
 import subprocess
@@ -192,6 +193,7 @@ def make_preexec():
 
     def _preexec():
         os.setsid()
+        resource.setrlimit(resource.RLIMIT_RTPRIO, (0, 0))
         if libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL) != 0:
             raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
 

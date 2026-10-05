@@ -208,6 +208,7 @@ class TestMemoryStressLifecycle:
 
     def test_the_child_isolates_itself_and_dies_with_its_parent(self, tab, monkeypatch):
         import os
+        import resource
         import signal
         import subprocess
 
@@ -226,8 +227,11 @@ class TestMemoryStressLifecycle:
 
         preexec = popen.call_args.kwargs["preexec_fn"]
         sessions = []
+        limits = []
         monkeypatch.setattr(os, "setsid", lambda: sessions.append(True))
+        monkeypatch.setattr(resource, "setrlimit", lambda which, value: limits.append((which, value)))
         preexec()
+        assert limits == [(resource.RLIMIT_RTPRIO, (0, 0))]
         assert sessions == [True]
         assert libc.prctl.call_args.args == (1, signal.SIGKILL)
 
