@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from corecycler.engine import detector as detector_mod
 from corecycler.engine.detector import (
     CoreMachineCheck,
     ErrorDetector,
@@ -137,6 +138,25 @@ class _AlwaysOverruns:
         if self.reads > 100:
             raise AssertionError("the reader kept reading a log that only overruns")
         raise BrokenPipeError(errno.EPIPE, "Broken pipe")
+
+    def close(self) -> None:
+        self.reads = 0
+
+
+class _NeverRunsDry:
+    GIVE_UP_AFTER = 100_000
+
+    def __init__(self, *, overruns: bool) -> None:
+        self.overruns = overruns
+        self.reads = 0
+
+    def read(self, _size: int):
+        self.reads += 1
+        if self.reads > self.GIVE_UP_AFTER:
+            raise AssertionError("the reader kept reading a log that never runs dry")
+        if self.overruns and self.reads % 2:
+            raise BrokenPipeError(errno.EPIPE, "Broken pipe")
+        return _kmsg(SOFT_LOCKUP[:1], first_seq=self.reads).encode()
 
     def close(self) -> None:
         self.reads = 0
@@ -350,6 +370,23 @@ class TestKmsgReader:
         detector._file = _AlwaysOverruns()
         assert detector.read_new().problem == "kernel log overran; records lost"
 
+    def test_a_flood_that_never_runs_dry_is_read_in_bounded_bites(self, detector):
+        detector.close()
+        flood = _NeverRunsDry(overruns=True)
+        detector._file = flood
+        first = detector.read_new()
+        bite = flood.reads
+        assert bite <= detector_mod.KMSG_MAX_READS
+        assert first.events
+        detector.read_new()
+        assert flood.reads > bite
+
+    def test_a_final_read_that_leaves_records_unread_is_a_problem(self, detector):
+        detector.close()
+        detector._file = _NeverRunsDry(overruns=False)
+        assert detector.read_new().problem is None
+        assert detector.read_new(final=True).problem == "kernel log flood: records left unread"
+
     def test_an_unreadable_kernel_log_is_a_problem_not_silence(self, tmp_path):
         reader = ErrorDetector(tmp_path / "absent")
         reader.reset()
@@ -369,6 +406,16 @@ class TestKmsgReader:
         reader = ErrorDetector(fifo)
         reader.reset()
         assert "fifo" in reader.read_new().problem
+
+    def test_a_path_the_reader_refuses_after_opening_leaves_no_descriptor_open(self, tmp_path):
+        reader = ErrorDetector(tmp_path)
+        before = len(os.listdir("/proc/self/fd"))
+        for _ in range(50):
+            reader.reset()
+        after = len(os.listdir("/proc/self/fd"))
+        assert "unreadable" in reader.read_new().problem
+        reader.close()
+        assert after == before
 
     def test_a_read_before_reset_is_a_problem(self, kmsg):
         read = ErrorDetector(kmsg).read_new()

@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 
 KMSG = Path("/dev/kmsg")
 KMSG_READ_SIZE = 8192
+KMSG_MAX_READS = 4096
 KERNEL_FACILITY = 0
 STATUS_UC = 1 << 61
 STATUS_DEFERRED = 1 << 44
@@ -59,6 +60,7 @@ _TROUBLE = re.compile(
 _KMSG_RECORD = re.compile(r"(\d+),\d+,(\d+),[^;]*;(.*)")
 _JOURNAL_LINE = re.compile(r"\s*(\d+(?:\.\d+)?)\s+\S+\s+kernel:\s?(.*)")
 _NOT_OPEN = "kernel log not open: read before reset"
+_FLOOD = "kernel log flood: records left unread"
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,7 +200,7 @@ class ErrorDetector:
     def reset(self) -> None:
         self.close()
         try:
-            self._file = io.FileIO(os.open(self._path, os.O_RDONLY | os.O_NONBLOCK), "r")
+            self._file = io.FileIO(self._path, "r", opener=lambda path, flags: os.open(path, flags | os.O_NONBLOCK))
             self._file.seek(0, os.SEEK_END)
         except OSError as exc:
             self.close()
@@ -217,7 +219,7 @@ class ErrorDetector:
         lines = list(self._carry)
         problems: list[str] = []
         overran = False
-        while True:
+        for _ in range(KMSG_MAX_READS):
             try:
                 chunk = self._file.read(KMSG_READ_SIZE)
             except BrokenPipeError:
@@ -235,6 +237,9 @@ class ErrorDetector:
             found, malformed = _kmsg_lines(chunk)
             lines.extend(found)
             problems.extend(f"kernel log {self._path} record malformed: {raw[:160]!r}" for raw in malformed)
+        else:
+            if final:
+                problems.append(_FLOOD)
         events, self._carry = parse_kernel_records(lines, final=final)
         return KernelRead(tuple(events), problems[0] if problems else None)
 
