@@ -21,7 +21,7 @@ from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.engine import TunerEngine, WorkerReport
 from corecycler.tuner.state import CoreState, TunerPhase
-from tests._machine import core_bank_record, this_boot
+from tests._machine import core_bank_record, journaled, this_boot
 
 # Real kernel MCE line shape (kernel: prefix stripped).
 CPU5_CORRECTED = (
@@ -99,7 +99,7 @@ def _seed_hardened_validating(eng, db, best: dict[int, int], baselines: dict[int
         )
         eng._core_states[core_id] = cs
         tp.save_core_state(db, sid, cs)
-        db.journal_co_intent(sid, core_id, offset, survived=True)
+        journaled(db, sid, core_id, offset, survived=True)
     db.update_tuner_session_status(sid, "validating")
     return tp.get_session(db, sid)
 
@@ -376,15 +376,13 @@ class TestForeignMceEvidence:
 
     def test_survival_marking_excludes_named_cores(self, db):
         sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
-        db.journal_co_intent(sid, 0, -20, survived=False)
-        db.journal_co_intent(sid, 5, -30, survived=False)
+        for core_id, value in ((0, -20), (5, -30)):
+            db.journal_confirm(journaled(db, sid, core_id, value))
 
-        db.journal_mark_survived(sid, exclude_cores=[5])
+        db.journal_mark_survived(sid, boot_id=this_boot(), exclude_cores=[5])
 
-        survived = db.journal_survived_values(sid)
-        assert 0 in survived
-        assert 5 not in survived
-        assert (5, -30) in db.journal_suspects(sid)
+        assert db.journal_proven_values(sid, -1) == {0: -20}
+        assert tp.crash_suspects(tp.resident_at_death(db.journal_rows(sid, this_boot())), -1) == {5: -30}
 
 
 class TestDriftAgainstJournal:
@@ -470,25 +468,21 @@ class TestUnattributedMcePayload:
         assert _has_unattributed_mce(_mce_events(5)) is False
         assert _has_unattributed_mce(()) is False
 
-    def _mark_survived_calls(self, db, topo_single_ccd, mock_backend, events, monkeypatch):
+    def _resident_marks_after_a_pass(self, db, topo_single_ccd, mock_backend, events):
         eng = _make_engine(db, topo_single_ccd, mock_backend)
         sid = eng._session_id
         cs = CoreState(core_id=0, phase=TunerPhase.CONFIRMING, current_offset=-20, best_offset=-20, baseline_offset=0)
         eng._core_states = {0: cs}
         tp.save_core_state(db, sid, cs)
         eng._co_applied[0] = -20
-        db.journal_co_intent(sid, 0, -20, survived=False)
-        calls = []
-        monkeypatch.setattr(tp, "journal_mark_survived", lambda *a, **kw: calls.append(kw))
+        resident = journaled(db, sid, 0, -20)
+        db.journal_confirm(resident)
         result = StressResult(core_id=0, outcome=Outcome.PASS, detail="", duration_seconds=1.0)
         eng._on_test_finished(WorkerReport(lanes=(result,), peak_stretch_pct=0.0, kernel_events=events))
-        return calls
+        return [row.survived for row in tp.journal_rows(db, sid, this_boot()) if row.id == resident]
 
-    def test_a_clean_pass_marks_the_resident_set_survived(self, db, topo_single_ccd, mock_backend, monkeypatch):
-        assert self._mark_survived_calls(db, topo_single_ccd, mock_backend, (), monkeypatch)
+    def test_a_clean_pass_marks_the_resident_set_survived(self, db, topo_single_ccd, mock_backend):
+        assert self._resident_marks_after_a_pass(db, topo_single_ccd, mock_backend, ()) == [True]
 
-    def test_a_pass_carrying_an_unattributed_mce_marks_nothing_survived(
-        self, db, topo_single_ccd, mock_backend, monkeypatch
-    ):
-        calls = self._mark_survived_calls(db, topo_single_ccd, mock_backend, SHARED_BANK, monkeypatch)
-        assert calls == []
+    def test_a_pass_carrying_an_unattributed_mce_marks_nothing_survived(self, db, topo_single_ccd, mock_backend):
+        assert self._resident_marks_after_a_pass(db, topo_single_ccd, mock_backend, SHARED_BANK) == [False]

@@ -75,7 +75,11 @@ same boot nothing crashed: every in-test flag is cleared with no penalty. After
 a reboot the journal is asked how the session's boot ended. A boot whose last
 entry is systemd-journald's "Journal stopped" shut down cleanly: nothing is
 attributed as a crash, the flags clear, and that boot's machine checks back
-their cores off as evidence that never counts a crash. Any other end, or a
+their cores off as evidence that never counts a crash. A boot in which
+another session wrote CO values after this session's last write is treated
+the same way, with only the machine checks logged before that write as
+evidence: the crash belongs to the session that wrote last. A session whose
+boot is unknown never matches another session this way. Any other end, or a
 journal that cannot say, is a crash and goes through the order below. The
 whole decision commits in one transaction together with the session's new
 boot id, so a dead boot is attributed exactly once; a failed commit changes
@@ -86,13 +90,15 @@ Evidence outranks policy; a guess is never written. Priority order:
 1. Kernel-journal forensics (`journalctl -b <session boot> _TRANSPORT=kernel
    SYSLOG_FACILITY=0` after the session's last activity, plus the next boot's
    kernel records logged before its first userspace entry): penalize exactly
-   the cores the kernel's MCE lines name, anchored at their journaled resident
-   values.
+   the cores the kernel's MCE lines name, anchored at their last write in the
+   dead boot.
 2. A persisted hunt slot (`tuner_sessions.hunting_core`): the box died while
    one core was stressed alone with every other core at stock — proof by
    isolation.
 3. A single in-test core in the SEARCH flow (isolation mode): direct blame.
-4. The CO journal's un-survived residents.
+4. The CO journal's un-survived residents of the dead boot: each core's last
+   write in that boot, and when the SMU never confirmed that write, the less
+   aggressive of it and the last confirmed write before it.
 5. Anything ambiguous (multi-core in-test set, or any crash under
    validation): penalize NOBODY; run the isolated crash hunt — per-core
    slots at the tuned value with all other cores at stock, most suspect

@@ -173,6 +173,20 @@ class TelemetrySample:
     vcore_v: float | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class JournalRow:
+    id: int
+    session_id: int
+    core_id: int
+    value: int
+    boot_id: str
+    mono_ns: int | None
+    confirmed: bool
+    survived: bool
+    retracted: bool
+    written_at: str
+
+
 # ---------------------------------------------------------------------------
 # HistoryDB
 # ---------------------------------------------------------------------------
@@ -181,7 +195,7 @@ class TelemetrySample:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 16
+    SCHEMA_VERSION = 17
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -378,7 +392,8 @@ CREATE TABLE IF NOT EXISTS tuner_sessions (
     validation_half     INTEGER NOT NULL DEFAULT 0,
     validation_dirty    INTEGER NOT NULL DEFAULT 0,
     validation_requeue  TEXT    NOT NULL DEFAULT '[]',
-    boot_id             TEXT    NOT NULL DEFAULT ''
+    boot_id             TEXT    NOT NULL DEFAULT '',
+    kernel_read_ns      INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS tuner_core_states (
@@ -435,13 +450,19 @@ CREATE TABLE IF NOT EXISTS tuner_events (
 CREATE INDEX IF NOT EXISTS idx_tuner_events_session ON tuner_events(session_id);
 
 CREATE TABLE IF NOT EXISTS tuner_co_journal (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id  INTEGER NOT NULL REFERENCES tuner_sessions(id) ON DELETE CASCADE,
     core_id     INTEGER NOT NULL,
     value       INTEGER NOT NULL,
+    boot_id     TEXT    NOT NULL,
+    mono_ns     INTEGER,
+    confirmed   INTEGER NOT NULL DEFAULT 0,
     survived    INTEGER NOT NULL DEFAULT 0,
-    updated_at  TEXT    NOT NULL,
-    UNIQUE(session_id, core_id)
+    retracted   INTEGER NOT NULL DEFAULT 0,
+    written_at  TEXT    NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_co_journal_boot ON tuner_co_journal(session_id, boot_id, core_id, id);
+CREATE INDEX IF NOT EXISTS idx_co_journal_proven ON tuner_co_journal(session_id, core_id, survived, retracted);
 """
     ).replace("__SCHEMA_VERSION__", str(SCHEMA_VERSION))
 
@@ -741,6 +762,41 @@ UPDATE tuner_sessions SET boot_id = COALESCE((
 WHERE boot_id = ''
 """
 
+    @staticmethod
+    def _migrate_v17(conn: sqlite3.Connection) -> None:
+        if not HistoryDB._column_exists(conn, "tuner_co_journal", "id"):
+            conn.executescript(HistoryDB._DDL_MIGRATE_V17_JOURNAL)
+        HistoryDB._add_columns(conn, "tuner_sessions", [("kernel_read_ns", "INTEGER")])
+
+    _DDL_MIGRATE_V17_JOURNAL = """\
+CREATE TABLE tuner_co_journal_v17 (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL REFERENCES tuner_sessions(id) ON DELETE CASCADE,
+    core_id     INTEGER NOT NULL,
+    value       INTEGER NOT NULL,
+    boot_id     TEXT    NOT NULL,
+    mono_ns     INTEGER,
+    confirmed   INTEGER NOT NULL DEFAULT 0,
+    survived    INTEGER NOT NULL DEFAULT 0,
+    retracted   INTEGER NOT NULL DEFAULT 0,
+    written_at  TEXT    NOT NULL
+);
+INSERT INTO tuner_co_journal_v17
+    (session_id, core_id, value, boot_id, mono_ns, confirmed, survived, retracted, written_at)
+SELECT j.session_id, j.core_id, j.value, s.boot_id, NULL, 0,
+       j.survived = 1 AND EXISTS (
+           SELECT 1 FROM tuner_test_log t
+           WHERE t.session_id = j.session_id AND t.core_id = j.core_id AND t.offset_tested = j.value
+             AND t.passed = 1 AND t.duration_seconds IS NOT NULL),
+       0, j.updated_at
+FROM tuner_co_journal j JOIN tuner_sessions s ON s.id = j.session_id
+ORDER BY j.updated_at, j.session_id, j.core_id;
+DROP TABLE tuner_co_journal;
+ALTER TABLE tuner_co_journal_v17 RENAME TO tuner_co_journal;
+CREATE INDEX idx_co_journal_boot ON tuner_co_journal(session_id, boot_id, core_id, id);
+CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, survived, retracted);
+"""
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
@@ -757,6 +813,7 @@ WHERE boot_id = ''
         14: _migrate_v14,
         15: _DDL_MIGRATE_V15,
         16: _migrate_v16,
+        17: _migrate_v17,
     }
 
     # ------------------------------------------------------------------
@@ -1297,7 +1354,9 @@ WHERE boot_id = ''
     # CO write-ahead journal + resume-crash circuit breaker
     # ------------------------------------------------------------------
 
-    def journal_co_intent(self, session_id: int, core_id: int, value: int, survived: bool) -> None:
+    def journal_co_intent(
+        self, session_id: int, core_id: int, value: int, survived: bool, *, boot_id: str, mono_ns: int
+    ) -> int:
         """Record the CO value about to be made resident in the SMU, durably.
 
         Written BEFORE the hardware write so any hard crash (idle, baseline
@@ -1309,55 +1368,71 @@ WHERE boot_id = ''
         synced before this returns, so the record is durable before the caller
         touches hardware.
         """
-        now = self._now_iso()
-        self.__conn.execute(
+        cur = self.__conn.execute(
             """\
-            INSERT INTO tuner_co_journal (session_id, core_id, value, survived, updated_at)
-            VALUES (?,?,?,?,?)
-            ON CONFLICT(session_id, core_id) DO UPDATE SET
-                value=excluded.value,
-                survived=excluded.survived,
-                updated_at=excluded.updated_at
+            INSERT INTO tuner_co_journal
+                (session_id, core_id, value, boot_id, mono_ns, confirmed, survived, retracted, written_at)
+            VALUES (?,?,?,?,?,0,?,0,?)
             """,
-            (session_id, core_id, value, int(survived), now),
+            (session_id, core_id, value, boot_id, mono_ns, int(survived), self._now_iso()),
         )
+        return cur.lastrowid
 
-    def journal_mark_survived(self, session_id: int, exclude_cores: tuple[int, ...] | list[int] = ()) -> None:
+    def journal_confirm(self, row_id: int) -> None:
+        self.__conn.execute("UPDATE tuner_co_journal SET confirmed=1 WHERE id=?", (row_id,))
+
+    def journal_mark_survived(
+        self, session_id: int, *, boot_id: str, exclude_cores: tuple[int, ...] | list[int] = ()
+    ) -> None:
         """Mark every resident CO value for the session as survived.
 
         Called after a test completes without a hard crash: the machine
         demonstrably ran with the whole resident offset vector and lived.
-        ``exclude_cores`` keeps cores with fresh contrary evidence (a corrected
-        MCE named them during this very test) un-survived — surviving the test
-        does not clear an error the hardware just reported.
+        Resident means each core's last write in this boot, and only once the
+        SMU accepted it. ``exclude_cores`` keeps cores with fresh contrary
+        evidence (a corrected MCE named them during this very test) un-survived.
+        Surviving the test does not clear an error the hardware just reported.
         """
-        if exclude_cores:
-            marks = ",".join("?" * len(exclude_cores))
-            self.__conn.execute(
-                f"UPDATE tuner_co_journal SET survived=1, updated_at=? WHERE session_id=? AND core_id NOT IN ({marks})",
-                (self._now_iso(), session_id, *exclude_cores),
-            )
-            return
+        marks = ",".join("?" * len(exclude_cores))
         self.__conn.execute(
-            "UPDATE tuner_co_journal SET survived=1, updated_at=? WHERE session_id=?",
-            (self._now_iso(), session_id),
+            f"""\
+            UPDATE tuner_co_journal SET survived=1 WHERE id IN (
+                SELECT j.id FROM tuner_co_journal j
+                WHERE j.session_id=? AND j.boot_id=? AND j.confirmed=1 AND j.survived=0
+                  AND j.core_id NOT IN ({marks})
+                  AND j.id = (SELECT MAX(k.id) FROM tuner_co_journal k
+                              WHERE k.session_id=j.session_id AND k.boot_id=j.boot_id AND k.core_id=j.core_id))
+            """,
+            (session_id, boot_id, *exclude_cores),
         )
 
-    def journal_suspects(self, session_id: int) -> list[tuple[int, int]]:
-        """Return ``[(core_id, value)]`` for non-zero offsets that were resident
-        but never proven survivable — i.e. live when the machine died."""
+    def journal_rows(self, session_id: int, boot_id: str) -> list[JournalRow]:
         rows = self.__conn.execute(
-            "SELECT core_id, value FROM tuner_co_journal "
-            "WHERE session_id=? AND survived=0 AND value<>0 ORDER BY core_id",
-            (session_id,),
+            "SELECT * FROM tuner_co_journal WHERE session_id=? AND boot_id=? ORDER BY id", (session_id, boot_id)
         ).fetchall()
-        return [(r["core_id"], r["value"]) for r in rows]
+        return [self._row_to_journal_row(r) for r in rows]
 
-    def journal_survived_values(self, session_id: int) -> dict[int, int]:
-        """Return ``{core_id: value}`` for offsets proven survivable this session."""
+    def journal_taken_over(self, session_id: int, boot_id: str) -> JournalRow | None:
+        if not boot_id:
+            return None
+        row = self.__conn.execute(
+            """\
+            SELECT * FROM tuner_co_journal
+            WHERE boot_id=? AND session_id<>? AND id > (
+                SELECT COALESCE(MAX(id), 0) FROM tuner_co_journal WHERE session_id=? AND boot_id=?)
+            ORDER BY id LIMIT 1
+            """,
+            (boot_id, session_id, session_id, boot_id),
+        ).fetchone()
+        return None if row is None else self._row_to_journal_row(row)
+
+    def journal_proven_values(self, session_id: int, direction: int) -> dict[int, int]:
         rows = self.__conn.execute(
-            "SELECT core_id, value FROM tuner_co_journal WHERE session_id=? AND survived=1",
-            (session_id,),
+            """\
+            SELECT core_id, ? * MAX(? * value) AS value FROM tuner_co_journal
+            WHERE session_id=? AND survived=1 AND retracted=0 GROUP BY core_id
+            """,
+            (direction, direction, session_id),
         ).fetchall()
         return {r["core_id"]: r["value"] for r in rows}
 
@@ -1367,10 +1442,29 @@ WHERE boot_id = ''
         detection compares live hardware against it (not against baselines,
         which validation deliberately leaves behind)."""
         rows = self.__conn.execute(
-            "SELECT core_id, value FROM tuner_co_journal WHERE session_id=?",
+            """\
+            SELECT j.core_id, j.value FROM tuner_co_journal j
+            WHERE j.session_id=? AND j.id = (
+                SELECT MAX(k.id) FROM tuner_co_journal k WHERE k.session_id=j.session_id AND k.core_id=j.core_id)
+            """,
             (session_id,),
         ).fetchall()
         return {r["core_id"]: r["value"] for r in rows}
+
+    @staticmethod
+    def _row_to_journal_row(row: sqlite3.Row) -> JournalRow:
+        return JournalRow(
+            id=row["id"],
+            session_id=row["session_id"],
+            core_id=row["core_id"],
+            value=row["value"],
+            boot_id=row["boot_id"],
+            mono_ns=row["mono_ns"],
+            confirmed=bool(row["confirmed"]),
+            survived=bool(row["survived"]),
+            retracted=bool(row["retracted"]),
+            written_at=row["written_at"],
+        )
 
     def latest_session_activity(self, session_id: int) -> str | None:
         """Most recent write timestamp across all of a session's state: the
@@ -1380,7 +1474,7 @@ WHERE boot_id = ''
             SELECT MAX(ts) FROM (
                 SELECT updated_at AS ts FROM tuner_sessions WHERE id=?
                 UNION ALL SELECT updated_at FROM tuner_core_states WHERE session_id=?
-                UNION ALL SELECT updated_at FROM tuner_co_journal WHERE session_id=?
+                UNION ALL SELECT written_at FROM tuner_co_journal WHERE session_id=?
                 UNION ALL SELECT tested_at FROM tuner_test_log WHERE session_id=?
             )
             """,
@@ -1797,6 +1891,21 @@ WHERE boot_id = ''
             ),
             {"session_id": "tuner_sessions", "run_id": "runs"},
         ),
+        (
+            "tuner_co_journal",
+            (
+                "session_id",
+                "core_id",
+                "value",
+                "boot_id",
+                "mono_ns",
+                "confirmed",
+                "survived",
+                "retracted",
+                "written_at",
+            ),
+            {"session_id": "tuner_sessions"},
+        ),
     )
 
     def merge_from(self, other_path: str | Path) -> dict[str, int]:
@@ -1921,6 +2030,7 @@ WHERE boot_id = ''
                         "validation_dirty",
                         "validation_requeue",
                         "boot_id",
+                        "kernel_read_ns",
                     ),
                 )
                 counts["tuner_sessions"] = len(maps["tuner_sessions"])
@@ -1944,17 +2054,6 @@ WHERE boot_id = ''
                             f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
                             vals,
                         )
-
-                # journal has no id column — copy keyed rows directly
-                for row in conn.execute("SELECT * FROM src.tuner_co_journal ORDER BY session_id, core_id").fetchall():
-                    new_sid = maps["tuner_sessions"].get(row["session_id"])
-                    if new_sid is None:
-                        continue
-                    conn.execute(
-                        "INSERT INTO tuner_co_journal (session_id, core_id, value, survived, updated_at) "
-                        "VALUES (?,?,?,?,?)",
-                        (new_sid, row["core_id"], row["value"], row["survived"], row["updated_at"]),
-                    )
 
         finally:
             conn.execute("DETACH DATABASE src")

@@ -11,10 +11,16 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from corecycler.history.db import HistoryDB
+    from corecycler.history.db import HistoryDB, JournalRow
 
     from .config import TunerConfig
     from .state import CoreState, TunerSession
+
+
+@dataclass(frozen=True, slots=True)
+class Resident:
+    last: JournalRow
+    confirmed_before: JournalRow | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,28 +130,61 @@ def load_core_states(db: HistoryDB, session_id: int) -> dict[int, CoreState]:
 # ---------------------------------------------------------------------------
 
 
-def journal_co_intent(db: HistoryDB, session_id: int, core_id: int, value: int, survived: bool) -> None:
+def journal_co_intent(
+    db: HistoryDB, session_id: int, core_id: int, value: int, survived: bool, *, boot_id: str, mono_ns: int
+) -> int:
     """Durably record a CO value before it is written to the SMU."""
-    db.journal_co_intent(session_id, core_id, value, survived)
+    return db.journal_co_intent(session_id, core_id, value, survived, boot_id=boot_id, mono_ns=mono_ns)
 
 
-def journal_mark_survived(db: HistoryDB, session_id: int, exclude_cores: tuple[int, ...] | list[int] = ()) -> None:
-    """Mark all resident CO values survived after a test completes without a crash.
+def journal_confirm(db: HistoryDB, row_id: int) -> None:
+    db.journal_confirm(row_id)
+
+
+def journal_mark_survived(
+    db: HistoryDB, session_id: int, *, boot_id: str, exclude_cores: tuple[int, ...] | list[int] = ()
+) -> None:
+    """Mark the resident CO values survived after a test completes without a crash.
 
     Cores in ``exclude_cores`` stay un-survived — fresh contrary evidence (a
     corrected MCE named them during this very test) outranks the survival.
     """
-    db.journal_mark_survived(session_id, exclude_cores)
+    db.journal_mark_survived(session_id, boot_id=boot_id, exclude_cores=exclude_cores)
 
 
-def journal_suspects(db: HistoryDB, session_id: int) -> list[tuple[int, int]]:
-    """Return (core_id, value) offsets that were resident when the machine died."""
-    return db.journal_suspects(session_id)
+def journal_rows(db: HistoryDB, session_id: int, boot_id: str) -> list[JournalRow]:
+    return db.journal_rows(session_id, boot_id)
 
 
-def journal_survived_values(db: HistoryDB, session_id: int) -> dict[int, int]:
-    """Return {core_id: value} offsets proven survivable this session."""
-    return db.journal_survived_values(session_id)
+def journal_taken_over(db: HistoryDB, session_id: int, boot_id: str) -> JournalRow | None:
+    return db.journal_taken_over(session_id, boot_id)
+
+
+def journal_proven_values(db: HistoryDB, session_id: int, direction: int) -> dict[int, int]:
+    return db.journal_proven_values(session_id, direction)
+
+
+def resident_at_death(rows: Iterable[JournalRow]) -> dict[int, Resident]:
+    last: dict[int, JournalRow] = {}
+    landed: dict[int, JournalRow] = {}
+    for row in sorted(rows, key=lambda row: row.id):
+        last[row.core_id] = row
+        if row.confirmed:
+            landed[row.core_id] = row
+    return {core_id: Resident(row, None if row.confirmed else landed.get(core_id)) for core_id, row in last.items()}
+
+
+def crash_suspects(resident: dict[int, Resident], direction: int) -> dict[int, int]:
+    suspects: dict[int, int] = {}
+    for core_id, held in resident.items():
+        unproven = [
+            row.value
+            for row in (held.last, held.confirmed_before)
+            if row is not None and row.value != 0 and (not row.survived or row.retracted)
+        ]
+        if unproven:
+            suspects[core_id] = min(unproven, key=lambda value: direction * value)
+    return suspects
 
 
 def get_resume_crash_streak(db: HistoryDB, session_id: int) -> int:

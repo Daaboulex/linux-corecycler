@@ -24,7 +24,7 @@ from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.engine import TunerEngine
 from corecycler.tuner.state import TunerPhase
-from tests._machine import core_bank_record
+from tests._machine import core_bank_record, journaled
 from tests._reports import mce, report, trouble, unblamed
 
 
@@ -742,7 +742,8 @@ class TestVerdictRouter:
         )
         assert tp.get_test_log(engine._db, engine._session_id) == []
         assert (cs.phase, cs.current_offset, cs.best_offset, cs.crash_count) == before
-        assert tp.journal_survived_values(engine._db, engine._session_id).get(0) != cs.current_offset
+        proven = tp.journal_proven_values(engine._db, engine._session_id, engine._config.direction)
+        assert proven.get(0) != cs.current_offset
 
     def test_a_stage4_thermal_stop_takes_the_thermal_path(self, engine):
         for core in (0, 1):
@@ -1245,7 +1246,7 @@ class TestEvidenceGuards:
 
     def test_a_suspect_for_an_unknown_core_is_skipped(self, engine, machine, tmp_path, monkeypatch):
         sid = engine._session_id
-        engine._db.journal_co_intent(sid, 99, -20, survived=False)
+        journaled(engine._db, sid, 99, -20)
         machine.reboot(clean=False)
         _restarted(engine, tmp_path, monkeypatch).resume(sid)
         assert [row["core_id"] for row in tp.get_test_log(engine._db, sid) if row["error_type"] == "crash"] == [0]
@@ -1459,7 +1460,7 @@ class TestResumeGuards:
             cs.in_test = True
             tp.save_core_state(engine._db, sid, cs)
         tp.update_session_status(engine._db, sid, "validating")
-        tp.journal_mark_survived(engine._db, sid)
+        tp.journal_mark_survived(engine._db, sid, boot_id=engine._boot_id)
         machine.reboot(clean=False)
         restarted = _restarted(engine, tmp_path, monkeypatch)
         hunts = []

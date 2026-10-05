@@ -134,8 +134,9 @@ configuration that crashes the machine. Three mechanisms enforce this:
    written to the SMU, and marked "survived" only after a test completes with it
    resident. So on the next launch the exact `(core, value)` live at crash time is known
    (whether or not a test was running, and including a crash during idle, baseline
-   restore, post-test revert, or multi-core validation). Every un-survived offset is
-   treated as a hard crash: a fail bound is set there and the core backs off past it.
+   restore, post-test revert, or multi-core validation). Every un-survived offset still
+   resident when the machine died is treated as a hard crash: a fail bound is set there
+   and the core backs off past it.
 2. **CO=0 is the only safe floor** -- the one state guaranteed stable is CO=0 (stock
    voltage). Crash backoff never settles past it, and if a core's *baseline* is what
    crashed, the baseline is descended toward 0 rather than re-applied -- so an unstable

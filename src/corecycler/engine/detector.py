@@ -265,6 +265,10 @@ def _clock_ns(clock: int) -> int:
     return time.clock_gettime_ns(clock)
 
 
+def monotonic_ns() -> int:
+    return _clock_ns(time.CLOCK_MONOTONIC)
+
+
 def _journalctl(args: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [tools.command_name("journalctl"), "-q", "--no-pager", *args],
@@ -355,7 +359,14 @@ def _events(entries: Iterable[_JournalEntry]) -> list[KernelEvent]:
     return events
 
 
-def harvest_after(boot_id: str, after_us: int | None, *, next_boot: bool, timeout: float = 15.0) -> KernelRead:
+def harvest_after(
+    boot_id: str,
+    after_us: int | None,
+    *,
+    next_boot: bool,
+    before_mono_ns: int | None = None,
+    timeout: float = 15.0,
+) -> KernelRead:
     if not boot_id:
         return KernelRead((), "the session's boot is not recorded")
     events: list[KernelEvent] = []
@@ -364,7 +375,11 @@ def harvest_after(boot_id: str, after_us: int | None, *, next_boot: bool, timeou
         problems.append("the session's last write time is unreadable")
     else:
         dead, problem = _journal_entries(["-b", boot_id, *_KERNEL_RECORDS], timeout)
-        events += _events(entry for entry in dead if entry.realtime_us > after_us)
+        events += _events(
+            entry
+            for entry in dead
+            if entry.realtime_us > after_us and (before_mono_ns is None or entry.mono_us * 1000 < before_mono_ns)
+        )
         problems.append(problem)
     if next_boot:
         following, problem = _next_boot(boot_id, timeout)

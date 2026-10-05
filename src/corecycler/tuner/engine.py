@@ -34,6 +34,7 @@ from corecycler.engine.detector import (
     boot_end,
     harvest_after,
     kernel_log_problem,
+    monotonic_ns,
     read_boot_id,
 )
 from corecycler.engine.execution import busy_fraction as _busy_fraction
@@ -56,7 +57,7 @@ if TYPE_CHECKING:
     from corecycler.engine.detector import BootEnd
     from corecycler.engine.memory_budget import MemoryBudget
     from corecycler.engine.topology import CPUTopology
-    from corecycler.history.db import HistoryDB
+    from corecycler.history.db import HistoryDB, JournalRow
     from corecycler.smu.driver import RyzenSMU
 
     from .state import TunerSession
@@ -585,14 +586,18 @@ class TunerEngine(QObject):
             states.update((cs.core_id, cs) for cs in cleared)
         else:
             end = boot_end(session.boot_id)
+            taken_over = tp.journal_taken_over(self._db, session_id, session.boot_id)
             harvest = harvest_after(
-                session.boot_id, _realtime_us(self._db.latest_session_activity(session_id)), next_boot=not end.clean
+                session.boot_id,
+                _realtime_us(self._db.latest_session_activity(session_id)),
+                next_boot=taken_over is None and not end.clean,
+                before_mono_ns=None if taken_over is None else taken_over.mono_ns,
             )
             plan = self._decide_attribution(
                 session,
                 states,
-                tp.journal_values(self._db, session_id),
-                tp.journal_suspects(self._db, session_id),
+                tp.journal_rows(self._db, session_id, session.boot_id),
+                taken_over,
                 end,
                 harvest,
                 streak,
@@ -610,8 +615,7 @@ class TunerEngine(QObject):
         self._core_states = states
         rebooted = plan is not None
 
-        for c, v in tp.journal_survived_values(self._db, session_id).items():
-            self._co_survived[c] = v
+        self._co_survived = tp.journal_proven_values(self._db, session_id, self._config.direction)
 
         if session.status == "quarantined" and not (plan is not None and plan.quarantine):
             self._reengage_quarantined(session_id)
@@ -852,9 +856,10 @@ class TunerEngine(QObject):
                 self.log_message.emit(f"Invalid tuner config: {'; '.join(errors)}")
                 return
             if session.boot_id != self._boot_id:
+                resident = tp.resident_at_death(tp.journal_rows(self._db, session_id, session.boot_id))
                 owed = (
                     any(cs.in_test for cs in tp.load_core_states(self._db, session_id).values())
-                    or tp.journal_suspects(self._db, session_id)
+                    or tp.crash_suspects(resident, self._config.direction)
                     or session.hunting_core is not None
                 )
                 if owed:
@@ -1426,8 +1431,8 @@ class TunerEngine(QObject):
         self,
         session: TunerSession,
         states: dict[int, CoreState],
-        journal: dict[int, int],
-        suspects: list[tuple[int, int]],
+        journal: list[JournalRow],
+        taken_over: JournalRow | None,
         end: BootEnd,
         harvest: KernelRead,
         streak: int,
@@ -1435,15 +1440,28 @@ class TunerEngine(QObject):
         work = {core_id: replace(cs, in_test=False) for core_id, cs in states.items()}
         in_test = sorted(core_id for core_id, cs in states.items() if cs.in_test)
         named = self._events_by_core(harvest.events, work)
+        residents = tp.resident_at_death(journal)
+        attributable = taken_over is None and not end.clean
         rows: list[tp.LogRow] = []
         messages: list[str] = []
         crashed: list[int] = []
         pending_hunt = False
         unattributed = session.unattributed_crashes
-        if end.problem is not None:
+        if taken_over is not None:
+            messages.append(
+                f"Session {taken_over.session_id} wrote Curve Optimizer values later in this session's boot: "
+                f"nothing is attributed to this session as a crash."
+            )
+        elif end.clean:
+            messages.append("The session's boot shut down cleanly: nothing is attributed as a crash.")
+        elif end.problem is not None:
             messages.append(f"How the session's boot ended is unknown ({end.problem}), so it counts as a crash.")
         if harvest.problem is not None:
             messages.append(f"Kernel-journal forensics unavailable: {harvest.problem}.")
+
+        def resident_value(core_id: int) -> int:
+            held = residents.get(core_id)
+            return work[core_id].current_offset if held is None else held.last.value
 
         def convict(core_id: int, offset: int, reason: str) -> None:
             cs = work[core_id]
@@ -1452,13 +1470,11 @@ class TunerEngine(QObject):
             self._apply_crash_penalty(cs)
             crashed.append(core_id)
 
-        if end.clean:
-            messages.append("The session's boot shut down cleanly: nothing is attributed as a crash.")
+        if not attributable:
             for core_id in sorted(named):
-                cs = work[core_id]
                 row, message = self._mce_evidence(
-                    cs,
-                    journal.get(core_id, cs.current_offset),
+                    work[core_id],
+                    resident_value(core_id),
                     all(event.corrected for event in named[core_id]),
                     [event.message for event in named[core_id]],
                     count_crash=False,
@@ -1467,7 +1483,7 @@ class TunerEngine(QObject):
                 messages.append(message)
         elif named:
             for core_id in sorted(named):
-                resident = journal.get(core_id, work[core_id].current_offset)
+                resident = resident_value(core_id)
                 convict(
                     core_id,
                     resident,
@@ -1506,7 +1522,7 @@ class TunerEngine(QObject):
                     f"crash hunt instead of guessing."
                 )
                 pending_hunt = True
-            for core_id, value in suspects:
+            for core_id, value in sorted(tp.crash_suspects(residents, self._config.direction).items()):
                 if core_id in crashed or core_id not in work:
                     continue
                 convict(
@@ -1516,7 +1532,7 @@ class TunerEngine(QObject):
                     f"treated as a hard crash.",
                 )
                 pending_hunt = False
-        incident = not end.clean and not crashed and not pending_hunt and session.status == "validating"
+        incident = attributable and not crashed and not pending_hunt and session.status == "validating"
         if crashed or pending_hunt:
             streak += 1
         return tp.AttributionPlan(
@@ -2297,10 +2313,10 @@ class TunerEngine(QObject):
                     "test — resident offsets stay unproven for this run."
                 )
             else:
-                tp.journal_mark_survived(self._db, self._session_id, exclude_cores=sorted(foreign))
-                for c, v in tp.journal_survived_values(self._db, self._session_id).items():
-                    if self._is_more_aggressive(v, self._co_survived.get(c, 0)):
-                        self._co_survived[c] = v
+                tp.journal_mark_survived(
+                    self._db, self._session_id, boot_id=self._boot_id, exclude_cores=sorted(foreign)
+                )
+                self._co_survived = tp.journal_proven_values(self._db, self._session_id, self._config.direction)
             if tp.get_resume_crash_streak(self._db, self._session_id) != 0:
                 tp.set_resume_crash_streak(self._db, self._session_id, 0)
 
@@ -3509,17 +3525,25 @@ class TunerEngine(QObject):
         hard crash is always attributable to the exact value that was resident.
         A value within the core's proven-safe envelope (0 is always safe) is
         journaled survived; a more-aggressive value is journaled un-survived until
-        a test completes with it resident. Returns the SMU write result; raised
-        SMU exceptions propagate to the caller's existing handling (the intent is
-        already journaled, so the value is treated as suspect on the next resume).
+        a test completes with it resident. The row is confirmed only once the SMU
+        accepts the write; a refused or raising write leaves it unconfirmed.
+        Returns the SMU write result; raised SMU exceptions propagate to the
+        caller's existing handling (the intent is already journaled, so the value
+        is treated as suspect on the next resume).
         """
         if self._smu is None:
             return False
         survived = not self._is_more_aggressive(value, self._co_survived.get(core_id, 0))
+        row_id = None
         if self._session_id is not None:
-            tp.journal_co_intent(self._db, self._session_id, core_id, value, survived)
+            row_id = tp.journal_co_intent(
+                self._db, self._session_id, core_id, value, survived, boot_id=self._boot_id, mono_ns=monotonic_ns()
+            )
         log.debug("CO write: core=%d value=%d survived=%s", core_id, value, survived)
-        return self._smu.set_co_offset(core_id, value)
+        written = self._smu.set_co_offset(core_id, value)
+        if written and row_id is not None:
+            tp.journal_confirm(self._db, row_id)
+        return written
 
     def _apply_validation_offsets(self, test_core_id: int, test_offset: int) -> bool:
         """Apply ALL confirmed offsets during validation — testing interactions.

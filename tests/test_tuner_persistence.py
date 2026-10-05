@@ -7,6 +7,7 @@ import pytest
 from corecycler.history.db import HistoryDB
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.persistence import (
+    crash_suspects,
     create_session,
     get_active_session,
     get_best_profile,
@@ -15,11 +16,12 @@ from corecycler.tuner.persistence import (
     get_test_log,
     load_core_states,
     log_test_result,
+    resident_at_death,
     save_core_state,
     update_session_status,
 )
 from corecycler.tuner.state import CoreState, TunerPhase
-from tests._machine import this_boot
+from tests._machine import journaled, this_boot
 
 
 @pytest.fixture
@@ -28,6 +30,10 @@ def db():
     d = HistoryDB(":memory:")
     yield d
     d.close()
+
+
+def _suspects(db, sid) -> dict[int, int]:
+    return crash_suspects(resident_at_death(db.journal_rows(sid, this_boot())), -1)
 
 
 class TestTunerSessions:
@@ -274,13 +280,13 @@ class TestSchemaV11:
             # New sessions start with a zeroed circuit breaker.
             assert db.get_resume_crash_streak(sid) == 0
             # Aggressive value -> suspect; 0 -> survived.
-            db.journal_co_intent(sid, 0, -30, survived=False)
-            db.journal_co_intent(sid, 1, 0, survived=True)
-            assert db.journal_suspects(sid) == [(0, -30)]
+            db.journal_confirm(journaled(db, sid, 0, -30))
+            db.journal_confirm(journaled(db, sid, 1, 0, survived=True))
+            assert _suspects(db, sid) == {0: -30}
             # Marking survived clears suspects.
-            db.journal_mark_survived(sid)
-            assert db.journal_suspects(sid) == []
-            assert db.journal_survived_values(sid) == {0: -30, 1: 0}
+            db.journal_mark_survived(sid, boot_id=this_boot())
+            assert _suspects(db, sid) == {}
+            assert db.journal_proven_values(sid, -1) == {0: -30, 1: 0}
             # Breaker is read/write.
             db.set_resume_crash_streak(sid, 3)
             assert db.get_resume_crash_streak(sid) == 3
@@ -311,6 +317,7 @@ class TestSchemaV11:
             ("tuner_sessions", "validation_dirty"),
             ("tuner_sessions", "validation_requeue"),
             ("tuner_sessions", "boot_id"),
+            ("tuner_sessions", "kernel_read_ns"),
             ("tuner_test_log", "peak_stretch_pct"),
         ):
             db._execute_raw(f"ALTER TABLE {table} DROP COLUMN {column}")
@@ -319,8 +326,8 @@ class TestSchemaV11:
         db2 = HistoryDB(path)  # re-open triggers the v11 migration
         try:
             assert db2._execute_raw("SELECT version FROM schema_version").fetchone()[0] == HistoryDB.SCHEMA_VERSION
-            db2.journal_co_intent(sid, 0, -25, survived=False)
-            assert (0, -25) in db2.journal_suspects(sid)
+            journaled(db2, sid, 0, -25)
+            assert _suspects(db2, sid) == {0: -25}
             db2.set_resume_crash_streak(sid, 2)
             assert db2.get_resume_crash_streak(sid) == 2
         finally:
@@ -421,8 +428,9 @@ class TestSchemaV13:
         db = HistoryDB(tmp_path / "test.db")
         try:
             sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
-            db.journal_co_intent(sid, 0, -41, survived=True)
-            db.journal_co_intent(sid, 1, -30, survived=False)
+            journaled(db, sid, 0, -30)
+            journaled(db, sid, 1, -30)
+            journaled(db, sid, 0, -41, survived=True)
             assert db.journal_values(sid) == {0: -41, 1: -30}
         finally:
             db.close()
@@ -512,6 +520,7 @@ class TestSchemaV16SessionBoot:
             db._execute_raw("UPDATE tuner_events SET timestamp=? WHERE id=(SELECT MAX(id) FROM tuner_events)", (stamp,))
         db._execute_raw("UPDATE tuner_sessions SET updated_at=?", (self.LAST_STATE_WRITE,))
         db._execute_raw("UPDATE tuner_core_states SET updated_at=?", (self.LAST_STATE_WRITE,))
+        _with_the_v15_journal(db)
         db._execute_raw("UPDATE schema_version SET version=15")
         db._execute_raw("ALTER TABLE tuner_sessions DROP COLUMN boot_id")
         db.close()
@@ -538,3 +547,99 @@ class TestSchemaV16SessionBoot:
             assert db.get_tuner_session(second).boot_id == engine._boot_id
         finally:
             db.close()
+
+
+_V15_JOURNAL = """\
+CREATE TABLE tuner_co_journal (
+    session_id  INTEGER NOT NULL REFERENCES tuner_sessions(id) ON DELETE CASCADE,
+    core_id     INTEGER NOT NULL,
+    value       INTEGER NOT NULL,
+    survived    INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT    NOT NULL,
+    UNIQUE(session_id, core_id)
+)"""
+
+
+def _with_the_v15_journal(db) -> None:
+    db._execute_raw("DROP TABLE tuner_co_journal")
+    db._execute_raw(_V15_JOURNAL)
+    db._execute_raw("ALTER TABLE tuner_sessions DROP COLUMN kernel_read_ns")
+
+
+def _shape(db, table: str) -> tuple[list[tuple], list[str]]:
+    columns = db._execute_raw(f"PRAGMA table_info({table})").fetchall()
+    indexes = db._execute_raw(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL", (table,)
+    ).fetchall()
+    return (
+        sorted((c["name"], c["type"], c["notnull"], c["dflt_value"], c["pk"]) for c in columns),
+        sorted(row["name"] for row in indexes),
+    )
+
+
+class TestSchemaV17Journal:
+    BOOT = "0a1b2c3d00004000800000000000000a"
+    V15_ROWS = (
+        (1, -15, 1, "2026-10-01T10:00:00+00:00"),
+        (0, -20, 1, "2026-10-01T10:05:00+00:00"),
+        (2, -10, 0, "2026-10-01T10:10:00+00:00"),
+    )
+
+    def _v16_file(self, path) -> int:
+        db = HistoryDB(path)
+        sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=self.BOOT)
+        db.insert_tuner_test_log(sid, 0, -20, "confirm", True, duration=300.0)
+        db.insert_tuner_test_log(sid, 1, -15, "fine", False, "crash", "crash", None)
+        db.insert_tuner_test_log(sid, 2, -10, "fine", True, duration=60.0)
+        _with_the_v15_journal(db)
+        for core_id, value, survived, stamp in self.V15_ROWS:
+            db._execute_raw(
+                "INSERT INTO tuner_co_journal (session_id, core_id, value, survived, updated_at) VALUES (?,?,?,?,?)",
+                (sid, core_id, value, survived, stamp),
+            )
+        db._execute_raw("UPDATE schema_version SET version=16")
+        db.close()
+        return sid
+
+    def test_v15_journal_rows_migrate_with_the_sessions_boot(self, tmp_path):
+        sid = self._v16_file(tmp_path / "v16.db")
+
+        db = HistoryDB(tmp_path / "v16.db")
+        fresh = HistoryDB(tmp_path / "fresh.db")
+        try:
+            rows = [
+                (r.core_id, r.value, r.mono_ns, r.confirmed, r.survived, r.retracted, r.written_at)
+                for r in db.journal_rows(sid, self.BOOT)
+            ]
+            assert rows == [
+                (1, -15, None, False, False, False, "2026-10-01T10:00:00+00:00"),
+                (0, -20, None, False, True, False, "2026-10-01T10:05:00+00:00"),
+                (2, -10, None, False, False, False, "2026-10-01T10:10:00+00:00"),
+            ]
+            for table in ("tuner_co_journal", "tuner_sessions"):
+                assert _shape(db, table) == _shape(fresh, table)
+        finally:
+            fresh.close()
+            db.close()
+
+
+class TestJournalProof:
+    def test_a_retracted_row_is_unproven(self, db):
+        sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
+        row = journaled(db, sid, 0, -20, survived=True)
+        db.journal_confirm(row)
+        db._execute_raw("UPDATE tuner_co_journal SET retracted=1 WHERE id=?", (row,))
+
+        assert _suspects(db, sid) == {0: -20}
+        assert db.journal_proven_values(sid, -1) == {}
+
+    def test_a_positive_direction_proves_and_anchors_by_its_own_aggressiveness(self, db):
+        sid = db.create_tuner_session("{}", "1.0", "TestCPU", boot_id=this_boot())
+        for value in (5, 8, 6):
+            journaled(db, sid, 0, value, survived=True)
+        db.journal_confirm(journaled(db, sid, 1, 3))
+        journaled(db, sid, 1, 6)
+
+        resident = resident_at_death(db.journal_rows(sid, this_boot()))
+        assert crash_suspects(resident, 1) == {1: 3}
+        assert db.journal_proven_values(sid, 1) == {0: 8}

@@ -24,7 +24,7 @@ from corecycler.history.db import (
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.state import CoreState, TunerPhase
-from tests._machine import this_boot
+from tests._machine import journaled, this_boot
 
 
 @pytest.fixture
@@ -157,7 +157,7 @@ class TestDurability:
         sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "", boot_id=this_boot())
         reader = _reader_holding_a_snapshot(path)
         started = time.monotonic()
-        tp.journal_co_intent(db, sid, 0, -5, False)
+        journaled(db, sid, 0, -5)
         elapsed = time.monotonic() - started
         reader.execute("ROLLBACK")
         reader.close()
@@ -256,7 +256,7 @@ def _seed(path, *, runs=1, sessions=1):
         sid = tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test", boot_id=this_boot())
         db.create_context(TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash=f"seed{sid}"))
         tp.save_core_state(db, sid, CoreState(core_id=0, phase=TunerPhase.CONFIRMED, best_offset=-20))
-        tp.journal_co_intent(db, sid, 0, -20, False)
+        journaled(db, sid, 0, -20)
         tp.log_test_result(db, sid, 0, -20, "confirm", True, duration=300.0)
     db.close()
     return db

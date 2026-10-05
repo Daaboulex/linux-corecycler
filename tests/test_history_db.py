@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 
 import pytest
 
@@ -14,7 +15,7 @@ from corecycler.history.db import (
     TelemetrySample,
     TuningContextRecord,
 )
-from tests._machine import this_boot
+from tests._machine import journaled, this_boot
 
 
 @pytest.fixture
@@ -655,7 +656,7 @@ class TestMergeFrom:
             sid, CoreState(core_id=3, phase=TunerPhase.CONFIRMED, current_offset=-30, best_offset=-30)
         )
         src.insert_tuner_test_log(sid, 3, -30, "confirm", True, duration=300.0, run_id=rid)
-        src.journal_co_intent(sid, 3, -30, survived=True)
+        journaled(src, sid, 3, -30, survived=True)
         src.close()
 
         counts = dst.merge_from(tmp_path / "src.db")
@@ -679,8 +680,36 @@ class TestMergeFrom:
         log_rows = dst.get_tuner_test_log(sess.id)
         assert len(log_rows) == 1
         assert log_rows[0]["run_id"] == merged_run.id  # cross-reference remapped
-        assert dst.journal_survived_values(sess.id) == {3: -30}
+        assert dst.journal_proven_values(sess.id, -1) == {3: -30}
         dst.close()
+
+    def test_merge_copies_every_journal_column_in_write_order(self, tmp_path):
+        dead = "a" * 32
+        src = HistoryDB(tmp_path / "src.db")
+        sid = src.create_tuner_session("{}", "2401", "9950X3D", boot_id=dead)
+        crashed = src.journal_co_intent(sid, 3, -30, False, boot_id=dead, mono_ns=5_000)
+        src.journal_confirm(crashed)
+        src.journal_co_intent(sid, 1, 0, True, boot_id=dead, mono_ns=9_000)
+        src.journal_mark_survived(sid, boot_id=dead)
+        src._execute_raw("UPDATE tuner_co_journal SET retracted=1 WHERE id=?", (crashed,))
+        src._execute_raw("UPDATE tuner_sessions SET kernel_read_ns=7000 WHERE id=?", (sid,))
+        written = src.journal_rows(sid, dead)
+        src.close()
+        dst = HistoryDB(tmp_path / "dst.db")
+        own = dst.create_tuner_session("{}", "2401", "9950X3D", boot_id=dead)
+        dst.journal_co_intent(own, 0, -5, False, boot_id=dead, mono_ns=1_000)
+
+        dst.merge_from(tmp_path / "src.db")
+
+        merged = dst.get_latest_tuner_session().id
+        copied = dst.journal_rows(merged, dead)
+        kernel_read = dst._execute_raw("SELECT kernel_read_ns FROM tuner_sessions WHERE id=?", (merged,)).fetchone()[0]
+        dst.close()
+        assert [replace(row, id=0, session_id=0) for row in copied] == [
+            replace(row, id=0, session_id=0) for row in written
+        ]
+        assert [row.core_id for row in copied] == [3, 1]
+        assert kernel_read == 7000
 
     def test_merge_migrates_old_schema_source_first(self, tmp_path):
         import sqlite3

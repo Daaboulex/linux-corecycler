@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 
     import pytest
 
+    from corecycler.history.db import HistoryDB
+
 REBOOT_S = 60
 UPTIME_S = 3600
 USERSPACE_S = 2
@@ -79,6 +81,12 @@ def core_bank_record(cpu: int, *, corrected: bool = True) -> list[str]:
 
 def this_boot() -> str:
     return uuid.UUID(detector.BOOT_ID_PATH.read_text().strip()).hex
+
+
+def journaled(db: HistoryDB, session_id: int, core_id: int, value: int, *, survived: bool = False) -> int:
+    return db.journal_co_intent(
+        session_id, core_id, value, survived, boot_id=this_boot(), mono_ns=detector.monotonic_ns()
+    )
 
 
 def _short_unix(entries: Iterable[Entry]) -> str:
