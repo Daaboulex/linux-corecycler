@@ -537,7 +537,7 @@ class Supervisor:
                         "and was killed",
                     )
                 )
-            if alive or run.cgroup is None:
+            if alive or run.contained is None:
                 self._signal_group(run, signal.SIGKILL)
             if run.contained is not None:
                 self._kill_scope(run)

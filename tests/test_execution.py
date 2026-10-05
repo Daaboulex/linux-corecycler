@@ -1180,6 +1180,27 @@ class TestTheScopeIsKnownFromLaunch:
         ):
             yield lambda cpus: replace(containment.contain(cpus), prefix=[])
 
+    def test_a_contained_lane_whose_leader_is_gone_gets_no_group_sweep(self, tmp_path, contained_by_the_probe):
+        swept: list[int] = []
+        real_signal_group = Supervisor._signal_group
+
+        def spy(supervisor_self, run, sig):
+            if sig == signal.SIGKILL:
+                swept.append(run.lane.core_id)
+            return real_signal_group(supervisor_self, run, sig)
+
+        backend = FakeBackend(_child(EXITS_AT_ONCE_LEAVING_A_CHILD_IN_ITS_OWN_GROUP))
+        supervisor, _, _ = make_supervisor(backend, containment_for=contained_by_the_probe)
+        try:
+            with patch.object(Supervisor, "_signal_group", spy), patch.object(containment, "kill_scope") as killed:
+                run_one(supervisor, lane(tmp_path / "lanes", cpus=(0,)), 5.0)
+            assert killed.call_count == 1
+            assert swept == []
+        finally:
+            for member in (tmp_path / "lanes").glob("core_0/run-*/stray.pid"):
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(int(member.read_text()), signal.SIGKILL)
+
     def test_a_leader_gone_before_any_watchdog_saw_its_scope_still_has_the_scope_killed(
         self, tmp_path, contained_by_the_probe
     ):
