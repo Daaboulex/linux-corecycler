@@ -1425,6 +1425,24 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
                 f"core {row['core_id']} has CO journal value {row['value']!r}, "
                 f"not an integer in the sane CO range {lo}..{hi}",
             )
+        stamp = self.__conn.execute(
+            "SELECT core_id, mono_ns FROM tuner_co_journal WHERE session_id=? "
+            "AND mono_ns IS NOT NULL AND typeof(mono_ns) <> 'integer' ORDER BY id LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        if stamp is not None:
+            raise CorruptSessionError(
+                session_id, f"core {stamp['core_id']} has CO journal stamp {stamp['mono_ns']!r}, not an integer"
+            )
+        floor = self.__conn.execute(
+            "SELECT kernel_read_ns FROM tuner_sessions WHERE id=? "
+            "AND kernel_read_ns IS NOT NULL AND typeof(kernel_read_ns) <> 'integer'",
+            (session_id,),
+        ).fetchone()
+        if floor is not None:
+            raise CorruptSessionError(
+                session_id, f"the last kernel read stamp {floor['kernel_read_ns']!r} is not an integer"
+            )
 
     def journal_rows(self, session_id: int, boot_id: str) -> list[JournalRow]:
         self.check_journal(session_id)

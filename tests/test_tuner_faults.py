@@ -1879,6 +1879,30 @@ class TestCorruptJournal:
         ]
         assert (_crash_rows(db, sid), tp.get_session(db, sid).boot_id) == ([], dead)
 
+    @pytest.mark.parametrize(
+        ("table", "column", "said"),
+        [
+            ("tuner_co_journal", "mono_ns", "core 0 has CO journal stamp 'x', not an integer"),
+            ("tuner_sessions", "kernel_read_ns", "the last kernel read stamp 'x' is not an integer"),
+        ],
+    )
+    def test_a_stamp_that_is_not_an_integer_refuses_the_resume(
+        self, db, topo, smu, mock_backend, machine, table, column, said
+    ):
+        sid = _session_on_this_boot(db, [_in_test(0, -10)])
+        journaled(db, sid, 0, -10, survived=False)
+        db._HistoryDB__conn.execute(f"UPDATE {table} SET {column}='x'")
+        machine.reboot(clean=False)
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
+        lines: list[str] = []
+        eng.log_message.connect(lines.append)
+        with patch.object(eng, "_run_next"):
+            eng.resume(sid)
+        assert [line for line in lines if line.startswith("Cannot resume")] == [
+            f"Cannot resume: session {sid} is unreadable: {said}"
+        ]
+        assert _crash_rows(db, sid) == []
+
 
 class TestRebootGate:
     def test_no_reboot_clears_in_test_without_penalty(self, db, topo, smu, mock_backend):
