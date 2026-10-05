@@ -70,12 +70,14 @@ class FaultSMU:
         self.writes: list[tuple[int, int]] = []
         self.reject_set = False  # set_co_offset returns False (rejected / read-back mismatch)
         self.raise_on_set = False  # set_co_offset raises (driver/permission fault)
+        self.rejecting_cores: set[int] = set()
+        self.raising_cores: set[int] = set()
 
     def set_co_offset(self, core_id: int, value: int) -> bool:
         self.writes.append((core_id, value))
-        if self.raise_on_set:
+        if self.raise_on_set or core_id in self.raising_cores:
             raise RuntimeError("SMU fault (injected)")
-        if self.reject_set:
+        if self.reject_set or core_id in self.rejecting_cores:
             return False
         self.applied[core_id] = value
         return True
@@ -96,6 +98,10 @@ class FaultSMU:
 class _HardCrash(Exception):
     """Simulates the machine dying DURING the SMU hardware write (power loss /
     instant hard crash) — the process never returns from set_co_offset."""
+
+
+class _ProcessDeath(BaseException):
+    pass
 
 
 class CrashDuringWriteSMU(FaultSMU):
@@ -846,6 +852,153 @@ class TestSMUWriteFault:
         ok = eng._apply_co_isolation(0, -10)
         assert ok is False
         assert eng._status == "paused"
+
+
+class TestInTestMarkFollowsTheWrite:
+    def _search_with_core_1_cached(self, db, topo, smu, backend):
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0, 1]), "", "")
+        eng = make_engine(db, topo, smu, backend, cores_to_test=[0, 1])
+        eng._session_id = sid
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, baseline_offset=0),
+            1: CoreState(core_id=1, phase=TunerPhase.CONFIRMED, current_offset=-5, best_offset=-5, baseline_offset=0),
+        }
+        for cs in eng._core_states.values():
+            tp.save_core_state(db, sid, cs)
+        db.journal_co_intent(sid, 1, -5, survived=True)
+        eng._co_survived[1] = -5
+        eng._co_applied[1] = -5
+        smu.applied[1] = -5
+        eng._set_status("running")
+        started: list[int] = []
+        eng._start_worker = lambda core_id, _duration, **_kw: started.append(core_id)
+        return eng, sid, started
+
+    def _assert_paused_with_no_mark(self, db, eng, sid, started):
+        assert eng.status == "paused"
+        assert started == []
+        assert not any(cs.in_test for cs in db.get_tuner_core_states(sid).values())
+
+    def test_a_refused_baseline_write_leaves_no_in_test_mark(self, db, topo, smu, mock_backend):
+        eng, sid, started = self._search_with_core_1_cached(db, topo, smu, mock_backend)
+        smu.rejecting_cores = {1}
+        eng._run_next()
+        self._assert_paused_with_no_mark(db, eng, sid, started)
+
+    def test_a_raising_co_write_leaves_no_in_test_mark(self, db, topo, smu, mock_backend):
+        eng, sid, started = self._search_with_core_1_cached(db, topo, smu, mock_backend)
+        smu.raising_cores = {1}
+        eng._run_next()
+        self._assert_paused_with_no_mark(db, eng, sid, started)
+
+    def test_a_crash_after_a_refused_write_convicts_nobody(self, db, topo, smu, mock_backend, machine):
+        eng, sid, _started = self._search_with_core_1_cached(db, topo, smu, mock_backend)
+        smu.rejecting_cores = {1}
+        eng._run_next()
+        del eng
+        machine.reboot(clean=False)
+        _resume_fresh(db, topo, FaultSMU(), mock_backend, sid, cores_to_test=[0, 1])
+        assert {c: cs.crash_count for c, cs in db.get_tuner_core_states(sid).items()} == {0: 0, 1: 0}
+        assert [row for row in tp.get_test_log(db, sid) if row["error_type"] == "crash"] == []
+
+    def test_a_death_during_another_cores_baseline_write_convicts_nobody(self, db, topo, smu, mock_backend, machine):
+        eng, sid, started = self._search_with_core_1_cached(db, topo, smu, mock_backend)
+
+        def die(core_id, value):
+            raise _ProcessDeath(f"killed while writing core {core_id} = {value}")
+
+        smu.set_co_offset = die
+        with pytest.raises(_ProcessDeath):
+            eng._run_next()
+        assert started == []
+        assert not any(cs.in_test for cs in db.get_tuner_core_states(sid).values())
+
+        del eng
+        machine.reboot(clean=False)
+        _resume_fresh(db, topo, FaultSMU(), mock_backend, sid, cores_to_test=[0, 1])
+        assert {c: cs.crash_count for c, cs in db.get_tuner_core_states(sid).items()} == {0: 0, 1: 0}
+
+    def test_abort_saves_the_cleared_mark_after_reverting(self, db, topo, smu, mock_backend):
+        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "")
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=[0])
+        eng._session_id = sid
+        eng._core_states = {
+            0: CoreState(core_id=0, phase=TunerPhase.COARSE_SEARCH, current_offset=-10, baseline_offset=0)
+        }
+        tp.save_core_state(db, sid, eng._core_states[0])
+        eng._set_status("running")
+        eng._start_worker = lambda _core_id, _duration, **_kw: setattr(eng, "_worker", _StubThread())
+        eng._run_next()
+        assert smu.applied[0] == -10
+        assert db.get_tuner_core_states(sid)[0].in_test
+
+        eng.abort()
+
+        assert smu.applied[0] == 0
+        assert not db.get_tuner_core_states(sid)[0].in_test
+
+    def test_abort_reverts_every_core_before_it_saves_a_core_state(self, db, topo, smu, mock_backend, monkeypatch):
+        cliffs = {0: -10, 1: -12, 2: -8, 3: -14}
+        sid = tp.create_session(db, TunerConfig(cores_to_test=list(cliffs)), "", "")
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=list(cliffs))
+        eng._session_id = sid
+        eng._core_states = {
+            c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=v, best_offset=v, baseline_offset=0)
+            for c, v in cliffs.items()
+        }
+        eng._co_survived = dict(cliffs)
+        eng._set_status("validating")
+        eng._validation_stage = 2
+        eng._validation_core_order = sorted(cliffs)
+        eng._start_multi_core_worker = lambda _cores, _duration, **_kw: setattr(eng, "_worker", _StubThread())
+        eng._run_validation_stage2()
+        assert smu.applied == cliffs
+        assert all(cs.in_test for cs in db.get_tuner_core_states(sid).values())
+
+        order: list[str] = []
+        write, save = smu.set_co_offset, db.upsert_tuner_core_state
+
+        def spied_write(core_id, value):
+            order.append("write")
+            return write(core_id, value)
+
+        def spied_save(session_id, cs):
+            order.append("save")
+            save(session_id, cs)
+
+        monkeypatch.setattr(smu, "set_co_offset", spied_write)
+        monkeypatch.setattr(db, "upsert_tuner_core_state", spied_save)
+
+        eng.abort()
+
+        writes = [i for i, kind in enumerate(order) if kind == "write"]
+        saves = [i for i, kind in enumerate(order) if kind == "save"]
+        assert len(writes) == len(cliffs)
+        assert saves
+        assert max(writes) < min(saves)
+        assert all(smu.applied[c] == 0 for c in cliffs)
+        assert not any(cs.in_test for cs in db.get_tuner_core_states(sid).values())
+
+    def test_an_apparatus_streak_ending_in_a_hunt_clears_the_slot(self, db, topo, smu, mock_backend):
+        best = {0: -10, 1: -10, 2: -10, 3: -20}
+        sid = tp.create_session(db, TunerConfig(cores_to_test=list(best)), "", "")
+        eng = make_engine(db, topo, smu, mock_backend, cores_to_test=list(best))
+        eng._session_id = sid
+        eng._core_states = {
+            c: CoreState(core_id=c, phase=TunerPhase.CONFIRMED, current_offset=v, best_offset=v, baseline_offset=0)
+            for c, v in best.items()
+        }
+        for cs in eng._core_states.values():
+            tp.save_core_state(db, sid, cs)
+        eng._start_worker = lambda *_args, **_kw: None
+        eng._start_hunt()
+        assert tp.get_session(db, sid).hunting_core == 3
+
+        for _ in range(eng._config.max_apparatus_retries + 1):
+            eng._on_test_finished(report(3, Outcome.NOT_STARTED, "Failed to start stress test: boom", 0.0))
+
+        assert eng.status == "paused"
+        assert tp.get_session(db, sid).hunting_core is None
 
 
 # ---------------------------------------------------------------------------

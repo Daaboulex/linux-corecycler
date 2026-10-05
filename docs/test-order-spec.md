@@ -41,8 +41,11 @@ CONFIRMING = 1, COARSE_SEARCH = 2, SETTLED = 3, NOT_STARTED = 4.
 4. `pick == None` means either every core is terminal (the session completes)
    or every non-terminal core is cooling — then all cooldowns drain by 1 and
    the pick repeats, so the tuner can never deadlock while work remains.
-5. The picked core is flagged `in_test` and persisted BEFORE its worker
-   starts (crash attribution), and cleared on any delivered verdict.
+5. The picked core is flagged `in_test` and persisted only after every CO
+   write for its test has landed, and before its worker starts (crash
+   attribution); a refused or raising write leaves it unflagged. The flag is
+   cleared on any delivered verdict, and Abort saves the clear after it has
+   reverted every core.
 
 ## Interruption contract
 

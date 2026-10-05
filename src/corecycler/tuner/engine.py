@@ -824,16 +824,14 @@ class TunerEngine(QObject):
                     self._worker.wait(3000)
             self._worker.deleteLater()
             self._worker = None
-        # Clear the in-flight flag and revert EVERY core to baseline so no
-        # aggressive offset lingers in the SMU after abort. Reverting only the
-        # tested core is wrong during validation, where all confirmed cores are
-        # applied at once — the others would be left at aggressive CO.
+        self._revert_all_to_baseline()
         if tested_core is not None:
             cs = self._core_states.get(tested_core)
             if cs is not None:
                 cs.in_test = False
+                if self._session_id:
+                    tp.save_core_state(self._db, self._session_id, cs)
         self._clear_cores_under_stress()
-        self._revert_all_to_baseline()
         self._validation_stage = 0
         self._in_requeue = False
         self._soaking = False
@@ -2223,8 +2221,6 @@ class TunerEngine(QObject):
             self._advance_core(core_id, passed=False)  # → confirming
             cs = self._core_states[core_id]
         self._last_tested_core = core_id
-        cs.in_test = True
-        tp.save_core_state(self._db, self._session_id, cs)
         # Track per-CCD position for ccd_round_robin
         core_info = self._topology.cores.get(core_id)
         if core_info and core_info.ccd is not None:
@@ -2244,6 +2240,8 @@ class TunerEngine(QObject):
                 # Search mode: isolate to prevent false blame on crash
                 if not self._apply_co_isolation(core_id, cs.current_offset):
                     return
+        cs.in_test = True
+        tp.save_core_state(self._db, self._session_id, cs)
 
         # Determine test duration based on phase
         if cs.phase in (
@@ -2724,6 +2722,8 @@ class TunerEngine(QObject):
                 self._revert_all_to_baseline()
             else:
                 self._revert_core_to_baseline(core_id)
+            if self._hunting and self._session_id is not None:
+                tp.set_hunting_core(self._db, self._session_id, None)
             self.log_message.emit(
                 f"Stress apparatus failed {streak} times in a row ({outcome}: {detail}). "
                 "The environment cannot run this test, and repeating it would prove nothing. "
