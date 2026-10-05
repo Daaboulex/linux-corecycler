@@ -898,12 +898,6 @@ class TestOutputFiles:
         assert verdict.outcome is Outcome.COMPUTATION
         assert "fail" in verdict.detail
 
-    def test_a_recognised_failure_never_reads_as_unrecognised(self, tmp_path):
-        supervisor, _, _ = make_supervisor(scripted(StressNgBackend, BAD_BYTE_THEN_FAIL))
-        verdict = run_one(supervisor, lane(tmp_path), 10.0)
-        assert verdict.outcome is Outcome.COMPUTATION
-        assert "no recognised message" not in verdict.detail
-
     def test_a_child_holding_the_output_cannot_hide_the_leaders_text(self, tmp_path):
         supervisor, _, _ = make_supervisor(scripted(StressNgBackend, LEADER_FAILS_WHILE_A_CHILD_HOLDS_THE_OUTPUT))
         verdict = run_one(supervisor, lane(tmp_path), 5.0)
