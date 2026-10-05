@@ -699,6 +699,30 @@ Iteration: 1  Total Elapsed Time: 3.054 seconds  ( 0.051 minutes )
 Running BKT: Passed  Test Speed:  5.2 * 10^08  bits / sec
 """
 
+_MEASURED_STARTUP_HEAD = """\
+Running from console...
+
+
+Checking processor/OS features...
+
+Reading Hardware Topology...
+
+Logical Cores:
+    0-31
+
+
+"""
+
+_MEASURED_UNKNOWN_TEST = (
+    _MEASURED_STARTUP_HEAD + "Exception Encountered: InvalidParametersException\n\nUnknown Test: NOSUCHTEST\n\n"
+)
+_MEASURED_BAD_CORE = (
+    _MEASURED_STARTUP_HEAD
+    + "Exception Encountered: InvalidParametersException\n\nIn Function: CoreSelector::load_config()\n\n"
+    + "Invalid core #: 96\n\n"
+)
+_MEASURED_MISSING_KEY = _MEASURED_STARTUP_HEAD + "Exception Encountered: KeyNotFoundException\n\nTests\n\n"
+
 _CAPTURED_INVALID_PARAM_OUTPUT = """\
 Reading Hardware Topology...
 
@@ -976,7 +1000,21 @@ class TestYCruncherBackend:
     def test_a_config_error_in_an_exception_block_is_not_a_computation_error(self, tmp_path):
         output = "Exception Encountered: InvalidParametersException\nIn Function: core_to_node()\nInvalid core id\n"
         found = YCruncherBackend().findings(output, tmp_path)
-        assert [signal.outcome for signal in found] == [Outcome.NOT_STARTED]
+        assert {signal.outcome for signal in found} == {Outcome.NOT_STARTED}
+
+    @pytest.mark.parametrize(
+        ("output", "reason"),
+        [
+            (_MEASURED_UNKNOWN_TEST, "Unknown Test: NOSUCHTEST"),
+            (_MEASURED_BAD_CORE, "Invalid core #: 96"),
+            (_MEASURED_MISSING_KEY, "Exception Encountered: KeyNotFoundException"),
+        ],
+        ids=["unknown-test", "bad-core", "missing-key"],
+    )
+    def test_a_startup_exception_the_pinned_binary_prints_is_not_started(self, tmp_path, output, reason):
+        found = YCruncherBackend().findings(output, tmp_path)
+        assert {signal.outcome for signal in found} == {Outcome.NOT_STARTED}
+        assert reason in {signal.text for signal in found}
 
     def test_invalid_parameter_is_not_started(self, tmp_path):
         found = YCruncherBackend().findings(_CAPTURED_INVALID_PARAM_OUTPUT, tmp_path)

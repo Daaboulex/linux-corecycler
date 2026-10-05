@@ -77,6 +77,10 @@ FINDINGS: FindingTable = (
         for pattern in (
             r"Invalid Parameter",
             r"Invalid core id",
+            r"InvalidParametersException",
+            r"KeyNotFoundException",
+            r"Unknown Test: ",
+            r"Invalid core #: ",
         )
     ),
 )
