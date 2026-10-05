@@ -542,7 +542,7 @@ def scenario_engine_parallel(args) -> None:
     check(
         "every_lane_earned_a_pass",
         sorted(results) == sorted(args.cores) and all(r.passed for r in results.values()),
-        {c: (r.passed, r.error_message) for c, r in results.items()},
+        {c: (r.passed, r.detail) for c, r in results.items()},
     )
     check(
         "parallel_affinity_stayed_inside",
