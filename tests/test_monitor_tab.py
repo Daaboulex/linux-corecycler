@@ -117,6 +117,21 @@ class TestMonitorTab:
         tab._update_power_limits()
         assert "120" in tab._ppt_label.text() and "200" in tab._ppt_label.text()
 
+    def test_a_live_value_the_reader_never_located_is_shown_as_not_read(self):
+        tab = _tab()
+        tab._pmtable = MagicMock()
+        tab._pmtable.is_available.return_value = True
+        tab._pmtable.read.return_value = SimpleNamespace(
+            ppt_value_w=120.0,
+            ppt_limit_w=200.0,
+            tdc_value_a=90.0,
+            tdc_limit_a=180.0,
+            edc_value_a=None,
+            edc_limit_a=230.0,
+        )
+        tab._update_power_limits()
+        assert tab._edc_label.text() == "EDC: limit 230A, live value not read"
+
     def test_stop_monitoring_closes_msr(self):
         tab = _tab()
         tab._msr = MagicMock()

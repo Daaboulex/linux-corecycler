@@ -209,7 +209,7 @@ class TestPowerLimitsInContext:
         import corecycler.smu.pmtable as pmtable_mod
         from corecycler.history.context import capture_system_context
 
-        monkeypatch.setattr(pmtable_mod, "read_power_limits", lambda n: (225.0, 190.0, 230.0))
+        monkeypatch.setattr(pmtable_mod, "read_power_limits", lambda: (225.0, 190.0, 230.0))
         smu = MagicMock()
         smu.get_all_co_offsets.return_value = {0: -30}
         smu.get_pbo_scalar.return_value = 1.0

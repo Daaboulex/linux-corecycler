@@ -98,7 +98,7 @@ def capture_system_context(
         try:
             from corecycler.smu.pmtable import read_power_limits
 
-            ppt, tdc, edc = read_power_limits(num_cores)
+            ppt, tdc, edc = read_power_limits()
         except Exception:
             log.debug("Failed to read PBO power limits", exc_info=True)
 

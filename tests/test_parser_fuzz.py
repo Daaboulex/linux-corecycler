@@ -82,7 +82,7 @@ class TestPmTableParserRobust:
         (tmp_path / "pm_table").write_bytes(raw)
         if ver:
             (tmp_path / "pm_table_version").write_bytes(ver)
-        result = PMTableReader(num_cores=16, sysfs_path=tmp_path).read()
+        result = PMTableReader(sysfs_path=tmp_path).read()
         assert result is None or hasattr(result, "raw_floats")
 
 

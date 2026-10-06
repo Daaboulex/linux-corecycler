@@ -26,21 +26,14 @@ from corecycler.smu.pmtable import (
 class TestPMTableData:
     def test_defaults(self):
         data = PMTableData()
-        assert data.core_frequency_mhz == {}
-        assert data.core_voltage_v == {}
-        assert data.core_temperature_c == {}
-        assert data.core_power_w == {}
-        assert data.core_c0_residency == {}
         assert data.package_power_w == 0.0
-        assert data.soc_power_w == 0.0
         assert data.ppt_limit_w == 0.0
         assert data.tdc_limit_a == 0.0
         assert data.edc_limit_a == 0.0
         assert data.ppt_value_w == 0.0
         assert data.tdc_value_a == 0.0
-        assert data.edc_value_a == 0.0
+        assert data.edc_value_a is None
         assert data.tctl_c == 0.0
-        assert data.tdie_c == 0.0
         assert data.raw_floats == []
 
 
@@ -122,24 +115,10 @@ class TestPMTableReader:
         floats[11] = 70.0  # hotspot temperature
         floats[63] = 230.0  # EDC limit
 
-        # Per-core data (core 0 at offset 100)
-        floats[100] = 5700.0  # core 0 freq
-        floats[101] = 1.35  # core 0 voltage
-        floats[102] = 12.5  # core 0 power
-        floats[103] = 68.0  # core 0 temp
-        floats[104] = 95.0  # core 0 C0 residency
-
-        # Core 1 at offset 110
-        floats[110] = 5500.0
-        floats[111] = 1.30
-        floats[112] = 11.0
-        floats[113] = 66.0
-        floats[114] = 80.0
-
         raw = struct.pack(f"<{len(floats)}f", *floats)
         (smu_dir / "pm_table").write_bytes(raw)
 
-        reader = PMTableReader(num_cores=16, sysfs_path=smu_dir)
+        reader = PMTableReader(sysfs_path=smu_dir)
         result = reader.read()
 
         assert result is not None
@@ -148,43 +127,9 @@ class TestPMTableReader:
         assert result.tdc_limit_a == pytest.approx(190.0)
         assert result.tdc_value_a == pytest.approx(95.0)
         assert result.edc_limit_a == pytest.approx(230.0)
-        assert result.edc_value_a == 0.0  # value slot not located — absent
+        assert result.edc_value_a is None
         assert result.tctl_c == pytest.approx(70.0)
-        assert result.tdie_c == 0.0  # not located — absent
         assert result.package_power_w == pytest.approx(142.0)
-        assert result.soc_power_w == 0.0  # not located — absent
-
-        assert result.core_frequency_mhz[0] == pytest.approx(5700.0)
-        assert result.core_voltage_v[0] == pytest.approx(1.35)
-        assert result.core_power_w[0] == pytest.approx(12.5)
-        assert result.core_temperature_c[0] == pytest.approx(68.0)
-        assert result.core_c0_residency[0] == pytest.approx(95.0)
-
-        assert result.core_frequency_mhz[1] == pytest.approx(5500.0)
-        assert result.core_voltage_v[1] == pytest.approx(1.30)
-
-    def test_partial_core_data(self, tmp_path):
-        """PM table that's too short for all cores should parse what it can."""
-        smu_dir = tmp_path / "ryzen_smu_drv"
-        smu_dir.mkdir()
-
-        # 210 floats: enough to trigger parsing (>= 200) and cover core 0
-        # (offset 100) and core 1 (offset 110), but NOT core 11+ (offset 210+)
-        floats = [0.0] * 210
-        floats[100] = 4800.0  # core 0 freq
-        floats[110] = 5100.0  # core 1 freq
-
-        raw = struct.pack(f"<{len(floats)}f", *floats)
-        (smu_dir / "pm_table").write_bytes(raw)
-
-        reader = PMTableReader(num_cores=16, sysfs_path=smu_dir)
-        result = reader.read()
-
-        assert result is not None
-        assert result.core_frequency_mhz[0] == pytest.approx(4800.0)
-        assert result.core_frequency_mhz[1] == pytest.approx(5100.0)
-        # Core 11+ should not be present (offset 210+ out of range)
-        assert 11 not in result.core_frequency_mhz
 
     def test_fewer_than_200_floats_skips_parsing(self, tmp_path):
         """PM table with < 200 floats should skip Granite Ridge parsing."""
@@ -201,7 +146,6 @@ class TestPMTableReader:
         assert result is not None
         assert len(result.raw_floats) == 50
         # No parsed fields (< 200 floats triggers early return)
-        assert result.core_frequency_mhz == {}
         assert result.ppt_limit_w == 0.0
 
     def test_raw_floats_always_available(self, tmp_path):
@@ -220,46 +164,6 @@ class TestPMTableReader:
         assert len(result.raw_floats) == 300
         assert result.raw_floats[0] == pytest.approx(0.0)
         assert result.raw_floats[299] == pytest.approx(299.0)
-
-    def test_num_cores_limits_parsing(self, tmp_path):
-        """num_cores parameter should limit how many cores are parsed."""
-        smu_dir = tmp_path / "ryzen_smu_drv"
-        smu_dir.mkdir()
-
-        floats = [0.0] * 420
-        for i in range(16):
-            floats[100 + i * 10] = 5000.0 + i * 100  # freq per core
-
-        raw = struct.pack(f"<{len(floats)}f", *floats)
-        (smu_dir / "pm_table").write_bytes(raw)
-
-        # Only parse 4 cores
-        reader = PMTableReader(num_cores=4, sysfs_path=smu_dir)
-        result = reader.read()
-
-        assert result is not None
-        assert len(result.core_frequency_mhz) == 4
-        assert 4 not in result.core_frequency_mhz
-
-    def test_32_core_limit(self, tmp_path):
-        """Parser should cap at 32 cores even if num_cores is higher."""
-        smu_dir = tmp_path / "ryzen_smu_drv"
-        smu_dir.mkdir()
-
-        # Need enough floats for 33+ cores
-        floats = [0.0] * 600
-        for i in range(40):
-            floats[100 + i * 10] = 4000.0 + i
-
-        raw = struct.pack(f"<{len(floats)}f", *floats)
-        (smu_dir / "pm_table").write_bytes(raw)
-
-        reader = PMTableReader(num_cores=40, sysfs_path=smu_dir)
-        result = reader.read()
-
-        assert result is not None
-        # Should cap at 32 cores
-        assert len(result.core_frequency_mhz) <= 32
 
     def test_os_error_reading(self, tmp_path):
         """OSError on read should return None."""
@@ -576,12 +480,11 @@ class TestVersionDispatch:
         floats[100] = 5700.0  # core 0 freq
         raw = struct.pack(f"<{len(floats)}f", *floats)
         smu_dir = _make_smu_dir(tmp_path, version_int=None, raw_bytes=raw)
-        reader = PMTableReader(num_cores=16, sysfs_path=smu_dir)
+        reader = PMTableReader(sysfs_path=smu_dir)
         result = reader.read()
 
         assert result is not None
         assert result.ppt_limit_w == 0.0  # fail closed — unknown layout
-        assert result.core_frequency_mhz[0] == pytest.approx(5700.0)
         # No version dispatch happened
         assert result.pm_table_version == 0
         assert result.is_calibrated is False
@@ -656,8 +559,7 @@ class TestVersionDispatch:
         # vdd_mem at 0x0A8 is beyond 256 bytes but within range -- check it's parsed or 0.0
         # (depends on whether the test data is large enough)
 
-    def test_legacy_core_data_still_parsed_with_version(self, tmp_path):
-        """Legacy _parse_granite_ridge core data is still parsed when version is known."""
+    def test_power_header_is_parsed_with_a_known_version(self, tmp_path):
         raw = bytearray(
             _build_versioned_pm_table(
                 0x620205,
@@ -670,19 +572,16 @@ class TestVersionDispatch:
         )
         # PPT limit at float index 2 (byte offset 8) — Zen 5 header layout
         struct.pack_into("<f", raw, 8, 225.0)
-        # Core 0 freq at float index 100 (byte offset 400)
-        struct.pack_into("<f", raw, 400, 5700.0)
         smu_dir = _make_smu_dir(tmp_path, version_int=0x00620205, raw_bytes=bytes(raw))
-        reader = PMTableReader(num_cores=16, sysfs_path=smu_dir)
+        reader = PMTableReader(sysfs_path=smu_dir)
         result = reader.read()
 
         assert result is not None
         # Versioned data
         assert result.is_calibrated is True
         assert result.fclk_mhz == pytest.approx(2000.0)
-        # Power header + core data also parsed
+
         assert result.ppt_limit_w == pytest.approx(225.0)
-        assert result.core_frequency_mhz[0] == pytest.approx(5700.0)
 
 
 # ===========================================================================
@@ -750,27 +649,27 @@ class TestReadPowerLimits:
         from corecycler.smu.pmtable import read_power_limits
 
         smu_dir = self._tree(tmp_path, 0x00620205, self._floats())
-        assert read_power_limits(16, smu_dir) == (225.0, 190.0, 230.0)
+        assert read_power_limits(smu_dir) == (225.0, 190.0, 230.0)
 
     def test_unknown_generation_fails_closed(self, tmp_path):
         from corecycler.smu.pmtable import read_power_limits
 
         smu_dir = self._tree(tmp_path, 0x00540104, self._floats())
-        assert read_power_limits(16, smu_dir) == (None, None, None)
+        assert read_power_limits(smu_dir) == (None, None, None)
 
     def test_implausible_values_fail_closed_per_field(self, tmp_path):
         from corecycler.smu.pmtable import read_power_limits
 
         smu_dir = self._tree(tmp_path, 0x00620205, self._floats(ppt=1e9, tdc=190.0, edc=5.0))
-        assert read_power_limits(16, smu_dir) == (None, 190.0, None)
+        assert read_power_limits(smu_dir) == (None, 190.0, None)
 
     def test_zero_reads_as_absent(self, tmp_path):
         from corecycler.smu.pmtable import read_power_limits
 
         smu_dir = self._tree(tmp_path, 0x00620205, self._floats(ppt=0.0, tdc=0.0, edc=0.0))
-        assert read_power_limits(16, smu_dir) == (None, None, None)
+        assert read_power_limits(smu_dir) == (None, None, None)
 
     def test_missing_table_fails_closed(self, tmp_path):
         from corecycler.smu.pmtable import read_power_limits
 
-        assert read_power_limits(16, tmp_path / "nope") == (None, None, None)
+        assert read_power_limits(tmp_path / "nope") == (None, None, None)

@@ -189,24 +189,15 @@ def _read_float(raw: bytes, byte_offset: int) -> float:
 class PMTableData:
     """Parsed PM table telemetry values."""
 
-    # per-core data
-    core_frequency_mhz: dict[int, float] = field(default_factory=dict)
-    core_voltage_v: dict[int, float] = field(default_factory=dict)
-    core_temperature_c: dict[int, float] = field(default_factory=dict)
-    core_power_w: dict[int, float] = field(default_factory=dict)
-    core_c0_residency: dict[int, float] = field(default_factory=dict)
-
     # package-level
     package_power_w: float = 0.0
-    soc_power_w: float = 0.0
     ppt_limit_w: float = 0.0
     tdc_limit_a: float = 0.0
     edc_limit_a: float = 0.0
     ppt_value_w: float = 0.0
     tdc_value_a: float = 0.0
-    edc_value_a: float = 0.0
+    edc_value_a: float | None = None
     tctl_c: float = 0.0
-    tdie_c: float = 0.0
 
     # memory controller clocks and voltages (version-aware parsing)
     fclk_mhz: float = 0.0
@@ -227,16 +218,14 @@ _PPT_MIN_W, _PPT_MAX_W = 30.0, 1000.0
 _AMP_MIN_A, _AMP_MAX_A = 30.0, 2000.0
 
 
-def read_power_limits(
-    num_cores: int = 16, sysfs_path: Path | None = None
-) -> tuple[float | None, float | None, float | None]:
+def read_power_limits(sysfs_path: Path | None = None) -> tuple[float | None, float | None, float | None]:
     """Read the live PBO power limits (PPT W, TDC A, EDC A) from the PM table.
 
     Fails closed: unsupported generation, unreadable table, or an implausible
     decoded value yields None for that field — a wrong number stored as a
     limit would poison every context comparison built on it.
     """
-    reader = PMTableReader(num_cores, sysfs_path) if sysfs_path is not None else PMTableReader(num_cores)
+    reader = PMTableReader(sysfs_path) if sysfs_path is not None else PMTableReader()
     data = reader.read()
     if data is None:
         return None, None, None
@@ -296,8 +285,7 @@ class PMTableReader:
     legacy approximate parsing for unknown versions.
     """
 
-    def __init__(self, num_cores: int = 16, sysfs_path: Path = SYSFS_BASE) -> None:
-        self.num_cores = num_cores
+    def __init__(self, sysfs_path: Path = SYSFS_BASE) -> None:
         self.sysfs = sysfs_path
 
     def is_available(self) -> bool:
@@ -353,7 +341,6 @@ class PMTableReader:
                     self._blank_memory_values(data)
             # else: unknown version, is_calibrated stays False
 
-        # Always parse legacy core-level data (per-core freq/voltage/temp/power)
         self._parse_granite_ridge(data, floats)
 
         return data
@@ -433,24 +420,6 @@ class PMTableReader:
             data.tdc_limit_a = floats[8]
             data.tdc_value_a = floats[9]
             data.edc_limit_a = floats[63]
-            data.edc_value_a = 0.0  # value slot not located — absent, not a guess
             data.tctl_c = floats[11]
-            data.tdie_c = 0.0  # not located — absent, not a guess
             # PPT value IS the package power the limit governs.
             data.package_power_w = floats[3]
-            data.soc_power_w = 0.0  # not located — absent, not a guess
-
-        # per-core data typically starts around offset 100+
-        # each core has ~10 float fields (freq, voltage, power, temp, residency, ...)
-        core_base = 100
-        core_stride = 10
-
-        for core in range(min(self.num_cores, 32)):
-            offset = core_base + core * core_stride
-            if offset + core_stride > len(floats):
-                break
-            data.core_frequency_mhz[core] = floats[offset]
-            data.core_voltage_v[core] = floats[offset + 1]
-            data.core_power_w[core] = floats[offset + 2]
-            data.core_temperature_c[core] = floats[offset + 3]
-            data.core_c0_residency[core] = floats[offset + 4]

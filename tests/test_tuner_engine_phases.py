@@ -1189,7 +1189,7 @@ class TestStartRefusals:
     def test_recorded_power_limits_are_narrated(self, db, tmp_path, monkeypatch):
         import corecycler.smu.pmtable as pmtable
 
-        monkeypatch.setattr(pmtable, "read_power_limits", lambda _n: (225.0, 190.0, 230.0))
+        monkeypatch.setattr(pmtable, "read_power_limits", lambda: (225.0, 190.0, 230.0))
         instance = TunerEngine(
             db=db,
             topology=_topo(),

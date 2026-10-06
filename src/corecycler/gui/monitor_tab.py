@@ -567,7 +567,9 @@ class MonitorTab(QWidget):
             return
 
         def fmt(label, name, value, limit, unit):
-            if limit > 0:
+            if limit > 0 and value is None:
+                label.setText(f"{name}: limit {limit:.0f}{unit}, live value not read")
+            elif limit > 0:
                 pct = (value / limit) * 100 if value >= 0 else 0
                 label.setText(f"{name}: {value:.0f}/{limit:.0f}{unit} ({pct:.0f}%)")
             else:
