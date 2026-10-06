@@ -40,15 +40,16 @@ def test_warm_is_one_sixty_second_slice_per_test_in_the_record_order_with_the_wa
 
 
 @pytest.mark.parametrize("seed", range(20))
-def test_burst_restarts_every_40_to_80_seconds_and_alternates_short_runs_and_freezes(seed):
+def test_burst_restarts_at_60_seconds_then_every_40_to_80_and_alternates_short_runs_and_freezes(seed):
     segments = plan(Load.BURST, 480.0, seed)
     assert sum(s.duration for s in segments) == pytest.approx(480.0)
-    assert all(40.0 <= s.duration <= 80.0 for s in segments[:-1])
+    assert segments[0].duration == 60.0
+    assert all(40.0 <= s.duration <= 80.0 for s in segments[1:-1])
     for index, s in enumerate(segments):
         assert ALL_TESTS[-len(s.tests) :] == s.tests
-        assert s.cpus == CPUS or (len(s.cpus) in (2,) and set(s.cpus) <= set(FIRSTS))
+        assert s.cpus == CPUS or (len(s.cpus) in (2, 4) and set(s.cpus) <= set(FIRSTS))
         first = s.frozen[0][0]
-        assert first == 3.0 if index == 0 else 1.0 <= first <= 2.0
+        assert first == 3.0 if index == 0 else first in (1.0, 2.0)
         for (start, stop), (after, _) in zip(s.frozen, s.frozen[1:], strict=False):
             assert 0.3 <= stop - start <= 4.0 and 0.2 <= after - stop <= 3.0
 
@@ -235,3 +236,14 @@ def test_a_cpu_the_topology_does_not_have_is_refused(tmp_path):
     (tmp_path / "stdout.log").write_text("Error(s) encountered on logical core 40.")
     with pytest.raises(ValueError, match="40"):
         runner(Script([Outcome.COMPUTATION], evidence_dir=tmp_path)).run(spec(Load.HOT, 510.0), threading.Event())
+
+
+def test_burst_draws_powers_of_two_up_to_the_cpu_count_on_first_cpus_and_all_cpus_as_the_last_draw():
+    cpus = tuple(range(32))
+    firsts = tuple(range(16))
+    seen = set()
+    for seed in range(200):
+        for s in stages.plan(Load.BURST, 480.0, cpus, firsts, 60_000, random.Random(seed)):
+            seen.add(len(s.cpus))
+            assert s.cpus == cpus or set(s.cpus) <= set(firsts)
+    assert seen == {2, 4, 8, 16, 32}

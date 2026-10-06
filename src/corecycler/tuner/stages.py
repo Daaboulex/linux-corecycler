@@ -13,6 +13,7 @@ HOT_PER_TEST_S = 60
 WARM_SLICE_S = 60.0
 WARM_PER_TEST_S = 30
 BURST_PER_TEST_S = 15
+BURST_FIRST_RESTART_S = 60.0
 IDLE_PER_TEST_S = 10
 HOT_MEMORY_CAP_MB = 16384
 BURST_MEMORY_MB = 2048
@@ -46,13 +47,13 @@ def _alternate(rng: random.Random, duration: float, first: float, run: tuple, re
     return tuple(intervals)
 
 
-def _counts(n: int) -> list[int]:
-    counts = []
+def _draws(n_cpus: int) -> list[int]:
+    draws = []
     k = 2
-    while k < n:
-        counts.append(k)
+    while k < n_cpus:
+        draws.append(k)
         k *= 2
-    return [*counts, n]
+    return [*draws, n_cpus]
 
 
 def plan(
@@ -75,11 +76,11 @@ def plan(
         segments = []
         t = 0.0
         while t < seconds:
-            length = min(seconds - t, rng.uniform(40.0, 80.0))
+            length = min(seconds - t, BURST_FIRST_RESTART_S if not segments else rng.uniform(40.0, 80.0))
             start = rng.randrange(len(ALL_TESTS))
-            count = rng.choice(_counts(len(firsts)))
-            chosen = cpus if count >= len(firsts) else tuple(sorted(rng.sample(firsts, count)))
-            first = 3.0 if not segments else rng.uniform(1.0, 2.0)
+            draw = rng.choice(_draws(len(cpus)))
+            chosen = cpus if draw >= len(cpus) else tuple(sorted(rng.sample(firsts, min(len(firsts), draw))))
+            first = 3.0 if not segments else rng.choice((1.0, 2.0))
             frozen = _alternate(rng, length, first, (0.2, 3.0), (0.3, 4.0))
             segments.append(Segment(chosen, ALL_TESTS[start:], BURST_PER_TEST_S, BURST_MEMORY_MB, length, frozen))
             t += length
