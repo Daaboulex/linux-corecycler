@@ -80,6 +80,9 @@ class _LaneRun:
     output: str = ""
     read_problem: str | None = None
     oom_kills: int = 0
+    frozen: bool = False
+    frozen_since: float | None = None
+    frozen_total: float = 0.0
 
     @property
     def alive(self) -> bool:
@@ -262,7 +265,7 @@ def refuse_if_missing(topology: CPUTopology, cores: list[int]) -> dict[int, Stre
 
 
 def _no_work_done(run: _LaneRun) -> str | None:
-    floor = LOAD_FLOOR_FRACTION * len(run.lane.cpus) * (run.deadline - run.started_at)
+    floor = LOAD_FLOOR_FRACTION * len(run.lane.cpus) * (run.deadline - run.started_at - run.frozen_total)
     if run.cpu_seconds is not None and 0 < floor <= run.cpu_seconds:
         return None
     used = "unreadable" if run.cpu_seconds is None else f"{run.cpu_seconds:.2f}s"
@@ -290,6 +293,7 @@ class Supervisor:
         phase: str = "stress",
         hooks: SuperviseHooks | None = None,
         containment_for: Callable[[tuple[int, ...]], containment.Containment | None] | None = None,
+        freeze: Callable[[float], bool] | None = None,
     ) -> None:
         self.backend = backend
         self.detector = detector
@@ -301,6 +305,7 @@ class Supervisor:
         self.phase = phase
         self.hooks = hooks or SuperviseHooks()
         self._containment_for = containment_for or containment.contain
+        self.freeze = freeze
 
     def run(self, lanes: list[Lane], config: StressConfig, duration: float) -> dict[int, StressResult]:
         start = time.monotonic()
@@ -357,6 +362,8 @@ class Supervisor:
             now = time.monotonic()
             if now >= deadline:
                 return
+            if self.freeze is not None:
+                self._set_frozen(runs, self.freeze(now - start), now)
             for run in runs:
                 if run.alive:
                     self._check(run, now, start)
@@ -397,7 +404,7 @@ class Supervisor:
             if fault:
                 run.signals.append(LaneSignal(Outcome.CONTAINMENT_BROKE, fault))
                 return
-        if now - start >= STALL_GRACE_SECONDS and now - run.last_active > self.stall_timeout:
+        if not run.frozen and now - start >= STALL_GRACE_SECONDS and now - run.last_active > self.stall_timeout:
             if self.hooks.on_stall:
                 self.hooks.on_stall(run.lane.core_id)
             run.signals.append(
@@ -408,6 +415,21 @@ class Supervisor:
                     f"{self.stall_timeout:.0f}s)",
                 )
             )
+
+    def _set_frozen(self, runs: list[_LaneRun], frozen: bool, now: float) -> None:
+        for run in runs:
+            if not run.alive or run.frozen == frozen:
+                continue
+            if frozen:
+                self._sample_cpu(run, now)
+                self._signal_group(run, signal.SIGSTOP)
+                run.frozen_since = now
+            else:
+                self._signal_group(run, signal.SIGCONT)
+                run.frozen_total += now - run.frozen_since
+                run.frozen_since = None
+                run.last_active = now
+            run.frozen = frozen
 
     def _take_kernel_events(self, runs: list[_LaneRun], *, final: bool = False) -> None:
         read = self.detector.read_new(final=final)
@@ -532,6 +554,7 @@ class Supervisor:
             stopping.append(run)
             if run.proc.poll() is None:
                 live.append(run)
+        self._set_frozen(live, False, stop)
         for run in live:
             run.sent = signal.SIGTERM
             self._signal_group(run, signal.SIGTERM)
