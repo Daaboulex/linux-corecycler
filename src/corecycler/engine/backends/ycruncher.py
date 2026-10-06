@@ -86,6 +86,19 @@ FINDINGS: FindingTable = (
 )
 
 
+def named_binary(binaries_dir: Path, name: str, cpu_flags: frozenset[str], vendor: str) -> Path:
+    required = dict(LAUNCHER_ORDER.get(vendor, ())).get(name)
+    if required is None:
+        raise OSError(f"y-cruncher has no binary named {name!r} for {vendor or 'an unknown vendor'}")
+    missing = sorted(required - cpu_flags)
+    if missing:
+        raise OSError(f"the y-cruncher binary {name!r} needs CPU flags this CPU lacks: {missing}")
+    candidate = binaries_dir / name
+    if not candidate.is_file():
+        raise OSError(f"the y-cruncher binary {name!r} is not in {binaries_dir}")
+    return candidate
+
+
 def compute_binary(binaries_dir: Path, cpu_flags: frozenset[str], vendor: str) -> Path | None:
     for name, required in LAUNCHER_ORDER.get(vendor, ()):
         candidate = binaries_dir / name
@@ -104,7 +117,11 @@ def _binaries_dir(launcher: Path) -> Path:
 
 def _stress_config(config: StressConfig) -> str:
     memory_mib = config.memory_mb if config.memory_mb and config.memory_mb > 0 else _DEFAULT_MEMORY_MIB
-    tests = MODE_TO_ALGORITHMS[config.mode]
+    tests = config.tests or MODE_TO_ALGORITHMS[config.mode]
+    unknown = [tag for tag in tests if tag not in ALL_TESTS]
+    if unknown:
+        raise ValueError(f"y-cruncher has no test named {unknown}; it offers {list(ALL_TESTS)}")
+    seconds = config.seconds_per_test if config.seconds_per_test else _PER_TEST_SECONDS
     lines = [
         "{",
         '    Action : "StressTest"',
@@ -112,7 +129,7 @@ def _stress_config(config: StressConfig) -> str:
         '        AllocateLocally : "true"',
         f"        LogicalCores : [{' '.join(str(cpu) for cpu in config.cpus)}]",
         f"        TotalMemory : {memory_mib * 1024 * 1024}",
-        f"        SecondsPerTest : {_PER_TEST_SECONDS}",
+        f"        SecondsPerTest : {seconds}",
         "        SecondsTotal : 0",
         '        StopOnError : "true"',
         "        Tests : [",
@@ -134,7 +151,10 @@ class YCruncherBackend(StressBackend):
             raise RuntimeError("y-cruncher pins one thread per lane CPU, and this lane names no CPUs")
         binaries = _binaries_dir(Path(self.require_binary()))
         vendor, flags = topology.common_cpu_flags()
-        compute = compute_binary(binaries, flags, vendor)
+        if config.binary:
+            compute = named_binary(binaries, config.binary, flags, vendor)
+        else:
+            compute = compute_binary(binaries, flags, vendor)
         if compute is None:
             raise OSError(f"no y-cruncher binary for this CPU ({vendor or 'unknown vendor'}) in {binaries}")
         (work_dir / CONFIG_FILE).write_text(_stress_config(config))

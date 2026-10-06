@@ -112,6 +112,9 @@ class StressConfig:
     threads: int = 1
     memory_mb: int | None = None
     cpus: tuple[int, ...] = ()
+    tests: tuple[str, ...] = ()
+    seconds_per_test: int | None = None
+    binary: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
