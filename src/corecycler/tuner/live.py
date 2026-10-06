@@ -1,0 +1,380 @@
+from __future__ import annotations
+
+import json
+import os
+import queue
+import threading
+import time
+from dataclasses import asdict, dataclass, field, replace
+from typing import TYPE_CHECKING, Protocol
+
+from corecycler.tuner.machine.session import transition
+from corecycler.tuner.machine.types import (
+    Abort,
+    Announce,
+    AwaitWorker,
+    BisectRun,
+    CancelSchedule,
+    ClearStockMarker,
+    Close,
+    CloseDb,
+    Commit,
+    ContinuationDue,
+    CoreRecord,
+    CrashEvidenceRead,
+    DatabaseFailed,
+    Flow,
+    ForgetResident,
+    InternalError,
+    Klass,
+    Lifecycle,
+    Live1,
+    MachineConfig,
+    Mode,
+    PauseReason,
+    PauseRequest,
+    Phase,
+    ReadCrashEvidence,
+    Report,
+    Resume,
+    RevertAll,
+    Schedule,
+    SessionState,
+    SmuRefused,
+    Stage,
+    Start,
+    StartWorker,
+    StopWorker,
+    Stored,
+    TestSpec,
+    WorkerReported,
+    World,
+    WriteCO,
+    WriteStockMarker,
+)
+from corecycler.tuner.orders import Method, RoundCursor
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
+
+
+class Hardware(Protocol):
+    def read_co(self, core: int) -> int | None: ...
+    def write_co(self, core: int, value: int) -> str | None: ...
+    def temperature(self) -> float | None: ...
+    def frequency_capped(self) -> bool: ...
+    def boot_id(self) -> str: ...
+    def boot_ended_clean(self, boot_id: str) -> bool: ...
+    def asleep_seconds(self) -> float: ...
+
+
+class Runner(Protocol):
+    def run(self, spec: TestSpec, stop: threading.Event) -> Report: ...
+
+
+def config_to_json(cfg: MachineConfig) -> dict:
+    return {**asdict(cfg), "selected": list(cfg.selected)}
+
+
+def config_from_json(raw: dict) -> MachineConfig:
+    return MachineConfig(
+        **{**raw, "mode": Mode(raw["mode"]), "method": Method(raw["method"]), "selected": tuple(raw["selected"])}
+    )
+
+
+def _pairs(raw) -> tuple:
+    return tuple(tuple(item) for item in raw)
+
+
+def _groups(raw) -> tuple[tuple[int, ...], ...]:
+    return tuple(tuple(group) for group in raw)
+
+
+def _bisect_from_json(raw: dict | None) -> BisectRun | None:
+    if raw is None:
+        return None
+    return BisectRun(
+        entry=Stage(raw["entry"]),
+        lane=raw["lane"],
+        klass=Klass(raw["klass"]),
+        universe=tuple(raw["universe"]),
+        values=_pairs(raw["values"]),
+        queue=_groups(raw["queue"]),
+        results=tuple((tuple(group), passed) for group, passed in raw["results"]),
+        parents=tuple((tuple(child), tuple(parent)) for child, parent in raw["parents"]),
+        rerun=None if raw["rerun"] is None else tuple(raw["rerun"]),
+    )
+
+
+def _flow_from_json(raw: dict | None) -> Flow | None:
+    if raw is None:
+        return None
+    live = raw["live1"]
+    return Flow(
+        stage=Stage(raw["stage"]),
+        klass=Klass(raw["klass"]),
+        cursor=RoundCursor(**raw["cursor"]),
+        owed=raw["owed"],
+        last_core=raw["last_core"],
+        applied=raw["applied"],
+        dirty=raw["dirty"],
+        live1=None if live is None else Live1(live["index"], tuple(live["requeue"]), live["solo"]),
+        bisect=_bisect_from_json(raw["bisect"]),
+        q5=tuple(((key[0], key[1]), count) for key, count in raw["q5"]),
+        q5_others=tuple(raw["q5_others"]),
+    )
+
+
+def stored_to_json(st: Stored) -> dict:
+    out = asdict(st)
+    out["config"] = config_to_json(st.config)
+    return out
+
+
+def stored_from_json(raw: dict) -> Stored:
+    return Stored(
+        session_id=raw["session_id"],
+        status=raw["status"],
+        config=config_from_json(raw["config"]),
+        seed=raw["seed"],
+        baseline=_pairs(raw["baseline"]),
+        cores=tuple(CoreRecord(**{**core, "phase": Phase(core["phase"])}) for core in raw["cores"]),
+        flow=_flow_from_json(raw["flow"]),
+        resume_streak=raw["resume_streak"],
+        incidents=raw["incidents"],
+    )
+
+
+def _write_atomic(path: Path, payload: dict) -> None:
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w") as handle:
+        json.dump(payload, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+class Store:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        root.mkdir(parents=True, exist_ok=True)
+
+    def _session(self, session_id: int) -> Path:
+        return self.root / f"session-{session_id}.json"
+
+    def save(self, st: Stored, boot: str) -> None:
+        _write_atomic(self._session(st.session_id), {"boot": boot, "stored": stored_to_json(st)})
+
+    def load(self, session_id: int) -> tuple[Stored, str] | None:
+        path = self._session(session_id)
+        if not path.exists():
+            return None
+        raw = json.loads(path.read_text())
+        return stored_from_json(raw["stored"]), raw["boot"]
+
+    def write_marker(self, boot: str) -> None:
+        _write_atomic(self.root / "stock-marker.json", {"boot": boot})
+
+    def marker_boot(self) -> str | None:
+        path = self.root / "stock-marker.json"
+        return json.loads(path.read_text())["boot"] if path.exists() else None
+
+    def clear_marker(self) -> None:
+        (self.root / "stock-marker.json").unlink(missing_ok=True)
+
+
+@dataclass
+class _Worker:
+    token: int
+    stop: threading.Event
+    thread: threading.Thread
+
+
+@dataclass
+class LiveRig:
+    hardware: Hardware
+    runner: Runner
+    store: Store
+    cpus_of: tuple[tuple[int, tuple[int, ...]], ...]
+    domain_of: tuple[tuple[int, int | None], ...]
+    two_t_problem: str | None = None
+    say: Callable[[str], None] = print
+    clock: Callable[[], float] = time.monotonic
+    state: SessionState = field(default_factory=SessionState)
+    resident: dict[int, int | None] = field(default_factory=dict)
+    timer: tuple[int, float] | None = None
+    worker: _Worker | None = None
+    inbox: queue.Queue = field(default_factory=queue.Queue)
+    signals: list = field(default_factory=list)
+    asleep_at_last_check: float = 0.0
+    stored_boot: str | None = None
+
+    def world(self) -> World:
+        asleep = self.hardware.asleep_seconds()
+        gap = asleep - self.asleep_at_last_check > 1.0
+        self.asleep_at_last_check = asleep
+        return World(
+            resident=tuple(sorted(self.resident.items())),
+            gap_grew=gap,
+            frequency_capped=self.hardware.frequency_capped(),
+            now=self.clock(),
+            temperature_c=self.hardware.temperature(),
+            cpus_of=self.cpus_of,
+            domain_of=self.domain_of,
+            two_t_problem=self.two_t_problem,
+        )
+
+    def world_for_start(self) -> World:
+        return replace(self.world(), bios_co=tuple((core, self.hardware.read_co(core)) for core, _ in self.cpus_of))
+
+    def world_for_resume(self, session_id: int) -> World:
+        loaded = self.store.load(session_id)
+        world = self.world()
+        if loaded is None:
+            return world
+        self.stored_boot = loaded[1]
+        return replace(world, stored=loaded[0])
+
+    def post(self, event, world: World | None = None) -> None:
+        pending = [event]
+        while pending:
+            ev = pending.pop(0)
+            before = self.state
+            result = transition(before, ev, world if world is not None and ev is event else self.world())
+            if result.refused is not None:
+                self.say(f"refused: {result.refused}")
+            self.state = result.state
+            acting = result.state if result.state.session_id is not None else before
+            follow = self._run(acting, result.effects)
+            if follow is not None:
+                pending.append(follow)
+
+    def _run(self, acting: SessionState, effects) -> object | None:
+        for effect in effects:
+            follow = self._apply(acting, effect)
+            if follow is not None:
+                return follow
+        return None
+
+    def _apply(self, acting: SessionState, effect) -> object | None:
+        match effect:
+            case WriteCO(core=core, value=value):
+                problem = self.hardware.write_co(core, value)
+                if problem is not None:
+                    self.resident[core] = None
+                    return SmuRefused(core, value, problem)
+                self.resident[core] = value
+            case RevertAll(values=values):
+                for core, value in values:
+                    problem = self.hardware.write_co(core, value)
+                    self.resident[core] = None if problem else value
+                    if problem is not None:
+                        self.say(f"revert of core {core} to {value} failed: {problem}")
+            case StopWorker(token=token):
+                if self.worker is not None and self.worker.token == token:
+                    self.worker.stop.set()
+            case AwaitWorker(token=token, bound_s=bound):
+                if self.worker is not None and self.worker.token == token:
+                    self.worker.thread.join(bound)
+                    if not self.worker.thread.is_alive():
+                        self.worker = None
+            case Commit(stored=st):
+                try:
+                    self.store.save(st, self.hardware.boot_id())
+                except OSError as exc:
+                    return DatabaseFailed(f"the session file could not be written: {exc}")
+                self.stored_boot = self.hardware.boot_id()
+            case StartWorker(token=token, spec=spec):
+                self._start(token, spec)
+            case Schedule(token=token, seconds=seconds):
+                self.timer = (token, self.clock() + seconds)
+            case CancelSchedule():
+                self.timer = None
+            case ForgetResident():
+                self.resident = {}
+            case ReadCrashEvidence():
+                return self._crash_evidence(acting)
+            case WriteStockMarker():
+                self.store.write_marker(self.hardware.boot_id())
+            case ClearStockMarker():
+                self.store.clear_marker()
+            case Announce(kind=kind, text=text):
+                self.say(f"{kind}: {text}")
+            case CloseDb():
+                pass
+        return None
+
+    def _crash_evidence(self, acting: SessionState) -> CrashEvidenceRead:
+        now = self.hardware.boot_id()
+        last = self.stored_boot or now
+        same = last == now
+        dirty = not same and not self.hardware.boot_ended_clean(last)
+        marker = self.store.marker_boot()
+        loaded = self.store.load(acting.session_id)
+        return CrashEvidenceRead(
+            dirty_end=dirty,
+            same_boot=same,
+            was_running=loaded is not None and loaded[0].status == "running",
+            stale_db=marker == (now if same else last),
+        )
+
+    def _start(self, token: int, spec: TestSpec) -> None:
+        stop = threading.Event()
+
+        def work() -> None:
+            try:
+                report = self.runner.run(spec, stop)
+            except Exception as exc:
+                self.inbox.put(InternalError(f"the test runner raised {exc!r}"))
+                return
+            self.inbox.put(WorkerReported(token, report))
+
+        thread = threading.Thread(target=work, name=f"tuner-test-{token}", daemon=True)
+        self.worker = _Worker(token, stop, thread)
+        thread.start()
+
+    def step(self, wait: float) -> bool:
+        if self.signals:
+            self.post(self.signals.pop(0))
+            return True
+        deadline = self.timer[1] if self.timer is not None else None
+        timeout = wait if deadline is None else max(0.0, min(wait, deadline - self.clock()))
+        try:
+            event = self.inbox.get(timeout=timeout)
+        except queue.Empty:
+            if self.timer is not None and self.clock() >= self.timer[1]:
+                token = self.timer[0]
+                self.timer = None
+                self.post(ContinuationDue(token))
+                return True
+            return False
+        if isinstance(event, WorkerReported) and self.worker is not None and self.worker.token == event.token:
+            self.worker = None
+        self.post(event)
+        return True
+
+    def at_rest(self) -> bool:
+        s = self.state
+        if s.lifecycle in (Lifecycle.COMPLETED, Lifecycle.ABORTED, Lifecycle.QUARANTINED, Lifecycle.IDLE):
+            return self.worker is None and self.timer is None
+        return s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is not PauseReason.RESUMING
+
+    def start(self, config: MachineConfig, session_id: int, seed: int, acknowledged: bool) -> None:
+        self.post(Start(config, session_id, seed, acknowledged), self.world_for_start())
+
+    def resume(self, session_id: int) -> None:
+        self.post(Resume(session_id), self.world_for_resume(session_id))
+
+    def run_until_rest(self, wait: float = 1.0) -> SessionState:
+        while not self.at_rest():
+            self.step(wait)
+        return self.state
+
+
+__all__ = ["Abort", "Close", "Hardware", "LiveRig", "PauseRequest", "Runner", "Store"]
