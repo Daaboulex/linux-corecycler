@@ -125,6 +125,7 @@ def report_from(
         detail="" if result.passed else f"{result.outcome.value}: {result.detail}",
         unblamed_corrected=bool(unblamed) and all(event.corrected for event in unblamed) and not trouble,
         context=context,
+        speeds=result.speeds,
     )
 
 
@@ -343,6 +344,7 @@ class StressRunner:
         rng = random.Random(f"{spec.stage.value}:{spec.load.value}:{spec.vector}:{self.runs}")
         segments = stages.plan(spec.load, spec.seconds, spec.cpus, firsts, self.available_mb(), rng)
         done = 0.0
+        speeds: list[tuple[str, float, bool]] = []
         for segment in segments:
             config = StressConfig(
                 mode=StressMode.CUSTOM,
@@ -358,6 +360,7 @@ class StressRunner:
             )
             result = results[lane.core_id]
             done += result.duration_seconds
+            speeds.extend(result.speeds)
             if result.outcome.kind is not OutcomeKind.PASS or observed:
                 assigned = tuple(sorted({self.core_of_cpu[c] for c in segment.cpus}))
                 named = named_cores(result, self.core_of_cpu)
@@ -365,8 +368,8 @@ class StressRunner:
                 context = telemetry.context(list(hold.ring), steady, assigned, named) if hold.ring else None
                 report = report_from(result, observed, segment.cpus, self.core_of_cpu, context, all_core=True)
                 if result.outcome.kind is not OutcomeKind.PASS or report.evidence:
-                    return replace(report, seconds=done, named=named)
-        return Report(Group.PASS, done)
+                    return replace(report, seconds=done, named=named, speeds=tuple(speeds))
+        return Report(Group.PASS, done, speeds=tuple(speeds))
 
     def _memory(self, spec: TestSpec, stop: threading.Event) -> Report:
         backend = self.memory_backend()

@@ -125,6 +125,7 @@ class StressResult:
     duration_seconds: float
     evidence_dir: Path | None = None
     iterations_completed: int = 0
+    speeds: tuple[tuple[str, float, bool], ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -164,6 +165,10 @@ class StressBackend(ABC):
     @abstractmethod
     def findings(self, output: str, work_dir: Path) -> tuple[LaneSignal, ...]:
         """Every signal this backend's own text names: the lane's output plus any results file it keeps."""
+
+    def speeds(self, output: str) -> tuple[tuple[str, float, bool], ...]:
+        """Each finished test's own speed figure, as (test, value, passed); none for a backend that prints none."""
+        return ()
 
     @abstractmethod
     def get_supported_modes(self) -> list[StressMode]:

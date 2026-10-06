@@ -202,7 +202,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 20
+    SCHEMA_VERSION = 21
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -305,7 +305,8 @@ CREATE TABLE IF NOT EXISTS tuner_tests (
     named_json      TEXT,
     context_json    TEXT,
     evidence_json   TEXT,
-    detail          TEXT
+    detail          TEXT,
+    speeds_json     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tuner_tests_session ON tuner_tests(session_id, core);
 """
@@ -856,6 +857,10 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         HistoryDB._add_columns(conn, "tuner_sessions", [("machine_json", "TEXT")])
         conn.executescript(HistoryDB._DDL_TUNER_TESTS)
 
+    @staticmethod
+    def _migrate_v21(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(conn, "tuner_tests", [("speeds_json", "TEXT")])
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
@@ -876,6 +881,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         18: _migrate_v18,
         19: _DDL_MIGRATE_V19,
         20: _DDL_TUNER_SAMPLES,
+        21: _migrate_v21,
     }
 
     # ------------------------------------------------------------------
@@ -1457,14 +1463,25 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         context_json: str | None,
         evidence_json: str,
         detail: str,
+        speeds_json: str,
     ) -> None:
         cur = self.__conn.execute(
             """\
             UPDATE tuner_tests SET ended_at=?, verdict=?, seconds_run=?, named_json=?,
-                context_json=?, evidence_json=?, detail=?
+                context_json=?, evidence_json=?, detail=?, speeds_json=?
             WHERE id=? AND ended_at IS NULL
             """,
-            (self._now_iso(), verdict, seconds_run, named_json, context_json, evidence_json, detail, row_id),
+            (
+                self._now_iso(),
+                verdict,
+                seconds_run,
+                named_json,
+                context_json,
+                evidence_json,
+                detail,
+                speeds_json,
+                row_id,
+            ),
         )
         if cur.rowcount != 1:
             raise sqlite3.IntegrityError(f"test row {row_id} is missing or already ended")

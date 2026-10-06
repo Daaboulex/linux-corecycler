@@ -71,6 +71,7 @@ class _LaneRun:
     sent: signal.Signals | None = None
     signals: list[LaneSignal] = field(default_factory=list)
     findings: tuple[LaneSignal, ...] = ()
+    speeds: tuple[tuple[str, float, bool], ...] = ()
     last_active: float = 0.0
     last_watchdog: float = 0.0
     cpu_seconds: float | None = None
@@ -480,6 +481,7 @@ class Supervisor:
             log.error("core %d: stress output unreadable: %s", run.lane.core_id, exc)
             unreadable = (LaneSignal(Outcome.UNVERIFIED, f"stress output unreadable ({exc}): verdict unavailable"),)
         run.findings = (*self.backend.findings(run.output, run.run_dir), *unreadable)
+        run.speeds = self.backend.speeds(run.output)
 
     @staticmethod
     def _read_oom_kills(run: _LaneRun) -> None:
@@ -636,6 +638,7 @@ class Supervisor:
             detail=detail,
             duration_seconds=run.duration(),
             evidence_dir=evidence_dir,
+            speeds=run.speeds,
         )
 
 

@@ -1834,3 +1834,19 @@ class TestContainment:
         (tmp_path / "301").mkdir()
         (tmp_path / "301" / "stat").write_text("301 (short) R 1 300\n")
         assert containment.process_group_cpu_seconds(300, proc_base=tmp_path) is None
+
+
+class ReportsSpeeds(FakeBackend):
+    def speeds(self, output: str) -> tuple[tuple[str, float, bool], ...]:
+        lines = (line.split() for line in output.splitlines() if line.startswith("SPEED"))
+        return tuple((name, float(value), True) for _, name, value in lines)
+
+
+def test_a_passing_lane_keeps_its_speeds_after_its_run_dir_is_gone(tmp_path):
+    passing = lane(tmp_path, 1, (1,))
+    script = "print('SPEED sft 6.5e9', flush=True)\n" + BUSY
+    supervisor, _, _ = make_supervisor(ReportsSpeeds(_child(script)))
+    passed = run_one(supervisor, passing, 2.0)
+    assert passed.outcome is Outcome.PASS
+    assert passed.speeds == (("sft", 6.5e9, True),)
+    assert list(passing.work_dir.rglob("*")) == []

@@ -108,6 +108,7 @@ class FakeRunner:
     seen: list = field(default_factory=list)
     evidence: tuple = ()
     read_ns: int | None = None
+    speeds: tuple = ()
 
     def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
         self.seen.append(spec)
@@ -117,7 +118,13 @@ class FakeRunner:
         live_value = self.hardware.co[spec.core]
         assert live_value == spec.value
         failed = live_value < EDGES[spec.core]
-        return Report(Group.SILICON if failed else Group.PASS, 1.0, evidence=self.evidence, kernel_read_ns=self.read_ns)
+        return Report(
+            Group.SILICON if failed else Group.PASS,
+            1.0,
+            evidence=self.evidence,
+            kernel_read_ns=self.read_ns,
+            speeds=self.speeds,
+        )
 
 
 def taken(core: int, n: int) -> telemetry.Sample:
@@ -358,6 +365,7 @@ def test_a_database_that_fails_every_write_still_comes_to_rest_at_stock(tmp_path
 
 def test_every_test_leaves_one_row_that_its_verdict_completes(tmp_path):
     r = rig(tmp_path)
+    r.runner.speeds = (("SFTv4", 6.56e9, True), ("VT3", 2.37e9, False))
     r.start(config(), 1, 7, True)
     r.run_until_rest(0.01)
     tests = rows(r, "SELECT * FROM tuner_tests WHERE session_id=1 ORDER BY id")
@@ -366,6 +374,7 @@ def test_every_test_leaves_one_row_that_its_verdict_completes(tmp_path):
     ]
     assert all(t["ended_at"] is not None and t["seconds_run"] == 1.0 for t in tests)
     assert {t["verdict"] for t in tests} == {"pass", "silicon"}
+    assert all(json.loads(t["speeds_json"]) == [["SFTv4", 6.56e9, True], ["VT3", 2.37e9, False]] for t in tests)
     assert [(json.loads(t["cpus_json"]), json.loads(t["vector_json"])) for t in tests] == [
         (list(s.cpus), [list(pair) for pair in s.vector]) for s in r.runner.seen
     ]
@@ -525,7 +534,7 @@ def test_a_crash_context_reads_the_last_ring_of_the_open_test_only(tmp_path, loa
     store.save(stored_with_fb(None), "boot-a")
     done = store.db.insert_tuner_test(1, "boot-a", 1, "steady", load, "1t", 0, -3, "[]", "[0, 16]", 60.0)
     store.sample(done, taken(0, 9))
-    store.db.end_tuner_test(done, "pass", 60.0, "[]", None, "{}", "")
+    store.db.end_tuner_test(done, "pass", 60.0, "[]", None, "{}", "", "[]")
     crashed = store.db.insert_tuner_test(1, "boot-a", 2, "steady", load, "1t", 0, -3, "[]", "[0, 16, 1]", 60.0)
     taken_samples = [taken(0, n) for n in range(telemetry.RING + 1)] + [replace(taken(0, 0), running=not frozen_last)]
     for sample in taken_samples:

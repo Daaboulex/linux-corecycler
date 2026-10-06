@@ -325,6 +325,7 @@ class Report:
     named: tuple[int, ...] = ()
     skipped: str = ""
     kernel_read_ns: int | None = None
+    speeds: tuple[tuple[str, float, bool], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

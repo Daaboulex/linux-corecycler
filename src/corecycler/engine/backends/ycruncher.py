@@ -60,6 +60,7 @@ LAUNCHER_ORDER: dict[str, tuple[tuple[str, frozenset[str]], ...]] = {
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _NAMED_CPU_RE = re.compile(r"Error\(s\) encountered on logical core (\d+)\.")
+_SPEED_RE = re.compile(r"Running (\S+): (Passed|Failed)\s+Test Speed:\s+([0-9.]+) \* 10\^(\d+)\s+(?:bits|terms) / sec")
 
 FINDINGS: FindingTable = (
     *(
@@ -175,3 +176,9 @@ class YCruncherBackend(StressBackend):
 
     def findings(self, output: str, work_dir: Path) -> tuple[LaneSignal, ...]:
         return scan(_ANSI_RE.sub("", output), FINDINGS)
+
+    def speeds(self, output: str) -> tuple[tuple[str, float, bool], ...]:
+        return tuple(
+            (test, float(mantissa) * 10 ** int(exponent), verdict == "Passed")
+            for test, verdict, mantissa, exponent in _SPEED_RE.findall(_ANSI_RE.sub("", output))
+        )

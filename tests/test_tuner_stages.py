@@ -112,7 +112,14 @@ def runner(script: Script, readings=None, detector=None, clocks=None):
                 self.freeze(duration / 2)
             self.observed.extend(script.events.pop(0) if script.events else [])
             elapsed = duration if outcome is Outcome.PASS else duration / 2
-            result = StressResult(lanes[0].core_id, outcome, "d", elapsed, evidence_dir=script.evidence_dir)
+            result = StressResult(
+                lanes[0].core_id,
+                outcome,
+                "d",
+                elapsed,
+                evidence_dir=script.evidence_dir,
+                speeds=((f"seg{len(script.seen)}", 1e9, outcome is Outcome.PASS),),
+            )
             return {lanes[0].core_id: result}
 
     class FakeDetector:
@@ -164,6 +171,15 @@ def test_an_all_core_stage_runs_every_segment_and_passes():
     report = runner(script).run(spec(Load.WARM), threading.Event())
     assert report.group is Group.PASS and report.seconds == pytest.approx(480.0)
     assert [tests for _, tests, _, _ in script.seen] == [(test,) for test in ALL_TESTS]
+
+
+def test_every_segment_s_speeds_reach_the_report_in_order_whether_the_stage_passes_or_fails():
+    passing = runner(Script([Outcome.PASS] * 8)).run(spec(Load.WARM), threading.Event())
+    assert [name for name, _, _ in passing.speeds] == [f"seg{n}" for n in range(1, 9)]
+    failing = runner(Script([Outcome.PASS, Outcome.COMPUTATION])).run(spec(Load.WARM), threading.Event())
+    assert failing.speeds == (("seg1", 1e9, True), ("seg2", 1e9, False))
+    one = Spec(Klass.T1, 0, -5, (0,), 60.0, ((0, -5),), Stage.SEARCH)
+    assert runner(Script([Outcome.PASS], sampled=False)).run(one, threading.Event()).speeds == (("seg1", 1e9, True),)
 
 
 def test_a_failing_segment_reports_its_cores_and_whether_the_load_was_paused():
@@ -520,3 +536,22 @@ def test_a_memory_stage_is_sampled_when_a_sink_is_given():
     _, run = memory_runner({}, seen=[])
     run.run(spec(Load.MEMORY, 300.0), threading.Event(), got.append)
     assert len(got) == 1 and got[0].running
+
+
+def test_y_cruncher_speeds_are_read_per_test_with_their_verdict():
+    out = (
+        "Running SFTv4: Passed  Test Speed:  6.56 * 10^09  bits / sec\n"
+        "\x1b[1;32mRunning FFTv4: Passed  Test Speed:  3.76 * 10^09  bits / sec\x1b[0m\n"
+        "Running VT3: Failed  Test Speed:  2.37 * 10^09  bits / sec\n"
+        "Running BKT: Passed  Test Speed:  2 * 10^10  bits / sec\n"
+        "Running BBP: Passed  Test Speed:  5.68 * 10^09  terms / sec\n"
+        "Running N63: Passed\n"
+    )
+    assert ycruncher.YCruncherBackend().speeds(out) == (
+        ("SFTv4", 6.56e9, True),
+        ("FFTv4", 3.76e9, True),
+        ("VT3", 2.37e9, False),
+        ("BKT", 2e10, True),
+        ("BBP", 5.68e9, True),
+    )
+    assert ycruncher.YCruncherBackend().speeds("") == ()
