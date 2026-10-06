@@ -63,6 +63,7 @@ class SmuHardware:
         if not self.smu.set_co_offset(core, value):
             return "the SMU refused the write"
         back = self.smu.get_co_offset(core)
+        self.say(f"core {core} set to {value}, read back {back}")
         if back != value:
             return f"the read-back gave {back}"
         return None

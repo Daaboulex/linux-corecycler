@@ -340,6 +340,12 @@ class LiveRig:
         )
 
     def _start(self, token: int, spec: TestSpec) -> None:
+        load = "" if spec.load is None else f" {spec.load.value}"
+        cpus = ",".join(str(cpu) for cpu in spec.cpus)
+        self.say(
+            f"test {token}: core {spec.core} {spec.stage.value} {spec.klass.value}{load} "
+            f"at {spec.value} for {spec.seconds:g} s on cpus {cpus}"
+        )
         stop = threading.Event()
 
         def work() -> None:
@@ -371,6 +377,9 @@ class LiveRig:
             return False
         if isinstance(event, WorkerReported) and self.worker is not None and self.worker.token == event.token:
             self.worker = None
+            report = event.report
+            detail = f" {report.detail}" if report.detail else ""
+            self.say(f"verdict {event.token}: {report.group.value} after {report.seconds:.0f} s{detail}")
         self.post(event)
         return True
 

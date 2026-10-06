@@ -235,6 +235,19 @@ def test_a_pause_signal_finishes_the_test_and_a_refusal_is_said(tmp_path):
     assert any(line.startswith("refused: a session is held") for line in said)
 
 
+def test_the_log_names_every_test_and_its_verdict(tmp_path):
+    said = []
+    r = rig(tmp_path)
+    r.say = said.append
+    r.start(config(), 1, 7, True)
+    r.run_until_rest(0.01)
+    tests = [line for line in said if line.startswith("test ")]
+    verdicts = [line for line in said if line.startswith("verdict ")]
+    assert tests and len(tests) == len(verdicts)
+    assert all(t.split(":")[0][5:] == v.split(":")[0][8:] for t, v in zip(tests, verdicts, strict=True))
+    assert any(" search 1t at " in t for t in tests) and any(": silicon after " in v for v in verdicts)
+
+
 def test_a_resume_of_an_unknown_session_is_refused(tmp_path):
     said = []
     r = rig(tmp_path)
@@ -282,6 +295,7 @@ def test_the_smu_adapter_writes_only_when_asked_and_checks_the_read_back():
     assert dry.write_co(3, -5) is None and dry.smu.co == {} and said == ["dry: core 3 would be set to -5"]
     real = live_hw.SmuHardware(FakeSmu(), True, said.append)
     assert real.write_co(3, -5) is None and real.read_co(3) == -5
+    assert said[-1] == "core 3 set to -5, read back -5"
     assert "refused" in live_hw.SmuHardware(FakeSmu(accept=False), True, said.append).write_co(3, -5)
     assert "-4" in live_hw.SmuHardware(FakeSmu(echo=-4), True, said.append).write_co(3, -5)
 
