@@ -20,6 +20,7 @@ BURST_MEMORY_MB = 2048
 IDLE_MEMORY_MB = 1024
 HOT_HOLD = (95.0, 85.0)
 WARM_HOLD = (65.0, 55.0)
+WARM_HOLD_CAP_S = 300.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,7 @@ class Segment:
     duration: float
     frozen: tuple[tuple[float, float], ...] = ()
     hold: tuple[float, float] | None = None
+    hold_cap_s: float | None = None
 
 
 def frozen_at(segment: Segment, elapsed: float) -> bool:
@@ -69,7 +71,15 @@ def plan(
             if remaining <= 0:
                 break
             slices.append(
-                Segment(cpus, (test,), WARM_PER_TEST_S, hot_memory, min(WARM_SLICE_S, remaining), hold=WARM_HOLD)
+                Segment(
+                    cpus,
+                    (test,),
+                    WARM_PER_TEST_S,
+                    hot_memory,
+                    min(WARM_SLICE_S, remaining),
+                    hold=WARM_HOLD,
+                    hold_cap_s=WARM_HOLD_CAP_S,
+                )
             )
         return tuple(slices)
     if load is Load.BURST:

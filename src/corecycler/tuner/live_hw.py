@@ -219,6 +219,7 @@ class StressRunner:
         freeze=None,
         poll: float = 1.0,
         backend=None,
+        hold_cap_s: float | None = None,
     ):
         observed: list = []
         watch = self.detector()
@@ -233,6 +234,7 @@ class StressRunner:
                 poll_interval=poll,
                 phase=f"{spec.stage.value} {(spec.load or spec.klass).value}",
                 freeze=freeze,
+                hold_cap_s=hold_cap_s,
             )
             results = supervisor.run(lanes, config, seconds)
         finally:
@@ -272,7 +274,9 @@ class StressRunner:
             lane = Lane(core_id=spec.core, cpus=segment.cpus, work_dir=self.work_dir / f"all_{spec.load.value}")
             every = IDLE_SAMPLE_S if spec.load is Load.IDLE else SAMPLE_S
             hold = Hold(segment, self.read_temperature, self.clocks, self.core_of_cpu, every)
-            results, observed = self._supervise(spec, stop, [lane], config, segment.duration, hold, poll=0.05)
+            results, observed = self._supervise(
+                spec, stop, [lane], config, segment.duration, hold, poll=0.05, hold_cap_s=segment.hold_cap_s
+            )
             result = results[lane.core_id]
             done += result.duration_seconds
             if result.outcome.kind is not OutcomeKind.PASS or observed:

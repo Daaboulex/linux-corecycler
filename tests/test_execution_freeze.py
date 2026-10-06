@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import signal
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -94,3 +95,41 @@ def test_a_frozen_lane_is_really_stopped_and_runs_again_when_thawed(tmp_path: Pa
     verdict = run_one(supervisor, lane(tmp_path), 1.6)
     assert verdict.outcome is Outcome.PASS, verdict.detail
     assert states[:2] == [("SIGSTOP", "T"), ("SIGCONT", "R")]
+
+
+def run_held(tmp_path: Path, frozen, duration: float, cap: float | None, busy_for: float = math.inf):
+    supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), stall_timeout=0.3)
+    supervisor.freeze = frozen
+    supervisor.hold_cap_s = cap
+    cpu = StoppableCpu(supervisor, busy_for)
+    began = time.monotonic()
+    with (
+        patch.object(execution, "STALL_GRACE_SECONDS", 0.0),
+        patch.object(containment, "process_group_cpu_seconds", side_effect=cpu),
+    ):
+        verdict = run_one(supervisor, lane(tmp_path), duration)
+    return verdict, time.monotonic() - began
+
+
+@pytest.mark.real_cpu_time
+def test_under_a_hold_cap_the_time_a_lane_is_held_does_not_count_toward_its_run(tmp_path: Path):
+    verdict, wall = run_held(tmp_path, lambda elapsed: 0.2 <= elapsed < 0.9, 1.0, 5.0)
+    assert verdict.outcome is Outcome.PASS, verdict.detail
+    assert wall >= 1.6
+
+
+@pytest.mark.real_cpu_time
+def test_a_hold_longer_than_its_cap_ends_the_run_as_thermal(tmp_path: Path):
+    verdict, wall = run_held(tmp_path, lambda elapsed: elapsed >= 0.2, 1.0, 0.5)
+    assert verdict.outcome is Outcome.THERMAL
+    assert "the load stayed held more than 0.5 s waiting for the CPU to cool" in verdict.detail
+    assert wall < 1.5
+
+
+def test_frozen_time_stops_counting_at_the_deadline(tmp_path: Path):
+    supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)))
+    run = execution._LaneRun(lane=lane(tmp_path), deadline=10.0, started_at=0.0)
+    run.proc = SimpleNamespace(pid=2**22 - 1, returncode=None)
+    run.frozen, run.frozen_since = True, 8.0
+    supervisor._set_frozen([run], False, 12.0)
+    assert run.frozen_total == 2.0 and run.frozen is False

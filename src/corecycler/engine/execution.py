@@ -264,6 +264,10 @@ def refuse_if_missing(topology: CPUTopology, cores: list[int]) -> dict[int, Stre
     return refused
 
 
+def _frozen_for(run: _LaneRun, now: float) -> float:
+    return run.frozen_total + (now - run.frozen_since if run.frozen else 0.0)
+
+
 def _no_work_done(run: _LaneRun) -> str | None:
     floor = LOAD_FLOOR_FRACTION * len(run.lane.cpus) * (run.deadline - run.started_at - run.frozen_total)
     if run.cpu_seconds is not None and 0 < floor <= run.cpu_seconds:
@@ -294,6 +298,7 @@ class Supervisor:
         hooks: SuperviseHooks | None = None,
         containment_for: Callable[[tuple[int, ...]], containment.Containment | None] | None = None,
         freeze: Callable[[float], bool] | None = None,
+        hold_cap_s: float | None = None,
     ) -> None:
         self.backend = backend
         self.detector = detector
@@ -306,6 +311,7 @@ class Supervisor:
         self.hooks = hooks or SuperviseHooks()
         self._containment_for = containment_for or containment.contain
         self.freeze = freeze
+        self.hold_cap_s = hold_cap_s
 
     def run(self, lanes: list[Lane], config: StressConfig, duration: float) -> dict[int, StressResult]:
         start = time.monotonic()
@@ -358,12 +364,21 @@ class Supervisor:
 
     def _watch(self, runs: list[_LaneRun], start: float, deadline: float) -> None:
         last_scan = start
+        duration = deadline - start
         while not self.stop_event.is_set():
             now = time.monotonic()
             if now >= deadline:
                 return
             if self.freeze is not None:
                 self._set_frozen(runs, self.freeze(now - start), now)
+            if self.hold_cap_s is not None:
+                held = [run.frozen_since for run in runs if run.frozen]
+                if held and now - min(held) > self.hold_cap_s:
+                    self._hold_expired(runs)
+                    return
+                deadline = start + duration + max(_frozen_for(run, now) for run in runs)
+                for run in runs:
+                    run.deadline = deadline
             for run in runs:
                 if run.alive:
                     self._check(run, now, start)
@@ -416,6 +431,13 @@ class Supervisor:
                 )
             )
 
+    def _hold_expired(self, runs: list[_LaneRun]) -> None:
+        reading = self.thermal.last_temperature
+        last = "" if reading is None else f", last reading {reading:.1f} C"
+        text = f"the load stayed held more than {self.hold_cap_s:g} s waiting for the CPU to cool{last}"
+        for run in runs:
+            run.signals.append(LaneSignal(Outcome.THERMAL, text))
+
     def _set_frozen(self, runs: list[_LaneRun], frozen: bool, now: float) -> None:
         for run in runs:
             if not run.alive or run.frozen == frozen:
@@ -426,7 +448,7 @@ class Supervisor:
                 run.frozen_since = now
             else:
                 self._signal_group(run, signal.SIGCONT)
-                run.frozen_total += now - run.frozen_since
+                run.frozen_total += max(0.0, min(now, run.deadline) - run.frozen_since)
                 run.frozen_since = None
                 run.last_active = now
             run.frozen = frozen

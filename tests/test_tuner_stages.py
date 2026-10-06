@@ -95,12 +95,14 @@ class Script:
     seen: list = field(default_factory=list)
     evidence_dir: Path | None = None
     sampled: bool = True
+    caps: list = field(default_factory=list)
 
 
 def runner(script: Script, readings=None, detector=None, clocks=None):
     class FakeSupervisor:
         def __init__(self, **kwargs):
             self.freeze = kwargs["freeze"]
+            script.caps.append(kwargs["hold_cap_s"])
             self.observed = kwargs["observed"]
 
         def run(self, lanes, cfg, duration):
@@ -424,3 +426,11 @@ def test_memory_that_cannot_run_is_skipped_with_its_reason(budget, available, re
     _, run = memory_runner({}, budget=budget, available=available, seen=seen)
     report = run.run(spec(Load.MEMORY, 300.0), threading.Event())
     assert reason in report.skipped and seen == []
+
+
+def test_only_warm_slices_wait_out_their_hold_and_the_runner_hands_the_cap_to_the_supervisor():
+    assert {s.hold_cap_s for s in plan(Load.WARM)} == {stages.WARM_HOLD_CAP_S}
+    assert {s.hold_cap_s for load in (Load.HOT, Load.BURST, Load.IDLE) for s in plan(load)} == {None}
+    script = Script([Outcome.PASS] * 8)
+    runner(script).run(spec(Load.WARM), threading.Event())
+    assert script.caps == [stages.WARM_HOLD_CAP_S] * 8
