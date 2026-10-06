@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import os
-from collections import deque
 from dataclasses import dataclass, field
 
 import pytest
@@ -176,12 +175,12 @@ class Survey:
 
 def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
     survey = Survey()
-    seen: set = set()
-    queue = deque([(fake, budget, ())])
-    while queue:
-        node, left, path = queue.popleft()
+    seen: set[int] = set()
+    stack = [(fake, budget, ())]
+    while stack:
+        node, left, path = stack.pop()
         depth = len(path)
-        k = (key(node), tuple(sorted(left.items())))
+        k = hash((key(node), tuple(sorted(left.items()))))
         if k in seen:
             continue
         seen.add(k)
@@ -204,7 +203,7 @@ def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
                 act(child, move)
             except Broken as broken:
                 raise Broken(f"{broken} after {(*path, move)}") from broken
-            queue.append((child, after, (*path, move)))
+            stack.append((child, after, (*path, move)))
     return survey
 
 
