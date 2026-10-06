@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field, replace
 
+from corecycler.history.db import JournalRow
 from corecycler.tuner.machine.session import transition
 from corecycler.tuner.machine.types import (
     Abort,
@@ -43,6 +44,7 @@ from corecycler.tuner.machine.types import (
     WriteCO,
     WriteStockMarker,
 )
+from corecycler.tuner.persistence import crash_suspects, resident_at_death
 
 
 class Broken(AssertionError):
@@ -59,6 +61,17 @@ class Layout:
         per = max(1, -(-cores // domains))
         cpus = tuple((c, (2 * c, 2 * c + 1) if smt else (c,)) for c in range(cores))
         return Layout(cpus, tuple((c, c // per) for c in range(cores)))
+
+
+def kept_rows(rows: tuple[JournalRow, ...]) -> tuple[JournalRow, ...]:
+    last: dict[int, JournalRow] = {}
+    landed: dict[int, JournalRow] = {}
+    for row in rows:
+        last[row.core_id] = row
+        if row.confirmed:
+            landed[row.core_id] = row
+    keep = {row.id for row in (*last.values(), *landed.values())}
+    return tuple(row for row in rows if row.id in keep)
 
 
 @dataclass
@@ -101,6 +114,10 @@ class Fake:
     edges_memory: dict[int, int] | None = None
     memory_skip: str = ""
     crash_note: tuple[tuple[Evidence, ...], bool] = ((), False)
+    journal: tuple[JournalRow, ...] = ()
+    journal_seq: int = 0
+    dead_suspects: tuple[int, ...] = ()
+    proven: dict[int, frozenset[int]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.co:
@@ -165,9 +182,11 @@ class Fake:
                 if self.faults.refuse_writes > 0:
                     self.faults.refuse_writes -= 1
                     self.resident[core] = None
+                    self.journaled(core, value, confirmed=False)
                     return SmuRefused(core, value, "injected refusal")
                 self.co[core] = value
                 self.resident[core] = value
+                self.journaled(core, value, confirmed=True)
             case RevertAll(values=values, journal=journal):
                 if journal and self.handling == "DatabaseFailed":
                     raise Broken("the database-failure handler journaled its revert into the failed database")
@@ -176,6 +195,8 @@ class Fake:
                         raise Broken(f"reverted core {core}, which the session does not own")
                     self.co[core] = value
                     self.resident[core] = value
+                    if journal:
+                        self.journaled(core, value, confirmed=True)
             case StopWorker(token=token):
                 if self.worker is not None and self.worker.token == token:
                     self.worker = None
@@ -188,6 +209,7 @@ class Fake:
                 if self.db is not None and st.session_id == self.db.session_id:
                     self.check_bounds_only_tighten(self.db, st)
                 self.db = st
+                self.retract(st)
                 self.stored_boot = self.boot
             case StartWorker(token=token, spec=spec):
                 self.check_start(state, spec)
@@ -202,12 +224,15 @@ class Fake:
                 dirty = self.stored_boot != self.boot
                 evidence, shared = self.crash_note if dirty else ((), False)
                 self.crash_note = ((), False)
+                suspects = self.dead_suspects if dirty else ()
+                self.dead_suspects = ()
                 return CrashEvidenceRead(
                     dirty_end=dirty,
                     same_boot=not dirty,
                     was_running=self.db is not None and self.db.status == "running",
                     stale_db=self.marker_boot == (self.stored_boot if dirty else self.boot),
                     shared_uncorrected=shared,
+                    suspects=suspects,
                     evidence=evidence,
                 )
             case WriteStockMarker():
@@ -329,7 +354,35 @@ class Fake:
                 self.stock_fail_owed.add(spec.core)
         self.worker = None
         self.now += report.seconds
+        self.mark_survived({e.core for e in report.evidence if e.corrected})
         self.post(WorkerReported(token, report))
+
+    def journaled(self, core: int, value: int, confirmed: bool) -> None:
+        envelope = self.proven.get(core, frozenset())
+        survived = value == 0 or (bool(envelope) and value >= min(envelope))
+        self.journal_seq += 1
+        row = JournalRow(self.journal_seq, 1, core, value, str(self.boot), None, confirmed, survived, False, "")
+        self.journal = kept_rows((*self.journal, row))
+
+    def mark_survived(self, exclude: set[int]) -> None:
+        latest = {row.core_id: row.id for row in self.journal}
+        marked = [
+            row
+            for row in self.journal
+            if latest[row.core_id] == row.id and row.confirmed and row.core_id not in exclude
+        ]
+        self.journal = tuple(replace(row, survived=True) if row in marked else row for row in self.journal)
+        proven = dict(self.proven)
+        for row in marked:
+            proven[row.core_id] = proven.get(row.core_id, frozenset()) | {row.value}
+        self.proven = proven
+
+    def retract(self, st: Stored) -> None:
+        bounds = {r.core: r.fb for r in st.cores}
+        self.proven = {
+            core: frozenset(v for v in values if bounds.get(core) is None or v > bounds[core])
+            for core, values in self.proven.items()
+        }
 
     def fire(self) -> None:
         if self.timer is None:
@@ -341,6 +394,8 @@ class Fake:
 
     def crash(self, evidence: tuple[Evidence, ...] = (), shared: bool = False) -> None:
         self.crash_note = (evidence, shared)
+        self.dead_suspects = tuple(sorted(crash_suspects(resident_at_death(self.journal), -1)))
+        self.journal = ()
         self.state = SessionState(next_token=self.state.next_token)
         self.worker = None
         self.timer = None

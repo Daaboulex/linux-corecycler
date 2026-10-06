@@ -329,7 +329,7 @@ class TestTunerSessionMethods:
             context_id=None,
         )
         assert machine == old + 1
-        assert db.load_machine_session(machine) == ('{"m": 1}', this_boot())
+        assert db.load_machine_session(machine) == ('{"m": 1}', this_boot(), None)
         assert db.load_machine_session(old) is None
         assert db.get_tuner_session(machine) is None
         assert [s.id for s in db.list_tuner_sessions()] == [old]
@@ -372,6 +372,29 @@ class TestTunerSessionMethods:
         row = db._execute_raw("SELECT status, machine_json, boot_id FROM tuner_sessions WHERE id=?", (sid,))
         assert dict(row.fetchone()) == {"status": "paused", "machine_json": "2", "boot_id": "b"}
         assert db.next_tuner_session_id() == sid + 1
+
+    def test_only_a_core_s_latest_landed_write_is_marked_survived(self, db):
+        sid = db.next_tuner_session_id()
+        fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
+        db.save_machine_session(sid, status="running", machine_json="1", boot_id="a", **fields)
+        landed = db.journal_co_intent(sid, 0, -3, False, boot_id="a", mono_ns=1)
+        db.journal_confirm(landed)
+        refused = db.journal_co_intent(sid, 0, -5, False, boot_id="a", mono_ns=2)
+        other = db.journal_co_intent(sid, 1, -2, False, boot_id="a", mono_ns=3)
+        db.journal_confirm(other)
+        db.journal_mark_survived(sid, boot_id="a")
+        survived = dict(db._execute_raw("SELECT id, survived FROM tuner_co_journal").fetchall())
+        assert survived == {landed: 0, refused: 0, other: 1}
+
+    def test_a_kernel_read_point_lives_only_as_long_as_its_boot(self, db):
+        sid = db.next_tuner_session_id()
+        fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
+        db.save_machine_session(sid, status="running", machine_json="1", boot_id="a", **fields)
+        db.set_kernel_read(sid, 5_000)
+        db.save_machine_session(sid, status="running", machine_json="2", boot_id="a", **fields)
+        assert db.load_machine_session(sid) == ("2", "a", 5_000)
+        db.save_machine_session(sid, status="running", machine_json="3", boot_id="b", **fields)
+        assert db.load_machine_session(sid) == ("3", "b", None)
 
     def test_list_tuner_sessions_limit(self, db):
         for _ in range(5):
@@ -797,7 +820,7 @@ class TestMergeFrom:
         ]
         loaded = dst.load_machine_session(merged)
         dst.close()
-        assert loaded == ('{"m": 1}', boot)
+        assert loaded == ('{"m": 1}', boot, None)
         assert [(t["token"], t["core"], t["value"], t["verdict"], t["seconds_run"]) for t in tests] == [
             (3, 8, -5, "silicon", 12.5)
         ]

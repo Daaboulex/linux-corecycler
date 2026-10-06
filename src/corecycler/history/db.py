@@ -202,7 +202,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 18
+    SCHEMA_VERSION = 19
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -495,7 +495,7 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
     written_at  TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_co_journal_boot ON tuner_co_journal(session_id, boot_id, core_id, id);
-CREATE INDEX IF NOT EXISTS idx_co_journal_proven ON tuner_co_journal(session_id, core_id, survived, retracted);
+CREATE INDEX IF NOT EXISTS idx_co_journal_proven ON tuner_co_journal(session_id, core_id, survived, retracted, value);
 """
         + _DDL_TUNER_TESTS
     ).replace("__SCHEMA_VERSION__", str(SCHEMA_VERSION))
@@ -831,6 +831,11 @@ CREATE INDEX idx_co_journal_boot ON tuner_co_journal(session_id, boot_id, core_i
 CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, survived, retracted);
 """
 
+    _DDL_MIGRATE_V19 = """\
+DROP INDEX IF EXISTS idx_co_journal_proven;
+CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, survived, retracted, value);
+"""
+
     @staticmethod
     def _migrate_v18(conn: sqlite3.Connection) -> None:
         HistoryDB._add_columns(conn, "tuner_sessions", [("machine_json", "TEXT")])
@@ -854,6 +859,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         16: _migrate_v16,
         17: _migrate_v17,
         18: _migrate_v18,
+        19: _DDL_MIGRATE_V19,
     }
 
     # ------------------------------------------------------------------
@@ -1371,6 +1377,8 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             VALUES (?,?,?,?,?,?,?,?,'',?,?)
             ON CONFLICT(id) DO UPDATE SET
                 updated_at=excluded.updated_at, status=excluded.status,
+                kernel_read_ns=CASE WHEN tuner_sessions.boot_id = excluded.boot_id
+                    THEN tuner_sessions.kernel_read_ns END,
                 boot_id=excluded.boot_id, machine_json=excluded.machine_json
             WHERE tuner_sessions.machine_json IS NOT NULL
             """,
@@ -1379,11 +1387,12 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         if cur.rowcount != 1:
             raise sqlite3.IntegrityError(f"session {session_id} belongs to the old engine")
 
-    def load_machine_session(self, session_id: int) -> tuple[str, str] | None:
+    def load_machine_session(self, session_id: int) -> tuple[str, str, int | None] | None:
         row = self.__conn.execute(
-            "SELECT machine_json, boot_id FROM tuner_sessions WHERE id=? AND machine_json IS NOT NULL", (session_id,)
+            "SELECT machine_json, boot_id, kernel_read_ns FROM tuner_sessions WHERE id=? AND machine_json IS NOT NULL",
+            (session_id,),
         ).fetchone()
-        return None if row is None else (row["machine_json"], row["boot_id"])
+        return None if row is None else (row["machine_json"], row["boot_id"], row["kernel_read_ns"])
 
     def insert_tuner_test(
         self,
@@ -1568,12 +1577,10 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         marks = ",".join("?" * len(exclude_cores))
         self.__conn.execute(
             f"""\
-            UPDATE tuner_co_journal SET survived=1 WHERE id IN (
-                SELECT j.id FROM tuner_co_journal j
-                WHERE j.session_id=? AND j.boot_id=? AND j.confirmed=1 AND j.survived=0
-                  AND j.core_id NOT IN ({marks})
-                  AND j.id = (SELECT MAX(k.id) FROM tuner_co_journal k
-                              WHERE k.session_id=j.session_id AND k.boot_id=j.boot_id AND k.core_id=j.core_id))
+            UPDATE tuner_co_journal SET survived=1
+            WHERE id IN (
+                SELECT MAX(id) FROM tuner_co_journal WHERE session_id=? AND boot_id=? GROUP BY core_id)
+              AND confirmed=1 AND survived=0 AND core_id NOT IN ({marks})
             """,
             (session_id, boot_id, *exclude_cores),
         )
@@ -1641,6 +1648,13 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             (direction, direction, session_id),
         ).fetchall()
         return {r["core_id"]: r["value"] for r in rows}
+
+    def journal_envelope(self, session_id: int, core_id: int) -> int | None:
+        row = self.__conn.execute(
+            "SELECT MIN(value) FROM tuner_co_journal WHERE session_id=? AND core_id=? AND survived=1 AND retracted=0",
+            (session_id, core_id),
+        ).fetchone()
+        return row[0]
 
     def journal_retract(self, session_id: int, core_id: int, value: int, direction: int) -> None:
         self.__conn.execute(

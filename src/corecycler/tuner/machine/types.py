@@ -324,6 +324,7 @@ class Report:
     context: FailContext | None = None
     named: tuple[int, ...] = ()
     skipped: str = ""
+    kernel_read_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,6 +377,7 @@ class CrashEvidenceRead:
     suspects: tuple[int, ...] = ()
     context: FailContext | None = None
     evidence: tuple[Evidence, ...] = ()
+    kernel_problem: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

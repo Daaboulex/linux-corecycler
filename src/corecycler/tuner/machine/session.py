@@ -299,6 +299,17 @@ def _convict(s: SessionState, core: int) -> tuple[SessionState, bool]:
 def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
     if s.lifecycle is not Lifecycle.PAUSED or s.pause is None or s.pause.reason is not PauseReason.RESUMING:
         return Transition(s)
+    result = _attributed(s, e, w)
+    if e.kernel_problem is None:
+        return result
+    note = Announce(
+        "kernel_log_unread",
+        f"the crashed boot's kernel log could not be read, so the crash was attributed without it: {e.kernel_problem}",
+    )
+    return replace(result, effects=(*result.effects, note))
+
+
+def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
     verdict = attribute(s, e)
     after = s
     for core in verdict.stale_fail:

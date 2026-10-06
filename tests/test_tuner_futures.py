@@ -10,6 +10,7 @@ from hypothesis import strategies as st
 
 from corecycler.tuner.machine.types import FailContext, Lifecycle, Load, PauseReason
 from corecycler.tuner.orders import Method, order_problem
+from corecycler.tuner.persistence import resident_at_death
 from tests._tuner_world import (
     Abort,
     Broken,
@@ -55,8 +56,26 @@ def clone(fake: Fake) -> Fake:
     return twin
 
 
+def journal_summary(fake: Fake) -> tuple:
+    return tuple(
+        sorted(
+            (
+                core,
+                (held.last.value, held.last.confirmed, held.last.survived),
+                None
+                if held.confirmed_before is None
+                else (held.confirmed_before.value, held.confirmed_before.survived),
+            )
+            for core, held in resident_at_death(fake.journal).items()
+        )
+    )
+
+
 def key(fake: Fake) -> tuple:
     return (
+        journal_summary(fake),
+        fake.dead_suspects,
+        tuple(sorted(fake.proven.items())),
         fake.state,
         tuple(sorted(fake.co.items())),
         tuple(sorted(fake.resident.items())),

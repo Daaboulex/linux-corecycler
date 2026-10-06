@@ -94,6 +94,10 @@ class SmuHardware:
     def boot_ended_clean(self, boot_id: str) -> bool:
         return kernel.boot_end(boot_id).clean
 
+    def harvest(self, boot_id: str, since_ns: int | None, next_boot: bool) -> kernel.JournalHarvest:
+        after = None if since_ns is None else kernel.HarvestFrom(mono_ns=since_ns, realtime_us=None)
+        return kernel.harvest_after(boot_id, after, next_boot=next_boot)
+
     def asleep_seconds(self) -> float:
         return time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
 
@@ -209,6 +213,7 @@ class StressRunner:
         self.memory_backend = memory_backend or (lambda: get_backend("stressapptest"))
         self.budget = budget or (lambda n, floor: memory_budget(n, floor, lane_cgroup=lane_cgroup_parent()))
         self.runs = 0
+        self.read_ns: int | None = None
 
     def _supervise(
         self,
@@ -238,11 +243,17 @@ class StressRunner:
                 hold_cap_s=hold_cap_s,
             )
             results = supervisor.run(lanes, config, seconds)
+            self.read_ns = watch.read_started_ns
         finally:
             watch.close()
         return results, observed
 
     def run(self, spec: TestSpec, stop: threading.Event) -> Report:
+        self.read_ns = None
+        report = self._run(spec, stop)
+        return replace(report, kernel_read_ns=self.read_ns)
+
+    def _run(self, spec: TestSpec, stop: threading.Event) -> Report:
         self.runs += 1
         if spec.load is Load.SOAK:
             return self._soak(spec, stop)
@@ -335,6 +346,7 @@ class StressRunner:
             read = watch.read_new(final=True)
             observed.extend(read.events)
             problem = problem or read.problem
+            self.read_ns = watch.read_started_ns
         finally:
             watch.close()
         evidence = tuple(

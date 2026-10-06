@@ -116,6 +116,8 @@ def runner(script: Script, readings=None, detector=None, clocks=None):
             return {lanes[0].core_id: result}
 
     class FakeDetector:
+        read_started_ns = None
+
         def reset(self):
             pass
 
@@ -179,6 +181,8 @@ def test_an_unblamed_record_in_a_passing_segment_does_not_end_the_stage():
 
 def soak_detector(reads):
     class Detector:
+        read_started_ns = 7_000
+
         def reset(self):
             pass
 
@@ -208,6 +212,7 @@ def test_the_soak_watch_reports_what_the_kernel_logged(events, problem, group):
     reads = [kernel.KernelRead(events, problem)]
     report = runner(Script([]), detector=soak_detector(reads)).run(spec(Load.SOAK, 0.05), threading.Event())
     assert report.group is group
+    assert report.kernel_read_ns == 7_000
     if events and isinstance(events[0], kernel.CoreMachineCheck):
         assert [e.core for e in report.evidence] == [1]
 
@@ -347,6 +352,8 @@ def memory_runner(outcomes, budget=None, available=True, seen=None):
             }
 
     class Detector:
+        read_started_ns = None
+
         def reset(self):
             pass
 

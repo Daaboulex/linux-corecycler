@@ -9,6 +9,7 @@ import time
 from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol
 
+from corecycler.engine import detector as kernel
 from corecycler.tuner.machine.session import transition
 from corecycler.tuner.machine.types import (
     Abort,
@@ -25,6 +26,7 @@ from corecycler.tuner.machine.types import (
     CoreRecord,
     CrashEvidenceRead,
     DatabaseFailed,
+    Evidence,
     Flow,
     ForgetResident,
     InternalError,
@@ -55,12 +57,13 @@ from corecycler.tuner.machine.types import (
     WriteStockMarker,
 )
 from corecycler.tuner.orders import Method, RoundCursor
+from corecycler.tuner.persistence import crash_suspects, resident_at_death
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from corecycler.history.db import HistoryDB
+    from corecycler.history.db import HistoryDB, JournalRow
 
 
 class Hardware(Protocol):
@@ -71,6 +74,7 @@ class Hardware(Protocol):
     def boot_id(self) -> str: ...
     def boot_ended_clean(self, boot_id: str) -> bool: ...
     def asleep_seconds(self) -> float: ...
+    def harvest(self, boot_id: str, since_ns: int | None, next_boot: bool) -> kernel.JournalHarvest: ...
 
 
 class Runner(Protocol):
@@ -195,29 +199,39 @@ class Store:
         self.db = db
         self.root = root
         self.identity = identity
+        self.retracted: dict[tuple[int, int], int] = {}
         root.mkdir(parents=True, exist_ok=True)
 
     def new_session_id(self) -> int:
         return self.db.next_tuner_session_id()
 
     def save(self, st: Stored, boot: str) -> None:
-        self.db.save_machine_session(
-            st.session_id,
-            status=st.status,
-            config_json=json.dumps(config_to_json(st.config)),
-            machine_json=json.dumps(stored_to_json(st)),
-            boot_id=boot,
-            bios_version=self.identity.bios_version,
-            cpu_model=self.identity.cpu_model,
-            context_id=self.identity.context_id,
-        )
+        tightened = {
+            (st.session_id, r.core): r.fb
+            for r in st.cores
+            if r.fb is not None and self.retracted.get((st.session_id, r.core)) != r.fb
+        }
+        with self.db.transaction():
+            self.db.save_machine_session(
+                st.session_id,
+                status=st.status,
+                config_json=json.dumps(config_to_json(st.config)),
+                machine_json=json.dumps(stored_to_json(st)),
+                boot_id=boot,
+                bios_version=self.identity.bios_version,
+                cpu_model=self.identity.cpu_model,
+                context_id=self.identity.context_id,
+            )
+            for (session, core), fb in tightened.items():
+                self.db.journal_retract(session, core, fb, -1)
+        self.retracted.update(tightened)
 
-    def load(self, session_id: int) -> tuple[Stored, str] | None:
+    def load(self, session_id: int) -> tuple[Stored, str, int | None] | None:
         row = self.db.load_machine_session(session_id)
         if row is None:
             return None
-        raw, boot = row
-        return replace(stored_from_json(json.loads(raw)), session_id=session_id), boot
+        raw, boot, read_ns = row
+        return replace(stored_from_json(json.loads(raw)), session_id=session_id), boot, read_ns
 
     def test_started(self, session_id: int, token: int, spec: TestSpec, boot: str) -> int:
         return self.db.insert_tuner_test(
@@ -234,7 +248,7 @@ class Store:
             spec.seconds,
         )
 
-    def test_ended(self, row: int, report: Report) -> None:
+    def test_returned(self, session_id: int, boot: str, row: int, report: Report) -> None:
         evidence = {"records": [asdict(e) for e in report.evidence], "unblamed_corrected": report.unblamed_corrected}
         self.db.end_tuner_test(
             row,
@@ -245,6 +259,16 @@ class Store:
             json.dumps(evidence),
             report.detail,
         )
+        corrected = tuple(sorted({e.core for e in report.evidence if e.corrected}))
+        self.db.journal_mark_survived(session_id, boot_id=boot, exclude_cores=corrected)
+        if report.kernel_read_ns is not None:
+            self.db.set_kernel_read(session_id, report.kernel_read_ns)
+
+    def journal_rows(self, session_id: int, boot: str) -> list[JournalRow]:
+        return self.db.journal_rows(session_id, boot)
+
+    def taken_over(self, session_id: int, boot: str) -> bool:
+        return self.db.journal_taken_over(session_id, boot) is not None
 
     def test_broken(self, row: int, detail: str) -> None:
         evidence = {"records": [], "unblamed_corrected": False}
@@ -254,7 +278,9 @@ class Store:
         self.db.insert_tuner_event(session_id, text, boot, kind)
 
     def journal_intent(self, session_id: int, core: int, value: int, boot: str, mono_ns: int) -> int:
-        return self.db.journal_co_intent(session_id, core, value, value == 0, boot_id=boot, mono_ns=mono_ns)
+        envelope = self.db.journal_envelope(session_id, core)
+        survived = value == 0 or (envelope is not None and value >= envelope)
+        return self.db.journal_co_intent(session_id, core, value, survived, boot_id=boot, mono_ns=mono_ns)
 
     def journal_confirm(self, row: int) -> None:
         self.db.journal_confirm(row)
@@ -295,6 +321,7 @@ class LiveRig:
     signals: list = field(default_factory=list)
     asleep_at_last_check: float = 0.0
     stored_boot: str | None = None
+    stored_read_ns: int | None = None
     test_row: tuple[int, int] | None = None
 
     def world(self) -> World:
@@ -320,8 +347,8 @@ class LiveRig:
         world = self.world()
         if loaded is None:
             return world
-        self.stored_boot = loaded[1]
-        return replace(world, stored=loaded[0])
+        stored, self.stored_boot, self.stored_read_ns = loaded
+        return replace(world, stored=stored)
 
     def post(self, event, world: World | None = None) -> None:
         pending = [event]
@@ -443,16 +470,45 @@ class LiveRig:
         same = last == now
         dirty = not same and not self.hardware.boot_ended_clean(last)
         marker = self.store.marker_boot()
+        session = acting.session_id
         try:
-            loaded = self.store.load(acting.session_id)
+            loaded = self.store.load(session)
+            rows = self.store.journal_rows(session, last)
+            other = not same and self.store.taken_over(session, last)
         except sqlite3.Error as exc:
             return DatabaseFailed(f"the session could not be read back: {exc}")
+        stamps = [row.mono_ns for row in rows if row.mono_ns is not None]
+        since = self.stored_read_ns if self.stored_read_ns is not None else min(stamps, default=None)
+        harvest = self.hardware.harvest(last, since, not same)
+        evidence, shared = self._kernel_evidence((*harvest.dead_boot, *harvest.next_boot))
         return CrashEvidenceRead(
             dirty_end=dirty,
             same_boot=same,
             was_running=loaded is not None and loaded[0].status == "running",
             stale_db=marker == (now if same else last),
+            other_session_wrote=other,
+            shared_uncorrected=shared,
+            suspects=tuple(sorted(crash_suspects(resident_at_death(rows), -1))),
+            evidence=evidence,
+            kernel_problem=harvest.problem,
         )
+
+    def _kernel_evidence(self, events) -> tuple[tuple[Evidence, ...], bool]:
+        core_of_cpu = {cpu: core for core, cpus in self.cpus_of for cpu in cpus}
+        evidence = tuple(
+            Evidence(core_of_cpu[e.cpu], e.corrected)
+            for e in events
+            if isinstance(e, kernel.CoreMachineCheck) and e.cpu in core_of_cpu
+        )
+        shared = any(
+            not e.corrected
+            and (
+                isinstance(e, kernel.UnblamedMachineCheck)
+                or (isinstance(e, kernel.CoreMachineCheck) and e.cpu not in core_of_cpu)
+            )
+            for e in events
+        )
+        return evidence, shared
 
     def _start(self, token: int, spec: TestSpec) -> None:
         load = "" if spec.load is None else f" {spec.load.value}"
@@ -497,7 +553,8 @@ class LiveRig:
                 report = event.report
                 detail = f" {report.detail}" if report.detail else ""
                 self.say(f"verdict {event.token}: {report.group.value} after {report.seconds:.0f} s{detail}")
-            failed = self._end_test(event.token, lambda row: self.store.test_ended(row, event.report))
+            session, boot = self.state.session_id, self.hardware.boot_id()
+            failed = self._end_test(event.token, lambda row: self.store.test_returned(session, boot, row, event.report))
         elif isinstance(event, InternalError) and self.test_row is not None:
             failed = self._end_test(self.test_row[0], lambda row: self.store.test_broken(row, event.error))
         self.post(event if failed is None else failed)

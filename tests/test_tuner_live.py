@@ -17,6 +17,8 @@ from corecycler.tuner import live, live_hw
 from corecycler.tuner.live import Identity, LiveRig, Store, stored_from_json, stored_to_json
 from corecycler.tuner.machine.types import (
     Close,
+    CrashEvidenceRead,
+    Evidence,
     Group,
     Klass,
     Lifecycle,
@@ -26,6 +28,7 @@ from corecycler.tuner.machine.types import (
     PauseRequest,
     Report,
     Stage,
+    Stored,
 )
 from corecycler.tuner.machine.types import (
     TestSpec as Spec,
@@ -44,7 +47,16 @@ IDENTITY = Identity("bios-1", "cpu-1", None)
 
 def config(**changes) -> MachineConfig:
     base = MachineConfig(
-        Mode.CO, Method.ALTERNATE, (0, 1, 8), max_offset=-8, k_1t=2, k_2t=1, wait_between_cores_s=0.0, cool_min_s=0.0
+        Mode.CO,
+        Method.ALTERNATE,
+        (0, 1, 8),
+        max_offset=-8,
+        k_1t=2,
+        k_2t=1,
+        wait_between_cores_s=0.0,
+        cool_min_s=0.0,
+        transient_window_s=60.0,
+        soak_seconds=60.0,
     )
     return replace(base, **changes)
 
@@ -56,6 +68,12 @@ class FakeHardware:
     clean: bool = False
     refuse: int = 0
     capped: bool = False
+    records: kernel.JournalHarvest = field(default_factory=lambda: kernel.JournalHarvest((), (), None))
+    harvests: list = field(default_factory=list)
+
+    def harvest(self, boot_id, since_ns, next_boot):
+        self.harvests.append((boot_id, since_ns, next_boot))
+        return self.records
 
     def read_co(self, core):
         return self.co.get(core)
@@ -88,6 +106,8 @@ class FakeRunner:
     hardware: FakeHardware
     raise_once: bool = False
     seen: list = field(default_factory=list)
+    evidence: tuple = ()
+    read_ns: int | None = None
 
     def run(self, spec: Spec, stop: threading.Event) -> Report:
         self.seen.append(spec)
@@ -97,7 +117,7 @@ class FakeRunner:
         live_value = self.hardware.co[spec.core]
         assert live_value == spec.value
         failed = live_value < EDGES[spec.core]
-        return Report(Group.SILICON if failed else Group.PASS, 1.0)
+        return Report(Group.SILICON if failed else Group.PASS, 1.0, evidence=self.evidence, kernel_read_ns=self.read_ns)
 
 
 OPENED: list[HistoryDB] = []
@@ -176,9 +196,9 @@ def test_the_store_keeps_the_session_in_the_database_and_the_stock_marker_apart(
     st = snapshots()[-1]
     assert store.load(st.session_id) is None
     store.save(st, "boot-a")
-    assert store.load(st.session_id) == (st, "boot-a")
+    assert store.load(st.session_id) == (st, "boot-a", None)
     reopened = Store(database(tmp_path / "history.db"), tmp_path / "s", IDENTITY)
-    assert reopened.load(st.session_id) == (st, "boot-a")
+    assert reopened.load(st.session_id) == (st, "boot-a", None)
     session = reopened.db.get_tuner_session(st.session_id)
     assert session is None
     assert reopened.new_session_id() == st.session_id + 1
@@ -265,7 +285,7 @@ def test_a_merged_session_resumes_under_its_new_id(tmp_path):
     own = target.create_tuner_session("{}", "bios-1", "cpu-1", boot_id="boot-a")
     target.merge_from(tmp_path / "a" / "history.db")
     store = Store(target, tmp_path / "b", IDENTITY)
-    loaded, _boot = store.load(own + 1)
+    loaded, _boot, _read = store.load(own + 1)
     assert loaded.session_id == own + 1
     assert loaded.cores == first.state.cores
 
@@ -322,6 +342,154 @@ def test_a_reboot_during_a_test_leaves_that_test_s_row_open(tmp_path):
     in_test = next(c for c in r.state.cores if c.in_test)
     open_rows = rows(r, "SELECT core, value FROM tuner_tests WHERE ended_at IS NULL")
     assert open_rows == [{"core": in_test.core, "value": in_test.value}]
+
+
+@pytest.mark.parametrize(("evidence", "survived"), [((), 1), (tuple(Evidence(c, True) for c in (0, 1, 8)), 0)])
+def test_a_test_that_comes_back_marks_its_values_survived_unless_a_corrected_check_named_the_core(
+    tmp_path, evidence, survived
+):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware, FakeRunner(hardware, evidence=evidence))
+    r.start(config(), 1, 7, True)
+    while not rows(r, "SELECT id FROM tuner_tests WHERE ended_at IS NOT NULL"):
+        r.step(0.01)
+    first = r.runner.seen[0]
+    marks = rows(r, "SELECT survived FROM tuner_co_journal WHERE core_id=? AND value=?", (first.core, first.value))
+    assert marks == [{"survived": survived}]
+
+
+def in_flight(r: LiveRig):
+    r.start(config(), 1, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    return next(c for c in r.state.cores if c.in_test)
+
+
+def resume_read(tmp_path, hardware, db, monkeypatch) -> tuple[CrashEvidenceRead, LiveRig, list[str]]:
+    reads = []
+    real = live.transition
+
+    def spy(state, event, world):
+        if isinstance(event, CrashEvidenceRead):
+            reads.append(event)
+        return real(state, event, world)
+
+    monkeypatch.setattr(live, "transition", spy)
+    said = []
+    again = rig(tmp_path, hardware, db=db)
+    again.say = said.append
+    again.resume(1)
+    assert len(reads) == 1
+    return reads[0], again, said
+
+
+def test_a_crash_read_names_the_unproven_values_resident_at_death(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    tested = in_flight(r)
+    first_write = rows(r, "SELECT MIN(mono_ns) AS ns FROM tuner_co_journal WHERE session_id=1")[0]["ns"]
+    hardware.boot = "boot-b"
+    read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert read.suspects == (tested.core,)
+    assert read.other_session_wrote is False
+    assert hardware.harvests == [("boot-a", first_write, True)]
+
+
+def test_a_crash_read_starts_where_the_last_test_s_kernel_read_stopped(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware, FakeRunner(hardware, read_ns=123_456))
+    r.start(config(), 1, 7, True)
+    while not rows(r, "SELECT id FROM tuner_tests WHERE ended_at IS NOT NULL"):
+        r.step(0.01)
+    while r.worker is None:
+        r.step(0.01)
+    hardware.boot = "boot-b"
+    resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert hardware.harvests == [("boot-a", 123_456, True)]
+
+
+def stored_with_fb(fb: int | None) -> Stored:
+    st = snapshots()[-1]
+    return replace(st, session_id=1, cores=tuple(replace(c, fb=fb if c.core == 0 else c.fb) for c in st.cores))
+
+
+def test_a_write_inside_a_core_s_survived_envelope_is_journaled_survived(tmp_path):
+    store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
+    store.save(stored_with_fb(None), "boot-a")
+    proven = store.journal_intent(1, 0, -4, "boot-a", 1)
+    store.journal_confirm(proven)
+    store.db.journal_mark_survived(1, boot_id="boot-a")
+    survived = {
+        value: store.db._execute_raw("SELECT survived FROM tuner_co_journal WHERE id=?", (row,)).fetchone()[0]
+        for value, row in ((v, store.journal_intent(1, 0, v, "boot-a", 2)) for v in (-3, -4, -5))
+    }
+    assert survived == {-3: 1, -4: 1, -5: 0}
+
+
+def test_a_commit_retracts_survived_values_at_or_past_a_new_fail_bound(tmp_path):
+    store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
+    store.save(stored_with_fb(None), "boot-a")
+    for value in (-2, -4):
+        row = store.journal_intent(1, 0, value, "boot-a", 1)
+        store.journal_confirm(row)
+        store.db.journal_mark_survived(1, boot_id="boot-a")
+    assert store.db.journal_envelope(1, 0) == -4
+    store.save(stored_with_fb(-3), "boot-a")
+    assert store.db.journal_envelope(1, 0) == -2
+
+
+def test_another_session_writing_later_in_the_dead_boot_is_seen(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    in_flight(r)
+    other = r.store.db.create_tuner_session("{}", "", "", boot_id="boot-a")
+    r.store.db.journal_co_intent(other, 1, -3, False, boot_id="boot-a", mono_ns=1)
+    hardware.boot = "boot-b"
+    read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert read.other_session_wrote is True
+
+
+def test_machine_check_records_of_the_dead_boot_become_evidence(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    in_flight(r)
+    hardware.records = kernel.JournalHarvest(
+        (
+            kernel.CoreMachineCheck(16, 5, False, "core 0 bank 5", 1.0),
+            kernel.UnblamedMachineCheck(3, 30, False, "data fabric", 2.0),
+            kernel.KernelTrouble("oops", 3.0),
+        ),
+        (kernel.CoreMachineCheck(1, 5, True, "core 1 corrected", 0.5),),
+        None,
+    )
+    hardware.boot = "boot-b"
+    read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert read.evidence == (Evidence(0, False), Evidence(1, True))
+    assert read.shared_uncorrected is True
+    assert read.kernel_problem is None
+
+
+def test_a_dead_boot_whose_kernel_log_cannot_be_read_is_resumed_and_named(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    in_flight(r)
+    hardware.records = kernel.JournalHarvest((), (), "no journal for boot-a")
+    hardware.boot = "boot-b"
+    read, again, said = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert read.kernel_problem == "no journal for boot-a"
+    assert any(line.startswith("kernel_log_unread: ") and "no journal for boot-a" in line for line in said)
+    assert rows(again, "SELECT count(*) AS n FROM tuner_events WHERE severity='kernel_log_unread'") == [{"n": 1}]
+
+
+def test_a_resume_in_the_same_boot_reads_only_this_boot_s_records(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    in_flight(r)
+    r.signals.append(Close())
+    r.step(0.01)
+    read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert read.same_boot is True
+    assert [(boot, next_boot) for boot, _, next_boot in hardware.harvests] == [("boot-a", False)]
 
 
 def test_every_co_write_is_journaled_before_it_lands_and_confirmed_once_it_does(tmp_path):
@@ -404,7 +572,7 @@ def test_a_revert_whose_journal_fails_still_reverts_and_pauses_as_database(tmp_p
 
 def test_a_test_result_that_cannot_be_written_pauses_as_database(tmp_path, monkeypatch):
     r = rig(tmp_path)
-    monkeypatch.setattr(r.store, "test_ended", broken)
+    monkeypatch.setattr(r.store, "test_returned", broken)
     r.start(config(), 1, 7, True)
     assert r.run_until_rest(0.01).pause.reason is PauseReason.DATABASE
     assert len(r.runner.seen) == 1
@@ -576,6 +744,14 @@ def test_the_adapter_reads_the_kernel_facts_it_needs(monkeypatch):
     clocks = {live_hw.time.CLOCK_BOOTTIME: 130.0, live_hw.time.CLOCK_MONOTONIC: 100.0}
     monkeypatch.setattr(live_hw.time, "clock_gettime", clocks.__getitem__)
     assert hw.asleep_seconds() == 30.0
+    asked = []
+    found = kernel.JournalHarvest((), (), None)
+    monkeypatch.setattr(
+        live_hw.kernel, "harvest_after", lambda boot, after, next_boot: asked.append((boot, after, next_boot)) or found
+    )
+    assert hw.harvest("b0", 5_000, True) is found
+    assert hw.harvest("b1", None, False) is found
+    assert asked == [("b0", kernel.HarvestFrom(mono_ns=5_000, realtime_us=None), True), ("b1", None, False)]
 
 
 @pytest.mark.parametrize(
@@ -614,6 +790,8 @@ def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, 
     seen = []
 
     class FakeDetector:
+        read_started_ns = 4_242
+
         def reset(self):
             seen.append("reset")
 
@@ -637,6 +815,7 @@ def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, 
     one = runner.run(Spec(Klass.T1, 0, -5, (16,), 60.0, ((0, -5),), Stage.SEARCH), threading.Event())
     two = runner.run(Spec(Klass.T2, 0, -5, (0, 16), 90.0, ((0, -5),), Stage.SEARCH), threading.Event())
     assert one.group is Group.PASS and two.group is Group.PASS
+    assert one.kernel_read_ns == two.kernel_read_ns == 4_242
     assert ((16,), ("SFTv4", "FFTv4", "N63"), 20, None, 60.0) in seen
     assert ((0, 16), ("SFTv4", "N63", "VT3"), 30, "19-ZN2 ~ Kagari", 90.0) in seen
     assert seen.count("reset") == 2 and seen.count("close") == 2

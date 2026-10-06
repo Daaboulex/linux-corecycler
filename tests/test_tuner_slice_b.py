@@ -6,8 +6,9 @@ import pytest
 
 from corecycler.tuner.machine import bisect, search
 from corecycler.tuner.machine.resume import attribute, resident
-from corecycler.tuner.machine.session import transition
+from corecycler.tuner.machine.session import QUARANTINE_STREAK, transition
 from corecycler.tuner.machine.types import (
+    Announce,
     BisectRun,
     CoreRecord,
     CrashEvidenceRead,
@@ -166,6 +167,25 @@ def test_crash_attribution_follows_the_spec_order(state, event, expected):
         assert getattr(verdict, field) == value
     if not expected:
         assert verdict == type(verdict)()
+
+
+@pytest.mark.parametrize(
+    ("state", "lifecycle"),
+    [(SEARCHING, Lifecycle.RUNNING), (replace(SEARCHING, resume_streak=QUARANTINE_STREAK - 1), Lifecycle.QUARANTINED)],
+)
+def test_a_dead_boot_whose_kernel_log_cannot_be_read_is_attributed_without_it_and_says_so(state, lifecycle):
+    result = transition(state, evidence_read(kernel_problem="journal rotated"), WORLD)
+    notes = [e.text for e in result.effects if isinstance(e, Announce) and e.kind == "kernel_log_unread"]
+    assert result.state.lifecycle is lifecycle
+    assert result.state.core(0).crash_count == 1
+    assert notes == [
+        "the crashed boot's kernel log could not be read, so the crash was attributed without it: journal rotated"
+    ]
+
+
+def test_a_readable_kernel_log_adds_no_note():
+    result = transition(SEARCHING, evidence_read(), WORLD)
+    assert not [e for e in result.effects if isinstance(e, Announce) and e.kind == "kernel_log_unread"]
 
 
 def test_a_crash_in_a_multi_core_bisect_slot_is_the_group_s_fail_not_a_conviction_of_its_members():
