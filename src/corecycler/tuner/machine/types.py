@@ -68,7 +68,28 @@ class Stage(StrEnum):
     SEARCH = "search"
     LIVE1 = "live1"
     BISECT = "bisect"
+    STEADY = "steady"
+    TRANSIENT = "transient"
+    TIGHTEN = "tighten"
+    SOAK = "soak"
     FINALIZE = "finalize"
+
+
+ALLCORE = frozenset({Stage.STEADY, Stage.TRANSIENT, Stage.TIGHTEN, Stage.SOAK})
+
+
+class Load(StrEnum):
+    ONE_T = "1t"
+    TWO_T = "2t"
+    HOT = "hot"
+    HOT_T = "hot_t"
+    BURST = "burst"
+    WARM = "warm"
+    IDLE = "idle"
+    SOAK = "soak"
+
+
+TRANSIENT_CYCLE = (Load.BURST, Load.WARM, Load.BURST, Load.IDLE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +105,12 @@ class MachineConfig:
     walk_budget_s: float = 7200.0
     test_seconds_1t: float = 60.0
     test_seconds_2t: float = 90.0
+    hot_seconds: float = 510.0
+    bisect_seconds: float = 160.0
+    stage_seconds: tuple[tuple[str, float], ...] = (("burst", 480.0), ("warm", 480.0), ("idle", 360.0))
+    transient_window_s: float = 3600.0
+    soak_seconds: float = 1800.0
+    soak: bool = True
     wait_between_cores_s: float = 15.0
     apparatus_retries: int = 3
     thermal_retries: int = 3
@@ -125,6 +152,7 @@ class TestSpec:
     seconds: float
     vector: tuple[tuple[int, int], ...] = ()
     stage: Stage = Stage.SEARCH
+    load: Load | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +208,32 @@ class BisectRun:
 
 
 @dataclass(frozen=True, slots=True)
+class FailContext:
+    steady: bool
+    working: tuple[int, ...]
+    paused: bool
+    mhz: float | None = None
+    tctl: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AllCore:
+    t_idx: int = 0
+    t_clean: float = 0.0
+    t_types: tuple = ()
+    t_busy: tuple = ()
+    t_cores: tuple = ()
+    t_n: int = 0
+    co_delta: tuple = ()
+    rung: int = 0
+    floors: tuple[tuple[int, int], ...] = ()
+    item: int | None = None
+    frozen: tuple[int, ...] = ()
+    tightened: bool = False
+    pass_no: int = 1
+
+
+@dataclass(frozen=True, slots=True)
 class Flow:
     stage: Stage
     klass: Klass = Klass.T1
@@ -192,6 +246,7 @@ class Flow:
     bisect: BisectRun | None = None
     q5: tuple[tuple[tuple[int, int], int], ...] = ()
     q5_others: tuple[int, ...] = ()
+    allcore: AllCore | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +314,7 @@ class Report:
     evidence: tuple[Evidence, ...] = ()
     detail: str = ""
     unblamed_corrected: bool = False
+    context: FailContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,6 +365,7 @@ class CrashEvidenceRead:
     other_session_wrote: bool = False
     shared_uncorrected: bool = False
     suspects: tuple[int, ...] = ()
+    context: FailContext | None = None
     evidence: tuple[Evidence, ...] = ()
 
 
@@ -370,6 +427,7 @@ class World:
     cpus_of: tuple[tuple[int, tuple[int, ...]], ...] = ()
     domain_of: tuple[tuple[int, int | None], ...] = ()
     two_t_problem: str | None = None
+    owner_layout: bool = False
 
     def resident_of(self, core: int) -> int | None:
         return dict(self.resident).get(core)

@@ -3,7 +3,16 @@ from __future__ import annotations
 import pytest
 
 from corecycler.tuner.machine import search
-from corecycler.tuner.machine.types import CoreRecord, Klass, Lifecycle, MachineConfig, Mode, PauseReason, Phase
+from corecycler.tuner.machine.types import (
+    CoreRecord,
+    Klass,
+    Lifecycle,
+    MachineConfig,
+    Mode,
+    PauseReason,
+    Phase,
+    Stage,
+)
 from corecycler.tuner.orders import Method
 from tests._tuner_world import (
     Abort,
@@ -102,7 +111,8 @@ def test_one_core_is_tested_twice_in_a_row_only_right_after_its_own_fail():
     assert fake.state.lifecycle is Lifecycle.COMPLETED
     first_visits = list(dict.fromkeys(core for _, _, core, _ in tested))
     assert first_visits == [0, 1, 2]
-    back_to_back = [(a, b) for a, b in zip(tested, tested[1:], strict=False) if a[:3] == b[:3]]
+    per_core = [entry for entry in tested if entry[0] in (Stage.SEARCH, Stage.LIVE1)]
+    back_to_back = [(a, b) for a, b in zip(per_core, per_core[1:], strict=False) if a[:3] == b[:3]]
     assert back_to_back
     assert all(value < edges[core] for (_, _, core, value), _ in back_to_back)
 

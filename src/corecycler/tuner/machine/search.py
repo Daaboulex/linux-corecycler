@@ -104,6 +104,10 @@ def back_off_in_place(rec: CoreRecord, cfg: MachineConfig, steps: int) -> CoreRe
     return replace(rec, fb=fb, value=min(0, rec.value + steps * cfg.fine_step), count=0)
 
 
+def loosen(rec: CoreRecord, cfg: MachineConfig, steps: int = 1) -> CoreRecord:
+    return replace(rec, value=min(0, rec.value + steps * cfg.fine_step), count=0)
+
+
 def begin_2t(rec: CoreRecord) -> CoreRecord:
     return _prove_at(rec, rec.value)
 

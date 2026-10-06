@@ -17,6 +17,7 @@ from corecycler.tuner.machine.types import (
     CrashEvidenceRead,
     DatabaseFailed,
     Evidence,
+    FailContext,
     ForgetResident,
     Group,
     InFlight,
@@ -94,6 +95,8 @@ class Fake:
     edges_2t: dict[int, int] | None = None
     stacks: tuple[tuple[tuple[int, ...], tuple[int, ...], int], ...] = ()
     two_t_problem: str | None = None
+    edges_hot: dict[int, int] | None = None
+    edges_transient: dict[int, int] | None = None
     crash_note: tuple[tuple[Evidence, ...], bool] = ((), False)
 
     def __post_init__(self) -> None:
@@ -224,6 +227,10 @@ class Fake:
                 raise Broken(f"core {r.core}'s fail bound loosened from {before} to {r.fb}")
 
     def check_start(self, state: SessionState, spec) -> None:
+        for core, value in spec.vector:
+            fb = state.core(core).fb
+            if value != 0 and fb is not None and value <= fb:
+                raise Broken(f"core {core} runs at {value} in a {spec.stage} test, at or past its fail bound {fb}")
         rec = state.core(spec.core)
         if rec.fb is not None and spec.value <= rec.fb:
             raise Broken(f"core {spec.core} tested at {spec.value}, at or past its fail bound {rec.fb}")
@@ -255,6 +262,9 @@ class Fake:
             finals = {r.core: r.value for r in s.cores}
             if self.stacked(finals):
                 raise Broken(f"completed with values {finals} that fail together")
+            for edges in (self.edges_hot, self.edges_transient):
+                if edges is not None and any(finals[core] < edges[core] for core in finals):
+                    raise Broken(f"completed with values {finals} that fail an all-core load")
             two_cpus = all(len(cpus) >= 2 for _, cpus in self.layout.cpus_of)
             for r in s.cores:
                 edge = self.edges[r.core]
@@ -280,6 +290,17 @@ class Fake:
 
     def verdict_for(self, spec) -> Report:
         vector = dict(spec.vector)
+        load = spec.load.value if spec.load is not None else None
+        if load == "soak":
+            return Report(Group.PASS, spec.seconds)
+        if load in ("hot", "burst", "warm", "idle"):
+            edges = (self.edges_hot if load == "hot" else self.edges_transient) or self.edges
+            failing = tuple(core for core, value in vector.items() if value < edges[core])
+            if not failing and not self.stacked(vector):
+                return Report(Group.PASS, spec.seconds)
+            working = tuple(vector) if load == "hot" else failing or tuple(vector)
+            context = FailContext(steady=load == "hot", working=working, paused=False, mhz=5000.0, tctl=70.0)
+            return Report(Group.SILICON, spec.seconds, context=context)
         failed = spec.value < self.edge(spec.core, spec.klass) or self.stacked(vector, spec.core)
         return Report(Group.SILICON if failed else Group.PASS, spec.seconds)
 

@@ -228,6 +228,11 @@ def tiny(cores: int, edges: list[int], domains: int = 1, **cfg) -> Fake:
         max_offset=cfg.pop("max_offset", -6),
         k_1t=cfg.pop("k_1t", 2),
         wait_between_cores_s=0.0,
+        hot_seconds=1.0,
+        bisect_seconds=1.0,
+        stage_seconds=(("burst", 1.0), ("warm", 1.0), ("idle", 1.0)),
+        transient_window_s=1.0,
+        soak_seconds=1.0,
         **cfg,
     )
     start(fake)
@@ -256,6 +261,19 @@ def test_every_future_of_a_tiny_cpu_ends_completed_or_quarantined_and_breaks_no_
     fake.stacks = stacks
     survey = explore(fake, {**ONE_OF_EACH, "total": total}, cap=2_000_000)
     assert survey.states > 100
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+@pytest.mark.parametrize(
+    ("edges", "hot", "transient"),
+    [([-3, -2], {0: -2, 1: -2}, None), ([-3, -2], None, {0: -2, 1: -1})],
+)
+def test_every_future_of_a_cpu_whose_all_core_loads_fail_reaches_a_rest(edges, hot, transient):
+    fake = tiny(2, edges, 2)
+    fake.edges_hot = hot
+    fake.edges_transient = transient
+    survey = explore(fake, {**ONE_OF_EACH, "total": 1}, cap=2_000_000)
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
 

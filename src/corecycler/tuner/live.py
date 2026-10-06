@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 from corecycler.tuner.machine.session import transition
 from corecycler.tuner.machine.types import (
     Abort,
+    AllCore,
     Announce,
     AwaitWorker,
     BisectRun,
@@ -79,7 +80,13 @@ def config_to_json(cfg: MachineConfig) -> dict:
 
 def config_from_json(raw: dict) -> MachineConfig:
     return MachineConfig(
-        **{**raw, "mode": Mode(raw["mode"]), "method": Method(raw["method"]), "selected": tuple(raw["selected"])}
+        **{
+            **raw,
+            "mode": Mode(raw["mode"]),
+            "method": Method(raw["method"]),
+            "selected": tuple(raw["selected"]),
+            "stage_seconds": _pairs(raw["stage_seconds"]),
+        }
     )
 
 
@@ -107,6 +114,13 @@ def _bisect_from_json(raw: dict | None) -> BisectRun | None:
     )
 
 
+def _allcore_from_json(raw: dict | None) -> AllCore | None:
+    if raw is None:
+        return None
+    pairs = ("t_types", "t_busy", "t_cores", "co_delta", "floors")
+    return AllCore(**{**raw, **{name: _pairs(raw[name]) for name in pairs}, "frozen": tuple(raw["frozen"])})
+
+
 def _flow_from_json(raw: dict | None) -> Flow | None:
     if raw is None:
         return None
@@ -123,6 +137,7 @@ def _flow_from_json(raw: dict | None) -> Flow | None:
         bisect=_bisect_from_json(raw["bisect"]),
         q5=tuple(((key[0], key[1]), count) for key, count in raw["q5"]),
         q5_others=tuple(raw["q5_others"]),
+        allcore=_allcore_from_json(raw["allcore"]),
     )
 
 

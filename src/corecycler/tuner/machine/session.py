@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from corecycler.tuner.machine import bisect, search
+from corecycler.tuner.machine import allcore, bisect, search
 from corecycler.tuner.machine.resume import attribute, resident
 from corecycler.tuner.machine.types import (
+    ALLCORE,
+    TRANSIENT_CYCLE,
     Abort,
+    AllCore,
     Announce,
     AwaitWorker,
     CancelSchedule,
@@ -26,6 +29,7 @@ from corecycler.tuner.machine.types import (
     Klass,
     Lifecycle,
     Live1,
+    Load,
     Mode,
     Pause,
     PauseReason,
@@ -54,6 +58,7 @@ from corecycler.tuner.machine.types import (
 )
 from corecycler.tuner.orders import next_core, order_problem, round_sequence
 
+ALLCORE_LOADS = frozenset({Load.HOT, Load.BURST, Load.WARM, Load.IDLE, Load.SOAK})
 QUARANTINE_STREAK = 3
 INCIDENT_LIMIT = 2
 COOL_POLL_S = 1.0
@@ -303,9 +308,9 @@ def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transiti
         after, at_stock = _convict(after, core)
         if at_stock:
             return _enter_pause(_clear_in_test(after), PauseReason.STOCK_UNSTABLE, f"core {core} crashed at 0", (core,))
-    flow_crash = verdict.flow_crash
-    if flow_crash:
-        after, stock = _flow_crash(after, w)
+    flow_crash = verdict.flow_crash and s.flow.stage is not Stage.SOAK
+    if verdict.flow_crash:
+        after, stock = _flow_crash(after, w, e.context)
         if stock is not None:
             return _enter_pause(_clear_in_test(after), PauseReason.STOCK_UNSTABLE, stock)
     after = _owe_interrupted(_clear_in_test(after), tuple(r.core for r in s.cores if r.in_test))
@@ -363,11 +368,15 @@ def _stale_fail(s: SessionState, core: int, w: World) -> tuple[SessionState, str
         return _live1_outcome(s, core, value, False, w)
     if stage is Stage.BISECT:
         return _bisect_outcome(s, False, w)
+    if stage in ALLCORE:
+        return _allcore_fail(s, None, w)
     raise ValueError(f"a lost verdict has no stage rule in {stage}")
 
 
-def _flow_crash(s: SessionState, w: World) -> tuple[SessionState, str | None]:
+def _flow_crash(s: SessionState, w: World, context=None) -> tuple[SessionState, str | None]:
     flow = s.flow
+    if flow.stage in ALLCORE:
+        return _allcore_fail(s, context, w)
     lane = next(r.core for r in s.cores if r.in_test)
     if flow.stage is Stage.LIVE1:
         values = {r.core: r.value for r in s.cores}
@@ -416,6 +425,8 @@ def _apply_evidence(s: SessionState, ev, at_stock: bool = False) -> SessionState
         flow = replace(flow, live1=replace(flow.live1, requeue=(*flow.live1.requeue, ev.core)))
     if stage is Stage.BISECT:
         flow = _bisect_exit(flow)
+    if stage in ALLCORE and flow.allcore is not None:
+        flow = replace(flow, allcore=replace(flow.allcore, t_clean=0.0))
     return replace(out, flow=flow)
 
 
@@ -482,6 +493,8 @@ def _next(s: SessionState, w: World, picked: int | None) -> Transition:
     stage = s.flow.stage
     if stage is Stage.FINALIZE:
         return _finalize(s, w)
+    if stage in ALLCORE:
+        return _allcore_next(s, w)
     if stage is Stage.LIVE1:
         return _live1_next(s, w, picked)
     if stage is Stage.BISECT:
@@ -520,8 +533,8 @@ def _end_class(s: SessionState, w: World) -> Transition:
 
 
 def _enter_live1(s: SessionState, w: World) -> Transition:
-    live = replace(s, flow=Flow(Stage.LIVE1, last_core=s.flow.last_core, live1=Live1()))
-    return _live1_next(live, w, None)
+    flow = Flow(Stage.LIVE1, last_core=s.flow.last_core, live1=Live1(), allcore=s.flow.allcore)
+    return _live1_next(replace(s, flow=flow), w, None)
 
 
 def _wait_first(s: SessionState, flow: Flow, core: int) -> Transition | None:
@@ -593,7 +606,131 @@ def _live1_next(s: SessionState, w: World, picked: int | None) -> Transition:
 
 
 def _end_live1(s: SessionState, w: World) -> Transition:
-    return _finalize(replace(s, flow=replace(s.flow, stage=Stage.FINALIZE, live1=None, applied=False)), w)
+    cursor = s.flow.allcore
+    if cursor is None:
+        cursor = AllCore(floors=tuple((r.core, r.value) for r in s.cores))
+    else:
+        cursor = replace(cursor, t_idx=0, t_clean=0.0, pass_no=cursor.pass_no + 1)
+    flow = replace(s.flow, stage=Stage.STEADY, live1=None, allcore=cursor)
+    return _allcore_next(replace(s, flow=flow), w)
+
+
+def _load_seconds(cfg, load: Load) -> float:
+    if load is Load.HOT:
+        return cfg.hot_seconds
+    if load is Load.SOAK:
+        return cfg.soak_seconds
+    return dict(cfg.stage_seconds)[load.value]
+
+
+def _all_cpus(s: SessionState, w: World) -> tuple[int, ...]:
+    cpus = dict(w.cpus_of)
+    return tuple(sorted(cpu for r in s.cores for cpu in cpus[r.core]))
+
+
+def _past_tighten(flow: Flow, cfg) -> Flow:
+    cursor = replace(flow.allcore, tightened=True, item=None, t_idx=0, t_clean=0.0)
+    if cfg.soak and not flow.dirty:
+        return replace(flow, stage=Stage.SOAK, allcore=cursor)
+    return replace(flow, stage=Stage.FINALIZE, allcore=cursor, applied=False)
+
+
+def _after_tighten(s: SessionState, w: World) -> Transition:
+    flow = _past_tighten(s.flow, s.config)
+    return _next(replace(s, flow=flow), w, None)
+
+
+def _allcore_next(s: SessionState, w: World) -> Transition:
+    cfg = s.config
+    flow = s.flow
+    cursor = flow.allcore
+    values = {r.core: r.value for r in s.cores}
+    if flow.stage is Stage.TIGHTEN:
+        if cursor.item is None:
+            waiting = [core for core in allcore.tighten_items(cursor) if core not in cursor.frozen]
+            if not waiting:
+                return _after_tighten(s, w)
+            core = waiting[0]
+            rec = s.core(core)
+            floor = dict(cursor.floors).get(core, rec.value)
+            target = rec.value - cfg.fine_step
+            if rec.value <= floor or not rec.inside(target, cfg.max_offset):
+                frozen = replace(cursor, frozen=(*cursor.frozen, core))
+                return _allcore_next(replace(s, flow=replace(flow, allcore=frozen)), w)
+            cursor = replace(cursor, item=core, t_idx=0, t_clean=0.0)
+            flow = replace(flow, allcore=cursor)
+        item = s.core(cursor.item)
+        if not item.inside(item.value - cfg.fine_step, cfg.max_offset):
+            frozen = replace(cursor, frozen=(*cursor.frozen, item.core), item=None, t_idx=0, t_clean=0.0)
+            return _allcore_next(replace(s, flow=replace(flow, allcore=frozen)), w)
+        values[cursor.item] -= cfg.fine_step
+        load = TRANSIENT_CYCLE[cursor.t_idx % len(TRANSIENT_CYCLE)]
+    elif flow.stage is Stage.STEADY:
+        load = Load.HOT
+    elif flow.stage is Stage.TRANSIENT:
+        load = TRANSIENT_CYCLE[cursor.t_idx % len(TRANSIENT_CYCLE)]
+    else:
+        load = Load.SOAK
+    first = s.cores[0].core
+    vector = tuple((core, values[core]) for core, _ in s.baseline)
+    cpus = () if load is Load.SOAK else _all_cpus(s, w)
+    spec = TestSpec(Klass.T1, first, values[first], cpus, _load_seconds(cfg, load), vector, flow.stage, load)
+    return _start_test(s, flow, spec, w)
+
+
+def _allcore_fail(s: SessionState, ctx, w: World) -> tuple[SessionState, str | None]:
+    flow = s.flow
+    cursor = flow.allcore
+    stage = flow.stage
+    if stage is Stage.SOAK:
+        return replace(s, incidents=s.incidents + 1, flow=replace(flow, dirty=True)), None
+    if stage is Stage.TIGHTEN:
+        frozen = replace(cursor, frozen=(*cursor.frozen, cursor.item), item=None, t_idx=0, t_clean=0.0)
+        return replace(s, flow=replace(flow, allcore=frozen)), None
+    if stage is Stage.STEADY and allcore.steady_class(ctx):
+        values = {r.core: r.value for r in s.cores}
+        if not any(values.values()):
+            return s, "the all-core load fails with every owned core at 0"
+        run = bisect.begin(Stage.STEADY, s.cores[0].core, Klass.T1, values, dict(w.domain_of))
+        return replace(s, flow=replace(flow, stage=Stage.BISECT, bisect=run)), None
+    fix = allcore.transient_fix(cursor, allcore.context_or_unknown(ctx), s.cores, len(s.cores), w.owner_layout)
+    if fix.core is None:
+        return s, "a transient failure found nothing left to loosen"
+    loosened = s.with_core(search.loosen(s.core(fix.core), s.config))
+    cursor = replace(fix.cursor, t_clean=0.0)
+    return replace(loosened, flow=replace(flow, allcore=cursor, dirty=True)), None
+
+
+def _allcore_verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing: bool, w: World) -> Transition:
+    cfg = s.config
+    flow = s.flow
+    cursor = flow.allcore
+    s = replace(s, streaks=Streaks(), resume_streak=0)
+    if group is Group.SILICON:
+        s, stock = _allcore_fail(s, rep.context, w)
+        if stock is not None:
+            return _enter_pause(s, PauseReason.STOCK_UNSTABLE, stock)
+        return _next_wait(s, spec, pausing)
+    if flow.stage is Stage.STEADY:
+        flow = replace(flow, stage=Stage.TRANSIENT, allcore=replace(cursor, t_idx=0, t_clean=0.0))
+    elif flow.stage is Stage.SOAK:
+        flow = replace(flow, stage=Stage.FINALIZE, applied=False)
+    else:
+        cursor = replace(cursor, t_idx=cursor.t_idx + 1, t_clean=cursor.t_clean + rep.seconds)
+        if cursor.t_clean < cfg.transient_window_s:
+            flow = replace(flow, allcore=cursor)
+        elif flow.stage is Stage.TIGHTEN:
+            rec = s.core(cursor.item)
+            s = s.with_core(replace(rec, value=rec.value - cfg.fine_step, count=0))
+            delta = dict(cursor.co_delta)
+            delta[cursor.item] -= 1
+            cursor = replace(cursor, co_delta=tuple(sorted(delta.items())), item=None, t_idx=0, t_clean=0.0)
+            flow = replace(flow, allcore=cursor, dirty=True)
+        elif not cursor.tightened:
+            flow = replace(flow, stage=Stage.TIGHTEN, allcore=replace(cursor, item=None, t_idx=0, t_clean=0.0))
+        else:
+            flow = _past_tighten(replace(flow, allcore=cursor), cfg)
+    return _next_wait(replace(s, flow=flow), spec, pausing)
 
 
 def _bisect_next(s: SessionState, w: World) -> Transition:
@@ -603,15 +740,11 @@ def _bisect_next(s: SessionState, w: World) -> Transition:
     values = {r.core: r.value for r in s.cores} if run.rerun is not None else bisect.slot_values(run, group)
     vector = tuple((c, values[c] if c in group else base) for c, base in s.baseline)
     lane = run.lane
-    spec = TestSpec(
-        run.klass,
-        lane,
-        dict(vector)[lane],
-        _cpus_for(lane, run.klass, w),
-        s.config.test_seconds_1t,
-        vector,
-        Stage.BISECT,
-    )
+    if run.entry is Stage.STEADY:
+        cpus, seconds, load = _all_cpus(s, w), s.config.bisect_seconds, Load.HOT
+    else:
+        cpus, seconds, load = _cpus_for(lane, run.klass, w), s.config.test_seconds_1t, Load.ONE_T
+    spec = TestSpec(run.klass, lane, dict(vector)[lane], cpus, seconds, vector, Stage.BISECT, load)
     return _start_test(s, flow, spec, w)
 
 
@@ -624,12 +757,10 @@ def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transi
         )
     token = s.next_token
     flow = replace(flow, last_core=spec.core)
-    started = replace(
-        s.with_core(replace(s.core(spec.core), in_test=True)),
-        flow=flow,
-        slot=InFlight(token, spec),
-        next_token=token + 1,
-    )
+    marked = s.with_core(replace(s.core(spec.core), in_test=True))
+    if spec.load in ALLCORE_LOADS:
+        marked = replace(s, cores=tuple(replace(r, in_test=True) for r in s.cores))
+    started = replace(marked, flow=flow, slot=InFlight(token, spec), next_token=token + 1)
     effects: list = []
     if w.gap_grew:
         effects.append(ForgetResident())
@@ -663,8 +794,19 @@ def _reported(s: SessionState, e: WorkerReported, w: World) -> Transition:
     spec = s.slot.spec
     rep = e.report
     pausing = s.lifecycle is Lifecycle.PAUSING
-    after = _after_test(s, spec.core)
-    for ev in rep.evidence:
+    if spec.load in ALLCORE_LOADS:
+        after = s
+        for ev in rep.evidence:
+            applied = _apply_evidence(after, ev)
+            if isinstance(applied, Transition):
+                return applied
+            after = applied
+        after = _clear_in_test(after)
+        if rep.evidence:
+            return _next_wait(replace(after, streaks=Streaks(), resume_streak=0), spec, pausing)
+    else:
+        after = _after_test(s, spec.core)
+    for ev in () if spec.load in ALLCORE_LOADS else rep.evidence:
         if ev.core == spec.core:
             continue
         applied = _apply_evidence(after, ev)
@@ -702,6 +844,8 @@ def _after_test(s: SessionState, core: int) -> SessionState:
 
 
 def _verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing: bool, w: World) -> Transition:
+    if spec.stage in ALLCORE:
+        return _allcore_verdict(s, spec, rep, group, pausing, w)
     if spec.stage is Stage.LIVE1:
         return _live1_verdict(s, spec, group, pausing, w)
     if spec.stage is Stage.BISECT:
@@ -807,6 +951,8 @@ def _next_wait(after: SessionState, spec: TestSpec, pausing: bool) -> Transition
     effects: list = [_commit(waiting)]
     if spec.stage is Stage.SEARCH:
         effects.append(WriteCO(spec.core, after.baseline_of(spec.core)))
+    if spec.load in ALLCORE_LOADS:
+        effects += [WriteCO(core, base) for core, base in after.baseline]
     effects.append(Schedule(token, 0.0))
     return Transition(waiting, tuple(effects))
 
