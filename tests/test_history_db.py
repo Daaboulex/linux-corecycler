@@ -315,6 +315,64 @@ class TestTunerSessionMethods:
         assert sessions[0].id == sid2  # newest first
         assert sessions[1].id == sid1
 
+    def test_old_engine_readers_never_see_a_machine_session(self, db):
+        old = db.create_tuner_session("{}", "BIOS-1", "CPU1", boot_id=this_boot())
+        machine = db.next_tuner_session_id()
+        db.save_machine_session(
+            machine,
+            status="running",
+            config_json="{}",
+            machine_json='{"m": 1}',
+            boot_id=this_boot(),
+            bios_version="BIOS-1",
+            cpu_model="CPU1",
+            context_id=None,
+        )
+        assert machine == old + 1
+        assert db.load_machine_session(machine) == ('{"m": 1}', this_boot())
+        assert db.load_machine_session(old) is None
+        assert db.get_tuner_session(machine) is None
+        assert [s.id for s in db.list_tuner_sessions()] == [old]
+        assert db.get_latest_tuner_session().id == old
+        assert db.get_active_tuner_session().id == old
+        assert [s.id for s in db.list_resumable_tuner_sessions()] == [old]
+        assert [s.id for s in db.list_recoverable_tuner_sessions()] == [old]
+
+    def test_a_machine_session_never_overwrites_an_old_engine_row(self, db):
+        old = db.create_tuner_session('{"old": 1}', "BIOS-1", "CPU1", boot_id=this_boot())
+        with pytest.raises(sqlite3.IntegrityError, match="belongs to the old engine"):
+            db.save_machine_session(
+                old,
+                status="running",
+                config_json="{}",
+                machine_json="{}",
+                boot_id=this_boot(),
+                bios_version="B",
+                cpu_model="C",
+                context_id=None,
+            )
+        assert db.get_tuner_session(old).config_json == '{"old": 1}'
+
+    def test_a_test_row_ends_once(self, db):
+        sid = db.next_tuner_session_id()
+        fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
+        db.save_machine_session(sid, status="running", machine_json="1", boot_id="a", **fields)
+        row = db.insert_tuner_test(sid, "a", 1, "search", None, "1t", 0, -5, "[]", "[0]", 60.0)
+        db.end_tuner_test(row, "pass", 60.0, "[]", None, "{}", "")
+        with pytest.raises(sqlite3.IntegrityError, match="already ended"):
+            db.end_tuner_test(row, "silicon", 1.0, "[]", None, "{}", "")
+        with pytest.raises(sqlite3.IntegrityError, match="missing"):
+            db.end_tuner_test(row + 1, "pass", 1.0, "[]", None, "{}", "")
+
+    def test_a_machine_session_row_follows_its_later_commits(self, db):
+        sid = db.next_tuner_session_id()
+        fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
+        db.save_machine_session(sid, status="running", machine_json="1", boot_id="a", **fields)
+        db.save_machine_session(sid, status="paused", machine_json="2", boot_id="b", **fields)
+        row = db._execute_raw("SELECT status, machine_json, boot_id FROM tuner_sessions WHERE id=?", (sid,))
+        assert dict(row.fetchone()) == {"status": "paused", "machine_json": "2", "boot_id": "b"}
+        assert db.next_tuner_session_id() == sid + 1
+
     def test_list_tuner_sessions_limit(self, db):
         for _ in range(5):
             db.create_tuner_session("{}", "", "", boot_id=this_boot())
@@ -710,6 +768,39 @@ class TestMergeFrom:
         ]
         assert [row.core_id for row in copied] == [3, 1]
         assert kernel_read == 7000
+
+    def test_merge_keeps_a_machine_session_and_its_tests_under_the_new_id(self, tmp_path):
+        boot = "b" * 32
+        src = HistoryDB(tmp_path / "src.db")
+        sid = src.next_tuner_session_id()
+        src.save_machine_session(
+            sid,
+            status="paused",
+            config_json="{}",
+            machine_json='{"m": 1}',
+            boot_id=boot,
+            bios_version="2401",
+            cpu_model="9950X3D",
+            context_id=None,
+        )
+        row = src.insert_tuner_test(sid, boot, 3, "search", None, "1t", 8, -5, "[[8, -5]]", "[8]", 60.0)
+        src.end_tuner_test(row, "silicon", 12.5, "[8]", None, "[]", "error on core 8")
+        src.close()
+        dst = HistoryDB(tmp_path / "dst.db")
+        own = dst.create_tuner_session("{}", "2401", "9950X3D", boot_id=boot)
+
+        dst.merge_from(tmp_path / "src.db")
+
+        merged = own + 1
+        tests = [
+            dict(r) for r in dst._execute_raw("SELECT * FROM tuner_tests WHERE session_id=?", (merged,)).fetchall()
+        ]
+        loaded = dst.load_machine_session(merged)
+        dst.close()
+        assert loaded == ('{"m": 1}', boot)
+        assert [(t["token"], t["core"], t["value"], t["verdict"], t["seconds_run"]) for t in tests] == [
+            (3, 8, -5, "silicon", 12.5)
+        ]
 
     def test_merge_migrates_old_schema_source_first(self, tmp_path):
         import sqlite3

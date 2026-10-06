@@ -202,7 +202,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 17
+    SCHEMA_VERSION = 18
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -284,7 +284,32 @@ class HistoryDB:
                 conn.execute("ROLLBACK")
             raise
 
-    # Full schema for fresh databases (current version)
+    _DDL_TUNER_TESTS = """\
+CREATE TABLE IF NOT EXISTS tuner_tests (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      INTEGER NOT NULL REFERENCES tuner_sessions(id) ON DELETE CASCADE,
+    boot_id         TEXT    NOT NULL,
+    token           INTEGER NOT NULL,
+    started_at      TEXT    NOT NULL,
+    stage           TEXT    NOT NULL,
+    load            TEXT,
+    klass           TEXT    NOT NULL,
+    core            INTEGER NOT NULL,
+    value           INTEGER NOT NULL,
+    vector_json     TEXT    NOT NULL,
+    cpus_json       TEXT    NOT NULL,
+    seconds_asked   REAL    NOT NULL,
+    ended_at        TEXT,
+    verdict         TEXT,
+    seconds_run     REAL,
+    named_json      TEXT,
+    context_json    TEXT,
+    evidence_json   TEXT,
+    detail          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tuner_tests_session ON tuner_tests(session_id, core);
+"""
+
     _DDL_FRESH = (
         """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -400,7 +425,8 @@ CREATE TABLE IF NOT EXISTS tuner_sessions (
     validation_dirty    INTEGER NOT NULL DEFAULT 0,
     validation_requeue  TEXT    NOT NULL DEFAULT '[]',
     boot_id             TEXT    NOT NULL DEFAULT '',
-    kernel_read_ns      INTEGER
+    kernel_read_ns      INTEGER,
+    machine_json        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tuner_core_states (
@@ -471,6 +497,7 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
 CREATE INDEX IF NOT EXISTS idx_co_journal_boot ON tuner_co_journal(session_id, boot_id, core_id, id);
 CREATE INDEX IF NOT EXISTS idx_co_journal_proven ON tuner_co_journal(session_id, core_id, survived, retracted);
 """
+        + _DDL_TUNER_TESTS
     ).replace("__SCHEMA_VERSION__", str(SCHEMA_VERSION))
 
     # Migration from v1 to v2
@@ -804,6 +831,11 @@ CREATE INDEX idx_co_journal_boot ON tuner_co_journal(session_id, boot_id, core_i
 CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, survived, retracted);
 """
 
+    @staticmethod
+    def _migrate_v18(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(conn, "tuner_sessions", [("machine_json", "TEXT")])
+        conn.executescript(HistoryDB._DDL_TUNER_TESTS)
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
@@ -821,6 +853,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         15: _DDL_MIGRATE_V15,
         16: _migrate_v16,
         17: _migrate_v17,
+        18: _migrate_v18,
     }
 
     # ------------------------------------------------------------------
@@ -1310,6 +1343,107 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         )
         return cur.lastrowid
 
+    def next_tuner_session_id(self) -> int:
+        row = self.__conn.execute(
+            "SELECT MAX(COALESCE((SELECT seq FROM sqlite_sequence WHERE name='tuner_sessions'), 0),"
+            " COALESCE((SELECT MAX(id) FROM tuner_sessions), 0)) + 1"
+        ).fetchone()
+        return row[0]
+
+    def save_machine_session(
+        self,
+        session_id: int,
+        *,
+        status: str,
+        config_json: str,
+        machine_json: str,
+        boot_id: str,
+        bios_version: str,
+        cpu_model: str,
+        context_id: int | None,
+    ) -> None:
+        now = self._now_iso()
+        cur = self.__conn.execute(
+            """\
+            INSERT INTO tuner_sessions
+                (id, created_at, updated_at, status, bios_version, cpu_model,
+                 config_json, context_id, notes, boot_id, machine_json)
+            VALUES (?,?,?,?,?,?,?,?,'',?,?)
+            ON CONFLICT(id) DO UPDATE SET
+                updated_at=excluded.updated_at, status=excluded.status,
+                boot_id=excluded.boot_id, machine_json=excluded.machine_json
+            WHERE tuner_sessions.machine_json IS NOT NULL
+            """,
+            (session_id, now, now, status, bios_version, cpu_model, config_json, context_id, boot_id, machine_json),
+        )
+        if cur.rowcount != 1:
+            raise sqlite3.IntegrityError(f"session {session_id} belongs to the old engine")
+
+    def load_machine_session(self, session_id: int) -> tuple[str, str] | None:
+        row = self.__conn.execute(
+            "SELECT machine_json, boot_id FROM tuner_sessions WHERE id=? AND machine_json IS NOT NULL", (session_id,)
+        ).fetchone()
+        return None if row is None else (row["machine_json"], row["boot_id"])
+
+    def insert_tuner_test(
+        self,
+        session_id: int,
+        boot_id: str,
+        token: int,
+        stage: str,
+        load: str | None,
+        klass: str,
+        core: int,
+        value: int,
+        vector_json: str,
+        cpus_json: str,
+        seconds_asked: float,
+    ) -> int:
+        cur = self.__conn.execute(
+            """\
+            INSERT INTO tuner_tests
+                (session_id, boot_id, token, started_at, stage, load, klass, core, value,
+                 vector_json, cpus_json, seconds_asked)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                session_id,
+                boot_id,
+                token,
+                self._now_iso(),
+                stage,
+                load,
+                klass,
+                core,
+                value,
+                vector_json,
+                cpus_json,
+                seconds_asked,
+            ),
+        )
+        return cur.lastrowid
+
+    def end_tuner_test(
+        self,
+        row_id: int,
+        verdict: str,
+        seconds_run: float,
+        named_json: str,
+        context_json: str | None,
+        evidence_json: str,
+        detail: str,
+    ) -> None:
+        cur = self.__conn.execute(
+            """\
+            UPDATE tuner_tests SET ended_at=?, verdict=?, seconds_run=?, named_json=?,
+                context_json=?, evidence_json=?, detail=?
+            WHERE id=? AND ended_at IS NULL
+            """,
+            (self._now_iso(), verdict, seconds_run, named_json, context_json, evidence_json, detail, row_id),
+        )
+        if cur.rowcount != 1:
+            raise sqlite3.IntegrityError(f"test row {row_id} is missing or already ended")
+
     def stamp_session_boot(self, session_id: int, boot_id: str) -> None:
         self.__conn.execute(
             "UPDATE tuner_sessions SET boot_id=?, kernel_read_ns=NULL, updated_at=? WHERE id=?",
@@ -1335,20 +1469,25 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         )
 
     def get_tuner_session(self, session_id: int) -> TunerSession | None:
-        row = self.__conn.execute("SELECT * FROM tuner_sessions WHERE id=?", (session_id,)).fetchone()
+        row = self.__conn.execute(
+            "SELECT * FROM tuner_sessions WHERE id=? AND machine_json IS NULL", (session_id,)
+        ).fetchone()
         if row is None:
             return None
         return self._row_to_tuner_session(row)
 
     def get_latest_tuner_session(self) -> TunerSession | None:
-        row = self.__conn.execute("SELECT * FROM tuner_sessions ORDER BY id DESC LIMIT 1").fetchone()
+        row = self.__conn.execute(
+            "SELECT * FROM tuner_sessions WHERE machine_json IS NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         if row is None:
             return None
         return self._row_to_tuner_session(row)
 
     def get_active_tuner_session(self) -> TunerSession | None:
         row = self.__conn.execute(
-            "SELECT * FROM tuner_sessions WHERE status IN ('running','paused','validating') ORDER BY id DESC LIMIT 1"
+            "SELECT * FROM tuner_sessions WHERE status IN ('running','paused','validating')"
+            " AND machine_json IS NULL ORDER BY id DESC LIMIT 1"
         ).fetchone()
         if row is None:
             return None
@@ -1371,13 +1510,16 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     def _sessions_with_status(self, statuses: tuple[str, ...], limit: int) -> list[TunerSession]:
         placeholders = ",".join("?" * len(statuses))
         rows = self.__conn.execute(
-            f"SELECT * FROM tuner_sessions WHERE status IN ({placeholders}) ORDER BY id DESC LIMIT ?",
+            f"SELECT * FROM tuner_sessions WHERE status IN ({placeholders})"
+            " AND machine_json IS NULL ORDER BY id DESC LIMIT ?",
             (*statuses, limit),
         ).fetchall()
         return [self._row_to_tuner_session(r) for r in rows]
 
     def list_tuner_sessions(self, *, limit: int = 100) -> list[TunerSession]:
-        rows = self.__conn.execute("SELECT * FROM tuner_sessions ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        rows = self.__conn.execute(
+            "SELECT * FROM tuner_sessions WHERE machine_json IS NULL ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
         return [self._row_to_tuner_session(r) for r in rows]
 
     # ------------------------------------------------------------------
@@ -1949,6 +2091,31 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             ),
             {"session_id": "tuner_sessions"},
         ),
+        (
+            "tuner_tests",
+            (
+                "session_id",
+                "boot_id",
+                "token",
+                "started_at",
+                "stage",
+                "load",
+                "klass",
+                "core",
+                "value",
+                "vector_json",
+                "cpus_json",
+                "seconds_asked",
+                "ended_at",
+                "verdict",
+                "seconds_run",
+                "named_json",
+                "context_json",
+                "evidence_json",
+                "detail",
+            ),
+            {"session_id": "tuner_sessions"},
+        ),
     )
 
     def merge_from(self, other_path: str | Path) -> dict[str, int]:
@@ -2074,6 +2241,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
                         "validation_requeue",
                         "boot_id",
                         "kernel_read_ns",
+                        "machine_json",
                     ),
                 )
                 counts["tuner_sessions"] = len(maps["tuner_sessions"])

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import sqlite3
 import threading
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -58,6 +59,8 @@ from corecycler.tuner.orders import Method, RoundCursor
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
+
+    from corecycler.history.db import HistoryDB
 
 
 class Hardware(Protocol):
@@ -180,23 +183,81 @@ def _write_atomic(path: Path, payload: dict) -> None:
         os.close(directory)
 
 
+@dataclass(frozen=True, slots=True)
+class Identity:
+    bios_version: str
+    cpu_model: str
+    context_id: int | None
+
+
 class Store:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, db: HistoryDB, root: Path, identity: Identity) -> None:
+        self.db = db
         self.root = root
+        self.identity = identity
         root.mkdir(parents=True, exist_ok=True)
 
-    def _session(self, session_id: int) -> Path:
-        return self.root / f"session-{session_id}.json"
+    def new_session_id(self) -> int:
+        return self.db.next_tuner_session_id()
 
     def save(self, st: Stored, boot: str) -> None:
-        _write_atomic(self._session(st.session_id), {"boot": boot, "stored": stored_to_json(st)})
+        self.db.save_machine_session(
+            st.session_id,
+            status=st.status,
+            config_json=json.dumps(config_to_json(st.config)),
+            machine_json=json.dumps(stored_to_json(st)),
+            boot_id=boot,
+            bios_version=self.identity.bios_version,
+            cpu_model=self.identity.cpu_model,
+            context_id=self.identity.context_id,
+        )
 
     def load(self, session_id: int) -> tuple[Stored, str] | None:
-        path = self._session(session_id)
-        if not path.exists():
+        row = self.db.load_machine_session(session_id)
+        if row is None:
             return None
-        raw = json.loads(path.read_text())
-        return stored_from_json(raw["stored"]), raw["boot"]
+        raw, boot = row
+        return replace(stored_from_json(json.loads(raw)), session_id=session_id), boot
+
+    def test_started(self, session_id: int, token: int, spec: TestSpec, boot: str) -> int:
+        return self.db.insert_tuner_test(
+            session_id,
+            boot,
+            token,
+            spec.stage.value,
+            None if spec.load is None else spec.load.value,
+            spec.klass.value,
+            spec.core,
+            spec.value,
+            json.dumps(spec.vector),
+            json.dumps(spec.cpus),
+            spec.seconds,
+        )
+
+    def test_ended(self, row: int, report: Report) -> None:
+        evidence = {"records": [asdict(e) for e in report.evidence], "unblamed_corrected": report.unblamed_corrected}
+        self.db.end_tuner_test(
+            row,
+            report.group.value,
+            report.seconds,
+            json.dumps(report.named),
+            None if report.context is None else json.dumps(asdict(report.context)),
+            json.dumps(evidence),
+            report.detail,
+        )
+
+    def test_broken(self, row: int, detail: str) -> None:
+        evidence = {"records": [], "unblamed_corrected": False}
+        self.db.end_tuner_test(row, "internal_error", 0.0, "[]", None, json.dumps(evidence), detail)
+
+    def event(self, session_id: int, kind: str, text: str, boot: str) -> None:
+        self.db.insert_tuner_event(session_id, text, boot, kind)
+
+    def journal_intent(self, session_id: int, core: int, value: int, boot: str, mono_ns: int) -> int:
+        return self.db.journal_co_intent(session_id, core, value, value == 0, boot_id=boot, mono_ns=mono_ns)
+
+    def journal_confirm(self, row: int) -> None:
+        self.db.journal_confirm(row)
 
     def write_marker(self, boot: str) -> None:
         _write_atomic(self.root / "stock-marker.json", {"boot": boot})
@@ -234,6 +295,7 @@ class LiveRig:
     signals: list = field(default_factory=list)
     asleep_at_last_check: float = 0.0
     stored_boot: str | None = None
+    test_row: tuple[int, int] | None = None
 
     def world(self) -> World:
         asleep = self.hardware.asleep_seconds()
@@ -285,17 +347,39 @@ class LiveRig:
     def _apply(self, acting: SessionState, effect) -> object | None:
         match effect:
             case WriteCO(core=core, value=value):
+                try:
+                    row = self._journal(acting, core, value)
+                except sqlite3.Error as exc:
+                    return DatabaseFailed(f"the CO journal could not be written: {exc}")
                 problem = self.hardware.write_co(core, value)
                 if problem is not None:
                     self.resident[core] = None
                     return SmuRefused(core, value, problem)
                 self.resident[core] = value
-            case RevertAll(values=values):
+                try:
+                    self.store.journal_confirm(row)
+                except sqlite3.Error as exc:
+                    return DatabaseFailed(f"the CO journal could not be confirmed: {exc}")
+            case RevertAll(values=values, journal=journal):
+                failed: sqlite3.Error | None = None
                 for core, value in values:
+                    row = None
+                    if journal and failed is None:
+                        try:
+                            row = self._journal(acting, core, value)
+                        except sqlite3.Error as exc:
+                            failed = exc
                     problem = self.hardware.write_co(core, value)
                     self.resident[core] = None if problem else value
                     if problem is not None:
                         self.say(f"revert of core {core} to {value} failed: {problem}")
+                    elif row is not None:
+                        try:
+                            self.store.journal_confirm(row)
+                        except sqlite3.Error as exc:
+                            failed = exc
+                if failed is not None:
+                    return DatabaseFailed(f"the CO journal failed during a revert: {failed}")
             case StopWorker(token=token):
                 if self.worker is not None and self.worker.token == token:
                     self.worker.stop.set()
@@ -307,10 +391,15 @@ class LiveRig:
             case Commit(stored=st):
                 try:
                     self.store.save(st, self.hardware.boot_id())
-                except OSError as exc:
-                    return DatabaseFailed(f"the session file could not be written: {exc}")
+                except sqlite3.Error as exc:
+                    return DatabaseFailed(f"the session could not be written: {exc}")
                 self.stored_boot = self.hardware.boot_id()
             case StartWorker(token=token, spec=spec):
+                try:
+                    row = self.store.test_started(acting.session_id, token, spec, self.hardware.boot_id())
+                except sqlite3.Error as exc:
+                    return DatabaseFailed(f"the test row could not be written: {exc}")
+                self.test_row = (token, row)
                 self._start(token, spec)
             case Schedule(token=token, seconds=seconds):
                 self.timer = (token, self.clock() + seconds)
@@ -326,17 +415,38 @@ class LiveRig:
                 self.store.clear_marker()
             case Announce(kind=kind, text=text):
                 self.say(f"{kind}: {text}")
+                try:
+                    self.store.event(acting.session_id, kind, text, self.hardware.boot_id())
+                except sqlite3.Error as exc:
+                    return DatabaseFailed(f"the event could not be written: {exc}")
             case CloseDb():
                 pass
         return None
 
-    def _crash_evidence(self, acting: SessionState) -> CrashEvidenceRead:
+    def _journal(self, acting: SessionState, core: int, value: int) -> int:
+        return self.store.journal_intent(acting.session_id, core, value, self.hardware.boot_id(), time.monotonic_ns())
+
+    def _end_test(self, token: int, write: Callable[[int], None]) -> DatabaseFailed | None:
+        if self.test_row is None or self.test_row[0] != token:
+            return None
+        row = self.test_row[1]
+        self.test_row = None
+        try:
+            write(row)
+        except sqlite3.Error as exc:
+            return DatabaseFailed(f"the test result could not be written: {exc}")
+        return None
+
+    def _crash_evidence(self, acting: SessionState) -> CrashEvidenceRead | DatabaseFailed:
         now = self.hardware.boot_id()
         last = self.stored_boot or now
         same = last == now
         dirty = not same and not self.hardware.boot_ended_clean(last)
         marker = self.store.marker_boot()
-        loaded = self.store.load(acting.session_id)
+        try:
+            loaded = self.store.load(acting.session_id)
+        except sqlite3.Error as exc:
+            return DatabaseFailed(f"the session could not be read back: {exc}")
         return CrashEvidenceRead(
             dirty_end=dirty,
             same_boot=same,
@@ -380,12 +490,17 @@ class LiveRig:
                 self.post(ContinuationDue(token))
                 return True
             return False
-        if isinstance(event, WorkerReported) and self.worker is not None and self.worker.token == event.token:
-            self.worker = None
-            report = event.report
-            detail = f" {report.detail}" if report.detail else ""
-            self.say(f"verdict {event.token}: {report.group.value} after {report.seconds:.0f} s{detail}")
-        self.post(event)
+        failed = None
+        if isinstance(event, WorkerReported):
+            if self.worker is not None and self.worker.token == event.token:
+                self.worker = None
+                report = event.report
+                detail = f" {report.detail}" if report.detail else ""
+                self.say(f"verdict {event.token}: {report.group.value} after {report.seconds:.0f} s{detail}")
+            failed = self._end_test(event.token, lambda row: self.store.test_ended(row, event.report))
+        elif isinstance(event, InternalError) and self.test_row is not None:
+            failed = self._end_test(self.test_row[0], lambda row: self.store.test_broken(row, event.error))
+        self.post(event if failed is None else failed)
         return True
 
     def at_rest(self) -> bool:
@@ -406,4 +521,4 @@ class LiveRig:
         return self.state
 
 
-__all__ = ["Abort", "Close", "Hardware", "LiveRig", "PauseRequest", "Runner", "Store"]
+__all__ = ["Abort", "Close", "Hardware", "Identity", "LiveRig", "PauseRequest", "Runner", "Store"]

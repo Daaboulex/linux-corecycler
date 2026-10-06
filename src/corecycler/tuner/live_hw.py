@@ -17,8 +17,9 @@ from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.containment import lane_cgroup_parent
 from corecycler.engine.execution import STDOUT_LOG, Lane, Supervisor, ThermalWatch, read_cpu_temperature
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
+from corecycler.history.db import HistoryDB
 from corecycler.tuner import stages, telemetry
-from corecycler.tuner.live import LiveRig, Store
+from corecycler.tuner.live import Identity, LiveRig, Store
 from corecycler.tuner.machine.types import (
     Abort,
     Close,
@@ -353,7 +354,8 @@ class StressRunner:
 def parse(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m corecycler.tuner.live_hw")
     parser.add_argument("--state-dir", type=Path, required=True)
-    parser.add_argument("--session", type=int, required=True)
+    parser.add_argument("--db", type=Path)
+    parser.add_argument("--session", type=int)
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--start", action="store_true")
     action.add_argument("--resume", action="store_true")
@@ -365,17 +367,35 @@ def parse(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--wait-between-cores", type=float, default=15.0)
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--acknowledge", action="store_true")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.resume and args.session is None:
+        parser.error("--resume needs --session")
+    return args
 
 
-def build_rig(args: argparse.Namespace, topology, smu, backend_factory, say: Callable[[str], None]) -> LiveRig:
+def read_identity(db: HistoryDB, smu, topology) -> Identity:
+    from corecycler.history import context
+
+    record = context.capture_system_context(smu, len(topology.cores))
+    return Identity(record.bios_version, topology.model_name, context.find_or_create_context(db, record))
+
+
+def build_rig(
+    args: argparse.Namespace,
+    topology,
+    smu,
+    backend_factory,
+    say: Callable[[str], None],
+    db: HistoryDB,
+    identity: Identity,
+) -> LiveRig:
     cpus_of = tuple(sorted((core, tuple(info.logical_cpus)) for core, info in topology.cores.items()))
     domain_of = tuple(sorted((core, info.ccd) for core, info in topology.cores.items()))
     core_of_cpu = {cpu: core for core, cpus in cpus_of for cpu in cpus}
     return LiveRig(
         hardware=SmuHardware(smu, args.write, say),
         runner=StressRunner(backend_factory, args.state_dir / "runs", core_of_cpu),
-        store=Store(args.state_dir),
+        store=Store(db, args.state_dir, identity),
         cpus_of=cpus_of,
         domain_of=domain_of,
         say=say,
@@ -402,7 +422,9 @@ def run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> i
             k_2t=args.k2,
             wait_between_cores_s=args.wait_between_cores,
         )
-        rig.start(config, args.session, args.seed, args.acknowledge)
+        session = rig.store.new_session_id()
+        say(f"session {session}")
+        rig.start(config, session, args.seed, args.acknowledge)
     else:
         rig.resume(args.session)
     final = rig.run_until_rest()
@@ -424,13 +446,18 @@ def main(argv: list[str] | None = None) -> int:
         print("live: the SMU or its core map is unavailable", file=sys.stderr)
         return 2
     load_all()
+    db = HistoryDB() if args.db is None else HistoryDB(args.db)
 
     def say(line: str) -> None:
         print(f"{time.strftime('%H:%M:%S')} {line}", flush=True)
 
-    rig = build_rig(args, topology, smu, lambda: get_backend("y-cruncher"), say)
-    install_signals(rig)
-    return run(args, rig, say)
+    try:
+        identity = read_identity(db, smu, topology)
+        rig = build_rig(args, topology, smu, lambda: get_backend("y-cruncher"), say, db, identity)
+        install_signals(rig)
+        return run(args, rig, say)
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import signal
+import sqlite3
 import threading
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
@@ -11,8 +12,9 @@ import pytest
 
 from corecycler.engine import detector as kernel
 from corecycler.engine.backends.base import Outcome, StressResult
+from corecycler.history.db import HistoryDB
 from corecycler.tuner import live, live_hw
-from corecycler.tuner.live import LiveRig, Store, stored_from_json, stored_to_json
+from corecycler.tuner.live import Identity, LiveRig, Store, stored_from_json, stored_to_json
 from corecycler.tuner.machine.types import (
     Close,
     Group,
@@ -37,6 +39,7 @@ if TYPE_CHECKING:
 CPUS = ((0, (0, 16)), (1, (1, 17)), (8, (8, 24)))
 DOMAINS = ((0, 0), (1, 0), (8, 1))
 EDGES = {0: -6, 1: -2, 8: -4}
+IDENTITY = Identity("bios-1", "cpu-1", None)
 
 
 def config(**changes) -> MachineConfig:
@@ -97,12 +100,28 @@ class FakeRunner:
         return Report(Group.SILICON if failed else Group.PASS, 1.0)
 
 
-def rig(tmp_path: Path, hardware: FakeHardware | None = None, runner=None) -> LiveRig:
+OPENED: list[HistoryDB] = []
+
+
+def database(path) -> HistoryDB:
+    db = HistoryDB(path)
+    OPENED.append(db)
+    return db
+
+
+@pytest.fixture(autouse=True)
+def close_databases():
+    yield
+    while OPENED:
+        OPENED.pop().close()
+
+
+def rig(tmp_path: Path, hardware: FakeHardware | None = None, runner=None, db: HistoryDB | None = None) -> LiveRig:
     hardware = hardware or FakeHardware()
     return LiveRig(
         hardware=hardware,
         runner=runner or FakeRunner(hardware),
-        store=Store(tmp_path / "state"),
+        store=Store(db or database(":memory:"), tmp_path / "state", IDENTITY),
         cpus_of=CPUS,
         domain_of=DOMAINS,
         say=lambda line: None,
@@ -148,13 +167,21 @@ def test_every_stored_state_of_a_run_survives_the_session_file_round_trip():
         assert stored_from_json(json.loads(json.dumps(stored_to_json(st)))) == st
 
 
-def test_the_store_saves_atomically_and_keeps_the_stock_marker_apart(tmp_path):
-    store = Store(tmp_path / "s")
+def rows(r: LiveRig, sql: str, params: tuple = ()) -> list:
+    return [dict(row) for row in r.store.db._execute_raw(sql, params).fetchall()]
+
+
+def test_the_store_keeps_the_session_in_the_database_and_the_stock_marker_apart(tmp_path):
+    store = Store(database(tmp_path / "history.db"), tmp_path / "s", IDENTITY)
     st = snapshots()[-1]
     assert store.load(st.session_id) is None
     store.save(st, "boot-a")
     assert store.load(st.session_id) == (st, "boot-a")
-    assert not list((tmp_path / "s").glob("*.tmp"))
+    reopened = Store(database(tmp_path / "history.db"), tmp_path / "s", IDENTITY)
+    assert reopened.load(st.session_id) == (st, "boot-a")
+    session = reopened.db.get_tuner_session(st.session_id)
+    assert session is None
+    assert reopened.new_session_id() == st.session_id + 1
     assert store.marker_boot() is None
     store.write_marker("boot-a")
     assert store.marker_boot() == "boot-a"
@@ -182,7 +209,7 @@ def test_a_close_mid_run_then_a_resume_in_the_same_boot_continues_without_a_pena
     r.step(0.01)
     assert r.state.lifecycle is Lifecycle.IDLE
     assert r.hardware.co == {0: 0, 1: 0, 8: 0}
-    again = rig(tmp_path, r.hardware)
+    again = rig(tmp_path, r.hardware, db=r.store.db)
     again.resume(1)
     final = again.run_until_rest(0.01)
     assert final.lifecycle is Lifecycle.COMPLETED
@@ -199,7 +226,7 @@ def test_a_reboot_during_a_test_convicts_the_tested_core_on_resume(tmp_path):
     in_test = next(c for c in r.state.cores if c.in_test)
     hardware.boot = "boot-b"
     hardware.co = {0: 0, 1: 0, 8: 0}
-    again = rig(tmp_path, hardware)
+    again = rig(tmp_path, hardware, db=r.store.db)
     again.resume(1)
     assert tested is not None
     assert again.state.core(in_test.core).crash_count == 1
@@ -215,18 +242,225 @@ def test_a_refused_write_pauses_with_the_reason(tmp_path):
     assert final.pause.reason is PauseReason.SMU_WRITE
 
 
-def test_a_session_file_that_cannot_be_written_puts_the_cores_at_stock(tmp_path, monkeypatch):
+def broken(*_):
+    raise sqlite3.OperationalError("disk I/O error")
+
+
+def test_a_database_that_cannot_be_written_puts_the_cores_at_stock(tmp_path, monkeypatch):
     r = rig(tmp_path)
     r.start(config(), 1, 7, True)
-
-    def full(*_):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(r.store, "save", full)
+    monkeypatch.setattr(r.store, "save", broken)
     final = r.run_until_rest(0.01)
     assert final.pause.reason is PauseReason.DATABASE
     assert r.store.marker_boot() == "boot-a"
     assert r.hardware.co == {0: 0, 1: 0, 8: 0}
+
+
+def test_a_merged_session_resumes_under_its_new_id(tmp_path):
+    first = rig(tmp_path / "a", db=database(tmp_path / "a" / "history.db"))
+    first.start(config(), 1, 7, True)
+    first.signals.append(PauseRequest())
+    first.run_until_rest(0.01)
+    target = database(tmp_path / "b.db")
+    own = target.create_tuner_session("{}", "bios-1", "cpu-1", boot_id="boot-a")
+    target.merge_from(tmp_path / "a" / "history.db")
+    store = Store(target, tmp_path / "b", IDENTITY)
+    loaded, _boot = store.load(own + 1)
+    assert loaded.session_id == own + 1
+    assert loaded.cores == first.state.cores
+
+
+def test_a_deleted_session_s_id_is_never_handed_out_again(tmp_path):
+    r = rig(tmp_path)
+    r.start(config(), r.store.new_session_id(), 7, True)
+    r.signals.append(PauseRequest())
+    r.run_until_rest(0.01)
+    r.store.db.delete_tuner_session(1)
+    assert r.store.new_session_id() == 2
+
+
+def test_a_database_that_fails_every_write_still_comes_to_rest_at_stock(tmp_path, monkeypatch):
+    r = rig(tmp_path)
+    events = []
+
+    def event(*_):
+        events.append(1)
+        if len(events) > 20:
+            raise RuntimeError("the rig kept writing events to a broken database")
+        raise sqlite3.OperationalError("disk I/O error")
+
+    r.start(config(), 1, 7, True)
+    for name in ("save", "journal_intent", "test_started"):
+        monkeypatch.setattr(r.store, name, broken)
+    monkeypatch.setattr(r.store, "event", event)
+    final = r.run_until_rest(0.01)
+    assert final.pause.reason is PauseReason.DATABASE
+    assert r.hardware.co == {0: 0, 1: 0, 8: 0}
+
+
+def test_every_test_leaves_one_row_that_its_verdict_completes(tmp_path):
+    r = rig(tmp_path)
+    r.start(config(), 1, 7, True)
+    r.run_until_rest(0.01)
+    tests = rows(r, "SELECT * FROM tuner_tests WHERE session_id=1 ORDER BY id")
+    assert [(t["core"], t["value"], t["klass"], t["stage"]) for t in tests] == [
+        (s.core, s.value, s.klass.value, s.stage.value) for s in r.runner.seen
+    ]
+    assert all(t["ended_at"] is not None and t["seconds_run"] == 1.0 for t in tests)
+    assert {t["verdict"] for t in tests} == {"pass", "silicon"}
+    assert [(json.loads(t["cpus_json"]), json.loads(t["vector_json"])) for t in tests] == [
+        (list(s.cpus), [list(pair) for pair in s.vector]) for s in r.runner.seen
+    ]
+
+
+def test_a_reboot_during_a_test_leaves_that_test_s_row_open(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    in_test = next(c for c in r.state.cores if c.in_test)
+    open_rows = rows(r, "SELECT core, value FROM tuner_tests WHERE ended_at IS NULL")
+    assert open_rows == [{"core": in_test.core, "value": in_test.value}]
+
+
+def test_every_co_write_is_journaled_before_it_lands_and_confirmed_once_it_does(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    write = hardware.write_co
+    pending = []
+
+    def journaled_write(core, value):
+        last = rows(r, "SELECT core_id, value, confirmed FROM tuner_co_journal ORDER BY id DESC LIMIT 1")
+        pending.append(last == [{"core_id": core, "value": value, "confirmed": 0}])
+        return write(core, value)
+
+    hardware.write_co = journaled_write
+    r.start(config(), 1, 7, True)
+    r.run_until_rest(0.01)
+    assert pending and all(pending)
+    journal = rows(r, "SELECT confirmed, boot_id FROM tuner_co_journal")
+    assert len(journal) == len(pending)
+    assert all(j == {"confirmed": 1, "boot_id": "boot-a"} for j in journal)
+
+
+def test_a_refused_write_leaves_its_journal_row_unconfirmed(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    hardware.refuse = 1
+    assert r.run_until_rest(0.01).pause.reason is PauseReason.SMU_WRITE
+    assert rows(r, "SELECT count(*) AS n FROM tuner_co_journal WHERE confirmed=0") == [{"n": 1}]
+
+
+def test_a_journal_that_cannot_be_written_stops_the_write_and_pauses_as_database(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    writes = []
+    write = hardware.write_co
+    hardware.write_co = lambda core, value: writes.append((core, value)) or write(core, value)
+    monkeypatch.setattr(r.store, "journal_intent", broken)
+    r.start(config(), 1, 7, True)
+    final = r.run_until_rest(0.01)
+    assert final.pause.reason is PauseReason.DATABASE
+    assert sorted(writes) == [(0, 0), (1, 0), (8, 0)]
+    assert r.runner.seen == []
+
+
+def test_a_test_row_that_cannot_be_written_starts_no_worker(tmp_path, monkeypatch):
+    r = rig(tmp_path)
+    monkeypatch.setattr(r.store, "test_started", broken)
+    r.start(config(), 1, 7, True)
+    assert r.run_until_rest(0.01).pause.reason is PauseReason.DATABASE
+    assert r.runner.seen == []
+
+
+def test_a_write_whose_journal_cannot_be_confirmed_pauses_as_database(tmp_path, monkeypatch):
+    r = rig(tmp_path)
+    monkeypatch.setattr(r.store, "journal_confirm", broken)
+    r.start(config(), 1, 7, True)
+    assert r.run_until_rest(0.01).pause.reason is PauseReason.DATABASE
+    assert r.hardware.co == {0: 0, 1: 0, 8: 0}
+
+
+def pause_mid_test(r: LiveRig) -> None:
+    r.start(config(), 1, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    r.signals.append(PauseRequest())
+
+
+@pytest.mark.parametrize("failing", ["journal_intent", "journal_confirm"])
+def test_a_revert_whose_journal_fails_still_reverts_and_pauses_as_database(tmp_path, monkeypatch, failing):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    pause_mid_test(r)
+    r.step(0.01)
+    monkeypatch.setattr(r.store, failing, broken)
+    final = r.run_until_rest(0.01)
+    assert final.pause.reason is PauseReason.DATABASE
+    assert hardware.co == {0: 0, 1: 0, 8: 0}
+
+
+def test_a_test_result_that_cannot_be_written_pauses_as_database(tmp_path, monkeypatch):
+    r = rig(tmp_path)
+    monkeypatch.setattr(r.store, "test_ended", broken)
+    r.start(config(), 1, 7, True)
+    assert r.run_until_rest(0.01).pause.reason is PauseReason.DATABASE
+    assert len(r.runner.seen) == 1
+
+
+def test_a_late_report_for_an_old_test_changes_no_row(tmp_path):
+    r = rig(tmp_path)
+    r.start(config(), 1, 7, True)
+    r.run_until_rest(0.01)
+    before = rows(r, "SELECT * FROM tuner_tests ORDER BY id")
+    r.inbox.put(live.WorkerReported(999, Report(Group.SILICON, 5.0)))
+    assert r.step(0.01) is True
+    assert rows(r, "SELECT * FROM tuner_tests ORDER BY id") == before
+
+
+def test_a_session_that_cannot_be_read_back_at_resume_pauses_as_database(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    pause_mid_test(r)
+    r.run_until_rest(0.01)
+    again = rig(tmp_path, hardware, db=r.store.db)
+    load = again.store.load
+    reads = []
+
+    def second_read_fails(session_id):
+        reads.append(session_id)
+        if len(reads) > 1:
+            raise sqlite3.OperationalError("disk I/O error")
+        return load(session_id)
+
+    monkeypatch.setattr(again.store, "load", second_read_fails)
+    again.resume(1)
+    assert again.state.pause.reason is PauseReason.DATABASE
+    assert reads == [1, 1]
+
+
+def test_every_announcement_is_kept_as_a_session_event(tmp_path):
+    said = []
+    r = rig(tmp_path)
+    r.say = said.append
+    r.start(config(), 1, 7, True)
+    r.run_until_rest(0.01)
+    events = rows(r, "SELECT severity, message, boot_id FROM tuner_events WHERE session_id=1 ORDER BY id")
+    announced = [line for line in said if line.split(":")[0] in {"started", "completed"}]
+    assert [
+        f"{e['severity']}: {e['message']}" for e in events if e["severity"] in {"started", "completed"}
+    ] == announced
+    assert announced and all(e["boot_id"] == "boot-a" for e in events)
+
+
+def test_a_start_that_is_refused_writes_no_session(tmp_path):
+    hardware = FakeHardware(co={0: -5, 1: 0, 8: 0})
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, False)
+    assert r.state.lifecycle is Lifecycle.IDLE
+    assert rows(r, "SELECT count(*) AS n FROM tuner_sessions") == [{"n": 0}]
 
 
 def test_a_runner_that_raises_pauses_as_internal(tmp_path):
@@ -234,6 +468,8 @@ def test_a_runner_that_raises_pauses_as_internal(tmp_path):
     r = rig(tmp_path, hardware, FakeRunner(hardware, raise_once=True))
     r.start(config(), 1, 7, True)
     assert r.run_until_rest(0.01).pause.reason is PauseReason.INTERNAL
+    tests = rows(r, "SELECT verdict, detail FROM tuner_tests")
+    assert tests == [{"verdict": "internal_error", "detail": "the test runner raised RuntimeError('runner broke')"}]
 
 
 def test_a_pause_signal_finishes_the_test_and_a_refusal_is_said(tmp_path):
@@ -408,7 +644,7 @@ def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, 
 
 def topology():
     cores = {core: SimpleNamespace(logical_cpus=cpus, ccd=dict(DOMAINS)[core]) for core, cpus in CPUS}
-    return SimpleNamespace(cores=cores)
+    return SimpleNamespace(cores=cores, model_name="cpu-1")
 
 
 def test_the_command_line_starts_or_resumes_and_reports_where_it_came_to_rest(tmp_path):
@@ -417,8 +653,6 @@ def test_the_command_line_starts_or_resumes_and_reports_where_it_came_to_rest(tm
         [
             "--state-dir",
             str(tmp_path / "s"),
-            "--session",
-            "4",
             "--start",
             "--cores",
             "0,1,8",
@@ -434,17 +668,40 @@ def test_the_command_line_starts_or_resumes_and_reports_where_it_came_to_rest(tm
             "0",
         ]
     )
-    built = live_hw.build_rig(args, topology(), FakeSmu(), lambda: None, lines.append)
+    db = database(tmp_path / "built.db")
+    built = live_hw.build_rig(args, topology(), FakeSmu(), lambda: None, lines.append, db, IDENTITY)
     assert built.hardware.write is True and built.cpus_of == CPUS and built.domain_of == DOMAINS
+    assert built.store.db is db
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
     r.say = lines.append
     r.runner = FakeRunner(hardware)
     args.state_dir = tmp_path / "state"
     assert live_hw.run(args, r, lines.append) == 0
+    assert "session 1" in lines
     assert any(line.startswith("rest: paused") or line.startswith("rest: completed") for line in lines)
-    resumed = live_hw.parse(["--state-dir", str(tmp_path / "state"), "--session", "4", "--resume"])
-    assert live_hw.run(resumed, rig(tmp_path, hardware), lines.append) == 0
+    resumed = live_hw.parse(["--state-dir", str(tmp_path / "state"), "--session", "1", "--resume"])
+    assert live_hw.run(resumed, rig(tmp_path, hardware, db=r.store.db), lines.append) == 0
+    assert "refused: session 1 is not stored" not in lines
+
+
+def test_the_identity_names_the_run_context_it_recorded(tmp_path, monkeypatch):
+    from corecycler.history import context
+    from corecycler.history.db import TuningContextRecord
+
+    db = database(tmp_path / "h.db")
+    monkeypatch.setattr(
+        context, "capture_system_context", lambda smu, n: TuningContextRecord(bios_version="2401", co_hash="h")
+    )
+    identity = live_hw.read_identity(db, FakeSmu(), topology())
+    assert (identity.bios_version, identity.cpu_model) == ("2401", "cpu-1")
+    assert db.get_context(identity.context_id).bios_version == "2401"
+
+
+def test_a_resume_names_its_session(capsys):
+    with pytest.raises(SystemExit):
+        live_hw.parse(["--state-dir", "s", "--resume"])
+    assert "--resume needs --session" in capsys.readouterr().err
 
 
 def test_signals_queue_the_owner_s_controls(tmp_path, monkeypatch):
@@ -464,7 +721,8 @@ def test_main_refuses_without_an_smu_and_runs_with_one(tmp_path, monkeypatch, ca
 
     monkeypatch.setattr(corecycler.engine.topology, "detect_topology", topology)
     monkeypatch.setattr(corecycler.cli, "_build_smu", lambda topo: None)
-    argv = ["--state-dir", str(tmp_path / "s"), "--session", "1", "--resume"]
+    monkeypatch.setattr(live_hw, "read_identity", lambda db, smu, topo: IDENTITY)
+    argv = ["--state-dir", str(tmp_path / "s"), "--db", str(tmp_path / "h.db"), "--session", "1", "--resume"]
     assert live_hw.main(argv) == 2
     assert "unavailable" in capsys.readouterr().err
     monkeypatch.setattr(corecycler.cli, "_build_smu", lambda topo: FakeSmu())
