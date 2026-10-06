@@ -5,6 +5,7 @@ import random
 import signal
 import sys
 import time
+from collections import deque
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,13 +14,12 @@ from corecycler.engine import detector as kernel
 from corecycler.engine.backends import ycruncher
 from corecycler.engine.backends.base import OutcomeKind, StressConfig, StressMode
 from corecycler.engine.execution import STDOUT_LOG, Lane, Supervisor, ThermalWatch, read_cpu_temperature
-from corecycler.tuner import stages
+from corecycler.tuner import stages, telemetry
 from corecycler.tuner.live import LiveRig, Store
 from corecycler.tuner.machine.types import (
     Abort,
     Close,
     Evidence,
-    FailContext,
     Group,
     Klass,
     Load,
@@ -37,6 +37,8 @@ if TYPE_CHECKING:
     from corecycler.tuner.machine.types import TestSpec
 
 CPU = Path("/sys/devices/system/cpu")
+SAMPLE_S = 0.25
+IDLE_SAMPLE_S = 0.5
 ONE_T = {"tests": ("SFTv4", "FFTv4", "N63"), "seconds_per_test": 20, "memory_mb": 13}
 TWO_T = {"tests": ("SFTv4", "N63", "VT3"), "seconds_per_test": 30, "memory_mb": 26, "binary": "19-ZN2 ~ Kagari"}
 GROUPS = {
@@ -132,21 +134,50 @@ def free_mb(meminfo: Path = Path("/proc/meminfo")) -> int:
     raise OSError("/proc/meminfo has no MemAvailable line")
 
 
+def read_clocks(cpu_root: Path = CPU) -> dict[int, float]:
+    return {
+        int(freq.parent.parent.name[3:]): int(freq.read_text()) / 1000
+        for freq in cpu_root.glob("cpu[0-9]*/cpufreq/scaling_cur_freq")
+    }
+
+
 class Hold:
-    def __init__(self, segment: stages.Segment, read: Callable[[], float | None]) -> None:
+    def __init__(
+        self,
+        segment: stages.Segment,
+        read: Callable[[], float | None],
+        clocks: Callable[[], dict[int, float]],
+        core_of_cpu: dict[int, int],
+        every: float,
+    ) -> None:
         self.segment = segment
         self.read = read
+        self.clocks = clocks
+        self.core_of_cpu = core_of_cpu
+        self.every = every
         self.held = False
+        self.ring: deque[telemetry.Sample] = deque(maxlen=telemetry.RING)
+        self.next_sample = 0.0
 
     def __call__(self, elapsed: float) -> bool:
-        if self.segment.hold is not None:
+        sampling = elapsed >= self.next_sample
+        temperature = self.read() if self.segment.hold is not None or sampling else None
+        if self.segment.hold is not None and temperature is not None:
             hot, cool = self.segment.hold
-            temperature = self.read()
-            if temperature is not None and temperature >= hot:
+            if temperature >= hot:
                 self.held = True
-            elif temperature is not None and temperature < cool:
+            elif temperature < cool:
                 self.held = False
-        return self.held or stages.frozen_at(self.segment, elapsed)
+        frozen = self.held or stages.frozen_at(self.segment, elapsed)
+        if sampling:
+            self.next_sample = elapsed + self.every
+            per_core: dict[int, float] = {}
+            for cpu, mhz in self.clocks().items():
+                core = self.core_of_cpu.get(cpu)
+                if core is not None:
+                    per_core[core] = max(per_core.get(core, 0.0), mhz)
+            self.ring.append(telemetry.Sample(not frozen, tuple(sorted(per_core.items())), temperature))
+        return frozen
 
 
 class YCruncherRunner:
@@ -159,6 +190,7 @@ class YCruncherRunner:
         detector=None,
         read_temperature=None,
         available_mb=None,
+        clocks=None,
     ) -> None:
         self.backend_factory = backend_factory
         self.work_dir = work_dir
@@ -167,6 +199,7 @@ class YCruncherRunner:
         self.detector = detector or kernel.ErrorDetector
         self.read_temperature = read_temperature or read_cpu_temperature
         self.available_mb = available_mb or free_mb
+        self.clocks = clocks or read_clocks
         self.runs = 0
 
     def _supervise(
@@ -227,17 +260,12 @@ class YCruncherRunner:
                 memory_mb=segment.memory_mb,
             )
             lane = Lane(core_id=spec.core, cpus=segment.cpus, work_dir=self.work_dir / f"all_{spec.load.value}")
-            hold = Hold(segment, self.read_temperature)
+            every = IDLE_SAMPLE_S if spec.load is Load.IDLE else SAMPLE_S
+            hold = Hold(segment, self.read_temperature, self.clocks, self.core_of_cpu, every)
             result, observed = self._supervise(spec, stop, lane, config, segment.duration, hold, poll=0.05)
             done += result.duration_seconds
             if result.outcome.kind is not OutcomeKind.PASS or observed:
-                paused = hold.held or stages.frozen_at(segment, result.duration_seconds)
-                context = FailContext(
-                    steady=spec.load is Load.HOT and not paused,
-                    working=tuple(sorted({self.core_of_cpu[c] for c in segment.cpus})),
-                    paused=paused,
-                    tctl=self.read_temperature(),
-                )
+                context = telemetry.context(list(hold.ring), spec.load is Load.HOT) if hold.ring else None
                 report = report_from(result, observed, segment.cpus, self.core_of_cpu, context, all_core=True)
                 if result.outcome.kind is not OutcomeKind.PASS or report.evidence:
                     return replace(report, seconds=done, named=named_cores(result, self.core_of_cpu))

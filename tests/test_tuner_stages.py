@@ -11,7 +11,7 @@ from corecycler.engine import detector as kernel
 from corecycler.engine.backends import ycruncher
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.backends.ycruncher import ALL_TESTS
-from corecycler.tuner import live_hw, stages
+from corecycler.tuner import live_hw, stages, telemetry
 from corecycler.tuner.machine.types import Group, Klass, Load, Stage
 from corecycler.tuner.machine.types import TestSpec as Spec
 
@@ -73,7 +73,7 @@ def test_a_plan_is_reproducible_from_its_seed_and_refuses_a_per_core_load():
 
 def test_the_hold_freezes_at_the_hot_mark_and_releases_below_the_cool_one():
     readings = iter([90.0, 96.0, 88.0, None, 84.0])
-    hold = live_hw.Hold(plan(Load.HOT)[0], lambda: next(readings))
+    hold = live_hw.Hold(plan(Load.HOT)[0], lambda: next(readings), dict, CORE_OF_CPU, 0.25)
     assert [hold(0.0) for _ in range(5)] == [False, True, True, True, False]
 
 
@@ -92,9 +92,10 @@ class Script:
     events: list = field(default_factory=list)
     seen: list = field(default_factory=list)
     evidence_dir: Path | None = None
+    sampled: bool = True
 
 
-def runner(script: Script, readings=None, detector=None):
+def runner(script: Script, readings=None, detector=None, clocks=None):
     class FakeSupervisor:
         def __init__(self, **kwargs):
             self.freeze = kwargs["freeze"]
@@ -103,7 +104,8 @@ def runner(script: Script, readings=None, detector=None):
         def run(self, lanes, cfg, duration):
             outcome = script.outcomes.pop(0)
             script.seen.append((lanes[0].cpus, cfg.tests, duration, self.freeze))
-            self.freeze(duration / 2)
+            if script.sampled:
+                self.freeze(duration / 2)
             self.observed.extend(script.events.pop(0) if script.events else [])
             elapsed = duration if outcome is Outcome.PASS else duration / 2
             result = StressResult(lanes[0].core_id, outcome, "d", elapsed, evidence_dir=script.evidence_dir)
@@ -124,6 +126,7 @@ def runner(script: Script, readings=None, detector=None):
         detector=detector or FakeDetector,
         read_temperature=lambda: 70.0 if readings is None else readings(),
         available_mb=lambda: 60_000,
+        clocks=clocks or (lambda: dict.fromkeys(CPUS, 5000.0)),
     )
 
 
@@ -247,3 +250,81 @@ def test_burst_draws_powers_of_two_up_to_the_cpu_count_on_first_cpus_and_all_cpu
             seen.add(len(s.cpus))
             assert s.cpus == cpus or set(s.cpus) <= set(firsts)
     assert seen == {2, 4, 8, 16, 32}
+
+
+def sample(running, mhz, tctl=70.0):
+    return telemetry.Sample(running, tuple(enumerate(mhz)), tctl)
+
+
+def test_working_cores_are_those_near_the_top_clock_in_at_least_half_the_samples():
+    ring = [
+        sample(True, [5000, 4300, 1000, 5000]),
+        sample(True, [5000, 4200, 1000, 600]),
+        sample(True, [5000, 4400, 1000, 600]),
+    ]
+    assert telemetry.working(ring[0]) == (0, 1, 3)
+    assert telemetry.ring_cores(ring) == (0, 1)
+    assert telemetry.ring_cores([*ring[:2], sample(False, [600, 600, 600, 600])]) == (0, 1, 3)
+    assert telemetry.working(telemetry.Sample(True, (), None)) == ()
+    assert telemetry.working(sample(True, [5000, 4250, 4249, 3000])) == (0, 1)
+    assert telemetry.ring_cores([sample(True, [5000, 1000]), sample(True, [1000, 5000])]) == (0, 1)
+
+
+def test_a_failure_while_running_reads_the_last_three_running_samples_and_a_frozen_one_reads_the_ring():
+    old = [sample(True, [5000, 5000, 1000, 1000]) for _ in range(5)]
+    late = [sample(True, [1000, 1000, 5000, 5000]) for _ in range(3)]
+    assert telemetry.context(old + late, True).working == (2, 3)
+    frozen = telemetry.context([*old, *late[:2], sample(False, [600, 600, 600, 600])], True)
+    assert frozen.working == (0, 1) and frozen.paused is True and frozen.steady is False
+
+
+def test_the_band_clock_and_tctl_come_from_the_hottest_running_sample():
+    ring = [
+        sample(True, [5000, 4000, 2000, 1000], 80.0),
+        sample(True, [5600, 5400, 4000, 600], 90.0),
+        sample(False, [600] * 4, 99.0),
+    ]
+    ctx = telemetry.context(ring, False)
+    assert (ctx.mhz, ctx.tctl, ctx.steady) == (5000.0, 90.0, False)
+    assert telemetry.band_clock(telemetry.Sample(True, (), None)) is None
+    with pytest.raises(ValueError):
+        telemetry.context([], True)
+
+
+def test_the_hold_samples_each_core_at_its_fastest_cpu_on_its_own_cadence():
+    clocks = {4: 5000.0, 0: 4000.0, 1: 3000.0, 99: 9000.0}
+    hold = live_hw.Hold(plan(Load.WARM)[0], lambda: 60.0, lambda: clocks, CORE_OF_CPU, 0.25)
+    for elapsed in (0.0, 0.1, 0.3, 0.5, 0.56):
+        hold(elapsed)
+    assert len(hold.ring) == 3
+    assert hold.ring[0] == telemetry.Sample(True, ((0, 5000.0), (1, 3000.0)), 60.0)
+    for elapsed in range(1, 20):
+        hold(float(elapsed))
+    assert len(hold.ring) == telemetry.RING
+
+
+def test_clocks_are_read_from_sysfs_in_mhz(tmp_path):
+    for cpu, khz in ((0, "5100000"), (17, "624000")):
+        freq = tmp_path / f"cpu{cpu}" / "cpufreq"
+        freq.mkdir(parents=True)
+        (freq / "scaling_cur_freq").write_text(khz + "\n")
+    (tmp_path / "cpufreq").mkdir()
+    assert live_hw.read_clocks(tmp_path) == {0: 5100.0, 17: 624.0}
+
+
+def test_the_failure_context_names_the_cores_running_near_the_top_clock():
+    clocks = {0: 5000.0, 1: 5000.0, 2: 1000.0, 3: 1000.0}
+    report = runner(Script([Outcome.COMPUTATION]), clocks=lambda: clocks).run(spec(Load.HOT, 510.0), threading.Event())
+    assert report.context.working == (0, 1) and report.context.mhz == 5000.0
+
+
+def test_a_failure_before_any_sample_has_no_context():
+    report = runner(Script([Outcome.COMPUTATION], sampled=False)).run(spec(Load.HOT, 510.0), threading.Event())
+    assert report.group is Group.SILICON and report.context is None
+
+
+@pytest.mark.parametrize(("load", "every"), [(Load.HOT, 0.25), (Load.IDLE, 0.5)])
+def test_idle_samples_every_half_second_and_the_other_loads_every_quarter(load, every):
+    script = Script([Outcome.PASS] * 8)
+    runner(script).run(spec(load, 30.0), threading.Event())
+    assert {hold.every for _, _, _, hold in script.seen} == {every}
