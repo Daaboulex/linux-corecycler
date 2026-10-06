@@ -13,7 +13,7 @@ HWMON_BASE = Path("/sys/class/hwmon")
 # Nuvoton NCT66xx: common on modern MSI boards (B550, B650, X570, X670)
 # Nuvoton NCT67xx: common on ASUS, MSI, ASRock boards
 # ITE IT868x/IT866x/IT871x: common on Gigabyte boards
-_SUPERIO_CHIPS = (
+SUPERIO_CHIPS = (
     "nct6687",
     "nct6686",
     "nct6683",
@@ -79,7 +79,7 @@ class HWMonReader:
                     self._hwmon_path = hwmon_dir
                 elif name in self._FALLBACK and fallback is None:
                     fallback = hwmon_dir
-                elif any(name.startswith(c) for c in _SUPERIO_CHIPS):
+                elif any(name.startswith(c) for c in SUPERIO_CHIPS):
                     # Super I/O chip — use as voltage fallback (in0 = Vcore on most boards)
                     self._superio_path = hwmon_dir
 

@@ -808,6 +808,7 @@ class TestMergeFrom:
         )
         row = src.insert_tuner_test(sid, boot, 3, "search", None, "1t", 8, -5, "[[8, -5]]", "[8]", 60.0)
         src.end_tuner_test(row, "silicon", 12.5, "[8]", None, "[]", "error on core 8")
+        src.insert_tuner_sample(row, 7, True, 61.5, "[[8, 5000.0]]", "[]", "[]")
         src.close()
         dst = HistoryDB(tmp_path / "dst.db")
         own = dst.create_tuner_session("{}", "2401", "9950X3D", boot_id=boot)
@@ -819,11 +820,15 @@ class TestMergeFrom:
             dict(r) for r in dst._execute_raw("SELECT * FROM tuner_tests WHERE session_id=?", (merged,)).fetchall()
         ]
         loaded = dst.load_machine_session(merged)
+        samples = [
+            (s["test_id"], s["mono_ns"], s["tctl"]) for s in dst._execute_raw("SELECT * FROM tuner_samples").fetchall()
+        ]
         dst.close()
         assert loaded == ('{"m": 1}', boot, None)
         assert [(t["token"], t["core"], t["value"], t["verdict"], t["seconds_run"]) for t in tests] == [
             (3, 8, -5, "silicon", 12.5)
         ]
+        assert samples == [(tests[0]["id"], 7, 61.5)]
 
     def test_merge_migrates_old_schema_source_first(self, tmp_path):
         import sqlite3

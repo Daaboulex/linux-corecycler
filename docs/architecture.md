@@ -57,7 +57,8 @@ src/corecycler/
     stages.py          y-cruncher load segments for machine/ (hot, warm, burst, idle)
     telemetry.py       Failure context for machine/ from a ring of clock samples
     live.py            LiveRig: drives machine/ with a worker thread, keeping the session, the CO
-                       journal, one row per test and the events in the history database
+                       journal, one row per test, its telemetry samples and the events in the
+                       history database
     live_hw.py         Real-hardware rig for live.py: python -m corecycler.tuner.live_hw
                        (CO writes only with --write)
   gui/               Qt tabs (config, results, monitor, smu, tuner, memory, history), core grid,

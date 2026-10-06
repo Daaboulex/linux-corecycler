@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol
 
 from corecycler.engine import detector as kernel
+from corecycler.tuner import telemetry
 from corecycler.tuner.machine.session import transition
 from corecycler.tuner.machine.types import (
     Abort,
@@ -27,12 +28,14 @@ from corecycler.tuner.machine.types import (
     CrashEvidenceRead,
     DatabaseFailed,
     Evidence,
+    FailContext,
     Flow,
     ForgetResident,
     InternalError,
     Klass,
     Lifecycle,
     Live1,
+    Load,
     MachineConfig,
     Mode,
     PauseReason,
@@ -78,7 +81,7 @@ class Hardware(Protocol):
 
 
 class Runner(Protocol):
-    def run(self, spec: TestSpec, stop: threading.Event) -> Report: ...
+    def run(self, spec: TestSpec, stop: threading.Event, sink: Callable[[telemetry.Sample], None]) -> Report: ...
 
 
 def config_to_json(cfg: MachineConfig) -> dict:
@@ -270,6 +273,35 @@ class Store:
     def taken_over(self, session_id: int, boot: str) -> bool:
         return self.db.journal_taken_over(session_id, boot) is not None
 
+    def sample(self, row: int, sample: telemetry.Sample) -> None:
+        self.db.insert_tuner_sample(
+            row,
+            sample.mono_ns,
+            sample.running,
+            sample.tctl,
+            json.dumps(sample.mhz),
+            json.dumps(sample.tccd),
+            json.dumps(sample.volts),
+        )
+
+    def crash_context(self, session_id: int, boot: str, core_of_cpu: dict[int, int]) -> FailContext | None:
+        test = self.db.open_tuner_test(session_id, boot)
+        if test is None:
+            return None
+        tail = self.db.tuner_sample_tail(test["id"], telemetry.RING)
+        if not tail:
+            return None
+        ring = [
+            telemetry.Sample(
+                bool(s["running"]),
+                tuple((core, mhz) for core, mhz in json.loads(s["clocks_json"])),
+                s["tctl"],
+            )
+            for s in tail
+        ]
+        assigned = tuple(sorted({core_of_cpu[cpu] for cpu in json.loads(test["cpus_json"]) if cpu in core_of_cpu}))
+        return telemetry.context(ring, test["load"] == Load.HOT.value, assigned, ())
+
     def test_broken(self, row: int, detail: str) -> None:
         evidence = {"records": [], "unblamed_corrected": False}
         self.db.end_tuner_test(row, "internal_error", 0.0, "[]", None, json.dumps(evidence), detail)
@@ -294,6 +326,12 @@ class Store:
 
     def clear_marker(self) -> None:
         (self.root / "stock-marker.json").unlink(missing_ok=True)
+
+
+@dataclass(frozen=True, slots=True)
+class Sampled:
+    token: int
+    sample: telemetry.Sample
 
 
 @dataclass
@@ -475,6 +513,7 @@ class LiveRig:
             loaded = self.store.load(session)
             rows = self.store.journal_rows(session, last)
             other = not same and self.store.taken_over(session, last)
+            context = None if same else self.store.crash_context(session, last, self._core_of_cpu())
         except sqlite3.Error as exc:
             return DatabaseFailed(f"the session could not be read back: {exc}")
         stamps = [row.mono_ns for row in rows if row.mono_ns is not None]
@@ -489,12 +528,16 @@ class LiveRig:
             other_session_wrote=other,
             shared_uncorrected=shared,
             suspects=tuple(sorted(crash_suspects(resident_at_death(rows), -1))),
+            context=context,
             evidence=evidence,
             kernel_problem=harvest.problem,
         )
 
+    def _core_of_cpu(self) -> dict[int, int]:
+        return {cpu: core for core, cpus in self.cpus_of for cpu in cpus}
+
     def _kernel_evidence(self, events) -> tuple[tuple[Evidence, ...], bool]:
-        core_of_cpu = {cpu: core for core, cpus in self.cpus_of for cpu in cpus}
+        core_of_cpu = self._core_of_cpu()
         evidence = tuple(
             Evidence(core_of_cpu[e.cpu], e.corrected)
             for e in events
@@ -521,7 +564,7 @@ class LiveRig:
 
         def work() -> None:
             try:
-                report = self.runner.run(spec, stop)
+                report = self.runner.run(spec, stop, lambda sample: self.inbox.put(Sampled(token, sample)))
             except Exception as exc:
                 self.inbox.put(InternalError(f"the test runner raised {exc!r}"))
                 return
@@ -546,6 +589,13 @@ class LiveRig:
                 self.post(ContinuationDue(token))
                 return True
             return False
+        if isinstance(event, Sampled):
+            if self.test_row is not None and self.test_row[0] == event.token:
+                try:
+                    self.store.sample(self.test_row[1], event.sample)
+                except sqlite3.Error as exc:
+                    self.post(DatabaseFailed(f"a telemetry sample could not be written: {exc}"))
+            return True
         failed = None
         if isinstance(event, WorkerReported):
             if self.worker is not None and self.worker.token == event.token:

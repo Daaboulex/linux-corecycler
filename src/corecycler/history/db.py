@@ -202,7 +202,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 19
+    SCHEMA_VERSION = 20
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -308,6 +308,20 @@ CREATE TABLE IF NOT EXISTS tuner_tests (
     detail          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tuner_tests_session ON tuner_tests(session_id, core);
+"""
+
+    _DDL_TUNER_SAMPLES = """\
+CREATE TABLE IF NOT EXISTS tuner_samples (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    test_id         INTEGER NOT NULL REFERENCES tuner_tests(id) ON DELETE CASCADE,
+    mono_ns         INTEGER NOT NULL,
+    running         INTEGER NOT NULL,
+    tctl            REAL,
+    clocks_json     TEXT    NOT NULL,
+    tccd_json       TEXT    NOT NULL,
+    volts_json      TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tuner_samples_test ON tuner_samples(test_id, id);
 """
 
     _DDL_FRESH = (
@@ -498,6 +512,7 @@ CREATE INDEX IF NOT EXISTS idx_co_journal_boot ON tuner_co_journal(session_id, b
 CREATE INDEX IF NOT EXISTS idx_co_journal_proven ON tuner_co_journal(session_id, core_id, survived, retracted, value);
 """
         + _DDL_TUNER_TESTS
+        + _DDL_TUNER_SAMPLES
     ).replace("__SCHEMA_VERSION__", str(SCHEMA_VERSION))
 
     # Migration from v1 to v2
@@ -860,6 +875,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         17: _migrate_v17,
         18: _migrate_v18,
         19: _DDL_MIGRATE_V19,
+        20: _DDL_TUNER_SAMPLES,
     }
 
     # ------------------------------------------------------------------
@@ -1452,6 +1468,38 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         )
         if cur.rowcount != 1:
             raise sqlite3.IntegrityError(f"test row {row_id} is missing or already ended")
+
+    def insert_tuner_sample(
+        self,
+        test_id: int,
+        mono_ns: int,
+        running: bool,
+        tctl: float | None,
+        clocks_json: str,
+        tccd_json: str,
+        volts_json: str,
+    ) -> None:
+        self.__conn.execute(
+            """\
+            INSERT INTO tuner_samples (test_id, mono_ns, running, tctl, clocks_json, tccd_json, volts_json)
+            VALUES (?,?,?,?,?,?,?)
+            """,
+            (test_id, mono_ns, int(running), tctl, clocks_json, tccd_json, volts_json),
+        )
+
+    def open_tuner_test(self, session_id: int, boot_id: str) -> dict | None:
+        row = self.__conn.execute(
+            "SELECT * FROM tuner_tests WHERE session_id=? AND boot_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1",
+            (session_id, boot_id),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def tuner_sample_tail(self, test_id: int, count: int) -> list[dict]:
+        rows = self.__conn.execute(
+            "SELECT * FROM (SELECT * FROM tuner_samples WHERE test_id=? ORDER BY id DESC LIMIT ?) ORDER BY id",
+            (test_id, count),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def stamp_session_boot(self, session_id: int, boot_id: str) -> None:
         self.__conn.execute(
@@ -2130,6 +2178,11 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             ),
             {"session_id": "tuner_sessions"},
         ),
+        (
+            "tuner_samples",
+            ("test_id", "mono_ns", "running", "tctl", "clocks_json", "tccd_json", "volts_json"),
+            {"test_id": "tuner_tests"},
+        ),
     )
 
     def merge_from(self, other_path: str | Path) -> dict[str, int]:
@@ -2275,10 +2328,11 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
                         if skip:
                             continue
                         placeholders = ",".join("?" * len(cols))
-                        conn.execute(
+                        cur = conn.execute(
                             f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
                             vals,
                         )
+                        maps.setdefault(table, {})[row["id"]] = cur.lastrowid
 
         finally:
             conn.execute("DETACH DATABASE src")

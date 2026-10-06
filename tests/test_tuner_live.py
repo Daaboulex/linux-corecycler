@@ -13,7 +13,7 @@ import pytest
 from corecycler.engine import detector as kernel
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.history.db import HistoryDB
-from corecycler.tuner import live, live_hw
+from corecycler.tuner import live, live_hw, telemetry
 from corecycler.tuner.live import Identity, LiveRig, Store, stored_from_json, stored_to_json
 from corecycler.tuner.machine.types import (
     Close,
@@ -109,7 +109,7 @@ class FakeRunner:
     evidence: tuple = ()
     read_ns: int | None = None
 
-    def run(self, spec: Spec, stop: threading.Event) -> Report:
+    def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
         self.seen.append(spec)
         if self.raise_once:
             self.raise_once = False
@@ -118,6 +118,29 @@ class FakeRunner:
         assert live_value == spec.value
         failed = live_value < EDGES[spec.core]
         return Report(Group.SILICON if failed else Group.PASS, 1.0, evidence=self.evidence, kernel_read_ns=self.read_ns)
+
+
+def taken(core: int, n: int) -> telemetry.Sample:
+    return telemetry.Sample(
+        True,
+        ((core, 5000.0 + n),),
+        60.0 + n,
+        mono_ns=1_000 + n,
+        tccd=((0, 55.0 + n),),
+        volts=(("sio_in0_vcore", 1.1),),
+    )
+
+
+@dataclass
+class SamplingRunner(FakeRunner):
+    hold: threading.Event | None = None
+
+    def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
+        for n in range(3):
+            sink(taken(spec.core, n))
+        if self.hold is not None:
+            self.hold.wait()
+        return super().run(spec, stop, sink)
 
 
 OPENED: list[HistoryDB] = []
@@ -383,6 +406,59 @@ def resume_read(tmp_path, hardware, db, monkeypatch) -> tuple[CrashEvidenceRead,
     return reads[0], again, said
 
 
+def test_every_sample_a_test_takes_is_kept_under_its_row(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware, SamplingRunner(hardware))
+    r.start(config(), 1, 7, True)
+    while not rows(r, "SELECT id FROM tuner_tests WHERE ended_at IS NOT NULL"):
+        r.step(0.01)
+    first = rows(r, "SELECT id, core FROM tuner_tests ORDER BY id LIMIT 1")[0]
+    samples = rows(
+        r,
+        "SELECT running, tctl, mono_ns, clocks_json, tccd_json, volts_json FROM tuner_samples"
+        " WHERE test_id=? ORDER BY id",
+        (first["id"],),
+    )
+    assert samples == [
+        {
+            "running": 1,
+            "tctl": 60.0 + n,
+            "mono_ns": 1_000 + n,
+            "clocks_json": json.dumps([[first["core"], 5000.0 + n]]),
+            "tccd_json": json.dumps([[0, 55.0 + n]]),
+            "volts_json": json.dumps([["sio_in0_vcore", 1.1]]),
+        }
+        for n in range(3)
+    ]
+
+
+def test_a_sample_that_cannot_be_written_pauses_as_database(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware, SamplingRunner(hardware))
+    monkeypatch.setattr(r.store, "sample", broken)
+    r.start(config(), 1, 7, True)
+    assert r.run_until_rest(0.01).pause.reason is PauseReason.DATABASE
+    assert hardware.co == {0: 0, 1: 0, 8: 0}
+
+
+def test_a_crash_s_context_is_rebuilt_from_the_samples_its_test_left(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    hold = threading.Event()
+    r = rig(tmp_path, hardware, SamplingRunner(hardware, hold=hold))
+    r.start(config(), 1, 7, True)
+    while rows(r, "SELECT count(*) AS n FROM tuner_samples")[0]["n"] < 3:
+        r.step(0.01)
+    tested = next(c for c in r.state.cores if c.in_test)
+    cpus = tuple(json.loads(rows(r, "SELECT cpus_json FROM tuner_tests WHERE ended_at IS NULL")[0]["cpus_json"]))
+    hardware.boot = "boot-b"
+    read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    hold.set()
+    working = tuple(sorted({core for core, owned in CPUS for cpu in owned if cpu in cpus}))
+    expected = telemetry.context([taken(tested.core, n) for n in range(3)], False, working, ())
+    assert read.context == expected
+    assert read.context.mhz == 5002.0
+
+
 def test_a_crash_read_names_the_unproven_values_resident_at_death(tmp_path, monkeypatch):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
@@ -424,6 +500,27 @@ def test_a_write_inside_a_core_s_survived_envelope_is_journaled_survived(tmp_pat
         for value, row in ((v, store.journal_intent(1, 0, v, "boot-a", 2)) for v in (-3, -4, -5))
     }
     assert survived == {-3: 1, -4: 1, -5: 0}
+
+
+@pytest.mark.parametrize(
+    ("load", "frozen_last", "steady"), [("hot", False, True), ("hot", True, False), ("burst", False, False)]
+)
+def test_a_crash_context_reads_the_last_ring_of_the_open_test_only(tmp_path, load, frozen_last, steady):
+    store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
+    store.save(stored_with_fb(None), "boot-a")
+    done = store.db.insert_tuner_test(1, "boot-a", 1, "steady", load, "1t", 0, -3, "[]", "[0, 16]", 60.0)
+    store.sample(done, taken(0, 9))
+    store.db.end_tuner_test(done, "pass", 60.0, "[]", None, "{}", "")
+    crashed = store.db.insert_tuner_test(1, "boot-a", 2, "steady", load, "1t", 0, -3, "[]", "[0, 16, 1]", 60.0)
+    taken_samples = [taken(0, n) for n in range(telemetry.RING + 1)] + [replace(taken(0, 0), running=not frozen_last)]
+    for sample in taken_samples:
+        store.sample(crashed, sample)
+    context = store.crash_context(1, "boot-a", {0: 0, 16: 0, 1: 1})
+    ring = [replace(s, mono_ns=0, tccd=(), volts=()) for s in taken_samples[-telemetry.RING :]]
+    assert context == telemetry.context(ring, load == "hot", (0, 1), ())
+    assert (context.paused, context.steady) == (frozen_last, steady)
+    assert context.tctl == 60.0 + telemetry.RING
+    assert store.crash_context(1, "boot-b", {0: 0}) is None
 
 
 def test_a_commit_retracts_survived_values_at_or_past_a_new_fail_bound(tmp_path):

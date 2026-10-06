@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
@@ -138,6 +138,25 @@ def runner(script: Script, readings=None, detector=None, clocks=None):
 
 def spec(load: Load, seconds: float = 480.0) -> Spec:
     return Spec(Klass.T1, 0, -5, CPUS, seconds, tuple((c, -5) for c in range(4)), Stage.TRANSIENT, load)
+
+
+def test_every_sample_of_an_all_core_stage_reaches_the_sink():
+    got = []
+    script = Script([Outcome.PASS] * 8)
+    runner(script).run(spec(Load.WARM), threading.Event(), got.append)
+    assert len(got) == len(script.seen)
+    assert all(s.mono_ns > 0 and s.tctl == 70.0 and s.mhz for s in got)
+
+
+def test_a_single_core_test_is_sampled_only_when_a_sink_is_given():
+    one = Spec(Klass.T1, 0, -5, (0,), 60.0, ((0, -5),), Stage.SEARCH)
+    got = []
+    script = Script([Outcome.PASS])
+    runner(script).run(one, threading.Event(), got.append)
+    assert [s.mhz for s in got] == [tuple((core, 5000.0) for core in range(4))]
+    unsampled = Script([Outcome.PASS], sampled=False)
+    runner(unsampled).run(one, threading.Event())
+    assert unsampled.seen[0][3] is None
 
 
 def test_an_all_core_stage_runs_every_segment_and_passes():
@@ -292,7 +311,8 @@ def test_the_hold_samples_each_core_at_its_fastest_cpu_on_its_own_cadence():
     for elapsed in (0.0, 0.1, 0.3, 0.5, 0.56):
         hold(elapsed)
     assert len(hold.ring) == 3
-    assert hold.ring[0] == telemetry.Sample(True, ((0, 5000.0), (1, 3000.0)), 60.0)
+    assert replace(hold.ring[0], mono_ns=0) == telemetry.Sample(True, ((0, 5000.0), (1, 3000.0)), 60.0)
+    assert 0 < hold.ring[0].mono_ns <= hold.ring[1].mono_ns
     for elapsed in range(1, 20):
         hold(float(elapsed))
     assert len(hold.ring) == telemetry.RING
@@ -305,6 +325,47 @@ def test_clocks_are_read_from_sysfs_in_mhz(tmp_path):
         (freq / "scaling_cur_freq").write_text(khz + "\n")
     (tmp_path / "cpufreq").mkdir()
     assert live_hw.read_clocks(tmp_path) == {0: 5100.0, 17: 624.0}
+
+
+def hwmon(root: Path, name: str, files: dict[str, str], bus: str | None = None) -> Path:
+    device = root / "class" / f"hwmon{len(list((root / 'class').glob('hwmon*')))}"
+    device.mkdir(parents=True)
+    (device / "name").write_text(name + "\n")
+    for file, text in files.items():
+        (device / file).write_text(text + "\n")
+    if bus is not None:
+        (root / "bus" / bus).mkdir(parents=True)
+        (device / "device").symlink_to(root / "bus" / bus)
+    return device
+
+
+def test_ccd_temperatures_and_the_board_and_gpu_voltages_are_read_under_their_sources(tmp_path):
+    tccd = {"temp1_label": "Tctl", "temp1_input": "70000", "temp3_label": "Tccd1", "temp3_input": "55500"}
+    hwmon(tmp_path, "zenpower", {**tccd, "temp4_label": "Tccd2", "temp4_input": "54000"}, "0000:00:18.3")
+    superio = hwmon(tmp_path, "nct6799", {"in0_input": "712", "in10_input": "1056"}, "nct6775.656")
+    gpu = {"in0_label": "vddgfx", "in0_input": "595", "in1_label": "vddnb", "in1_input": "1250"}
+    hwmon(tmp_path, "amdgpu", gpu, "0000:7c:00.0")
+    hwmon(tmp_path, "amdgpu", {"in0_label": "vddgfx", "in0_input": "969"}, "0000:03:00.0")
+    hwmon(tmp_path, "hidpp_battery_0", {"in0_input": "4125"})
+    hwmon(tmp_path, "nvme", {"temp1_input": "40000"})
+    read = live_hw.Readings(tmp_path / "class")
+    assert read() == (
+        ((0, 55.5), (1, 54.0)),
+        (
+            ("amdgpu@0000:03:00.0:vddgfx", 0.969),
+            ("amdgpu@0000:7c:00.0:vddgfx", 0.595),
+            ("amdgpu@0000:7c:00.0:vddnb", 1.25),
+            ("nct6799:in0", 0.712),
+            ("nct6799:in10", 1.056),
+        ),
+    )
+    (superio / "in10_input").write_text("garbage\n")
+    (superio / "in0_input").unlink()
+    assert read()[1][3:] == (("nct6799:in0", None), ("nct6799:in10", None))
+
+
+def test_a_machine_without_hwmon_reads_nothing(tmp_path):
+    assert live_hw.Readings(tmp_path / "missing")() == ((), ())
 
 
 def test_the_failure_context_names_the_segments_cores_and_the_named_cores_clock(tmp_path):
@@ -341,9 +402,12 @@ def memory_runner(outcomes, budget=None, available=True, seen=None):
     class LaneSupervisor:
         def __init__(self, **kwargs):
             self.backend = kwargs["backend"]
+            self.freeze = kwargs["freeze"]
 
         def run(self, lanes, cfg, duration):
             seen.append((tuple((lane.core_id, lane.cpus) for lane in lanes), cfg.threads, cfg.memory_mb, self.backend))
+            if self.freeze is not None:
+                self.freeze(duration / 2)
             return {
                 lane.core_id: StressResult(
                     lane.core_id, outcomes.get(lane.core_id, Outcome.PASS), f"lane {lane.core_id}", duration
@@ -441,3 +505,18 @@ def test_the_working_cores_of_a_failing_burst_segment_are_the_cores_it_drew():
             assert report.context.working == drawn
             return
     raise AssertionError("no seed drew a partial segment")
+
+
+def test_a_sample_carries_the_ccd_temperatures_and_voltages_read_with_it():
+    got = []
+    readings = (((0, 50.0), (1, None)), (("nct6799:in0", 1.1),))
+    hold = live_hw.Hold(plan(Load.WARM)[0], lambda: 60.0, dict, CORE_OF_CPU, 0.25, got.append, lambda: readings)
+    hold(0.0)
+    assert (got[0].tccd, got[0].volts) == readings
+
+
+def test_a_memory_stage_is_sampled_when_a_sink_is_given():
+    got = []
+    _, run = memory_runner({}, seen=[])
+    run.run(spec(Load.MEMORY, 300.0), threading.Event(), got.append)
+    assert len(got) == 1 and got[0].running
