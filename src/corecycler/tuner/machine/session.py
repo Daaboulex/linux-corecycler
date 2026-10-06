@@ -6,6 +6,7 @@ from corecycler.tuner.machine import allcore, bisect, search
 from corecycler.tuner.machine.resume import attribute, resident
 from corecycler.tuner.machine.types import (
     ALLCORE,
+    ENDURANCE_CYCLE,
     TRANSIENT_CYCLE,
     Abort,
     AllCore,
@@ -630,9 +631,15 @@ def _all_cpus(s: SessionState, w: World) -> tuple[int, ...]:
 
 def _past_tighten(flow: Flow, cfg) -> Flow:
     cursor = replace(flow.allcore, tightened=True, item=None, t_idx=0, t_clean=0.0)
+    if cfg.endurance:
+        return replace(flow, stage=Stage.ENDURANCE, allcore=cursor)
+    return _past_endurance(replace(flow, allcore=cursor), cfg)
+
+
+def _past_endurance(flow: Flow, cfg) -> Flow:
     if cfg.soak and not flow.dirty:
-        return replace(flow, stage=Stage.SOAK, allcore=cursor)
-    return replace(flow, stage=Stage.FINALIZE, allcore=cursor, applied=False)
+        return replace(flow, stage=Stage.SOAK)
+    return replace(flow, stage=Stage.FINALIZE, applied=False)
 
 
 def _after_tighten(s: SessionState, w: World) -> Transition:
@@ -669,6 +676,8 @@ def _allcore_next(s: SessionState, w: World) -> Transition:
         load = Load.HOT
     elif flow.stage is Stage.TRANSIENT:
         load = TRANSIENT_CYCLE[cursor.t_idx % len(TRANSIENT_CYCLE)]
+    elif flow.stage is Stage.ENDURANCE:
+        load = ENDURANCE_CYCLE[cursor.t_idx % len(ENDURANCE_CYCLE)]
     else:
         load = Load.SOAK
     first = s.cores[0].core
@@ -687,12 +696,13 @@ def _allcore_fail(s: SessionState, ctx, w: World) -> tuple[SessionState, str | N
     if stage is Stage.TIGHTEN:
         frozen = replace(cursor, frozen=(*cursor.frozen, cursor.item), item=None, t_idx=0, t_clean=0.0)
         return replace(s, flow=replace(flow, allcore=frozen)), None
-    if stage is Stage.STEADY and allcore.steady_class(ctx):
+    if stage in (Stage.STEADY, Stage.ENDURANCE) and allcore.steady_class(ctx):
         values = {r.core: r.value for r in s.cores}
         if not any(values.values()):
             return s, "the all-core load fails with every owned core at 0"
-        run = bisect.begin(Stage.STEADY, s.cores[0].core, Klass.T1, values, dict(w.domain_of))
-        return replace(s, flow=replace(flow, stage=Stage.BISECT, bisect=run)), None
+        run = bisect.begin(stage, s.cores[0].core, Klass.T1, values, dict(w.domain_of))
+        cursor = replace(cursor, t_clean=0.0)
+        return replace(s, flow=replace(flow, stage=Stage.BISECT, bisect=run, allcore=cursor)), None
     fix = allcore.transient_fix(cursor, allcore.context_or_unknown(ctx), s.cores, len(s.cores), w.owner_layout)
     if fix.core is None:
         return s, "a transient failure found nothing left to loosen"
@@ -717,8 +727,11 @@ def _allcore_verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group,
         flow = replace(flow, stage=Stage.FINALIZE, applied=False)
     else:
         cursor = replace(cursor, t_idx=cursor.t_idx + 1, t_clean=cursor.t_clean + rep.seconds)
-        if cursor.t_clean < cfg.transient_window_s:
+        window = cfg.endurance_window_s if flow.stage is Stage.ENDURANCE else cfg.transient_window_s
+        if cursor.t_clean < window:
             flow = replace(flow, allcore=cursor)
+        elif flow.stage is Stage.ENDURANCE:
+            flow = _past_endurance(replace(flow, allcore=cursor), cfg)
         elif flow.stage is Stage.TIGHTEN:
             rec = s.core(cursor.item)
             s = s.with_core(replace(rec, value=rec.value - cfg.fine_step, count=0))
@@ -740,7 +753,7 @@ def _bisect_next(s: SessionState, w: World) -> Transition:
     values = {r.core: r.value for r in s.cores} if run.rerun is not None else bisect.slot_values(run, group)
     vector = tuple((c, values[c] if c in group else base) for c, base in s.baseline)
     lane = run.lane
-    if run.entry is Stage.STEADY:
+    if run.entry in (Stage.STEADY, Stage.ENDURANCE):
         cpus, seconds, load = _all_cpus(s, w), s.config.bisect_seconds, Load.HOT
     else:
         cpus, seconds, load = _cpus_for(lane, run.klass, w), s.config.test_seconds_1t, Load.ONE_T

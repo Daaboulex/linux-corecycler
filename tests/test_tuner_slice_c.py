@@ -1,7 +1,16 @@
 from __future__ import annotations
 
 from corecycler.tuner.machine import allcore
-from corecycler.tuner.machine.types import AllCore, CoreRecord, FailContext, Lifecycle, PauseReason, Phase, Stage
+from corecycler.tuner.machine.types import (
+    AllCore,
+    CoreRecord,
+    FailContext,
+    Lifecycle,
+    Load,
+    PauseReason,
+    Phase,
+    Stage,
+)
 from tests._tuner_world import fresh, run_to_rest, start
 
 FAST = {
@@ -10,13 +19,14 @@ FAST = {
     "stage_seconds": (("burst", 1.0), ("warm", 1.0), ("idle", 1.0)),
     "transient_window_s": 2.0,
     "soak_seconds": 1.0,
+    "endurance_window_s": 5.0,
     "wait_between_cores_s": 0.0,
     "k_1t": 1,
     "k_2t": 1,
 }
 
 
-def run(edges, hot=None, transient=None, cores=2, domains=2, stacks=(), **cfg):
+def run(edges, hot=None, transient=None, cores=2, domains=2, stacks=(), on_start=None, **cfg):
     fake = fresh(cores, edges, domains, max_offset=-8, **{**FAST, **cfg})
     fake.edges_hot = hot
     fake.edges_transient = transient
@@ -26,6 +36,8 @@ def run(edges, hot=None, transient=None, cores=2, domains=2, stacks=(), **cfg):
 
     def spy(state, spec):
         stages.append((spec.stage, spec.load, dict(spec.vector)))
+        if on_start is not None:
+            on_start(fake, spec)
         original(state, spec)
 
     fake.check_start = spy
@@ -123,3 +135,44 @@ def test_a_steady_failure_with_every_core_at_zero_pauses_as_stock_unstable():
     assert fake.state.pause.reason is PauseReason.STOCK_UNSTABLE
     assert [vector for stage, _, vector in stages if stage is Stage.STEADY] == [{0: 0, 1: 0}]
     assert Stage.BISECT not in {stage for stage, _, _ in stages}
+
+
+def test_endurance_is_off_unless_asked_and_when_on_cycles_its_five_loads_before_soak():
+    fake, stages = run([-4, -2], endurance=True)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    order = list(dict.fromkeys(stage for stage, _, _ in stages))
+    assert order == [Stage.SEARCH, Stage.LIVE1, Stage.STEADY, Stage.TRANSIENT, Stage.ENDURANCE, Stage.SOAK]
+    loads = [load for stage, load, _ in stages if stage is Stage.ENDURANCE]
+    assert loads == [Load.HOT, Load.BURST, Load.WARM, Load.BURST, Load.IDLE]
+    assert Stage.ENDURANCE not in {stage for stage, _, _ in run([-4, -2])[1]}
+
+
+def degrade(hot=None, transient=None):
+    def on_start(fake, spec):
+        if spec.stage is Stage.ENDURANCE and fake.edges_hot is None and fake.edges_transient is None:
+            fake.edges_hot = hot
+            fake.edges_transient = transient
+
+    return on_start
+
+
+def test_a_steady_failure_in_endurance_bisects_and_comes_back_to_endurance_at_hot_with_its_clean_time_reset():
+    fake, stages = run([-6, -2], endurance=True, on_start=degrade(hot={0: -4, 1: -2}))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert fake.state.core(0).value >= -4
+    seen = [(stage, load) for stage, load, _ in stages]
+    first_bisect = seen.index((Stage.BISECT, Load.HOT))
+    assert seen[first_bisect - 1] == (Stage.ENDURANCE, Load.HOT)
+    returns = [seen[i + 1] for i in range(first_bisect, len(seen) - 1) if seen[i][0] is Stage.BISECT]
+    assert {after for after in returns if after[0] is not Stage.BISECT} == {(Stage.ENDURANCE, Load.HOT)}
+    last = max(i for i, (stage, _) in enumerate(seen) if stage is Stage.BISECT)
+    after = [load for stage, load in seen[last:] if stage is Stage.ENDURANCE][:5]
+    assert after == [Load.HOT, Load.BURST, Load.WARM, Load.BURST, Load.IDLE]
+
+
+def test_a_transient_failure_in_endurance_loosens_one_core_and_runs_the_same_load_again():
+    fake, stages = run([-6, -3], endurance=True, on_start=degrade(transient={0: -5, 1: -3}))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert fake.state.core(0).value == -5
+    endurance = [(load, vector[0]) for stage, load, vector in stages if stage is Stage.ENDURANCE]
+    assert endurance[:3] == [(Load.HOT, -6), (Load.BURST, -6), (Load.BURST, -5)]

@@ -71,11 +71,12 @@ class Stage(StrEnum):
     STEADY = "steady"
     TRANSIENT = "transient"
     TIGHTEN = "tighten"
+    ENDURANCE = "endurance"
     SOAK = "soak"
     FINALIZE = "finalize"
 
 
-ALLCORE = frozenset({Stage.STEADY, Stage.TRANSIENT, Stage.TIGHTEN, Stage.SOAK})
+ALLCORE = frozenset({Stage.STEADY, Stage.TRANSIENT, Stage.TIGHTEN, Stage.ENDURANCE, Stage.SOAK})
 
 
 class Load(StrEnum):
@@ -90,6 +91,7 @@ class Load(StrEnum):
 
 
 TRANSIENT_CYCLE = (Load.BURST, Load.WARM, Load.BURST, Load.IDLE)
+ENDURANCE_CYCLE = (Load.HOT, Load.BURST, Load.WARM, Load.BURST, Load.IDLE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +113,8 @@ class MachineConfig:
     transient_window_s: float = 3600.0
     soak_seconds: float = 1800.0
     soak: bool = True
+    endurance: bool = False
+    endurance_window_s: float = 10800.0
     wait_between_cores_s: float = 15.0
     apparatus_retries: int = 3
     thermal_retries: int = 3

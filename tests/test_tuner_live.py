@@ -110,7 +110,7 @@ def rig(tmp_path: Path, hardware: FakeHardware | None = None, runner=None) -> Li
 
 
 def snapshots() -> list:
-    fake = fresh(3, [-3, -1, -2], 2, max_offset=-5, k_1t=2, k_2t=1, wait_between_cores_s=0.0)
+    fake = fresh(3, [-3, -1, -2], 2, max_offset=-5, k_1t=2, k_2t=1, wait_between_cores_s=0.0, endurance=True)
     fake.stacks = (((0, 1), (0, 1), 3),)
     start(fake)
     seen = []
@@ -130,7 +130,8 @@ def snapshots() -> list:
 def test_every_stored_state_of_a_run_survives_the_session_file_round_trip():
     stored = snapshots()
     assert len(stored) > 20
-    assert {s.flow.stage for s in stored if s.flow is not None} >= {Stage.SEARCH, Stage.LIVE1, Stage.BISECT}
+    expected = {Stage.SEARCH, Stage.LIVE1, Stage.BISECT, Stage.STEADY, Stage.TRANSIENT, Stage.ENDURANCE, Stage.SOAK}
+    assert {s.flow.stage for s in stored if s.flow is not None} >= expected
     assert stored[-1].status == "completed"
     for st in stored:
         assert stored_from_json(json.loads(json.dumps(stored_to_json(st)))) == st

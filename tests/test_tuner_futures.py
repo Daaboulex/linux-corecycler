@@ -9,7 +9,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from corecycler.tuner.machine.types import Lifecycle, PauseReason
+from corecycler.tuner.machine.types import FailContext, Lifecycle, Load, PauseReason
 from corecycler.tuner.orders import Method, order_problem
 from tests._tuner_world import (
     Abort,
@@ -132,7 +132,9 @@ def act(fake: Fake, move: str) -> None:
         case "slept":
             fake.deliver(Report(Group.SLEPT, 1.0))
         case "false_fail":
-            fake.deliver(Report(Group.SILICON, worker_spec.seconds))
+            steady = worker_spec.load is Load.HOT
+            context = FailContext(True, tuple(dict(worker_spec.vector)), False) if steady else None
+            fake.deliver(Report(Group.SILICON, worker_spec.seconds, context=context))
         case "evidence":
             others = [c for c in fake.edges if c != worker_spec.core]
             target = others[0] if others else worker_spec.core
@@ -266,11 +268,15 @@ def test_every_future_of_a_tiny_cpu_ends_completed_or_quarantined_and_breaks_no_
 
 
 @pytest.mark.parametrize(
-    ("edges", "hot", "transient"),
-    [([-3, -2], {0: -2, 1: -2}, None), ([-3, -2], None, {0: -2, 1: -1})],
+    ("edges", "hot", "transient", "endurance"),
+    [
+        ([-3, -2], {0: -2, 1: -2}, None, False),
+        ([-3, -2], None, {0: -2, 1: -1}, False),
+        ([-3, -2], None, None, True),
+    ],
 )
-def test_every_future_of_a_cpu_whose_all_core_loads_fail_reaches_a_rest(edges, hot, transient):
-    fake = tiny(2, edges, 2)
+def test_every_future_of_a_cpu_whose_all_core_loads_fail_reaches_a_rest(edges, hot, transient, endurance):
+    fake = tiny(2, edges, 2, endurance=endurance, endurance_window_s=2.0)
     fake.edges_hot = hot
     fake.edges_transient = transient
     survey = explore(fake, {**ONE_OF_EACH, "total": 1}, cap=2_000_000)
@@ -281,7 +287,8 @@ def test_every_future_of_a_cpu_whose_all_core_loads_fail_reaches_a_rest(edges, h
 @pytest.mark.slow
 def test_every_future_with_a_deeper_fault_budget():
     total = int(os.environ.get("TUNER_FUTURES_FAULTS", "3"))
-    survey = explore(tiny(3, [-4, 0, -2], 2), {**ONE_OF_EACH, "crash": 2, "total": total}, cap=5_000_000)
+    cap = int(os.environ.get("TUNER_FUTURES_CAP", "5000000"))
+    survey = explore(tiny(3, [-4, 0, -2], 2), {**ONE_OF_EACH, "crash": 2, "total": total}, cap=cap)
     print(f"\nreachable states {survey.states}, leaves {survey.leaves}, longest future {survey.deepest} moves")
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
 
