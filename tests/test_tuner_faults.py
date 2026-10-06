@@ -68,7 +68,7 @@ class FaultSMU:
     """
 
     def __init__(self, co_range: tuple[int, int] = (-60, 10)) -> None:
-        self.commands = SimpleNamespace(co_range=co_range)
+        self.commands = SimpleNamespace(co_range=co_range, has_co=True)
         self.applied: dict[int, int] = {}
         self.writes: list[tuple[int, int]] = []
         self.reject_set = False  # set_co_offset returns False (rejected / read-back mismatch)

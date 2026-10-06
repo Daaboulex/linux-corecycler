@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from corecycler.history.db import TuningContextRecord
+from corecycler.smu import pmtable
 
 if TYPE_CHECKING:
     from corecycler.history.db import HistoryDB
@@ -78,29 +79,15 @@ def capture_system_context(
     ppt = tdc = edc = None
 
     if smu is not None and num_cores > 0:
-        try:
-            co_offsets = smu.get_all_co_offsets(num_cores)
-        except Exception:
-            log.warning("Failed to read CO offsets from SMU", exc_info=True)
-
-        try:
-            pbo_scalar = smu.get_pbo_scalar()
-        except Exception:
-            log.debug("Failed to read PBO scalar", exc_info=True)
-
-        try:
-            boost_limit = smu.get_boost_limit()
-        except Exception:
-            log.debug("Failed to read boost limit", exc_info=True)
-
-        # PBO power limits are part of the stability environment: the same CO
-        # profile can be stable at PPT 200 W and unstable at 230 W.
-        try:
-            from corecycler.smu.pmtable import read_power_limits
-
-            ppt, tdc, edc = read_power_limits()
-        except Exception:
-            log.debug("Failed to read PBO power limits", exc_info=True)
+        co_offsets = smu.get_all_co_offsets(num_cores)
+        pbo_scalar = smu.get_pbo_scalar()
+        boost_limit = smu.get_boost_limit()
+        ppt, tdc, edc = pmtable.read_power_limits()
+        unread = sorted(core for core, value in co_offsets.items() if value is None)
+        if unread and smu.commands.has_co:
+            log.warning(
+                "Tuning context: the CO of cores %s could not be read, so they are left out of its identity", unread
+            )
 
     co_hash = compute_co_hash(co_offsets, (ppt, tdc, edc))
     co_json = json.dumps(
