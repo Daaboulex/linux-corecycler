@@ -7,10 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from corecycler.config import tools
 from corecycler.engine import detector as kernel
 from corecycler.engine.backends import ycruncher
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.backends.ycruncher import ALL_TESTS
+from corecycler.engine.memory_budget import MemoryBudgetUnavailable
 from corecycler.tuner import live_hw, stages, telemetry
 from corecycler.tuner.machine.types import Group, Klass, Load, Stage
 from corecycler.tuner.machine.types import TestSpec as Spec
@@ -118,7 +120,7 @@ def runner(script: Script, readings=None, detector=None, clocks=None):
         def close(self):
             pass
 
-    return live_hw.YCruncherRunner(
+    return live_hw.StressRunner(
         lambda: None,
         Path("/nonexistent"),
         CORE_OF_CPU,
@@ -328,3 +330,97 @@ def test_idle_samples_every_half_second_and_the_other_loads_every_quarter(load, 
     script = Script([Outcome.PASS] * 8)
     runner(script).run(spec(load, 30.0), threading.Event())
     assert {hold.every for _, _, _, hold in script.seen} == {every}
+
+
+@dataclass
+class Budget:
+    fits: bool = True
+    per_instance_mb: int = 512
+    minimum_per_instance_mb: int = 256
+
+    def describe(self) -> str:
+        return "fake budget"
+
+
+def memory_runner(outcomes, budget=None, available=True, seen=None):
+    class LaneSupervisor:
+        def __init__(self, **kwargs):
+            self.backend = kwargs["backend"]
+
+        def run(self, lanes, cfg, duration):
+            seen.append((tuple((lane.core_id, lane.cpus) for lane in lanes), cfg.threads, cfg.memory_mb, self.backend))
+            return {
+                lane.core_id: StressResult(
+                    lane.core_id, outcomes.get(lane.core_id, Outcome.PASS), f"lane {lane.core_id}", duration
+                )
+                for lane in lanes
+            }
+
+    class Detector:
+        def reset(self):
+            pass
+
+        def close(self):
+            pass
+
+    class Backend:
+        def is_available(self):
+            return available
+
+        def resolution(self):
+            return tools.Resolution("stressapptest", None, "PATH", problem="not on PATH")
+
+    tool = Backend()
+    return tool, live_hw.StressRunner(
+        lambda: None,
+        Path("/nonexistent"),
+        CORE_OF_CPU,
+        LaneSupervisor,
+        detector=Detector,
+        read_temperature=lambda: 60.0,
+        available_mb=lambda: 60_000,
+        memory_backend=lambda: tool,
+        budget=budget or (lambda n, floor: Budget()),
+    )
+
+
+def test_memory_runs_one_stressapptest_lane_per_core_with_the_budgeted_memory():
+    seen = []
+    tool, run = memory_runner({}, seen=seen)
+    report = run.run(spec(Load.MEMORY, 300.0), threading.Event())
+    assert report.group is Group.PASS and report.named == () and report.seconds == 300.0
+    assert seen == [(((0, (0, 4)), (1, (1, 5)), (2, (2, 6)), (3, (3, 7))), 2, 512, tool)]
+
+
+def test_memory_names_each_silicon_lane_and_an_apparatus_lane_alone_is_no_silicon_verdict():
+    _, run = memory_runner({2: Outcome.COMPUTATION, 3: Outcome.STALL}, seen=[])
+    report = run.run(spec(Load.MEMORY, 300.0), threading.Event())
+    assert (report.group, report.named) == (Group.SILICON, (2,))
+    assert "core 2: lane 2" in report.detail and "core 3: lane 3" in report.detail
+    assert report.detail.endswith("memory budget: fake budget")
+    _, run = memory_runner({3: Outcome.STALL}, seen=[])
+    report = run.run(spec(Load.MEMORY, 300.0), threading.Event())
+    assert (report.group, report.named) == (Group.APPARATUS, ())
+
+
+def unavailable(n, floor):
+    raise MemoryBudgetUnavailable("no meminfo")
+
+
+@pytest.mark.parametrize(
+    ("budget", "available", "reason"),
+    [
+        (
+            lambda n, floor: Budget(fits=False, per_instance_mb=100),
+            True,
+            "100 MB per instance is below the floor of 256 MB",
+        ),
+        (unavailable, True, "the memory budget is unavailable: no meminfo"),
+        (None, False, "stressapptest is not installed: not on PATH"),
+    ],
+)
+def test_memory_that_cannot_run_is_skipped_with_its_reason(budget, available, reason):
+    seen = []
+    _, run = memory_runner({}, budget=budget, available=available, seen=seen)
+    report = run.run(spec(Load.MEMORY, 300.0), threading.Event())
+    assert reason in report.skipped and seen == []

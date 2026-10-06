@@ -234,6 +234,7 @@ def tiny(cores: int, edges: list[int], domains: int = 1, **cfg) -> Fake:
         stage_seconds=(("burst", 1.0), ("warm", 1.0), ("idle", 1.0)),
         transient_window_s=1.0,
         soak_seconds=1.0,
+        memory_seconds=1.0,
         **cfg,
     )
     start(fake)
@@ -281,6 +282,14 @@ def test_every_future_of_a_cpu_whose_all_core_loads_fail_reaches_a_rest(edges, h
     fake.names_cores = names
     fake.edges_hot = hot
     fake.edges_transient = transient
+    survey = explore(fake, {**ONE_OF_EACH, "total": 1}, cap=2_000_000)
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+def test_every_future_of_a_cpu_whose_memory_lanes_fail_reaches_a_rest():
+    fake = tiny(2, [-3, -2], 2)
+    fake.edges_memory = {0: -2, 1: -1}
     survey = explore(fake, {**ONE_OF_EACH, "total": 1}, cap=2_000_000)
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves

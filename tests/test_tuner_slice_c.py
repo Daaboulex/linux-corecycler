@@ -22,18 +22,22 @@ FAST = {
     "transient_window_s": 2.0,
     "soak_seconds": 1.0,
     "endurance_window_s": 5.0,
+    "memory_seconds": 1.0,
     "wait_between_cores_s": 0.0,
     "k_1t": 1,
     "k_2t": 1,
 }
 
 
-def run(edges, hot=None, transient=None, cores=2, domains=2, stacks=(), on_start=None, names=False, **cfg):
+def run(
+    edges, hot=None, transient=None, cores=2, domains=2, stacks=(), on_start=None, names=False, memory_edges=None, **cfg
+):
     fake = fresh(cores, edges, domains, max_offset=-8, **{**FAST, **cfg})
     fake.edges_hot = hot
     fake.edges_transient = transient
     fake.stacks = stacks
     fake.names_cores = names
+    fake.edges_memory = memory_edges
     stages = []
     original = fake.check_start
 
@@ -53,7 +57,7 @@ def test_a_clean_co_only_run_walks_every_stage_once_in_the_planned_order():
     fake, stages = run([-4, -2])
     assert fake.state.lifecycle is Lifecycle.COMPLETED
     order = list(dict.fromkeys(stage for stage, _, _ in stages))
-    assert order == [Stage.SEARCH, Stage.LIVE1, Stage.STEADY, Stage.TRANSIENT, Stage.SOAK]
+    assert order == [Stage.SEARCH, Stage.LIVE1, Stage.STEADY, Stage.TRANSIENT, Stage.MEMORY, Stage.SOAK]
     assert {r.core: r.value for r in fake.state.cores} == {0: -4, 1: -2}
 
 
@@ -144,7 +148,15 @@ def test_endurance_is_off_unless_asked_and_when_on_cycles_its_five_loads_before_
     fake, stages = run([-4, -2], endurance=True)
     assert fake.state.lifecycle is Lifecycle.COMPLETED
     order = list(dict.fromkeys(stage for stage, _, _ in stages))
-    assert order == [Stage.SEARCH, Stage.LIVE1, Stage.STEADY, Stage.TRANSIENT, Stage.ENDURANCE, Stage.SOAK]
+    assert order == [
+        Stage.SEARCH,
+        Stage.LIVE1,
+        Stage.STEADY,
+        Stage.TRANSIENT,
+        Stage.ENDURANCE,
+        Stage.MEMORY,
+        Stage.SOAK,
+    ]
     loads = [load for stage, load, _ in stages if stage is Stage.ENDURANCE]
     assert loads == [Load.HOT, Load.BURST, Load.WARM, Load.BURST, Load.IDLE]
     assert Stage.ENDURANCE not in {stage for stage, _, _ in run([-4, -2])[1]}
@@ -262,3 +274,73 @@ def test_a_named_back_off_in_transient_restarts_the_clean_window_on_the_same_loa
     first_pass = [load for _, load, _ in takewhile(lambda run: run[0] is Stage.TRANSIENT, stages[begin:])]
     assert first_pass == [Load.BURST, Load.WARM, Load.WARM, Load.BURST]
     assert (fake.state.core(0).value, fake.state.core(0).fb) == (-5, -6)
+
+
+def test_memory_can_be_switched_off():
+    fake, stages = run([-4, -2], memory=False)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert Stage.MEMORY not in {stage for stage, _, _ in stages}
+
+
+def test_a_failing_memory_lane_backs_its_core_off_requeues_it_for_a_live1_slot_and_runs_memory_again():
+    fake, stages = run([-6, -3], memory_edges={0: -4, 1: -3})
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert (fake.state.core(0).value, fake.state.core(0).fb) == (-4, -5)
+    begin = next(i for i, (stage, _, _) in enumerate(stages) if stage is Stage.MEMORY)
+    walk = [(stage, vector[0]) for stage, _, vector in stages[begin : begin + 5]]
+    assert walk == [(Stage.MEMORY, -6), (Stage.LIVE1, -5), (Stage.MEMORY, -5), (Stage.LIVE1, -4), (Stage.MEMORY, -4)]
+    assert Stage.STEADY in {stage for stage, _, _ in stages[begin:]}
+
+
+def test_a_memory_lane_failing_at_zero_gets_a_solo_retest_while_another_core_is_not_at_zero():
+    fake, stages = run([0, -3], memory_edges={0: 1, 1: -3})
+    solos = [vector for stage, _, vector in stages if stage is Stage.LIVE1 and vector == {0: 0, 1: 0}]
+    assert solos
+    assert fake.state.lifecycle is Lifecycle.PAUSED and fake.state.pause.reason is PauseReason.STOCK_UNSTABLE
+    assert fake.state.core(1).value == 0 and fake.state.core(1).fb == -1
+
+
+def test_a_memory_lane_outside_the_session_pauses_as_a_held_knob():
+    fake, _ = run([-4, -2], on_start=report_once(Stage.MEMORY, Report(Group.SILICON, 1.0, named=(5,))))
+    assert fake.state.pause.reason is PauseReason.HELD_KNOB and "core 5" in fake.state.pause.detail
+
+
+def test_a_memory_failure_naming_no_lane_bisects_with_the_memory_slot():
+    fake, stages = run([-4, -2], on_start=report_once(Stage.MEMORY, Report(Group.SILICON, 1.0)))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    slots = [load for stage, load, _ in stages if stage is Stage.BISECT]
+    assert slots and set(slots) == {Load.MEMORY}
+
+
+def test_a_skipped_memory_run_is_no_verdict_and_the_plan_goes_on():
+    fake = fresh(2, [-4, -2], 2, max_offset=-8, **FAST)
+    fake.memory_skip = "stressapptest is not installed"
+    start(fake)
+    run_to_rest(fake, 20_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert any(line.startswith("memory_skipped: ") and "not installed" in line for line in fake.log)
+
+
+def test_a_skipped_bisect_slot_counts_as_apparatus_and_runs_again():
+    def on_start(fake, spec):
+        if spec.stage is Stage.MEMORY and not getattr(fake, "failed_memory", False):
+            fake.failed_memory = True
+            once(fake, Report(Group.SILICON, 1.0))
+        elif spec.stage is Stage.BISECT and not getattr(fake, "skipped_slot", False):
+            fake.skipped_slot = True
+            once(fake, Report(Group.PASS, 0.0, skipped="the memory budget no longer fits"))
+
+    fake, stages = run([-4, -2], on_start=on_start)
+    slots = [vector for stage, _, vector in stages if stage is Stage.BISECT]
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert slots[0] == slots[1]
+
+
+def once(fake, report):
+    original = fake.verdict_for
+
+    def first(spec):
+        fake.verdict_for = original
+        return report
+
+    fake.verdict_for = first

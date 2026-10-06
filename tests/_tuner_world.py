@@ -98,6 +98,8 @@ class Fake:
     edges_hot: dict[int, int] | None = None
     edges_transient: dict[int, int] | None = None
     names_cores: bool = False
+    edges_memory: dict[int, int] | None = None
+    memory_skip: str = ""
     crash_note: tuple[tuple[Evidence, ...], bool] = ((), False)
 
     def __post_init__(self) -> None:
@@ -263,7 +265,7 @@ class Fake:
             finals = {r.core: r.value for r in s.cores}
             if self.stacked(finals):
                 raise Broken(f"completed with values {finals} that fail together")
-            for edges in (self.edges_hot, self.edges_transient):
+            for edges in (self.edges_hot, self.edges_transient, self.edges_memory):
                 if edges is not None and any(finals[core] < edges[core] for core in finals):
                     raise Broken(f"completed with values {finals} that fail an all-core load")
             two_cpus = all(len(cpus) >= 2 for _, cpus in self.layout.cpus_of)
@@ -294,6 +296,14 @@ class Fake:
         load = spec.load.value if spec.load is not None else None
         if load == "soak":
             return Report(Group.PASS, spec.seconds)
+        if load == "memory":
+            if self.memory_skip:
+                return Report(Group.PASS, 0.0, skipped=self.memory_skip)
+            edges = self.edges_memory or self.edges
+            failing = tuple(core for core, value in vector.items() if value < edges[core])
+            if not failing and not self.stacked(vector):
+                return Report(Group.PASS, spec.seconds)
+            return Report(Group.SILICON, spec.seconds, named=failing)
         if load in ("hot", "burst", "warm", "idle"):
             edges = (self.edges_hot if load == "hot" else self.edges_transient) or self.edges
             failing = tuple(core for core, value in vector.items() if value < edges[core])

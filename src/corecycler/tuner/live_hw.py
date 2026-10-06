@@ -11,9 +11,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from corecycler.engine import detector as kernel
-from corecycler.engine.backends import ycruncher
+from corecycler.engine.backends import get_backend, ycruncher
 from corecycler.engine.backends.base import OutcomeKind, StressConfig, StressMode
+from corecycler.engine.backends.stressapptest import StressapptestBackend
+from corecycler.engine.containment import lane_cgroup_parent
 from corecycler.engine.execution import STDOUT_LOG, Lane, Supervisor, ThermalWatch, read_cpu_temperature
+from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.tuner import stages, telemetry
 from corecycler.tuner.live import LiveRig, Store
 from corecycler.tuner.machine.types import (
@@ -180,7 +183,7 @@ class Hold:
         return frozen
 
 
-class YCruncherRunner:
+class StressRunner:
     def __init__(
         self,
         backend_factory,
@@ -191,6 +194,8 @@ class YCruncherRunner:
         read_temperature=None,
         available_mb=None,
         clocks=None,
+        memory_backend=None,
+        budget=None,
     ) -> None:
         self.backend_factory = backend_factory
         self.work_dir = work_dir
@@ -200,24 +205,27 @@ class YCruncherRunner:
         self.read_temperature = read_temperature or read_cpu_temperature
         self.available_mb = available_mb or free_mb
         self.clocks = clocks or read_clocks
+        self.memory_backend = memory_backend or (lambda: get_backend("stressapptest"))
+        self.budget = budget or (lambda n, floor: memory_budget(n, floor, lane_cgroup=lane_cgroup_parent()))
         self.runs = 0
 
     def _supervise(
         self,
         spec: TestSpec,
         stop: threading.Event,
-        lane: Lane,
+        lanes: list[Lane],
         config: StressConfig,
         seconds: float,
         freeze=None,
         poll: float = 1.0,
+        backend=None,
     ):
         observed: list = []
         watch = self.detector()
         watch.reset()
         try:
             supervisor = self.supervisor(
-                backend=self.backend_factory(),
+                backend=backend or self.backend_factory(),
                 detector=watch,
                 thermal=ThermalWatch(max_temperature=95.0, grace_seconds=3.0, hard_margin=8.0, require_sensor=True),
                 stop_event=stop,
@@ -226,10 +234,10 @@ class YCruncherRunner:
                 phase=f"{spec.stage.value} {(spec.load or spec.klass).value}",
                 freeze=freeze,
             )
-            result = supervisor.run([lane], config, seconds)[lane.core_id]
+            results = supervisor.run(lanes, config, seconds)
         finally:
             watch.close()
-        return result, observed
+        return results, observed
 
     def run(self, spec: TestSpec, stop: threading.Event) -> Report:
         self.runs += 1
@@ -239,8 +247,10 @@ class YCruncherRunner:
             settings = ONE_T if spec.klass is Klass.T1 else TWO_T
             config = StressConfig(mode=StressMode.CUSTOM, **settings)
             lane = Lane(core_id=spec.core, cpus=spec.cpus, work_dir=self.work_dir / f"core_{spec.core}")
-            result, observed = self._supervise(spec, stop, lane, config, spec.seconds)
-            return report_from(result, observed, spec.cpus, self.core_of_cpu)
+            results, observed = self._supervise(spec, stop, [lane], config, spec.seconds)
+            return report_from(results[lane.core_id], observed, spec.cpus, self.core_of_cpu)
+        if spec.load is Load.MEMORY:
+            return self._memory(spec, stop)
         firsts = tuple(
             sorted(
                 {
@@ -262,7 +272,8 @@ class YCruncherRunner:
             lane = Lane(core_id=spec.core, cpus=segment.cpus, work_dir=self.work_dir / f"all_{spec.load.value}")
             every = IDLE_SAMPLE_S if spec.load is Load.IDLE else SAMPLE_S
             hold = Hold(segment, self.read_temperature, self.clocks, self.core_of_cpu, every)
-            result, observed = self._supervise(spec, stop, lane, config, segment.duration, hold, poll=0.05)
+            results, observed = self._supervise(spec, stop, [lane], config, segment.duration, hold, poll=0.05)
+            result = results[lane.core_id]
             done += result.duration_seconds
             if result.outcome.kind is not OutcomeKind.PASS or observed:
                 context = telemetry.context(list(hold.ring), spec.load is Load.HOT) if hold.ring else None
@@ -270,6 +281,37 @@ class YCruncherRunner:
                 if result.outcome.kind is not OutcomeKind.PASS or report.evidence:
                     return replace(report, seconds=done, named=named_cores(result, self.core_of_cpu))
         return Report(Group.PASS, done)
+
+    def _memory(self, spec: TestSpec, stop: threading.Event) -> Report:
+        backend = self.memory_backend()
+        if not backend.is_available():
+            return Report(Group.PASS, 0.0, skipped=f"stressapptest is not installed: {backend.resolution().problem}")
+        by_core: dict[int, list[int]] = {}
+        for cpu in spec.cpus:
+            by_core.setdefault(self.core_of_cpu[cpu], []).append(cpu)
+        lanes = [
+            Lane(core_id=core, cpus=tuple(cpus), work_dir=self.work_dir / f"memory_{core}")
+            for core, cpus in sorted(by_core.items())
+        ]
+        threads = max(len(lane.cpus) for lane in lanes)
+        try:
+            budget = self.budget(len(lanes), StressapptestBackend.minimum_memory_mb(threads))
+        except MemoryBudgetUnavailable as exc:
+            return Report(Group.PASS, 0.0, skipped=f"the memory budget is unavailable: {exc}")
+        if not budget.fits:
+            floor = budget.minimum_per_instance_mb
+            reason = f"{budget.per_instance_mb} MB per instance is below the floor of {floor} MB ({budget.describe()})"
+            return Report(Group.PASS, 0.0, skipped=reason)
+        config = StressConfig(threads=threads, memory_mb=budget.per_instance_mb)
+        results, observed = self._supervise(spec, stop, lanes, config, spec.seconds, backend=backend)
+        named = tuple(sorted(core for core, r in results.items() if r.outcome.kind is OutcomeKind.SILICON))
+        worst = min(results.values(), key=lambda r: r.outcome.rank)
+        report = report_from(worst, observed, spec.cpus, self.core_of_cpu, all_core=True)
+        failed = [f"core {core}: {r.detail}" for core, r in sorted(results.items()) if not r.passed]
+        detail = "; ".join([*failed, f"memory budget: {budget.describe()}"]) if failed else ""
+        seconds = max(r.duration_seconds for r in results.values())
+        group = Group.SILICON if named else report.group
+        return replace(report, group=group, seconds=seconds, named=named, detail=detail)
 
     def _soak(self, spec: TestSpec, stop: threading.Event) -> Report:
         watch = self.detector()
@@ -325,7 +367,7 @@ def build_rig(args: argparse.Namespace, topology, smu, backend_factory, say: Cal
     core_of_cpu = {cpu: core for core, cpus in cpus_of for cpu in cpus}
     return LiveRig(
         hardware=SmuHardware(smu, args.write, say),
-        runner=YCruncherRunner(backend_factory, args.state_dir / "runs", core_of_cpu),
+        runner=StressRunner(backend_factory, args.state_dir / "runs", core_of_cpu),
         store=Store(args.state_dir),
         cpus_of=cpus_of,
         domain_of=domain_of,

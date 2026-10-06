@@ -121,6 +121,11 @@ def _allcore_from_json(raw: dict | None) -> AllCore | None:
     return AllCore(**{**raw, **{name: _pairs(raw[name]) for name in pairs}, "frozen": tuple(raw["frozen"])})
 
 
+def _live1_from_json(raw: dict) -> Live1:
+    back = raw["back"]
+    return Live1(raw["index"], tuple(raw["requeue"]), raw["solo"], None if back is None else Stage(back))
+
+
 def _flow_from_json(raw: dict | None) -> Flow | None:
     if raw is None:
         return None
@@ -133,7 +138,7 @@ def _flow_from_json(raw: dict | None) -> Flow | None:
         last_core=raw["last_core"],
         applied=raw["applied"],
         dirty=raw["dirty"],
-        live1=None if live is None else Live1(live["index"], tuple(live["requeue"]), live["solo"]),
+        live1=None if live is None else _live1_from_json(live),
         bisect=_bisect_from_json(raw["bisect"]),
         q5=tuple(((key[0], key[1]), count) for key, count in raw["q5"]),
         q5_others=tuple(raw["q5_others"]),

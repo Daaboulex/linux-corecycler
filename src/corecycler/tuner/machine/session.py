@@ -59,7 +59,7 @@ from corecycler.tuner.machine.types import (
 )
 from corecycler.tuner.orders import next_core, order_problem, round_sequence
 
-ALLCORE_LOADS = frozenset({Load.HOT, Load.BURST, Load.WARM, Load.IDLE, Load.SOAK})
+ALLCORE_LOADS = frozenset({Load.HOT, Load.BURST, Load.WARM, Load.IDLE, Load.MEMORY, Load.SOAK})
 QUARANTINE_STREAK = 3
 INCIDENT_LIMIT = 2
 COOL_POLL_S = 1.0
@@ -369,6 +369,8 @@ def _stale_fail(s: SessionState, core: int, w: World) -> tuple[SessionState, str
         return _live1_outcome(s, core, value, False, w)
     if stage is Stage.BISECT:
         return _bisect_outcome(s, False, w)
+    if stage is Stage.MEMORY:
+        return _memory_flow_rule(s, w)
     if stage in ALLCORE:
         return _allcore_fail(s, None, w)
     raise ValueError(f"a lost verdict has no stage rule in {stage}")
@@ -376,6 +378,8 @@ def _stale_fail(s: SessionState, core: int, w: World) -> tuple[SessionState, str
 
 def _flow_crash(s: SessionState, w: World, context=None) -> tuple[SessionState, str | None]:
     flow = s.flow
+    if flow.stage is Stage.MEMORY:
+        return _memory_flow_rule(s, w)
     if flow.stage in ALLCORE:
         return _allcore_fail(s, context, w)
     lane = next(r.core for r in s.cores if r.in_test)
@@ -494,6 +498,8 @@ def _next(s: SessionState, w: World, picked: int | None) -> Transition:
     stage = s.flow.stage
     if stage is Stage.FINALIZE:
         return _finalize(s, w)
+    if stage is Stage.MEMORY:
+        return _memory_next(s, w)
     if stage in ALLCORE:
         return _allcore_next(s, w)
     if stage is Stage.LIVE1:
@@ -594,6 +600,8 @@ def _live1_next(s: SessionState, w: World, picked: int | None) -> Transition:
     elif live.requeue:
         core = live.requeue[0]
         vector = tuple((r.core, r.value) for r in s.cores)
+    elif live.back is not None:
+        return _next(replace(s, flow=replace(flow, stage=live.back, live1=None)), w, None)
     else:
         return _end_live1(s, w)
     if picked is None:
@@ -637,6 +645,12 @@ def _past_tighten(flow: Flow, cfg) -> Flow:
 
 
 def _past_endurance(flow: Flow, cfg) -> Flow:
+    if cfg.memory:
+        return replace(flow, stage=Stage.MEMORY)
+    return _past_memory(flow, cfg)
+
+
+def _past_memory(flow: Flow, cfg) -> Flow:
     if cfg.soak and not flow.dirty:
         return replace(flow, stage=Stage.SOAK)
     return replace(flow, stage=Stage.FINALIZE, applied=False)
@@ -711,6 +725,69 @@ def _allcore_fail(s: SessionState, ctx, w: World) -> tuple[SessionState, str | N
     return replace(loosened, flow=replace(flow, allcore=cursor, dirty=True)), None
 
 
+def _memory_next(s: SessionState, w: World) -> Transition:
+    values = {r.core: r.value for r in s.cores}
+    first = s.cores[0].core
+    vector = tuple((core, values[core]) for core, _ in s.baseline)
+    cfg = s.config
+    spec = TestSpec(
+        Klass.T1, first, values[first], _all_cpus(s, w), cfg.memory_seconds, vector, Stage.MEMORY, Load.MEMORY
+    )
+    return _start_test(s, s.flow, spec, w)
+
+
+def _memory_flow_rule(s: SessionState, w: World) -> tuple[SessionState, str | None]:
+    values = {r.core: r.value for r in s.cores}
+    if not any(values.values()):
+        return s, "the memory load fails with every owned core at 0"
+    run = bisect.begin(Stage.MEMORY, s.cores[0].core, Klass.T1, values, dict(w.domain_of))
+    return replace(s, flow=replace(s.flow, stage=Stage.BISECT, bisect=run)), None
+
+
+def _memory_lanes(s: SessionState, named: tuple[int, ...], w: World) -> SessionState | Transition:
+    owned = {r.core for r in s.cores}
+    held = tuple(core for core in named if core not in owned)
+    if held:
+        return _enter_pause(
+            s,
+            PauseReason.HELD_KNOB,
+            f"the memory lane of core {held[0]} failed at a value this session does not own",
+            held,
+        )
+    if not named:
+        s, stock = _memory_flow_rule(s, w)
+        return s if stock is None else _enter_pause(s, PauseReason.STOCK_UNSTABLE, stock)
+    requeue: list[int] = []
+    solo = None
+    for core in named:
+        rec = s.core(core)
+        if rec.value < 0:
+            s = s.with_core(search.back_off_in_place(rec, s.config, 1))
+            requeue.append(core)
+        elif solo is None and any(r.value != 0 for r in s.cores if r.core != core):
+            solo = core
+        elif solo is None:
+            return _enter_pause(
+                s, PauseReason.STOCK_UNSTABLE, f"core {core} fails the memory load with every core at 0", (core,)
+            )
+    live = Live1(index=len(_live1_sequence(s, w)), requeue=tuple(requeue), solo=solo, back=Stage.MEMORY)
+    return replace(s, flow=replace(s.flow, stage=Stage.LIVE1, live1=live, dirty=True))
+
+
+def _memory_verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing: bool, w: World) -> Transition:
+    s = replace(s, streaks=Streaks(), resume_streak=0)
+    if rep.skipped:
+        skipped = _next_wait(replace(s, flow=_past_memory(s.flow, s.config)), spec, pausing)
+        notice = Announce("memory_skipped", f"MEMORY skipped, not a stability verdict: {rep.skipped}")
+        return replace(skipped, effects=(notice, *skipped.effects))
+    if group is Group.PASS:
+        return _next_wait(replace(s, flow=_past_memory(s.flow, s.config)), spec, pausing)
+    fixed = _memory_lanes(s, rep.named, w)
+    if isinstance(fixed, Transition):
+        return fixed
+    return _next_wait(fixed, spec, pausing)
+
+
 def _allcore_named(s: SessionState, named: tuple[int, ...]) -> SessionState | Transition | None:
     owned = {r.core for r in s.cores}
     held = tuple(core for core in named if core not in owned)
@@ -778,6 +855,8 @@ def _bisect_next(s: SessionState, w: World) -> Transition:
     lane = run.lane
     if run.entry in (Stage.STEADY, Stage.ENDURANCE):
         cpus, seconds, load = _all_cpus(s, w), s.config.bisect_seconds, Load.HOT
+    elif run.entry is Stage.MEMORY:
+        cpus, seconds, load = _all_cpus(s, w), s.config.memory_seconds, Load.MEMORY
     else:
         cpus, seconds, load = _cpus_for(lane, run.klass, w), s.config.test_seconds_1t, Load.ONE_T
     spec = TestSpec(run.klass, lane, dict(vector)[lane], cpus, seconds, vector, Stage.BISECT, load)
@@ -851,7 +930,7 @@ def _reported(s: SessionState, e: WorkerReported, w: World) -> Transition:
         after = applied
     if s.flow.stage is Stage.BISECT and after.flow.stage is not Stage.BISECT:
         return _next_wait(after, spec, pausing)
-    group = rep.group
+    group = Group.APPARATUS if rep.skipped and spec.stage is not Stage.MEMORY else rep.group
     if any(ev.core == spec.core for ev in rep.evidence) and group is Group.PASS:
         group = Group.SILICON
     if group is Group.ENVIRONMENT and rep.unblamed_corrected and spec.stage in (Stage.SEARCH, Stage.LIVE1):
@@ -880,6 +959,8 @@ def _after_test(s: SessionState, core: int) -> SessionState:
 
 
 def _verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing: bool, w: World) -> Transition:
+    if spec.stage is Stage.MEMORY:
+        return _memory_verdict(s, spec, rep, group, pausing, w)
     if spec.stage in ALLCORE:
         return _allcore_verdict(s, spec, rep, group, pausing, w)
     if spec.stage is Stage.LIVE1:

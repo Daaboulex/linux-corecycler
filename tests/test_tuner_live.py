@@ -112,6 +112,7 @@ def rig(tmp_path: Path, hardware: FakeHardware | None = None, runner=None) -> Li
 def snapshots() -> list:
     fake = fresh(3, [-3, -1, -2], 2, max_offset=-5, k_1t=2, k_2t=1, wait_between_cores_s=0.0, endurance=True)
     fake.stacks = (((0, 1), (0, 1), 3),)
+    fake.edges_memory = {0: -1, 1: -1, 2: -1}
     start(fake)
     seen = []
     crashed = False
@@ -130,9 +131,19 @@ def snapshots() -> list:
 def test_every_stored_state_of_a_run_survives_the_session_file_round_trip():
     stored = snapshots()
     assert len(stored) > 20
-    expected = {Stage.SEARCH, Stage.LIVE1, Stage.BISECT, Stage.STEADY, Stage.TRANSIENT, Stage.ENDURANCE, Stage.SOAK}
+    expected = {
+        Stage.SEARCH,
+        Stage.LIVE1,
+        Stage.BISECT,
+        Stage.STEADY,
+        Stage.TRANSIENT,
+        Stage.ENDURANCE,
+        Stage.MEMORY,
+        Stage.SOAK,
+    }
     assert {s.flow.stage for s in stored if s.flow is not None} >= expected
     assert stored[-1].status == "completed"
+    assert any(s.flow.live1.back is Stage.MEMORY for s in stored if s.flow is not None and s.flow.live1 is not None)
     for st in stored:
         assert stored_from_json(json.loads(json.dumps(stored_to_json(st)))) == st
 
@@ -384,7 +395,7 @@ def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, 
             }
 
     monkeypatch.setattr(live_hw.kernel, "ErrorDetector", FakeDetector)
-    runner = live_hw.YCruncherRunner(lambda: "backend", tmp_path, {0: 0, 16: 0}, FakeSupervisor)
+    runner = live_hw.StressRunner(lambda: "backend", tmp_path, {0: 0, 16: 0}, FakeSupervisor)
     one = runner.run(Spec(Klass.T1, 0, -5, (16,), 60.0, ((0, -5),), Stage.SEARCH), threading.Event())
     two = runner.run(Spec(Klass.T2, 0, -5, (0, 16), 90.0, ((0, -5),), Stage.SEARCH), threading.Event())
     assert one.group is Group.PASS and two.group is Group.PASS

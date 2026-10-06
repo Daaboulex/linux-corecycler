@@ -33,7 +33,7 @@ def resident(s: SessionState, core: int) -> int:
         if core not in group:
             return s.baseline_of(core)
         return rec.value if run.rerun is not None else dict(run.values)[core]
-    if flow.stage in ALLCORE:
+    if flow.stage in ALLCORE or flow.stage is Stage.MEMORY:
         if not rec.in_test:
             return s.baseline_of(core)
         cursor = flow.allcore

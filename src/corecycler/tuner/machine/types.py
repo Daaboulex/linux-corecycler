@@ -72,6 +72,7 @@ class Stage(StrEnum):
     TRANSIENT = "transient"
     TIGHTEN = "tighten"
     ENDURANCE = "endurance"
+    MEMORY = "memory"
     SOAK = "soak"
     FINALIZE = "finalize"
 
@@ -87,6 +88,7 @@ class Load(StrEnum):
     BURST = "burst"
     WARM = "warm"
     IDLE = "idle"
+    MEMORY = "memory"
     SOAK = "soak"
 
 
@@ -115,6 +117,8 @@ class MachineConfig:
     soak: bool = True
     endurance: bool = False
     endurance_window_s: float = 10800.0
+    memory: bool = True
+    memory_seconds: float = 300.0
     wait_between_cores_s: float = 15.0
     apparatus_retries: int = 3
     thermal_retries: int = 3
@@ -196,6 +200,7 @@ class Live1:
     index: int = 0
     requeue: tuple[int, ...] = ()
     solo: int | None = None
+    back: Stage | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,6 +325,7 @@ class Report:
     unblamed_corrected: bool = False
     context: FailContext | None = None
     named: tuple[int, ...] = ()
+    skipped: str = ""
 
 
 @dataclass(frozen=True, slots=True)
