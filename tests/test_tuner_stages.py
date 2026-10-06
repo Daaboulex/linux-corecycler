@@ -260,39 +260,25 @@ def sample(running, mhz, tctl=70.0):
     return telemetry.Sample(running, tuple(enumerate(mhz)), tctl)
 
 
-def test_working_cores_are_those_near_the_top_clock_in_at_least_half_the_samples():
-    ring = [
-        sample(True, [5000, 4300, 1000, 5000]),
-        sample(True, [5000, 4200, 1000, 600]),
-        sample(True, [5000, 4400, 1000, 600]),
-    ]
-    assert telemetry.working(ring[0]) == (0, 1, 3)
-    assert telemetry.ring_cores(ring) == (0, 1)
-    assert telemetry.ring_cores([*ring[:2], sample(False, [600, 600, 600, 600])]) == (0, 1, 3)
-    assert telemetry.working(telemetry.Sample(True, (), None)) == ()
-    assert telemetry.working(sample(True, [5000, 4250, 4249, 3000])) == (0, 1)
-    assert telemetry.ring_cores([sample(True, [5000, 1000]), sample(True, [1000, 5000])]) == (0, 1)
+def test_the_working_cores_are_the_cores_the_failing_segment_ran_on_whatever_their_clocks():
+    ring = [sample(True, [5600, 600, 5600, 600]), sample(True, [5600, 600, 5600, 600])]
+    ctx = telemetry.context(ring, True, (1, 3), ())
+    assert ctx.working == (1, 3) and ctx.paused is False and ctx.steady is True
+    assert ctx.mhz == 600.0
 
 
-def test_a_failure_while_running_reads_the_last_three_running_samples_and_a_frozen_one_reads_the_ring():
-    old = [sample(True, [5000, 5000, 1000, 1000]) for _ in range(5)]
-    late = [sample(True, [1000, 1000, 5000, 5000]) for _ in range(3)]
-    assert telemetry.context(old + late, True).working == (2, 3)
-    frozen = telemetry.context([*old, *late[:2], sample(False, [600, 600, 600, 600])], True)
-    assert frozen.working == (0, 1) and frozen.paused is True and frozen.steady is False
-
-
-def test_the_band_clock_and_tctl_come_from_the_hottest_running_sample():
+def test_the_band_clock_is_the_named_cores_own_clock_in_the_hottest_running_sample():
     ring = [
         sample(True, [5000, 4000, 2000, 1000], 80.0),
         sample(True, [5600, 5400, 4000, 600], 90.0),
         sample(False, [600] * 4, 99.0),
     ]
-    ctx = telemetry.context(ring, False)
-    assert (ctx.mhz, ctx.tctl, ctx.steady) == (5000.0, 90.0, False)
-    assert telemetry.band_clock(telemetry.Sample(True, (), None)) is None
+    ctx = telemetry.context(ring, False, (0, 1, 2), (1,))
+    assert (ctx.mhz, ctx.tctl, ctx.paused, ctx.steady) == (5400.0, 90.0, True, False)
+    assert telemetry.context(ring, False, (0, 1, 2), ()).mhz == 5000.0
+    assert telemetry.band_clock(telemetry.Sample(True, (), None), (0,)) is None
     with pytest.raises(ValueError):
-        telemetry.context([], True)
+        telemetry.context([], True, (0,), ())
 
 
 def test_the_hold_samples_each_core_at_its_fastest_cpu_on_its_own_cadence():
@@ -316,10 +302,12 @@ def test_clocks_are_read_from_sysfs_in_mhz(tmp_path):
     assert live_hw.read_clocks(tmp_path) == {0: 5100.0, 17: 624.0}
 
 
-def test_the_failure_context_names_the_cores_running_near_the_top_clock():
-    clocks = {0: 5000.0, 1: 5000.0, 2: 1000.0, 3: 1000.0}
-    report = runner(Script([Outcome.COMPUTATION]), clocks=lambda: clocks).run(spec(Load.HOT, 510.0), threading.Event())
-    assert report.context.working == (0, 1) and report.context.mhz == 5000.0
+def test_the_failure_context_names_the_segments_cores_and_the_named_cores_clock(tmp_path):
+    clocks = {0: 5000.0, 1: 5000.0, 2: 4200.0, 3: 1000.0}
+    (tmp_path / "stdout.log").write_text("Error(s) encountered on logical core 6.")
+    script = Script([Outcome.COMPUTATION], evidence_dir=tmp_path)
+    report = runner(script, clocks=lambda: clocks).run(spec(Load.HOT, 510.0), threading.Event())
+    assert report.context.working == (0, 1, 2, 3) and report.named == (2,) and report.context.mhz == 4200.0
 
 
 def test_a_failure_before_any_sample_has_no_context():
@@ -434,3 +422,15 @@ def test_only_warm_slices_wait_out_their_hold_and_the_runner_hands_the_cap_to_th
     script = Script([Outcome.PASS] * 8)
     runner(script).run(spec(Load.WARM), threading.Event())
     assert script.caps == [stages.WARM_HOLD_CAP_S] * 8
+
+
+def test_the_working_cores_of_a_failing_burst_segment_are_the_cores_it_drew():
+    for value in range(-1, -30, -1):
+        script = Script([Outcome.COMPUTATION])
+        burst = Spec(Klass.T1, 0, value, CPUS, 480.0, tuple((c, value) for c in range(4)), Stage.TRANSIENT, Load.BURST)
+        report = runner(script).run(burst, threading.Event())
+        drawn = tuple(sorted({CORE_OF_CPU[c] for c in script.seen[0][0]}))
+        if len(drawn) < 4:
+            assert report.context.working == drawn
+            return
+    raise AssertionError("no seed drew a partial segment")

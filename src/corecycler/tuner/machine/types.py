@@ -231,8 +231,6 @@ class AllCore:
     t_clean: float = 0.0
     t_types: tuple = ()
     t_busy: tuple = ()
-    t_cores: tuple = ()
-    t_n: int = 0
     co_delta: tuple = ()
     rung: int = 0
     floors: tuple[tuple[int, int], ...] = ()

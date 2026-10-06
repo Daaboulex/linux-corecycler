@@ -12,7 +12,6 @@ BAND_BORDERS_MHZ = (4400, 5175, 5650)
 COLUMN_SPLIT_C = 75.0
 NEAR_BAND_MHZ = 150
 NEAR_COLUMN_C = 5.0
-BACKGROUND_SHARE = 0.7
 OWNER_PRIORITY = (8, 0, 9, 10, 11, 13, 12, 2, 1, 3, 4, 5, 6, 7, 14, 15)
 
 
@@ -43,11 +42,6 @@ def _bump(pairs: tuple, key, by: int = 1) -> tuple:
     return tuple(sorted(counts.items(), key=lambda item: str(item[0])))
 
 
-def background(cursor: AllCore) -> tuple[int, ...]:
-    n = max(1, cursor.t_n)
-    return tuple(sorted(core for core, count in cursor.t_cores if count >= BACKGROUND_SHARE * n))
-
-
 def type_key(ctx: FailContext, light: bool, kind: str) -> str:
     if light:
         return "light"
@@ -73,10 +67,8 @@ def transient_fix(
     cursor: AllCore, ctx: FailContext, cores: tuple[CoreRecord, ...], selected: int, owner_layout: bool
 ) -> Fix:
     working = tuple(sorted(set(ctx.working)))
-    cursor = replace(cursor, t_cores=_bump_all(cursor.t_cores, working), t_n=cursor.t_n + 1)
-    bg = background(cursor)
-    busy = tuple(core for core in working if core not in bg)
-    light = ctx.paused or not busy
+    light = ctx.paused or not working
+    busy = () if light else working
     kind = "light" if light else ("step" if len(working) * 2 >= selected else "boost")
     key = type_key(ctx, light, kind)
     n = _count(cursor.t_types, key)
@@ -86,7 +78,7 @@ def transient_fix(
         t_busy = _bump(t_busy, f"{key}/{core}")
     cursor = replace(cursor, t_busy=t_busy)
     recurring = tuple(core for core in busy if _count(t_busy, f"{key}/{core}") >= 2)
-    core_set = (working or bg) if light else recurring
+    core_set = working if light else recurring
     candidates = ["core"] if light else []
     if kind == "boost" and core_set:
         candidates.append("core")
@@ -99,12 +91,6 @@ def transient_fix(
     if core is None:
         return Fix(cursor, None, "nothing left to loosen")
     return _loosened(cursor, core, f"{kind} failure, key {key}, least loosened core")
-
-
-def _bump_all(pairs: tuple, cores: tuple[int, ...]) -> tuple:
-    for core in cores:
-        pairs = _bump(pairs, core)
-    return pairs
 
 
 def _loosened(cursor: AllCore, core: int, why: str) -> Fix:

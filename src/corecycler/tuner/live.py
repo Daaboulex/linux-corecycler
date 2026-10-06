@@ -117,7 +117,7 @@ def _bisect_from_json(raw: dict | None) -> BisectRun | None:
 def _allcore_from_json(raw: dict | None) -> AllCore | None:
     if raw is None:
         return None
-    pairs = ("t_types", "t_busy", "t_cores", "co_delta", "floors")
+    pairs = ("t_types", "t_busy", "co_delta", "floors")
     return AllCore(**{**raw, **{name: _pairs(raw[name]) for name in pairs}, "frozen": tuple(raw["frozen"])})
 
 

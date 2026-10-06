@@ -280,10 +280,13 @@ class StressRunner:
             result = results[lane.core_id]
             done += result.duration_seconds
             if result.outcome.kind is not OutcomeKind.PASS or observed:
-                context = telemetry.context(list(hold.ring), spec.load is Load.HOT) if hold.ring else None
+                assigned = tuple(sorted({self.core_of_cpu[c] for c in segment.cpus}))
+                named = named_cores(result, self.core_of_cpu)
+                steady = spec.load is Load.HOT
+                context = telemetry.context(list(hold.ring), steady, assigned, named) if hold.ring else None
                 report = report_from(result, observed, segment.cpus, self.core_of_cpu, context, all_core=True)
                 if result.outcome.kind is not OutcomeKind.PASS or report.evidence:
-                    return replace(report, seconds=done, named=named_cores(result, self.core_of_cpu))
+                    return replace(report, seconds=done, named=named)
         return Report(Group.PASS, done)
 
     def _memory(self, spec: TestSpec, stop: threading.Event) -> Report:

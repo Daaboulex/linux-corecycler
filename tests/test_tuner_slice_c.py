@@ -102,20 +102,20 @@ def test_the_transient_rule_takes_the_least_loosened_working_core_for_a_light_fa
 
 def test_a_boost_failure_names_a_core_only_when_it_recurs_under_the_same_type_key():
     cores = tuple(CoreRecord(c, Phase.PROVEN, -5) for c in range(8))
-    history = AllCore(t_n=10, t_cores=((0, 9),))
     ctx = FailContext(False, (0, 3), False, mhz=5300.0, tctl=60.0)
-    first = allcore.transient_fix(history, ctx, cores, 8, False)
+    first = allcore.transient_fix(AllCore(), ctx, cores, 8, False)
     second = allcore.transient_fix(first.cursor, ctx, cores, 8, False)
-    assert allcore.background(first.cursor) == (0,)
-    assert "least loosened" in first.detail
+    assert "least loosened" in first.detail and first.core == 0
     assert second.core == 3 and "least loosened" not in second.detail
 
 
-def test_the_first_transient_failure_is_light_because_its_cores_count_as_background():
+def test_a_failure_while_the_load_was_frozen_is_light_and_loosens_a_core_that_ran_it():
     cores = tuple(CoreRecord(c, Phase.PROVEN, -5) for c in range(8))
-    fix = allcore.transient_fix(AllCore(), FailContext(False, (3,), False, 5300.0, 60.0), cores, 8, False)
+    fix = allcore.transient_fix(AllCore(), FailContext(False, (3,), True, 5300.0, 60.0), cores, 8, False)
     assert fix.detail.startswith("light")
     assert fix.core == 3
+    running = allcore.transient_fix(AllCore(), FailContext(False, (3,), False, 5300.0, 60.0), cores, 8, False)
+    assert running.detail.startswith("boost")
 
 
 def test_a_step_failure_falls_back_to_the_least_loosened_core_and_the_owner_order_breaks_ties():
