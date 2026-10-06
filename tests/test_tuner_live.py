@@ -299,6 +299,21 @@ def test_a_database_that_cannot_be_written_puts_the_cores_at_stock(tmp_path, mon
     assert r.hardware.co == {0: 0, 1: 0, 8: 0}
 
 
+def test_a_stock_marker_that_cannot_be_written_still_puts_the_cores_at_stock(tmp_path, monkeypatch):
+    said = []
+    r = rig(tmp_path)
+    r.say = said.append
+    r.start(config(), 1, 7, True)
+    while not any(value for value in r.hardware.co.values()):
+        r.step(0.01)
+    monkeypatch.setattr(r.store, "save", broken)
+    monkeypatch.setattr(r.store, "write_marker", lambda boot: (_ for _ in ()).throw(OSError(28, "No space left")))
+    final = r.run_until_rest(0.01)
+    assert final.pause.reason is PauseReason.DATABASE
+    assert r.hardware.co == {0: 0, 1: 0, 8: 0}
+    assert any("stock marker could not be written" in line and "No space left" in line for line in said)
+
+
 def test_a_merged_session_resumes_under_its_new_id(tmp_path):
     first = rig(tmp_path / "a", db=database(tmp_path / "a" / "history.db"))
     first.start(config(), 1, 7, True)

@@ -475,7 +475,13 @@ class LiveRig:
             case ReadCrashEvidence():
                 return self._crash_evidence(acting)
             case WriteStockMarker():
-                self.store.write_marker(self.hardware.boot_id())
+                try:
+                    self.store.write_marker(self.hardware.boot_id())
+                except OSError as exc:
+                    self.say(
+                        "the stock marker could not be written, so the cores go to stock without it and a resume "
+                        f"will not know the database fell behind: {exc}"
+                    )
             case ClearStockMarker():
                 self.store.clear_marker()
             case Announce(kind=kind, text=text):
