@@ -10,8 +10,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from corecycler.engine import detector as kernel
+from corecycler.engine.backends import ycruncher
 from corecycler.engine.backends.base import OutcomeKind, StressConfig, StressMode
-from corecycler.engine.execution import Lane, Supervisor, ThermalWatch, read_cpu_temperature
+from corecycler.engine.execution import STDOUT_LOG, Lane, Supervisor, ThermalWatch, read_cpu_temperature
 from corecycler.tuner import stages
 from corecycler.tuner.live import LiveRig, Store
 from corecycler.tuner.machine.types import (
@@ -112,6 +113,16 @@ def report_from(
         unblamed_corrected=bool(unblamed) and all(event.corrected for event in unblamed) and not trouble,
         context=context,
     )
+
+
+def named_cores(result, core_of_cpu: dict[int, int]) -> tuple[int, ...]:
+    if result.outcome.kind is not OutcomeKind.SILICON or result.evidence_dir is None:
+        return ()
+    cpus = ycruncher.named_cpus((result.evidence_dir / STDOUT_LOG).read_text(errors="replace"))
+    unknown = [cpu for cpu in cpus if cpu not in core_of_cpu]
+    if unknown:
+        raise ValueError(f"y-cruncher named CPUs {unknown}, which the topology does not have")
+    return tuple(sorted({core_of_cpu[cpu] for cpu in cpus}))
 
 
 def free_mb(meminfo: Path = Path("/proc/meminfo")) -> int:
@@ -229,7 +240,7 @@ class YCruncherRunner:
                 )
                 report = report_from(result, observed, segment.cpus, self.core_of_cpu, context, all_core=True)
                 if result.outcome.kind is not OutcomeKind.PASS or report.evidence:
-                    return replace(report, seconds=done)
+                    return replace(report, seconds=done, named=named_cores(result, self.core_of_cpu))
         return Report(Group.PASS, done)
 
     def _soak(self, spec: TestSpec, stop: threading.Event) -> Report:

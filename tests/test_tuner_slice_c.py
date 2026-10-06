@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from itertools import takewhile
+
 from corecycler.tuner.machine import allcore
 from corecycler.tuner.machine.types import (
     AllCore,
@@ -11,7 +13,7 @@ from corecycler.tuner.machine.types import (
     Phase,
     Stage,
 )
-from tests._tuner_world import fresh, run_to_rest, start
+from tests._tuner_world import Group, Report, fresh, run_to_rest, start
 
 FAST = {
     "hot_seconds": 1.0,
@@ -26,11 +28,12 @@ FAST = {
 }
 
 
-def run(edges, hot=None, transient=None, cores=2, domains=2, stacks=(), on_start=None, **cfg):
+def run(edges, hot=None, transient=None, cores=2, domains=2, stacks=(), on_start=None, names=False, **cfg):
     fake = fresh(cores, edges, domains, max_offset=-8, **{**FAST, **cfg})
     fake.edges_hot = hot
     fake.edges_transient = transient
     fake.stacks = stacks
+    fake.names_cores = names
     stages = []
     original = fake.check_start
 
@@ -176,3 +179,86 @@ def test_a_transient_failure_in_endurance_loosens_one_core_and_runs_the_same_loa
     assert fake.state.core(0).value == -5
     endurance = [(load, vector[0]) for stage, load, vector in stages if stage is Stage.ENDURANCE]
     assert endurance[:3] == [(Load.HOT, -6), (Load.BURST, -6), (Load.BURST, -5)]
+
+
+def test_a_steady_failure_that_names_a_core_backs_that_core_off_in_place_without_a_bisect():
+    fake, stages = run([-6, -2], hot={0: -4, 1: -2}, names=True)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert Stage.BISECT not in {stage for stage, _, _ in stages}
+    assert (fake.state.core(0).value, fake.state.core(0).fb) == (-4, -5)
+    assert [vector[0] for stage, _, vector in stages if stage is Stage.STEADY][:3] == [-6, -5, -4]
+    order = [stage for stage, _, _ in stages]
+    assert len(order) - order[::-1].index(Stage.LIVE1) > order.index(Stage.STEADY)
+
+
+def test_a_transient_failure_that_names_a_core_backs_off_that_core_and_leaves_nothing_to_tighten():
+    fake, stages = run([-6, -3], transient={0: -5, 1: -3}, names=True)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert (fake.state.core(0).value, fake.state.core(0).fb) == (-5, -6)
+    assert Stage.TIGHTEN not in {stage for stage, _, _ in stages}
+
+
+def name_from(stage, hot=None, transient=None):
+    def on_start(fake, spec):
+        if spec.stage is stage and not fake.names_cores:
+            fake.names_cores = True
+            fake.edges_hot = hot or fake.edges_hot
+            fake.edges_transient = transient or fake.edges_transient
+
+    return on_start
+
+
+def test_a_tighten_trial_that_names_its_own_core_freezes_the_item_as_before():
+    fake, stages = run([-6, -3], transient={0: -5, 1: -3}, on_start=name_from(Stage.TIGHTEN))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert (fake.state.core(0).value, fake.state.core(0).fb) == (-5, -7)
+    assert [vector[0] for stage, _, vector in stages if stage is Stage.TIGHTEN] == [-6]
+
+
+def report_once(stage, report, nth=1):
+    seen = []
+
+    def on_start(fake, spec):
+        if spec.stage is stage:
+            seen.append(spec)
+        if len(seen) == nth and not getattr(fake, "reported", False):
+            fake.reported = True
+            original = fake.verdict_for
+
+            def once(spec):
+                fake.verdict_for = original
+                return report
+
+            fake.verdict_for = once
+
+    return on_start
+
+
+def test_a_tighten_trial_that_names_another_core_backs_that_core_off_and_repeats_the_trial():
+    named = Report(Group.SILICON, 1.0, named=(1,))
+    fake, stages = run([-6, -3], transient={0: -5, 1: -3}, on_start=report_once(Stage.TIGHTEN, named))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert (fake.state.core(1).value, fake.state.core(1).fb) == (-2, -3)
+    trials = [(vector[0], vector[1]) for stage, _, vector in stages if stage is Stage.TIGHTEN]
+    assert trials[:2] == [(-6, -3), (-6, -2)]
+
+
+def test_a_named_core_outside_the_session_pauses_as_a_held_knob():
+    named = Report(Group.SILICON, 1.0, named=(7,))
+    fake, _ = run([-4, -2], on_start=report_once(Stage.STEADY, named))
+    assert fake.state.lifecycle is Lifecycle.PAUSED
+    assert fake.state.pause.reason is PauseReason.HELD_KNOB and "core 7" in fake.state.pause.detail
+
+
+def test_a_named_core_already_at_zero_leaves_the_failure_to_the_stage_rule():
+    fake, stages = run([0, -2], hot={0: 1, 1: -2}, names=True)
+    assert Stage.BISECT in {stage for stage, _, _ in stages}
+
+
+def test_a_named_back_off_in_transient_restarts_the_clean_window_on_the_same_load():
+    named = Report(Group.SILICON, 1.0, named=(0,))
+    fake, stages = run([-6, -3], on_start=report_once(Stage.TRANSIENT, named, nth=2))
+    begin = next(i for i, (stage, _, _) in enumerate(stages) if stage is Stage.TRANSIENT)
+    first_pass = [load for _, load, _ in takewhile(lambda run: run[0] is Stage.TRANSIENT, stages[begin:])]
+    assert first_pass == [Load.BURST, Load.WARM, Load.WARM, Load.BURST]
+    assert (fake.state.core(0).value, fake.state.core(0).fb) == (-5, -6)

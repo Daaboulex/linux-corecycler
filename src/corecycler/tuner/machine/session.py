@@ -711,12 +711,35 @@ def _allcore_fail(s: SessionState, ctx, w: World) -> tuple[SessionState, str | N
     return replace(loosened, flow=replace(flow, allcore=cursor, dirty=True)), None
 
 
+def _allcore_named(s: SessionState, named: tuple[int, ...]) -> SessionState | Transition | None:
+    owned = {r.core for r in s.cores}
+    held = tuple(core for core in named if core not in owned)
+    if held:
+        return _enter_pause(
+            s, PauseReason.HELD_KNOB, f"y-cruncher named core {held[0]}, whose value this session does not own", held
+        )
+    flow = s.flow
+    if flow.stage is Stage.TIGHTEN and flow.allcore.item in named:
+        return None
+    movable = [core for core in named if s.core(core).value < 0]
+    if not movable:
+        return None
+    for core in movable:
+        s = s.with_core(search.back_off_in_place(s.core(core), s.config, 1))
+    return replace(s, flow=replace(flow, allcore=replace(flow.allcore, t_clean=0.0), dirty=True))
+
+
 def _allcore_verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing: bool, w: World) -> Transition:
     cfg = s.config
     flow = s.flow
     cursor = flow.allcore
     s = replace(s, streaks=Streaks(), resume_streak=0)
     if group is Group.SILICON:
+        fixed = _allcore_named(s, rep.named)
+        if isinstance(fixed, Transition):
+            return fixed
+        if fixed is not None:
+            return _next_wait(fixed, spec, pausing)
         s, stock = _allcore_fail(s, rep.context, w)
         if stock is not None:
             return _enter_pause(s, PauseReason.STOCK_UNSTABLE, stock)

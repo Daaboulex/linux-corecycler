@@ -268,15 +268,18 @@ def test_every_future_of_a_tiny_cpu_ends_completed_or_quarantined_and_breaks_no_
 
 
 @pytest.mark.parametrize(
-    ("edges", "hot", "transient", "endurance"),
+    ("edges", "hot", "transient", "endurance", "names"),
     [
-        ([-3, -2], {0: -2, 1: -2}, None, False),
-        ([-3, -2], None, {0: -2, 1: -1}, False),
-        ([-3, -2], None, None, True),
+        ([-3, -2], {0: -2, 1: -2}, None, False, False),
+        ([-3, -2], None, {0: -2, 1: -1}, False, False),
+        ([-3, -2], None, None, True, False),
+        ([-3, -2], {0: -2, 1: -2}, None, False, True),
+        ([-3, -2], None, {0: -2, 1: -1}, True, True),
     ],
 )
-def test_every_future_of_a_cpu_whose_all_core_loads_fail_reaches_a_rest(edges, hot, transient, endurance):
+def test_every_future_of_a_cpu_whose_all_core_loads_fail_reaches_a_rest(edges, hot, transient, endurance, names):
     fake = tiny(2, edges, 2, endurance=endurance, endurance_window_s=2.0)
+    fake.names_cores = names
     fake.edges_hot = hot
     fake.edges_transient = transient
     survey = explore(fake, {**ONE_OF_EACH, "total": 1}, cap=2_000_000)

@@ -3,10 +3,12 @@ from __future__ import annotations
 import random
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
 from corecycler.engine import detector as kernel
+from corecycler.engine.backends import ycruncher
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.backends.ycruncher import ALL_TESTS
 from corecycler.tuner import live_hw, stages
@@ -88,6 +90,7 @@ class Script:
     outcomes: list
     events: list = field(default_factory=list)
     seen: list = field(default_factory=list)
+    evidence_dir: Path | None = None
 
 
 def runner(script: Script, readings=None, detector=None):
@@ -102,7 +105,8 @@ def runner(script: Script, readings=None, detector=None):
             self.freeze(duration / 2)
             self.observed.extend(script.events.pop(0) if script.events else [])
             elapsed = duration if outcome is Outcome.PASS else duration / 2
-            return {lanes[0].core_id: StressResult(lanes[0].core_id, outcome, "d", elapsed)}
+            result = StressResult(lanes[0].core_id, outcome, "d", elapsed, evidence_dir=script.evidence_dir)
+            return {lanes[0].core_id: result}
 
     class FakeDetector:
         def reset(self):
@@ -113,7 +117,7 @@ def runner(script: Script, readings=None, detector=None):
 
     return live_hw.YCruncherRunner(
         lambda: None,
-        __import__("pathlib").Path("/nonexistent"),
+        Path("/nonexistent"),
         CORE_OF_CPU,
         FakeSupervisor,
         detector=detector or FakeDetector,
@@ -205,3 +209,29 @@ def test_a_stopped_soak_is_no_verdict():
     stop.set()
     report = runner(Script([]), detector=soak_detector([])).run(spec(Load.SOAK, 5.0), stop)
     assert report.group is Group.APPARATUS and "stopped" in report.detail
+
+
+def test_y_cruncher_names_each_failing_cpu_once_through_its_color_codes():
+    out = "\x1b[1;31mError(s) encountered on logical core 6.\x1b[0m\nError(s) encountered on logical core 6.\n"
+    assert ycruncher.named_cpus(out + "Error(s) encountered on logical core 13.") == (6, 13)
+    assert ycruncher.named_cpus("Error(s) encountered on logical core.") == ()
+
+
+@pytest.mark.parametrize(
+    ("outcome", "log", "named"),
+    [
+        (Outcome.COMPUTATION, "Error(s) encountered on logical core 6.", (2,)),
+        (Outcome.COMPUTATION, "Coefficient is too large.", ()),
+        (Outcome.STALL, "Error(s) encountered on logical core 6.", ()),
+    ],
+)
+def test_a_failing_all_core_segment_reports_the_cores_y_cruncher_named(tmp_path, outcome, log, named):
+    (tmp_path / "stdout.log").write_text(log)
+    script = Script([outcome], evidence_dir=tmp_path)
+    assert runner(script).run(spec(Load.HOT, 510.0), threading.Event()).named == named
+
+
+def test_a_cpu_the_topology_does_not_have_is_refused(tmp_path):
+    (tmp_path / "stdout.log").write_text("Error(s) encountered on logical core 40.")
+    with pytest.raises(ValueError, match="40"):
+        runner(Script([Outcome.COMPUTATION], evidence_dir=tmp_path)).run(spec(Load.HOT, 510.0), threading.Event())

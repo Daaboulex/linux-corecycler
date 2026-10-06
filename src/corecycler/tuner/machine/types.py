@@ -319,6 +319,7 @@ class Report:
     detail: str = ""
     unblamed_corrected: bool = False
     context: FailContext | None = None
+    named: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

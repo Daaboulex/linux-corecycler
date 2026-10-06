@@ -97,6 +97,7 @@ class Fake:
     two_t_problem: str | None = None
     edges_hot: dict[int, int] | None = None
     edges_transient: dict[int, int] | None = None
+    names_cores: bool = False
     crash_note: tuple[tuple[Evidence, ...], bool] = ((), False)
 
     def __post_init__(self) -> None:
@@ -300,7 +301,8 @@ class Fake:
                 return Report(Group.PASS, spec.seconds)
             working = tuple(vector) if load == "hot" else failing or tuple(vector)
             context = FailContext(steady=load == "hot", working=working, paused=False, mhz=5000.0, tctl=70.0)
-            return Report(Group.SILICON, spec.seconds, context=context)
+            named = failing if self.names_cores else ()
+            return Report(Group.SILICON, spec.seconds, context=context, named=named)
         failed = spec.value < self.edge(spec.core, spec.klass) or self.stacked(vector, spec.core)
         return Report(Group.SILICON if failed else Group.PASS, spec.seconds)
 

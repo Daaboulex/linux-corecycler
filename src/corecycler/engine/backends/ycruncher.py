@@ -59,6 +59,7 @@ LAUNCHER_ORDER: dict[str, tuple[tuple[str, frozenset[str]], ...]] = {
 }
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_NAMED_CPU_RE = re.compile(r"Error\(s\) encountered on logical core (\d+)\.")
 
 FINDINGS: FindingTable = (
     *(
@@ -84,6 +85,10 @@ FINDINGS: FindingTable = (
         )
     ),
 )
+
+
+def named_cpus(output: str) -> tuple[int, ...]:
+    return tuple(sorted({int(cpu) for cpu in _NAMED_CPU_RE.findall(_ANSI_RE.sub("", output))}))
 
 
 def named_binary(binaries_dir: Path, name: str, cpu_flags: frozenset[str], vendor: str) -> Path:
