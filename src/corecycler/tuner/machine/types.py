@@ -66,6 +66,8 @@ class Group(StrEnum):
 
 class Stage(StrEnum):
     SEARCH = "search"
+    LIVE1 = "live1"
+    BISECT = "bisect"
     FINALIZE = "finalize"
 
 
@@ -81,6 +83,7 @@ class MachineConfig:
     k_2t: int = 6
     walk_budget_s: float = 7200.0
     test_seconds_1t: float = 60.0
+    test_seconds_2t: float = 90.0
     wait_between_cores_s: float = 15.0
     apparatus_retries: int = 3
     thermal_retries: int = 3
@@ -120,6 +123,8 @@ class TestSpec:
     value: int
     cpus: tuple[int, ...]
     seconds: float
+    vector: tuple[tuple[int, int], ...] = ()
+    stage: Stage = Stage.SEARCH
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +160,26 @@ class Streaks:
 
 
 @dataclass(frozen=True, slots=True)
+class Live1:
+    index: int = 0
+    requeue: tuple[int, ...] = ()
+    solo: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BisectRun:
+    entry: Stage
+    lane: int
+    klass: Klass
+    universe: tuple[int, ...]
+    values: tuple[tuple[int, int], ...]
+    queue: tuple[tuple[int, ...], ...]
+    results: tuple[tuple[tuple[int, ...], bool], ...] = ()
+    parents: tuple[tuple[tuple[int, ...], tuple[int, ...]], ...] = ()
+    rerun: tuple[int, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Flow:
     stage: Stage
     klass: Klass = Klass.T1
@@ -162,6 +187,11 @@ class Flow:
     owed: int | None = None
     last_core: int | None = None
     applied: bool = False
+    dirty: bool = False
+    live1: Live1 | None = None
+    bisect: BisectRun | None = None
+    q5: tuple[tuple[tuple[int, int], int], ...] = ()
+    q5_others: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +258,7 @@ class Report:
     seconds: float
     evidence: tuple[Evidence, ...] = ()
     detail: str = ""
+    unblamed_corrected: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +306,9 @@ class CrashEvidenceRead:
     same_boot: bool
     was_running: bool
     stale_db: bool = False
+    other_session_wrote: bool = False
+    shared_uncorrected: bool = False
+    suspects: tuple[int, ...] = ()
     evidence: tuple[Evidence, ...] = ()
 
 
@@ -335,6 +369,7 @@ class World:
     stored: Stored | None = None
     cpus_of: tuple[tuple[int, tuple[int, ...]], ...] = ()
     domain_of: tuple[tuple[int, int | None], ...] = ()
+    two_t_problem: str | None = None
 
     def resident_of(self, core: int) -> int | None:
         return dict(self.resident).get(core)

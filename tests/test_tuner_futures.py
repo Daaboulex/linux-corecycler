@@ -38,6 +38,10 @@ FAULTS = (
     "dbfail",
     "hot",
     "abort",
+    "unblamed",
+    "mce_other",
+    "crash_mce",
+    "crash_shared",
 )
 
 
@@ -62,6 +66,7 @@ def key(fake: Fake) -> tuple:
         fake.timer,
         fake.now,
         fake.temperature,
+        fake.crash_note,
         fake.boot - fake.stored_boot,
         fake.faults.refuse_writes,
         fake.faults.fail_commits,
@@ -92,9 +97,13 @@ def moves(fake: Fake, budget: dict[str, int]) -> list[tuple[str, dict[str, int]]
         if budget.get(fault, 0) <= 0 or budget["total"] <= 0:
             continue
         spent = {**budget, fault: budget[fault] - 1, "total": budget["total"] - 1}
-        if fault in ("thermal", "apparatus", "slept", "false_fail", "evidence") and fake.worker is None:
+        if fault in ("thermal", "apparatus", "slept", "false_fail", "evidence", "unblamed", "mce_other") and (
+            fake.worker is None
+        ):
             continue
         if fault in ("pause", "abort") and s.lifecycle not in (Lifecycle.RUNNING, Lifecycle.PAUSING):
+            continue
+        if fault in ("crash_mce", "crash_shared") and fake.worker is None:
             continue
         if fault in ("close", "crash") and s.lifecycle is Lifecycle.IDLE:
             continue
@@ -142,6 +151,16 @@ def act(fake: Fake, move: str) -> None:
             fake.faults.fail_commits = 1
         case "hot":
             fake.temperature = 99.0
+        case "unblamed":
+            fake.deliver(Report(Group.ENVIRONMENT, 1.0, unblamed_corrected=True))
+        case "mce_other":
+            others = [c for c in fake.edges if c != worker_spec.core]
+            target = others[0] if others else worker_spec.core
+            fake.deliver(Report(Group.PASS, worker_spec.seconds, evidence=(Evidence(target, False),)))
+        case "crash_mce":
+            fake.crash(evidence=(Evidence(worker_spec.core, False),))
+        case "crash_shared":
+            fake.crash(shared=True)
         case _:
             raise AssertionError(move)
 
@@ -219,11 +238,23 @@ ONE_OF_EACH = {fault: 1 for fault in FAULTS}
 
 
 @pytest.mark.parametrize(
-    ("cores", "edges", "domains", "total"),
-    [(1, [-3], 1, 2), (2, [-2, 0], 2, 2), (2, [-6, -1], 1, 1)],
+    ("cores", "edges", "domains", "total", "stacks"),
+    [
+        (1, [-3], 1, 2, ()),
+        (2, [-2, 0], 2, 2, ()),
+        (2, [-6, -1], 1, 1, ()),
+        (2, [-3, -3], 2, 1, (((0, 1), (0, 1), 4),)),
+        (3, [-2, -2, -2], 2, 1, (((0, 2), (0, 2), 3),)),
+        (3, [-2, -2, -1], 2, 2, (((0, 1), (0, 1), 3),)),
+        (2, [0, -3], 2, 1, (((0,), (0, 1), 2),)),
+    ],
 )
-def test_every_future_of_a_tiny_cpu_ends_completed_or_quarantined_and_breaks_no_rule(cores, edges, domains, total):
-    survey = explore(tiny(cores, edges, domains), {**ONE_OF_EACH, "total": total}, cap=400_000)
+def test_every_future_of_a_tiny_cpu_ends_completed_or_quarantined_and_breaks_no_rule(
+    cores, edges, domains, total, stacks
+):
+    fake = tiny(cores, edges, domains)
+    fake.stacks = stacks
+    survey = explore(fake, {**ONE_OF_EACH, "total": total}, cap=2_000_000)
     assert survey.states > 100
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves

@@ -93,18 +93,18 @@ def test_one_core_is_tested_twice_in_a_row_only_right_after_its_own_fail():
     original = fake.check_start
 
     def spy(state, spec):
-        tested.append((spec.core, spec.value))
+        tested.append((spec.stage, spec.klass, spec.core, spec.value))
         original(state, spec)
 
     fake.check_start = spy
     start(fake)
     run_to_rest(fake, 2000)
     assert fake.state.lifecycle is Lifecycle.COMPLETED
-    first_visits = list(dict.fromkeys(core for core, _ in tested))
+    first_visits = list(dict.fromkeys(core for _, _, core, _ in tested))
     assert first_visits == [0, 1, 2]
-    back_to_back = [(a, b) for a, b in zip(tested, tested[1:], strict=False) if a[0] == b[0]]
+    back_to_back = [(a, b) for a, b in zip(tested, tested[1:], strict=False) if a[:3] == b[:3]]
     assert back_to_back
-    assert all(first_value < edges[core] for (core, first_value), _ in back_to_back)
+    assert all(value < edges[core] for (_, _, core, value), _ in back_to_back)
 
 
 def test_a_pause_mid_test_finishes_the_test_then_puts_every_core_at_baseline():

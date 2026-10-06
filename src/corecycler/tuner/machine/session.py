@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from corecycler.tuner.machine import search
+from corecycler.tuner.machine import bisect, search
+from corecycler.tuner.machine.resume import attribute, resident
 from corecycler.tuner.machine.types import (
     Abort,
     Announce,
@@ -24,6 +25,7 @@ from corecycler.tuner.machine.types import (
     InternalError,
     Klass,
     Lifecycle,
+    Live1,
     Mode,
     Pause,
     PauseReason,
@@ -50,11 +52,12 @@ from corecycler.tuner.machine.types import (
     WriteCO,
     WriteStockMarker,
 )
-from corecycler.tuner.orders import next_core, order_problem
+from corecycler.tuner.orders import next_core, order_problem, round_sequence
 
 QUARANTINE_STREAK = 3
 INCIDENT_LIMIT = 2
 COOL_POLL_S = 1.0
+UNCORRECTED_STEPS = 3
 HELD = (Lifecycle.RUNNING, Lifecycle.PAUSING, Lifecycle.PAUSED)
 RESUMABLE = frozenset({"running", "paused", "aborted"})
 
@@ -130,10 +133,6 @@ def _commit(s: SessionState) -> Commit:
     return Commit(stored(s))
 
 
-def _baselines(s: SessionState) -> tuple[tuple[int, int], ...]:
-    return s.baseline
-
-
 def _clear_in_test(s: SessionState) -> SessionState:
     return replace(s, cores=tuple(replace(r, in_test=False) for r in s.cores))
 
@@ -154,39 +153,31 @@ def _stop_effects(s: SessionState, revert_values: tuple[tuple[int, int], ...], j
 
 
 def _keep_pick(s: SessionState) -> SessionState:
-    if isinstance(s.slot, Waiting) and s.slot.picked is not None and s.flow is not None and s.flow.owed is None:
-        return replace(s, flow=replace(s.flow, owed=s.slot.picked))
+    flow = s.flow
+    picked = s.slot.picked if isinstance(s.slot, Waiting) else None
+    if picked is not None and flow is not None and flow.stage is Stage.SEARCH and flow.owed is None:
+        return replace(s, flow=replace(flow, owed=picked))
     return s
 
 
-def _evidence_pause(s: SessionState, evidence, exclude: int | None) -> Transition | None:
-    owned = {r.core for r in s.cores}
-    for ev in evidence:
-        if ev.core == exclude:
-            continue
-        if ev.core in owned:
-            return _enter_pause(
-                s, PauseReason.STOCK_UNSTABLE, f"core {ev.core} logged a machine check at its stock value", (ev.core,)
-            )
-        return _enter_pause(
-            s,
-            PauseReason.HELD_KNOB,
-            f"core {ev.core} logged a machine check at the value this session does not own",
-            (ev.core,),
-        )
-    return None
+def _database_paused(s: SessionState) -> bool:
+    return s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is PauseReason.DATABASE
 
 
 def _enter_pause(s: SessionState, reason: PauseReason, detail: str, cores: tuple[int, ...] = ()) -> Transition:
     s = _keep_pick(s)
-    effects = _stop_effects(s, _baselines(s), journal=True)
+    effects = _stop_effects(s, s.baseline, journal=True)
     paused = _clear_in_test(
         replace(s, lifecycle=Lifecycle.PAUSED, slot=None, pause=Pause(reason, detail, cores), streaks=Streaks())
     )
-    flow = paused.flow if paused.flow is not None else Flow(Stage.SEARCH)
-    paused = replace(paused, flow=replace(flow, applied=False))
+    paused = replace(paused, flow=replace(paused.flow, applied=False))
     effects += [_commit(paused), Announce("paused", f"{reason.value}: {detail}")]
     return Transition(paused, tuple(effects))
+
+
+def _two_cpus_everywhere(cores: tuple[int, ...], w: World) -> bool:
+    cpus = dict(w.cpus_of)
+    return all(len(cpus.get(core, ())) >= 2 for core in cores)
 
 
 def _start(s: SessionState, e: Start, w: World) -> Transition:
@@ -231,6 +222,8 @@ def _start_problem(cfg, e: Start, w: World) -> str | None:
     missing = sorted(core for core in cfg.selected if not cpus.get(core))
     if missing:
         return f"cores {missing} are not in the core map"
+    if _two_cpus_everywhere(cfg.selected, w) and w.two_t_problem is not None:
+        return f"the 2T class cannot run: {w.two_t_problem}"
     bios = dict(w.bios_co)
     unreadable = sorted(core for core in cfg.selected if bios.get(core) is None)
     if unreadable:
@@ -255,10 +248,6 @@ def _resume(s: SessionState, e: Resume, w: World) -> Transition:
     return _resume_stored(s, e, w)
 
 
-def _database_paused(s: SessionState) -> bool:
-    return s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is PauseReason.DATABASE
-
-
 def _resume_stored(s: SessionState, e: Resume, w: World) -> Transition:
     st = w.stored
     if st is None or st.session_id != e.session_id:
@@ -276,51 +265,71 @@ def _resume_stored(s: SessionState, e: Resume, w: World) -> Transition:
     return Transition(resumed, (ReadCrashEvidence(e.session_id),))
 
 
+def _convict(s: SessionState, core: int) -> tuple[SessionState, bool]:
+    cfg = s.config
+    rec = s.core(core)
+    value = resident(s, core)
+    if value == 0:
+        return s, True
+    if s.flow.stage is Stage.SEARCH:
+        return s.with_core(search.on_crash(replace(rec, value=value), cfg).record), False
+    backed = search.back_off_in_place(replace(rec, value=value), cfg, search.CRASH_STEPS)
+    out = s.with_core(replace(backed, crash_count=rec.crash_count + 1))
+    flow = out.flow
+    if flow.stage is Stage.BISECT and core in bisect.current_group(flow.bisect):
+        flow = _bisect_exit(flow)
+    return replace(out, flow=replace(flow, dirty=True)), False
+
+
 def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
     if s.lifecycle is not Lifecycle.PAUSED or s.pause is None or s.pause.reason is not PauseReason.RESUMING:
         return Transition(s)
-    cfg = s.config
-    in_test = [r for r in s.cores if r.in_test]
-    cleared = _clear_in_test(s)
-    convicted = False
-    incident = False
-    if e.same_boot and e.stale_db:
-        for rec in in_test:
-            if rec.phase is not Phase.PROVEN or rec.value != 0:
-                step = search.on_fail(cleared.core(rec.core), cfg, s.flow.klass, 0.0)
-                cleared = cleared.with_core(step.record)
-    if e.dirty_end and not e.same_boot:
-        if len(in_test) == 1:
-            step = search.on_crash(cleared.core(in_test[0].core), cfg)
-            if step.stock_unstable:
-                return _enter_pause(
-                    cleared, PauseReason.STOCK_UNSTABLE, f"core {in_test[0].core} crashed at 0", (in_test[0].core,)
-                )
-            cleared = cleared.with_core(step.record)
-            convicted = True
-        else:
-            incident = bool(in_test) or e.was_running
-    streak = s.resume_streak + 1 if convicted else s.resume_streak
-    incidents = s.incidents + 1 if incident else s.incidents
-    cleared = replace(cleared, resume_streak=streak, incidents=incidents)
-    named = _evidence_pause(cleared, e.evidence, exclude=None)
-    if named is not None:
-        return named
+    verdict = attribute(s, e)
+    after = s
+    for core in verdict.stale_fail:
+        after, stock = _stale_fail(after, core, w)
+        if stock is not None:
+            return _enter_pause(_clear_in_test(after), PauseReason.STOCK_UNSTABLE, stock, (core,))
+    for core in verdict.convict:
+        after, at_stock = _convict(after, core)
+        if at_stock:
+            return _enter_pause(_clear_in_test(after), PauseReason.STOCK_UNSTABLE, f"core {core} crashed at 0", (core,))
+    flow_crash = verdict.flow_crash
+    if flow_crash:
+        after, stock = _flow_crash(after, w)
+        if stock is not None:
+            return _enter_pause(_clear_in_test(after), PauseReason.STOCK_UNSTABLE, stock)
+    after = _clear_in_test(after)
+    streak = s.resume_streak + 1 if verdict.convict or flow_crash else s.resume_streak
+    incidents = s.incidents + 1 if verdict.incident else s.incidents
+    after = replace(after, resume_streak=streak, incidents=incidents)
+    if verdict.held is not None:
+        return _enter_pause(
+            after,
+            PauseReason.HELD_KNOB,
+            f"core {verdict.held} crashed the machine at a value this session does not own",
+            (verdict.held,),
+        )
+    for ev in verdict.evidence:
+        applied = _apply_evidence(after, ev, at_stock=verdict.at_stock)
+        if isinstance(applied, Transition):
+            return applied
+        after = applied
     if streak >= QUARANTINE_STREAK:
-        quarantined = replace(cleared, lifecycle=Lifecycle.QUARANTINED, flow=None, slot=None, pause=None)
+        quarantined = replace(after, lifecycle=Lifecycle.QUARANTINED, flow=None, slot=None, pause=None)
         return Transition(
             quarantined,
             (
-                RevertAll(_baselines(s), True),
+                RevertAll(s.baseline, True),
                 _commit(quarantined),
                 Announce("quarantined", f"{streak} crashes in a row with no test surviving"),
             ),
         )
-    if incident and incidents >= INCIDENT_LIMIT:
-        return _enter_pause(cleared, PauseReason.INCIDENTS, f"{incidents} crashes nobody could be blamed for")
-    token = cleared.next_token
+    if after.incidents > s.incidents and after.incidents >= INCIDENT_LIMIT:
+        return _enter_pause(after, PauseReason.INCIDENTS, f"{after.incidents} crashes nobody could be blamed for")
+    token = after.next_token
     running = replace(
-        cleared,
+        after,
         lifecycle=Lifecycle.RUNNING,
         pause=None,
         slot=Waiting(token, 0.0),
@@ -331,6 +340,74 @@ def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transiti
     effects += [WriteCO(core, value) for core, value in s.baseline]
     effects += [Announce("resumed", f"session {s.session_id}"), Schedule(token, 0.0)]
     return Transition(running, tuple(effects))
+
+
+def _stale_fail(s: SessionState, core: int, w: World) -> tuple[SessionState, str | None]:
+    stage = s.flow.stage
+    value = resident(s, core)
+    if stage is Stage.SEARCH:
+        rec = s.core(core)
+        if rec.value == 0:
+            return s, None
+        return s.with_core(search.on_fail(rec, s.config, s.flow.klass, 0.0).record), None
+    if stage is Stage.LIVE1:
+        return _live1_outcome(s, core, value, False, w)
+    if stage is Stage.BISECT:
+        return _bisect_outcome(s, False, w)
+    raise ValueError(f"a lost verdict has no stage rule in {stage}")
+
+
+def _flow_crash(s: SessionState, w: World) -> tuple[SessionState, str | None]:
+    flow = s.flow
+    lane = next(r.core for r in s.cores if r.in_test)
+    if flow.stage is Stage.LIVE1:
+        values = {r.core: r.value for r in s.cores}
+        if not any(values.values()):
+            return s, "the machine crashed with every owned core at 0"
+        run = bisect.begin(Stage.LIVE1, lane, Klass.T1, values, dict(w.domain_of))
+        return replace(s, flow=replace(flow, stage=Stage.BISECT, bisect=run)), None
+    if flow.stage is Stage.BISECT:
+        run = flow.bisect
+        if run.rerun is not None:
+            return _q6(s, run.rerun)
+        group = bisect.current_group(run)
+        if not group:
+            return s, "the held values with every owned core at 0 crashed the machine"
+        return replace(s, flow=replace(flow, bisect=bisect.record(run, False, dict(w.domain_of)))), None
+    raise ValueError(f"a crash with a core in test has no flow rule in {flow.stage}")
+
+
+def _apply_evidence(s: SessionState, ev, at_stock: bool = False) -> SessionState | Transition:
+    owned = {r.core for r in s.cores}
+    if ev.core not in owned:
+        return _enter_pause(
+            s,
+            PauseReason.HELD_KNOB,
+            f"core {ev.core} logged a machine check at a value this session does not own",
+            (ev.core,),
+        )
+    value = 0 if at_stock else resident(s, ev.core)
+    stage = s.flow.stage
+    if value == 0:
+        if stage is Stage.SEARCH:
+            return _enter_pause(
+                s, PauseReason.STOCK_UNSTABLE, f"core {ev.core} logged a machine check at its stock value", (ev.core,)
+            )
+        incidents = s.incidents + 1
+        out = replace(s, incidents=incidents)
+        if incidents >= INCIDENT_LIMIT:
+            return _enter_pause(out, PauseReason.INCIDENTS, f"{incidents} machine checks at stock values")
+        return out
+    steps = 1 if ev.corrected else UNCORRECTED_STEPS
+    rec = s.core(ev.core)
+    backed = search.back_off_in_place(replace(rec, value=value), s.config, steps)
+    out = s.with_core(backed)
+    flow = replace(out.flow, dirty=True)
+    if stage is Stage.LIVE1 and flow.live1 is not None and ev.core not in flow.live1.requeue:
+        flow = replace(flow, live1=replace(flow.live1, requeue=(*flow.live1.requeue, ev.core)))
+    if stage is Stage.BISECT:
+        flow = _bisect_exit(flow)
+    return replace(out, flow=flow)
 
 
 def _pause_request(s: SessionState) -> Transition:
@@ -348,7 +425,7 @@ def _abort(s: SessionState) -> Transition:
     if s.lifecycle not in HELD:
         return Transition(s, refused="nothing to abort")
     s = _clear_in_test(_keep_pick(s))
-    effects = _stop_effects(s, _baselines(s), journal=True)
+    effects = _stop_effects(s, s.baseline, journal=True)
     effects += [
         Commit(replace(stored(s), status="aborted")),
         Announce("aborted", "every owned core is at its baseline"),
@@ -362,7 +439,7 @@ def _close(s: SessionState) -> Transition:
         return Transition(SessionState(next_token=s.next_token), (CloseDb(),))
     s = _keep_pick(s)
     database = _database_paused(s)
-    effects = _stop_effects(s, _baselines(s), journal=not database)
+    effects = _stop_effects(s, s.baseline, journal=not database)
     if not database:
         paused = _clear_in_test(
             replace(
@@ -374,8 +451,10 @@ def _close(s: SessionState) -> Transition:
     return Transition(SessionState(next_token=s.next_token), tuple(effects))
 
 
-def _cpus_for(core: int, w: World) -> tuple[int, ...]:
+def _cpus_for(core: int, klass: Klass, w: World) -> tuple[int, ...]:
     cpus = dict(w.cpus_of)[core]
+    if klass is Klass.T2:
+        return tuple(cpus[:2])
     if core == 0 and len(cpus) > 1:
         return (cpus[1],)
     return (cpus[0],)
@@ -384,24 +463,28 @@ def _cpus_for(core: int, w: World) -> tuple[int, ...]:
 def _continuation(s: SessionState, e: ContinuationDue, w: World) -> Transition:
     if s.lifecycle is not Lifecycle.RUNNING or not isinstance(s.slot, Waiting) or s.slot.token != e.token:
         return Transition(s)
-    if s.flow.stage is Stage.FINALIZE:
-        return _finalize(s, w)
     slot = s.slot
     if slot.cool_below_c is not None:
         return _cooling(s, slot, w)
+    return _next(s, w, slot.picked)
+
+
+def _next(s: SessionState, w: World, picked: int | None) -> Transition:
+    stage = s.flow.stage
+    if stage is Stage.FINALIZE:
+        return _finalize(s, w)
+    if stage is Stage.LIVE1:
+        return _live1_next(s, w, picked)
+    if stage is Stage.BISECT:
+        return _bisect_next(s, w)
     if search.class_done(s.cores):
         return _end_class(s, w)
-    return _pick_and_start(s, w, slot.picked)
-
-
-def _end_class(s: SessionState, w: World) -> Transition:
-    finalize = replace(s, flow=Flow(Stage.FINALIZE))
-    return _finalize(finalize, w)
+    return _search_next(s, w, picked)
 
 
 def _cooling(s: SessionState, slot: Waiting, w: World) -> Transition:
     if w.temperature_c is not None and slot.cool_below_c is not None and w.temperature_c < slot.cool_below_c:
-        return _pick_and_start(replace(s, slot=Waiting(slot.token, 0.0)), w, None)
+        return _next(replace(s, slot=Waiting(slot.token, 0.0)), w, None)
     if slot.cool_deadline is not None and w.now >= slot.cool_deadline:
         return _enter_pause(s, PauseReason.THERMAL, "the CPU did not cool below the limit within the cap")
     token = s.next_token
@@ -409,27 +492,54 @@ def _cooling(s: SessionState, slot: Waiting, w: World) -> Transition:
     return Transition(replace(s, slot=waiting, next_token=token + 1), (Schedule(token, COOL_POLL_S),))
 
 
-def _pick_and_start(s: SessionState, w: World, picked: int | None) -> Transition:
+def _end_class(s: SessionState, w: World) -> Transition:
+    flow = s.flow
+    cores = tuple(r.core for r in s.cores)
+    if flow.klass is Klass.T1 and _two_cpus_everywhere(cores, w):
+        two = replace(
+            s,
+            cores=tuple(search.begin_2t(r) for r in s.cores),
+            flow=Flow(Stage.SEARCH, Klass.T2, last_core=flow.last_core),
+        )
+        return _search_next(two, w, None)
+    entered = _enter_live1(s, w)
+    if flow.klass is Klass.T1:
+        single = sorted(core for core in cores if len(dict(w.cpus_of).get(core, ())) < 2)
+        skipped = Announce("skipped", f"the 2T class is skipped: cores {single} have one online CPU")
+        return replace(entered, effects=(skipped, *entered.effects))
+    return entered
+
+
+def _enter_live1(s: SessionState, w: World) -> Transition:
+    live = replace(s, flow=Flow(Stage.LIVE1, last_core=s.flow.last_core, live1=Live1()))
+    return _live1_next(live, w, None)
+
+
+def _wait_first(s: SessionState, flow: Flow, core: int) -> Transition | None:
+    cfg = s.config
+    if flow.last_core is not None and core != flow.last_core and cfg.wait_between_cores_s > 0:
+        token = s.next_token
+        waiting = replace(
+            s, flow=flow, slot=Waiting(token, cfg.wait_between_cores_s, picked=core), next_token=token + 1
+        )
+        return Transition(waiting, (Schedule(token, cfg.wait_between_cores_s),))
+    return None
+
+
+def _search_next(s: SessionState, w: World, picked: int | None) -> Transition:
     cfg = s.config
     flow = s.flow
     cores = tuple(r.core for r in s.cores)
     if picked is None:
         core, cursor = next_core(cfg.method, cores, dict(w.domain_of), s.seed, flow.klass.value, flow.cursor, flow.owed)
+        repeat = flow.owed is not None
         flow = replace(flow, cursor=cursor)
-        if flow.owed is None and flow.last_core is not None and core != flow.last_core and cfg.wait_between_cores_s > 0:
-            token = s.next_token
-            waiting = replace(
-                s, flow=flow, slot=Waiting(token, cfg.wait_between_cores_s, picked=core), next_token=token + 1
-            )
-            return Transition(waiting, (Schedule(token, cfg.wait_between_cores_s),))
+        if not repeat:
+            waiting = _wait_first(s, flow, core)
+            if waiting is not None:
+                return waiting
     else:
         core = picked
-    if w.frequency_capped:
-        return _enter_pause(
-            replace(s, flow=flow),
-            PauseReason.APPARATUS,
-            "a frequency cap or disabled boost would make every verdict meaningless",
-        )
     rec = search.resolve_start(s.core(core), cfg)
     if rec.phase is not Phase.PROVEN and not rec.inside(rec.value, cfg.max_offset):
         return _enter_pause(
@@ -437,26 +547,94 @@ def _pick_and_start(s: SessionState, w: World, picked: int | None) -> Transition
             PauseReason.INTERNAL,
             f"core {core} would be tested at {rec.value}, at or past its fail bound",
         )
+    vector = tuple((c, rec.value if c == core else base) for c, base in s.baseline)
+    seconds = cfg.test_seconds_1t if flow.klass is Klass.T1 else cfg.test_seconds_2t
+    spec = TestSpec(flow.klass, core, rec.value, _cpus_for(core, flow.klass, w), seconds, vector, Stage.SEARCH)
+    return _start_test(s.with_core(rec), replace(flow, owed=None), spec, w)
+
+
+def _live1_sequence(s: SessionState, w: World) -> tuple[int, ...]:
+    cores = tuple(r.core for r in s.cores)
+    return round_sequence(s.config.method, cores, dict(w.domain_of), s.seed, "live1", 0)
+
+
+def _live1_next(s: SessionState, w: World, picked: int | None) -> Transition:
+    flow = s.flow
+    live = flow.live1
+    sequence = _live1_sequence(s, w)
+    if live.solo is not None:
+        core = live.solo
+        vector = tuple((c, base) for c, base in s.baseline)
+    elif live.index < len(sequence):
+        core = sequence[live.index]
+        vector = tuple((r.core, r.value) for r in s.cores)
+    elif live.requeue:
+        core = live.requeue[0]
+        vector = tuple((r.core, r.value) for r in s.cores)
+    else:
+        return _end_live1(s, w)
+    if picked is None:
+        waiting = _wait_first(s, flow, core)
+        if waiting is not None:
+            return waiting
+    spec = TestSpec(
+        Klass.T1, core, dict(vector)[core], _cpus_for(core, Klass.T1, w), s.config.test_seconds_1t, vector, Stage.LIVE1
+    )
+    return _start_test(s, flow, spec, w)
+
+
+def _end_live1(s: SessionState, w: World) -> Transition:
+    return _finalize(replace(s, flow=replace(s.flow, stage=Stage.FINALIZE, live1=None, applied=False)), w)
+
+
+def _bisect_next(s: SessionState, w: World) -> Transition:
+    flow = s.flow
+    run = flow.bisect
+    group = bisect.current_group(run)
+    values = {r.core: r.value for r in s.cores} if run.rerun is not None else bisect.slot_values(run, group)
+    vector = tuple((c, values[c] if c in group else base) for c, base in s.baseline)
+    lane = run.lane
+    spec = TestSpec(
+        run.klass,
+        lane,
+        dict(vector)[lane],
+        _cpus_for(lane, run.klass, w),
+        s.config.test_seconds_1t,
+        vector,
+        Stage.BISECT,
+    )
+    return _start_test(s, flow, spec, w)
+
+
+def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transition:
+    if w.frequency_capped:
+        return _enter_pause(
+            replace(s, flow=flow),
+            PauseReason.APPARATUS,
+            "a frequency cap or disabled boost would make every verdict meaningless",
+        )
     token = s.next_token
-    spec = TestSpec(flow.klass, core, rec.value, _cpus_for(core, w), cfg.test_seconds_1t)
-    flow = replace(flow, owed=None, last_core=core)
+    flow = replace(flow, last_core=spec.core)
     started = replace(
-        s.with_core(replace(rec, in_test=True)), flow=flow, slot=InFlight(token, spec), next_token=token + 1
+        s.with_core(replace(s.core(spec.core), in_test=True)),
+        flow=flow,
+        slot=InFlight(token, spec),
+        next_token=token + 1,
     )
     effects: list = []
     if w.gap_grew:
         effects.append(ForgetResident())
-    for other, value in s.baseline:
-        if other != core and (w.gap_grew or w.resident_of(other) != value):
-            effects.append(WriteCO(other, value))
-    if w.gap_grew or w.resident_of(core) != rec.value:
-        effects.append(WriteCO(core, rec.value))
+    for core, value in spec.vector:
+        if w.gap_grew or w.resident_of(core) != value:
+            effects.append(WriteCO(core, value))
     effects += [_commit(started), StartWorker(token, spec)]
     return Transition(started, tuple(effects))
 
 
 def _finalize(s: SessionState, w: World) -> Transition:
     flow = s.flow
+    if flow.dirty:
+        return _enter_live1(replace(s, flow=replace(flow, dirty=False)), w)
     if not flow.applied:
         token = s.next_token
         applied = replace(s, flow=replace(flow, applied=True), slot=Waiting(token, 0.0), next_token=token + 1)
@@ -476,24 +654,49 @@ def _reported(s: SessionState, e: WorkerReported, w: World) -> Transition:
     spec = s.slot.spec
     rep = e.report
     pausing = s.lifecycle is Lifecycle.PAUSING
-    named = _evidence_pause(_after_test(s, spec.core), rep.evidence, exclude=spec.core)
-    if named is not None:
-        return named
+    after = _after_test(s, spec.core)
+    for ev in rep.evidence:
+        if ev.core == spec.core:
+            continue
+        applied = _apply_evidence(after, ev)
+        if isinstance(applied, Transition):
+            return applied
+        after = applied
+    if s.flow.stage is Stage.BISECT and after.flow.stage is not Stage.BISECT:
+        return _next_wait(after, spec, pausing)
     group = rep.group
     if any(ev.core == spec.core for ev in rep.evidence) and group is Group.PASS:
         group = Group.SILICON
+    if group is Group.ENVIRONMENT and rep.unblamed_corrected and spec.stage in (Stage.SEARCH, Stage.LIVE1):
+        recurred, after = _q5(after, spec)
+        if recurred:
+            group = Group.SILICON
     if group in (Group.PASS, Group.SILICON):
-        return _verdict(s, spec, rep, group, pausing)
+        return _verdict(after, spec, rep, group, pausing, w)
     if group is Group.THERMAL:
-        return _thermal(s, spec, rep, pausing, w)
-    return _apparatus(s, spec, rep, pausing)
+        return _thermal(after, spec, rep, pausing, w)
+    return _apparatus(after, spec, rep, pausing)
+
+
+def _q5(s: SessionState, spec: TestSpec) -> tuple[bool, SessionState]:
+    flow = s.flow
+    counts = dict(flow.q5)
+    key = (spec.core, spec.value)
+    counts[key] = counts.get(key, 0) + 1
+    others = tuple(sorted({*flow.q5_others, spec.core}))
+    out = replace(s, flow=replace(flow, q5=tuple(sorted(counts.items())), q5_others=others))
+    return counts[key] >= 2 and others == (spec.core,), out
 
 
 def _after_test(s: SessionState, core: int) -> SessionState:
     return s.with_core(replace(s.core(core), in_test=False))
 
 
-def _verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing: bool) -> Transition:
+def _verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing: bool, w: World) -> Transition:
+    if spec.stage is Stage.LIVE1:
+        return _live1_verdict(s, spec, group, pausing, w)
+    if spec.stage is Stage.BISECT:
+        return _bisect_verdict(s, spec, group, pausing, w)
     cfg = s.config
     rec = s.core(spec.core)
     if group is Group.PASS:
@@ -501,17 +704,12 @@ def _verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing
     else:
         step = search.on_fail(rec, cfg, spec.klass, rep.seconds)
     if step.stock_unstable:
-        return _enter_pause(
-            _after_test(s, spec.core),
-            PauseReason.STOCK_UNSTABLE,
-            f"core {spec.core} failed at its stock value",
-            (spec.core,),
-        )
+        return _enter_pause(s, PauseReason.STOCK_UNSTABLE, f"core {spec.core} failed at its stock value", (spec.core,))
     starts = s.streaks.start_failures
     if step.first_value:
         starts = 0 if group is Group.PASS else starts + 1
     after = replace(
-        s.with_core(replace(step.record, in_test=False)),
+        s.with_core(step.record),
         streaks=Streaks(start_failures=starts),
         resume_streak=0,
         flow=replace(s.flow, owed=spec.core if group is Group.SILICON else None),
@@ -521,27 +719,100 @@ def _verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing
     return _next_wait(after, spec, pausing)
 
 
+def _live1_outcome(s: SessionState, core: int, value: int, passed: bool, w: World) -> tuple[SessionState, str | None]:
+    cfg = s.config
+    flow = s.flow
+    live = flow.live1
+    if passed:
+        if live.solo is not None:
+            backed = tuple(search.back_off_in_place(r, cfg, 1) if r.core != core else r for r in s.cores)
+            return replace(s, cores=backed, flow=replace(flow, live1=replace(live, solo=None), dirty=True)), None
+        if live.index < len(_live1_sequence(s, w)):
+            return replace(s, flow=replace(flow, live1=replace(live, index=live.index + 1))), None
+        return replace(s, flow=replace(flow, live1=replace(live, requeue=live.requeue[1:]))), None
+    if live.solo is not None:
+        return s, f"core {core} fails at stock with every other core at 0"
+    if value != 0:
+        backed = search.back_off_in_place(replace(s.core(core), value=value), cfg, 1)
+        return replace(s.with_core(backed), flow=replace(flow, dirty=True)), None
+    if any(r.value != 0 for r in s.cores if r.core != core):
+        return replace(s, flow=replace(flow, live1=replace(live, solo=core))), None
+    return s, f"core {core} fails at stock with every core at 0"
+
+
+def _live1_verdict(s: SessionState, spec: TestSpec, group: Group, pausing: bool, w: World) -> Transition:
+    s = replace(s, streaks=Streaks(), resume_streak=0)
+    s, stock = _live1_outcome(s, spec.core, spec.value, group is Group.PASS, w)
+    if stock is not None:
+        return _enter_pause(s, PauseReason.STOCK_UNSTABLE, stock, (spec.core,))
+    return _next_wait(s, spec, pausing)
+
+
+def _bisect_exit(flow: Flow) -> Flow:
+    return replace(flow, stage=flow.bisect.entry, bisect=None, dirty=True)
+
+
+def _q6(s: SessionState, group: tuple[int, ...]) -> tuple[SessionState, str | None]:
+    loosen = [r for r in s.cores if r.core in group and r.value != 0]
+    if not loosen:
+        return s, f"the cores {list(group)} fail together and none can loosen"
+    cores = tuple(search.back_off_in_place(r, s.config, 1) if r in loosen else r for r in s.cores)
+    flow = s.flow
+    return replace(s, cores=cores, flow=replace(flow, bisect=replace(flow.bisect, rerun=group))), None
+
+
+def _bisect_outcome(s: SessionState, passed: bool, w: World) -> tuple[SessionState, str | None]:
+    flow = s.flow
+    run = flow.bisect
+    current = bisect.current_group(run)
+    if run.rerun is not None:
+        if passed:
+            return replace(s, flow=_bisect_exit(flow)), None
+        return _q6(s, run.rerun)
+    if not passed and not current:
+        return s, "the held values with every owned core at 0 fail the slot"
+    if not passed and len(current) == 1:
+        core = current[0]
+        backed = search.back_off_in_place(replace(s.core(core), value=dict(run.values)[core]), s.config, 1)
+        return replace(s.with_core(backed), flow=_bisect_exit(flow)), None
+    run = bisect.record(run, passed, dict(w.domain_of))
+    s = replace(s, flow=replace(flow, bisect=run))
+    if run.queue:
+        return s, None
+    return _q6(s, bisect.resolve(run))
+
+
+def _bisect_verdict(s: SessionState, spec: TestSpec, group: Group, pausing: bool, w: World) -> Transition:
+    s = replace(s, streaks=Streaks(), resume_streak=0)
+    s, stock = _bisect_outcome(s, group is Group.PASS, w)
+    if stock is not None:
+        return _enter_pause(s, PauseReason.STOCK_UNSTABLE, stock)
+    return _next_wait(s, spec, pausing)
+
+
 def _next_wait(after: SessionState, spec: TestSpec, pausing: bool) -> Transition:
     if pausing:
         return _enter_pause(after, PauseReason.USER, "paused by the user")
     token = after.next_token
     waiting = replace(after, slot=Waiting(token, 0.0), next_token=token + 1)
-    base = after.baseline_of(spec.core)
-    return Transition(waiting, (_commit(waiting), WriteCO(spec.core, base), Schedule(token, 0.0)))
+    effects: list = [_commit(waiting)]
+    if spec.stage is Stage.SEARCH:
+        effects.append(WriteCO(spec.core, after.baseline_of(spec.core)))
+    effects.append(Schedule(token, 0.0))
+    return Transition(waiting, tuple(effects))
+
+
+def _retry_flow(s: SessionState, spec: TestSpec) -> Flow:
+    return replace(s.flow, owed=spec.core) if spec.stage is Stage.SEARCH else s.flow
 
 
 def _thermal(s: SessionState, spec: TestSpec, rep: Report, pausing: bool, w: World) -> Transition:
     cfg = s.config
     rec = s.core(spec.core)
-    if rec.phase in (Phase.COARSE, Phase.FINE):
-        rec = replace(rec, walk_seconds=rec.walk_seconds + rep.seconds)
+    if spec.stage is Stage.SEARCH and rec.phase in (Phase.COARSE, Phase.FINE):
+        s = s.with_core(replace(rec, walk_seconds=rec.walk_seconds + rep.seconds))
     streak = s.streaks.thermal + 1
-    after = replace(
-        s.with_core(replace(rec, in_test=False)),
-        streaks=replace(s.streaks, thermal=streak),
-        resume_streak=0,
-        flow=replace(s.flow, owed=spec.core),
-    )
+    after = replace(s, streaks=replace(s.streaks, thermal=streak), resume_streak=0, flow=_retry_flow(s, spec))
     if streak > cfg.thermal_retries:
         return _enter_pause(after, PauseReason.THERMAL, f"{streak} thermal stops in a row")
     if pausing:
@@ -553,17 +824,17 @@ def _thermal(s: SessionState, spec: TestSpec, rep: Report, pausing: bool, w: Wor
         slot=Waiting(token, cfg.cool_min_s, cool_below_c=limit, cool_deadline=w.now + cfg.cool_cap_s),
         next_token=token + 1,
     )
-    return Transition(
-        waiting, (_commit(waiting), WriteCO(spec.core, after.baseline_of(spec.core)), Schedule(token, cfg.cool_min_s))
-    )
+    effects: list = [_commit(waiting)]
+    if spec.stage is Stage.SEARCH:
+        effects.append(WriteCO(spec.core, after.baseline_of(spec.core)))
+    effects.append(Schedule(token, cfg.cool_min_s))
+    return Transition(waiting, tuple(effects))
 
 
 def _apparatus(s: SessionState, spec: TestSpec, rep: Report, pausing: bool) -> Transition:
     cfg = s.config
     streak = s.streaks.apparatus + 1
-    after = replace(
-        _after_test(s, spec.core), streaks=replace(s.streaks, apparatus=streak), flow=replace(s.flow, owed=spec.core)
-    )
+    after = replace(s, streaks=replace(s.streaks, apparatus=streak), flow=_retry_flow(s, spec))
     if streak > cfg.apparatus_retries:
         return _enter_pause(after, PauseReason.APPARATUS, f"no verdict {streak} times in a row: {rep.detail}")
     if pausing:
@@ -573,7 +844,10 @@ def _apparatus(s: SessionState, spec: TestSpec, rep: Report, pausing: bool) -> T
     effects: list = []
     if rep.group is Group.SLEPT:
         effects.append(ForgetResident())
-    effects += [_commit(waiting), WriteCO(spec.core, after.baseline_of(spec.core)), Schedule(token, 0.0)]
+    effects.append(_commit(waiting))
+    if spec.stage is Stage.SEARCH:
+        effects.append(WriteCO(spec.core, after.baseline_of(spec.core)))
+    effects.append(Schedule(token, 0.0))
     return Transition(waiting, tuple(effects))
 
 
@@ -590,7 +864,7 @@ def _smu_refused(s: SessionState, e: SmuRefused) -> Transition:
 def _database_failed(s: SessionState, e: DatabaseFailed) -> Transition:
     if s.lifecycle not in HELD:
         return Transition(s, (Announce("database_failed", e.error),))
-    if s.pause is not None and s.pause.reason is PauseReason.DATABASE:
+    if _database_paused(s):
         return Transition(s)
     effects = _stop_effects(s, tuple((core, 0) for core, _ in s.baseline), journal=False)
     effects.insert(effects.index(next(x for x in effects if isinstance(x, RevertAll))), WriteStockMarker())

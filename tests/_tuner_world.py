@@ -91,6 +91,10 @@ class Fake:
     failed_at: set[tuple[int, int]] = field(default_factory=set)
     log: list[str] = field(default_factory=list)
     steps: int = 0
+    edges_2t: dict[int, int] | None = None
+    stacks: tuple[tuple[tuple[int, ...], tuple[int, ...], int], ...] = ()
+    two_t_problem: str | None = None
+    crash_note: tuple[tuple[Evidence, ...], bool] = ((), False)
 
     def __post_init__(self) -> None:
         if not self.co:
@@ -107,6 +111,7 @@ class Fake:
             stored=self.db,
             cpus_of=self.layout.cpus_of,
             domain_of=self.layout.domain_of,
+            two_t_problem=self.two_t_problem,
         )
 
     def post(self, event) -> None:
@@ -189,11 +194,15 @@ class Fake:
                 self.resident = {}
             case ReadCrashEvidence():
                 dirty = self.stored_boot != self.boot
+                evidence, shared = self.crash_note if dirty else ((), False)
+                self.crash_note = ((), False)
                 return CrashEvidenceRead(
                     dirty_end=dirty,
                     same_boot=not dirty,
                     was_running=self.db is not None and self.db.status == "running",
-                    stale_db=self.marker_boot == self.boot,
+                    stale_db=self.marker_boot == (self.stored_boot if dirty else self.boot),
+                    shared_uncorrected=shared,
+                    evidence=evidence,
                 )
             case WriteStockMarker():
                 self.marker_boot = self.boot
@@ -225,11 +234,14 @@ class Fake:
             core == spec.core and value != 0 and spec.value < value for core, value in self.failed_at
         ):
             raise Broken(f"core {spec.core} tested at {spec.value} after a FAIL at or above it")
-        if self.co.get(spec.core) != spec.value:
-            raise Broken(f"core {spec.core} starts at {self.co.get(spec.core)}, not its test value {spec.value}")
-        for core, base in state.baseline:
-            if core != spec.core and self.co.get(core) != base:
-                raise Broken(f"core {core} sits at {self.co.get(core)} during another core's test, not {base}")
+        vector = dict(spec.vector)
+        if vector.get(spec.core) != spec.value:
+            raise Broken(f"core {spec.core}'s test value {spec.value} is not its value in the test vector")
+        if set(vector) != {core for core, _ in state.baseline}:
+            raise Broken(f"the test vector {sorted(vector)} does not cover exactly the owned cores")
+        for core, value in vector.items():
+            if self.co.get(core) != value:
+                raise Broken(f"core {core} sits at {self.co.get(core)} during a {spec.stage} test that needs {value}")
 
     def check(self, before: SessionState, event, result: Transition) -> None:
         s = result.state
@@ -240,26 +252,47 @@ class Fake:
                 if self.co.get(core) != base:
                     raise Broken(f"paused ({s.pause.reason}) with core {core} at {self.co.get(core)}, not {base}")
         if s.lifecycle is Lifecycle.COMPLETED:
+            finals = {r.core: r.value for r in s.cores}
+            if self.stacked(finals):
+                raise Broken(f"completed with values {finals} that fail together")
+            two_cpus = all(len(cpus) >= 2 for _, cpus in self.layout.cpus_of)
             for r in s.cores:
-                if r.value < self.edges[r.core]:
-                    raise Broken(f"completed with core {r.core} at {r.value}, past its true edge {self.edges[r.core]}")
+                edge = self.edges[r.core]
+                if two_cpus and self.edges_2t is not None:
+                    edge = max(edge, self.edges_2t[r.core])
+                if r.value < edge:
+                    raise Broken(f"completed with core {r.core} at {r.value}, past its true edge {edge}")
                 if r.phase is not Phase.PROVEN:
                     raise Broken(f"completed with core {r.core} still {r.phase}")
                 if self.co.get(r.core) != r.value:
                     raise Broken(f"completed but core {r.core} sits at {self.co.get(r.core)}, not {r.value}")
 
+    def edge(self, core: int, klass) -> int:
+        if klass.value == "2t" and self.edges_2t is not None:
+            return self.edges_2t[core]
+        return self.edges[core]
+
+    def stacked(self, vector: dict[int, int], lane: int | None = None) -> bool:
+        return any(
+            (lane is None or lane in lanes) and sum(abs(vector.get(core, 0)) for core in cores) > limit
+            for lanes, cores, limit in self.stacks
+        )
+
     def verdict_for(self, spec) -> Report:
-        group = Group.PASS if spec.value >= self.edges[spec.core] else Group.SILICON
-        return Report(group, spec.seconds)
+        vector = dict(spec.vector)
+        failed = spec.value < self.edge(spec.core, spec.klass) or self.stacked(vector, spec.core)
+        return Report(Group.SILICON if failed else Group.PASS, spec.seconds)
 
     def deliver(self, report: Report | None = None) -> None:
         if self.worker is None:
             raise Broken("no worker to report")
         token, spec = self.worker.token, self.worker.spec
         report = report if report is not None else self.verdict_for(spec)
-        if report.group is Group.SILICON:
-            self.failed_at.add((spec.core, spec.value))
-            if spec.value == 0:
+        isolated = all(value == 0 for core, value in spec.vector if core != spec.core)
+        if report.group is Group.SILICON and spec.stage.value in ("search", "live1"):
+            if spec.value != 0:
+                self.failed_at.add((spec.core, spec.value))
+            elif isolated:
                 self.stock_fail_owed.add(spec.core)
         self.worker = None
         self.now += report.seconds
@@ -273,7 +306,8 @@ class Fake:
         self.now = max(self.now, due)
         self.post(ContinuationDue(token))
 
-    def crash(self) -> None:
+    def crash(self, evidence: tuple[Evidence, ...] = (), shared: bool = False) -> None:
+        self.crash_note = (evidence, shared)
         self.state = SessionState(next_token=self.state.next_token)
         self.worker = None
         self.timer = None

@@ -97,5 +97,16 @@ def on_crash(rec: CoreRecord, cfg: MachineConfig) -> CoreStep:
     return CoreStep(_prove_at(backed, min(0, v + CRASH_STEPS * cfg.fine_step)))
 
 
+def back_off_in_place(rec: CoreRecord, cfg: MachineConfig, steps: int) -> CoreRecord:
+    if rec.value == 0:
+        return rec
+    fb = rec.value if rec.fb is None or rec.value > rec.fb else rec.fb
+    return replace(rec, fb=fb, value=min(0, rec.value + steps * cfg.fine_step), count=0)
+
+
+def begin_2t(rec: CoreRecord) -> CoreRecord:
+    return _prove_at(rec, rec.value)
+
+
 def class_done(cores: tuple[CoreRecord, ...]) -> bool:
     return all(r.phase is Phase.PROVEN for r in cores)
