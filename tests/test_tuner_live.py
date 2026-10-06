@@ -354,7 +354,9 @@ def test_the_adapter_reads_the_kernel_facts_it_needs(monkeypatch):
 )
 def test_each_outcome_becomes_its_verdict_group(outcome, group):
     result = StressResult(core_id=0, outcome=outcome, detail="d", duration_seconds=2.0)
-    assert live_hw.report_from(result, [], (0,), {0: 0}).group is group
+    report = live_hw.report_from(result, [], (0,), {0: 0})
+    assert report.group is group
+    assert report.detail == ("" if outcome is Outcome.PASS else f"{outcome.value}: d")
 
 
 def test_machine_checks_on_other_cores_become_evidence_and_unblamed_corrected_ones_are_flagged():

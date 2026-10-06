@@ -114,7 +114,7 @@ def report_from(
         group=group,
         seconds=result.duration_seconds,
         evidence=evidence,
-        detail=f"{result.outcome.value}: {result.detail}",
+        detail="" if result.passed else f"{result.outcome.value}: {result.detail}",
         unblamed_corrected=bool(unblamed) and all(event.corrected for event in unblamed) and not trouble,
         context=context,
     )
