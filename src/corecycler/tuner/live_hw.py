@@ -1,22 +1,27 @@
 from __future__ import annotations
 
 import argparse
+import random
 import signal
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from corecycler.engine import detector as kernel
 from corecycler.engine.backends.base import OutcomeKind, StressConfig, StressMode
 from corecycler.engine.execution import Lane, Supervisor, ThermalWatch, read_cpu_temperature
+from corecycler.tuner import stages
 from corecycler.tuner.live import LiveRig, Store
 from corecycler.tuner.machine.types import (
     Abort,
     Close,
     Evidence,
+    FailContext,
     Group,
     Klass,
+    Load,
     MachineConfig,
     Mode,
     PauseRequest,
@@ -85,11 +90,15 @@ class SmuHardware:
         return time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
 
 
-def report_from(result, observed, lane_cpus: tuple[int, ...], core_of_cpu: dict[int, int]) -> Report:
+def report_from(
+    result, observed, lane_cpus: tuple[int, ...], core_of_cpu: dict[int, int], context=None, all_core: bool = False
+) -> Report:
     evidence = tuple(
         Evidence(core_of_cpu[event.cpu], event.corrected)
         for event in observed
-        if isinstance(event, kernel.CoreMachineCheck) and event.cpu not in lane_cpus and event.cpu in core_of_cpu
+        if isinstance(event, kernel.CoreMachineCheck)
+        and (all_core or event.cpu not in lane_cpus)
+        and event.cpu in core_of_cpu
     )
     unblamed = [event for event in observed if isinstance(event, kernel.UnblamedMachineCheck)]
     trouble = any(isinstance(event, kernel.KernelTrouble) for event in observed)
@@ -100,22 +109,66 @@ def report_from(result, observed, lane_cpus: tuple[int, ...], core_of_cpu: dict[
         evidence=evidence,
         detail=f"{result.outcome.value}: {result.detail}",
         unblamed_corrected=bool(unblamed) and all(event.corrected for event in unblamed) and not trouble,
+        context=context,
     )
 
 
+def free_mb(meminfo: Path = Path("/proc/meminfo")) -> int:
+    for line in meminfo.read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1]) // 1024
+    raise OSError("/proc/meminfo has no MemAvailable line")
+
+
+class Hold:
+    def __init__(self, segment: stages.Segment, read: Callable[[], float | None]) -> None:
+        self.segment = segment
+        self.read = read
+        self.held = False
+
+    def __call__(self, elapsed: float) -> bool:
+        if self.segment.hold is not None:
+            hot, cool = self.segment.hold
+            temperature = self.read()
+            if temperature is not None and temperature >= hot:
+                self.held = True
+            elif temperature is not None and temperature < cool:
+                self.held = False
+        return self.held or stages.frozen_at(self.segment, elapsed)
+
+
 class YCruncherRunner:
-    def __init__(self, backend_factory, work_dir: Path, core_of_cpu: dict[int, int], supervisor=Supervisor) -> None:
+    def __init__(
+        self,
+        backend_factory,
+        work_dir: Path,
+        core_of_cpu: dict[int, int],
+        supervisor=Supervisor,
+        detector=None,
+        read_temperature=None,
+        available_mb=None,
+    ) -> None:
         self.backend_factory = backend_factory
         self.work_dir = work_dir
         self.core_of_cpu = core_of_cpu
         self.supervisor = supervisor
+        self.detector = detector or kernel.ErrorDetector
+        self.read_temperature = read_temperature or read_cpu_temperature
+        self.available_mb = available_mb or free_mb
+        self.runs = 0
 
-    def run(self, spec: TestSpec, stop: threading.Event) -> Report:
-        settings = ONE_T if spec.klass is Klass.T1 else TWO_T
-        config = StressConfig(mode=StressMode.CUSTOM, **settings)
-        lane = Lane(core_id=spec.core, cpus=spec.cpus, work_dir=self.work_dir / f"core_{spec.core}")
+    def _supervise(
+        self,
+        spec: TestSpec,
+        stop: threading.Event,
+        lane: Lane,
+        config: StressConfig,
+        seconds: float,
+        freeze=None,
+        poll: float = 1.0,
+    ):
         observed: list = []
-        watch = kernel.ErrorDetector()
+        watch = self.detector()
         watch.reset()
         try:
             supervisor = self.supervisor(
@@ -124,12 +177,88 @@ class YCruncherRunner:
                 thermal=ThermalWatch(max_temperature=95.0, grace_seconds=3.0, hard_margin=8.0, require_sensor=True),
                 stop_event=stop,
                 observed=observed,
-                phase=f"{spec.stage.value} {spec.klass.value}",
+                poll_interval=poll,
+                phase=f"{spec.stage.value} {(spec.load or spec.klass).value}",
+                freeze=freeze,
             )
-            result = supervisor.run([lane], config, spec.seconds)[spec.core]
+            result = supervisor.run([lane], config, seconds)[lane.core_id]
         finally:
             watch.close()
-        return report_from(result, observed, spec.cpus, self.core_of_cpu)
+        return result, observed
+
+    def run(self, spec: TestSpec, stop: threading.Event) -> Report:
+        self.runs += 1
+        if spec.load is Load.SOAK:
+            return self._soak(spec, stop)
+        if spec.load in (None, Load.ONE_T, Load.TWO_T):
+            settings = ONE_T if spec.klass is Klass.T1 else TWO_T
+            config = StressConfig(mode=StressMode.CUSTOM, **settings)
+            lane = Lane(core_id=spec.core, cpus=spec.cpus, work_dir=self.work_dir / f"core_{spec.core}")
+            result, observed = self._supervise(spec, stop, lane, config, spec.seconds)
+            return report_from(result, observed, spec.cpus, self.core_of_cpu)
+        firsts = tuple(
+            sorted(
+                {
+                    min(c for c in spec.cpus if self.core_of_cpu[c] == core)
+                    for core in {self.core_of_cpu[c] for c in spec.cpus}
+                }
+            )
+        )
+        rng = random.Random(f"{spec.stage.value}:{spec.load.value}:{spec.vector}:{self.runs}")
+        segments = stages.plan(spec.load, spec.seconds, spec.cpus, firsts, self.available_mb(), rng)
+        done = 0.0
+        for segment in segments:
+            config = StressConfig(
+                mode=StressMode.CUSTOM,
+                tests=segment.tests,
+                seconds_per_test=segment.seconds_per_test,
+                memory_mb=segment.memory_mb,
+            )
+            lane = Lane(core_id=spec.core, cpus=segment.cpus, work_dir=self.work_dir / f"all_{spec.load.value}")
+            hold = Hold(segment, self.read_temperature)
+            result, observed = self._supervise(spec, stop, lane, config, segment.duration, hold, poll=0.05)
+            done += result.duration_seconds
+            if result.outcome.kind is not OutcomeKind.PASS or observed:
+                paused = hold.held or stages.frozen_at(segment, result.duration_seconds)
+                context = FailContext(
+                    steady=spec.load is Load.HOT and not paused,
+                    working=tuple(sorted({self.core_of_cpu[c] for c in segment.cpus})),
+                    paused=paused,
+                    tctl=self.read_temperature(),
+                )
+                report = report_from(result, observed, segment.cpus, self.core_of_cpu, context, all_core=True)
+                if result.outcome.kind is not OutcomeKind.PASS or report.evidence:
+                    return replace(report, seconds=done)
+        return Report(Group.PASS, done)
+
+    def _soak(self, spec: TestSpec, stop: threading.Event) -> Report:
+        watch = self.detector()
+        watch.reset()
+        observed: list = []
+        problem = None
+        try:
+            end = time.monotonic() + spec.seconds
+            while time.monotonic() < end and not stop.wait(min(1.0, max(0.0, end - time.monotonic()))):
+                read = watch.read_new()
+                observed.extend(read.events)
+                problem = problem or read.problem
+            read = watch.read_new(final=True)
+            observed.extend(read.events)
+            problem = problem or read.problem
+        finally:
+            watch.close()
+        evidence = tuple(
+            Evidence(self.core_of_cpu[e.cpu], e.corrected)
+            for e in observed
+            if isinstance(e, kernel.CoreMachineCheck) and e.cpu in self.core_of_cpu
+        )
+        if stop.is_set():
+            return Report(Group.APPARATUS, 0.0, evidence, "the soak was stopped before its end")
+        if problem is not None:
+            return Report(Group.APPARATUS, spec.seconds, evidence, f"the kernel log could not be read: {problem}")
+        unblamed = any(isinstance(e, (kernel.UnblamedMachineCheck, kernel.KernelTrouble)) for e in observed)
+        group = Group.ENVIRONMENT if unblamed else Group.PASS
+        return Report(group, spec.seconds, evidence, "soak watch")
 
 
 def parse(argv: list[str]) -> argparse.Namespace:
