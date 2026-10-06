@@ -66,13 +66,12 @@ def attribute(s: SessionState, e: CrashEvidenceRead) -> Attribution:
     if e.shared_uncorrected and not uncorrected:
         return Attribution(incident=True, evidence=evidence)
     stage = s.flow.stage
-    if stage is Stage.BISECT and in_test:
-        group = current_group(s.flow.bisect)
-        if len(group) == 1:
-            return Attribution(convict=group, evidence=evidence)
+    slot = current_group(s.flow.bisect) if stage is Stage.BISECT and in_test else ()
+    if len(slot) == 1:
+        return Attribution(convict=slot, evidence=evidence)
     if stage is Stage.SEARCH and len(in_test) == 1:
         return Attribution(convict=in_test, evidence=evidence)
-    suspects = tuple(core for core in e.suspects if core in owned)
+    suspects = tuple(core for core in e.suspects if core in owned and core not in slot)
     if suspects:
         return Attribution(convict=suspects, evidence=evidence)
     if in_test:

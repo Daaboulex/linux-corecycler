@@ -168,6 +168,15 @@ def test_crash_attribution_follows_the_spec_order(state, event, expected):
         assert verdict == type(verdict)()
 
 
+def test_a_crash_in_a_multi_core_bisect_slot_is_the_group_s_fail_not_a_conviction_of_its_members():
+    run = BisectRun(Stage.LIVE1, 0, Klass.T1, (0, 1), ((0, -5), (1, -3)), ((0, 1),))
+    cores = (replace(proven(0, -5), in_test=True), replace(proven(1, -3), in_test=True), proven(2, 0))
+    state = replace(LIVE, cores=cores, flow=Flow(Stage.BISECT, live1=Live1(), bisect=run))
+    verdict = attribute(state, evidence_read(suspects=(0, 1)))
+    assert verdict.convict == ()
+    assert verdict.flow_crash
+
+
 def test_a_bisect_single_core_head_in_test_is_convicted():
     run = BisectRun(Stage.LIVE1, 0, Klass.T1, (0, 1), ((0, -5), (1, -3)), ((1,),), (((0, 1), False),))
     state = replace(LIVE, flow=Flow(Stage.BISECT, live1=Live1(), bisect=run))
