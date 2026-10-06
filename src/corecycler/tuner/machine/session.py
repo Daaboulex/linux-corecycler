@@ -155,8 +155,17 @@ def _stop_effects(s: SessionState, revert_values: tuple[tuple[int, int], ...], j
 def _keep_pick(s: SessionState) -> SessionState:
     flow = s.flow
     picked = s.slot.picked if isinstance(s.slot, Waiting) else None
+    if isinstance(s.slot, InFlight):
+        picked = s.slot.spec.core
     if picked is not None and flow is not None and flow.stage is Stage.SEARCH and flow.owed is None:
         return replace(s, flow=replace(flow, owed=picked))
+    return s
+
+
+def _owe_interrupted(s: SessionState, in_test: tuple[int, ...]) -> SessionState:
+    flow = s.flow
+    if flow.stage is Stage.SEARCH and flow.owed is None and len(in_test) == 1:
+        return replace(s, flow=replace(flow, owed=in_test[0]))
     return s
 
 
@@ -299,7 +308,7 @@ def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transiti
         after, stock = _flow_crash(after, w)
         if stock is not None:
             return _enter_pause(_clear_in_test(after), PauseReason.STOCK_UNSTABLE, stock)
-    after = _clear_in_test(after)
+    after = _owe_interrupted(_clear_in_test(after), tuple(r.core for r in s.cores if r.in_test))
     streak = s.resume_streak + 1 if verdict.convict or flow_crash else s.resume_streak
     incidents = s.incidents + 1 if verdict.incident else s.incidents
     after = replace(after, resume_streak=streak, incidents=incidents)

@@ -264,3 +264,26 @@ def test_a_live1_back_off_sends_the_profile_through_a_second_live1_pass_before_c
     live1 = [entry for entry in stages if entry[0] is Stage.LIVE1]
     restarts = [i for i, entry in enumerate(live1) if entry[1] == 0 and i > 0 and live1[i - 1][1] != 0]
     assert restarts, "a back-off in LIVE1 must send the profile through LIVE1 again"
+
+
+@pytest.mark.parametrize("ender", ["close", "abort", "crash"])
+def test_a_search_test_cut_short_is_retried_first_after_the_resume(ender):
+    from tests._tuner_world import Abort, Close
+
+    fake = fresh(3, [-9, -9, -9], 1, max_offset=-12, k_1t=2, wait_between_cores_s=0.0)
+    start(fake)
+    fake.fire()
+    fake.deliver()
+    fake.fire()
+    interrupted = fake.worker.spec.core
+    if ender == "close":
+        fake.post(Close())
+    elif ender == "abort":
+        fake.post(Abort())
+    else:
+        fake.crash()
+        fake.boot -= 1
+    fake.post(Resume(1))
+    while fake.worker is None:
+        fake.fire()
+    assert fake.worker.spec.core == interrupted

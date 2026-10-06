@@ -136,13 +136,19 @@ def test_a_crash_mid_test_convicts_the_tested_core_on_resume():
 
 
 def test_three_crashes_in_a_row_quarantine_the_session_at_baseline():
-    fake = fresh(3, [-30, -30, -30], max_offset=-40, k_1t=2)
+    fake = fresh(3, [-30, -30, -30], max_offset=-40, k_1t=2, wait_between_cores_s=0.0)
     start(fake)
+    while fake.worker is None or fake.worker.spec.value > -20:
+        fake.progress()
+    crashed = []
     for _ in range(3):
         while fake.worker is None:
             fake.fire()
+        crashed.append((fake.worker.spec.core, fake.worker.spec.value))
         fake.crash()
         fake.post(Resume(1))
+    assert len({core for core, _ in crashed}) == 1
+    assert [value for _, value in crashed] == [crashed[0][1], crashed[0][1] + 3, crashed[0][1] + 6]
     assert fake.state.lifecycle is Lifecycle.QUARANTINED
     assert fake.co == {0: 0, 1: 0, 2: 0}
 
