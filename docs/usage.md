@@ -4,17 +4,15 @@
 
 ## Quick start
 
-1. Launch CoreCycler (`corecycler` or `python src/corecycler/main.py`). Full monitoring
-   (clock stretch, per-core power, Curve Optimizer) needs access to the MSR and SMU
-   devices: grant it to your user once ([Device access](installation.md#device-access))
-   or launch with `sudo`. Without either it runs with reduced telemetry and a status-bar
-   warning.
+1. Launch CoreCycler (`corecycler` or `python src/corecycler/main.py`). The Curve
+   Optimizer needs SMU access: grant it to your user once
+   ([Device access](installation.md#device-access)) or launch with `sudo`. Clock stretch
+   and per-core power read model-specific registers, which need `sudo` today. Without
+   access it runs with reduced telemetry and a status-bar warning.
 2. The CPU topology (cores, CCDs, SMT, X3D) is detected automatically.
-3. In the Configuration tab, select a backend -- use stress-ng if mprime is not
-   installed. A backend that is not on PATH (mprime and y-cruncher are extracted
-   tarballs, and `sudo` drops your shell's PATH) is not a dead end: CoreCycler offers
-   any copy it finds and remembers the one you pick. `corecycler doctor` shows every
-   tool and where it resolved from.
+3. In the Configuration tab, select a backend. Use stress-ng if mprime is not installed.
+   If a backend is reported as not found, see
+   [Where CoreCycler looks for a backend](installation.md#where-corecycler-looks-for-a-backend).
 4. The default preset is **Standard** (10 min/core, 1 cycle); adjust or pick another.
 5. Click **Start Test** and watch the core grid: each core lights up as it is tested,
    turning green (passed) or red (failed). The Results tab shows per-core detail.
@@ -58,42 +56,52 @@ Direct SMU access for reading and writing per-core CO offsets at runtime (requir
 Auto-Tuner's Export Profile and the History tab's "Load to CO Tab").
 
 All values written here are **volatile** and reset on reboot; set them in BIOS to make
-them permanent. For Zen 2 (no Curve Optimizer) the tab shows "Connected (no CO support)"
--- PBO limits and scalar are still accessible.
+them permanent. For Zen 2 (no Curve Optimizer) the tab shows "Connected (no CO support)".
+No GUI or CLI path changes PBO limits, the boost limit or the PBO scalar.
 
 ## Auto-Tuner
 
 The Auto-Tuner automates the entire PBO Curve Optimizer search via runtime SMU writes
-(requires `ryzen_smu`). For each core it runs a coarse-to-fine search:
+(requires `ryzen_smu`). For each core it runs a coarse-to-fine search, then hardens the
+result:
 
-1. **Coarse search** -- from `start_offset` (default 0), step by `coarse_step`
-   (default -5) toward `max_offset`, running a short test (`search_duration`, default
-   60s) per step. A pass goes more aggressive; a fail bounds the limit.
-2. **Fine search** -- from the last passing coarse value, step by `fine_step`
-   (default -1) toward the failure point to narrow the exact limit.
-3. **Confirmation** -- a longer test (`confirm_duration`, default 300s) validates the
-   best offset. On failure, a **smart backoff** finds the nearest stable offset: a quick
-   pre-confirm filter (`search_duration x backoff_preconfirm_multiplier`, default 2x), a
-   **midpoint jump** after `midpoint_jump_threshold` (default 3) consecutive pre-confirm
-   fails, then **binary search** to the boundary. Backoff stops at the BIOS baseline
-   (from `inherit_current`), not zero -- unless the baseline itself crashes, in which
-   case it descends toward CO=0 (see [Crash safety](#crash-safety)).
-4. **Multi-core validation** (`auto_validate`, on by default) -- after every core is
-   individually confirmed, a staged sequence catches failures invisible to per-core
-   testing:
-   - **Stage 1 -- per-core, all offsets live**: all confirmed offsets applied, each core
+1. **Coarse search**: from `start_offset` (default 0), step by `coarse_step` (default 5)
+   in `direction` (default -1, toward negative offsets) up to `max_offset` (default -50),
+   running a short test (`search_duration_seconds`, default 60 s) per step. A pass goes
+   more aggressive. A fail bounds the limit.
+2. **Fine search**: from the last passing coarse value, step by `fine_step` (default 1)
+   toward the failure point to narrow the exact limit.
+3. **Confirmation**: a longer test (`confirm_duration_seconds`, default 300 s) validates
+   the best offset. On failure, a **smart backoff** finds the nearest stable offset: a
+   quick pre-confirm filter (`search_duration_seconds x backoff_preconfirm_multiplier`,
+   default 2x), a **midpoint jump** after `midpoint_jump_threshold` (default 3)
+   consecutive pre-confirm fails, then **binary search** to the boundary. Backoff stops
+   at the BIOS baseline (from `inherit_current`), not zero, unless the baseline itself
+   crashes. Then it descends toward CO=0 (see [Crash safety](#crash-safety)).
+4. **Hardening**: a confirmed core runs each entry of `hardening_tiers` in turn, each for
+   `confirm_duration_seconds`. The defaults are three mprime tiers, whatever the Backend
+   setting: AVX2 Small FFTs, SSE Large FFTs, then SSE Small FFTs as a light-load
+   spectrum (bursts, load transitions, idle watch). A failed tier backs the core off by
+   one `fine_step` and runs that tier again. A core that passes every tier, or backs off
+   to its baseline, is HARDENED. An empty `hardening_tiers` in the `corecycler tune
+   --config` JSON skips this step.
+5. **Multi-core validation** (`auto_validate`, on by default): once every core is
+   HARDENED (CONFIRMED when `hardening_tiers` is empty), a staged sequence catches
+   failures invisible to per-core testing. Stages 1, 2, 3, 4 and 6 run each test for
+   `validate_duration_seconds` (default 300 s):
+   - **Stage 1 (per-core, all offsets live)**: all confirmed offsets applied, each core
      stressed in turn. Catches shared-VRM power-delivery interactions.
-   - **Stage 2 -- all-core simultaneous**: one pinned stress process per core at once
-     for `validate_duration` -- full package-power worst case, per-core verdicts.
-   - **Stage 3 -- alternating half-core load**: half loaded, half idle, then swap
+   - **Stage 2 (all-core simultaneous)**: one pinned stress process per core at once.
+     Full package-power worst case, per-core verdicts.
+   - **Stage 3 (alternating half-core load)**: half loaded, half idle, then swap
      (split by CCD when available). Catches boost-ramp voltage transients.
-   - **Stage 4 -- rapid transitions** (`validate_transitions`): fast load/idle cycling
-     on one CPU of every core at once, per-core verdicts -- catches idle-to-boost
+   - **Stage 4 (rapid transitions)** (`validate_transitions`): fast load/idle cycling
+     on one CPU of every core at once, per-core verdicts. Catches idle-to-boost
      instability.
-   - **Stage 5 -- per-core spectrum** (`validate_spectrum`): bursts, load transitions
+   - **Stage 5 (per-core spectrum)** (`validate_spectrum`): bursts, load transitions
      and idle watch per core with all offsets live.
-   - **Stage 6 -- all-core memory load** (`validate_memory`): one memory stressor
-     (stressapptest) per core at once, all offsets live -- catches CO marginality
+   - **Stage 6 (all-core memory load)** (`validate_memory`): one memory stressor
+     (stressapptest) per core at once, all offsets live. Catches CO marginality
      that only appears under memory-controller load. Every instance gets an equal share
      of one budget read live at launch: `MemAvailable`, capped by what is left under any
      cgroup memory limit (`memory.max` or `memory.high`) over the cgroup the stressors
@@ -101,19 +109,20 @@ The Auto-Tuner automates the entire PBO Curve Optimizer search via runtime SMU w
      numbers are logged. Skipped with a log if no memory stress tool is installed or the
      share falls below the 256 MB per-instance coverage floor; neither is a stability
      verdict.
-   - **Stage 7 -- real-world soak** (`validate_soak`): no synthetic load; the kernel
+   - **Stage 7 (real-world soak)** (`validate_soak`): no synthetic load; the kernel
      error stream is watched for `soak_duration_seconds` while the machine is used
      normally. Any hardware event fails it.
 
    A failing core is backed off by one `fine_step`, re-proven solo, and only the failed
-   stage reruns. A stall, external kill, or unattributable machine check is an
-   APPARATUS fault: the step retries without a verdict (up to `max_apparatus_retries`),
-   never a back-off. Any back-off marks the pass dirty -- completion requires one final
-   clean pass. If a failing core reaches its baseline with real failures persisting,
+   stage reruns. A stall, external kill, unattributable machine check or kernel trouble
+   (a lockup, oops or panic in the kernel log) is an APPARATUS fault: the step retries
+   without a verdict (up to `max_apparatus_retries`), never a back-off. Any back-off
+   marks the pass dirty, and completion then requires one final clean pass. If a failing
+   core reaches its baseline with real failures persisting,
    the tuner reverts everything to baseline and PAUSES with an honest message instead
    of declaring completion. A reboot mid-validation with no attributable evidence is
    recorded as an unattributed incident; repeated incidents pause for your decision.
-5. **Result** -- each core gets a confirmed, cross-validated best offset. Export it as
+6. **Result**: each core gets a confirmed, cross-validated best offset. Export it as
    JSON or load it into the Curve Optimizer tab.
 
 ### CO isolation
@@ -153,51 +162,23 @@ configuration that crashes the machine. Three mechanisms enforce this:
 An interrupted session is detected on next launch and offered for resume; resume
 re-applies only journaled-safe baselines and re-engages one core at a time. A crash or
 pause during validation is recoverable: on resume the tuner restores the persisted
-validation cursor and continues at the exact stage and position it left off.
+validation cursor and continues at the stage and position it left off, with two limits.
+It never resumes past stage 6, so a session stopped in the soak runs stage 6 again
+first. From stage 2 on, a core whose offset changed since its stage 1 pass gets a solo
+re-test before the stage continues.
 
 ### State machine
 
-```text
-NOT_STARTED -> COARSE_SEARCH -> FINE_SEARCH -> SETTLED -> CONFIRMING -> CONFIRMED
-                                    |                       |            |
-                                    v                       v            v (all cores)
-                                 SETTLED              FAILED_CONFIRM   VALIDATION
-                                                           |     S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7
-                                                           v      (fail: back off failing core,
-                                                    BACKOFF (smart)    solo re-prove, rerun stage;
-                                                    - pre-confirm      dirty pass => one final
-                                                    - midpoint jump    clean pass before DONE)
-                                                    - binary search
-                                                    - baseline floor
-```
+Every per-core phase and transition is charted in
+[Tuner core state machine](tuner-state-spec.md).
 
 ### Configuration options
 
-| Parameter | Default | Range | Description |
-|---|---|---|---|
-| Start Offset | 0 | -60 to +30 | Starting CO value for all cores |
-| Coarse Step | 5 | 1-15 | Step size during coarse search |
-| Fine Step | 1 | 1-5 | Step size during fine search |
-| Max Offset | -50 | -60 to +60 | Most aggressive offset (auto-clamped to CPU generation) |
-| Search Duration | 60s | 10-600s | Test duration per search step |
-| Confirm Duration | 300s | 30-1800s | Test duration for the confirmation run |
-| Validate Duration | 300s | 30-3600s | Test duration per multi-core validation stage |
-| Max Confirm Retries | 2 | 0-5 | Retries before backing off from a value |
-| Auto Validate | true | true/false | Run staged multi-core validation (stages 1-7) after all cores confirm |
-| Backend | mprime | mprime/stress-ng/y-cruncher | Per-core stress backend (stressapptest runs only the memory stage and the Memory tab) |
-| Mode | SSE | SSE/AVX/AVX2/AVX512 | Stress instruction set |
-| FFT Preset | SMALL | SMALLEST/SMALL/LARGE/HUGE/ALL/MODERATE/HEAVY/HEAVY_SHORT | FFT size preset (mprime) |
-| Test Order | sequential | see below | Core testing order |
-| Stretch Threshold | 3.0% | 0-20% | Clock-stretch failure threshold (0 = off, requires root) |
-| Abort on Consecutive Failures | 0 | >= 0 | Abort if N cores fail at start_offset (0 = off) |
-| Resume Crash Quarantine Threshold | 3 | 1-20 | Crash-resumes (no surviving test between) before forcing CO=0 and quarantining |
-| Allow Missing Thermal Sensor | false | true/false | Permit running with no readable temperature sensor (false = fail closed) |
-| Inherit Current CO | false | true/false | Read current SMU offsets as starting points |
-
-Abort on Consecutive Failures, Resume Crash Quarantine Threshold and Allow Missing
-Thermal Sensor are not in the panel: set them in the JSON that `corecycler tune
---config` loads. The Backoff Pre-Confirm Multiplier (2.0) and Midpoint Jump
-Threshold (3) use sensible defaults and are not exposed at all.
+The Auto-Tuner tab sets the common fields, each with a tooltip. Its Backend list shows
+every registered backend. `corecycler tune --config <file>` loads a JSON object that may
+set any field of `TunerConfig` by its own name; a field with an unknown name or a wrong
+type is dropped with a logged warning and its default used. The fields, their defaults
+and the checks on them are in `src/corecycler/tuner/config.py`.
 
 ### How each backend uses Mode and FFT Preset
 
@@ -219,13 +200,8 @@ Threshold (3) use sensible defaults and are not exposed at all.
 
 ### Test orderings
 
-| Order | Strategy | Best for |
-|---|---|---|
-| sequential | Finish each core completely before the next | Simple, easy to follow |
-| round_robin | One test per core per round | Partial results for all cores sooner |
-| weakest_first | Prioritize cores closest to confirmation | Finish nearly-done cores first |
-| ccd_alternating | Alternate CCDs, prioritize the CCD with fewest confirmed | Balanced thermal coverage |
-| ccd_round_robin | Round-robin within each CCD, alternating CCDs | Best thermal profile -- each core cools while the other CCD is tested |
+The five test orders (`test_order`) and how each picks the next core are specified in
+[Test-order specification](test-order-spec.md).
 
 ### Tips
 
@@ -234,8 +210,8 @@ Threshold (3) use sensible defaults and are not exposed at all.
 - The default `max_offset` of -50 suits Zen 4 and is Zen 5's firmware limit (a
   deeper request is clamped); Zen 3/3D are clamped to -30 automatically.
 - A typical 16-core run takes ~2-4 hours plus several hours of staged validation (stages 1-7 include an all-core memory-load stage and a 30-minute real-world soak).
-- If many cores fail at the starting offset, enable **abort on consecutive failures**
-  (e.g. 3) -- it usually means BIOS PBO needs adjusting first.
+- If many cores fail at the starting offset, set `abort_on_consecutive_failures` (e.g. 3)
+  in the `--config` JSON. It usually means BIOS PBO needs adjusting first.
 - **Multi-core validation** is the key differentiator from manual testing: a core stable
   in isolation may fail when all cores draw power at once. If validation keeps backing
   off and restarting, the VRM may not support the aggregate profile -- reduce
@@ -262,16 +238,16 @@ Core grid colors -- **blue**: testing now; **green**: passed/confirmed; **red**:
 **amber**: tuner smart-backoff; **gray**: pending; **purple**: memory stress (all cores
 at once).
 
-| Error type | Meaning | Typical cause |
+| Outcome | Meaning | Typical cause |
 |---|---|---|
-| MCE (Machine Check Exception) | Hardware-level CPU error (kernel log) | CO too aggressive -- voltage too low for the requested frequency |
-| Computation | Stress test got a wrong result (rounding, sumout, mismatch) | CO too aggressive -- subtle numerical instability |
-| Idle instability | MCE during an idle/C-state transition | CO unstable during voltage ramp-up from deep sleep |
-| Load transition | Error during a variable-load stop/start | Voltage regulation insufficient during rapid load changes |
-| Timeout | Stress process stopped responding | Possible instability hang (sometimes benign) |
-| Crash | Stress process terminated unexpectedly | Core instability causing instruction faults |
+| MCE (`mce`) | The kernel logged a machine check naming the tested core, in any phase (stress, idle, load transition); the detail names the phase | CO too aggressive: voltage too low for the requested frequency |
+| Computation (`computation`) | Stress test got a wrong result (rounding, sumout, mismatch) | CO too aggressive: subtle numerical instability |
+| Crash (`crash`) | Stress process died of SIGILL, SIGBUS, SIGFPE or SIGSEGV | Core instability causing instruction faults |
+| Clock stretch (`clock_stretch`) | Auto-Tuner only: the test passed, but APERF/MPERF stretch exceeded the threshold (needs root) | CO too aggressive: the Auto-Tuner counts it as a failed test |
+| Thermal (`thermal`) | The temperature limit stopped the test | Cooling, not CO |
+| Apparatus (`stall`, `killed`, `startup` and the rest) | The test itself could not be judged | Not a CO verdict: the Auto-Tuner retries the step |
 
-**MCE errors are the most serious** -- the CPU detected an actual hardware-level error;
+**MCE errors are the most serious**: the CPU detected an actual hardware-level error, so
 reduce that core's CO (make it less negative). **Computation errors** are the most common
-CO-tuning failure. **Idle instability** is caught by the idle test phase and is a failure
-mode sustained-load tests miss entirely.
+CO-tuning failure. An MCE in the idle phase is a failure mode sustained-load tests miss
+entirely.

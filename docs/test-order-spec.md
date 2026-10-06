@@ -1,10 +1,11 @@
 # Test-order specification
 
 The auto-tuner picks the next core to test with one of five orders
-(`TunerConfig.test_order`). This is the control-system contract for all five:
-what each order must do, what state it carries, and what happens across an
-interruption. `tests/test_test_order_spec.py` executes every row of this
-chart; a behavior change that is not reflected here fails the suite.
+(`TunerConfig.test_order`). This chart describes all five: what each order
+must do, what state it carries, and what happens across an interruption. It
+renders the rules that `tests/test_test_order_spec.py` checks. The test does
+not read this file, so a behavior change is written into the test and this
+chart separately.
 
 ## State the selectors read and write
 

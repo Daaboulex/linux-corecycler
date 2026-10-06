@@ -1,12 +1,13 @@
 # Tuner core state machine — transition specification
 
-The per-core state machine's ALLOWED transition relation, declared as data
-and exhaustively executed by `tests/test_state_transition_spec.py`: every
-(phase x outcome x offset-scenario) combination is driven through the real
-`_advance_core` / `_apply_crash_penalty`, and any transition outside this
-chart fails the suite. Safety invariants are asserted after every single
-transition. `docs/test-order-spec.md` covers which core gets tested next;
-this chart covers what happens to a core once it has a verdict.
+The per-core state machine's ALLOWED transition relation. The relation itself
+is data in `tests/test_state_transition_spec.py`, which drives every
+(phase x outcome x offset-scenario) combination through the real
+`_advance_core` / `_apply_crash_penalty` and fails on any transition outside
+it. This chart renders that data; the test does not read this file. Safety
+invariants are asserted after every single transition. `docs/test-order-spec.md`
+covers which core gets tested next; this chart covers what happens to a core
+once it has a verdict.
 
 ## Verdict transitions (`_advance_core`)
 
@@ -65,6 +66,9 @@ penalty never overshoots past stock (CO=0).
   output lines. Never logged as a verdict, never marks the journal survived.
 - A machine check naming no core (`mce_unattributed`): the resident offsets
   stay unsurvived and the step is retried the same way, outside the soak.
+- Kernel trouble (`kernel_trouble`: a soft or hard lockup, an oops, a kernel
+  BUG or a panic in the kernel log): the step is retried the same way,
+  outside the soak.
 - Apparatus-breaker trips (implausible fail streaks, search flow only) —
   roll back to the most aggressive proven pass, re-enter CONFIRMING, pause.
 
@@ -102,12 +106,17 @@ Evidence outranks policy; a guess is never written. Priority order:
 4. The CO journal's un-survived residents of the dead boot: each core's last
    write in that boot, and when the SMU never confirmed that write, the less
    aggressive of it and the last confirmed write before it.
-5. Anything ambiguous (multi-core in-test set, or any crash under
-   validation): penalize NOBODY; run the isolated crash hunt — per-core
+5. Anything ambiguous (more than one core in test, or any core in test under
+   validation): penalize NOBODY; run the isolated crash hunt: per-core
    slots at the tuned value with all other cores at stock, most suspect
    first (prior MCE rows, crash history, deepest undervolt). A slot failure
    convicts its core. After `max_unattributed_crash_hunts` fruitless hunts
    in a row the session pauses for the owner.
+6. A crash under validation with no core in test and no evidence above:
+   nobody is penalized and no hunt runs. It is recorded as an unattributed
+   incident and the final clean validation pass is owed again. Incidents and
+   fruitless hunts share one count; at `max_unattributed_crash_hunts` the
+   session pauses for the owner.
 
 Every conviction retracts the value it convicts and every more aggressive
 value of that core from the proven set, in the same transaction: the value

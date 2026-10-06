@@ -108,7 +108,7 @@ in
     deviceAccess = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Whether to grant the deviceAccessUser access to MSR devices and SMU sysfs via a dedicated group, a udev rule for MSR and a systemd oneshot for the ryzen_smu files. No sudo required for monitoring and CO access. The oneshot includes `smn`, which is arbitrary SMN register access -- see SECURITY.md before enabling this for a user you would not trust with the SMU mailbox.";
+      description = "Whether to grant the deviceAccessUser access to the SMU sysfs files via a dedicated group and a systemd oneshot for the ryzen_smu files, so CO access needs no sudo. A udev rule also gives the group read mode on the MSR devices, but the kernel refuses an MSR open without CAP_SYS_RAWIO, so clock stretch, per-core power and MSR package power still need root. The oneshot includes `smn`, which is arbitrary SMN register access. See SECURITY.md before enabling this for a user you would not trust with the SMU mailbox.";
     };
 
     deviceAccessUser = lib.mkOption {

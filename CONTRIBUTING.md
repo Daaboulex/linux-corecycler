@@ -20,10 +20,12 @@ nix develop '.#packages.x86_64-linux.default' --command python -m pytest -m 'not
 git clone https://github.com/Daaboulex/linux-corecycler.git
 cd linux-corecycler
 python3 -m venv .venv && source .venv/bin/activate   # PEP 668: system pip is managed
-pip install -e ".[dev]"   # installs pytest, ruff, hypothesis
-pip install PySide6       # Qt6 bindings (required for tuner engine tests)
+pip install -e ".[dev]" pytest-cov
 pytest tests/ -v
 ```
+
+`pip install -e ".[dev]"` installs PySide6, pytest, ruff and hypothesis. The `dev` extra
+lacks pytest-cov, which the coverage gate below needs, so it is installed by name.
 
 ## Workflow
 
@@ -71,22 +73,11 @@ branch without a test fails the build, not review.
 - **Use existing fixtures.** See `tests/conftest.py` for topology
   builders, mock SMU sysfs, and backend mocks.
 
-### Test Categories
+### PySide6 in the suite
 
-PySide6 is needed for the whole suite, not only the GUI files: `conftest.py`'s autouse
-fixtures import the tuner engine, which imports Qt.
-
-| Category | Files | Description |
-|----------|-------|-------------|
-| SMU commands | `test_smu_commands.py` | Encoding/decoding, generation detection |
-| SMU driver | `test_smu_driver.py` | CO read/write, slot probing, backup/restore |
-| Monitor | `test_monitor.py` | hwmon, frequency, power monitoring |
-| Topology | `test_topology.py` | CPU detection, CCD layout, X3D |
-| Tuner engine | `test_tuner_engine.py` | State machine, crash recovery, scheduling |
-| Backends | `test_backends.py` | Stress test command generation, output parsing |
-| External tools | `test_tools.py`, `test_tool_prompt.py` | Binary resolution, the missing-tool prompt |
-| Contracts | `test_contracts.py`, `test_tool_discovery_live.py` | Drift pins (Ring A) and live checks (Ring B) |
-| History | `test_history_*.py` | SQLite persistence, export, context |
+When PySide6 is missing, `tests/conftest.py` fakes `PySide6.QtCore`, so the engine and
+tuner tests run without Qt. The GUI tests import `PySide6.QtWidgets` and need the real
+package.
 
 ### Property-Based Tests (Hypothesis)
 
@@ -111,29 +102,19 @@ To run: `pytest tests/test_tuner_engine.py -k "Invariant" -v`
 4. If the generation has unique behavior (different SMU addresses,
    harvested cores), add a dedicated test
 
-### Mock Infrastructure
-
-| Fixture | Purpose | Location |
-|---------|---------|----------|
-| `_gen_cpuinfo()` | Generate mock /proc/cpuinfo text | `conftest.py` |
-| `build_topology()` | Build CPUTopology from mock cpuinfo | `conftest.py` |
-| `mock_sysfs` | Factory for fake sysfs trees | `conftest.py` |
-| `mock_backend` | Controllable stress backend | `conftest.py` |
-| `smu_dir` | Fake ryzen_smu sysfs | `test_smu_driver.py` |
-| `zen3_cmds` / `zen5_cmds` | SMU command set fixtures | `test_smu_driver.py` |
-
 ## Code Style
 
 ### Python
 
 - **Python 3.12+** required
-- **Ruff** for linting (`ruff check src/`), configured in `pyproject.toml`. There is no
-  Python auto-formatter: `ruff format` is not part of the gate and running it would
-  reformat the tree
+- **Ruff** lints and formats, configured in `pyproject.toml`. The pre-commit hooks run
+  `ruff check --fix` and `ruff format`
 - Line length: 120 characters
-- Type hints on all function signatures
+- Type hints on function signatures. Ruff does not check them, and some older functions
+  lack them
 - Dataclasses with `slots=True` for data structures
-- `StrEnum` for enumerations (catches typos at import time)
+- `StrEnum` where the value is stored or compared as a string (tuner phases, outcomes);
+  plain `Enum` elsewhere
 - No comments unless explaining *why* (not *what*)
 
 ### Nix
@@ -144,7 +125,7 @@ To run: `pytest tests/test_tuner_engine.py -k "Invariant" -v`
 
 ## Adding a Stress Test Backend
 
-CoreCycler uses a backend registry. Adding a new backend is 4 steps:
+CoreCycler uses a backend registry. Adding a new backend is 6 steps:
 
 1. Create `src/corecycler/engine/backends/<name>.py`
 2. Subclass `StressBackend` from `base.py` and implement:
@@ -156,13 +137,15 @@ CoreCycler uses a backend registry. Adding a new backend is 4 steps:
      the final verdict are the Supervisor's job, never the backend's
    - `get_supported_modes() -> list[StressMode]` — SSE, AVX, AVX2, etc.
 3. Add `@register_backend("display-name")` decorator
-4. Add a matching `ExternalTool` entry to `TOOLS` in `src/corecycler/config/tools.py`,
-   which is how the binary is found and how `corecycler doctor` reports it. Locating a
-   binary lives there and nowhere else: PATH alone cannot find a tool under `sudo`
-   (secure_path) or one extracted from a tarball. The `external-tool-discovery`
-   contract fails if a registered backend has no entry.
+4. Import the module in `load_all()` in `src/corecycler/engine/backends/__init__.py`.
+   Nothing else imports it, so without this line it never registers
+5. Add a matching `ExternalTool` entry to `TOOLS` in `src/corecycler/config/tools.py`, the
+   one place a binary is located ([why](docs/installation.md#where-corecycler-looks-for-a-backend))
+6. Add the key to the backend set pinned in `_pin_external_tool_discovery()` in
+   `tests/contract_inventory.py`. The `external-tool-discovery` contract fails until the
+   registry, `TOOLS` and that set agree
 
-The GUI discovers backends automatically — no GUI code changes needed.
+Once `load_all()` registers it, the GUI's backend lists show it. No GUI file changes.
 
 See `src/corecycler/engine/backends/mprime.py` for a reference implementation.
 
@@ -170,7 +153,8 @@ See `src/corecycler/engine/backends/mprime.py` for a reference implementation.
 
 Hardware-touching code (SMU driver, hwmon, topology) has higher review standards:
 
-- **Test with mock sysfs** — never depend on real hardware in tests
+- **Test with mock sysfs.** Unit tests never need real hardware. Only the Ring B contract
+  tests (`-m contract`, above) touch it
 - **Range-check all SMU arguments** — CO values, PBO limits
 - **Log every SMU write** — debug logging for hardware operations
 - **Document the source** — cite ZenStates-Core, kernel driver docs, or AMD documentation
@@ -180,7 +164,8 @@ Hardware-touching code (SMU driver, hwmon, topology) has higher review standards
 
 1. Add `CPUGeneration` enum value in `src/corecycler/smu/commands.py`
 2. Add `SMUCommandSet` entry in `COMMAND_SETS` with correct opcodes
-3. Add detection logic in `detect_generation()`
+3. Add its family and model range to `_MODEL_TABLE`. Only a name-based adjustment goes in
+   `detect_generation()`
 4. Add test fixture in `tests/conftest.py`
 5. Add parametrized detection test in `tests/test_smu_commands.py`
 6. If encoding differs, update `encode_co_arg()` / `decode_co_arg()`

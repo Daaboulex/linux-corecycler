@@ -2,26 +2,10 @@
 
 # Installation
 
-The main [README](../README.md) covers the quick NixOS flake install. This page covers
-the full NixOS module, other distros, kernel modules, and stress backends.
-
-Full telemetry and the Curve Optimizer need access to MSR and SMU devices -- grant it to
-your user once and no `sudo` is needed, see [Device access](#device-access).
-
 ## NixOS module
 
-```nix
-{
-  imports = [ inputs.corecycler.nixosModules.default ];
-
-  services.corecycler = {
-    enable = true;
-    deviceAccessUser = "your-username";  # required -- user added to the corecycler group
-  };
-}
-```
-
-The module handles the package, kernel modules, udev rules for MSR access, a systemd
+The flake input and the minimal module setup are in the [README](../README.md#installation).
+The module handles the package, kernel modules, a udev rule for the MSR devices, a systemd
 oneshot for SMU sysfs permissions, and the `corecycler` group. No manual kernel-module
 setup is needed.
 
@@ -40,26 +24,13 @@ services.corecycler = {
 
 ### Module options
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `enable` | bool | `false` | Enable CoreCycler |
-| `unfreeBackends` | bool | `false` | Include mprime and y-cruncher (unfree). When false, stress-ng and stressapptest are bundled |
-| `ryzenSmu` | bool | `true` | Load [ryzen_smu](https://github.com/amkillam/ryzen_smu) for CO read/write via SMU (Zen 1-5) |
-| `zenpower` | bool | `false` | Load [zenpower5](https://github.com/mattkeenan/zenpower5) instead of k10temp -- temps, SVI2 voltage (Zen 1-4), RAPL power. Blacklists k10temp |
-| `coretemp` | bool | `false` | Load in-tree coretemp for Intel CPU temperatures |
-| `nct6775` | bool | `false` | Load in-tree nct6775 for Nuvoton NCT6775-NCT6799 Super I/O (Vcore, fans, temps): ASUS, MSI, ASRock |
-| `nct6683` | bool | `false` | Load in-tree nct6683 for Nuvoton NCT6683/6686/6687 Super I/O: modern MSI (B550, B650, X570, X670) |
-| `it87` | bool | `false` | Load out-of-tree [it87](https://github.com/frankcrawford/it87) for ITE Super I/O (Gigabyte) |
-| `cpuid` | bool | `false` | Load in-tree cpuid module for `/dev/cpu/*/cpuid` |
-| `spd5118` | bool | `false` | Load spd5118 + i2c_dev for DDR5 DIMM temperature monitoring |
-| `deviceAccess` | bool | `true` | Grant `deviceAccessUser` access to MSR/SMU sysfs without sudo |
-| `deviceAccessUser` | string | `""` | Username for device access (required when `deviceAccess` is true) |
-| `autoResume.enable` | bool | `false` | Resume the active tuner session after login, sudo-less via the device-access group |
-| `autoResume.delaySeconds` | int | `120` | Settle time after login before that resume runs |
+Every option, with its type, default and description, is declared in
+[`nix/module.nix`](../nix/module.nix).
 
-Out-of-tree modules (ryzen_smu, zenpower5, it87) are built against your running kernel;
-both GCC and Clang/LTO kernels (e.g. CachyOS) are auto-detected. In-tree modules (msr,
-nct6775, nct6683, coretemp, cpuid, spd5118 + i2c_dev) load via `boot.kernelModules`.
+Out-of-tree modules (ryzen_smu, zenpower5, it87) are built against the kernel your
+configuration selects (`boot.kernelPackages`), with GCC or Clang to match how that kernel
+was built. In-tree modules (msr, nct6775, nct6683, coretemp, cpuid, spd5118 + i2c_dev)
+load via `boot.kernelModules`.
 
 ### Package-only (no module)
 
@@ -67,7 +38,7 @@ nct6775, nct6683, coretemp, cpuid, spd5118 + i2c_dev) load via `boot.kernelModul
 # FOSS-only (stress-ng + stressapptest bundled, no unfree software)
 environment.systemPackages = [ inputs.corecycler.packages.${pkgs.system}.default ];
 
-# Full (also bundles mprime -- requires allowUnfree)
+# Full (also bundles mprime and y-cruncher, x86_64-linux only)
 environment.systemPackages = [ inputs.corecycler.packages.${pkgs.system}.full ];
 ```
 
@@ -77,17 +48,19 @@ environment.systemPackages = [ inputs.corecycler.packages.${pkgs.system}.full ];
 | `packages.full` | stress-ng, stressapptest, mprime, y-cruncher | Yes (mprime, y-cruncher) |
 
 `packages.full` is built off-CI (its unfree backends are not on `cache.nixos.org`, so CI
-only eval-gates it); build it yourself with `nix build .#full` and `allowUnfree`. Both
-variants bundle setpriv (util-linux); core pinning uses a systemd cgroup scope
-(`systemd-run -p AllowedCPUs=...`), so the host needs systemd — without it, stress
-launches are refused rather than run unpinned.
+only evaluates it). Build it with `nix build .#full`. The flake's own packages are built
+with unfree allowed, so neither they nor the NixOS module need `allowUnfree`. Only the
+overlay (`overlays.default`) builds against your nixpkgs, and its `linux-corecycler-full`
+needs `allowUnfree` there.
+
+Both variants bundle setpriv (util-linux). Core pinning uses a systemd cgroup scope
+(`systemd-run -p AllowedCPUs=...`), so the host needs systemd. Without it, the stress
+launches of a manual run and the Auto-Tuner are refused rather than run unpinned. The
+Memory tab's test is never pinned.
 
 ## Nix (any distro)
 
-```bash
-nix run github:Daaboulex/linux-corecycler        # FOSS-only
-nix run github:Daaboulex/linux-corecycler#full   # with mprime
-```
+`nix run` works without the module, see the [README](../README.md#installation).
 
 ## Other distros
 
@@ -151,27 +124,36 @@ and PySide6 >= 6.7.
 
 ## Device access
 
-Stress testing and temperature monitoring work as your own user. Everything that reads a
-model-specific register or the SMU needs permission on those devices:
+Stress testing and temperature monitoring work as your own user. The SMU, the
+model-specific registers and some kernel interfaces need more:
 
 | Feature | Plain user | With device access | As root |
 |---|---|---|---|
 | Stress testing (per-core cycling) | Full | Full | Full |
 | Temperature, per-CCD temps, frequency | Full | Full | Full |
-| Package power | Via hwmon (zenpower) | Full | Full |
-| Per-core power (RAPL MSR) | N/A | Full | Full |
-| Clock stretch detection (APERF/MPERF) | N/A | Full | Full |
+| Package power | Via hwmon (zenpower) | Same | Full |
+| Per-core power (RAPL MSR) | N/A | N/A | Full |
+| Clock stretch detection (APERF/MPERF) | N/A | N/A | Full |
 | Vcore voltage | Via Super I/O or zenpower | Same | Same |
 | DIMM info (dmidecode) | N/A | N/A | Full |
 | Curve Optimizer (SMU read/write) | N/A | Full | Full |
 | Kernel error detection (MCE via /dev/kmsg) | Needs `kernel.dmesg_restrict=0` | Full | Full |
 
-Two limits worth knowing. `dmidecode` reads the raw DMI table, which only root may open,
-so the Memory tab's DIMM details need a root run whatever else you grant. And MCE
-detection reads `/dev/kmsg`: where `kernel.dmesg_restrict` is 1, a non-root run cannot
-open it, so no test can pass and every result is "unverified". The sysctl below is part of
-device access, not an extra. Without access the status bar warns and unavailable data
-shows "N/A" rather than stale values.
+What device access does not cover:
+
+- **MSR reads need root.** Clock stretch, per-core power and the MSR fallback for package
+  power read `/dev/cpu/N/msr`. The kernel opens it only for a process holding
+  `CAP_SYS_RAWIO`, whatever the file's group and mode.
+- **DIMM details need root.** `dmidecode` reads the raw DMI table, which only root may open.
+- **MCE detection needs `/dev/kmsg`.** Where `kernel.dmesg_restrict` is 1, a non-root run
+  cannot open it, so no test can pass and every result is "unverified". The sysctl below
+  is part of device access, not an extra.
+- **The Auto-Tuner needs the kernel journal.** It refuses to start unless
+  `journalctl -b 0 -n 1 _TRANSPORT=kernel` prints a kernel record of this boot. Device
+  access does not grant journal access.
+
+Without access the status bar warns and unavailable data shows "N/A" rather than stale
+values.
 
 ### Grant it to your user (no sudo)
 
@@ -189,6 +171,10 @@ echo 'SUBSYSTEM=="msr", KERNEL=="msr[0-9]*", GROUP="corecycler", MODE="0640"' \
 echo 'kernel.dmesg_restrict = 0' | sudo tee /etc/sysctl.d/99-corecycler-dmesg.conf
 sudo sysctl --system && sudo udevadm control --reload && sudo modprobe msr
 ```
+
+The MSR rule matches what the NixOS module installs. It sets the group and mode on
+`/dev/cpu/N/msr`, but the kernel still refuses the open without `CAP_SYS_RAWIO`, so it
+grants no MSR reads today.
 
 Then the SMU permissions oneshot, which is under
 [ryzen_smu kernel module](#ryzen_smu-kernel-module) because it has to be ordered after the
@@ -216,15 +202,7 @@ aborting.
 One thing depends on your distribution: a D-Bus session bus authenticates by peer
 credentials, and some refuse a connection from another user (CachyOS does). A run tests
 the bus before using it, so nothing is left calling an address it cannot reach; where the
-bus does refuse, desktop notifications are unavailable under sudo. Nothing else about a
-sudo run is second class: the Wayland socket is reached by its own path rather than
-through your runtime directory, which is what root borrowing that directory used to
-complain about once per lookup.
-
-On Zen 5, Vcore telemetry uses SVI3, which no Linux driver supports yet; the tool falls
-back to the motherboard Super I/O chip (Nuvoton NCT668x/NCT677x-NCT679x, ITE
-IT862x-IT877x), scanning input labels for the Vcore channel. If neither source is
-available, Vcore shows "N/A".
+bus does refuse, desktop notifications are unavailable under sudo.
 
 ## Kernel modules
 
@@ -232,20 +210,25 @@ None are required for basic stress testing; each unlocks more functionality.
 
 | Module | Type | Purpose | Required for |
 |---|---|---|---|
-| `msr` | In-tree | `/dev/cpu/N/msr` for APERF/MPERF and per-core RAPL | Clock stretch, per-core power |
-| `ryzen_smu` | Out-of-tree | SMU sysfs for CO read/write, PBO limits, PM table | Curve Optimizer tab, Auto-Tuner |
-| `zenpower` / `zenpower5` | Out-of-tree | Richer AMD hwmon (SVI2/SVI3 voltage, RAPL) than k10temp | Better voltage/power monitoring |
-| `nct6683` / `nct6775` | In-tree | Nuvoton Super I/O (Vcore via label scan) | Motherboard Vcore on Zen 5 |
-| `it87` | Out-of-tree | ITE Super I/O | Motherboard Vcore on Gigabyte boards |
+| `msr` | In-tree | `/dev/cpu/N/msr` for APERF/MPERF and per-core RAPL (root only) | Clock stretch, per-core power |
+| [`ryzen_smu`](https://github.com/amkillam/ryzen_smu) (amkillam fork) | Out-of-tree | SMU sysfs for CO read/write, PBO limit reads, PM table | Curve Optimizer tab, Auto-Tuner |
+| `zenpower` ([zenpower5](https://github.com/mattkeenan/zenpower5)) | Out-of-tree | Richer AMD hwmon than k10temp: SVI2 voltage and current (Zen 1-4), RAPL power | Better voltage/power monitoring |
+| `nct6683` / `nct6775` | In-tree | Nuvoton Super I/O (Vcore via label scan): NCT6683/6686/6687 on modern MSI boards, NCT6775-NCT6799 on ASUS, MSI and ASRock boards | Motherboard Vcore |
+| [`it87`](https://github.com/frankcrawford/it87) (frankcrawford fork) | Out-of-tree | ITE Super I/O, common on Gigabyte boards | Motherboard Vcore |
 | `spd5118` + `i2c_dev` | In-tree | DDR5 DIMM temperature via the SPD hub | Live DIMM temperatures |
 | `coretemp` | In-tree | Intel CPU temperature | Intel systems only |
+
+On Zen 5, Vcore telemetry uses SVI3, which no Linux driver supports yet. The tool falls
+back to the motherboard Super I/O chip (Nuvoton NCT668x/NCT677x-NCT679x, ITE
+IT862x-IT877x), scanning input labels for the Vcore channel. If neither source is
+available, Vcore shows "N/A".
 
 On non-NixOS distros, load in-tree modules with `sudo modprobe <name>`; build
 out-of-tree modules from source.
 
 ## Stress backends
 
-You need at least one. The Nix package bundles them automatically.
+You need at least one.
 
 | Backend | License | Sensitivity | Best for | Bundled in Nix |
 |---|---|---|---|---|
@@ -333,10 +316,4 @@ ExecStart=/bin/sh -c 'cd /sys/kernel/ryzen_smu_drv && chgrp corecycler smu_args 
 WantedBy=multi-user.target
 ```
 
-`smn` is in that list because an SMN register read is a *write* of the address,
-and the SMU's core-disable fuse -- read over SMN -- is the only thing that says
-which physical core slots are fused off on a harvested CPU whose BIOS renumbers
-core ids. Without it, per-core CO is refused on those parts rather than applied
-to the wrong core. Granting the group write access to `smn` also grants it
-arbitrary SMN register access; it is the same trust boundary as the SMU mailbox
-files next to it, so grant it only to a user you would already trust with those.
+Why `smn` is in that list, and the access it grants, is in [Privilege Model](../SECURITY.md#privilege-model).
