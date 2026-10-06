@@ -830,6 +830,56 @@ class TestMergeFrom:
         ]
         assert samples == [(tests[0]["id"], 7, 61.5)]
 
+    def test_merge_carries_every_column_of_every_table(self, tmp_path):
+        src_path = tmp_path / "src.db"
+        HistoryDB(src_path).close()
+        raw = sqlite3.connect(src_path)
+        raw.row_factory = sqlite3.Row
+        tables = ["tuning_contexts", *(table for table, _ in HistoryDB._MERGE_TABLES)]
+        links = {"run_id", "context_id", "session_id", "test_id"}
+        written = {}
+        for table in tables:
+            cols = [c["name"] for c in raw.execute(f"PRAGMA table_info({table})") if c["name"] != "id"]
+            row = {c: 1 if c in links else f"{table}.{c}" for c in cols}
+            raw.execute(
+                f"INSERT INTO {table} ({','.join(row)}) VALUES ({','.join('?' * len(row))})", list(row.values())
+            )
+            written[table] = row
+        raw.commit()
+        raw.close()
+        dst = HistoryDB(tmp_path / "dst.db")
+        dst.merge_from(src_path)
+        copied = {t: dict(dst._execute_raw(f"SELECT * FROM {t} ORDER BY id DESC").fetchone()) for t in tables}
+        dst.close()
+        for table, row in written.items():
+            assert {c: v for c, v in copied[table].items() if c not in links | {"id"}} == {
+                c: v for c, v in row.items() if c not in links
+            }, table
+
+    def test_merge_keeps_rows_whose_optional_link_is_gone(self, tmp_path):
+        src_path = tmp_path / "src.db"
+        src = HistoryDB(src_path)
+        sid = src.create_tuner_session("{}", "2401", "old-cpu", boot_id="b")
+        src.close()
+        raw = sqlite3.connect(src_path)
+        raw.execute(
+            "INSERT INTO runs (started_at, cpu_model, backend, status, context_id) VALUES (?,?,?,?,?)",
+            ("2025-01-01T00:00:00+00:00", "old-cpu", "mprime", "completed", 99),
+        )
+        raw.execute(
+            "INSERT INTO tuner_test_log (session_id, core_id, offset_tested, phase, passed, run_id, tested_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (sid, 3, -5, "search", 1, 99, "2025-01-01T00:00:00+00:00"),
+        )
+        raw.commit()
+        raw.close()
+        dst = HistoryDB(tmp_path / "dst.db")
+        assert dst.merge_from(src_path)["runs"] == 1
+        assert dst.list_runs()[0].context_id is None
+        logged = dst._execute_raw("SELECT core_id, run_id FROM tuner_test_log").fetchall()
+        dst.close()
+        assert [tuple(row) for row in logged] == [(3, None)]
+
     def test_merge_migrates_old_schema_source_first(self, tmp_path):
         import sqlite3
 

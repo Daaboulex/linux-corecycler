@@ -2060,130 +2060,23 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     # ------------------------------------------------------------------
 
     # Per-table copy columns (id excluded) and which columns remap to new ids.
-    _MERGE_TABLES: tuple[tuple[str, tuple[str, ...], dict[str, str]], ...] = (
-        (
-            "core_results",
-            (
-                "run_id",
-                "core_id",
-                "ccd",
-                "cycle",
-                "started_at",
-                "finished_at",
-                "passed",
-                "error_message",
-                "error_type",
-                "elapsed_seconds",
-                "iterations_completed",
-                "peak_freq_mhz",
-                "max_temp_c",
-                "min_vcore_v",
-                "max_vcore_v",
-            ),
-            {"run_id": "runs"},
-        ),
-        ("events", ("run_id", "timestamp", "event_type", "core_id", "message", "details_json"), {"run_id": "runs"}),
-        (
-            "telemetry_samples",
-            ("run_id", "core_id", "timestamp", "freq_mhz", "effective_max_mhz", "temp_c", "vcore_v"),
-            {"run_id": "runs"},
-        ),
-        (
-            "tuner_core_states",
-            (
-                "session_id",
-                "core_id",
-                "phase",
-                "current_offset",
-                "best_offset",
-                "coarse_fail_offset",
-                "confirm_attempts",
-                "baseline_offset",
-                "backoff_mode",
-                "consecutive_backoff_fails",
-                "backoff_fail_bound",
-                "backoff_pass_bound",
-                "in_test",
-                "crash_count",
-                "crash_cooldown",
-                "thermal_aborts",
-                "cumulative_test_time",
-                "hardening_tier_index",
-                "updated_at",
-            ),
-            {"session_id": "tuner_sessions"},
-        ),
-        (
-            "tuner_events",
-            ("session_id", "timestamp", "boot_id", "severity", "message"),
-            {"session_id": "tuner_sessions"},
-        ),
-        (
-            "tuner_test_log",
-            (
-                "session_id",
-                "core_id",
-                "offset_tested",
-                "phase",
-                "passed",
-                "error_message",
-                "error_type",
-                "duration_seconds",
-                "run_id",
-                "backend",
-                "stress_mode",
-                "fft_preset",
-                "tested_at",
-                "peak_stretch_pct",
-            ),
-            {"session_id": "tuner_sessions", "run_id": "runs"},
-        ),
-        (
-            "tuner_co_journal",
-            (
-                "session_id",
-                "core_id",
-                "value",
-                "boot_id",
-                "mono_ns",
-                "confirmed",
-                "survived",
-                "retracted",
-                "written_at",
-            ),
-            {"session_id": "tuner_sessions"},
-        ),
-        (
-            "tuner_tests",
-            (
-                "session_id",
-                "boot_id",
-                "token",
-                "started_at",
-                "stage",
-                "load",
-                "klass",
-                "core",
-                "value",
-                "vector_json",
-                "cpus_json",
-                "seconds_asked",
-                "ended_at",
-                "verdict",
-                "seconds_run",
-                "named_json",
-                "context_json",
-                "evidence_json",
-                "detail",
-            ),
-            {"session_id": "tuner_sessions"},
-        ),
-        (
-            "tuner_samples",
-            ("test_id", "mono_ns", "running", "tctl", "clocks_json", "tccd_json", "volts_json"),
-            {"test_id": "tuner_tests"},
-        ),
+    _MERGE_TABLES: tuple[tuple[str, dict[str, str]], ...] = (
+        ("runs", {"context_id": "tuning_contexts"}),
+        ("tuner_sessions", {"context_id": "tuning_contexts"}),
+        ("core_results", {"run_id": "runs"}),
+        ("events", {"run_id": "runs"}),
+        ("telemetry_samples", {"run_id": "runs"}),
+        ("tuner_core_states", {"session_id": "tuner_sessions"}),
+        ("tuner_events", {"session_id": "tuner_sessions"}),
+        ("tuner_test_log", {"session_id": "tuner_sessions", "run_id": "runs"}),
+        ("tuner_co_journal", {"session_id": "tuner_sessions"}),
+        ("tuner_tests", {"session_id": "tuner_sessions"}),
+        ("tuner_samples", {"test_id": "tuner_tests"}),
     )
+    _MERGE_LINKS_KEPT_WHEN_UNMATCHED = frozenset({"run_id", "context_id"})
+
+    def _merged_columns(self, table: str) -> list[str]:
+        return [row["name"] for row in self.__conn.execute(f"PRAGMA main.table_info({table})") if row["name"] != "id"]
 
     def merge_from(self, other_path: str | Path) -> dict[str, int]:
         """Adopt every record from another corecycler history database.
@@ -2192,9 +2085,10 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         the source is first opened through HistoryDB (migrating it to the
         current schema, however old it is), then every run, tuning context and
         tuner session is copied in with fresh ids and remapped references.
-        Tuning contexts deduplicate by (co_hash, bios_version). The source
-        file is not modified beyond its schema migration. All-or-nothing:
-        one transaction, rolled back on any error.
+        Every column a table has is copied, so a column added later is never
+        left behind. Tuning contexts deduplicate by (co_hash, bios_version).
+        The source file is not modified beyond its schema migration.
+        All-or-nothing: one transaction, rolled back on any error.
         """
         other_path = Path(other_path)
         HistoryDB(other_path).close()
@@ -2203,30 +2097,15 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         counts = {"contexts": 0, "runs": 0, "tuner_sessions": 0}
         try:
             with self.transaction():
-                maps: dict[str, dict[int, int]] = {}
+                maps: dict[str, dict[int, int]] = {table: {} for table, _ in self._MERGE_TABLES}
 
                 ctx_map: dict[int, int] = {}
+                ctx_cols = self._merged_columns("tuning_contexts")
                 for row in conn.execute("SELECT * FROM src.tuning_contexts ORDER BY id").fetchall():
                     cur = conn.execute(
-                        """\
-                        INSERT OR IGNORE INTO tuning_contexts
-                            (created_at, bios_version, co_offsets_json, co_hash,
-                             pbo_scalar, boost_limit_mhz, notes,
-                             ppt_limit_w, tdc_limit_a, edc_limit_a)
-                        VALUES (?,?,?,?,?,?,?,?,?,?)
-                        """,
-                        (
-                            row["created_at"],
-                            row["bios_version"],
-                            row["co_offsets_json"],
-                            row["co_hash"],
-                            row["pbo_scalar"],
-                            row["boost_limit_mhz"],
-                            row["notes"],
-                            row["ppt_limit_w"],
-                            row["tdc_limit_a"],
-                            row["edc_limit_a"],
-                        ),
+                        f"INSERT OR IGNORE INTO tuning_contexts ({','.join(ctx_cols)}) "
+                        f"VALUES ({','.join('?' * len(ctx_cols))})",
+                        [row[c] for c in ctx_cols],
                     )
                     if cur.rowcount > 0:
                         ctx_map[row["id"]] = cur.lastrowid
@@ -2239,81 +2118,8 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
                         ctx_map[row["id"]] = existing["id"]
                 maps["tuning_contexts"] = ctx_map
 
-                def copy_parent(table: str, cols: tuple[str, ...]) -> dict[int, int]:
-                    id_map: dict[int, int] = {}
-                    for row in conn.execute(f"SELECT * FROM src.{table} ORDER BY id").fetchall():
-                        vals = []
-                        for c in cols:
-                            v = row[c]
-                            if c == "context_id" and v is not None:
-                                v = ctx_map.get(v)
-                            vals.append(v)
-                        placeholders = ",".join("?" * len(cols))
-                        cur = conn.execute(
-                            f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
-                            vals,
-                        )
-                        id_map[row["id"]] = cur.lastrowid
-                    return id_map
-
-                maps["runs"] = copy_parent(
-                    "runs",
-                    (
-                        "started_at",
-                        "finished_at",
-                        "status",
-                        "cpu_model",
-                        "physical_cores",
-                        "logical_cpus",
-                        "ccds",
-                        "is_x3d",
-                        "backend",
-                        "stress_mode",
-                        "fft_preset",
-                        "seconds_per_core",
-                        "cycle_count",
-                        "stop_on_error",
-                        "variable_load",
-                        "idle_stability_test",
-                        "max_temperature",
-                        "settings_json",
-                        "context_id",
-                        "bios_version",
-                        "total_cores",
-                        "cores_passed",
-                        "cores_failed",
-                        "total_seconds",
-                    ),
-                )
-                counts["runs"] = len(maps["runs"])
-
-                maps["tuner_sessions"] = copy_parent(
-                    "tuner_sessions",
-                    (
-                        "created_at",
-                        "updated_at",
-                        "status",
-                        "bios_version",
-                        "cpu_model",
-                        "config_json",
-                        "context_id",
-                        "resume_crash_streak",
-                        "notes",
-                        "unattributed_crashes",
-                        "hunting_core",
-                        "validation_stage",
-                        "validation_index",
-                        "validation_half",
-                        "validation_dirty",
-                        "validation_requeue",
-                        "boot_id",
-                        "kernel_read_ns",
-                        "machine_json",
-                    ),
-                )
-                counts["tuner_sessions"] = len(maps["tuner_sessions"])
-
-                for table, cols, remaps in self._MERGE_TABLES:
+                for table, remaps in self._MERGE_TABLES:
+                    cols = self._merged_columns(table)
                     for row in conn.execute(f"SELECT * FROM src.{table} ORDER BY id").fetchall():
                         vals = []
                         skip = False
@@ -2321,18 +2127,19 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
                             v = row[c]
                             if c in remaps and v is not None:
                                 v = maps[remaps[c]].get(v)
-                                if v is None and c != "run_id":
+                                if v is None and c not in self._MERGE_LINKS_KEPT_WHEN_UNMATCHED:
                                     skip = True
                                     break
                             vals.append(v)
                         if skip:
                             continue
-                        placeholders = ",".join("?" * len(cols))
                         cur = conn.execute(
-                            f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
+                            f"INSERT INTO {table} ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
                             vals,
                         )
-                        maps.setdefault(table, {})[row["id"]] = cur.lastrowid
+                        maps[table][row["id"]] = cur.lastrowid
+                counts["runs"] = len(maps["runs"])
+                counts["tuner_sessions"] = len(maps["tuner_sessions"])
 
         finally:
             conn.execute("DETACH DATABASE src")
