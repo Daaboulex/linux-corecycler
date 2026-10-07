@@ -8,7 +8,8 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from corecycler.tuner.machine.types import FailContext, Lifecycle, Load, PauseReason
+from corecycler.tuner.machine.session import HELD
+from corecycler.tuner.machine.types import FailContext, Lifecycle, Load, PauseReason, ValidateProfile
 from corecycler.tuner.orders import Method, order_problem
 from corecycler.tuner.persistence import resident_at_death
 from tests._tuner_world import (
@@ -42,6 +43,7 @@ FAULTS = (
     "mce_other",
     "crash_mce",
     "crash_shared",
+    "validate",
 )
 
 
@@ -123,6 +125,8 @@ def moves(fake: Fake, budget: dict[str, int]) -> list[tuple[str, dict[str, int]]
             continue
         if fault in ("crash_mce", "crash_shared") and fake.worker is None:
             continue
+        if fault == "validate" and (fake.db is None or fake.db.status != "completed" or s.lifecycle in HELD):
+            continue
         if fault in ("close", "crash") and s.lifecycle is Lifecycle.IDLE:
             continue
         if fault in ("refuse", "dbfail", "hot") and s.lifecycle is not Lifecycle.RUNNING:
@@ -157,6 +161,8 @@ def act(fake: Fake, move: str) -> None:
             others = [c for c in fake.edges if c != worker_spec.core]
             target = others[0] if others else worker_spec.core
             fake.deliver(Report(Group.PASS, worker_spec.seconds, evidence=(Evidence(target, True),)))
+        case "validate":
+            fake.post(ValidateProfile(fake.db.session_id))
         case "pause":
             fake.post(PauseRequest())
         case "abort":

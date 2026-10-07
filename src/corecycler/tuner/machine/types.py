@@ -254,6 +254,7 @@ class Flow:
     q5: tuple[tuple[tuple[int, int], int], ...] = ()
     q5_others: tuple[int, ...] = ()
     allcore: AllCore | None = None
+    validating: tuple[tuple[int, int], ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,6 +358,11 @@ class Resume:
 
 
 @dataclass(frozen=True, slots=True)
+class ValidateProfile:
+    session_id: int
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuationDue:
     token: int
 
@@ -404,6 +410,7 @@ Event = (
     | Abort
     | Close
     | Resume
+    | ValidateProfile
     | ContinuationDue
     | WorkerReported
     | CrashEvidenceRead
@@ -439,6 +446,7 @@ class World:
     cpus_of: tuple[tuple[int, tuple[int, ...]], ...] = ()
     domain_of: tuple[tuple[int, int | None], ...] = ()
     two_t_problem: str | None = None
+    stored_crash_suspects: tuple[int, ...] | None = None
     owner_layout: bool = False
 
     def resident_of(self, core: int) -> int | None:

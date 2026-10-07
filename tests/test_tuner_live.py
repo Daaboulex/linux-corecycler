@@ -29,6 +29,7 @@ from corecycler.tuner.machine.types import (
     Report,
     Stage,
     Stored,
+    ValidateProfile,
 )
 from corecycler.tuner.machine.types import (
     TestSpec as Spec,
@@ -194,6 +195,9 @@ def snapshots() -> list:
             fake.crash()
             fake.post(Resume(1))
             seen.append(fake.db)
+    fake.post(ValidateProfile(1))
+    while fake.progress():
+        seen.append(fake.db)
     return seen
 
 
@@ -212,6 +216,7 @@ def test_every_stored_state_of_a_run_survives_the_session_file_round_trip():
     }
     assert {s.flow.stage for s in stored if s.flow is not None} >= expected
     assert stored[-1].status == "completed"
+    assert any(s.flow.validating for s in stored if s.flow is not None)
     assert any(s.flow.live1.back is Stage.MEMORY for s in stored if s.flow is not None and s.flow.live1 is not None)
     for st in stored:
         assert stored_from_json(json.loads(json.dumps(stored_to_json(st)))) == st
@@ -281,6 +286,38 @@ def test_a_reboot_during_a_test_convicts_the_tested_core_on_resume(tmp_path):
     assert tested is not None
     assert again.state.core(in_test.core).crash_count == 1
     assert again.run_until_rest(0.01).lifecycle is Lifecycle.COMPLETED
+
+
+def completed_then_rebooted(tmp_path, clean: bool) -> tuple[LiveRig, list[str]]:
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    assert r.run_until_rest(0.01).lifecycle is Lifecycle.COMPLETED
+    hardware.boot, hardware.co, hardware.clean = "boot-b", {0: 0, 1: 0, 8: 0}, clean
+    said: list[str] = []
+    again = rig(tmp_path, hardware, db=r.store.db)
+    again.say = said.append
+    return again, said
+
+
+@pytest.mark.parametrize("clean", [True, False])
+def test_a_completed_profile_is_validated_in_a_later_boot_and_names_a_crash_of_its_own(tmp_path, clean):
+    r, said = completed_then_rebooted(tmp_path, clean)
+    r.validate(1)
+    final = r.run_until_rest(0.01)
+    assert final.lifecycle is Lifecycle.COMPLETED
+    assert r.hardware.co == EDGES
+    opening = next(line for line in said if line.startswith("validating: "))
+    assert ("crashed" in opening) is not clean
+
+
+def test_a_crash_over_an_unproven_value_refuses_validation_naming_the_core(tmp_path):
+    r, said = completed_then_rebooted(tmp_path, clean=False)
+    r.store.journal_confirm(r.store.journal_intent(1, 0, EDGES[0] - 3, "boot-a", 0))
+    r.validate(1)
+    assert r.state.lifecycle is Lifecycle.IDLE
+    assert r.hardware.co == {0: 0, 1: 0, 8: 0}
+    assert len(said) == 1 and "cores 0 held unproven values" in said[0]
 
 
 def test_a_refused_write_pauses_with_the_reason(tmp_path):
@@ -998,10 +1035,19 @@ def test_the_identity_names_the_run_context_it_recorded(tmp_path, monkeypatch):
     assert db.get_context(identity.context_id).bios_version == "2401"
 
 
-def test_a_resume_names_its_session(capsys):
+@pytest.mark.parametrize("action", ["--resume", "--validate"])
+def test_a_resume_or_a_validation_names_its_session(capsys, action):
     with pytest.raises(SystemExit):
-        live_hw.parse(["--state-dir", "s", "--resume"])
-    assert "--resume needs --session" in capsys.readouterr().err
+        live_hw.parse(["--state-dir", "s", action])
+    assert f"{action} needs --session" in capsys.readouterr().err
+
+
+def test_the_command_line_validates_a_completed_session(tmp_path):
+    r, said = completed_then_rebooted(tmp_path, clean=True)
+    args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--session", "1", "--validate"])
+    assert live_hw.run(args, r, said.append) == 0
+    assert any(line.startswith("validating: session 1") for line in said)
+    assert "rest: completed" in said
 
 
 def test_signals_queue_the_owner_s_controls(tmp_path, monkeypatch):

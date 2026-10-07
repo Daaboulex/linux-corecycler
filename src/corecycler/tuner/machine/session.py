@@ -51,6 +51,7 @@ from corecycler.tuner.machine.types import (
     Streaks,
     TestSpec,
     Transition,
+    ValidateProfile,
     Waiting,
     WorkerReported,
     World,
@@ -74,6 +75,8 @@ def transition(s: SessionState, e: Event, w: World) -> Transition:
             return _start(s, e, w)
         case Resume():
             return _resume(s, e, w)
+        case ValidateProfile():
+            return _validate(s, e, w)
         case PauseRequest():
             return _pause_request(s)
         case Abort():
@@ -263,6 +266,16 @@ def _resume(s: SessionState, e: Resume, w: World) -> Transition:
     return _resume_stored(s, e, w)
 
 
+def _stored_gates(st: Stored, w: World) -> str | None:
+    if w.preflight_refusal is not None:
+        return w.preflight_refusal
+    problem = order_problem(st.config.method, st.config.selected, dict(w.domain_of))
+    if problem is None:
+        return None
+    remedy = "start a new session" if st.status == "completed" else f"abort session {st.session_id} and start a new one"
+    return f"{problem}; {remedy}"
+
+
 def _resume_stored(s: SessionState, e: Resume, w: World) -> Transition:
     st = w.stored
     if st is None or st.session_id != e.session_id:
@@ -271,13 +284,58 @@ def _resume_stored(s: SessionState, e: Resume, w: World) -> Transition:
         return Transition(s, refused="the session is completed: use Validate Profile")
     if st.status not in RESUMABLE:
         return Transition(s, refused=f"a session stored as {st.status} cannot be resumed")
-    if w.preflight_refusal is not None:
-        return Transition(s, refused=w.preflight_refusal)
-    problem = order_problem(st.config.method, st.config.selected, dict(w.domain_of))
-    if problem is not None:
-        return Transition(s, refused=f"{problem}; abort session {st.session_id} and start a new one")
+    refusal = _stored_gates(st, w)
+    if refusal is not None:
+        return Transition(s, refused=refusal)
     resumed = replace(reconstruct(st), next_token=s.next_token)
     return Transition(resumed, (ReadCrashEvidence(e.session_id),))
+
+
+def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
+    if s.lifecycle in HELD:
+        return Transition(s, refused="a session is held: pause or abort it first")
+    st = w.stored
+    if st is None or st.session_id != e.session_id:
+        return Transition(s, refused=f"session {e.session_id} is not stored")
+    if st.status != "completed":
+        return Transition(
+            s, refused=f"session {st.session_id} is {st.status}: only a completed session can be validated"
+        )
+    refusal = _stored_gates(st, w)
+    if refusal is not None:
+        return Transition(s, refused=refusal)
+    if w.stored_crash_suspects:
+        cores = ", ".join(map(str, w.stored_crash_suspects))
+        return Transition(
+            s,
+            refused=f"the boot session {st.session_id} completed in crashed while cores {cores} held unproven "
+            "values, and a completed session has no step that attributes it: start a new session",
+        )
+    token = s.next_token
+    profile = tuple((r.core, r.value) for r in st.cores)
+    running = SessionState(
+        lifecycle=Lifecycle.RUNNING,
+        session_id=st.session_id,
+        config=st.config,
+        seed=st.seed,
+        baseline=st.baseline,
+        cores=tuple(replace(r, in_test=False) for r in st.cores),
+        flow=Flow(Stage.LIVE1, live1=Live1(), allcore=AllCore(floors=profile), validating=profile),
+        slot=Waiting(token, 0.0),
+        resume_streak=st.resume_streak,
+        next_token=token + 1,
+    )
+    effects: list = [_commit(running)]
+    effects += [WriteCO(core, value) for core, value in st.baseline if w.resident_of(core) != value]
+    effects += [
+        Announce(
+            "validating",
+            f"session {st.session_id}: proving its completed values again"
+            + ("" if w.stored_crash_suspects is None else ", after the boot it completed in crashed"),
+        ),
+        Schedule(token, 0.0),
+    ]
+    return Transition(running, tuple(effects))
 
 
 def _convict(s: SessionState, core: int) -> tuple[SessionState, bool]:
@@ -461,6 +519,12 @@ def _abort(s: SessionState) -> Transition:
     if s.lifecycle not in HELD:
         return Transition(s, refused="nothing to abort")
     s = _clear_in_test(_keep_pick(s))
+    profile = s.flow.validating if s.flow is not None else None
+    if profile is not None and tuple((r.core, r.value) for r in s.cores) == profile:
+        effects = _stop_effects(s, profile, journal=True)
+        done = replace(s, lifecycle=Lifecycle.COMPLETED, flow=None, slot=None, pause=None, streaks=Streaks())
+        effects += [_commit(done), Announce("completed", "validation aborted: the completed values stand")]
+        return Transition(done, tuple(effects))
     effects = _stop_effects(s, s.baseline, journal=True)
     effects += [
         Commit(replace(stored(s), status="aborted")),
@@ -551,7 +615,9 @@ def _end_class(s: SessionState, w: World) -> Transition:
 
 
 def _enter_live1(s: SessionState, w: World) -> Transition:
-    flow = Flow(Stage.LIVE1, last_core=s.flow.last_core, live1=Live1(), allcore=s.flow.allcore)
+    flow = Flow(
+        Stage.LIVE1, last_core=s.flow.last_core, live1=Live1(), allcore=s.flow.allcore, validating=s.flow.validating
+    )
     return _live1_next(replace(s, flow=flow), w, None)
 
 
@@ -631,6 +697,8 @@ def _end_live1(s: SessionState, w: World) -> Transition:
         cursor = AllCore(floors=tuple((r.core, r.value) for r in s.cores))
     else:
         cursor = replace(cursor, t_idx=0, t_clean=0.0, pass_no=cursor.pass_no + 1)
+    if s.flow.validating is not None:
+        return _next(replace(s, flow=_past_tighten(replace(s.flow, live1=None, allcore=cursor), s.config)), w, None)
     flow = replace(s.flow, stage=Stage.STEADY, live1=None, allcore=cursor)
     return _allcore_next(replace(s, flow=flow), w)
 

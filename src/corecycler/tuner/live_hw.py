@@ -450,6 +450,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--start", action="store_true")
     action.add_argument("--resume", action="store_true")
+    action.add_argument("--validate", action="store_true")
     parser.add_argument("--cores", default="")
     parser.add_argument("--max-offset", type=int, default=-15)
     parser.add_argument("--k1", type=int, default=2)
@@ -459,8 +460,9 @@ def parse(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--acknowledge", action="store_true")
     args = parser.parse_args(argv)
-    if args.resume and args.session is None:
-        parser.error("--resume needs --session")
+    for named in ("resume", "validate"):
+        if getattr(args, named) and args.session is None:
+            parser.error(f"--{named} needs --session")
     return args
 
 
@@ -516,6 +518,8 @@ def run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> i
         session = rig.store.new_session_id()
         say(f"session {session}")
         rig.start(config, session, args.seed, args.acknowledge)
+    elif args.validate:
+        rig.validate(args.session)
     else:
         rig.resume(args.session)
     final = rig.run_until_rest()

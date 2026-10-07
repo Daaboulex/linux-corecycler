@@ -54,6 +54,7 @@ from corecycler.tuner.machine.types import (
     StopWorker,
     Stored,
     TestSpec,
+    ValidateProfile,
     WorkerReported,
     World,
     WriteCO,
@@ -153,6 +154,7 @@ def _flow_from_json(raw: dict | None) -> Flow | None:
         q5=tuple(((key[0], key[1]), count) for key, count in raw["q5"]),
         q5_others=tuple(raw["q5_others"]),
         allcore=_allcore_from_json(raw["allcore"]),
+        validating=None if raw["validating"] is None else _pairs(raw["validating"]),
     )
 
 
@@ -327,6 +329,10 @@ class Store:
 
     def clear_marker(self) -> None:
         (self.root / "stock-marker.json").unlink(missing_ok=True)
+
+
+def _unproven(rows: list[JournalRow]) -> tuple[int, ...]:
+    return tuple(sorted(crash_suspects(resident_at_death(rows), -1)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -534,7 +540,7 @@ class LiveRig:
             stale_db=marker == (now if same else last),
             other_session_wrote=other,
             shared_uncorrected=shared,
-            suspects=tuple(sorted(crash_suspects(resident_at_death(rows), -1))),
+            suspects=_unproven(rows),
             context=context,
             evidence=evidence,
             kernel_problem=harvest.problem,
@@ -628,6 +634,15 @@ class LiveRig:
 
     def resume(self, session_id: int) -> None:
         self.post(Resume(session_id), self.world_for_resume(session_id))
+
+    def validate(self, session_id: int) -> None:
+        world = self.world_for_resume(session_id)
+        last = self.stored_boot
+        if world.stored is None or last == self.hardware.boot_id() or self.hardware.boot_ended_clean(last):
+            self.post(ValidateProfile(session_id), world)
+            return
+        suspects = _unproven(self.store.journal_rows(session_id, last))
+        self.post(ValidateProfile(session_id), replace(world, stored_crash_suspects=suspects))
 
     def run_until_rest(self, wait: float = 1.0) -> SessionState:
         while not self.at_rest():
