@@ -671,18 +671,3 @@ class TestDriverWriteReadBranches:
         with patch.object(smu, "_send_rsmu_command", return_value=self._resp(5)) as send:
             assert smu.get_fastest_core() is None
         send.assert_not_called()
-
-    def test_detect_system_state_reads_fastest_core_on_zen3(self, smu_dir):
-        smu = RyzenSMU(self._vermeer_full(), smu_dir)
-        with patch.object(smu, "_send_rsmu_command", return_value=self._resp(7)):
-            state = smu.detect_system_state(2)
-        assert state.fastest_core == 7
-
-    def test_read_max_freq_sysfs_handles_error(self):
-        from corecycler.smu.driver import _read_max_freq_sysfs
-
-        with (
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pathlib.Path.read_text", side_effect=OSError),
-        ):
-            assert _read_max_freq_sysfs() is None

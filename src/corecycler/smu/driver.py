@@ -9,16 +9,14 @@ POST, and SMU writes here overlay (replace) them until the next power cycle.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import struct
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from .commands import (
-    CPUGeneration,
     SMUCommandSet,
     decode_co_arg,
     encode_boost_limit_arg,
@@ -82,41 +80,6 @@ class SMUResponse:
     success: bool
     args: tuple[int, ...]
     raw: bytes
-
-
-@dataclass(slots=True)
-class SystemPBOState:
-    """Snapshot of the current PBO/CO state from SMU and sysfs.
-
-    Populated by ``RyzenSMU.detect_system_state()``. All values are
-    runtime state — they reflect BIOS settings plus any SMU overrides.
-    """
-
-    # Per-core CO offsets (physical core id -> offset)
-    co_offsets: dict[int, int | None] = field(default_factory=dict)
-
-    # PBO power limits (from PM table or SMU query)
-    ppt_limit_w: float | None = None
-    tdc_limit_a: float | None = None
-    edc_limit_a: float | None = None
-
-    # PBO scalar (1.0 to 10.0)
-    pbo_scalar: float | None = None
-
-    # Boost frequency limit (MHz)
-    boost_limit_mhz: int | None = None
-
-    # Max observed frequency from cpufreq (accounts for boost override + BCLK)
-    max_freq_mhz: float | None = None
-
-    # Whether OC mode is enabled
-    oc_mode: bool | None = None
-
-    # Fastest core index (from SMU)
-    fastest_core: int | None = None
-
-    # CPU generation detected
-    generation: CPUGeneration | None = None
 
     # Whether ryzen_smu driver is available
     smu_available: bool = False
@@ -804,43 +767,6 @@ class RyzenSMU:
         return resp.success
 
     # ------------------------------------------------------------------
-    # System state detection
-    # ------------------------------------------------------------------
-
-    def detect_system_state(self, num_cores: int) -> SystemPBOState:
-        """Read the current PBO/CO state from SMU and sysfs.
-
-        This provides a snapshot of the system's current configuration,
-        including CO offsets, PBO limits, boost override, and max frequency.
-        Call this before starting a test to understand the baseline.
-        """
-        state = SystemPBOState(
-            generation=self.commands.generation,
-            smu_available=True,
-        )
-
-        # Read CO offsets
-        if self.commands.has_co:
-            state.co_offsets = self.get_all_co_offsets(num_cores)
-
-        # Read boost limit
-        state.boost_limit_mhz = self.get_boost_limit()
-
-        # Read PBO scalar
-        state.pbo_scalar = self.get_pbo_scalar()
-
-        # Read fastest core
-        if self.commands.get_fastest_core_cmd is not None:
-            resp = self._send_rsmu_command(self.commands.get_fastest_core_cmd)
-            if resp.success:
-                state.fastest_core = resp.args[0]
-
-        # Read max frequency from cpufreq sysfs (accounts for boost override + BCLK)
-        state.max_freq_mhz = _read_max_freq_sysfs()
-
-        return state
-
-    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -853,21 +779,3 @@ class RyzenSMU:
         if not resp.success:
             return None
         return resp.args[0]
-
-
-# ===========================================================================
-# Sysfs helpers for system state detection
-# ===========================================================================
-
-
-def _read_max_freq_sysfs() -> float | None:
-    """Read max boost frequency from cpufreq sysfs (MHz).
-
-    This reflects the actual boost limit including PBO boost override
-    and BCLK scaling.
-    """
-    path = Path("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
-    with contextlib.suppress(ValueError, OSError):
-        if path.exists():
-            return int(path.read_text().strip()) / 1000.0
-    return None
