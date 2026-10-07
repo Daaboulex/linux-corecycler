@@ -451,6 +451,19 @@ class TestTunerSessionMethods:
         ]
         assert rows[0]["first_seen"]
 
+    def test_a_child_session_links_to_its_parent_and_inherits_proven_values(self, db):
+        fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
+        for sid in (1, 2):
+            db.save_machine_session(sid, status="paused", machine_json="1", boot_id="a", **fields)
+        db.link_session(2, 1, "continue")
+        db.journal_inherit(2, {0: -12, 1: -6})
+        linked = db._execute_raw("SELECT parent_session_id, origin FROM tuner_sessions WHERE id=2").fetchone()
+        assert tuple(linked) == (1, "continue")
+        assert db.journal_proven_values(2, -1) == {0: -12, 1: -6}
+        assert db.journal_rows(2, "a") == []
+        with pytest.raises(sqlite3.IntegrityError, match="session 3 is missing"):
+            db.link_session(3, 1, "continue")
+
     def test_a_damaged_block_is_refused_rather_than_read(self, db):
         sid = db.next_tuner_session_id()
         fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
@@ -933,6 +946,20 @@ class TestMergeFrom:
         ]
         assert samples == [sample, sample | {"mono_ns": 8}]
 
+    def test_merge_keeps_a_child_session_linked_to_its_parent_under_the_new_ids(self, tmp_path):
+        src = HistoryDB(tmp_path / "src.db")
+        fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
+        for sid in (1, 2):
+            src.save_machine_session(sid, status="paused", machine_json="1", boot_id="a", **fields)
+        src.link_session(2, 1, "restart")
+        src.close()
+        dst = HistoryDB(tmp_path / "dst.db")
+        own = dst.create_tuner_session("{}", "2401", "9950X3D", boot_id="a")
+        dst.merge_from(tmp_path / "src.db")
+        rows = dst._execute_raw("SELECT id, parent_session_id, origin FROM tuner_sessions ORDER BY id").fetchall()
+        dst.close()
+        assert [tuple(r) for r in rows] == [(own, None, None), (own + 1, None, None), (own + 2, own + 1, "restart")]
+
     def test_merge_adopts_new_boots_and_keeps_the_first_record_of_a_known_one(self, tmp_path):
         src = HistoryDB(tmp_path / "src.db")
         src.insert_tuner_boot("b1", "2401", 2033.0, 3000.0, 3000.0, "{}", '{"from": "src"}')
@@ -951,7 +978,7 @@ class TestMergeFrom:
         raw = sqlite3.connect(src_path)
         raw.row_factory = sqlite3.Row
         tables = ["tuning_contexts", *(table for table, _ in HistoryDB._MERGE_TABLES)]
-        links = {"run_id", "context_id", "session_id", "test_id"}
+        links = {"run_id", "context_id", "session_id", "test_id", "parent_session_id"}
         written = {}
         for table in tables:
             cols = [c["name"] for c in raw.execute(f"PRAGMA table_info({table})") if c["name"] != "id"]

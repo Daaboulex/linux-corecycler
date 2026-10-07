@@ -220,7 +220,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 26
+    SCHEMA_VERSION = 27
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -487,7 +487,9 @@ CREATE TABLE IF NOT EXISTS tuner_sessions (
     validation_requeue  TEXT    NOT NULL DEFAULT '[]',
     boot_id             TEXT    NOT NULL DEFAULT '',
     kernel_read_ns      INTEGER,
-    machine_json        TEXT
+    machine_json        TEXT,
+    parent_session_id   INTEGER REFERENCES tuner_sessions(id),
+    origin              TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tuner_core_states (
@@ -945,6 +947,14 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             conn.execute("INSERT INTO telemetry_blocks (run_id, data) VALUES (?,?)", (run_id, block))
         conn.execute("DROP TABLE telemetry_samples")
 
+    @staticmethod
+    def _migrate_v27(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(
+            conn,
+            "tuner_sessions",
+            [("parent_session_id", "INTEGER REFERENCES tuner_sessions(id)"), ("origin", "TEXT")],
+        )
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
@@ -971,6 +981,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         24: _migrate_v24,
         25: _migrate_v25,
         26: _DDL_TUNER_BOOTS,
+        27: _migrate_v27,
     }
 
     # ------------------------------------------------------------------
@@ -1472,6 +1483,23 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         )
         if cur.rowcount != 1:
             raise sqlite3.IntegrityError(f"session {session_id} belongs to the old engine")
+
+    def link_session(self, child_id: int, parent_id: int, origin: str) -> None:
+        cur = self.__conn.execute(
+            "UPDATE tuner_sessions SET parent_session_id=?, origin=? WHERE id=?", (parent_id, origin, child_id)
+        )
+        if cur.rowcount != 1:
+            raise sqlite3.IntegrityError(f"session {child_id} is missing, so it cannot be linked to {parent_id}")
+
+    def journal_inherit(self, session_id: int, proven: dict[int, int]) -> None:
+        self.__conn.executemany(
+            """\
+            INSERT INTO tuner_co_journal
+                (session_id, core_id, value, boot_id, mono_ns, confirmed, survived, retracted, written_at)
+            VALUES (?,?,?,'',NULL,1,1,0,?)
+            """,
+            [(session_id, core, value, self._now_iso()) for core, value in sorted(proven.items())],
+        )
 
     def load_machine_session(self, session_id: int) -> tuple[str, str, int | None] | None:
         row = self.__conn.execute(
@@ -2171,7 +2199,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     # Per-table copy columns (id excluded) and which columns remap to new ids.
     _MERGE_TABLES: tuple[tuple[str, dict[str, str]], ...] = (
         ("runs", {"context_id": "tuning_contexts"}),
-        ("tuner_sessions", {"context_id": "tuning_contexts"}),
+        ("tuner_sessions", {"context_id": "tuning_contexts", "parent_session_id": "tuner_sessions"}),
         ("core_results", {"run_id": "runs"}),
         ("events", {"run_id": "runs"}),
         ("telemetry_blocks", {"run_id": "runs"}),
@@ -2183,7 +2211,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         ("tuner_samples", {"test_id": "tuner_tests"}),
         ("tuner_sample_blocks", {"test_id": "tuner_tests"}),
     )
-    _MERGE_LINKS_KEPT_WHEN_UNMATCHED = frozenset({"run_id", "context_id"})
+    _MERGE_LINKS_KEPT_WHEN_UNMATCHED = frozenset({"run_id", "context_id", "parent_session_id"})
 
     def _merged_columns(self, table: str) -> list[str]:
         return [row["name"] for row in self.__conn.execute(f"PRAGMA main.table_info({table})") if row["name"] != "id"]

@@ -38,6 +38,7 @@ from corecycler.tuner.machine.types import (
     StartWorker,
     StopWorker,
     Stored,
+    Supersede,
     Transition,
     WorkerReported,
     World,
@@ -121,6 +122,7 @@ class Fake:
     journal_seq: int = 0
     dead_suspects: tuple[int, ...] = ()
     proven: dict[int, frozenset[int]] = field(default_factory=dict)
+    superseded: set[int] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         if not self.co:
@@ -217,6 +219,20 @@ class Fake:
                 self.db = st
                 self.retract(st)
                 self.stored_boot = self.boot
+            case Supersede(parent=parent, child=child, origin=origin):
+                if self.faults.fail_commits > 0:
+                    self.faults.fail_commits -= 1
+                    return DatabaseFailed("injected database failure")
+                if self.db is None or parent.session_id != self.db.session_id or parent.status != "superseded":
+                    raise Broken(f"superseded {parent.session_id} ({parent.status}), not the stored session")
+                self.superseded.add(parent.session_id)
+                self.db = child
+                self.journal = ()
+                if origin == "restart":
+                    self.proven = {}
+                    self.failed_at = set()
+                    self.stock_fail_owed = set()
+                self.stored_boot = self.boot
             case StartWorker(token=token, spec=spec):
                 self.check_start(state, spec)
                 self.worker = InFlight(token, spec)
@@ -261,6 +277,8 @@ class Fake:
                 raise Broken(f"core {r.core}'s fail bound loosened from {before} to {r.fb}")
 
     def check_start(self, state: SessionState, spec) -> None:
+        if state.session_id in self.superseded:
+            raise Broken(f"superseded session {state.session_id} ran a test")
         if state.setup != self.setup:
             raise Broken(f"a test started on the setup {self.setup}, not the session's {state.setup}")
         for core, value in spec.vector:

@@ -18,6 +18,7 @@ from corecycler.tuner.machine.types import (
     CloseDb,
     Commit,
     ContinuationDue,
+    ContinueOnSetup,
     CoreRecord,
     CrashEvidenceRead,
     DatabaseFailed,
@@ -38,6 +39,7 @@ from corecycler.tuner.machine.types import (
     Phase,
     ReadCrashEvidence,
     Report,
+    RestartOnSetup,
     Resume,
     RevertAll,
     Schedule,
@@ -49,6 +51,7 @@ from corecycler.tuner.machine.types import (
     StopWorker,
     Stored,
     Streaks,
+    Supersede,
     TestSpec,
     Transition,
     ValidateProfile,
@@ -77,6 +80,10 @@ def transition(s: SessionState, e: Event, w: World) -> Transition:
             return _resume(s, e, w)
         case ValidateProfile():
             return _validate(s, e, w)
+        case ContinueOnSetup():
+            return _continue_on_setup(s, e, w)
+        case RestartOnSetup():
+            return _restart_on_setup(s, e, w)
         case PauseRequest():
             return _pause_request(s)
         case Abort():
@@ -296,6 +303,58 @@ def _resume_stored(s: SessionState, e: Resume, w: World) -> Transition:
         return Transition(s, refused=refusal)
     resumed = replace(reconstruct(st), next_token=s.next_token)
     return Transition(resumed, (ReadCrashEvidence(e.session_id),))
+
+
+def _setup_choice_problem(s: SessionState, w: World) -> str | None:
+    if s.lifecycle is not Lifecycle.PAUSED or s.pause is None or s.pause.reason is not PauseReason.SETUP_CHANGED:
+        return "only a session paused as setup_changed can continue or restart under a new setup"
+    if not _changes(s.setup, w.setup):
+        return f"nothing that affects a verdict changed since session {s.session_id} started; resume it"
+    return None
+
+
+def _superseded(s: SessionState) -> Stored:
+    return replace(stored(s), status="superseded")
+
+
+def _continue_on_setup(s: SessionState, e: ContinueOnSetup, w: World) -> Transition:
+    problem = _setup_choice_problem(s, w)
+    if problem is not None:
+        return Transition(s, refused=problem)
+    changed = _changes(s.setup, w.setup)
+    token = s.next_token
+    child = replace(
+        s,
+        lifecycle=Lifecycle.RUNNING,
+        session_id=e.child_id,
+        setup=w.setup,
+        pause=None,
+        slot=Waiting(token, 0.0),
+        streaks=Streaks(),
+        next_token=token + 1,
+    )
+    effects: list = [Supersede(_superseded(s), stored(child), "continue"), ClearStockMarker()]
+    effects += [WriteCO(core, value) for core, value in s.baseline]
+    effects += [
+        Announce("continued", f"session {e.child_id} continues session {s.session_id} under a new setup: {changed}"),
+        Schedule(token, 0.0),
+    ]
+    return Transition(child, tuple(effects))
+
+
+def _restart_on_setup(s: SessionState, e: RestartOnSetup, w: World) -> Transition:
+    problem = _setup_choice_problem(s, w)
+    if problem is not None:
+        return Transition(s, refused=problem)
+    started = _start(SessionState(next_token=s.next_token), Start(s.config, e.child_id, s.seed, e.acknowledged), w)
+    if started.refused is not None:
+        return Transition(s, refused=started.refused)
+    rest = tuple(effect for effect in started.effects if not isinstance(effect, Commit))
+    restarted = Announce(
+        "restarted",
+        f"session {e.child_id} restarts session {s.session_id} under a new setup: {_changes(s.setup, w.setup)}",
+    )
+    return Transition(started.state, (Supersede(_superseded(s), stored(started.state), "restart"), *rest, restarted))
 
 
 def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:

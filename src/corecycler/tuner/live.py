@@ -27,6 +27,7 @@ from corecycler.tuner.machine.types import (
     CloseDb,
     Commit,
     ContinuationDue,
+    ContinueOnSetup,
     CoreRecord,
     CrashEvidenceRead,
     DatabaseFailed,
@@ -47,6 +48,7 @@ from corecycler.tuner.machine.types import (
     Phase,
     ReadCrashEvidence,
     Report,
+    RestartOnSetup,
     Resume,
     RevertAll,
     Schedule,
@@ -57,6 +59,7 @@ from corecycler.tuner.machine.types import (
     StartWorker,
     StopWorker,
     Stored,
+    Supersede,
     TestSpec,
     ValidateProfile,
     WorkerReported,
@@ -233,19 +236,33 @@ class Store:
             if r.fb is not None and self.retracted.get((st.session_id, r.core)) != r.fb
         }
         with self.db.transaction():
-            self.db.save_machine_session(
-                st.session_id,
-                status=st.status,
-                config_json=json.dumps(config_to_json(st.config)),
-                machine_json=json.dumps(stored_to_json(st)),
-                boot_id=boot,
-                bios_version=self.identity.bios_version,
-                cpu_model=self.identity.cpu_model,
-                context_id=self.identity.context_id,
-            )
-            for (session, core), fb in tightened.items():
-                self.db.journal_retract(session, core, fb, -1)
+            self._write(st, boot, tightened)
         self.retracted.update(tightened)
+
+    def supersede(self, parent: Stored, child: Stored, origin: str, boot: str) -> None:
+        proven = self.db.journal_proven_values(parent.session_id, -1) if origin == "continue" else {}
+        with self.db.transaction():
+            self._write(parent, boot, {})
+            self._write(child, boot, {})
+            self.db.link_session(child.session_id, parent.session_id, origin)
+            self.db.journal_inherit(child.session_id, proven)
+            self.db.insert_tuner_event(
+                parent.session_id, f"superseded by session {child.session_id} ({origin})", boot, "superseded"
+            )
+
+    def _write(self, st: Stored, boot: str, tightened: dict[tuple[int, int], int]) -> None:
+        self.db.save_machine_session(
+            st.session_id,
+            status=st.status,
+            config_json=json.dumps(config_to_json(st.config)),
+            machine_json=json.dumps(stored_to_json(st)),
+            boot_id=boot,
+            bios_version=self.identity.bios_version,
+            cpu_model=self.identity.cpu_model,
+            context_id=self.identity.context_id,
+        )
+        for (session, core), fb in tightened.items():
+            self.db.journal_retract(session, core, fb, -1)
 
     def load(self, session_id: int) -> tuple[Stored, str, int | None] | None:
         row = self.db.load_machine_session(session_id)
@@ -525,6 +542,12 @@ class LiveRig:
                 except sqlite3.Error as exc:
                     return DatabaseFailed(f"the session could not be written: {exc}")
                 self.stored_boot = self.boot
+            case Supersede(parent=parent, child=child, origin=origin):
+                try:
+                    self.store.supersede(parent, child, origin, self.boot)
+                except sqlite3.Error as exc:
+                    return DatabaseFailed(f"session {parent.session_id} could not be superseded: {exc}")
+                self.stored_boot = self.boot
             case StartWorker(token=token, spec=spec):
                 if not self.boot_recorded:
                     try:
@@ -699,6 +722,12 @@ class LiveRig:
 
     def resume(self, session_id: int) -> None:
         self.post(Resume(session_id), self.world_for_resume(session_id))
+
+    def continue_on_setup(self) -> None:
+        self.post(ContinueOnSetup(self.store.new_session_id()), self.world_checked())
+
+    def restart_on_setup(self, acknowledged: bool) -> None:
+        self.post(RestartOnSetup(self.store.new_session_id(), acknowledged), self.world_for_start())
 
     def validate(self, session_id: int) -> None:
         world = self.world_for_resume(session_id)

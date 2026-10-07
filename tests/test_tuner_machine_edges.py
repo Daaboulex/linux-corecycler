@@ -8,6 +8,7 @@ from corecycler.tuner.machine import search
 from corecycler.tuner.machine.session import stored, transition
 from corecycler.tuner.machine.types import (
     ContinuationDue,
+    ContinueOnSetup,
     CoreRecord,
     CrashEvidenceRead,
     DatabaseFailed,
@@ -23,10 +24,12 @@ from corecycler.tuner.machine.types import (
     PauseReason,
     Phase,
     Report,
+    RestartOnSetup,
     SessionState,
     SmuRefused,
     Stage,
     Start,
+    Supersede,
     Waiting,
     WorkerReported,
     World,
@@ -258,6 +261,69 @@ def test_a_setup_changed_while_paused_pauses_the_resume_and_putting_it_back_lets
     while fake.worker is None:
         assert fake.progress()
     assert fake.state.pause is None
+
+
+def paused_on_a_new_setup():
+    fake = running_fake()
+    fake.post(PauseRequest())
+    while fake.state.lifecycle is not Lifecycle.PAUSED:
+        assert fake.progress()
+    fake.setup = (("bios", "B"),)
+    fake.post(Resume(1))
+    while fake.state.pause.reason is PauseReason.RESUMING:
+        assert fake.progress()
+    assert fake.state.pause.reason is PauseReason.SETUP_CHANGED
+    return fake
+
+
+def test_continue_carries_the_session_into_a_child_under_the_new_setup_and_supersedes_the_parent():
+    fake = paused_on_a_new_setup()
+    parent = fake.state
+    result = transition(parent, ContinueOnSetup(2), fake.world())
+    child = result.state
+    assert (child.session_id, child.lifecycle, child.setup) == (2, Lifecycle.RUNNING, (("bios", "B"),))
+    assert (child.cores, child.flow.stage, child.baseline) == (parent.cores, parent.flow.stage, parent.baseline)
+    [supersede] = [effect for effect in result.effects if isinstance(effect, Supersede)]
+    assert (supersede.parent.session_id, supersede.parent.status, supersede.origin) == (1, "superseded", "continue")
+    assert supersede.child.session_id == 2
+    assert result.effects[0] is supersede
+
+
+def test_restart_begins_a_fresh_session_from_the_parent_s_config_and_supersedes_the_parent():
+    fake = paused_on_a_new_setup()
+    parent = fake.state
+    result = transition(parent, RestartOnSetup(2, acknowledged=True), fake.world())
+    child = result.state
+    assert (child.session_id, child.lifecycle, child.config, child.setup) == (
+        2,
+        Lifecycle.RUNNING,
+        parent.config,
+        (("bios", "B"),),
+    )
+    assert all(r.phase is Phase.NOT_STARTED for r in child.cores)
+    assert child.flow.stage is Stage.SEARCH
+    [supersede] = [effect for effect in result.effects if isinstance(effect, Supersede)]
+    assert (supersede.parent.status, supersede.origin, supersede.child.session_id) == ("superseded", "restart", 2)
+    assert result.effects[0] is supersede
+
+
+@pytest.mark.parametrize("choice", [ContinueOnSetup(2), RestartOnSetup(2, acknowledged=True)])
+def test_a_choice_is_refused_unless_the_session_paused_on_a_setup_that_still_differs(choice):
+    fake = paused_on_a_new_setup()
+    fake.setup = (("bios", "A"),)
+    unchanged = transition(fake.state, choice, fake.world())
+    assert "nothing that affects a verdict changed since session 1 started" in unchanged.refused
+    running = running_fake()
+    assert "only a session paused as setup_changed" in transition(running.state, choice, running.world()).refused
+
+
+def test_a_restart_the_start_gates_refuse_leaves_the_parent_paused_and_untouched():
+    fake = paused_on_a_new_setup()
+    world = replace(fake.world(), preflight_refusal="the SMU is held by ryzenadj")
+    result = transition(fake.state, RestartOnSetup(2, acknowledged=True), world)
+    assert "held by ryzenadj" in result.refused
+    assert result.state == fake.state
+    assert result.effects == ()
 
 
 def test_a_test_value_at_or_past_its_fail_bound_pauses_as_internal_instead_of_running():

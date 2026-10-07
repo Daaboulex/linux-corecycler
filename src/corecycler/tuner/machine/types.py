@@ -368,6 +368,17 @@ class ValidateProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class ContinueOnSetup:
+    child_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class RestartOnSetup:
+    child_id: int
+    acknowledged: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuationDue:
     token: int
 
@@ -416,6 +427,8 @@ Event = (
     | Close
     | Resume
     | ValidateProfile
+    | ContinueOnSetup
+    | RestartOnSetup
     | ContinuationDue
     | WorkerReported
     | CrashEvidenceRead
@@ -493,6 +506,13 @@ class Commit:
 
 
 @dataclass(frozen=True, slots=True)
+class Supersede:
+    parent: Stored
+    child: Stored
+    origin: str
+
+
+@dataclass(frozen=True, slots=True)
 class StartWorker:
     token: int
     spec: TestSpec
@@ -546,6 +566,7 @@ Effect = (
     | StopWorker
     | AwaitWorker
     | Commit
+    | Supersede
     | StartWorker
     | Schedule
     | CancelSchedule

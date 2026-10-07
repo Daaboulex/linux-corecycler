@@ -1375,11 +1375,81 @@ def test_the_identity_names_the_run_context_it_recorded(tmp_path, monkeypatch):
     assert db.get_context(identity.context_id).bios_version == "2401"
 
 
-@pytest.mark.parametrize("action", ["--resume", "--validate"])
+@pytest.mark.parametrize("action", ["--resume", "--validate", "--continue", "--restart"])
 def test_a_resume_or_a_validation_names_its_session(capsys, action):
     with pytest.raises(SystemExit):
         live_hw.parse(["--state-dir", "s", action])
     assert f"{action} needs --session" in capsys.readouterr().err
+
+
+def paused_then_moved_to_a_new_setup(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while not rows(r, "SELECT id FROM tuner_tests WHERE ended_at IS NOT NULL"):
+        r.step(0.01)
+    r.post(PauseRequest())
+    r.run_until_rest(0.01)
+    hardware.setup_now = (("bios", "B"),)
+    return hardware, rig(tmp_path, hardware, db=r.store.db)
+
+
+@pytest.mark.parametrize(("flag", "origin"), [("--continue", "continue"), ("--restart", "restart")])
+def test_the_command_line_carries_a_session_onto_a_new_setup(tmp_path, flag, origin):
+    hardware, again = paused_then_moved_to_a_new_setup(tmp_path)
+    said = []
+    again.say = said.append
+    args = live_hw.parse(["--state-dir", str(tmp_path / "state"), "--session", "1", flag, "--acknowledge"])
+    assert live_hw.run(args, again, said.append) == 0
+    sessions = {r["id"]: r for r in rows(again, "SELECT id, status, parent_session_id, origin FROM tuner_sessions")}
+    assert sessions[1]["status"] == "superseded"
+    assert (sessions[2]["parent_session_id"], sessions[2]["origin"]) == (1, origin)
+    assert rows(again, "SELECT message FROM tuner_events WHERE session_id=1 AND severity='superseded'") == [
+        {"message": f"superseded by session 2 ({origin})"}
+    ]
+    assert again.state.session_id == 2
+    assert rows(again, "SELECT DISTINCT session_id FROM tuner_tests WHERE started_at IS NOT NULL ORDER BY 1")[-1] == {
+        "session_id": 2
+    }
+
+
+def test_a_continued_session_inherits_its_parent_s_proven_values_and_a_restart_does_not(tmp_path):
+    for choice in ("continue", "restart"):
+        folder = tmp_path / choice
+        hardware, again = paused_then_moved_to_a_new_setup(folder)
+        proven = again.store.db.journal_proven_values(1, -1)
+        again.resume(1)
+        again.run_until_rest(0.01)
+        if choice == "continue":
+            again.continue_on_setup()
+        else:
+            again.restart_on_setup(True)
+        inherited = rows(
+            again,
+            "SELECT core_id, value, boot_id, mono_ns, confirmed, survived FROM tuner_co_journal"
+            " WHERE session_id=2 AND boot_id='' ORDER BY core_id",
+        )
+        if choice == "continue":
+            assert proven
+            assert inherited == [
+                {"core_id": core, "value": value, "boot_id": "", "mono_ns": None, "confirmed": 1, "survived": 1}
+                for core, value in sorted(proven.items())
+            ]
+        else:
+            assert inherited == []
+
+
+def test_a_supersede_that_cannot_be_written_pauses_as_database_and_leaves_the_parent_paused(tmp_path, monkeypatch):
+    hardware, again = paused_then_moved_to_a_new_setup(tmp_path)
+    again.resume(1)
+    again.run_until_rest(0.01)
+    monkeypatch.setattr(again.store, "supersede", broken)
+    again.continue_on_setup()
+    final = again.run_until_rest(0.01)
+    assert final.pause.reason is PauseReason.DATABASE
+    assert "session 1 could not be superseded" in final.pause.detail
+    assert rows(again, "SELECT status FROM tuner_sessions WHERE id=1") == [{"status": "paused"}]
+    assert rows(again, "SELECT id FROM tuner_sessions WHERE id=2") == []
 
 
 def test_the_command_line_validates_a_completed_session(tmp_path):

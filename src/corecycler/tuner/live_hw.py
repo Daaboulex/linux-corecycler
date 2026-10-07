@@ -38,6 +38,7 @@ from corecycler.tuner.machine.types import (
     Load,
     MachineConfig,
     Mode,
+    PauseReason,
     PauseRequest,
     Report,
 )
@@ -595,6 +596,8 @@ def parse(argv: list[str]) -> argparse.Namespace:
     action.add_argument("--start", action="store_true")
     action.add_argument("--resume", action="store_true")
     action.add_argument("--validate", action="store_true")
+    action.add_argument("--continue", dest="continue_on", action="store_true")
+    action.add_argument("--restart", action="store_true")
     parser.add_argument("--cores", default="")
     parser.add_argument("--max-offset", type=int, default=-15)
     parser.add_argument("--k1", type=int, default=2)
@@ -604,9 +607,14 @@ def parse(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--acknowledge", action="store_true")
     args = parser.parse_args(argv)
-    for named in ("resume", "validate"):
+    for named, flag in (
+        ("resume", "resume"),
+        ("validate", "validate"),
+        ("continue_on", "continue"),
+        ("restart", "restart"),
+    ):
         if getattr(args, named) and args.session is None:
-            parser.error(f"--{named} needs --session")
+            parser.error(f"--{flag} needs --session")
     return args
 
 
@@ -669,6 +677,16 @@ def run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> i
     else:
         rig.resume(args.session)
     final = rig.run_until_rest()
+    if (
+        (args.continue_on or args.restart)
+        and final.pause is not None
+        and final.pause.reason is PauseReason.SETUP_CHANGED
+    ):
+        if args.restart:
+            rig.restart_on_setup(args.acknowledge)
+        else:
+            rig.continue_on_setup()
+        final = rig.run_until_rest()
     reason = f" ({final.pause.reason.value}: {final.pause.detail})" if final.pause is not None else ""
     say(f"rest: {final.lifecycle.value}{reason}")
     say("values: " + ", ".join(f"{r.core}={r.value} ({r.phase.value}, fb {r.fb})" for r in final.cores))

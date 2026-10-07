@@ -9,7 +9,15 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from corecycler.tuner.machine.session import HELD
-from corecycler.tuner.machine.types import FailContext, Lifecycle, Load, PauseReason, ValidateProfile
+from corecycler.tuner.machine.types import (
+    ContinueOnSetup,
+    FailContext,
+    Lifecycle,
+    Load,
+    PauseReason,
+    RestartOnSetup,
+    ValidateProfile,
+)
 from corecycler.tuner.orders import Method, order_problem
 from corecycler.tuner.persistence import resident_at_death
 from tests._tuner_world import (
@@ -46,6 +54,8 @@ FAULTS = (
     "validate",
     "profile",
     "setup",
+    "continue",
+    "restart",
 )
 
 
@@ -55,6 +65,7 @@ def clone(fake: Fake) -> Fake:
     twin.resident = dict(fake.resident)
     twin.failed_at = set(fake.failed_at)
     twin.stock_fail_owed = set(fake.stock_fail_owed)
+    twin.superseded = set(fake.superseded)
     twin.faults = copy.copy(fake.faults)
     twin.log = []
     return twin
@@ -96,6 +107,7 @@ def key(fake: Fake) -> tuple:
         fake.faults.fail_commits,
         frozenset(fake.failed_at),
         frozenset(fake.stock_fail_owed),
+        frozenset(fake.superseded),
     )
 
 
@@ -137,6 +149,10 @@ def moves(fake: Fake, budget: dict[str, int]) -> list[tuple[str, dict[str, int]]
             continue
         if fault == "setup" and s.lifecycle in (Lifecycle.RUNNING, Lifecycle.PAUSING):
             continue
+        if fault in ("continue", "restart") and not (
+            s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is PauseReason.SETUP_CHANGED
+        ):
+            continue
         out.append((fault, spent))
     return out
 
@@ -173,6 +189,10 @@ def act(fake: Fake, move: str) -> None:
             fake.power = (("platform profile", "power-saver" if fake.power == BALANCED else "balanced"),)
         case "setup":
             fake.setup = (("bios", "B" if fake.setup == BIOS_A else "A"),)
+        case "continue":
+            fake.post(ContinueOnSetup(fake.db.session_id + 1))
+        case "restart":
+            fake.post(RestartOnSetup(fake.db.session_id + 1, acknowledged=True))
         case "pause":
             fake.post(PauseRequest())
         case "abort":
@@ -335,6 +355,13 @@ def test_every_future_of_a_cpu_whose_memory_lanes_fail_reaches_a_rest():
 
 def test_no_future_runs_a_test_on_a_setup_changed_while_the_session_was_away():
     budget = {"setup": 2, "pause": 2, "crash": 1, "close": 1, "abort": 1, "validate": 1, "total": 3}
+    survey = explore(tiny(2, [-3, -2], 2), budget, cap=2_000_000)
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+def test_a_session_continued_or_restarted_on_a_new_setup_never_runs_its_parent_again():
+    budget = {"setup": 1, "pause": 1, "crash": 1, "continue": 1, "restart": 1, "total": 3}
     survey = explore(tiny(2, [-3, -2], 2), budget, cap=2_000_000)
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
