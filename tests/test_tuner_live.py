@@ -4,7 +4,7 @@ import json
 import signal
 import sqlite3
 import threading
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -13,6 +13,7 @@ import pytest
 from corecycler.engine import detector as kernel
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.history.db import HistoryDB
+from corecycler.monitor.frequency import PowerState
 from corecycler.monitor.hwmon import SensorRead
 from corecycler.tuner import live, live_hw, telemetry
 from corecycler.tuner.live import Identity, LiveRig, Store, stored_from_json, stored_to_json
@@ -69,7 +70,7 @@ class FakeHardware:
     boot: str = "boot-a"
     clean: bool = False
     refuse: int = 0
-    capped: bool = False
+    power_state: PowerState = field(default_factory=lambda: UNCAPPED)
     records: kernel.JournalHarvest = field(default_factory=lambda: kernel.JournalHarvest((), (), None))
     harvests: list = field(default_factory=list)
     boot_reads: int = 0
@@ -91,8 +92,8 @@ class FakeHardware:
     def temperature(self):
         return 50.0
 
-    def frequency_capped(self):
-        return self.capped
+    def power(self):
+        return self.power_state
 
     def boot_id(self):
         self.boot_reads += 1
@@ -129,6 +130,9 @@ class FakeRunner:
             kernel_read_ns=self.read_ns,
             speeds=self.speeds,
         )
+
+
+UNCAPPED = PowerState("balanced", "powersave", "balance_performance", "1", 5756.452, 5756.452)
 
 
 def warm() -> SensorRead:
@@ -427,6 +431,7 @@ def test_every_test_leaves_one_row_that_its_verdict_completes(tmp_path):
     assert all(t["ended_at"] is not None and t["seconds_run"] == 1.0 for t in tests)
     assert {t["verdict"] for t in tests} == {"pass", "silicon"}
     assert all(json.loads(t["speeds_json"]) == [["SFTv4", 6.56e9, True], ["VT3", 2.37e9, False]] for t in tests)
+    assert all(json.loads(t["power_json"]) == asdict(UNCAPPED) for t in tests)
     assert [(json.loads(t["cpus_json"]), json.loads(t["vector_json"])) for t in tests] == [
         (list(s.cpus), [list(pair) for pair in s.vector]) for s in r.runner.seen
     ]
@@ -584,10 +589,10 @@ def test_a_write_inside_a_core_s_survived_envelope_is_journaled_survived(tmp_pat
 def test_a_crash_context_reads_the_last_ring_of_the_open_test_only(tmp_path, load, frozen_last, steady):
     store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
     store.save(stored_with_fb(None), "boot-a")
-    done = store.db.insert_tuner_test(1, "boot-a", 1, "steady", load, "1t", 0, -3, "[]", "[0, 16]", 60.0)
+    done = store.db.insert_tuner_test(1, "boot-a", 1, "steady", load, "1t", 0, -3, "[]", "[0, 16]", 60.0, "{}")
     store.sample(done, taken(0, 9))
     store.db.end_tuner_test(done, "pass", 60.0, "[]", None, "{}", "", "[]")
-    crashed = store.db.insert_tuner_test(1, "boot-a", 2, "steady", load, "1t", 0, -3, "[]", "[0, 16, 1]", 60.0)
+    crashed = store.db.insert_tuner_test(1, "boot-a", 2, "steady", load, "1t", 0, -3, "[]", "[0, 16, 1]", 60.0, "{}")
     taken_samples = [taken(0, n) for n in range(telemetry.RING + 1)] + [replace(taken(0, 0), running=not frozen_last)]
     for sample in taken_samples:
         store.sample(crashed, sample)
@@ -900,7 +905,7 @@ def test_the_smu_adapter_writes_only_when_asked_and_checks_the_read_back():
 )
 def test_a_frequency_cap_or_disabled_boost_is_seen(tmp_path, scaling, top, boost, pstate, capped):
     hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, sysfs(tmp_path, scaling, top, boost, pstate))
-    assert hw.frequency_capped() is capped
+    assert hw.power().capped() is capped
 
 
 def test_the_adapter_reads_the_kernel_facts_it_needs(monkeypatch):
@@ -1088,7 +1093,7 @@ def test_main_refuses_without_an_smu_and_runs_with_one(tmp_path, monkeypatch, ca
     monkeypatch.setattr(corecycler.cli, "_build_smu", lambda topo: FakeSmu())
     monkeypatch.setattr(corecycler.engine.backends, "load_all", lambda: None)
     monkeypatch.setattr(live_hw, "install_signals", lambda r: None)
-    monkeypatch.setattr(live_hw.SmuHardware, "frequency_capped", lambda self: False)
+    monkeypatch.setattr(live_hw.SmuHardware, "power", lambda self: UNCAPPED)
     assert live_hw.main(argv) == 0
     assert "refused: session 1 is not stored" in capsys.readouterr().out
 

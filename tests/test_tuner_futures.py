@@ -44,6 +44,7 @@ FAULTS = (
     "crash_mce",
     "crash_shared",
     "validate",
+    "profile",
 )
 
 
@@ -87,6 +88,7 @@ def key(fake: Fake) -> tuple:
         fake.now,
         fake.temperature,
         fake.crash_note,
+        fake.power,
         fake.boot - fake.stored_boot,
         fake.faults.refuse_writes,
         fake.faults.fail_commits,
@@ -163,6 +165,8 @@ def act(fake: Fake, move: str) -> None:
             fake.deliver(Report(Group.PASS, worker_spec.seconds, evidence=(Evidence(target, True),)))
         case "validate":
             fake.post(ValidateProfile(fake.db.session_id))
+        case "profile":
+            fake.power = (("platform profile", "power-saver" if fake.power == BALANCED else "balanced"),)
         case "pause":
             fake.post(PauseRequest())
         case "abort":
@@ -266,7 +270,9 @@ def tiny(cores: int, edges: list[int], domains: int = 1, **cfg) -> Fake:
     return fake
 
 
-ONE_OF_EACH = {fault: 1 for fault in FAULTS}
+BALANCED = (("platform profile", "balanced"),)
+
+ONE_OF_EACH = {fault: 1 for fault in FAULTS if fault != "profile"}
 
 
 @pytest.mark.parametrize(
@@ -324,7 +330,7 @@ def test_every_future_of_a_cpu_whose_memory_lanes_fail_reaches_a_rest():
 def test_every_future_with_a_deeper_fault_budget():
     total = int(os.environ.get("TUNER_FUTURES_FAULTS", "3"))
     cap = int(os.environ.get("TUNER_FUTURES_CAP", "5000000"))
-    survey = explore(tiny(3, [-4, 0, -2], 2), {**ONE_OF_EACH, "crash": 2, "total": total}, cap=cap)
+    survey = explore(tiny(3, [-4, 0, -2], 2), {**ONE_OF_EACH, "crash": 2, "profile": 2, "total": total}, cap=cap)
     print(f"\nreachable states {survey.states}, leaves {survey.leaves}, longest future {survey.deepest} moves")
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
 

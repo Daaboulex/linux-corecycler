@@ -40,6 +40,7 @@ class PauseReason(StrEnum):
     INTERNAL = "internal"
     OUTSIDE_WRITE = "outside_write"
     HELD_KNOB = "held_knob"
+    SETUP_CHANGED = "setup_changed"
 
 
 class Klass(StrEnum):
@@ -272,6 +273,7 @@ class SessionState:
     resume_streak: int = 0
     incidents: int = 0
     next_token: int = 1
+    power: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         problems = list(_state_problems(self))
@@ -431,6 +433,7 @@ class Stored:
     flow: Flow | None
     resume_streak: int = 0
     incidents: int = 0
+    power: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,6 +443,7 @@ class World:
     resident: tuple[tuple[int, int | None], ...] = ()
     gap_grew: bool = False
     frequency_capped: bool = False
+    power: tuple[tuple[str, str], ...] = ()
     now: float = 0.0
     temperature_c: float | None = None
     stored: Stored | None = None

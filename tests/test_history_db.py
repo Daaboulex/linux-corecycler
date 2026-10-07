@@ -357,7 +357,7 @@ class TestTunerSessionMethods:
         sid = db.next_tuner_session_id()
         fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
         db.save_machine_session(sid, status="running", machine_json="1", boot_id="a", **fields)
-        row = db.insert_tuner_test(sid, "a", 1, "search", None, "1t", 0, -5, "[]", "[0]", 60.0)
+        row = db.insert_tuner_test(sid, "a", 1, "search", None, "1t", 0, -5, "[]", "[0]", 60.0, "{}")
         db.end_tuner_test(row, "pass", 60.0, "[]", None, "{}", "", "[]")
         with pytest.raises(sqlite3.IntegrityError, match="already ended"):
             db.end_tuner_test(row, "silicon", 1.0, "[]", None, "{}", "", "[]")
@@ -806,7 +806,7 @@ class TestMergeFrom:
             cpu_model="9950X3D",
             context_id=None,
         )
-        row = src.insert_tuner_test(sid, boot, 3, "search", None, "1t", 8, -5, "[[8, -5]]", "[8]", 60.0)
+        row = src.insert_tuner_test(sid, boot, 3, "search", None, "1t", 8, -5, "[[8, -5]]", "[8]", 60.0, "{}")
         src.end_tuner_test(row, "silicon", 12.5, "[8]", None, "[]", "error on core 8", "[]")
         src.insert_tuner_sample(row, 7, True, 61.5, "[[8, 5000.0]]", "[]", "[]")
         src.close()

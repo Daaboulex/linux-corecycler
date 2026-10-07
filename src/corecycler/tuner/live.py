@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from corecycler.config.paths import hand_back
 from corecycler.engine import detector as kernel
+from corecycler.monitor.frequency import PowerState
 from corecycler.tuner import telemetry
 from corecycler.tuner.machine.session import transition
 from corecycler.tuner.machine.types import (
@@ -75,7 +76,7 @@ class Hardware(Protocol):
     def read_co(self, core: int) -> int | None: ...
     def write_co(self, core: int, value: int) -> str | None: ...
     def temperature(self) -> float | None: ...
-    def frequency_capped(self) -> bool: ...
+    def power(self) -> PowerState: ...
     def boot_id(self) -> str: ...
     def boot_ended_clean(self, boot_id: str) -> bool: ...
     def asleep_seconds(self) -> float: ...
@@ -176,6 +177,7 @@ def stored_from_json(raw: dict) -> Stored:
         flow=_flow_from_json(raw["flow"]),
         resume_streak=raw["resume_streak"],
         incidents=raw["incidents"],
+        power=tuple((name, value) for name, value in raw["power"]),
     )
 
 
@@ -240,7 +242,7 @@ class Store:
         raw, boot, read_ns = row
         return replace(stored_from_json(json.loads(raw)), session_id=session_id), boot, read_ns
 
-    def test_started(self, session_id: int, token: int, spec: TestSpec, boot: str) -> int:
+    def test_started(self, session_id: int, token: int, spec: TestSpec, boot: str, power: PowerState) -> int:
         return self.db.insert_tuner_test(
             session_id,
             boot,
@@ -253,6 +255,7 @@ class Store:
             json.dumps(spec.vector),
             json.dumps(spec.cpus),
             spec.seconds,
+            json.dumps(asdict(power)),
         )
 
     def test_returned(self, session_id: int, boot: str, row: int, report: Report) -> None:
@@ -371,18 +374,21 @@ class LiveRig:
     stored_read_ns: int | None = None
     test_row: tuple[int, int] | None = None
     boot: str = field(init=False)
+    power: PowerState = field(default_factory=PowerState)
 
     def __post_init__(self) -> None:
         self.boot = self.hardware.boot_id()
 
     def world(self) -> World:
+        self.power = self.hardware.power()
         asleep = self.hardware.asleep_seconds()
         gap = asleep - self.asleep_at_last_check > 1.0
         self.asleep_at_last_check = asleep
         return World(
             resident=tuple(sorted(self.resident.items())),
             gap_grew=gap,
-            frequency_capped=self.hardware.frequency_capped(),
+            frequency_capped=self.power.capped(),
+            power=self.power.named(),
             now=self.clock(),
             temperature_c=self.hardware.temperature(),
             cpus_of=self.cpus_of,
@@ -474,7 +480,7 @@ class LiveRig:
                 self.stored_boot = self.boot
             case StartWorker(token=token, spec=spec):
                 try:
-                    row = self.store.test_started(acting.session_id, token, spec, self.boot)
+                    row = self.store.test_started(acting.session_id, token, spec, self.boot, self.power)
                 except sqlite3.Error as exc:
                     return DatabaseFailed(f"the test row could not be written: {exc}")
                 self.test_row = (token, row)

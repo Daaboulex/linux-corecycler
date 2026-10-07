@@ -202,7 +202,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 21
+    SCHEMA_VERSION = 22
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -302,7 +302,8 @@ CREATE TABLE IF NOT EXISTS tuner_tests (
     context_json    TEXT,
     evidence_json   TEXT,
     detail          TEXT,
-    speeds_json     TEXT
+    speeds_json     TEXT,
+    power_json      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tuner_tests_session ON tuner_tests(session_id, core);
 """
@@ -857,6 +858,10 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     def _migrate_v21(conn: sqlite3.Connection) -> None:
         HistoryDB._add_columns(conn, "tuner_tests", [("speeds_json", "TEXT")])
 
+    @staticmethod
+    def _migrate_v22(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(conn, "tuner_tests", [("power_json", "TEXT")])
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
@@ -878,6 +883,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         19: _DDL_MIGRATE_V19,
         20: _DDL_TUNER_SAMPLES,
         21: _migrate_v21,
+        22: _migrate_v22,
     }
 
     # ------------------------------------------------------------------
@@ -1425,13 +1431,14 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         vector_json: str,
         cpus_json: str,
         seconds_asked: float,
+        power_json: str,
     ) -> int:
         cur = self.__conn.execute(
             """\
             INSERT INTO tuner_tests
                 (session_id, boot_id, token, started_at, stage, load, klass, core, value,
-                 vector_json, cpus_json, seconds_asked)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                 vector_json, cpus_json, seconds_asked, power_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 session_id,
@@ -1446,6 +1453,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
                 vector_json,
                 cpus_json,
                 seconds_asked,
+                power_json,
             ),
         )
         return cur.lastrowid

@@ -18,7 +18,7 @@ from corecycler.engine.containment import lane_cgroup_parent
 from corecycler.engine.execution import STDOUT_LOG, Lane, Supervisor, ThermalWatch
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.history.db import HistoryDB
-from corecycler.monitor.frequency import Clocks, fastest
+from corecycler.monitor.frequency import Clocks, PowerState, fastest, read_power_state
 from corecycler.monitor.hwmon import SensorRead, Sensors
 from corecycler.tuner import stages, telemetry
 from corecycler.tuner.live import Identity, LiveRig, Store
@@ -83,15 +83,8 @@ class SmuHardware:
     def temperature(self) -> float | None:
         return self.sensors().hottest
 
-    def frequency_capped(self) -> bool:
-        freq = self.cpu_root / "cpu0" / "cpufreq"
-        boost = self.cpu_root / "cpufreq" / "boost"
-        if boost.exists() and boost.read_text().strip() == "0":
-            return True
-        top = freq / "amd_pstate_max_freq"
-        if not top.exists():
-            top = freq / "cpuinfo_max_freq"
-        return int((freq / "scaling_max_freq").read_text()) < 0.98 * int(top.read_text())
+    def power(self) -> PowerState:
+        return read_power_state(self.cpu_root)
 
     def boot_id(self) -> str:
         return kernel.read_boot_id()

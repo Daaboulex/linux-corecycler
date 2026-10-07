@@ -119,6 +119,7 @@ def stored(s: SessionState) -> Stored:
         flow=s.flow,
         resume_streak=s.resume_streak,
         incidents=s.incidents,
+        power=s.power,
     )
 
 
@@ -135,6 +136,7 @@ def reconstruct(st: Stored) -> SessionState:
         pause=Pause(PauseReason.RESUMING, "reading what the last boot left"),
         resume_streak=st.resume_streak,
         incidents=st.incidents,
+        power=st.power,
     )
 
 
@@ -217,6 +219,7 @@ def _start(s: SessionState, e: Start, w: World) -> Transition:
         flow=Flow(Stage.SEARCH, Klass.T1),
         slot=Waiting(token, 0.0),
         next_token=token + 1,
+        power=w.power,
     )
     effects: list = [_commit(new)]
     effects += [WriteCO(core, value) for core, value in baseline if w.resident_of(core) != value]
@@ -324,6 +327,7 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
         slot=Waiting(token, 0.0),
         resume_streak=st.resume_streak,
         next_token=token + 1,
+        power=st.power,
     )
     effects: list = [_commit(running)]
     effects += [WriteCO(core, value) for core, value in st.baseline if w.resident_of(core) != value]
@@ -942,6 +946,16 @@ def _bisect_next(s: SessionState, w: World) -> Transition:
     return _start_test(s, flow, spec, w)
 
 
+def _power_changes(recorded: tuple[tuple[str, str], ...], now: tuple[tuple[str, str], ...]) -> str:
+    was, found = dict(recorded), dict(now)
+    changes = [
+        f"{name} was {was.get(name, 'absent')}, is now {found.get(name, 'absent')}"
+        for name in sorted(was.keys() | found.keys())
+        if was.get(name) != found.get(name)
+    ]
+    return "the power state changed since the session started: " + "; ".join(changes) + "; restore it and resume"
+
+
 def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transition:
     if w.frequency_capped:
         return _enter_pause(
@@ -949,6 +963,8 @@ def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transi
             PauseReason.APPARATUS,
             "a frequency cap or disabled boost would make every verdict meaningless",
         )
+    if s.power != w.power:
+        return _enter_pause(replace(s, flow=flow), PauseReason.SETUP_CHANGED, _power_changes(s.power, w.power))
     token = s.next_token
     flow = replace(flow, last_core=spec.core)
     marked = s.with_core(replace(s.core(spec.core), in_test=True))

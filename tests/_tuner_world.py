@@ -94,6 +94,7 @@ class Fake:
     now: float = 0.0
     temperature: float | None = 60.0
     capped: bool = False
+    power: tuple[tuple[str, str], ...] = (("platform profile", "balanced"),)
     gap_grew: bool = False
     boot: int = 0
     stored_boot: int = 0
@@ -129,6 +130,7 @@ class Fake:
             resident=tuple(sorted(self.resident.items())),
             gap_grew=self.gap_grew,
             frequency_capped=self.capped,
+            power=self.power,
             now=self.now,
             temperature_c=self.temperature,
             stored=self.db,

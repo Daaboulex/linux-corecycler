@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -60,3 +61,60 @@ def read_max_frequency(cpu_id: int = 0) -> float | None:
         with contextlib.suppress(ValueError, OSError):
             return int(path.read_text().strip()) / 1000.0
     return None
+
+
+PLATFORM_PROFILE = Path("/sys/firmware/acpi/platform_profile")
+
+
+def _text(path: Path) -> str | None:
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class PowerState:
+    """The settings that can change a verdict without touching a core: read before every test.
+
+    A setting this machine does not have is None.
+    """
+
+    profile: str | None = None
+    governor: str | None = None
+    epp: str | None = None
+    boost: str | None = None
+    max_mhz: float | None = None
+    top_mhz: float | None = None
+
+    def capped(self) -> bool:
+        """Boost off, or the scaling maximum held below the top clock; unknown counts as capped."""
+        if self.boost == "0":
+            return True
+        if self.max_mhz is None or self.top_mhz is None:
+            return True
+        return self.max_mhz < 0.98 * self.top_mhz
+
+    def named(self) -> tuple[tuple[str, str], ...]:
+        """The settings a session records at Start and compares before each test."""
+        pairs = (
+            ("platform profile", self.profile),
+            ("governor", self.governor),
+            ("EPP", self.epp),
+            ("boost", self.boost),
+            ("scaling maximum MHz", None if self.max_mhz is None else f"{self.max_mhz:.0f}"),
+        )
+        return tuple((name, value) for name, value in pairs if value is not None)
+
+
+def read_power_state(root: Path = CPUFREQ_BASE, profile: Path = PLATFORM_PROFILE) -> PowerState:
+    cpufreq = root / "cpu0" / "cpufreq"
+    top = cpufreq / "amd_pstate_max_freq"
+    return PowerState(
+        profile=_text(profile),
+        governor=_text(cpufreq / "scaling_governor"),
+        epp=_text(cpufreq / "energy_performance_preference"),
+        boost=_text(root / "cpufreq" / "boost"),
+        max_mhz=_mhz(cpufreq / "scaling_max_freq"),
+        top_mhz=_mhz(top if top.exists() else cpufreq / "cpuinfo_max_freq"),
+    )

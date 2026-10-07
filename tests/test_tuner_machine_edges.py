@@ -219,6 +219,26 @@ def test_a_frequency_cap_at_test_start_pauses_before_any_test():
     assert fake.worker is None
 
 
+def test_a_power_state_change_between_tests_pauses_naming_it_and_restoring_it_lets_a_resume_continue():
+    fake = running_fake()
+    assert fake.db.power == fake.power
+    recorded = fake.power
+    fake.power = (("platform profile", "power-saver"),)
+    fake.fire()
+    assert fake.state.pause.reason is PauseReason.SETUP_CHANGED
+    assert "platform profile was balanced, is now power-saver" in fake.state.pause.detail
+    assert fake.worker is None
+    fake.post(Resume(1))
+    while fake.worker is None and fake.progress():
+        pass
+    assert fake.state.pause.reason is PauseReason.SETUP_CHANGED
+    fake.power = recorded
+    fake.post(Resume(1))
+    while fake.worker is None:
+        assert fake.progress()
+    assert fake.state.pause is None
+
+
 def test_a_test_value_at_or_past_its_fail_bound_pauses_as_internal_instead_of_running():
     fake = running_fake()
     bad = replace(fake.state.core(0), phase=Phase.PROVE, value=-8, fb=-8)

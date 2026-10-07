@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from corecycler.monitor.frequency import Clocks, fastest
+from corecycler.monitor.frequency import Clocks, PowerState, fastest, read_power_state
 from corecycler.monitor.hwmon import SensorRead, Sensors
 
 
@@ -199,3 +199,33 @@ def test_a_core_s_clock_is_its_faster_cpu_that_was_read():
     assert fastest({0: 4000.0, 16: 5100.0, 1: 3000.0}, (0, 16)) == 5100.0
     assert fastest({0: None, 16: 4800.0}, (0, 16)) == 4800.0
     assert fastest({0: None}, (0, 16)) is None
+
+
+def test_the_power_state_is_read_from_cpufreq_and_the_platform_profile(tmp_path):
+    cpufreq(tmp_path, 0, "5100000", "4300000")
+    folder = tmp_path / "cpu0" / "cpufreq"
+    (folder / "scaling_governor").write_text("powersave\n")
+    (folder / "energy_performance_preference").write_text("power\n")
+    (folder / "amd_pstate_max_freq").write_text("5756452\n")
+    (tmp_path / "cpufreq").mkdir()
+    (tmp_path / "cpufreq" / "boost").write_text("1\n")
+    profile = tmp_path / "platform_profile"
+    profile.write_text("low-power\n")
+    state = read_power_state(tmp_path, profile)
+    assert state == PowerState("low-power", "powersave", "power", "1", 4300.0, 5756.452)
+    assert state.capped() is True
+    assert state.named() == (
+        ("platform profile", "low-power"),
+        ("governor", "powersave"),
+        ("EPP", "power"),
+        ("boost", "1"),
+        ("scaling maximum MHz", "4300"),
+    )
+
+
+def test_a_machine_without_the_power_files_names_nothing_and_counts_as_capped(tmp_path):
+    state = read_power_state(tmp_path / "missing", tmp_path / "no_profile")
+    assert state == PowerState()
+    assert state.named() == ()
+    assert state.capped() is True
+    assert PowerState(boost="1", max_mhz=5700.0, top_mhz=5700.0).capped() is False
