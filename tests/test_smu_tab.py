@@ -76,11 +76,14 @@ class TestTunerLock:
         tab._smu = MagicMock()
         tab._smu.is_available.return_value = True
         tab._smu.has_backup.return_value = False
-        tab._smu.get_co_offset.return_value = 0
+        tab._smu.get_co_offset.return_value = -7
         tab.set_tuner_running(True)
+        assert tab._table.item(0, 2).text() == "--"
         tab.set_tuner_running(False)
         assert tab._tuner_active is False
         assert tab._apply_all_btn.isEnabled()
+        assert not tab._restore_btn.isEnabled()
+        assert tab._table.item(0, 2).text() == "-7"
         for spin in tab._spinboxes.values():
             assert spin.isEnabled()
 

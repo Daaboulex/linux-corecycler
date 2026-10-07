@@ -195,3 +195,42 @@ class TestBackupRestore:
         tab._smu = _smu(restore=(False, [1]))
         tab._restore_co()
         tab._smu.get_co_offset.assert_called()
+
+
+class TestOneWriter:
+    def test_every_write_waits_while_a_driver_holds_the_lock(self, tab):
+        import corecycler.gui.smu_tab as st
+        from corecycler.smu.writer_lock import co_writer
+
+        tab._smu = _smu()
+        with co_writer(record=True):
+            tab._apply_single(0)
+            tab._apply_all_co()
+            tab._reset_all_co()
+            tab._restore_co()
+        tab._smu.set_co_offset.assert_not_called()
+        tab._smu.reset_all_co.assert_not_called()
+        tab._smu.restore_co_offsets.assert_not_called()
+        assert st.QMessageBox.warning.call_count == 4
+        assert "another CO writer holds" in st.QMessageBox.warning.call_args.args[2]
+        assert tab._apply_all_btn.isEnabled()
+
+    def test_restore_is_refused_while_the_tuner_runs(self, tab):
+        tab._smu = _smu()
+        tab._tuner_active = True
+        tab._restore_co()
+        tab._smu.restore_co_offsets.assert_not_called()
+
+    def test_the_controls_stay_locked_through_a_table_rebuild_a_backup_and_a_write(self, tab, monkeypatch):
+        tab._smu = _smu()
+        tab.set_tuner_running(True)
+        tab._backup_co()
+        assert not tab._restore_btn.isEnabled()
+        tab._populate_table()
+        assert not any(tab._table.cellWidget(row, 4).isEnabled() for row in range(tab._table.rowCount()))
+        assert not any(spin.isEnabled() for spin in tab._spinboxes.values())
+        tab.set_tuner_running(False)
+        monkeypatch.setattr(tab, "_set_all", lambda: tab.set_tuner_running(True))
+        tab._apply_all_co()
+        assert not tab._apply_all_btn.isEnabled()
+        assert not tab._reset_btn.isEnabled()

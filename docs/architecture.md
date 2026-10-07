@@ -37,6 +37,9 @@ src/corecycler/
     commands.py        Per-generation command IDs, encoding-scheme dispatch, harvested-core slots
     driver.py          ryzen_smu sysfs: CO, PBO limits, boost, scalar, core-slot map, system state
     pmtable.py         Version-aware PM table parsing: FCLK/UCLK/MCLK, voltages, ratio
+    writer_lock.py     The one CO writer lock (tuner.lock in the data directory): the tuner
+                       driver holds it for its run and names itself in it, the Curve Optimizer
+                       tab takes it for each write
   monitor/           Live hardware telemetry
     hwmon.py           k10temp/zenpower/coretemp temps + Vcore/Vsoc; Super I/O fallback (Zen 5)
     cpu_usage.py       Per-CPU usage from /proc/stat
@@ -61,8 +64,8 @@ src/corecycler/
                        journal, one row per test, its telemetry samples and the events in the
                        history database
     live_hw.py         The tuner driver, live.py on the real hardware: the CLI's tuning
-                       commands run it; one per machine (it holds tuner.lock in the data
-                       directory); CO writes only with --write
+                       commands run it; one per machine (it holds the CO writer lock,
+                       smu/writer_lock.py); CO writes only with --write
   gui/               Qt tabs (config, results, monitor, smu, tuner, memory, history), core grid,
                      and the missing-tool prompt that records a backend's path
     style.py           Display standards: the desktop draws the widgets, this holds only the

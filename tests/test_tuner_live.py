@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 import sqlite3
 import struct
@@ -1590,18 +1591,24 @@ def test_main_refuses_without_an_smu_and_runs_with_one(tmp_path, driver_home, mo
     assert notified == [live_hw.EXIT_REFUSED, live_hw.EXIT_REFUSED]
 
 
-def test_one_driver_runs_at_a_time_on_a_machine(tmp_path, driver_home, capsys):
-    import fcntl
+def test_one_co_writer_at_a_time_on_a_machine(tmp_path, driver_home, writer_dir, capsys):
+    from corecycler.smu.writer_lock import co_writer, running_driver
 
-    data, notified = driver_home
-    data.mkdir(parents=True)
+    _, notified = driver_home
     argv = ["--state-dir", str(tmp_path / "s"), "--db", str(tmp_path / "other.db"), "--session", "1", "--resume"]
-    with (data / "tuner.lock").open("a") as held:
-        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with co_writer():
         assert live_hw.main(argv) == live_hw.EXIT_LOCKED
-    assert f"another tuner driver holds {data / 'tuner.lock'}" in capsys.readouterr().err
+    assert f"live: another CO writer holds {writer_dir / 'tuner.lock'}" in capsys.readouterr().err
     assert notified == []
-    assert live_hw.main(argv) == live_hw.EXIT_REFUSED
+    seen = []
+    drive = live_hw._drive
+    live_hw._drive = lambda args: seen.append(running_driver()) or drive(args)
+    try:
+        assert live_hw.main(argv) == live_hw.EXIT_REFUSED
+    finally:
+        live_hw._drive = drive
+    assert seen == [os.getpid()]
+    assert running_driver() is None
 
 
 def test_a_usage_error_is_a_refusal_and_help_is_not(driver_home, capsys):

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import random
@@ -24,7 +23,7 @@ from corecycler.cli import (
     EXIT_REFUSED,
     EXIT_SIGNAL,
 )
-from corecycler.config.paths import data_dir, hand_back
+from corecycler.config.paths import data_dir
 from corecycler.config.settings import load_settings
 from corecycler.engine import detector as kernel
 from corecycler.engine.backends import get_backend, ycruncher
@@ -40,6 +39,7 @@ from corecycler.monitor.hwmon import SensorRead, Sensors
 from corecycler.smu.commands import detect_generation, get_commands, tjmax_c
 from corecycler.smu.driver import RyzenSMU, core_map_blocked
 from corecycler.smu.pmtable import PMTableReader, read_power_limits
+from corecycler.smu.writer_lock import WriterBusy, co_writer
 from corecycler.tuner import stages, telemetry
 from corecycler.tuner.live import BootFacts, Identity, LiveRig, Store, config_from_json
 from corecycler.tuner.machine.types import (
@@ -745,16 +745,12 @@ def main(argv: list[str] | None = None) -> int:
         args = parse(sys.argv[1:] if argv is None else argv)
     except SystemExit as stop:
         return EXIT_REFUSED if stop.code else EXIT_COMPLETED
-    lock_path = data_dir() / "tuner.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a") as lock:
-        hand_back(lock_path)
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print(f"live: another tuner driver holds {lock_path}", file=sys.stderr)
-            return EXIT_LOCKED
-        code = _drive(args)
+    try:
+        with co_writer(record=True):
+            code = _drive(args)
+    except WriterBusy as busy:
+        print(f"live: {busy}", file=sys.stderr)
+        return EXIT_LOCKED
     notify_outcome(code)
     return code
 

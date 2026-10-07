@@ -663,6 +663,15 @@ def tool_search_roots(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def writer_dir(monkeypatch, tmp_path_factory):
+    from corecycler.smu import writer_lock
+
+    folder = tmp_path_factory.mktemp("data")
+    monkeypatch.setattr(writer_lock, "data_dir", lambda: folder)
+    return folder
+
+
+@pytest.fixture(autouse=True)
 def no_blocking_dialogs(monkeypatch):
     """A modal dialog in a test hangs the suite forever -- fail loudly instead.
 

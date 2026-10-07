@@ -34,7 +34,7 @@ All-core tests (Prime95 all threads, Cinebench) cannot find this: under all-core
 Read this before using the Curve Optimizer features. Full scope in [SECURITY.md](./SECURITY.md).
 
 - **CO writes are volatile.** They live only in the CPU's runtime SMU state and reset on reboot. Your BIOS settings are never written.
-- **Three things write offsets.** The Curve Optimizer tab, the Auto-Tuner tab, and the tuner driver behind `corecycler tune`, `resume`, `validate`, `continue` and `restart` (`python -m corecycler.tuner.live_hw`, which writes only with `--write`; the commands pass it). Stress testing alone writes nothing. One tuner driver runs at a time. The Curve Optimizer tab is locked while the Auto-Tuner tab runs, not while a driver started from a terminal runs.
+- **Three things write offsets.** The Curve Optimizer tab, the Auto-Tuner tab, and the tuner driver behind `corecycler tune`, `resume`, `validate`, `continue` and `restart` (`python -m corecycler.tuner.live_hw`, which writes only with `--write`; the commands pass it). Stress testing alone writes nothing. A tuner driver holds the CO writer lock for its whole run and the Curve Optimizer tab takes it for each write, so one driver runs at a time and the tab writes nothing while one runs.
 - **The Auto-Tuner is crash-safe.** See [Crash safety](docs/usage.md#crash-safety).
 - **Thermal protection.** A configurable temperature limit (default 95 C) stops the test. A manual run then ends. The Auto-Tuner cools down and retries the same offset, and fails closed when no temperature sensor is readable.
 
