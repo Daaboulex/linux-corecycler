@@ -239,6 +239,27 @@ def test_a_power_state_change_between_tests_pauses_naming_it_and_restoring_it_le
     assert fake.state.pause is None
 
 
+def test_a_setup_changed_while_paused_pauses_the_resume_and_putting_it_back_lets_it_continue():
+    fake = running_fake()
+    assert fake.db.setup == fake.setup
+    recorded = fake.setup
+    fake.post(PauseRequest())
+    while fake.state.lifecycle is not Lifecycle.PAUSED:
+        assert fake.progress()
+    fake.setup = (("bios", "B"),)
+    fake.post(Resume(1))
+    while fake.worker is None and fake.progress():
+        pass
+    assert fake.state.pause.reason is PauseReason.SETUP_CHANGED
+    assert "bios was A, is now B" in fake.state.pause.detail
+    assert fake.worker is None
+    fake.setup = recorded
+    fake.post(Resume(1))
+    while fake.worker is None:
+        assert fake.progress()
+    assert fake.state.pause is None
+
+
 def test_a_test_value_at_or_past_its_fail_bound_pauses_as_internal_instead_of_running():
     fake = running_fake()
     bad = replace(fake.state.core(0), phase=Phase.PROVE, value=-8, fb=-8)

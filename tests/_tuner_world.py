@@ -95,6 +95,7 @@ class Fake:
     temperature: float | None = 60.0
     capped: bool = False
     power: tuple[tuple[str, str], ...] = (("platform profile", "balanced"),)
+    setup: tuple[tuple[str, str], ...] = (("bios", "A"),)
     tjmax_c: float | None = None
     gap_grew: bool = False
     boot: int = 0
@@ -132,6 +133,7 @@ class Fake:
             gap_grew=self.gap_grew,
             frequency_capped=self.capped,
             power=self.power,
+            setup=self.setup,
             tjmax_c=self.tjmax_c,
             now=self.now,
             temperature_c=self.temperature,
@@ -259,6 +261,8 @@ class Fake:
                 raise Broken(f"core {r.core}'s fail bound loosened from {before} to {r.fb}")
 
     def check_start(self, state: SessionState, spec) -> None:
+        if state.setup != self.setup:
+            raise Broken(f"a test started on the setup {self.setup}, not the session's {state.setup}")
         for core, value in spec.vector:
             fb = state.core(core).fb
             if value != 0 and fb is not None and value <= fb:

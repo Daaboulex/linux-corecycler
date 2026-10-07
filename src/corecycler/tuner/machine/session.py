@@ -120,6 +120,7 @@ def stored(s: SessionState) -> Stored:
         resume_streak=s.resume_streak,
         incidents=s.incidents,
         power=s.power,
+        setup=s.setup,
     )
 
 
@@ -137,6 +138,7 @@ def reconstruct(st: Stored) -> SessionState:
         resume_streak=st.resume_streak,
         incidents=st.incidents,
         power=st.power,
+        setup=st.setup,
     )
 
 
@@ -220,6 +222,7 @@ def _start(s: SessionState, e: Start, w: World) -> Transition:
         slot=Waiting(token, 0.0),
         next_token=token + 1,
         power=w.power,
+        setup=w.setup,
     )
     effects: list = [_commit(new)]
     effects += [WriteCO(core, value) for core, value in baseline if w.resident_of(core) != value]
@@ -315,6 +318,13 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
             refused=f"the boot session {st.session_id} completed in crashed while cores {cores} held unproven "
             "values, and a completed session has no step that attributes it: start a new session",
         )
+    changed = _changes(st.setup, w.setup)
+    if changed:
+        return Transition(
+            s,
+            refused=f"the setup changed since session {st.session_id} started: {changed}; "
+            "start a new session on this setup",
+        )
     token = s.next_token
     profile = tuple((r.core, r.value) for r in st.cores)
     running = SessionState(
@@ -329,6 +339,7 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
         resume_streak=st.resume_streak,
         next_token=token + 1,
         power=st.power,
+        setup=st.setup,
     )
     effects: list = [_commit(running)]
     effects += [WriteCO(core, value) for core, value in st.baseline if w.resident_of(core) != value]
@@ -416,6 +427,13 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
         )
     if after.incidents > s.incidents and after.incidents >= INCIDENT_LIMIT:
         return _enter_pause(after, PauseReason.INCIDENTS, f"{after.incidents} crashes nobody could be blamed for")
+    changed = _changes(after.setup, w.setup)
+    if changed:
+        return _enter_pause(
+            after,
+            PauseReason.SETUP_CHANGED,
+            f"the setup changed since the session started: {changed}; put it back and resume, or start a new session",
+        )
     token = after.next_token
     running = replace(
         after,
@@ -947,14 +965,13 @@ def _bisect_next(s: SessionState, w: World) -> Transition:
     return _start_test(s, flow, spec, w)
 
 
-def _power_changes(recorded: tuple[tuple[str, str], ...], now: tuple[tuple[str, str], ...]) -> str:
+def _changes(recorded: tuple[tuple[str, str], ...], now: tuple[tuple[str, str], ...]) -> str:
     was, found = dict(recorded), dict(now)
-    changes = [
+    return "; ".join(
         f"{name} was {was.get(name, 'absent')}, is now {found.get(name, 'absent')}"
         for name in sorted(was.keys() | found.keys())
         if was.get(name) != found.get(name)
-    ]
-    return "the power state changed since the session started: " + "; ".join(changes) + "; restore it and resume"
+    )
 
 
 def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transition:
@@ -965,7 +982,9 @@ def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transi
             "a frequency cap or disabled boost would make every verdict meaningless",
         )
     if s.power != w.power:
-        return _enter_pause(replace(s, flow=flow), PauseReason.SETUP_CHANGED, _power_changes(s.power, w.power))
+        changed = _changes(s.power, w.power)
+        detail = f"the power state changed since the session started: {changed}; restore it and resume"
+        return _enter_pause(replace(s, flow=flow), PauseReason.SETUP_CHANGED, detail)
     limit = s.config.thermal_limit_c if w.tjmax_c is None else min(s.config.thermal_limit_c, w.tjmax_c)
     spec = replace(spec, thermal_limit_c=limit)
     token = s.next_token

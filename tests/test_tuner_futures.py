@@ -45,6 +45,7 @@ FAULTS = (
     "crash_shared",
     "validate",
     "profile",
+    "setup",
 )
 
 
@@ -89,6 +90,7 @@ def key(fake: Fake) -> tuple:
         fake.temperature,
         fake.crash_note,
         fake.power,
+        fake.setup,
         fake.boot - fake.stored_boot,
         fake.faults.refuse_writes,
         fake.faults.fail_commits,
@@ -133,6 +135,8 @@ def moves(fake: Fake, budget: dict[str, int]) -> list[tuple[str, dict[str, int]]
             continue
         if fault in ("refuse", "dbfail", "hot") and s.lifecycle is not Lifecycle.RUNNING:
             continue
+        if fault == "setup" and s.lifecycle in (Lifecycle.RUNNING, Lifecycle.PAUSING):
+            continue
         out.append((fault, spent))
     return out
 
@@ -167,6 +171,8 @@ def act(fake: Fake, move: str) -> None:
             fake.post(ValidateProfile(fake.db.session_id))
         case "profile":
             fake.power = (("platform profile", "power-saver" if fake.power == BALANCED else "balanced"),)
+        case "setup":
+            fake.setup = (("bios", "B" if fake.setup == BIOS_A else "A"),)
         case "pause":
             fake.post(PauseRequest())
         case "abort":
@@ -271,8 +277,9 @@ def tiny(cores: int, edges: list[int], domains: int = 1, **cfg) -> Fake:
 
 
 BALANCED = (("platform profile", "balanced"),)
+BIOS_A = (("bios", "A"),)
 
-ONE_OF_EACH = {fault: 1 for fault in FAULTS if fault != "profile"}
+ONE_OF_EACH = {fault: 1 for fault in FAULTS if fault not in ("profile", "setup")}
 
 
 @pytest.mark.parametrize(
@@ -326,11 +333,20 @@ def test_every_future_of_a_cpu_whose_memory_lanes_fail_reaches_a_rest():
     assert "completed" in survey.leaves
 
 
+def test_no_future_runs_a_test_on_a_setup_changed_while_the_session_was_away():
+    budget = {"setup": 2, "pause": 2, "crash": 1, "close": 1, "abort": 1, "validate": 1, "total": 3}
+    survey = explore(tiny(2, [-3, -2], 2), budget, cap=2_000_000)
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
 @pytest.mark.slow
 def test_every_future_with_a_deeper_fault_budget():
     total = int(os.environ.get("TUNER_FUTURES_FAULTS", "3"))
     cap = int(os.environ.get("TUNER_FUTURES_CAP", "5000000"))
-    survey = explore(tiny(3, [-4, 0, -2], 2), {**ONE_OF_EACH, "crash": 2, "profile": 2, "total": total}, cap=cap)
+    survey = explore(
+        tiny(3, [-4, 0, -2], 2), {**ONE_OF_EACH, "crash": 2, "profile": 2, "setup": 2, "total": total}, cap=cap
+    )
     print(f"\nreachable states {survey.states}, leaves {survey.leaves}, longest future {survey.deepest} moves")
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
 

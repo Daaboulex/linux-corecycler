@@ -94,6 +94,9 @@ class Hardware(Protocol):
     def boot_id(self) -> str: ...
     def boot_ended_clean(self, boot_id: str) -> bool: ...
     def boot_facts(self, boot_id: str) -> BootFacts: ...
+    def setup(
+        self, cpus_of: tuple[tuple[int, tuple[int, ...]], ...], domain_of: tuple[tuple[int, int | None], ...]
+    ) -> tuple[tuple[str, str], ...]: ...
     def asleep_seconds(self) -> float: ...
     def harvest(self, boot_id: str, since_ns: int | None, next_boot: bool) -> kernel.JournalHarvest: ...
 
@@ -193,6 +196,7 @@ def stored_from_json(raw: dict) -> Stored:
         resume_streak=raw["resume_streak"],
         incidents=raw["incidents"],
         power=tuple((name, value) for name, value in raw["power"]),
+        setup=tuple((name, value) for name, value in raw["setup"]),
     )
 
 
@@ -407,10 +411,12 @@ class LiveRig:
     test_row: tuple[int, int, bool] | None = None
     boot_recorded: bool = False
     boot: str = field(init=False)
+    setup: tuple[tuple[str, str], ...] = field(init=False)
     power: PowerState = field(default_factory=PowerState)
 
     def __post_init__(self) -> None:
         self.boot = self.hardware.boot_id()
+        self.setup = self.hardware.setup(self.cpus_of, self.domain_of)
 
     def world(self) -> World:
         self.power = self.hardware.power()
@@ -422,6 +428,7 @@ class LiveRig:
             gap_grew=gap,
             frequency_capped=self.power.capped(),
             power=self.power.named(),
+            setup=self.setup,
             now=self.clock(),
             temperature_c=self.hardware.temperature(),
             cpus_of=self.cpus_of,

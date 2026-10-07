@@ -4,10 +4,12 @@ import argparse
 import os
 import random
 import signal
+import struct
 import sys
 import time
 from collections import deque
 from dataclasses import replace
+from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,7 +26,7 @@ from corecycler.monitor.frequency import Clocks, PowerState, fastest, read_power
 from corecycler.monitor.hwmon import SensorRead, Sensors
 from corecycler.smu.commands import tjmax_c
 from corecycler.smu.driver import core_map_blocked
-from corecycler.smu.pmtable import PMTableReader
+from corecycler.smu.pmtable import PMTableReader, read_power_limits
 from corecycler.tuner import stages, telemetry
 from corecycler.tuner.live import BootFacts, Identity, LiveRig, Store
 from corecycler.tuner.machine.types import (
@@ -50,6 +52,11 @@ if TYPE_CHECKING:
 CPU = Path("/sys/devices/system/cpu")
 HWMON = Path("/sys/class/hwmon")
 PCI = Path("/sys/bus/pci/devices")
+DMI = Path("/sys/class/dmi/id")
+MODULES = Path("/sys/module")
+NOTES = Path("/sys/kernel/notes")
+CPUINFO = Path("/proc/cpuinfo")
+NT_GNU_BUILD_ID = 3
 IGPU_IDS = frozenset({("0x1002", "0x13c0"), ("0x1002", "0x164e")})
 FREEZE_TICK_S = 0.05
 ONE_T = {"tests": ("SFTv4", "FFTv4", "N63"), "seconds_per_test": 20, "memory_mb": 13}
@@ -115,6 +122,29 @@ class SmuHardware:
     def boot_ended_clean(self, boot_id: str) -> bool:
         return kernel.boot_end(boot_id).clean
 
+    def setup(
+        self, cpus_of: tuple[tuple[int, tuple[int, ...]], ...], domain_of: tuple[tuple[int, int | None], ...]
+    ) -> tuple[tuple[str, str], ...]:
+        ppt, tdc, edc = read_power_limits()
+        pbo = (
+            f"ppt {_number(ppt)} tdc {_number(tdc)} edc {_number(edc)} "
+            f"scalar {_number(self.smu.get_pbo_scalar())} boost {_number(self.smu.get_boost_limit())}"
+        )
+        l3 = dict(domain_of)
+        cores = "; ".join(f"{core}: {','.join(map(str, cpus))} l3 {l3.get(core)}" for core, cpus in cpus_of)
+        bios = (_setting(DMI / name) for name in ("bios_vendor", "bios_version", "bios_date", "bios_release"))
+        smu = (_setting(MODULES / "ryzen_smu" / name) for name in ("version", "srcversion"))
+        return (
+            ("app", app_version()),
+            ("bios", " ".join(bios)),
+            ("kernel", kernel_build()),
+            ("microcode", microcode()),
+            ("pbo", pbo),
+            ("ryzen_smu", " ".join(smu)),
+            ("smu_firmware", _setting(Path(SMU_DRIVER) / "version")),
+            ("topology", f"online {_setting(self.cpu_root / 'online')}; {cores}"),
+        )
+
     def boot_facts(self, boot_id: str) -> BootFacts:
         pm = PMTableReader().read()
         clocks = pm if pm is not None and pm.is_calibrated else None
@@ -137,17 +167,57 @@ class SmuHardware:
         return time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
 
 
-def _sysfs(path: Path) -> str | None:
+def _setting(path: Path) -> str:
     try:
         return path.read_text().strip()
-    except OSError:
-        return None
+    except OSError as exc:
+        return f"unreadable: {exc.strerror}"
+
+
+def build_id(notes: bytes) -> str | None:
+    at = 0
+    while at + 12 <= len(notes):
+        namesz, descsz, kind = struct.unpack_from("<III", notes, at)
+        name_at = at + 12
+        desc_at = name_at + (namesz + 3) // 4 * 4
+        if kind == NT_GNU_BUILD_ID and notes[name_at : name_at + namesz] == b"GNU\0":
+            return notes[desc_at : desc_at + descsz].hex()
+        at = desc_at + (descsz + 3) // 4 * 4
+    return None
+
+
+def kernel_build(notes: Path = NOTES) -> str:
+    try:
+        found = build_id(notes.read_bytes())
+    except OSError as exc:
+        return f"{os.uname().release} build unreadable: {exc.strerror}"
+    return f"{os.uname().release} build {found or 'id absent'}"
+
+
+def microcode(cpuinfo: Path = CPUINFO) -> str:
+    try:
+        text = cpuinfo.read_text()
+    except OSError as exc:
+        return f"unreadable: {exc.strerror}"
+    found = {line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith("microcode")}
+    return ",".join(sorted(found)) or "absent"
+
+
+def app_version() -> str:
+    try:
+        return metadata.version("corecycler")
+    except metadata.PackageNotFoundError:
+        return "unreadable: not installed"
+
+
+def _number(value: float | None) -> str:
+    return "unreadable" if value is None else f"{value:.1f}"
 
 
 def igpu(pci: Path = PCI) -> dict:
     if not pci.is_dir():
         return {"present": None, "problem": f"{pci} is not readable"}
-    found = [dev for dev in sorted(pci.iterdir()) if (_sysfs(dev / "vendor"), _sysfs(dev / "device")) in IGPU_IDS]
+    found = [dev for dev in sorted(pci.iterdir()) if (_setting(dev / "vendor"), _setting(dev / "device")) in IGPU_IDS]
     if len(found) > 1:
         return {"present": None, "problem": "more than one iGPU id: " + ", ".join(dev.name for dev in found)}
     if not found:
@@ -157,9 +227,9 @@ def igpu(pci: Path = PCI) -> dict:
     return {
         "present": True,
         "address": dev.name,
-        "device": _sysfs(dev / "device"),
+        "device": _setting(dev / "device"),
         "driver": driver.resolve().name if driver.exists() else None,
-        "vram_total": _sysfs(dev / "mem_info_vram_total"),
+        "vram_total": _setting(dev / "mem_info_vram_total"),
     }
 
 

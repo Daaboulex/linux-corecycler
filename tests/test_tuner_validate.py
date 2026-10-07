@@ -110,6 +110,10 @@ def test_an_abort_after_a_back_off_ends_the_session_aborted():
             lambda fake, world: replace(world, stored_crash_suspects=(0, 1)),
             "cores 0, 1 held unproven values",
         ),
+        (
+            lambda fake, world: replace(world, setup=(("bios", "B"),)),
+            "the setup changed since session 1 started: bios was A, is now B",
+        ),
     ],
 )
 def test_validation_is_refused_naming_why(change, reason):

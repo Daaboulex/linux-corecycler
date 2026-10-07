@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import signal
 import sqlite3
+import struct
 import threading
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -75,6 +76,10 @@ class FakeHardware:
     refusal: str | None = None
     warnings: tuple = ()
     facts_asked: list = field(default_factory=list)
+    setup_now: tuple = (("bios", "A"),)
+
+    def setup(self, cpus_of, domain_of):
+        return self.setup_now
 
     def boot_facts(self, boot_id):
         self.facts_asked.append(boot_id)
@@ -255,6 +260,11 @@ def test_every_stored_state_of_a_run_survives_the_session_file_round_trip():
     assert any(s.flow.live1.back is Stage.MEMORY for s in stored if s.flow is not None and s.flow.live1 is not None)
     for st in stored:
         assert stored_from_json(json.loads(json.dumps(stored_to_json(st)))) == st
+    assert all(st.setup == (("bios", "A"),) for st in stored)
+    older = stored_to_json(stored[0])
+    del older["setup"]
+    with pytest.raises(KeyError, match="setup"):
+        stored_from_json(older)
 
 
 def rows(r: LiveRig, sql: str, params: tuple = ()) -> list:
@@ -1008,6 +1018,14 @@ class FakeSmu:
     co: dict = field(default_factory=dict)
     accept: bool = True
     echo: int | None = None
+    scalar: float | None = 10.0
+    boost: int | None = None
+
+    def get_pbo_scalar(self):
+        return self.scalar
+
+    def get_boost_limit(self):
+        return self.boost
 
     def get_co_offset(self, core):
         return self.echo if self.echo is not None else self.co.get(core, 0)
@@ -1088,7 +1106,7 @@ def test_an_igpu_without_a_driver_is_present_and_unbound(tmp_path):
         "address": "0000:7c:00.0",
         "device": "0x164e",
         "driver": None,
-        "vram_total": None,
+        "vram_total": "unreadable: No such file or directory",
     }
 
 
@@ -1116,6 +1134,95 @@ def test_the_adapter_gathers_the_boot_s_facts(monkeypatch, calibrated):
     clocks = (2033.0, 3000.0, 3000.0) if calibrated else (None, None, None)
     assert facts == BootFacts("2401", *clocks, ("a line",), None, {"present": False})
     assert asked == ["b1"]
+
+
+def note(kind: int, name: bytes, desc: bytes) -> bytes:
+    def pad(raw: bytes) -> bytes:
+        return raw + b"\0" * (-len(raw) % 4)
+
+    return struct.pack("<III", len(name), len(desc), kind) + pad(name) + pad(desc)
+
+
+def test_the_kernel_build_id_is_the_gnu_note_among_the_kernel_s_notes(tmp_path):
+    notes = (
+        note(1, b"Xen\0", b"\x01\x02\x03")
+        + note(3, b"Linux\0", b"\x05\x06\x07")
+        + note(3, b"GNU\0", bytes.fromhex("deadbeef00"))
+    )
+    assert live_hw.build_id(notes) == "deadbeef00"
+    assert live_hw.build_id(note(1, b"Linux\0", b"\x00")) is None
+    assert live_hw.build_id(b"") is None
+    (tmp_path / "notes").write_bytes(notes)
+    assert live_hw.kernel_build(tmp_path / "notes").endswith(" build deadbeef00")
+    assert live_hw.kernel_build(tmp_path / "gone").endswith(" build unreadable: No such file or directory")
+
+
+def test_microcode_is_every_distinct_revision_the_cpus_report(tmp_path):
+    info = tmp_path / "cpuinfo"
+    info.write_text("processor\t: 0\nmicrocode\t: 0xb404023\n\nprocessor\t: 1\nmicrocode\t: 0xb404023\n")
+    assert live_hw.microcode(info) == "0xb404023"
+    info.write_text("microcode\t: 0xb404023\nmicrocode\t: 0xb404022\n")
+    assert live_hw.microcode(info) == "0xb404022,0xb404023"
+    info.write_text("processor\t: 0\n")
+    assert live_hw.microcode(info) == "absent"
+    assert live_hw.microcode(tmp_path / "gone") == "unreadable: No such file or directory"
+
+
+def test_the_app_version_is_the_installed_package_s_or_says_it_is_not_installed(monkeypatch):
+    monkeypatch.setattr(live_hw.metadata, "version", lambda name: "1.2.3")
+    assert live_hw.app_version() == "1.2.3"
+
+    def absent(name):
+        raise live_hw.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(live_hw.metadata, "version", absent)
+    assert live_hw.app_version() == "unreadable: not installed"
+
+
+def test_the_setup_holds_one_line_per_key_with_the_reason_for_what_could_not_be_read(tmp_path, monkeypatch):
+    dmi = tmp_path / "dmi"
+    dmi.mkdir()
+    for name, value in (("bios_vendor", "ASUS"), ("bios_version", "2401"), ("bios_date", "05/01/2026")):
+        (dmi / name).write_text(value + "\n")
+    cpu = tmp_path / "cpu"
+    cpu.mkdir()
+    (cpu / "online").write_text("0-3\n")
+    monkeypatch.setattr(live_hw, "DMI", dmi)
+    monkeypatch.setattr(live_hw, "MODULES", tmp_path / "modules")
+    monkeypatch.setattr(live_hw, "SMU_DRIVER", str(tmp_path / "drv"))
+    monkeypatch.setattr(live_hw, "read_power_limits", lambda: (200.0, None, 230.0))
+    monkeypatch.setattr(live_hw, "app_version", lambda: "1.2.3")
+    monkeypatch.setattr(live_hw, "kernel_build", lambda: "7.2.7 build abc")
+    monkeypatch.setattr(live_hw, "microcode", lambda: "0xb404023")
+    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, cpu)
+    setup = dict(hw.setup(((0, (0, 2)), (1, (1, 3))), ((0, 0), (1, 1))))
+    assert setup == {
+        "app": "1.2.3",
+        "bios": "ASUS 2401 05/01/2026 unreadable: No such file or directory",
+        "kernel": "7.2.7 build abc",
+        "microcode": "0xb404023",
+        "pbo": "ppt 200.0 tdc unreadable edc 230.0 scalar 10.0 boost unreadable",
+        "ryzen_smu": "unreadable: No such file or directory unreadable: No such file or directory",
+        "smu_firmware": "unreadable: No such file or directory",
+        "topology": "online 0-3; 0: 0,2 l3 0; 1: 1,3 l3 1",
+    }
+
+
+def test_a_session_resumed_on_a_changed_setup_pauses_before_any_test_and_names_the_change(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    r.post(PauseRequest())
+    r.run_until_rest(0.01)
+    hardware.setup_now = (("bios", "B"),)
+    again = rig(tmp_path, hardware, db=r.store.db)
+    again.resume(1)
+    final = again.run_until_rest(0.01)
+    assert final.pause.reason is PauseReason.SETUP_CHANGED
+    assert "bios was A, is now B" in final.pause.detail
+    assert again.worker is None
 
 
 def test_the_adapter_reads_the_kernel_facts_it_needs(monkeypatch):

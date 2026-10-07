@@ -275,6 +275,7 @@ class SessionState:
     incidents: int = 0
     next_token: int = 1
     power: tuple[tuple[str, str], ...] = ()
+    setup: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         problems = list(_state_problems(self))
@@ -436,6 +437,7 @@ class Stored:
     resume_streak: int = 0
     incidents: int = 0
     power: tuple[tuple[str, str], ...] = ()
+    setup: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,6 +449,7 @@ class World:
     gap_grew: bool = False
     frequency_capped: bool = False
     power: tuple[tuple[str, str], ...] = ()
+    setup: tuple[tuple[str, str], ...] = ()
     tjmax_c: float | None = None
     now: float = 0.0
     temperature_c: float | None = None
