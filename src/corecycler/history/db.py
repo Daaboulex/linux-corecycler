@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 
 RESUMABLE_STATUSES = ("running", "paused", "validating")
 SAMPLE_BLOCK_S = 10.0
+INCREMENTAL_VACUUM = 2
 SAMPLE_BLOCK_OPTIONS = {zstd.CompressionParameter.compression_level: 19, zstd.CompressionParameter.checksum_flag: 1}
 SAMPLE_LISTS = ("clocks", "tccd", "volts")
 RECOVERABLE_STATUSES = (*RESUMABLE_STATUSES, "quarantined", "aborted")
@@ -236,6 +237,7 @@ class HistoryDB:
             # Sudo and non-sudo runs share ONE database; a second writer must wait
             # for the WAL lock instead of failing with "database is locked".
             self.__conn.execute("PRAGMA busy_timeout=5000")
+            self.__conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
             # Fail closed on a corrupted file BEFORE migrations touch it.
             check = self.__conn.execute("PRAGMA quick_check").fetchone()[0]
             if check != "ok":
@@ -244,6 +246,7 @@ class HistoryDB:
                     f"Move the file aside and restart to rebuild."
                 )
             self._create_schema()
+            self._shrink()
         except BaseException:
             self.__conn.close()
             raise
@@ -257,6 +260,13 @@ class HistoryDB:
     # ------------------------------------------------------------------
     # Schema
     # ------------------------------------------------------------------
+
+    def _shrink(self) -> None:
+        conn = self.__conn
+        if conn.execute("PRAGMA auto_vacuum").fetchone()[0] != INCREMENTAL_VACUUM:
+            log.info("History database %s moves to incremental vacuum with one full VACUUM", self._db_path)
+            conn.execute("VACUUM")
+        conn.execute("PRAGMA incremental_vacuum").fetchall()
 
     def _create_schema(self) -> None:
         cur = self.__conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
@@ -1543,6 +1553,14 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             )
             conn.execute("DELETE FROM tuner_samples WHERE test_id=?", (test_id,))
 
+    def prune_tuner_samples(self, verdict: str, ended_before: str) -> None:
+        self.__conn.execute(
+            "DELETE FROM tuner_sample_blocks WHERE test_id IN"
+            " (SELECT id FROM tuner_tests WHERE verdict=? AND ended_at < ?)",
+            (verdict, ended_before),
+        )
+        self._shrink()
+
     def tuner_test_samples(self, test_id: int) -> list[dict]:
         blocks = self.__conn.execute("SELECT data FROM tuner_sample_blocks WHERE test_id=? ORDER BY id", (test_id,))
         tail = self.__conn.execute("SELECT * FROM tuner_samples WHERE test_id=? ORDER BY id", (test_id,))
@@ -2233,10 +2251,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             (iso_date,),
         )
         return cur.rowcount
-
-    def vacuum(self) -> None:
-        """Reclaim space after bulk deletes."""
-        self.__conn.execute("VACUUM")
 
     def close(self) -> None:
         if self._closed:

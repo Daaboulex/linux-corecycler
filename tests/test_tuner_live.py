@@ -5,6 +5,7 @@ import signal
 import sqlite3
 import threading
 from dataclasses import asdict, dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -238,6 +239,18 @@ def test_every_stored_state_of_a_run_survives_the_session_file_round_trip():
 
 def rows(r: LiveRig, sql: str, params: tuple = ()) -> list:
     return [dict(row) for row in r.store.db._execute_raw(sql, params).fetchall()]
+
+
+def test_the_store_prunes_the_samples_of_tests_that_passed_more_than_their_kept_days_ago(tmp_path, monkeypatch):
+    db = database(":memory:")
+    pruned = []
+    monkeypatch.setattr(db, "prune_tuner_samples", lambda verdict, before: pruned.append((verdict, before)))
+    before = datetime.now(UTC) - timedelta(days=live.PASSED_SAMPLES_KEPT_DAYS)
+    Store(db, tmp_path / "state", IDENTITY)
+    after = datetime.now(UTC) - timedelta(days=live.PASSED_SAMPLES_KEPT_DAYS)
+    [(verdict, cutoff)] = pruned
+    assert verdict == Group.PASS.value
+    assert before <= datetime.fromisoformat(cutoff) <= after
 
 
 def test_the_store_hands_its_state_directory_back_to_the_invoking_user(tmp_path, monkeypatch):

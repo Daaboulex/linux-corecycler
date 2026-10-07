@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import asdict, dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
 from corecycler.config.paths import hand_back
@@ -34,6 +35,7 @@ from corecycler.tuner.machine.types import (
     FailContext,
     Flow,
     ForgetResident,
+    Group,
     InternalError,
     Klass,
     Lifecycle,
@@ -204,6 +206,9 @@ class Identity:
     context_id: int | None
 
 
+PASSED_SAMPLES_KEPT_DAYS = 30
+
+
 class Store:
     def __init__(self, db: HistoryDB, root: Path, identity: Identity) -> None:
         self.db = db
@@ -214,6 +219,8 @@ class Store:
         self.unwritten: list[dict] = []
         root.mkdir(parents=True, exist_ok=True)
         hand_back(root)
+        kept_from = datetime.now(UTC) - timedelta(days=PASSED_SAMPLES_KEPT_DAYS)
+        db.prune_tuner_samples(Group.PASS.value, kept_from.isoformat())
 
     def new_session_id(self) -> int:
         return self.db.next_tuner_session_id()

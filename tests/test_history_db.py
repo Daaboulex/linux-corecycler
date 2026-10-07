@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import sqlite3
 from compression import zstd
 from dataclasses import replace
@@ -279,8 +280,56 @@ class TestMaintenance:
         assert len(runs) == 1
         assert runs[0].cpu_model == "new"
 
-    def test_vacuum(self, db):
-        db.vacuum()  # should not error
+    def test_an_older_database_moves_to_incremental_vacuum_and_gives_back_its_free_pages(self, tmp_path):
+        path = tmp_path / "history.db"
+        HistoryDB(path).close()
+        conn = sqlite3.connect(path, autocommit=True)
+        conn.execute("PRAGMA auto_vacuum=NONE")
+        conn.execute("VACUUM")
+        conn.execute("CREATE TABLE filler (x BLOB)")
+        conn.executemany("INSERT INTO filler VALUES (zeroblob(4000))", [()] * 50)
+        conn.execute("DROP TABLE filler")
+        assert conn.execute("PRAGMA auto_vacuum").fetchone()[0] == 0
+        assert conn.execute("PRAGMA freelist_count").fetchone()[0] > 0
+        conn.close()
+        db = HistoryDB(path)
+        try:
+            assert db._execute_raw("PRAGMA auto_vacuum").fetchone()[0] == 2
+            assert db._execute_raw("PRAGMA freelist_count").fetchone()[0] == 0
+        finally:
+            db.close()
+
+    def test_only_the_samples_of_tests_that_passed_before_the_cutoff_go(self, db):
+        sid = db.create_tuner_session("{}", "2401", "9950X3D", boot_id="a")
+        noise = random.Random(7)
+        rows = {}
+        for name, verdict, ended in (
+            ("old pass", "pass", "2026-08-01T00:00:00+00:00"),
+            ("new pass", "pass", "2026-10-01T00:00:00+00:00"),
+            ("old fail", "silicon", "2026-08-01T00:00:00+00:00"),
+            ("open", None, None),
+        ):
+            row = db.insert_tuner_test(sid, "a", len(rows) + 1, "steady", "hot", "1t", 0, -5, "[]", "[0]", 60.0, "{}")
+            filler = [
+                {
+                    "mono_ns": n,
+                    "running": True,
+                    "tctl": 60.0,
+                    "clocks": [[c, noise.random()] for c in range(16)],
+                    "tccd": [],
+                    "volts": [],
+                }
+                for n in range(500)
+            ]
+            db.insert_tuner_block(row, filler)
+            db._execute_raw("UPDATE tuner_tests SET verdict=?, ended_at=? WHERE id=?", (verdict, ended, row))
+            rows[name] = row
+        assert db._execute_raw("PRAGMA page_count").fetchone()[0] > 20
+        db.prune_tuner_samples("pass", "2026-09-07T00:00:00+00:00")
+        kept = {name for name, row in rows.items() if db.tuner_test_samples(row)}
+        assert kept == {"new pass", "old fail", "open"}
+        assert db._execute_raw("SELECT count(*) FROM tuner_tests").fetchone()[0] == 4
+        assert db._execute_raw("PRAGMA freelist_count").fetchone()[0] == 0
 
 
 class TestStatusCounts:
