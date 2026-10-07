@@ -16,7 +16,7 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
 from corecycler.engine.topology import CPUTopology, PhysicalCore
-from tests._sensors import FakeClocks, FakeSensors
+from tests._sensors import FakeSensors, a_tick
 
 
 def _make_mock_mainwindow(**overrides):
@@ -37,9 +37,7 @@ def _make_mock_mainwindow(**overrides):
     ns._active_test_core = overrides.get("_active_test_core")
     ns._topology = overrides.get("_topology")
     ns._sensors = overrides.get("_sensors", FakeSensors())
-    ns._clocks = overrides.get("_clocks", FakeClocks({0: 5500.0}))
     ns._telemetry_failing = False
-    ns._msr = overrides.get("_msr", MagicMock())
     ns._core_grid = overrides.get("_core_grid", MagicMock())
     ns._core_telemetry = overrides.get("_core_telemetry", {})
     ns._settings = overrides.get("_settings", MagicMock(record_telemetry=False))
@@ -55,17 +53,9 @@ class TestUpdateElapsedNoNameError:
         from corecycler.gui.main_window import MainWindow
 
         ns = _make_mock_mainwindow()
-        # Bind _update_elapsed
         ns._update_elapsed = types.MethodType(MainWindow._update_elapsed, ns)
-        # Bind a stub _feed_core_grid_telemetry to verify it's called
-        feed_mock = MagicMock()
-        ns._feed_core_grid_telemetry = feed_mock
-
-        # Must not raise NameError
         ns._update_elapsed()
-
-        # Verify _feed_core_grid_telemetry was called
-        feed_mock.assert_called_once()
+        ns._results_tab.update_summary.assert_called_once()
 
 
 class TestOnTestCompletedFailsClosed:
@@ -93,36 +83,19 @@ class TestCoreGridTelemetryFed:
         topo = CPUTopology()
         topo.cores = {0: PhysicalCore(core_id=0, ccd=0, ccx=None, logical_cpus=(0,))}
 
-        msr_mock = MagicMock()
-        msr_mock.is_available.return_value = True
-        stretch_reading = MagicMock()
-        stretch_reading.stretch_pct = 2.5
-        msr_mock.read_clock_stretch.return_value = {0: stretch_reading}
-        power_reading = MagicMock()
-        power_reading.watts = 15.0
-        msr_mock.read_core_power.return_value = {0: power_reading}
-
         core_grid_mock = MagicMock()
-
+        sensors = FakeSensors(tctl=65.0, tccd=((0, 62.0),), vcore=1.25)
         ns = _make_mock_mainwindow(
             _active_test_core=0,
             _topology=topo,
-            _sensors=FakeSensors(tctl=65.0, tccd=((0, 62.0),), vcore=1.25),
-            _msr=msr_mock,
+            _sensors=sensors,
             _core_grid=core_grid_mock,
         )
+        ns._feed_core_grid_telemetry = types.MethodType(MainWindow._feed_core_grid_telemetry, ns)
+        ns._feed_core_grid_telemetry(a_tick(sensors, clocks={0: 5500.0}, stretch={0: 2.5}, core_watts={0: 15.0}))
 
-        ns._feed_core_grid_telemetry = types.MethodType(
-            MainWindow._feed_core_grid_telemetry,
-            ns,
-        )
-        ns._feed_core_grid_telemetry()
-
-        # Must have been called with core_id=0 and freq > 0
-        core_grid_mock.update_core_telemetry.assert_called_once()
-        call_args = core_grid_mock.update_core_telemetry.call_args
-        assert call_args[0][0] == 0  # core_id
-        assert call_args[0][1] > 0  # freq_mhz
+        core_grid_mock.update_core_telemetry.assert_called_once_with(0, 5500.0, 62.0, 1.25, stretch_pct=2.5)
+        assert (ns._core_telemetry[0]["max_stretch_pct"], ns._core_telemetry[0]["core_watts"]) == (2.5, 15.0)
 
 
 class TestActiveTestCoreSetBySignal:
@@ -159,11 +132,8 @@ class TestFeedTelemetryNoopWhenNoActiveCore:
             _core_grid=core_grid_mock,
         )
 
-        ns._feed_core_grid_telemetry = types.MethodType(
-            MainWindow._feed_core_grid_telemetry,
-            ns,
-        )
-        ns._feed_core_grid_telemetry()
+        ns._feed_core_grid_telemetry = types.MethodType(MainWindow._feed_core_grid_telemetry, ns)
+        ns._feed_core_grid_telemetry(a_tick())
 
         core_grid_mock.update_core_telemetry.assert_not_called()
 
@@ -195,30 +165,11 @@ class _MockStyleLabel:
         return self._stylesheet
 
 
-class TestMonitorTabUsesPollInterval:
-    def test_monitor_tab_uses_poll_interval(self):
-        """MonitorTab.__init__ timer.start() must use poll_interval, not hardcoded 1000."""
+class TestMonitorTabSwallowsNothing:
+    def test_the_monitor_tab_swallows_no_error(self):
         content = _MONITOR_TAB_SRC.read_text()
-        # Find MonitorTab class, then its __init__ method
-        class_match = re.search(r"class MonitorTab\(.*?\n((?:(?!^class ).*\n)*)", content, re.MULTILINE)
-        assert class_match is not None, "Could not find MonitorTab class"
-        class_body = class_match.group(1)
-        # Find __init__ within MonitorTab
-        init_match = re.search(r"def __init__\(.*?\n(?:(?!    def ).*\n)*", class_body)
-        assert init_match is not None, "Could not find __init__ in MonitorTab"
-        init_body = init_match.group()
-        assert "poll_interval" in init_body, (
-            "MonitorTab.__init__ timer.start() should use poll_interval, not hardcoded 1000"
-        )
-
-
-class TestMonitorTabNarrowedException:
-    def test_monitor_tab_narrowed_exception(self):
-        """monitor_tab.py must use suppress(OSError, ...) not suppress(Exception)."""
-        content = _MONITOR_TAB_SRC.read_text()
-        assert "suppress(Exception)" not in content, "monitor_tab.py still has overly broad suppress(Exception)"
-        # Should have narrowed exception handling for sysfs/procfs errors
-        assert "OSError" in content, "monitor_tab.py should handle OSError for sysfs/procfs failures"
+        assert "suppress(" not in content
+        assert "except" not in content
 
 
 class TestStalenessIndicator:
@@ -228,12 +179,6 @@ class TestStalenessIndicator:
 
         tab = types.SimpleNamespace()
         tab._sensors = FakeSensors()
-        tab._clocks = FakeClocks()
-        tab._power = MagicMock()
-        tab._msr = MagicMock()
-        tab._msr.is_available.return_value = False
-        tab._cpu_usage = MagicMock()
-        tab._cpu_usage.read.return_value = {}
         tab._topology = None
         tab._per_core_bars = {}
         tab._per_core_visible = False
@@ -252,14 +197,12 @@ class TestStalenessIndicator:
         tab._voltage_chart = MagicMock()
         tab._power_chart = MagicMock()
         tab._max_freq_label = MagicMock()
-        tab._update_power_limits = MagicMock()
+        tab._show_power_limits = MagicMock()
 
         # hwmon returns None tctl for 3 consecutive reads
         tab._sensors.give()
-        tab._power.read_power_watts.return_value = None
 
-        # Bind _do_update
-        tab._do_update = MethodType(MonitorTab._do_update, tab)
+        tab.on_tick = MethodType(MonitorTab.on_tick, tab)
 
         # Access class constants
         tab._STALE_THRESHOLD = MonitorTab._STALE_THRESHOLD
@@ -268,7 +211,7 @@ class TestStalenessIndicator:
 
         # 3 consecutive failure reads
         for _ in range(3):
-            tab._do_update()
+            tab.on_tick(a_tick(tab._sensors))
 
         # After 3 failures, label should be grey
         assert tab._tctl_label.styleSheet() == MonitorTab._stale_style(), (
@@ -285,12 +228,6 @@ class TestStalenessRecovery:
 
         tab = types.SimpleNamespace()
         tab._sensors = FakeSensors()
-        tab._clocks = FakeClocks()
-        tab._power = MagicMock()
-        tab._msr = MagicMock()
-        tab._msr.is_available.return_value = False
-        tab._cpu_usage = MagicMock()
-        tab._cpu_usage.read.return_value = {}
         tab._topology = None
         tab._per_core_bars = {}
         tab._per_core_visible = False
@@ -307,24 +244,23 @@ class TestStalenessRecovery:
         tab._voltage_chart = MagicMock()
         tab._power_chart = MagicMock()
         tab._max_freq_label = MagicMock()
-        tab._update_power_limits = MagicMock()
+        tab._show_power_limits = MagicMock()
 
-        tab._do_update = MethodType(MonitorTab._do_update, tab)
+        tab.on_tick = MethodType(MonitorTab.on_tick, tab)
         tab._STALE_THRESHOLD = MonitorTab._STALE_THRESHOLD
         tab._NORMAL_STYLE = MonitorTab._NORMAL_STYLE
         tab._stale_style = MonitorTab._stale_style
 
         # First, trigger staleness with 3 failures
         tab._sensors.give()
-        tab._power.read_power_watts.return_value = None
         for _ in range(3):
-            tab._do_update()
+            tab.on_tick(a_tick(tab._sensors))
 
         assert tab._tctl_label.styleSheet() == MonitorTab._stale_style()
 
         # Now a successful read
         tab._sensors.give(tctl=72.0, vcore=1.30)
-        tab._do_update()
+        tab.on_tick(a_tick(tab._sensors))
 
         # Grey should be removed, fail count reset
         assert tab._tctl_label.styleSheet() != MonitorTab._stale_style(), (

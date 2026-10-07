@@ -17,7 +17,7 @@ def _tab():
     QApplication.instance() or QApplication([])
     from corecycler.gui.memory_tab import MemoryTab
 
-    return MemoryTab()
+    return MemoryTab(False)
 
 
 class TestToolDetection:

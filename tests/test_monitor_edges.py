@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from corecycler.monitor import frequency as freqmod
@@ -163,13 +165,18 @@ class TestRaplPowerReader:
         assert watts is not None
         assert 0.0 < watts < 10.0
 
-    def test_a_wrapped_counter_stays_positive(self, tmp_path, monkeypatch):
+    def test_a_wrap_without_a_known_range_drops_that_one_reading(self, tmp_path, monkeypatch, caplog):
         pw = self._rapl(tmp_path, monkeypatch, {"intel-rapl:0": {"energy_uj": "10\n"}})
-        reader = pw.PowerMonitor()
+        with caplog.at_level("WARNING", logger="corecycler.monitor.power"):
+            reader = pw.PowerMonitor()
+        assert "max_energy_range_uj" in caplog.text
         reader._read_rapl()
-        reader._last_energy_uj = 2**32 - 1000
+        reader._last_energy_uj = 5_000_000
         reader._last_time -= 1.0
-        assert reader._read_rapl() > 0
+        assert reader._read_rapl() is None
+        reader._package_path.write_text("1000010\n")
+        reader._last_time -= 1.0
+        assert reader._read_rapl() == pytest.approx(1.0, rel=0.05)
 
     def test_an_unreadable_counter_reads_as_unknown(self, tmp_path, monkeypatch):
         pw = self._rapl(tmp_path, monkeypatch, {"intel-rapl:0": {"energy_uj": "junk\n"}})

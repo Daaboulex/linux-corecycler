@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from corecycler.monitor.hwmon import SensorRead
+from corecycler.monitor.tick import Tick
 
 BOARD_VCORE = "nct6799:in0"
 
@@ -35,3 +36,39 @@ class FakeClocks:
 
     def ceilings(self):
         return dict(self.ceiling)
+
+
+def a_tick(sensors=None, **fields) -> Tick:
+    quiet = {
+        "clocks": {},
+        "ceilings": {},
+        "sensed": (sensors or FakeSensors()).read(),
+        "package_watts": None,
+        "usage": {},
+        "stretch": {},
+        "core_watts": {},
+        "pm": None,
+    }
+    return Tick(**(quiet | fields))
+
+
+class FakeTicker:
+    def __init__(self, sensors, clocks):
+        self.sensors = sensors
+        self.clocks = clocks
+        self.pm = PMAbsent()
+        self.closed = False
+
+    def power_available(self):
+        return False
+
+    def read(self, cpus):
+        return a_tick(self.sensors, clocks=self.clocks.read(), ceilings=self.clocks.ceilings())
+
+    def close(self):
+        self.closed = True
+
+
+class PMAbsent:
+    def is_available(self):
+        return False

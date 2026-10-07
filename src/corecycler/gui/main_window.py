@@ -51,7 +51,7 @@ from corecycler.history.logger import TestRunLogger
 from corecycler.history.timefmt import format_local
 from corecycler.monitor.frequency import Clocks, fastest
 from corecycler.monitor.hwmon import Sensors
-from corecycler.monitor.msr import MSRReader
+from corecycler.monitor.tick import Tick, Ticker, first_cpus
 
 log = logging.getLogger(__name__)
 
@@ -111,9 +111,8 @@ class MainWindow(QMainWindow):
         self._closing = False
         self._test_start_time: float = 0
         self._sensors = Sensors()
-        self._clocks = Clocks()
+        self._ticker = Ticker(self._sensors, Clocks())
         self._telemetry_failing = False
-        self._msr = MSRReader()
         self._core_telemetry: dict[int, dict] = {}  # core_id -> {max_freq, max_temp, last_vcore}
         self._core_status_cache: dict[int, CoreTestStatus] = {}
         self._cached_cycle: int = 0
@@ -217,7 +216,7 @@ class MainWindow(QMainWindow):
         self._results_tab = ResultsTab()
         self._tabs.addTab(self._results_tab, "Results")
 
-        self._monitor_tab = MonitorTab(self._sensors, self._clocks, topology=self._topology)
+        self._monitor_tab = MonitorTab(self._sensors, self._ticker.power_available(), topology=self._topology)
         self._tabs.addTab(self._monitor_tab, "Monitor")
 
         self._smu_tab = SMUTab(self._topology)
@@ -237,7 +236,7 @@ class MainWindow(QMainWindow):
         self._history_tab.load_profile_requested.connect(self._on_load_co_profile)
         self._tabs.addTab(self._history_tab, "History")
 
-        self._memory_tab = MemoryTab()
+        self._memory_tab = MemoryTab(self._ticker.pm.is_available())
         self._memory_tab.memory_stress_started.connect(self._on_memory_stress_started)
         self._memory_tab.memory_stress_done.connect(self._on_memory_stress_done)
         self._tabs.addTab(self._memory_tab, "Memory")
@@ -314,6 +313,15 @@ class MainWindow(QMainWindow):
     def _setup_timer(self) -> None:
         self._elapsed_timer = QTimer(self)
         self._elapsed_timer.timeout.connect(self._update_elapsed)
+        self._tick_timer = QTimer(self)
+        self._tick_timer.timeout.connect(self._on_tick)
+        self._tick_timer.start(int(self._settings.poll_interval * 1000))
+
+    def _on_tick(self) -> None:
+        tick = self._ticker.read(first_cpus(self._topology))
+        self._monitor_tab.on_tick(tick)
+        self._memory_tab.on_tick(tick)
+        self._feed_core_grid_telemetry(tick)
 
     def _start_test(self) -> None:
         if not self._topology:
@@ -737,16 +745,7 @@ class MainWindow(QMainWindow):
             total_cycles=profile.cycle_count,
         )
 
-        # feed per-core telemetry to the grid for the active core
-        self._feed_core_grid_telemetry()
-
-    def _feed_core_grid_telemetry(self) -> None:
-        """Read freq/temp/voltage/stretch and push to the active core's grid cell.
-
-        Uses ``_active_test_core`` (set by ``_on_core_started`` signal handler
-        in the GUI thread) instead of reading scheduler state directly
-        across threads.
-        """
+    def _feed_core_grid_telemetry(self, tick: Tick) -> None:
         current_core = self._active_test_core
         if current_core is None:
             return
@@ -755,26 +754,10 @@ class MainWindow(QMainWindow):
         if not core_info:
             return
 
-        logical_cpu = core_info.logical_cpus[0]
-        freq = fastest(self._clocks.read(), core_info.logical_cpus)
-
-        # MSR-based clock stretch detection (APERF/MPERF ratio)
-        stretch_pct: float | None = None
-        if self._msr.is_available():
-            stretch_readings = self._msr.read_clock_stretch([logical_cpu])
-            stretch_reading = stretch_readings.get(logical_cpu)
-            if stretch_reading:
-                stretch_pct = stretch_reading.stretch_pct
-
-        # Per-core power from MSR RAPL
-        core_watts: float | None = None
-        if self._msr.is_available():
-            power_readings = self._msr.read_core_power([logical_cpu])
-            power_reading = power_readings.get(logical_cpu)
-            if power_reading:
-                core_watts = power_reading.watts
-
-        reading = self._sensors.read()
+        freq = fastest(tick.clocks, core_info.logical_cpus)
+        stretch_pct = tick.stretch.get(core_info.logical_cpus[0])
+        core_watts = tick.core_watts.get(core_info.logical_cpus[0])
+        reading = tick.sensed
         temp = dict(reading.tccd).get(core_info.ccd if core_info.ccd is not None else 0, reading.tctl)
         core_vcore = self._sensors.vcore(reading)
 
@@ -934,9 +917,8 @@ class MainWindow(QMainWindow):
         self._settings.window_height = self.height()
         save_settings(self._settings)
 
-        self._monitor_tab.stop_monitoring()
-        if self._msr:
-            self._msr.close()
+        self._tick_timer.stop()
+        self._ticker.close()
         if self._history_db:
             self._history_db.close()
         event.accept()

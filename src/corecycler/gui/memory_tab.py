@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QThread, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QComboBox,
@@ -24,14 +25,16 @@ from PySide6.QtWidgets import (
 )
 
 from corecycler.config import tools
-from corecycler.config.settings import load_settings
 from corecycler.engine import execution
 from corecycler.engine.backends.base import KILLED_BY_US_CODES
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.memory_budget import memory_budget
 from corecycler.gui.style import theme
 from corecycler.monitor.memory import DIMMInfo, SPD5118Reader, read_dimm_info
-from corecycler.smu.pmtable import PMTableReader, compute_fclk_uclk_ratio
+from corecycler.smu.pmtable import compute_fclk_uclk_ratio
+
+if TYPE_CHECKING:
+    from corecycler.monitor.tick import Tick
 
 log = logging.getLogger(__name__)
 
@@ -125,23 +128,16 @@ class MemoryTab(QWidget):
     memory_stress_started = Signal()
     memory_stress_done = Signal(bool)  # passed
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, pm_available: bool, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._dimms: list[DIMMInfo] = []
         self._spd_reader = SPD5118Reader()
-        self._pm_reader = PMTableReader()
+        self._pm_available = pm_available
         self._stress_worker: _StressWorker | None = None
         self._external_test_running: bool = False
         self._setup_ui()
         self._load_dimm_info()
         self._update_spd_labels()
-
-        # Unified timer for PM table + DIMM temperature polling
-        self._update_timer = QTimer(self)
-        self._update_timer.timeout.connect(self._update_live_data)
-        if self._pm_reader.is_available() or self._spd_reader.is_available():
-            settings = load_settings()
-            self._update_timer.start(int(settings.poll_interval * 1000))
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -190,7 +186,7 @@ class MemoryTab(QWidget):
         self._mc_missing_label.setVisible(False)
         mc_layout.addWidget(self._mc_missing_label)
 
-        if not self._pm_reader.is_available():
+        if not self._pm_available:
             # Hide clock/voltage rows, show driver-missing message
             self._fclk_label.setVisible(False)
             self._uclk_label.setVisible(False)
@@ -351,7 +347,7 @@ class MemoryTab(QWidget):
         for key in ("dmidecode", "stressapptest", "stress-ng"):
             deps.append(f"{key}: " + ("found" if tools.resolve(key).path else "missing"))
         deps.append("spd5118: " + ("available" if self._spd_reader.is_available() else "not loaded"))
-        deps.append("ryzen_smu: " + ("available" if self._pm_reader.is_available() else "not loaded"))
+        deps.append("ryzen_smu: " + ("available" if self._pm_available else "not loaded"))
         self._deps_label.setText("  |  ".join(deps))
 
     def _update_spd_labels(self) -> None:
@@ -406,11 +402,9 @@ class MemoryTab(QWidget):
             if i < len(self._temp_labels):
                 self._temp_labels[i].setText(f"DIMM {i + 1}: {temp:.1f}C")
 
-    def _update_live_data(self) -> None:
-        """Read PM table and DIMM temps in one tick."""
-        # PM table (controller clocks + voltages)
-        if self._pm_reader.is_available():
-            pm_data = self._pm_reader.read()
+    def on_tick(self, tick: Tick) -> None:
+        if self._pm_available:
+            pm_data = tick.pm
             if pm_data is not None and pm_data.is_calibrated:
                 self._update_clock_labels(pm_data)
                 self._update_voltage_labels(pm_data)

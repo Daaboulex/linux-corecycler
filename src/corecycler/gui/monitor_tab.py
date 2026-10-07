@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import contextlib
 from collections import deque
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -20,21 +19,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from corecycler.config.settings import load_settings
 from corecycler.gui.style import theme
 from corecycler.gui.widgets.charts import LiveChart
-from corecycler.monitor.cpu_usage import CPUUsageReader
 from corecycler.monitor.frequency import fastest, read_max_frequency
-from corecycler.monitor.msr import MSRReader
-from corecycler.monitor.power import PowerMonitor
-from corecycler.smu.pmtable import PMTableReader
 
 MAX_FREQ_HISTORY = 60  # 1 minute at 1s
 
 
 if TYPE_CHECKING:
-    from corecycler.monitor.frequency import Clocks
     from corecycler.monitor.hwmon import Sensors
+    from corecycler.monitor.tick import Tick
+    from corecycler.smu.pmtable import PMTableData
 
 
 class CoreFreqBar(QWidget):
@@ -239,15 +234,10 @@ class MonitorTab(QWidget):
     def _stale_style() -> str:
         return f"font: bold 11px monospace; padding: 2px; color: {theme.COLOR_MUTED_DARK};"
 
-    def __init__(self, sensors: Sensors, clocks: Clocks, topology=None) -> None:
+    def __init__(self, sensors: Sensors, power_available: bool, topology=None) -> None:
         super().__init__()
         self._topology = topology
         self._sensors = sensors
-        self._clocks = clocks
-        self._power = PowerMonitor()
-        self._msr = MSRReader()
-        self._cpu_usage = CPUUsageReader()
-        self._pmtable = PMTableReader()
         self._per_core_bars: dict[int, CoreFreqBar] = {}
         self._per_core_visible = False
         self._hwmon_fail_count: int = 0
@@ -261,14 +251,8 @@ class MonitorTab(QWidget):
         has_voltage = self._sensors.vcore_source is not None
         if not has_voltage:
             self._vcore_label.setText("Vcore: N/A (no voltage source)")
-        has_power = self._power.is_available() or self._msr.is_available()
-        if not has_power:
+        if not power_available:
             self._power_label.setText("Package: N/A (needs root)")
-
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._update)
-        settings = load_settings()
-        self._timer.start(int(settings.poll_interval * 1000))
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -350,7 +334,7 @@ class MonitorTab(QWidget):
         self._per_core_layout.setContentsMargins(0, 0, 0, 0)
         self._per_core_layout.setSpacing(2)
 
-        self._build_per_core_bars()
+        self._build_per_core_bars([])
 
         self._per_core_layout.addStretch()
         self._per_core_scroll.setWidget(per_core_container)
@@ -366,8 +350,7 @@ class MonitorTab(QWidget):
         else:
             self._max_core_freq = 6000
 
-    def _build_per_core_bars(self) -> None:
-        """Create per-core frequency bars from topology or by scanning sysfs."""
+    def _build_per_core_bars(self, cpus: list[int]) -> None:
         self._per_core_bars.clear()
 
         if self._topology:
@@ -396,7 +379,7 @@ class MonitorTab(QWidget):
         else:
             # fallback: create bars from current frequency readings
             # Label as "CPU N" (logical CPU IDs, not physical core IDs)
-            for cpu_id in sorted(self._clocks.read()):
+            for cpu_id in cpus:
                 bar = CoreFreqBar(cpu_id, f"CPU{cpu_id}", max_freq=6000)
                 self._per_core_bars[cpu_id] = bar
                 self._per_core_layout.addWidget(bar)
@@ -407,14 +390,11 @@ class MonitorTab(QWidget):
         self._per_core_scroll.setVisible(checked)
         self._toggle_btn.setText("Package View" if checked else "Per-Core View")
 
-    def _update(self) -> None:
-        # legitimate sysfs/procfs read failures are dropped
-        with contextlib.suppress(OSError, ValueError, PermissionError):
-            self._do_update()
-
-    def _do_update(self) -> None:
-        clocks = self._clocks.read()
-        ceilings = self._clocks.ceilings()
+    def on_tick(self, tick: Tick) -> None:
+        clocks = tick.clocks
+        if self._topology is None and not self._per_core_bars and clocks:
+            self._rebuild_bars(sorted(clocks))
+        ceilings = tick.ceilings
         freqs = {cpu: mhz for cpu, mhz in clocks.items() if mhz is not None}
 
         if freqs:
@@ -427,7 +407,7 @@ class MonitorTab(QWidget):
                 self._freq_chart.max_val = max_freq * 1.1
             self._freq_chart.add_value(max_freq)
 
-        sensed = self._sensors.read()
+        sensed = tick.sensed
         tctl = sensed.tctl
         if tctl is not None:
             self._hwmon_fail_count = 0
@@ -467,48 +447,20 @@ class MonitorTab(QWidget):
             if self._hwmon_fail_count >= self._STALE_THRESHOLD:
                 self._vcore_label.setStyleSheet(self._stale_style())
 
-        # power — sysfs RAPL (user-accessible) or MSR RAPL (root-only)
-        watts = self._power.read_power_watts()
+        watts = tick.package_watts
         if watts is not None:
             self._power_fail_count = 0
             self._power_label.setStyleSheet(self._NORMAL_STYLE)
             self._power_label.setText(f"Package: {watts:.1f}W")
             self._power_chart.add_value(watts)
-        elif self._msr.is_available():
-            # Fallback: read package energy from MSR RAPL
-            pkg_power = self._msr.read_package_power()
-            if pkg_power is not None:
-                self._power_fail_count = 0
-                self._power_label.setStyleSheet(self._NORMAL_STYLE)
-                self._power_label.setText(f"Package: {pkg_power:.1f}W")
-                self._power_chart.add_value(pkg_power)
-            else:
-                self._power_fail_count += 1
-                if self._power_fail_count >= self._STALE_THRESHOLD:
-                    self._power_label.setStyleSheet(self._stale_style())
         else:
             self._power_fail_count += 1
             if self._power_fail_count >= self._STALE_THRESHOLD:
                 self._power_label.setStyleSheet(self._stale_style())
 
-        # CPU usage from /proc/stat
-        usage_data = self._cpu_usage.read()  # logical cpu → usage %
-
-        # MSR: clock stretch + per-core power (for per-core bars)
-        stretch_data: dict[int, float] = {}  # logical cpu → stretch %
-        power_data: dict[int, float] = {}  # logical cpu → watts
-        if self._msr.is_available() and self._topology:
-            all_cpus = []
-            for core_info in self._topology.cores.values():
-                if core_info.logical_cpus:
-                    all_cpus.append(core_info.logical_cpus[0])
-            if all_cpus:
-                stretch_readings = self._msr.read_clock_stretch(all_cpus)
-                for cpu_id, reading in stretch_readings.items():
-                    stretch_data[cpu_id] = reading.stretch_pct
-                power_readings = self._msr.read_core_power(all_cpus)
-                for cpu_id, reading in power_readings.items():
-                    power_data[cpu_id] = reading.watts
+        usage_data = tick.usage
+        stretch_data = tick.stretch
+        power_data = tick.core_watts
 
         ccd_temps = {ccd: temp for ccd, temp in sensed.tccd if temp is not None}
 
@@ -546,10 +498,9 @@ class MonitorTab(QWidget):
                         usage_pct=usage_data.get(cpu_id, 0),
                     )
 
-        self._update_power_limits()
+        self._show_power_limits(tick.pm)
 
-    def _update_power_limits(self) -> None:
-        pm = self._pmtable.read() if self._pmtable.is_available() else None
+    def _show_power_limits(self, pm: PMTableData | None) -> None:
         if pm is None:
             self._ppt_label.setText("PPT: N/A")
             self._tdc_label.setText("TDC: N/A")
@@ -570,25 +521,21 @@ class MonitorTab(QWidget):
         fmt(self._edc_label, "EDC", pm.edc_value_a, pm.edc_limit_a, "A")
 
     def set_topology(self, topology) -> None:
-        """Update topology and rebuild per-core bars."""
         self._topology = topology
-        # clear existing bars
+        self._rebuild_bars([])
+
+    def _rebuild_bars(self, cpus: list[int]) -> None:
         for bar in self._per_core_bars.values():
             bar.deleteLater()
         self._per_core_bars.clear()
-        # clear layout (skip stretch)
         while self._per_core_layout.count():
             item = self._per_core_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self._build_per_core_bars()
+        self._build_per_core_bars(cpus)
         self._per_core_layout.addStretch()
 
     def set_active_core(self, core_id: int | None) -> None:
         """Highlight the core currently being tested (None to clear)."""
         for cid, bar in self._per_core_bars.items():
             bar.set_active(cid == core_id)
-
-    def stop_monitoring(self) -> None:
-        self._timer.stop()
-        self._msr.close()

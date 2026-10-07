@@ -1,10 +1,6 @@
-"""monitor_tab live-update coverage: the _do_update read/branch matrix."""
-
 from __future__ import annotations
 
 import sys as _sys
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -12,7 +8,8 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
 from corecycler.engine.topology import CPUTopology, PhysicalCore
-from tests._sensors import FakeClocks, FakeSensors
+from corecycler.monitor.tick import Tick
+from tests._sensors import FakeSensors
 
 
 def _qapp():
@@ -32,98 +29,73 @@ def _topo() -> CPUTopology:
     return topo
 
 
-def _tab():
+def _tab(sensors=None):
     _qapp()
     from corecycler.gui.monitor_tab import MonitorTab
 
-    return MonitorTab(FakeSensors(), FakeClocks(), topology=_topo())
+    return MonitorTab(sensors or FakeSensors(), True, topology=_topo())
 
 
-def _dual(actual=5000.0, ceiling=5200.0):
-    return FakeClocks(dict.fromkeys(range(4), actual), dict.fromkeys(range(4), ceiling))
-
-
-def _drive(tab, monkeypatch, *, dual=None, watts=None, msr_ok=False, pkg=None, hwmon=None):
-    tab._clocks = dual if dual is not None else FakeClocks()
-
-    tab._sensors = hwmon if hwmon is not None else FakeSensors()
-    tab._power = MagicMock()
-    tab._power.read_power_watts.return_value = watts
-    tab._msr = MagicMock()
-    tab._msr.is_available.return_value = msr_ok
-    tab._msr.read_package_power.return_value = pkg
-    tab._msr.read_clock_stretch.return_value = {0: SimpleNamespace(stretch_pct=2.5)}
-    tab._msr.read_core_power.return_value = {0: SimpleNamespace(watts=12.0)}
-    tab._cpu_usage = MagicMock()
-    tab._cpu_usage.read.return_value = {0: 50.0, 1: 40.0, 2: 30.0, 3: 20.0}
-    tab._pmtable = MagicMock()
-    tab._pmtable.is_available.return_value = False
-    tab._update()
+def _tick(*, actual=5000.0, ceiling=5200.0, watts=None, sensors=None, pm=None) -> Tick:
+    return Tick(
+        clocks=dict.fromkeys(range(4), actual),
+        ceilings=dict.fromkeys(range(4), ceiling),
+        sensed=(sensors or FakeSensors()).read(),
+        package_watts=watts,
+        usage={0: 50.0, 1: 40.0, 2: 30.0, 3: 20.0},
+        stretch={0: 2.5},
+        core_watts={0: 12.0},
+        pm=pm,
+    )
 
 
 class TestMonitorUpdateMatrix:
-    def test_sysfs_power_and_per_ccd_labels(self, monkeypatch):
+    def test_package_power_and_per_ccd_labels(self):
         tab = _tab()
-        _drive(tab, monkeypatch, dual=_dual(), watts=95.0)
+        tab.on_tick(_tick(watts=95.0))
         assert "95.0W" in tab._power_label.text()
         assert 0 in tab._ccd_temp_labels
         assert "VC" in tab._ccd_temp_labels[0].text()
         assert "VC" not in tab._ccd_temp_labels[1].text()
 
-    def test_a_ccd_whose_read_failed_gets_no_label_and_msr_reads_leave_the_ccds_alone(self, monkeypatch):
-        tab = _tab()
-        _drive(tab, monkeypatch, dual=_dual(), watts=95.0, msr_ok=True, hwmon=FakeSensors(tccd=((0, None), (1, 59.0))))
+    def test_a_ccd_whose_read_failed_gets_no_label(self):
+        sensors = FakeSensors(tccd=((0, None), (1, 59.0)))
+        tab = _tab(sensors)
+        tab.on_tick(_tick(watts=95.0, sensors=sensors))
         assert sorted(tab._ccd_temp_labels) == [1]
         assert "59.0" in tab._ccd_temp_labels[1].text()
 
-    def test_msr_power_fallback_used_when_sysfs_absent(self, monkeypatch):
-        tab = _tab()
-        _drive(tab, monkeypatch, dual=_dual(), watts=None, msr_ok=True, pkg=88.0)
-        assert "88.0W" in tab._power_label.text()
-
-    def test_msr_fallback_failure_marks_power_stale(self, monkeypatch):
+    def test_no_package_power_marks_power_stale(self):
         tab = _tab()
         tab._power_fail_count = tab._STALE_THRESHOLD
-        _drive(tab, monkeypatch, dual=_dual(), watts=None, msr_ok=True, pkg=None)
+        tab.on_tick(_tick(watts=None))
         assert tab._power_label.styleSheet() == tab._stale_style()
 
-    def test_no_power_source_marks_power_stale(self, monkeypatch):
-        tab = _tab()
-        tab._power_fail_count = tab._STALE_THRESHOLD
-        _drive(tab, monkeypatch, dual=_dual(), watts=None, msr_ok=False)
-        assert tab._power_label.styleSheet() == tab._stale_style()
-
-    def test_boost_above_ceiling_raises_max(self, monkeypatch):
+    def test_boost_above_ceiling_raises_max(self):
         tab = _tab()
         tab._max_core_freq = 5000
-        _drive(tab, monkeypatch, dual=_dual(actual=6200.0, ceiling=6300.0), watts=50.0)
+        tab.on_tick(_tick(actual=6200.0, ceiling=6300.0, watts=50.0))
         assert tab._max_core_freq == 6200.0
         assert "6200" in tab._max_freq_label.text()
 
-    def test_missing_hwmon_values_mark_stale(self, monkeypatch):
-        tab = _tab()
+    def test_missing_hwmon_values_mark_stale(self):
+        sensors = FakeSensors(tctl=None, tccd=(), vcore=None)
+        tab = _tab(sensors)
         tab._hwmon_fail_count = tab._STALE_THRESHOLD
-        _drive(
-            tab,
-            monkeypatch,
-            dual=_dual(),
-            watts=50.0,
-            hwmon=FakeSensors(tctl=None, tccd=(), vcore=None),
-        )
+        tab.on_tick(_tick(watts=50.0, sensors=sensors))
         assert tab._tctl_label.styleSheet() == tab._stale_style()
         assert tab._vcore_label.styleSheet() == tab._stale_style()
 
-    def test_bars_update_without_topology(self, monkeypatch):
+    def test_the_bars_show_the_tick_s_stretch_and_core_power(self):
+        tab = _tab()
+        bar = tab._per_core_bars[0]
+        seen = []
+        bar.update_data = lambda *args, **kwargs: seen.append(kwargs)
+        tab.on_tick(_tick(watts=50.0))
+        assert (seen[0]["stretch_pct"], seen[0]["core_watts"]) == (2.5, 12.0)
+
+    def test_bars_update_without_topology(self):
         tab = _tab()
         tab._topology = None
-        _drive(tab, monkeypatch, dual=_dual(), watts=50.0)
+        tab.on_tick(_tick(watts=50.0))
         assert tab._per_core_bars
-
-    def test_update_swallows_reader_oserror(self, monkeypatch):
-        tab = _tab()
-
-        def boom():
-            raise OSError("sysfs gone")
-
-        tab._clocks.read = boom
-        tab._update()

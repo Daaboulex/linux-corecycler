@@ -11,6 +11,7 @@ import pytest
 from corecycler.gui.style import theme
 from corecycler.monitor.memory import SPD5118Reader, SPDTimingData, decode_spd_timings, parse_dmidecode_output
 from corecycler.smu.pmtable import PMTableData, compute_fclk_uclk_ratio
+from tests._sensors import a_tick
 
 SAMPLE_DMIDECODE = """\
 # dmidecode 3.6
@@ -235,8 +236,7 @@ def _make_headless_tab():
     tab._vdd_label = _MockLabel("VDD: --")
     tab._vddq_label = _MockLabel("VDDQ: --")
     tab._cal_label = _MockLabel("")
-    tab._pm_reader = MagicMock()
-    tab._pm_reader.is_available.return_value = True
+    tab._pm_available = True
     tab._spd_reader = MagicMock()
     tab._spd_reader.is_available.return_value = False
     # SPD timing labels (added in Plan 04-02)
@@ -249,7 +249,7 @@ def _make_headless_tab():
     tab._update_voltage_labels = types.MethodType(MemoryTab._update_voltage_labels, tab)
     tab._show_uncalibrated = types.MethodType(MemoryTab._show_uncalibrated, tab)
     tab._set_clocks_unavailable = types.MethodType(MemoryTab._set_clocks_unavailable, tab)
-    tab._update_live_data = types.MethodType(MemoryTab._update_live_data, tab)
+    tab.on_tick = types.MethodType(MemoryTab.on_tick, tab)
     tab._update_temperatures = types.MethodType(MemoryTab._update_temperatures, tab)
     tab._update_spd_labels = types.MethodType(MemoryTab._update_spd_labels, tab)
     tab._temp_labels = []
@@ -315,7 +315,7 @@ class TestMemoryTabBehavior:
         assert theme.COLOR_MUTED in tab._ratio_label.styleSheet()
         assert tab._cal_label.text() == ""
 
-    def test_update_live_data_calibrated_path(self):
+    def test_a_tick_calibrated_path(self):
         """Calibrated PM data updates clock labels with MHz values."""
         tab = _make_headless_tab()
         pm_data = PMTableData(
@@ -328,12 +328,11 @@ class TestMemoryTabBehavior:
             is_calibrated=True,
             is_verified=True,
         )
-        tab._pm_reader.read.return_value = pm_data
-        tab._update_live_data()
+        tab.on_tick(a_tick(pm=pm_data))
         assert "2000" in tab._fclk_label.text()
         assert "Verified" in tab._cal_label.text()
 
-    def test_update_live_data_community_sourced_path(self):
+    def test_a_tick_community_sourced_path(self):
         """Calibrated-but-unverified PM data renders values but labels them honestly."""
         tab = _make_headless_tab()
         pm_data = PMTableData(
@@ -345,13 +344,12 @@ class TestMemoryTabBehavior:
             is_calibrated=True,
             is_verified=False,
         )
-        tab._pm_reader.read.return_value = pm_data
-        tab._update_live_data()
+        tab.on_tick(a_tick(pm=pm_data))
         assert "2000" in tab._fclk_label.text()
         assert "community-sourced" in tab._cal_label.text()
         assert "Verified" not in tab._cal_label.text()
 
-    def test_update_live_data_uncalibrated_path(self):
+    def test_a_tick_uncalibrated_path(self):
         """Uncalibrated PM data shows dashes and uncalibrated label."""
         tab = _make_headless_tab()
         pm_data = PMTableData(
@@ -359,26 +357,23 @@ class TestMemoryTabBehavior:
             is_calibrated=False,
             raw_floats=[0.0] * 50,
         )
-        tab._pm_reader.read.return_value = pm_data
-        tab._update_live_data()
+        tab.on_tick(a_tick(pm=pm_data))
         assert "--" in tab._fclk_label.text()
         assert "Uncalibrated" in tab._cal_label.text()
 
-    def test_update_live_data_none_read_greys_out(self):
+    def test_a_tick_none_read_greys_out(self):
         """None from pm_reader.read() greys out all labels."""
         tab = _make_headless_tab()
-        tab._pm_reader.read.return_value = None
-        tab._update_live_data()
+        tab.on_tick(a_tick(pm=None))
         assert "--" in tab._fclk_label.text()
         assert theme.COLOR_MUTED in tab._fclk_label.styleSheet()
         assert tab._cal_label.text() == ""
 
-    def test_update_live_data_recovery_after_failure(self):
+    def test_a_tick_recovery_after_failure(self):
         """Labels recover after a failed read followed by a successful read."""
         tab = _make_headless_tab()
         # First: fail
-        tab._pm_reader.read.return_value = None
-        tab._update_live_data()
+        tab.on_tick(a_tick(pm=None))
         assert "--" in tab._fclk_label.text()
         # Then: recover
         pm_data = PMTableData(
@@ -390,8 +385,7 @@ class TestMemoryTabBehavior:
             is_calibrated=True,
             is_verified=True,
         )
-        tab._pm_reader.read.return_value = pm_data
-        tab._update_live_data()
+        tab.on_tick(a_tick(pm=pm_data))
         assert "2000" in tab._fclk_label.text()
         assert "Verified" in tab._cal_label.text()
 

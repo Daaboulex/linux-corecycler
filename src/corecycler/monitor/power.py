@@ -26,6 +26,7 @@ class PowerMonitor:
 
     def __init__(self) -> None:
         self._package_path: Path | None = None
+        self._energy_range_uj: int | None = None
         self._hwmon_power_path: Path | None = None  # fallback: power1_input
         self._last_energy_uj: int | None = None
         self._last_time: float | None = None
@@ -36,7 +37,7 @@ class PowerMonitor:
         # Try primary RAPL path first
         pkg0 = RAPL_BASE / "intel-rapl:0" / "energy_uj"
         if self._try_read(pkg0):
-            self._package_path = pkg0
+            self._use_rapl(pkg0)
             return
 
         # Scan all RAPL domains for a readable "package" counter
@@ -49,7 +50,7 @@ class PowerMonitor:
                 except OSError:
                     continue
                 if "package" in name_text and self._try_read(energy):
-                    self._package_path = energy
+                    self._use_rapl(energy)
                     return
 
         # Fallback: hwmon power1_input from zenpower/k10temp (world-readable)
@@ -77,6 +78,15 @@ class PowerMonitor:
             log.info("RAPL energy_uj exists but is not readable (needs root)")
         else:
             log.debug("RAPL sysfs not found")
+
+    def _use_rapl(self, energy: Path) -> None:
+        self._package_path = energy
+        try:
+            self._energy_range_uj = int(energy.with_name("max_energy_range_uj").read_text().strip())
+        except (OSError, ValueError) as exc:
+            log.warning(
+                "RAPL %s has no readable max_energy_range_uj (%s): a counter wrap drops one reading", energy, exc
+            )
 
     @staticmethod
     def _try_read(path: Path) -> bool:
@@ -115,12 +125,13 @@ class PowerMonitor:
             dt = now - self._last_time
             if dt > 0:
                 delta = energy_uj - self._last_energy_uj
-                if delta < 0:
-                    delta += 2**32  # 32-bit counter wraparound
-                watts = (delta / 1_000_000) / dt
                 self._last_energy_uj = energy_uj
                 self._last_time = now
-                return watts
+                if delta < 0:
+                    if self._energy_range_uj is None:
+                        return None
+                    delta += self._energy_range_uj
+                return (delta / 1_000_000) / dt
 
         self._last_energy_uj = energy_uj
         self._last_time = now

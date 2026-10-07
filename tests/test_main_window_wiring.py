@@ -28,7 +28,7 @@ from corecycler.history.db import HistoryDB, RunRecord
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from tests._machine import this_boot
-from tests._sensors import FakeClocks, FakeSensors
+from tests._sensors import FakeClocks, FakeSensors, FakeTicker
 
 
 def _qapp():
@@ -93,7 +93,7 @@ def _build(
     monkeypatch.setattr(mw, "adopt_legacy_root_db", adopt or (lambda _d: None))
     monkeypatch.setattr(mw, "detect_topology", lambda: topology or _topo())
     monkeypatch.setattr(mw, "detect_bios_change", bios if callable(bios) else (lambda _d: bios))
-    monkeypatch.setattr(mw, "MSRReader", MagicMock)
+    monkeypatch.setattr(mw, "Ticker", FakeTicker)
     monkeypatch.setattr(mw, "Sensors", FakeSensors)
     monkeypatch.setattr(mw, "Clocks", lambda: FakeClocks({0: 4400.0, 8: 4500.0, 1: 4400.0}))
     monkeypatch.setattr(mw, "memory_accounting_problem", lambda: None)
@@ -486,6 +486,21 @@ class TestTunerAndMemoryBridges:
         assert not window._smu_tab._read_all_co.called
 
 
+class TestOneTick:
+    def test_one_timer_on_the_poll_interval_feeds_every_view_the_same_tick(self, monkeypatch, tmp_path, db):
+        window = _build(monkeypatch, tmp_path, db=db, settings=_settings(tmp_path, poll_interval=0.25))
+        assert window._tick_timer.isActive()
+        assert window._tick_timer.interval() == 250
+        window._monitor_tab.on_tick = MagicMock()
+        window._memory_tab.on_tick = MagicMock()
+        window._active_test_core = 0
+        window._on_tick()
+        tick = window._monitor_tab.on_tick.call_args.args[0]
+        window._memory_tab.on_tick.assert_called_once_with(tick)
+        assert window._core_telemetry[0]["max_freq"] == 4500.0
+        window._history_db = None
+
+
 class TestElapsedWatchdog:
     def test_without_a_worker_nothing_happens(self, window):
         window._update_elapsed()
@@ -500,36 +515,33 @@ class TestElapsedWatchdog:
 
     def test_telemetry_for_an_unknown_core_is_skipped(self, window):
         window._active_test_core = 99
-        window._feed_core_grid_telemetry()
+        window._feed_core_grid_telemetry(window._ticker.read([]))
         assert window._core_telemetry == {}
 
     def test_a_telemetry_sample_is_recorded(self, window):
-        window._msr.is_available.return_value = False
         window._sensors.give(tctl=65.0, tccd=((0, 72.0),), vcore=1.2)
         logger = MagicMock()
         window._logger = logger
         window._active_test_core = 0
-        window._feed_core_grid_telemetry()
+        window._feed_core_grid_telemetry(window._ticker.read([]))
         logger.record_telemetry_sample.assert_called_once_with(0, 4500.0, 72.0, 1.2, effective_max_mhz=None)
         assert window._core_telemetry[0]["max_freq"] == 4500.0
 
     def test_a_failing_telemetry_write_is_logged_once_and_its_recovery_is_logged(self, window, caplog):
-        window._msr.is_available.return_value = False
         window._logger = MagicMock()
         window._logger.record_telemetry_sample.side_effect = [sqlite3.OperationalError("disk full")] * 2 + [None]
         window._active_test_core = 0
         with caplog.at_level("INFO", logger="corecycler.gui.main_window"):
             for _ in range(3):
-                window._feed_core_grid_telemetry()
+                window._feed_core_grid_telemetry(window._ticker.read([]))
         assert caplog.text.count("disk full") == 1
         assert "recorded again" in caplog.text
 
     def test_a_core_with_no_temperature_read_records_none_not_zero(self, window):
-        window._msr.is_available.return_value = False
         window._sensors.give()
         window._logger = MagicMock()
         window._active_test_core = 0
-        window._feed_core_grid_telemetry()
+        window._feed_core_grid_telemetry(window._ticker.read([]))
         assert window._logger.record_telemetry_sample.call_args.args[2] is None
         assert window._core_telemetry[0]["max_temp"] == 0.0
 
@@ -633,7 +645,8 @@ class TestCloseEvent:
         event = MagicMock()
         window.closeEvent(event)
         assert event.accept.called
-        assert window._msr.close.called
+        assert window._ticker.closed
+        assert not window._tick_timer.isActive()
 
     def test_a_declined_close_is_cancelled(self, window, no_modal):
         window._worker = _mock_worker()

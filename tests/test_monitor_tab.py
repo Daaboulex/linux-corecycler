@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys as _sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -13,7 +12,6 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
 from corecycler.engine.topology import CPUTopology, PhysicalCore
-from corecycler.monitor.frequency import Clocks
 from corecycler.monitor.hwmon import Sensors
 
 
@@ -42,7 +40,7 @@ def _tab(topo=None):
     _qapp()
     from corecycler.gui.monitor_tab import MonitorTab
 
-    return MonitorTab(Sensors(Path("/nonexistent")), Clocks(Path("/nonexistent")), topology=topo or _topo())
+    return MonitorTab(Sensors(Path("/nonexistent")), False, topology=topo or _topo())
 
 
 class TestCoreFreqBar:
@@ -98,45 +96,38 @@ class TestMonitorTab:
         tab.set_topology(_topo(ccds=1))
         assert sorted(tab._per_core_bars) == list(range(8))
 
+    def test_a_machine_with_no_power_source_says_so_before_the_first_tick(self):
+        assert _tab()._power_label.text() == "Package: N/A (needs root)"
+
     def test_power_limits_na_when_pmtable_absent(self):
         tab = _tab()
-        tab._pmtable = MagicMock()
-        tab._pmtable.is_available.return_value = False
-        tab._update_power_limits()
+        tab._show_power_limits(None)
         assert "N/A" in tab._ppt_label.text()
 
     def test_power_limits_formatted_when_present(self):
         tab = _tab()
-        tab._pmtable = MagicMock()
-        tab._pmtable.is_available.return_value = True
-        tab._pmtable.read.return_value = SimpleNamespace(
-            ppt_value_w=120.0,
-            ppt_limit_w=200.0,
-            tdc_value_a=90.0,
-            tdc_limit_a=180.0,
-            edc_value_a=110.0,
-            edc_limit_a=230.0,
+        tab._show_power_limits(
+            SimpleNamespace(
+                ppt_value_w=120.0,
+                ppt_limit_w=200.0,
+                tdc_value_a=90.0,
+                tdc_limit_a=180.0,
+                edc_value_a=110.0,
+                edc_limit_a=230.0,
+            )
         )
-        tab._update_power_limits()
         assert "120" in tab._ppt_label.text() and "200" in tab._ppt_label.text()
 
     def test_a_live_value_the_reader_never_located_is_shown_as_not_read(self):
         tab = _tab()
-        tab._pmtable = MagicMock()
-        tab._pmtable.is_available.return_value = True
-        tab._pmtable.read.return_value = SimpleNamespace(
-            ppt_value_w=120.0,
-            ppt_limit_w=200.0,
-            tdc_value_a=90.0,
-            tdc_limit_a=180.0,
-            edc_value_a=None,
-            edc_limit_a=230.0,
+        tab._show_power_limits(
+            SimpleNamespace(
+                ppt_value_w=120.0,
+                ppt_limit_w=200.0,
+                tdc_value_a=90.0,
+                tdc_limit_a=180.0,
+                edc_value_a=None,
+                edc_limit_a=230.0,
+            )
         )
-        tab._update_power_limits()
         assert tab._edc_label.text() == "EDC: limit 230A, live value not read"
-
-    def test_stop_monitoring_closes_msr(self):
-        tab = _tab()
-        tab._msr = MagicMock()
-        tab.stop_monitoring()
-        tab._msr.close.assert_called_once()

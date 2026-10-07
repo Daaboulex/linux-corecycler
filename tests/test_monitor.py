@@ -114,27 +114,22 @@ class TestPowerMonitor:
         assert watts is not None
         assert watts == pytest.approx(100.0, abs=5.0)
 
-    def test_counter_wraparound(self, tmp_path):
-        """Handle 32-bit energy counter wraparound."""
+    def test_a_counter_wrap_counts_the_energy_up_to_the_domain_s_range(self, tmp_path):
         rapl_dir = tmp_path / "powercap" / "intel-rapl" / "intel-rapl:0"
         rapl_dir.mkdir(parents=True)
         energy_file = rapl_dir / "energy_uj"
         energy_file.write_text("0")
+        (rapl_dir / "max_energy_range_uj").write_text("65532610987\n")
 
         rapl_base = tmp_path / "powercap" / "intel-rapl"
         with patch("corecycler.monitor.power.RAPL_BASE", rapl_base):
             mon = PowerMonitor()
-
-            # Set baseline near max 32-bit value
-            mon._last_energy_uj = 2**32 - 1000000
+            mon._last_energy_uj = 65532610987 - 1_000_000
             mon._last_time = time.monotonic() - 1.0
-
-            # After wraparound, counter is small
             energy_file.write_text("1000000")
             watts = mon.read_power_watts()
 
-        assert watts is not None
-        assert watts > 0
+        assert watts == pytest.approx(2.0, rel=0.05)
 
     def test_read_when_not_available(self, tmp_path):
         with (
