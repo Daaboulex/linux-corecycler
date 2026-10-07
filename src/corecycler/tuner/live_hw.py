@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import json
 import os
 import random
 import signal
@@ -13,6 +15,17 @@ from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from corecycler.cli import (
+    EXIT_ABORTED,
+    EXIT_COMPLETED,
+    EXIT_LOCKED,
+    EXIT_PAUSED,
+    EXIT_QUARANTINED,
+    EXIT_REFUSED,
+    EXIT_SIGNAL,
+)
+from corecycler.config.paths import data_dir, hand_back
+from corecycler.config.settings import load_settings
 from corecycler.engine import detector as kernel
 from corecycler.engine.backends import get_backend, ycruncher
 from corecycler.engine.backends.base import OutcomeKind, StressConfig, StressMode
@@ -24,17 +37,18 @@ from corecycler.history.context import read_bios_version
 from corecycler.history.db import HistoryDB
 from corecycler.monitor.frequency import Clocks, PowerState, fastest, read_power_state
 from corecycler.monitor.hwmon import SensorRead, Sensors
-from corecycler.smu.commands import tjmax_c
-from corecycler.smu.driver import core_map_blocked
+from corecycler.smu.commands import detect_generation, get_commands, tjmax_c
+from corecycler.smu.driver import RyzenSMU, core_map_blocked
 from corecycler.smu.pmtable import PMTableReader, read_power_limits
 from corecycler.tuner import stages, telemetry
-from corecycler.tuner.live import BootFacts, Identity, LiveRig, Store
+from corecycler.tuner.live import BootFacts, Identity, LiveRig, Store, config_from_json
 from corecycler.tuner.machine.types import (
     Abort,
     Close,
     Evidence,
     Group,
     Klass,
+    Lifecycle,
     Load,
     MachineConfig,
     Mode,
@@ -589,7 +603,7 @@ class StressRunner:
 
 def parse(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m corecycler.tuner.live_hw")
-    parser.add_argument("--state-dir", type=Path, required=True)
+    parser.add_argument("--state-dir", type=Path, default=data_dir() / "tuner")
     parser.add_argument("--db", type=Path)
     parser.add_argument("--session", type=int)
     action = parser.add_mutually_exclusive_group(required=True)
@@ -598,12 +612,13 @@ def parse(argv: list[str]) -> argparse.Namespace:
     action.add_argument("--validate", action="store_true")
     action.add_argument("--continue", dest="continue_on", action="store_true")
     action.add_argument("--restart", action="store_true")
-    parser.add_argument("--cores", default="")
-    parser.add_argument("--max-offset", type=int, default=-15)
-    parser.add_argument("--k1", type=int, default=2)
-    parser.add_argument("--k2", type=int, default=2)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--cores")
+    parser.add_argument("--max-offset", dest="max_offset", type=int)
+    parser.add_argument("--k1", dest="k_1t", type=int)
+    parser.add_argument("--k2", dest="k_2t", type=int)
+    parser.add_argument("--wait-between-cores", dest="wait_between_cores_s", type=float)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--wait-between-cores", type=float, default=15.0)
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--acknowledge", action="store_true")
     args = parser.parse_args(argv)
@@ -615,6 +630,13 @@ def parse(argv: list[str]) -> argparse.Namespace:
     ):
         if getattr(args, named) and args.session is None:
             parser.error(f"--{flag} needs --session")
+    shorthand = [name for name in ("cores", *SHORTHAND) if getattr(args, name) is not None]
+    if not args.start and (args.config is not None or shorthand):
+        parser.error("--config, --cores and the configuration flags go with --start only")
+    if args.start and args.config is not None and shorthand:
+        parser.error("--config holds the whole configuration; leave out --cores and the configuration flags")
+    if args.start and args.config is None and args.cores is None:
+        parser.error("--start needs --config FILE or --cores")
     return args
 
 
@@ -656,19 +678,39 @@ def install_signals(rig: LiveRig) -> None:
     signal.signal(signal.SIGUSR2, lambda *_: rig.signals.append(Abort()))
 
 
+SHORTHAND = ("max_offset", "k_1t", "k_2t", "wait_between_cores_s")
+
+EXIT_OF = {
+    Lifecycle.COMPLETED: EXIT_COMPLETED,
+    Lifecycle.PAUSED: EXIT_PAUSED,
+    Lifecycle.QUARANTINED: EXIT_QUARANTINED,
+    Lifecycle.ABORTED: EXIT_ABORTED,
+    Lifecycle.IDLE: EXIT_SIGNAL,
+}
+
+OUTCOME_NOTES = {
+    EXIT_COMPLETED: ("Tuning complete", "The session finished and confirmed a profile.", "normal"),
+    EXIT_PAUSED: ("Tuning paused", "The tuner stopped for attention: check the log.", "critical"),
+    EXIT_QUARANTINED: ("Tuning quarantined", "The profile is unsafe; cores forced to stock.", "critical"),
+    EXIT_ABORTED: ("Tuning aborted", "Every owned core is back at its baseline.", "critical"),
+}
+
+
+def start_config(args: argparse.Namespace, domain_of: tuple[tuple[int, int | None], ...]) -> MachineConfig:
+    if args.config is not None:
+        return config_from_json(json.loads(args.config.read_text()))
+    selected = tuple(int(core) for core in args.cores.split(",") if core)
+    given = {name: getattr(args, name) for name in SHORTHAND if getattr(args, name) is not None}
+    return MachineConfig(Mode.CO, default_method(selected, dict(domain_of)), selected, **given)
+
+
 def run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> int:
     if args.start:
-        selected = tuple(int(core) for core in args.cores.split(",") if core)
-        method = default_method(selected, dict(rig.domain_of))
-        config = MachineConfig(
-            Mode.CO,
-            method,
-            selected,
-            max_offset=args.max_offset,
-            k_1t=args.k1,
-            k_2t=args.k2,
-            wait_between_cores_s=args.wait_between_cores,
-        )
+        try:
+            config = start_config(args, rig.domain_of)
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            say(f"refused: the start configuration: {e}")
+            return EXIT_REFUSED
         session = rig.store.new_session_id()
         say(f"session {session}")
         rig.start(config, session, args.seed, args.acknowledge)
@@ -676,6 +718,8 @@ def run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> i
         rig.validate(args.session)
     else:
         rig.resume(args.session)
+    if rig.refused is not None:
+        return EXIT_REFUSED
     final = rig.run_until_rest()
     if (
         (args.continue_on or args.restart)
@@ -686,24 +730,71 @@ def run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> i
             rig.restart_on_setup(args.acknowledge)
         else:
             rig.continue_on_setup()
+        if rig.refused is not None:
+            return EXIT_REFUSED
         final = rig.run_until_rest()
     reason = f" ({final.pause.reason.value}: {final.pause.detail})" if final.pause is not None else ""
     say(f"rest: {final.lifecycle.value}{reason}")
     say("values: " + ", ".join(f"{r.core}={r.value} ({r.phase.value}, fb {r.fb})" for r in final.cores))
-    return 0
+    return EXIT_OF[final.lifecycle]
 
 
 def main(argv: list[str] | None = None) -> int:
-    from corecycler.cli import _build_smu
+    try:
+        args = parse(sys.argv[1:] if argv is None else argv)
+    except SystemExit as stop:
+        return EXIT_REFUSED if stop.code else EXIT_COMPLETED
+    lock_path = data_dir() / "tuner.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a") as lock:
+        hand_back(lock_path)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"live: another tuner driver holds {lock_path}", file=sys.stderr)
+            return EXIT_LOCKED
+        code = _drive(args)
+    notify_outcome(code)
+    return code
+
+
+def notify_outcome(code: int) -> None:
+    note = OUTCOME_NOTES.get(code)
+    if note is None:
+        return
+    try:
+        if not load_settings().notify_on_completion:
+            return
+        from corecycler.notify import desktop_notify
+
+        title, body, urgency = note
+        desktop_notify(title, body, urgency=urgency)
+    except Exception as e:
+        print(f"notification failed: {e}", file=sys.stderr)
+
+
+def build_smu(topology):
+    commands = get_commands(detect_generation(topology.family, topology.model, topology.model_name))
+    if commands is None or not commands.has_co or not RyzenSMU.is_available():
+        return None
+    smu = RyzenSMU(commands)
+    smu.set_topology(topology)
+    map_err = core_map_blocked(smu)
+    if map_err is not None:
+        print(f"corecycler: per-core CO disabled: {map_err}", file=sys.stderr)
+        return None
+    return smu
+
+
+def _drive(args: argparse.Namespace) -> int:
     from corecycler.engine.backends import get_backend, load_all
     from corecycler.engine.topology import detect_topology
 
-    args = parse(sys.argv[1:] if argv is None else argv)
     topology = detect_topology()
-    smu = _build_smu(topology)
+    smu = build_smu(topology)
     if smu is None:
         print("live: the SMU or its core map is unavailable", file=sys.stderr)
-        return 2
+        return EXIT_REFUSED
     load_all()
     db = HistoryDB() if args.db is None else HistoryDB(args.db)
 

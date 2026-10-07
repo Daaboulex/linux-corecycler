@@ -83,12 +83,10 @@ result:
    setting: AVX2 Small FFTs, SSE Large FFTs, then SSE Small FFTs as a light-load
    spectrum (bursts, load transitions, idle watch). A failed tier backs the core off by
    one `fine_step` and runs that tier again. A core that passes every tier, or backs off
-   to its baseline, is HARDENED. An empty `hardening_tiers` in the `corecycler tune
-   --config` JSON skips this step.
+   to its baseline, is HARDENED.
 5. **Multi-core validation** (`auto_validate`, on by default): once every core is
-   HARDENED (CONFIRMED when `hardening_tiers` is empty), a staged sequence catches
-   failures invisible to per-core testing. Stages 1, 2, 3, 4 and 6 run each test for
-   `validate_duration_seconds` (default 300 s):
+   HARDENED, a staged sequence catches failures invisible to per-core testing. Stages
+   1, 2, 3, 4 and 6 run each test for `validate_duration_seconds` (default 300 s):
    - **Stage 1 (per-core, all offsets live)**: all confirmed offsets applied, each core
      stressed in turn. Catches shared-VRM power-delivery interactions.
    - **Stage 2 (all-core simultaneous)**: one pinned stress process per core at once.
@@ -175,10 +173,9 @@ Every per-core phase and transition is charted in
 ### Configuration options
 
 The Auto-Tuner tab sets the common fields, each with a tooltip. Its Backend list shows
-every registered backend. `corecycler tune --config <file>` loads a JSON object that may
-set any field of `TunerConfig` by its own name; a field with an unknown name or a wrong
-type is dropped with a logged warning and its default used. The fields, their defaults
-and the checks on them are in `src/corecycler/tuner/config.py`.
+every registered backend. The fields, their defaults and the checks on them are in
+`src/corecycler/tuner/config.py`. `corecycler tune` runs the new tuner instead, not this
+one; `corecycler --help` lists its commands.
 
 ### How each backend uses Mode and FFT Preset
 

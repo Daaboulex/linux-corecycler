@@ -1483,6 +1483,18 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         if cur.rowcount != 1:
             raise sqlite3.IntegrityError(f"session {session_id} belongs to the old engine")
 
+    def list_machine_sessions(self, limit: int = 50) -> list[dict]:
+        rows = self.__conn.execute(
+            """\
+            SELECT s.id, s.status, s.updated_at, s.parent_session_id, s.origin,
+                (SELECT e.message FROM tuner_events e WHERE e.session_id = s.id ORDER BY e.id DESC LIMIT 1)
+                    AS last_event
+            FROM tuner_sessions s WHERE s.machine_json IS NOT NULL ORDER BY s.id DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def link_session(self, child_id: int, parent_id: int, origin: str) -> None:
         cur = self.__conn.execute(
             "UPDATE tuner_sessions SET parent_session_id=?, origin=? WHERE id=?", (parent_id, origin, child_id)

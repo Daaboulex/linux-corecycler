@@ -21,7 +21,8 @@ with a plain `subprocess.Popen` in its own process group, outside any cgroup sco
 ```text
 src/corecycler/
   main.py            Entry point, Qt setup, sudo session handshake
-  cli.py             Headless doctor/status/tune/resume commands (no display needed)
+  cli.py             Headless commands: doctor, status, and the tuning commands (tune, resume,
+                     validate, continue, restart), which run the tuner driver tuner/live_hw.py
   notify.py          Desktop notifications via notify-send, best-effort
   engine/            Stress execution
     topology.py        CPU topology: cores, CCDs, L3 cache, X3D V-Cache detection
@@ -49,18 +50,19 @@ src/corecycler/
     state.py           TunerPhase StrEnum, CoreState / TunerSession dataclasses
     persistence.py     Session CRUD, core-state upsert, test log, CO write-ahead journal
     engine.py          TunerEngine: state machine, scheduling, crash recovery, staged validation (1-7);
-                       the GUI and corecycler tune both run this
+                       the GUI's Auto-Tuner tab runs this
     machine/           The next tuner as a pure state machine: session.transition(state, event, world)
                        returns the new state and its effects (search, bisect, all-core, resume
-                       attribution); no GUI or CLI path uses it yet
+                       attribution); the tuner driver live_hw.py runs it
     orders.py          Core pick orders for machine/ (alternate, sequential, random)
     stages.py          y-cruncher load segments for machine/ (hot, warm, burst, idle)
     telemetry.py       Failure context for machine/ from a ring of clock samples
     live.py            LiveRig: drives machine/ with a worker thread, keeping the session, the CO
                        journal, one row per test, its telemetry samples and the events in the
                        history database
-    live_hw.py         Real-hardware rig for live.py: python -m corecycler.tuner.live_hw
-                       (CO writes only with --write)
+    live_hw.py         The tuner driver, live.py on the real hardware: the CLI's tuning
+                       commands run it; one per machine (it holds tuner.lock in the data
+                       directory); CO writes only with --write
   gui/               Qt tabs (config, results, monitor, smu, tuner, memory, history), core grid,
                      and the missing-tool prompt that records a backend's path
     style.py           Display standards: the desktop draws the widgets, this holds only the

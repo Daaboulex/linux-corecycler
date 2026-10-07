@@ -428,6 +428,7 @@ class LiveRig:
     stored_read_ns: int | None = None
     test_row: tuple[int, int, bool] | None = None
     boot_recorded: bool = False
+    refused: str | None = None
     boot: str = field(init=False)
     setup: tuple[tuple[str, str], ...] = field(init=False)
     power: PowerState = field(default_factory=PowerState)
@@ -479,6 +480,7 @@ class LiveRig:
             before = self.state
             result = transition(before, ev, world if world is not None and ev is event else self.world())
             if result.refused is not None:
+                self.refused = result.refused
                 self.say(f"refused: {result.refused}")
             self.state = result.state
             acting = result.state if result.state.session_id is not None else before

@@ -455,8 +455,8 @@ class TestNoL3Grouping:
 
 class TestCliRefusal:
     def test_build_smu_prints_reason_and_returns_none(self, monkeypatch, capsys):
-        from corecycler import cli
         from corecycler.engine.topology import CPUTopology, PhysicalCore
+        from corecycler.tuner import live_hw
 
         monkeypatch.setattr(drv.RyzenSMU, "is_available", staticmethod(lambda *a, **k: True))
         monkeypatch.setattr(
@@ -467,7 +467,7 @@ class TestCliRefusal:
         topo = CPUTopology(model_name="AMD Ryzen 5 5600X 6-Core Processor", family=25, model=0x21)
         for cid in range(6):
             topo.cores[cid] = PhysicalCore(core_id=cid, ccd=0, ccx=None, logical_cpus=(cid,))
-        assert cli._build_smu(topo) is None
+        assert live_hw.build_smu(topo) is None
         assert "per-core CO disabled" in capsys.readouterr().err
 
 

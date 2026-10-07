@@ -1396,12 +1396,14 @@ def test_the_command_line_starts_or_resumes_and_reports_where_it_came_to_rest(tm
     r.say = lines.append
     r.runner = FakeRunner(hardware)
     args.state_dir = tmp_path / "state"
-    assert live_hw.run(args, r, lines.append) == 0
+    assert live_hw.run(args, r, lines.append) == live_hw.EXIT_COMPLETED
     assert "session 1" in lines
-    assert any(line.startswith("rest: paused") or line.startswith("rest: completed") for line in lines)
+    assert "rest: completed" in lines
     resumed = live_hw.parse(["--state-dir", str(tmp_path / "state"), "--session", "1", "--resume"])
-    assert live_hw.run(resumed, rig(tmp_path, hardware, db=r.store.db), lines.append) == 0
-    assert "refused: session 1 is not stored" not in lines
+    again = rig(tmp_path, hardware, db=r.store.db)
+    again.say = lines.append
+    assert live_hw.run(resumed, again, lines.append) == live_hw.EXIT_REFUSED
+    assert lines[-1] == "refused: the session is completed: use Validate Profile"
 
 
 def test_the_identity_names_the_run_context_it_recorded(tmp_path, monkeypatch):
@@ -1453,6 +1455,48 @@ def test_the_command_line_carries_a_session_onto_a_new_setup(tmp_path, flag, ori
     assert rows(again, "SELECT DISTINCT session_id FROM tuner_tests WHERE started_at IS NOT NULL ORDER BY 1")[-1] == {
         "session_id": 2
     }
+
+
+def test_a_resume_that_pauses_exits_paused(tmp_path):
+    hardware, again = paused_then_moved_to_a_new_setup(tmp_path)
+    said = []
+    again.say = said.append
+    args = live_hw.parse(["--state-dir", str(tmp_path / "state"), "--session", "1", "--resume"])
+    assert live_hw.run(args, again, said.append) == live_hw.EXIT_PAUSED
+    assert any(line.startswith("rest: paused (setup_changed") for line in said)
+
+
+@pytest.mark.parametrize(
+    ("control", "code", "rest"),
+    [(Close(), live_hw.EXIT_SIGNAL, "idle"), (live.Abort(), live_hw.EXIT_ABORTED, "aborted")],
+)
+def test_a_signal_s_outcome_is_the_driver_s_exit_code(tmp_path, control, code, rest):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.runner = FakeRunner(hardware)
+    said = []
+    r.say = said.append
+    r.signals.append(control)
+    args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--start", "--cores", "0,1,8", "--acknowledge"])
+    assert live_hw.run(args, r, said.append) == code
+    assert f"rest: {rest}" in said
+
+
+def test_a_restart_refused_at_start_s_gates_is_a_refusal(tmp_path):
+    hardware, again = paused_then_moved_to_a_new_setup(tmp_path)
+    said = []
+    again.say = said.append
+    resume = again.resume
+
+    def resume_then_lose_the_kernel_log(session_id):
+        resume(session_id)
+        hardware.refusal = "the kernel log /dev/kmsg cannot be read"
+
+    again.resume = resume_then_lose_the_kernel_log
+    args = live_hw.parse(["--state-dir", str(tmp_path / "state"), "--session", "1", "--restart"])
+    assert live_hw.run(args, again, said.append) == live_hw.EXIT_REFUSED
+    assert said[-1] == "refused: the kernel log /dev/kmsg cannot be read"
+    assert rows(again, "SELECT id, status FROM tuner_sessions") == [{"id": 1, "status": "paused"}]
 
 
 def test_a_continued_session_inherits_its_parent_s_proven_values_and_a_restart_does_not(tmp_path):
@@ -1512,24 +1556,161 @@ def test_signals_queue_the_owner_s_controls(tmp_path, monkeypatch):
     assert [type(event).__name__ for event in r.signals] == ["Close", "Close", "PauseRequest", "Abort"]
 
 
-def test_main_refuses_without_an_smu_and_runs_with_one(tmp_path, monkeypatch, capsys):
-    import corecycler.cli
+@pytest.fixture
+def driver_home(tmp_path, monkeypatch):
+    import corecycler.config.paths as paths
     import corecycler.engine.backends
     import corecycler.engine.topology
 
+    monkeypatch.setattr(paths, "user_home", lambda: tmp_path / "home")
     monkeypatch.setattr(corecycler.engine.topology, "detect_topology", topology)
-    monkeypatch.setattr(corecycler.cli, "_build_smu", lambda topo: None)
+    monkeypatch.setattr(live_hw, "build_smu", lambda topo: FakeSmu())
     monkeypatch.setattr(live_hw, "read_identity", lambda db, smu, topo: IDENTITY)
-    argv = ["--state-dir", str(tmp_path / "s"), "--db", str(tmp_path / "h.db"), "--session", "1", "--resume"]
-    assert live_hw.main(argv) == 2
-    assert "unavailable" in capsys.readouterr().err
-    monkeypatch.setattr(corecycler.cli, "_build_smu", lambda topo: FakeSmu())
     monkeypatch.setattr(corecycler.engine.backends, "load_all", lambda: None)
     monkeypatch.setattr(live_hw, "install_signals", lambda r: None)
     monkeypatch.setattr(live_hw.SmuHardware, "power", lambda self: UNCAPPED)
     monkeypatch.setattr(live_hw.SmuHardware, "preflight", lambda self: (None, ()))
-    assert live_hw.main(argv) == 0
+    notified = []
+    monkeypatch.setattr(live_hw, "notify_outcome", notified.append)
+    return tmp_path / "home" / ".local" / "share" / "corecycler", notified
+
+
+def test_main_refuses_without_an_smu_and_runs_with_one(tmp_path, driver_home, monkeypatch, capsys):
+    _, notified = driver_home
+    monkeypatch.setattr(live_hw, "build_smu", lambda topo: None)
+    argv = ["--state-dir", str(tmp_path / "s"), "--db", str(tmp_path / "h.db"), "--session", "1", "--resume"]
+    assert live_hw.main(argv) == live_hw.EXIT_REFUSED
+    assert "unavailable" in capsys.readouterr().err
+    monkeypatch.setattr(live_hw, "build_smu", lambda topo: FakeSmu())
+    assert live_hw.main(argv) == live_hw.EXIT_REFUSED
     assert "refused: session 1 is not stored" in capsys.readouterr().out
+    assert notified == [live_hw.EXIT_REFUSED, live_hw.EXIT_REFUSED]
+
+
+def test_one_driver_runs_at_a_time_on_a_machine(tmp_path, driver_home, capsys):
+    import fcntl
+
+    data, notified = driver_home
+    data.mkdir(parents=True)
+    argv = ["--state-dir", str(tmp_path / "s"), "--db", str(tmp_path / "other.db"), "--session", "1", "--resume"]
+    with (data / "tuner.lock").open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert live_hw.main(argv) == live_hw.EXIT_LOCKED
+    assert f"another tuner driver holds {data / 'tuner.lock'}" in capsys.readouterr().err
+    assert notified == []
+    assert live_hw.main(argv) == live_hw.EXIT_REFUSED
+
+
+def test_a_usage_error_is_a_refusal_and_help_is_not(driver_home, capsys):
+    assert live_hw.main(["--resume"]) == live_hw.EXIT_REFUSED
+    assert "--resume needs --session" in capsys.readouterr().err
+    assert live_hw.main(["--help"]) == live_hw.EXIT_COMPLETED
+
+
+def test_the_state_directory_defaults_under_the_user_s_data(driver_home):
+    data, _ = driver_home
+    assert live_hw.parse(["--session", "1", "--resume"]).state_dir == data / "tuner"
+
+
+@pytest.mark.parametrize(
+    ("argv", "problem"),
+    [
+        (["--start"], "--start needs --config FILE or --cores"),
+        (["--start", "--config", "c.json", "--cores", "0"], "--config holds the whole configuration"),
+        (["--start", "--config", "c.json", "--k1", "3"], "--config holds the whole configuration"),
+        (["--resume", "--session", "1", "--config", "c.json"], "go with --start only"),
+        (["--validate", "--session", "1", "--max-offset", "-9"], "go with --start only"),
+    ],
+)
+def test_a_start_has_exactly_one_configuration_source(argv, problem, capsys):
+    with pytest.raises(SystemExit):
+        live_hw.parse(["--state-dir", "s", *argv])
+    assert problem in capsys.readouterr().err
+
+
+def test_the_flags_build_the_spec_s_config_with_only_what_was_given():
+    args = live_hw.parse(["--state-dir", "s", "--start", "--cores", "0,8", "--k1", "3"])
+    built = live_hw.start_config(args, DOMAINS)
+    assert built == MachineConfig(Mode.CO, built.method, (0, 8), k_1t=3)
+    assert built.max_offset == MachineConfig(Mode.CO, built.method, (0, 8)).max_offset
+
+
+def test_a_config_file_starts_the_session_it_describes(tmp_path):
+    wanted = config(max_offset=-9, k_1t=1, k_2t=1, wait_between_cores_s=0)
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps(live.config_to_json(wanted)))
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.runner = FakeRunner(hardware)
+    said = []
+    args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--start", "--config", str(path), "--acknowledge"])
+    live_hw.run(args, r, said.append)
+    assert "session 1" in said
+    (stored,) = rows(r, "SELECT config_json FROM tuner_sessions WHERE id=1")
+    assert live.config_from_json(json.loads(stored["config_json"])) == wanted
+
+
+@pytest.mark.parametrize("content", [None, "{", '{"mode": "co"}', "[]"])
+def test_a_config_that_cannot_be_read_refuses_the_start(tmp_path, content):
+    path = tmp_path / "c.json"
+    if content is not None:
+        path.write_text(content)
+    said = []
+    args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--start", "--config", str(path)])
+    r = rig(tmp_path)
+    assert live_hw.run(args, r, said.append) == live_hw.EXIT_REFUSED
+    assert said[-1].startswith("refused: the start configuration: ")
+    assert r.store.db.list_machine_sessions() == []
+
+
+class TestNotifyOutcome:
+    def test_unknown_code_is_silent(self, capsys):
+        live_hw.notify_outcome(999)
+        assert capsys.readouterr().err == ""
+
+    def test_disabled_by_setting(self, monkeypatch, capsys):
+        monkeypatch.setattr(live_hw, "load_settings", lambda: SimpleNamespace(notify_on_completion=False))
+        sent = []
+        monkeypatch.setattr("corecycler.notify.desktop_notify", lambda *a, **k: sent.append(a))
+        live_hw.notify_outcome(live_hw.EXIT_COMPLETED)
+        assert sent == []
+
+    def test_each_outcome_sends_its_note(self, monkeypatch):
+        monkeypatch.setattr(live_hw, "load_settings", lambda: SimpleNamespace(notify_on_completion=True))
+        sent = []
+        monkeypatch.setattr("corecycler.notify.desktop_notify", lambda title, body, urgency: sent.append(title))
+        for code in (live_hw.EXIT_COMPLETED, live_hw.EXIT_PAUSED, live_hw.EXIT_QUARANTINED, live_hw.EXIT_ABORTED):
+            live_hw.notify_outcome(code)
+        assert sent == ["Tuning complete", "Tuning paused", "Tuning quarantined", "Tuning aborted"]
+
+    def test_failure_surfaces_on_stderr(self, monkeypatch, capsys):
+        def boom():
+            raise RuntimeError("no settings")
+
+        monkeypatch.setattr(live_hw, "load_settings", boom)
+        live_hw.notify_outcome(live_hw.EXIT_COMPLETED)
+        assert "notification failed: no settings" in capsys.readouterr().err
+
+
+class TestBuildSmu:
+    def test_none_on_an_unsupported_cpu(self):
+        from corecycler.engine.topology import CPUTopology
+
+        assert live_hw.build_smu(CPUTopology(model_name="Intel", family=6, model=1)) is None
+
+    def test_none_when_the_driver_is_absent(self, monkeypatch):
+        from corecycler.engine.topology import CPUTopology
+
+        monkeypatch.setattr(live_hw.RyzenSMU, "is_available", staticmethod(lambda *a, **k: False))
+        assert live_hw.build_smu(CPUTopology(family=26, model=0x44, model_name="Test 9950X")) is None
+
+    def test_the_driver_when_available(self, monkeypatch):
+        from corecycler.engine.topology import CPUTopology, PhysicalCore
+
+        topo = CPUTopology(model_name="AMD Ryzen 9 9950X3D 16-Core Processor", family=26, model=0x44)
+        topo.cores = {cid: PhysicalCore(core_id=cid, ccd=cid // 8, ccx=None, logical_cpus=(cid,)) for cid in range(16)}
+        monkeypatch.setattr(live_hw.RyzenSMU, "is_available", staticmethod(lambda *a, **k: True))
+        assert live_hw.build_smu(topo) is not None
 
 
 def test_the_live_module_exports_the_controls():
