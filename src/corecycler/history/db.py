@@ -2332,6 +2332,10 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         busy, wal_frames, checkpointed = self.__conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
         log.info("WAL checkpoint: busy=%d log=%d checkpointed=%d", busy, wal_frames, checkpointed)
 
+    @property
+    def path(self) -> Path:
+        return self._db_path
+
     def close(self) -> None:
         if self._closed:
             return

@@ -25,10 +25,8 @@ from corecycler.engine.scheduler import CoreTestStatus
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.gui import main_window as mw
 from corecycler.history.db import HistoryDB, RunRecord
-from corecycler.tuner import persistence as tp
-from corecycler.tuner.config import TunerConfig
-from tests._machine import this_boot
 from tests._sensors import FakeClocks, FakeSensors, FakeTicker
+from tests._tuner_world import save_machine_session
 
 
 def _qapp():
@@ -267,15 +265,14 @@ class TestStartTest:
         assert window._worker is None
         assert no_modal.warning.call_args.args[2] == f"Cannot start: {problem}"
 
-    def test_an_active_tuner_session_can_be_declined(self, window, monkeypatch, no_modal):
+    def test_an_active_tuner_session_can_be_declined(self, window, monkeypatch, no_modal, tmp_path):
         self._ready(window, monkeypatch)
-        sid = tp.create_session(
-            window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test", boot_id=this_boot()
-        )
-        tp.update_session_status(window._history_db, sid, "running")
+        saved = save_machine_session(window._history_db, tmp_path, "paused")
+        window._tuner_tab.refresh()
         no_modal.question.return_value = no_modal.StandardButton.No
         window._start_test()
         assert window._worker is None
+        assert f"Tuning session {saved.session_id} is paused" in no_modal.question.call_args.args[2]
 
     def test_an_unknown_backend_is_refused(self, window, monkeypatch, no_modal):
         def _missing(_n):
@@ -604,40 +601,12 @@ class TestProfileIo:
 
 
 class TestAutoResume:
-    def test_without_a_database_nothing_resumes(self, window, caplog):
-        window._history_db = None
-        with caplog.at_level("INFO", logger="corecycler.gui.main_window"):
-            window.attempt_auto_resume()
-        assert "no database available" in caplog.text
-
-    def test_without_a_mid_run_session_nothing_resumes(self, window, caplog):
-        window._tuner_tab._resume_session = MagicMock()
-        with caplog.at_level("INFO", logger="corecycler.gui.main_window"):
-            window.attempt_auto_resume()
-        assert "no mid-run session" in caplog.text
-        assert not window._tuner_tab._resume_session.called
-
-    def test_an_active_engine_blocks_auto_resume(self, window, caplog):
-        sid = tp.create_session(
-            window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test", boot_id=this_boot()
-        )
-        tp.update_session_status(window._history_db, sid, "running")
-        window._tuner_tab._engine = MagicMock(status="running")
-        window._tuner_tab._resume_session = MagicMock()
-        with caplog.at_level("INFO", logger="corecycler.gui.main_window"):
-            window.attempt_auto_resume()
-        assert "engine already active" in caplog.text
-        assert not window._tuner_tab._resume_session.called
-
-    def test_a_mid_run_session_is_resumed(self, window):
-        sid = tp.create_session(
-            window._history_db, TunerConfig(), bios_version="2402", cpu_model="Test", boot_id=this_boot()
-        )
-        tp.update_session_status(window._history_db, sid, "running")
-        window._tuner_tab._engine = None
-        window._tuner_tab._resume_session = MagicMock()
+    def test_the_window_hands_auto_resume_to_the_tuner_tab(self, window, monkeypatch, tmp_path):
+        saved = save_machine_session(window._history_db, tmp_path, "running")
+        launched = []
+        monkeypatch.setattr(window._tuner_tab, "_launch", lambda args, auto=False: launched.append((args, auto)))
         window.attempt_auto_resume()
-        assert window._tuner_tab._resume_session.call_args.args == (sid,)
+        assert launched == [(["--resume", "--session", str(saved.session_id)], True)]
 
 
 class TestCloseEvent:
@@ -667,13 +636,4 @@ class TestCloseEvent:
         assert logger.on_test_stopped.called
         assert worker.scheduler.force_stop.called
         assert worker.terminate.called
-        assert event.accept.called
-
-    def test_a_running_tuner_is_force_stopped(self, window, no_modal):
-        window._tuner_tab.force_stop = MagicMock()
-        window._tuner_tab._engine = MagicMock(status="running")
-        no_modal.question.return_value = no_modal.StandardButton.Yes
-        event = MagicMock()
-        window.closeEvent(event)
-        assert window._tuner_tab.force_stop.called
         assert event.accept.called

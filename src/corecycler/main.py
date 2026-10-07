@@ -209,10 +209,9 @@ def _bootstrap_sudo_session() -> None:
 
 
 def _install_exception_hooks(window) -> None:
-    """Uncaught exceptions must SURFACE, never vanish: log the full traceback,
-    make the hardware safe (stop the tuner, which reverts CO toward baselines),
-    and tell the user. Silently continuing in an unknown state is how a
-    poisoned session gets written; this is the top of the fail-closed chain.
+    """Uncaught exceptions must SURFACE, never vanish: log the full traceback
+    and tell the user. The tuner runs in its own driver process, which a GUI
+    fault leaves running.
     """
     import logging
     import threading
@@ -226,11 +225,6 @@ def _install_exception_hooks(window) -> None:
             return
         hook_log.critical("UNCAUGHT EXCEPTION", exc_info=(exc_type, exc, tb))
         try:
-            if window._tuner_tab.is_running:
-                window._tuner_tab.force_stop()
-        except Exception:
-            hook_log.critical("Emergency tuner stop failed", exc_info=True)
-        try:
             from PySide6.QtWidgets import QMessageBox
 
             detail = "".join(traceback.format_exception_only(exc_type, exc)).strip()
@@ -238,9 +232,9 @@ def _install_exception_hooks(window) -> None:
                 window,
                 "Internal Error",
                 f"An internal error occurred:\n\n{detail}\n\n"
-                "The auto-tuner was stopped (CO offsets reverted toward "
-                "baseline). The full traceback is in the terminal/journal "
-                "log. This is a bug to report, not a tuning result.",
+                "A running tuner driver is a separate process and keeps going. "
+                "The full traceback is in the terminal/journal log. This is a "
+                "bug to report, not a tuning result.",
             )
         except Exception:
             hook_log.critical("Could not display the error dialog", exc_info=True)
@@ -405,19 +399,12 @@ def main() -> int:
             print(f"exit cleanup: stress worker stop failed: {e}", file=sys.stderr)
 
         try:
-            if window._tuner_tab.is_running:
-                window._tuner_tab.force_stop()
-        except Exception as e:
-            print(f"exit cleanup: tuner stop failed: {e}", file=sys.stderr)
-
-        try:
             window._memory_tab.force_stop()
         except Exception as e:
             print(f"exit cleanup: memory stop failed: {e}", file=sys.stderr)
 
     atexit.register(_cleanup_on_exit)
 
-    # Handle SIGTERM/SIGINT/SIGHUP gracefully — save tuner state on exit
     def _signal_handler(signum, frame):
         _cleanup_on_exit()
         app.quit()

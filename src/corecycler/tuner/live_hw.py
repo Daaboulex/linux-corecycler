@@ -23,6 +23,7 @@ from corecycler.cli import (
     EXIT_REFUSED,
     EXIT_SIGNAL,
 )
+from corecycler.config import tools
 from corecycler.config.paths import data_dir
 from corecycler.config.settings import load_settings
 from corecycler.engine import detector as kernel
@@ -787,6 +788,7 @@ def _drive(args: argparse.Namespace) -> int:
     from corecycler.engine.backends import get_backend, load_all
     from corecycler.engine.topology import detect_topology
 
+    tools.load_configured_paths()
     topology = detect_topology()
     smu = build_smu(topology)
     if smu is None:

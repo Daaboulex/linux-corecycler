@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import textwrap
 from typing import TYPE_CHECKING
 
 from corecycler.config import tools
@@ -20,10 +21,20 @@ EXIT_ABORTED = 6
 EXIT_LOCKED = 7
 EXIT_SIGNAL = 130
 
+EXIT_MEANINGS = {
+    EXIT_COMPLETED: "completed",
+    EXIT_PAUSED: "paused (needs attention)",
+    EXIT_QUARANTINED: "quarantined",
+    EXIT_REFUSED: "refused (bad config or environment)",
+    EXIT_ABORTED: "aborted",
+    EXIT_LOCKED: "another CO writer holds the lock",
+    EXIT_SIGNAL: "stopped by a signal (offsets reverted to baseline)",
+}
+
 SESSION_COMMANDS = ("resume", "validate", "continue", "restart")
 COMMANDS = ("doctor", "status", "tune", *SESSION_COMMANDS)
 
-USAGE = """\
+USAGE = f"""\
 corecycler headless commands:
 
   corecycler doctor                report every external tool and where it resolved
@@ -40,9 +51,7 @@ corecycler headless commands:
 tune and restart take --acknowledge to start over a CO the BIOS already sets.
 Every tuning command takes --db FILE and --state-dir DIR; one runs at a time.
 
-Exit codes: 0 completed, 3 paused (needs attention), 4 quarantined,
-5 refused (bad config/environment), 6 aborted, 7 another driver is running,
-130 stopped by signal (offsets reverted to baseline).
+{textwrap.fill("Exit codes: " + ", ".join(f"{code} {meaning}" for code, meaning in EXIT_MEANINGS.items()) + ".", 72)}
 
 Running the binary with no command opens the GUI.
 """

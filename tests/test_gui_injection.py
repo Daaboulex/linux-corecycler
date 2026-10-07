@@ -19,7 +19,6 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
 
 from corecycler.engine.backends import load_all
 from corecycler.engine.topology import CPUTopology, PhysicalCore
-from corecycler.tuner.config import TunerConfig
 
 _CACHE: dict = {}
 
@@ -61,7 +60,7 @@ def _tuner_tab():
         _qapp()
         from corecycler.gui.tuner_tab import TunerTab
 
-        _CACHE["tuner"] = TunerTab(db=None, topology=_topo(), smu=None)
+        _CACHE["tuner"] = TunerTab(None, _topo(), (-50, 10))
     return _CACHE["tuner"]
 
 
@@ -95,47 +94,16 @@ class TestCoProfileInjection:
             assert lo <= spin.value() <= hi
 
 
-class TestTunerConfigPanel:
-    def test_in_range_config_round_trips(self):
-        tab = _tuner_tab()
-        cfg = TunerConfig(
-            start_offset=-5,
-            coarse_step=3,
-            fine_step=1,
-            max_offset=-40,
-            search_duration_seconds=60,
-            confirm_duration_seconds=300,
-            validate_duration_seconds=300,
-            max_confirm_retries=2,
-            inherit_current=True,
-            auto_validate=False,
-        )
-        tab._apply_config_to_ui(cfg)
-        out = tab._get_config()
-        assert (out.start_offset, out.coarse_step, out.fine_step, out.max_offset) == (-5, 3, 1, -40)
-        assert out.inherit_current is True
-        assert out.auto_validate is False
+class TestTunerSettings:
+    @settings(deadline=None, max_examples=50)
+    @given(st.data())
+    def test_no_typed_value_yields_a_knob_below_its_floor(self, data):
+        from corecycler.tuner.machine.types import KNOB_FLOOR
 
-    @settings(deadline=None)
-    @given(
-        start=st.integers(-200, 200),
-        coarse=st.integers(-50, 200),
-        fine=st.integers(-50, 200),
-        maxoff=st.integers(-200, 200),
-        search=st.integers(-100, 100000),
-    )
-    def test_injected_config_never_yields_unusable_steps(self, start, coarse, fine, maxoff, search):
         tab = _tuner_tab()
-        tab._apply_config_to_ui(
-            TunerConfig(
-                start_offset=start,
-                coarse_step=coarse,
-                fine_step=fine,
-                max_offset=maxoff,
-                search_duration_seconds=search,
-            )
-        )
-        out = tab._get_config()
-        assert out.coarse_step >= 1
-        assert out.fine_step >= 1
-        assert out.search_duration_seconds >= 1
+        for widget in tab._knobs.values():
+            if hasattr(widget, "setValue"):
+                widget.setValue(data.draw(st.integers(-(10**7), 10**7)))
+        cfg = tab.config()
+        assert all(getattr(cfg, name) >= floor for name, floor in KNOB_FLOOR.items())
+        assert -50 <= cfg.max_offset <= -1

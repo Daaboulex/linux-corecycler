@@ -4,6 +4,7 @@ in every combination the window can meet them, against the real widgets."""
 from __future__ import annotations
 
 import json
+import os
 import sys as _sys
 import time
 from pathlib import Path
@@ -107,23 +108,26 @@ class TestCloseDuringTest:
         with pytest.raises(Exception, match="[Cc]losed"):
             db.list_runs(limit=1)
 
-    def test_close_stops_a_running_tuner_and_memory_stress(self, window, no_modal, monkeypatch):
-        monkeypatch.setattr(
-            type(window._tuner_tab),
-            "is_running",
-            property(lambda self: True),
-            raising=False,
-        )
-        tuner_stop = MagicMock()
-        monkeypatch.setattr(window._tuner_tab, "force_stop", tuner_stop)
+    def test_close_leaves_a_tuner_driver_running_and_stops_memory_stress(self, window, no_modal, monkeypatch):
+        from corecycler.smu.writer_lock import co_writer, running_driver
+
         memory_stop = MagicMock()
         monkeypatch.setattr(window._memory_tab, "force_stop", memory_stop)
         window._memory_tab._stress_worker = _running_worker()
         _answer(no_modal, "Yes")
-        event = _close(window)
+        with co_writer(record=True):
+            event = _close(window)
+            assert running_driver() == os.getpid()
         assert event.accept.called
-        assert tuner_stop.called
         assert memory_stop.called
+
+    def test_a_tuner_driver_alone_does_not_hold_the_close(self, window, no_modal):
+        from corecycler.smu.writer_lock import co_writer
+
+        with co_writer(record=True):
+            event = _close(window)
+        assert event.accept.called
+        assert not no_modal.question.called
 
 
 class TestWorkerFinishAlive:

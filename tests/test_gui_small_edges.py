@@ -78,15 +78,6 @@ class TestStyleCompletenessGuard:
         with pytest.raises(AssertionError, match="disagree on states"):
             style._assert_complete()
 
-    def test_unknown_grid_state_target_raises(self, monkeypatch):
-        from corecycler.gui import style
-
-        mapped = dict(style.PHASE_TO_GRID)
-        mapped[next(iter(mapped))] = "no-such-grid-state"
-        monkeypatch.setattr(style, "PHASE_TO_GRID", mapped)
-        with pytest.raises(AssertionError, match="unknown grid states"):
-            style._assert_complete()
-
     def test_unstyled_session_status_raises(self, monkeypatch):
         from corecycler.gui import style
 

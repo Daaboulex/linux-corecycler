@@ -106,21 +106,6 @@ PHASE_LABELS: dict[TunerPhase, str] = {
     TunerPhase.HARDENED: "Hardened",
 }
 
-PHASE_TO_GRID: dict[TunerPhase, str] = {
-    TunerPhase.NOT_STARTED: "pending",
-    TunerPhase.COARSE_SEARCH: "queued",
-    TunerPhase.FINE_SEARCH: "queued",
-    TunerPhase.SETTLED: "queued",
-    TunerPhase.CONFIRMING: "queued",
-    TunerPhase.CONFIRMED: "passed",
-    TunerPhase.FAILED_CONFIRM: "backoff",
-    TunerPhase.BACKOFF_PRECONFIRM: "backoff",
-    TunerPhase.BACKOFF_CONFIRMING: "backoff",
-    TunerPhase.HARDENING_T1: "queued",
-    TunerPhase.HARDENING_T2: "queued",
-    TunerPhase.HARDENED: "passed",
-}
-
 GRID_STATE_LABELS: dict[str, str] = {
     "pending": "Pending",
     "queued": "Queued",
@@ -311,10 +296,6 @@ def state_label(state: str) -> str:
     return GRID_STATE_LABELS.get(state, state)
 
 
-def status_label(status: str) -> str:
-    return SESSION_STATUS_LABELS.get(status, status)
-
-
 def duration_str(seconds: float | None) -> str:
     if seconds is None or seconds <= 0:
         return ABSENT
@@ -344,7 +325,6 @@ def _assert_complete() -> None:
         resolved = resolve(scheme, QPalette())
         for name, mapping in (
             ("PHASE_LABELS", PHASE_LABELS),
-            ("PHASE_TO_GRID", PHASE_TO_GRID),
             ("PHASE_COLORS", resolved["PHASE_COLORS"]),
         ):
             missing = set(TunerPhase) - set(mapping)
@@ -352,9 +332,6 @@ def _assert_complete() -> None:
                 raise AssertionError(f"{name} is missing phases: {sorted(missing)}")
         if set(resolved["STATE_COLORS"]) != set(GRID_STATE_LABELS):
             raise AssertionError("STATE_COLORS and GRID_STATE_LABELS disagree on states")
-        unmapped = {s for s in PHASE_TO_GRID.values() if s not in resolved["STATE_COLORS"]}
-        if unmapped:
-            raise AssertionError(f"PHASE_TO_GRID targets unknown grid states: {unmapped}")
         unstyled = set(SESSION_STATUS_LABELS) - set(resolved["STATUS_COLORS"])
         if unstyled:
             raise AssertionError(f"STATUS_COLORS is missing statuses: {sorted(unstyled)}")

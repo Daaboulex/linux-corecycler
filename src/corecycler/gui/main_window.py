@@ -48,10 +48,10 @@ from corecycler.gui.widgets.core_grid import CoreGridWidget
 from corecycler.history.context import detect_bios_change
 from corecycler.history.db import HistoryDB, adopt_legacy_root_db
 from corecycler.history.logger import TestRunLogger
-from corecycler.history.timefmt import format_local
 from corecycler.monitor.frequency import Clocks, fastest
 from corecycler.monitor.hwmon import Sensors
 from corecycler.monitor.tick import Tick, Ticker, first_cpus
+from corecycler.smu.driver import core_map_blocked
 
 log = logging.getLogger(__name__)
 
@@ -222,8 +222,9 @@ class MainWindow(QMainWindow):
         self._smu_tab = SMUTab(self._topology)
         self._tabs.addTab(self._smu_tab, "Curve Optimizer")
 
-        smu = self._smu_tab.smu if hasattr(self._smu_tab, "smu") else None
-        self._tuner_tab = TunerTab(self._history_db, self._topology, smu)
+        smu = self._smu_tab.smu
+        writable = smu is not None and smu.commands.has_co and core_map_blocked(smu) is None
+        self._tuner_tab = TunerTab(self._history_db, self._topology, smu.commands.co_range if writable else None)
         self._tuner_tab.tuner_running_changed.connect(self._on_tuner_running_changed)
         self._tuner_tab.tuner_core_testing.connect(self._on_tuner_core_update)
         self._tuner_tab.tuner_core_elapsed.connect(self._on_tuner_core_elapsed)
@@ -321,6 +322,7 @@ class MainWindow(QMainWindow):
         tick = self._ticker.read(first_cpus(self._topology))
         self._monitor_tab.on_tick(tick)
         self._memory_tab.on_tick(tick)
+        self._tuner_tab.refresh()
         self._feed_core_grid_telemetry(tick)
 
     def _start_test(self) -> None:
@@ -343,27 +345,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "OOM Kills Cannot Be Seen", f"Cannot start: {oom_problem}")
             return
 
-        # Warn if an active/paused tuner session exists — running a manual test
-        # won't corrupt CO offsets (manual tests don't touch SMU), but the user
-        # should be aware their tuner session is waiting.
-        if self._history_db:
-            from corecycler.tuner import persistence as _tp
-
-            active = _tp.get_active_session(self._history_db)
-            if active:
-                reply = QMessageBox.question(
-                    self,
-                    "Active Tuner Session",
-                    f"A tuner session is {active.status} "
-                    f"(started {format_local(active.created_at, date_only=True)}).\n\n"
-                    "Manual stress tests don't modify CO offsets, but you may want to "
-                    "resume or abort the tuner session first.\n\n"
-                    "Continue with manual test anyway?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
-                )
-                if reply != QMessageBox.StandardButton.Yes:
-                    return
+        waiting = self._tuner_tab.waiting_session()
+        if waiting is not None:
+            reply = QMessageBox.question(
+                self,
+                "Active Tuner Session",
+                f"Tuning session {waiting.session_id} is {waiting.status}.\n\n"
+                "Manual stress tests don't modify CO offsets, but you may want to "
+                "resume or abort the tuner session first.\n\n"
+                "Continue with manual test anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
         profile = self._config_tab.get_profile()
 
@@ -831,39 +826,18 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Error", f"Failed to load profile: {e}")
 
     def attempt_auto_resume(self) -> None:
-        """Login-autostart entry: resume the active mid-run session, if any.
-
-        Paused sessions are a deliberate human choice and stay paused;
-        quarantined/completed ones never qualify.
-        """
-        from corecycler.tuner import persistence as tp
-
-        if self._history_db is None:
-            log.info("auto-resume: no database available")
-            return
-        session = tp.pick_auto_resume_session(self._history_db)
-        if session is None:
-            log.info("auto-resume: no mid-run session to resume")
-            return
-        engine = getattr(self._tuner_tab, "_engine", None)
-        if engine is not None and engine.status != "idle":
-            log.info("auto-resume: engine already active (%s)", engine.status)
-            return
-        log.info("auto-resume: resuming session %d (%s)", session.id, session.status)
-        self._tuner_tab._resume_session(session.id)
+        self._tuner_tab.attempt_auto_resume()
 
     def closeEvent(self, event) -> None:
-        # Check if ANYTHING is running (manual test OR tuner OR memory stress)
         self._closing = True
         manual_running = self._worker and self._worker.isRunning()
-        tuner_running = self._tuner_tab.is_running
         memory_running = (
             hasattr(self, "_memory_tab")
             and self._memory_tab._stress_worker is not None
             and self._memory_tab._stress_worker.isRunning()
         )
 
-        if manual_running or tuner_running or memory_running:
+        if manual_running or memory_running:
             reply = QMessageBox.question(
                 self,
                 "Test Running",
@@ -903,10 +877,6 @@ class MainWindow(QMainWindow):
             if not self._worker.wait(5000):
                 self._worker.terminate()
                 self._worker.wait(2000)
-
-        # Stop auto-tuner
-        if tuner_running:
-            self._tuner_tab.force_stop()
 
         # Stop memory stress test if running
         if hasattr(self, "_memory_tab"):

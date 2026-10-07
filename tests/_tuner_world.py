@@ -492,3 +492,17 @@ __all__ = [
     "run_to_rest",
     "start",
 ]
+
+
+def save_machine_session(db, root, status: str, session_id: int | None = None) -> Stored:
+    from corecycler.tuner.live import Identity, Store
+    from corecycler.tuner.machine.session import stored
+    from tests._machine import this_boot
+
+    fake = fresh(2, [-3, -2], 1, max_offset=-5, k_1t=1)
+    start(fake)
+    saved = replace(stored(fake.state), status=status)
+    if session_id is not None:
+        saved = replace(saved, session_id=session_id)
+    Store(db, root / "state", Identity("bios-1", "cpu-1", None)).save(saved, this_boot())
+    return saved
