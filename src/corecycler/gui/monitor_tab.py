@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from collections import deque
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
@@ -28,12 +29,15 @@ from corecycler.monitor.frequency import (
     read_core_frequencies_dual,
     read_max_frequency,
 )
-from corecycler.monitor.hwmon import HWMonReader
 from corecycler.monitor.msr import MSRReader
 from corecycler.monitor.power import PowerMonitor
 from corecycler.smu.pmtable import PMTableReader
 
 MAX_FREQ_HISTORY = 60  # 1 minute at 1s
+
+
+if TYPE_CHECKING:
+    from corecycler.monitor.hwmon import Sensors
 
 
 class CoreFreqBar(QWidget):
@@ -238,10 +242,10 @@ class MonitorTab(QWidget):
     def _stale_style() -> str:
         return f"font: bold 11px monospace; padding: 2px; color: {theme.COLOR_MUTED_DARK};"
 
-    def __init__(self, topology=None) -> None:
+    def __init__(self, sensors: Sensors, topology=None) -> None:
         super().__init__()
         self._topology = topology
-        self._hwmon = HWMonReader()
+        self._sensors = sensors
         self._power = PowerMonitor()
         self._msr = MSRReader()
         self._cpu_usage = CPUUsageReader()
@@ -254,9 +258,9 @@ class MonitorTab(QWidget):
         self._setup_ui()
 
         # Check data source availability and set initial labels
-        if not self._hwmon.is_available():
+        if not self._sensors.available():
             self._tctl_label.setText("Tctl: N/A")
-        has_voltage = self._hwmon.is_available() and self._hwmon.read().vcore_v is not None
+        has_voltage = self._sensors.vcore_source is not None
         if not has_voltage:
             self._vcore_label.setText("Vcore: N/A (no voltage source)")
         has_power = self._power.is_available() or self._msr.is_available()
@@ -432,9 +436,8 @@ class MonitorTab(QWidget):
                 self._freq_chart.max_val = max_freq * 1.1
             self._freq_chart.add_value(max_freq)
 
-        # hwmon
-        hwmon_data = self._hwmon.read()
-        tctl = hwmon_data.tctl_c
+        sensed = self._sensors.read()
+        tctl = sensed.tctl
         if tctl is not None:
             self._hwmon_fail_count = 0
             self._tctl_label.setStyleSheet(self._NORMAL_STYLE)
@@ -445,10 +448,9 @@ class MonitorTab(QWidget):
             if self._hwmon_fail_count >= self._STALE_THRESHOLD:
                 self._tctl_label.setStyleSheet(self._stale_style())
             # Keep last-known text — don't clear it
-        # Per-CCD temps — create labels dynamically on first appearance
-        for tccd_idx in sorted(hwmon_data.tccd_temps):
-            temp = hwmon_data.tccd_temps[tccd_idx]
-            ccd_idx = tccd_idx - 1  # Tccd1 → CCD 0
+        for ccd_idx, temp in sensed.tccd:
+            if temp is None:
+                continue
             if ccd_idx not in self._ccd_temp_labels:
                 label = QLabel()
                 label.setStyleSheet("font: bold 11px monospace; padding: 2px;")
@@ -465,10 +467,11 @@ class MonitorTab(QWidget):
                         vcache_tag = " VC"
                         break
             self._ccd_temp_labels[ccd_idx].setText(f"CCD{ccd_idx}{vcache_tag}: {temp:.1f}°C")
-        if hwmon_data.vcore_v is not None:
+        core_vcore = self._sensors.vcore(sensed)
+        if core_vcore is not None:
             self._vcore_label.setStyleSheet(self._NORMAL_STYLE)
-            self._vcore_label.setText(f"Vcore: {hwmon_data.vcore_v:.4f}V")
-            self._voltage_chart.add_value(hwmon_data.vcore_v)
+            self._vcore_label.setText(f"Vcore: {core_vcore:.4f}V")
+            self._voltage_chart.add_value(core_vcore)
         else:
             if self._hwmon_fail_count >= self._STALE_THRESHOLD:
                 self._vcore_label.setStyleSheet(self._stale_style())
@@ -516,11 +519,7 @@ class MonitorTab(QWidget):
                 for cpu_id, reading in power_readings.items():
                     power_data[cpu_id] = reading.watts
 
-        # Build CCD → temp mapping from hwmon tccd_temps
-        # k10temp: Tccd1 = CCD index 1, but topology CCD indices start at 0
-        ccd_temps: dict[int, float] = {}
-        for tccd_idx, temp in hwmon_data.tccd_temps.items():
-            ccd_temps[tccd_idx - 1] = temp  # Tccd1 → CCD 0, Tccd2 → CCD 1
+        ccd_temps = {ccd: temp for ccd, temp in sensed.tccd if temp is not None}
 
         # update per-core bars (even if hidden, so history accumulates)
         if self._per_core_bars and freqs:

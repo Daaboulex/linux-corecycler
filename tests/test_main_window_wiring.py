@@ -28,6 +28,7 @@ from corecycler.history.db import HistoryDB, RunRecord
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from tests._machine import this_boot
+from tests._sensors import FakeSensors
 
 
 def _qapp():
@@ -93,7 +94,7 @@ def _build(
     monkeypatch.setattr(mw, "detect_topology", lambda: topology or _topo())
     monkeypatch.setattr(mw, "detect_bios_change", bios if callable(bios) else (lambda _d: bios))
     monkeypatch.setattr(mw, "MSRReader", MagicMock)
-    monkeypatch.setattr(mw, "HWMonReader", MagicMock)
+    monkeypatch.setattr(mw, "Sensors", FakeSensors)
     monkeypatch.setattr(mw, "read_core_frequencies", lambda: {0: 4500.0, 1: 4400.0})
     monkeypatch.setattr(mw, "memory_accounting_problem", lambda: None)
     return mw.MainWindow()
@@ -493,17 +494,33 @@ class TestElapsedWatchdog:
 
     def test_a_telemetry_sample_is_recorded(self, window):
         window._msr.is_available.return_value = False
-        hwmon = MagicMock()
-        hwmon.tccd_temps = {1: 72.0}
-        hwmon.tctl_c = 65.0
-        hwmon.vcore_v = 1.2
-        window._hwmon.read.return_value = hwmon
+        window._sensors.give(tctl=65.0, tccd=((0, 72.0),), vcore=1.2)
         logger = MagicMock()
         window._logger = logger
         window._active_test_core = 0
         window._feed_core_grid_telemetry()
-        assert logger.record_telemetry_sample.called
+        logger.record_telemetry_sample.assert_called_once_with(0, 4500.0, 72.0, 1.2, effective_max_mhz=None)
         assert window._core_telemetry[0]["max_freq"] == 4500.0
+
+    def test_a_failing_telemetry_write_is_logged_once_and_its_recovery_is_logged(self, window, caplog):
+        window._msr.is_available.return_value = False
+        window._logger = MagicMock()
+        window._logger.record_telemetry_sample.side_effect = [sqlite3.OperationalError("disk full")] * 2 + [None]
+        window._active_test_core = 0
+        with caplog.at_level("INFO", logger="corecycler.gui.main_window"):
+            for _ in range(3):
+                window._feed_core_grid_telemetry()
+        assert caplog.text.count("disk full") == 1
+        assert "recorded again" in caplog.text
+
+    def test_a_core_with_no_temperature_read_records_none_not_zero(self, window):
+        window._msr.is_available.return_value = False
+        window._sensors.give()
+        window._logger = MagicMock()
+        window._active_test_core = 0
+        window._feed_core_grid_telemetry()
+        assert window._logger.record_telemetry_sample.call_args.args[2] is None
+        assert window._core_telemetry[0]["max_temp"] == 0.0
 
 
 class TestProfileIo:

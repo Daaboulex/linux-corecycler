@@ -11,6 +11,7 @@ These run only under real PySide6 (offscreen); the conftest stub is skipped.
 from __future__ import annotations
 
 import sys as _sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,6 +20,7 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
 from corecycler.engine.topology import CPUTopology, PhysicalCore
+from corecycler.monitor.hwmon import Sensors
 
 
 def _qapp():
@@ -103,7 +105,7 @@ class TestMonitorTabResourceClose:
         _qapp()
         from corecycler.gui.monitor_tab import MonitorTab
 
-        tab = MonitorTab(topology=_topo())
+        tab = MonitorTab(Sensors(Path("/nonexistent")), topology=_topo())
         tab._msr = MagicMock()
         tab.stop_monitoring()
         tab._msr.close.assert_called_once()

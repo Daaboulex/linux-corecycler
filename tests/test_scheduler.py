@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -20,6 +21,7 @@ from corecycler.engine.scheduler import (
     TestState,
 )
 from corecycler.engine.topology import CPUTopology, PhysicalCore
+from corecycler.monitor.hwmon import SensorRead
 from tests.test_execution import BUSY, FakeBackend, FakeDetector, _child, own
 
 
@@ -44,6 +46,10 @@ class ScriptedSupervisor:
     def run(self, lanes, config, duration):
         step = ScriptedSupervisor.script.pop(0)
         return step(self, lanes, config, duration)
+
+
+def sensors_at(temperature: float):
+    return lambda: SimpleNamespace(read=lambda: SensorRead(hottest=temperature))
 
 
 @pytest.fixture(autouse=True)
@@ -445,7 +451,7 @@ class TestVariableLoadComposition:
 
 class TestAStopBeforeTheLastPhase:
     def test_a_stop_during_idle_stability_leaves_the_core_without_a_verdict(self, tmp_path, monkeypatch, caplog):
-        monkeypatch.setattr(execution, "read_cpu_temperature", lambda: 40.0)
+        monkeypatch.setattr(scheduler_mod, "Sensors", sensors_at(40.0))
         sched = make_scheduler(tmp_path, cores_to_test=[0], idle_stability_test=10.0)
         ScriptedSupervisor.script = [step_pass]
         timers: list[threading.Timer] = []
@@ -507,7 +513,7 @@ class ClosableDetector(FakeDetector):
 def real_supervisor(monkeypatch):
     monkeypatch.setattr(scheduler_mod, "Supervisor", execution.Supervisor)
     monkeypatch.setattr(containment, "contain", lambda cpus: None)
-    monkeypatch.setattr(execution, "read_cpu_temperature", lambda: 40.0)
+    monkeypatch.setattr(scheduler_mod, "Sensors", sensors_at(40.0))
 
 
 def timed_pass(sup, lanes, config, duration):
@@ -609,7 +615,7 @@ class TestRapidTransitionLanes:
         assert "CPU:2 MC5_STATUS uncorrected" in results[2].detail
 
     def test_a_machine_check_in_an_idle_phase_fails_only_the_core_that_logged_it(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(execution, "read_cpu_temperature", lambda: 40.0)
+        monkeypatch.setattr(scheduler_mod, "Sensors", sensors_at(40.0))
         sched = make_scheduler(tmp_path, topo=make_topo(THREE_SMT_CORES))
         sched.detector = ClosableDetector([[own(2, "CPU:2 MC5_STATUS uncorrected")]])
         ScriptedSupervisor.script = [timed_pass]
@@ -620,7 +626,7 @@ class TestRapidTransitionLanes:
         assert "core 2" in results[0].detail
 
     def test_a_thermal_trip_in_an_idle_phase_stops_every_core_as_thermal(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(execution, "read_cpu_temperature", lambda: 104.0)
+        monkeypatch.setattr(scheduler_mod, "Sensors", sensors_at(104.0))
         sched = make_scheduler(tmp_path, topo=make_topo(THREE_SMT_CORES))
         ScriptedSupervisor.script = [timed_pass]
         results = sched.run_rapid_transitions([0, 1, 2], total_duration=1.0, load_seconds=0.02, idle_seconds=0.5)

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from corecycler.engine import containment, execution
+from corecycler.engine import containment
 from corecycler.engine.backends.base import Outcome, StressConfig
 from corecycler.engine.backends.mprime import MprimeBackend
 from corecycler.engine.backends.stress_ng import StressNgBackend
@@ -17,6 +17,7 @@ from corecycler.engine.parallel import ParallelStress
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.history.db import HistoryDB
+from corecycler.monitor.hwmon import SensorRead, Sensors
 from corecycler.tuner import engine as eng
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.state import TunerPhase
@@ -65,7 +66,7 @@ def engine(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(instance, "_start_worker", MagicMock())
     monkeypatch.setattr(eng.QTimer, "singleShot", lambda _ms, fn: None)
-    monkeypatch.setattr(execution, "read_cpu_temperature", lambda: 40.0)
+    monkeypatch.setattr(Sensors, "read", lambda self: SensorRead(hottest=40.0))
     instance.start()
     yield instance
     db.close()
@@ -198,7 +199,7 @@ class RecordsItsTortureConfig(MprimeBackend):
 
 
 def test_each_stage4_lane_runs_one_mprime_torture_worker_that_meets_its_load_floor(tmp_path, monkeypatch):
-    monkeypatch.setattr(execution, "read_cpu_temperature", lambda: 40.0)
+    monkeypatch.setattr(Sensors, "read", lambda self: SensorRead(hottest=40.0))
     cores = [0, 1, 2, 3]
     topology = CPUTopology()
     for core in cores:

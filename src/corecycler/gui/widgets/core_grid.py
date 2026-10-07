@@ -121,7 +121,7 @@ class CoreCell(QWidget):
     def update_telemetry(
         self,
         freq_mhz: float = 0,
-        temp_c: float = 0,
+        temp_c: float | None = None,
         vcore_v: float | None = None,
         stretch_pct: float | None = None,
         co_offset: int | None = None,
@@ -137,7 +137,7 @@ class CoreCell(QWidget):
                 parts.append(f"{freq_mhz:.0f}MHz")
             if stretch_pct is not None:
                 parts.append(f"S:{stretch_pct:.1f}%")
-            if temp_c > 0:
+            if temp_c is not None:
                 parts.append(f"{temp_c:.0f}C")
             if vcore_v is not None:
                 parts.append(f"{vcore_v:.4f}V")
@@ -216,7 +216,7 @@ class CoreGridWidget(QWidget):
         self,
         core_id: int,
         freq_mhz: float = 0,
-        temp_c: float = 0,
+        temp_c: float | None = None,
         vcore_v: float | None = None,
         stretch_pct: float | None = None,
         co_offset: int | None = None,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys as _sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -12,6 +13,7 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
 from corecycler.engine.topology import CPUTopology, PhysicalCore
+from corecycler.monitor.hwmon import Sensors
 
 
 def _qapp():
@@ -39,7 +41,7 @@ def _tab(topo=None):
     _qapp()
     from corecycler.gui.monitor_tab import MonitorTab
 
-    return MonitorTab(topology=topo or _topo())
+    return MonitorTab(Sensors(Path("/nonexistent")), topology=topo or _topo())
 
 
 class TestCoreFreqBar:

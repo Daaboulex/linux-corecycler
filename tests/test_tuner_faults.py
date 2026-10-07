@@ -1370,9 +1370,8 @@ class TestThermalFailClosed:
             grace_seconds=3.0,
             hard_margin=8.0,
             require_sensor=True,
-            read=lambda: None,
         )
-        assert watch.safe() is False  # fail closed
+        assert watch.safe(None) is False  # fail closed
 
     def test_no_sensor_lenient_when_not_required(self):
         watch = ThermalWatch(
@@ -1380,9 +1379,8 @@ class TestThermalFailClosed:
             grace_seconds=3.0,
             hard_margin=8.0,
             require_sensor=False,
-            read=lambda: None,
         )
-        assert watch.safe() is True  # explicit opt-out
+        assert watch.safe(None) is True  # explicit opt-out
 
     def test_tuner_default_requires_sensor(self, db, topo, smu, mock_backend):
         """The tuner drives the scheduler with the sensor required by default."""

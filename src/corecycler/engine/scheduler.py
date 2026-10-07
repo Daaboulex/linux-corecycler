@@ -15,6 +15,7 @@ from corecycler.engine import execution
 from corecycler.engine.backends.base import LaneSignal, Outcome, OutcomeKind, StressResult
 from corecycler.engine.detector import CoreMachineCheck, ErrorDetector, KernelEvent
 from corecycler.engine.execution import Lane, SuperviseHooks, Supervisor, ThermalWatch
+from corecycler.monitor.hwmon import Sensors
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -91,7 +92,8 @@ class CoreScheduler:
         self._current_core: int | None = None
         self._current_cycle: int = 0
         self._stop_event = threading.Event()
-        self._thermal: ThermalWatch | None = None
+        self._thermal = ThermalWatch.for_config(scheduler_config)
+        self._sensors = Sensors()
 
         self.on_core_start: list = []
         self.on_core_finish: list = []
@@ -118,21 +120,13 @@ class CoreScheduler:
             return sorted(self.config.cores_to_test)
         return sorted(self.topology.cores.keys())
 
-    def _new_thermal(self) -> ThermalWatch:
-        return ThermalWatch(
-            max_temperature=self.config.max_temperature,
-            grace_seconds=self.config.over_temp_grace_seconds,
-            hard_margin=self.config.over_temp_hard_margin,
-            require_sensor=self.config.require_thermal_sensor,
-        )
-
     def run(self) -> dict[int, list[StressResult]]:
         """Run the full test cycle. Blocks until complete. Use run_async() for GUI."""
         self.state = TestState.RUNNING
         self._stop_event.clear()
         self.observed_mce = []
         self.detector.reset()
-        self._thermal = self._new_thermal()
+        self._thermal = ThermalWatch.for_config(self.config)
 
         cores = self._get_test_cores()
         try:
@@ -169,7 +163,8 @@ class CoreScheduler:
         return Supervisor(
             backend=self.backend,
             detector=self.detector,
-            thermal=self._thermal or self._new_thermal(),
+            thermal=self._thermal,
+            sensors=self._sensors.read,
             stop_event=self._stop_event,
             observed=self.observed_mce,
             poll_interval=self.config.poll_interval,
@@ -284,7 +279,8 @@ class CoreScheduler:
                 idle = execution.watch_idle(
                     cpus=lane.cpus,
                     duration=segment,
-                    thermal=self._thermal or self._new_thermal(),
+                    thermal=self._thermal,
+                    sensors=self._sensors.read,
                     detector=self.detector,
                     stop_event=self._stop_event,
                     observed=self.observed_mce,
@@ -342,7 +338,8 @@ class CoreScheduler:
         return execution.watch_idle(
             cpus=cpus,
             duration=duration,
-            thermal=self._thermal or self._new_thermal(),
+            thermal=self._thermal,
+            sensors=self._sensors.read,
             detector=self.detector,
             stop_event=self._stop_event,
             observed=self.observed_mce,
@@ -368,7 +365,7 @@ class CoreScheduler:
             self.state = TestState.FINISHED
             return refused
         self.observed_mce = []
-        self._thermal = self._new_thermal()
+        self._thermal = ThermalWatch.for_config(self.config)
         lanes = [
             Lane(
                 core_id=core,
@@ -399,6 +396,7 @@ class CoreScheduler:
                         cpus=idle_cpus,
                         duration=min(idle_seconds, total_duration - elapsed),
                         thermal=self._thermal,
+                        sensors=self._sensors.read,
                         detector=self.detector,
                         stop_event=self._stop_event,
                         observed=self.observed_mce,
@@ -421,10 +419,6 @@ class CoreScheduler:
                 elapsed,
             )
         return _every_core(cores, Outcome.PASS, "", elapsed)
-
-    @staticmethod
-    def _read_cpu_temperature() -> float | None:
-        return execution.read_cpu_temperature()
 
 
 def _phase_cut(core_id: int, phase: str, duration: float) -> StressResult:

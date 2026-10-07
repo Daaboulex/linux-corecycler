@@ -6,6 +6,7 @@ import contextlib
 import json
 import logging
 import os
+import sqlite3
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -49,7 +50,7 @@ from corecycler.history.db import HistoryDB, adopt_legacy_root_db
 from corecycler.history.logger import TestRunLogger
 from corecycler.history.timefmt import format_local
 from corecycler.monitor.frequency import read_core_frequencies
-from corecycler.monitor.hwmon import HWMonReader
+from corecycler.monitor.hwmon import Sensors
 from corecycler.monitor.msr import MSRReader
 
 log = logging.getLogger(__name__)
@@ -109,7 +110,8 @@ class MainWindow(QMainWindow):
         self._worker: TestWorker | None = None
         self._closing = False
         self._test_start_time: float = 0
-        self._hwmon = HWMonReader()
+        self._sensors = Sensors()
+        self._telemetry_failing = False
         self._msr = MSRReader()
         self._core_telemetry: dict[int, dict] = {}  # core_id -> {max_freq, max_temp, last_vcore}
         self._core_status_cache: dict[int, CoreTestStatus] = {}
@@ -214,7 +216,7 @@ class MainWindow(QMainWindow):
         self._results_tab = ResultsTab()
         self._tabs.addTab(self._results_tab, "Results")
 
-        self._monitor_tab = MonitorTab(topology=self._topology)
+        self._monitor_tab = MonitorTab(topology=self._topology, sensors=self._sensors)
         self._tabs.addTab(self._monitor_tab, "Monitor")
 
         self._smu_tab = SMUTab(self._topology)
@@ -769,31 +771,29 @@ class MainWindow(QMainWindow):
             if power_reading:
                 core_watts = power_reading.watts
 
-        # temperature (prefer per-CCD temp over package Tctl)
-        hwmon_data = self._hwmon.read()
-        ccd = core_info.ccd if core_info.ccd is not None else 0
-        # k10temp: Tccd1 -> CCD 0 (index offset)
-        temp = hwmon_data.tccd_temps.get(ccd + 1, hwmon_data.tctl_c or 0)
-        vcore = hwmon_data.vcore_v
+        reading = self._sensors.read()
+        temp = dict(reading.tccd).get(core_info.ccd if core_info.ccd is not None else 0, reading.tctl)
+        core_vcore = self._sensors.vcore(reading)
 
         self._core_grid.update_core_telemetry(
             current_core,
             freq,
             temp,
-            vcore,
+            core_vcore,
             stretch_pct=stretch_pct,
         )
 
-        # Record telemetry sample in history
         if self._logger and self._settings.record_telemetry:
-            with contextlib.suppress(Exception):  # don't spam logs every second
-                self._logger.record_telemetry_sample(
-                    current_core,
-                    freq,
-                    temp,
-                    vcore,
-                    effective_max_mhz=None,
-                )
+            try:
+                self._logger.record_telemetry_sample(current_core, freq, temp, core_vcore, effective_max_mhz=None)
+            except sqlite3.Error as exc:
+                if not self._telemetry_failing:
+                    log.warning("telemetry samples are not being recorded: %s", exc)
+                self._telemetry_failing = True
+            else:
+                if self._telemetry_failing:
+                    log.info("telemetry samples are recorded again")
+                self._telemetry_failing = False
 
         # track peak telemetry per core for the log
         if current_core not in self._core_telemetry:
@@ -813,14 +813,14 @@ class MainWindow(QMainWindow):
             t["max_stretch_pct"] = stretch_pct
         if core_watts is not None:
             t["core_watts"] = core_watts
-        if temp > t["max_temp"]:
+        if temp is not None and temp > t["max_temp"]:
             t["max_temp"] = temp
-        if vcore is not None:
-            t["last_vcore"] = vcore
-            if t["min_vcore"] is None or vcore < t["min_vcore"]:
-                t["min_vcore"] = vcore
-            if t["max_vcore"] is None or vcore > t["max_vcore"]:
-                t["max_vcore"] = vcore
+        if core_vcore is not None:
+            t["last_vcore"] = core_vcore
+            if t["min_vcore"] is None or core_vcore < t["min_vcore"]:
+                t["min_vcore"] = core_vcore
+            if t["max_vcore"] is None or core_vcore > t["max_vcore"]:
+                t["max_vcore"] = core_vcore
 
     def _save_profile(self) -> None:
         from corecycler.config.settings import save_profile

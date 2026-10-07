@@ -18,7 +18,7 @@ from corecycler.engine import containment, execution
 from corecycler.engine import scheduler as scheduler_mod
 from corecycler.engine.backends.base import LaneSignal, Outcome, StressConfig
 from corecycler.engine.execution import Lane, SuperviseHooks, ThermalWatch, _LaneRun
-from corecycler.engine.scheduler import CoreScheduler
+from corecycler.monitor.hwmon import SensorRead
 
 
 class TestContainmentProbe:
@@ -177,25 +177,9 @@ class TestThermalEdges:
             grace_seconds=0.0,
             hard_margin=8,
             require_sensor=False,
-            read=lambda: 96.0,
         )
-        assert watch.safe() is False
-        assert watch.safe() is False
-
-
-class TestTemperatureSourceEdges:
-    def test_a_nameless_or_unreadable_hwmon_node_is_skipped(self, tmp_path):
-        nameless = tmp_path / "hwmon0"
-        nameless.mkdir()
-        unreadable = tmp_path / "hwmon1"
-        unreadable.mkdir()
-        (unreadable / "name").mkdir()
-        real = tmp_path / "hwmon2"
-        real.mkdir()
-        (real / "name").write_text("k10temp\n")
-        (real / "temp1_input").write_text("51000\n")
-        with patch.object(execution, "Path", lambda _p: tmp_path):
-            assert execution.read_cpu_temperature() == 51.0
+        assert watch.safe(96.0) is False
+        assert watch.safe(96.0) is False
 
 
 def _idle_supervisor(backend=None, **overrides):
@@ -209,8 +193,8 @@ def _idle_supervisor(backend=None, **overrides):
             grace_seconds=3,
             hard_margin=8,
             require_sensor=False,
-            read=lambda: 40.0,
         ),
+        sensors=lambda: SensorRead(hottest=40.0),
         stop_event=threading.Event(),
         observed=[],
         poll_interval=0.01,
@@ -456,10 +440,6 @@ class TestSchedulerHookGlue:
         results = sched.run_rapid_transitions([0, 1], total_duration=5.0, load_seconds=0.02)
         assert [results[core].outcome for core in (0, 1)] == [Outcome.CUT_SHORT, Outcome.CUT_SHORT]
 
-    def test_the_temperature_delegate_reads_through_the_engine(self, monkeypatch):
-        monkeypatch.setattr(execution, "read_cpu_temperature", lambda: 33.5)
-        assert CoreScheduler._read_cpu_temperature() == 33.5
-
     def test_an_idle_error_with_stop_on_error_latches_the_stop(self, tmp_path, monkeypatch):
         from test_scheduler import ok
 
@@ -474,26 +454,6 @@ class TestSchedulerHookGlue:
 
 
 class TestRemainingLoopEdges:
-    def test_a_lone_nameless_hwmon_node_reads_as_no_sensor(self, tmp_path):
-        (tmp_path / "hwmon0").mkdir()
-        with patch.object(execution, "Path", lambda _p: tmp_path):
-            assert execution.read_cpu_temperature() is None
-
-    def test_a_lone_unreadable_name_reads_as_no_sensor(self, tmp_path):
-        node = tmp_path / "hwmon0"
-        node.mkdir()
-        (node / "name").mkdir()
-        with patch.object(execution, "Path", lambda _p: tmp_path):
-            assert execution.read_cpu_temperature() is None
-
-    def test_a_lone_foreign_sensor_reads_as_no_cpu_sensor(self, tmp_path):
-        node = tmp_path / "hwmon0"
-        node.mkdir()
-        (node / "name").write_text("nvme\n")
-        (node / "temp1_input").write_text("99000\n")
-        with patch.object(execution, "Path", lambda _p: tmp_path):
-            assert execution.read_cpu_temperature() is None
-
     def test_the_in_loop_output_scan_fails_the_lane_mid_run(self, tmp_path):
         from test_execution import FakeBackend
 

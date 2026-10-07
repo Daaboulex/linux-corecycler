@@ -16,7 +16,6 @@ import subprocess
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from corecycler.config.paths import hand_back
@@ -27,10 +26,12 @@ from corecycler.engine.detector import KernelTrouble, UnblamedMachineCheck
 if TYPE_CHECKING:
     import threading
     from collections.abc import Callable
+    from pathlib import Path
 
     from corecycler.engine.backends.base import StressBackend, StressConfig
     from corecycler.engine.detector import ErrorDetector, KernelEvent
     from corecycler.engine.topology import CPUTopology
+    from corecycler.monitor.hwmon import SensorRead
 
 log = logging.getLogger(__name__)
 
@@ -119,19 +120,25 @@ class ThermalWatch:
         grace_seconds: float,
         hard_margin: float,
         require_sensor: bool,
-        read: Callable[[], float | None] | None = None,
     ) -> None:
         self.max_temperature = max_temperature
         self.grace_seconds = grace_seconds
         self.hard_margin = hard_margin
         self.require_sensor = require_sensor
-        self._read = read or read_cpu_temperature
         self.tripped = False
         self._over_since: float | None = None
         self.last_temperature: float | None = None
 
-    def safe(self) -> bool:
-        temp = self._read()
+    @classmethod
+    def for_config(cls, config) -> ThermalWatch:
+        return cls(
+            max_temperature=config.max_temperature,
+            grace_seconds=config.over_temp_grace_seconds,
+            hard_margin=config.over_temp_hard_margin,
+            require_sensor=config.require_thermal_sensor,
+        )
+
+    def safe(self, temp: float | None) -> bool:
         self.last_temperature = temp
         if temp is None:
             return not self.require_sensor
@@ -156,33 +163,6 @@ class ThermalWatch:
                 return True
             return False
         return True
-
-
-def read_cpu_temperature() -> float | None:
-    hwmon_base = Path("/sys/class/hwmon")
-    if not hwmon_base.exists():
-        return None
-    with contextlib.suppress(OSError):
-        for hwmon_dir in hwmon_base.iterdir():
-            name_file = hwmon_dir / "name"
-            if not name_file.exists():
-                continue
-            try:
-                name = name_file.read_text().strip()
-            except OSError:
-                continue
-            if name not in ("k10temp", "coretemp", "zenpower", "zenpower3"):
-                continue
-            max_temp = 0.0
-            for temp_input in sorted(hwmon_dir.glob("temp*_input")):
-                try:
-                    temp_c = int(temp_input.read_text().strip()) / 1000.0
-                except (ValueError, OSError):
-                    continue
-                max_temp = max(max_temp, temp_c)
-            if max_temp > 0:
-                return max_temp
-    return None
 
 
 _PR_SET_PDEATHSIG = 1
@@ -292,6 +272,7 @@ class Supervisor:
         backend: StressBackend,
         detector: ErrorDetector,
         thermal: ThermalWatch,
+        sensors: Callable[[], SensorRead],
         stop_event: threading.Event,
         observed: list[KernelEvent],
         poll_interval: float = 1.0,
@@ -299,12 +280,13 @@ class Supervisor:
         phase: str = "stress",
         hooks: SuperviseHooks | None = None,
         containment_for: Callable[[tuple[int, ...]], containment.Containment | None] | None = None,
-        freeze: Callable[[float], bool] | None = None,
+        freeze: Callable[[float, SensorRead], bool] | None = None,
         hold_cap_s: float | None = None,
     ) -> None:
         self.backend = backend
         self.detector = detector
         self.thermal = thermal
+        self.sensors = sensors
         self.stop_event = stop_event
         self.observed = observed
         self.poll_interval = poll_interval
@@ -372,8 +354,9 @@ class Supervisor:
             now = time.monotonic()
             if now >= deadline:
                 return
+            reading = self.sensors()
             if self.freeze is not None:
-                self._set_frozen(runs, self.freeze(now - start), now)
+                self._set_frozen(runs, self.freeze(now - start, reading), now)
             if self.hold_cap_s is not None:
                 held = [run.frozen_since for run in runs if run.frozen]
                 if held and now - min(held) > self.hold_cap_s:
@@ -385,7 +368,7 @@ class Supervisor:
             for run in runs:
                 if run.alive:
                     self._check(run, now, start)
-            if not self.thermal.safe():
+            if not self.thermal.safe(reading.hottest):
                 temp = self.thermal.last_temperature
                 if self.hooks.on_thermal and temp is not None:
                     self.hooks.on_thermal(temp)
@@ -649,6 +632,7 @@ def watch_idle(
     cpus: tuple[int, ...],
     duration: float,
     thermal: ThermalWatch,
+    sensors: Callable[[], SensorRead],
     detector: ErrorDetector,
     stop_event: threading.Event,
     observed: list[KernelEvent],
@@ -659,7 +643,7 @@ def watch_idle(
     found: list[LaneSignal] = []
     while True:
         final = bool(found) or time.monotonic() - start >= duration or stop_event.is_set()
-        if not final and not thermal.safe():
+        if not final and not thermal.safe(sensors().hottest):
             final = True
             found.append(
                 LaneSignal(

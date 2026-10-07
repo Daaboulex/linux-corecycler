@@ -45,6 +45,7 @@ from corecycler.engine.execution import (
     exit_signal,
     watch_idle,
 )
+from corecycler.monitor.hwmon import SensorRead
 from tests.test_detector import LONE_DECODER_RECORD, _append, _kmsg
 
 if TYPE_CHECKING:
@@ -384,7 +385,6 @@ def cool_thermal() -> ThermalWatch:
         grace_seconds=3.0,
         hard_margin=8.0,
         require_sensor=False,
-        read=lambda: 40.0,
     )
 
 
@@ -394,8 +394,11 @@ def hot_thermal() -> ThermalWatch:
         grace_seconds=0,
         hard_margin=8,
         require_sensor=False,
-        read=lambda: 104.0,
     )
+
+
+def at(temperature: float | None):
+    return lambda: SensorRead(hottest=temperature)
 
 
 def make_supervisor(
@@ -403,6 +406,7 @@ def make_supervisor(
     *,
     detector: FakeDetector | ErrorDetector | None = None,
     thermal: ThermalWatch | None = None,
+    sensors=None,
     stop_event: threading.Event | None = None,
     observed: list | None = None,
     poll_interval: float = 0.02,
@@ -417,6 +421,7 @@ def make_supervisor(
         backend=backend,
         detector=detector or FakeDetector(),
         thermal=thermal or cool_thermal(),
+        sensors=sensors or at(40.0),
         stop_event=stop,
         observed=seen,
         poll_interval=poll_interval,
@@ -542,7 +547,9 @@ class TestOutcomeGrading:
 
     def test_a_lanes_own_machine_check_outranks_a_thermal_trip(self, tmp_path):
         detector = FakeDetector([[own(0)]])
-        supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), detector=detector, thermal=hot_thermal())
+        supervisor, _, _ = make_supervisor(
+            FakeBackend(_child(BUSY)), detector=detector, thermal=hot_thermal(), sensors=at(104.0)
+        )
         verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.OWN_CORE_MCE
         assert "temperature" in verdict.detail
@@ -706,7 +713,7 @@ class TestVerdicts:
         assert not alive
 
     def test_the_supervisor_never_sets_the_callers_stop(self, tmp_path):
-        supervisor, stop, _ = make_supervisor(FakeBackend(_child(BUSY)), thermal=hot_thermal())
+        supervisor, stop, _ = make_supervisor(FakeBackend(_child(BUSY)), thermal=hot_thermal(), sensors=at(104.0))
         verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.THERMAL
         assert not stop.is_set()
@@ -1351,9 +1358,8 @@ class TestThermalGuard:
             grace_seconds=3,
             hard_margin=8,
             require_sensor=True,
-            read=lambda: None,
         )
-        assert watch.safe() is False
+        assert watch.safe(None) is False
 
     def test_a_missing_sensor_is_tolerated_when_optional(self):
         watch = ThermalWatch(
@@ -1361,9 +1367,8 @@ class TestThermalGuard:
             grace_seconds=3,
             hard_margin=8,
             require_sensor=False,
-            read=lambda: None,
         )
-        assert watch.safe() is True
+        assert watch.safe(None) is True
 
     def test_a_brief_overshoot_is_granted_grace(self):
         watch = ThermalWatch(
@@ -1371,9 +1376,8 @@ class TestThermalGuard:
             grace_seconds=60,
             hard_margin=8,
             require_sensor=False,
-            read=lambda: 96.0,
         )
-        assert watch.safe() is True
+        assert watch.safe(96.0) is True
 
     def test_a_sustained_overshoot_trips(self):
         watch = ThermalWatch(
@@ -1381,9 +1385,8 @@ class TestThermalGuard:
             grace_seconds=0.0,
             hard_margin=8,
             require_sensor=False,
-            read=lambda: 96.0,
         )
-        assert watch.safe() is False
+        assert watch.safe(96.0) is False
         assert watch.tripped
 
     def test_recovery_before_grace_resets_the_window(self):
@@ -1393,11 +1396,10 @@ class TestThermalGuard:
             grace_seconds=60,
             hard_margin=8,
             require_sensor=False,
-            read=lambda: next(temps),
         )
-        assert watch.safe() is True
-        assert watch.safe() is True
-        assert watch.safe() is True
+        assert watch.safe(next(temps)) is True
+        assert watch.safe(next(temps)) is True
+        assert watch.safe(next(temps)) is True
         assert watch._over_since is not None
 
     def test_the_hard_ceiling_trips_immediately(self):
@@ -1406,9 +1408,8 @@ class TestThermalGuard:
             grace_seconds=60,
             hard_margin=8,
             require_sensor=False,
-            read=lambda: 103.5,
         )
-        assert watch.safe() is False
+        assert watch.safe(103.5) is False
         assert watch.tripped
 
     def test_hysteresis_governs_resume(self):
@@ -1418,17 +1419,16 @@ class TestThermalGuard:
             grace_seconds=0,
             hard_margin=8,
             require_sensor=False,
-            read=lambda: next(temps),
         )
-        assert watch.safe() is False
-        assert watch.safe() is False
-        assert watch.safe() is True
+        assert watch.safe(next(temps)) is False
+        assert watch.safe(next(temps)) is False
+        assert watch.safe(next(temps)) is True
 
     def test_a_trip_is_a_batch_outcome_and_fires_the_hook(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(5)"))
         seen_temps: list[float] = []
         supervisor, _, _ = make_supervisor(
-            backend, thermal=hot_thermal(), hooks=SuperviseHooks(on_thermal=seen_temps.append)
+            backend, thermal=hot_thermal(), sensors=at(104.0), hooks=SuperviseHooks(on_thermal=seen_temps.append)
         )
         verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 5.0)
         assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.THERMAL] * 2
@@ -1445,42 +1445,15 @@ class TestThermalGuard:
             grace_seconds=0,
             hard_margin=8,
             require_sensor=False,
-            read=hot_once_core_0_has_ended,
         )
         supervisor, _, _ = make_supervisor(
             FakeBackend(_child(CORE_0_ENDS_AT_ONCE)),
             thermal=thermal,
+            sensors=lambda: SensorRead(hottest=hot_once_core_0_has_ended()),
             hooks=SuperviseHooks(on_status=lambda core, elapsed: alive_by_tick.setdefault(elapsed, set()).add(core)),
         )
         verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 10.0)
         assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.THERMAL] * 2
-
-
-class TestTemperatureSource:
-    def test_an_absent_hwmon_tree_reads_as_no_sensor(self, tmp_path):
-        with patch.object(execution, "Path", lambda _p: tmp_path / "nope"):
-            assert execution.read_cpu_temperature() is None
-
-    def test_the_hottest_matching_sensor_wins(self, tmp_path):
-        hw = tmp_path / "hwmon0"
-        hw.mkdir()
-        (hw / "name").write_text("k10temp\n")
-        (hw / "temp1_input").write_text("65000\n")
-        (hw / "temp2_input").write_text("72500\n")
-        foreign = tmp_path / "hwmon1"
-        foreign.mkdir()
-        (foreign / "name").write_text("nvme\n")
-        (foreign / "temp1_input").write_text("99000\n")
-        with patch.object(execution, "Path", lambda _p: tmp_path):
-            assert execution.read_cpu_temperature() == 72.5
-
-    def test_a_garbled_input_is_skipped(self, tmp_path):
-        hw = tmp_path / "hwmon0"
-        hw.mkdir()
-        (hw / "name").write_text("zenpower\n")
-        (hw / "temp1_input").write_text("garbage\n")
-        with patch.object(execution, "Path", lambda _p: tmp_path):
-            assert execution.read_cpu_temperature() is None
 
 
 class TestWatchIdle:
@@ -1489,6 +1462,7 @@ class TestWatchIdle:
             cpus=(0,),
             duration=0.05,
             thermal=cool_thermal(),
+            sensors=at(40.0),
             detector=FakeDetector(),
             stop_event=threading.Event(),
             observed=[],
@@ -1512,7 +1486,7 @@ class TestWatchIdle:
 
     def test_an_overheat_during_idle_is_thermal_and_leaves_the_stop_to_the_caller(self):
         stop = threading.Event()
-        found = watch_idle(**self._args(thermal=hot_thermal(), duration=5.0, stop_event=stop))
+        found = watch_idle(**self._args(thermal=hot_thermal(), sensors=at(104.0), duration=5.0, stop_event=stop))
         assert found is not None and found.outcome is Outcome.THERMAL
         assert "temperature" in found.text
         assert not stop.is_set()
@@ -1520,7 +1494,9 @@ class TestWatchIdle:
     def test_an_own_core_record_outranks_a_thermal_trip_during_idle(self):
         detector = FakeDetector([[own(0)]])
         seen: list = []
-        found = watch_idle(**self._args(thermal=hot_thermal(), detector=detector, observed=seen, duration=5.0))
+        found = watch_idle(
+            **self._args(thermal=hot_thermal(), sensors=at(104.0), detector=detector, observed=seen, duration=5.0)
+        )
         assert found is not None and found.outcome is Outcome.OWN_CORE_MCE
         assert [e.cpu for e in seen] == [0]
         assert detector.finals == [True]
@@ -1859,3 +1835,33 @@ def test_a_run_directory_is_handed_back_to_the_invoking_user(tmp_path, monkeypat
     supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)))
     run_one(supervisor, passing, 1.0)
     assert len(handed) == 1 and handed[0].parent == passing.work_dir and handed[0].name.startswith("run-")
+
+
+def test_each_tick_reads_the_sensors_once_and_the_hold_and_the_stop_judge_that_read(tmp_path):
+    produced: list[SensorRead] = []
+    held: list[SensorRead] = []
+
+    def sensors() -> SensorRead:
+        produced.append(SensorRead(hottest=40.0 + len(produced)))
+        return produced[-1]
+
+    def freeze(elapsed: float, reading: SensorRead) -> bool:
+        held.append(reading)
+        return False
+
+    thermal = cool_thermal()
+    supervisor = Supervisor(
+        backend=FakeBackend(_child(BUSY)),
+        detector=FakeDetector(),
+        thermal=thermal,
+        sensors=sensors,
+        stop_event=threading.Event(),
+        observed=[],
+        poll_interval=0.02,
+        containment_for=lambda cpus: None,
+        freeze=freeze,
+    )
+    run_one(supervisor, lane(tmp_path, 1, (1,)), 0.3)
+    assert len(produced) > 2
+    assert held == produced
+    assert thermal.last_temperature == produced[-1].hottest

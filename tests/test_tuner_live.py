@@ -13,6 +13,7 @@ import pytest
 from corecycler.engine import detector as kernel
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.history.db import HistoryDB
+from corecycler.monitor.hwmon import SensorRead
 from corecycler.tuner import live, live_hw, telemetry
 from corecycler.tuner.live import Identity, LiveRig, Store, stored_from_json, stored_to_json
 from corecycler.tuner.machine.types import (
@@ -126,6 +127,10 @@ class FakeRunner:
             kernel_read_ns=self.read_ns,
             speeds=self.speeds,
         )
+
+
+def warm() -> SensorRead:
+    return SensorRead(hottest=61.0, tctl=58.0)
 
 
 def taken(core: int, n: int) -> telemetry.Sample:
@@ -872,13 +877,13 @@ def sysfs(tmp_path: Path, scaling: int, top: int, boost: str | None, pstate: boo
 
 def test_the_smu_adapter_writes_only_when_asked_and_checks_the_read_back():
     said = []
-    dry = live_hw.SmuHardware(FakeSmu(), False, said.append)
+    dry = live_hw.SmuHardware(FakeSmu(), False, said.append, warm)
     assert dry.write_co(3, -5) is None and dry.smu.co == {} and said == ["dry: core 3 would be set to -5"]
-    real = live_hw.SmuHardware(FakeSmu(), True, said.append)
+    real = live_hw.SmuHardware(FakeSmu(), True, said.append, warm)
     assert real.write_co(3, -5) is None and real.read_co(3) == -5
     assert said[-1] == "core 3 set to -5, read back -5"
-    assert "refused" in live_hw.SmuHardware(FakeSmu(accept=False), True, said.append).write_co(3, -5)
-    assert "-4" in live_hw.SmuHardware(FakeSmu(echo=-4), True, said.append).write_co(3, -5)
+    assert "refused" in live_hw.SmuHardware(FakeSmu(accept=False), True, said.append, warm).write_co(3, -5)
+    assert "-4" in live_hw.SmuHardware(FakeSmu(echo=-4), True, said.append, warm).write_co(3, -5)
 
 
 @pytest.mark.parametrize(
@@ -891,15 +896,14 @@ def test_the_smu_adapter_writes_only_when_asked_and_checks_the_read_back():
     ],
 )
 def test_a_frequency_cap_or_disabled_boost_is_seen(tmp_path, scaling, top, boost, pstate, capped):
-    hw = live_hw.SmuHardware(FakeSmu(), False, print, sysfs(tmp_path, scaling, top, boost, pstate))
+    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, sysfs(tmp_path, scaling, top, boost, pstate))
     assert hw.frequency_capped() is capped
 
 
 def test_the_adapter_reads_the_kernel_facts_it_needs(monkeypatch):
     monkeypatch.setattr(live_hw.kernel, "read_boot_id", lambda: "b1")
     monkeypatch.setattr(live_hw.kernel, "boot_end", lambda boot: kernel.BootEnd(clean=boot == "b0", problem=None))
-    monkeypatch.setattr(live_hw, "read_cpu_temperature", lambda: 61.0)
-    hw = live_hw.SmuHardware(FakeSmu(), False, print)
+    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm)
     assert (hw.boot_id(), hw.boot_ended_clean("b0"), hw.boot_ended_clean("b9"), hw.temperature()) == (
         "b1",
         True,
@@ -976,7 +980,7 @@ def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, 
             }
 
     monkeypatch.setattr(live_hw.kernel, "ErrorDetector", FakeDetector)
-    runner = live_hw.StressRunner(lambda: "backend", tmp_path, {0: 0, 16: 0}, FakeSupervisor)
+    runner = live_hw.StressRunner(lambda: "backend", tmp_path, {0: 0, 16: 0}, warm, supervisor=FakeSupervisor)
     one = runner.run(Spec(Klass.T1, 0, -5, (16,), 60.0, ((0, -5),), Stage.SEARCH), threading.Event())
     two = runner.run(Spec(Klass.T2, 0, -5, (0, 16), 90.0, ((0, -5),), Stage.SEARCH), threading.Event())
     assert one.group is Group.PASS and two.group is Group.PASS

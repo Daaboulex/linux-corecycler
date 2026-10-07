@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import random
-import re
 import signal
 import sys
 import time
@@ -16,10 +15,10 @@ from corecycler.engine.backends import get_backend, ycruncher
 from corecycler.engine.backends.base import OutcomeKind, StressConfig, StressMode
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.containment import lane_cgroup_parent
-from corecycler.engine.execution import STDOUT_LOG, Lane, Supervisor, ThermalWatch, read_cpu_temperature
+from corecycler.engine.execution import STDOUT_LOG, Lane, Supervisor, ThermalWatch
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.history.db import HistoryDB
-from corecycler.monitor.hwmon import SUPERIO_CHIPS
+from corecycler.monitor.hwmon import SensorRead, Sensors
 from corecycler.tuner import stages, telemetry
 from corecycler.tuner.live import Identity, LiveRig, Store
 from corecycler.tuner.machine.types import (
@@ -57,10 +56,13 @@ GROUPS = {
 
 
 class SmuHardware:
-    def __init__(self, smu, write: bool, say: Callable[[str], None], cpu_root: Path = CPU) -> None:
+    def __init__(
+        self, smu, write: bool, say: Callable[[str], None], sensors: Callable[[], SensorRead], cpu_root: Path = CPU
+    ) -> None:
         self.smu = smu
         self.write = write
         self.say = say
+        self.sensors = sensors
         self.cpu_root = cpu_root
 
     def read_co(self, core: int) -> int | None:
@@ -79,7 +81,7 @@ class SmuHardware:
         return None
 
     def temperature(self) -> float | None:
-        return read_cpu_temperature()
+        return self.sensors().hottest
 
     def frequency_capped(self) -> bool:
         freq = self.cpu_root / "cpu0" / "cpufreq"
@@ -153,70 +155,27 @@ def read_clocks(cpu_root: Path = CPU) -> dict[int, float]:
     }
 
 
-def _milli(path: Path) -> float | None:
-    try:
-        return int(path.read_text().strip()) / 1000
-    except (OSError, ValueError):
-        return None
-
-
-class Readings:
-    def __init__(self, root: Path = HWMON) -> None:
-        tccd: dict[int, Path] = {}
-        self.volts: list[tuple[str, Path]] = []
-        devices = (
-            [(d, (d / "name").read_text().strip()) for d in root.iterdir() if (d / "name").is_file()]
-            if root.is_dir()
-            else []
-        )
-        names = [name for _, name in devices]
-        for device, name in devices:
-            for label in device.glob("temp*_label"):
-                found = re.fullmatch(r"Tccd(\d+)", label.read_text().strip())
-                if found:
-                    tccd[int(found.group(1)) - 1] = label.with_name(label.name.replace("_label", "_input"))
-            if name != "amdgpu" and not name.startswith(SUPERIO_CHIPS):
-                continue
-            prefix = f"{name}@{(device / 'device').resolve().name}" if names.count(name) > 1 else name
-            for value in device.glob("in*_input"):
-                label = value.with_name(value.name.replace("_input", "_label"))
-                source = label.read_text().strip() if label.is_file() else value.name.removesuffix("_input")
-                self.volts.append((f"{prefix}:{source}", value))
-        self.tccd = sorted(tccd.items())
-        self.volts.sort()
-
-    def __call__(self) -> tuple[tuple[tuple[int, float | None], ...], tuple[tuple[str, float | None], ...]]:
-        return (
-            tuple((ccd, _milli(path)) for ccd, path in self.tccd),
-            tuple((source, _milli(path)) for source, path in self.volts),
-        )
-
-
 class Hold:
     def __init__(
         self,
         segment: stages.Segment,
-        read: Callable[[], float | None],
         clocks: Callable[[], dict[int, float]],
         core_of_cpu: dict[int, int],
         every: float,
         sink: Callable[[telemetry.Sample], None] | None = None,
-        readings: Callable[[], tuple] | None = None,
     ) -> None:
         self.segment = segment
-        self.read = read
         self.clocks = clocks
         self.core_of_cpu = core_of_cpu
         self.every = every
         self.sink = sink
-        self.readings = readings
         self.held = False
         self.ring: deque[telemetry.Sample] = deque(maxlen=telemetry.RING)
         self.next_sample = 0.0
 
-    def __call__(self, elapsed: float) -> bool:
+    def __call__(self, elapsed: float, reading: SensorRead) -> bool:
         sampling = elapsed >= self.next_sample
-        temperature = self.read() if self.segment.hold is not None or sampling else None
+        temperature = reading.hottest
         if self.segment.hold is not None and temperature is not None:
             hot, cool = self.segment.hold
             if temperature >= hot:
@@ -231,9 +190,13 @@ class Hold:
                 core = self.core_of_cpu.get(cpu)
                 if core is not None:
                     per_core[core] = max(per_core.get(core, 0.0), mhz)
-            tccd, volts = self.readings() if self.readings is not None else ((), ())
             sample = telemetry.Sample(
-                not frozen, tuple(sorted(per_core.items())), temperature, time.monotonic_ns(), tccd, volts
+                not frozen,
+                tuple(sorted(per_core.items())),
+                reading.tctl,
+                time.monotonic_ns(),
+                reading.tccd,
+                reading.volts,
             )
             self.ring.append(sample)
             if self.sink is not None:
@@ -247,21 +210,20 @@ class StressRunner:
         backend_factory,
         work_dir: Path,
         core_of_cpu: dict[int, int],
+        sensors: Callable[[], SensorRead],
         supervisor=Supervisor,
         detector=None,
-        read_temperature=None,
         available_mb=None,
         clocks=None,
         memory_backend=None,
         budget=None,
-        readings=None,
     ) -> None:
         self.backend_factory = backend_factory
         self.work_dir = work_dir
         self.core_of_cpu = core_of_cpu
         self.supervisor = supervisor
         self.detector = detector or kernel.ErrorDetector
-        self.read_temperature = read_temperature or read_cpu_temperature
+        self.sensors = sensors
         self.available_mb = available_mb or free_mb
         self.clocks = clocks or read_clocks
         self.memory_backend = memory_backend or (lambda: get_backend("stressapptest"))
@@ -269,7 +231,6 @@ class StressRunner:
         self.runs = 0
         self.read_ns: int | None = None
         self.sink: Callable[[telemetry.Sample], None] | None = None
-        self.readings = readings
 
     def _supervise(
         self,
@@ -291,6 +252,7 @@ class StressRunner:
                 backend=backend or self.backend_factory(),
                 detector=watch,
                 thermal=ThermalWatch(max_temperature=95.0, grace_seconds=3.0, hard_margin=8.0, require_sensor=True),
+                sensors=self.sensors,
                 stop_event=stop,
                 observed=observed,
                 poll_interval=poll,
@@ -325,9 +287,7 @@ class StressRunner:
                 flat = stages.Segment(
                     spec.cpus, settings["tests"], settings["seconds_per_test"], settings["memory_mb"], spec.seconds
                 )
-                sampler = Hold(
-                    flat, self.read_temperature, self.clocks, self.core_of_cpu, SAMPLE_S, self.sink, self.readings
-                )
+                sampler = Hold(flat, self.clocks, self.core_of_cpu, SAMPLE_S, self.sink)
             poll = SAMPLE_S if sampler is not None else 1.0
             results, observed = self._supervise(spec, stop, [lane], config, spec.seconds, sampler, poll=poll)
             return report_from(results[lane.core_id], observed, spec.cpus, self.core_of_cpu)
@@ -354,7 +314,7 @@ class StressRunner:
             )
             lane = Lane(core_id=spec.core, cpus=segment.cpus, work_dir=self.work_dir / f"all_{spec.load.value}")
             every = IDLE_SAMPLE_S if spec.load is Load.IDLE else SAMPLE_S
-            hold = Hold(segment, self.read_temperature, self.clocks, self.core_of_cpu, every, self.sink, self.readings)
+            hold = Hold(segment, self.clocks, self.core_of_cpu, every, self.sink)
             results, observed = self._supervise(
                 spec, stop, [lane], config, segment.duration, hold, poll=0.05, hold_cap_s=segment.hold_cap_s
             )
@@ -395,9 +355,7 @@ class StressRunner:
         sampler = None
         if self.sink is not None:
             flat = stages.Segment(spec.cpus, (), 0, budget.per_instance_mb, spec.seconds)
-            sampler = Hold(
-                flat, self.read_temperature, self.clocks, self.core_of_cpu, SAMPLE_S, self.sink, self.readings
-            )
+            sampler = Hold(flat, self.clocks, self.core_of_cpu, SAMPLE_S, self.sink)
         poll = SAMPLE_S if sampler is not None else 1.0
         results, observed = self._supervise(
             spec, stop, lanes, config, spec.seconds, sampler, poll=poll, backend=backend
@@ -485,9 +443,10 @@ def build_rig(
     cpus_of = tuple(sorted((core, tuple(info.logical_cpus)) for core, info in topology.cores.items()))
     domain_of = tuple(sorted((core, info.ccd) for core, info in topology.cores.items()))
     core_of_cpu = {cpu: core for core, cpus in cpus_of for cpu in cpus}
+    sensors = Sensors().read
     return LiveRig(
-        hardware=SmuHardware(smu, args.write, say),
-        runner=StressRunner(backend_factory, args.state_dir / "runs", core_of_cpu, readings=Readings()),
+        hardware=SmuHardware(smu, args.write, say, sensors),
+        runner=StressRunner(backend_factory, args.state_dir / "runs", core_of_cpu, sensors),
         store=Store(db, args.state_dir, identity),
         cpus_of=cpus_of,
         domain_of=domain_of,

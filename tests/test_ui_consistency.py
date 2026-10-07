@@ -16,7 +16,7 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
 from corecycler.engine.topology import CPUTopology, PhysicalCore
-from corecycler.monitor.hwmon import HWMonData
+from tests._sensors import FakeSensors
 
 
 def _make_mock_mainwindow(**overrides):
@@ -36,7 +36,8 @@ def _make_mock_mainwindow(**overrides):
     ns._config_tab.get_profile.return_value = MagicMock(cycle_count=1)
     ns._active_test_core = overrides.get("_active_test_core")
     ns._topology = overrides.get("_topology")
-    ns._hwmon = overrides.get("_hwmon", MagicMock())
+    ns._sensors = overrides.get("_sensors", FakeSensors())
+    ns._telemetry_failing = False
     ns._msr = overrides.get("_msr", MagicMock())
     ns._core_grid = overrides.get("_core_grid", MagicMock())
     ns._core_telemetry = overrides.get("_core_telemetry", {})
@@ -88,13 +89,9 @@ class TestCoreGridTelemetryFed:
     def test_core_grid_telemetry_fed(self, mock_freqs):
         """_feed_core_grid_telemetry with _active_test_core=0 calls update_core_telemetry."""
         from corecycler.gui.main_window import MainWindow
-        from corecycler.monitor.hwmon import HWMonData
 
         topo = CPUTopology()
         topo.cores = {0: PhysicalCore(core_id=0, ccd=0, ccx=None, logical_cpus=(0,))}
-
-        hwmon_mock = MagicMock()
-        hwmon_mock.read.return_value = HWMonData(tctl_c=65.0, tccd_temps={1: 62.0}, vcore_v=1.25)
 
         msr_mock = MagicMock()
         msr_mock.is_available.return_value = True
@@ -110,7 +107,7 @@ class TestCoreGridTelemetryFed:
         ns = _make_mock_mainwindow(
             _active_test_core=0,
             _topology=topo,
-            _hwmon=hwmon_mock,
+            _sensors=FakeSensors(tctl=65.0, tccd=((0, 62.0),), vcore=1.25),
             _msr=msr_mock,
             _core_grid=core_grid_mock,
         )
@@ -230,7 +227,7 @@ class TestStalenessIndicator:
         from corecycler.gui.monitor_tab import MonitorTab
 
         tab = types.SimpleNamespace()
-        tab._hwmon = MagicMock()
+        tab._sensors = FakeSensors()
         tab._power = MagicMock()
         tab._msr = MagicMock()
         tab._msr.is_available.return_value = False
@@ -257,7 +254,7 @@ class TestStalenessIndicator:
         tab._update_power_limits = MagicMock()
 
         # hwmon returns None tctl for 3 consecutive reads
-        tab._hwmon.read.return_value = HWMonData(tctl_c=None, tccd_temps={}, vcore_v=None)
+        tab._sensors.give()
         tab._power.read_power_watts.return_value = None
 
         # Bind _do_update
@@ -286,7 +283,7 @@ class TestStalenessRecovery:
         from corecycler.gui.monitor_tab import MonitorTab
 
         tab = types.SimpleNamespace()
-        tab._hwmon = MagicMock()
+        tab._sensors = FakeSensors()
         tab._power = MagicMock()
         tab._msr = MagicMock()
         tab._msr.is_available.return_value = False
@@ -316,7 +313,7 @@ class TestStalenessRecovery:
         tab._stale_style = MonitorTab._stale_style
 
         # First, trigger staleness with 3 failures
-        tab._hwmon.read.return_value = HWMonData(tctl_c=None, tccd_temps={}, vcore_v=None)
+        tab._sensors.give()
         tab._power.read_power_watts.return_value = None
         for _ in range(3):
             tab._do_update()
@@ -324,7 +321,7 @@ class TestStalenessRecovery:
         assert tab._tctl_label.styleSheet() == MonitorTab._stale_style()
 
         # Now a successful read
-        tab._hwmon.read.return_value = HWMonData(tctl_c=72.0, tccd_temps={}, vcore_v=1.30)
+        tab._sensors.give(tctl=72.0, vcore=1.30)
         tab._do_update()
 
         # Grey should be removed, fail count reset

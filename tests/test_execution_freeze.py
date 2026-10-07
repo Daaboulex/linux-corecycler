@@ -62,26 +62,26 @@ def run_frozen(tmp_path: Path, frozen, duration: float, busy_for: float = math.i
 
 @pytest.mark.real_cpu_time
 def test_a_lane_frozen_for_most_of_its_run_is_neither_stalled_nor_short_of_work(tmp_path: Path):
-    verdict = run_frozen(tmp_path, lambda elapsed: 0.3 <= elapsed < 1.6, 2.0)
+    verdict = run_frozen(tmp_path, lambda elapsed, _reading: 0.3 <= elapsed < 1.6, 2.0)
     assert verdict.outcome is Outcome.PASS, verdict.detail
 
 
 @pytest.mark.real_cpu_time
 def test_a_lane_that_stops_working_after_a_thaw_is_still_a_stall(tmp_path: Path):
-    verdict = run_frozen(tmp_path, lambda elapsed: 0.2 <= elapsed < 0.6, 3.0, busy_for=0.4)
+    verdict = run_frozen(tmp_path, lambda elapsed, _reading: 0.2 <= elapsed < 0.6, 3.0, busy_for=0.4)
     assert verdict.outcome is Outcome.STALL, verdict.detail
 
 
 @pytest.mark.real_cpu_time
 def test_a_lane_still_frozen_at_its_deadline_stops_cleanly_and_its_frozen_time_is_excused(tmp_path: Path):
-    verdict = run_frozen(tmp_path, lambda elapsed: elapsed >= 0.6, 1.8)
+    verdict = run_frozen(tmp_path, lambda elapsed, _reading: elapsed >= 0.6, 1.8)
     assert verdict.outcome is Outcome.PASS, verdict.detail
 
 
 def test_a_frozen_lane_is_really_stopped_and_runs_again_when_thawed(tmp_path: Path):
     backend = FakeBackend(_child(BUSY))
     supervisor, _, _ = make_supervisor(backend, stall_timeout=5.0)
-    supervisor.freeze = lambda elapsed: 0.3 <= elapsed < 1.0
+    supervisor.freeze = lambda elapsed, _reading: 0.3 <= elapsed < 1.0
     states: list[tuple[str, str]] = []
     send = supervisor._signal_group
 
@@ -113,14 +113,14 @@ def run_held(tmp_path: Path, frozen, duration: float, cap: float | None, busy_fo
 
 @pytest.mark.real_cpu_time
 def test_under_a_hold_cap_the_time_a_lane_is_held_does_not_count_toward_its_run(tmp_path: Path):
-    verdict, wall = run_held(tmp_path, lambda elapsed: 0.2 <= elapsed < 0.9, 1.0, 5.0)
+    verdict, wall = run_held(tmp_path, lambda elapsed, _reading: 0.2 <= elapsed < 0.9, 1.0, 5.0)
     assert verdict.outcome is Outcome.PASS, verdict.detail
     assert wall >= 1.6
 
 
 @pytest.mark.real_cpu_time
 def test_a_hold_longer_than_its_cap_ends_the_run_as_thermal(tmp_path: Path):
-    verdict, wall = run_held(tmp_path, lambda elapsed: elapsed >= 0.2, 1.0, 0.5)
+    verdict, wall = run_held(tmp_path, lambda elapsed, _reading: elapsed >= 0.2, 1.0, 0.5)
     assert verdict.outcome is Outcome.THERMAL
     assert "the load stayed held more than 0.5 s waiting for the CPU to cool" in verdict.detail
     assert wall < 1.5

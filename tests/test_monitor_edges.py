@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from corecycler.monitor import frequency as freqmod
 from corecycler.monitor.cpu_usage import CPUUsageReader
-from corecycler.monitor.hwmon import HWMonReader
 from corecycler.monitor.power import PowerMonitor
 
 
@@ -61,28 +60,6 @@ class TestPowerMonitorEdges:
         mon = PowerMonitor.__new__(PowerMonitor)
         mon._hwmon_power_path = tmp_path / "gone" / "power1_input"
         assert mon._read_hwmon_power() is None
-
-
-class TestHWMonReaderEdges:
-    def test_name_unreadable_is_skipped(self, tmp_path):
-        base = tmp_path / "hwmon"
-        d = base / "hwmon0"
-        d.mkdir(parents=True)
-        (d / "name").mkdir()  # directory: exists() True, read_text() raises OSError
-        with patch("corecycler.monitor.hwmon.HWMON_BASE", base):
-            reader = HWMonReader()
-        assert reader.is_available() is False
-
-    def test_voltage_input_unreadable_is_skipped(self, tmp_path):
-        base = tmp_path / "hwmon"
-        d = base / "hwmon0"
-        d.mkdir(parents=True)
-        (d / "name").write_text("k10temp\n")
-        (d / "in1_input").write_text("not-an-int\n")
-        with patch("corecycler.monitor.hwmon.HWMON_BASE", base):
-            reader = HWMonReader()
-            data = reader.read()
-        assert data.vcore_v is None
 
 
 class TestFrequencyEdges:

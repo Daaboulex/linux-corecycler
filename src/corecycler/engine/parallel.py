@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from corecycler.config.paths import resolve_work_dir
 from corecycler.engine.detector import ErrorDetector, KernelEvent
 from corecycler.engine.execution import Lane, Supervisor, ThermalWatch, refuse_if_missing
+from corecycler.monitor.hwmon import Sensors
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -73,12 +74,8 @@ class ParallelStress:
         supervisor = Supervisor(
             backend=self.backend,
             detector=self.detector,
-            thermal=ThermalWatch(
-                max_temperature=self.config.max_temperature,
-                grace_seconds=self.config.over_temp_grace_seconds,
-                hard_margin=self.config.over_temp_hard_margin,
-                require_sensor=self.config.require_thermal_sensor,
-            ),
+            thermal=ThermalWatch.for_config(self.config),
+            sensors=Sensors().read,
             stop_event=self._stop_event,
             observed=self.observed_mce,
             poll_interval=self.config.poll_interval,

@@ -20,6 +20,7 @@ from corecycler.gui import memory_tab as mem
 from corecycler.gui import monitor_tab as mon
 from corecycler.gui import smu_tab as st
 from corecycler.monitor.memory import DIMMInfo
+from tests._sensors import FakeSensors
 
 
 def _qapp():
@@ -273,10 +274,10 @@ class TestCoreFreqBarPaint:
 class TestMonitorTabFallbacks:
     def _tab(self, monkeypatch, *, hwmon_available=True, max_freq=5000.0, topology=None):
         _qapp()
-        monkeypatch.setattr(mon, "HWMonReader", lambda: _reader(hwmon_available, read=MagicMock()))
         monkeypatch.setattr(mon, "read_max_frequency", lambda: max_freq)
         monkeypatch.setattr(mon, "read_core_frequencies", lambda: {0: 4000.0, 1: 3800.0})
-        return mon.MonitorTab(topology=topology)
+        sensors = FakeSensors() if hwmon_available else FakeSensors(tctl=None, tccd=(), vcore=None)
+        return mon.MonitorTab(sensors, topology=topology)
 
     def test_a_missing_thermal_sensor_reads_as_unavailable(self, monkeypatch):
         tab = self._tab(monkeypatch, hwmon_available=False)

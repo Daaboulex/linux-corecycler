@@ -12,6 +12,7 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
 from corecycler.engine.topology import CPUTopology, PhysicalCore
+from tests._sensors import FakeSensors
 
 
 def _qapp():
@@ -35,15 +36,7 @@ def _tab():
     _qapp()
     from corecycler.gui.monitor_tab import MonitorTab
 
-    return MonitorTab(topology=_topo())
-
-
-def _hwmon_data(tctl=60.0, tccd=None, vcore=1.2):
-    return SimpleNamespace(
-        tctl_c=tctl,
-        tccd_temps=tccd if tccd is not None else {1: 61.0, 2: 59.0},
-        vcore_v=vcore,
-    )
+    return MonitorTab(FakeSensors(), topology=_topo())
 
 
 def _dual(actual=5000.0, ceiling=5200.0):
@@ -56,8 +49,7 @@ def _drive(tab, monkeypatch, *, dual=None, simple=None, watts=None, msr_ok=False
     monkeypatch.setattr(mt, "read_core_frequencies_dual", lambda: dual if dual is not None else {})
     monkeypatch.setattr(mt, "read_core_frequencies", lambda: simple if simple is not None else {})
 
-    tab._hwmon = MagicMock()
-    tab._hwmon.read.return_value = hwmon if hwmon is not None else _hwmon_data()
+    tab._sensors = hwmon if hwmon is not None else FakeSensors()
     tab._power = MagicMock()
     tab._power.read_power_watts.return_value = watts
     tab._msr = MagicMock()
@@ -80,6 +72,12 @@ class TestMonitorUpdateMatrix:
         assert 0 in tab._ccd_temp_labels
         assert "VC" in tab._ccd_temp_labels[0].text()
         assert "VC" not in tab._ccd_temp_labels[1].text()
+
+    def test_a_ccd_whose_read_failed_gets_no_label_and_msr_reads_leave_the_ccds_alone(self, monkeypatch):
+        tab = _tab()
+        _drive(tab, monkeypatch, dual=_dual(), watts=95.0, msr_ok=True, hwmon=FakeSensors(tccd=((0, None), (1, 59.0))))
+        assert sorted(tab._ccd_temp_labels) == [1]
+        assert "59.0" in tab._ccd_temp_labels[1].text()
 
     def test_msr_power_fallback_used_when_sysfs_absent(self, monkeypatch):
         tab = _tab()
@@ -105,8 +103,7 @@ class TestMonitorUpdateMatrix:
         simple = MagicMock(return_value={0: 4800.0, 1: 4700.0})
         monkeypatch.setattr(mt, "read_core_frequencies_dual", lambda: {})
         monkeypatch.setattr(mt, "read_core_frequencies", simple)
-        tab._hwmon = MagicMock()
-        tab._hwmon.read.return_value = _hwmon_data()
+        tab._sensors = FakeSensors()
         tab._power = MagicMock()
         tab._power.read_power_watts.return_value = 50.0
         tab._msr = MagicMock()
@@ -133,7 +130,7 @@ class TestMonitorUpdateMatrix:
             monkeypatch,
             dual=_dual(),
             watts=50.0,
-            hwmon=_hwmon_data(tctl=None, tccd={}, vcore=None),
+            hwmon=FakeSensors(tctl=None, tccd=(), vcore=None),
         )
         assert tab._tctl_label.styleSheet() == tab._stale_style()
         assert tab._vcore_label.styleSheet() == tab._stale_style()

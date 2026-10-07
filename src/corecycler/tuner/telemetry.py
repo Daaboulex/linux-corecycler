@@ -13,8 +13,8 @@ class Sample:
     mhz: tuple[tuple[int, float], ...]
     tctl: float | None
     mono_ns: int = 0
-    tccd: tuple[tuple[int, float], ...] = ()
-    volts: tuple[tuple[str, float], ...] = ()
+    tccd: tuple[tuple[int, float | None], ...] = ()
+    volts: tuple[tuple[str, float | None], ...] = ()
 
 
 def band_clock(sample: Sample, cores: tuple[int, ...]) -> float | None:
