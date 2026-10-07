@@ -66,10 +66,10 @@ class TestProcStatRobust:
         assert isinstance(result, dict)
 
 
-class TestProcCpuinfoFreqRobust:
+class TestClockFileRobust:
     @settings(max_examples=400, deadline=None)
-    @given(text=st.text(max_size=600))
-    def test_read_from_proc_never_crashes(self, text):
-        with patch("pathlib.Path.exists", return_value=True), patch("pathlib.Path.read_text", return_value=text):
-            result = freq_mod._read_from_proc()
-        assert isinstance(result, dict)
+    @given(text=st.text(max_size=60))
+    def test_any_clock_file_text_reads_as_a_number_or_none(self, text):
+        with patch("pathlib.Path.read_text", return_value=text):
+            result = freq_mod._mhz(Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"))
+        assert result is None or isinstance(result, float)

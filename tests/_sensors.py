@@ -23,3 +23,15 @@ class FakeSensors:
 
     def vcore(self, read):
         return None if self.vcore_source is None else dict(read.volts)[self.vcore_source]
+
+
+class FakeClocks:
+    def __init__(self, clocks=None, ceilings=None):
+        self.clocks = clocks if clocks is not None else {}
+        self.ceiling = ceilings if ceilings is not None else {}
+
+    def read(self):
+        return dict(self.clocks)
+
+    def ceilings(self):
+        return dict(self.ceiling)

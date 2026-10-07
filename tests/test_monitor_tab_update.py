@@ -12,7 +12,7 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
 from corecycler.engine.topology import CPUTopology, PhysicalCore
-from tests._sensors import FakeSensors
+from tests._sensors import FakeClocks, FakeSensors
 
 
 def _qapp():
@@ -36,18 +36,15 @@ def _tab():
     _qapp()
     from corecycler.gui.monitor_tab import MonitorTab
 
-    return MonitorTab(FakeSensors(), topology=_topo())
+    return MonitorTab(FakeSensors(), FakeClocks(), topology=_topo())
 
 
 def _dual(actual=5000.0, ceiling=5200.0):
-    return {cid: SimpleNamespace(actual_mhz=actual, effective_max_mhz=ceiling) for cid in range(4)}
+    return FakeClocks(dict.fromkeys(range(4), actual), dict.fromkeys(range(4), ceiling))
 
 
-def _drive(tab, monkeypatch, *, dual=None, simple=None, watts=None, msr_ok=False, pkg=None, hwmon=None):
-    import corecycler.gui.monitor_tab as mt
-
-    monkeypatch.setattr(mt, "read_core_frequencies_dual", lambda: dual if dual is not None else {})
-    monkeypatch.setattr(mt, "read_core_frequencies", lambda: simple if simple is not None else {})
+def _drive(tab, monkeypatch, *, dual=None, watts=None, msr_ok=False, pkg=None, hwmon=None):
+    tab._clocks = dual if dual is not None else FakeClocks()
 
     tab._sensors = hwmon if hwmon is not None else FakeSensors()
     tab._power = MagicMock()
@@ -96,25 +93,6 @@ class TestMonitorUpdateMatrix:
         _drive(tab, monkeypatch, dual=_dual(), watts=None, msr_ok=False)
         assert tab._power_label.styleSheet() == tab._stale_style()
 
-    def test_falls_back_to_simple_frequency_read(self, monkeypatch):
-        import corecycler.gui.monitor_tab as mt
-
-        tab = _tab()
-        simple = MagicMock(return_value={0: 4800.0, 1: 4700.0})
-        monkeypatch.setattr(mt, "read_core_frequencies_dual", lambda: {})
-        monkeypatch.setattr(mt, "read_core_frequencies", simple)
-        tab._sensors = FakeSensors()
-        tab._power = MagicMock()
-        tab._power.read_power_watts.return_value = 50.0
-        tab._msr = MagicMock()
-        tab._msr.is_available.return_value = False
-        tab._cpu_usage = MagicMock()
-        tab._cpu_usage.read.return_value = {}
-        tab._pmtable = MagicMock()
-        tab._pmtable.is_available.return_value = False
-        tab._update()
-        simple.assert_called_once()
-
     def test_boost_above_ceiling_raises_max(self, monkeypatch):
         tab = _tab()
         tab._max_core_freq = 5000
@@ -142,12 +120,10 @@ class TestMonitorUpdateMatrix:
         assert tab._per_core_bars
 
     def test_update_swallows_reader_oserror(self, monkeypatch):
-        import corecycler.gui.monitor_tab as mt
-
         tab = _tab()
 
         def boom():
             raise OSError("sysfs gone")
 
-        monkeypatch.setattr(mt, "read_core_frequencies_dual", boom)
+        tab._clocks.read = boom
         tab._update()

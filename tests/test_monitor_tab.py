@@ -13,6 +13,7 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
 from corecycler.engine.topology import CPUTopology, PhysicalCore
+from corecycler.monitor.frequency import Clocks
 from corecycler.monitor.hwmon import Sensors
 
 
@@ -41,7 +42,7 @@ def _tab(topo=None):
     _qapp()
     from corecycler.gui.monitor_tab import MonitorTab
 
-    return MonitorTab(Sensors(Path("/nonexistent")), topology=topo or _topo())
+    return MonitorTab(Sensors(Path("/nonexistent")), Clocks(Path("/nonexistent")), topology=topo or _topo())
 
 
 class TestCoreFreqBar:

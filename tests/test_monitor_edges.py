@@ -63,38 +63,6 @@ class TestPowerMonitorEdges:
 
 
 class TestFrequencyEdges:
-    def test_read_falls_back_to_proc_when_cpufreq_absent(self, tmp_path):
-        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", tmp_path / "absent"):
-            out = freqmod.read_core_frequencies()
-        assert isinstance(out, dict)
-
-    def test_cpu_dir_without_freq_files_is_skipped(self, tmp_path):
-        base = tmp_path / "cpu"
-        (base / "cpu0").mkdir(parents=True)
-        with (
-            patch("corecycler.monitor.frequency.CPUFREQ_BASE", base),
-            patch("corecycler.monitor.frequency._read_from_proc", return_value={7: 1.0}),
-        ):
-            out = freqmod.read_core_frequencies()
-        assert out == {7: 1.0}
-
-    def test_read_from_proc_malformed_processor_line(self):
-        fake = "processor\t: notanum\ncpu MHz\t: 3000.0\n"
-        with patch("pathlib.Path.exists", return_value=True), patch("pathlib.Path.read_text", return_value=fake):
-            assert freqmod._read_from_proc() == {}
-
-    def test_dual_returns_empty_when_cpufreq_absent(self, tmp_path):
-        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", tmp_path / "absent"):
-            assert freqmod.read_core_frequencies_dual() == {}
-
-    def test_dual_actual_unreadable_is_skipped(self, tmp_path):
-        base = tmp_path / "cpu"
-        cf = base / "cpu0" / "cpufreq"
-        cf.mkdir(parents=True)
-        (cf / "cpuinfo_cur_freq").write_text("garbage\n")
-        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", base):
-            assert freqmod.read_core_frequencies_dual() == {}
-
     def test_read_max_frequency_unreadable_returns_none(self, tmp_path):
         base = tmp_path / "cpu"
         cf = base / "cpu0" / "cpufreq"
@@ -102,14 +70,6 @@ class TestFrequencyEdges:
         (cf / "cpuinfo_max_freq").write_text("garbage\n")
         with patch("corecycler.monitor.frequency.CPUFREQ_BASE", base):
             assert freqmod.read_max_frequency(0) is None
-
-    def test_read_min_frequency_unreadable_returns_none(self, tmp_path):
-        base = tmp_path / "cpu"
-        cf = base / "cpu0" / "cpufreq"
-        cf.mkdir(parents=True)
-        (cf / "cpuinfo_min_freq").write_text("garbage\n")
-        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", base):
-            assert freqmod.read_min_frequency(0) is None
 
 
 class TestCpufreqSysfsReaders:
@@ -129,72 +89,19 @@ class TestCpufreqSysfsReaders:
         monkeypatch.setattr(freq, "CPUFREQ_BASE", base)
         return freq
 
-    def test_the_hardware_frequency_is_preferred_over_the_governor_target(self, tmp_path, monkeypatch):
+    def test_the_boost_limit_is_read(self, tmp_path, monkeypatch):
         freq = self._tree(
             tmp_path,
             monkeypatch,
             {
-                "cpu0": {"cpuinfo_cur_freq": "4200000\n", "scaling_cur_freq": "3000000\n"},
-            },
-        )
-        assert freq.read_core_frequencies() == {0: 4200.0}
-
-    def test_the_governor_target_is_the_fallback(self, tmp_path, monkeypatch):
-        freq = self._tree(tmp_path, monkeypatch, {"cpu1": {"scaling_cur_freq": "3600000\n"}})
-        assert freq.read_core_frequencies() == {1: 3600.0}
-
-    def test_unreadable_and_non_cpu_entries_are_skipped(self, tmp_path, monkeypatch):
-        freq = self._tree(
-            tmp_path,
-            monkeypatch,
-            {
-                "cpu0": {"scaling_cur_freq": "not a number\n"},
-                "cpu1": {},
-                "cpufreq": {"scaling_cur_freq": "3600000\n"},
-            },
-        )
-        monkeypatch.setattr(freq, "_read_from_proc", dict)
-        assert freq.read_core_frequencies() == {}
-
-    def test_the_dual_reader_pairs_actual_with_the_boost_ceiling(self, tmp_path, monkeypatch):
-        freq = self._tree(
-            tmp_path,
-            monkeypatch,
-            {
-                "cpu0": {"cpuinfo_avg_freq": "4100000\n", "scaling_max_freq": "5700000\n"},
-            },
-        )
-        reading = freq.read_core_frequencies_dual()[0]
-        assert reading.actual_mhz == 4100.0
-        assert reading.effective_max_mhz == 5700.0
-
-    def test_the_dual_reader_needs_both_halves(self, tmp_path, monkeypatch):
-        freq = self._tree(
-            tmp_path,
-            monkeypatch,
-            {
-                "cpu0": {"cpuinfo_cur_freq": "garbage\n"},
-                "cpu1": {"scaling_max_freq": "5700000\n"},
-                "cpuidle": {"scaling_cur_freq": "3600000\n"},
-            },
-        )
-        assert freq.read_core_frequencies_dual() == {}
-
-    def test_the_boost_and_floor_limits_are_read(self, tmp_path, monkeypatch):
-        freq = self._tree(
-            tmp_path,
-            monkeypatch,
-            {
-                "cpu0": {"cpuinfo_max_freq": "5700000\n", "cpuinfo_min_freq": "550000\n"},
+                "cpu0": {"cpuinfo_max_freq": "5700000\n"},
             },
         )
         assert freq.read_max_frequency(0) == 5700.0
-        assert freq.read_min_frequency(0) == 550.0
 
-    def test_absent_limits_read_as_unknown(self, tmp_path, monkeypatch):
+    def test_an_absent_boost_limit_reads_as_unknown(self, tmp_path, monkeypatch):
         freq = self._tree(tmp_path, monkeypatch, {"cpu0": {}})
         assert freq.read_max_frequency(0) is None
-        assert freq.read_min_frequency(0) is None
 
 
 class TestRaplPowerReader:

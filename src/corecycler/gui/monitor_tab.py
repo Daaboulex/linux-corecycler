@@ -24,11 +24,7 @@ from corecycler.config.settings import load_settings
 from corecycler.gui.style import theme
 from corecycler.gui.widgets.charts import LiveChart
 from corecycler.monitor.cpu_usage import CPUUsageReader
-from corecycler.monitor.frequency import (
-    read_core_frequencies,
-    read_core_frequencies_dual,
-    read_max_frequency,
-)
+from corecycler.monitor.frequency import fastest, read_max_frequency
 from corecycler.monitor.msr import MSRReader
 from corecycler.monitor.power import PowerMonitor
 from corecycler.smu.pmtable import PMTableReader
@@ -37,6 +33,7 @@ MAX_FREQ_HISTORY = 60  # 1 minute at 1s
 
 
 if TYPE_CHECKING:
+    from corecycler.monitor.frequency import Clocks
     from corecycler.monitor.hwmon import Sensors
 
 
@@ -242,10 +239,11 @@ class MonitorTab(QWidget):
     def _stale_style() -> str:
         return f"font: bold 11px monospace; padding: 2px; color: {theme.COLOR_MUTED_DARK};"
 
-    def __init__(self, sensors: Sensors, topology=None) -> None:
+    def __init__(self, sensors: Sensors, clocks: Clocks, topology=None) -> None:
         super().__init__()
         self._topology = topology
         self._sensors = sensors
+        self._clocks = clocks
         self._power = PowerMonitor()
         self._msr = MSRReader()
         self._cpu_usage = CPUUsageReader()
@@ -398,8 +396,7 @@ class MonitorTab(QWidget):
         else:
             # fallback: create bars from current frequency readings
             # Label as "CPU N" (logical CPU IDs, not physical core IDs)
-            freqs = read_core_frequencies()
-            for cpu_id in sorted(freqs.keys()):
+            for cpu_id in sorted(self._clocks.read()):
                 bar = CoreFreqBar(cpu_id, f"CPU{cpu_id}", max_freq=6000)
                 self._per_core_bars[cpu_id] = bar
                 self._per_core_layout.addWidget(bar)
@@ -416,15 +413,9 @@ class MonitorTab(QWidget):
             self._do_update()
 
     def _do_update(self) -> None:
-        # frequencies — read both actual and boost ceiling per-core
-        dual_freqs = read_core_frequencies_dual()
-        # Extract simple freq dict for chart + fallback
-        freqs: dict[int, float] = {cpu_id: r.actual_mhz for cpu_id, r in dual_freqs.items()}
-        # Also extract per-core boost ceilings
-        eff_max_freqs: dict[int, float] = {cpu_id: r.effective_max_mhz for cpu_id, r in dual_freqs.items()}
-        # Fallback to simple read if dual returned nothing
-        if not freqs:
-            freqs = read_core_frequencies()
+        clocks = self._clocks.read()
+        ceilings = self._clocks.ceilings()
+        freqs = {cpu: mhz for cpu, mhz in clocks.items() if mhz is not None}
 
         if freqs:
             max_freq = max(freqs.values())
@@ -528,8 +519,8 @@ class MonitorTab(QWidget):
                     core_info = self._topology.cores.get(core_id)
                     if core_info and core_info.logical_cpus:
                         logical_cpu = core_info.logical_cpus[0]
-                        cpu_freq = freqs.get(logical_cpu, 0)
-                        eff_max = eff_max_freqs.get(logical_cpu, 0)
+                        cpu_freq = fastest(clocks, core_info.logical_cpus) or 0
+                        eff_max = fastest(ceilings, core_info.logical_cpus) or 0
                         # Use per-CCD temp if available, fall back to Tctl
                         ccd = core_info.ccd if core_info.ccd is not None else 0
                         core_temp = ccd_temps.get(ccd, tctl or 0)

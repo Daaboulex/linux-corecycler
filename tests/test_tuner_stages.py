@@ -144,10 +144,10 @@ def runner(script: Script, readings=None, detector=None, clocks=None):
         Path("/nonexistent"),
         CORE_OF_CPU,
         lambda: at(70.0 if readings is None else readings()),
+        clocks or (lambda: dict.fromkeys(CPUS, 5000.0)),
         supervisor=FakeSupervisor,
         detector=detector or FakeDetector,
         available_mb=lambda: 60_000,
-        clocks=clocks or (lambda: dict.fromkeys(CPUS, 5000.0)),
     )
 
 
@@ -342,15 +342,6 @@ def test_the_hold_samples_each_core_at_its_fastest_cpu_on_its_own_cadence():
     assert len(hold.ring) == telemetry.RING
 
 
-def test_clocks_are_read_from_sysfs_in_mhz(tmp_path):
-    for cpu, khz in ((0, "5100000"), (17, "624000")):
-        freq = tmp_path / f"cpu{cpu}" / "cpufreq"
-        freq.mkdir(parents=True)
-        (freq / "scaling_cur_freq").write_text(khz + "\n")
-    (tmp_path / "cpufreq").mkdir()
-    assert live_hw.read_clocks(tmp_path) == {0: 5100.0, 17: 624.0}
-
-
 def test_the_failure_context_names_the_segments_cores_and_the_named_cores_clock(tmp_path):
     clocks = {0: 5000.0, 1: 5000.0, 2: 4200.0, 3: 1000.0}
     (tmp_path / "stdout.log").write_text("Error(s) encountered on logical core 6.")
@@ -414,6 +405,7 @@ def memory_runner(outcomes, budget=None, available=True, seen=None):
         Path("/nonexistent"),
         CORE_OF_CPU,
         lambda: at(60.0),
+        lambda: dict.fromkeys(CPUS, 5000.0),
         supervisor=LaneSupervisor,
         detector=Detector,
         available_mb=lambda: 60_000,

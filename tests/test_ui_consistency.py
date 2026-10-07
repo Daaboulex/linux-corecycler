@@ -16,7 +16,7 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
 from corecycler.engine.topology import CPUTopology, PhysicalCore
-from tests._sensors import FakeSensors
+from tests._sensors import FakeClocks, FakeSensors
 
 
 def _make_mock_mainwindow(**overrides):
@@ -37,6 +37,7 @@ def _make_mock_mainwindow(**overrides):
     ns._active_test_core = overrides.get("_active_test_core")
     ns._topology = overrides.get("_topology")
     ns._sensors = overrides.get("_sensors", FakeSensors())
+    ns._clocks = overrides.get("_clocks", FakeClocks({0: 5500.0}))
     ns._telemetry_failing = False
     ns._msr = overrides.get("_msr", MagicMock())
     ns._core_grid = overrides.get("_core_grid", MagicMock())
@@ -85,8 +86,7 @@ class TestOnTestCompletedFailsClosed:
 
 
 class TestCoreGridTelemetryFed:
-    @patch("corecycler.gui.main_window.read_core_frequencies", return_value={0: 5500.0})
-    def test_core_grid_telemetry_fed(self, mock_freqs):
+    def test_core_grid_telemetry_fed(self):
         """_feed_core_grid_telemetry with _active_test_core=0 calls update_core_telemetry."""
         from corecycler.gui.main_window import MainWindow
 
@@ -228,6 +228,7 @@ class TestStalenessIndicator:
 
         tab = types.SimpleNamespace()
         tab._sensors = FakeSensors()
+        tab._clocks = FakeClocks()
         tab._power = MagicMock()
         tab._msr = MagicMock()
         tab._msr.is_available.return_value = False
@@ -284,6 +285,7 @@ class TestStalenessRecovery:
 
         tab = types.SimpleNamespace()
         tab._sensors = FakeSensors()
+        tab._clocks = FakeClocks()
         tab._power = MagicMock()
         tab._msr = MagicMock()
         tab._msr.is_available.return_value = False

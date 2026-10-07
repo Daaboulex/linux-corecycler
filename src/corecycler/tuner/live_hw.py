@@ -18,6 +18,7 @@ from corecycler.engine.containment import lane_cgroup_parent
 from corecycler.engine.execution import STDOUT_LOG, Lane, Supervisor, ThermalWatch
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.history.db import HistoryDB
+from corecycler.monitor.frequency import Clocks, fastest
 from corecycler.monitor.hwmon import SensorRead, Sensors
 from corecycler.tuner import stages, telemetry
 from corecycler.tuner.live import Identity, LiveRig, Store
@@ -147,25 +148,20 @@ def free_mb(meminfo: Path = Path("/proc/meminfo")) -> int:
     raise OSError("/proc/meminfo has no MemAvailable line")
 
 
-def read_clocks(cpu_root: Path = CPU) -> dict[int, float]:
-    return {
-        int(freq.parent.parent.name[3:]): int(freq.read_text()) / 1000
-        for freq in cpu_root.glob("cpu[0-9]*/cpufreq/scaling_cur_freq")
-    }
-
-
 class Hold:
     def __init__(
         self,
         segment: stages.Segment,
-        clocks: Callable[[], dict[int, float]],
+        clocks: Callable[[], dict[int, float | None]],
         core_of_cpu: dict[int, int],
         every: float,
         sink: Callable[[telemetry.Sample], None] | None = None,
     ) -> None:
         self.segment = segment
         self.clocks = clocks
-        self.core_of_cpu = core_of_cpu
+        self.cpus_of: dict[int, list[int]] = {}
+        for cpu, core in sorted(core_of_cpu.items()):
+            self.cpus_of.setdefault(core, []).append(cpu)
         self.every = every
         self.sink = sink
         self.held = False
@@ -184,14 +180,11 @@ class Hold:
         frozen = self.held or stages.frozen_at(self.segment, elapsed)
         if sampling:
             self.next_sample = elapsed + self.every
-            per_core: dict[int, float] = {}
-            for cpu, mhz in self.clocks().items():
-                core = self.core_of_cpu.get(cpu)
-                if core is not None:
-                    per_core[core] = max(per_core.get(core, 0.0), mhz)
+            clocks = self.clocks()
+            per_core = ((core, fastest(clocks, cpus)) for core, cpus in sorted(self.cpus_of.items()))
             sample = telemetry.Sample(
                 not frozen,
-                tuple(sorted(per_core.items())),
+                tuple((core, mhz) for core, mhz in per_core if mhz is not None),
                 reading.tctl,
                 time.monotonic_ns(),
                 reading.tccd,
@@ -210,10 +203,10 @@ class StressRunner:
         work_dir: Path,
         core_of_cpu: dict[int, int],
         sensors: Callable[[], SensorRead],
+        clocks: Callable[[], dict[int, float | None]],
         supervisor=Supervisor,
         detector=None,
         available_mb=None,
-        clocks=None,
         memory_backend=None,
         budget=None,
     ) -> None:
@@ -224,7 +217,7 @@ class StressRunner:
         self.detector = detector or kernel.ErrorDetector
         self.sensors = sensors
         self.available_mb = available_mb or free_mb
-        self.clocks = clocks or read_clocks
+        self.clocks = clocks
         self.memory_backend = memory_backend or (lambda: get_backend("stressapptest"))
         self.budget = budget or (lambda n, floor: memory_budget(n, floor, lane_cgroup=lane_cgroup_parent()))
         self.runs = 0
@@ -444,7 +437,7 @@ def build_rig(
     sensors = Sensors().read
     return LiveRig(
         hardware=SmuHardware(smu, args.write, say, sensors),
-        runner=StressRunner(backend_factory, args.state_dir / "runs", core_of_cpu, sensors),
+        runner=StressRunner(backend_factory, args.state_dir / "runs", core_of_cpu, sensors, Clocks().read),
         store=Store(db, args.state_dir, identity),
         cpus_of=cpus_of,
         domain_of=domain_of,

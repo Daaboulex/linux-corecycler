@@ -28,7 +28,7 @@ from corecycler.history.db import HistoryDB, RunRecord
 from corecycler.tuner import persistence as tp
 from corecycler.tuner.config import TunerConfig
 from tests._machine import this_boot
-from tests._sensors import FakeSensors
+from tests._sensors import FakeClocks, FakeSensors
 
 
 def _qapp():
@@ -95,7 +95,7 @@ def _build(
     monkeypatch.setattr(mw, "detect_bios_change", bios if callable(bios) else (lambda _d: bios))
     monkeypatch.setattr(mw, "MSRReader", MagicMock)
     monkeypatch.setattr(mw, "Sensors", FakeSensors)
-    monkeypatch.setattr(mw, "read_core_frequencies", lambda: {0: 4500.0, 1: 4400.0})
+    monkeypatch.setattr(mw, "Clocks", lambda: FakeClocks({0: 4400.0, 8: 4500.0, 1: 4400.0}))
     monkeypatch.setattr(mw, "memory_accounting_problem", lambda: None)
     return mw.MainWindow()
 

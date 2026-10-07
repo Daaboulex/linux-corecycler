@@ -49,7 +49,7 @@ from corecycler.history.context import detect_bios_change
 from corecycler.history.db import HistoryDB, adopt_legacy_root_db
 from corecycler.history.logger import TestRunLogger
 from corecycler.history.timefmt import format_local
-from corecycler.monitor.frequency import read_core_frequencies
+from corecycler.monitor.frequency import Clocks, fastest
 from corecycler.monitor.hwmon import Sensors
 from corecycler.monitor.msr import MSRReader
 
@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
         self._closing = False
         self._test_start_time: float = 0
         self._sensors = Sensors()
+        self._clocks = Clocks()
         self._telemetry_failing = False
         self._msr = MSRReader()
         self._core_telemetry: dict[int, dict] = {}  # core_id -> {max_freq, max_temp, last_vcore}
@@ -216,7 +217,7 @@ class MainWindow(QMainWindow):
         self._results_tab = ResultsTab()
         self._tabs.addTab(self._results_tab, "Results")
 
-        self._monitor_tab = MonitorTab(topology=self._topology, sensors=self._sensors)
+        self._monitor_tab = MonitorTab(self._sensors, self._clocks, topology=self._topology)
         self._tabs.addTab(self._monitor_tab, "Monitor")
 
         self._smu_tab = SMUTab(self._topology)
@@ -750,10 +751,7 @@ class MainWindow(QMainWindow):
             return
 
         logical_cpu = core_info.logical_cpus[0]
-
-        # per-core frequency
-        freqs = read_core_frequencies()
-        freq = freqs.get(logical_cpu, 0)
+        freq = fastest(self._clocks.read(), core_info.logical_cpus)
 
         # MSR-based clock stretch detection (APERF/MPERF ratio)
         stretch_pct: float | None = None
@@ -807,7 +805,7 @@ class MainWindow(QMainWindow):
                 "max_vcore": None,
             }
         t = self._core_telemetry[current_core]
-        if freq > t["max_freq"]:
+        if freq is not None and freq > t["max_freq"]:
             t["max_freq"] = freq
         if stretch_pct is not None and stretch_pct > t["max_stretch_pct"]:
             t["max_stretch_pct"] = stretch_pct

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from corecycler.monitor.frequency import Clocks, fastest
 from corecycler.monitor.hwmon import SensorRead, Sensors
 
 
@@ -155,3 +156,46 @@ def test_no_core_rail_reading_is_none(tmp_path):
         tmp_path, ("k10temp", {"temp1_input": "60000"}), ("amdgpu", {"in0_label": "vddgfx", "in0_input": "900"})
     )
     assert got is None
+
+
+def cpufreq(root: Path, cpu: int, current: str | None, ceiling: str = "5756452") -> None:
+    folder = root / f"cpu{cpu}" / "cpufreq"
+    folder.mkdir(parents=True)
+    if current is not None:
+        (folder / "scaling_cur_freq").write_text(current + "\n")
+    (folder / "scaling_max_freq").write_text(ceiling + "\n")
+
+
+def test_each_cpu_s_clock_and_ceiling_come_from_cpufreq_and_a_failed_read_is_none(tmp_path):
+    cpufreq(tmp_path, 0, "5100000")
+    cpufreq(tmp_path, 17, "624000", "4300000")
+    cpufreq(tmp_path, 3, None)
+    (tmp_path / "cpufreq").mkdir()
+    (tmp_path / "cpuidle").mkdir()
+    clocks = Clocks(tmp_path)
+    assert clocks.read() == {0: 5100.0, 17: 624.0}
+    assert clocks.ceilings() == {0: 5756.452, 17: 4300.0}
+    (tmp_path / "cpu17" / "cpufreq" / "scaling_cur_freq").write_text("garbage\n")
+    assert clocks.read() == {0: 5100.0, 17: None}
+
+
+def test_a_machine_without_cpufreq_reads_no_clock(tmp_path):
+    assert Clocks(tmp_path / "missing").read() == {}
+
+
+def test_a_clock_read_never_scans_the_tree_again(tmp_path, monkeypatch):
+    cpufreq(tmp_path, 0, "5100000")
+    clocks = Clocks(tmp_path)
+
+    def scanned(*_args, **_kwargs):
+        pytest.fail("a read scanned cpufreq again")
+
+    monkeypatch.setattr(Path, "iterdir", scanned)
+    monkeypatch.setattr(Path, "glob", scanned)
+    assert clocks.read() == {0: 5100.0}
+
+
+def test_a_core_s_clock_is_its_faster_cpu_that_was_read():
+    assert fastest({0: 4000.0, 16: 5100.0, 1: 3000.0}, (0, 16)) == 5100.0
+    assert fastest({0: None, 16: 4800.0}, (0, 16)) == 4800.0
+    assert fastest({0: None}, (0, 16)) is None
