@@ -128,6 +128,7 @@ def stored(s: SessionState) -> Stored:
         incidents=s.incidents,
         power=s.power,
         setup=s.setup,
+        base_co=s.base_co,
     )
 
 
@@ -146,6 +147,7 @@ def reconstruct(st: Stored) -> SessionState:
         incidents=st.incidents,
         power=st.power,
         setup=st.setup,
+        base_co=st.base_co,
     )
 
 
@@ -230,6 +232,7 @@ def _start(s: SessionState, e: Start, w: World) -> Transition:
         next_token=token + 1,
         power=w.power,
         setup=w.setup,
+        base_co=w.bios_co,
     )
     effects: list = [_commit(new)]
     effects += [WriteCO(core, value) for core, value in baseline if w.resident_of(core) != value]
@@ -308,7 +311,7 @@ def _resume_stored(s: SessionState, e: Resume, w: World) -> Transition:
 def _setup_choice_problem(s: SessionState, w: World) -> str | None:
     if s.lifecycle is not Lifecycle.PAUSED or s.pause is None or s.pause.reason is not PauseReason.SETUP_CHANGED:
         return "only a session paused as setup_changed can continue or restart under a new setup"
-    if not _changes(s.setup, w.setup):
+    if not _changes(s.setup, w.setup) and not _held_base_changes(s, w.bios_co):
         return f"nothing that affects a verdict changed since session {s.session_id} started; resume it"
     return None
 
@@ -321,13 +324,14 @@ def _continue_on_setup(s: SessionState, e: ContinueOnSetup, w: World) -> Transit
     problem = _setup_choice_problem(s, w)
     if problem is not None:
         return Transition(s, refused=problem)
-    changed = _changes(s.setup, w.setup)
+    changed = "; ".join(filter(None, (_changes(s.setup, w.setup), _held_base_changes(s, w.bios_co))))
     token = s.next_token
     child = replace(
         s,
         lifecycle=Lifecycle.RUNNING,
         session_id=e.child_id,
         setup=w.setup,
+        base_co=w.bios_co,
         pause=None,
         slot=Waiting(token, 0.0),
         streaks=Streaks(),
@@ -352,7 +356,8 @@ def _restart_on_setup(s: SessionState, e: RestartOnSetup, w: World) -> Transitio
     rest = tuple(effect for effect in started.effects if not isinstance(effect, Commit))
     restarted = Announce(
         "restarted",
-        f"session {e.child_id} restarts session {s.session_id} under a new setup: {_changes(s.setup, w.setup)}",
+        f"session {e.child_id} restarts session {s.session_id} under a new setup: "
+        + "; ".join(filter(None, (_changes(s.setup, w.setup), _held_base_changes(s, w.bios_co)))),
     )
     return Transition(started.state, (Supersede(_superseded(s), stored(started.state), "restart"), *rest, restarted))
 
@@ -399,6 +404,7 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
         next_token=token + 1,
         power=st.power,
         setup=st.setup,
+        base_co=st.base_co,
     )
     effects: list = [_commit(running)]
     effects += [WriteCO(core, value) for core, value in st.baseline if w.resident_of(core) != value]
@@ -493,6 +499,9 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
             PauseReason.SETUP_CHANGED,
             f"the setup changed since the session started: {changed}; put it back and resume, or start a new session",
         )
+    knobs = _knob_problem(after, e, w)
+    if knobs is not None:
+        return _enter_pause(after, *knobs)
     token = after.next_token
     running = replace(
         after,
@@ -506,6 +515,50 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
     effects += [WriteCO(core, value) for core, value in s.baseline]
     effects += [Announce("resumed", f"session {s.session_id}"), Schedule(token, 0.0)]
     return Transition(running, tuple(effects))
+
+
+def _held_base_changes(s: SessionState, reads: tuple[tuple[int, int | None], ...]) -> str:
+    base, owned = dict(s.base_co), {core for core, _ in s.baseline}
+    return "; ".join(
+        f"core {core} is {value}, the BIOS gave {base.get(core)} when the session started"
+        for core, value in reads
+        if core not in owned and value != base.get(core)
+    )
+
+
+def _knob_problem(s: SessionState, e: CrashEvidenceRead, w: World) -> tuple[PauseReason, str, tuple[int, ...]] | None:
+    reads = dict(e.co_now)
+    cores = [core for core, _ in w.cpus_of]
+    unread = tuple(core for core in cores if reads.get(core) is None)
+    if unread:
+        return PauseReason.SMU_READ, f"the CO of core {', '.join(map(str, unread))} could not be read", unread
+    base, baseline, written = dict(s.base_co), dict(s.baseline), dict(e.last_written)
+    if not e.same_boot:
+        changed = _held_base_changes(s, e.co_now)
+        if changed:
+            moved = tuple(core for core in cores if core not in baseline and reads[core] != base.get(core))
+            return (
+                PauseReason.SETUP_CHANGED,
+                f"the BIOS CO of a core the session does not own changed: {changed}",
+                moved,
+            )
+        if not e.marked_now:
+            return None
+    expected = {
+        core: written.get(core, base.get(core) if e.same_boot else baseline[core])
+        if core in baseline
+        else base.get(core)
+        for core in cores
+    }
+    moved = tuple(
+        core
+        for core in cores
+        if reads[core] != expected[core] and not (e.marked_now and core in baseline and reads[core] == 0)
+    )
+    if not moved:
+        return None
+    found = "; ".join(f"core {c} reads {reads[c]}, the session left it at {expected[c]}" for c in moved)
+    return PauseReason.OUTSIDE_WRITE, f"something else wrote the CO while the session was away: {found}", moved
 
 
 def _stale_fail(s: SessionState, core: int, w: World) -> tuple[SessionState, str | None]:

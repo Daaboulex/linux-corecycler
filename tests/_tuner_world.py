@@ -123,6 +123,7 @@ class Fake:
     dead_suspects: tuple[int, ...] = ()
     proven: dict[int, frozenset[int]] = field(default_factory=dict)
     superseded: set[int] = field(default_factory=set)
+    outside: set[int] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         if not self.co:
@@ -157,6 +158,8 @@ class Fake:
                 raise Broken(f"transition raised on {type(ev).__name__} from {before.lifecycle}: {exc!r}") from exc
             self.gap_grew = False
             self.handling = type(ev).__name__
+            if isinstance(ev, CrashEvidenceRead) and result.state.lifecycle is Lifecycle.RUNNING and self.outside:
+                raise Broken(f"resumed over an outside write on cores {sorted(self.outside)}")
             stored_before = self.db
             follow = self.run(before, result)
             self.state = result.state
@@ -194,6 +197,7 @@ class Fake:
                     return SmuRefused(core, value, "injected refusal")
                 self.co[core] = value
                 self.resident[core] = value
+                self.outside.discard(core)
                 self.journaled(core, value, confirmed=True)
             case RevertAll(values=values, journal=journal):
                 if journal and self.handling == "DatabaseFailed":
@@ -203,6 +207,7 @@ class Fake:
                         raise Broken(f"reverted core {core}, which the session does not own")
                     self.co[core] = value
                     self.resident[core] = value
+                    self.outside.discard(core)
                     if journal:
                         self.journaled(core, value, confirmed=True)
             case StopWorker(token=token):
@@ -256,6 +261,11 @@ class Fake:
                     shared_uncorrected=shared,
                     suspects=suspects,
                     evidence=evidence,
+                    co_now=tuple((core, self.co.get(core)) for core, _ in self.layout.cpus_of),
+                    last_written=()
+                    if dirty
+                    else tuple(sorted({row.core_id: row.value for row in self.journal if row.confirmed}.items())),
+                    marked_now=self.marker_boot == self.boot,
                 )
             case WriteStockMarker():
                 self.marker_boot = self.boot
@@ -428,6 +438,7 @@ class Fake:
         self.boot += 1
         self.co = dict(self.bios)
         self.resident = {}
+        self.outside = set()
 
     def progress(self) -> bool:
         if self.worker is not None:

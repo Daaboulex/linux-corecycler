@@ -200,6 +200,7 @@ def stored_from_json(raw: dict) -> Stored:
         incidents=raw["incidents"],
         power=tuple((name, value) for name, value in raw["power"]),
         setup=tuple((name, value) for name, value in raw["setup"]),
+        base_co=tuple((core, value) for core, value in raw["base_co"]),
     )
 
 
@@ -632,6 +633,11 @@ class LiveRig:
             context=context,
             evidence=evidence,
             kernel_problem=harvest.problem,
+            co_now=tuple((core, self.hardware.read_co(core)) for core, _ in self.cpus_of),
+            last_written=tuple(sorted({row.core_id: row.value for row in rows if row.confirmed}.items()))
+            if same
+            else (),
+            marked_now=marker == now,
         )
 
     def _core_of_cpu(self) -> dict[int, int]:
@@ -724,7 +730,7 @@ class LiveRig:
         self.post(Resume(session_id), self.world_for_resume(session_id))
 
     def continue_on_setup(self) -> None:
-        self.post(ContinueOnSetup(self.store.new_session_id()), self.world_checked())
+        self.post(ContinueOnSetup(self.store.new_session_id()), self.world_for_start())
 
     def restart_on_setup(self, acknowledged: bool) -> None:
         self.post(RestartOnSetup(self.store.new_session_id(), acknowledged), self.world_for_start())

@@ -326,6 +326,75 @@ def test_a_restart_the_start_gates_refuse_leaves_the_parent_paused_and_untouched
     assert result.effects == ()
 
 
+HELD = World(
+    cpus_of=((0, (0, 1)), (1, (2, 3)), (2, (4, 5))),
+    domain_of=((0, 0), (1, 0), (2, 0)),
+    bios_co=((0, 0), (1, 0), (2, -5)),
+)
+
+
+def resuming_with_a_held_core():
+    started = transition(SessionState(), Start(CFG, 1, 0, True), HELD).state
+    paused = replace(started, lifecycle=Lifecycle.PAUSED, slot=None, pause=Pause(PauseReason.RESUMING, "reading"))
+    return paused
+
+
+def evidence(same_boot: bool, reads: dict, written: dict | None = None, marked: bool = False) -> CrashEvidenceRead:
+    return CrashEvidenceRead(
+        dirty_end=not same_boot,
+        same_boot=same_boot,
+        was_running=False,
+        co_now=tuple(sorted(reads.items())),
+        last_written=tuple(sorted((written or {}).items())),
+        marked_now=marked,
+    )
+
+
+def test_a_core_whose_co_cannot_be_read_pauses_as_smu_read_naming_it():
+    result = transition(resuming_with_a_held_core(), evidence(True, {0: 0, 1: None, 2: -5}), HELD)
+    assert result.state.pause.reason is PauseReason.SMU_READ
+    assert result.state.pause.cores == (1,)
+    missing = transition(resuming_with_a_held_core(), evidence(True, {0: 0, 1: 0}), HELD)
+    assert missing.state.pause.reason is PauseReason.SMU_READ
+    assert missing.state.pause.cores == (2,)
+
+
+def test_after_a_reboot_only_a_held_core_s_bios_change_pauses_as_setup_changed():
+    owned_moved = transition(resuming_with_a_held_core(), evidence(False, {0: -7, 1: 0, 2: -5}), HELD)
+    assert owned_moved.state.lifecycle is Lifecycle.RUNNING
+    held_moved = transition(resuming_with_a_held_core(), evidence(False, {0: 0, 1: 0, 2: -9}), HELD)
+    assert held_moved.state.pause.reason is PauseReason.SETUP_CHANGED
+    assert "core 2 is -9, the BIOS gave -5 when the session started" in held_moved.state.pause.detail
+    assert held_moved.state.pause.cores == (2,)
+
+
+def test_a_held_core_s_bios_change_can_be_continued_and_the_child_takes_the_co_read_now_as_its_base():
+    paused = transition(resuming_with_a_held_core(), evidence(False, {0: 0, 1: 0, 2: -9}), HELD).state
+    now = replace(HELD, bios_co=((0, 0), (1, 0), (2, -9)))
+    child = transition(paused, ContinueOnSetup(2), now).state
+    assert (child.session_id, child.lifecycle, child.base_co) == (2, Lifecycle.RUNNING, now.bios_co)
+    assert "nothing that affects a verdict changed" in transition(paused, ContinueOnSetup(2), HELD).refused
+
+
+def test_in_the_same_boot_a_core_off_its_last_write_or_its_base_pauses_as_an_outside_write():
+    owned = transition(resuming_with_a_held_core(), evidence(True, {0: -4, 1: 0, 2: -5}, {0: -3, 1: 0}), HELD)
+    assert owned.state.pause.reason is PauseReason.OUTSIDE_WRITE
+    assert "core 0 reads -4, the session left it at -3" in owned.state.pause.detail
+    held = transition(resuming_with_a_held_core(), evidence(True, {0: -3, 1: 0, 2: -6}, {0: -3, 1: 0}), HELD)
+    assert held.state.pause.reason is PauseReason.OUTSIDE_WRITE
+    assert held.state.pause.cores == (2,)
+    left = transition(resuming_with_a_held_core(), evidence(True, {0: -3, 1: 0, 2: -5}, {0: -3, 1: 0}), HELD)
+    assert left.state.lifecycle is Lifecycle.RUNNING
+
+
+def test_stock_on_an_owned_core_is_the_tool_s_own_revert_only_in_the_boot_the_marker_names():
+    reads, written = {0: 0, 1: 0, 2: -5}, {0: -3, 1: 0}
+    marked = transition(resuming_with_a_held_core(), evidence(True, reads, written, marked=True), HELD)
+    assert marked.state.lifecycle is Lifecycle.RUNNING
+    unmarked = transition(resuming_with_a_held_core(), evidence(True, reads, written), HELD)
+    assert unmarked.state.pause.reason is PauseReason.OUTSIDE_WRITE
+
+
 def test_a_test_value_at_or_past_its_fail_bound_pauses_as_internal_instead_of_running():
     fake = running_fake()
     bad = replace(fake.state.core(0), phase=Phase.PROVE, value=-8, fb=-8)

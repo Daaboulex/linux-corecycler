@@ -56,7 +56,8 @@ def held(flow: Flow, cores: tuple[CoreRecord, ...], **changes) -> SessionState:
 
 
 def evidence_read(**fields) -> CrashEvidenceRead:
-    return CrashEvidenceRead(**{"dirty_end": True, "same_boot": False, "was_running": True, **fields})
+    reads = tuple((core, 0) for core, _ in WORLD.cpus_of)
+    return CrashEvidenceRead(**{"dirty_end": True, "same_boot": False, "was_running": True, "co_now": reads, **fields})
 
 
 def test_the_2t_class_proves_each_value_again_and_backs_off_to_the_2t_edge():

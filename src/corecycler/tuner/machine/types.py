@@ -276,6 +276,7 @@ class SessionState:
     next_token: int = 1
     power: tuple[tuple[str, str], ...] = ()
     setup: tuple[tuple[str, str], ...] = ()
+    base_co: tuple[tuple[int, int | None], ...] = ()
 
     def __post_init__(self) -> None:
         problems = list(_state_problems(self))
@@ -401,6 +402,9 @@ class CrashEvidenceRead:
     context: FailContext | None = None
     evidence: tuple[Evidence, ...] = ()
     kernel_problem: str | None = None
+    co_now: tuple[tuple[int, int | None], ...] = ()
+    last_written: tuple[tuple[int, int], ...] = ()
+    marked_now: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,6 +455,7 @@ class Stored:
     incidents: int = 0
     power: tuple[tuple[str, str], ...] = ()
     setup: tuple[tuple[str, str], ...] = ()
+    base_co: tuple[tuple[int, int | None], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -56,6 +56,7 @@ FAULTS = (
     "setup",
     "continue",
     "restart",
+    "outside",
 )
 
 
@@ -66,6 +67,7 @@ def clone(fake: Fake) -> Fake:
     twin.failed_at = set(fake.failed_at)
     twin.stock_fail_owed = set(fake.stock_fail_owed)
     twin.superseded = set(fake.superseded)
+    twin.outside = set(fake.outside)
     twin.faults = copy.copy(fake.faults)
     twin.log = []
     return twin
@@ -108,6 +110,7 @@ def key(fake: Fake) -> tuple:
         frozenset(fake.failed_at),
         frozenset(fake.stock_fail_owed),
         frozenset(fake.superseded),
+        frozenset(fake.outside),
     )
 
 
@@ -149,6 +152,10 @@ def moves(fake: Fake, budget: dict[str, int]) -> list[tuple[str, dict[str, int]]
             continue
         if fault == "setup" and s.lifecycle in (Lifecycle.RUNNING, Lifecycle.PAUSING):
             continue
+        if fault == "outside" and not (
+            s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is not PauseReason.RESUMING
+        ):
+            continue
         if fault in ("continue", "restart") and not (
             s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is PauseReason.SETUP_CHANGED
         ):
@@ -189,6 +196,10 @@ def act(fake: Fake, move: str) -> None:
             fake.power = (("platform profile", "power-saver" if fake.power == BALANCED else "balanced"),)
         case "setup":
             fake.setup = (("bios", "B" if fake.setup == BIOS_A else "A"),)
+        case "outside":
+            core = fake.state.baseline[0][0]
+            fake.co[core] = fake.state.config.max_offset - 1
+            fake.outside.add(core)
         case "continue":
             fake.post(ContinueOnSetup(fake.db.session_id + 1))
         case "restart":
@@ -299,7 +310,7 @@ def tiny(cores: int, edges: list[int], domains: int = 1, **cfg) -> Fake:
 BALANCED = (("platform profile", "balanced"),)
 BIOS_A = (("bios", "A"),)
 
-ONE_OF_EACH = {fault: 1 for fault in FAULTS if fault not in ("profile", "setup")}
+ONE_OF_EACH = {fault: 1 for fault in FAULTS if fault not in ("profile", "setup", "outside")}
 
 
 @pytest.mark.parametrize(
@@ -367,12 +378,21 @@ def test_a_session_continued_or_restarted_on_a_new_setup_never_runs_its_parent_a
     assert "completed" in survey.leaves
 
 
+def test_no_future_resumes_over_a_co_another_tool_wrote_while_the_session_was_paused():
+    budget = {"outside": 2, "pause": 2, "crash": 1, "dbfail": 1, "total": 3}
+    survey = explore(tiny(2, [-3, -2], 2), budget, cap=2_000_000)
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
 @pytest.mark.slow
 def test_every_future_with_a_deeper_fault_budget():
     total = int(os.environ.get("TUNER_FUTURES_FAULTS", "3"))
     cap = int(os.environ.get("TUNER_FUTURES_CAP", "5000000"))
     survey = explore(
-        tiny(3, [-4, 0, -2], 2), {**ONE_OF_EACH, "crash": 2, "profile": 2, "setup": 2, "total": total}, cap=cap
+        tiny(3, [-4, 0, -2], 2),
+        {**ONE_OF_EACH, "crash": 2, "profile": 2, "setup": 2, "outside": 1, "total": total},
+        cap=cap,
     )
     print(f"\nreachable states {survey.states}, leaves {survey.leaves}, longest future {survey.deepest} moves")
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}

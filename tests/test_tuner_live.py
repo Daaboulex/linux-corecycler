@@ -265,6 +265,11 @@ def test_every_stored_state_of_a_run_survives_the_session_file_round_trip():
     del older["setup"]
     with pytest.raises(KeyError, match="setup"):
         stored_from_json(older)
+    assert all(st.base_co == stored[0].base_co != () for st in stored)
+    older = stored_to_json(stored[0])
+    del older["base_co"]
+    with pytest.raises(KeyError, match="base_co"):
+        stored_from_json(older)
 
 
 def rows(r: LiveRig, sql: str, params: tuple = ()) -> list:
@@ -1206,6 +1211,43 @@ def test_the_setup_holds_one_line_per_key_with_the_reason_for_what_could_not_be_
         "smu_firmware": "unreadable: No such file or directory",
         "topology": "online 0-3; 0: 0,2 l3 0; 1: 1,3 l3 1",
     }
+
+
+def test_a_resume_in_the_same_boot_after_another_tool_wrote_a_core_pauses_as_an_outside_write(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while not rows(r, "SELECT id FROM tuner_tests WHERE ended_at IS NOT NULL"):
+        r.step(0.01)
+    r.post(PauseRequest())
+    r.run_until_rest(0.01)
+    left = dict(hardware.co)
+    hardware.co[1] = -19
+    again = rig(tmp_path, hardware, db=r.store.db)
+    again.resume(1)
+    final = again.run_until_rest(0.01)
+    assert final.pause.reason is PauseReason.OUTSIDE_WRITE
+    assert f"core 1 reads -19, the session left it at {left[1]}" in final.pause.detail
+    assert hardware.co[1] == 0
+
+
+def test_a_resume_after_a_database_pause_in_the_same_boot_takes_the_stock_reads_as_the_tool_s_own(
+    tmp_path, monkeypatch
+):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while not any(hardware.co.values()):
+        r.step(0.01)
+    monkeypatch.setattr(r.store, "save", broken)
+    assert r.run_until_rest(0.01).pause.reason is PauseReason.DATABASE
+    monkeypatch.undo()
+    assert hardware.co == {0: 0, 1: 0, 8: 0}
+    again = rig(tmp_path, hardware, db=r.store.db)
+    again.resume(1)
+    while again.worker is None and not again.at_rest():
+        again.step(0.01)
+    assert again.state.pause is None
 
 
 def test_a_session_resumed_on_a_changed_setup_pauses_before_any_test_and_names_the_change(tmp_path):
