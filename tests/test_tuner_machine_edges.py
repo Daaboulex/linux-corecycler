@@ -341,3 +341,14 @@ def test_a_full_run_after_every_edge_still_completes():
     fake = running_fake()
     run_to_rest(fake, 2000)
     assert fake.state.lifecycle is Lifecycle.COMPLETED
+
+
+@pytest.mark.parametrize(("tjmax", "limit"), [(None, 95.0), (89.0, 89.0), (100.0, 95.0)])
+def test_each_test_runs_under_the_lower_of_the_set_limit_and_the_model_tjmax_and_cools_below_it(tjmax, limit):
+    fake = running_fake()
+    fake.tjmax_c = tjmax
+    while fake.worker is None:
+        assert fake.progress()
+    assert fake.worker.spec.thermal_limit_c == limit
+    fake.deliver(Report(Group.THERMAL, 5.0))
+    assert fake.state.slot.cool_below_c == limit - fake.state.config.cool_margin_c

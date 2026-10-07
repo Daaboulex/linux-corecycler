@@ -18,7 +18,7 @@ IDLE_PER_TEST_S = 10
 HOT_MEMORY_CAP_MB = 16384
 BURST_MEMORY_MB = 2048
 IDLE_MEMORY_MB = 1024
-HOT_HOLD = (95.0, 85.0)
+HOT_HOLD_SPAN_C = 10.0
 WARM_HOLD = (65.0, 55.0)
 WARM_HOLD_CAP_S = 300.0
 
@@ -59,11 +59,19 @@ def _draws(n_cpus: int) -> list[int]:
 
 
 def plan(
-    load: Load, seconds: float, cpus: tuple[int, ...], firsts: tuple[int, ...], usable_mb: int, rng: random.Random
+    load: Load,
+    seconds: float,
+    cpus: tuple[int, ...],
+    firsts: tuple[int, ...],
+    usable_mb: int,
+    rng: random.Random,
+    limit_c: float,
 ) -> tuple[Segment, ...]:
     hot_memory = max(1, min(HOT_MEMORY_CAP_MB, usable_mb // 2))
     if load is Load.HOT:
-        return (Segment(cpus, ALL_TESTS, HOT_PER_TEST_S, hot_memory, seconds, hold=HOT_HOLD),)
+        return (
+            Segment(cpus, ALL_TESTS, HOT_PER_TEST_S, hot_memory, seconds, hold=(limit_c, limit_c - HOT_HOLD_SPAN_C)),
+        )
     if load is Load.WARM:
         slices = []
         for index, test in enumerate(ALL_TESTS):

@@ -30,14 +30,14 @@ CORE_OF_CPU = {cpu: cpu % 4 for cpu in CPUS}
 
 
 def plan(load: Load, seconds: float = 480.0, seed: int = 1):
-    return stages.plan(load, seconds, CPUS, FIRSTS, 60_000, random.Random(seed))
+    return stages.plan(load, seconds, CPUS, FIRSTS, 60_000, random.Random(seed), 95.0)
 
 
 def test_hot_is_one_all_cpu_segment_of_every_test_with_the_hot_hold():
     (hot,) = plan(Load.HOT, 510.0)
     assert (hot.cpus, hot.tests, hot.seconds_per_test, hot.duration) == (CPUS, ALL_TESTS, 60, 510.0)
     assert hot.memory_mb == 16384 and hot.hold == (95.0, 85.0) and hot.frozen == ()
-    (small,) = stages.plan(Load.HOT, 10.0, CPUS, FIRSTS, 4000, random.Random(1))
+    (small,) = stages.plan(Load.HOT, 10.0, CPUS, FIRSTS, 4000, random.Random(1), 95.0)
     assert small.memory_mb == 2000
 
 
@@ -95,6 +95,7 @@ class Script:
     sampled: bool = True
     caps: list = field(default_factory=list)
     memory: list = field(default_factory=list)
+    limits: list = field(default_factory=list)
 
 
 def runner(script: Script, readings=None, detector=None, clocks=None, usable_mb=60_000):
@@ -103,6 +104,7 @@ def runner(script: Script, readings=None, detector=None, clocks=None, usable_mb=
             self.freeze = kwargs["freeze"]
             self.sensors = kwargs["sensors"]
             script.caps.append(kwargs["hold_cap_s"])
+            script.limits.append(kwargs["thermal"].max_temperature)
             self.observed = kwargs["observed"]
 
         def run(self, lanes, cfg, duration):
@@ -145,7 +147,7 @@ def runner(script: Script, readings=None, detector=None, clocks=None, usable_mb=
 
 
 def spec(load: Load, seconds: float = 480.0) -> Spec:
-    return Spec(Klass.T1, 0, -5, CPUS, seconds, tuple((c, -5) for c in range(4)), Stage.TRANSIENT, load)
+    return Spec(Klass.T1, 0, -5, CPUS, seconds, tuple((c, -5) for c in range(4)), Stage.TRANSIENT, load, 95.0)
 
 
 def test_every_sample_of_an_all_core_stage_reaches_the_sink():
@@ -157,7 +159,7 @@ def test_every_sample_of_an_all_core_stage_reaches_the_sink():
 
 
 def test_a_single_core_test_is_sampled_only_when_a_sink_is_given():
-    one = Spec(Klass.T1, 0, -5, (0,), 60.0, ((0, -5),), Stage.SEARCH)
+    one = Spec(Klass.T1, 0, -5, (0,), 60.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0)
     got = []
     script = Script([Outcome.PASS])
     runner(script).run(one, threading.Event(), got.append)
@@ -179,7 +181,7 @@ def test_every_segment_s_speeds_reach_the_report_in_order_whether_the_stage_pass
     assert [name for name, _, _ in passing.speeds] == [f"seg{n}" for n in range(1, 9)]
     failing = runner(Script([Outcome.PASS, Outcome.COMPUTATION])).run(spec(Load.WARM), threading.Event())
     assert failing.speeds == (("seg1", 1e9, True), ("seg2", 1e9, False))
-    one = Spec(Klass.T1, 0, -5, (0,), 60.0, ((0, -5),), Stage.SEARCH)
+    one = Spec(Klass.T1, 0, -5, (0,), 60.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0)
     assert runner(Script([Outcome.PASS], sampled=False)).run(one, threading.Event()).speeds == (("seg1", 1e9, True),)
 
 
@@ -291,7 +293,7 @@ def test_burst_draws_powers_of_two_up_to_the_cpu_count_on_first_cpus_and_all_cpu
     firsts = tuple(range(16))
     seen = set()
     for seed in range(200):
-        for s in stages.plan(Load.BURST, 480.0, cpus, firsts, 60_000, random.Random(seed)):
+        for s in stages.plan(Load.BURST, 480.0, cpus, firsts, 60_000, random.Random(seed), 95.0):
             seen.add(len(s.cpus))
             assert s.cpus == cpus or set(s.cpus) <= set(firsts)
     assert seen == {2, 4, 8, 16, 32}
@@ -460,7 +462,9 @@ def test_only_warm_slices_wait_out_their_hold_and_the_runner_hands_the_cap_to_th
 def test_the_working_cores_of_a_failing_burst_segment_are_the_cores_it_drew():
     for value in range(-1, -30, -1):
         script = Script([Outcome.COMPUTATION])
-        burst = Spec(Klass.T1, 0, value, CPUS, 480.0, tuple((c, value) for c in range(4)), Stage.TRANSIENT, Load.BURST)
+        burst = Spec(
+            Klass.T1, 0, value, CPUS, 480.0, tuple((c, value) for c in range(4)), Stage.TRANSIENT, Load.BURST, 95.0
+        )
         report = runner(script).run(burst, threading.Event())
         drawn = tuple(sorted({CORE_OF_CPU[c] for c in script.seen[0][0]}))
         if len(drawn) < 4:
@@ -510,7 +514,11 @@ def test_every_stage_samples_at_the_one_rate():
         runner(script).run(spec(load), threading.Event(), lambda sample: None)
         holds += [freeze for *_, freeze in script.seen]
     one = Script([Outcome.PASS])
-    runner(one).run(Spec(Klass.T1, 0, -5, (0,), 60.0, ((0, -5),), Stage.SEARCH), threading.Event(), lambda sample: None)
+    runner(one).run(
+        Spec(Klass.T1, 0, -5, (0,), 60.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0),
+        threading.Event(),
+        lambda sample: None,
+    )
     holds += [freeze for *_, freeze in one.seen]
     assert {hold.every for hold in holds} == {telemetry.SAMPLE_S}
     assert len(holds) > 5
@@ -520,3 +528,23 @@ def test_an_all_core_load_sizes_its_memory_from_the_one_budget():
     script = Script([Outcome.PASS])
     runner(script, usable_mb=4000).run(spec(Load.HOT, 510.0), threading.Event())
     assert script.memory == [2000]
+
+
+def test_the_hot_hold_band_sits_at_the_thermal_limit_and_ten_degrees_under_it():
+    (hot,) = stages.plan(Load.HOT, 510.0, CPUS, FIRSTS, 60_000, random.Random(1), 89.0)
+    assert hot.hold == (89.0, 79.0)
+    (warm, *_) = stages.plan(Load.WARM, 480.0, CPUS, FIRSTS, 60_000, random.Random(1), 89.0)
+    assert warm.hold == stages.WARM_HOLD
+
+
+def test_a_spec_without_a_thermal_limit_is_refused_before_anything_runs():
+    script = Script([Outcome.PASS])
+    with pytest.raises(ValueError, match="no thermal limit"):
+        runner(script).run(Spec(Klass.T1, 0, -5, (0,), 60.0, ((0, -5),), Stage.SEARCH), threading.Event())
+    assert script.seen == []
+
+
+def test_the_thermal_stop_of_every_run_is_the_spec_s_limit():
+    script = Script([Outcome.PASS] * 8)
+    runner(script).run(replace(spec(Load.WARM), thermal_limit_c=89.0), threading.Event())
+    assert set(script.limits) == {89.0}

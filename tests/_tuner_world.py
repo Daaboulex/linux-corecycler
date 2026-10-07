@@ -95,6 +95,7 @@ class Fake:
     temperature: float | None = 60.0
     capped: bool = False
     power: tuple[tuple[str, str], ...] = (("platform profile", "balanced"),)
+    tjmax_c: float | None = None
     gap_grew: bool = False
     boot: int = 0
     stored_boot: int = 0
@@ -131,6 +132,7 @@ class Fake:
             gap_grew=self.gap_grew,
             frequency_capped=self.capped,
             power=self.power,
+            tjmax_c=self.tjmax_c,
             now=self.now,
             temperature_c=self.temperature,
             stored=self.db,

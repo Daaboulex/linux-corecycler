@@ -361,6 +361,7 @@ class LiveRig:
     cpus_of: tuple[tuple[int, tuple[int, ...]], ...]
     domain_of: tuple[tuple[int, int | None], ...]
     two_t_problem: str | None = None
+    tjmax_c: float | None = None
     say: Callable[[str], None] = print
     clock: Callable[[], float] = time.monotonic
     state: SessionState = field(default_factory=SessionState)
@@ -394,6 +395,7 @@ class LiveRig:
             cpus_of=self.cpus_of,
             domain_of=self.domain_of,
             two_t_problem=self.two_t_problem,
+            tjmax_c=self.tjmax_c,
         )
 
     def world_for_start(self) -> World:

@@ -20,6 +20,7 @@ from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budg
 from corecycler.history.db import HistoryDB
 from corecycler.monitor.frequency import Clocks, PowerState, fastest, read_power_state
 from corecycler.monitor.hwmon import SensorRead, Sensors
+from corecycler.smu.commands import tjmax_c
 from corecycler.tuner import stages, telemetry
 from corecycler.tuner.live import Identity, LiveRig, Store
 from corecycler.tuner.machine.types import (
@@ -227,7 +228,9 @@ class StressRunner:
             supervisor = self.supervisor(
                 backend=backend or self.backend_factory(),
                 detector=watch,
-                thermal=ThermalWatch(max_temperature=95.0, grace_seconds=3.0, hard_margin=8.0, require_sensor=True),
+                thermal=ThermalWatch(
+                    max_temperature=spec.thermal_limit_c, grace_seconds=3.0, hard_margin=8.0, require_sensor=True
+                ),
                 sensors=self.sensors,
                 stop_event=stop,
                 observed=observed,
@@ -245,6 +248,8 @@ class StressRunner:
     def run(
         self, spec: TestSpec, stop: threading.Event, sink: Callable[[telemetry.Sample], None] | None = None
     ) -> Report:
+        if spec.thermal_limit_c is None:
+            raise ValueError("a test spec carries no thermal limit, so its run would have no thermal stop")
         self.read_ns = None
         self.sink = sink
         report = self._run(spec, stop)
@@ -279,7 +284,9 @@ class StressRunner:
             )
         )
         rng = random.Random(f"{spec.stage.value}:{spec.load.value}:{spec.vector}:{self.runs}")
-        segments = stages.plan(spec.load, spec.seconds, spec.cpus, firsts, self.budget(1, 0).usable_mb, rng)
+        segments = stages.plan(
+            spec.load, spec.seconds, spec.cpus, firsts, self.budget(1, 0).usable_mb, rng, spec.thermal_limit_c
+        )
         done = 0.0
         speeds: list[tuple[str, float, bool]] = []
         for segment in segments:
@@ -425,6 +432,7 @@ def build_rig(
         store=Store(db, args.state_dir, identity),
         cpus_of=cpus_of,
         domain_of=domain_of,
+        tjmax_c=tjmax_c(topology.model_name),
         say=say,
     )
 

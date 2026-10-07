@@ -989,8 +989,12 @@ def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, 
 
     monkeypatch.setattr(live_hw.kernel, "ErrorDetector", FakeDetector)
     runner = live_hw.StressRunner(lambda: "backend", tmp_path, {0: 0, 16: 0}, warm, dict, supervisor=FakeSupervisor)
-    one = runner.run(Spec(Klass.T1, 0, -5, (16,), 60.0, ((0, -5),), Stage.SEARCH), threading.Event())
-    two = runner.run(Spec(Klass.T2, 0, -5, (0, 16), 90.0, ((0, -5),), Stage.SEARCH), threading.Event())
+    one = runner.run(
+        Spec(Klass.T1, 0, -5, (16,), 60.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0), threading.Event()
+    )
+    two = runner.run(
+        Spec(Klass.T2, 0, -5, (0, 16), 90.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0), threading.Event()
+    )
     assert one.group is Group.PASS and two.group is Group.PASS
     assert one.kernel_read_ns == two.kernel_read_ns == 4_242
     assert ((16,), ("SFTv4", "FFTv4", "N63"), 20, None, 60.0) in seen

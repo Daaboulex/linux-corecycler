@@ -6,6 +6,7 @@ Command sets are derived from the SMUSettings/*.cs files in ZenStates-Core.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
 from enum import Enum, auto
@@ -672,3 +673,127 @@ def encode_pbo_scalar_arg(scalar: float) -> int:
 def encode_boost_limit_arg(freq_mhz: int) -> int:
     """Encode boost frequency limit (MHz) for SMU. 20-bit value."""
     return freq_mhz & 0xFFFFF
+
+
+TJMAX_C: dict[str, float] = {
+    **dict.fromkeys(
+        (
+            "9950X3D2",
+            "9950X3D",
+            "9950X",
+            "9900X3D",
+            "9900X",
+            "9850X3D",
+            "9800X3D",
+            "9700X",
+            "9700F",
+            "9600X",
+            "9600",
+            "9500F",
+            "9980X",
+            "9970X",
+            "9960X",
+            "PRO 9995WX",
+            "PRO 9985WX",
+            "PRO 9975WX",
+            "PRO 9965WX",
+            "PRO 9955WX",
+            "PRO 9945WX",
+            "7950X",
+            "7900X",
+            "7900",
+            "7700X",
+            "7700",
+            "7600X",
+            "7600",
+            "7500F",
+            "7400F",
+            "7400",
+            "8700G",
+            "8700F",
+            "8705G",
+            "8600G",
+            "8605G",
+            "8500G",
+            "8500GE",
+            "8505G",
+            "8505GE",
+            "8400F",
+            "8300G",
+            "8300GE",
+            "8305G",
+            "8305GE",
+            "7980X",
+            "7970X",
+            "7960X",
+            "PRO 7995WX",
+            "PRO 7985WX",
+            "PRO 7975WX",
+            "PRO 7965WX",
+            "PRO 7955WX",
+            "PRO 7945WX",
+            "5600XT",
+            "5600X",
+            "5600T",
+            "5600F",
+            "5500F",
+            "5700G",
+            "5700GE",
+            "5700",
+            "5600GT",
+            "5600G",
+            "5605GE",
+            "5500GT",
+            "5300G",
+            "5300GE",
+            "PRO 5995WX",
+            "PRO 5975WX",
+            "3950X",
+            "3900XT",
+            "3900X",
+            "3900",
+            "3800XT",
+            "3800X",
+            "3700X",
+            "3600XT",
+            "3600X",
+            "3600",
+            "3500X",
+            "3500",
+            "3990X",
+            "3970X",
+            "3960X",
+        ),
+        95.0,
+    ),
+    **dict.fromkeys(
+        (
+            "5950X",
+            "5900XT",
+            "5900X",
+            "5800XT",
+            "5800X3D",
+            "5800X",
+            "5700X3D",
+            "5700X",
+            "5600X3D",
+            "5600",
+            "5500X3D",
+            "5500",
+            "PRO 3995WX",
+            "PRO 3975WX",
+            "PRO 3955WX",
+            "PRO 3945WX",
+        ),
+        90.0,
+    ),
+    **dict.fromkeys(("7950X3D", "7900X3D", "7800X3D", "7700X3D", "7600X3D", "7500X3D"), 89.0),
+}
+UNKNOWN_TJMAX_C = min(TJMAX_C.values())
+_SKU_RE = re.compile(r"Ryzen (?:\d+ |Threadripper )(PRO )?(\w+)")
+
+
+def tjmax_c(model_name: str) -> float:
+    """The model's Tjmax; a model the table does not name gets the lowest one known (D53)."""
+    found = _SKU_RE.search(model_name)
+    return UNKNOWN_TJMAX_C if found is None else TJMAX_C.get(f"{found.group(1) or ''}{found.group(2)}", UNKNOWN_TJMAX_C)

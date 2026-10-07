@@ -965,6 +965,8 @@ def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transi
         )
     if s.power != w.power:
         return _enter_pause(replace(s, flow=flow), PauseReason.SETUP_CHANGED, _power_changes(s.power, w.power))
+    limit = s.config.thermal_limit_c if w.tjmax_c is None else min(s.config.thermal_limit_c, w.tjmax_c)
+    spec = replace(spec, thermal_limit_c=limit)
     token = s.next_token
     flow = replace(flow, last_core=spec.core)
     marked = s.with_core(replace(s.core(spec.core), in_test=True))
@@ -1185,7 +1187,7 @@ def _thermal(s: SessionState, spec: TestSpec, rep: Report, pausing: bool, w: Wor
     if pausing:
         return _enter_pause(after, PauseReason.USER, "paused by the user")
     token = after.next_token
-    limit = cfg.thermal_limit_c - cfg.cool_margin_c
+    limit = spec.thermal_limit_c - cfg.cool_margin_c
     waiting = replace(
         after,
         slot=Waiting(token, cfg.cool_min_s, cool_below_c=limit, cool_deadline=w.now + cfg.cool_cap_s),

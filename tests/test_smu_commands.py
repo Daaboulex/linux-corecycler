@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from corecycler.smu.commands import (
     COMMAND_SETS,
+    TJMAX_C,
     CPUGeneration,
     SMUCommandSet,
     decode_co_arg,
@@ -18,6 +19,7 @@ from corecycler.smu.commands import (
     encode_co_arg,
     encode_pbo_limit_arg,
     get_commands,
+    tjmax_c,
 )
 
 # ===========================================================================
@@ -469,3 +471,26 @@ class TestDetectGenerationDriftEdges:
     def test_encode_pbo_limit_arg_watts_to_milliwatts(self):
         assert encode_pbo_limit_arg(225) == 225000
         assert encode_pbo_limit_arg(0) == 0
+
+
+class TestTjmax:
+    @pytest.mark.parametrize(
+        ("model_name", "tjmax"),
+        [
+            ("AMD Ryzen 9 9950X3D 16-Core Processor", 95.0),
+            ("AMD Ryzen 7 7800X3D 8-Core Processor", 89.0),
+            ("AMD Ryzen 7 5800X3D 8-Core Processor", 90.0),
+            ("AMD Ryzen 7 5700 8-Core Processor", 95.0),
+            ("AMD Ryzen Threadripper PRO 3995WX 64-Cores", 90.0),
+            ("AMD Ryzen Threadripper 7980X 64-Cores", 95.0),
+        ],
+    )
+    def test_a_known_model_gets_its_own_tjmax(self, model_name, tjmax):
+        assert tjmax_c(model_name) == tjmax
+
+    @pytest.mark.parametrize(
+        "model_name",
+        ["AMD Ryzen 3 3100 4-Core Processor", "AMD Ryzen 7 PRO 8700G w/ Radeon 780M Graphics", "Apple M1 Max", ""],
+    )
+    def test_an_unknown_model_gets_the_lowest_tjmax_any_known_model_has(self, model_name):
+        assert tjmax_c(model_name) == min(TJMAX_C.values()) == 89.0

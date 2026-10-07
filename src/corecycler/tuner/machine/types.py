@@ -162,6 +162,7 @@ class TestSpec:
     vector: tuple[tuple[int, int], ...] = ()
     stage: Stage = Stage.SEARCH
     load: Load | None = None
+    thermal_limit_c: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,6 +445,7 @@ class World:
     gap_grew: bool = False
     frequency_capped: bool = False
     power: tuple[tuple[str, str], ...] = ()
+    tjmax_c: float | None = None
     now: float = 0.0
     temperature_c: float | None = None
     stored: Stored | None = None
