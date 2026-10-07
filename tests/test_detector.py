@@ -31,6 +31,7 @@ from corecycler.engine.detector import (
     kernel_log_problem,
     parse_kernel_records,
     read_boot_id,
+    reset_reasons,
 )
 from tests._machine import core_bank_record
 
@@ -547,6 +548,36 @@ class TestBootEnd:
         end = boot_end(dead)
         assert end.clean is False
         assert f"No journal boot entry found for the specified boot ({dead}+0)." in end.problem
+
+
+class TestResetReasons:
+    FLOOD = (
+        "x86/amd: Previous system reset reason [0x08000800]: an uncorrected error caused a data fabric sync flood event"
+    )
+
+    def test_the_boot_s_reset_reason_lines_before_userspace_are_read(self, machine):
+        machine.reboot(clean=False)
+        machine.kernel(self.FLOOD, mono_s=1)
+        machine.kernel(
+            "x86/amd: Previous system reset reason [0x00200800]: ACPI power state transition occurred", mono_s=1
+        )
+        machine.kernel("amdgpu 0000:7c:00.0: amdgpu: SMU is initialized successfully!", mono_s=1)
+        machine.kernel("x86/amd: Previous system reset reason [0x00000800]: a late copy", mono_s=5)
+        lines, problem = reset_reasons(machine.boot_id)
+        assert lines == (
+            self.FLOOD,
+            "x86/amd: Previous system reset reason [0x00200800]: ACPI power state transition occurred",
+        )
+        assert problem is None
+
+    def test_a_boot_the_journal_does_not_hold_is_a_problem_not_an_empty_answer(self, machine):
+        machine.reboot(clean=False)
+        gone = machine.boot_id
+        machine.reboot(clean=False)
+        machine.forget_boot(gone)
+        lines, problem = reset_reasons(gone)
+        assert lines == ()
+        assert gone in problem
 
 
 class TestHarvestAfter:

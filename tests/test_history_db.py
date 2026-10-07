@@ -440,6 +440,17 @@ class TestTunerSessionMethods:
         assert db.tuner_test_samples(row) == taken
         assert db.tuner_test_samples(other) == taken[:1]
 
+    def test_a_boot_is_recorded_once_and_its_first_record_stands(self, db):
+        db.insert_tuner_boot(
+            "b1", "2401", 2033.0, 3000.0, 3000.0, '{"lines": [], "problem": null}', '{"present": false}'
+        )
+        db.insert_tuner_boot("b1", "2402", None, None, None, '{"lines": [], "problem": "x"}', '{"present": true}')
+        rows = [dict(r) for r in db._execute_raw("SELECT * FROM tuner_boots").fetchall()]
+        assert [(r["boot_id"], r["bios_version"], r["fclk_mhz"], r["igpu_json"]) for r in rows] == [
+            ("b1", "2401", 2033.0, '{"present": false}')
+        ]
+        assert rows[0]["first_seen"]
+
     def test_a_damaged_block_is_refused_rather_than_read(self, db):
         sid = db.next_tuner_session_id()
         fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
@@ -921,6 +932,18 @@ class TestMergeFrom:
             (3, 8, -5, "silicon", 12.5)
         ]
         assert samples == [sample, sample | {"mono_ns": 8}]
+
+    def test_merge_adopts_new_boots_and_keeps_the_first_record_of_a_known_one(self, tmp_path):
+        src = HistoryDB(tmp_path / "src.db")
+        src.insert_tuner_boot("b1", "2401", 2033.0, 3000.0, 3000.0, "{}", '{"from": "src"}')
+        src.insert_tuner_boot("b2", "2401", None, None, None, "{}", '{"from": "src"}')
+        src.close()
+        dst = HistoryDB(tmp_path / "dst.db")
+        dst.insert_tuner_boot("b1", "2401", 2033.0, 3000.0, 3000.0, "{}", '{"from": "dst"}')
+        dst.merge_from(tmp_path / "src.db")
+        boots = {r["boot_id"]: r["igpu_json"] for r in dst._execute_raw("SELECT * FROM tuner_boots").fetchall()}
+        dst.close()
+        assert boots == {"b1": '{"from": "dst"}', "b2": '{"from": "src"}'}
 
     def test_merge_carries_every_column_of_every_table(self, tmp_path):
         src_path = tmp_path / "src.db"

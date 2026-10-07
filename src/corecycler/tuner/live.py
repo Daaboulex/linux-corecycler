@@ -75,6 +75,17 @@ if TYPE_CHECKING:
     from corecycler.history.db import HistoryDB, JournalRow
 
 
+@dataclass(frozen=True, slots=True)
+class BootFacts:
+    bios_version: str
+    fclk_mhz: float | None
+    uclk_mhz: float | None
+    mclk_mhz: float | None
+    reset_reasons: tuple[str, ...]
+    reset_problem: str | None
+    igpu: dict
+
+
 class Hardware(Protocol):
     def read_co(self, core: int) -> int | None: ...
     def write_co(self, core: int, value: int) -> str | None: ...
@@ -83,6 +94,7 @@ class Hardware(Protocol):
     def preflight(self) -> tuple[str | None, tuple[str, ...]]: ...
     def boot_id(self) -> str: ...
     def boot_ended_clean(self, boot_id: str) -> bool: ...
+    def boot_facts(self, boot_id: str) -> BootFacts: ...
     def asleep_seconds(self) -> float: ...
     def harvest(self, boot_id: str, since_ns: int | None, next_boot: bool) -> kernel.JournalHarvest: ...
 
@@ -289,6 +301,17 @@ class Store:
             self.db.set_kernel_read(session_id, report.kernel_read_ns)
         self.db.checkpoint()
 
+    def boot_seen(self, boot: str, facts: BootFacts) -> None:
+        self.db.insert_tuner_boot(
+            boot,
+            facts.bios_version,
+            facts.fclk_mhz,
+            facts.uclk_mhz,
+            facts.mclk_mhz,
+            json.dumps({"lines": list(facts.reset_reasons), "problem": facts.reset_problem}),
+            json.dumps(facts.igpu),
+        )
+
     def journal_rows(self, session_id: int, boot: str) -> list[JournalRow]:
         return self.db.journal_rows(session_id, boot)
 
@@ -397,6 +420,7 @@ class LiveRig:
     stored_boot: str | None = None
     stored_read_ns: int | None = None
     test_row: tuple[int, int, bool] | None = None
+    boot_recorded: bool = False
     boot: str = field(init=False)
     power: PowerState = field(default_factory=PowerState)
 
@@ -510,6 +534,12 @@ class LiveRig:
                     return DatabaseFailed(f"the session could not be written: {exc}")
                 self.stored_boot = self.boot
             case StartWorker(token=token, spec=spec):
+                if not self.boot_recorded:
+                    try:
+                        self.store.boot_seen(self.boot, self.hardware.boot_facts(self.boot))
+                    except sqlite3.Error as exc:
+                        return DatabaseFailed(f"this boot's facts could not be written: {exc}")
+                    self.boot_recorded = True
                 try:
                     row = self.store.test_started(acting.session_id, token, spec, self.boot, self.power)
                 except sqlite3.Error as exc:

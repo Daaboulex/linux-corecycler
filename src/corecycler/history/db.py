@@ -220,7 +220,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 25
+    SCHEMA_VERSION = 26
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -358,6 +358,19 @@ CREATE TABLE IF NOT EXISTS tuner_sample_blocks (
     data            BLOB    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tuner_sample_blocks_test ON tuner_sample_blocks(test_id, id);
+"""
+
+    _DDL_TUNER_BOOTS = """\
+CREATE TABLE IF NOT EXISTS tuner_boots (
+    boot_id            TEXT    PRIMARY KEY,
+    first_seen         TEXT    NOT NULL,
+    bios_version       TEXT    NOT NULL,
+    fclk_mhz           REAL,
+    uclk_mhz           REAL,
+    mclk_mhz           REAL,
+    reset_reasons_json TEXT    NOT NULL,
+    igpu_json          TEXT    NOT NULL
+);
 """
 
     _DDL_TELEMETRY_BLOCKS = """\
@@ -548,6 +561,7 @@ CREATE INDEX IF NOT EXISTS idx_co_journal_proven ON tuner_co_journal(session_id,
         + _DDL_TUNER_TESTS
         + _DDL_TUNER_SAMPLES
         + _DDL_TELEMETRY_BLOCKS
+        + _DDL_TUNER_BOOTS
     ).replace("__SCHEMA_VERSION__", str(SCHEMA_VERSION))
 
     # Migration from v1 to v2
@@ -956,6 +970,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         23: _migrate_v23,
         24: _migrate_v24,
         25: _migrate_v25,
+        26: _DDL_TUNER_BOOTS,
     }
 
     # ------------------------------------------------------------------
@@ -1565,6 +1580,21 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             (verdict, ended_before),
         )
         self._shrink()
+
+    def insert_tuner_boot(
+        self,
+        boot_id: str,
+        bios_version: str,
+        fclk_mhz: float | None,
+        uclk_mhz: float | None,
+        mclk_mhz: float | None,
+        reset_reasons_json: str,
+        igpu_json: str,
+    ) -> None:
+        self.__conn.execute(
+            "INSERT OR IGNORE INTO tuner_boots VALUES (?,?,?,?,?,?,?,?)",
+            (boot_id, self._now_iso(), bios_version, fclk_mhz, uclk_mhz, mclk_mhz, reset_reasons_json, igpu_json),
+        )
 
     def tuner_test_samples(self, test_id: int) -> list[dict]:
         blocks = self.__conn.execute("SELECT data FROM tuner_sample_blocks WHERE test_id=? ORDER BY id", (test_id,))
@@ -2218,6 +2248,8 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
                             vals,
                         )
                         maps[table][row["id"]] = cur.lastrowid
+                boot_cols = ",".join(self._merged_columns("tuner_boots"))
+                conn.execute(f"INSERT OR IGNORE INTO tuner_boots ({boot_cols}) SELECT {boot_cols} FROM src.tuner_boots")
                 counts["runs"] = len(maps["runs"])
                 counts["tuner_sessions"] = len(maps["tuner_sessions"])
 

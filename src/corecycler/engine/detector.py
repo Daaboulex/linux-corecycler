@@ -64,6 +64,7 @@ _STORED_BOOT_ID = re.compile(r"[0-9a-f]{32}")
 _KERNEL_RECORDS = ("-o", "json", "--output-fields=MESSAGE", "_TRANSPORT=kernel", f"SYSLOG_FACILITY={KERNEL_FACILITY}")
 _USERSPACE = ("_TRANSPORT=driver", "_TRANSPORT=journal", "_TRANSPORT=stdout", "_TRANSPORT=syslog")
 _NOT_OPEN = "kernel log not open: read before reset"
+RESET_REASON = "x86/amd: Previous system reset reason"
 _FLOOD = "kernel log flood: records left unread"
 
 
@@ -383,6 +384,11 @@ def _before_userspace(boot_id: str, timeout: float) -> tuple[list[_JournalEntry]
         return [], problem
     records, problem = _journal_entries(["-b", boot_id, *_KERNEL_RECORDS], timeout)
     return [record for record in records if not first or record.mono_us < first[0].mono_us], problem
+
+
+def reset_reasons(boot_id: str, timeout: float = 15.0) -> tuple[tuple[str, ...], str | None]:
+    early, problem = _before_userspace(boot_id, timeout)
+    return tuple(entry.message for entry in early if entry.message.startswith(RESET_REASON)), problem
 
 
 def _events(entries: Iterable[_JournalEntry]) -> tuple[KernelEvent, ...]:

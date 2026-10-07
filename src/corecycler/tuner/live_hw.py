@@ -18,13 +18,15 @@ from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.containment import lane_cgroup_parent, memory_accounting_problem
 from corecycler.engine.execution import Lane, Supervisor, ThermalWatch
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
+from corecycler.history.context import read_bios_version
 from corecycler.history.db import HistoryDB
 from corecycler.monitor.frequency import Clocks, PowerState, fastest, read_power_state
 from corecycler.monitor.hwmon import SensorRead, Sensors
 from corecycler.smu.commands import tjmax_c
 from corecycler.smu.driver import core_map_blocked
+from corecycler.smu.pmtable import PMTableReader
 from corecycler.tuner import stages, telemetry
-from corecycler.tuner.live import Identity, LiveRig, Store
+from corecycler.tuner.live import BootFacts, Identity, LiveRig, Store
 from corecycler.tuner.machine.types import (
     Abort,
     Close,
@@ -47,6 +49,8 @@ if TYPE_CHECKING:
 
 CPU = Path("/sys/devices/system/cpu")
 HWMON = Path("/sys/class/hwmon")
+PCI = Path("/sys/bus/pci/devices")
+IGPU_IDS = frozenset({("0x1002", "0x13c0"), ("0x1002", "0x164e")})
 FREEZE_TICK_S = 0.05
 ONE_T = {"tests": ("SFTv4", "FFTv4", "N63"), "seconds_per_test": 20, "memory_mb": 13}
 TWO_T = {"tests": ("SFTv4", "N63", "VT3"), "seconds_per_test": 30, "memory_mb": 26, "binary": "19-ZN2 ~ Kagari"}
@@ -111,12 +115,52 @@ class SmuHardware:
     def boot_ended_clean(self, boot_id: str) -> bool:
         return kernel.boot_end(boot_id).clean
 
+    def boot_facts(self, boot_id: str) -> BootFacts:
+        pm = PMTableReader().read()
+        clocks = pm if pm is not None and pm.is_calibrated else None
+        reasons, problem = kernel.reset_reasons(boot_id)
+        return BootFacts(
+            bios_version=read_bios_version(),
+            fclk_mhz=None if clocks is None else clocks.fclk_mhz,
+            uclk_mhz=None if clocks is None else clocks.uclk_mhz,
+            mclk_mhz=None if clocks is None else clocks.mclk_mhz,
+            reset_reasons=reasons,
+            reset_problem=problem,
+            igpu=igpu(),
+        )
+
     def harvest(self, boot_id: str, since_ns: int | None, next_boot: bool) -> kernel.JournalHarvest:
         after = None if since_ns is None else kernel.HarvestFrom(mono_ns=since_ns, realtime_us=None)
         return kernel.harvest_after(boot_id, after, next_boot=next_boot)
 
     def asleep_seconds(self) -> float:
         return time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
+
+
+def _sysfs(path: Path) -> str | None:
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return None
+
+
+def igpu(pci: Path = PCI) -> dict:
+    if not pci.is_dir():
+        return {"present": None, "problem": f"{pci} is not readable"}
+    found = [dev for dev in sorted(pci.iterdir()) if (_sysfs(dev / "vendor"), _sysfs(dev / "device")) in IGPU_IDS]
+    if len(found) > 1:
+        return {"present": None, "problem": "more than one iGPU id: " + ", ".join(dev.name for dev in found)}
+    if not found:
+        return {"present": False}
+    dev = found[0]
+    driver = dev / "driver"
+    return {
+        "present": True,
+        "address": dev.name,
+        "device": _sysfs(dev / "device"),
+        "driver": driver.resolve().name if driver.exists() else None,
+        "vram_total": _sysfs(dev / "mem_info_vram_total"),
+    }
 
 
 SMU_DRIVER = "/sys/kernel/ryzen_smu_drv"

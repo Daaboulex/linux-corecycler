@@ -17,7 +17,7 @@ from corecycler.history.db import HistoryDB
 from corecycler.monitor.frequency import PowerState
 from corecycler.monitor.hwmon import SensorRead
 from corecycler.tuner import live, live_hw, stages, telemetry
-from corecycler.tuner.live import Identity, LiveRig, Store, stored_from_json, stored_to_json
+from corecycler.tuner.live import BootFacts, Identity, LiveRig, Store, stored_from_json, stored_to_json
 from corecycler.tuner.machine.types import (
     Close,
     CrashEvidenceRead,
@@ -74,6 +74,11 @@ class FakeHardware:
     boot_reads: int = 0
     refusal: str | None = None
     warnings: tuple = ()
+    facts_asked: list = field(default_factory=list)
+
+    def boot_facts(self, boot_id):
+        self.facts_asked.append(boot_id)
+        return BOOT_FACTS
 
     def harvest(self, boot_id, since_ns, next_boot):
         self.harvests.append((boot_id, since_ns, next_boot))
@@ -136,6 +141,21 @@ class FakeRunner:
         )
 
 
+BOOT_FACTS = BootFacts(
+    bios_version="2401",
+    fclk_mhz=2033.0,
+    uclk_mhz=3000.0,
+    mclk_mhz=3000.0,
+    reset_reasons=("x86/amd: Previous system reset reason [0x00200800]: ACPI power state transition occurred",),
+    reset_problem=None,
+    igpu={
+        "present": True,
+        "address": "0000:7c:00.0",
+        "device": "0x13c0",
+        "driver": "amdgpu",
+        "vram_total": "536870912",
+    },
+)
 UNCAPPED = PowerState("balanced", "powersave", "balance_performance", "1", 5756.452, 5756.452)
 
 
@@ -590,6 +610,32 @@ def test_a_checkpoint_that_fails_at_a_test_end_pauses_as_database(tmp_path, monk
     assert hardware.co == {0: 0, 1: 0, 8: 0}
 
 
+def test_the_first_test_of_a_rig_records_its_boot_once(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    r.run_until_rest(0.01)
+    boots = rows(r, "SELECT * FROM tuner_boots")
+    assert len(rows(r, "SELECT id FROM tuner_tests")) > 1
+    assert hardware.facts_asked == ["boot-a"]
+    assert [(b["boot_id"], b["bios_version"], b["fclk_mhz"], b["uclk_mhz"], b["mclk_mhz"]) for b in boots] == [
+        ("boot-a", "2401", 2033.0, 3000.0, 3000.0)
+    ]
+    assert json.loads(boots[0]["reset_reasons_json"]) == {"lines": list(BOOT_FACTS.reset_reasons), "problem": None}
+    assert json.loads(boots[0]["igpu_json"]) == BOOT_FACTS.igpu
+
+
+def test_a_boot_that_cannot_be_recorded_pauses_as_database(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    monkeypatch.setattr(r.store, "boot_seen", broken)
+    r.start(config(), 1, 7, True)
+    final = r.run_until_rest(0.01)
+    assert final.pause.reason is PauseReason.DATABASE
+    assert "this boot's facts" in final.pause.detail
+    assert hardware.co == {0: 0, 1: 0, 8: 0}
+
+
 def test_a_sample_that_cannot_be_written_pauses_as_database(tmp_path, monkeypatch):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware, SamplingRunner(hardware))
@@ -1006,6 +1052,70 @@ def test_the_smu_adapter_writes_only_when_asked_and_checks_the_read_back():
 def test_a_frequency_cap_or_disabled_boost_is_seen(tmp_path, scaling, top, boost, pstate, capped):
     hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, sysfs(tmp_path, scaling, top, boost, pstate))
     assert hw.power().capped() is capped
+
+
+def pci_device(root, address, vendor, device, driver=None, vram=None):
+    node = root / address
+    node.mkdir(parents=True)
+    (node / "vendor").write_text(vendor + "\n")
+    (node / "device").write_text(device + "\n")
+    if driver is not None:
+        bound = root.parent / "drivers" / driver
+        bound.mkdir(parents=True, exist_ok=True)
+        (node / "driver").symlink_to(bound)
+    if vram is not None:
+        (node / "mem_info_vram_total").write_text(vram + "\n")
+
+
+def test_the_igpu_is_found_by_its_pci_id_with_its_driver_and_carve_out(tmp_path):
+    root = tmp_path / "devices"
+    pci_device(root, "0000:01:00.0", "0x1002", "0x744c", driver="amdgpu", vram="25753026560")
+    pci_device(root, "0000:7c:00.0", "0x1002", "0x13c0", driver="amdgpu", vram="536870912")
+    assert live_hw.igpu(root) == {
+        "present": True,
+        "address": "0000:7c:00.0",
+        "device": "0x13c0",
+        "driver": "amdgpu",
+        "vram_total": "536870912",
+    }
+
+
+def test_an_igpu_without_a_driver_is_present_and_unbound(tmp_path):
+    root = tmp_path / "devices"
+    pci_device(root, "0000:7c:00.0", "0x1002", "0x164e")
+    assert live_hw.igpu(root) == {
+        "present": True,
+        "address": "0000:7c:00.0",
+        "device": "0x164e",
+        "driver": None,
+        "vram_total": None,
+    }
+
+
+def test_no_igpu_id_is_absent_and_two_or_an_unreadable_tree_is_unknown(tmp_path):
+    root = tmp_path / "devices"
+    pci_device(root, "0000:01:00.0", "0x1002", "0x744c", driver="amdgpu")
+    assert live_hw.igpu(root) == {"present": False}
+    pci_device(root, "0000:7c:00.0", "0x1002", "0x13c0")
+    pci_device(root, "0000:7d:00.0", "0x1002", "0x164e")
+    two = live_hw.igpu(root)
+    assert two["present"] is None and "0000:7c:00.0, 0000:7d:00.0" in two["problem"]
+    gone = live_hw.igpu(tmp_path / "none")
+    assert gone["present"] is None and "not readable" in gone["problem"]
+
+
+@pytest.mark.parametrize("calibrated", [True, False])
+def test_the_adapter_gathers_the_boot_s_facts(monkeypatch, calibrated):
+    pm = SimpleNamespace(is_calibrated=calibrated, fclk_mhz=2033.0, uclk_mhz=3000.0, mclk_mhz=3000.0)
+    monkeypatch.setattr(live_hw, "PMTableReader", lambda: SimpleNamespace(read=lambda: pm))
+    monkeypatch.setattr(live_hw, "read_bios_version", lambda: "2401")
+    asked = []
+    monkeypatch.setattr(live_hw.kernel, "reset_reasons", lambda boot: asked.append(boot) or (("a line",), None))
+    monkeypatch.setattr(live_hw, "igpu", lambda: {"present": False})
+    facts = live_hw.SmuHardware(FakeSmu(), False, print, warm).boot_facts("b1")
+    clocks = (2033.0, 3000.0, 3000.0) if calibrated else (None, None, None)
+    assert facts == BootFacts("2401", *clocks, ("a line",), None, {"present": False})
+    assert asked == ["b1"]
 
 
 def test_the_adapter_reads_the_kernel_facts_it_needs(monkeypatch):
