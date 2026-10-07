@@ -364,13 +364,6 @@ def test_a_failure_before_any_sample_has_no_context():
     assert report.group is Group.SILICON and report.context is None
 
 
-@pytest.mark.parametrize(("load", "every"), [(Load.HOT, 0.25), (Load.IDLE, 0.5)])
-def test_idle_samples_every_half_second_and_the_other_loads_every_quarter(load, every):
-    script = Script([Outcome.PASS] * 8)
-    runner(script).run(spec(load, 30.0), threading.Event())
-    assert {hold.every for _, _, _, hold in script.seen} == {every}
-
-
 @dataclass
 class Budget:
     fits: bool = True
@@ -523,3 +516,16 @@ def test_y_cruncher_speeds_are_read_per_test_with_their_verdict():
         ("BBP", 5.68e9, True),
     )
     assert ycruncher.YCruncherBackend().speeds("") == ()
+
+
+def test_every_stage_samples_at_the_one_rate():
+    holds = []
+    for load in (Load.HOT, Load.WARM, Load.BURST, Load.IDLE):
+        script = Script([Outcome.PASS] * 500)
+        runner(script).run(spec(load), threading.Event(), lambda sample: None)
+        holds += [freeze for *_, freeze in script.seen]
+    one = Script([Outcome.PASS])
+    runner(one).run(Spec(Klass.T1, 0, -5, (0,), 60.0, ((0, -5),), Stage.SEARCH), threading.Event(), lambda sample: None)
+    holds += [freeze for *_, freeze in one.seen]
+    assert {hold.every for hold in holds} == {telemetry.SAMPLE_S}
+    assert len(holds) > 5

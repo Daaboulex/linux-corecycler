@@ -4,7 +4,9 @@ from dataclasses import dataclass
 
 from corecycler.tuner.machine.types import FailContext
 
-RING = 8
+SAMPLE_S = 0.1
+WINDOW_S = 2.0
+RING = round(WINDOW_S / SAMPLE_S)
 
 
 @dataclass(frozen=True, slots=True)

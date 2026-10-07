@@ -43,8 +43,7 @@ if TYPE_CHECKING:
 
 CPU = Path("/sys/devices/system/cpu")
 HWMON = Path("/sys/class/hwmon")
-SAMPLE_S = 0.25
-IDLE_SAMPLE_S = 0.5
+FREEZE_TICK_S = 0.05
 ONE_T = {"tests": ("SFTv4", "FFTv4", "N63"), "seconds_per_test": 20, "memory_mb": 13}
 TWO_T = {"tests": ("SFTv4", "N63", "VT3"), "seconds_per_test": 30, "memory_mb": 26, "binary": "19-ZN2 ~ Kagari"}
 GROUPS = {
@@ -239,8 +238,8 @@ class StressRunner:
         lanes: list[Lane],
         config: StressConfig,
         seconds: float,
-        freeze=None,
-        poll: float = 1.0,
+        freeze,
+        poll: float,
         backend=None,
         hold_cap_s: float | None = None,
     ):
@@ -287,9 +286,10 @@ class StressRunner:
                 flat = stages.Segment(
                     spec.cpus, settings["tests"], settings["seconds_per_test"], settings["memory_mb"], spec.seconds
                 )
-                sampler = Hold(flat, self.clocks, self.core_of_cpu, SAMPLE_S, self.sink)
-            poll = SAMPLE_S if sampler is not None else 1.0
-            results, observed = self._supervise(spec, stop, [lane], config, spec.seconds, sampler, poll=poll)
+                sampler = Hold(flat, self.clocks, self.core_of_cpu, telemetry.SAMPLE_S, self.sink)
+            results, observed = self._supervise(
+                spec, stop, [lane], config, spec.seconds, sampler, poll=telemetry.SAMPLE_S
+            )
             return report_from(results[lane.core_id], observed, spec.cpus, self.core_of_cpu)
         if spec.load is Load.MEMORY:
             return self._memory(spec, stop)
@@ -313,10 +313,9 @@ class StressRunner:
                 memory_mb=segment.memory_mb,
             )
             lane = Lane(core_id=spec.core, cpus=segment.cpus, work_dir=self.work_dir / f"all_{spec.load.value}")
-            every = IDLE_SAMPLE_S if spec.load is Load.IDLE else SAMPLE_S
-            hold = Hold(segment, self.clocks, self.core_of_cpu, every, self.sink)
+            hold = Hold(segment, self.clocks, self.core_of_cpu, telemetry.SAMPLE_S, self.sink)
             results, observed = self._supervise(
-                spec, stop, [lane], config, segment.duration, hold, poll=0.05, hold_cap_s=segment.hold_cap_s
+                spec, stop, [lane], config, segment.duration, hold, poll=FREEZE_TICK_S, hold_cap_s=segment.hold_cap_s
             )
             result = results[lane.core_id]
             done += result.duration_seconds
@@ -355,10 +354,9 @@ class StressRunner:
         sampler = None
         if self.sink is not None:
             flat = stages.Segment(spec.cpus, (), 0, budget.per_instance_mb, spec.seconds)
-            sampler = Hold(flat, self.clocks, self.core_of_cpu, SAMPLE_S, self.sink)
-        poll = SAMPLE_S if sampler is not None else 1.0
+            sampler = Hold(flat, self.clocks, self.core_of_cpu, telemetry.SAMPLE_S, self.sink)
         results, observed = self._supervise(
-            spec, stop, lanes, config, spec.seconds, sampler, poll=poll, backend=backend
+            spec, stop, lanes, config, spec.seconds, sampler, poll=telemetry.SAMPLE_S, backend=backend
         )
         named = tuple(sorted(core for core, r in results.items() if r.outcome.kind is OutcomeKind.SILICON))
         worst = min(results.values(), key=lambda r: r.outcome.rank)
