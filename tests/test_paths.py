@@ -7,6 +7,7 @@ must never raise, since a root-owned file beats losing the write.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -160,3 +161,17 @@ class TestAtomicWrite:
         paths.atomic_write(tmp_path / "profile.json", "a")
         paths.atomic_write(tmp_path / "profile.yaml", "b")
         assert seen == ["profile.json.tmp", "profile.yaml.tmp"]
+
+
+class TestHandedBackLog:
+    def test_a_rollover_hands_the_new_log_file_back(self, tmp_path, monkeypatch):
+        handed = []
+        monkeypatch.setattr(paths, "hand_back", handed.append)
+        target = tmp_path / "corecycler.log"
+        handler = paths.HandedBackLog(target, maxBytes=10, backupCount=1)
+        record = logging.LogRecord("t", logging.INFO, __file__, 1, "a line longer than ten bytes", None, None)
+        handler.emit(record)
+        handler.emit(record)
+        handler.close()
+        assert handed == [target]
+        assert (tmp_path / "corecycler.log.1").exists()

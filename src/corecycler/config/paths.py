@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -116,3 +117,9 @@ def hand_back(path: Path) -> None:
             os.chown(entry, owner, int(gid), follow_symlinks=False)
         except OSError as exc:
             log.warning("could not hand %s back to uid %d: %s", entry, owner, exc)
+
+
+class HandedBackLog(RotatingFileHandler):
+    def doRollover(self) -> None:
+        super().doRollover()
+        hand_back(Path(self.baseFilename))
