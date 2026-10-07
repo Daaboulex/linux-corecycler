@@ -215,6 +215,7 @@ def rig(tmp_path: Path, hardware: FakeHardware | None = None, runner=None, db: H
         store=Store(db or database(":memory:"), tmp_path / "state", IDENTITY),
         cpus_of=CPUS,
         domain_of=DOMAINS,
+        co_range=(-50, 10),
         say=lambda line: None,
     )
 
@@ -1025,6 +1026,7 @@ class FakeSmu:
     echo: int | None = None
     scalar: float | None = 10.0
     boost: int | None = None
+    commands: SimpleNamespace = field(default_factory=lambda: SimpleNamespace(co_range=(-50, 10)))
 
     def get_pbo_scalar(self):
         return self.scalar
@@ -1390,6 +1392,7 @@ def test_the_command_line_starts_or_resumes_and_reports_where_it_came_to_rest(tm
     db = database(tmp_path / "built.db")
     built = live_hw.build_rig(args, topology(), FakeSmu(), lambda: None, lines.append, db, IDENTITY)
     assert built.hardware.write is True and built.cpus_of == CPUS and built.domain_of == DOMAINS
+    assert built.co_range == (-50, 10)
     assert built.store.db is db
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
@@ -1648,6 +1651,24 @@ def test_a_config_file_starts_the_session_it_describes(tmp_path):
     assert "session 1" in said
     (stored,) = rows(r, "SELECT config_json FROM tuner_sessions WHERE id=1")
     assert live.config_from_json(json.loads(stored["config_json"])) == wanted
+
+
+WRONG_TYPES = [
+    ("k_1t", "10"),
+    ("soak", 1),
+    ("coarse_step", True),
+    ("thermal_limit_c", "95"),
+    ("selected", ["0"]),
+    ("stage_seconds", [["burst", "480"], ["warm", 480.0], ["idle", 360.0]]),
+]
+
+
+@pytest.mark.parametrize(("name", "value"), WRONG_TYPES)
+def test_a_configuration_with_a_wrong_type_is_refused_at_the_boundary(name, value):
+    raw = live.config_to_json(config())
+    assert live.config_from_json(raw) == config()
+    with pytest.raises(ValueError, match=f"wrong types for {name}"):
+        live.config_from_json({**raw, name: value})
 
 
 @pytest.mark.parametrize("content", [None, "{", '{"mode": "co"}', "[]"])

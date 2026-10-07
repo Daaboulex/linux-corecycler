@@ -666,6 +666,7 @@ def build_rig(
         store=Store(db, args.state_dir, identity),
         cpus_of=cpus_of,
         domain_of=domain_of,
+        co_range=smu.commands.co_range,
         tjmax_c=tjmax_c(topology.model_name),
         say=say,
     )

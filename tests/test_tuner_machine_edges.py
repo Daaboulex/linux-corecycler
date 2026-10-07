@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 
 from corecycler.tuner.machine import search
-from corecycler.tuner.machine.session import stored, transition
+from corecycler.tuner.machine.session import config_problem, stored, transition
 from corecycler.tuner.machine.types import (
+    KNOB_FLOOR,
     ContinuationDue,
     ContinueOnSetup,
     CoreRecord,
@@ -30,6 +31,7 @@ from corecycler.tuner.machine.types import (
     Stage,
     Start,
     Supersede,
+    ValidateProfile,
     Waiting,
     WorkerReported,
     World,
@@ -49,7 +51,9 @@ from tests._tuner_world import (
 )
 
 CFG = MachineConfig(Mode.CO, Method.SEQUENTIAL, (0, 1), max_offset=-20, k_1t=2)
-LAYOUT = World(cpus_of=((0, (0, 1)), (1, (2, 3))), domain_of=((0, 0), (1, 0)), bios_co=((0, 0), (1, 0)))
+LAYOUT = World(
+    cpus_of=((0, (0, 1)), (1, (2, 3))), domain_of=((0, 0), (1, 0)), bios_co=((0, 0), (1, 0)), co_range=(-50, 10)
+)
 
 
 def refusal(state: SessionState, event, world: World = LAYOUT) -> str:
@@ -82,10 +86,42 @@ def running_fake():
         (replace(CFG, selected=(0, 1, 5)), LAYOUT, True, "core map"),
         (CFG, replace(LAYOUT, bios_co=((0, 0), (1, None))), True, "could not be read"),
         (CFG, replace(LAYOUT, bios_co=((0, -10), (1, -10))), False, "acknowledge"),
+        (replace(CFG, fine_step=0), LAYOUT, True, "fine_step 0 is below 1"),
+        (replace(CFG, k_1t=0, test_seconds_1t=0.5), LAYOUT, True, "k_1t 0 is below 1; test_seconds_1t 0.5 is"),
+        (replace(CFG, wait_between_cores_s=-1.0), LAYOUT, True, "wait_between_cores_s -1.0 is below 0.0"),
+        (replace(CFG, fine_step=3, coarse_step=2), LAYOUT, True, "fine_step 3 is above coarse_step 2"),
+        (CFG, replace(LAYOUT, co_range=None), True, "CO range is unknown"),
+        (replace(CFG, max_offset=-51), LAYOUT, True, "max_offset -51 is outside -50..-1"),
+        (replace(CFG, max_offset=0), LAYOUT, True, "max_offset 0 is outside -50..-1"),
+        (replace(CFG, max_offset=-2, fine_step=3, coarse_step=3), LAYOUT, True, "outside -50..-3"),
+        (replace(CFG, cool_min_s=10.0, cool_cap_s=5.0), LAYOUT, True, "cool_min_s 10.0 is above cool_cap_s 5.0"),
+        (replace(CFG, stage_seconds=(("burst", 1.0), ("warm", 1.0))), LAYOUT, True, "burst, idle, warm once each"),
+        (replace(CFG, stage_seconds=(("burst", 1.0), ("burst", 1.0), ("idle", 1.0))), LAYOUT, True, "once each"),
+        (replace(CFG, stage_seconds=(("burst", 1.0), ("warm", 0.0), ("idle", 1.0))), LAYOUT, True, "each above 0"),
     ],
 )
 def test_start_is_refused_naming_the_first_gate_that_fails(config, world, acknowledged, says):
     assert says in refusal(SessionState(), Start(config, 1, 0, acknowledged), world)
+
+
+def test_every_numeric_knob_but_the_offset_has_a_floor_and_the_defaults_pass_it():
+    numeric = {f.name for f in fields(MachineConfig) if f.type in ("int", "float")}
+    assert set(KNOB_FLOOR) == numeric - {"max_offset"}
+    assert config_problem(MachineConfig(Mode.CO, Method.SEQUENTIAL, (0,)), (-50, 10)) is None
+    assert config_problem(replace(CFG, max_offset=-50, fine_step=1), (-50, 10)) is None
+
+
+def test_a_stored_configuration_outside_its_ranges_is_not_resumed_or_validated():
+    fake = running_fake()
+    bad = replace(stored(fake.state), status="paused", config=replace(CFG, coarse_step=0))
+    world = replace(fake.world(), stored=bad)
+    assert refusal(SessionState(), Resume(bad.session_id), world) == (
+        f"coarse_step 0 is below 1; abort session {bad.session_id} and start a new one"
+    )
+    done = replace(bad, status="completed")
+    assert "coarse_step 0 is below 1; start a new session" in refusal(
+        SessionState(), ValidateProfile(done.session_id), replace(world, stored=done)
+    )
 
 
 def test_start_with_a_bios_co_runs_once_acknowledged():
@@ -330,6 +366,7 @@ HELD = World(
     cpus_of=((0, (0, 1)), (1, (2, 3)), (2, (4, 5))),
     domain_of=((0, 0), (1, 0), (2, 0)),
     bios_co=((0, 0), (1, 0), (2, -5)),
+    co_range=(-50, 10),
 )
 
 

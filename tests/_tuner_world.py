@@ -98,6 +98,7 @@ class Fake:
     power: tuple[tuple[str, str], ...] = (("platform profile", "balanced"),)
     setup: tuple[tuple[str, str], ...] = (("bios", "A"),)
     tjmax_c: float | None = None
+    co_range: tuple[int, int] | None = (-50, 10)
     gap_grew: bool = False
     boot: int = 0
     stored_boot: int = 0
@@ -138,6 +139,7 @@ class Fake:
             power=self.power,
             setup=self.setup,
             tjmax_c=self.tjmax_c,
+            co_range=self.co_range,
             now=self.now,
             temperature_c=self.temperature,
             stored=self.db,

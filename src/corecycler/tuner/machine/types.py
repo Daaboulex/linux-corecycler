@@ -95,6 +95,7 @@ class Load(StrEnum):
 
 TRANSIENT_CYCLE = (Load.BURST, Load.WARM, Load.BURST, Load.IDLE)
 ENDURANCE_CYCLE = (Load.HOT, Load.BURST, Load.WARM, Load.BURST, Load.IDLE)
+STAGE_LOADS = frozenset(load.value for load in (*TRANSIENT_CYCLE, *ENDURANCE_CYCLE) if load is not Load.HOT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +133,32 @@ class MachineConfig:
 
     def k(self, klass: Klass) -> int:
         return self.k_1t if klass is Klass.T1 else self.k_2t
+
+
+KNOB_FLOOR: dict[str, float] = {
+    "coarse_step": 1,
+    "fine_step": 1,
+    "k_1t": 1,
+    "k_2t": 1,
+    "walk_budget_s": 1.0,
+    "test_seconds_1t": 1.0,
+    "test_seconds_2t": 1.0,
+    "hot_seconds": 1.0,
+    "bisect_seconds": 1.0,
+    "transient_window_s": 1.0,
+    "soak_seconds": 1.0,
+    "endurance_window_s": 1.0,
+    "memory_seconds": 1.0,
+    "wait_between_cores_s": 0.0,
+    "apparatus_retries": 0,
+    "thermal_retries": 0,
+    "thermal_limit_c": 1.0,
+    "cool_margin_c": 0.0,
+    "cool_min_s": 0.0,
+    "cool_cap_s": 0.0,
+    "start_failure_threshold": 0,
+    "stop_bound_s": 1.0,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -477,6 +504,7 @@ class World:
     two_t_problem: str | None = None
     stored_crash_suspects: tuple[int, ...] | None = None
     owner_layout: bool = False
+    co_range: tuple[int, int] | None = None
 
     def resident_of(self, core: int) -> int | None:
         return dict(self.resident).get(core)

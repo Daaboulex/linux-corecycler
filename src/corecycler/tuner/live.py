@@ -5,7 +5,7 @@ import queue
 import sqlite3
 import threading
 import time
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
@@ -112,8 +112,11 @@ def config_to_json(cfg: MachineConfig) -> dict:
     return {**asdict(cfg), "selected": list(cfg.selected)}
 
 
+KNOB_TYPES = {"int": (int,), "float": (int, float), "bool": (bool,)}
+
+
 def config_from_json(raw: dict) -> MachineConfig:
-    return MachineConfig(
+    cfg = MachineConfig(
         **{
             **raw,
             "mode": Mode(raw["mode"]),
@@ -122,6 +125,24 @@ def config_from_json(raw: dict) -> MachineConfig:
             "stage_seconds": _pairs(raw["stage_seconds"]),
         }
     )
+    wrong = [
+        f.name
+        for f in fields(MachineConfig)
+        if f.type in KNOB_TYPES
+        and (
+            not isinstance(getattr(cfg, f.name), KNOB_TYPES[f.type])
+            or (f.type != "bool" and isinstance(getattr(cfg, f.name), bool))
+        )
+    ]
+    if not all(isinstance(core, int) and not isinstance(core, bool) for core in cfg.selected):
+        wrong.append("selected")
+    if not all(
+        len(pair) == 2 and isinstance(pair[0], str) and isinstance(pair[1], int | float) for pair in cfg.stage_seconds
+    ):
+        wrong.append("stage_seconds")
+    if wrong:
+        raise ValueError(f"wrong types for {', '.join(wrong)}")
+    return cfg
 
 
 def _pairs(raw) -> tuple:
@@ -413,6 +434,7 @@ class LiveRig:
     store: Store
     cpus_of: tuple[tuple[int, tuple[int, ...]], ...]
     domain_of: tuple[tuple[int, int | None], ...]
+    co_range: tuple[int, int] | None
     two_t_problem: str | None = None
     tjmax_c: float | None = None
     say: Callable[[str], None] = print
@@ -454,6 +476,7 @@ class LiveRig:
             domain_of=self.domain_of,
             two_t_problem=self.two_t_problem,
             tjmax_c=self.tjmax_c,
+            co_range=self.co_range,
         )
 
     def world_checked(self) -> World:

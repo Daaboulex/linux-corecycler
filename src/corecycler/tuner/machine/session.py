@@ -7,6 +7,8 @@ from corecycler.tuner.machine.resume import attribute, resident
 from corecycler.tuner.machine.types import (
     ALLCORE,
     ENDURANCE_CYCLE,
+    KNOB_FLOOR,
+    STAGE_LOADS,
     TRANSIENT_CYCLE,
     Abort,
     AllCore,
@@ -32,6 +34,7 @@ from corecycler.tuner.machine.types import (
     Lifecycle,
     Live1,
     Load,
+    MachineConfig,
     Mode,
     Pause,
     PauseReason,
@@ -249,6 +252,9 @@ def _start_problem(cfg, e: Start, w: World) -> str | None:
         return w.preflight_refusal
     if cfg.mode is not Mode.CO:
         return f"the {cfg.mode.value} mode is not built yet; only per-core CO runs"
+    problem = config_problem(cfg, w.co_range)
+    if problem is not None:
+        return problem
     domain_of = dict(w.domain_of)
     problem = order_problem(cfg.method, cfg.selected, domain_of)
     if problem is not None:
@@ -283,10 +289,34 @@ def _resume(s: SessionState, e: Resume, w: World) -> Transition:
     return _resume_stored(s, e, w)
 
 
+def config_problem(cfg: MachineConfig, co_range: tuple[int, int] | None) -> str | None:
+    low = [
+        f"{name} {getattr(cfg, name)} is below {floor}"
+        for name, floor in KNOB_FLOOR.items()
+        if getattr(cfg, name) < floor
+    ]
+    if low:
+        return "; ".join(low)
+    if cfg.fine_step > cfg.coarse_step:
+        return f"fine_step {cfg.fine_step} is above coarse_step {cfg.coarse_step}"
+    if co_range is None:
+        return "this CPU's CO range is unknown"
+    if not co_range[0] <= cfg.max_offset <= -cfg.fine_step:
+        return f"max_offset {cfg.max_offset} is outside {co_range[0]}..{-cfg.fine_step}, the CPU's range to one step"
+    if cfg.cool_min_s > cfg.cool_cap_s:
+        return f"cool_min_s {cfg.cool_min_s} is above cool_cap_s {cfg.cool_cap_s}"
+    names = [name for name, _ in cfg.stage_seconds]
+    if sorted(names) != sorted(STAGE_LOADS) or any(seconds <= 0 for _, seconds in cfg.stage_seconds):
+        return f"stage_seconds must give {', '.join(sorted(STAGE_LOADS))} once each, each above 0"
+    return None
+
+
 def _stored_gates(st: Stored, w: World) -> str | None:
     if w.preflight_refusal is not None:
         return w.preflight_refusal
-    problem = order_problem(st.config.method, st.config.selected, dict(w.domain_of))
+    problem = config_problem(st.config, w.co_range) or order_problem(
+        st.config.method, st.config.selected, dict(w.domain_of)
+    )
     if problem is None:
         return None
     remedy = "start a new session" if st.status == "completed" else f"abort session {st.session_id} and start a new one"
