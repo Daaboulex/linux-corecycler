@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import queue
 import sqlite3
 import threading
@@ -10,7 +9,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
-from corecycler.config.paths import hand_back
+from corecycler.config.paths import atomic_write, hand_back
 from corecycler.engine import detector as kernel
 from corecycler.monitor.frequency import PowerState
 from corecycler.tuner import telemetry
@@ -197,20 +196,6 @@ def stored_from_json(raw: dict) -> Stored:
     )
 
 
-def _write_atomic(path: Path, payload: dict) -> None:
-    tmp = path.with_suffix(".tmp")
-    with tmp.open("w") as handle:
-        json.dump(payload, handle)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp, path)
-    directory = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
-
-
 @dataclass(frozen=True, slots=True)
 class Identity:
     bios_version: str
@@ -372,7 +357,7 @@ class Store:
         self.db.journal_confirm(row)
 
     def write_marker(self, boot: str) -> None:
-        _write_atomic(self.root / "stock-marker.json", {"boot": boot})
+        atomic_write(self.root / "stock-marker.json", json.dumps({"boot": boot}))
 
     def marker_boot(self) -> str | None:
         path = self.root / "stock-marker.json"

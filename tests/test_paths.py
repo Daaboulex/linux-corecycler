@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from corecycler.config import paths
 
 
@@ -116,3 +118,45 @@ class TestHandBack:
         with patch("os.geteuid", return_value=self.USER), patch("os.chown") as plain:
             paths.hand_back(leaf)
         assert chown.call_count == plain.call_count == 0
+
+
+class TestAtomicWrite:
+    def test_the_content_lands_synced_and_handed_back_with_no_temp_file_left(self, tmp_path, monkeypatch):
+        synced, handed = [], []
+        real_fsync = paths.os.fsync
+        monkeypatch.setattr(paths.os, "fsync", lambda fd: synced.append(fd) or real_fsync(fd))
+        monkeypatch.setattr(paths, "hand_back", handed.append)
+        target = tmp_path / "settings.json"
+        paths.atomic_write(target, '{"a": 1}')
+        assert target.read_text() == '{"a": 1}'
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["settings.json"]
+        assert len(synced) == 2
+        assert handed == [target]
+
+    def test_a_temp_file_a_crash_left_does_not_block_the_next_write(self, tmp_path):
+        target = tmp_path / "settings.json"
+        (tmp_path / "settings.json.tmp").write_text("half a write")
+        paths.atomic_write(target, "whole")
+        assert target.read_text() == "whole"
+        assert not (tmp_path / "settings.json.tmp").exists()
+
+    def test_a_failed_write_keeps_the_old_file_and_leaves_no_temp_file(self, tmp_path, monkeypatch):
+        target = tmp_path / "settings.json"
+        target.write_text("old")
+
+        def refuse(src, dst):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(paths.os, "replace", refuse)
+        with pytest.raises(OSError, match="disk full"):
+            paths.atomic_write(target, "new")
+        assert target.read_text() == "old"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["settings.json"]
+
+    def test_two_targets_in_one_folder_never_share_a_temp_file(self, tmp_path, monkeypatch):
+        seen = []
+        real_replace = paths.os.replace
+        monkeypatch.setattr(paths.os, "replace", lambda src, dst: seen.append(Path(src).name) or real_replace(src, dst))
+        paths.atomic_write(tmp_path / "profile.json", "a")
+        paths.atomic_write(tmp_path / "profile.yaml", "b")
+        assert seen == ["profile.json.tmp", "profile.yaml.tmp"]
