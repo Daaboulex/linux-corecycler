@@ -59,9 +59,9 @@ def _draws(n_cpus: int) -> list[int]:
 
 
 def plan(
-    load: Load, seconds: float, cpus: tuple[int, ...], firsts: tuple[int, ...], free_mb: int, rng: random.Random
+    load: Load, seconds: float, cpus: tuple[int, ...], firsts: tuple[int, ...], usable_mb: int, rng: random.Random
 ) -> tuple[Segment, ...]:
-    hot_memory = max(1, min(HOT_MEMORY_CAP_MB, free_mb // 2))
+    hot_memory = max(1, min(HOT_MEMORY_CAP_MB, usable_mb // 2))
     if load is Load.HOT:
         return (Segment(cpus, ALL_TESTS, HOT_PER_TEST_S, hot_memory, seconds, hold=HOT_HOLD),)
     if load is Load.WARM:

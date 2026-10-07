@@ -72,6 +72,7 @@ class FakeHardware:
     capped: bool = False
     records: kernel.JournalHarvest = field(default_factory=lambda: kernel.JournalHarvest((), (), None))
     harvests: list = field(default_factory=list)
+    boot_reads: int = 0
 
     def harvest(self, boot_id, since_ns, next_boot):
         self.harvests.append((boot_id, since_ns, next_boot))
@@ -94,6 +95,7 @@ class FakeHardware:
         return self.capped
 
     def boot_id(self):
+        self.boot_reads += 1
         return self.boot
 
     def boot_ended_clean(self, boot_id):
@@ -261,6 +263,7 @@ def test_a_live_rig_finds_every_edge_and_leaves_the_final_values_applied(tmp_pat
     r = rig(tmp_path)
     r.start(config(), 1, 7, True)
     final = r.run_until_rest(0.01)
+    assert r.hardware.boot_reads == 1
     assert final.lifecycle is Lifecycle.COMPLETED
     assert {c.core: c.value for c in final.cores} == EDGES
     assert r.hardware.co == EDGES

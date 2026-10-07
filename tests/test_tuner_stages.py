@@ -86,15 +86,6 @@ def test_the_hold_freezes_at_the_hot_mark_and_releases_below_the_cool_one():
     assert [hold(0.0, at(next(readings))) for _ in range(5)] == [False, True, True, True, False]
 
 
-def test_free_memory_is_read_from_meminfo(tmp_path):
-    meminfo = tmp_path / "meminfo"
-    meminfo.write_text("MemTotal: 64000000 kB\nMemAvailable: 32768000 kB\n")
-    assert live_hw.free_mb(meminfo) == 32000
-    meminfo.write_text("MemTotal: 1 kB\n")
-    with pytest.raises(OSError):
-        live_hw.free_mb(meminfo)
-
-
 @dataclass
 class Script:
     outcomes: list
@@ -103,9 +94,10 @@ class Script:
     evidence_dir: Path | None = None
     sampled: bool = True
     caps: list = field(default_factory=list)
+    memory: list = field(default_factory=list)
 
 
-def runner(script: Script, readings=None, detector=None, clocks=None):
+def runner(script: Script, readings=None, detector=None, clocks=None, usable_mb=60_000):
     class FakeSupervisor:
         def __init__(self, **kwargs):
             self.freeze = kwargs["freeze"]
@@ -116,6 +108,7 @@ def runner(script: Script, readings=None, detector=None, clocks=None):
         def run(self, lanes, cfg, duration):
             outcome = script.outcomes.pop(0)
             script.seen.append((lanes[0].cpus, cfg.tests, duration, self.freeze))
+            script.memory.append(cfg.memory_mb)
             if script.sampled:
                 self.freeze(duration / 2, self.sensors())
             self.observed.extend(script.events.pop(0) if script.events else [])
@@ -147,7 +140,7 @@ def runner(script: Script, readings=None, detector=None, clocks=None):
         clocks or (lambda: dict.fromkeys(CPUS, 5000.0)),
         supervisor=FakeSupervisor,
         detector=detector or FakeDetector,
-        available_mb=lambda: 60_000,
+        budget=lambda n, floor: Budget(usable_mb=usable_mb),
     )
 
 
@@ -360,6 +353,7 @@ class Budget:
     fits: bool = True
     per_instance_mb: int = 512
     minimum_per_instance_mb: int = 256
+    usable_mb: int = 60_000
 
     def describe(self) -> str:
         return "fake budget"
@@ -408,7 +402,6 @@ def memory_runner(outcomes, budget=None, available=True, seen=None):
         lambda: dict.fromkeys(CPUS, 5000.0),
         supervisor=LaneSupervisor,
         detector=Detector,
-        available_mb=lambda: 60_000,
         memory_backend=lambda: tool,
         budget=budget or (lambda n, floor: Budget()),
     )
@@ -521,3 +514,9 @@ def test_every_stage_samples_at_the_one_rate():
     holds += [freeze for *_, freeze in one.seen]
     assert {hold.every for hold in holds} == {telemetry.SAMPLE_S}
     assert len(holds) > 5
+
+
+def test_an_all_core_load_sizes_its_memory_from_the_one_budget():
+    script = Script([Outcome.PASS])
+    runner(script, usable_mb=4000).run(spec(Load.HOT, 510.0), threading.Event())
+    assert script.memory == [2000]

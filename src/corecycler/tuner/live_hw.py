@@ -141,13 +141,6 @@ def named_cores(result, core_of_cpu: dict[int, int]) -> tuple[int, ...]:
     return tuple(sorted({core_of_cpu[cpu] for cpu in cpus}))
 
 
-def free_mb(meminfo: Path = Path("/proc/meminfo")) -> int:
-    for line in meminfo.read_text().splitlines():
-        if line.startswith("MemAvailable:"):
-            return int(line.split()[1]) // 1024
-    raise OSError("/proc/meminfo has no MemAvailable line")
-
-
 class Hold:
     def __init__(
         self,
@@ -206,7 +199,6 @@ class StressRunner:
         clocks: Callable[[], dict[int, float | None]],
         supervisor=Supervisor,
         detector=None,
-        available_mb=None,
         memory_backend=None,
         budget=None,
     ) -> None:
@@ -216,7 +208,6 @@ class StressRunner:
         self.supervisor = supervisor
         self.detector = detector or kernel.ErrorDetector
         self.sensors = sensors
-        self.available_mb = available_mb or free_mb
         self.clocks = clocks
         self.memory_backend = memory_backend or (lambda: get_backend("stressapptest"))
         self.budget = budget or (lambda n, floor: memory_budget(n, floor, lane_cgroup=lane_cgroup_parent()))
@@ -295,7 +286,7 @@ class StressRunner:
             )
         )
         rng = random.Random(f"{spec.stage.value}:{spec.load.value}:{spec.vector}:{self.runs}")
-        segments = stages.plan(spec.load, spec.seconds, spec.cpus, firsts, self.available_mb(), rng)
+        segments = stages.plan(spec.load, spec.seconds, spec.cpus, firsts, self.budget(1, 0).usable_mb, rng)
         done = 0.0
         speeds: list[tuple[str, float, bool]] = []
         for segment in segments:

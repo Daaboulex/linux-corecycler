@@ -370,6 +370,10 @@ class LiveRig:
     stored_boot: str | None = None
     stored_read_ns: int | None = None
     test_row: tuple[int, int] | None = None
+    boot: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.boot = self.hardware.boot_id()
 
     def world(self) -> World:
         asleep = self.hardware.asleep_seconds()
@@ -464,13 +468,13 @@ class LiveRig:
                         self.worker = None
             case Commit(stored=st):
                 try:
-                    self.store.save(st, self.hardware.boot_id())
+                    self.store.save(st, self.boot)
                 except sqlite3.Error as exc:
                     return DatabaseFailed(f"the session could not be written: {exc}")
-                self.stored_boot = self.hardware.boot_id()
+                self.stored_boot = self.boot
             case StartWorker(token=token, spec=spec):
                 try:
-                    row = self.store.test_started(acting.session_id, token, spec, self.hardware.boot_id())
+                    row = self.store.test_started(acting.session_id, token, spec, self.boot)
                 except sqlite3.Error as exc:
                     return DatabaseFailed(f"the test row could not be written: {exc}")
                 self.test_row = (token, row)
@@ -485,7 +489,7 @@ class LiveRig:
                 return self._crash_evidence(acting)
             case WriteStockMarker():
                 try:
-                    self.store.write_marker(self.hardware.boot_id())
+                    self.store.write_marker(self.boot)
                 except OSError as exc:
                     self.say(
                         "the stock marker could not be written, so the cores go to stock without it and a resume "
@@ -496,7 +500,7 @@ class LiveRig:
             case Announce(kind=kind, text=text):
                 self.say(f"{kind}: {text}")
                 try:
-                    self.store.event(acting.session_id, kind, text, self.hardware.boot_id())
+                    self.store.event(acting.session_id, kind, text, self.boot)
                 except sqlite3.Error as exc:
                     return DatabaseFailed(f"the event could not be written: {exc}")
             case CloseDb():
@@ -504,7 +508,7 @@ class LiveRig:
         return None
 
     def _journal(self, acting: SessionState, core: int, value: int) -> int:
-        return self.store.journal_intent(acting.session_id, core, value, self.hardware.boot_id(), time.monotonic_ns())
+        return self.store.journal_intent(acting.session_id, core, value, self.boot, time.monotonic_ns())
 
     def _end_test(self, token: int, write: Callable[[int], None]) -> DatabaseFailed | None:
         if self.test_row is None or self.test_row[0] != token:
@@ -518,7 +522,7 @@ class LiveRig:
         return None
 
     def _crash_evidence(self, acting: SessionState) -> CrashEvidenceRead | DatabaseFailed:
-        now = self.hardware.boot_id()
+        now = self.boot
         last = self.stored_boot or now
         same = last == now
         dirty = not same and not self.hardware.boot_ended_clean(last)
@@ -618,7 +622,7 @@ class LiveRig:
                 report = event.report
                 detail = f" {report.detail}" if report.detail else ""
                 self.say(f"verdict {event.token}: {report.group.value} after {report.seconds:.0f} s{detail}")
-            session, boot = self.state.session_id, self.hardware.boot_id()
+            session, boot = self.state.session_id, self.boot
             failed = self._end_test(event.token, lambda row: self.store.test_returned(session, boot, row, event.report))
         elif isinstance(event, InternalError) and self.test_row is not None:
             failed = self._end_test(self.test_row[0], lambda row: self.store.test_broken(row, event.error))
@@ -640,7 +644,7 @@ class LiveRig:
     def validate(self, session_id: int) -> None:
         world = self.world_for_resume(session_id)
         last = self.stored_boot
-        if world.stored is None or last == self.hardware.boot_id() or self.hardware.boot_ended_clean(last):
+        if world.stored is None or last == self.boot or self.hardware.boot_ended_clean(last):
             self.post(ValidateProfile(session_id), world)
             return
         suspects = _unproven(self.store.journal_rows(session_id, last))
