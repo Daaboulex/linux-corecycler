@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from compression import zstd
 from dataclasses import replace
 
 import pytest
@@ -16,6 +17,8 @@ from corecycler.history.db import (
     TuningContextRecord,
 )
 from tests._machine import journaled, this_boot
+
+AT = "2026-10-07T10:00:00+00:00"
 
 
 @pytest.fixture
@@ -33,7 +36,8 @@ class TestSchema:
         assert "runs" in names
         assert "core_results" in names
         assert "events" in names
-        assert "telemetry_samples" in names
+        assert "telemetry_blocks" in names
+        assert "tuner_sample_blocks" in names
         assert "schema_version" in names
 
     def test_schema_version_is_current(self, db):
@@ -108,7 +112,7 @@ class TestRuns:
         run_id = db.create_run(RunRecord(cpu_model="test"))
         db.insert_core_result(CoreResultRecord(run_id=run_id, core_id=0))
         db.insert_event(EventRecord(run_id=run_id, event_type="test", message="hi"))
-        db.insert_telemetry_batch([TelemetrySample(run_id=run_id, core_id=0, freq_mhz=5000)])
+        db.insert_telemetry_block([TelemetrySample(run_id=run_id, core_id=0, timestamp=AT, freq_mhz=5000)])
 
         db.delete_run(run_id)
 
@@ -214,26 +218,29 @@ class TestEvents:
 
 
 class TestTelemetry:
-    def test_batch_insert_and_get(self, db):
+    def test_blocks_read_back_in_order_and_by_core(self, db):
         run_id = db.create_run(RunRecord(cpu_model="test"))
         samples = [
-            TelemetrySample(run_id=run_id, core_id=0, freq_mhz=5500, temp_c=75.0, vcore_v=1.2),
-            TelemetrySample(run_id=run_id, core_id=0, freq_mhz=5600, temp_c=76.0, vcore_v=1.21),
-            TelemetrySample(run_id=run_id, core_id=1, freq_mhz=5400, temp_c=74.0, vcore_v=1.19),
+            TelemetrySample(run_id=run_id, core_id=0, timestamp=AT, freq_mhz=5500, temp_c=75.0, vcore_v=1.2),
+            TelemetrySample(run_id=run_id, core_id=0, timestamp=AT, freq_mhz=5600, temp_c=76.0, vcore_v=1.21),
+            TelemetrySample(run_id=run_id, core_id=1, timestamp=AT, freq_mhz=5400, temp_c=74.0, vcore_v=1.19),
         ]
-        db.insert_telemetry_batch(samples)
+        db.insert_telemetry_block(samples[:2])
+        db.insert_telemetry_block(samples[2:])
 
-        all_samples = db.get_telemetry(run_id)
-        assert len(all_samples) == 3
+        assert db.get_telemetry(run_id) == samples
+        assert db.get_telemetry(run_id, core_id=0) == samples[:2]
+        assert db.get_telemetry(run_id, core_id=1) == samples[2:]
 
-        core0 = db.get_telemetry(run_id, core_id=0)
-        assert len(core0) == 2
-
-        core1 = db.get_telemetry(run_id, core_id=1)
-        assert len(core1) == 1
-
-    def test_empty_batch(self, db):
-        db.insert_telemetry_batch([])  # should not error
+    def test_a_block_holds_one_run_and_only_stamped_samples(self, db):
+        first, second = (db.create_run(RunRecord(cpu_model="test")) for _ in range(2))
+        with pytest.raises(ValueError, match="exactly one run"):
+            db.insert_telemetry_block([])
+        with pytest.raises(ValueError, match="exactly one run"):
+            db.insert_telemetry_block([TelemetrySample(run_id=run, core_id=0, timestamp=AT) for run in (first, second)])
+        with pytest.raises(ValueError, match="no timestamp"):
+            db.insert_telemetry_block([TelemetrySample(run_id=first, core_id=0)])
+        assert db.get_telemetry(first) == db.get_telemetry(second) == []
 
 
 class TestMaintenance:
@@ -363,6 +370,40 @@ class TestTunerSessionMethods:
             db.end_tuner_test(row, "silicon", 1.0, "[]", None, "{}", "", "[]", "")
         with pytest.raises(sqlite3.IntegrityError, match="missing"):
             db.end_tuner_test(row + 1, "pass", 1.0, "[]", None, "{}", "", "[]", "")
+
+    def test_a_block_takes_its_test_s_tail_and_samples_read_back_in_order(self, db):
+        sid = db.next_tuner_session_id()
+        fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
+        db.save_machine_session(sid, status="running", machine_json="1", boot_id="a", **fields)
+        row, other = (
+            db.insert_tuner_test(sid, "a", n, "steady", "hot", "1t", 0, -5, "[]", "[0]", 60.0, "{}") for n in (1, 2)
+        )
+        taken = [
+            {"mono_ns": n, "running": n % 2 == 0, "tctl": None, "clocks": [[0, 5000.0]], "tccd": [], "volts": []}
+            for n in range(4)
+        ]
+        for sample in taken[:2]:
+            db.insert_tuner_sample(row, sample)
+        db.insert_tuner_sample(other, taken[0])
+        db.insert_tuner_block(row, taken[:2])
+        db.insert_tuner_sample(row, taken[2])
+        db.insert_tuner_sample(row, taken[3])
+        assert db.tuner_test_samples(row) == taken
+        assert db.tuner_test_samples(other) == taken[:1]
+
+    def test_a_damaged_block_is_refused_rather_than_read(self, db):
+        sid = db.next_tuner_session_id()
+        fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
+        db.save_machine_session(sid, status="running", machine_json="1", boot_id="a", **fields)
+        row = db.insert_tuner_test(sid, "a", 1, "steady", "hot", "1t", 0, -5, "[]", "[0]", 60.0, "{}")
+        db.insert_tuner_block(
+            row, [{"mono_ns": 1, "running": True, "tctl": 60.0, "clocks": [], "tccd": [], "volts": []}]
+        )
+        data = bytearray(db._execute_raw("SELECT data FROM tuner_sample_blocks").fetchone()[0])
+        data[-1] ^= 1
+        db._execute_raw("UPDATE tuner_sample_blocks SET data=?", (bytes(data),))
+        with pytest.raises(zstd.ZstdError, match="checksum"):
+            db.tuner_test_samples(row)
 
     def test_a_machine_session_row_follows_its_later_commits(self, db):
         sid = db.next_tuner_session_id()
@@ -728,7 +769,7 @@ class TestMergeFrom:
         )
         src.insert_core_result(CoreResultRecord(run_id=rid, core_id=3, passed=True))
         src.insert_event(EventRecord(run_id=rid, event_type="core_start", core_id=3))
-        src.insert_telemetry_batch([TelemetrySample(run_id=rid, core_id=3, freq_mhz=5300.0)])
+        src.insert_telemetry_block([TelemetrySample(run_id=rid, core_id=3, timestamp=AT, freq_mhz=5300.0)])
         # a tuner session with state, log, and journal
         sid = src.create_tuner_session("{}", "2401", "9950X3D", context_id=src_ctx, boot_id=this_boot())
         from corecycler.tuner.state import CoreState, TunerPhase
@@ -810,7 +851,9 @@ class TestMergeFrom:
         src.end_tuner_test(
             row, "silicon", 12.5, "[8]", None, "[]", "error on core 8", "[]", "Error(s) encountered on logical core 8."
         )
-        src.insert_tuner_sample(row, 7, True, 61.5, "[[8, 5000.0]]", "[]", "[]")
+        sample = {"mono_ns": 7, "running": True, "tctl": 61.5, "clocks": [[8, 5000.0]], "tccd": [], "volts": []}
+        src.insert_tuner_block(row, [sample])
+        src.insert_tuner_sample(row, sample | {"mono_ns": 8})
         src.close()
         dst = HistoryDB(tmp_path / "dst.db")
         own = dst.create_tuner_session("{}", "2401", "9950X3D", boot_id=boot)
@@ -822,15 +865,13 @@ class TestMergeFrom:
             dict(r) for r in dst._execute_raw("SELECT * FROM tuner_tests WHERE session_id=?", (merged,)).fetchall()
         ]
         loaded = dst.load_machine_session(merged)
-        samples = [
-            (s["test_id"], s["mono_ns"], s["tctl"]) for s in dst._execute_raw("SELECT * FROM tuner_samples").fetchall()
-        ]
+        samples = dst.tuner_test_samples(tests[0]["id"])
         dst.close()
         assert loaded == ('{"m": 1}', boot, None)
         assert [(t["token"], t["core"], t["value"], t["verdict"], t["seconds_run"]) for t in tests] == [
             (3, 8, -5, "silicon", 12.5)
         ]
-        assert samples == [(tests[0]["id"], 7, 61.5)]
+        assert samples == [sample, sample | {"mono_ns": 8}]
 
     def test_merge_carries_every_column_of_every_table(self, tmp_path):
         src_path = tmp_path / "src.db"
@@ -1017,6 +1058,128 @@ class TestTransaction:
                 assert conn.in_transaction
         finally:
             db.close()
+
+
+class TestMigrationV24:
+    def test_every_stored_sample_row_moves_into_one_block_per_test(self, tmp_path):
+        path = tmp_path / "v23.db"
+        db = HistoryDB(path)
+        sid = db.create_tuner_session("{}", "2401", "9950X3D", boot_id="a")
+        rows = [db.insert_tuner_test(sid, "a", n, "search", None, "1t", 0, -5, "[]", "[0]", 60.0, "{}") for n in (1, 2)]
+        db.close()
+        conn = sqlite3.connect(path)
+        conn.executescript(_V20_SAMPLES)
+        stored = [(rows[0], 1, 1, 60.5), (rows[1], 2, 0, None), (rows[0], 3, 1, 61.0)]
+        conn.executemany(
+            "INSERT INTO tuner_samples (test_id, mono_ns, running, tctl, clocks_json, tccd_json, volts_json)"
+            " VALUES (?,?,?,?,'[[0, 5000.0]]','[[0, 55.0]]','[[\"vcore\", 1.1]]')",
+            stored,
+        )
+        conn.commit()
+        conn.close()
+        db = HistoryDB(path)
+        try:
+            read = {row: db.tuner_test_samples(row) for row in rows}
+            blocks = db._execute_raw("SELECT test_id FROM tuner_sample_blocks ORDER BY id").fetchall()
+            tail = db._execute_raw("SELECT count(*) FROM tuner_samples").fetchone()[0]
+        finally:
+            db.close()
+
+        def sample(mono_ns, running, tctl):
+            return {
+                "mono_ns": mono_ns,
+                "running": bool(running),
+                "tctl": tctl,
+                "clocks": [[0, 5000.0]],
+                "tccd": [[0, 55.0]],
+                "volts": [["vcore", 1.1]],
+            }
+
+        assert read == {rows[0]: [sample(1, 1, 60.5), sample(3, 1, 61.0)], rows[1]: [sample(2, 0, None)]}
+        assert [b[0] for b in blocks] == rows
+        assert tail == 0
+
+    def test_a_rerun_keeps_the_tail_rows_it_finds(self, tmp_path):
+        path = tmp_path / "v24.db"
+        db = HistoryDB(path)
+        sid = db.create_tuner_session("{}", "2401", "9950X3D", boot_id="a")
+        row = db.insert_tuner_test(sid, "a", 1, "steady", "hot", "1t", 0, -5, "[]", "[0]", 60.0, "{}")
+        sample = {"mono_ns": 1, "running": True, "tctl": 60.5, "clocks": [[0, 5000.0]], "tccd": [], "volts": []}
+        db.insert_tuner_sample(row, sample)
+        db.close()
+        conn = sqlite3.connect(path)
+        conn.execute("UPDATE schema_version SET version = 23")
+        conn.commit()
+        conn.close()
+        db = HistoryDB(path)
+        try:
+            assert db.tuner_test_samples(row) == [sample]
+            assert db._execute_raw("SELECT count(*) FROM tuner_samples").fetchone()[0] == 1
+        finally:
+            db.close()
+
+
+_V20_SAMPLES = """\
+UPDATE schema_version SET version = 23;
+DROP TABLE tuner_sample_blocks;
+DROP TABLE tuner_samples;
+CREATE TABLE tuner_samples (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    test_id         INTEGER NOT NULL REFERENCES tuner_tests(id) ON DELETE CASCADE,
+    mono_ns         INTEGER NOT NULL,
+    running         INTEGER NOT NULL,
+    tctl            REAL,
+    clocks_json     TEXT    NOT NULL,
+    tccd_json       TEXT    NOT NULL,
+    volts_json      TEXT    NOT NULL
+);
+"""
+
+
+class TestMigrationV25:
+    def test_every_stored_telemetry_row_moves_into_one_block_per_run(self, tmp_path):
+        path = tmp_path / "v24.db"
+        db = HistoryDB(path)
+        runs = [db.create_run(RunRecord(cpu_model="test")) for _ in range(2)]
+        db.close()
+        conn = sqlite3.connect(path)
+        conn.executescript(_V24_TELEMETRY)
+        stored = [(runs[1], 2, 5300.0, None), (runs[0], 0, 5500.0, 75.0), (runs[1], 3, None, 70.5)]
+        conn.executemany(
+            "INSERT INTO telemetry_samples (run_id, core_id, timestamp, freq_mhz, effective_max_mhz, temp_c, vcore_v)"
+            " VALUES (?,?,?,?,5700.0,?,1.2)",
+            [(run, core, AT, freq, temp) for run, core, freq, temp in stored],
+        )
+        conn.commit()
+        conn.close()
+        db = HistoryDB(path)
+        try:
+            read = {run: db.get_telemetry(run) for run in runs}
+            gone = db._execute_raw("SELECT count(*) FROM sqlite_master WHERE name='telemetry_samples'").fetchone()[0]
+        finally:
+            db.close()
+
+        def sample(run, core, freq, temp):
+            return TelemetrySample(run, core, AT, freq, 5700.0, temp, 1.2)
+
+        assert read == {runs[0]: [sample(*stored[1])], runs[1]: [sample(*stored[0]), sample(*stored[2])]}
+        assert gone == 0
+
+
+_V24_TELEMETRY = """\
+UPDATE schema_version SET version = 24;
+DROP TABLE telemetry_blocks;
+CREATE TABLE telemetry_samples (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    core_id         INTEGER NOT NULL,
+    timestamp       TEXT    NOT NULL,
+    freq_mhz        REAL,
+    effective_max_mhz REAL,
+    temp_c          REAL,
+    vcore_v         REAL
+);
+"""
 
 
 class TestMigrationV5:

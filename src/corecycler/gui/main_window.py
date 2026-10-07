@@ -628,6 +628,11 @@ class MainWindow(QMainWindow):
             return
         was_stopping = not self._stop_btn.isEnabled()
         self._cleanup_worker()
+        if self._logger:
+            try:
+                self._logger.write_telemetry()
+            except Exception:
+                log.exception("Failed to write the run's last telemetry to history")
         self._logger = None
         self._history_tab.refresh()
         if was_stopping:

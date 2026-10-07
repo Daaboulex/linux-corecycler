@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from corecycler.history.db import SAMPLE_BLOCK_S
 from corecycler.tuner.machine.types import FailContext
 
 SAMPLE_S = 0.1
 WINDOW_S = 2.0
 RING = round(WINDOW_S / SAMPLE_S)
+BLOCK = round(SAMPLE_BLOCK_S / SAMPLE_S)
 
 
 @dataclass(frozen=True, slots=True)

@@ -10,7 +10,8 @@ from corecycler.config.settings import TestProfile
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.scheduler import CoreTestStatus
 from corecycler.engine.topology import CPUTopology, PhysicalCore
-from corecycler.history.db import HistoryDB
+from corecycler.history import logger as logger_module
+from corecycler.history.db import SAMPLE_BLOCK_S, HistoryDB
 from corecycler.history.logger import TestRunLogger
 
 
@@ -182,14 +183,29 @@ class TestTestCompletion:
 
 
 class TestTelemetry:
-    def test_record_sample(self, db, logger):
+    def test_samples_wait_in_memory_until_the_run_ends(self, db, logger):
         logger.record_telemetry_sample(0, 5500.0, 75.0, 1.2)
         logger.record_telemetry_sample(0, 5600.0, 76.0, 1.21)
-
+        assert db.get_telemetry(logger.run_id) == []
+        logger.on_test_stopped()
         samples = db.get_telemetry(logger.run_id, core_id=0)
-        assert len(samples) == 2
-        assert samples[0].freq_mhz == 5500.0
-        assert samples[1].temp_c == 76.0
+        assert [(s.freq_mhz, s.temp_c) for s in samples] == [(5500.0, 75.0), (5600.0, 76.0)]
+        assert all(s.timestamp for s in samples)
+
+    def test_a_block_is_written_once_its_first_sample_is_a_block_period_old(self, db, logger, monkeypatch):
+        now = [100.0]
+        monkeypatch.setattr(logger_module.time, "monotonic", lambda: now[0])
+        logger.record_telemetry_sample(0, 5500.0, 75.0, 1.2)
+        now[0] += SAMPLE_BLOCK_S - 0.5
+        logger.record_telemetry_sample(0, 5600.0, 76.0, 1.21)
+        assert db.get_telemetry(logger.run_id) == []
+        now[0] += 0.5
+        logger.record_telemetry_sample(0, 5700.0, 77.0, 1.22)
+        assert len(db.get_telemetry(logger.run_id)) == 3
+        logger.record_telemetry_sample(0, 5800.0, 78.0, 1.23)
+        assert len(db.get_telemetry(logger.run_id)) == 3
+        logger.on_test_completed("{}")
+        assert len(db.get_telemetry(logger.run_id)) == 4
 
     def test_update_peaks(self, db, logger):
         logger.on_core_started(0, 0)

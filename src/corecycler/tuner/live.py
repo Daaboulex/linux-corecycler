@@ -15,6 +15,7 @@ from corecycler.monitor.frequency import PowerState
 from corecycler.tuner import telemetry
 from corecycler.tuner.machine.session import transition
 from corecycler.tuner.machine.types import (
+    ALLCORE,
     Abort,
     AllCore,
     Announce,
@@ -209,6 +210,8 @@ class Store:
         self.root = root
         self.identity = identity
         self.retracted: dict[tuple[int, int], int] = {}
+        self.unwritten_row: int | None = None
+        self.unwritten: list[dict] = []
         root.mkdir(parents=True, exist_ok=True)
         hand_back(root)
 
@@ -261,6 +264,7 @@ class Store:
 
     def test_returned(self, session_id: int, boot: str, row: int, report: Report) -> None:
         evidence = {"records": [asdict(e) for e in report.evidence], "unblamed_corrected": report.unblamed_corrected}
+        self.write_block()
         self.db.end_tuner_test(
             row,
             report.group.value,
@@ -283,37 +287,45 @@ class Store:
     def taken_over(self, session_id: int, boot: str) -> bool:
         return self.db.journal_taken_over(session_id, boot) is not None
 
-    def sample(self, row: int, sample: telemetry.Sample) -> None:
-        self.db.insert_tuner_sample(
-            row,
-            sample.mono_ns,
-            sample.running,
-            sample.tctl,
-            json.dumps(sample.mhz),
-            json.dumps(sample.tccd),
-            json.dumps(sample.volts),
-        )
+    def sample(self, row: int, sample: telemetry.Sample, durable: bool) -> None:
+        if self.unwritten_row != row:
+            self.write_block()
+            self.unwritten_row = row
+        taken = {
+            "mono_ns": sample.mono_ns,
+            "running": sample.running,
+            "tctl": sample.tctl,
+            "clocks": sample.mhz,
+            "tccd": sample.tccd,
+            "volts": sample.volts,
+        }
+        if durable:
+            self.db.insert_tuner_sample(row, taken)
+        self.unwritten.append(taken)
+        if len(self.unwritten) >= telemetry.BLOCK:
+            self.write_block()
+
+    def write_block(self) -> None:
+        if self.unwritten:
+            self.db.insert_tuner_block(self.unwritten_row, self.unwritten)
+            self.unwritten = []
 
     def crash_context(self, session_id: int, boot: str, core_of_cpu: dict[int, int]) -> FailContext | None:
         test = self.db.open_tuner_test(session_id, boot)
         if test is None:
             return None
-        tail = self.db.tuner_sample_tail(test["id"], telemetry.RING)
-        if not tail:
+        last = self.db.tuner_test_samples(test["id"])[-telemetry.RING :]
+        if not last:
             return None
         ring = [
-            telemetry.Sample(
-                bool(s["running"]),
-                tuple((core, mhz) for core, mhz in json.loads(s["clocks_json"])),
-                s["tctl"],
-            )
-            for s in tail
+            telemetry.Sample(s["running"], tuple((core, mhz) for core, mhz in s["clocks"]), s["tctl"]) for s in last
         ]
         assigned = tuple(sorted({core_of_cpu[cpu] for cpu in json.loads(test["cpus_json"]) if cpu in core_of_cpu}))
         return telemetry.context(ring, test["load"] == Load.HOT.value, assigned, ())
 
     def test_broken(self, row: int, detail: str) -> None:
         evidence = {"records": [], "unblamed_corrected": False}
+        self.write_block()
         self.db.end_tuner_test(row, "internal_error", 0.0, "[]", None, json.dumps(evidence), detail, "[]", "")
 
     def event(self, session_id: int, kind: str, text: str, boot: str) -> None:
@@ -375,7 +387,7 @@ class LiveRig:
     asleep_at_last_check: float = 0.0
     stored_boot: str | None = None
     stored_read_ns: int | None = None
-    test_row: tuple[int, int] | None = None
+    test_row: tuple[int, int, bool] | None = None
     boot: str = field(init=False)
     power: PowerState = field(default_factory=PowerState)
 
@@ -493,7 +505,7 @@ class LiveRig:
                     row = self.store.test_started(acting.session_id, token, spec, self.boot, self.power)
                 except sqlite3.Error as exc:
                     return DatabaseFailed(f"the test row could not be written: {exc}")
-                self.test_row = (token, row)
+                self.test_row = (token, row, spec.stage in ALLCORE)
                 self._start(token, spec)
             case Schedule(token=token, seconds=seconds):
                 self.timer = (token, self.clock() + seconds)
@@ -627,7 +639,7 @@ class LiveRig:
         if isinstance(event, Sampled):
             if self.test_row is not None and self.test_row[0] == event.token:
                 try:
-                    self.store.sample(self.test_row[1], event.sample)
+                    self.store.sample(self.test_row[1], event.sample, self.test_row[2])
                 except sqlite3.Error as exc:
                     self.post(DatabaseFailed(f"a telemetry sample could not be written: {exc}"))
             return True

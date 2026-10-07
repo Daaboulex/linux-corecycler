@@ -501,23 +501,52 @@ def test_every_sample_a_test_takes_is_kept_under_its_row(tmp_path):
     while not rows(r, "SELECT id FROM tuner_tests WHERE ended_at IS NOT NULL"):
         r.step(0.01)
     first = rows(r, "SELECT id, core FROM tuner_tests ORDER BY id LIMIT 1")[0]
-    samples = rows(
-        r,
-        "SELECT running, tctl, mono_ns, clocks_json, tccd_json, volts_json FROM tuner_samples"
-        " WHERE test_id=? ORDER BY id",
-        (first["id"],),
-    )
-    assert samples == [
+    assert r.store.db.tuner_test_samples(first["id"]) == [
         {
-            "running": 1,
+            "running": True,
             "tctl": 60.0 + n,
             "mono_ns": 1_000 + n,
-            "clocks_json": json.dumps([[first["core"], 5000.0 + n]]),
-            "tccd_json": json.dumps([[0, 55.0 + n]]),
-            "volts_json": json.dumps([["sio_in0_vcore", 1.1]]),
+            "clocks": [[first["core"], 5000.0 + n]],
+            "tccd": [[0, 55.0 + n]],
+            "volts": [["sio_in0_vcore", 1.1]],
         }
         for n in range(3)
     ]
+    assert rows(r, "SELECT count(*) AS n FROM tuner_samples") == [{"n": 0}]
+
+
+def test_a_stage_whose_crash_rule_reads_no_context_keeps_its_samples_in_memory_until_a_block(tmp_path):
+    hardware = FakeHardware()
+    hold = threading.Event()
+    r = rig(tmp_path, hardware, SamplingRunner(hardware, hold=hold))
+    r.start(config(), 1, 7, True)
+    while len(r.store.unwritten) < 3:
+        r.step(0.01)
+    hold.set()
+    assert r.test_row[2] is False
+    assert rows(r, "SELECT count(*) AS n FROM tuner_samples") == [{"n": 0}]
+    assert rows(r, "SELECT count(*) AS n FROM tuner_sample_blocks") == [{"n": 0}]
+
+
+def test_the_store_writes_a_block_every_block_of_samples_and_at_the_test_s_end(tmp_path):
+    store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
+    store.save(stored_with_fb(None), "boot-a")
+    row = store.db.insert_tuner_test(1, "boot-a", 1, "steady", "hot", "1t", 0, -3, "[]", "[0]", 60.0, "{}")
+
+    def counts() -> tuple[int, int]:
+        tables = ("tuner_samples", "tuner_sample_blocks")
+        return tuple(store.db._execute_raw(f"SELECT count(*) FROM {table}").fetchone()[0] for table in tables)
+
+    for n in range(telemetry.BLOCK - 1):
+        store.sample(row, taken(0, n), durable=True)
+    assert counts() == (telemetry.BLOCK - 1, 0)
+    store.sample(row, taken(0, telemetry.BLOCK - 1), durable=True)
+    assert counts() == (0, 1)
+    store.sample(row, taken(0, telemetry.BLOCK), durable=False)
+    assert counts() == (0, 1)
+    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0))
+    assert counts() == (0, 2)
+    assert [s["mono_ns"] for s in store.db.tuner_test_samples(row)] == [1_000 + n for n in range(telemetry.BLOCK + 1)]
 
 
 def test_a_sample_that_cannot_be_written_pauses_as_database(tmp_path, monkeypatch):
@@ -530,6 +559,7 @@ def test_a_sample_that_cannot_be_written_pauses_as_database(tmp_path, monkeypatc
 
 
 def test_a_crash_s_context_is_rebuilt_from_the_samples_its_test_left(tmp_path, monkeypatch):
+    monkeypatch.setattr(live, "ALLCORE", frozenset(Stage))
     hardware = FakeHardware()
     hold = threading.Event()
     r = rig(tmp_path, hardware, SamplingRunner(hardware, hold=hold))
@@ -590,24 +620,46 @@ def test_a_write_inside_a_core_s_survived_envelope_is_journaled_survived(tmp_pat
     assert survived == {-3: 1, -4: 1, -5: 0}
 
 
+def test_a_broken_test_keeps_the_samples_it_took(tmp_path):
+    store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
+    store.save(stored_with_fb(None), "boot-a")
+    row = store.db.insert_tuner_test(1, "boot-a", 1, "search", None, "1t", 0, -3, "[]", "[0]", 60.0, "{}")
+    store.sample(row, taken(0, 1), durable=False)
+    store.test_broken(row, "the test runner raised")
+    assert [s["mono_ns"] for s in store.db.tuner_test_samples(row)] == [1_001]
+
+
+def test_samples_a_test_left_unwritten_go_into_its_block_when_the_next_test_samples(tmp_path):
+    store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
+    store.save(stored_with_fb(None), "boot-a")
+    first, second = (
+        store.db.insert_tuner_test(1, "boot-a", n, "search", None, "1t", 0, -3, "[]", "[0]", 60.0, "{}") for n in (1, 2)
+    )
+    store.sample(first, taken(0, 1), durable=False)
+    store.sample(second, taken(0, 2), durable=False)
+    assert [s["mono_ns"] for s in store.db.tuner_test_samples(first)] == [1_001]
+    assert store.db.tuner_test_samples(second) == []
+
+
+@pytest.mark.parametrize("count", [telemetry.RING + 1, telemetry.BLOCK + 5])
 @pytest.mark.parametrize(
     ("load", "frozen_last", "steady"), [("hot", False, True), ("hot", True, False), ("burst", False, False)]
 )
-def test_a_crash_context_reads_the_last_ring_of_the_open_test_only(tmp_path, load, frozen_last, steady):
+def test_a_crash_context_reads_the_last_ring_of_the_open_test_only(tmp_path, load, frozen_last, steady, count):
     store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
     store.save(stored_with_fb(None), "boot-a")
     done = store.db.insert_tuner_test(1, "boot-a", 1, "steady", load, "1t", 0, -3, "[]", "[0, 16]", 60.0, "{}")
-    store.sample(done, taken(0, 9))
+    store.sample(done, taken(0, 9), durable=True)
     store.db.end_tuner_test(done, "pass", 60.0, "[]", None, "{}", "", "[]", "")
     crashed = store.db.insert_tuner_test(1, "boot-a", 2, "steady", load, "1t", 0, -3, "[]", "[0, 16, 1]", 60.0, "{}")
-    taken_samples = [taken(0, n) for n in range(telemetry.RING + 1)] + [replace(taken(0, 0), running=not frozen_last)]
+    taken_samples = [taken(0, n) for n in range(count)] + [replace(taken(0, 0), running=not frozen_last)]
     for sample in taken_samples:
-        store.sample(crashed, sample)
+        store.sample(crashed, sample, durable=True)
     context = store.crash_context(1, "boot-a", {0: 0, 16: 0, 1: 1})
     ring = [replace(s, mono_ns=0, tccd=(), volts=()) for s in taken_samples[-telemetry.RING :]]
     assert context == telemetry.context(ring, load == "hot", (0, 1), ())
     assert (context.paused, context.steady) == (frozen_last, steady)
-    assert context.tctl == 60.0 + telemetry.RING
+    assert context.tctl == 60.0 + count - 1
     assert store.crash_context(1, "boot-b", {0: 0}) is None
 
 

@@ -483,7 +483,7 @@ def _seed_telemetry(db, rid):
                 vcore_v=1.2 + i * 0.01,
             )
         )
-    db.insert_telemetry_batch(samples)
+    db.insert_telemetry_block(samples)
 
 
 def _run_by_id(db, rid):

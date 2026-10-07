@@ -430,13 +430,24 @@ class TestStatusSlots:
 
     def test_worker_completion_restores_the_ui(self, window):
         window._worker = _mock_worker()
-        window._logger = MagicMock()
+        logger = window._logger = MagicMock()
         window._stop_btn.setEnabled(True)
         window._on_worker_finished()
         assert window._status_msg.text() == "Test complete"
         assert window._start_btn.isEnabled()
         assert window._worker is None
         assert window._logger is None
+        logger.write_telemetry.assert_called_once_with()
+
+    def test_a_failing_last_telemetry_write_is_logged_and_the_ui_still_restores(self, window, caplog):
+        window._worker = _mock_worker()
+        window._logger = MagicMock()
+        window._logger.write_telemetry.side_effect = sqlite3.OperationalError("disk I/O error")
+        window._stop_btn.setEnabled(True)
+        window._on_worker_finished()
+        assert window._logger is None
+        assert window._start_btn.isEnabled()
+        assert "Failed to write the run's last telemetry to history" in caplog.text
 
     def test_worker_completion_after_a_stop_says_so(self, window):
         window._worker = _mock_worker()

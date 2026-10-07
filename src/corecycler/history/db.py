@@ -13,7 +13,8 @@ import json
 import logging
 import os
 import sqlite3
-from dataclasses import dataclass
+from compression import zstd
+from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -34,7 +35,24 @@ LEGACY_ROOT_DB = Path("/root/.local/share/corecycler/history/history.db")
 log = logging.getLogger(__name__)
 
 RESUMABLE_STATUSES = ("running", "paused", "validating")
+SAMPLE_BLOCK_S = 10.0
+SAMPLE_BLOCK_OPTIONS = {zstd.CompressionParameter.compression_level: 19, zstd.CompressionParameter.checksum_flag: 1}
+SAMPLE_LISTS = ("clocks", "tccd", "volts")
 RECOVERABLE_STATUSES = (*RESUMABLE_STATUSES, "quarantined", "aborted")
+
+
+def _pack_samples(samples: list[dict]) -> bytes:
+    lines = "\n".join(json.dumps(sample, separators=(",", ":")) for sample in samples)
+    return zstd.compress(lines.encode(), options=SAMPLE_BLOCK_OPTIONS)
+
+
+def _unpack_samples(data: bytes) -> list[dict]:
+    return [json.loads(line) for line in zstd.decompress(data).decode().splitlines()]
+
+
+def _tail_sample(row: sqlite3.Row, lists: tuple[str, ...] = SAMPLE_LISTS) -> dict:
+    sample = {"mono_ns": row["mono_ns"], "running": bool(row["running"]), "tctl": row["tctl"]}
+    return sample | {name: json.loads(row[column]) for name, column in zip(SAMPLE_LISTS, lists, strict=True)}
 
 
 class SchemaTooNewError(RuntimeError):
@@ -170,7 +188,6 @@ class TuningContextRecord:
 
 @dataclass(slots=True)
 class TelemetrySample:
-    id: int | None = None
     run_id: int = 0
     core_id: int = 0
     timestamp: str = ""
@@ -202,7 +219,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 23
+    SCHEMA_VERSION = 25
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -311,16 +328,30 @@ CREATE INDEX IF NOT EXISTS idx_tuner_tests_session ON tuner_tests(session_id, co
 
     _DDL_TUNER_SAMPLES = """\
 CREATE TABLE IF NOT EXISTS tuner_samples (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              INTEGER PRIMARY KEY,
     test_id         INTEGER NOT NULL REFERENCES tuner_tests(id) ON DELETE CASCADE,
     mono_ns         INTEGER NOT NULL,
     running         INTEGER NOT NULL,
     tctl            REAL,
-    clocks_json     TEXT    NOT NULL,
-    tccd_json       TEXT    NOT NULL,
-    volts_json      TEXT    NOT NULL
+    clocks          TEXT    NOT NULL,
+    tccd            TEXT    NOT NULL,
+    volts           TEXT    NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_tuner_samples_test ON tuner_samples(test_id, id);
+CREATE TABLE IF NOT EXISTS tuner_sample_blocks (
+    id              INTEGER PRIMARY KEY,
+    test_id         INTEGER NOT NULL REFERENCES tuner_tests(id) ON DELETE CASCADE,
+    data            BLOB    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tuner_sample_blocks_test ON tuner_sample_blocks(test_id, id);
+"""
+
+    _DDL_TELEMETRY_BLOCKS = """\
+CREATE TABLE IF NOT EXISTS telemetry_blocks (
+    id              INTEGER PRIMARY KEY,
+    run_id          INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    data            BLOB    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_telemetry_blocks_run ON telemetry_blocks(run_id, id);
 """
 
     _DDL_FRESH = (
@@ -407,18 +438,6 @@ CREATE TABLE IF NOT EXISTS events (
     details_json    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id);
-
-CREATE TABLE IF NOT EXISTS telemetry_samples (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id          INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    core_id         INTEGER NOT NULL,
-    timestamp       TEXT    NOT NULL,
-    freq_mhz       REAL,
-    effective_max_mhz REAL,
-    temp_c          REAL,
-    vcore_v         REAL
-);
-CREATE INDEX IF NOT EXISTS idx_telemetry_run_core ON telemetry_samples(run_id, core_id);
 
 CREATE TABLE IF NOT EXISTS tuner_sessions (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -513,6 +532,7 @@ CREATE INDEX IF NOT EXISTS idx_co_journal_proven ON tuner_co_journal(session_id,
 """
         + _DDL_TUNER_TESTS
         + _DDL_TUNER_SAMPLES
+        + _DDL_TELEMETRY_BLOCKS
     ).replace("__SCHEMA_VERSION__", str(SCHEMA_VERSION))
 
     # Migration from v1 to v2
@@ -869,6 +889,33 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         HistoryDB._add_columns(conn, "tuner_tests", [("output", "TEXT")])
         HistoryDB._add_columns(conn, "core_results", [("output", "TEXT")])
 
+    @staticmethod
+    def _migrate_v24(conn: sqlite3.Connection) -> None:
+        if HistoryDB._column_exists(conn, "tuner_samples", "clocks_json"):
+            conn.execute("ALTER TABLE tuner_samples RENAME TO tuner_samples_v23")
+            conn.executescript(HistoryDB._DDL_TUNER_SAMPLES)
+            lists = tuple(f"{name}_json" for name in SAMPLE_LISTS)
+            tests = [row[0] for row in conn.execute("SELECT DISTINCT test_id FROM tuner_samples_v23 ORDER BY test_id")]
+            for test_id in tests:
+                taken = conn.execute("SELECT * FROM tuner_samples_v23 WHERE test_id=? ORDER BY id", (test_id,))
+                block = _pack_samples([_tail_sample(row, lists) for row in taken.fetchall()])
+                conn.execute("INSERT INTO tuner_sample_blocks (test_id, data) VALUES (?,?)", (test_id, block))
+            conn.execute("DROP TABLE tuner_samples_v23")
+        conn.executescript(HistoryDB._DDL_TUNER_SAMPLES)
+
+    @staticmethod
+    def _migrate_v25(conn: sqlite3.Connection) -> None:
+        conn.executescript(HistoryDB._DDL_TELEMETRY_BLOCKS)
+        if not HistoryDB._column_exists(conn, "telemetry_samples", "core_id"):
+            return
+        names = [field.name for field in fields(TelemetrySample) if field.name != "run_id"]
+        runs = [row[0] for row in conn.execute("SELECT DISTINCT run_id FROM telemetry_samples ORDER BY run_id")]
+        for run_id in runs:
+            taken = conn.execute("SELECT * FROM telemetry_samples WHERE run_id=? ORDER BY id", (run_id,))
+            block = _pack_samples([{name: row[name] for name in names} for row in taken.fetchall()])
+            conn.execute("INSERT INTO telemetry_blocks (run_id, data) VALUES (?,?)", (run_id, block))
+        conn.execute("DROP TABLE telemetry_samples")
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
@@ -892,6 +939,8 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         21: _migrate_v21,
         22: _migrate_v22,
         23: _migrate_v23,
+        24: _migrate_v24,
+        25: _migrate_v25,
     }
 
     # ------------------------------------------------------------------
@@ -1209,52 +1258,23 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     # Telemetry
     # ------------------------------------------------------------------
 
-    def insert_telemetry_batch(self, samples: list[TelemetrySample]) -> None:
-        if not samples:
-            return
-        self.__conn.executemany(
-            """\
-            INSERT INTO telemetry_samples (run_id, core_id, timestamp, freq_mhz, effective_max_mhz, temp_c, vcore_v)
-            VALUES (?,?,?,?,?,?,?)
-            """,
-            [
-                (
-                    s.run_id,
-                    s.core_id,
-                    s.timestamp or self._now_iso(),
-                    s.freq_mhz,
-                    s.effective_max_mhz,
-                    s.temp_c,
-                    s.vcore_v,
-                )
-                for s in samples
-            ],
+    def insert_telemetry_block(self, samples: list[TelemetrySample]) -> None:
+        runs = {sample.run_id for sample in samples}
+        if len(runs) != 1:
+            raise ValueError(f"a telemetry block holds the samples of exactly one run, not of {sorted(runs)}")
+        if not all(sample.timestamp for sample in samples):
+            raise ValueError("a telemetry sample has no timestamp")
+        taken = [{k: v for k, v in asdict(sample).items() if k != "run_id"} for sample in samples]
+        self.__conn.execute(
+            "INSERT INTO telemetry_blocks (run_id, data) VALUES (?,?)", (runs.pop(), _pack_samples(taken))
         )
 
     def get_telemetry(self, run_id: int, *, core_id: int | None = None) -> list[TelemetrySample]:
-        if core_id is not None:
-            rows = self.__conn.execute(
-                "SELECT * FROM telemetry_samples WHERE run_id=? AND core_id=? ORDER BY id",
-                (run_id, core_id),
-            ).fetchall()
-        else:
-            rows = self.__conn.execute(
-                "SELECT * FROM telemetry_samples WHERE run_id=? ORDER BY id",
-                (run_id,),
-            ).fetchall()
-        return [
-            TelemetrySample(
-                id=r["id"],
-                run_id=r["run_id"],
-                core_id=r["core_id"],
-                timestamp=r["timestamp"],
-                freq_mhz=r["freq_mhz"],
-                effective_max_mhz=r["effective_max_mhz"],
-                temp_c=r["temp_c"],
-                vcore_v=r["vcore_v"],
-            )
-            for r in rows
-        ]
+        blocks = self.__conn.execute("SELECT data FROM telemetry_blocks WHERE run_id=? ORDER BY id", (run_id,))
+        samples = (
+            TelemetrySample(run_id=run_id, **taken) for (data,) in blocks.fetchall() for taken in _unpack_samples(data)
+        )
+        return [sample for sample in samples if core_id is None or sample.core_id == core_id]
 
     # ------------------------------------------------------------------
     # Tuning contexts
@@ -1504,23 +1524,31 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         if cur.rowcount != 1:
             raise sqlite3.IntegrityError(f"test row {row_id} is missing or already ended")
 
-    def insert_tuner_sample(
-        self,
-        test_id: int,
-        mono_ns: int,
-        running: bool,
-        tctl: float | None,
-        clocks_json: str,
-        tccd_json: str,
-        volts_json: str,
-    ) -> None:
+    def insert_tuner_sample(self, test_id: int, sample: dict) -> None:
         self.__conn.execute(
-            """\
-            INSERT INTO tuner_samples (test_id, mono_ns, running, tctl, clocks_json, tccd_json, volts_json)
-            VALUES (?,?,?,?,?,?,?)
-            """,
-            (test_id, mono_ns, int(running), tctl, clocks_json, tccd_json, volts_json),
+            "INSERT INTO tuner_samples (test_id, mono_ns, running, tctl, clocks, tccd, volts) VALUES (?,?,?,?,?,?,?)",
+            (
+                test_id,
+                sample["mono_ns"],
+                int(sample["running"]),
+                sample["tctl"],
+                *(json.dumps(sample[name]) for name in SAMPLE_LISTS),
+            ),
         )
+
+    def insert_tuner_block(self, test_id: int, samples: list[dict]) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                "INSERT INTO tuner_sample_blocks (test_id, data) VALUES (?,?)", (test_id, _pack_samples(samples))
+            )
+            conn.execute("DELETE FROM tuner_samples WHERE test_id=?", (test_id,))
+
+    def tuner_test_samples(self, test_id: int) -> list[dict]:
+        blocks = self.__conn.execute("SELECT data FROM tuner_sample_blocks WHERE test_id=? ORDER BY id", (test_id,))
+        tail = self.__conn.execute("SELECT * FROM tuner_samples WHERE test_id=? ORDER BY id", (test_id,))
+        return [sample for (data,) in blocks.fetchall() for sample in _unpack_samples(data)] + [
+            _tail_sample(row) for row in tail.fetchall()
+        ]
 
     def open_tuner_test(self, session_id: int, boot_id: str) -> dict | None:
         row = self.__conn.execute(
@@ -1528,13 +1556,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             (session_id, boot_id),
         ).fetchone()
         return None if row is None else dict(row)
-
-    def tuner_sample_tail(self, test_id: int, count: int) -> list[dict]:
-        rows = self.__conn.execute(
-            "SELECT * FROM (SELECT * FROM tuner_samples WHERE test_id=? ORDER BY id DESC LIMIT ?) ORDER BY id",
-            (test_id, count),
-        ).fetchall()
-        return [dict(row) for row in rows]
 
     def stamp_session_boot(self, session_id: int, boot_id: str) -> None:
         self.__conn.execute(
@@ -2100,13 +2121,14 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         ("tuner_sessions", {"context_id": "tuning_contexts"}),
         ("core_results", {"run_id": "runs"}),
         ("events", {"run_id": "runs"}),
-        ("telemetry_samples", {"run_id": "runs"}),
+        ("telemetry_blocks", {"run_id": "runs"}),
         ("tuner_core_states", {"session_id": "tuner_sessions"}),
         ("tuner_events", {"session_id": "tuner_sessions"}),
         ("tuner_test_log", {"session_id": "tuner_sessions", "run_id": "runs"}),
         ("tuner_co_journal", {"session_id": "tuner_sessions"}),
         ("tuner_tests", {"session_id": "tuner_sessions"}),
         ("tuner_samples", {"test_id": "tuner_tests"}),
+        ("tuner_sample_blocks", {"test_id": "tuner_tests"}),
     )
     _MERGE_LINKS_KEPT_WHEN_UNMATCHED = frozenset({"run_id", "context_id"})
 

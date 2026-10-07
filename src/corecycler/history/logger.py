@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from corecycler.history.context import capture_system_context, find_or_create_context
 from corecycler.history.db import (
+    SAMPLE_BLOCK_S,
     CoreResultRecord,
     EventRecord,
     HistoryDB,
@@ -50,6 +51,8 @@ class TestRunLogger:
     ) -> None:
         self._db = db
         self._start_time = time.monotonic()
+        self._unwritten: list[TelemetrySample] = []
+        self._unwritten_since = self._start_time
         self._active_result_ids: dict[int, int] = {}  # core_id → core_results.id
 
         # Capture tuning context (CO offsets, BIOS version, PBO state)
@@ -164,6 +167,7 @@ class TestRunLogger:
         )
 
     def on_test_completed(self, results_json: str) -> None:
+        self.write_telemetry()
         # Fail closed: a logging slot must never crash the GUI on a malformed or
         # unexpectedly-shaped results payload.
         try:
@@ -192,6 +196,7 @@ class TestRunLogger:
         )
 
     def on_test_stopped(self) -> None:
+        self.write_telemetry()
         elapsed = time.monotonic() - self._start_time
         self._db.finish_run(
             self._run_id,
@@ -218,18 +223,27 @@ class TestRunLogger:
         vcore_v: float | None,
         effective_max_mhz: float | None = None,
     ) -> None:
-        self._db.insert_telemetry_batch(
-            [
-                TelemetrySample(
-                    run_id=self._run_id,
-                    core_id=core_id,
-                    freq_mhz=freq_mhz,
-                    effective_max_mhz=effective_max_mhz,
-                    temp_c=temp_c,
-                    vcore_v=vcore_v,
-                )
-            ]
+        now = time.monotonic()
+        if not self._unwritten:
+            self._unwritten_since = now
+        self._unwritten.append(
+            TelemetrySample(
+                run_id=self._run_id,
+                core_id=core_id,
+                timestamp=HistoryDB._now_iso(),
+                freq_mhz=freq_mhz,
+                effective_max_mhz=effective_max_mhz,
+                temp_c=temp_c,
+                vcore_v=vcore_v,
+            )
         )
+        if now - self._unwritten_since >= SAMPLE_BLOCK_S:
+            self.write_telemetry()
+
+    def write_telemetry(self) -> None:
+        if self._unwritten:
+            self._db.insert_telemetry_block(self._unwritten)
+            self._unwritten = []
 
     def update_core_telemetry_peaks(
         self,
