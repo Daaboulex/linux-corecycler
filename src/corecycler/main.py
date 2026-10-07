@@ -282,9 +282,9 @@ def setup_logging() -> None:
     stderr_handler.setFormatter(fmt)
     handlers: list[logging.Handler] = [stderr_handler]
     try:
-        from corecycler.config.paths import HandedBackLog, hand_back, user_home
+        from corecycler.config.paths import HandedBackLog, data_dir, hand_back
 
-        log_dir = user_home() / ".local" / "share" / "corecycler" / "logs"
+        log_dir = data_dir() / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         file_handler = HandedBackLog(log_dir / "corecycler.log", maxBytes=5_000_000, backupCount=3)
         file_handler.setLevel(logging.DEBUG)
@@ -351,9 +351,9 @@ def main() -> int:
     # One instance only — two engines would fight over the SMU.
     from PySide6.QtCore import QLockFile
 
-    from corecycler.config.paths import user_home
+    from corecycler.config.paths import data_dir
 
-    lock_dir = user_home() / ".local" / "share" / "corecycler"
+    lock_dir = data_dir()
     lock_dir.mkdir(parents=True, exist_ok=True)
     instance_lock = QLockFile(str(lock_dir / "corecycler.lock"))
     if not instance_lock.tryLock(0):

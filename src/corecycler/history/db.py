@@ -19,15 +19,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from corecycler.config.paths import hand_back, user_home
+from corecycler.config.paths import data_dir, hand_back
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from corecycler.tuner.state import CoreState, TunerSession
 
-DATA_DIR = user_home() / ".local" / "share" / "corecycler" / "history"
-DEFAULT_DB_PATH = DATA_DIR / "history.db"
+DEFAULT_DB_PATH = data_dir() / "history" / "history.db"
 
 # Legacy location of root-owned history data from sudo runs.
 LEGACY_ROOT_DB = Path("/root/.local/share/corecycler/history/history.db")

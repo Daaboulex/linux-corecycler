@@ -30,6 +30,10 @@ def user_home() -> Path:
     return Path.home()
 
 
+def data_dir() -> Path:
+    return user_home() / ".local" / "share" / "corecycler"
+
+
 def atomic_write(path: Path, content: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.unlink(missing_ok=True)
