@@ -562,6 +562,34 @@ def test_the_store_writes_a_block_every_block_of_samples_and_at_the_test_s_end(t
     assert [s["mono_ns"] for s in store.db.tuner_test_samples(row)] == [1_000 + n for n in range(telemetry.BLOCK + 1)]
 
 
+def test_every_test_end_checkpoints_the_database(tmp_path, monkeypatch):
+    store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
+    store.save(stored_with_fb(None), "boot-a")
+    returned, broken = (
+        store.db.insert_tuner_test(1, "boot-a", n, "search", None, "1t", 0, -3, "[]", "[0]", 60.0, "{}") for n in (1, 2)
+    )
+    checkpoints = []
+    monkeypatch.setattr(store.db, "checkpoint", lambda: checkpoints.append(1))
+    store.test_returned(1, "boot-a", returned, Report(Group.PASS, 60.0))
+    store.test_broken(broken, "the test runner raised")
+    assert len(checkpoints) == 2
+
+
+def test_a_checkpoint_that_fails_at_a_test_end_pauses_as_database(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+
+    def full() -> None:
+        raise sqlite3.OperationalError("database or disk is full")
+
+    monkeypatch.setattr(r.store.db, "checkpoint", full)
+    r.start(config(), 1, 7, True)
+    final = r.run_until_rest(0.01)
+    monkeypatch.undo()
+    assert final.pause.reason is PauseReason.DATABASE
+    assert hardware.co == {0: 0, 1: 0, 8: 0}
+
+
 def test_a_sample_that_cannot_be_written_pauses_as_database(tmp_path, monkeypatch):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware, SamplingRunner(hardware))

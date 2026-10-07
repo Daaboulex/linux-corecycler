@@ -287,6 +287,7 @@ class Store:
         self.db.journal_mark_survived(session_id, boot_id=boot, exclude_cores=corrected)
         if report.kernel_read_ns is not None:
             self.db.set_kernel_read(session_id, report.kernel_read_ns)
+        self.db.checkpoint()
 
     def journal_rows(self, session_id: int, boot: str) -> list[JournalRow]:
         return self.db.journal_rows(session_id, boot)
@@ -334,6 +335,7 @@ class Store:
         evidence = {"records": [], "unblamed_corrected": False}
         self.write_block()
         self.db.end_tuner_test(row, "internal_error", 0.0, "[]", None, json.dumps(evidence), detail, "[]", "")
+        self.db.checkpoint()
 
     def event(self, session_id: int, kind: str, text: str, boot: str) -> None:
         self.db.insert_tuner_event(session_id, text, boot, kind)

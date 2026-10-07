@@ -231,7 +231,12 @@ class HistoryDB:
         self.__conn = sqlite3.connect(str(self._db_path), autocommit=True)
         try:
             self.__conn.row_factory = sqlite3.Row
-            self.__conn.execute("PRAGMA journal_mode=WAL")
+            mode = self.__conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+            if mode not in ("wal", "memory"):
+                raise RuntimeError(
+                    f"History database {self._db_path} cannot use write-ahead logging (journal mode {mode}), "
+                    f"so a commit is not durable before the hardware write it guards"
+                )
             self.__conn.execute("PRAGMA synchronous=FULL")
             self.__conn.execute("PRAGMA foreign_keys=ON")
             # Sudo and non-sudo runs share ONE database; a second writer must wait
@@ -2252,12 +2257,15 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         )
         return cur.rowcount
 
+    def checkpoint(self) -> None:
+        busy, wal_frames, checkpointed = self.__conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        log.info("WAL checkpoint: busy=%d log=%d checkpointed=%d", busy, wal_frames, checkpointed)
+
     def close(self) -> None:
         if self._closed:
             return
         try:
-            busy, wal_frames, checkpointed = self.__conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
-            log.info("WAL checkpoint at close: busy=%d log=%d checkpointed=%d", busy, wal_frames, checkpointed)
+            self.checkpoint()
         finally:
             self.__conn.close()
             self._closed = True

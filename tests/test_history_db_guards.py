@@ -81,6 +81,19 @@ class TestOpenGuards:
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):
             opened[0].execute("SELECT 1")
 
+    def test_a_database_that_cannot_use_wal_is_refused_and_closed(self, tmp_path, monkeypatch):
+        opened = []
+        real_connect = sqlite3.connect
+
+        def without_wal(*args, **kwargs):
+            opened.append(_WithoutWal(real_connect(*args, **kwargs)))
+            return opened[-1]
+
+        monkeypatch.setattr(sqlite3, "connect", without_wal)
+        with pytest.raises(RuntimeError, match=r"cannot use write-ahead logging \(journal mode delete\)"):
+            HistoryDB(tmp_path / "history.db")
+        assert opened[0].closed is True
+
     def test_a_version_without_a_migration_is_refused(self, tmp_path):
         path = tmp_path / "history.db"
         HistoryDB(path).close()
@@ -126,6 +139,21 @@ class _CheckpointFails:
     def execute(self, sql, *args):
         if sql.startswith("PRAGMA wal_checkpoint"):
             raise sqlite3.OperationalError("disk I/O error")
+        return self.real.execute(sql, *args)
+
+    def close(self) -> None:
+        self.closed = True
+        self.real.close()
+
+
+class _WithoutWal:
+    def __init__(self, real: sqlite3.Connection) -> None:
+        self.real = real
+        self.closed = False
+
+    def execute(self, sql, *args):
+        if sql == "PRAGMA journal_mode=WAL":
+            return self.real.execute("SELECT 'delete'")
         return self.real.execute(sql, *args)
 
     def close(self) -> None:
@@ -190,7 +218,7 @@ class TestDurability:
         db.close()
         elapsed = time.monotonic() - started
         reader.close()
-        closing = [r for r in caplog.records if r.name == "corecycler.history.db" and r.funcName == "close"]
+        closing = [r for r in caplog.records if r.name == "corecycler.history.db" and r.funcName == "checkpoint"]
         assert elapsed < 1.0
         assert len(closing) == 1
         busy, wal_frames, checkpointed = closing[0].args
