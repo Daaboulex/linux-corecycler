@@ -45,6 +45,7 @@ STOP_GRACE_SECONDS = 3.0
 KILL_WAIT_SECONDS = 2.0
 SIGNAL_EXIT_BASE = 128
 DETAIL_TAIL_LINES = 5
+OUTPUT_KEPT_CHARS = 64 * 1024
 STDOUT_LOG = "stdout.log"
 STDERR_LOG = "stderr.log"
 CPU_SIGNALS: frozenset[signal.Signals] = frozenset({signal.SIGILL, signal.SIGBUS, signal.SIGFPE, signal.SIGSEGV})
@@ -265,6 +266,12 @@ def _tail(text: str) -> str:
     return " | ".join([line.strip() for line in text.splitlines() if line.strip()][-DETAIL_TAIL_LINES:])
 
 
+def kept_output(text: str) -> str:
+    if len(text) <= OUTPUT_KEPT_CHARS:
+        return text
+    return f"({len(text) - OUTPUT_KEPT_CHARS} earlier characters not kept)\n{text[-OUTPUT_KEPT_CHARS:]}"
+
+
 class Supervisor:
     def __init__(
         self,
@@ -301,25 +308,29 @@ class Supervisor:
         start = time.monotonic()
         runs = [_LaneRun(lane=lane, deadline=start + duration) for lane in lanes]
         try:
+            try:
+                for run in runs:
+                    if not self._launch(run, replace(config, threads=len(run.lane.cpus), cpus=run.lane.cpus)):
+                        break
+                self._watch(runs, start, start + duration)
+            finally:
+                self._stop_all(runs)
             for run in runs:
-                if not self._launch(run, replace(config, threads=len(run.lane.cpus), cpus=run.lane.cpus)):
-                    break
-            self._watch(runs, start, start + duration)
+                if run.proc is not None:
+                    self._scan_output(run)
+            self._take_kernel_events(runs, final=True)
+            return {run.lane.core_id: self._grade(run) for run in runs}
         finally:
-            self._stop_all(runs)
-        for run in runs:
-            if run.proc is not None:
-                self._scan_output(run)
-        self._take_kernel_events(runs, final=True)
-        return {run.lane.core_id: self._grade(run) for run in runs}
+            for run in runs:
+                self._remove_run_dir(run)
 
     def _launch(self, run: _LaneRun, cfg: StressConfig) -> bool:
         lane = run.lane
         run_dir = lane.work_dir / f"run-{datetime.now(UTC):%Y%m%dT%H%M%S%f}"
         try:
             run_dir.mkdir(parents=True)
-            hand_back(run_dir)
             run.run_dir = run_dir
+            hand_back(run_dir)
             self.backend.prepare(run_dir, cfg)
             self.backend.assert_prepared(run_dir)
             run.contained = self._containment_for(lane.cpus)
@@ -608,23 +619,23 @@ class Supervisor:
         tail = _tail(run.output)
         if outcome in _SHOWS_LAST_OUTPUT and tail:
             detail = f"{detail}; last output: {tail}"
-        evidence_dir = run.run_dir
-        if outcome is Outcome.PASS:
-            evidence_dir = None
-            try:
-                shutil.rmtree(run.run_dir)
-            except OSError as exc:
-                log.error("core %d: removing the passed run dir %s failed: %s", run.lane.core_id, run.run_dir, exc)
-        if evidence_dir is not None:
-            detail = f"{detail}; evidence: {evidence_dir}"
         return StressResult(
             core_id=run.lane.core_id,
             outcome=outcome,
             detail=detail,
             duration_seconds=run.duration(),
-            evidence_dir=evidence_dir,
+            output="" if outcome is Outcome.PASS else kept_output(run.output),
             speeds=run.speeds,
         )
+
+    @staticmethod
+    def _remove_run_dir(run: _LaneRun) -> None:
+        if run.run_dir is None:
+            return
+        try:
+            shutil.rmtree(run.run_dir)
+        except OSError as exc:
+            log.error("core %d: removing the run dir %s failed: %s", run.lane.core_id, run.run_dir, exc)
 
 
 def watch_idle(

@@ -307,7 +307,6 @@ class TestSupervisorInternalsEdges:
         assert verdict.outcome is Outcome.COMPUTATION
         assert "FATAL" in verdict.detail
         assert "did not stop" in verdict.detail
-        assert verdict.evidence_dir == tmp_path
 
     @pytest.mark.real_cpu_time
     def test_no_load_window_ever_proves_load(self, tmp_path):

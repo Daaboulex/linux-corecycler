@@ -139,19 +139,19 @@ class TestWorkerBridge:
         assert seen["cycle"] == 2
         assert json.loads(seen["done"])["0"][0]["passed"] is True
 
-    def test_a_failed_result_keeps_its_outcome_and_evidence_in_the_payload(self, tmp_path):
+    def test_a_failed_result_keeps_its_outcome_and_output_in_the_payload(self):
         _qapp()
         scheduler = MagicMock()
         worker = mw.TestWorker(scheduler)
         seen = []
         worker.test_completed.connect(seen.append)
         failed = StressResult(
-            core_id=1, outcome=Outcome.COMPUTATION, detail="rounding", duration_seconds=2.0, evidence_dir=tmp_path
+            core_id=1, outcome=Outcome.COMPUTATION, detail="rounding", duration_seconds=2.0, output="FATAL ERROR"
         )
         scheduler.on_test_complete[0]({1: [failed]})
         row = json.loads(seen[0])["1"][0]
         assert (row["passed"], row["outcome"], row["detail"]) == (False, "computation", "rounding")
-        assert row["evidence_dir"] == str(tmp_path)
+        assert row["output"] == "FATAL ERROR"
 
     def test_run_delegates_to_the_scheduler(self):
         _qapp()

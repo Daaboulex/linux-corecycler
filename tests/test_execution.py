@@ -6,7 +6,6 @@ import contextlib
 import ctypes.util
 import itertools
 import os
-import re
 import resource
 import shutil
 import signal
@@ -111,7 +110,7 @@ time.sleep(30)
 LEAVES_A_CHILD = """
 import os, sys, time
 if os.fork() == 0:
-    open("stray.pid", "w").write(str(os.getpid()))
+    open(sys.argv[1], "w").write(str(os.getpid()))
     time.sleep(30)
     os._exit(0)
 time.sleep(0.1)
@@ -119,15 +118,15 @@ sys.exit(0)
 """
 
 EXITS_AT_ONCE_LEAVING_A_CHILD_IN_ITS_OWN_GROUP = """
-import os, time
+import os, sys, time
 if os.fork() == 0:
     os.setsid()
-    with open("stray.tmp", "w") as out:
+    with open(sys.argv[1] + ".tmp", "w") as out:
         out.write(str(os.getpid()))
-    os.rename("stray.tmp", "stray.pid")
+    os.rename(sys.argv[1] + ".tmp", sys.argv[1])
     time.sleep(30)
     os._exit(0)
-while not os.path.exists("stray.pid"):
+while not os.path.exists(sys.argv[1]):
     time.sleep(0.01)
 time.sleep(0.4)
 """
@@ -810,10 +809,11 @@ class TestTeardown:
         assert [verdict.outcome for verdict in verdicts.values()] == [Outcome.DID_NOT_STOP] * 4
 
     def test_a_payload_child_does_not_outlive_its_lane(self, tmp_path):
-        backend = FakeBackend(_child(LEAVES_A_CHILD))
+        pid_file = tmp_path / "stray.pid"
+        backend = FakeBackend([*_child(LEAVES_A_CHILD), str(pid_file)])
         supervisor, _, _ = make_supervisor(backend)
-        verdict = run_one(supervisor, lane(tmp_path), 10.0)
-        stray = int((verdict.evidence_dir / "stray.pid").read_text())
+        run_one(supervisor, lane(tmp_path), 10.0)
+        stray = int(pid_file.read_text())
         try:
             assert within(1.0, lambda: gone(stray))
         finally:
@@ -912,16 +912,13 @@ class TestOutputFiles:
         assert verdict.outcome is Outcome.COMPUTATION
         assert "verification failed" in verdict.detail
 
-    def test_a_failed_tests_logs_stay_and_a_passed_tests_go(self, tmp_path):
+    def test_every_run_dir_goes_and_a_failed_runs_output_stays_on_its_result(self, tmp_path):
         failing = lane(tmp_path, 0)
         supervisor, _, _ = make_supervisor(scripted(StressNgBackend, FAILS_AT_ONCE))
         failed = run_one(supervisor, failing, 10.0)
         assert failed.outcome is Outcome.COMPUTATION
-        assert failed.evidence_dir is not None
-        assert failed.evidence_dir.parent == failing.work_dir
-        assert re.fullmatch(r"run-\d{8}T\d{12}", failed.evidence_dir.name)
-        assert FAIL_LINE in (failed.evidence_dir / execution.STDOUT_LOG).read_text()
-        assert f"evidence: {failed.evidence_dir}" in failed.detail
+        assert FAIL_LINE in failed.output
+        assert list(failing.work_dir.rglob("*")) == []
         passing = lane(tmp_path, 1, (1,))
         supervisor, _, _ = make_supervisor(
             FakeBackend(_child(WRITES_IN_ITS_CWD)),
@@ -929,9 +926,26 @@ class TestOutputFiles:
         )
         passed = run_one(supervisor, passing, 2.0)
         assert passed.outcome is Outcome.PASS
-        assert passed.evidence_dir is None
-        assert "evidence" not in passed.detail
+        assert passed.output == ""
         assert list(passing.work_dir.rglob("*")) == []
+
+    def test_a_fault_while_watching_still_removes_the_run_dir(self, tmp_path):
+        one = lane(tmp_path)
+
+        def fault(_core: int, _elapsed: float) -> None:
+            raise RuntimeError("a status hook fault")
+
+        supervisor, _, _ = make_supervisor(
+            FakeBackend(_child(WRITES_IN_ITS_CWD)), hooks=SuperviseHooks(on_status=fault)
+        )
+        with pytest.raises(RuntimeError, match="a status hook fault"):
+            run_one(supervisor, one, 10.0)
+        assert list(one.work_dir.rglob("*")) == []
+
+    def test_a_long_output_keeps_its_end_and_says_how_much_went(self):
+        end = "b" * execution.OUTPUT_KEPT_CHARS
+        assert execution.kept_output("a" * 10 + end) == f"(10 earlier characters not kept)\n{end}"
+        assert execution.kept_output(end) == end
 
     def test_an_unreadable_output_log_is_never_a_pass(self, tmp_path):
         one = lane(tmp_path)
@@ -1192,7 +1206,8 @@ class TestTheScopeIsKnownFromLaunch:
                 swept.append(run.lane.core_id)
             return real_signal_group(supervisor_self, run, sig)
 
-        backend = FakeBackend(_child(EXITS_AT_ONCE_LEAVING_A_CHILD_IN_ITS_OWN_GROUP))
+        pid_file = tmp_path / "stray.pid"
+        backend = FakeBackend([*_child(EXITS_AT_ONCE_LEAVING_A_CHILD_IN_ITS_OWN_GROUP), str(pid_file)])
         supervisor, _, _ = make_supervisor(backend, containment_for=contained_by_the_probe)
         try:
             with patch.object(Supervisor, "_signal_group", spy), patch.object(containment, "kill_scope") as killed:
@@ -1200,9 +1215,9 @@ class TestTheScopeIsKnownFromLaunch:
             assert killed.call_count == 1
             assert swept == []
         finally:
-            for member in (tmp_path / "lanes").glob("core_0/run-*/stray.pid"):
+            if pid_file.exists():
                 with contextlib.suppress(ProcessLookupError):
-                    os.kill(int(member.read_text()), signal.SIGKILL)
+                    os.kill(int(pid_file.read_text()), signal.SIGKILL)
 
     def test_a_leader_gone_before_any_watchdog_saw_its_scope_still_has_the_scope_killed(
         self, tmp_path, contained_by_the_probe
@@ -1221,21 +1236,21 @@ class TestTheScopeIsKnownFromLaunch:
         def cgroup_kill(cgroup_path):
             kill_scope(cgroup_path, cgroup_base=cgroup_fs)
             if (scopes[0] / "cgroup.kill").read_text() == "1":
-                for member in (tmp_path / "lanes").glob("core_0/run-*/stray.pid"):
-                    os.kill(int(member.read_text()), signal.SIGKILL)
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
 
-        backend = FakeBackend(_child(EXITS_AT_ONCE_LEAVING_A_CHILD_IN_ITS_OWN_GROUP))
+        pid_file = tmp_path / "stray.pid"
+        backend = FakeBackend([*_child(EXITS_AT_ONCE_LEAVING_A_CHILD_IN_ITS_OWN_GROUP), str(pid_file)])
         supervisor, _, _ = make_supervisor(backend, containment_for=contained)
         try:
             with patch.object(containment, "kill_scope", side_effect=cgroup_kill):
                 run_one(supervisor, lane(tmp_path / "lanes", cpus=(0,)), 5.0)
-            stray = int(next((tmp_path / "lanes").glob("core_0/run-*/stray.pid")).read_text())
+            stray = int(pid_file.read_text())
             assert (scopes[0] / "cgroup.kill").read_text() == "1"
             assert within(2.0, lambda: gone(stray))
         finally:
-            for member in (tmp_path / "lanes").glob("core_0/run-*/stray.pid"):
+            if pid_file.exists():
                 with contextlib.suppress(ProcessLookupError):
-                    os.kill(int(member.read_text()), signal.SIGKILL)
+                    os.kill(int(pid_file.read_text()), signal.SIGKILL)
 
     def test_a_payload_found_in_a_scope_other_than_the_launched_one_is_a_containment_fault(
         self, tmp_path, contained_by_the_probe

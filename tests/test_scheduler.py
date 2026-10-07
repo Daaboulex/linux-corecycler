@@ -220,14 +220,13 @@ class TestRunOrchestration:
         assert sched.core_status[0].errors == 1
         assert sched.core_status[0].last_error == "mprime error: FATAL ERROR"
 
-    def test_a_failed_cores_evidence_dir_reaches_the_result(self, tmp_path):
+    def test_a_failed_cores_output_reaches_the_result(self, tmp_path):
         sched = make_scheduler(tmp_path, cores_to_test=[0])
-        evidence = tmp_path / "work" / "core_0" / "run-20261004T000000000000"
         kept = StressResult(
-            core_id=0, outcome=Outcome.COMPUTATION, detail="fail", duration_seconds=0.1, evidence_dir=evidence
+            core_id=0, outcome=Outcome.COMPUTATION, detail="fail", duration_seconds=0.1, output="the tool's last lines"
         )
         ScriptedSupervisor.script = [lambda sup, lanes, c, d: {0: kept}]
-        assert sched.run()[0][0].evidence_dir == evidence
+        assert sched.run()[0][0].output == "the tool's last lines"
 
     def test_stop_on_error_ends_the_run_at_the_failure(self, tmp_path):
         sched = make_scheduler(tmp_path, stop_on_error=True)

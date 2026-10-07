@@ -127,6 +127,7 @@ class TestRunLogger:
             error_type=None if result.passed else result.outcome.value,
             elapsed_seconds=result.duration_seconds,
             iterations_completed=result.iterations_completed,
+            output=result.output,
         )
 
         event_type = "core_finish" if result.passed else "error"

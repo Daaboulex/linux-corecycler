@@ -116,9 +116,8 @@ class TestStaleResultsDisasterReplay:
         first = _run_one(backend, work_dir, seconds=20)
         assert first.passed is False
 
-        assert first.evidence_dir is not None
-        assert first.evidence_dir.parent == work_dir / "core_0"
-        assert "FATAL ERROR" in (first.evidence_dir / "results.txt").read_text()
+        assert "FATAL ERROR" in first.detail
+        assert list((work_dir / "core_0").iterdir()) == []
 
         # Run 2: clean run in the SAME work dir.
         clean_bin = _fake_mprime(

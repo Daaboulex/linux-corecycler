@@ -16,7 +16,7 @@ from corecycler.engine.backends import get_backend, ycruncher
 from corecycler.engine.backends.base import OutcomeKind, StressConfig, StressMode
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.containment import lane_cgroup_parent, memory_accounting_problem
-from corecycler.engine.execution import STDOUT_LOG, Lane, Supervisor, ThermalWatch
+from corecycler.engine.execution import Lane, Supervisor, ThermalWatch
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.history.db import HistoryDB
 from corecycler.monitor.frequency import Clocks, PowerState, fastest, read_power_state
@@ -210,13 +210,14 @@ def report_from(
         unblamed_corrected=bool(unblamed) and all(event.corrected for event in unblamed) and not trouble,
         context=context,
         speeds=result.speeds,
+        output=result.output,
     )
 
 
 def named_cores(result, core_of_cpu: dict[int, int]) -> tuple[int, ...]:
-    if result.outcome.kind is not OutcomeKind.SILICON or result.evidence_dir is None:
+    if result.outcome.kind is not OutcomeKind.SILICON:
         return ()
-    cpus = ycruncher.named_cpus((result.evidence_dir / STDOUT_LOG).read_text(errors="replace"))
+    cpus = ycruncher.named_cpus(result.output)
     unknown = [cpu for cpu in cpus if cpu not in core_of_cpu]
     if unknown:
         raise ValueError(f"y-cruncher named CPUs {unknown}, which the topology does not have")
@@ -437,7 +438,8 @@ class StressRunner:
         detail = "; ".join([*failed, f"memory budget: {budget.describe()}"]) if failed else ""
         seconds = max(r.duration_seconds for r in results.values())
         group = Group.SILICON if named else report.group
-        return replace(report, group=group, seconds=seconds, named=named, detail=detail)
+        output = "\n".join(f"core {core}:\n{r.output}" for core, r in sorted(results.items()) if r.output)
+        return replace(report, group=group, seconds=seconds, named=named, detail=detail, output=output)
 
     def _soak(self, spec: TestSpec, stop: threading.Event) -> Report:
         watch = self.detector()

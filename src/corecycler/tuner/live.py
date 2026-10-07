@@ -270,6 +270,7 @@ class Store:
             json.dumps(evidence),
             report.detail,
             json.dumps(report.speeds),
+            report.output,
         )
         corrected = tuple(sorted({e.core for e in report.evidence if e.corrected}))
         self.db.journal_mark_survived(session_id, boot_id=boot, exclude_cores=corrected)
@@ -313,7 +314,7 @@ class Store:
 
     def test_broken(self, row: int, detail: str) -> None:
         evidence = {"records": [], "unblamed_corrected": False}
-        self.db.end_tuner_test(row, "internal_error", 0.0, "[]", None, json.dumps(evidence), detail, "[]")
+        self.db.end_tuner_test(row, "internal_error", 0.0, "[]", None, json.dumps(evidence), detail, "[]", "")
 
     def event(self, session_id: int, kind: str, text: str, boot: str) -> None:
         self.db.insert_tuner_event(session_id, text, boot, kind)

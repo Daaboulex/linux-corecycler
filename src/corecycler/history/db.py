@@ -202,7 +202,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 22
+    SCHEMA_VERSION = 23
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -303,7 +303,8 @@ CREATE TABLE IF NOT EXISTS tuner_tests (
     evidence_json   TEXT,
     detail          TEXT,
     speeds_json     TEXT,
-    power_json      TEXT
+    power_json      TEXT,
+    output          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tuner_tests_session ON tuner_tests(session_id, core);
 """
@@ -391,7 +392,8 @@ CREATE TABLE IF NOT EXISTS core_results (
     peak_freq_mhz   REAL,
     max_temp_c       REAL,
     min_vcore_v      REAL,
-    max_vcore_v      REAL
+    max_vcore_v      REAL,
+    output           TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_core_results_run ON core_results(run_id);
 
@@ -862,6 +864,11 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     def _migrate_v22(conn: sqlite3.Connection) -> None:
         HistoryDB._add_columns(conn, "tuner_tests", [("power_json", "TEXT")])
 
+    @staticmethod
+    def _migrate_v23(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(conn, "tuner_tests", [("output", "TEXT")])
+        HistoryDB._add_columns(conn, "core_results", [("output", "TEXT")])
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
@@ -884,6 +891,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         20: _DDL_TUNER_SAMPLES,
         21: _migrate_v21,
         22: _migrate_v22,
+        23: _migrate_v23,
     }
 
     # ------------------------------------------------------------------
@@ -1075,6 +1083,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         max_temp_c: float | None = None,
         min_vcore_v: float | None = None,
         max_vcore_v: float | None = None,
+        output: str | None = None,
     ) -> None:
         sets: list[str] = []
         vals: list = []
@@ -1108,6 +1117,9 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         if max_vcore_v is not None:
             sets.append("max_vcore_v=?")
             vals.append(max_vcore_v)
+        if output is not None:
+            sets.append("output=?")
+            vals.append(output)
         if not sets:
             return
         vals.append(result_id)
@@ -1468,11 +1480,12 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         evidence_json: str,
         detail: str,
         speeds_json: str,
+        output: str,
     ) -> None:
         cur = self.__conn.execute(
             """\
             UPDATE tuner_tests SET ended_at=?, verdict=?, seconds_run=?, named_json=?,
-                context_json=?, evidence_json=?, detail=?, speeds_json=?
+                context_json=?, evidence_json=?, detail=?, speeds_json=?, output=?
             WHERE id=? AND ended_at IS NULL
             """,
             (
@@ -1484,6 +1497,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
                 evidence_json,
                 detail,
                 speeds_json,
+                output,
                 row_id,
             ),
         )

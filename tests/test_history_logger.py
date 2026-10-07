@@ -110,6 +110,7 @@ class TestCoreLifecycle:
             outcome=Outcome.OWN_CORE_MCE,
             detail="MCE detected on CPU 4",
             duration_seconds=120.0,
+            output="the tool's last lines",
         )
         logger.on_core_finished(2, result)
 
@@ -117,6 +118,8 @@ class TestCoreLifecycle:
         assert results[0].passed is False
         assert results[0].error_message == "MCE detected on CPU 4"
         assert results[0].error_type == "mce"
+        kept = db._execute_raw("SELECT output FROM core_results WHERE id=?", (results[0].id,)).fetchone()[0]
+        assert kept == "the tool's last lines"
 
         events = db.get_events(logger.run_id, event_type="error")
         assert len(events) == 1

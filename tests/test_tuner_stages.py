@@ -91,7 +91,7 @@ class Script:
     outcomes: list
     events: list = field(default_factory=list)
     seen: list = field(default_factory=list)
-    evidence_dir: Path | None = None
+    output: str = ""
     sampled: bool = True
     caps: list = field(default_factory=list)
     memory: list = field(default_factory=list)
@@ -120,7 +120,7 @@ def runner(script: Script, readings=None, detector=None, clocks=None, usable_mb=
                 outcome,
                 "d",
                 elapsed,
-                evidence_dir=script.evidence_dir,
+                output=script.output,
                 speeds=((f"seg{len(script.seen)}", 1e9, outcome is Outcome.PASS),),
             )
             return {lanes[0].core_id: result}
@@ -276,16 +276,15 @@ def test_y_cruncher_names_each_failing_cpu_once_through_its_color_codes():
         (Outcome.STALL, "Error(s) encountered on logical core 6.", ()),
     ],
 )
-def test_a_failing_all_core_segment_reports_the_cores_y_cruncher_named(tmp_path, outcome, log, named):
-    (tmp_path / "stdout.log").write_text(log)
-    script = Script([outcome], evidence_dir=tmp_path)
-    assert runner(script).run(spec(Load.HOT, 510.0), threading.Event()).named == named
+def test_a_failing_all_core_segment_reports_the_cores_y_cruncher_named(outcome, log, named):
+    report = runner(Script([outcome], output=log)).run(spec(Load.HOT, 510.0), threading.Event())
+    assert (report.named, report.output) == (named, log)
 
 
-def test_a_cpu_the_topology_does_not_have_is_refused(tmp_path):
-    (tmp_path / "stdout.log").write_text("Error(s) encountered on logical core 40.")
+def test_a_cpu_the_topology_does_not_have_is_refused():
+    script = Script([Outcome.COMPUTATION], output="Error(s) encountered on logical core 40.")
     with pytest.raises(ValueError, match="40"):
-        runner(Script([Outcome.COMPUTATION], evidence_dir=tmp_path)).run(spec(Load.HOT, 510.0), threading.Event())
+        runner(script).run(spec(Load.HOT, 510.0), threading.Event())
 
 
 def test_burst_draws_powers_of_two_up_to_the_cpu_count_on_first_cpus_and_all_cpus_as_the_last_draw():
@@ -337,10 +336,9 @@ def test_the_hold_samples_each_core_at_its_fastest_cpu_on_its_own_cadence():
     assert len(hold.ring) == telemetry.RING
 
 
-def test_the_failure_context_names_the_segments_cores_and_the_named_cores_clock(tmp_path):
+def test_the_failure_context_names_the_segments_cores_and_the_named_cores_clock():
     clocks = {0: 5000.0, 1: 5000.0, 2: 4200.0, 3: 1000.0}
-    (tmp_path / "stdout.log").write_text("Error(s) encountered on logical core 6.")
-    script = Script([Outcome.COMPUTATION], evidence_dir=tmp_path)
+    script = Script([Outcome.COMPUTATION], output="Error(s) encountered on logical core 6.")
     report = runner(script, clocks=lambda: clocks).run(spec(Load.HOT, 510.0), threading.Event())
     assert report.context.working == (0, 1, 2, 3) and report.named == (2,) and report.context.mhz == 4200.0
 
@@ -374,7 +372,11 @@ def memory_runner(outcomes, budget=None, available=True, seen=None):
                 self.freeze(duration / 2, self.sensors())
             return {
                 lane.core_id: StressResult(
-                    lane.core_id, outcomes.get(lane.core_id, Outcome.PASS), f"lane {lane.core_id}", duration
+                    lane.core_id,
+                    outcomes.get(lane.core_id, Outcome.PASS),
+                    f"lane {lane.core_id}",
+                    duration,
+                    output="" if lane.core_id not in outcomes else f"out {lane.core_id}",
                 )
                 for lane in lanes
             }
@@ -423,6 +425,7 @@ def test_memory_names_each_silicon_lane_and_an_apparatus_lane_alone_is_no_silico
     assert (report.group, report.named) == (Group.SILICON, (2,))
     assert "core 2: lane 2" in report.detail and "core 3: lane 3" in report.detail
     assert report.detail.endswith("memory budget: fake budget")
+    assert report.output == "core 2:\nout 2\ncore 3:\nout 3"
     _, run = memory_runner({3: Outcome.STALL}, seen=[])
     report = run.run(spec(Load.MEMORY, 300.0), threading.Event())
     assert (report.group, report.named) == (Group.APPARATUS, ())

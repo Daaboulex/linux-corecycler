@@ -131,6 +131,7 @@ class FakeRunner:
             evidence=self.evidence,
             kernel_read_ns=self.read_ns,
             speeds=self.speeds,
+            output="Error(s) encountered on logical core 0." if failed else "",
         )
 
 
@@ -434,6 +435,10 @@ def test_every_test_leaves_one_row_that_its_verdict_completes(tmp_path):
     assert {t["verdict"] for t in tests} == {"pass", "silicon"}
     assert all(json.loads(t["speeds_json"]) == [["SFTv4", 6.56e9, True], ["VT3", 2.37e9, False]] for t in tests)
     assert all(json.loads(t["power_json"]) == asdict(UNCAPPED) for t in tests)
+    assert {(t["verdict"], t["output"]) for t in tests} == {
+        ("pass", ""),
+        ("silicon", "Error(s) encountered on logical core 0."),
+    }
     assert [(json.loads(t["cpus_json"]), json.loads(t["vector_json"])) for t in tests] == [
         (list(s.cpus), [list(pair) for pair in s.vector]) for s in r.runner.seen
     ]
@@ -593,7 +598,7 @@ def test_a_crash_context_reads_the_last_ring_of_the_open_test_only(tmp_path, loa
     store.save(stored_with_fb(None), "boot-a")
     done = store.db.insert_tuner_test(1, "boot-a", 1, "steady", load, "1t", 0, -3, "[]", "[0, 16]", 60.0, "{}")
     store.sample(done, taken(0, 9))
-    store.db.end_tuner_test(done, "pass", 60.0, "[]", None, "{}", "", "[]")
+    store.db.end_tuner_test(done, "pass", 60.0, "[]", None, "{}", "", "[]", "")
     crashed = store.db.insert_tuner_test(1, "boot-a", 2, "steady", load, "1t", 0, -3, "[]", "[0, 16, 1]", 60.0, "{}")
     taken_samples = [taken(0, n) for n in range(telemetry.RING + 1)] + [replace(taken(0, 0), running=not frozen_last)]
     for sample in taken_samples:

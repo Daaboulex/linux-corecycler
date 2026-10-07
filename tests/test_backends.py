@@ -58,7 +58,7 @@ class TestStressConfig:
 class TestStressResult:
     def test_defaults(self):
         r = StressResult(core_id=0, outcome=Outcome.PASS, detail="", duration_seconds=60.0)
-        assert r.evidence_dir is None
+        assert r.output == ""
         assert r.iterations_completed == 0
 
     @pytest.mark.parametrize("outcome", list(Outcome))

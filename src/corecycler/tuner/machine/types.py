@@ -330,6 +330,7 @@ class Report:
     skipped: str = ""
     kernel_read_ns: int | None = None
     speeds: tuple[tuple[str, float, bool], ...] = ()
+    output: str = ""
 
 
 @dataclass(frozen=True, slots=True)

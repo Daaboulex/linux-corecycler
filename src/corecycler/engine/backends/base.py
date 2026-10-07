@@ -123,7 +123,7 @@ class StressResult:
     outcome: Outcome
     detail: str
     duration_seconds: float
-    evidence_dir: Path | None = None
+    output: str = ""
     iterations_completed: int = 0
     speeds: tuple[tuple[str, float, bool], ...] = ()
 
