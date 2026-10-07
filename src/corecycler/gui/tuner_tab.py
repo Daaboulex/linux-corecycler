@@ -312,7 +312,7 @@ class TunerTab(QWidget):
             fd = os.open("/dev/cpu/0/msr", os.O_RDONLY)
             os.close(fd)
             msr_available = True
-        except (OSError, PermissionError):
+        except OSError, PermissionError:
             msr_available = False
 
         if not msr_available:

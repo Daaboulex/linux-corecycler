@@ -82,7 +82,7 @@ class MSRReader:
             finally:
                 os.close(fd)
             self._available = True
-        except (OSError, PermissionError):
+        except OSError, PermissionError:
             self._available = False
         return self._available
 
@@ -220,7 +220,7 @@ class MSRReader:
             fd = os.open(f"/dev/cpu/{cpu_id}/msr", os.O_RDONLY)
             self._fds[cpu_id] = fd
             return fd
-        except (OSError, PermissionError):
+        except OSError, PermissionError:
             return None
 
     def _read_msr(self, cpu_id: int, msr_addr: int) -> int | None:
@@ -231,7 +231,7 @@ class MSRReader:
         try:
             data = os.pread(fd, 8, msr_addr)
             return struct.unpack("Q", data)[0]
-        except (OSError, struct.error):
+        except OSError, struct.error:
             return None
 
     def _get_energy_unit(self) -> float | None:

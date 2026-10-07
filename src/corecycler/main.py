@@ -143,7 +143,7 @@ def _bus_is_usable(address: str, uid: int) -> bool:
             probe.connect(endpoint)
             probe.sendall(b"\0AUTH EXTERNAL " + str(uid).encode().hex().encode() + b"\r\n")
             return probe.recv(64).startswith(b"OK")
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
 
 

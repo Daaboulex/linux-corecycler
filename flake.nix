@@ -37,7 +37,7 @@
             # pyside6 for the default interpreter, so pinning python312 forced a
             # ~50-min from-source pyside6 build on every CI run. python3 keeps
             # the heavy Qt bindings a cache.nixos.org hit. requires-python in
-            # pyproject.toml still allows >=3.12 for downstream users.
+            # pyproject.toml is >=3.14, the first with compression.zstd.
             python = pkgs.python3;
             pythonPkgs = python.pkgs;
 

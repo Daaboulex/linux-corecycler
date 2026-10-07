@@ -119,7 +119,7 @@ python3 -m venv .venv && .venv/bin/pip install PySide6
 sudo .venv/bin/python src/corecycler/main.py
 ```
 
-Install stress backends and kernel modules separately (below). Requires Python 3.12+
+Install stress backends and kernel modules separately (below). Requires Python 3.14+
 and PySide6 >= 6.7.
 
 ## Device access

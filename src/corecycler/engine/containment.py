@@ -131,7 +131,7 @@ def process_group_cpu_seconds(pgid: int, *, proc_base: Path | None = None) -> fl
             if int(fields[2]) != pgid:
                 continue
             utime, stime, cutime, cstime = (int(value) for value in fields[11:15])
-        except (OSError, ValueError, IndexError):
+        except OSError, ValueError, IndexError:
             continue
         ticks = (ticks or 0) + utime + stime + cutime + cstime
     return None if ticks is None else ticks / os.sysconf("SC_CLK_TCK")
@@ -275,7 +275,7 @@ def observed_tree_cpus(pid: int, *, proc_base: Path | None = None) -> set[int]:
                     if line.startswith("Cpus_allowed_list:"):
                         allowed |= _parse_cpu_ranges(line.split(":", 1)[1].strip())
                         break
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 continue
     return allowed
 

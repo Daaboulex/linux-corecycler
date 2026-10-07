@@ -181,7 +181,7 @@ class MprimeBackend(StressBackend):
                 text=True,
                 timeout=10,
             )
-        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        except OSError, RuntimeError, subprocess.TimeoutExpired:
             return None
         return self.parse_version(result.stdout + result.stderr)
 

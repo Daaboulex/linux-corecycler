@@ -106,7 +106,7 @@ To run: `pytest tests/test_tuner_engine.py -k "Invariant" -v`
 
 ### Python
 
-- **Python 3.12+** required
+- **Python 3.14+** required
 - **Ruff** lints and formats, configured in `pyproject.toml`. The pre-commit hooks run
   `ruff check --fix` and `ruff format`
 - Line length: 120 characters

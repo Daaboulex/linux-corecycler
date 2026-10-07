@@ -97,7 +97,7 @@ def _boot_identity() -> tuple[str, str | None]:
 def _realtime_us(iso_ts: str | None) -> int | None:
     try:
         moment = datetime.fromisoformat(iso_ts)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=UTC)
@@ -2879,7 +2879,7 @@ class TunerEngine(QObject):
             self._validation_dirty = resume_from.validation_dirty
             try:
                 raw = json.loads(resume_from.validation_requeue)
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 raw = []  # fail closed: a corrupt cursor loses only the hint
             requeue = [c for c in raw if isinstance(c, int) and c in self._core_states] if isinstance(raw, list) else []
             if self._validation_stage >= 2:

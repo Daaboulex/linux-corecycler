@@ -8,7 +8,7 @@ version = "0.0.1"
 description = "Per-core CPU stability tester and PBO Curve Optimizer tuner for AMD Ryzen on Linux"
 readme = "README.md"
 license = "GPL-3.0-or-later"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 authors = [{ name = "Daaboulex" }]
 dependencies = ["PySide6>=6.7"]
 
@@ -32,7 +32,7 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py314"
 line-length = 120
 
 [tool.ruff.lint]

@@ -162,7 +162,7 @@ class TunerConfig:
         longer crashes validate()/the engine; it reverts to the default."""
         try:
             d = json.loads(data)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return cls()
         if not isinstance(d, dict):
             return cls()

@@ -334,7 +334,7 @@ def span_str(start_iso: str | None, end_iso: str | None) -> str:
     try:
         start = datetime.fromisoformat(start_iso)
         end = datetime.fromisoformat(end_iso)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return ABSENT
     return duration_str((end - start).total_seconds())
 

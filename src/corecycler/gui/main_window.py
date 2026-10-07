@@ -294,7 +294,7 @@ class MainWindow(QMainWindow):
         try:
             fd = os.open("/dev/cpu/0/msr", os.O_RDONLY)
             os.close(fd)
-        except (OSError, PermissionError):
+        except OSError, PermissionError:
             missing.append("MSR (clock stretch, per-core power, package power)")
         if not Path("/sys/kernel/ryzen_smu_drv/smu_args").exists() or not os.access(
             "/sys/kernel/ryzen_smu_drv/smu_args", os.W_OK
@@ -577,7 +577,7 @@ class MainWindow(QMainWindow):
         # unexpectedly-shaped results payload.
         try:
             results = json.loads(results_json)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return
         if not isinstance(results, dict):
             return
@@ -614,7 +614,7 @@ class MainWindow(QMainWindow):
             if isinstance(r_list, list) and r_list and not _all_passed(r_list):
                 try:
                     failed_cores.append(int(cid))
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     continue
         self._config_tab.set_failed_cores(failed_cores)
 

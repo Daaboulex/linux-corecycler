@@ -272,7 +272,7 @@ def gone(pid: int) -> bool:
     try:
         with open(f"/proc/{pid}/stat") as stat:
             return stat.read().rpartition(")")[2].split()[0] == "Z"
-    except (FileNotFoundError, ProcessLookupError):
+    except FileNotFoundError, ProcessLookupError:
         return True
 
 

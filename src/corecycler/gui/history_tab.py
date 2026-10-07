@@ -821,7 +821,7 @@ class HistoryTab(QWidget):
         try:
             settings = json.loads(run.settings_json)
             lines.append(json.dumps(settings, indent=2))
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             lines.append(run.settings_json)
 
         self._events_log.setPlainText("\n".join(lines))
@@ -929,7 +929,7 @@ class HistoryTab(QWidget):
         # Info line
         try:
             cfg = json.loads(sess.config_json)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             cfg = {}
 
         info_parts = [
@@ -1402,7 +1402,7 @@ def _co_offsets(co_json: str) -> dict | None:
     """
     try:
         offsets = json.loads(co_json)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return None
     if not isinstance(offsets, dict) or not offsets:
         return None

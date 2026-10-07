@@ -84,7 +84,7 @@ class PowerMonitor:
         try:
             int(path.read_text().strip())
             return True
-        except (OSError, ValueError, PermissionError):
+        except OSError, ValueError, PermissionError:
             return False
 
     def is_available(self) -> bool:
@@ -106,7 +106,7 @@ class PowerMonitor:
         """Read power from RAPL energy counter (delta-based)."""
         try:
             energy_uj = int(self._package_path.read_text().strip())  # type: ignore[union-attr]
-        except (ValueError, OSError):
+        except ValueError, OSError:
             return None
 
         now = time.monotonic()
@@ -131,5 +131,5 @@ class PowerMonitor:
         try:
             uw = int(self._hwmon_power_path.read_text().strip())  # type: ignore[union-attr]
             return uw / 1_000_000
-        except (ValueError, OSError):
+        except ValueError, OSError:
             return None

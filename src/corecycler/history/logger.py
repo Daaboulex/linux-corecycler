@@ -168,7 +168,7 @@ class TestRunLogger:
         # unexpectedly-shaped results payload.
         try:
             results = json.loads(results_json)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return
         if not isinstance(results, dict):
             return

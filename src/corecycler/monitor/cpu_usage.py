@@ -34,7 +34,7 @@ class CPUUsageReader:
                 vals = [int(v) for v in parts[1:8]]
                 idle = vals[3] + vals[4]  # idle + iowait
                 total = sum(vals)
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 continue
             busy = total - idle
 

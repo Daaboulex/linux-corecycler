@@ -131,7 +131,7 @@ def smu_holder(proc: Path = PROC) -> str | None:
     for pid in _others(proc):
         try:
             targets = [os.readlink(fd) for fd in (pid / "fd").iterdir()]
-        except (FileNotFoundError, ProcessLookupError):
+        except FileNotFoundError, ProcessLookupError:
             continue
         except PermissionError as exc:
             return f"process {pid.name} cannot be inspected ({exc}), so another SMU driver holder cannot be ruled out"

@@ -54,7 +54,7 @@ class SensorRead:
 def _milli(path: Path) -> float | None:
     try:
         return int(path.read_text().strip()) / 1000
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
 
 
