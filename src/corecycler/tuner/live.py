@@ -77,6 +77,7 @@ class Hardware(Protocol):
     def write_co(self, core: int, value: int) -> str | None: ...
     def temperature(self) -> float | None: ...
     def power(self) -> PowerState: ...
+    def preflight(self) -> tuple[str | None, tuple[str, ...]]: ...
     def boot_id(self) -> str: ...
     def boot_ended_clean(self, boot_id: str) -> bool: ...
     def asleep_seconds(self) -> float: ...
@@ -398,12 +399,18 @@ class LiveRig:
             tjmax_c=self.tjmax_c,
         )
 
+    def world_checked(self) -> World:
+        refusal, warnings = self.hardware.preflight()
+        return replace(self.world(), preflight_refusal=refusal, preflight_warnings=warnings)
+
     def world_for_start(self) -> World:
-        return replace(self.world(), bios_co=tuple((core, self.hardware.read_co(core)) for core, _ in self.cpus_of))
+        return replace(
+            self.world_checked(), bios_co=tuple((core, self.hardware.read_co(core)) for core, _ in self.cpus_of)
+        )
 
     def world_for_resume(self, session_id: int) -> World:
         loaded = self.store.load(session_id)
-        world = self.world()
+        world = self.world_checked()
         if loaded is None:
             return world
         stored, self.stored_boot, self.stored_read_ns = loaded

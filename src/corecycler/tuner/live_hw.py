@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import signal
 import sys
@@ -14,13 +15,14 @@ from corecycler.engine import detector as kernel
 from corecycler.engine.backends import get_backend, ycruncher
 from corecycler.engine.backends.base import OutcomeKind, StressConfig, StressMode
 from corecycler.engine.backends.stressapptest import StressapptestBackend
-from corecycler.engine.containment import lane_cgroup_parent
+from corecycler.engine.containment import lane_cgroup_parent, memory_accounting_problem
 from corecycler.engine.execution import STDOUT_LOG, Lane, Supervisor, ThermalWatch
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.history.db import HistoryDB
 from corecycler.monitor.frequency import Clocks, PowerState, fastest, read_power_state
 from corecycler.monitor.hwmon import SensorRead, Sensors
 from corecycler.smu.commands import tjmax_c
+from corecycler.smu.driver import core_map_blocked
 from corecycler.tuner import stages, telemetry
 from corecycler.tuner.live import Identity, LiveRig, Store
 from corecycler.tuner.machine.types import (
@@ -56,15 +58,31 @@ GROUPS = {
 }
 
 
+def lane_budget(instances: int, launch_minimum_mb: int):
+    return memory_budget(instances, launch_minimum_mb, lane_cgroup=lane_cgroup_parent())
+
+
 class SmuHardware:
     def __init__(
-        self, smu, write: bool, say: Callable[[str], None], sensors: Callable[[], SensorRead], cpu_root: Path = CPU
+        self,
+        smu,
+        write: bool,
+        say: Callable[[str], None],
+        sensors: Callable[[], SensorRead],
+        cpu_root: Path = CPU,
+        tools: tuple = (),
+        budget=lane_budget,
     ) -> None:
         self.smu = smu
         self.write = write
         self.say = say
         self.sensors = sensors
         self.cpu_root = cpu_root
+        self.tools = tools
+        self.budget = budget
+
+    def preflight(self) -> tuple[str | None, tuple[str, ...]]:
+        return preflight(self.smu, self.sensors, self.power, self.tools, self.budget)
 
     def read_co(self, core: int) -> int | None:
         return self.smu.get_co_offset(core)
@@ -99,6 +117,76 @@ class SmuHardware:
 
     def asleep_seconds(self) -> float:
         return time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
+
+
+SMU_DRIVER = "/sys/kernel/ryzen_smu_drv"
+PROC = Path("/proc")
+
+
+def _others(proc: Path) -> list[Path]:
+    return [pid for pid in proc.iterdir() if pid.name.isdigit() and int(pid.name) != os.getpid()]
+
+
+def smu_holder(proc: Path = PROC) -> str | None:
+    for pid in _others(proc):
+        try:
+            targets = [os.readlink(fd) for fd in (pid / "fd").iterdir()]
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except PermissionError as exc:
+            return f"process {pid.name} cannot be inspected ({exc}), so another SMU driver holder cannot be ruled out"
+        if any(target.startswith(SMU_DRIVER) for target in targets):
+            name = (pid / "comm").read_text().strip()
+            return f"{name} (pid {pid.name}) holds the SMU driver open, so its writes and this session's could collide"
+    return None
+
+
+def running(name: str, proc: Path = PROC) -> bool:
+    for pid in _others(proc):
+        try:
+            if (pid / "comm").read_text().strip() == name:
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
+def scheduling_problem() -> str | None:
+    policy = os.sched_getscheduler(0)
+    if policy in (os.SCHED_IDLE, os.SCHED_BATCH):
+        return "the tool runs under an idle or batch scheduling policy, so its own watch could be starved by the load"
+    return None
+
+
+def preflight(smu, sensors, power, tools, budget, proc: Path = PROC) -> tuple[str | None, tuple[str, ...]]:
+    """The first gate of L01 that refuses (in L01 order, later gates not run), and the warnings."""
+    gates = (
+        lambda: core_map_blocked(smu),
+        kernel.kernel_log_problem,
+        memory_accounting_problem,
+        lambda: (
+            None
+            if sensors().hottest is not None
+            else "no CPU temperature can be read, so nothing would stop a load that overheats"
+        ),
+        lambda: "a frequency cap or disabled boost would make every verdict meaningless" if power().capped() else None,
+        lambda: smu_holder(proc),
+        scheduling_problem,
+        *(
+            lambda tool=tool: (
+                None if tool.is_available() else f"{tool.name} is not installed: {tool.resolution().problem}"
+            )
+            for tool in tools
+        ),
+    )
+    refusal = next((problem for gate in gates if (problem := gate()) is not None), None)
+    warnings = []
+    if running("ananicy-cpp", proc):
+        warnings.append("ananicy-cpp is running and may renice the stress tools while they run")
+    hot_mb = budget(1, 0).usable_mb // 2
+    if hot_mb < stages.HOT_MEMORY_CAP_MB:
+        warnings.append(f"HOT runs y-cruncher with {hot_mb} MB, under its {stages.HOT_MEMORY_CAP_MB} MB cap")
+    return refusal, tuple(warnings)
 
 
 def report_from(
@@ -204,7 +292,7 @@ class StressRunner:
         self.sensors = sensors
         self.clocks = clocks
         self.memory_backend = memory_backend or (lambda: get_backend("stressapptest"))
-        self.budget = budget or (lambda n, floor: memory_budget(n, floor, lane_cgroup=lane_cgroup_parent()))
+        self.budget = budget or lane_budget
         self.runs = 0
         self.read_ns: int | None = None
         self.sink: Callable[[telemetry.Sample], None] | None = None
@@ -427,7 +515,7 @@ def build_rig(
     core_of_cpu = {cpu: core for core, cpus in cpus_of for cpu in cpus}
     sensors = Sensors().read
     return LiveRig(
-        hardware=SmuHardware(smu, args.write, say, sensors),
+        hardware=SmuHardware(smu, args.write, say, sensors, tools=(backend_factory(), get_backend("stressapptest"))),
         runner=StressRunner(backend_factory, args.state_dir / "runs", core_of_cpu, sensors, Clocks().read),
         store=Store(db, args.state_dir, identity),
         cpus_of=cpus_of,

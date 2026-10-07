@@ -5,8 +5,8 @@ import signal
 import sqlite3
 import threading
 from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 
 import pytest
 
@@ -15,7 +15,7 @@ from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.history.db import HistoryDB
 from corecycler.monitor.frequency import PowerState
 from corecycler.monitor.hwmon import SensorRead
-from corecycler.tuner import live, live_hw, telemetry
+from corecycler.tuner import live, live_hw, stages, telemetry
 from corecycler.tuner.live import Identity, LiveRig, Store, stored_from_json, stored_to_json
 from corecycler.tuner.machine.types import (
     Close,
@@ -38,9 +38,6 @@ from corecycler.tuner.machine.types import (
 )
 from corecycler.tuner.orders import Method
 from tests._tuner_world import Resume, fresh, run_to_rest, start
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 CPUS = ((0, (0, 16)), (1, (1, 17)), (8, (8, 24)))
 DOMAINS = ((0, 0), (1, 0), (8, 1))
@@ -74,6 +71,8 @@ class FakeHardware:
     records: kernel.JournalHarvest = field(default_factory=lambda: kernel.JournalHarvest((), (), None))
     harvests: list = field(default_factory=list)
     boot_reads: int = 0
+    refusal: str | None = None
+    warnings: tuple = ()
 
     def harvest(self, boot_id, since_ns, next_boot):
         self.harvests.append((boot_id, since_ns, next_boot))
@@ -94,6 +93,9 @@ class FakeHardware:
 
     def power(self):
         return self.power_state
+
+    def preflight(self):
+        return self.refusal, self.warnings
 
     def boot_id(self):
         self.boot_reads += 1
@@ -1098,6 +1100,7 @@ def test_main_refuses_without_an_smu_and_runs_with_one(tmp_path, monkeypatch, ca
     monkeypatch.setattr(corecycler.engine.backends, "load_all", lambda: None)
     monkeypatch.setattr(live_hw, "install_signals", lambda r: None)
     monkeypatch.setattr(live_hw.SmuHardware, "power", lambda self: UNCAPPED)
+    monkeypatch.setattr(live_hw.SmuHardware, "preflight", lambda self: (None, ()))
     assert live_hw.main(argv) == 0
     assert "refused: session 1 is not stored" in capsys.readouterr().out
 
@@ -1131,3 +1134,139 @@ def test_a_sleep_between_tests_makes_the_rig_rewrite_every_core(tmp_path):
     r.run_until_rest(0.01)
     assert r.state.lifecycle is Lifecycle.COMPLETED
     assert hardware.co == EDGES
+
+
+def test_a_start_the_machine_s_preflight_refuses_writes_nothing_and_says_why(tmp_path):
+    said = []
+    r = rig(tmp_path, FakeHardware(refusal="the kernel log /dev/kmsg cannot be read"))
+    r.say = said.append
+    r.start(config(), 1, 7, True)
+    assert said == ["refused: the kernel log /dev/kmsg cannot be read"]
+    assert r.store.load(1) is None and r.hardware.co == {0: 0, 1: 0, 8: 0}
+
+
+def test_preflight_warnings_become_session_events_when_it_starts(tmp_path):
+    r = rig(tmp_path, FakeHardware(warnings=("ananicy-cpp is running",)))
+    r.start(config(), 1, 7, True)
+    events = rows(r, "SELECT message FROM tuner_events WHERE session_id=1 AND severity='warning'")
+    assert events == [{"message": "ananicy-cpp is running"}]
+
+
+def proc_tree(root: Path, processes: dict[int, tuple[str, tuple[str, ...]]]) -> Path:
+    for pid, (comm, targets) in processes.items():
+        fd = root / str(pid) / "fd"
+        fd.mkdir(parents=True)
+        (root / str(pid) / "comm").write_text(comm + "\n")
+        for n, target in enumerate(targets):
+            (fd / str(n)).symlink_to(target)
+    (root / "self").mkdir(parents=True)
+    return root
+
+
+class Tool:
+    def __init__(self, name, problem=None):
+        self.name, self.problem = name, problem
+
+    def is_available(self):
+        return self.problem is None
+
+    def resolution(self):
+        return SimpleNamespace(problem=self.problem)
+
+
+def preflight(
+    tmp_path, monkeypatch, *, smu=None, temp=60.0, power=UNCAPPED, tools=(), usable=60_000, procs=None, scheduling=None
+):
+    monkeypatch.setattr(live_hw.kernel, "kernel_log_problem", lambda: None)
+    monkeypatch.setattr(live_hw, "memory_accounting_problem", lambda: None)
+    monkeypatch.setattr(live_hw, "scheduling_problem", scheduling or (lambda: None))
+    proc = proc_tree(tmp_path / "proc", procs or {})
+    return live_hw.preflight(
+        smu or FakeSmu(),
+        lambda: SensorRead(hottest=temp),
+        lambda: power,
+        tools,
+        lambda n, floor: SimpleNamespace(usable_mb=usable),
+        proc,
+    )
+
+
+def test_a_ready_machine_passes_preflight_without_warnings(tmp_path, monkeypatch):
+    assert preflight(tmp_path, monkeypatch, tools=(Tool("y-cruncher"),)) == (None, ())
+
+
+@pytest.mark.parametrize(
+    ("changes", "says"),
+    [
+        ({"temp": None}, "no CPU temperature"),
+        ({"power": PowerState(boost="0")}, "frequency cap or disabled boost"),
+        ({"procs": {4242: ("ryzenadj", ("/sys/kernel/ryzen_smu_drv/smu_args",))}}, "ryzenadj (pid 4242) holds"),
+        ({"tools": (Tool("stressapptest", "not on PATH"),)}, "stressapptest is not installed: not on PATH"),
+    ],
+)
+def test_each_preflight_gate_refuses_naming_its_reason(tmp_path, monkeypatch, changes, says):
+    refusal, _ = preflight(tmp_path, monkeypatch, **changes)
+    assert says in refusal
+
+
+def test_the_first_failing_gate_wins_and_the_later_ones_never_run(tmp_path, monkeypatch):
+    def never():
+        raise AssertionError("a later gate ran")
+
+    refusal, _ = preflight(tmp_path, monkeypatch, temp=None, scheduling=never)
+    assert "no CPU temperature" in refusal
+
+
+def test_a_scheduling_policy_that_could_starve_the_watch_refuses(monkeypatch):
+    monkeypatch.setattr(live_hw.os, "sched_getscheduler", lambda pid: live_hw.os.SCHED_IDLE)
+    assert "idle or batch" in live_hw.scheduling_problem()
+    monkeypatch.setattr(live_hw.os, "sched_getscheduler", lambda pid: live_hw.os.SCHED_OTHER)
+    assert live_hw.scheduling_problem() is None
+
+
+def test_a_process_that_cannot_be_inspected_refuses_rather_than_passes(tmp_path, monkeypatch):
+    proc = proc_tree(tmp_path / "proc", {77: ("hidden", ())})
+    real = Path.iterdir
+
+    def denied(path):
+        if path == proc / "77" / "fd":
+            raise PermissionError("denied")
+        return real(path)
+
+    monkeypatch.setattr(Path, "iterdir", denied)
+    assert "process 77 cannot be inspected" in live_hw.smu_holder(proc)
+
+
+def test_ananicy_and_a_short_hot_budget_are_warnings_not_refusals(tmp_path, monkeypatch):
+    refusal, warnings = preflight(tmp_path, monkeypatch, usable=8000, procs={9: ("ananicy-cpp", ())})
+    assert refusal is None
+    assert warnings == (
+        "ananicy-cpp is running and may renice the stress tools while they run",
+        f"HOT runs y-cruncher with 4000 MB, under its {stages.HOT_MEMORY_CAP_MB} MB cap",
+    )
+
+
+def test_a_process_that_vanishes_mid_scan_is_skipped(tmp_path):
+    proc = proc_tree(tmp_path / "proc", {5: ("ryzenadj", ("/sys/kernel/ryzen_smu_drv/smu_args",))})
+    (proc / "6").mkdir()
+    assert live_hw.running("ryzenadj", proc) is True
+    assert live_hw.running("ananicy-cpp", proc) is False
+    assert "ryzenadj (pid 5) holds" in live_hw.smu_holder(proc)
+    quiet = proc_tree(tmp_path / "quiet", {7: ("bash", ())})
+    (quiet / "6").mkdir()
+    assert live_hw.smu_holder(quiet) is None
+
+
+def test_the_hardware_adapter_checks_its_own_smu_sensors_power_tools_and_budget(monkeypatch):
+    seen = []
+    monkeypatch.setattr(live_hw, "preflight", lambda *parts: seen.append(parts) or ("refused", ()))
+    tools = (Tool("y-cruncher"),)
+    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, tools=tools, budget=len)
+    assert hw.preflight() == ("refused", ())
+    assert seen == [(hw.smu, warm, hw.power, tools, len)]
+
+
+def test_the_lane_budget_reads_the_budget_under_the_lane_cgroup(monkeypatch):
+    monkeypatch.setattr(live_hw, "lane_cgroup_parent", lambda: "/lanes")
+    monkeypatch.setattr(live_hw, "memory_budget", lambda n, floor, lane_cgroup: (n, floor, lane_cgroup))
+    assert live_hw.lane_budget(2, 256) == (2, 256, "/lanes")

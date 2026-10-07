@@ -441,6 +441,7 @@ class Stored:
 class World:
     bios_co: tuple[tuple[int, int | None], ...] = ()
     preflight_refusal: str | None = None
+    preflight_warnings: tuple[str, ...] = ()
     resident: tuple[tuple[int, int | None], ...] = ()
     gap_grew: bool = False
     frequency_capped: bool = False

@@ -225,6 +225,7 @@ def _start(s: SessionState, e: Start, w: World) -> Transition:
     effects += [WriteCO(core, value) for core, value in baseline if w.resident_of(core) != value]
     effects += [
         Announce("started", f"session {e.session_id}, {len(baseline)} cores, {cfg.method.value} order"),
+        *(Announce("warning", warning) for warning in w.preflight_warnings),
         Schedule(token, 0.0),
     ]
     return Transition(new, tuple(effects))
