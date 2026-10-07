@@ -1850,3 +1850,12 @@ def test_a_passing_lane_keeps_its_speeds_after_its_run_dir_is_gone(tmp_path):
     assert passed.outcome is Outcome.PASS
     assert passed.speeds == (("sft", 6.5e9, True),)
     assert list(passing.work_dir.rglob("*")) == []
+
+
+def test_a_run_directory_is_handed_back_to_the_invoking_user(tmp_path, monkeypatch):
+    handed: list = []
+    monkeypatch.setattr(execution, "hand_back", handed.append)
+    passing = lane(tmp_path, 1, (1,))
+    supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)))
+    run_one(supervisor, passing, 1.0)
+    assert len(handed) == 1 and handed[0].parent == passing.work_dir and handed[0].name.startswith("run-")

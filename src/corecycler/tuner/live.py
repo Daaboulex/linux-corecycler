@@ -9,6 +9,7 @@ import time
 from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol
 
+from corecycler.config.paths import hand_back
 from corecycler.engine import detector as kernel
 from corecycler.tuner import telemetry
 from corecycler.tuner.machine.session import transition
@@ -206,6 +207,7 @@ class Store:
         self.identity = identity
         self.retracted: dict[tuple[int, int], int] = {}
         root.mkdir(parents=True, exist_ok=True)
+        hand_back(root)
 
     def new_session_id(self) -> int:
         return self.db.next_tuner_session_id()

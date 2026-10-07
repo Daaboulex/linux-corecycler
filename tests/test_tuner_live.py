@@ -226,6 +226,13 @@ def rows(r: LiveRig, sql: str, params: tuple = ()) -> list:
     return [dict(row) for row in r.store.db._execute_raw(sql, params).fetchall()]
 
 
+def test_the_store_hands_its_state_directory_back_to_the_invoking_user(tmp_path, monkeypatch):
+    handed: list = []
+    monkeypatch.setattr(live, "hand_back", handed.append)
+    Store(database(":memory:"), tmp_path / "state", IDENTITY)
+    assert handed == [tmp_path / "state"]
+
+
 def test_the_store_keeps_the_session_in_the_database_and_the_stock_marker_apart(tmp_path):
     store = Store(database(tmp_path / "history.db"), tmp_path / "s", IDENTITY)
     st = snapshots()[-1]

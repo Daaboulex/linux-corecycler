@@ -284,7 +284,7 @@ def setup_logging() -> None:
     try:
         from logging.handlers import RotatingFileHandler
 
-        from corecycler.config.paths import fix_sudo_ownership, user_home
+        from corecycler.config.paths import hand_back, user_home
 
         log_dir = user_home() / ".local" / "share" / "corecycler" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -292,7 +292,7 @@ def setup_logging() -> None:
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(fmt)
         handlers.append(file_handler)
-        fix_sudo_ownership(log_dir, log_dir / "corecycler.log")
+        hand_back(log_dir / "corecycler.log")
     except OSError as e:
         print(f"corecycler: debug log unavailable: {e}", file=sys.stderr)
     logging.basicConfig(level=logging.DEBUG, handlers=handlers)

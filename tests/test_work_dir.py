@@ -44,7 +44,7 @@ class TestResolveWorkDir:
 
     def test_ensure_creates_the_tree_and_repairs_ownership(self, tmp_path, monkeypatch):
         chowned: list[Path] = []
-        monkeypatch.setattr(paths, "fix_sudo_ownership", lambda *p: chowned.extend(p))
+        monkeypatch.setattr(paths, "hand_back", chowned.append)
         work = paths.ensure_work_dir(str(tmp_path / "deep" / "work"))
         assert work.is_dir()
         assert work in chowned

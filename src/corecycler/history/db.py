@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from corecycler.config.paths import fix_sudo_ownership, user_home
+from corecycler.config.paths import hand_back, user_home
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -231,15 +231,11 @@ class HistoryDB:
             self.__conn.close()
             raise
         if str(self._db_path) != ":memory:":
-            # A sudo run must not leave the shared DB (or its WAL sidecars)
-            # root-owned, or the next non-sudo run cannot write it.
-            fix_sudo_ownership(
-                self._db_path.parent.parent,  # .../corecycler (mkdir -p may create it as root)
-                self._db_path.parent,
-                self._db_path,
-                self._db_path.with_name(self._db_path.name + "-wal"),
-                self._db_path.with_name(self._db_path.name + "-shm"),
-            )
+            self._hand_back_files()
+
+    def _hand_back_files(self) -> None:
+        for path in (self._db_path, *(self._db_path.with_name(self._db_path.name + end) for end in ("-wal", "-shm"))):
+            hand_back(path)
 
     # ------------------------------------------------------------------
     # Schema
@@ -2208,9 +2204,4 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             self.__conn.close()
             self._closed = True
         if str(self._db_path) != ":memory:":
-            # WAL sidecars may have been recreated (root-owned) during the run.
-            fix_sudo_ownership(
-                self._db_path,
-                self._db_path.with_name(self._db_path.name + "-wal"),
-                self._db_path.with_name(self._db_path.name + "-shm"),
-            )
+            self._hand_back_files()

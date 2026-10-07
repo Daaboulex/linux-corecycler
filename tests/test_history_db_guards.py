@@ -35,6 +35,18 @@ def db():
 
 
 class TestOpenGuards:
+    def test_open_and_close_hand_back_the_database_and_its_sidecars_and_nothing_above_them(self, tmp_path, monkeypatch):
+        import corecycler.history.db as history
+
+        handed: list = []
+        monkeypatch.setattr(history, "hand_back", handed.append)
+        path = tmp_path / "deep" / "flow.db"
+        own = [path, path.with_name("flow.db-wal"), path.with_name("flow.db-shm")]
+        db = HistoryDB(path)
+        assert handed == own
+        db.close()
+        assert handed == own + own
+
     def test_a_corrupt_file_is_refused(self, tmp_path):
         path = tmp_path / "history.db"
         path.write_bytes(b"SQLite format 3\x00" + b"\x00" * 512)

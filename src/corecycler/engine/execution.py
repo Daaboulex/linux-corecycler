@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from corecycler.config.paths import hand_back
 from corecycler.engine import containment
 from corecycler.engine.backends.base import LaneSignal, Outcome, StressResult, read_text
 from corecycler.engine.detector import KernelTrouble, UnblamedMachineCheck
@@ -335,6 +336,7 @@ class Supervisor:
         run_dir = lane.work_dir / f"run-{datetime.now(UTC):%Y%m%dT%H%M%S%f}"
         try:
             run_dir.mkdir(parents=True)
+            hand_back(run_dir)
             run.run_dir = run_dir
             self.backend.prepare(run_dir, cfg)
             self.backend.assert_prepared(run_dir)
