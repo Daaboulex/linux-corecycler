@@ -321,7 +321,7 @@ class Fake:
             self.stock_fail_owed.clear()
         if s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is not PauseReason.RESUMING:
             for core, base in s.baseline:
-                if self.co.get(core) != base:
+                if self.co.get(core) != base and core not in self.outside:
                     raise Broken(f"paused ({s.pause.reason}) with core {core} at {self.co.get(core)}, not {base}")
         if s.lifecycle is Lifecycle.COMPLETED:
             finals = {r.core: r.value for r in s.cores}
