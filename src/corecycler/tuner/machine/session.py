@@ -1146,6 +1146,15 @@ def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transi
     moved = _power_moved(s, w)
     if moved is not None:
         return _enter_pause(replace(s, flow=flow), PauseReason.SETUP_CHANGED, moved)
+    past = [
+        (core, value, s.core(core).fb)
+        for core, value in spec.vector
+        if value != 0 and s.core(core).fb is not None and value <= s.core(core).fb
+    ]
+    if past:
+        core, value, fb = past[0]
+        detail = f"core {core} would run at {value}, at or past its fail bound {fb}"
+        return _enter_pause(replace(s, flow=flow), PauseReason.INTERNAL, detail)
     limit = s.config.thermal_limit_c if w.tjmax_c is None else min(s.config.thermal_limit_c, w.tjmax_c)
     spec = replace(spec, thermal_limit_c=limit)
     token = s.next_token

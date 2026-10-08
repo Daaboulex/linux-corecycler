@@ -281,6 +281,25 @@ def test_a_power_state_change_between_tests_pauses_naming_it_and_restoring_it_le
     assert fake.state.pause is None
 
 
+def test_a_test_at_or_past_a_fail_bound_is_never_started():
+    from corecycler.tuner.machine.session import _start_test
+
+    fake = running_fake()
+    waiting = fake.state
+    fake.fire()
+    spec = fake.state.slot.spec
+    bounded = waiting.with_core(replace(waiting.core(spec.core), fb=spec.value))
+    result = _start_test(bounded, waiting.flow, spec, fake.world())
+    assert result.state.pause.reason is PauseReason.INTERNAL
+    assert (
+        f"core {spec.core} would run at {spec.value}, at or past its fail bound {spec.value}"
+        in result.state.pause.detail
+    )
+    assert not any(type(effect).__name__ == "StartWorker" for effect in result.effects)
+    stock = replace(spec, value=0, vector=tuple((core, 0) for core, _ in spec.vector))
+    assert _start_test(bounded, waiting.flow, stock, fake.world()).state.pause is None
+
+
 def test_a_resume_over_a_changed_power_state_pauses_before_any_test_and_keeps_the_turn():
     fake = running_fake()
     fake.power = (("platform profile", "power-saver"),)
