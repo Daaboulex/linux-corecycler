@@ -232,7 +232,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 27
+    SCHEMA_VERSION = 28
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -348,7 +348,8 @@ CREATE TABLE IF NOT EXISTS tuner_tests (
     detail          TEXT,
     speeds_json     TEXT,
     power_json      TEXT,
-    output          TEXT
+    output          TEXT,
+    peaks_json      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tuner_tests_session ON tuner_tests(session_id, core);
 """
@@ -967,6 +968,10 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             [("parent_session_id", "INTEGER REFERENCES tuner_sessions(id)"), ("origin", "TEXT")],
         )
 
+    @staticmethod
+    def _migrate_v28(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(conn, "tuner_tests", [("peaks_json", "TEXT")])
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
@@ -994,6 +999,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         25: _migrate_v25,
         26: _DDL_TUNER_BOOTS,
         27: _migrate_v27,
+        28: _migrate_v28,
     }
 
     # ------------------------------------------------------------------
@@ -1517,6 +1523,27 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def core_peaks(self, session_id: int) -> dict[int, float]:
+        rows = self.__conn.execute(
+            "SELECT CAST(p.key AS INTEGER) AS peak_core, MAX(p.value) AS mhz FROM tuner_tests t,"
+            " json_each(t.peaks_json) p WHERE t.session_id=?"
+            " GROUP BY peak_core ORDER BY peak_core",
+            (session_id,),
+        ).fetchall()
+        return {row["peak_core"]: row["mhz"] for row in rows}
+
+    def peaks_by_range(self) -> list[dict]:
+        rows = self.__conn.execute(
+            "SELECT CAST(p.key AS INTEGER) AS peak_core, json_extract(t.power_json, '$.max_mhz') AS cap_mhz,"
+            " json_extract(t.power_json, '$.boost') AS boost, MAX(p.value) AS mhz"
+            " FROM tuner_tests t, json_each(t.peaks_json) p"
+            " GROUP BY peak_core, cap_mhz, boost ORDER BY peak_core, cap_mhz, boost"
+        ).fetchall()
+        return [
+            {"core": row["peak_core"], "cap_mhz": row["cap_mhz"], "boost": row["boost"], "mhz": row["mhz"]}
+            for row in rows
+        ]
+
     def session_boots(self, session_id: int) -> list[dict]:
         rows = self.__conn.execute(
             "SELECT * FROM tuner_boots WHERE boot_id IN (SELECT boot_id FROM tuner_tests WHERE session_id=?"
@@ -1600,11 +1627,13 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         detail: str,
         speeds_json: str,
         output: str,
+        *,
+        peaks_json: str | None = None,
     ) -> None:
         cur = self.__conn.execute(
             """\
             UPDATE tuner_tests SET ended_at=?, verdict=?, seconds_run=?, named_json=?,
-                context_json=?, evidence_json=?, detail=?, speeds_json=?, output=?
+                context_json=?, evidence_json=?, detail=?, speeds_json=?, output=?, peaks_json=?
             WHERE id=? AND ended_at IS NULL
             """,
             (
@@ -1617,6 +1646,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
                 detail,
                 speeds_json,
                 output,
+                peaks_json,
                 row_id,
             ),
         )

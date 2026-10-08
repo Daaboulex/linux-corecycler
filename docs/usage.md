@@ -114,6 +114,16 @@ shows every other setting by its own name. Start refuses a setting outside its r
 names it. When the BIOS already sets a CO on a selected core, Start refuses unless
 **Start over a CO the BIOS already sets** is ticked.
 
+### Power state and clocks
+
+A session records the power state at Start: the platform profile, governor, EPP, boost
+and the scaling maximum frequency. A capped machine (power-saver holding every core at
+4300 MHz, for example) runs, and the cap is the session's range: every result belongs to
+it, and a session that changes range midway pauses until the power state is put back. A
+later session at another range tests the cores there. Every test also records each core's
+highest observed clock, sampled ten times a second; History shows each core's peak in a
+session and its highest clock at every range seen so far.
+
 ### Crash safety
 
 Hard crashes are expected during CO tuning; that is how each core's limit is found.

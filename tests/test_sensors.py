@@ -213,7 +213,6 @@ def test_the_power_state_is_read_from_cpufreq_and_the_platform_profile(tmp_path)
     profile.write_text("low-power\n")
     state = read_power_state(tmp_path, profile)
     assert state == PowerState("low-power", "powersave", "power", "1", 4300.0, 5756.452)
-    assert state.capped() is True
     assert state.named() == (
         ("platform profile", "low-power"),
         ("governor", "powersave"),
@@ -223,9 +222,7 @@ def test_the_power_state_is_read_from_cpufreq_and_the_platform_profile(tmp_path)
     )
 
 
-def test_a_machine_without_the_power_files_names_nothing_and_counts_as_capped(tmp_path):
+def test_a_machine_without_the_power_files_names_nothing(tmp_path):
     state = read_power_state(tmp_path / "missing", tmp_path / "no_profile")
     assert state == PowerState()
     assert state.named() == ()
-    assert state.capped() is True
-    assert PowerState(boost="1", max_mhz=5700.0, top_mhz=5700.0).capped() is False

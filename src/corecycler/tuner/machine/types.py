@@ -492,7 +492,6 @@ class World:
     preflight_warnings: tuple[str, ...] = ()
     resident: tuple[tuple[int, int | None], ...] = ()
     gap_grew: bool = False
-    frequency_capped: bool = False
     power: tuple[tuple[str, str], ...] = ()
     setup: tuple[tuple[str, str], ...] = ()
     tjmax_c: float | None = None

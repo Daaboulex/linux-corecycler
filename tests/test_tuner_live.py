@@ -599,6 +599,27 @@ def test_the_store_writes_a_block_every_block_of_samples_and_at_the_test_s_end(t
     assert [s["mono_ns"] for s in store.db.tuner_test_samples(row)] == [1_000 + n for n in range(telemetry.BLOCK + 1)]
 
 
+def test_a_test_row_keeps_each_core_s_highest_clock_from_every_sample_it_took(tmp_path):
+    store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
+    store.save(stored_with_fb(None), "boot-a")
+    row = store.db.insert_tuner_test(1, "boot-a", 1, "steady", "hot", "1t", 0, -3, "[]", "[0, 1]", 60.0, "{}")
+    for n, clocks in enumerate((((0, 4100.0), (1, 4200.0)), ((0, 4290.0), (1, None)), ((0, 4150.0), (1, 4310.0)))):
+        store.sample(row, telemetry.Sample(True, clocks, 60.0, mono_ns=n), durable=n == 2)
+    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0))
+    (saved,) = rows(SimpleNamespace(store=store), "SELECT peaks_json FROM tuner_tests WHERE id=?", (row,))
+    assert json.loads(saved["peaks_json"]) == {"0": 4290.0, "1": 4310.0}
+    assert store.db.core_peaks(1) == {0: 4290.0, 1: 4310.0}
+
+
+def test_a_test_without_samples_keeps_an_empty_peak_record(tmp_path):
+    store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
+    store.save(stored_with_fb(None), "boot-a")
+    row = store.db.insert_tuner_test(1, "boot-a", 1, "search", None, "1t", 0, -3, "[]", "[0]", 60.0, "{}")
+    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0))
+    assert rows(SimpleNamespace(store=store), "SELECT peaks_json FROM tuner_tests") == [{"peaks_json": "{}"}]
+    assert store.db.core_peaks(1) == {}
+
+
 def test_every_test_end_checkpoints_the_database(tmp_path, monkeypatch):
     store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
     store.save(stored_with_fb(None), "boot-a")
@@ -977,8 +998,14 @@ def test_a_runner_that_raises_pauses_as_internal(tmp_path):
     r = rig(tmp_path, hardware, FakeRunner(hardware, raise_once=True))
     r.start(config(), 1, 7, True)
     assert r.run_until_rest(0.01).pause.reason is PauseReason.INTERNAL
-    tests = rows(r, "SELECT verdict, detail FROM tuner_tests")
-    assert tests == [{"verdict": "internal_error", "detail": "the test runner raised RuntimeError('runner broke')"}]
+    tests = rows(r, "SELECT verdict, detail, peaks_json FROM tuner_tests")
+    assert tests == [
+        {
+            "verdict": "internal_error",
+            "detail": "the test runner raised RuntimeError('runner broke')",
+            "peaks_json": None,
+        }
+    ]
 
 
 def test_a_pause_signal_finishes_the_test_and_a_refusal_is_said(tmp_path):
@@ -1064,20 +1091,6 @@ def test_the_smu_adapter_writes_only_when_asked_and_checks_the_read_back():
     assert said[-1] == "core 3 set to -5, read back -5"
     assert "refused" in live_hw.SmuHardware(FakeSmu(accept=False), True, said.append, warm).write_co(3, -5)
     assert "-4" in live_hw.SmuHardware(FakeSmu(echo=-4), True, said.append, warm).write_co(3, -5)
-
-
-@pytest.mark.parametrize(
-    ("scaling", "top", "boost", "pstate", "capped"),
-    [
-        (4300000, 5756452, "1", True, True),
-        (5756452, 5756452, "1", True, False),
-        (5756452, 5756452, "0", True, True),
-        (5700000, 5700000, None, False, False),
-    ],
-)
-def test_a_frequency_cap_or_disabled_boost_is_seen(tmp_path, scaling, top, boost, pstate, capped):
-    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, sysfs(tmp_path, scaling, top, boost, pstate))
-    assert hw.power().capped() is capped
 
 
 def pci_device(root, address, vendor, device, driver=None, vram=None):
@@ -1810,9 +1823,7 @@ class Tool:
         return SimpleNamespace(problem=self.problem)
 
 
-def preflight(
-    tmp_path, monkeypatch, *, smu=None, temp=60.0, power=UNCAPPED, tools=(), usable=60_000, procs=None, scheduling=None
-):
+def preflight(tmp_path, monkeypatch, *, smu=None, temp=60.0, tools=(), usable=60_000, procs=None, scheduling=None):
     monkeypatch.setattr(live_hw.kernel, "kernel_log_problem", lambda: None)
     monkeypatch.setattr(live_hw, "memory_accounting_problem", lambda: None)
     monkeypatch.setattr(live_hw, "scheduling_problem", scheduling or (lambda: None))
@@ -1820,7 +1831,6 @@ def preflight(
     return live_hw.preflight(
         smu or FakeSmu(),
         lambda: SensorRead(hottest=temp),
-        lambda: power,
         tools,
         lambda n, floor: SimpleNamespace(usable_mb=usable),
         proc,
@@ -1835,7 +1845,6 @@ def test_a_ready_machine_passes_preflight_without_warnings(tmp_path, monkeypatch
     ("changes", "says"),
     [
         ({"temp": None}, "no CPU temperature"),
-        ({"power": PowerState(boost="0")}, "frequency cap or disabled boost"),
         ({"procs": {4242: ("ryzenadj", ("/sys/kernel/ryzen_smu_drv/smu_args",))}}, "ryzenadj (pid 4242) holds"),
         ({"tools": (Tool("stressapptest", "not on PATH"),)}, "stressapptest is not installed: not on PATH"),
     ],
@@ -1893,13 +1902,13 @@ def test_a_process_that_vanishes_mid_scan_is_skipped(tmp_path):
     assert live_hw.smu_holder(quiet) is None
 
 
-def test_the_hardware_adapter_checks_its_own_smu_sensors_power_tools_and_budget(monkeypatch):
+def test_the_hardware_adapter_checks_its_own_smu_sensors_tools_and_budget(monkeypatch):
     seen = []
     monkeypatch.setattr(live_hw, "preflight", lambda *parts: seen.append(parts) or ("refused", ()))
     tools = (Tool("y-cruncher"),)
     hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, tools=tools, budget=len)
     assert hw.preflight() == ("refused", ())
-    assert seen == [(hw.smu, warm, hw.power, tools, len)]
+    assert seen == [(hw.smu, warm, tools, len)]
 
 
 def test_the_lane_budget_reads_the_budget_under_the_lane_cgroup(monkeypatch):
@@ -1911,3 +1920,9 @@ def test_the_lane_budget_reads_the_budget_under_the_lane_cgroup(monkeypatch):
 def test_a_session_that_is_not_stored_cannot_be_read(tmp_path):
     with pytest.raises(ValueError, match="session 9 is not stored"):
         live.read_stored(database(tmp_path / "h.db"), 9)
+
+
+def test_the_hardware_adapter_reads_the_power_state_under_its_cpu_root(tmp_path):
+    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, sysfs(tmp_path, 4300000, 5756452, "1"))
+    state = hw.power()
+    assert (state.max_mhz, state.top_mhz, state.boost) == (4300.0, 5756.452, "1")

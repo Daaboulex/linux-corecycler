@@ -250,12 +250,15 @@ def test_a_machine_check_found_at_resume_pauses_as_stock_unstable():
     assert result.state.pause.reason is PauseReason.STOCK_UNSTABLE
 
 
-def test_a_frequency_cap_at_test_start_pauses_before_any_test():
-    fake = running_fake()
-    fake.capped = True
+def test_a_capped_power_state_is_the_session_s_range_and_tests_run_in_it():
+    capped = (("boost", "1"), ("platform profile", "power-saver"), ("scaling maximum MHz", "4300"))
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    fake.power = capped
+    start(fake)
+    assert fake.db.power == capped
     fake.fire()
-    assert fake.state.pause.reason is PauseReason.APPARATUS
-    assert fake.worker is None
+    assert fake.state.pause is None
+    assert fake.worker is not None
 
 
 def test_a_power_state_change_between_tests_pauses_naming_it_and_restoring_it_lets_a_resume_continue():

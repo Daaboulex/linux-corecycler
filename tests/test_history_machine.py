@@ -81,18 +81,23 @@ def test_the_detail_shows_cores_tests_events_and_boots(db, tmp_path):
     row = db.insert_tuner_test(
         saved.session_id, this_boot(), 1, "search", "1t", "1t", core, -3, "[]", "[0]", 60.0, "{}"
     )
-    db.end_tuner_test(row, "silicon", 12.0, "[]", None, "[]", "y-cruncher error", "{}", "")
+    db.end_tuner_test(
+        row, "silicon", 12.0, "[]", None, "[]", "y-cruncher error", "{}", "", peaks_json=f'{{"{core}": 4421.0}}'
+    )
     db.insert_tuner_event(saved.session_id, "user: paused by the owner", this_boot(), "paused")
     db.insert_tuner_boot(this_boot(), "2402", None, None, None, "[]", "{}")
     tab = tuner_view(db)
     assert tab._core_results_table.rowCount() == len(saved.cores)
-    first = [tab._core_results_table.item(0, column).text() for column in range(6)]
-    assert first == [str(core), saved.cores[0].phase.value, str(saved.cores[0].value), "-", "1", "silicon"]
+    first = [tab._core_results_table.item(0, column).text() for column in range(7)]
+    assert first == [str(core), saved.cores[0].phase.value, str(saved.cores[0].value), "-", "1", "silicon", "4421"]
+    assert tab._core_results_table.item(1, 6).text() == "-"
     text = tab._events_log.toPlainText()
     assert f"core {core}  search 1t 1t at -3: silicon  y-cruncher error" in text
     assert "paused: user: paused by the owner" in text
     assert f"  {this_boot()}  first seen " in text and "BIOS 2402" in text
     assert "order " in tab._detail_info.text()
+    assert tab._detail_info.text().endswith("range platform profile balanced")
+    assert f"  core {core}: 4421 MHz with the scaling maximum at unknown, boost unknown" in text
     assert not tab._load_co_btn.isEnabled()
 
 

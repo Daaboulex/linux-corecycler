@@ -94,7 +94,6 @@ class Fake:
     timer: tuple[int, float] | None = None
     now: float = 0.0
     temperature: float | None = 60.0
-    capped: bool = False
     power: tuple[tuple[str, str], ...] = (("platform profile", "balanced"),)
     setup: tuple[tuple[str, str], ...] = (("bios", "A"),)
     tjmax_c: float | None = None
@@ -135,7 +134,6 @@ class Fake:
             bios_co=tuple(sorted(self.bios.items())),
             resident=tuple(sorted(self.resident.items())),
             gap_grew=self.gap_grew,
-            frequency_capped=self.capped,
             power=self.power,
             setup=self.setup,
             tjmax_c=self.tjmax_c,

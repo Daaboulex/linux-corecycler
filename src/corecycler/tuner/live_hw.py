@@ -109,7 +109,7 @@ class SmuHardware:
         self.budget = budget
 
     def preflight(self) -> tuple[str | None, tuple[str, ...]]:
-        return preflight(self.smu, self.sensors, self.power, self.tools, self.budget)
+        return preflight(self.smu, self.sensors, self.tools, self.budget)
 
     def read_co(self, core: int) -> int | None:
         return self.smu.get_co_offset(core)
@@ -288,7 +288,7 @@ def scheduling_problem() -> str | None:
     return None
 
 
-def preflight(smu, sensors, power, tools, budget, proc: Path = PROC) -> tuple[str | None, tuple[str, ...]]:
+def preflight(smu, sensors, tools, budget, proc: Path = PROC) -> tuple[str | None, tuple[str, ...]]:
     """The first gate of L01 that refuses (in L01 order, later gates not run), and the warnings."""
     gates = (
         lambda: core_map_blocked(smu),
@@ -299,7 +299,6 @@ def preflight(smu, sensors, power, tools, budget, proc: Path = PROC) -> tuple[st
             if sensors().hottest is not None
             else "no CPU temperature can be read, so nothing would stop a load that overheats"
         ),
-        lambda: "a frequency cap or disabled boost would make every verdict meaningless" if power().capped() else None,
         lambda: smu_holder(proc),
         scheduling_problem,
         *(

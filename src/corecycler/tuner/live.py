@@ -145,6 +145,15 @@ def config_from_json(raw: dict) -> MachineConfig:
     return cfg
 
 
+def peaks(samples: list[dict]) -> dict[int, float]:
+    highest: dict[int, float] = {}
+    for sample in samples:
+        for core, mhz in sample["clocks"]:
+            if mhz is not None and mhz > highest.get(core, 0.0):
+                highest[core] = mhz
+    return dict(sorted(highest.items()))
+
+
 def read_stored(db: HistoryDB, session_id: int) -> Stored:
     row = db.load_machine_session(session_id)
     if row is None:
@@ -328,6 +337,7 @@ class Store:
             report.detail,
             json.dumps(report.speeds),
             report.output,
+            peaks_json=json.dumps(peaks(self.db.tuner_test_samples(row))),
         )
         corrected = tuple(sorted({e.core for e in report.evidence if e.corrected}))
         self.db.journal_mark_survived(session_id, boot_id=boot, exclude_cores=corrected)
@@ -473,7 +483,6 @@ class LiveRig:
         return World(
             resident=tuple(sorted(self.resident.items())),
             gap_grew=gap,
-            frequency_capped=self.power.capped(),
             power=self.power.named(),
             setup=self.setup,
             now=self.clock(),

@@ -1426,3 +1426,64 @@ class TestRecoverableSessions:
         first = self._session(db, "quarantined")
         second = self._session(db, "running")
         assert [s.id for s in db.list_recoverable_tuner_sessions()] == [second, first]
+
+
+class TestPeakClocks:
+    def _test(self, db, session_id, peaks_json, cap, boost="1"):
+        row = db.insert_tuner_test(
+            session_id,
+            this_boot(),
+            1,
+            "search",
+            None,
+            "1t",
+            0,
+            -3,
+            "[]",
+            "[0]",
+            60.0,
+            f'{{"max_mhz": {cap}, "boost": "{boost}"}}',
+        )
+        db.end_tuner_test(row, "pass", 60.0, "[]", None, "{}", "", "[]", "", peaks_json=peaks_json)
+
+    def _session(self, db, session_id):
+        db.save_machine_session(
+            session_id,
+            status="paused",
+            config_json="{}",
+            machine_json="{}",
+            boot_id="b",
+            bios_version="b",
+            cpu_model="c",
+            context_id=None,
+        )
+
+    def test_a_core_s_peak_per_session_and_per_range(self, db):
+        self._session(db, 1)
+        self._session(db, 2)
+        self._test(db, 1, '{"0": 4300.0, "1": 4280.0}', 4300.0)
+        self._test(db, 1, '{"0": 4420.0}', 4300.0)
+        self._test(db, 1, None, 4300.0)
+        self._test(db, 2, '{"0": 5700.0}', 5756.0)
+        self._test(db, 2, '{"0": 4000.0}', 4300.0, boost="0")
+        assert db.core_peaks(1) == {0: 4420.0, 1: 4280.0}
+        assert db.core_peaks(2) == {0: 5700.0}
+        assert db.peaks_by_range() == [
+            {"core": 0, "cap_mhz": 4300.0, "boost": "0", "mhz": 4000.0},
+            {"core": 0, "cap_mhz": 4300.0, "boost": "1", "mhz": 4420.0},
+            {"core": 0, "cap_mhz": 5756.0, "boost": "1", "mhz": 5700.0},
+            {"core": 1, "cap_mhz": 4300.0, "boost": "1", "mhz": 4280.0},
+        ]
+
+    def test_v28_adds_the_peak_column_to_a_v27_database(self, tmp_path):
+        path = tmp_path / "history.db"
+        HistoryDB(path).close()
+        conn = sqlite3.connect(path)
+        conn.execute("ALTER TABLE tuner_tests DROP COLUMN peaks_json")
+        conn.execute("UPDATE schema_version SET version=27")
+        conn.commit()
+        conn.close()
+        db = HistoryDB(path)
+        columns = {row[1] for row in db._execute_raw("PRAGMA table_info(tuner_tests)").fetchall()}
+        db.close()
+        assert "peaks_json" in columns

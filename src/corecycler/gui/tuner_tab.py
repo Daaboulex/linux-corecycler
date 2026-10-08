@@ -213,10 +213,12 @@ class TunerTab(QWidget):
     def _build_live(self) -> QVBoxLayout:
         column = QVBoxLayout()
         self._status = QLabel("No tuning session")
+        self._range = QLabel("")
         self._driver = QLabel("")
         self._driver.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM};")
         self._test = QLabel("")
         column.addWidget(self._status)
+        column.addWidget(self._range)
         column.addWidget(self._driver)
         column.addWidget(self._test)
         buttons = QHBoxLayout()
@@ -289,6 +291,8 @@ class TunerTab(QWidget):
         self._status.setText(f"Session {view.session_id}: {view.status}{reason}")
         if view.problem is not None:
             self._status.setText(view.problem)
+        power = view.stored.power if view.stored is not None else ()
+        self._range.setText("Range: " + (", ".join(f"{name} {value}" for name, value in power) or "unknown"))
         self._show_test(view)
         self._show_cores(view)
         self._show_events(view)

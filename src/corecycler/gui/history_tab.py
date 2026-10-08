@@ -1066,13 +1066,15 @@ class HistoryTab(QWidget):
             info.append(f"{sess.origin} of session {sess.parent_session_id}")
         if sess.bios_version:
             info.append(f"BIOS {sess.bios_version}")
+        info.append("range " + (", ".join(f"{name} {value}" for name, value in saved.power) or "unknown"))
         self._detail_info.setText("  |  ".join(info))
         self._detail_info.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 2px;")
         tests = self._db.list_tuner_tests(sess.id)
+        peaks = self._db.core_peaks(sess.id)
         per_core: dict[int, list[dict]] = {}
         for test in tests:
             per_core.setdefault(test["core"], []).append(test)
-        headers = ["Core", "Phase", "Value", "Fail Bound", "Tests", "Last Verdict"]
+        headers = ["Core", "Phase", "Value", "Fail Bound", "Tests", "Last Verdict", "Peak MHz"]
         self._core_results_table.setColumnCount(len(headers))
         self._core_results_table.setHorizontalHeaderLabels(headers)
         self._core_results_table.setRowCount(len(saved.cores))
@@ -1086,6 +1088,7 @@ class HistoryTab(QWidget):
                 "-" if record.fb is None else str(record.fb),
                 str(len(own)),
                 last,
+                f"{peaks[record.core]:.0f}" if record.core in peaks else "-",
             )
             for column, text in enumerate(texts):
                 self._core_results_table.setItem(row, column, _item(text, Qt.AlignmentFlag.AlignCenter))
@@ -1106,6 +1109,13 @@ class HistoryTab(QWidget):
         lines += [
             f"  {boot['boot_id']}  first seen {format_local(boot['first_seen'])}  BIOS {boot['bios_version']}"
             for boot in self._db.session_boots(sess.id)
+        ]
+        lines += ["", "-- Highest clock per core and range, every session --"]
+        lines += [
+            f"  core {row['core']}: {row['mhz']:.0f} MHz with the scaling maximum at "
+            + ("unknown" if row["cap_mhz"] is None else f"{row['cap_mhz']:.0f} MHz")
+            + f", boost {row['boost'] if row['boost'] is not None else 'unknown'}"
+            for row in self._db.peaks_by_range()
         ]
         self._events_log.setPlainText("\n".join(lines))
 

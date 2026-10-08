@@ -1117,12 +1117,6 @@ def _changes(recorded: tuple[tuple[str, str], ...], now: tuple[tuple[str, str], 
 
 
 def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transition:
-    if w.frequency_capped:
-        return _enter_pause(
-            replace(s, flow=flow),
-            PauseReason.APPARATUS,
-            "a frequency cap or disabled boost would make every verdict meaningless",
-        )
     if s.power != w.power:
         changed = _changes(s.power, w.power)
         detail = f"the power state changed since the session started: {changed}; restore it and resume"

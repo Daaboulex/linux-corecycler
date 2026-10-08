@@ -166,6 +166,7 @@ def test_a_paused_session_shows_its_cores_and_offers_resume(db, home, tmp_path):
     t.refresh()
     assert t._status.text() == f"Session {saved.session_id}: paused (user: paused by the owner)"
     assert t._cores.rowCount() == len(saved.cores)
+    assert t._range.text() == "Range: platform profile balanced"
     assert t._cores.item(0, 1).text() == str(saved.cores[0].value)
     assert infos == [(r.core, r.value, r.phase.value) for r in saved.cores]
     t.refresh()

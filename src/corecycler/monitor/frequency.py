@@ -87,14 +87,6 @@ class PowerState:
     max_mhz: float | None = None
     top_mhz: float | None = None
 
-    def capped(self) -> bool:
-        """Boost off, or the scaling maximum held below the top clock; unknown counts as capped."""
-        if self.boost == "0":
-            return True
-        if self.max_mhz is None or self.top_mhz is None:
-            return True
-        return self.max_mhz < 0.98 * self.top_mhz
-
     def named(self) -> tuple[tuple[str, str], ...]:
         """The settings a session records at Start and compares before each test."""
         pairs = (
