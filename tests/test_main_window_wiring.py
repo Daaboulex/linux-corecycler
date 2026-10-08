@@ -286,6 +286,14 @@ class TestStartTest:
         assert window._worker is None
         assert no_modal.warning.call_args.args[2] == f"Cannot start: {problem}"
 
+    def test_no_ticked_core_is_refused(self, window, monkeypatch, no_modal):
+        self._ready(window, monkeypatch)
+        for box in window._config_tab._core_boxes.values():
+            box.setChecked(False)
+        window._start_test()
+        assert window._worker is None
+        assert no_modal.warning.call_args.args[1] == "No cores"
+
     def test_an_active_tuner_session_can_be_declined(self, window, monkeypatch, no_modal, tmp_path):
         self._ready(window, monkeypatch)
         saved = save_machine_session(window._history_db, tmp_path, "paused")

@@ -64,8 +64,11 @@ src/corecycler/
                      and the missing-tool prompt that records a backend's path
     tuner_tab.py       Auto-Tuner tab: starts the tuner driver as its own process and follows
                        its session in the history database on the main window's tick
-    style.py           Display standards: the desktop draws the widgets, this holds only the
-                       colors that carry meaning, resolved against its current color scheme
+    style.py           Display standards: the desktop draws the widgets, this holds the colors
+                       that carry meaning, resolved against its current color scheme, and the
+                       words for each tuner phase, stage, pause reason and power state
+    widgets/           The core grid, the charts, and the setting row every settings tab is
+                       built from: a name, the box, its unit to the right, a line on what it does
   config/            Settings and test profiles (~/.config/corecycler/), plus tools.py --
                      the one resolver for every external binary (PATH is not enough)
 nix/                 NixOS module + kernel-module derivations (ryzen-smu, zenpower, it87)

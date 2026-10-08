@@ -373,6 +373,9 @@ class MainWindow(QMainWindow):
                 return
 
         profile = self._config_tab.get_profile()
+        if profile.cores_to_test == []:
+            QMessageBox.warning(self, "No cores", "Tick at least one core to test on the Configuration tab.")
+            return
 
         # select backend
         backend = self._get_backend(profile.backend)

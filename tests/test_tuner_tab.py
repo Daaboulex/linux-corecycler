@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication
 from corecycler.cli import EXIT_PAUSED
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.gui import tuner_tab as tt
+from corecycler.gui.widgets import spoken
 from corecycler.history.db import HistoryDB
 from corecycler.smu.writer_lock import co_writer
 from corecycler.tuner.live import config_from_json
@@ -118,7 +119,7 @@ def test_every_setting_shows_its_name_unit_and_what_it_does(db, home):
     ("seconds", "said"), [(59.0, ""), (60.0, "1 min"), (90.0, "1 min 30 s"), (5400.0, "1 h 30 min"), (7200.0, "2 h")]
 )
 def test_a_duration_is_also_said_in_minutes_and_hours(seconds, said):
-    assert tt.spoken(seconds) == said
+    assert spoken(seconds) == said
 
 
 def test_the_unit_follows_the_box(db, home):

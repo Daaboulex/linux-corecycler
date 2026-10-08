@@ -1,8 +1,8 @@
 """Property-based value injection into the GUI input surfaces.
 
-Any string a user can type, any profile a saved file can hold, and any config a
-resumed session can carry must never crash the UI and never yield an offset or
-core id outside the hardware's supported range.
+Any profile a saved file can hold and any config a resumed session can carry
+must never crash the UI and never yield an offset outside the hardware's
+supported range.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from hypothesis import strategies as st
 if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
-from corecycler.engine.backends import load_all
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 
 _CACHE: dict = {}
@@ -36,16 +35,6 @@ def _topo() -> CPUTopology:
     return topo
 
 
-def _config_tab():
-    if "cfg" not in _CACHE:
-        _qapp()
-        load_all()
-        from corecycler.gui.config_tab import ConfigTab
-
-        _CACHE["cfg"] = ConfigTab(_topo())
-    return _CACHE["cfg"]
-
-
 def _smu_tab():
     if "smu" not in _CACHE:
         _qapp()
@@ -62,24 +51,6 @@ def _tuner_tab():
 
         _CACHE["tuner"] = TunerTab(None, _topo(), (-50, 10), None)
     return _CACHE["tuner"]
-
-
-class TestCoreInputParser:
-    @settings(deadline=None)
-    @given(st.text(max_size=48))
-    def test_any_string_yields_none_or_valid_cores(self, text):
-        tab = _config_tab()
-        tab._cores_input.setText(text)
-        cores = tab.get_profile().cores_to_test
-        assert cores is None or all(0 <= c <= 7 for c in cores)
-
-    @settings(deadline=None)
-    @given(st.lists(st.integers(-50, 50), max_size=12))
-    def test_integer_lists_filter_to_present_cores(self, ids):
-        tab = _config_tab()
-        tab._cores_input.setText(",".join(str(i) for i in ids))
-        cores = tab.get_profile().cores_to_test
-        assert cores is None or set(cores) <= set(range(8))
 
 
 class TestCoProfileInjection:

@@ -10,22 +10,27 @@
    and per-core power read model-specific registers, which need `sudo` today. Without
    access it runs with reduced telemetry and a status-bar warning.
 2. The CPU topology (cores, CCDs, SMT, X3D) is detected automatically.
-3. In the Configuration tab, select a backend. Use stress-ng if mprime is not installed.
-   If a backend is reported as not found, see
+3. In the Configuration tab, choose the test program. Use stress-ng if mprime is not
+   installed. If a program is reported as not found, see
    [Where CoreCycler looks for a backend](installation.md#where-corecycler-looks-for-a-backend).
-4. The default preset is **Standard** (10 min/core, 1 cycle); adjust or pick another.
+4. The default preset is **Standard** (each core 10 min, 1 round); adjust or pick another.
 5. Click **Start Test** and watch the core grid: each core lights up as it is tested,
    turning green (passed) or red (failed). The Results tab shows per-core detail.
 
-### Test mode presets
+### Presets
 
-| Preset | Time/Core | Cycles | Variable Load | Idle Test | Use Case |
-|---|---|---|---|---|---|
-| Quick | 2 min | 1 | No | No | Fast screening, rough check |
-| Standard | 10 min | 1 | No | No | Initial CO tuning |
-| Thorough | 30 min | 2 | No | 5s between | Validation after tuning |
-| Full Spectrum | 20 min | 3 | Yes | 60s + 10s between | Comprehensive stability proof |
-| Custom | User-defined | User-defined | Optional | Optional | Fine-tuned testing |
+| Preset | Time per core | Rounds | Changing load | Idle watch after each core | Pause between cores | For |
+|---|---|---|---|---|---|---|
+| Quick check | 2 min | 1 | No | 0 | 0 | Finds clear errors fast and misses rare ones |
+| Standard | 10 min | 1 | No | 0 | 0 | A first check after changing a value |
+| Thorough | 30 min | 2 | No | 0 | 5 s | Errors that show only now and then |
+| Everything | 20 min | 3 | Yes | 1 min | 10 s | Load changes and idle time, closest to daily use |
+| Your own settings | yours | yours | yours | yours | yours | Anything else |
+
+The tab shows the preset whose five values match the settings below it, and **Your own
+settings** when none does; the test program, temperature limit, stop at the first error
+and the cores are not part of a preset. **Cores to test** has one box per core: every
+ticked core is tested, and Start refuses when none is ticked.
 
 ## Finding optimal CO values (manual)
 
@@ -39,7 +44,7 @@ The manual workflow for tuning AMD PBO Curve Optimizer:
 4. **Reduce CO for failing cores** in BIOS (e.g. -15 to -10, or less); leave passing
    cores at -15.
 5. **Repeat** until all cores pass.
-6. **Extended validation**: switch to Thorough or Full Spectrum -- the variable-load and
+6. **Extended validation**: switch to Thorough or Everything -- the changing-load and
    idle tests catch instability sustained load misses.
 7. **Test other instruction sets**: SSE produces the highest clocks and is most
    sensitive; AVX2 exercises different execution units and can expose other failures.
@@ -170,33 +175,36 @@ resumes the one session a crash interrupted, trying three times a minute apart w
 driver refuses (the SMU driver not loaded yet, for example). A paused session is your
 decision and is never resumed by itself, and with two interrupted sessions neither is.
 
-## Backends: Mode and FFT Preset
+## Test programs: instruction set and FFT size
 
-**Mode** (SSE/AVX/AVX2/AVX512) and **FFT Preset** mean different things per backend in
-the Configuration tab:
+The Configuration tab offers each program's own instruction sets (SSE, AVX, AVX2,
+AVX-512), and the FFT size only for mprime, each size named with its range. They mean
+different things per program:
 
-- **mprime** -- Mode selects the torture-test instruction set and FFT Preset sets the FFT
-  size range. `SSE` with Small FFTs is the most sensitive, highest-boost combination.
-- **stress-ng** -- Mode selects the CPU stressor method; FFT Preset is ignored.
+- **mprime** -- the instruction set selects the torture-test instructions and the FFT
+  size the range of FFTs. `SSE` with Small FFTs is the most sensitive, highest-boost
+  combination.
+- **stress-ng** -- the instruction set selects the CPU stressor method.
+- **stressapptest** -- SSE only.
 - **y-cruncher** -- y-cruncher has no instruction-set switch: the instruction set is fixed
-  by the per-microarchitecture binary it auto-selects for your CPU. Mode instead chooses
-  which of y-cruncher's component tests run (FFT Preset is ignored):
+  by the per-microarchitecture binary it auto-selects for your CPU. The choice instead
+  picks which of y-cruncher's component tests run:
   - `SSE` -- `BKT` only (scalar-integer Basecase/Karatsuba): the lowest-power,
     highest-boost, most CO-sensitive test.
   - `AVX` -- `BKT, BBP, SFTv4, SNT, SVT` (adds the AVX compute and small in-cache tests).
-  - `AVX2` / `AVX512` -- all algorithms, including the memory-bandwidth transforms
-    (`FFTv4, N63, VT3`). Because y-cruncher auto-selects a supported binary, `AVX512` mode
+  - `AVX2` / `AVX-512` -- all algorithms, including the memory-bandwidth transforms
+    (`FFTv4, N63, VT3`). Because y-cruncher auto-selects a supported binary, AVX-512
     runs the strongest instruction set your CPU actually has and never crashes on a
-    non-AVX512 chip.
+    non-AVX-512 chip.
 
 ## Recommended settings
 
-| Scenario | Backend | Mode | FFT Preset | Preset |
+| Scenario | Test program | Instruction set | FFT size | Preset |
 |---|---|---|---|---|
-| Quick screening | stress-ng | SSE | -- | Quick |
+| Quick screening | stress-ng | SSE | -- | Quick check |
 | Initial CO tuning | mprime | SSE | Small | Standard |
 | Thorough validation | mprime | SSE | Huge | Thorough |
-| Comprehensive stability | mprime | SSE | All | Full Spectrum |
+| Comprehensive stability | mprime | SSE | All sizes | Everything |
 | AVX2 validation | mprime | AVX2 | Heavy | Standard |
 
 ## Understanding results

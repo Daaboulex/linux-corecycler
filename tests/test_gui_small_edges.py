@@ -180,4 +180,4 @@ class TestConfigTabProfile:
 
         assert tab._fft_min_spin.value() == 16
         assert tab._fft_max_spin.value() == 4096
-        assert tab._cores_input.text() == ""
+        assert tab.get_profile().cores_to_test is None

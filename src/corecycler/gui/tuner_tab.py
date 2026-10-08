@@ -13,7 +13,7 @@ from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -48,6 +48,7 @@ from corecycler.gui.style import (
     tuner_phase_label,
 )
 from corecycler.gui.tool_prompt import ensure_tool
+from corecycler.gui.widgets import add_setting, note, setting_grid
 from corecycler.smu.writer_lock import running_driver
 from corecycler.tuner.live import config_to_json, read_stored
 from corecycler.tuner.machine.types import KNOB_FLOOR, MachineConfig, Mode, PauseReason, Phase, Stage, Stored
@@ -208,58 +209,11 @@ def _assert_every_knob_named() -> None:
 _assert_every_knob_named()
 
 
-def spoken(seconds: float) -> str:
-    total = round(seconds)
-    if total < 60:
-        return ""
-    hours, rest = divmod(total, 3600)
-    minutes, secs = divmod(rest, 60)
-    return " ".join(f"{count} {unit}" for count, unit in ((hours, "h"), (minutes, "min"), (secs, "s")) if count)
-
-
 def labelled(text: str) -> str:
     for knobs in KNOB_TEXT.values():
         for name, (label, _, _) in knobs.items():
             text = re.sub(rf"\b{name}\b", f"'{label}'", text)
     return text
-
-
-def _note(text: str) -> QLabel:
-    note = QLabel(text)
-    note.setWordWrap(True)
-    note.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM};")
-    return note
-
-
-def _add_row(grid: QGridLayout, row: int, label: str, widget: QWidget, unit: str, about: str) -> None:
-    name = QLabel(label)
-    name.setMinimumHeight(widget.sizeHint().height())
-    grid.addWidget(name, row, 0, Qt.AlignmentFlag.AlignTop)
-    field = QVBoxLayout()
-    field.setSpacing(2)
-    line = QHBoxLayout()
-    line.addWidget(widget)
-    if unit:
-        shown = QLabel(unit)
-        line.addWidget(shown)
-        if unit == "s":
-
-            def say(seconds: float, shown: QLabel = shown) -> None:
-                shown.setText(f"s ({said})" if (said := spoken(seconds)) else "s")
-
-            widget.valueChanged.connect(say)
-            say(widget.value())
-    line.addStretch(1)
-    field.addLayout(line)
-    field.addWidget(_note(about))
-    grid.addLayout(field, row, 1)
-
-
-def _rows() -> QGridLayout:
-    grid = QGridLayout()
-    grid.setVerticalSpacing(12)
-    grid.setColumnStretch(1, 1)
-    return grid
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,13 +309,13 @@ class TunerTab(QWidget):
             cores.addWidget(box, index // 8, index % 8)
         column.addWidget(QLabel("Cores to tune"))
         column.addLayout(cores)
-        column.addWidget(_note("An unticked core keeps its value and is not tested."))
-        shown = _rows()
+        column.addWidget(note("An unticked core keeps its value and is not tested."))
+        shown = setting_grid()
         self._order = QComboBox()
         for method in Method:
             self._order.addItem(ORDER_LABELS[method], method.value)
         self._order.setCurrentIndex(self._order.findData(default_method(tuple(self._core_boxes), domain_of).value))
-        _add_row(
+        add_setting(
             shown,
             0,
             "Core order",
@@ -372,7 +326,7 @@ class TunerTab(QWidget):
         defaults = {f.name: f.default for f in fields(MachineConfig) if f.name not in SET_BY_THE_TAB}
         defaults |= STAGE_DEFAULT
         for row, (name, (label, unit, about)) in enumerate(KNOB_TEXT[SHOWN].items(), start=1):
-            _add_row(shown, row, label, self._knob(name, defaults[name]), unit, about)
+            add_setting(shown, row, label, self._knob(name, defaults[name]), unit, about)
         column.addLayout(shown)
         self._advanced_toggle = QToolButton()
         self._advanced_toggle.setText("Advanced settings")
@@ -385,9 +339,9 @@ class TunerTab(QWidget):
             if title == SHOWN:
                 continue
             box = QGroupBox(title)
-            rows = _rows()
+            rows = setting_grid()
             for row, (name, (label, unit, about)) in enumerate(knobs.items()):
-                _add_row(rows, row, label, self._knob(name, defaults[name]), unit, about)
+                add_setting(rows, row, label, self._knob(name, defaults[name]), unit, about)
             box.setLayout(rows)
             advanced.addWidget(box)
         self._advanced.setVisible(False)
