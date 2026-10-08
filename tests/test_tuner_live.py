@@ -1906,3 +1906,8 @@ def test_the_lane_budget_reads_the_budget_under_the_lane_cgroup(monkeypatch):
     monkeypatch.setattr(live_hw, "lane_cgroup_parent", lambda: "/lanes")
     monkeypatch.setattr(live_hw, "memory_budget", lambda n, floor, lane_cgroup: (n, floor, lane_cgroup))
     assert live_hw.lane_budget(2, 256) == (2, 256, "/lanes")
+
+
+def test_a_session_that_is_not_stored_cannot_be_read(tmp_path):
+    with pytest.raises(ValueError, match="session 9 is not stored"):
+        live.read_stored(database(tmp_path / "h.db"), 9)

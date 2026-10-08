@@ -40,7 +40,7 @@ from corecycler.engine import detector as kernel
 from corecycler.gui.style import button_qss, theme
 from corecycler.gui.tool_prompt import ensure_tool
 from corecycler.smu.writer_lock import running_driver
-from corecycler.tuner.live import config_to_json, stored_from_json
+from corecycler.tuner.live import config_to_json, read_stored
 from corecycler.tuner.machine.types import KNOB_FLOOR, MachineConfig, Mode, PauseReason, Phase, Stored
 from corecycler.tuner.orders import Method, default_method
 
@@ -93,11 +93,10 @@ def read_view(db: HistoryDB, boot: str) -> SessionView | None:
     newest = db.list_machine_sessions(limit=1)
     if not newest:
         return None
-    session_id, status = newest[0]["id"], newest[0]["status"]
+    session_id, status = newest[0].id, newest[0].status
     stored, problem = None, None
-    loaded = db.load_machine_session(session_id)
     try:
-        stored = stored_from_json(json.loads(loaded[0]))
+        stored = read_stored(db, session_id)
     except (TypeError, KeyError, ValueError) as e:
         problem = f"session {session_id} cannot be read: {e!r}"
     return SessionView(
@@ -442,7 +441,7 @@ class TunerTab(QWidget):
         if self.is_running or self._child is not None:
             self._note("auto-resume: a tuner driver already runs")
             return
-        interrupted = [s["id"] for s in self._db.list_machine_sessions() if s["status"] == "running"]
+        interrupted = [s.id for s in self._db.list_machine_sessions() if s.status == "running"]
         if len(interrupted) != 1:
             self._note(f"auto-resume: {len(interrupted)} interrupted sessions; resume one by hand")
             return

@@ -31,9 +31,12 @@ from PySide6.QtWidgets import (
 
 from corecycler.gui.style import duration_str, font_mono, phase_label, span_str, theme
 from corecycler.gui.widgets import table_item as _item
-from corecycler.history.db import CorruptSessionError
+from corecycler.history.db import CorruptSessionError, MachineSessionRecord
 from corecycler.history.timefmt import format_local
+from corecycler.smu.writer_lock import running_driver
 from corecycler.tuner import persistence as tp
+from corecycler.tuner.live import config_to_json, read_stored
+from corecycler.tuner.machine.types import Phase
 from corecycler.tuner.state import TunerPhase, TunerSession
 
 if TYPE_CHECKING:
@@ -59,8 +62,8 @@ class HistoryTab(QWidget):
         self._view_mode = self.VIEW_GROUPED
         self._bios_warning: str = ""
         self._displayed_runs: list[RunRecord] = []
-        self._tuner_sessions: list[TunerSession] = []
-        self._selected_tuner_session: TunerSession | None = None
+        self._tuner_sessions: list[TunerSession | MachineSessionRecord] = []
+        self._selected_tuner_session: TunerSession | MachineSessionRecord | None = None
         self._initial_load = True
         self._setup_ui()
         if db:
@@ -830,10 +833,27 @@ class HistoryTab(QWidget):
     # Tuner sessions
     # ------------------------------------------------------------------
 
-    def _load_tuner_sessions(self) -> list[TunerSession]:
+    def _load_tuner_sessions(self) -> list[TunerSession | MachineSessionRecord]:
         if not self._db:
             return []
-        return self._db.list_tuner_sessions(limit=100)
+        both = [*self._db.list_machine_sessions(limit=100), *self._db.list_tuner_sessions(limit=100)]
+        return sorted(both, key=lambda sess: sess.id, reverse=True)[:100]
+
+    def _progress(self, sess: TunerSession | MachineSessionRecord) -> tuple[str, str, str | None, bool]:
+        if isinstance(sess, MachineSessionRecord):
+            try:
+                cores = read_stored(self._db, sess.id).cores
+            except (TypeError, KeyError, ValueError) as e:
+                return "?", "unreadable", f"unreadable: {e!r}", False
+            proven = sum(1 for record in cores if record.phase is Phase.PROVEN)
+            return str(len(cores)), f"{proven}/{len(cores)}", None, bool(cores) and proven == len(cores)
+        try:
+            core_states = tp.load_core_states(self._db, sess.id)
+        except CorruptSessionError as e:
+            return "?", "unreadable", f"unreadable: {e.detail}", False
+        total = len(core_states)
+        confirmed = sum(1 for cs in core_states.values() if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED))
+        return str(total), f"{confirmed}/{total}", None, total > 0 and confirmed == total
 
     def _populate_tuner_sessions(self) -> None:
         sessions = self._tuner_sessions
@@ -858,19 +878,7 @@ class HistoryTab(QWidget):
             if not self._db:
                 continue
 
-            try:
-                core_states = tp.load_core_states(self._db, sess.id)
-            except CorruptSessionError as e:
-                cores_text, confirmed_text, unreadable = "?", "unreadable", f"unreadable: {e.detail}"
-                all_confirmed = False
-            else:
-                total = len(core_states)
-                confirmed = sum(
-                    1 for cs in core_states.values() if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED)
-                )
-                cores_text, confirmed_text, unreadable = str(total), f"{confirmed}/{total}", None
-                all_confirmed = total > 0 and confirmed == total
-
+            cores_text, confirmed_text, unreadable, all_confirmed = self._progress(sess)
             date_str = format_local(sess.created_at)
 
             items = [
@@ -907,8 +915,11 @@ class HistoryTab(QWidget):
 
         self._runs_table.setSortingEnabled(True)
 
-    def _show_tuner_session_detail(self, sess: TunerSession) -> None:
+    def _show_tuner_session_detail(self, sess: TunerSession | MachineSessionRecord) -> None:
         if not self._db or sess.id is None:
+            return
+        if isinstance(sess, MachineSessionRecord):
+            self._show_machine_session_detail(sess)
             return
 
         self._selected_tuner_session = sess
@@ -1032,10 +1043,80 @@ class HistoryTab(QWidget):
 
         self._events_log.setPlainText("\n".join(lines))
 
+    def _show_machine_session_detail(self, sess: MachineSessionRecord) -> None:
+        self._selected_tuner_session = sess
+        self._tuner_actions_row.setVisible(True)
+        self._expand_detail()
+        try:
+            saved = read_stored(self._db, sess.id)
+        except (TypeError, KeyError, ValueError) as e:
+            self._load_co_btn.setEnabled(False)
+            self._detail_info.setText(f"Session #{sess.id} unreadable: {e!r}")
+            self._detail_info.setStyleSheet(f"color: {theme.COLOR_FAIL}; padding: 2px;")
+            self._core_results_table.setRowCount(0)
+            self._events_log.setPlainText(repr(e))
+            return
+        self._load_co_btn.setEnabled(sess.status == "completed")
+        cfg = saved.config
+        info = [
+            sess.cpu_model or "Unknown CPU",
+            f"order {cfg.method.value}, max {cfg.max_offset}, k {cfg.k_1t}/{cfg.k_2t}",
+        ]
+        if sess.parent_session_id is not None:
+            info.append(f"{sess.origin} of session {sess.parent_session_id}")
+        if sess.bios_version:
+            info.append(f"BIOS {sess.bios_version}")
+        self._detail_info.setText("  |  ".join(info))
+        self._detail_info.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 2px;")
+        tests = self._db.list_tuner_tests(sess.id)
+        per_core: dict[int, list[dict]] = {}
+        for test in tests:
+            per_core.setdefault(test["core"], []).append(test)
+        headers = ["Core", "Phase", "Value", "Fail Bound", "Tests", "Last Verdict"]
+        self._core_results_table.setColumnCount(len(headers))
+        self._core_results_table.setHorizontalHeaderLabels(headers)
+        self._core_results_table.setRowCount(len(saved.cores))
+        for row, record in enumerate(saved.cores):
+            own = per_core.get(record.core, [])
+            last = next((test["verdict"] for test in reversed(own) if test["verdict"]), None) or "-"
+            texts = (
+                str(record.core),
+                record.phase.value,
+                str(record.value),
+                "-" if record.fb is None else str(record.fb),
+                str(len(own)),
+                last,
+            )
+            for column, text in enumerate(texts):
+                self._core_results_table.setItem(row, column, _item(text, Qt.AlignmentFlag.AlignCenter))
+        self._auto_size_core_results_table()
+        lines = ["-- Configuration --", json.dumps(config_to_json(cfg), indent=2), "", "-- Tests --"]
+        lines += [
+            f"  {format_local(test['started_at'])}  core {test['core']}  {test['stage']} {test['load'] or ''}"
+            f" {test['klass']} at {test['value']}: {test['verdict'] or 'open'}"
+            + (f"  {test['detail']}" if test["detail"] else "")
+            for test in tests
+        ]
+        lines += ["", "-- Events --"]
+        lines += [
+            f"  {format_local(event['timestamp'])}  {event['severity']}: {event['message']}"
+            for event in self._db.get_tuner_events(sess.id)
+        ]
+        lines += ["", "-- Boots --"]
+        lines += [
+            f"  {boot['boot_id']}  first seen {format_local(boot['first_seen'])}  BIOS {boot['bios_version']}"
+            for boot in self._db.session_boots(sess.id)
+        ]
+        self._events_log.setPlainText("\n".join(lines))
+
     @Slot()
     def _on_load_co_profile(self) -> None:
         """Load the selected tuner session's best CO offsets into the CO tab."""
         if not self._db or self._selected_tuner_session is None:
+            return
+        if isinstance(self._selected_tuner_session, MachineSessionRecord):
+            saved = read_stored(self._db, self._selected_tuner_session.id)
+            self.load_profile_requested.emit({record.core: record.value for record in saved.cores})
             return
         profile = tp.get_session_offsets(self._db, self._selected_tuner_session.id)
         if not profile:
@@ -1234,11 +1315,25 @@ class HistoryTab(QWidget):
 
         session_ids = []
         active = []
+        driver = running_driver() is not None
+        chosen = {self._tuner_sessions[row].id for row in rows if row < len(self._tuner_sessions)}
+        parents = {
+            sess.parent_session_id: sess.id
+            for sess in self._tuner_sessions
+            if isinstance(sess, MachineSessionRecord) and sess.parent_session_id is not None and sess.id not in chosen
+        }
         for row in rows:
             if row < len(self._tuner_sessions) and self._tuner_sessions[row].id is not None:
                 sess = self._tuner_sessions[row]
-                if sess.status in ("running", "validating"):
+                machine = isinstance(sess, MachineSessionRecord)
+                if sess.status == "validating" or (sess.status == "running" and (driver or not machine)):
                     active.append(sess.id)
+                elif sess.id in parents:
+                    QMessageBox.warning(
+                        self,
+                        "Session Has a Successor",
+                        f"Session {sess.id} carries on as session {parents[sess.id]}: delete that one first.",
+                    )
                 else:
                     session_ids.append(sess.id)
 
@@ -1246,7 +1341,7 @@ class HistoryTab(QWidget):
             QMessageBox.warning(
                 self,
                 "Session Active",
-                f"Session(s) {active} are mid-run — abort them in the Auto-Tuner tab before deleting.",
+                f"Session(s) {active} are mid-run: stop them in the Auto-Tuner tab before deleting.",
             )
         if not session_ids:
             return

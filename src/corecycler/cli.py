@@ -97,8 +97,8 @@ def cmd_status(db: HistoryDB | None = None) -> int:
         print("no tuning sessions")
         return EXIT_COMPLETED
     for s in sessions:
-        link = f"{s['origin']} of {s['parent_session_id']}  " if s["parent_session_id"] is not None else ""
-        print(f"{s['id']:>4}  {s['status']:<11} {s['updated_at']}  {link}{s['last_event'] or ''}")
+        link = f"{s.origin} of {s.parent_session_id}  " if s.parent_session_id is not None else ""
+        print(f"{s.id:>4}  {s.status:<11} {s.updated_at}  {link}{s.last_event or ''}")
     return EXIT_COMPLETED
 
 

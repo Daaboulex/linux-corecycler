@@ -145,6 +145,13 @@ def config_from_json(raw: dict) -> MachineConfig:
     return cfg
 
 
+def read_stored(db: HistoryDB, session_id: int) -> Stored:
+    row = db.load_machine_session(session_id)
+    if row is None:
+        raise ValueError(f"session {session_id} is not stored")
+    return replace(stored_from_json(json.loads(row[0])), session_id=session_id)
+
+
 def _pairs(raw) -> tuple:
     return tuple(tuple(item) for item in raw)
 
@@ -290,8 +297,7 @@ class Store:
         row = self.db.load_machine_session(session_id)
         if row is None:
             return None
-        raw, boot, read_ns = row
-        return replace(stored_from_json(json.loads(raw)), session_id=session_id), boot, read_ns
+        return read_stored(self.db, session_id), row[1], row[2]
 
     def test_started(self, session_id: int, token: int, spec: TestSpec, boot: str, power: PowerState) -> int:
         return self.db.insert_tuner_test(

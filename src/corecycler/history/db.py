@@ -165,6 +165,19 @@ class EventRecord:
     details_json: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class MachineSessionRecord:
+    id: int
+    status: str
+    created_at: str
+    updated_at: str
+    cpu_model: str
+    bios_version: str
+    parent_session_id: int | None
+    origin: str | None
+    last_event: str | None
+
+
 @dataclass(slots=True)
 class TuningContextRecord:
     id: int | None = None
@@ -1483,15 +1496,32 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         if cur.rowcount != 1:
             raise sqlite3.IntegrityError(f"session {session_id} belongs to the old engine")
 
-    def list_machine_sessions(self, limit: int = 50) -> list[dict]:
+    def list_machine_sessions(self, limit: int = 50) -> list[MachineSessionRecord]:
         rows = self.__conn.execute(
             """\
-            SELECT s.id, s.status, s.updated_at, s.parent_session_id, s.origin,
+            SELECT s.id, s.status, s.created_at, s.updated_at, s.cpu_model, s.bios_version, s.parent_session_id,
+                s.origin,
                 (SELECT e.message FROM tuner_events e WHERE e.session_id = s.id ORDER BY e.id DESC LIMIT 1)
                     AS last_event
             FROM tuner_sessions s WHERE s.machine_json IS NOT NULL ORDER BY s.id DESC LIMIT ?
             """,
             (limit,),
+        ).fetchall()
+        return [MachineSessionRecord(**dict(row)) for row in rows]
+
+    def list_tuner_tests(self, session_id: int) -> list[dict]:
+        rows = self.__conn.execute(
+            "SELECT id, boot_id, started_at, ended_at, stage, load, klass, core, value, seconds_asked, seconds_run,"
+            " verdict, detail FROM tuner_tests WHERE session_id=? ORDER BY id",
+            (session_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def session_boots(self, session_id: int) -> list[dict]:
+        rows = self.__conn.execute(
+            "SELECT * FROM tuner_boots WHERE boot_id IN (SELECT boot_id FROM tuner_tests WHERE session_id=?"
+            " UNION SELECT boot_id FROM tuner_co_journal WHERE session_id=?) ORDER BY first_seen",
+            (session_id, session_id),
         ).fetchall()
         return [dict(row) for row in rows]
 
