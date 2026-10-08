@@ -53,16 +53,18 @@ class TestSetTopologyStates:
 
         monkeypatch.setattr(st.RyzenSMU, "is_available", staticmethod(lambda *a, **k: True))
         tab.set_topology(_topo())
-        assert "Connected" in tab._status_label.text()
+        assert tab._status_label.text() == "ryzen_smu driver connected"
+        assert tab._gen_label.text() == "CPU generation Zen 5 Granite Ridge"
         assert tab._apply_all_btn.isEnabled()
-        assert "CO Range" in tab._range_label.text()
+        assert tab._range_label.text().startswith("Allowed values -")
 
     def test_connected_without_co_support(self, tab, monkeypatch):
         import corecycler.gui.smu_tab as st
 
         monkeypatch.setattr(st.RyzenSMU, "is_available", staticmethod(lambda *a, **k: True))
         tab.set_topology(_topo(model_name="AMD Ryzen 9 3950X", family=23, model=0x71))
-        assert "no CO support" in tab._status_label.text()
+        assert tab._range_label.text() == "This CPU generation has no Curve Optimizer"
+        assert tab._gen_label.text() == "CPU generation Zen 2 Matisse"
         assert tab._apply_all_btn.isEnabled() is False
 
     def test_driver_not_loaded(self, tab, monkeypatch):
@@ -70,11 +72,12 @@ class TestSetTopologyStates:
 
         monkeypatch.setattr(st.RyzenSMU, "is_available", staticmethod(lambda *a, **k: False))
         tab.set_topology(_topo())
-        assert "Driver not loaded" in tab._status_label.text()
+        assert tab._status_label.text() == "ryzen_smu driver not loaded"
+        assert tab._gen_label.text() == "CPU generation Zen 5 Granite Ridge"
 
     def test_unsupported_generation(self, tab):
         tab.set_topology(_topo(model_name="Intel Core i9", family=6, model=0xA7))
-        assert "Unsupported CPU generation" in tab._status_label.text()
+        assert tab._status_label.text() == "This CPU generation is not supported (Unknown)"
 
 
 class TestSaveCoProfile:

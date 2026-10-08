@@ -71,7 +71,7 @@ class TestReadAllCo:
         smu.get_co_offset.return_value = None
         tab._smu = smu
         tab._read_all_co()
-        assert tab._table.item(0, 2).text() == "ERR"
+        assert tab._table.item(0, 2).text() == "unreadable"
 
 
 class TestApplySingle:

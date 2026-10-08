@@ -49,14 +49,17 @@ per-step reboots.
 
 ## Curve Optimizer tab
 
-Direct SMU access for reading and writing per-core CO offsets at runtime (requires
-`ryzen_smu`). Reads all current offsets, per-core spinboxes, per-core and bulk Apply
-(each with a confirmation dialog), Reset to 0, Backup/Restore within a session, Dry Run
-(logs writes without touching hardware), and Save/Load CO Profile (JSON, shared with the
-History tab's "Load to CO Tab").
+Reads and writes each core's Curve Optimizer value at runtime through `ryzen_smu`. The
+table shows the value **Now on the CPU** and a **Value to set** per core, with a **Set**
+button per core; **Read from CPU**, **Set all** and **Set all to 0** act on every core,
+each write after a confirmation. **Remember current values** keeps every core's value
+until the app closes and **Put remembered values back** writes them again. **Practice
+mode** logs every write without touching the CPU. **Save values to file** and **Load
+values from file** use JSON, the same values History loads from a completed tuning
+session.
 
 All values written here are **volatile** and reset on reboot; set them in BIOS to make
-them permanent. For Zen 2 (no Curve Optimizer) the tab shows "Connected (no CO support)".
+them permanent. For Zen 2 the tab says "This CPU generation has no Curve Optimizer".
 No GUI or CLI path changes PBO limits, the boost limit or the PBO scalar.
 
 ## Auto-Tuner

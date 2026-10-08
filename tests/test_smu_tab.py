@@ -106,14 +106,14 @@ class TestReadBack:
         tab._smu = MagicMock()
         tab._smu.get_co_offset.return_value = None
         tab._read_all_co()
-        assert tab._table.item(0, 2).text() == "ERR"
+        assert tab._table.item(0, 2).text() == "unreadable"
 
     def test_dry_run_toggle_propagates_to_driver(self):
         tab = _tab()
         tab._smu = MagicMock()
         tab._dry_run_cb.setChecked(True)
         assert tab._smu.dry_run is True
-        assert "[DRY]" in tab._apply_all_btn.text()
+        assert tab._apply_all_btn.text() == "Set all (practice)"
 
 
 class TestCoreMapRefusal:
@@ -137,8 +137,45 @@ class TestCoreMapRefusal:
         assert not tab._apply_all_btn.isEnabled()
         assert not tab._reset_btn.isEnabled()
         assert not tab._backup_btn.isEnabled()
-        assert "CO disabled" in tab._range_label.text()
+        assert "Writes are off: " in tab._range_label.text()
+        assert tab._gen_label.text().startswith("CPU generation Zen ")
         row0_btn = tab._table.cellWidget(0, 4)
         assert row0_btn is not None and not row0_btn.isEnabled()
         tab._read_all_co()
         assert tab._table.item(0, 2).text() == "--"
+
+
+class TestPlainWords:
+    ACRONYMS = frozenset({"CCD", "CO", "CPU", "BIOS", "SMU", "JSON"})
+
+    def test_no_visible_text_keeps_a_code_name(self):
+        import re
+
+        from PySide6.QtWidgets import QAbstractButton, QGroupBox, QLabel
+
+        tab = _tab()
+        texts = [w.text() for w in tab.findChildren(QLabel) + tab.findChildren(QAbstractButton)]
+        texts += [w.title() for w in tab.findChildren(QGroupBox)]
+        texts += [tab._table.horizontalHeaderItem(c).text() for c in range(tab._table.columnCount())]
+        for text in texts:
+            assert "_" not in text.replace("ryzen_smu", ""), text
+            shouting = set(re.findall(r"\b[A-Z][A-Z0-9]+\b", text)) - self.ACRONYMS
+            assert not shouting, text
+
+    @pytest.mark.parametrize(
+        ("name", "said"),
+        [("ZEN5_GRANITE_RIDGE", "Zen 5 Granite Ridge"), ("ZEN3D_WARHOL", "Zen 3D Warhol"), ("UNKNOWN", "Unknown")],
+    )
+    def test_a_generation_is_named_as_amd_names_it(self, name, said):
+        from corecycler.gui.smu_tab import generation_text
+        from corecycler.smu.commands import CPUGeneration
+
+        assert generation_text(CPUGeneration[name]) == said
+
+    def test_a_profile_s_source_is_named_in_the_banner(self):
+        tab = _tab()
+        tab.set_co_profile({0: -5})
+        assert (
+            tab._profile_banner.text()
+            == "Values from a tuning session are in Value to set. Press Set all to write them."
+        )
