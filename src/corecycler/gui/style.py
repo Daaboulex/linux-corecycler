@@ -13,7 +13,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPalette
 
-from corecycler.tuner.machine.types import PauseReason, Phase, Stage
+from corecycler.tuner.machine.types import Group, PauseReason, Phase, Stage
 
 DARK = "dark"
 LIGHT = "light"
@@ -111,6 +111,16 @@ STAGE_LABELS: dict[Stage, str] = {
     Stage.MEMORY: "Memory",
     Stage.SOAK: "Idle watch",
     Stage.FINALIZE: "Finishing",
+}
+
+VERDICT_LABELS: dict[str, str] = {
+    Group.PASS: "Passed",
+    Group.SILICON: "Failed",
+    Group.THERMAL: "Too hot",
+    Group.ENVIRONMENT: "Machine fault no core is blamed for",
+    Group.APPARATUS: "Could not be judged",
+    Group.SLEPT: "Machine slept",
+    "internal_error": "Internal error",
 }
 
 POWER_LABELS = {
@@ -291,6 +301,10 @@ def stage_label(value: str) -> str:
     return STAGE_LABELS.get(value, value)
 
 
+def verdict_text(value: str) -> str:
+    return VERDICT_LABELS.get(value, value)
+
+
 def pause_text(message: str) -> str:
     reason, colon, detail = message.partition(": ")
     label = PAUSE_LABELS.get(reason)
@@ -335,7 +349,12 @@ def span_str(start_iso: str | None, end_iso: str | None) -> str:
 
 
 def _assert_complete() -> None:
-    for table, members in ((TUNER_PHASE_LABELS, Phase), (PAUSE_LABELS, PauseReason), (STAGE_LABELS, Stage)):
+    for table, members in (
+        (TUNER_PHASE_LABELS, Phase),
+        (PAUSE_LABELS, PauseReason),
+        (STAGE_LABELS, Stage),
+        (VERDICT_LABELS, Group),
+    ):
         unlabelled = set(members) - set(table)
         if unlabelled:
             raise AssertionError(f"{members.__name__} has no label for {sorted(unlabelled)}")

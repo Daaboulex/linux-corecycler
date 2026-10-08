@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QGroupBox,
@@ -29,15 +30,30 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from corecycler.gui.style import duration_str, font_mono, power_text, span_str, theme
+from corecycler.gui.style import (
+    SESSION_STATUS_LABELS,
+    duration_str,
+    font_mono,
+    power_text,
+    span_str,
+    stage_label,
+    theme,
+    tuner_phase_label,
+    verdict_text,
+)
+from corecycler.gui.tuner_tab import ORDER_LABELS, THREADS, settings_lines
 from corecycler.gui.widgets import table_item as _item
 from corecycler.history.timefmt import format_local
 from corecycler.smu.writer_lock import running_driver
-from corecycler.tuner.live import config_to_json, read_stored
+from corecycler.tuner.live import read_stored
 from corecycler.tuner.machine.types import Phase
 
 if TYPE_CHECKING:
     from corecycler.history.db import HistoryDB, MachineSessionRecord, RunRecord, TuningContextRecord
+
+
+VIEW_LABELS = {"grouped": "Stress tests by setup", "all": "All stress tests", "tuner": "Tuning sessions"}
+ORIGINS = {"continue": "continued from", "restart": "started over from"}
 
 
 class HistoryTab(QWidget):
@@ -83,7 +99,7 @@ class HistoryTab(QWidget):
         summary_group = QGroupBox("")
         summary_layout = QHBoxLayout(summary_group)
 
-        self._total_label = QLabel("Test Runs: 0")
+        self._total_label = QLabel("Stress test runs: 0")
         self._completed_label = QLabel("Completed: 0")
         self._completed_label.setStyleSheet(f"color: {theme.COLOR_PASS}; font-weight: bold;")
         self._crashed_label = QLabel("Crashed: 0")
@@ -103,17 +119,12 @@ class HistoryTab(QWidget):
 
         summary_layout.addStretch()
 
-        self._view_toggle = QPushButton("All Runs")
-        self._view_toggle.setCheckable(True)
-        self._view_toggle.setToolTip("Toggle between grouped (by tuning context) and flat view")
-        self._view_toggle.clicked.connect(self._toggle_view)
-        summary_layout.addWidget(self._view_toggle)
-
-        self._tuner_toggle = QPushButton("Tuner Sessions")
-        self._tuner_toggle.setCheckable(True)
-        self._tuner_toggle.setToolTip("Show auto-tuner session history")
-        self._tuner_toggle.clicked.connect(self._toggle_tuner_view)
-        summary_layout.addWidget(self._tuner_toggle)
+        summary_layout.addWidget(QLabel("Show"))
+        self._view_select = QComboBox()
+        for mode, label in VIEW_LABELS.items():
+            self._view_select.addItem(label, mode)
+        self._view_select.currentIndexChanged.connect(self._on_view_selected)
+        summary_layout.addWidget(self._view_select)
 
         self._delete_btn = QPushButton("Delete Selected")
         self._delete_btn.setEnabled(False)
@@ -154,6 +165,7 @@ class HistoryTab(QWidget):
         self._context_table.setColumnWidth(3, 50)
         self._context_table.setColumnWidth(4, 100)
         self._context_table.setAlternatingRowColors(True)
+        self._context_table.verticalHeader().setVisible(False)
         self._context_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._context_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._context_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -189,6 +201,7 @@ class HistoryTab(QWidget):
         self._runs_table.setColumnWidth(5, 75)
         self._runs_table.setColumnWidth(6, 40)
         self._runs_table.setAlternatingRowColors(True)
+        self._runs_table.verticalHeader().setVisible(False)
         self._runs_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._runs_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._runs_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -214,8 +227,8 @@ class HistoryTab(QWidget):
         self._tuner_actions_row = QWidget()
         tuner_actions_layout = QHBoxLayout(self._tuner_actions_row)
         tuner_actions_layout.setContentsMargins(0, 0, 0, 0)
-        self._load_co_btn = QPushButton("Load to CO Tab")
-        self._load_co_btn.setToolTip("Load confirmed CO offsets into the Curve Optimizer tab")
+        self._load_co_btn = QPushButton("Load these values into Curve Optimizer")
+        self._load_co_btn.setToolTip("Fills the Curve Optimizer tab's Value to set column; nothing is written")
         self._load_co_btn.clicked.connect(self._on_load_co_profile)
         tuner_actions_layout.addWidget(self._load_co_btn)
         tuner_actions_layout.addStretch()
@@ -228,23 +241,9 @@ class HistoryTab(QWidget):
             ["Core", "CCD", "Cycle", "Result", "Duration", "Peak MHz", "Max C", "Vcore Range", "Error"]
         )
         cr_header = self._core_results_table.horizontalHeader()
-        cr_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        cr_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        cr_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        cr_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        cr_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        cr_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        cr_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        cr_header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
-        cr_header.setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
-        self._core_results_table.setColumnWidth(0, 50)
-        self._core_results_table.setColumnWidth(1, 40)
-        self._core_results_table.setColumnWidth(2, 50)
-        self._core_results_table.setColumnWidth(3, 60)
-        self._core_results_table.setColumnWidth(4, 80)
-        self._core_results_table.setColumnWidth(5, 80)
-        self._core_results_table.setColumnWidth(6, 60)
-        self._core_results_table.setColumnWidth(7, 120)
+        cr_header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        cr_header.setStretchLastSection(True)
+        self._core_results_table.verticalHeader().setVisible(False)
         self._core_results_table.setAlternatingRowColors(True)
         self._core_results_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._core_results_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -275,41 +274,19 @@ class HistoryTab(QWidget):
     # ------------------------------------------------------------------
 
     @Slot()
-    def _toggle_view(self) -> None:
-        if self._view_toggle.isChecked():
-            self._view_mode = self.VIEW_ALL
-            self._tuner_toggle.setChecked(False)
-        else:
-            self._view_mode = self.VIEW_GROUPED
-        self._apply_view_mode()
-
-    @Slot()
-    def _toggle_tuner_view(self) -> None:
-        if self._tuner_toggle.isChecked():
-            self._view_mode = self.VIEW_TUNER
-            self._view_toggle.setChecked(False)
-        else:
-            self._view_mode = self.VIEW_GROUPED
+    def _on_view_selected(self) -> None:
+        self._view_mode = self._view_select.currentData()
         self._apply_view_mode()
 
     def _update_toggle_labels(self) -> None:
-        """Update toggle button labels to reflect current view mode.
-
-        Called after every view mode change and after summary updates
-        so the labels stay consistent.
-        """
-        tuner_count = len(self._tuner_sessions)
-        count_suffix = f" ({tuner_count})" if tuner_count > 0 else ""
-
-        if self._view_mode == self.VIEW_ALL:
-            self._view_toggle.setText("All Runs ✓")
-            self._tuner_toggle.setText(f"Tuner Sessions{count_suffix}")
-        elif self._view_mode == self.VIEW_TUNER:
-            self._view_toggle.setText("All Runs")
-            self._tuner_toggle.setText(f"Tuner Sessions{count_suffix} ✓")
-        else:
-            self._view_toggle.setText("All Runs")
-            self._tuner_toggle.setText(f"Tuner Sessions{count_suffix}")
+        count = len(self._tuner_sessions)
+        label = VIEW_LABELS[self.VIEW_TUNER]
+        self._view_select.setItemText(
+            self._view_select.findData(self.VIEW_TUNER), f"{label} ({count})" if count else label
+        )
+        self._view_select.blockSignals(True)
+        self._view_select.setCurrentIndex(self._view_select.findData(self._view_mode))
+        self._view_select.blockSignals(False)
 
     def _apply_view_mode(self) -> None:
         self._update_toggle_labels()
@@ -357,8 +334,6 @@ class HistoryTab(QWidget):
             self._reload_data()
             if self._tuner_sessions:
                 self._view_mode = self.VIEW_TUNER
-                self._tuner_toggle.setChecked(True)
-                self._view_toggle.setChecked(False)
             self._update_summary()
             self._apply_view_mode()
             return
@@ -416,14 +391,14 @@ class HistoryTab(QWidget):
     def _update_summary(self) -> None:
         if self._view_mode == self.VIEW_TUNER:
             statuses = [s.status for s in self._tuner_sessions]
-            self._total_label.setText(f"Sessions: {len(statuses)}")
+            self._total_label.setText(f"Tuning sessions: {len(statuses)}")
             self._completed_label.setText(f"Completed: {statuses.count('completed')}")
             self._crashed_label.setText(f"Quarantined: {statuses.count('quarantined')}")
-            self._stopped_label.setText(f"Active: {statuses.count('running')}  Paused: {statuses.count('paused')}")
+            self._stopped_label.setText(f"Running: {statuses.count('running')}  Paused: {statuses.count('paused')}")
         else:
             counts = self._db.get_status_counts() if self._db else {}
             total = sum(counts.values())
-            self._total_label.setText(f"Runs: {total}")
+            self._total_label.setText(f"Stress test runs: {total}")
             self._completed_label.setText(f"Completed: {counts.get('completed', 0)}")
             self._crashed_label.setText(f"Crashed: {counts.get('crashed', 0)}")
             self._stopped_label.setText(f"Stopped: {counts.get('stopped', 0)}")
@@ -846,7 +821,7 @@ class HistoryTab(QWidget):
         sessions = self._tuner_sessions
         self._runs_table.setSortingEnabled(False)
         self._runs_table.setColumnCount(7)
-        self._runs_table.setHorizontalHeaderLabels(["Date", "Status", "CPU", "Cores", "Confirmed", "Duration", "BIOS"])
+        self._runs_table.setHorizontalHeaderLabels(["Date", "Status", "CPU", "Cores", "Proven", "Duration", "BIOS"])
         header = self._runs_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -870,8 +845,8 @@ class HistoryTab(QWidget):
 
             items = [
                 (date_str, Qt.AlignmentFlag.AlignLeft),
-                (sess.status.capitalize(), Qt.AlignmentFlag.AlignCenter),
-                (sess.cpu_model[:30] if sess.cpu_model else "-", Qt.AlignmentFlag.AlignLeft),
+                (SESSION_STATUS_LABELS.get(sess.status, sess.status), Qt.AlignmentFlag.AlignCenter),
+                (sess.cpu_model or "-", Qt.AlignmentFlag.AlignLeft),
                 (cores_text, Qt.AlignmentFlag.AlignCenter),
                 (confirmed_text, Qt.AlignmentFlag.AlignCenter),
                 (span_str(sess.created_at, sess.updated_at), Qt.AlignmentFlag.AlignCenter),
@@ -921,10 +896,10 @@ class HistoryTab(QWidget):
         cfg = saved.config
         info = [
             sess.cpu_model or "Unknown CPU",
-            f"order {cfg.method.value}, max {cfg.max_offset}, k {cfg.k_1t}/{cfg.k_2t}",
+            f"{ORDER_LABELS[cfg.method]}, deepest offset {cfg.max_offset}, {cfg.k_1t} and {cfg.k_2t} passes to prove",
         ]
         if sess.parent_session_id is not None:
-            info.append(f"{sess.origin} of session {sess.parent_session_id}")
+            info.append(f"{ORIGINS.get(sess.origin, sess.origin)} session {sess.parent_session_id}")
         if sess.bios_version:
             info.append(f"BIOS {sess.bios_version}")
         info.append("power state: " + (power_text(saved.power) or "unknown"))
@@ -935,16 +910,16 @@ class HistoryTab(QWidget):
         per_core: dict[int, list[dict]] = {}
         for test in tests:
             per_core.setdefault(test["core"], []).append(test)
-        headers = ["Core", "Phase", "Value", "Fail Bound", "Tests", "Last Verdict", "Peak MHz"]
+        headers = ["Core", "Phase", "Value", "Failed at", "Tests", "Last result", "Peak MHz"]
         self._core_results_table.setColumnCount(len(headers))
         self._core_results_table.setHorizontalHeaderLabels(headers)
         self._core_results_table.setRowCount(len(saved.cores))
         for row, record in enumerate(saved.cores):
             own = per_core.get(record.core, [])
-            last = next((test["verdict"] for test in reversed(own) if test["verdict"]), None) or "-"
+            last = next((verdict_text(test["verdict"]) for test in reversed(own) if test["verdict"]), "-")
             texts = (
                 str(record.core),
-                record.phase.value,
+                tuner_phase_label(record.phase),
                 str(record.value),
                 "-" if record.fb is None else str(record.fb),
                 str(len(own)),
@@ -954,10 +929,11 @@ class HistoryTab(QWidget):
             for column, text in enumerate(texts):
                 self._core_results_table.setItem(row, column, _item(text, Qt.AlignmentFlag.AlignCenter))
         self._auto_size_core_results_table()
-        lines = ["-- Configuration --", json.dumps(config_to_json(cfg), indent=2), "", "-- Tests --"]
+        lines = ["-- Settings --", *settings_lines(cfg), "", "-- Tests --"]
         lines += [
-            f"  {format_local(test['started_at'])}  core {test['core']}  {test['stage']} {test['load'] or ''}"
-            f" {test['klass']} at {test['value']}: {test['verdict'] or 'open'}"
+            f"  {format_local(test['started_at'])}  core {test['core']}, {stage_label(test['stage'])}, "
+            f"{THREADS.get(test['klass'], test['klass'])}, at {test['value']}: "
+            + (verdict_text(test["verdict"]) if test["verdict"] else "running")
             + (f"  {test['detail']}" if test["detail"] else "")
             for test in tests
         ]

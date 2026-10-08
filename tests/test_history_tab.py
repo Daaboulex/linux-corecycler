@@ -182,13 +182,15 @@ class TestRunDetail:
         assert tab._detail_info.text()
 
 
-class TestToggles:
-    def test_toggle_between_views(self, db):
+class TestViewChoice:
+    def test_the_tuner_view_and_back_keeps_the_runs(self, db):
         _seed_run_with_results(db, cores=1)
         tab = _tab(db)
-        tab._toggle_view()
-        tab._toggle_tuner_view()
-        tab._toggle_tuner_view()
+        tab._view_select.setCurrentIndex(tab._view_select.findData(tab.VIEW_TUNER))
+        assert tab._total_label.text() == "Tuning sessions: 0"
+        tab._view_select.setCurrentIndex(tab._view_select.findData(tab.VIEW_ALL))
+        assert tab._runs_table.rowCount() == 1
+        assert tab._total_label.text() == "Stress test runs: 1"
 
 
 class TestExport:

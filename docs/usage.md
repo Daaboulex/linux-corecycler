@@ -207,6 +207,18 @@ different things per program:
 | Comprehensive stability | mprime | SSE | All sizes | Everything |
 | AVX2 validation | mprime | AVX2 | Heavy | Standard |
 
+## History tab
+
+**Show** picks the view: **Stress tests by setup** groups the manual runs by BIOS, CO
+profile and PBO scalar, **All stress tests** lists them one by one, and **Tuning
+sessions** lists the Auto-Tuner's sessions, newest first. A session's line names its
+core order, deepest offset, passes to prove, BIOS and power state; its table shows each
+core's phase, value, the value it failed at, its tests, its last result and its highest
+clock. The log below lists the session's settings by the Auto-Tuner tab's names, every
+test, the events, the boots it saw and each core's highest clock at every power-state
+range. **Load these values into Curve Optimizer** fills the Curve Optimizer tab's Value
+to set column from a completed session; nothing reaches the CPU until Set all.
+
 ## Understanding results
 
 Core grid colors -- **blue**: testing now; **green**: passed, or proven by the

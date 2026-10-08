@@ -11,6 +11,7 @@ if not hasattr(sys.modules.get("PySide6", None), "__path__"):
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from corecycler.gui.history_tab import HistoryTab
+from corecycler.gui.style import tuner_phase_label
 from corecycler.history.db import HistoryDB
 from corecycler.smu.writer_lock import co_writer
 from corecycler.tuner.live import Identity, Store
@@ -63,7 +64,8 @@ def test_sessions_list_newest_first_and_leave_out_old_engine_rows(db, tmp_path):
     tab = tuner_view(db)
     assert [sess.id for sess in tab._tuner_sessions] == [saved.session_id, first.session_id]
     assert (cell(tab, 0, 1), cell(tab, 0, 3), cell(tab, 0, 4)) == ("Paused", "2", "0/2")
-    assert tab._total_label.text() == "Sessions: 2"
+    assert tab._total_label.text() == "Tuning sessions: 2"
+    assert tab._view_select.currentText() == "Tuning sessions (2)"
 
 
 def test_a_proven_session_counts_its_proven_cores(db, tmp_path):
@@ -88,13 +90,19 @@ def test_the_detail_shows_cores_tests_events_and_boots(db, tmp_path):
     tab = tuner_view(db)
     assert tab._core_results_table.rowCount() == len(saved.cores)
     first = [tab._core_results_table.item(0, column).text() for column in range(7)]
-    assert first == [str(core), saved.cores[0].phase.value, str(saved.cores[0].value), "-", "1", "silicon", "4421"]
+    phase = tuner_phase_label(saved.cores[0].phase)
+    assert first == [str(core), phase, str(saved.cores[0].value), "-", "1", "Failed", "4421"]
     assert tab._core_results_table.item(1, 6).text() == "-"
     text = tab._events_log.toPlainText()
-    assert f"core {core}  search 1t 1t at -3: silicon  y-cruncher error" in text
+    assert f"core {core}, Search, one thread, at -3: Failed  y-cruncher error" in text
+    cfg = saved.config
+    assert f"  Deepest offset to try: {cfg.max_offset} counts" in text
+    assert "  Search time limit per core: 7200 s (2 h)" in text
+    assert "  Endurance: off" in text and "  Burst segment: 480 s (8 min)" in text
+    assert "  Fine step: 1 count\n" in text and "  Pause after first-value failures: 0 cores" in text
     assert "paused: user: paused by the owner" in text
     assert f"  {this_boot()}  first seen " in text and "BIOS 2402" in text
-    assert "order " in tab._detail_info.text()
+    assert f", deepest offset {cfg.max_offset}, {cfg.k_1t} and {cfg.k_2t} passes to prove" in tab._detail_info.text()
     assert tab._detail_info.text().endswith("power state: balanced profile")
     assert f"  core {core}: 4421 MHz with the scaling maximum at unknown, boost unknown" in text
     assert not tab._load_co_btn.isEnabled()
@@ -115,7 +123,7 @@ def test_a_continued_session_names_its_parent(db, tmp_path):
     child = save_machine_session(db, tmp_path, "paused", session_id=2)
     db.link_session(child.session_id, parent.session_id, "continue")
     tab = tuner_view(db)
-    assert "continue of session 1" in tab._detail_info.text()
+    assert "continued from session 1" in tab._detail_info.text()
 
 
 def test_an_unreadable_session_is_named_in_the_list_and_the_detail(db, tmp_path):

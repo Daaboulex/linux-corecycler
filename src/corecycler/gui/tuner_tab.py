@@ -48,7 +48,7 @@ from corecycler.gui.style import (
     tuner_phase_label,
 )
 from corecycler.gui.tool_prompt import ensure_tool
-from corecycler.gui.widgets import add_setting, note, setting_grid
+from corecycler.gui.widgets import add_setting, note, setting_grid, spoken
 from corecycler.smu.writer_lock import running_driver
 from corecycler.tuner.live import config_to_json, read_stored
 from corecycler.tuner.machine.types import KNOB_FLOOR, MachineConfig, Mode, PauseReason, Phase, Stage, Stored
@@ -182,6 +182,7 @@ ORDER_LABELS = {
 }
 ONE_CORE = frozenset({Stage.SEARCH, Stage.LIVE1})
 THREADS = {"1t": "one thread", "2t": "two threads"}
+SINGULAR = {"counts": "count", "passes": "pass", "times": "time", "cores": "core"}
 SET_BY_THE_TAB = ("mode", "method", "selected", "stage_seconds")
 STAGE_DEFAULT = next(f.default for f in fields(MachineConfig) if f.name == "stage_seconds")
 STAGE_ORDER = tuple(load for load, _ in STAGE_DEFAULT)
@@ -207,6 +208,21 @@ def _assert_every_knob_named() -> None:
 
 
 _assert_every_knob_named()
+
+
+def settings_lines(cfg: MachineConfig) -> list[str]:
+    stage_seconds = dict(cfg.stage_seconds)
+    lines = [f"  Cores to tune: {', '.join(map(str, cfg.selected))}", f"  Core order: {ORDER_LABELS[cfg.method]}"]
+    for knobs in KNOB_TEXT.values():
+        for name, (label, unit, _) in knobs.items():
+            value = stage_seconds[name] if name in STAGE_ORDER else getattr(cfg, name)
+            if isinstance(value, bool):
+                lines.append(f"  {label}: {'on' if value else 'off'}")
+                continue
+            said = spoken(value) if unit == "s" else ""
+            shown = SINGULAR.get(unit, unit) if value == 1 else unit
+            lines.append(f"  {label}: {value:g} {shown}".rstrip() + (f" ({said})" if said else ""))
+    return lines
 
 
 def labelled(text: str) -> str:

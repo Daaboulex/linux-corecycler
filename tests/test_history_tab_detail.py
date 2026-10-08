@@ -101,44 +101,31 @@ def _seed_run(db, started_at, *, status="completed", cores_failed=0, context_id=
     )
 
 
-class TestViewToggles:
-    def test_checked_view_toggle_selects_all_runs(self, db):
-        tab = _tab(db)
-        tab._tuner_toggle.setChecked(True)
-        tab._view_toggle.setChecked(True)
-        tab._toggle_view()
-        assert tab._view_mode == tab.VIEW_ALL
-        assert not tab._tuner_toggle.isChecked()
+class TestViewSelector:
+    def _show(self, tab, mode):
+        tab._view_select.setCurrentIndex(tab._view_select.findData(mode))
 
-    def test_unchecked_view_toggle_returns_to_grouped(self, db):
+    def test_each_choice_selects_its_view(self, db):
         tab = _tab(db)
-        tab._view_toggle.setChecked(True)
-        tab._toggle_view()
-        tab._view_toggle.setChecked(False)
-        tab._toggle_view()
-        assert tab._view_mode == tab.VIEW_GROUPED
-
-    def test_checked_tuner_toggle_selects_tuner_view(self, db):
-        tab = _tab(db)
-        tab._view_toggle.setChecked(True)
-        tab._tuner_toggle.setChecked(True)
-        tab._toggle_tuner_view()
-        assert tab._view_mode == tab.VIEW_TUNER
-        assert not tab._view_toggle.isChecked()
-
-    def test_unchecked_tuner_toggle_returns_to_grouped(self, db):
-        tab = _tab(db)
-        tab._tuner_toggle.setChecked(False)
-        tab._toggle_tuner_view()
-        assert tab._view_mode == tab.VIEW_GROUPED
+        for mode in (tab.VIEW_ALL, tab.VIEW_TUNER, tab.VIEW_GROUPED):
+            self._show(tab, mode)
+            assert tab._view_mode == mode
+            assert tab._view_select.currentData() == mode
+        assert not tab._context_table.isHidden()
 
     def test_all_view_populates_runs_table(self, db):
         _seed_run(db, "2026-07-20T10:00:00+00:00")
         _seed_run(db, "2026-07-21T10:00:00+00:00")
         tab = _tab(db)
-        tab._view_toggle.setChecked(True)
-        tab._toggle_view()
+        self._show(tab, tab.VIEW_ALL)
         assert tab._runs_table.rowCount() == 2
+        assert tab._context_table.isHidden()
+        assert tab._total_label.text() == "Stress test runs: 2"
+
+    def test_the_choices_read_as_words(self, db):
+        tab = _tab(db)
+        shown = [tab._view_select.itemText(i) for i in range(tab._view_select.count())]
+        assert shown == ["Stress tests by setup", "All stress tests", "Tuning sessions"]
 
 
 class TestWithoutDatabase:
