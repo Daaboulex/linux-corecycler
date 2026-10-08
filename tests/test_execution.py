@@ -285,12 +285,16 @@ def within(seconds: float, condition: Callable[[], bool]) -> bool:
     return True
 
 
-def stop_once(stop: threading.Event, condition: Callable[[], bool]) -> None:
+def stop_once(stop: threading.Event, condition: Callable[[], bool]) -> threading.Event:
+    seen = threading.Event()
+
     def watch() -> None:
-        within(10.0, condition)
+        if within(10.0, condition):
+            seen.set()
         stop.set()
 
     threading.Thread(target=watch, daemon=True).start()
+    return seen
 
 
 def holds_the_deadline_until(condition: Callable[[], bool]) -> SuperviseHooks:

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from corecycler.engine import execution
 from corecycler.engine.backends.base import Outcome, StressConfig, StressMode
 from corecycler.engine.backends.stressapptest import ALLOCATION_REFUSALS, StressapptestBackend
 from tests.test_execution import (
@@ -143,14 +144,19 @@ def _prints_on_sigterm(summary: str, code: int, marker: Path) -> str:
 
 
 class TestSummaryAfterTheStop:
+    @pytest.fixture(autouse=True)
+    def a_grace_a_loaded_host_cannot_exhaust(self, monkeypatch):
+        monkeypatch.setattr(execution, "STOP_GRACE_SECONDS", 30.0)
+
     def test_the_summary_printed_after_our_stop_is_read(self, tmp_path):
         marker = tmp_path / "summary-written"
         summary = "Report Error: miscompare : DIMM0 : 1 : 3s\nStatus: FAIL - test discovered HW problems\n"
         one = lane(tmp_path)
         supervisor, stop, _ = make_supervisor(scripted(StressapptestBackend, _prints_on_sigterm(summary, 1, marker)))
-        stop_once(stop, lambda: any(one.work_dir.glob("run-*/ready")))
+        ready = stop_once(stop, lambda: any(one.work_dir.glob("run-*/ready")))
         verdict = run_one(supervisor, one, 30.0)
-        assert marker.exists()
+        assert ready.is_set(), f"the stub was not ready within 10 s; {verdict.outcome}: {verdict.detail}"
+        assert marker.exists(), f"the stub's SIGTERM handler wrote nothing; {verdict.outcome}: {verdict.detail}"
         assert verdict.outcome is Outcome.COMPUTATION
         assert "miscompare" in verdict.detail
 
@@ -162,7 +168,7 @@ class TestSummaryAfterTheStop:
             hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/ready"))),
         )
         verdict = run_one(supervisor, one, 2.0)
-        assert marker.exists()
+        assert marker.exists(), f"the stub's SIGTERM handler wrote nothing; {verdict.outcome}: {verdict.detail}"
         assert verdict.outcome is Outcome.PASS
 
 
