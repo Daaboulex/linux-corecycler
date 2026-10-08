@@ -38,6 +38,7 @@ SAMPLE_BLOCK_S = 10.0
 INCREMENTAL_VACUUM = 2
 SAMPLE_BLOCK_OPTIONS = {zstd.CompressionParameter.compression_level: 19, zstd.CompressionParameter.checksum_flag: 1}
 SAMPLE_LISTS = ("clocks", "tccd", "volts")
+OLD_TUNER_TABLES = ("tuner_core_states", "tuner_test_log", "tuner_events", "tuner_co_journal")
 RECOVERABLE_STATUSES = (*RESUMABLE_STATUSES, "quarantined", "aborted")
 
 
@@ -2283,6 +2284,19 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         ("tuner_sample_blocks", {"test_id": "tuner_tests"}),
     )
     _MERGE_LINKS_KEPT_WHEN_UNMATCHED = frozenset({"run_id", "context_id", "parent_session_id"})
+
+    def old_tuner_tables(self) -> dict[str, dict[str, list]]:
+        sessions = "SELECT id FROM tuner_sessions WHERE machine_json IS NULL"
+        queries = {"tuner_sessions": f"SELECT * FROM tuner_sessions WHERE id IN ({sessions}) ORDER BY id"} | {
+            table: f"SELECT * FROM {table} WHERE session_id IN ({sessions}) ORDER BY id" for table in OLD_TUNER_TABLES
+        }
+        return {
+            table: {
+                "columns": [row["name"] for row in self.__conn.execute(f"PRAGMA main.table_info({table})")],
+                "rows": [dict(row) for row in self.__conn.execute(query)],
+            }
+            for table, query in queries.items()
+        }
 
     def _merged_columns(self, table: str) -> list[str]:
         return [row["name"] for row in self.__conn.execute(f"PRAGMA main.table_info({table})") if row["name"] != "id"]

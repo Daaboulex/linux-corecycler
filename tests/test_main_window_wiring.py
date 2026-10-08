@@ -25,6 +25,7 @@ from corecycler.engine.scheduler import CoreTestStatus
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.gui import main_window as mw
 from corecycler.history.db import HistoryDB, RunRecord
+from tests._old_rows import seed_old_session
 from tests._sensors import FakeClocks, FakeSensors, FakeTicker
 from tests._tuner_world import save_machine_session
 
@@ -188,6 +189,26 @@ class TestConstruction:
         assert win._history_db is db
         assert not win._bios_changed
         win._history_db = None
+
+    def test_the_old_sessions_are_archived_at_start_and_a_failure_is_logged(self, monkeypatch, tmp_path, caplog):
+        on_disk = HistoryDB(tmp_path / "history.db")
+        seed_old_session(on_disk)
+        with caplog.at_level("INFO", logger="corecycler.gui.main_window"):
+            win = _build(monkeypatch, tmp_path, db=on_disk)
+        assert (tmp_path / "history.db.old-tuner-sessions.json").exists()
+        assert "Old tuner sessions archived to" in caplog.text
+        win._history_db = None
+
+        def _boom(_d):
+            raise OSError("read-only")
+
+        monkeypatch.setattr(mw, "archive_old_sessions", _boom)
+        with caplog.at_level("ERROR", logger="corecycler.gui.main_window"):
+            again = _build(monkeypatch, tmp_path, db=on_disk)
+        assert "Archiving the old tuner sessions failed; their rows stay in the database" in caplog.text
+        assert again._history_db is on_disk
+        again._history_db = None
+        on_disk.close()
 
     def test_an_unusable_database_leaves_the_window_running(self, monkeypatch, tmp_path):
         def _boom():

@@ -45,6 +45,7 @@ from corecycler.gui.style import theme
 from corecycler.gui.tool_prompt import ensure_tool
 from corecycler.gui.tuner_tab import TunerTab
 from corecycler.gui.widgets.core_grid import CoreGridWidget
+from corecycler.history.archive import archive_old_sessions
 from corecycler.history.context import detect_bios_change
 from corecycler.history.db import HistoryDB, adopt_legacy_root_db
 from corecycler.history.logger import TestRunLogger
@@ -133,6 +134,12 @@ class MainWindow(QMainWindow):
                         log.info("Adopted legacy root history: %s", adopted)
                 except Exception:
                     log.exception("Legacy root history adoption failed — continuing")
+                try:
+                    archived = archive_old_sessions(self._history_db)
+                    if archived is not None:
+                        log.info("Old tuner sessions archived to %s", archived)
+                except Exception:
+                    log.exception("Archiving the old tuner sessions failed; their rows stay in the database")
                 recovered = self._history_db.recover_incomplete_runs()
                 if recovered:
                     for run_id, started_at in recovered:
