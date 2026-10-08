@@ -671,3 +671,32 @@ class TestDriverWriteReadBranches:
         with patch.object(smu, "_send_rsmu_command", return_value=self._resp(5)) as send:
             assert smu.get_fastest_core() is None
         send.assert_not_called()
+
+
+class TestOneMailboxAcrossProcesses:
+    @pytest.mark.parametrize(("call", "anchor"), [("command", "smu_args"), ("rsmu", "smu_args"), ("smn", "smn")])
+    def test_a_sequence_waits_while_another_process_holds_its_file(self, smu_dir, zen5_cmds, call, anchor):
+        import fcntl
+        import threading
+
+        (smu_dir / "smn").write_bytes(struct.pack("<I", 7))
+        smu = RyzenSMU(zen5_cmds, smu_dir)
+        calls = {
+            "command": lambda: smu._send_command(0x99),
+            "rsmu": lambda: smu._send_rsmu_command(0x99),
+            "smn": lambda: smu.read_smn(0x10),
+        }
+        done = threading.Event()
+        worker = threading.Thread(target=lambda: (calls[call](), done.set()))
+        with (smu_dir / anchor).open("rb") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            worker.start()
+            assert not done.wait(0.3)
+        assert done.wait(5)
+        worker.join()
+
+    def test_without_the_mailbox_file_a_command_fails_closed(self, smu_dir, zen5_cmds):
+        (smu_dir / "smu_args").unlink()
+        response = RyzenSMU(zen5_cmds, smu_dir)._send_command(0x99)
+        assert response.success is False
+        assert RyzenSMU(zen5_cmds, smu_dir)._send_rsmu_command(0x99).success is False

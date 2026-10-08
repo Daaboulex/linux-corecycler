@@ -9,12 +9,15 @@ POST, and SMU writes here overlay (replace) them until the next power cycle.
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import struct
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .commands import (
     SMUCommandSet,
@@ -24,6 +27,9 @@ from .commands import (
     encode_pbo_limit_arg,
     encode_pbo_scalar_arg,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 log = logging.getLogger(__name__)
 
@@ -258,13 +264,19 @@ class RyzenSMU:
         decay into the previous read's value: it returns None.
         """
         path = self.sysfs / "smn"
-        with self._smu_lock:
-            try:
+        try:
+            with self._held(path):
                 path.write_bytes(struct.pack("<I", address))
                 return struct.unpack("<I", path.read_bytes()[:4])[0]
-            except (OSError, struct.error) as exc:
-                log.debug("SMN read of %#010x failed: %s", address, exc)
-                return None
+        except (OSError, struct.error) as exc:
+            log.debug("SMN read of %#010x failed: %s", address, exc)
+            return None
+
+    @contextmanager
+    def _held(self, anchor: Path) -> Iterator[None]:
+        with self._smu_lock, anchor.open("rb") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
 
     def _fuse_group_slots(self, encode_ccd: int, want: int) -> list[int]:
         """This CCD's live physical slots, from its SMN core-disable fuse.
@@ -430,59 +442,35 @@ class RyzenSMU:
 
     def _send_command(self, cmd: int, args: tuple[int, ...] = (0, 0, 0, 0, 0, 0)) -> SMUResponse:
         """Send an SMU command and read the response."""
-        with self._smu_lock:
-            args_path = self.sysfs / "smu_args"
-            cmd_path = self._get_cmd_path()
+        return self._mailbox(self._get_cmd_path(), cmd, args, "SMU")
 
-            # pack 6 x uint32 arguments
-            if len(args) < 6:
-                args = args + (0,) * (6 - len(args))
-            # Fail closed: an out-of-range arg, a permission error, or a truncated
-            # sysfs response must return a failed SMUResponse, never raise or write a
-            # coerced wrong value. A failed pack means we never write at all.
-            try:
-                packed_args = struct.pack("<6I", *args[:6])
+    def _mailbox(self, cmd_path: Path, cmd: int, args: tuple[int, ...], name: str) -> SMUResponse:
+        args_path = self.sysfs / "smu_args"
+        if len(args) < 6:
+            args = args + (0,) * (6 - len(args))
+        # Fail closed: an out-of-range arg, a permission error, or a truncated
+        # sysfs response must return a failed SMUResponse, never raise or write a
+        # coerced wrong value. A failed pack means we never write at all.
+        try:
+            packed_args = struct.pack("<6I", *args[:6])
+            with self._held(args_path):
                 args_path.write_bytes(packed_args)
                 cmd_path.write_bytes(struct.pack("<I", cmd))
                 resp_cmd = cmd_path.read_bytes()
                 resp_args_raw = args_path.read_bytes()
-                status = struct.unpack("<I", resp_cmd[:4])[0]
-                resp_args = struct.unpack("<6I", resp_args_raw[:24])
-            except (OSError, struct.error) as exc:
-                log.debug("SMU command %#x failed: %s", cmd, exc)
-                return SMUResponse(success=False, args=(0,) * 6, raw=b"")
-
-            return SMUResponse(
-                success=(status == 1),
-                args=resp_args,
-                raw=resp_args_raw,
-            )
+            status = struct.unpack("<I", resp_cmd[:4])[0]
+            resp_args = struct.unpack("<6I", resp_args_raw[:24])
+        except (OSError, struct.error) as exc:
+            log.debug("%s command %#x failed: %s", name, cmd, exc)
+            return SMUResponse(success=False, args=(0,) * 6, raw=b"")
+        return SMUResponse(success=(status == 1), args=resp_args, raw=resp_args_raw)
 
     def _send_rsmu_command(self, cmd: int, args: tuple[int, ...] = (0, 0, 0, 0, 0, 0)) -> SMUResponse:
         """Send an RSMU command regardless of the default mailbox.
 
         PBO limit commands use RSMU even on Zen 3 (which defaults to MP1 for CO).
         """
-        with self._smu_lock:
-            args_path = self.sysfs / "smu_args"
-            cmd_path = self.sysfs / "rsmu_cmd"
-
-            if len(args) < 6:
-                args = args + (0,) * (6 - len(args))
-            # Fail closed on a bad arg / permission error / truncated response.
-            try:
-                packed_args = struct.pack("<6I", *args[:6])
-                args_path.write_bytes(packed_args)
-                cmd_path.write_bytes(struct.pack("<I", cmd))
-                resp_cmd = cmd_path.read_bytes()
-                resp_args_raw = args_path.read_bytes()
-                status = struct.unpack("<I", resp_cmd[:4])[0]
-                resp_args = struct.unpack("<6I", resp_args_raw[:24])
-            except (OSError, struct.error) as exc:
-                log.debug("RSMU command %#x failed: %s", cmd, exc)
-                return SMUResponse(success=False, args=(0,) * 6, raw=b"")
-
-            return SMUResponse(success=(status == 1), args=resp_args, raw=resp_args_raw)
+        return self._mailbox(self.sysfs / "rsmu_cmd", cmd, args, "RSMU")
 
     # ------------------------------------------------------------------
     # CO offset read/write
