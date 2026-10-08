@@ -73,6 +73,7 @@ COOL_POLL_S = 1.0
 UNCORRECTED_STEPS = 3
 HELD = (Lifecycle.RUNNING, Lifecycle.PAUSING, Lifecycle.PAUSED)
 RESUMABLE = frozenset({"running", "paused", "aborted"})
+SETUP_REMEDY = "put it back and resume, or continue or restart under it"
 
 
 def transition(s: SessionState, e: Event, w: World) -> Transition:
@@ -412,24 +413,10 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
             refused=f"the boot session {st.session_id} completed in crashed while cores {cores} held unproven "
             "values, and a completed session has no step that attributes it: start a new session",
         )
-    changed = _changes(st.setup, w.setup)
-    if changed:
-        return Transition(
-            s,
-            refused=f"the setup changed since session {st.session_id} started: {changed}; "
-            "start a new session on this setup",
-        )
     reads = dict(w.bios_co)
     unread = sorted(core for core, _ in w.cpus_of if reads.get(core) is None)
     if unread:
         return Transition(s, refused=f"the CO of core {', '.join(map(str, unread))} could not be read")
-    held = _held_base_changes(st, w.bios_co)
-    if held:
-        return Transition(
-            s,
-            refused=f"the BIOS CO of a core session {st.session_id} does not own changed: {held}; "
-            "start a new session on this setup",
-        )
     if st.power != w.power:
         return Transition(
             s,
@@ -453,6 +440,10 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
         setup=st.setup,
         base_co=st.base_co,
     )
+    changed = "; ".join(filter(None, (_changes(st.setup, w.setup), _held_base_changes(st, w.bios_co))))
+    if changed:
+        detail = f"the setup changed since session {st.session_id} started: {changed}; {SETUP_REMEDY}"
+        return _enter_pause(running, PauseReason.SETUP_CHANGED, detail, _held_moved(st, w.bios_co))
     effects: list = [_commit(running)]
     effects += [WriteCO(core, value) for core, value in st.baseline if w.resident_of(core) != value]
     effects += [
@@ -544,7 +535,7 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
         return _enter_pause(
             after,
             PauseReason.SETUP_CHANGED,
-            f"the setup changed since the session started: {changed}; put it back and resume, or start a new session",
+            f"the setup changed since the session started: {changed}; {SETUP_REMEDY}",
         )
     moved = _power_moved(after, w)
     if moved is not None:
@@ -567,12 +558,16 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
     return Transition(running, tuple(effects))
 
 
-def _held_base_changes(s: SessionState | Stored, reads: tuple[tuple[int, int | None], ...]) -> str:
+def _held_moved(s: SessionState | Stored, reads: tuple[tuple[int, int | None], ...]) -> tuple[int, ...]:
     base, owned = dict(s.base_co), {core for core, _ in s.baseline}
+    return tuple(core for core, value in reads if core not in owned and value != base.get(core))
+
+
+def _held_base_changes(s: SessionState | Stored, reads: tuple[tuple[int, int | None], ...]) -> str:
+    base, values = dict(s.base_co), dict(reads)
     return "; ".join(
-        f"core {core} is {value}, the BIOS gave {base.get(core)} when the session started"
-        for core, value in reads
-        if core not in owned and value != base.get(core)
+        f"core {core} is {values[core]}, the BIOS gave {base.get(core)} when the session started"
+        for core in _held_moved(s, reads)
     )
 
 
@@ -586,7 +581,7 @@ def _knob_problem(s: SessionState, e: CrashEvidenceRead, w: World) -> tuple[Paus
     if not e.same_boot:
         changed = _held_base_changes(s, e.co_now)
         if changed:
-            moved = tuple(core for core in cores if core not in baseline and reads[core] != base.get(core))
+            moved = _held_moved(s, e.co_now)
             return (
                 PauseReason.SETUP_CHANGED,
                 f"the BIOS CO of a core the session does not own changed: {changed}",

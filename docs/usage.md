@@ -136,11 +136,11 @@ Hard crashes are expected during CO tuning; that is how each core's limit is fou
 - **Quarantine**: three crash-resumes in a row with no test surviving between them put
   every selected core back to 0 and stop the session for good.
 - **Setup changes**: the session records the BIOS, kernel, microcode and app build at
-  Start. A resume on a different setup pauses: put the setup back and resume, or
-  **Continue** (carry the proven values into a new session under the new setup) or
-  **Restart** (start over with the same settings).
-- **Outside writes**: at resume every core's CO is read back. A value the session did not
-  write pauses it, and so does a CO that cannot be read.
+  Start. A resume or a Validate on a different setup pauses: put the setup back and
+  resume, or **Continue** (carry the proven values into a new session under the new
+  setup) or **Restart** (start over with the same settings).
+- **Outside writes**: at resume and at the start of each stage every core's CO is read
+  back. A value the session did not write pauses it, and so does a CO that cannot be read.
 - **One writer**: the driver holds a lock for its whole run and the Curve Optimizer tab
   takes it for each write, so the two never write at once.
 - **Temperature**: above the thermal limit, or the CPU's Tjmax when that is lower, the

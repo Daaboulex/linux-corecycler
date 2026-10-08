@@ -7,7 +7,9 @@ import pytest
 from corecycler.tuner.machine.session import transition
 from corecycler.tuner.machine.types import (
     Abort,
+    ContinueOnSetup,
     Lifecycle,
+    PauseReason,
     Stage,
     StartWorker,
     ValidateProfile,
@@ -110,10 +112,6 @@ def test_an_abort_after_a_back_off_ends_the_session_aborted():
             lambda fake, world: replace(world, stored_crash_suspects=(0, 1)),
             "cores 0, 1 held unproven values",
         ),
-        (
-            lambda fake, world: replace(world, setup=(("bios", "B"),)),
-            "the setup changed since session 1 started: bios was A, is now B",
-        ),
     ],
 )
 def test_validation_is_refused_naming_why(change, reason):
@@ -121,6 +119,19 @@ def test_validation_is_refused_naming_why(change, reason):
     result = transition(fake.state, ValidateProfile(1), change(fake, fake.world()))
     assert reason in result.refused
     assert result.state == fake.state
+
+
+def test_validation_on_a_changed_setup_pauses_and_can_be_continued_under_it():
+    fake = completed()
+    moved = replace(fake.world(), setup=(("bios", "B"),))
+    result = transition(fake.state, ValidateProfile(1), moved)
+    assert result.refused is None
+    assert (result.state.lifecycle, result.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.SETUP_CHANGED)
+    assert "the setup changed since session 1 started: bios was A, is now B" in result.state.pause.detail
+    assert "continue or restart under it" in result.state.pause.detail
+    child = transition(result.state, ContinueOnSetup(2), moved).state
+    assert (child.session_id, child.lifecycle) == (2, Lifecycle.RUNNING)
+    assert child.flow.validating == result.state.flow.validating
 
 
 def test_validation_is_refused_while_a_session_is_held():
