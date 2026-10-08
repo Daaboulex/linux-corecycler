@@ -231,7 +231,12 @@ class MainWindow(QMainWindow):
 
         smu = self._smu_tab.smu
         writable = smu is not None and smu.commands.has_co and core_map_blocked(smu) is None
-        self._tuner_tab = TunerTab(self._history_db, self._topology, smu.commands.co_range if writable else None)
+        self._tuner_tab = TunerTab(
+            self._history_db,
+            self._topology,
+            smu.commands.co_range if writable else None,
+            smu.get_co_offset if writable else None,
+        )
         self._tuner_tab.tuner_running_changed.connect(self._on_tuner_running_changed)
         self._tuner_tab.tuner_core_testing.connect(self._on_tuner_core_update)
         self._tuner_tab.tuner_core_elapsed.connect(self._on_tuner_core_elapsed)

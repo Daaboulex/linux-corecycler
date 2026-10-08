@@ -73,24 +73,33 @@ found.
 ### What a session does
 
 1. **Search, one thread per core**: one core at a time under y-cruncher on one of its
-   CPUs, from 0 toward `max_offset` (default -50, never below the CPU's CO range) in
-   coarse steps of 5, then steps of 1. A value is proven after 10 passes taken in rounds
-   with the other cores, 15 s apart; a failure sets the core's fail bound and backs it
-   off.
+   CPUs, from 0 toward the deepest offset to try (default -50, never below the CPU's
+   CO range) in coarse steps of 5, then steps of 1. A value is proven after 10 passes
+   taken in rounds with the other cores, 15 s apart; a failure sets the core's fail
+   bound and backs it off.
 2. **Search, two threads per core**: when every selected core has two online CPUs, the
    same proof with both threads of the core and 6 passes, from the one-thread value.
-3. **LIVE1**: every value live at once, each core tested alone again.
-4. **STEADY**: a hot all-core load on every selected CPU. A failure that names no core is
-   bisected by CCD and by half until one core is convicted; it backs off one step.
-5. **TRANSIENT**: bursts, warm and idle phases until an hour passes without a failure.
-6. **TIGHTEN**: each core tries one step tighter again while the others hold.
-7. **ENDURANCE** (off by default): hot, burst, warm and idle in a cycle until three hours
-   pass clean.
-8. **MEMORY** (on by default): stressapptest on each selected core, skipped with the
-   reason when memory is short.
-9. **SOAK** (on by default): 30 minutes without load, watching the kernel log.
-10. **FINALIZE**: when a value had to back off after LIVE1, the pass runs again from
-    LIVE1 without TIGHTEN; otherwise the session completes with its values.
+3. **Each core alone** (LIVE1): every value live at once, each core tested alone again.
+4. **Hot all-core** (STEADY): a hot all-core load on every selected CPU. A failure that
+   names no core is narrowed by CCD and by half until one core is convicted; it backs
+   off one step.
+5. **Changing loads** (TRANSIENT): burst, warm and idle segments until an hour passes
+   without a failure.
+6. **Tighten** (TIGHTEN): each core tries one step tighter again while the others hold.
+7. **Endurance** (ENDURANCE, off by default): hot, burst, warm and idle in a cycle until
+   three hours pass clean.
+8. **Memory** (MEMORY, on by default): stressapptest on each selected core, skipped with
+   the reason when memory is short.
+9. **Idle watch** (SOAK, on by default): 30 minutes without load, watching the kernel
+   log.
+10. **Finishing** (FINALIZE): when a value had to back off after LIVE1, the pass runs
+    again from LIVE1 without TIGHTEN; otherwise the session completes with its values.
+
+The tab names each stage in words; the names in brackets are what the session's events
+and the command line print. Every length here is a setting, fixed for the session:
+the changing-load, tighten and endurance stages repeat until their clean time is
+reached, and a cool-down after a heat stop waits until the CPU is cool, within its
+shortest and longest time.
 
 ### Controls
 
@@ -108,11 +117,16 @@ lists the sessions, and `corecycler --help` lists the flags and exit codes.
 
 ### Settings
 
-The tab shows the cores, the order (alternate across CCDs, sequential or random), the
-max offset, the thermal limit and the memory, soak and endurance stages; **Advanced**
-shows every other setting by its own name. Start refuses a setting outside its range and
-names it. When the BIOS already sets a CO on a selected core, Start refuses unless
-**Start over a CO the BIOS already sets** is ticked.
+The tab shows the cores, the core order (alternate across CCDs, one after another or
+random), the deepest offset to try, the temperature limit and the memory test, idle watch
+and endurance stages; **Advanced settings** shows every other setting in four groups
+(the search, the all-core stages, temperature, and what happens when a test goes wrong).
+Every setting has its unit to the right of its box and a line saying what it does; a
+duration also reads in minutes or hours. Start refuses a setting outside its range and
+names it. When a selected core already runs a CO value, set by the BIOS or written since
+boot, Start lists those values and asks before it starts over them; the tuner searches
+every core from 0, and a reboot brings the BIOS values back. From the command line,
+`tune` and `restart` take `--acknowledge` for the same answer.
 
 ### Power state and clocks
 

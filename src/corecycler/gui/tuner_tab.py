@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -12,12 +13,11 @@ from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -37,28 +38,154 @@ from PySide6.QtWidgets import (
 from corecycler.cli import EXIT_LOCKED, EXIT_MEANINGS, EXIT_REFUSED
 from corecycler.config.paths import atomic_write, data_dir, hand_back
 from corecycler.engine import detector as kernel
-from corecycler.gui.style import button_qss, theme
+from corecycler.gui.style import (
+    SESSION_STATUS_LABELS,
+    button_qss,
+    pause_text,
+    power_text,
+    stage_label,
+    theme,
+    tuner_phase_label,
+)
 from corecycler.gui.tool_prompt import ensure_tool
 from corecycler.smu.writer_lock import running_driver
 from corecycler.tuner.live import config_to_json, read_stored
-from corecycler.tuner.machine.types import KNOB_FLOOR, MachineConfig, Mode, PauseReason, Phase, Stored
+from corecycler.tuner.machine.types import KNOB_FLOOR, MachineConfig, Mode, PauseReason, Phase, Stage, Stored
 from corecycler.tuner.orders import Method, default_method
+from corecycler.tuner.stages import WARM_HOLD
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from corecycler.engine.topology import CPUTopology
     from corecycler.history.db import HistoryDB
 
 log = logging.getLogger(__name__)
 
-CURATED = {
-    "max_offset": "Max offset",
-    "thermal_limit_c": "Thermal limit (C)",
-    "memory": "Memory stage",
-    "soak": "Soak stage",
-    "endurance": "Endurance stage",
+DEGREES = "°C"
+SHOWN = "Shown"
+KNOB_TEXT: dict[str, dict[str, tuple[str, str, str]]] = {
+    SHOWN: {
+        "max_offset": (
+            "Deepest offset to try",
+            "counts",
+            "The most negative Curve Optimizer value the search may reach. Each core settles at its own"
+            " stable value on the way.",
+        ),
+        "thermal_limit_c": (
+            "Temperature limit",
+            DEGREES,
+            "A test stops when the CPU reaches this, or its own maximum if that is lower, cools down and"
+            " repeats the same value.",
+        ),
+        "memory": (
+            "Memory test",
+            "",
+            "After the CPU stages, each core runs stressapptest. Skipped, with the reason, when memory is short.",
+        ),
+        "soak": ("Idle watch", "", "At the end the machine sits without load while the kernel log is watched."),
+        "endurance": ("Endurance", "", "A long extra run of mixed all-core loads after the main stages."),
+    },
+    "Search, one core at a time": {
+        "coarse_step": ("Coarse step", "counts", "How far each step of the first, quick search moves."),
+        "fine_step": ("Fine step", "counts", "How far each step moves once the quick search has found the edge."),
+        "k_1t": (
+            "Passes to prove, one thread",
+            "passes",
+            "Clean tests a value needs with one thread busy before it counts as stable.",
+        ),
+        "k_2t": ("Passes to prove, two threads", "passes", "The same with both threads of the core busy."),
+        "test_seconds_1t": ("Test length, one thread", "s", "How long each one-thread test runs."),
+        "test_seconds_2t": ("Test length, two threads", "s", "How long each two-thread test runs."),
+        "walk_budget_s": (
+            "Search time limit per core",
+            "s",
+            "When a core has searched this long, the search stops and proves the best value found so far.",
+        ),
+        "wait_between_cores_s": (
+            "Pause between cores",
+            "s",
+            "Rest before the next core's test, so the last test's heat does not carry over.",
+        ),
+    },
+    "All-core stages": {
+        "hot_seconds": ("Hot test length", "s", "Every core at once under the heaviest load."),
+        "bisect_seconds": (
+            "Narrowing test length",
+            "s",
+            "When an all-core test fails without naming a core, groups of cores are tested this long to find it.",
+        ),
+        "burst": (
+            "Burst segment",
+            "s",
+            "Groups of cores switch between load and rest every few seconds, which swings the voltage hardest.",
+        ),
+        "warm": (
+            "Warm segment",
+            "s",
+            f"Every core runs each test in turn while the CPU is held between {WARM_HOLD[1]:.0f} and"
+            f" {WARM_HOLD[0]:.0f} {DEGREES}.",
+        ),
+        "idle": ("Idle segment", "s", "A few cores wake briefly between long rests, where the clocks boost highest."),
+        "transient_window_s": (
+            "Clean time needed, changing loads",
+            "s",
+            "Burst, warm and idle repeat until this much time passes without a failure. Tighten uses the same.",
+        ),
+        "endurance_window_s": (
+            "Clean time needed, endurance",
+            "s",
+            "The endurance loads repeat until this much time passes without a failure.",
+        ),
+        "memory_seconds": ("Memory test length per core", "s", "How long stressapptest runs on each core."),
+        "soak_seconds": ("Idle watch length", "s", "How long the machine sits without load at the end."),
+    },
+    "Temperature": {
+        "cool_margin_c": (
+            "Cool below the limit by",
+            DEGREES,
+            "After a heat stop, wait until the CPU is this far under the limit.",
+        ),
+        "cool_min_s": ("Shortest cool-down", "s", "Always rest at least this long after a heat stop."),
+        "cool_cap_s": ("Longest cool-down", "s", "If the CPU is still too hot after this long, the session pauses."),
+        "thermal_retries": (
+            "Heat stops before pausing",
+            "times",
+            "Heat stops in a row on the same value before the session pauses.",
+        ),
+    },
+    "When a test goes wrong": {
+        "apparatus_retries": (
+            "Retries for a test that cannot be judged",
+            "times",
+            "A test that stalls, does not start, or is killed by something else runs again this many times,"
+            " then the session pauses.",
+        ),
+        "start_failure_threshold": (
+            "Pause after first-value failures",
+            "cores",
+            "Pause when this many cores in a row fail the first value they try, a sign the setup is wrong."
+            " 0 turns it off.",
+        ),
+        "stop_bound_s": (
+            "Time allowed to stop a test",
+            "s",
+            "How long a test may take to end when asked before it is left behind as hung.",
+        ),
+    },
 }
+ORDER_LABELS = {
+    Method.ALTERNATE: "Alternate across CCDs",
+    Method.SEQUENTIAL: "One after another",
+    Method.RANDOM: "Random",
+}
+ONE_CORE = frozenset({Stage.SEARCH, Stage.LIVE1})
+THREADS = {"1t": "one thread", "2t": "two threads"}
 SET_BY_THE_TAB = ("mode", "method", "selected", "stage_seconds")
+STAGE_DEFAULT = next(f.default for f in fields(MachineConfig) if f.name == "stage_seconds")
+STAGE_ORDER = tuple(load for load, _ in STAGE_DEFAULT)
 CEILING = 1_000_000_000
+BOX_WIDTH = 110
 GRID_STATE = {
     Phase.NOT_STARTED: "pending",
     Phase.COARSE: "queued",
@@ -69,6 +196,70 @@ GRID_STATE = {
 AUTO_RESUME_TRIES = 3
 AUTO_RESUME_GAP_MS = 60_000
 TOOLS = ("y-cruncher", "stressapptest")
+
+
+def _assert_every_knob_named() -> None:
+    named = [name for knobs in KNOB_TEXT.values() for name in knobs]
+    offered = [f.name for f in fields(MachineConfig) if f.name not in SET_BY_THE_TAB] + list(STAGE_ORDER)
+    if sorted(named) != sorted(offered):
+        raise AssertionError(f"KNOB_TEXT and the settings disagree: {sorted(set(named) ^ set(offered))}")
+
+
+_assert_every_knob_named()
+
+
+def spoken(seconds: float) -> str:
+    total = round(seconds)
+    if total < 60:
+        return ""
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    return " ".join(f"{count} {unit}" for count, unit in ((hours, "h"), (minutes, "min"), (secs, "s")) if count)
+
+
+def labelled(text: str) -> str:
+    for knobs in KNOB_TEXT.values():
+        for name, (label, _, _) in knobs.items():
+            text = re.sub(rf"\b{name}\b", f"'{label}'", text)
+    return text
+
+
+def _note(text: str) -> QLabel:
+    note = QLabel(text)
+    note.setWordWrap(True)
+    note.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM};")
+    return note
+
+
+def _add_row(grid: QGridLayout, row: int, label: str, widget: QWidget, unit: str, about: str) -> None:
+    name = QLabel(label)
+    name.setMinimumHeight(widget.sizeHint().height())
+    grid.addWidget(name, row, 0, Qt.AlignmentFlag.AlignTop)
+    field = QVBoxLayout()
+    field.setSpacing(2)
+    line = QHBoxLayout()
+    line.addWidget(widget)
+    if unit:
+        shown = QLabel(unit)
+        line.addWidget(shown)
+        if unit == "s":
+
+            def say(seconds: float, shown: QLabel = shown) -> None:
+                shown.setText(f"s ({said})" if (said := spoken(seconds)) else "s")
+
+            widget.valueChanged.connect(say)
+            say(widget.value())
+    line.addStretch(1)
+    field.addLayout(line)
+    field.addWidget(_note(about))
+    grid.addLayout(field, row, 1)
+
+
+def _rows() -> QGridLayout:
+    grid = QGridLayout()
+    grid.setVerticalSpacing(12)
+    grid.setColumnStretch(1, 1)
+    return grid
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,11 +306,18 @@ class TunerTab(QWidget):
     tuner_core_elapsed = Signal(int, float)
     tuner_core_info = Signal(int, int, str)
 
-    def __init__(self, db: HistoryDB | None, topology: CPUTopology | None, co_range: tuple[int, int] | None) -> None:
+    def __init__(
+        self,
+        db: HistoryDB | None,
+        topology: CPUTopology | None,
+        co_range: tuple[int, int] | None,
+        read_co: Callable[[int], int | None] | None,
+    ) -> None:
         super().__init__()
         self._db = db
         self._topology = topology
         self._co_range = co_range
+        self._read_co = read_co
         self._child: subprocess.Popen | None = None
         self._child_auto = False
         self._auto_tries_left = 0
@@ -141,11 +339,12 @@ class TunerTab(QWidget):
     def _build(self) -> None:
         layout = QHBoxLayout(self)
         layout.addWidget(self._build_settings(), 1)
-        layout.addLayout(self._build_live(), 2)
+        layout.addLayout(self._build_live(), 1)
 
     def _build_settings(self) -> QWidget:
         group = QGroupBox("Settings")
         column = QVBoxLayout(group)
+        column.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
         cores = QGridLayout()
         domain_of = {}
         for index, (core, info) in enumerate(sorted(self._topology.cores.items()) if self._topology else ()):
@@ -154,41 +353,52 @@ class TunerTab(QWidget):
             self._core_boxes[core] = box
             domain_of[core] = info.ccd
             cores.addWidget(box, index // 8, index % 8)
-        column.addWidget(QLabel("Cores"))
+        column.addWidget(QLabel("Cores to tune"))
         column.addLayout(cores)
-        form = QFormLayout()
+        column.addWidget(_note("An unticked core keeps its value and is not tested."))
+        shown = _rows()
         self._order = QComboBox()
         for method in Method:
-            self._order.addItem(method.value, method.value)
-        self._order.setCurrentText(default_method(tuple(self._core_boxes), domain_of).value)
-        form.addRow("Order", self._order)
+            self._order.addItem(ORDER_LABELS[method], method.value)
+        self._order.setCurrentIndex(self._order.findData(default_method(tuple(self._core_boxes), domain_of).value))
+        _add_row(
+            shown,
+            0,
+            "Core order",
+            self._order,
+            "",
+            "Which core is tested next. Alternating across CCDs lets one cool while the other works.",
+        )
         defaults = {f.name: f.default for f in fields(MachineConfig) if f.name not in SET_BY_THE_TAB}
-        for name, label in CURATED.items():
-            form.addRow(label, self._knob(name, defaults[name]))
-        self._acknowledge = QCheckBox("Start over a CO the BIOS already sets")
-        form.addRow(self._acknowledge)
-        column.addLayout(form)
+        defaults |= STAGE_DEFAULT
+        for row, (name, (label, unit, about)) in enumerate(KNOB_TEXT[SHOWN].items(), start=1):
+            _add_row(shown, row, label, self._knob(name, defaults[name]), unit, about)
+        column.addLayout(shown)
         self._advanced_toggle = QToolButton()
-        self._advanced_toggle.setText("Advanced")
+        self._advanced_toggle.setText("Advanced settings")
         self._advanced_toggle.setCheckable(True)
         column.addWidget(self._advanced_toggle)
         self._advanced = QWidget()
-        advanced = QFormLayout(self._advanced)
-        for name, default in defaults.items():
-            if name not in CURATED:
-                advanced.addRow(name, self._knob(name, default))
-        stage_default = next(f.default for f in fields(MachineConfig) if f.name == "stage_seconds")
-        for load, seconds in stage_default:
-            spin = QDoubleSpinBox()
-            spin.setRange(1.0, CEILING)
-            spin.setValue(seconds)
-            self._stage_spins[load] = spin
-            advanced.addRow(f"stage_seconds {load}", spin)
+        advanced = QVBoxLayout(self._advanced)
+        advanced.setContentsMargins(0, 0, 0, 0)
+        for title, knobs in KNOB_TEXT.items():
+            if title == SHOWN:
+                continue
+            box = QGroupBox(title)
+            rows = _rows()
+            for row, (name, (label, unit, about)) in enumerate(knobs.items()):
+                _add_row(rows, row, label, self._knob(name, defaults[name]), unit, about)
+            box.setLayout(rows)
+            advanced.addWidget(box)
         self._advanced.setVisible(False)
         self._advanced_toggle.toggled.connect(self._advanced.setVisible)
         column.addWidget(self._advanced)
         column.addStretch(1)
-        return group
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(group)
+        return scroll
 
     def _knob(self, name: str, default) -> QWidget:
         if isinstance(default, bool):
@@ -205,9 +415,15 @@ class TunerTab(QWidget):
                 widget.setValue(default)
         else:
             widget = QDoubleSpinBox()
-            widget.setRange(KNOB_FLOOR[name], CEILING)
+            widget.setDecimals(0)
+            widget.setRange(1.0 if name in STAGE_ORDER else KNOB_FLOOR[name], CEILING)
             widget.setValue(default)
-        self._knobs[name] = widget
+        if not isinstance(widget, QCheckBox):
+            widget.setFixedWidth(BOX_WIDTH)
+        if name in STAGE_ORDER:
+            self._stage_spins[name] = widget
+        else:
+            self._knobs[name] = widget
         return widget
 
     def _build_live(self) -> QVBoxLayout:
@@ -241,7 +457,7 @@ class TunerTab(QWidget):
         self._buttons["Abort"].setStyleSheet(button_qss(theme.BTN_RED))
         column.addLayout(buttons)
         self._cores = QTableWidget(0, 4)
-        self._cores.setHorizontalHeaderLabels(["Core", "Value", "Phase", "Fail bound"])
+        self._cores.setHorizontalHeaderLabels(["Core", "Value", "Phase", "Failed at"])
         self._cores.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._cores.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         column.addWidget(self._cores, 1)
@@ -259,7 +475,7 @@ class TunerTab(QWidget):
             Mode.CO,
             Method(self._order.currentData()),
             tuple(core for core, box in self._core_boxes.items() if box.isChecked()),
-            stage_seconds=tuple((load, spin.value()) for load, spin in self._stage_spins.items()),
+            stage_seconds=tuple((load, self._stage_spins[load].value()) for load in STAGE_ORDER),
             **values,
         )
 
@@ -287,12 +503,13 @@ class TunerTab(QWidget):
             self._status.setText("No tuning session")
             return
         pause = [event for event in view.events if event["severity"] == "paused"]
-        reason = f" ({pause[-1]['message']})" if view.status == "paused" and pause else ""
-        self._status.setText(f"Session {view.session_id}: {view.status}{reason}")
+        reason = f". {pause_text(pause[-1]['message'])}" if view.status == "paused" and pause else ""
+        status = SESSION_STATUS_LABELS.get(view.status, view.status)
+        self._status.setText(f"Session {view.session_id}: {status}{reason}")
         if view.problem is not None:
             self._status.setText(view.problem)
         power = view.stored.power if view.stored is not None else ()
-        self._range.setText("Range: " + (", ".join(f"{name} {value}" for name, value in power) or "unknown"))
+        self._range.setText("Power state: " + (power_text(power) or "unknown"))
         self._show_test(view)
         self._show_cores(view)
         self._show_events(view)
@@ -303,9 +520,12 @@ class TunerTab(QWidget):
             self._test.setText("")
             return
         elapsed = (datetime.now(UTC) - datetime.fromisoformat(test["started_at"])).total_seconds()
+        if test["stage"] in ONE_CORE:
+            what = f"core {test['core']} at {test['value']}, {THREADS.get(test['klass'], test['klass'])}"
+        else:
+            what = "a group of cores" if test["stage"] == Stage.BISECT else "every core"
         self._test.setText(
-            f"Testing core {test['core']}: {test['stage']} {test['klass']} at {test['value']}, "
-            f"{elapsed:.0f} of {test['seconds_asked']:.0f} s"
+            f"Testing {what}: {stage_label(test['stage'])}, {elapsed:.0f} of {test['seconds_asked']:.0f} s"
         )
         self.tuner_core_elapsed.emit(test["core"], elapsed)
 
@@ -315,7 +535,8 @@ class TunerTab(QWidget):
         testing = view.test["core"] if view.test is not None and self._running else None
         for row, record in enumerate(records):
             fail = "" if record.fb is None else str(record.fb)
-            for column, text in enumerate((str(record.core), str(record.value), record.phase.value, fail)):
+            texts = (str(record.core), str(record.value), tuner_phase_label(record.phase), fail)
+            for column, text in enumerate(texts):
                 self._cores.setItem(row, column, QTableWidgetItem(text))
             state = "testing" if record.core == testing else GRID_STATE[record.phase]
             shown = (state, record.value, record.phase.value)
@@ -359,17 +580,41 @@ class TunerTab(QWidget):
         state = data_dir() / "tuner"
         state.mkdir(parents=True, exist_ok=True)
         path = state / "start-config.json"
-        atomic_write(path, json.dumps(config_to_json(self.config())))
-        self._launch(["--start", "--config", str(path), *self._acknowledged()])
+        config = self.config()
+        over = self._over_set_values(config.selected)
+        if over is None:
+            return
+        atomic_write(path, json.dumps(config_to_json(config)))
+        self._launch(["--start", "--config", str(path), *over])
 
-    def _acknowledged(self) -> list[str]:
-        return ["--acknowledge"] if self._acknowledge.isChecked() else []
+    def _over_set_values(self, cores: tuple[int, ...]) -> list[str] | None:
+        if self._read_co is None:
+            return []
+        values = {core: self._read_co(core) for core in cores}
+        already = ", ".join(f"C{core} {value}" for core, value in sorted(values.items()) if value not in (0, None))
+        if not already:
+            return []
+        answer = QMessageBox.question(
+            self,
+            "Curve Optimizer values already set",
+            f"These cores already run a Curve Optimizer value, set by the BIOS or written since boot: {already}."
+            "\n\nThe tuner searches every core from 0 and replaces these values while it runs."
+            " A reboot brings the BIOS values back.\n\nStart anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return ["--acknowledge"] if answer == QMessageBox.StandardButton.Yes else None
 
     def _on_session(self, action: str) -> None:
-        if self._view is None or not self._tools_ready():
+        view = self._view
+        if view is None or not self._tools_ready():
             return
-        extra = self._acknowledged() if action == "restart" else []
-        self._launch([f"--{action}", "--session", str(self._view.session_id), *extra])
+        extra: list[str] | None = []
+        if action == "restart":
+            extra = self._over_set_values(view.stored.config.selected) if view.stored is not None else []
+        if extra is None:
+            return
+        self._launch([f"--{action}", "--session", str(view.session_id), *extra])
 
     def _on_abort(self) -> None:
         answer = QMessageBox.question(
@@ -426,7 +671,7 @@ class TunerTab(QWidget):
         self._child = None
         meaning = EXIT_MEANINGS.get(code, f"exit {code}")
         last = self._last_driver_line() if code in (EXIT_REFUSED, EXIT_LOCKED) else ""
-        self._note(f"the driver ended: {meaning}" + (f": {last}" if last else ""))
+        self._note(f"the driver ended: {meaning}" + (f": {labelled(last)}" if last else ""))
         if self._child_auto and code in (EXIT_REFUSED, EXIT_LOCKED) and self._auto_tries_left > 0:
             self._note(f"auto-resume: trying again in {AUTO_RESUME_GAP_MS // 1000} s ({meaning})")
             QTimer.singleShot(AUTO_RESUME_GAP_MS, lambda: self.attempt_auto_resume(self._auto_tries_left))

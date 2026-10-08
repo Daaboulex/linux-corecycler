@@ -13,7 +13,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPalette
 
-from corecycler.tuner.machine.types import Phase
+from corecycler.tuner.machine.types import PauseReason, Phase, Stage
 
 DARK = "dark"
 LIGHT = "light"
@@ -81,6 +81,46 @@ TUNER_PHASE_LABELS: dict[Phase, str] = {
     Phase.PROVEN: "Proven",
 }
 
+
+PAUSE_LABELS: dict[PauseReason, str] = {
+    PauseReason.USER: "Asked by you",
+    PauseReason.RESUMING: "Reading what the last boot left",
+    PauseReason.APPARATUS: "A test could not be judged",
+    PauseReason.SMU_WRITE: "A Curve Optimizer write failed",
+    PauseReason.SMU_READ: "A Curve Optimizer read failed",
+    PauseReason.THERMAL: "Too hot",
+    PauseReason.DATABASE: "The history database could not be written",
+    PauseReason.STOCK_UNSTABLE: "A core fails at its stock value",
+    PauseReason.INCIDENTS: "Crashes no core could be blamed for",
+    PauseReason.PROFILE_APPLY: "The found values could not be applied",
+    PauseReason.START_FAILURES: "Cores failed their first value",
+    PauseReason.INTERNAL: "Internal error",
+    PauseReason.OUTSIDE_WRITE: "Another program changed a Curve Optimizer value",
+    PauseReason.HELD_KNOB: "A core outside the session failed",
+    PauseReason.SETUP_CHANGED: "The setup changed",
+}
+
+STAGE_LABELS: dict[Stage, str] = {
+    Stage.SEARCH: "Search",
+    Stage.LIVE1: "Each core alone",
+    Stage.BISECT: "Narrowing",
+    Stage.STEADY: "Hot all-core",
+    Stage.TRANSIENT: "Changing loads",
+    Stage.TIGHTEN: "Tighten",
+    Stage.ENDURANCE: "Endurance",
+    Stage.MEMORY: "Memory",
+    Stage.SOAK: "Idle watch",
+    Stage.FINALIZE: "Finishing",
+}
+
+POWER_LABELS = {
+    "platform profile": "{} profile",
+    "governor": "{} governor",
+    "EPP": "EPP {}",
+    "boost": "boost {}",
+    "scaling maximum MHz": "up to {} MHz",
+}
+ON_OFF = {"1": "on", "0": "off"}
 
 GRID_STATE_LABELS: dict[str, str] = {
     "pending": "Pending",
@@ -247,6 +287,25 @@ def tuner_phase_label(value: str) -> str:
     return TUNER_PHASE_LABELS.get(value, value)
 
 
+def stage_label(value: str) -> str:
+    return STAGE_LABELS.get(value, value)
+
+
+def pause_text(message: str) -> str:
+    reason, colon, detail = message.partition(": ")
+    label = PAUSE_LABELS.get(reason)
+    return f"{label}: {detail}" if label is not None and colon else message
+
+
+def power_text(pairs: tuple[tuple[str, str], ...]) -> str:
+    return ", ".join(
+        POWER_LABELS[name].format(ON_OFF.get(value, value) if name == "boost" else value)
+        if name in POWER_LABELS
+        else f"{name} {value}"
+        for name, value in pairs
+    )
+
+
 def state_label(state: str) -> str:
     return GRID_STATE_LABELS.get(state, state)
 
@@ -276,9 +335,10 @@ def span_str(start_iso: str | None, end_iso: str | None) -> str:
 
 
 def _assert_complete() -> None:
-    unlabelled = set(Phase) - set(TUNER_PHASE_LABELS)
-    if unlabelled:
-        raise AssertionError(f"TUNER_PHASE_LABELS is missing phases: {sorted(unlabelled)}")
+    for table, members in ((TUNER_PHASE_LABELS, Phase), (PAUSE_LABELS, PauseReason), (STAGE_LABELS, Stage)):
+        unlabelled = set(members) - set(table)
+        if unlabelled:
+            raise AssertionError(f"{members.__name__} has no label for {sorted(unlabelled)}")
     for scheme in _SEMANTIC:
         resolved = resolve(scheme, QPalette())
         if set(resolved["STATE_COLORS"]) != set(GRID_STATE_LABELS):

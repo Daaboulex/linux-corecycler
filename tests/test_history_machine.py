@@ -95,7 +95,7 @@ def test_the_detail_shows_cores_tests_events_and_boots(db, tmp_path):
     assert "paused: user: paused by the owner" in text
     assert f"  {this_boot()}  first seen " in text and "BIOS 2402" in text
     assert "order " in tab._detail_info.text()
-    assert tab._detail_info.text().endswith("range platform profile balanced")
+    assert tab._detail_info.text().endswith("power state: balanced profile")
     assert f"  core {core}: 4421 MHz with the scaling maximum at unknown, boost unknown" in text
     assert not tab._load_co_btn.isEnabled()
 

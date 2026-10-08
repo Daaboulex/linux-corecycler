@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from corecycler.gui.style import duration_str, font_mono, span_str, theme
+from corecycler.gui.style import duration_str, font_mono, power_text, span_str, theme
 from corecycler.gui.widgets import table_item as _item
 from corecycler.history.timefmt import format_local
 from corecycler.smu.writer_lock import running_driver
@@ -927,7 +927,7 @@ class HistoryTab(QWidget):
             info.append(f"{sess.origin} of session {sess.parent_session_id}")
         if sess.bios_version:
             info.append(f"BIOS {sess.bios_version}")
-        info.append("range " + (", ".join(f"{name} {value}" for name, value in saved.power) or "unknown"))
+        info.append("power state: " + (power_text(saved.power) or "unknown"))
         self._detail_info.setText("  |  ".join(info))
         self._detail_info.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 2px;")
         tests = self._db.list_tuner_tests(sess.id)

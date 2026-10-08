@@ -56,17 +56,51 @@ class TestStyleFormatters:
         assert span_str("2026-07-24T00:00:00", "2026-07-24T01:30:00") == "1h 30m"
 
 
+class TestTunerWords:
+    def test_a_pause_is_said_by_its_reason_s_label(self):
+        from corecycler.gui.style import pause_text
+
+        assert pause_text("thermal: the CPU did not cool") == "Too hot: the CPU did not cool"
+        assert pause_text("not_a_reason: as stored") == "not_a_reason: as stored"
+        assert pause_text("thermal") == "thermal"
+
+    def test_the_power_state_reads_as_words(self):
+        from corecycler.gui.style import power_text
+
+        pairs = (
+            ("platform profile", "power-saver"),
+            ("governor", "powersave"),
+            ("EPP", "power"),
+            ("boost", "1"),
+            ("scaling maximum MHz", "4300"),
+            ("new knob", "x"),
+        )
+        assert power_text(pairs) == (
+            "power-saver profile, powersave governor, EPP power, boost on, up to 4300 MHz, new knob x"
+        )
+        assert power_text((("boost", "0"),)) == "boost off"
+
+    def test_a_stage_is_said_in_words(self):
+        from corecycler.gui.style import stage_label
+
+        assert (stage_label("transient"), stage_label("later")) == ("Changing loads", "later")
+
+
 class TestStyleCompletenessGuard:
     """_assert_complete is the import-time guard that a new phase/state/status
     cannot ship unstyled. Each arm must actually fire when its map is broken."""
 
-    def test_missing_phase_raises(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("table", "kind"), [("TUNER_PHASE_LABELS", "Phase"), ("PAUSE_LABELS", "PauseReason"), ("STAGE_LABELS", "Stage")]
+    )
+    def test_a_member_without_a_label_raises(self, monkeypatch, table, kind):
         from corecycler.gui import style
 
-        trimmed = dict(style.TUNER_PHASE_LABELS)
-        trimmed.pop(next(iter(trimmed)))
-        monkeypatch.setattr(style, "TUNER_PHASE_LABELS", trimmed)
-        with pytest.raises(AssertionError, match="TUNER_PHASE_LABELS is missing phases"):
+        trimmed = dict(getattr(style, table))
+        dropped = next(iter(trimmed))
+        trimmed.pop(dropped)
+        monkeypatch.setattr(style, table, trimmed)
+        with pytest.raises(AssertionError, match=f"{kind} has no label for .*{dropped.name}"):
             style._assert_complete()
 
     def test_state_color_label_mismatch_raises(self, monkeypatch):

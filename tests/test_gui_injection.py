@@ -60,7 +60,7 @@ def _tuner_tab():
         _qapp()
         from corecycler.gui.tuner_tab import TunerTab
 
-        _CACHE["tuner"] = TunerTab(None, _topo(), (-50, 10))
+        _CACHE["tuner"] = TunerTab(None, _topo(), (-50, 10), None)
     return _CACHE["tuner"]
 
 
