@@ -1801,11 +1801,16 @@ def test_preflight_warnings_become_session_events_when_it_starts(tmp_path):
     assert events == [{"message": "ananicy-cpp is running"}]
 
 
-def proc_tree(root: Path, processes: dict[int, tuple[str, tuple[str, ...]]]) -> Path:
+def proc_tree(
+    root: Path, processes: dict[int, tuple[str, tuple[str, ...]]], argv: dict[int, tuple[str, ...]] | None = None
+) -> Path:
     for pid, (comm, targets) in processes.items():
         fd = root / str(pid) / "fd"
         fd.mkdir(parents=True)
         (root / str(pid) / "comm").write_text(comm + "\n")
+        (root / str(pid) / "cmdline").write_bytes(
+            b"\0".join(arg.encode() for arg in (argv or {}).get(pid, (comm,))) + b"\0"
+        )
         for n, target in enumerate(targets):
             (fd / str(n)).symlink_to(target)
     (root / "self").mkdir(parents=True)
@@ -1823,11 +1828,14 @@ class Tool:
         return SimpleNamespace(problem=self.problem)
 
 
-def preflight(tmp_path, monkeypatch, *, smu=None, temp=60.0, tools=(), usable=60_000, procs=None, scheduling=None):
+def preflight(
+    tmp_path, monkeypatch, *, smu=None, temp=60.0, tools=(), usable=60_000, procs=None, scheduling=None, unread=()
+):
     monkeypatch.setattr(live_hw.kernel, "kernel_log_problem", lambda: None)
     monkeypatch.setattr(live_hw, "memory_accounting_problem", lambda: None)
     monkeypatch.setattr(live_hw, "scheduling_problem", scheduling or (lambda: None))
     proc = proc_tree(tmp_path / "proc", procs or {})
+    unreadable(monkeypatch, proc, *unread)
     return live_hw.preflight(
         smu or FakeSmu(),
         lambda: SensorRead(hottest=temp),
@@ -1845,7 +1853,7 @@ def test_a_ready_machine_passes_preflight_without_warnings(tmp_path, monkeypatch
     ("changes", "says"),
     [
         ({"temp": None}, "no CPU temperature"),
-        ({"procs": {4242: ("ryzenadj", ("/sys/kernel/ryzen_smu_drv/smu_args",))}}, "ryzenadj (pid 4242) holds"),
+        ({"procs": {4242: ("monitor", ("/sys/kernel/ryzen_smu_drv/smu_args",))}}, "monitor (pid 4242) holds"),
         ({"tools": (Tool("stressapptest", "not on PATH"),)}, "stressapptest is not installed: not on PATH"),
     ],
 )
@@ -1869,17 +1877,43 @@ def test_a_scheduling_policy_that_could_starve_the_watch_refuses(monkeypatch):
     assert live_hw.scheduling_problem() is None
 
 
-def test_a_process_that_cannot_be_inspected_refuses_rather_than_passes(tmp_path, monkeypatch):
-    proc = proc_tree(tmp_path / "proc", {77: ("hidden", ())})
+def unreadable(monkeypatch, proc, *pids):
     real = Path.iterdir
 
     def denied(path):
-        if path == proc / "77" / "fd":
+        if path in {proc / str(pid) / "fd" for pid in pids}:
             raise PermissionError("denied")
         return real(path)
 
     monkeypatch.setattr(Path, "iterdir", denied)
-    assert "process 77 cannot be inspected" in live_hw.smu_holder(proc)
+
+
+def test_a_process_whose_files_cannot_be_read_is_checked_by_name(tmp_path, monkeypatch):
+    proc = proc_tree(
+        tmp_path / "proc",
+        {77: ("systemd", ()), 78: ("python3", ()), 79: ("bash", ())},
+        argv={78: ("python3", "/opt/zen/zenstates.py", "-l")},
+    )
+    unreadable(monkeypatch, proc, 77, 79)
+    refusal, by_name_only = live_hw.smu_holder(proc)
+    assert refusal == "python3 (pid 78) is a known SMU tool, so its writes and this session's could collide"
+    quiet = proc_tree(tmp_path / "quiet", {77: ("systemd", ()), 79: ("bash", ())})
+    unreadable(monkeypatch, quiet, 77, 79)
+    assert live_hw.smu_holder(quiet) == (None, 2)
+
+
+def test_a_known_smu_tool_refuses_even_without_a_driver_handle(tmp_path):
+    proc = proc_tree(tmp_path / "proc", {5: ("ryzenadj", ())})
+    assert live_hw.smu_holder(proc) == (
+        "ryzenadj (pid 5) is a known SMU tool, so its writes and this session's could collide",
+        0,
+    )
+
+
+def test_processes_checked_by_name_only_are_a_warning(tmp_path, monkeypatch):
+    refusal, warnings = preflight(tmp_path, monkeypatch, procs={77: ("systemd", ())}, unread=(77,))
+    assert refusal is None
+    assert warnings == ("1 processes were checked for an SMU tool by name only; their open files need root",)
 
 
 def test_ananicy_and_a_short_hot_budget_are_warnings_not_refusals(tmp_path, monkeypatch):
@@ -1896,10 +1930,18 @@ def test_a_process_that_vanishes_mid_scan_is_skipped(tmp_path):
     (proc / "6").mkdir()
     assert live_hw.running("ryzenadj", proc) is True
     assert live_hw.running("ananicy-cpp", proc) is False
-    assert "ryzenadj (pid 5) holds" in live_hw.smu_holder(proc)
+    assert "ryzenadj (pid 5) is a known SMU tool" in live_hw.smu_holder(proc)[0]
+    holder = proc_tree(tmp_path / "holder", {8: ("monitor", ("/sys/kernel/ryzen_smu_drv/smu_args",))})
+    assert live_hw.smu_holder(holder) == (
+        "monitor (pid 8) holds the SMU driver open, so its writes and this session's could collide",
+        0,
+    )
     quiet = proc_tree(tmp_path / "quiet", {7: ("bash", ())})
     (quiet / "6").mkdir()
-    assert live_hw.smu_holder(quiet) is None
+    (quiet / "9").mkdir()
+    (quiet / "9" / "comm").write_text("bash\n")
+    (quiet / "9" / "cmdline").write_bytes(b"bash\0")
+    assert live_hw.smu_holder(quiet) == (None, 0)
 
 
 def test_the_hardware_adapter_checks_its_own_smu_sensors_tools_and_budget(monkeypatch):

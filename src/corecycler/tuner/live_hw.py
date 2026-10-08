@@ -257,18 +257,35 @@ def _others(proc: Path) -> list[Path]:
     return [pid for pid in proc.iterdir() if pid.name.isdigit() and int(pid.name) != os.getpid()]
 
 
-def smu_holder(proc: Path = PROC) -> str | None:
+SMU_TOOLS = frozenset({"ryzenadj", "ryzen_monitor", "ryzen_monitor_ng", "zenstates", "zenstates.py"})
+
+
+def smu_holder(proc: Path = PROC) -> tuple[str | None, int]:
+    by_name_only = 0
     for pid in _others(proc):
+        try:
+            name = (pid / "comm").read_text().strip()
+            argv = (pid / "cmdline").read_bytes().split(b"\0")
+        except FileNotFoundError, ProcessLookupError:
+            continue
+        if SMU_TOOLS & {name, *(Path(arg.decode(errors="replace")).name for arg in argv if arg)}:
+            return (
+                f"{name} (pid {pid.name}) is a known SMU tool, so its writes and this session's could collide",
+                by_name_only,
+            )
         try:
             targets = [os.readlink(fd) for fd in (pid / "fd").iterdir()]
         except FileNotFoundError, ProcessLookupError:
             continue
-        except PermissionError as exc:
-            return f"process {pid.name} cannot be inspected ({exc}), so another SMU driver holder cannot be ruled out"
+        except PermissionError:
+            by_name_only += 1
+            continue
         if any(target.startswith(SMU_DRIVER) for target in targets):
-            name = (pid / "comm").read_text().strip()
-            return f"{name} (pid {pid.name}) holds the SMU driver open, so its writes and this session's could collide"
-    return None
+            return (
+                f"{name} (pid {pid.name}) holds the SMU driver open, so its writes and this session's could collide",
+                by_name_only,
+            )
+    return None, by_name_only
 
 
 def running(name: str, proc: Path = PROC) -> bool:
@@ -290,6 +307,13 @@ def scheduling_problem() -> str | None:
 
 def preflight(smu, sensors, tools, budget, proc: Path = PROC) -> tuple[str | None, tuple[str, ...]]:
     """The first gate of L01 that refuses (in L01 order, later gates not run), and the warnings."""
+    by_name_only: list[int] = []
+
+    def holder() -> str | None:
+        problem, count = smu_holder(proc)
+        by_name_only.append(count)
+        return problem
+
     gates = (
         lambda: core_map_blocked(smu),
         kernel.kernel_log_problem,
@@ -299,7 +323,7 @@ def preflight(smu, sensors, tools, budget, proc: Path = PROC) -> tuple[str | Non
             if sensors().hottest is not None
             else "no CPU temperature can be read, so nothing would stop a load that overheats"
         ),
-        lambda: smu_holder(proc),
+        holder,
         scheduling_problem,
         *(
             lambda tool=tool: (
@@ -310,6 +334,10 @@ def preflight(smu, sensors, tools, budget, proc: Path = PROC) -> tuple[str | Non
     )
     refusal = next((problem for gate in gates if (problem := gate()) is not None), None)
     warnings = []
+    if by_name_only and by_name_only[0]:
+        warnings.append(
+            f"{by_name_only[0]} processes were checked for an SMU tool by name only; their open files need root"
+        )
     if running("ananicy-cpp", proc):
         warnings.append("ananicy-cpp is running and may renice the stress tools while they run")
     hot_mb = budget(1, 0).usable_mb // 2
