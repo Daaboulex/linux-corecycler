@@ -281,6 +281,20 @@ def test_a_power_state_change_between_tests_pauses_naming_it_and_restoring_it_le
     assert fake.state.pause is None
 
 
+def test_a_resume_over_a_changed_power_state_pauses_before_any_test_and_keeps_the_turn():
+    fake = running_fake()
+    fake.power = (("platform profile", "power-saver"),)
+    fake.fire()
+    paused = fake.state
+    fake.post(Resume(1))
+    while fake.progress():
+        pass
+    assert fake.state.pause.reason is PauseReason.SETUP_CHANGED
+    assert "the power state changed since the session started" in fake.state.pause.detail
+    assert fake.state.flow == paused.flow
+    assert fake.worker is None
+
+
 def test_a_setup_changed_while_paused_pauses_the_resume_and_putting_it_back_lets_it_continue():
     fake = running_fake()
     assert fake.db.setup == fake.setup

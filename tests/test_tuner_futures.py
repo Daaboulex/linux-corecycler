@@ -232,6 +232,9 @@ def act(fake: Fake, move: str) -> None:
             raise AssertionError(move)
 
 
+LONGEST_FUTURE = 2000
+
+
 @dataclass
 class Survey:
     states: int = 0
@@ -253,6 +256,10 @@ def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
         survey.states += 1
         if survey.states > cap:
             raise Broken(f"more than {cap} reachable states: the machine may not be bounded")
+        if depth > LONGEST_FUTURE:
+            raise Broken(
+                f"a future longer than {LONGEST_FUTURE} moves: the machine may never come to rest: {path[-12:]}"
+            )
         options = moves(node, left)
         if not options:
             leaf = node.state.lifecycle.value
@@ -373,6 +380,13 @@ def test_no_future_runs_a_test_on_a_setup_changed_while_the_session_was_away():
 
 def test_a_session_continued_or_restarted_on_a_new_setup_never_runs_its_parent_again():
     budget = {"setup": 1, "pause": 1, "crash": 1, "continue": 1, "restart": 1, "total": 3}
+    survey = explore(tiny(2, [-3, -2], 2), budget, cap=2_000_000)
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+def test_no_future_resumes_round_a_power_state_changed_while_the_session_was_away():
+    budget = {"profile": 2, "pause": 2, "crash": 1, "abort": 1, "close": 1, "total": 3}
     survey = explore(tiny(2, [-3, -2], 2), budget, cap=2_000_000)
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves

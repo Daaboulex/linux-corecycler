@@ -529,6 +529,9 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
             PauseReason.SETUP_CHANGED,
             f"the setup changed since the session started: {changed}; put it back and resume, or start a new session",
         )
+    moved = _power_moved(after, w)
+    if moved is not None:
+        return _enter_pause(after, PauseReason.SETUP_CHANGED, moved)
     knobs = _knob_problem(after, e, w)
     if knobs is not None:
         return _enter_pause(after, *knobs)
@@ -1116,11 +1119,16 @@ def _changes(recorded: tuple[tuple[str, str], ...], now: tuple[tuple[str, str], 
     )
 
 
+def _power_moved(s: SessionState, w: World) -> str | None:
+    if s.power == w.power:
+        return None
+    return f"the power state changed since the session started: {_changes(s.power, w.power)}; restore it and resume"
+
+
 def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transition:
-    if s.power != w.power:
-        changed = _changes(s.power, w.power)
-        detail = f"the power state changed since the session started: {changed}; restore it and resume"
-        return _enter_pause(replace(s, flow=flow), PauseReason.SETUP_CHANGED, detail)
+    moved = _power_moved(s, w)
+    if moved is not None:
+        return _enter_pause(replace(s, flow=flow), PauseReason.SETUP_CHANGED, moved)
     limit = s.config.thermal_limit_c if w.tjmax_c is None else min(s.config.thermal_limit_c, w.tjmax_c)
     spec = replace(spec, thermal_limit_c=limit)
     token = s.next_token
