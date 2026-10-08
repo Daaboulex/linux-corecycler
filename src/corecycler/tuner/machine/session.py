@@ -832,12 +832,6 @@ def _search_next(s: SessionState, w: World, picked: int | None) -> Transition:
     else:
         core = picked
     rec = search.resolve_start(s.core(core), cfg)
-    if rec.phase is not Phase.PROVEN and not rec.inside(rec.value, cfg.max_offset):
-        return _enter_pause(
-            replace(s, flow=flow),
-            PauseReason.INTERNAL,
-            f"core {core} would be tested at {rec.value}, at or past its fail bound",
-        )
     vector = tuple((c, rec.value if c == core else base) for c, base in s.baseline)
     seconds = cfg.test_seconds_1t if flow.klass is Klass.T1 else cfg.test_seconds_2t
     spec = TestSpec(flow.klass, core, rec.value, _cpus_for(core, flow.klass, w), seconds, vector, Stage.SEARCH)
@@ -1146,14 +1140,17 @@ def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transi
     moved = _power_moved(s, w)
     if moved is not None:
         return _enter_pause(replace(s, flow=flow), PauseReason.SETUP_CHANGED, moved)
-    past = [
-        (core, value, s.core(core).fb)
+    outside = [
+        (core, value)
         for core, value in spec.vector
-        if value != 0 and s.core(core).fb is not None and value <= s.core(core).fb
+        if value != 0 and not s.core(core).inside(value, s.config.max_offset)
     ]
-    if past:
-        core, value, fb = past[0]
-        detail = f"core {core} would run at {value}, at or past its fail bound {fb}"
+    if outside:
+        core, value = outside[0]
+        detail = (
+            f"core {core} would run at {value}, outside {s.config.max_offset}..0 "
+            f"or at or past its fail bound {s.core(core).fb}"
+        )
         return _enter_pause(replace(s, flow=flow), PauseReason.INTERNAL, detail)
     limit = s.config.thermal_limit_c if w.tjmax_c is None else min(s.config.thermal_limit_c, w.tjmax_c)
     spec = replace(spec, thermal_limit_c=limit)

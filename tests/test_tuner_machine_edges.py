@@ -292,10 +292,14 @@ def test_a_test_at_or_past_a_fail_bound_is_never_started():
     result = _start_test(bounded, waiting.flow, spec, fake.world())
     assert result.state.pause.reason is PauseReason.INTERNAL
     assert (
-        f"core {spec.core} would run at {spec.value}, at or past its fail bound {spec.value}"
+        f"core {spec.core} would run at {spec.value}, outside -20..0 or at or past its fail bound {spec.value}"
         in result.state.pause.detail
     )
     assert not any(type(effect).__name__ == "StartWorker" for effect in result.effects)
+    deep = replace(spec, value=-21, vector=tuple((core, -21 if core == spec.core else v) for core, v in spec.vector))
+    beyond = _start_test(waiting, waiting.flow, deep, fake.world())
+    assert beyond.state.pause.reason is PauseReason.INTERNAL
+    assert f"core {spec.core} would run at -21, outside -20..0" in beyond.state.pause.detail
     stock = replace(spec, value=0, vector=tuple((core, 0) for core, _ in spec.vector))
     assert _start_test(bounded, waiting.flow, stock, fake.world()).state.pause is None
 
