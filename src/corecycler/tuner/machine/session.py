@@ -607,8 +607,34 @@ def _knob_problem(s: SessionState, e: CrashEvidenceRead, w: World) -> tuple[Paus
     )
     if not moved:
         return None
-    found = "; ".join(f"core {c} reads {reads[c]}, the session left it at {expected[c]}" for c in moved)
-    return PauseReason.OUTSIDE_WRITE, f"something else wrote the CO while the session was away: {found}", moved
+    return (
+        PauseReason.OUTSIDE_WRITE,
+        f"something else wrote the CO while the session was away: {_left(moved, reads, expected)}",
+        moved,
+    )
+
+
+def _left(moved: tuple[int, ...], reads: dict[int, int | None], expected: dict[int, int | None]) -> str:
+    return "; ".join(f"core {c} reads {reads[c]}, the session left it at {expected[c]}" for c in moved)
+
+
+def _stage_entry_problem(s: SessionState, w: World) -> tuple[PauseReason, str, tuple[int, ...]] | None:
+    cores = tuple(core for core, _ in w.cpus_of)
+    reads = dict(w.co_now or ())
+    unread = tuple(core for core in cores if reads.get(core) is None)
+    if unread:
+        return PauseReason.SMU_READ, f"the CO of core {', '.join(map(str, unread))} could not be read", unread
+    owned, base = {core for core, _ in s.baseline}, dict(s.base_co)
+    cached = {} if w.gap_grew else dict(w.resident)
+    expected = {core: cached.get(core) if core in owned else base.get(core) for core in cores}
+    moved = tuple(core for core in cores if expected[core] is not None and reads[core] != expected[core])
+    if not moved:
+        return None
+    return (
+        PauseReason.OUTSIDE_WRITE,
+        f"something else wrote the CO during the session: {_left(moved, reads, expected)}",
+        moved,
+    )
 
 
 def _stale_fail(s: SessionState, core: int, w: World) -> tuple[SessionState, str | None]:
@@ -1152,6 +1178,11 @@ def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transi
             f"or at or past its fail bound {s.core(core).fb}"
         )
         return _enter_pause(replace(s, flow=flow), PauseReason.INTERNAL, detail)
+    if flow.stage is not s.knobs_stage:
+        problem = _stage_entry_problem(s, w)
+        if problem is not None:
+            return _enter_pause(replace(s, flow=flow), *problem)
+        s = replace(s, knobs_stage=flow.stage)
     limit = s.config.thermal_limit_c if w.tjmax_c is None else min(s.config.thermal_limit_c, w.tjmax_c)
     spec = replace(spec, thermal_limit_c=limit)
     token = s.next_token

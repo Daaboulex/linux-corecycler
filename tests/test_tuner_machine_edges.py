@@ -427,6 +427,56 @@ def evidence(same_boot: bool, reads: dict, written: dict | None = None, marked: 
     )
 
 
+def first_test_of_a_session_with_a_held_core(**world):
+    started = transition(SessionState(), Start(CFG, 1, 0, True), HELD).state
+    reads = {0: 0, 1: 0, 2: -5}
+    seen = replace(HELD, co_now=tuple(sorted(reads.items())), resident=((0, 0), (1, 0)))
+    return transition(started, ContinuationDue(started.slot.token), replace(seen, **world))
+
+
+def test_a_stage_entry_with_every_co_as_left_starts_the_test_and_remembers_the_stage():
+    result = first_test_of_a_session_with_a_held_core()
+    assert isinstance(result.state.slot, InFlight)
+    assert result.state.knobs_stage is Stage.SEARCH
+
+
+@pytest.mark.parametrize(
+    ("reads", "reason", "cores", "says"),
+    [
+        ({0: 0, 1: 0, 2: -9}, PauseReason.OUTSIDE_WRITE, (2,), "core 2 reads -9, the session left it at -5"),
+        ({0: -4, 1: 0, 2: -5}, PauseReason.OUTSIDE_WRITE, (0,), "core 0 reads -4, the session left it at 0"),
+        ({0: 0, 1: None, 2: -5}, PauseReason.SMU_READ, (1,), "the CO of core 1 could not be read"),
+        (None, PauseReason.SMU_READ, (0, 1, 2), "the CO of core 0, 1, 2 could not be read"),
+    ],
+)
+def test_a_stage_entry_with_a_moved_or_unread_co_pauses_before_any_test(reads, reason, cores, says):
+    co_now = None if reads is None else tuple(sorted(reads.items()))
+    result = first_test_of_a_session_with_a_held_core(co_now=co_now)
+    assert (result.state.pause.reason, result.state.pause.cores) == (reason, cores)
+    assert says in result.state.pause.detail
+    assert not any(type(effect).__name__ == "StartWorker" for effect in result.effects)
+
+
+def test_an_owned_core_the_rig_forgot_is_not_compared():
+    result = first_test_of_a_session_with_a_held_core(co_now=((0, -4), (1, 0), (2, -5)), resident=())
+    assert isinstance(result.state.slot, InFlight)
+
+
+def test_after_a_sleep_gap_only_the_held_cores_are_compared():
+    owned_moved = first_test_of_a_session_with_a_held_core(co_now=((0, -4), (1, 0), (2, -5)), gap_grew=True)
+    assert isinstance(owned_moved.state.slot, InFlight)
+    held_moved = first_test_of_a_session_with_a_held_core(co_now=((0, 0), (1, 0), (2, -9)), gap_grew=True)
+    assert held_moved.state.pause.reason is PauseReason.OUTSIDE_WRITE
+
+
+def test_within_a_stage_the_co_is_not_read_again():
+    started = transition(SessionState(), Start(CFG, 1, 0, True), HELD).state
+    entered = replace(started, knobs_stage=Stage.SEARCH)
+    moved = replace(HELD, co_now=((0, 0), (1, 0), (2, -9)), resident=((0, 0), (1, 0)))
+    result = transition(entered, ContinuationDue(entered.slot.token), moved)
+    assert isinstance(result.state.slot, InFlight)
+
+
 def completed_with_a_held_core():
     started = transition(SessionState(), Start(CFG, 1, 0, True), HELD).state
     return replace(stored(started), status="completed")

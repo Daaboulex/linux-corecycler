@@ -734,7 +734,7 @@ class LiveRig:
             if self.timer is not None and self.clock() >= self.timer[1]:
                 token = self.timer[0]
                 self.timer = None
-                self.post(ContinuationDue(token))
+                self.post(ContinuationDue(token), replace(self.world(), co_now=self.co_reads()))
                 return True
             return False
         if isinstance(event, Sampled):

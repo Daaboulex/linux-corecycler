@@ -304,6 +304,7 @@ class SessionState:
     power: tuple[tuple[str, str], ...] = ()
     setup: tuple[tuple[str, str], ...] = ()
     base_co: tuple[tuple[int, int | None], ...] = ()
+    knobs_stage: Stage | None = None
 
     def __post_init__(self) -> None:
         problems = list(_state_problems(self))
@@ -504,6 +505,7 @@ class World:
     stored_crash_suspects: tuple[int, ...] | None = None
     owner_layout: bool = False
     co_range: tuple[int, int] | None = None
+    co_now: tuple[tuple[int, int | None], ...] | None = None
 
     def resident_of(self, core: int) -> int | None:
         return dict(self.resident).get(core)

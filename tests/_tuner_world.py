@@ -138,6 +138,7 @@ class Fake:
             setup=self.setup,
             tjmax_c=self.tjmax_c,
             co_range=self.co_range,
+            co_now=tuple(sorted(self.co.items())),
             now=self.now,
             temperature_c=self.temperature,
             stored=self.db,
