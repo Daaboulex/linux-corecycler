@@ -419,6 +419,23 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
             refused=f"the setup changed since session {st.session_id} started: {changed}; "
             "start a new session on this setup",
         )
+    reads = dict(w.bios_co)
+    unread = sorted(core for core, _ in w.cpus_of if reads.get(core) is None)
+    if unread:
+        return Transition(s, refused=f"the CO of core {', '.join(map(str, unread))} could not be read")
+    held = _held_base_changes(st, w.bios_co)
+    if held:
+        return Transition(
+            s,
+            refused=f"the BIOS CO of a core session {st.session_id} does not own changed: {held}; "
+            "start a new session on this setup",
+        )
+    if st.power != w.power:
+        return Transition(
+            s,
+            refused=f"the power state changed since session {st.session_id} started: "
+            f"{_changes(st.power, w.power)}; restore it and validate",
+        )
     token = s.next_token
     profile = tuple((r.core, r.value) for r in st.cores)
     running = SessionState(
@@ -550,7 +567,7 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
     return Transition(running, tuple(effects))
 
 
-def _held_base_changes(s: SessionState, reads: tuple[tuple[int, int | None], ...]) -> str:
+def _held_base_changes(s: SessionState | Stored, reads: tuple[tuple[int, int | None], ...]) -> str:
     base, owned = dict(s.base_co), {core for core, _ in s.baseline}
     return "; ".join(
         f"core {core} is {value}, the BIOS gave {base.get(core)} when the session started"

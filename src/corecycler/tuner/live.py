@@ -498,10 +498,11 @@ class LiveRig:
         refusal, warnings = self.hardware.preflight()
         return replace(self.world(), preflight_refusal=refusal, preflight_warnings=warnings)
 
+    def co_reads(self) -> tuple[tuple[int, int | None], ...]:
+        return tuple((core, self.hardware.read_co(core)) for core, _ in self.cpus_of)
+
     def world_for_start(self) -> World:
-        return replace(
-            self.world_checked(), bios_co=tuple((core, self.hardware.read_co(core)) for core, _ in self.cpus_of)
-        )
+        return replace(self.world_checked(), bios_co=self.co_reads())
 
     def world_for_resume(self, session_id: int) -> World:
         loaded = self.store.load(session_id)
@@ -776,7 +777,7 @@ class LiveRig:
         self.post(RestartOnSetup(self.store.new_session_id(), acknowledged), self.world_for_start())
 
     def validate(self, session_id: int) -> None:
-        world = self.world_for_resume(session_id)
+        world = replace(self.world_for_resume(session_id), bios_co=self.co_reads())
         last = self.stored_boot
         if world.stored is None or last == self.boot or self.hardware.boot_ended_clean(last):
             self.post(ValidateProfile(session_id), world)

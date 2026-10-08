@@ -404,6 +404,34 @@ def evidence(same_boot: bool, reads: dict, written: dict | None = None, marked: 
     )
 
 
+def completed_with_a_held_core():
+    started = transition(SessionState(), Start(CFG, 1, 0, True), HELD).state
+    return replace(stored(started), status="completed")
+
+
+@pytest.mark.parametrize(
+    ("world", "says"),
+    [
+        (replace(HELD, bios_co=((0, 0), (1, 0), (2, -9))), "core 2 is -9, the BIOS gave -5 when the session started"),
+        (replace(HELD, bios_co=((0, 0), (1, None), (2, -5))), "the CO of core 1 could not be read"),
+        (replace(HELD, bios_co=((0, 0), (1, 0))), "the CO of core 2 could not be read"),
+        (
+            replace(HELD, power=(("platform profile", "power-saver"),)),
+            "the power state changed since session 1 started: platform profile was absent, is now power-saver",
+        ),
+    ],
+)
+def test_validate_refuses_a_moved_held_core_an_unread_co_or_a_moved_power_state(world, says):
+    done = completed_with_a_held_core()
+    assert says in refusal(SessionState(), ValidateProfile(1), replace(world, stored=done))
+
+
+def test_validate_starts_when_the_held_cores_and_the_power_state_are_as_recorded():
+    done = completed_with_a_held_core()
+    owned_moved = replace(HELD, bios_co=((0, -7), (1, 0), (2, -5)), stored=done)
+    assert transition(SessionState(), ValidateProfile(1), owned_moved).state.lifecycle is Lifecycle.RUNNING
+
+
 def test_a_core_whose_co_cannot_be_read_pauses_as_smu_read_naming_it():
     result = transition(resuming_with_a_held_core(), evidence(True, {0: 0, 1: None, 2: -5}), HELD)
     assert result.state.pause.reason is PauseReason.SMU_READ
