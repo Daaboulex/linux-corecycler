@@ -154,7 +154,7 @@ class MainWindow(QMainWindow):
                         self._bios_current = current
                         log.info("BIOS version changed: %s -> %s", old, current)
                 except Exception:
-                    log.debug("Failed to detect BIOS change", exc_info=True)
+                    log.exception("Failed to detect a BIOS change")
             except Exception as e:
                 log.exception("Failed to initialize history database")
                 self._history_db = None
@@ -464,39 +464,51 @@ class MainWindow(QMainWindow):
         self._stop_btn.setEnabled(False)
         self._status_msg.setText("Stopping...")
 
-        # disconnect before stopping: a queued signal must not reach a half torn-down logger
-        if self._logger and self._worker:
-            with contextlib.suppress(RuntimeError):
-                self._worker.core_started.disconnect(self._logger.on_core_started)
-                self._worker.core_finished.disconnect(self._logger.on_core_finished)
-                self._worker.status_updated.disconnect(self._logger.on_status_updated)
-                self._worker.cycle_completed.disconnect(self._logger.on_cycle_completed)
-                self._worker.test_completed.disconnect(self._logger.on_test_completed)
-
-        if self._worker:
-            with contextlib.suppress(RuntimeError):
-                self._worker.status_updated.disconnect(self._on_status_cached)
-                self._worker.cycle_completed.disconnect(self._on_cycle_cached)
-
-        if self._logger:
-            for core_id, t in self._core_telemetry.items():
-                if t["max_freq"] > 0:
-                    with contextlib.suppress(Exception):
-                        self._logger.update_core_telemetry_peaks(
-                            core_id,
-                            peak_freq_mhz=t["max_freq"],
-                            max_temp_c=t["max_temp"],
-                            min_vcore_v=t["min_vcore"],
-                            max_vcore_v=t["max_vcore"],
-                        )
-            try:
-                self._logger.on_test_stopped()
-            except Exception:
-                log.exception("Failed to record test stop in history")
-            self._logger = None
+        self._release_logger()
+        self._disconnect_caches()
         self._core_telemetry.clear()
 
         self._worker.scheduler.stop()
+
+    def _release_logger(self) -> None:
+        logger, self._logger = self._logger, None
+        if logger is None:
+            return
+        # disconnect before the stop is recorded: a queued signal would reach a released logger
+        if self._worker is not None:
+            for signal, slot in (
+                (self._worker.core_started, logger.on_core_started),
+                (self._worker.core_finished, logger.on_core_finished),
+                (self._worker.status_updated, logger.on_status_updated),
+                (self._worker.cycle_completed, logger.on_cycle_completed),
+                (self._worker.test_completed, logger.on_test_completed),
+            ):
+                with contextlib.suppress(RuntimeError):
+                    signal.disconnect(slot)
+        for core_id, peaks in self._core_telemetry.items():
+            if peaks["max_freq"] > 0:
+                try:
+                    logger.update_core_telemetry_peaks(
+                        core_id,
+                        peak_freq_mhz=peaks["max_freq"],
+                        max_temp_c=peaks["max_temp"],
+                        min_vcore_v=peaks["min_vcore"],
+                        max_vcore_v=peaks["max_vcore"],
+                    )
+                except Exception:
+                    log.exception("Failed to record telemetry peaks of core %d", core_id)
+        try:
+            logger.on_test_stopped()
+        except Exception:
+            log.exception("Failed to record test stop in history")
+
+    def _disconnect_caches(self) -> None:
+        for signal, slot in (
+            (self._worker.status_updated, self._on_status_cached),
+            (self._worker.cycle_completed, self._on_cycle_cached),
+        ):
+            with contextlib.suppress(RuntimeError):
+                signal.disconnect(slot)
 
     def _get_backend(self, name: str):
         try:
@@ -834,22 +846,9 @@ class MainWindow(QMainWindow):
                 return
 
         if manual_running:
-            # disconnect before stopping: a queued signal would write after the database closes
-            if self._logger and self._worker:
-                with contextlib.suppress(RuntimeError):
-                    self._worker.core_started.disconnect(self._logger.on_core_started)
-                    self._worker.core_finished.disconnect(self._logger.on_core_finished)
-                    self._worker.status_updated.disconnect(self._logger.on_status_updated)
-                    self._worker.cycle_completed.disconnect(self._logger.on_cycle_completed)
-                    self._worker.test_completed.disconnect(self._logger.on_test_completed)
-                with contextlib.suppress(Exception):
-                    self._logger.on_test_stopped()
-                self._logger = None
-
+            self._release_logger()
+            self._disconnect_caches()
             # the finished handler's queued delivery would land after the database closes
-            with contextlib.suppress(RuntimeError):
-                self._worker.status_updated.disconnect(self._on_status_cached)
-                self._worker.cycle_completed.disconnect(self._on_cycle_cached)
             with contextlib.suppress(RuntimeError, TypeError):
                 self._worker.finished.disconnect(self._on_worker_finished)
 

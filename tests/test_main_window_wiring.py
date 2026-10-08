@@ -181,13 +181,15 @@ class TestConstruction:
         assert win._history_tab._bios_warning == "BIOS changed: 2401 -> 2402"
         win._history_db = None
 
-    def test_adoption_and_bios_failures_do_not_stop_startup(self, monkeypatch, tmp_path, db):
+    def test_adoption_and_bios_failures_do_not_stop_startup_and_are_logged(self, monkeypatch, tmp_path, db, caplog):
         def _boom(_d):
             raise OSError("unreadable")
 
-        win = _build(monkeypatch, tmp_path, db=db, bios=_boom, adopt=_boom)
+        with caplog.at_level("ERROR", logger="corecycler.gui.main_window"):
+            win = _build(monkeypatch, tmp_path, db=db, bios=_boom, adopt=_boom)
         assert win._history_db is db
         assert not win._bios_changed
+        assert "Failed to detect a BIOS change" in caplog.text
         win._history_db = None
 
     def test_the_old_sessions_are_archived_at_start_and_a_failure_is_logged(self, monkeypatch, tmp_path, caplog):
@@ -396,6 +398,26 @@ class TestStopTest:
         assert worker.scheduler.stop.called
         assert window._logger is None
         assert window._core_telemetry == {}
+
+    def test_a_failed_peak_write_is_logged_and_the_stop_still_recorded(self, window, caplog):
+        window._worker = _mock_worker()
+        logger = MagicMock()
+        logger.update_core_telemetry_peaks.side_effect = OSError("db gone")
+        window._logger = logger
+        window._core_telemetry[3] = {"max_freq": 5000.0, "max_temp": 80.0, "min_vcore": 1.1, "max_vcore": 1.3}
+        with caplog.at_level("ERROR", logger="corecycler.gui.main_window"):
+            window._stop_test()
+        assert "Failed to record telemetry peaks of core 3" in caplog.text
+        assert logger.on_test_stopped.called
+
+    def test_one_signal_that_was_never_connected_leaves_the_others_disconnected(self, window):
+        worker = _mock_worker()
+        worker.core_started.disconnect.side_effect = RuntimeError("not connected")
+        window._worker = worker
+        window._logger = MagicMock()
+        window._stop_test()
+        for name in ("core_finished", "status_updated", "cycle_completed", "test_completed"):
+            assert getattr(worker, name).disconnect.called, name
 
     def test_a_logger_that_fails_to_record_the_stop_is_surfaced(self, window, caplog):
         window._worker = _mock_worker()
@@ -659,9 +681,11 @@ class TestCloseEvent:
         window._worker = worker
         logger = MagicMock()
         window._logger = logger
+        window._core_telemetry[2] = {"max_freq": 5100.0, "max_temp": 82.0, "min_vcore": 1.1, "max_vcore": 1.3}
         no_modal.question.return_value = no_modal.StandardButton.Yes
         event = MagicMock()
         window.closeEvent(event)
+        assert logger.update_core_telemetry_peaks.call_args.args == (2,)
         assert logger.on_test_stopped.called
         assert worker.scheduler.force_stop.called
         assert worker.terminate.called
