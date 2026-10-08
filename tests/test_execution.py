@@ -1558,13 +1558,13 @@ class TestWatchIdle:
 
 
 class TestPreexec:
-    def test_the_preexec_resolves_no_library_after_the_fork(self, monkeypatch):
-        preexec = execution.make_preexec()
-
-        def resolved_after_the_fork(_name):
-            raise AssertionError("find_library ran in the forked child")
-
-        monkeypatch.setattr(ctypes.util, "find_library", resolved_after_the_fork)
+    def test_making_the_preexec_runs_no_program_and_searches_no_library(self):
+        execution._libc.cache_clear()
+        with (
+            patch.object(subprocess, "Popen", side_effect=AssertionError("a program ran")),
+            patch.object(ctypes.util, "find_library", side_effect=AssertionError("a library was searched")),
+        ):
+            preexec = execution.make_preexec()
         done = subprocess.run(_child("print(1)"), preexec_fn=preexec, capture_output=True, text=True, check=False)
         assert done.stdout == "1\n"
 

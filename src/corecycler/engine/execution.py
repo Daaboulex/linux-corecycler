@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
-import ctypes.util
 import functools
 import logging
 import math
@@ -170,7 +169,7 @@ _PR_SET_PDEATHSIG = 1
 
 @functools.cache
 def _libc() -> ctypes.CDLL:
-    return ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    return ctypes.CDLL(None, use_errno=True)
 
 
 def make_preexec():
