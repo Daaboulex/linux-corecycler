@@ -61,7 +61,6 @@ class HistoryTab(QWidget):
 
     load_profile_requested = Signal(object)  # dict[int, int]
 
-    # View modes
     VIEW_GROUPED = "grouped"
     VIEW_ALL = "all"
     VIEW_TUNER = "tuner"
@@ -88,14 +87,9 @@ class HistoryTab(QWidget):
         self._bios_label.setText(self._bios_warning)
         self._bios_label.setVisible(True)
 
-    # ------------------------------------------------------------------
-    # UI setup
-    # ------------------------------------------------------------------
-
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        # --- Summary bar ---
         summary_group = QGroupBox("")
         summary_layout = QHBoxLayout(summary_group)
 
@@ -139,16 +133,13 @@ class HistoryTab(QWidget):
 
         layout.addWidget(summary_group)
 
-        # --- Two-section vertical splitter: top (context+runs) / bottom (detail+log) ---
         splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # === Top section: context table + runs table ===
         top_widget = QWidget()
         top_layout = QVBoxLayout(top_widget)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(0)
 
-        # Context table (hidden in "All Runs" mode, auto-sized to rows)
         self._context_table = QTableWidget()
         self._context_table.setColumnCount(6)
         self._context_table.setHorizontalHeaderLabels(
@@ -177,7 +168,6 @@ class HistoryTab(QWidget):
         self._context_table.setMaximumHeight(200)
         top_layout.addWidget(self._context_table)
 
-        # Runs table (stretches to fill remaining top space)
         self._runs_table = QTableWidget()
         self._runs_table.setSortingEnabled(True)
         self._runs_table.setColumnCount(8)
@@ -212,7 +202,6 @@ class HistoryTab(QWidget):
 
         splitter.addWidget(top_widget)
 
-        # === Bottom section: detail info + core results + events log ===
         self._detail_widget = QWidget()
         detail_layout = QVBoxLayout(self._detail_widget)
         detail_layout.setContentsMargins(0, 0, 0, 0)
@@ -223,7 +212,6 @@ class HistoryTab(QWidget):
         self._detail_info.setStyleSheet(f"color: {theme.COLOR_MUTED}; padding: 2px;")
         detail_layout.addWidget(self._detail_info)
 
-        # Tuner session action buttons (hidden by default, shown for tuner sessions)
         self._tuner_actions_row = QWidget()
         tuner_actions_layout = QHBoxLayout(self._tuner_actions_row)
         tuner_actions_layout.setContentsMargins(0, 0, 0, 0)
@@ -250,7 +238,6 @@ class HistoryTab(QWidget):
         self._core_results_table.setMaximumHeight(300)
         detail_layout.addWidget(self._core_results_table)
 
-        # Events log (stretches to fill remaining bottom space)
         self._events_log = QPlainTextEdit()
         self._events_log.setReadOnly(True)
         self._events_log.setPlaceholderText("Select a run or session to view per-core results, events, and logs")
@@ -263,15 +250,9 @@ class HistoryTab(QWidget):
 
         self._splitter = splitter
         splitter.setChildrenCollapsible(False)
-        # Both panes absorb free space equally on resize; the runs table can
-        # never be squeezed out by a degenerate saved/initial splitter state.
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter)
-
-    # ------------------------------------------------------------------
-    # View toggle
-    # ------------------------------------------------------------------
 
     @Slot()
     def _on_view_selected(self) -> None:
@@ -291,7 +272,6 @@ class HistoryTab(QWidget):
     def _apply_view_mode(self) -> None:
         self._update_toggle_labels()
 
-        # Reload data to ensure we have fresh content for the new view
         if self._db:
             self._reload_data()
             self._update_summary()
@@ -300,8 +280,7 @@ class HistoryTab(QWidget):
             self._context_table.setVisible(False)
             self._populate_tuner_sessions()
             if self._tuner_sessions:
-                # _populate_tuner_sessions selected row 0 and opened its
-                # detail — clearing here would hide it again.
+                # the population opened the newest session's detail; clearing it would hide it again
                 return
         elif self._view_mode == self.VIEW_ALL:
             self._context_table.setVisible(False)
@@ -309,7 +288,6 @@ class HistoryTab(QWidget):
         else:
             self._context_table.setVisible(True)
             self._populate_context_table()
-            # Auto-select first context so runs are always visible
             if self._context_table.rowCount() > 0:
                 self._context_table.selectRow(0)
                 return
@@ -317,18 +295,11 @@ class HistoryTab(QWidget):
                 self._runs_table.setRowCount(0)
         self._clear_detail()
 
-    # ------------------------------------------------------------------
-    # Data loading
-    # ------------------------------------------------------------------
-
     @Slot()
     def refresh(self) -> None:
         if not self._db:
             return
 
-        # On first load, pick the best default view based on available data.
-        # Must run BEFORE _refresh_preserve_context so the view mode is set
-        # before any table population happens.
         if self._initial_load:
             self._initial_load = False
             self._reload_data()
@@ -345,7 +316,6 @@ class HistoryTab(QWidget):
         if not self._db:
             return
 
-        # remember which context was selected
         selected_ctx_id = None
         if self._view_mode == self.VIEW_GROUPED:
             ctx_rows = sorted({idx.row() for idx in self._context_table.selectionModel().selectedRows()})
@@ -356,15 +326,13 @@ class HistoryTab(QWidget):
         self._update_summary()
 
         if self._view_mode == self.VIEW_GROUPED and selected_ctx_id is not None:
-            # Rebuild context table but restore selection without clearing detail
             self._populate_context_table()
             for i, ctx in enumerate(self._contexts):
                 if ctx.id == selected_ctx_id:
                     self._context_table.selectRow(i)
-                    # Force refresh — selectRow may not fire signal if same row index
+                    # selectRow does not signal when the row is already selected
                     self._on_context_selected()
                     return
-            # Context was deleted (all its runs gone) — fall through to full refresh
         elif self._view_mode == self.VIEW_ALL:
             self._populate_runs_table(self._runs)
             self._clear_detail()
@@ -373,19 +341,16 @@ class HistoryTab(QWidget):
             self._populate_tuner_sessions()
             return
 
-        # Fallback: full view mode reset
         self._apply_view_mode()
 
     def _reload_data(self) -> None:
         self._runs = self._db.list_runs(limit=500)
         self._contexts = self._db.list_contexts()
 
-        # Group runs by context_id
         self._context_runs.clear()
         for run in self._runs:
             self._context_runs.setdefault(run.context_id, []).append(run)
 
-        # Load tuner sessions
         self._tuner_sessions = self._load_tuner_sessions()
 
     def _update_summary(self) -> None:
@@ -404,21 +369,13 @@ class HistoryTab(QWidget):
             self._stopped_label.setText(f"Stopped: {counts.get('stopped', 0)}")
         self._update_toggle_labels()
 
-    # ------------------------------------------------------------------
-    # Context table
-    # ------------------------------------------------------------------
-
     def _populate_context_table(self) -> None:
-        # Include "Ungrouped" if there are runs without a context
         ungrouped = self._context_runs.get(None, [])
         row_count = len(self._contexts) + (1 if ungrouped else 0)
         self._context_table.setRowCount(row_count)
 
-        # Pre-compute which contexts have a BIOS change from their chronological
-        # predecessor.  self._contexts is newest-first, so the chronological
-        # predecessor of index i is index i+1.  We mark the *newer* context
-        # (the one that introduced the change) with the indicator.
         bios_changed_set: set[int] = set()
+        # contexts are newest first, so i + 1 is the older neighbour of i
         for i in range(len(self._contexts) - 1):
             if self._contexts[i].bios_version != self._contexts[i + 1].bios_version:
                 bios_changed_set.add(i)
@@ -431,7 +388,6 @@ class HistoryTab(QWidget):
             scalar_str = f"{ctx.pbo_scalar:.1f}" if ctx.pbo_scalar is not None else "-"
             best = _best_result(runs)
 
-            # Detect BIOS change — mark the newer context that introduced the change
             bios_changed = idx in bios_changed_set
 
             bios_text = ctx.bios_version or "-"
@@ -447,7 +403,6 @@ class HistoryTab(QWidget):
                 (ctx.notes or "", Qt.AlignmentFlag.AlignLeft),
             ]
 
-            # Color based on best pass rate
             has_failures = any(r.cores_failed > 0 for r in runs if r.status == "completed")
             all_pass = any(r.cores_failed == 0 and r.status == "completed" for r in runs)
             row_color = (
@@ -480,7 +435,6 @@ class HistoryTab(QWidget):
                 cell.setForeground(QColor(theme.COLOR_MUTED))
                 self._context_table.setItem(row, col, cell)
 
-        # Auto-size context table height to fit rows (capped at 200px)
         self._auto_size_context_table()
 
     def _auto_size_context_table(self) -> None:
@@ -509,7 +463,6 @@ class HistoryTab(QWidget):
         header_h = self._core_results_table.horizontalHeader().height()
         if header_h < 10:
             header_h = 26
-        # Cap at 300px — enough for ~10 rows, rest goes to events log
         self._core_results_table.setMaximumHeight(min(header_h + row_h * rc + 6, 300))
 
     @Slot()
@@ -524,7 +477,6 @@ class HistoryTab(QWidget):
             ctx = self._contexts[row]
             runs = self._context_runs.get(ctx.id, [])
         else:
-            # Ungrouped row
             runs = self._context_runs.get(None, [])
 
         self._populate_runs_table(runs)
@@ -549,15 +501,10 @@ class HistoryTab(QWidget):
             self._db.update_context_notes(ctx.id, text)
             self._refresh_preserve_context()
 
-    # ------------------------------------------------------------------
-    # Runs table
-    # ------------------------------------------------------------------
-
     def _populate_runs_table(self, runs: list[RunRecord]) -> None:
         self._displayed_runs = runs
         self._runs_table.setSortingEnabled(False)
 
-        # Always reset column headers (tuner sessions view may have changed them)
         self._runs_table.setColumnCount(8)
         self._runs_table.setHorizontalHeaderLabels(
             ["Date", "Backend", "Mode", "Result", "Duration", "Status", "Cores", "BIOS"]
@@ -612,16 +559,11 @@ class HistoryTab(QWidget):
 
         self._runs_table.setSortingEnabled(True)
 
-    # ------------------------------------------------------------------
-    # Selection & detail
-    # ------------------------------------------------------------------
-
     @Slot()
     def _on_run_selection_changed(self) -> None:
         rows = self._selected_run_rows()
 
         if self._view_mode == self.VIEW_TUNER:
-            # Tuner session selection
             self._delete_btn.setEnabled(len(rows) >= 1)
             self._compare_btn.setEnabled(False)
             if len(rows) == 1 and rows[0] < len(self._tuner_sessions):
@@ -656,7 +598,6 @@ class HistoryTab(QWidget):
         self._tuner_actions_row.setVisible(False)
         self._expand_detail()
 
-        # Info line
         info_parts = [
             run.cpu_model,
             f"{run.backend} / {run.stress_mode} / {run.fft_preset}",
@@ -672,7 +613,6 @@ class HistoryTab(QWidget):
         self._detail_info.setText("  |  ".join(info_parts))
         self._detail_info.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 2px;")
 
-        # Core results
         results = self._db.get_core_results(run.id)
         self._core_results_table.setColumnCount(9)
         self._core_results_table.setHorizontalHeaderLabels(
@@ -705,17 +645,14 @@ class HistoryTab(QWidget):
                     cell.setForeground(QColor(result_color))
                 elif r.passed is False:
                     cell.setForeground(QColor(theme.COLOR_FAIL))
-                # Add tooltip on error column so full message is visible on hover
                 if col == 8 and r.error_message:
                     cell.setToolTip(r.error_message)
                 self._core_results_table.setItem(row, col, cell)
 
         self._auto_size_core_results_table()
 
-        # Events log + context info
         lines: list[str] = []
 
-        # Show tuning context info if available
         if run.context_id and self._db:
             ctx = self._db.get_context(run.context_id)
             if ctx:
@@ -771,7 +708,6 @@ class HistoryTab(QWidget):
                 if eff_maxes:
                     eff_max = max(eff_maxes)
                     parts.append(f"    Boost ceiling: {eff_max:.0f} MHz")
-                    # clock stretch: worst deficit between actual and max
                     if freqs:
                         min_freq = min(freqs)
                         stretch_pct = (1.0 - min_freq / eff_max) * 100.0
@@ -799,10 +735,6 @@ class HistoryTab(QWidget):
             lines.append(run.settings_json)
 
         self._events_log.setPlainText("\n".join(lines))
-
-    # ------------------------------------------------------------------
-    # Tuner sessions
-    # ------------------------------------------------------------------
 
     def _load_tuner_sessions(self) -> list[MachineSessionRecord]:
         if not self._db:
@@ -867,12 +799,9 @@ class HistoryTab(QWidget):
                     cell.setData(Qt.ItemDataRole.UserRole, row)
                 self._runs_table.setItem(row, col, cell)
 
-        # Auto-select latest session so detail is visible immediately.
-        # selectRow alone is not enough: when row 0 is already selected the
-        # selectionChanged signal never fires, so show the detail explicitly
-        # (idempotent) instead of depending on the signal path.
         if sessions:
             self._runs_table.selectRow(0)
+            # selectRow does not signal when the row is already selected
             self._show_tuner_session_detail(sessions[0])
 
         self._runs_table.setSortingEnabled(True)
@@ -974,10 +903,8 @@ class HistoryTab(QWidget):
             return
         self._detail_widget.setVisible(True)
         total = sum(self._splitter.sizes())
+        # before its first layout pass the splitter reports no size
         if total <= 0:
-            # Not laid out yet (first tab entry): derive from the widget, with
-            # a floor so the split can never be zero-sized. Qt rescales these
-            # proportionally at the real layout pass.
             total = max(self._splitter.height(), self.height(), 400)
         self._splitter.setSizes([total // 2, total - total // 2])
 
@@ -989,10 +916,6 @@ class HistoryTab(QWidget):
         self._tuner_actions_row.setVisible(False)
         self._selected_tuner_session = None
         self._detail_widget.setVisible(False)
-
-    # ------------------------------------------------------------------
-    # Context menu (runs table)
-    # ------------------------------------------------------------------
 
     @Slot()
     def _show_context_menu(self, pos) -> None:
@@ -1071,11 +994,9 @@ class HistoryTab(QWidget):
                 self._delete_tuner_sessions(rows)
             return
 
-        # In grouped view, allow deleting contexts directly from context table
         if self._view_mode == self.VIEW_GROUPED:
             ctx_rows = sorted({idx.row() for idx in self._context_table.selectionModel().selectedRows()})
             if ctx_rows and not self._selected_run_rows():
-                # User selected contexts, not runs — delete contexts
                 self._delete_contexts(ctx_rows)
                 return
 
@@ -1088,7 +1009,6 @@ class HistoryTab(QWidget):
             return
 
         displayed = getattr(self, "_displayed_runs", self._runs)
-        # Build description of what we're deleting
         run_ids = []
         for row in rows:
             if row < len(displayed) and displayed[row].id is not None:
@@ -1110,7 +1030,6 @@ class HistoryTab(QWidget):
         for run_id in run_ids:
             self._db.delete_run(run_id)
 
-        # Clean up orphaned contexts (no remaining runs)
         if self._db:
             self._db.delete_orphaned_contexts()
 
@@ -1128,7 +1047,6 @@ class HistoryTab(QWidget):
         if not ctx_ids:
             return
 
-        # Count total associated runs for an explicit warning
         total_runs = sum(len(self._context_runs.get(cid, [])) for cid in ctx_ids)
 
         reply = QMessageBox.question(
@@ -1196,13 +1114,8 @@ class HistoryTab(QWidget):
         for sid in session_ids:
             self._db.delete_tuner_session(sid)
 
-        # Clean up contexts that no longer have any runs or sessions
         self._db.delete_orphaned_contexts()
         self._refresh_preserve_context()
-
-    # ------------------------------------------------------------------
-    # Compare mode
-    # ------------------------------------------------------------------
 
     @Slot()
     def _compare_selected(self) -> None:
@@ -1282,11 +1195,6 @@ class HistoryTab(QWidget):
         self._events_log.setPlainText("\n".join(lines))
 
 
-# ---------------------------------------------------------------------------
-# Export options dialog
-# ---------------------------------------------------------------------------
-
-
 class _ExportOptionsDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1318,11 +1226,6 @@ class _ExportOptionsDialog(QDialog):
     @property
     def include_telemetry(self) -> bool:
         return self._telemetry_cb.isChecked()
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _co_offsets(co_json: str) -> dict | None:

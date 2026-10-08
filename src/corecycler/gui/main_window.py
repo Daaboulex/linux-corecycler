@@ -74,7 +74,6 @@ class TestWorker(QThread):
         super().__init__()
         self.scheduler = scheduler
 
-        # wire callbacks
         self.scheduler.on_core_start = [lambda cid, cyc: self.core_started.emit(cid, cyc)]
         self.scheduler.on_core_finish = [lambda cid, res: self.core_finished.emit(cid, res)]
         self.scheduler.on_status_update = [lambda cid, st: self.status_updated.emit(cid, st)]
@@ -120,14 +119,11 @@ class MainWindow(QMainWindow):
         self._active_test_core: int | None = None
         self._logger: TestRunLogger | None = None
 
-        # History database
         self._history_db: HistoryDB | None = None
         self._history_problem: str | None = None
         if self._settings.record_history:
             try:
                 self._history_db = HistoryDB()
-                # One-database guarantee: under sudo, merge any history left
-                # under /root into the user's database.
                 try:
                     adopted = adopt_legacy_root_db(self._history_db)
                     if adopted:
@@ -144,11 +140,9 @@ class MainWindow(QMainWindow):
                 if recovered:
                     for run_id, started_at in recovered:
                         log.info("Recovered stale session id=%d started_at=%s, marked as crashed", run_id, started_at)
-                # Purge old runs
                 if self._settings.history_retention_days > 0:
                     cutoff = datetime.now(UTC) - timedelta(days=self._settings.history_retention_days)
                     self._history_db.purge_before(cutoff.isoformat())
-                # Check for BIOS version changes
                 self._bios_changed = False
                 self._bios_old = ""
                 self._bios_current = ""
@@ -182,7 +176,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
 
-        # left: core grid
         left = QVBoxLayout()
         left.setContentsMargins(0, 0, 0, 0)
 
@@ -211,7 +204,6 @@ class MainWindow(QMainWindow):
 
         main_layout.addLayout(left, stretch=0)
 
-        # right: tabs — align with CPU header on the left
         self._tabs = QTabWidget()
         self._tabs.setContentsMargins(0, 0, 0, 0)
         self._tabs.setDocumentMode(True)
@@ -287,7 +279,6 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # profile management
         save_action = QAction("Save Profile", self)
         save_action.triggered.connect(self._save_profile)
         toolbar.addAction(save_action)
@@ -342,7 +333,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", "CPU topology not detected")
             return
 
-        # Check if memory stress is running
         if (
             hasattr(self, "_memory_tab")
             and self._memory_tab._stress_worker
@@ -377,7 +367,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No cores", "Tick at least one core to test on the Configuration tab.")
             return
 
-        # select backend
         backend = self._get_backend(profile.backend)
         if not backend:
             return
@@ -425,10 +414,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", f"Failed to initialize scheduler: {e}")
             return
 
-        # init results tab
         self._results_tab.init_cores(scheduler.core_status)
 
-        # create worker
         self._core_status_cache.clear()
         self._cached_cycle = 0
         self._active_test_core = None
@@ -443,7 +430,6 @@ class MainWindow(QMainWindow):
         self._worker.crashed.connect(self._on_worker_crashed)
         self._worker.finished.connect(self._on_worker_finished)
 
-        # History logger
         self._logger = None
         if self._settings.record_history and self._history_db and self._topology:
             try:
@@ -461,7 +447,6 @@ class MainWindow(QMainWindow):
                 log.exception("Failed to create history logger")
                 self._logger = None
 
-        # UI state — mutual exclusion with tuner and memory stress
         self._start_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
         self._tuner_tab.set_test_running(True)
@@ -479,8 +464,7 @@ class MainWindow(QMainWindow):
         self._stop_btn.setEnabled(False)
         self._status_msg.setText("Stopping...")
 
-        # Disconnect logger from worker signals BEFORE stopping — prevents
-        # half-torn-down logger from receiving queued signals during shutdown
+        # disconnect before stopping: a queued signal must not reach a half torn-down logger
         if self._logger and self._worker:
             with contextlib.suppress(RuntimeError):
                 self._worker.core_started.disconnect(self._logger.on_core_started)
@@ -489,14 +473,12 @@ class MainWindow(QMainWindow):
                 self._worker.cycle_completed.disconnect(self._logger.on_cycle_completed)
                 self._worker.test_completed.disconnect(self._logger.on_test_completed)
 
-        # Disconnect thread-safety cache signals
         if self._worker:
             with contextlib.suppress(RuntimeError):
                 self._worker.status_updated.disconnect(self._on_status_cached)
                 self._worker.cycle_completed.disconnect(self._on_cycle_cached)
 
         if self._logger:
-            # Save any accumulated peak telemetry before stopping
             for core_id, t in self._core_telemetry.items():
                 if t["max_freq"] > 0:
                     with contextlib.suppress(Exception):
@@ -514,8 +496,6 @@ class MainWindow(QMainWindow):
             self._logger = None
         self._core_telemetry.clear()
 
-        # Signal the scheduler to stop — worker thread will finish naturally
-        # and _on_worker_finished will handle UI cleanup
         self._worker.scheduler.stop()
 
     def _get_backend(self, name: str):
@@ -551,7 +531,6 @@ class MainWindow(QMainWindow):
         if result and not result.passed:
             self._results_tab.add_error(core_id, result.detail)
 
-        # log telemetry summary for this core
         t = self._core_telemetry.pop(core_id, None)
         if t and t["max_freq"] > 0:
             extra_parts = []
@@ -568,7 +547,6 @@ class MainWindow(QMainWindow):
                 f"[{state}] Peak: {t['max_freq']:.0f} MHz, Max temp: {t['max_temp']:.1f}C{extra}",
             )
 
-            # Record peak telemetry in history
             if self._logger:
                 try:
                     self._logger.update_core_telemetry_peaks(
@@ -591,8 +569,6 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_test_completed(self, results_json: str) -> None:
-        # Fail closed: a display slot must never crash the GUI on a malformed or
-        # unexpectedly-shaped results payload.
         try:
             results = json.loads(results_json)
         except json.JSONDecodeError, TypeError:
@@ -607,9 +583,7 @@ class MainWindow(QMainWindow):
                 and all(isinstance(r, dict) and r.get("passed") for r in r_list)
             )
 
-        # Keys are stringified core_ids, values are lists of result dicts.
-        # A core with no verdict (stopped before its test earned one) is not
-        # tested — counting it as failed would read as a silicon problem.
+        # a core with no verdict was not tested; counting it failed would read as a silicon fault
         tested = {cid: r_list for cid, r_list in results.items() if isinstance(r_list, list) and r_list}
         total = len(tested)
         passed = sum(1 for r_list in tested.values() if _all_passed(r_list))
@@ -626,7 +600,6 @@ class MainWindow(QMainWindow):
             total_cycles=profile.cycle_count,
         )
 
-        # enable "Retest Failed" button with the list of failed cores
         failed_cores = []
         for cid, r_list in results.items():
             if isinstance(r_list, list) and r_list and not _all_passed(r_list):
@@ -726,15 +699,12 @@ class MainWindow(QMainWindow):
     def _on_tab_changed(self, index: int) -> None:
         """Refresh data when switching tabs."""
         widget = self._tabs.widget(index)
-        # Auto-refresh CO values when switching to Curve Optimizer tab (only
-        # when tuner is idle — tuner sends live updates via update_current_co())
         if widget is self._smu_tab and hasattr(self._smu_tab, "_read_all_co") and not self._tuner_tab.is_running:
             self._smu_tab._read_all_co()
 
     def _update_elapsed(self) -> None:
         if not self._worker:
             return
-        # crash watchdog: if thread object exists but is no longer running
         if not self._worker.isRunning():
             self._cleanup_worker()
             self._status_msg.setText("Test stopped (worker exited unexpectedly)")
@@ -791,7 +761,6 @@ class MainWindow(QMainWindow):
                     log.info("telemetry samples are recorded again")
                 self._telemetry_failing = False
 
-        # track peak telemetry per core for the log
         if current_core not in self._core_telemetry:
             self._core_telemetry[current_core] = {
                 "max_freq": 0.0,
@@ -864,10 +833,8 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
-        # Stop manual test worker
         if manual_running:
-            # Disconnect logger BEFORE stopping worker — prevents queued signals
-            # from writing to the DB after we close it
+            # disconnect before stopping: a queued signal would write after the database closes
             if self._logger and self._worker:
                 with contextlib.suppress(RuntimeError):
                     self._worker.core_started.disconnect(self._logger.on_core_started)
@@ -875,13 +842,11 @@ class MainWindow(QMainWindow):
                     self._worker.status_updated.disconnect(self._logger.on_status_updated)
                     self._worker.cycle_completed.disconnect(self._logger.on_cycle_completed)
                     self._worker.test_completed.disconnect(self._logger.on_test_completed)
-                # Mark the run as stopped before closing DB
                 with contextlib.suppress(Exception):
                     self._logger.on_test_stopped()
                 self._logger = None
 
-            # Disconnect thread-safety cache signals, and the finished handler:
-            # its queued delivery lands after this method closes the database.
+            # the finished handler's queued delivery would land after the database closes
             with contextlib.suppress(RuntimeError):
                 self._worker.status_updated.disconnect(self._on_status_cached)
                 self._worker.cycle_completed.disconnect(self._on_cycle_cached)
@@ -893,11 +858,9 @@ class MainWindow(QMainWindow):
                 self._worker.terminate()
                 self._worker.wait(2000)
 
-        # Stop memory stress test if running
         if hasattr(self, "_memory_tab"):
             self._memory_tab.force_stop()
 
-        # save window size
         self._settings.window_width = self.width()
         self._settings.window_height = self.height()
         save_settings(self._settings)
