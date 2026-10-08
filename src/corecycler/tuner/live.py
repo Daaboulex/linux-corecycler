@@ -68,10 +68,9 @@ from corecycler.tuner.machine.types import (
     WriteStockMarker,
 )
 from corecycler.tuner.orders import Method, RoundCursor
-from corecycler.tuner.persistence import crash_suspects, resident_at_death
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
     from pathlib import Path
 
     from corecycler.history.db import HistoryDB, JournalRow
@@ -424,6 +423,35 @@ class Store:
 
     def clear_marker(self) -> None:
         (self.root / "stock-marker.json").unlink(missing_ok=True)
+
+
+@dataclass(frozen=True, slots=True)
+class Resident:
+    last: JournalRow
+    confirmed_before: JournalRow | None
+
+
+def resident_at_death(rows: Iterable[JournalRow]) -> dict[int, Resident]:
+    last: dict[int, JournalRow] = {}
+    landed: dict[int, JournalRow] = {}
+    for row in sorted(rows, key=lambda row: row.id):
+        last[row.core_id] = row
+        if row.confirmed:
+            landed[row.core_id] = row
+    return {core_id: Resident(row, None if row.confirmed else landed.get(core_id)) for core_id, row in last.items()}
+
+
+def crash_suspects(resident: dict[int, Resident], direction: int) -> dict[int, int]:
+    suspects: dict[int, int] = {}
+    for core_id, held in resident.items():
+        unproven = [
+            row.value
+            for row in (held.last, held.confirmed_before)
+            if row is not None and row.value != 0 and (not row.survived or row.retracted)
+        ]
+        if unproven:
+            suspects[core_id] = min(unproven, key=lambda value: direction * value)
+    return suspects
 
 
 def _unproven(rows: list[JournalRow]) -> tuple[int, ...]:

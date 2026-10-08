@@ -411,34 +411,6 @@ class TestSchedulerHookGlue:
         assert "idle transition" in results[0][0].detail
         assert sched._stop_requested
 
-    def test_rapid_reports_a_stop_landing_mid_cycle_as_cut_short(self, tmp_path, monkeypatch):
-        from test_scheduler import cut
-
-        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: None)
-        sched, scripted = self._scheduler(tmp_path, monkeypatch)
-
-        def stop_during(sup, lanes, config, duration):
-            time.sleep(0.02)
-            sup.kwargs["stop_event"].set()
-            return {one.core_id: cut(one.core_id) for one in lanes}
-
-        scripted.script = [stop_during]
-        results = sched.run_rapid_transitions([0, 1], total_duration=5.0, load_seconds=0.02)
-        assert [results[core].outcome for core in (0, 1)] == [Outcome.CUT_SHORT, Outcome.CUT_SHORT]
-
-    def test_a_stop_between_rapid_cycles_is_cut_short(self, tmp_path, monkeypatch):
-        from test_scheduler import ok
-
-        sched, scripted = self._scheduler(tmp_path, monkeypatch)
-
-        def stop_while_idle(**kwargs):
-            kwargs["stop_event"].set()
-
-        monkeypatch.setattr(execution, "watch_idle", stop_while_idle)
-        scripted.script = [lambda sup, lanes, c, d: {one.core_id: ok(one.core_id) for one in lanes}]
-        results = sched.run_rapid_transitions([0, 1], total_duration=5.0, load_seconds=0.02)
-        assert [results[core].outcome for core in (0, 1)] == [Outcome.CUT_SHORT, Outcome.CUT_SHORT]
-
     def test_an_idle_error_with_stop_on_error_latches_the_stop(self, tmp_path, monkeypatch):
         from test_scheduler import ok
 

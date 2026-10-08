@@ -1,8 +1,8 @@
-"""HistoryDB boundary guards: corruption refusal, missing rows, merge skips.
+"""HistoryDB boundary guards: corruption refusal, merge skips.
 
-Every one of these is a fail-closed path — a corrupt file, an absent session,
-an insane persisted offset, or an orphaned row in a merged database. They must
-raise or return a safe default, never quietly hand back nonsense.
+Every one of these is a fail-closed path — a corrupt file, an insane persisted
+offset, or an orphaned row in a merged database. They must raise or return a
+safe default, never quietly hand back nonsense.
 """
 
 from __future__ import annotations
@@ -21,10 +21,8 @@ from corecycler.history.db import (
     SchemaTooNewError,
     TuningContextRecord,
 )
-from corecycler.tuner import persistence as tp
-from corecycler.tuner.config import TunerConfig
-from corecycler.tuner.state import CoreState, TunerPhase
 from tests._machine import journaled, this_boot
+from tests._old_rows import seed_old_session
 
 
 @pytest.fixture
@@ -32,6 +30,21 @@ def db():
     d = HistoryDB(":memory:")
     yield d
     d.close()
+
+
+def _session(db) -> int:
+    session = db.next_tuner_session_id()
+    db.save_machine_session(
+        session,
+        status="running",
+        config_json="{}",
+        machine_json="{}",
+        boot_id=this_boot(),
+        bios_version="2402",
+        cpu_model="Test",
+        context_id=None,
+    )
+    return session
 
 
 class TestOpenGuards:
@@ -194,7 +207,7 @@ class TestDurability:
     def test_a_reader_holding_a_snapshot_does_not_stall_a_co_write(self, tmp_path):
         path = tmp_path / "history.db"
         db = HistoryDB(path)
-        sid = tp.create_session(db, TunerConfig(cores_to_test=[0]), "", "", boot_id=this_boot())
+        sid = _session(db)
         reader = _reader_holding_a_snapshot(path)
         started = time.monotonic()
         journaled(db, sid, 0, -5)
@@ -212,7 +225,7 @@ class TestDurability:
         path = tmp_path / "history.db"
         db = HistoryDB(path)
         reader = _reader_holding_a_snapshot(path)
-        tp.create_session(db, TunerConfig(), "", "", boot_id=this_boot())
+        _session(db)
         caplog.set_level(logging.INFO, logger="corecycler.history.db")
         started = time.monotonic()
         db.close()
@@ -231,56 +244,26 @@ class TestDurability:
         db.close()
 
 
-class TestMissingRows:
-    def test_an_absent_session_has_no_latest(self, db):
-        assert db.get_latest_tuner_session() is None
-
-    def test_an_absent_session_reports_no_unattributed_crashes(self, db):
-        assert db.get_unattributed_crashes(999) == 0
-
-    def test_an_absent_session_reports_no_crash_streak(self, db):
-        assert db.get_resume_crash_streak(999) == 0
-
-
-class TestCoreStateSanity:
-    def _session(self, db):
-        return tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test", boot_id=this_boot())
-
-    def test_an_offset_outside_the_sane_range_is_refused(self, db):
-        sid = self._session(db)
-        with pytest.raises(ValueError, match="outside sane CO range"):
-            db.upsert_tuner_core_state(sid, CoreState(core_id=0, current_offset=-9999))
-
-    def test_a_negative_counter_is_refused(self, db):
-        sid = self._session(db)
-        with pytest.raises(ValueError, match="negative"):
-            db.upsert_tuner_core_state(sid, CoreState(core_id=0, crash_count=-1))
-
+class TestJournalSanity:
     def test_a_journal_value_that_is_not_a_whole_offset_is_refused_on_read(self, db):
-        sid = self._session(db)
+        sid = _session(db)
         db.journal_co_intent(sid, 0, 5.5, False, boot_id="0" * 32, mono_ns=1)
         with pytest.raises(CorruptSessionError, match="core 0 has CO journal value 5.5, not an integer"):
             db.journal_proven_values(sid, -1)
 
-    def test_negative_accumulated_time_is_refused(self, db):
-        sid = self._session(db)
-        with pytest.raises(ValueError, match="cumulative_test_time"):
-            db.upsert_tuner_core_state(sid, CoreState(core_id=0, cumulative_test_time=-1.0))
-
     @pytest.mark.parametrize(
-        ("column", "value", "cause"),
-        [("phase", "future_phase", "future_phase"), ("current_offset", -9999, "current_offset=-9999")],
+        ("table", "column", "said"),
+        [
+            ("tuner_co_journal", "mono_ns", "core 0 has CO journal stamp 'x', not an integer"),
+            ("tuner_sessions", "kernel_read_ns", "the last kernel read stamp 'x' is not an integer"),
+        ],
     )
-    def test_an_unreadable_row_names_its_session_and_its_cause(self, db, column, value, cause):
-        sid = self._session(db)
-        tp.save_core_state(db, sid, CoreState(core_id=3))
-        db._execute_raw(f"UPDATE tuner_core_states SET {column}=? WHERE session_id=?", (value, sid))
-        with pytest.raises(CorruptSessionError) as refused:
-            db.get_tuner_core_states(sid)
-        assert cause in refused.value.detail
-        assert "core 3" in refused.value.detail
-        assert f"session {sid}" in str(refused.value)
-        assert refused.value.detail in str(refused.value)
+    def test_a_stamp_that_is_not_an_integer_is_refused_on_read(self, db, table, column, said):
+        sid = _session(db)
+        journaled(db, sid, 0, -10)
+        db._execute_raw(f"UPDATE {table} SET {column}='x'")
+        with pytest.raises(CorruptSessionError, match=said):
+            db.journal_rows(sid, this_boot())
 
 
 def _seed(path, *, runs=1, sessions=1):
@@ -299,11 +282,8 @@ def _seed(path, *, runs=1, sessions=1):
             CoreResultRecord(run_id=rid, core_id=0, started_at="2026-07-20T10:00:00+00:00", passed=True)
         )
     for _ in range(sessions):
-        sid = tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test", boot_id=this_boot())
+        sid = seed_old_session(db)
         db.create_context(TuningContextRecord(bios_version="2402", co_offsets_json="{}", co_hash=f"seed{sid}"))
-        tp.save_core_state(db, sid, CoreState(core_id=0, phase=TunerPhase.CONFIRMED, best_offset=-20))
-        journaled(db, sid, 0, -20)
-        tp.log_test_result(db, sid, 0, -20, "confirm", True, duration=300.0)
     db.close()
     return db
 
@@ -318,7 +298,7 @@ class TestMerge:
         assert counts["tuner_sessions"] == 1
         assert counts["contexts"] == 1
         assert len(target.list_runs()) == 1
-        assert len(target.list_tuner_sessions()) == 1
+        assert target._execute_raw("SELECT count(*) FROM tuner_sessions").fetchone()[0] == 1
         target.close()
 
     def test_a_duplicate_context_is_deduplicated(self, tmp_path):
@@ -349,7 +329,7 @@ class TestMerge:
         target = HistoryDB(tmp_path / "target.db")
         counts = target.merge_from(other_path)
         assert counts["tuner_sessions"] == 0
-        assert target.list_tuner_sessions() == []
+        assert target._execute_raw("SELECT count(*) FROM tuner_sessions").fetchone()[0] == 0
         target.close()
 
 
@@ -383,7 +363,7 @@ class TestFailClosedOnBadInput:
         with pytest.raises(sqlite3.Error):
             target.merge_from(source)
         assert len(target.list_runs()) == before
-        assert target.list_tuner_sessions() == []
+        assert target._execute_raw("SELECT count(*) FROM tuner_sessions").fetchone()[0] == 0
         target.close()
 
     def test_an_interrupted_merge_leaves_the_target_as_it_was_and_usable(self, tmp_path):

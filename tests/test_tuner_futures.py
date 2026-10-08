@@ -8,6 +8,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from corecycler.tuner.live import resident_at_death
 from corecycler.tuner.machine.session import HELD
 from corecycler.tuner.machine.types import (
     ContinueOnSetup,
@@ -19,7 +20,6 @@ from corecycler.tuner.machine.types import (
     ValidateProfile,
 )
 from corecycler.tuner.orders import Method, order_problem
-from corecycler.tuner.persistence import resident_at_death
 from tests._tuner_world import (
     Abort,
     Broken,

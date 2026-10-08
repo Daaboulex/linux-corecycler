@@ -42,12 +42,6 @@ def test_every_old_session_and_its_rows_are_archived_as_stored(db, tmp_path):
     assert len(db._execute_raw("SELECT id FROM tuner_sessions").fetchall()) == 3
 
 
-def test_the_glossary_spells_out_every_phase_the_old_engine_had():
-    from corecycler.tuner.state import TunerPhase
-
-    assert set(PHASES) == {phase.value for phase in TunerPhase}
-
-
 def test_nothing_is_written_without_old_sessions_or_a_second_time(db, tmp_path):
     save_machine_session(db, tmp_path, "paused")
     assert archive_old_sessions(db) is None

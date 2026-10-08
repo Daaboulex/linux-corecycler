@@ -40,6 +40,7 @@ from corecycler.tuner.machine.types import (
     TestSpec as Spec,
 )
 from corecycler.tuner.orders import Method
+from tests._old_rows import seed_old_session
 from tests._tuner_world import Resume, fresh, run_to_rest, start
 
 CPUS = ((0, (0, 16)), (1, (1, 17)), (8, (8, 24)))
@@ -305,8 +306,6 @@ def test_the_store_keeps_the_session_in_the_database_and_the_stock_marker_apart(
     assert store.load(st.session_id) == (st, "boot-a", None)
     reopened = Store(database(tmp_path / "history.db"), tmp_path / "s", IDENTITY)
     assert reopened.load(st.session_id) == (st, "boot-a", None)
-    session = reopened.db.get_tuner_session(st.session_id)
-    assert session is None
     assert reopened.new_session_id() == st.session_id + 1
     assert store.marker_boot() is None
     store.write_marker("boot-a")
@@ -436,7 +435,7 @@ def test_a_merged_session_resumes_under_its_new_id(tmp_path):
     first.signals.append(PauseRequest())
     first.run_until_rest(0.01)
     target = database(tmp_path / "b.db")
-    own = target.create_tuner_session("{}", "bios-1", "cpu-1", boot_id="boot-a")
+    own = seed_old_session(target)
     target.merge_from(tmp_path / "a" / "history.db")
     store = Store(target, tmp_path / "b", IDENTITY)
     loaded, _boot, _read = store.load(own + 1)
@@ -804,7 +803,7 @@ def test_another_session_writing_later_in_the_dead_boot_is_seen(tmp_path, monkey
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
     in_flight(r)
-    other = r.store.db.create_tuner_session("{}", "", "", boot_id="boot-a")
+    other = seed_old_session(r.store.db)
     r.store.db.journal_co_intent(other, 1, -3, False, boot_id="boot-a", mono_ns=1)
     hardware.boot = "boot-b"
     read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)

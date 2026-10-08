@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 
 from corecycler.history.db import JournalRow
+from corecycler.tuner.live import crash_suspects, resident_at_death
 from corecycler.tuner.machine.session import transition
 from corecycler.tuner.machine.types import (
     Abort,
@@ -45,7 +46,6 @@ from corecycler.tuner.machine.types import (
     WriteCO,
     WriteStockMarker,
 )
-from corecycler.tuner.persistence import crash_suspects, resident_at_death
 
 
 class Broken(AssertionError):

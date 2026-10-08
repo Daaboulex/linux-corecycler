@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from corecycler.gui.style import duration_str, font_mono, phase_label, scheduler_phase_label, state_label, theme
+from corecycler.gui.style import duration_str, font_mono, scheduler_phase_label, state_label, theme, tuner_phase_label
 
 if TYPE_CHECKING:
     from corecycler.engine.scheduler import CoreTestStatus
@@ -84,7 +84,7 @@ class CoreCell(QWidget):
 
     def _refresh_labels(self) -> None:
         if self._tuner_phase:
-            text = phase_label(self._tuner_phase)
+            text = tuner_phase_label(self._tuner_phase)
         elif self._state == "testing" and self._scheduler_phase:
             text = scheduler_phase_label(self._scheduler_phase)
         else:

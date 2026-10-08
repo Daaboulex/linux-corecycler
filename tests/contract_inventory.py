@@ -16,12 +16,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 from corecycler.config import tools
 from corecycler.engine import containment, topology
 from corecycler.engine.backends import BACKEND_REGISTRY, load_all
-from corecycler.engine.execution import cpu_times as _cpu_times
 from corecycler.monitor.memory import parse_dmidecode_output
 from corecycler.monitor.msr import (
     MSR_APERF,
@@ -39,7 +38,6 @@ from corecycler.smu.commands import (
     get_commands,
 )
 from corecycler.smu.driver import RyzenSMU, SMUResponse
-from corecycler.tuner.engine import _read_cpu_times
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -171,13 +169,6 @@ def _pin_proc_cpus_allowed_list() -> None:
         task.mkdir(parents=True)
         (task / "status").write_text("Name:\tstress\nCpus_allowed_list:\t0-1,4\n")
         assert containment.observed_tree_cpus(77, proc_base=Path(tmp)) == {0, 1, 4}
-
-
-def _pin_proc_stat_cpu_fields() -> None:
-    stat = "cpu  1 2 3 4 5 6 7 8\ncpu0 100 20 300 4000 50 6 7 8\n"
-    for reader in (_cpu_times, _read_cpu_times):
-        with patch("builtins.open", mock_open(read_data=stat)):
-            assert reader(0) == (4050, 4491), reader.__module__
 
 
 def _pin_apu_co_command_ids() -> None:
@@ -391,14 +382,6 @@ CONTRACTS: list[Contract] = [
         ring_a=_pin_proc_cpus_allowed_list,
         live_verifiable=True,
         ring_b_test=("test_containment_live.py::test_a_contained_child_cannot_escape_its_cpuset"),
-    ),
-    Contract(
-        name="proc-stat-cpu-fields",
-        kind="os",
-        source="proc(5) /proc/stat cpuN fields: [3]=idle [4]=iowait, the stall watchdog's basis",
-        ring_a=_pin_proc_stat_cpu_fields,
-        live_verifiable=True,
-        ring_b_test="test_hardware_contracts.py::test_proc_stat_cpu_line_matches_the_pinned_fields",
     ),
     Contract(
         name="zen5-co-range",

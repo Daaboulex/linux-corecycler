@@ -63,10 +63,10 @@ class TestStyleCompletenessGuard:
     def test_missing_phase_raises(self, monkeypatch):
         from corecycler.gui import style
 
-        trimmed = dict(style.PHASE_LABELS)
+        trimmed = dict(style.TUNER_PHASE_LABELS)
         trimmed.pop(next(iter(trimmed)))
-        monkeypatch.setattr(style, "PHASE_LABELS", trimmed)
-        with pytest.raises(AssertionError, match="missing phases"):
+        monkeypatch.setattr(style, "TUNER_PHASE_LABELS", trimmed)
+        with pytest.raises(AssertionError, match="TUNER_PHASE_LABELS is missing phases"):
             style._assert_complete()
 
     def test_state_color_label_mismatch_raises(self, monkeypatch):
@@ -98,6 +98,20 @@ class TestCoreGridEdges:
         cell._scheduler_phase = "coarse"
         cell._refresh_labels()
         assert "Coarse" in cell._status_label.text()
+
+    def test_cell_shows_the_label_of_each_machine_phase_and_an_unknown_phase_as_given(self):
+        _qapp()
+        from corecycler.gui.style import TUNER_PHASE_LABELS
+        from corecycler.gui.widgets.core_grid import CoreCell
+        from corecycler.tuner.machine.types import Phase
+
+        cell = CoreCell(core_id=0, ccd=0, has_vcache=False)
+        shown = {}
+        for value in [*(phase.value for phase in Phase), "confirm"]:
+            cell.update_telemetry(tuner_phase=value)
+            shown[value] = cell._status_label.text()
+        assert shown == {phase.value: TUNER_PHASE_LABELS[phase] for phase in Phase} | {"confirm": "confirm"}
+        assert all(shown[phase.value] != phase.value for phase in Phase)
 
     def test_set_topology_clears_nested_layouts(self):
         _qapp()

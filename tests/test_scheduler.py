@@ -11,7 +11,7 @@ from typing import ClassVar
 
 import pytest
 
-from corecycler.engine import containment, execution
+from corecycler.engine import execution
 from corecycler.engine import scheduler as scheduler_mod
 from corecycler.engine.backends.base import LaneSignal, Outcome, StressConfig, StressResult
 from corecycler.engine.scheduler import (
@@ -22,7 +22,6 @@ from corecycler.engine.scheduler import (
 )
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.monitor.hwmon import SensorRead
-from tests.test_execution import BUSY, FakeBackend, FakeDetector, _child, own
 
 
 class RecordingBackend:
@@ -498,166 +497,6 @@ class TestAStopBeforeTheLastPhase:
         results = sched.run()
         assert [result.outcome for result in results[0]] == [Outcome.PASS]
         assert sched.core_status[0].state == "passed"
-
-
-THREE_SMT_CORES = {0: (0, 16), 1: (1, 17), 2: (2, 18)}
-
-
-class ClosableDetector(FakeDetector):
-    def close(self) -> None:
-        pass
-
-
-@pytest.fixture
-def real_supervisor(monkeypatch):
-    monkeypatch.setattr(scheduler_mod, "Supervisor", execution.Supervisor)
-    monkeypatch.setattr(containment, "contain", lambda cpus: None)
-    monkeypatch.setattr(scheduler_mod, "Sensors", sensors_at(40.0))
-
-
-def timed_pass(sup, lanes, config, duration):
-    time.sleep(duration)
-    return {one.core_id: ok(one.core_id) for one in lanes}
-
-
-def outcomes(results: dict[int, StressResult]) -> dict[int, Outcome]:
-    return {core: result.outcome for core, result in results.items()}
-
-
-class TestRapidTransitions:
-    def test_cycles_run_and_report_a_pass_for_every_core(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: None)
-        sched = make_scheduler(tmp_path)
-        ScriptedSupervisor.script = [timed_pass] * 40
-        results = sched.run_rapid_transitions([0, 1], total_duration=0.1, load_seconds=0.03, idle_seconds=0.01)
-        assert outcomes(results) == {0: Outcome.PASS, 1: Outcome.PASS}
-        assert results[0].duration_seconds == results[1].duration_seconds >= 0.03
-        assert sched.state == TestState.FINISHED
-
-    def test_a_failure_names_its_cycle(self, tmp_path):
-        sched = make_scheduler(tmp_path)
-
-        def timed_fail(sup, lanes, config, duration):
-            time.sleep(0.02)
-            return {
-                one.core_id: bad(one.core_id, "stress process died of SIGSEGV", Outcome.CPU_SIGNAL) for one in lanes
-            }
-
-        ScriptedSupervisor.script = [timed_fail]
-        results = sched.run_rapid_transitions([0], total_duration=1.0, load_seconds=0.02)
-        assert results[0].outcome is Outcome.CPU_SIGNAL
-        assert "rapid transition cycle 1" in results[0].detail
-
-    def test_a_rapid_cycle_failure_keeps_its_outcome(self, tmp_path):
-        sched = make_scheduler(tmp_path)
-        ScriptedSupervisor.script = [returns(Outcome.THERMAL, "CPU temperature exceeded 95.0 C safety limit")]
-        results = sched.run_rapid_transitions([0, 1], total_duration=1.0, load_seconds=0.02)
-        assert outcomes(results) == {0: Outcome.THERMAL, 1: Outcome.THERMAL}
-
-    def test_a_prior_stop_is_honored_without_running(self, tmp_path):
-        sched = make_scheduler(tmp_path)
-        sched.stop()
-        results = sched.run_rapid_transitions([0, 1], total_duration=5.0)
-        assert outcomes(results) == {0: Outcome.CUT_SHORT, 1: Outcome.CUT_SHORT}
-        assert ScriptedSupervisor.created == []
-
-    def test_a_run_too_short_for_one_load_segment_is_no_work_done(self, tmp_path):
-        sched = make_scheduler(tmp_path)
-        results = sched.run_rapid_transitions([0, 1], total_duration=0.01, load_seconds=0.02)
-        assert outcomes(results) == {0: Outcome.NO_WORK_DONE, 1: Outcome.NO_WORK_DONE}
-        assert "no work done" in results[1].detail
-        assert ScriptedSupervisor.created == []
-
-    def test_an_unknown_core_refuses_every_lane_before_anything_runs(self, tmp_path):
-        sched = make_scheduler(tmp_path, topo=make_topo({0: (0,)}))
-        results = sched.run_rapid_transitions([0, 7], total_duration=0.1)
-        assert outcomes(results) == {0: Outcome.CUT_SHORT, 7: Outcome.NOT_STARTED}
-        assert "core 7" in results[0].detail
-        assert ScriptedSupervisor.created == []
-
-    def test_an_empty_request_runs_nothing(self, tmp_path):
-        sched = make_scheduler(tmp_path)
-        assert sched.run_rapid_transitions([], total_duration=1.0, load_seconds=0.02) == {}
-        assert ScriptedSupervisor.created == []
-        assert sched.state == TestState.FINISHED
-
-    def test_an_idle_mce_ends_the_cycling(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            execution,
-            "watch_idle",
-            lambda **kwargs: LaneSignal(Outcome.OWN_CORE_MCE, f"MCE during {kwargs['phase']}: bang"),
-        )
-        sched = make_scheduler(tmp_path)
-        ScriptedSupervisor.script = [timed_pass]
-        results = sched.run_rapid_transitions([0], total_duration=1.0, load_seconds=0.02, idle_seconds=0.02)
-        assert results[0].outcome is Outcome.OWN_CORE_MCE
-        assert "idle phase of rapid transition cycle 1" in results[0].detail
-
-
-class TestRapidTransitionLanes:
-    def test_each_core_gets_its_own_one_cpu_lane(self, tmp_path, real_supervisor):
-        backend = FakeBackend(_child(BUSY))
-        sched = make_scheduler(tmp_path, topo=make_topo(THREE_SMT_CORES), backend=backend)
-        sched.stress_config.threads = 2
-        sched.run_rapid_transitions([0, 1, 2], total_duration=0.2, load_seconds=0.2)
-        assert [(config.threads, config.cpus) for config in backend.configs] == [(1, (0,)), (1, (1,)), (1, (2,))]
-        assert [run_dir.parent for run_dir in backend.prepared] == [
-            tmp_path / "work" / "rapid_transition" / f"core_{core}" for core in (0, 1, 2)
-        ]
-
-    def test_a_machine_check_in_a_load_segment_fails_only_the_core_that_logged_it(self, tmp_path, real_supervisor):
-        sched = make_scheduler(tmp_path, topo=make_topo(THREE_SMT_CORES), backend=FakeBackend(_child(BUSY)))
-        sched.detector = ClosableDetector([[own(2, "CPU:2 MC5_STATUS uncorrected")]])
-        results = sched.run_rapid_transitions([0, 1, 2], total_duration=20.0, load_seconds=10.0, idle_seconds=0.5)
-        assert outcomes(results) == {0: Outcome.CUT_SHORT, 1: Outcome.CUT_SHORT, 2: Outcome.OWN_CORE_MCE}
-        assert "rapid transition cycle 1" in results[2].detail
-        assert "CPU:2 MC5_STATUS uncorrected" in results[2].detail
-
-    def test_a_machine_check_in_an_idle_phase_fails_only_the_core_that_logged_it(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(scheduler_mod, "Sensors", sensors_at(40.0))
-        sched = make_scheduler(tmp_path, topo=make_topo(THREE_SMT_CORES))
-        sched.detector = ClosableDetector([[own(2, "CPU:2 MC5_STATUS uncorrected")]])
-        ScriptedSupervisor.script = [timed_pass]
-        results = sched.run_rapid_transitions([0, 1, 2], total_duration=1.0, load_seconds=0.02, idle_seconds=0.5)
-        assert outcomes(results) == {0: Outcome.CUT_SHORT, 1: Outcome.CUT_SHORT, 2: Outcome.OWN_CORE_MCE}
-        assert "idle phase of rapid transition cycle 1" in results[2].detail
-        assert "CPU:2 MC5_STATUS uncorrected" in results[2].detail
-        assert "core 2" in results[0].detail
-
-    def test_a_thermal_trip_in_an_idle_phase_stops_every_core_as_thermal(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(scheduler_mod, "Sensors", sensors_at(104.0))
-        sched = make_scheduler(tmp_path, topo=make_topo(THREE_SMT_CORES))
-        ScriptedSupervisor.script = [timed_pass]
-        results = sched.run_rapid_transitions([0, 1, 2], total_duration=1.0, load_seconds=0.02, idle_seconds=0.5)
-        assert outcomes(results) == dict.fromkeys((0, 1, 2), Outcome.THERMAL)
-
-    def test_a_failing_lane_leaves_every_other_lane_cut_short(self, tmp_path):
-        sched = make_scheduler(tmp_path, topo=make_topo(THREE_SMT_CORES))
-
-        def core_1_fails(sup, lanes, config, duration):
-            time.sleep(duration)
-            return {one.core_id: bad(one.core_id) if one.core_id == 1 else ok(one.core_id) for one in lanes}
-
-        ScriptedSupervisor.script = [core_1_fails] * 60
-        results = sched.run_rapid_transitions([0, 1, 2], total_duration=1.0, load_seconds=0.02, idle_seconds=0.02)
-        assert outcomes(results) == {0: Outcome.CUT_SHORT, 1: Outcome.COMPUTATION, 2: Outcome.CUT_SHORT}
-        assert "rapid transition cycle 1" in results[1].detail
-        assert results[1].detail.endswith("mprime error: FATAL ERROR")
-        assert "core 1" in results[0].detail
-        assert len(ScriptedSupervisor.created) == 1
-
-    def test_a_lane_the_supervisor_cut_is_not_named_as_a_failure(self, tmp_path):
-        sched = make_scheduler(tmp_path, topo=make_topo(THREE_SMT_CORES))
-        cut_lane = cut(1)
-
-        def core_0_fails_core_1_is_cut(sup, lanes, config, duration):
-            return {0: bad(0), 1: cut_lane, 2: ok(2)}
-
-        ScriptedSupervisor.script = [core_0_fails_core_1_is_cut]
-        results = sched.run_rapid_transitions([0, 1, 2], total_duration=1.0, load_seconds=0.02, idle_seconds=0.02)
-        assert outcomes(results) == {0: Outcome.COMPUTATION, 1: Outcome.CUT_SHORT, 2: Outcome.CUT_SHORT}
-        assert results[1] == cut_lane
-        assert "stopped by core 0:" in results[2].detail
 
 
 class TestSignalMarshallingAudit:

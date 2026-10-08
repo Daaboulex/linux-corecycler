@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import ctypes.util
-import itertools
 import os
 import resource
 import shutil
@@ -39,8 +38,6 @@ from corecycler.engine.execution import (
     SuperviseHooks,
     Supervisor,
     ThermalWatch,
-    busy_fraction,
-    cpu_times,
     exit_signal,
     watch_idle,
 )
@@ -1066,14 +1063,10 @@ class TestStallWatchdog:
         assert verdict.outcome is Outcome.STALL
         assert stalls == [0]
 
-    def test_a_hung_payload_stalls_even_when_its_cpus_are_busy(self, tmp_path):
+    def test_a_hung_payload_is_judged_by_its_own_cpu_time(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
         supervisor, _, _ = make_supervisor(backend, stall_timeout=0.2)
-        totals = itertools.count(100, 100)
-        with (
-            patch.object(execution, "STALL_GRACE_SECONDS", 0.0),
-            patch.object(execution, "cpu_times", side_effect=lambda _cpu: (0, next(totals))),
-        ):
+        with patch.object(execution, "STALL_GRACE_SECONDS", 0.0):
             verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 3.0)
         assert verdict.outcome is Outcome.STALL
 
@@ -1614,25 +1607,6 @@ class TestPreexec:
         verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.NOT_STARTED
         assert "Failed to start stress test" in verdict.detail
-
-
-class TestHelpers:
-    def test_cpu_times_reads_a_real_cpu(self):
-        sample = cpu_times(0)
-        assert sample is not None and sample[1] >= sample[0]
-
-    def test_cpu_times_tolerates_an_absent_cpu(self):
-        assert cpu_times(99999) is None
-
-    def test_busy_fraction_needs_two_samples(self):
-        assert busy_fraction(None, (1, 2)) is None
-        assert busy_fraction((1, 2), None) is None
-
-    def test_busy_fraction_needs_forward_progress(self):
-        assert busy_fraction((10, 100), (10, 100)) is None
-
-    def test_busy_fraction_is_the_non_idle_share(self):
-        assert busy_fraction((0, 0), (50, 100)) == 0.5
 
 
 class TestContainment:

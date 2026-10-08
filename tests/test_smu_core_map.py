@@ -27,7 +27,6 @@ from corecycler.smu.commands import (
     get_commands,
 )
 from corecycler.smu.driver import RyzenSMU, SMUResponse, core_map_blocked
-from tests._machine import this_boot
 
 VERMEER = get_commands(CPUGeneration.ZEN3_VERMEER)
 ZEN5 = get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE)
@@ -387,50 +386,6 @@ class TestKnownCoreDomain:
         assert silicon.store[(0, 6)] == -7
 
 
-class TestTunerRefusesUnmappedSMU:
-    def _engine(self, smu):
-        from corecycler.history.db import HistoryDB
-        from corecycler.tuner.config import TunerConfig
-        from corecycler.tuner.engine import TunerEngine
-
-        topo = MagicMock()
-        topo.cores = {c: MagicMock(ccd=0, logical_cpus=(c,)) for c in range(4)}
-        topo.model_name = "Test"
-        db = HistoryDB(":memory:")
-        engine = TunerEngine(
-            db=db,
-            topology=topo,
-            smu=smu,
-            backend=MagicMock(name="mprime"),
-            config=TunerConfig(cores_to_test=[0, 1], inherit_current=False),
-        )
-        return engine, db
-
-    def test_start_refuses_with_the_map_error(self):
-        smu, _silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: set(range(8))})
-        engine, db = self._engine(smu)
-        messages: list[str] = []
-        engine.log_message.connect(messages.append)
-        engine.start()
-        db.close()
-        assert engine._session_id is None
-        assert any("Cannot start" in m and "disagrees with the OS" in m for m in messages)
-
-    def test_resume_refuses_with_the_map_error(self):
-        smu, _silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: set(range(8))})
-        engine, db = self._engine(smu)
-        from corecycler.tuner import persistence as tp
-        from corecycler.tuner.config import TunerConfig
-
-        session_id = tp.create_session(db, TunerConfig(), "bios-1.0", "Test", None, boot_id=this_boot())
-        messages: list[str] = []
-        engine.log_message.connect(messages.append)
-        engine.resume(session_id)
-        db.close()
-        assert engine._status != "running"
-        assert any("Cannot resume" in m for m in messages)
-
-
 class TestNoL3Grouping:
     def test_window_grouping_reads_the_window_ccd_fuse(self):
         smu = RyzenSMU(VERMEER, MagicMock())
@@ -469,43 +424,6 @@ class TestCliRefusal:
             topo.cores[cid] = PhysicalCore(core_id=cid, ccd=0, ccx=None, logical_cpus=(cid,))
         assert live_hw.build_smu(topo) is None
         assert "per-core CO disabled" in capsys.readouterr().err
-
-
-class TestTunerEndToEndOnRenumbered:
-    def test_engine_traffic_lands_on_mapped_slots(self, monkeypatch, tmp_path):
-        from corecycler.history.db import HistoryDB
-        from corecycler.tuner import engine as eng_mod
-        from corecycler.tuner.config import TunerConfig
-        from corecycler.tuner.engine import TunerEngine
-
-        smu, silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: REPORTED_5600X_LIVE_SLOTS})
-        topo = MagicMock()
-        topo.cores = {c: MagicMock(ccd=0, logical_cpus=(c,)) for c in range(6)}
-        topo.model_name = "AMD Ryzen 5 5600X 6-Core Processor"
-        db = HistoryDB(":memory:")
-        backend = MagicMock()
-        backend.name = "mprime"
-        engine = TunerEngine(
-            db=db,
-            topology=topo,
-            smu=smu,
-            backend=backend,
-            config=TunerConfig(cores_to_test=[2, 3], inherit_current=True),
-            work_dir=tmp_path,
-        )
-        monkeypatch.setattr(engine, "_start_worker", MagicMock())
-        monkeypatch.setattr(eng_mod.QTimer, "singleShot", lambda _ms, fn: None)
-        engine.start()
-        assert engine._session_id is not None
-        assert (0, 4) in silicon.get_calls
-        assert (0, 5) in silicon.get_calls
-        assert engine._apply_co(2, -5) is True
-        assert silicon.writes[-1] == (0, 4, -5)
-        assert engine._apply_co(3, -5) is True
-        assert silicon.writes[-1] == (0, 5, -5)
-        engine.abort()
-        db.close()
-        assert all(slot not in (2, 3) for _ccd, slot, _v in silicon.writes)
 
 
 class TestOfflineCpusDisableGapProof:
@@ -559,29 +477,3 @@ class TestPerCcdCompactionIsResolvedByFuse:
         assert smu.core_map_error is None
         assert silicon.fuse_reads == []
         assert smu.core_map[15] == (1, 7)
-
-
-class TestValidateProfileRefusesUnmappedSMU:
-    def test_validate_refuses_with_the_map_error(self):
-        from corecycler.history.db import HistoryDB
-        from corecycler.tuner.config import TunerConfig
-        from corecycler.tuner.engine import TunerEngine
-
-        smu, _silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: set(range(8))})
-        topo = MagicMock()
-        topo.cores = {c: MagicMock(ccd=0, logical_cpus=(c,)) for c in range(4)}
-        topo.model_name = "Test"
-        db = HistoryDB(":memory:")
-        engine = TunerEngine(
-            db=db,
-            topology=topo,
-            smu=smu,
-            backend=MagicMock(name="mprime"),
-            config=TunerConfig(cores_to_test=[0, 1], inherit_current=False),
-        )
-        messages: list[str] = []
-        engine.log_message.connect(messages.append)
-        engine.validate_profile(1)
-        db.close()
-        assert engine._status != "running"
-        assert any("Cannot validate" in m for m in messages)

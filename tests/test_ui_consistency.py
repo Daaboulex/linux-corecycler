@@ -8,7 +8,7 @@ import time
 import types
 from pathlib import Path
 from types import MethodType
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -267,68 +267,6 @@ class TestStalenessRecovery:
             "tctl label should recover from grey after successful read"
         )
         assert tab._hwmon_fail_count == 0, "fail count should be reset on success"
-
-
-class TestLoadToCOEnabledForHardened:
-    """A session whose cores all reached HARDENED (the terminal phase with
-    hardening tiers on — the default) must still offer Load to CO: hardened is
-    confirmed plus extra stress. The gate only knowing CONFIRMED left every
-    finished default-config session with a dead button."""
-
-    def _detail_ns(self):
-        ns = types.SimpleNamespace()
-        ns._db = MagicMock()
-        ns._selected_tuner_session = None
-        ns._tuner_actions_row = MagicMock()
-        ns._load_co_btn = MagicMock()
-        ns._expand_detail = MagicMock()
-        ns._detail_info = MagicMock()
-        ns._core_results_table = MagicMock()
-        ns._auto_size_core_results_table = MagicMock()
-        ns._events_log = MagicMock()
-        return ns
-
-    def _run_detail(self, phases, best_offset=-10):
-        from corecycler.gui.history_tab import HistoryTab
-        from corecycler.tuner.state import CoreState, TunerPhase  # noqa: F401
-
-        ns = self._detail_ns()
-        sess = types.SimpleNamespace(
-            id=1,
-            config_json="{}",
-            cpu_model="cpu",
-            bios_version=None,
-            created_at="2026-07-17T00:00:00+00:00",
-        )
-        states = {
-            i: CoreState(core_id=i, phase=p, current_offset=-10, best_offset=best_offset, baseline_offset=0)
-            for i, p in enumerate(phases)
-        }
-        with (
-            patch("corecycler.gui.history_tab.tp.load_core_states", return_value=states),
-            patch("corecycler.gui.history_tab.tp.get_test_log", return_value=[]),
-            patch("corecycler.gui.history_tab.tp.get_events", return_value=[]),
-        ):
-            MethodType(HistoryTab._show_tuner_session_detail, ns)(sess)
-        return ns
-
-    def test_all_hardened_session_enables_load(self):
-        from corecycler.tuner.state import TunerPhase
-
-        ns = self._run_detail([TunerPhase.HARDENED] * 4)
-        ns._load_co_btn.setEnabled.assert_called_with(True)
-
-    def test_unfinished_session_with_values_enables_load(self):
-        from corecycler.tuner.state import TunerPhase
-
-        ns = self._run_detail([TunerPhase.COARSE_SEARCH] * 4)
-        ns._load_co_btn.setEnabled.assert_called_with(True)
-
-    def test_session_without_values_disables_load(self):
-        from corecycler.tuner.state import TunerPhase
-
-        ns = self._run_detail([TunerPhase.NOT_STARTED] * 4, best_offset=None)
-        ns._load_co_btn.setEnabled.assert_called_with(False)
 
 
 class TestNoStrayDisplayConstants:

@@ -24,8 +24,6 @@ from corecycler.config.paths import data_dir, hand_back
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from corecycler.tuner.state import CoreState, TunerSession
-
 DEFAULT_DB_PATH = data_dir() / "history" / "history.db"
 
 # Legacy location of root-owned history data from sudo runs.
@@ -33,13 +31,11 @@ LEGACY_ROOT_DB = Path("/root/.local/share/corecycler/history/history.db")
 
 log = logging.getLogger(__name__)
 
-RESUMABLE_STATUSES = ("running", "paused", "validating")
 SAMPLE_BLOCK_S = 10.0
 INCREMENTAL_VACUUM = 2
 SAMPLE_BLOCK_OPTIONS = {zstd.CompressionParameter.compression_level: 19, zstd.CompressionParameter.checksum_flag: 1}
 SAMPLE_LISTS = ("clocks", "tccd", "volts")
 OLD_TUNER_TABLES = ("tuner_core_states", "tuner_test_log", "tuner_events", "tuner_co_journal")
-RECOVERABLE_STATUSES = (*RESUMABLE_STATUSES, "quarantined", "aborted")
 
 
 def _pack_samples(samples: list[dict]) -> bytes:
@@ -192,12 +188,6 @@ class TuningContextRecord:
     ppt_limit_w: float | None = None
     tdc_limit_a: float | None = None
     edc_limit_a: float | None = None
-
-    def co_offsets(self) -> dict[int, int]:
-        stored = json.loads(self.co_offsets_json)
-        if not isinstance(stored, dict) or any(type(value) is not int for value in stored.values()):
-            raise ValueError(f"not a map of core to integer offset: {self.co_offsets_json!r}")
-        return {int(core): value for core, value in stored.items()}
 
 
 @dataclass(slots=True)
@@ -1388,23 +1378,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             return None
         return self._row_to_context(row)
 
-    def start_co_offsets(self, session_id: int) -> dict[int, int]:
-        row = self.__conn.execute(
-            "SELECT c.* FROM tuning_contexts c JOIN tuner_sessions s ON s.context_id = c.id WHERE s.id=?",
-            (session_id,),
-        ).fetchone()
-        if row is None:
-            return {}
-        context = self._row_to_context(row)
-        try:
-            return context.co_offsets()
-        except ValueError as exc:
-            raise CorruptSessionError(
-                session_id,
-                f"the Curve Optimizer recorded at Start, {context.co_offsets_json!r}, "
-                "is not a map of core to integer offset",
-            ) from exc
-
     def get_context_by_hash(self, co_hash: str, bios_version: str) -> TuningContextRecord | None:
         """Find an existing context matching the given CO hash and BIOS version."""
         row = self.__conn.execute(
@@ -1442,28 +1415,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     # ------------------------------------------------------------------
     # Tuner sessions
     # ------------------------------------------------------------------
-
-    def create_tuner_session(
-        self,
-        config_json: str,
-        bios_version: str,
-        cpu_model: str,
-        context_id: int | None = None,
-        *,
-        boot_id: str,
-    ) -> int:
-        """Create a new tuner session. Returns the session id."""
-        now = self._now_iso()
-        cur = self.__conn.execute(
-            """\
-            INSERT INTO tuner_sessions
-                (created_at, updated_at, status, bios_version, cpu_model,
-                 config_json, context_id, notes, boot_id)
-            VALUES (?,?,?,?,?,?,?,?,?)
-            """,
-            (now, now, "running", bios_version, cpu_model, config_json, context_id, "", boot_id),
-        )
-        return cur.lastrowid
 
     def next_tuner_session_id(self) -> int:
         row = self.__conn.execute(
@@ -1710,83 +1661,11 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         ).fetchone()
         return None if row is None else dict(row)
 
-    def stamp_session_boot(self, session_id: int, boot_id: str) -> None:
-        self.__conn.execute(
-            "UPDATE tuner_sessions SET boot_id=?, kernel_read_ns=NULL, updated_at=? WHERE id=?",
-            (boot_id, self._now_iso(), session_id),
-        )
-
     def set_kernel_read(self, session_id: int, kernel_read_ns: int) -> None:
         self.__conn.execute(
             "UPDATE tuner_sessions SET kernel_read_ns=?, updated_at=? WHERE id=?",
             (kernel_read_ns, self._now_iso(), session_id),
         )
-
-    def set_validation_dirty(self, session_id: int, dirty: bool) -> None:
-        self.__conn.execute(
-            "UPDATE tuner_sessions SET validation_dirty=?, updated_at=? WHERE id=?",
-            (int(dirty), self._now_iso(), session_id),
-        )
-
-    def update_tuner_session_status(self, session_id: int, status: str) -> None:
-        self.__conn.execute(
-            "UPDATE tuner_sessions SET status=?, updated_at=? WHERE id=?",
-            (status, self._now_iso(), session_id),
-        )
-
-    def get_tuner_session(self, session_id: int) -> TunerSession | None:
-        row = self.__conn.execute(
-            "SELECT * FROM tuner_sessions WHERE id=? AND machine_json IS NULL", (session_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_tuner_session(row)
-
-    def get_latest_tuner_session(self) -> TunerSession | None:
-        row = self.__conn.execute(
-            "SELECT * FROM tuner_sessions WHERE machine_json IS NULL ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_tuner_session(row)
-
-    def get_active_tuner_session(self) -> TunerSession | None:
-        row = self.__conn.execute(
-            "SELECT * FROM tuner_sessions WHERE status IN ('running','paused','validating')"
-            " AND machine_json IS NULL ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_tuner_session(row)
-
-    def list_resumable_tuner_sessions(self, *, limit: int = 50) -> list[TunerSession]:
-        """Sessions safe to resume without being asked: the ones still in flight."""
-        return self._sessions_with_status(RESUMABLE_STATUSES, limit)
-
-    def list_recoverable_tuner_sessions(self, *, limit: int = 50) -> list[TunerSession]:
-        """Sessions a user can still pick up by hand, newest first.
-
-        Wider than the resumable set on purpose: a quarantined or aborted
-        session keeps every core's phase, baseline and proven offsets, so
-        hiding it is what turns a stopped run into hours of lost work. It is
-        never resumed automatically -- only when the user names it.
-        """
-        return self._sessions_with_status(RECOVERABLE_STATUSES, limit)
-
-    def _sessions_with_status(self, statuses: tuple[str, ...], limit: int) -> list[TunerSession]:
-        placeholders = ",".join("?" * len(statuses))
-        rows = self.__conn.execute(
-            f"SELECT * FROM tuner_sessions WHERE status IN ({placeholders})"
-            " AND machine_json IS NULL ORDER BY id DESC LIMIT ?",
-            (*statuses, limit),
-        ).fetchall()
-        return [self._row_to_tuner_session(r) for r in rows]
-
-    def list_tuner_sessions(self, *, limit: int = 100) -> list[TunerSession]:
-        rows = self.__conn.execute(
-            "SELECT * FROM tuner_sessions WHERE machine_json IS NULL ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
-        return [self._row_to_tuner_session(r) for r in rows]
 
     # ------------------------------------------------------------------
     # CO write-ahead journal + resume-crash circuit breaker
@@ -1882,8 +1761,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         return [self._row_to_journal_row(r) for r in rows]
 
     def journal_taken_over(self, session_id: int, boot_id: str) -> JournalRow | None:
-        if not boot_id:
-            return None
         row = self.__conn.execute(
             """\
             SELECT * FROM tuner_co_journal
@@ -1937,39 +1814,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             written_at=row["written_at"],
         )
 
-    def get_unattributed_crashes(self, session_id: int) -> int:
-        row = self.__conn.execute(
-            "SELECT unattributed_crashes FROM tuner_sessions WHERE id=?", (session_id,)
-        ).fetchone()
-        if row is None:
-            return 0
-        return row["unattributed_crashes"] or 0
-
-    def set_unattributed_crashes(self, session_id: int, value: int) -> None:
-        self.__conn.execute(
-            "UPDATE tuner_sessions SET unattributed_crashes=?, updated_at=? WHERE id=?",
-            (value, self._now_iso(), session_id),
-        )
-
-    def set_validation_position(
-        self,
-        session_id: int,
-        stage: int,
-        index: int,
-        half: int,
-        dirty: bool,
-        requeue_json: str,
-    ) -> None:
-        """Persist the multi-core validation cursor after every transition,
-        so a reboot or app restart continues exactly where validation was
-        instead of restarting stage 1 for every core."""
-        self.__conn.execute(
-            "UPDATE tuner_sessions SET validation_stage=?, validation_index=?, "
-            "validation_half=?, validation_dirty=?, validation_requeue=?, "
-            "updated_at=? WHERE id=?",
-            (stage, index, half, int(dirty), requeue_json, self._now_iso(), session_id),
-        )
-
     def insert_tuner_event(self, session_id: int, message: str, boot_id: str = "", severity: str = "info") -> None:
         self.__conn.execute(
             "INSERT INTO tuner_events (session_id, timestamp, boot_id, severity, message) VALUES (?,?,?,?,?)",
@@ -1984,241 +1828,9 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def set_hunting_core(self, session_id: int, core_id: int | None) -> None:
-        """Persist which core an isolated hunt slot is stressing BEFORE the
-        slot starts: a hard crash mid-slot then names its proven culprit on
-        resume (every other core was at stock during the slot)."""
-        self.__conn.execute(
-            "UPDATE tuner_sessions SET hunting_core=?, updated_at=? WHERE id=?",
-            (core_id, self._now_iso(), session_id),
-        )
-
-    def get_resume_crash_streak(self, session_id: int) -> int:
-        row = self.__conn.execute("SELECT resume_crash_streak FROM tuner_sessions WHERE id=?", (session_id,)).fetchone()
-        if row is None:
-            return 0
-        return row["resume_crash_streak"] or 0
-
-    def set_resume_crash_streak(self, session_id: int, value: int) -> None:
-        self.__conn.execute(
-            "UPDATE tuner_sessions SET resume_crash_streak=?, updated_at=? WHERE id=?",
-            (value, self._now_iso(), session_id),
-        )
-
     # Hard silicon bounds for any Curve Optimizer offset (Zen generations use
     # at most [-60, +30]; anything outside is corruption, not a tuning value).
     _CO_SANE_RANGE = (-100, 100)
-
-    @classmethod
-    def _check_core_state_sane(cls, cs: CoreState) -> None:
-        """Guard condition on the persistence boundary, both directions.
-
-        Insane values (bit corruption, a hand-edited row, an arithmetic bug
-        upstream) must RAISE at the boundary — once written they become
-        indistinguishable from truth and every later decision trusts them.
-        """
-        lo, hi = cls._CO_SANE_RANGE
-        for name in (
-            "current_offset",
-            "best_offset",
-            "coarse_fail_offset",
-            "baseline_offset",
-            "backoff_fail_bound",
-            "backoff_pass_bound",
-        ):
-            v = getattr(cs, name)
-            if v is not None and not lo <= v <= hi:
-                raise ValueError(
-                    f"core {cs.core_id}: {name}={v} outside sane CO range "
-                    f"[{lo}, {hi}] — refusing to persist/load corrupted state"
-                )
-        for name in (
-            "confirm_attempts",
-            "consecutive_backoff_fails",
-            "crash_count",
-            "crash_cooldown",
-            "thermal_aborts",
-            "hardening_tier_index",
-        ):
-            v = getattr(cs, name)
-            if v < 0:
-                raise ValueError(f"core {cs.core_id}: {name}={v} negative — refusing to persist/load corrupted state")
-        if cs.cumulative_test_time < 0:
-            raise ValueError(
-                f"core {cs.core_id}: cumulative_test_time={cs.cumulative_test_time} "
-                f"negative — refusing to persist/load corrupted state"
-            )
-
-    def upsert_tuner_core_state(self, session_id: int, cs: CoreState) -> None:
-        self._check_core_state_sane(cs)
-        now = self._now_iso()
-        self.__conn.execute(
-            """\
-            INSERT INTO tuner_core_states
-                (session_id, core_id, phase, current_offset, best_offset,
-                 coarse_fail_offset, confirm_attempts, baseline_offset,
-                 backoff_mode, consecutive_backoff_fails,
-                 backoff_fail_bound, backoff_pass_bound, in_test,
-                 crash_count, crash_cooldown, thermal_aborts,
-                 cumulative_test_time,
-                 hardening_tier_index, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(session_id, core_id) DO UPDATE SET
-                phase=excluded.phase,
-                current_offset=excluded.current_offset,
-                best_offset=excluded.best_offset,
-                coarse_fail_offset=excluded.coarse_fail_offset,
-                confirm_attempts=excluded.confirm_attempts,
-                baseline_offset=excluded.baseline_offset,
-                backoff_mode=excluded.backoff_mode,
-                consecutive_backoff_fails=excluded.consecutive_backoff_fails,
-                backoff_fail_bound=excluded.backoff_fail_bound,
-                backoff_pass_bound=excluded.backoff_pass_bound,
-                in_test=excluded.in_test,
-                crash_count=excluded.crash_count,
-                crash_cooldown=excluded.crash_cooldown,
-                thermal_aborts=excluded.thermal_aborts,
-                cumulative_test_time=excluded.cumulative_test_time,
-                hardening_tier_index=excluded.hardening_tier_index,
-                updated_at=excluded.updated_at
-            """,
-            (
-                session_id,
-                cs.core_id,
-                cs.phase,
-                cs.current_offset,
-                cs.best_offset,
-                cs.coarse_fail_offset,
-                cs.confirm_attempts,
-                cs.baseline_offset,
-                int(cs.backoff_mode),
-                cs.consecutive_backoff_fails,
-                cs.backoff_fail_bound,
-                cs.backoff_pass_bound,
-                int(cs.in_test),
-                cs.crash_count,
-                cs.crash_cooldown,
-                cs.thermal_aborts,
-                cs.cumulative_test_time,
-                cs.hardening_tier_index,
-                now,
-            ),
-        )
-
-    def get_tuner_core_states(self, session_id: int) -> dict[int, CoreState]:
-        from corecycler.tuner.state import CoreState as _CoreState
-        from corecycler.tuner.state import TunerPhase as _TunerPhase
-
-        rows = self.__conn.execute(
-            "SELECT * FROM tuner_core_states WHERE session_id=? ORDER BY core_id",
-            (session_id,),
-        ).fetchall()
-        result: dict[int, _CoreState] = {}
-        for r in rows:
-            try:
-                phase = _TunerPhase(r["phase"])
-            except ValueError as e:
-                raise CorruptSessionError(
-                    session_id, f"core {r['core_id']} has phase {r['phase']!r}, which this build does not know"
-                ) from e
-            loaded = _CoreState(
-                core_id=r["core_id"],
-                phase=phase,
-                current_offset=r["current_offset"],
-                best_offset=r["best_offset"],
-                coarse_fail_offset=r["coarse_fail_offset"],
-                confirm_attempts=r["confirm_attempts"],
-                baseline_offset=r["baseline_offset"],
-                backoff_mode=bool(r["backoff_mode"]),
-                consecutive_backoff_fails=r["consecutive_backoff_fails"],
-                backoff_fail_bound=r["backoff_fail_bound"],
-                backoff_pass_bound=r["backoff_pass_bound"],
-                in_test=bool(r["in_test"]),
-                crash_count=r["crash_count"] or 0,
-                crash_cooldown=r["crash_cooldown"] or 0,
-                thermal_aborts=r["thermal_aborts"],
-                cumulative_test_time=r["cumulative_test_time"] or 0.0,
-                hardening_tier_index=r["hardening_tier_index"] or 0,
-            )
-            try:
-                self._check_core_state_sane(loaded)
-            except ValueError as e:
-                raise CorruptSessionError(session_id, str(e)) from e
-            result[loaded.core_id] = loaded
-        return result
-
-    def insert_tuner_test_log(
-        self,
-        session_id: int,
-        core_id: int,
-        offset: int,
-        phase: str,
-        passed: bool,
-        error_msg: str | None = None,
-        error_type: str | None = None,
-        duration: float | None = None,
-        run_id: int | None = None,
-        backend: str | None = None,
-        stress_mode: str | None = None,
-        fft_preset: str | None = None,
-        peak_stretch_pct: float | None = None,
-    ) -> int:
-        cur = self.__conn.execute(
-            """\
-            INSERT INTO tuner_test_log
-                (session_id, core_id, offset_tested, phase, passed,
-                 error_message, error_type, duration_seconds, run_id,
-                 backend, stress_mode, fft_preset, tested_at, peak_stretch_pct)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                session_id,
-                core_id,
-                offset,
-                phase,
-                int(passed),
-                error_msg,
-                error_type,
-                duration,
-                run_id,
-                backend,
-                stress_mode,
-                fft_preset,
-                self._now_iso(),
-                peak_stretch_pct,
-            ),
-        )
-        return cur.lastrowid
-
-    def get_tuner_test_log(self, session_id: int, core_id: int | None = None) -> list[dict]:
-        if core_id is not None:
-            rows = self.__conn.execute(
-                "SELECT * FROM tuner_test_log WHERE session_id=? AND core_id=? ORDER BY id",
-                (session_id, core_id),
-            ).fetchall()
-        else:
-            rows = self.__conn.execute(
-                "SELECT * FROM tuner_test_log WHERE session_id=? ORDER BY id",
-                (session_id,),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def get_tuner_session_offsets(self, session_id: int) -> dict[int, int]:
-        rows = self.__conn.execute(
-            "SELECT core_id, best_offset FROM tuner_core_states WHERE session_id=? AND best_offset IS NOT NULL",
-            (session_id,),
-        ).fetchall()
-        return {r["core_id"]: r["best_offset"] for r in rows}
-
-    def get_tuner_best_profile(self, session_id: int) -> dict[int, int]:
-        # HARDENED is confirmed-plus-extra-stress, so it counts as confirmed here.
-        rows = self.__conn.execute(
-            "SELECT core_id, best_offset FROM tuner_core_states "
-            "WHERE session_id=? AND phase IN ('confirmed','hardened') "
-            "AND best_offset IS NOT NULL",
-            (session_id,),
-        ).fetchall()
-        return {r["core_id"]: r["best_offset"] for r in rows}
 
     def delete_context_cascade(self, context_id: int) -> None:
         """Delete a tuning context and all associated runs and tuner sessions."""
@@ -2229,32 +1841,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     def get_status_counts(self) -> dict[str, int]:
         rows = self.__conn.execute("SELECT status, COUNT(*) as cnt FROM runs GROUP BY status").fetchall()
         return {r["status"]: r["cnt"] for r in rows}
-
-    @staticmethod
-    def _row_to_tuner_session(row: sqlite3.Row) -> TunerSession:
-        from corecycler.tuner.state import TunerSession as _TunerSession
-
-        return _TunerSession(
-            id=row["id"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-            status=row["status"],
-            bios_version=row["bios_version"],
-            cpu_model=row["cpu_model"],
-            config_json=row["config_json"],
-            context_id=row["context_id"],
-            resume_crash_streak=row["resume_crash_streak"],
-            notes=row["notes"],
-            unattributed_crashes=row["unattributed_crashes"] or 0,
-            hunting_core=row["hunting_core"],
-            validation_stage=row["validation_stage"] or 0,
-            validation_index=row["validation_index"] or 0,
-            validation_half=row["validation_half"] or 0,
-            validation_dirty=bool(row["validation_dirty"]),
-            validation_requeue=row["validation_requeue"] or "[]",
-            boot_id=row["boot_id"],
-            kernel_read_ns=row["kernel_read_ns"],
-        )
 
     def _execute_raw(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Internal: raw SQL access for testing. Not for application code."""

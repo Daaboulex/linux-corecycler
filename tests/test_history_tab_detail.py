@@ -27,10 +27,7 @@ from corecycler.history.db import (
     TelemetrySample,
     TuningContextRecord,
 )
-from corecycler.tuner import persistence as tp
-from corecycler.tuner.config import TunerConfig
-from corecycler.tuner.state import CoreState, TunerPhase
-from tests._machine import this_boot
+from tests._tuner_world import save_machine_session
 
 
 def _qapp():
@@ -102,12 +99,6 @@ def _seed_run(db, started_at, *, status="completed", cores_failed=0, context_id=
             bios_version="2402",
         )
     )
-
-
-def _seed_session(db, status="completed"):
-    sid = tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test 8C", boot_id=this_boot())
-    tp.update_session_status(db, sid, status)
-    return sid
 
 
 class TestViewToggles:
@@ -382,8 +373,8 @@ class TestContextMenus:
         labels = [c.args[0] for c in menu_cls.return_value.addAction.call_args_list]
         assert labels == ["Compare", "Export All as CSV...", "Delete"]
 
-    def test_runs_menu_is_suppressed_in_tuner_view(self, db, monkeypatch):
-        _seed_session(db)
+    def test_runs_menu_is_suppressed_in_tuner_view(self, db, monkeypatch, tmp_path):
+        save_machine_session(db, tmp_path, "completed")
         tab = _tab(db)
         tab._view_mode = tab.VIEW_TUNER
         tab.refresh()
@@ -578,53 +569,9 @@ class TestRunDetail:
         tab.hide()
 
 
-class TestTunerSessionDetail:
-    def test_detail_renders_states_test_log_and_profile(self, db):
-        sid = _seed_session(db, "completed")
-        tp.save_core_state(
-            db,
-            sid,
-            CoreState(core_id=0, phase=TunerPhase.HARDENED, current_offset=-30, best_offset=-30),
-        )
-        tp.save_core_state(
-            db,
-            sid,
-            CoreState(core_id=1, phase=TunerPhase.FINE_SEARCH, current_offset=-18, best_offset=None),
-        )
-        tp.log_test_result(db, sid, 0, -30, "confirm", True, duration=300.0)
-        tp.log_test_result(db, sid, 1, -18, "coarse", False, error_msg="rounding error", duration=12.5)
-        tab = _tab(db)
-        tab._view_mode = tab.VIEW_TUNER
-        tab.refresh()
-        sess = db.list_tuner_sessions()[0]
-        tab._show_tuner_session_detail(sess)
-
-        assert tab._core_results_table.item(0, 5).text() == "PASS"
-        assert tab._core_results_table.item(1, 5).text() == "FAIL"
-        assert tab._core_results_table.item(0, 4).text() == "1"
-        assert tab._core_results_table.item(1, 3).text() == "-"
-
-        text = tab._events_log.toPlainText()
-        assert "Test Log" in text
-        assert "offset -30" in text
-        assert "[confirm] PASS" in text
-        assert "rounding error" in text
-        assert "300.0s" in text
-        assert "Confirmed CO Profile" in text
-
-    def test_unparsable_config_falls_back_to_empty(self, db):
-        sid = _seed_session(db, "completed")
-        tp.save_core_state(db, sid, CoreState(core_id=0, phase=TunerPhase.NOT_STARTED))
-        tab = _tab(db)
-        tab._view_mode = tab.VIEW_TUNER
-        tab.refresh()
-        sess = db.get_tuner_session(sid)
-        sess.config_json = "{not json"
-        tab._show_tuner_session_detail(sess)
-        assert "coarse=?" in tab._detail_info.text()
-
-    def test_rows_are_skipped_without_a_database(self, db):
-        _seed_session(db)
+class TestMachineSessionDetail:
+    def test_rows_are_skipped_without_a_database(self, db, tmp_path):
+        save_machine_session(db, tmp_path, "completed")
         tab = _tab(db)
         tab._view_mode = tab.VIEW_TUNER
         tab.refresh()
@@ -644,55 +591,25 @@ class TestLoadCoProfile:
         tab._on_load_co_profile()
         assert emitted == []
 
-    def test_a_session_without_offsets_informs_the_user(self, db):
-        sid = _seed_session(db)
-        tp.save_core_state(db, sid, CoreState(core_id=0, phase=TunerPhase.NOT_STARTED, best_offset=None))
-        tab = _tab(db)
-        tab._view_mode = tab.VIEW_TUNER
-        tab.refresh()
-        tab._selected_tuner_session = db.get_tuner_session(sid)
-        emitted = []
-        tab.load_profile_requested.connect(emitted.append)
-        with patch("corecycler.gui.history_tab.QMessageBox.information") as info:
-            tab._on_load_co_profile()
-        assert info.called
-        assert emitted == []
-
-    def test_offsets_are_emitted(self, db):
-        sid = _seed_session(db)
-        tp.save_core_state(
-            db,
-            sid,
-            CoreState(core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-30, best_offset=-30),
-        )
-        tab = _tab(db)
-        tab._view_mode = tab.VIEW_TUNER
-        tab.refresh()
-        tab._selected_tuner_session = db.get_tuner_session(sid)
-        emitted = []
-        tab.load_profile_requested.connect(emitted.append)
-        tab._on_load_co_profile()
-        assert emitted == [{0: -30}]
-
 
 class TestDeleteSelected:
-    def test_tuner_view_deletes_the_selected_session(self, db):
-        _seed_session(db, "completed")
+    def test_tuner_view_deletes_the_selected_session(self, db, tmp_path):
+        save_machine_session(db, tmp_path, "completed")
         tab = _tab(db)
         tab._view_mode = tab.VIEW_TUNER
         tab.refresh()
         with patch("corecycler.gui.history_tab.QMessageBox.question", return_value=_yes()):
             tab._delete_selected()
-        assert db.list_tuner_sessions() == []
+        assert db.list_machine_sessions() == []
 
-    def test_declined_session_delete_keeps_it(self, db):
-        _seed_session(db, "completed")
+    def test_declined_session_delete_keeps_it(self, db, tmp_path):
+        save_machine_session(db, tmp_path, "completed")
         tab = _tab(db)
         tab._view_mode = tab.VIEW_TUNER
         tab.refresh()
         with patch("corecycler.gui.history_tab.QMessageBox.question", return_value=_no()):
             tab._delete_selected()
-        assert len(db.list_tuner_sessions()) == 1
+        assert len(db.list_machine_sessions()) == 1
 
     def test_grouped_view_deletes_the_selected_context_and_its_runs(self, db):
         cid = _seed_context(db, "2402", {"0": -20})
@@ -746,14 +663,14 @@ class TestDeleteSelected:
         assert not ask.called
         assert len(db.list_runs()) == 1
 
-    def test_declined_tuner_session_delete_keeps_it(self, db):
-        _seed_session(db, "completed")
+    def test_declined_tuner_session_delete_keeps_it(self, db, tmp_path):
+        save_machine_session(db, tmp_path, "completed")
         tab = _tab(db)
         tab._view_mode = tab.VIEW_TUNER
         tab.refresh()
         with patch("corecycler.gui.history_tab.QMessageBox.question", return_value=_no()):
             tab._delete_tuner_sessions([0])
-        assert len(db.list_tuner_sessions()) == 1
+        assert len(db.list_machine_sessions()) == 1
 
 
 class TestCompare:

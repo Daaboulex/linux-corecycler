@@ -29,18 +29,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from corecycler.gui.style import duration_str, font_mono, phase_label, span_str, theme
+from corecycler.gui.style import duration_str, font_mono, span_str, theme
 from corecycler.gui.widgets import table_item as _item
-from corecycler.history.db import CorruptSessionError, MachineSessionRecord
 from corecycler.history.timefmt import format_local
 from corecycler.smu.writer_lock import running_driver
-from corecycler.tuner import persistence as tp
 from corecycler.tuner.live import config_to_json, read_stored
 from corecycler.tuner.machine.types import Phase
-from corecycler.tuner.state import TunerPhase, TunerSession
 
 if TYPE_CHECKING:
-    from corecycler.history.db import HistoryDB, RunRecord, TuningContextRecord
+    from corecycler.history.db import HistoryDB, MachineSessionRecord, RunRecord, TuningContextRecord
 
 
 class HistoryTab(QWidget):
@@ -62,8 +59,8 @@ class HistoryTab(QWidget):
         self._view_mode = self.VIEW_GROUPED
         self._bios_warning: str = ""
         self._displayed_runs: list[RunRecord] = []
-        self._tuner_sessions: list[TunerSession | MachineSessionRecord] = []
-        self._selected_tuner_session: TunerSession | MachineSessionRecord | None = None
+        self._tuner_sessions: list[MachineSessionRecord] = []
+        self._selected_tuner_session: MachineSessionRecord | None = None
         self._initial_load = True
         self._setup_ui()
         if db:
@@ -422,8 +419,7 @@ class HistoryTab(QWidget):
             self._total_label.setText(f"Sessions: {len(statuses)}")
             self._completed_label.setText(f"Completed: {statuses.count('completed')}")
             self._crashed_label.setText(f"Quarantined: {statuses.count('quarantined')}")
-            active = sum(1 for s in statuses if s in ("running", "validating"))
-            self._stopped_label.setText(f"Active: {active}  Paused: {statuses.count('paused')}")
+            self._stopped_label.setText(f"Active: {statuses.count('running')}  Paused: {statuses.count('paused')}")
         else:
             counts = self._db.get_status_counts() if self._db else {}
             total = sum(counts.values())
@@ -833,27 +829,18 @@ class HistoryTab(QWidget):
     # Tuner sessions
     # ------------------------------------------------------------------
 
-    def _load_tuner_sessions(self) -> list[TunerSession | MachineSessionRecord]:
+    def _load_tuner_sessions(self) -> list[MachineSessionRecord]:
         if not self._db:
             return []
-        both = [*self._db.list_machine_sessions(limit=100), *self._db.list_tuner_sessions(limit=100)]
-        return sorted(both, key=lambda sess: sess.id, reverse=True)[:100]
+        return self._db.list_machine_sessions(limit=100)
 
-    def _progress(self, sess: TunerSession | MachineSessionRecord) -> tuple[str, str, str | None, bool]:
-        if isinstance(sess, MachineSessionRecord):
-            try:
-                cores = read_stored(self._db, sess.id).cores
-            except (TypeError, KeyError, ValueError) as e:
-                return "?", "unreadable", f"unreadable: {e!r}", False
-            proven = sum(1 for record in cores if record.phase is Phase.PROVEN)
-            return str(len(cores)), f"{proven}/{len(cores)}", None, bool(cores) and proven == len(cores)
+    def _progress(self, sess: MachineSessionRecord) -> tuple[str, str, str | None, bool]:
         try:
-            core_states = tp.load_core_states(self._db, sess.id)
-        except CorruptSessionError as e:
-            return "?", "unreadable", f"unreadable: {e.detail}", False
-        total = len(core_states)
-        confirmed = sum(1 for cs in core_states.values() if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED))
-        return str(total), f"{confirmed}/{total}", None, total > 0 and confirmed == total
+            cores = read_stored(self._db, sess.id).cores
+        except (TypeError, KeyError, ValueError) as e:
+            return "?", "unreadable", f"unreadable: {e!r}", False
+        proven = sum(1 for record in cores if record.phase is Phase.PROVEN)
+        return str(len(cores)), f"{proven}/{len(cores)}", None, bool(cores) and proven == len(cores)
 
     def _populate_tuner_sessions(self) -> None:
         sessions = self._tuner_sessions
@@ -915,135 +902,9 @@ class HistoryTab(QWidget):
 
         self._runs_table.setSortingEnabled(True)
 
-    def _show_tuner_session_detail(self, sess: TunerSession | MachineSessionRecord) -> None:
-        if not self._db or sess.id is None:
+    def _show_tuner_session_detail(self, sess: MachineSessionRecord) -> None:
+        if not self._db:
             return
-        if isinstance(sess, MachineSessionRecord):
-            self._show_machine_session_detail(sess)
-            return
-
-        self._selected_tuner_session = sess
-        self._tuner_actions_row.setVisible(True)
-        self._expand_detail()
-        try:
-            core_states = tp.load_core_states(self._db, sess.id)
-        except CorruptSessionError as e:
-            self._load_co_btn.setEnabled(False)
-            self._detail_info.setText(f"Session #{sess.id} unreadable: {e.detail}")
-            self._detail_info.setStyleSheet(f"color: {theme.COLOR_FAIL}; padding: 2px;")
-            self._core_results_table.setRowCount(0)
-            self._events_log.setPlainText(str(e))
-            return
-        has_offsets = any(cs.best_offset is not None for cs in core_states.values())
-        self._load_co_btn.setEnabled(has_offsets)
-
-        # Info line
-        try:
-            cfg = json.loads(sess.config_json)
-        except json.JSONDecodeError, TypeError:
-            cfg = {}
-
-        info_parts = [
-            sess.cpu_model or "Unknown CPU",
-            f"coarse={cfg.get('coarse_step', '?')} fine={cfg.get('fine_step', '?')}",
-            f"search={cfg.get('search_duration_seconds', '?')}s confirm={cfg.get('confirm_duration_seconds', '?')}s",
-            f"max={cfg.get('max_offset', '?')}",
-        ]
-        if sess.bios_version:
-            info_parts.append(f"BIOS {sess.bios_version}")
-        self._detail_info.setText("  |  ".join(info_parts))
-        self._detail_info.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 2px;")
-
-        test_log = tp.get_test_log(self._db, sess.id)
-
-        # Count tests per core
-        tests_per_core: dict[int, int] = {}
-        last_result_per_core: dict[int, bool] = {}
-        for entry in test_log:
-            cid = entry["core_id"]
-            tests_per_core[cid] = tests_per_core.get(cid, 0) + 1
-            last_result_per_core[cid] = bool(entry["passed"])
-
-        self._core_results_table.setColumnCount(7)
-        self._core_results_table.setHorizontalHeaderLabels(
-            ["Core", "Phase", "Current Offset", "Best Offset", "Tests", "Last Result", "Confirm Attempts"]
-        )
-        cr_header = self._core_results_table.horizontalHeader()
-        cr_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        for i in range(7):
-            if i != 1:  # Phase column stretches
-                cr_header.setSectionResizeMode(i, QHeaderView.ResizeMode.Fixed)
-        self._core_results_table.setColumnWidth(0, 50)
-        self._core_results_table.setColumnWidth(2, 100)
-        self._core_results_table.setColumnWidth(3, 80)
-        self._core_results_table.setColumnWidth(4, 50)
-        self._core_results_table.setColumnWidth(5, 80)
-        self._core_results_table.setColumnWidth(6, 120)
-
-        sorted_cores = sorted(core_states.keys())
-        self._core_results_table.setRowCount(len(sorted_cores))
-
-        for row_idx, core_id in enumerate(sorted_cores):
-            cs = core_states[core_id]
-            num_tests = tests_per_core.get(core_id, 0)
-            last = last_result_per_core.get(core_id)
-            last_str = "PASS" if last else ("FAIL" if last is not None else "-")
-
-            row_items = [
-                (str(core_id), Qt.AlignmentFlag.AlignCenter),
-                (phase_label(cs.phase), Qt.AlignmentFlag.AlignCenter),
-                (str(cs.current_offset), Qt.AlignmentFlag.AlignCenter),
-                (str(cs.best_offset) if cs.best_offset is not None else "-", Qt.AlignmentFlag.AlignCenter),
-                (str(num_tests), Qt.AlignmentFlag.AlignCenter),
-                (last_str, Qt.AlignmentFlag.AlignCenter),
-                (str(cs.confirm_attempts), Qt.AlignmentFlag.AlignCenter),
-            ]
-
-            color = theme.PHASE_COLORS[cs.phase]
-            for col, (text, align) in enumerate(row_items):
-                cell = _item(text, align)
-                if col == 1:
-                    cell.setForeground(QColor(color))
-                elif col == 5:
-                    if last_str == "PASS":
-                        cell.setForeground(QColor(theme.COLOR_PASS))
-                    elif last_str == "FAIL":
-                        cell.setForeground(QColor(theme.COLOR_FAIL))
-                self._core_results_table.setItem(row_idx, col, cell)
-
-        self._auto_size_core_results_table()
-
-        # Events log — show test log entries
-        lines: list[str] = []
-        lines.append("── Tuner Configuration ──")
-        lines.append(json.dumps(cfg, indent=2))
-        lines.append("")
-
-        if test_log:
-            lines.append("── Test Log ──")
-            for entry in test_log:
-                ts = format_local(entry.get("tested_at", ""))
-                result = "PASS" if entry["passed"] else "FAIL"
-                dur = f"{entry.get('duration_seconds', 0):.1f}s" if entry.get("duration_seconds") else "-"
-                err = entry.get("error_message", "")
-                err_str = f" — {err}" if err else ""
-                lines.append(
-                    f"  {ts}  Core {entry['core_id']}  "
-                    f"offset {entry['offset_tested']}  "
-                    f"[{entry.get('phase', '?')}] {result}  {dur}{err_str}"
-                )
-
-        # Profile summary
-        profile = tp.get_best_profile(self._db, sess.id)
-        if profile:
-            lines.append("")
-            lines.append("── Confirmed CO Profile ──")
-            for cid in sorted(profile):
-                lines.append(f"  Core {cid}: {profile[cid]}")
-
-        self._events_log.setPlainText("\n".join(lines))
-
-    def _show_machine_session_detail(self, sess: MachineSessionRecord) -> None:
         self._selected_tuner_session = sess
         self._tuner_actions_row.setVisible(True)
         self._expand_detail()
@@ -1124,17 +985,8 @@ class HistoryTab(QWidget):
         """Load the selected tuner session's best CO offsets into the CO tab."""
         if not self._db or self._selected_tuner_session is None:
             return
-        if isinstance(self._selected_tuner_session, MachineSessionRecord):
-            saved = read_stored(self._db, self._selected_tuner_session.id)
-            self.load_profile_requested.emit({record.core: record.value for record in saved.cores})
-            return
-        profile = tp.get_session_offsets(self._db, self._selected_tuner_session.id)
-        if not profile:
-            from PySide6.QtWidgets import QMessageBox
-
-            QMessageBox.information(self, "No Profile", "This tuner session has no CO offsets to load.")
-            return
-        self.load_profile_requested.emit(profile)
+        saved = read_stored(self._db, self._selected_tuner_session.id)
+        self.load_profile_requested.emit({record.core: record.value for record in saved.cores})
 
     def _expand_detail(self) -> None:
         """Show the detail section and split space evenly with the top.
@@ -1330,13 +1182,12 @@ class HistoryTab(QWidget):
         parents = {
             sess.parent_session_id: sess.id
             for sess in self._tuner_sessions
-            if isinstance(sess, MachineSessionRecord) and sess.parent_session_id is not None and sess.id not in chosen
+            if sess.parent_session_id is not None and sess.id not in chosen
         }
         for row in rows:
-            if row < len(self._tuner_sessions) and self._tuner_sessions[row].id is not None:
+            if row < len(self._tuner_sessions):
                 sess = self._tuner_sessions[row]
-                machine = isinstance(sess, MachineSessionRecord)
-                if sess.status == "validating" or (sess.status == "running" and (driver or not machine)):
+                if sess.status == "running" and driver:
                     active.append(sess.id)
                 elif sess.id in parents:
                     QMessageBox.warning(

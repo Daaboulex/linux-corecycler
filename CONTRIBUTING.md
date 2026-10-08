@@ -75,24 +75,26 @@ branch without a test fails the build, not review.
 
 ### PySide6 in the suite
 
-When PySide6 is missing, `tests/conftest.py` fakes `PySide6.QtCore`, so the engine and
-tuner tests run without Qt. The GUI tests import `PySide6.QtWidgets` and need the real
-package.
+The GUI tests import `PySide6.QtWidgets` and need the real package, a dependency that
+`pip install -e ".[dev]"` installs.
 
 ### Property-Based Tests (Hypothesis)
 
-The tuner state machine has property-based tests using
-[Hypothesis](https://hypothesis.readthedocs.io/). These generate
-random pass/fail sequences and assert that invariants always hold:
+The explorer in `tests/test_tuner_futures.py` drives the tuner's state machine
+(`tuner/machine/`) against the fake world in `tests/_tuner_world.py`. It walks every
+future of a small CPU within a fault budget, and random futures that
+[Hypothesis](https://hypothesis.readthedocs.io/) generates. After every step the world
+checks its rules, among them:
 
-- Offset never exceeds `max_offset`
-- Offset never goes past baseline
-- Phase is always a valid `TunerPhase`
-- `crash_count` only increases
-- Every core reaches a terminal state
-- `best_offset` only gets more aggressive during search
+- A CO write lands on a core the session owns, inside `[max_offset, 0]`
+- No core is tested at or past its fail bound, and a fail bound never loosens
+- A test runs only on the setup the session started on
+- A completed session's values pass together, and no core sits past its true edge
+- Every future comes to rest
 
-To run: `pytest tests/test_tuner_engine.py -k "Invariant" -v`
+To run: `pytest tests/test_tuner_futures.py -m "not slow" -v`. Without the marker filter
+the deeper fault budget runs too, sized by `TUNER_FUTURES_FAULTS` and `TUNER_FUTURES_CAP`.
+`TUNER_FUZZ_EXAMPLES` sets how many random futures run.
 
 ### Adding Tests for New CPU Generations
 

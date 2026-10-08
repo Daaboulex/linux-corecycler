@@ -17,7 +17,8 @@ from corecycler.history.db import (
     TelemetrySample,
     TuningContextRecord,
 )
-from tests._machine import journaled, this_boot
+from tests._machine import this_boot
+from tests._old_rows import seed_old_session
 
 AT = "2026-10-07T10:00:00+00:00"
 
@@ -300,7 +301,9 @@ class TestMaintenance:
             db.close()
 
     def test_only_the_samples_of_tests_that_passed_before_the_cutoff_go(self, db):
-        sid = db.create_tuner_session("{}", "2401", "9950X3D", boot_id="a")
+        sid = db.next_tuner_session_id()
+        fields = {"config_json": "{}", "bios_version": "2401", "cpu_model": "9950X3D", "context_id": None}
+        db.save_machine_session(sid, status="running", machine_json="1", boot_id="a", **fields)
         noise = random.Random(7)
         rows = {}
         for name, verdict, ended in (
@@ -360,19 +363,11 @@ class TestStatusCounts:
         assert counts == {"completed": 5}
 
 
-class TestTunerSessionMethods:
+class TestMachineSessionMethods:
     """Verify public tuner methods that both Grouped and Tuner views use."""
 
-    def test_list_tuner_sessions(self, db):
-        sid1 = db.create_tuner_session("{}", "BIOS-1", "CPU1", boot_id=this_boot())
-        sid2 = db.create_tuner_session("{}", "BIOS-1", "CPU1", boot_id=this_boot())
-        sessions = db.list_tuner_sessions()
-        assert len(sessions) == 2
-        assert sessions[0].id == sid2  # newest first
-        assert sessions[1].id == sid1
-
-    def test_old_engine_readers_never_see_a_machine_session(self, db):
-        old = db.create_tuner_session("{}", "BIOS-1", "CPU1", boot_id=this_boot())
+    def test_machine_readers_never_see_an_old_engine_row(self, db):
+        old = seed_old_session(db)
         machine = db.next_tuner_session_id()
         db.save_machine_session(
             machine,
@@ -387,15 +382,10 @@ class TestTunerSessionMethods:
         assert machine == old + 1
         assert db.load_machine_session(machine) == ('{"m": 1}', this_boot(), None)
         assert db.load_machine_session(old) is None
-        assert db.get_tuner_session(machine) is None
-        assert [s.id for s in db.list_tuner_sessions()] == [old]
-        assert db.get_latest_tuner_session().id == old
-        assert db.get_active_tuner_session().id == old
-        assert [s.id for s in db.list_resumable_tuner_sessions()] == [old]
-        assert [s.id for s in db.list_recoverable_tuner_sessions()] == [old]
+        assert [s.id for s in db.list_machine_sessions()] == [machine]
 
     def test_a_machine_session_never_overwrites_an_old_engine_row(self, db):
-        old = db.create_tuner_session('{"old": 1}', "BIOS-1", "CPU1", boot_id=this_boot())
+        old = seed_old_session(db)
         with pytest.raises(sqlite3.IntegrityError, match="belongs to the old engine"):
             db.save_machine_session(
                 old,
@@ -407,7 +397,8 @@ class TestTunerSessionMethods:
                 cpu_model="C",
                 context_id=None,
             )
-        assert db.get_tuner_session(old).config_json == '{"old": 1}'
+        kept = db._execute_raw("SELECT status, bios_version, machine_json FROM tuner_sessions WHERE id=?", (old,))
+        assert tuple(kept.fetchone()) == ("completed", "2402", None)
 
     def test_a_test_row_ends_once(self, db):
         sid = db.next_tuner_session_id()
@@ -510,22 +501,17 @@ class TestTunerSessionMethods:
         db.save_machine_session(sid, status="running", machine_json="3", boot_id="b", **fields)
         assert db.load_machine_session(sid) == ("3", "b", None)
 
-    def test_list_tuner_sessions_limit(self, db):
-        for _ in range(5):
-            db.create_tuner_session("{}", "", "", boot_id=this_boot())
-        sessions = db.list_tuner_sessions(limit=3)
-        assert len(sessions) == 3
-
     def test_delete_context_cascade(self, db):
         ctx_id = db.create_context(TuningContextRecord(bios_version="v1"))
         db.create_run(RunRecord(cpu_model="test", context_id=ctx_id))
-        sid = db.create_tuner_session("{}", "v1", "test", context_id=ctx_id, boot_id=this_boot())
+        sid = seed_old_session(db)
+        db._execute_raw("UPDATE tuner_sessions SET context_id=? WHERE id=?", (ctx_id, sid))
 
         db.delete_context_cascade(ctx_id)
 
         runs = db.list_runs_for_context(ctx_id)
         assert len(runs) == 0
-        assert db.get_tuner_session(sid) is None
+        assert db._execute_raw("SELECT id FROM tuner_sessions").fetchall() == []
         assert db.get_context(ctx_id) is None
 
 
@@ -844,14 +830,9 @@ class TestMergeFrom:
         src.insert_event(EventRecord(run_id=rid, event_type="core_start", core_id=3))
         src.insert_telemetry_block([TelemetrySample(run_id=rid, core_id=3, timestamp=AT, freq_mhz=5300.0)])
         # a tuner session with state, log, and journal
-        sid = src.create_tuner_session("{}", "2401", "9950X3D", context_id=src_ctx, boot_id=this_boot())
-        from corecycler.tuner.state import CoreState, TunerPhase
-
-        src.upsert_tuner_core_state(
-            sid, CoreState(core_id=3, phase=TunerPhase.CONFIRMED, current_offset=-30, best_offset=-30)
-        )
-        src.insert_tuner_test_log(sid, 3, -30, "confirm", True, duration=300.0, run_id=rid)
-        journaled(src, sid, 3, -30, survived=True)
+        sid = seed_old_session(src)
+        src._execute_raw("UPDATE tuner_sessions SET context_id=? WHERE id=?", (src_ctx, sid))
+        src._execute_raw("UPDATE tuner_test_log SET run_id=? WHERE session_id=?", (rid, sid))
         src.close()
 
         counts = dst.merge_from(tmp_path / "src.db")
@@ -867,21 +848,23 @@ class TestMergeFrom:
         assert [e.event_type for e in dst.get_events(merged_run.id)] == ["core_start"]
         assert len(dst.get_telemetry(merged_run.id)) == 1
 
-        sess = dst.get_latest_tuner_session()
-        assert sess.bios_version == "2401"
-        assert sess.context_id == dst_ctx
-        states = dst.get_tuner_core_states(sess.id)
-        assert states[3].best_offset == -30
-        log_rows = dst.get_tuner_test_log(sess.id)
-        assert len(log_rows) == 1
-        assert log_rows[0]["run_id"] == merged_run.id  # cross-reference remapped
-        assert dst.journal_proven_values(sess.id, -1) == {3: -30}
+        def rows(sql):
+            return [tuple(row) for row in dst._execute_raw(sql).fetchall()]
+
+        [(merged, bios, context)] = rows("SELECT id, bios_version, context_id FROM tuner_sessions")
+        assert (bios, context) == ("2402", dst_ctx)
+        assert rows("SELECT session_id, core_id, best_offset FROM tuner_core_states") == [(merged, 0, -12)]
+        assert rows("SELECT session_id, run_id FROM tuner_test_log") == [(merged, merged_run.id)]
+        assert rows("SELECT session_id, message FROM tuner_events") == [(merged, "confirmed")]
+        assert rows("SELECT session_id, core_id, value FROM tuner_co_journal") == [(merged, 0, -12)]
         dst.close()
 
     def test_merge_copies_every_journal_column_in_write_order(self, tmp_path):
         dead = "a" * 32
         src = HistoryDB(tmp_path / "src.db")
-        sid = src.create_tuner_session("{}", "2401", "9950X3D", boot_id=dead)
+        sid = src.next_tuner_session_id()
+        fields = {"config_json": "{}", "bios_version": "2401", "cpu_model": "9950X3D", "context_id": None}
+        src.save_machine_session(sid, status="paused", machine_json="1", boot_id=dead, **fields)
         crashed = src.journal_co_intent(sid, 3, -30, False, boot_id=dead, mono_ns=5_000)
         src.journal_confirm(crashed)
         src.journal_co_intent(sid, 1, 0, True, boot_id=dead, mono_ns=9_000)
@@ -891,12 +874,12 @@ class TestMergeFrom:
         written = src.journal_rows(sid, dead)
         src.close()
         dst = HistoryDB(tmp_path / "dst.db")
-        own = dst.create_tuner_session("{}", "2401", "9950X3D", boot_id=dead)
+        own = seed_old_session(dst)
         dst.journal_co_intent(own, 0, -5, False, boot_id=dead, mono_ns=1_000)
 
         dst.merge_from(tmp_path / "src.db")
 
-        merged = dst.get_latest_tuner_session().id
+        merged = own + 1
         copied = dst.journal_rows(merged, dead)
         kernel_read = dst._execute_raw("SELECT kernel_read_ns FROM tuner_sessions WHERE id=?", (merged,)).fetchone()[0]
         dst.close()
@@ -929,7 +912,7 @@ class TestMergeFrom:
         src.insert_tuner_sample(row, sample | {"mono_ns": 8})
         src.close()
         dst = HistoryDB(tmp_path / "dst.db")
-        own = dst.create_tuner_session("{}", "2401", "9950X3D", boot_id=boot)
+        own = seed_old_session(dst)
 
         dst.merge_from(tmp_path / "src.db")
 
@@ -954,7 +937,7 @@ class TestMergeFrom:
         src.link_session(2, 1, "restart")
         src.close()
         dst = HistoryDB(tmp_path / "dst.db")
-        own = dst.create_tuner_session("{}", "2401", "9950X3D", boot_id="a")
+        own = seed_old_session(dst)
         dst.merge_from(tmp_path / "src.db")
         rows = dst._execute_raw("SELECT id, parent_session_id, origin FROM tuner_sessions ORDER BY id").fetchall()
         dst.close()
@@ -1001,7 +984,7 @@ class TestMergeFrom:
     def test_merge_keeps_rows_whose_optional_link_is_gone(self, tmp_path):
         src_path = tmp_path / "src.db"
         src = HistoryDB(src_path)
-        sid = src.create_tuner_session("{}", "2401", "old-cpu", boot_id="b")
+        sid = seed_old_session(src)
         src.close()
         raw = sqlite3.connect(src_path)
         raw.execute(
@@ -1018,9 +1001,9 @@ class TestMergeFrom:
         dst = HistoryDB(tmp_path / "dst.db")
         assert dst.merge_from(src_path)["runs"] == 1
         assert dst.list_runs()[0].context_id is None
-        logged = dst._execute_raw("SELECT core_id, run_id FROM tuner_test_log").fetchall()
+        logged = dst._execute_raw("SELECT core_id, run_id FROM tuner_test_log ORDER BY id").fetchall()
         dst.close()
-        assert [tuple(row) for row in logged] == [(3, None)]
+        assert [tuple(row) for row in logged] == [(0, None), (3, None)]
 
     def test_merge_migrates_old_schema_source_first(self, tmp_path):
         import sqlite3
@@ -1163,7 +1146,9 @@ class TestMigrationV24:
     def test_every_stored_sample_row_moves_into_one_block_per_test(self, tmp_path):
         path = tmp_path / "v23.db"
         db = HistoryDB(path)
-        sid = db.create_tuner_session("{}", "2401", "9950X3D", boot_id="a")
+        sid = db.next_tuner_session_id()
+        fields = {"config_json": "{}", "bios_version": "2401", "cpu_model": "9950X3D", "context_id": None}
+        db.save_machine_session(sid, status="paused", machine_json="1", boot_id="a", **fields)
         rows = [db.insert_tuner_test(sid, "a", n, "search", None, "1t", 0, -5, "[]", "[0]", 60.0, "{}") for n in (1, 2)]
         db.close()
         conn = sqlite3.connect(path)
@@ -1201,7 +1186,9 @@ class TestMigrationV24:
     def test_a_rerun_keeps_the_tail_rows_it_finds(self, tmp_path):
         path = tmp_path / "v24.db"
         db = HistoryDB(path)
-        sid = db.create_tuner_session("{}", "2401", "9950X3D", boot_id="a")
+        sid = db.next_tuner_session_id()
+        fields = {"config_json": "{}", "bios_version": "2401", "cpu_model": "9950X3D", "context_id": None}
+        db.save_machine_session(sid, status="paused", machine_json="1", boot_id="a", **fields)
         row = db.insert_tuner_test(sid, "a", 1, "steady", "hot", "1t", 0, -5, "[]", "[0]", 60.0, "{}")
         sample = {"mono_ns": 1, "running": True, "tctl": 60.5, "clocks": [[0, 5000.0]], "tccd": [], "volts": []}
         db.insert_tuner_sample(row, sample)
@@ -1322,13 +1309,14 @@ class TestMigrationV5:
             version = db._execute_raw("SELECT version FROM schema_version").fetchone()[0]
             contexts = sorted(c.id for c in db.list_contexts())
             runs = {r.id: r.context_id for r in db.list_runs()}
-            session = db.get_tuner_session(session_on_duplicate)
+            session = db._execute_raw("SELECT context_id FROM tuner_sessions WHERE id=?", (session_on_duplicate,))
+            session_context = session.fetchone()[0]
         finally:
             db.close()
         assert version == HistoryDB.SCHEMA_VERSION
         assert contexts == sorted([kept, other])
         assert runs == {run_on_duplicate: kept, run_on_other: other}
-        assert session.context_id == kept
+        assert session_context == kept
 
 
 class TestAdoptLegacyRootDb:
@@ -1397,35 +1385,6 @@ class TestAdoptLegacyRootDb:
             assert not root_path.with_name("root.db-shm").exists()
         finally:
             dest.close()
-
-
-class TestRecoverableSessions:
-    """A stopped session keeps its work; only the automatic path filters it out."""
-
-    def _session(self, db, status):
-        sid = db.create_tuner_session("{}", "bios", "cpu", boot_id=this_boot())
-        db.update_tuner_session_status(sid, status)
-        return sid
-
-    def test_in_flight_sessions_are_resumable_and_recoverable(self, db):
-        ids = [self._session(db, s) for s in ("running", "paused", "validating")]
-        assert sorted(s.id for s in db.list_resumable_tuner_sessions()) == sorted(ids)
-        assert sorted(s.id for s in db.list_recoverable_tuner_sessions()) == sorted(ids)
-
-    def test_a_stopped_session_is_recoverable_but_never_automatic(self, db):
-        ids = [self._session(db, s) for s in ("quarantined", "aborted")]
-        assert db.list_resumable_tuner_sessions() == []
-        assert sorted(s.id for s in db.list_recoverable_tuner_sessions()) == sorted(ids)
-
-    def test_a_completed_session_is_neither(self, db):
-        self._session(db, "completed")
-        assert db.list_resumable_tuner_sessions() == []
-        assert db.list_recoverable_tuner_sessions() == []
-
-    def test_newest_first(self, db):
-        first = self._session(db, "quarantined")
-        second = self._session(db, "running")
-        assert [s.id for s in db.list_recoverable_tuner_sessions()] == [second, first]
 
 
 class TestPeakClocks:

@@ -13,11 +13,10 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from corecycler.gui.history_tab import HistoryTab
 from corecycler.history.db import HistoryDB
 from corecycler.smu.writer_lock import co_writer
-from corecycler.tuner import persistence as tp
-from corecycler.tuner.config import TunerConfig
 from corecycler.tuner.live import Identity, Store
 from corecycler.tuner.machine.types import Phase
 from tests._machine import this_boot
+from tests._old_rows import seed_old_session
 from tests._tuner_world import save_machine_session
 
 
@@ -57,14 +56,14 @@ def cell(tab: HistoryTab, row: int, column: int) -> str:
     return tab._runs_table.item(row, column).text()
 
 
-def test_machine_and_old_sessions_list_together_newest_first(db, tmp_path):
+def test_sessions_list_newest_first_and_leave_out_old_engine_rows(db, tmp_path):
     first = save_machine_session(db, tmp_path, "completed", session_id=1)
-    old = tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test", boot_id=this_boot())
+    old = seed_old_session(db)
     saved = save_machine_session(db, tmp_path, "paused", session_id=old + 1)
     tab = tuner_view(db)
-    assert [sess.id for sess in tab._tuner_sessions] == [saved.session_id, old, first.session_id]
+    assert [sess.id for sess in tab._tuner_sessions] == [saved.session_id, first.session_id]
     assert (cell(tab, 0, 1), cell(tab, 0, 3), cell(tab, 0, 4)) == ("Paused", "2", "0/2")
-    assert tab._total_label.text() == "Sessions: 3"
+    assert tab._total_label.text() == "Sessions: 2"
 
 
 def test_a_proven_session_counts_its_proven_cores(db, tmp_path):

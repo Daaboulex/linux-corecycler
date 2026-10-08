@@ -13,7 +13,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPalette
 
-from corecycler.tuner.state import TunerPhase
+from corecycler.tuner.machine.types import Phase
 
 DARK = "dark"
 LIGHT = "light"
@@ -42,15 +42,6 @@ _SEMANTIC: dict[str, dict[str, str]] = {
         "BG_BACKOFF": "#3a2a1a",
         "BG_MEM_STRESS": "#2a1a2e",
         "BG_ACTIVE_TINT": "#1a2a1a",
-        "PHASE_COARSE": "#b4b432",
-        "PHASE_FINE": "#c8c832",
-        "PHASE_SETTLED": "#c89632",
-        "PHASE_CONFIRMING": "#3296c8",
-        "PHASE_CONFIRMED": "#32b432",
-        "PHASE_FAILED_CONFIRM": "#dc8050",
-        "PHASE_HARDENING_T1": "#b39ddb",
-        "PHASE_HARDENING_T2": "#a084d6",
-        "PHASE_HARDENED": "#66bb6a",
     },
     LIGHT: {
         "COLOR_PASS": "#266b2a",
@@ -75,15 +66,6 @@ _SEMANTIC: dict[str, dict[str, str]] = {
         "BG_BACKOFF": "#f9eedd",
         "BG_MEM_STRESS": "#f1e6f6",
         "BG_ACTIVE_TINT": "#e9f3ea",
-        "PHASE_COARSE": "#6b6b1e",
-        "PHASE_FINE": "#5f5f1a",
-        "PHASE_SETTLED": "#7a5216",
-        "PHASE_CONFIRMING": "#1f5f80",
-        "PHASE_CONFIRMED": "#1f7a1f",
-        "PHASE_FAILED_CONFIRM": "#8f3a10",
-        "PHASE_HARDENING_T1": "#5e35b1",
-        "PHASE_HARDENING_T2": "#4527a0",
-        "PHASE_HARDENED": "#266b2a",
     },
 }
 
@@ -91,20 +73,14 @@ ABSENT = "-"
 PENDING_VALUE = "--"
 NOT_AVAILABLE = "N/A"
 
-PHASE_LABELS: dict[TunerPhase, str] = {
-    TunerPhase.NOT_STARTED: "Not started",
-    TunerPhase.COARSE_SEARCH: "Coarse search",
-    TunerPhase.FINE_SEARCH: "Fine search",
-    TunerPhase.SETTLED: "Settled",
-    TunerPhase.CONFIRMING: "Confirming",
-    TunerPhase.CONFIRMED: "Confirmed",
-    TunerPhase.FAILED_CONFIRM: "Failed confirm",
-    TunerPhase.BACKOFF_PRECONFIRM: "Backing off",
-    TunerPhase.BACKOFF_CONFIRMING: "Backoff confirm",
-    TunerPhase.HARDENING_T1: "Hardening 1",
-    TunerPhase.HARDENING_T2: "Hardening 2",
-    TunerPhase.HARDENED: "Hardened",
+TUNER_PHASE_LABELS: dict[Phase, str] = {
+    Phase.NOT_STARTED: "Not started",
+    Phase.COARSE: "Coarse",
+    Phase.FINE: "Fine",
+    Phase.PROVE: "Proving",
+    Phase.PROVEN: "Proven",
 }
+
 
 GRID_STATE_LABELS: dict[str, str] = {
     "pending": "Pending",
@@ -181,23 +157,6 @@ def _state_colors(c: dict[str, str]) -> dict[str, tuple[str, str, str]]:
     }
 
 
-def _phase_colors(c: dict[str, str]) -> dict[TunerPhase, str]:
-    return {
-        TunerPhase.NOT_STARTED: c["COLOR_MUTED_DARK"],
-        TunerPhase.COARSE_SEARCH: c["PHASE_COARSE"],
-        TunerPhase.FINE_SEARCH: c["PHASE_FINE"],
-        TunerPhase.SETTLED: c["PHASE_SETTLED"],
-        TunerPhase.CONFIRMING: c["PHASE_CONFIRMING"],
-        TunerPhase.CONFIRMED: c["PHASE_CONFIRMED"],
-        TunerPhase.FAILED_CONFIRM: c["PHASE_FAILED_CONFIRM"],
-        TunerPhase.BACKOFF_PRECONFIRM: c["COLOR_ORANGE"],
-        TunerPhase.BACKOFF_CONFIRMING: c["COLOR_WARN_SOFT"],
-        TunerPhase.HARDENING_T1: c["PHASE_HARDENING_T1"],
-        TunerPhase.HARDENING_T2: c["PHASE_HARDENING_T2"],
-        TunerPhase.HARDENED: c["PHASE_HARDENED"],
-    }
-
-
 def _status_colors(c: dict[str, str]) -> dict[str, str]:
     return {
         "completed": c["COLOR_PASS"],
@@ -221,7 +180,6 @@ def resolve(scheme: str, palette: QPalette) -> dict[str, object]:
     colors["CHART_FREQ"] = colors["COLOR_ACTIVE"]
     values: dict[str, object] = dict(colors)
     values["STATE_COLORS"] = _state_colors(colors)
-    values["PHASE_COLORS"] = _phase_colors(colors)
     values["STATUS_COLORS"] = _status_colors(colors)
     values["scheme"] = scheme
     return values
@@ -285,11 +243,8 @@ def scheduler_phase_label(phase: str) -> str:
     return phase.capitalize() if phase else ""
 
 
-def phase_label(phase: TunerPhase | str) -> str:
-    try:
-        return PHASE_LABELS[TunerPhase(phase)]
-    except ValueError:
-        return str(phase)
+def tuner_phase_label(value: str) -> str:
+    return TUNER_PHASE_LABELS.get(value, value)
 
 
 def state_label(state: str) -> str:
@@ -321,15 +276,11 @@ def span_str(start_iso: str | None, end_iso: str | None) -> str:
 
 
 def _assert_complete() -> None:
+    unlabelled = set(Phase) - set(TUNER_PHASE_LABELS)
+    if unlabelled:
+        raise AssertionError(f"TUNER_PHASE_LABELS is missing phases: {sorted(unlabelled)}")
     for scheme in _SEMANTIC:
         resolved = resolve(scheme, QPalette())
-        for name, mapping in (
-            ("PHASE_LABELS", PHASE_LABELS),
-            ("PHASE_COLORS", resolved["PHASE_COLORS"]),
-        ):
-            missing = set(TunerPhase) - set(mapping)
-            if missing:
-                raise AssertionError(f"{name} is missing phases: {sorted(missing)}")
         if set(resolved["STATE_COLORS"]) != set(GRID_STATE_LABELS):
             raise AssertionError("STATE_COLORS and GRID_STATE_LABELS disagree on states")
         unstyled = set(SESSION_STATUS_LABELS) - set(resolved["STATUS_COLORS"])

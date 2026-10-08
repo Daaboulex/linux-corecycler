@@ -91,20 +91,6 @@ def test_dmidecode_parses_real_dimms():
     assert all(d.size_gb > 0 for d in dimms)
 
 
-def test_proc_stat_cpu_line_matches_the_pinned_fields():
-    """The stall watchdog reads idle+iowait from /proc/stat; drift here blinds it."""
-    from corecycler.engine.execution import cpu_times as _cpu_times
-
-    require(Path("/proc/stat").exists(), "/proc/stat not readable")
-    sample = _cpu_times(0)
-    require(sample is not None, "no cpu0 line in /proc/stat")
-    idle, total = sample
-    assert 0 < idle < total
-    fields = next(line.split() for line in Path("/proc/stat").read_text().splitlines() if line.startswith("cpu0 "))
-    assert len(fields) >= 6
-    assert idle == int(fields[4]) + int(fields[5])
-
-
 def test_core_slot_map_matches_the_live_core_disable_fuse():
     """The mapping's ground truth, on real silicon: this generation's
     core-disable fuse address decodes to exactly the physical slots the

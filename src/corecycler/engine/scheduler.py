@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from corecycler.config.paths import resolve_work_dir
 from corecycler.engine import execution
 from corecycler.engine.backends.base import LaneSignal, Outcome, OutcomeKind, StressResult
-from corecycler.engine.detector import CoreMachineCheck, ErrorDetector, KernelEvent
+from corecycler.engine.detector import ErrorDetector, KernelEvent
 from corecycler.engine.execution import Lane, SuperviseHooks, Supervisor, ThermalWatch
 from corecycler.monitor.hwmon import Sensors
 
@@ -346,80 +346,6 @@ class CoreScheduler:
             phase=phase_name,
         )
 
-    def run_rapid_transitions(
-        self,
-        cores: list[int],
-        total_duration: float = 600.0,
-        load_seconds: float = 10.0,
-        idle_seconds: float = 5.0,
-    ) -> dict[int, StressResult]:
-        """Rapid load/idle cycling: one single-CPU lane per core, every lane loaded at once, a verdict per core."""
-        self.state = TestState.RUNNING
-        cores = sorted(set(cores))
-        if self._stop_event.is_set() or not cores:
-            self.state = TestState.FINISHED
-            return _every_core(
-                cores, Outcome.CUT_SHORT, "rapid transition run stopped before its first load segment", 0.0
-            )
-        if refused := execution.refuse_if_missing(self.topology, cores):
-            self.state = TestState.FINISHED
-            return refused
-        self.observed_mce = []
-        self._thermal = ThermalWatch.for_config(self.config)
-        lanes = [
-            Lane(
-                core_id=core,
-                cpus=(self.topology.cores[core].logical_cpus[0],),
-                work_dir=self.work_dir / "rapid_transition" / f"core_{core}",
-            )
-            for core in cores
-        ]
-        idle_cpus = tuple(sorted(cpu for lane in lanes for cpu in lane.cpus))
-
-        elapsed = 0.0
-        cycle = 0
-        self.detector.reset()
-        try:
-            while total_duration - elapsed >= load_seconds and not self._stop_event.is_set():
-                cycle += 1
-                segment_start = time.monotonic()
-                supervisor = self._supervisor("rapid transition")
-                results = supervisor.run(lanes, self.stress_config, load_seconds)
-                elapsed += time.monotonic() - segment_start
-                if not all(result.passed for result in results.values()):
-                    return _segment_verdicts(results, cycle)
-                if elapsed < total_duration:
-                    phase = f"idle phase of rapid transition cycle {cycle}"
-                    seen = len(self.observed_mce)
-                    segment_start = time.monotonic()
-                    idle = execution.watch_idle(
-                        cpus=idle_cpus,
-                        duration=min(idle_seconds, total_duration - elapsed),
-                        thermal=self._thermal,
-                        sensors=self._sensors.read,
-                        detector=self.detector,
-                        stop_event=self._stop_event,
-                        observed=self.observed_mce,
-                        phase=phase,
-                    )
-                    elapsed += time.monotonic() - segment_start
-                    if idle is not None:
-                        return _idle_verdicts(lanes, idle, self.observed_mce[seen:], phase, elapsed)
-        finally:
-            self.detector.close()
-            self.state = TestState.FINISHED
-        if self._stop_event.is_set():
-            return _every_core(cores, Outcome.CUT_SHORT, f"rapid transition run stopped during cycle {cycle}", elapsed)
-        if cycle == 0:
-            return _every_core(
-                cores,
-                Outcome.NO_WORK_DONE,
-                f"rapid transition run of {total_duration:.1f}s is shorter than one {load_seconds:.1f}s load "
-                "segment: no work done, verdict unavailable",
-                elapsed,
-            )
-        return _every_core(cores, Outcome.PASS, "", elapsed)
-
 
 def _phase_cut(core_id: int, phase: str, duration: float) -> StressResult:
     return StressResult(
@@ -428,49 +354,3 @@ def _phase_cut(core_id: int, phase: str, duration: float) -> StressResult:
         detail=f"{phase} phase stopped before its end: no verdict of its own",
         duration_seconds=duration,
     )
-
-
-def _every_core(cores: list[int], outcome: Outcome, detail: str, duration: float) -> dict[int, StressResult]:
-    return {
-        core: StressResult(core_id=core, outcome=outcome, detail=detail, duration_seconds=duration) for core in cores
-    }
-
-
-def _segment_verdicts(results: dict[int, StressResult], cycle: int) -> dict[int, StressResult]:
-    failed = [core for core, result in results.items() if not result.passed and result.outcome is not Outcome.CUT_SHORT]
-    stopped_by = f"core {', '.join(str(core) for core in failed)}" if failed else "a stop"
-    verdicts: dict[int, StressResult] = {}
-    for core, result in results.items():
-        if core in failed:
-            verdicts[core] = replace(result, detail=f"Failure during rapid transition cycle {cycle}: {result.detail}")
-        elif result.outcome is Outcome.CUT_SHORT:
-            verdicts[core] = result
-        else:
-            verdicts[core] = replace(
-                result,
-                outcome=Outcome.CUT_SHORT,
-                detail=f"rapid transition cycle {cycle} stopped by {stopped_by}: no verdict of its own",
-            )
-    return verdicts
-
-
-def _idle_verdicts(
-    lanes: list[Lane], found: LaneSignal, events: list[KernelEvent], phase: str, elapsed: float
-) -> dict[int, StressResult]:
-    blamed: dict[int, LaneSignal] = {}
-    if found.outcome is Outcome.OWN_CORE_MCE:
-        machine_checks = [event for event in events if isinstance(event, CoreMachineCheck)]
-        for lane in lanes:
-            hits = (execution.kernel_signal(event, lane.cpus, phase) for event in machine_checks)
-            own = [hit for hit in hits if hit is not None]
-            if own:
-                blamed[lane.core_id] = own[0]
-    if not blamed:
-        return _every_core([lane.core_id for lane in lanes], found.outcome, found.text, elapsed)
-    named = ", ".join(str(core) for core in blamed)
-    cut = LaneSignal(Outcome.CUT_SHORT, f"{phase} stopped by a machine check on core {named}: no verdict of its own")
-    verdicts = {lane.core_id: blamed.get(lane.core_id, cut) for lane in lanes}
-    return {
-        core: StressResult(core_id=core, outcome=signal.outcome, detail=signal.text, duration_seconds=elapsed)
-        for core, signal in verdicts.items()
-    }

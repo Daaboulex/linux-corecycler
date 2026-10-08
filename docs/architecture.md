@@ -27,7 +27,6 @@ src/corecycler/
   engine/            Stress execution
     topology.py        CPU topology: cores, CCDs, L3 cache, X3D V-Cache detection
     scheduler.py       Per-core cycling, variable load, idle tests
-    parallel.py        All-core simultaneous lanes (validation stages)
     execution.py       The one supervised loop: launch, poll, stall/thermal/MCE, verdicts
     containment.py     systemd cgroup scopes (AllowedCPUs) and the kernel cpuset record
     detector.py        MCE and kernel-error records from /dev/kmsg + the systemd journal
@@ -49,12 +48,7 @@ src/corecycler/
     msr.py             MSR (root): APERF/MPERF clock stretch, per-core RAPL power
   history/           SQLite persistence (WAL): run/context/tuner tables, migration registry, JSON/CSV export
   tuner/             Automated PBO Curve Optimizer tuner
-    config.py          TunerConfig dataclass (search parameters with defaults)
-    state.py           TunerPhase StrEnum, CoreState / TunerSession dataclasses
-    persistence.py     Session CRUD, core-state upsert, test log, CO write-ahead journal
-    engine.py          TunerEngine: state machine, scheduling, crash recovery, staged validation (1-7);
-                       the old tuner, which no entry runs since the Auto-Tuner tab starts the driver
-    machine/           The next tuner as a pure state machine: session.transition(state, event, world)
+    machine/           The tuner as a pure state machine: session.transition(state, event, world)
                        returns the new state and its effects (search, bisect, all-core, resume
                        attribution); the tuner driver live_hw.py runs it
     orders.py          Core pick orders for machine/ (alternate, sequential, random)

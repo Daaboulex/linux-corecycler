@@ -8,6 +8,7 @@ import pytest
 
 from corecycler import cli
 from corecycler.history.db import HistoryDB
+from tests._old_rows import seed_old_session
 
 
 @pytest.fixture
@@ -101,7 +102,7 @@ class TestStatus:
         assert lines[1].endswith("  superseded by session 2 (continue)")
 
     def test_old_engine_sessions_are_not_listed(self, db, capsys):
-        db.create_tuner_session("{}", "bios-1", "cpu-1", boot_id="b")
+        seed_old_session(db)
         assert cli.cmd_status(db) == cli.EXIT_COMPLETED
         assert capsys.readouterr().out == "no tuning sessions\n"
 

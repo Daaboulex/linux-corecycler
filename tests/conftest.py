@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.util
 import struct
 import sys
 import time
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,84 +14,15 @@ import pytest
 # add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-# Mock PySide6 if not installed — allows running state machine tests without Qt.
-# TunerEngine inherits QObject and uses Signal/Slot, but the state machine logic
-# (_advance_core, _apply_crash_penalty, etc.) is pure Python and testable without Qt.
-if "PySide6" not in sys.modules:
-    try:
-        import PySide6  # noqa: F401
-    except ImportError:
-        _qt = ModuleType("PySide6")
-        _qtcore = ModuleType("PySide6.QtCore")
-
-        class _FakeSignal:
-            def __init__(self, *args, **kwargs):
-                self._slots = []
-
-            def __set_name__(self, owner, name):
-                self._name = name
-
-            def __get__(self, instance, owner=None):
-                if instance is None:
-                    return self
-                bound = instance.__dict__[self._name] = _FakeSignal()
-                return bound
-
-            def emit(self, *args):
-                for slot in self._slots:
-                    slot(*args)
-
-            def connect(self, slot):
-                self._slots.append(slot)
-
-            def disconnect(self, slot=None):
-                if slot is None:
-                    self._slots.clear()
-                elif slot in self._slots:
-                    self._slots.remove(slot)
-
-        class _FakeQObject:
-            pass
-
-        class _FakeQThread:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def start(self):
-                pass
-
-            def wait(self, *args):
-                return True
-
-            def isRunning(self):
-                return False
-
-            def terminate(self):
-                pass
-
-            def deleteLater(self):
-                pass
-
-        class _FakeQTimer:
-            @staticmethod
-            def singleShot(ms, func):
-                func()
-
-        _qtcore.QObject = _FakeQObject
-        _qtcore.QThread = _FakeQThread
-        _qtcore.QTimer = _FakeQTimer
-        _qtcore.Signal = _FakeSignal
-        _qtcore.Slot = lambda *a, **k: lambda f: f
-        _qt.QtCore = _qtcore
-
-        sys.modules["PySide6"] = _qt
-        sys.modules["PySide6.QtCore"] = _qtcore
-
 from corecycler.engine import containment
 from corecycler.engine.backends.base import StressBackend, StressConfig, StressMode
 from corecycler.engine.execution import Supervisor
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.smu.commands import CPUGeneration, SMUCommandSet
+
+QT_INSTALLED = importlib.util.find_spec("PySide6") is not None
+if QT_INSTALLED:
+    importlib.import_module("PySide6")
 
 # ---------------------------------------------------------------------------
 # Mock cpuinfo data for various CPU configurations
@@ -554,12 +485,6 @@ def topo_dual_ccd_x3d():
 
 
 @pytest.fixture
-def topo_single_ccd():
-    """Topology fixture: 4-core single CCD, no SMT."""
-    return build_topology(CPUINFO_SINGLE_CCD_NO_SMT, num_ccds=1)
-
-
-@pytest.fixture
 def topo_intel():
     """Topology fixture: 2-core Intel with SMT (4 logical)."""
     return build_topology(CPUINFO_INTEL_10CORE_SMT, num_ccds=1)
@@ -733,43 +658,6 @@ def machine(monkeypatch, tmp_path_factory):
     from tests._machine import installed
 
     return installed(tmp_path_factory.mktemp("machine"), monkeypatch)
-
-
-@pytest.fixture(autouse=True)
-def lanes_count_oom_kills(monkeypatch):
-    import corecycler.tuner.engine as engine_mod
-
-    monkeypatch.setattr(engine_mod, "memory_accounting_problem", lambda: None)
-
-
-@pytest.fixture(autouse=True)
-def synthetic_memory_budget(monkeypatch, tmp_path_factory):
-    """The memory stage sizes its stressors from the live machine
-    (tuner.engine.memory_budget reads /proc/meminfo and the cgroup tree, and
-    the containment probe launches a scope to learn the lanes' cgroup). A unit
-    test never reads the real box: the real budget reader runs against an
-    injected 32 GB desktop with 28 GB available and no cgroup limit, and the
-    lanes' cgroup is unknown. Budget tests inject their own machines. Returns
-    the injected bases and ``budget_for(instances, minimum)`` so a test can
-    derive its expectations from the same machine.
-    """
-    import corecycler.tuner.engine as engine_mod
-    from corecycler.engine.memory_budget import memory_budget as real_budget
-
-    root = tmp_path_factory.mktemp("synthetic-machine")
-    proc = root / "proc"
-    (proc / "self").mkdir(parents=True)
-    (proc / "meminfo").write_text(f"MemTotal:       {32 * 1024 * 1024} kB\nMemAvailable:   {28 * 1024 * 1024} kB\n")
-    (proc / "self" / "cgroup").write_text("0::/user.slice/user-1000.slice/user@1000.service/app.slice\n")
-    cgroup = root / "cgroup"
-    cgroup.mkdir()
-
-    def fake(instances, launch_minimum_mb, *, lane_cgroup=None, **_kw):
-        return real_budget(instances, launch_minimum_mb, lane_cgroup=lane_cgroup, proc_base=proc, cgroup_base=cgroup)
-
-    monkeypatch.setattr(engine_mod, "memory_budget", fake)
-    monkeypatch.setattr(engine_mod, "lane_cgroup_parent", lambda: None)
-    return SimpleNamespace(proc_base=proc, cgroup_base=cgroup, budget_for=fake)
 
 
 def pytest_configure(config):
