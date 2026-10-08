@@ -163,7 +163,7 @@ class MprimeBackend(StressBackend):
                 TortureHyperthreading={1 if config.threads > 1 else 0}
             """)
             + flags_block
-            + "EnableSetAffinity=0\n"
+            + "EnableSetAffinity=0\nEnableSetPriority=0\n"
         )
 
     @staticmethod

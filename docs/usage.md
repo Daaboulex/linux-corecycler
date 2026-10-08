@@ -169,6 +169,14 @@ Hard crashes are expected during CO tuning; that is how each core's limit is fou
   test stops and the tuner cools down and retries the same value; after three such
   retries in a row the next thermal stop pauses. No readable temperature sensor refuses
   the run.
+- **Other schedulers**: a stress tool whose nice value or scheduling policy differs from
+  what it was started with (ananicy-cpp renices programs by name) is not a verdict: the
+  test is repeated, and if it keeps happening the session pauses naming the program and
+  how to stop it. A sched_ext scheduler that runs when the tab is about to start tests
+  (Start, Resume, Validate, Continue, Restart) is named first, with Start anyway or
+  Cancel. When a session ends, a scheduling service
+  (ananicy-cpp, scx_loader, scx) that is enabled but stopped is named with the command
+  that starts it again. Manual stress runs judge a renice the same way.
 
 `corecycler --auto-resume [seconds]` (the NixOS autostart entry passes it) waits, then
 resumes the one session a crash interrupted, trying three times a minute apart while the

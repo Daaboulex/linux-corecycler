@@ -251,6 +251,7 @@ def igpu(pci: Path = PCI) -> dict:
 
 SMU_DRIVER = "/sys/kernel/ryzen_smu_drv"
 PROC = Path("/proc")
+SCHED_EXT = Path("/sys/kernel/sched_ext")
 
 
 def _others(proc: Path) -> list[Path]:
@@ -288,14 +289,23 @@ def smu_holder(proc: Path = PROC) -> tuple[str | None, int]:
     return None, by_name_only
 
 
-def running(name: str, proc: Path = PROC) -> bool:
-    for pid in _others(proc):
-        try:
-            if (pid / "comm").read_text().strip() == name:
-                return True
-        except FileNotFoundError:
-            continue
-    return False
+def sched_ext_note(root: Path = SCHED_EXT) -> str | None:
+    try:
+        state = (root / "state").read_text().strip()
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        return f"the sched_ext state cannot be read ({e}), so another scheduler may be running every task"
+    if state != "enabled":
+        return None
+    try:
+        name = (root / "root" / "ops").read_text().strip()
+    except OSError as e:
+        name = f"whose name cannot be read ({e})"
+    return (
+        f"the sched_ext scheduler {name} runs every task in place of the kernel's, the tests included; "
+        "for clean results stop it (scxctl stop, or systemctl stop scx_loader) and start it again afterwards"
+    )
 
 
 def scheduling_problem() -> str | None:
@@ -305,7 +315,9 @@ def scheduling_problem() -> str | None:
     return None
 
 
-def preflight(smu, sensors, tools, budget, proc: Path = PROC) -> tuple[str | None, tuple[str, ...]]:
+def preflight(
+    smu, sensors, tools, budget, proc: Path = PROC, sched_ext: Path = SCHED_EXT
+) -> tuple[str | None, tuple[str, ...]]:
     """The first gate of L01 that refuses (in L01 order, later gates not run), and the warnings."""
     by_name_only: list[int] = []
 
@@ -338,8 +350,9 @@ def preflight(smu, sensors, tools, budget, proc: Path = PROC) -> tuple[str | Non
         warnings.append(
             f"{by_name_only[0]} processes were checked for an SMU tool by name only; their open files need root"
         )
-    if running("ananicy-cpp", proc):
-        warnings.append("ananicy-cpp is running and may renice the stress tools while they run")
+    scheduler = sched_ext_note(sched_ext)
+    if scheduler is not None:
+        warnings.append(scheduler)
     hot_mb = budget(1, 0).usable_mb // 2
     if hot_mb < stages.HOT_MEMORY_CAP_MB:
         warnings.append(f"HOT runs y-cruncher with {hot_mb} MB, under its {stages.HOT_MEMORY_CAP_MB} MB cap")

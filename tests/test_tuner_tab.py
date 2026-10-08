@@ -7,6 +7,7 @@ import sys
 import time
 from dataclasses import fields, replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -50,6 +51,7 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setattr(tt, "data_dir", lambda: data)
     monkeypatch.setattr(tt, "QMessageBox", MagicMock())
     monkeypatch.setattr(tt, "ensure_tool", lambda parent, key: True)
+    monkeypatch.setattr(tt, "sched_ext_note", lambda: None)
     return data
 
 
@@ -406,6 +408,80 @@ def test_restart_without_a_co_reader_leaves_the_question_to_the_driver(db, home,
     t._buttons["Restart"].click()
     tt.QMessageBox.question.assert_not_called()
     assert launched[0][0][4:] == ["--restart", "--session", str(saved.session_id), "--db", str(db.path)]
+
+
+def test_a_running_sched_ext_scheduler_is_asked_about_before_any_test_starts(db, home, launched, tmp_path, monkeypatch):
+    monkeypatch.setattr(tt, "sched_ext_note", lambda: "the sched_ext scheduler lavd runs every task")
+    saved = save_machine_session(db, tmp_path, "paused")
+    t = tab(db)
+    tt.QMessageBox.question.return_value = tt.QMessageBox.StandardButton.Cancel
+    t._buttons["Start"].click()
+    t._buttons["Resume"].click()
+    assert launched == []
+    assert tt.QMessageBox.question.call_args.args[2] == "The sched_ext scheduler lavd runs every task.\n\nStart anyway?"
+    tt.QMessageBox.question.return_value = tt.QMessageBox.StandardButton.Yes
+    t._buttons["Resume"].click()
+    assert launched[0][0][4:7] == ["--resume", "--session", str(saved.session_id)]
+
+
+@pytest.mark.parametrize(
+    ("stopped", "said"),
+    [
+        ([], ""),
+        (
+            ["ananicy-cpp"],
+            "The session has ended and ananicy-cpp is enabled but stopped. Start it again with:"
+            " sudo systemctl start ananicy-cpp.service",
+        ),
+        (
+            ["ananicy-cpp", "scx_loader"],
+            "The session has ended and ananicy-cpp and scx_loader are enabled but stopped. Start them again with:"
+            " sudo systemctl start ananicy-cpp.service && sudo systemctl start scx_loader.service",
+        ),
+    ],
+)
+def test_a_session_that_ends_names_a_stopped_scheduling_service(db, home, tmp_path, monkeypatch, stopped, said):
+    saved = save_machine_session(db, tmp_path, "running")
+    asked = []
+    monkeypatch.setattr(tt, "stopped_services", lambda: asked.append(1) or stopped)
+    t = tab(db)
+    t.refresh()
+    assert asked == []
+    db._execute_raw("UPDATE tuner_sessions SET status='completed' WHERE id=?", (saved.session_id,))
+    t.refresh()
+    t.refresh()
+    assert asked == [1]
+    assert t._reminder.text() == said
+
+
+def test_a_failed_service_check_is_said(db, home, tmp_path, monkeypatch):
+    saved = save_machine_session(db, tmp_path, "paused")
+
+    def broken():
+        raise tt.subprocess.TimeoutExpired("systemctl", 5)
+
+    monkeypatch.setattr(tt, "stopped_services", broken)
+    t = tab(db)
+    db._execute_raw("UPDATE tuner_sessions SET status='aborted' WHERE id=?", (saved.session_id,))
+    t.refresh()
+    assert t._reminder.text().startswith("The scheduling services could not be checked: ")
+
+
+def test_only_an_enabled_and_stopped_service_is_named(monkeypatch):
+    calls = []
+    state = {("is-enabled", "ananicy-cpp"): 0, ("is-active", "ananicy-cpp"): 3, ("is-enabled", "scx_loader"): 1}
+
+    def run(command, check, timeout):
+        verb, unit = command[1], command[3].removesuffix(".service")
+        calls.append((verb, unit))
+        return SimpleNamespace(returncode=state.get((verb, unit), 0))
+
+    monkeypatch.setattr(tt.tools, "resolve", lambda key: SimpleNamespace(path=Path("/run/systemctl")))
+    monkeypatch.setattr(tt.subprocess, "run", run)
+    assert tt.stopped_services() == ["ananicy-cpp"]
+    assert ("is-active", "scx_loader") not in calls
+    monkeypatch.setattr(tt.tools, "resolve", lambda key: SimpleNamespace(path=None))
+    assert tt.stopped_services() == []
 
 
 def test_the_driver_s_end_is_said_with_its_refusal(db, home, launched):

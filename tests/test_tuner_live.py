@@ -1858,7 +1858,17 @@ class Tool:
 
 
 def preflight(
-    tmp_path, monkeypatch, *, smu=None, temp=60.0, tools=(), usable=60_000, procs=None, scheduling=None, unread=()
+    tmp_path,
+    monkeypatch,
+    *,
+    smu=None,
+    temp=60.0,
+    tools=(),
+    usable=60_000,
+    procs=None,
+    scheduling=None,
+    unread=(),
+    sched_ext=None,
 ):
     monkeypatch.setattr(live_hw.kernel, "kernel_log_problem", lambda: None)
     monkeypatch.setattr(live_hw, "memory_accounting_problem", lambda: None)
@@ -1871,6 +1881,7 @@ def preflight(
         tools,
         lambda n, floor: SimpleNamespace(usable_mb=usable),
         proc,
+        sched_ext or tmp_path / "no-sched-ext",
     )
 
 
@@ -1945,20 +1956,45 @@ def test_processes_checked_by_name_only_are_a_warning(tmp_path, monkeypatch):
     assert warnings == ("1 processes were checked for an SMU tool by name only; their open files need root",)
 
 
-def test_ananicy_and_a_short_hot_budget_are_warnings_not_refusals(tmp_path, monkeypatch):
+def sched_ext(root: Path, state: str | None, ops: str | None = None) -> Path:
+    root.mkdir()
+    if state is not None:
+        (root / "state").write_text(f"{state}\n")
+    if ops is not None:
+        (root / "root").mkdir()
+        (root / "root" / "ops").write_text(f"{ops}\n")
+    return root
+
+
+def test_a_running_ananicy_alone_is_not_a_warning_and_a_short_hot_budget_is(tmp_path, monkeypatch):
     refusal, warnings = preflight(tmp_path, monkeypatch, usable=8000, procs={9: ("ananicy-cpp", ())})
     assert refusal is None
+    assert warnings == (f"HOT runs y-cruncher with 4000 MB, under its {stages.HOT_MEMORY_CAP_MB} MB cap",)
+
+
+def test_an_enabled_sched_ext_scheduler_is_a_warning_naming_it(tmp_path, monkeypatch):
+    root = sched_ext(tmp_path / "scx", "enabled", "lavd_1.0.13")
+    refusal, warnings = preflight(tmp_path, monkeypatch, sched_ext=root)
+    assert refusal is None
     assert warnings == (
-        "ananicy-cpp is running and may renice the stress tools while they run",
-        f"HOT runs y-cruncher with 4000 MB, under its {stages.HOT_MEMORY_CAP_MB} MB cap",
+        "the sched_ext scheduler lavd_1.0.13 runs every task in place of the kernel's, the tests included; for"
+        " clean results stop it (scxctl stop, or systemctl stop scx_loader) and start it again afterwards",
     )
+
+
+def test_sched_ext_absent_or_disabled_is_silent_and_unreadable_is_said(tmp_path, monkeypatch):
+    assert live_hw.sched_ext_note(tmp_path / "absent") is None
+    assert live_hw.sched_ext_note(sched_ext(tmp_path / "off", "disabled")) is None
+    nameless = live_hw.sched_ext_note(sched_ext(tmp_path / "nameless", "enabled"))
+    assert nameless.startswith("the sched_ext scheduler whose name cannot be read (")
+    blocked = sched_ext(tmp_path / "blocked", None)
+    (blocked / "state").mkdir()
+    assert live_hw.sched_ext_note(blocked).startswith("the sched_ext state cannot be read (")
 
 
 def test_a_process_that_vanishes_mid_scan_is_skipped(tmp_path):
     proc = proc_tree(tmp_path / "proc", {5: ("ryzenadj", ("/sys/kernel/ryzen_smu_drv/smu_args",))})
     (proc / "6").mkdir()
-    assert live_hw.running("ryzenadj", proc) is True
-    assert live_hw.running("ananicy-cpp", proc) is False
     assert "ryzenadj (pid 5) is a known SMU tool" in live_hw.smu_holder(proc)[0]
     holder = proc_tree(tmp_path / "holder", {8: ("monitor", ("/sys/kernel/ryzen_smu_drv/smu_args",))})
     assert live_hw.smu_holder(holder) == (

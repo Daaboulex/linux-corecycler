@@ -14,6 +14,7 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -1858,3 +1859,67 @@ def test_each_tick_reads_the_sensors_once_and_the_hold_and_the_stop_judge_that_r
     assert len(produced) > 2
     assert held == produced
     assert thermal.last_temperature == produced[-1].hottest
+
+
+def _stat(pid: int, comm: str, ppid: int, nice: int = 0, policy: int = 0) -> str:
+    fields = ["S", str(ppid), *["0"] * 14, str(nice), *["0"] * 21, str(policy)]
+    return f"{pid} ({comm}) {' '.join(fields)}\n"
+
+
+def _process(base: Path, pid: int, comm: str, ppid: int, threads: dict[int, tuple[int, int]]) -> None:
+    (base / str(pid)).mkdir()
+    (base / str(pid) / "stat").write_text(_stat(pid, comm, ppid))
+    for tid, (nice, policy) in threads.items():
+        (base / str(pid) / "task" / str(tid)).mkdir(parents=True)
+        (base / str(pid) / "task" / str(tid) / "stat").write_text(_stat(tid, comm, ppid, nice, policy))
+
+
+class TestScheduling:
+    def test_every_thread_of_the_tree_is_read(self, tmp_path):
+        _process(tmp_path, 100, "y-cruncher", 1, {100: (0, 0), 102: (0, 0)})
+        _process(tmp_path, 101, "24-ZN5 ~ Kom", 100, {101: (16, os.SCHED_IDLE)})
+        _process(tmp_path, 200, "other", 1, {200: (19, 0)})
+        assert sorted(containment.tree_scheduling(100, proc_base=tmp_path)) == [
+            ("24-ZN5 ~ Kom", 101, 16, os.SCHED_IDLE),
+            ("y-cruncher", 100, 0, 0),
+            ("y-cruncher", 102, 0, 0),
+        ]
+
+    def test_a_gone_or_garbled_thread_is_skipped(self, tmp_path):
+        _process(tmp_path, 100, "x", 1, {100: (0, 0)})
+        (tmp_path / "100" / "task" / "103").mkdir()
+        (tmp_path / "100" / "task" / "104").mkdir()
+        (tmp_path / "100" / "task" / "104" / "stat").write_text("104 (x) S 1\n")
+        (tmp_path / "101").mkdir()
+        (tmp_path / "101" / "stat").write_text(_stat(101, "gone", 100))
+        assert containment.tree_scheduling(100, proc_base=tmp_path) == [("x", 100, 0, 0)]
+
+    def test_the_spawner_s_own_scheduling_is_what_a_payload_inherits(self):
+        assert containment.own_scheduling() == (os.getpriority(os.PRIO_PROCESS, 0), os.sched_getscheduler(0))
+
+    def test_a_changed_thread_is_a_fault_naming_it_and_the_remedy(self, tmp_path, monkeypatch):
+        run = execution._LaneRun(lane=lane(tmp_path), scheduled_as=(0, os.SCHED_OTHER))
+        run.proc = SimpleNamespace(pid=100)
+        changed = [("y-cruncher", 100, 0, os.SCHED_OTHER), ("y-cruncher", 102, 16, os.SCHED_IDLE)]
+        monkeypatch.setattr(containment, "tree_scheduling", lambda pid: changed if pid == 100 else [])
+        assert execution._scheduling_fault(run) == (
+            "y-cruncher (thread 102) runs at nice 16 with idle scheduling instead of nice 0 with normal: another"
+            " program changed how the test is scheduled (ananicy-cpp does this by process name); stop it or its"
+            " rule for y-cruncher, then resume: scheduling fault, not a core verdict"
+        )
+        changed[1] = ("y-cruncher", 102, 0, 7)
+        assert "with policy 7 scheduling" in execution._scheduling_fault(run)
+
+    def test_an_unchanged_or_unlaunched_payload_is_no_fault(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(containment, "tree_scheduling", lambda pid: [("x", pid, 0, os.SCHED_OTHER)])
+        run = execution._LaneRun(lane=lane(tmp_path), scheduled_as=(0, os.SCHED_OTHER))
+        run.proc = SimpleNamespace(pid=100)
+        assert execution._scheduling_fault(run) is None
+        assert execution._scheduling_fault(execution._LaneRun(lane=lane(tmp_path))) is None
+
+    def test_a_payload_that_is_reniced_while_it_runs_is_not_a_core_verdict(self, tmp_path):
+        code = "import os\nos.nice(5)\nwhile True:\n    pass\n"
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(code)))
+        verdict = run_one(supervisor, lane(tmp_path), execution.WATCHDOG_INTERVAL * 3)
+        assert verdict.outcome is Outcome.CONTAINMENT_BROKE
+        assert "runs at nice " in verdict.detail and "scheduling fault, not a core verdict" in verdict.detail

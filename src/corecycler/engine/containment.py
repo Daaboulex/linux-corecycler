@@ -280,6 +280,32 @@ def observed_tree_cpus(pid: int, *, proc_base: Path | None = None) -> set[int]:
     return allowed
 
 
+def own_scheduling() -> tuple[int, int]:
+    return os.getpriority(os.PRIO_PROCESS, 0), os.sched_getscheduler(0)
+
+
+def tree_scheduling(pid: int, *, proc_base: Path | None = None) -> list[tuple[str, int, int, int]]:
+    base = proc_base or Path("/proc")
+    found = []
+    for member in _process_tree(pid, base):
+        try:
+            tasks = list((base / str(member) / "task").iterdir())
+        except OSError:
+            continue
+        for task in tasks:
+            try:
+                stat = (task / "stat").read_text()
+            except OSError:
+                continue
+            fields = stat[stat.rfind(")") + 1 :].split()
+            name = stat[stat.find("(") + 1 : stat.rfind(")")]
+            try:
+                found.append((name, int(task.name), int(fields[16]), int(fields[38])))
+            except IndexError, ValueError:
+                continue
+    return found
+
+
 def _process_tree(root_pid: int, base: Path) -> list[int]:
     children: dict[int, list[int]] = {}
     try:

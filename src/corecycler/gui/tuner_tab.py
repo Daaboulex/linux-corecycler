@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from corecycler.cli import EXIT_LOCKED, EXIT_MEANINGS, EXIT_REFUSED
+from corecycler.config import tools
 from corecycler.config.paths import atomic_write, data_dir, hand_back
 from corecycler.engine import detector as kernel
 from corecycler.gui.style import (
@@ -51,6 +52,7 @@ from corecycler.gui.tool_prompt import ensure_tool
 from corecycler.gui.widgets import add_setting, note, setting_grid, spoken
 from corecycler.smu.writer_lock import running_driver
 from corecycler.tuner.live import config_to_json, read_stored
+from corecycler.tuner.live_hw import sched_ext_note
 from corecycler.tuner.machine.types import KNOB_FLOOR, MachineConfig, Mode, PauseReason, Phase, Stage, Stored
 from corecycler.tuner.orders import Method, default_method
 from corecycler.tuner.stages import WARM_HOLD
@@ -195,6 +197,8 @@ GRID_STATE = {
     Phase.PROVE: "queued",
     Phase.PROVEN: "passed",
 }
+SCHEDULING_SERVICES = ("ananicy-cpp", "scx_loader", "scx")
+ENDED = frozenset({"completed", "aborted", "quarantined"})
 AUTO_RESUME_TRIES = 3
 AUTO_RESUME_GAP_MS = 60_000
 TOOLS = ("y-cruncher", "stressapptest")
@@ -223,6 +227,18 @@ def settings_lines(cfg: MachineConfig) -> list[str]:
             shown = SINGULAR.get(unit, unit) if value == 1 else unit
             lines.append(f"  {label}: {value:g} {shown}".rstrip() + (f" ({said})" if said else ""))
     return lines
+
+
+def stopped_services() -> list[str]:
+    systemctl = tools.resolve("systemctl").path
+    if systemctl is None:
+        return []
+
+    def answers(verb: str, unit: str) -> bool:
+        command = [str(systemctl), verb, "--quiet", f"{unit}.service"]
+        return subprocess.run(command, check=False, timeout=5).returncode == 0
+
+    return [unit for unit in SCHEDULING_SERVICES if answers("is-enabled", unit) and not answers("is-active", unit)]
 
 
 def labelled(text: str) -> str:
@@ -403,10 +419,13 @@ class TunerTab(QWidget):
         self._driver = QLabel("")
         self._driver.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM};")
         self._test = QLabel("")
+        self._reminder = QLabel("")
+        self._reminder.setWordWrap(True)
         column.addWidget(self._status)
         column.addWidget(self._range)
         column.addWidget(self._driver)
         column.addWidget(self._test)
+        column.addWidget(self._reminder)
         buttons = QHBoxLayout()
         self._buttons: dict[str, QPushButton] = {}
         for name, action in (
@@ -459,9 +478,26 @@ class TunerTab(QWidget):
         if running != self._running:
             self._running = running
             self.tuner_running_changed.emit(running)
+        seen = self._view
         self._view = read_view(self._db, kernel.read_boot_id()) if self._db is not None else None
+        if seen is not None and self._view is not None and seen.status not in ENDED and self._view.status in ENDED:
+            self._remind()
         self._show()
         self._enable_controls()
+
+    def _remind(self) -> None:
+        try:
+            stopped = stopped_services()
+        except (OSError, subprocess.SubprocessError) as e:
+            self._reminder.setText(f"The scheduling services could not be checked: {e}")
+            return
+        commands = " && ".join(f"sudo systemctl start {unit}.service" for unit in stopped)
+        self._reminder.setText(
+            f"The session has ended and {' and '.join(stopped)} {'is' if len(stopped) == 1 else 'are'} enabled"
+            f" but stopped. Start {'it' if len(stopped) == 1 else 'them'} again with: {commands}"
+            if stopped
+            else ""
+        )
 
     def waiting_session(self) -> SessionView | None:
         view = self._view
@@ -544,8 +580,21 @@ class TunerTab(QWidget):
     def _tools_ready(self) -> bool:
         return all(ensure_tool(self, key) for key in TOOLS)
 
+    def _scheduler_allows(self) -> bool:
+        problem = sched_ext_note()
+        if problem is None:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Another scheduler is running",
+            f"{problem[0].upper()}{problem[1:]}.\n\nStart anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
     def _on_start(self) -> None:
-        if not self._tools_ready():
+        if not self._tools_ready() or not self._scheduler_allows():
             return
         state = data_dir() / "tuner"
         state.mkdir(parents=True, exist_ok=True)
@@ -577,7 +626,7 @@ class TunerTab(QWidget):
 
     def _on_session(self, action: str) -> None:
         view = self._view
-        if view is None or not self._tools_ready():
+        if view is None or not self._tools_ready() or not self._scheduler_allows():
             return
         extra: list[str] | None = []
         if action == "restart":

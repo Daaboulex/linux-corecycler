@@ -36,6 +36,13 @@ log = logging.getLogger(__name__)
 STALL_GRACE_SECONDS = 5.0
 OUTPUT_SCAN_INTERVAL = 5.0
 WATCHDOG_INTERVAL = 2.0
+POLICY_NAMES = {
+    os.SCHED_OTHER: "normal",
+    os.SCHED_BATCH: "batch",
+    os.SCHED_IDLE: "idle",
+    os.SCHED_FIFO: "realtime FIFO",
+    os.SCHED_RR: "realtime round-robin",
+}
 CONTAINMENT_GRACE_SECONDS = 5.0
 LOAD_FLOOR_FRACTION = 0.5
 STALL_BUSY_FRACTION = 0.05
@@ -85,6 +92,7 @@ class _LaneRun:
     frozen: bool = False
     frozen_since: float | None = None
     frozen_total: float = 0.0
+    scheduled_as: tuple[int, int] | None = None
 
     @property
     def alive(self) -> bool:
@@ -211,6 +219,25 @@ def kernel_signal(event: KernelEvent, own_cpus: tuple[int, ...], phase: str) -> 
     return None
 
 
+def _policy(number: int) -> str:
+    return POLICY_NAMES.get(number, f"policy {number}")
+
+
+def _scheduling_fault(run: _LaneRun) -> str | None:
+    if run.scheduled_as is None:
+        return None
+    nice, policy = run.scheduled_as
+    for name, tid, now_nice, now_policy in containment.tree_scheduling(run.proc.pid):
+        if (now_nice, now_policy) != (nice, policy):
+            return (
+                f"{name} (thread {tid}) runs at nice {now_nice} with {_policy(now_policy)} scheduling instead of "
+                f"nice {nice} with {_policy(policy)}: another program changed how the test is scheduled "
+                f"(ananicy-cpp does this by process name); stop it or its rule for {name}, then resume: "
+                "scheduling fault, not a core verdict"
+            )
+    return None
+
+
 def _frozen_for(run: _LaneRun, now: float) -> float:
     return run.frozen_total + (now - run.frozen_since if run.frozen else 0.0)
 
@@ -304,6 +331,7 @@ class Supervisor:
             log.error("core %d: refusing stress launch: %s", lane.core_id, exc)
             run.signals.append(LaneSignal(Outcome.NOT_STARTED, f"Failed to start stress test: {exc}"))
             return False
+        run.scheduled_as = containment.own_scheduling()
         try:
             with (run_dir / STDOUT_LOG).open("wb") as stdout, (run_dir / STDERR_LOG).open("wb") as stderr:
                 run.proc = subprocess.Popen(
@@ -373,10 +401,12 @@ class Supervisor:
             self._note_exit(run)
             self._scan_output(run)
             return
-        if run.contained is not None and now - run.last_watchdog >= WATCHDOG_INTERVAL:
+        if now - run.last_watchdog >= WATCHDOG_INTERVAL:
             run.last_watchdog = now
-            self._read_oom_kills(run)
-            fault = self._containment_fault(run, now)
+            fault = _scheduling_fault(run)
+            if run.contained is not None:
+                self._read_oom_kills(run)
+                fault = fault or self._containment_fault(run, now)
             if fault:
                 run.signals.append(LaneSignal(Outcome.CONTAINMENT_BROKE, fault))
                 return
