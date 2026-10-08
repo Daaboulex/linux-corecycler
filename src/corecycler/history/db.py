@@ -1605,17 +1605,22 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         if cur.rowcount != 1:
             raise sqlite3.IntegrityError(f"test row {row_id} is missing or already ended")
 
-    def insert_tuner_sample(self, test_id: int, sample: dict) -> None:
-        self.__conn.execute(
-            "INSERT INTO tuner_samples (test_id, mono_ns, running, tctl, clocks, tccd, volts) VALUES (?,?,?,?,?,?,?)",
-            (
-                test_id,
-                sample["mono_ns"],
-                int(sample["running"]),
-                sample["tctl"],
-                *(json.dumps(sample[name]) for name in SAMPLE_LISTS),
-            ),
-        )
+    def insert_tuner_samples(self, test_id: int, samples: list[dict]) -> None:
+        with self.transaction() as conn:
+            conn.executemany(
+                "INSERT INTO tuner_samples (test_id, mono_ns, running, tctl, clocks, tccd, volts)"
+                " VALUES (?,?,?,?,?,?,?)",
+                [
+                    (
+                        test_id,
+                        sample["mono_ns"],
+                        int(sample["running"]),
+                        sample["tctl"],
+                        *(json.dumps(sample[name]) for name in SAMPLE_LISTS),
+                    )
+                    for sample in samples
+                ],
+            )
 
     def insert_tuner_block(self, test_id: int, samples: list[dict]) -> None:
         with self.transaction() as conn:

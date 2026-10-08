@@ -6,6 +6,7 @@ import signal
 import sqlite3
 import struct
 import threading
+import time
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -186,7 +187,7 @@ class SamplingRunner(FakeRunner):
     hold: threading.Event | None = None
 
     def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
-        for n in range(3):
+        for n in range(telemetry.TAIL_GROUP):
             sink(taken(spec.core, n))
         if self.hold is not None:
             self.hold.wait()
@@ -559,7 +560,7 @@ def test_every_sample_a_test_takes_is_kept_under_its_row(tmp_path):
             "tccd": [[0, 55.0 + n]],
             "volts": [["sio_in0_vcore", 1.1]],
         }
-        for n in range(3)
+        for n in range(telemetry.TAIL_GROUP)
     ]
     assert rows(r, "SELECT count(*) AS n FROM tuner_samples") == [{"n": 0}]
 
@@ -569,7 +570,7 @@ def test_a_stage_whose_crash_rule_reads_no_context_keeps_its_samples_in_memory_u
     hold = threading.Event()
     r = rig(tmp_path, hardware, SamplingRunner(hardware, hold=hold))
     r.start(config(), 1, 7, True)
-    while len(r.store.unwritten) < 3:
+    while len(r.store.unwritten) < telemetry.TAIL_GROUP:
         r.step(0.01)
     hold.set()
     assert r.test_row[2] is False
@@ -588,7 +589,7 @@ def test_the_store_writes_a_block_every_block_of_samples_and_at_the_test_s_end(t
 
     for n in range(telemetry.BLOCK - 1):
         store.sample(row, taken(0, n), durable=True)
-    assert counts() == (telemetry.BLOCK - 1, 0)
+    assert counts() == ((telemetry.BLOCK - 1) // telemetry.TAIL_GROUP * telemetry.TAIL_GROUP, 0)
     store.sample(row, taken(0, telemetry.BLOCK - 1), durable=True)
     assert counts() == (0, 1)
     store.sample(row, taken(0, telemetry.BLOCK), durable=False)
@@ -596,6 +597,31 @@ def test_the_store_writes_a_block_every_block_of_samples_and_at_the_test_s_end(t
     store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0))
     assert counts() == (0, 2)
     assert [s["mono_ns"] for s in store.db.tuner_test_samples(row)] == [1_000 + n for n in range(telemetry.BLOCK + 1)]
+
+
+def test_the_durable_tail_is_written_a_group_at_a_time_and_only_in_durable_tests(tmp_path, monkeypatch):
+    store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
+    store.save(stored_with_fb(None), "boot-a")
+    row = store.db.insert_tuner_test(1, "boot-a", 1, "steady", "hot", "1t", 0, -3, "[]", "[0]", 60.0, "{}")
+    writes = []
+    real = store.db.insert_tuner_samples
+    monkeypatch.setattr(
+        store.db, "insert_tuner_samples", lambda test, samples: writes.append(len(samples)) or real(test, samples)
+    )
+
+    def tail() -> list[int]:
+        return [n for (n,) in store.db._execute_raw("SELECT mono_ns FROM tuner_samples ORDER BY id").fetchall()]
+
+    group = telemetry.TAIL_GROUP
+    for n in range(group - 1):
+        store.sample(row, taken(0, n), durable=True)
+    assert tail() == []
+    store.sample(row, taken(0, group - 1), durable=True)
+    assert tail() == [1_000 + n for n in range(group)]
+    for n in range(group, 2 * group):
+        store.sample(row, taken(0, n), durable=False)
+    assert tail() == [1_000 + n for n in range(group)]
+    assert writes == [group]
 
 
 def test_a_test_row_keeps_each_core_s_highest_clock_from_every_sample_it_took(tmp_path):
@@ -688,7 +714,9 @@ def test_a_crash_s_context_is_rebuilt_from_the_samples_its_test_left(tmp_path, m
     hold = threading.Event()
     r = rig(tmp_path, hardware, SamplingRunner(hardware, hold=hold))
     r.start(config(), 1, 7, True)
-    while rows(r, "SELECT count(*) AS n FROM tuner_samples")[0]["n"] < 3:
+    deadline = time.monotonic() + 30
+    while rows(r, "SELECT count(*) AS n FROM tuner_samples")[0]["n"] < telemetry.TAIL_GROUP:
+        assert time.monotonic() < deadline, "the durable tail never reached one group"
         r.step(0.01)
     tested = next(c for c in r.state.cores if c.in_test)
     cpus = tuple(json.loads(rows(r, "SELECT cpus_json FROM tuner_tests WHERE ended_at IS NULL")[0]["cpus_json"]))
@@ -696,9 +724,9 @@ def test_a_crash_s_context_is_rebuilt_from_the_samples_its_test_left(tmp_path, m
     read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
     hold.set()
     working = tuple(sorted({core for core, owned in CPUS for cpu in owned if cpu in cpus}))
-    expected = telemetry.context([taken(tested.core, n) for n in range(3)], False, working, ())
+    expected = telemetry.context([taken(tested.core, n) for n in range(telemetry.TAIL_GROUP)], False, working, ())
     assert read.context == expected
-    assert read.context.mhz == 5002.0
+    assert read.context.mhz == 5000.0 + telemetry.TAIL_GROUP - 1
 
 
 def test_a_crash_read_names_the_unproven_values_resident_at_death(tmp_path, monkeypatch):
@@ -765,7 +793,9 @@ def test_samples_a_test_left_unwritten_go_into_its_block_when_the_next_test_samp
     assert store.db.tuner_test_samples(second) == []
 
 
-@pytest.mark.parametrize("count", [telemetry.RING + 1, telemetry.BLOCK + 5])
+@pytest.mark.parametrize(
+    "count", [telemetry.RING + telemetry.TAIL_GROUP - 1, telemetry.BLOCK + telemetry.TAIL_GROUP - 1]
+)
 @pytest.mark.parametrize(
     ("load", "frozen_last", "steady"), [("hot", False, True), ("hot", True, False), ("burst", False, False)]
 )

@@ -9,6 +9,8 @@ SAMPLE_S = 0.1
 WINDOW_S = 2.0
 RING = round(WINDOW_S / SAMPLE_S)
 BLOCK = round(SAMPLE_BLOCK_S / SAMPLE_S)
+TAIL_S = 0.5
+TAIL_GROUP = round(TAIL_S / SAMPLE_S)
 
 
 @dataclass(frozen=True, slots=True)

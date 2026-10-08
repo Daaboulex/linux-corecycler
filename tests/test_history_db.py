@@ -422,12 +422,10 @@ class TestMachineSessionMethods:
             {"mono_ns": n, "running": n % 2 == 0, "tctl": None, "clocks": [[0, 5000.0]], "tccd": [], "volts": []}
             for n in range(4)
         ]
-        for sample in taken[:2]:
-            db.insert_tuner_sample(row, sample)
-        db.insert_tuner_sample(other, taken[0])
+        db.insert_tuner_samples(row, taken[:2])
+        db.insert_tuner_samples(other, taken[:1])
         db.insert_tuner_block(row, taken[:2])
-        db.insert_tuner_sample(row, taken[2])
-        db.insert_tuner_sample(row, taken[3])
+        db.insert_tuner_samples(row, taken[2:])
         assert db.tuner_test_samples(row) == taken
         assert db.tuner_test_samples(other) == taken[:1]
 
@@ -909,7 +907,7 @@ class TestMergeFrom:
         )
         sample = {"mono_ns": 7, "running": True, "tctl": 61.5, "clocks": [[8, 5000.0]], "tccd": [], "volts": []}
         src.insert_tuner_block(row, [sample])
-        src.insert_tuner_sample(row, sample | {"mono_ns": 8})
+        src.insert_tuner_samples(row, [sample | {"mono_ns": 8}])
         src.close()
         dst = HistoryDB(tmp_path / "dst.db")
         own = seed_old_session(dst)
@@ -1191,7 +1189,7 @@ class TestMigrationV24:
         db.save_machine_session(sid, status="paused", machine_json="1", boot_id="a", **fields)
         row = db.insert_tuner_test(sid, "a", 1, "steady", "hot", "1t", 0, -5, "[]", "[0]", 60.0, "{}")
         sample = {"mono_ns": 1, "running": True, "tctl": 60.5, "clocks": [[0, 5000.0]], "tccd": [], "volts": []}
-        db.insert_tuner_sample(row, sample)
+        db.insert_tuner_samples(row, [sample])
         db.close()
         conn = sqlite3.connect(path)
         conn.execute("UPDATE schema_version SET version = 23")

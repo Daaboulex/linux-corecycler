@@ -373,11 +373,11 @@ class Store:
             "tccd": sample.tccd,
             "volts": sample.volts,
         }
-        if durable:
-            self.db.insert_tuner_sample(row, taken)
         self.unwritten.append(taken)
         if len(self.unwritten) >= telemetry.BLOCK:
             self.write_block()
+        elif durable and len(self.unwritten) % telemetry.TAIL_GROUP == 0:
+            self.db.insert_tuner_samples(row, self.unwritten[-telemetry.TAIL_GROUP :])
 
     def write_block(self) -> None:
         if self.unwritten:
