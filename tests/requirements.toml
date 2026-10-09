@@ -3243,15 +3243,15 @@ task = "T28"
 
 [[requirement]]
 id = "U15"
-statement = "After a Bisect culprit: continue the tree or re-run the parent"
-proof = "open"
-task = "O7"
+statement = "After Bisect finds the culprit of an all-core failure, the culprit backs off one step and the whole entry stage runs again with every core (D90)"
+proof = "untested"
+task = "T29"
 
 [[requirement]]
 id = "U16"
-statement = "Bisect (c) tie between equal-size groups"
-proof = "open"
-task = "O7"
+statement = "When Bisect's two halves are the same size, the half with the lowest core number is tested first, so the same failure always takes the same path (D91)"
+proof = "untested"
+task = "T29"
 
 [[requirement]]
 id = "U18"
@@ -3267,9 +3267,9 @@ task = "O7"
 
 [[requirement]]
 id = "U22"
-statement = "A Pause during a 480-510 s AllCore stage waits for its end"
-proof = "open"
-task = "O7"
+statement = "A Pause during any all-core stage stops the running test at once; the cut test gives no verdict and runs again from its start on resume (D92)"
+proof = "not built"
+task = "T27"
 
 [[requirement]]
 id = "U24"
