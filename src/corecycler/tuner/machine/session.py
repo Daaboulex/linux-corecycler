@@ -35,6 +35,7 @@ from corecycler.tuner.machine.types import (
     Live1,
     Load,
     MachineConfig,
+    MarkSurvived,
     Mode,
     Pause,
     PauseReason,
@@ -1237,13 +1238,27 @@ def _finalize(s: SessionState, w: World) -> Transition:
     return Transition(done, (_commit(done), Announce("completed", f"final values {values}")))
 
 
+SURVIVING = frozenset({Group.PASS, Group.SILICON, Group.THERMAL})
+
+
+def _survival_mark(rep: Report) -> MarkSurvived | None:
+    if rep.group not in SURVIVING or rep.unblamed_corrected or rep.skipped:
+        return None
+    return MarkSurvived(tuple(sorted({ev.core for ev in rep.evidence if ev.corrected})))
+
+
 def _reported(s: SessionState, e: WorkerReported, w: World) -> Transition:
     if s.lifecycle not in (Lifecycle.RUNNING, Lifecycle.PAUSING) or not isinstance(s.slot, InFlight):
         return Transition(s)
     if s.slot.token != e.token:
         return Transition(s)
+    result = _judged(s, e.report, w)
+    mark = _survival_mark(e.report)
+    return result if mark is None else replace(result, effects=(mark, *result.effects))
+
+
+def _judged(s: SessionState, rep: Report, w: World) -> Transition:
     spec = s.slot.spec
-    rep = e.report
     pausing = s.lifecycle is Lifecycle.PAUSING
     if spec.load in ALLCORE_LOADS:
         after = s

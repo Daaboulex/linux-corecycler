@@ -21,6 +21,7 @@ from corecycler.tuner.machine.types import (
     Lifecycle,
     Load,
     MachineConfig,
+    MarkSurvived,
     Mode,
     Pause,
     PauseReason,
@@ -76,6 +77,26 @@ def running_fake():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     start(fake)
     return fake
+
+
+@pytest.mark.req("PRELUDE.4c")
+@pytest.mark.parametrize(
+    ("report", "marks"),
+    [
+        (Report(Group.PASS, 1.0), True),
+        (Report(Group.SILICON, 1.0), True),
+        (Report(Group.THERMAL, 1.0), True),
+        (Report(Group.APPARATUS, 1.0, detail="tool died"), False),
+        (Report(Group.ENVIRONMENT, 1.0, unblamed_corrected=True), False),
+        (Report(Group.PASS, 0.0, skipped="no memory to give the lanes"), False),
+    ],
+)
+def test_only_a_test_that_ran_and_saw_nothing_unblamed_marks_its_values_survived(report, marks):
+    fake = running_fake()
+    while fake.worker is None:
+        assert fake.progress()
+    result = transition(fake.state, WorkerReported(fake.worker.token, report), fake.world())
+    assert any(isinstance(effect, MarkSurvived) for effect in result.effects) is marks
 
 
 @pytest.mark.req("L19.d.soak", "U22")

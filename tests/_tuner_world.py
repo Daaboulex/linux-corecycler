@@ -25,6 +25,7 @@ from corecycler.tuner.machine.types import (
     InFlight,
     Lifecycle,
     MachineConfig,
+    MarkSurvived,
     PauseReason,
     PauseRequest,
     Phase,
@@ -93,6 +94,7 @@ class Fake:
     resident: dict[int, int | None] = field(default_factory=dict)
     db: Stored | None = None
     worker: InFlight | None = None
+    last_report: Report | None = None
     timer: tuple[int, float] | None = None
     now: float = 0.0
     temperature: float | None = 60.0
@@ -252,6 +254,12 @@ class Fake:
                 self.timer = None
             case ForgetResident():
                 self.resident = {}
+            case MarkSurvived(exclude=exclude):
+                rep = self.last_report
+                proves = rep is not None and rep.group in (Group.PASS, Group.SILICON, Group.THERMAL)
+                if not proves or rep.skipped or rep.unblamed_corrected:
+                    raise Broken(f"values marked survived after a report that proves nothing: {rep}")
+                self.mark_survived(set(exclude))
             case ReadCrashEvidence():
                 dirty = self.stored_boot != self.boot
                 evidence, shared = self.crash_note if dirty else ((), False)
@@ -412,7 +420,7 @@ class Fake:
                 self.stock_fail_owed.add(spec.core)
         self.worker = None
         self.now += report.seconds
-        self.mark_survived({e.core for e in report.evidence if e.corrected})
+        self.last_report = report
         self.post(WorkerReported(token, report))
 
     def journaled(self, core: int, value: int, confirmed: bool) -> None:

@@ -42,6 +42,7 @@ from corecycler.tuner.machine.types import (
     Live1,
     Load,
     MachineConfig,
+    MarkSurvived,
     Mode,
     PauseReason,
     PauseRequest,
@@ -323,6 +324,9 @@ class Store:
             json.dumps(asdict(power)),
         )
 
+    def mark_survived(self, session_id: int, boot: str, exclude: tuple[int, ...]) -> None:
+        self.db.journal_mark_survived(session_id, boot_id=boot, exclude_cores=exclude)
+
     def test_returned(self, session_id: int, boot: str, row: int, report: Report) -> None:
         evidence = {"records": [asdict(e) for e in report.evidence], "unblamed_corrected": report.unblamed_corrected}
         self.write_block()
@@ -338,8 +342,6 @@ class Store:
             report.output,
             peaks_json=json.dumps(peaks(self.db.tuner_test_samples(row))),
         )
-        corrected = tuple(sorted({e.core for e in report.evidence if e.corrected}))
-        self.db.journal_mark_survived(session_id, boot_id=boot, exclude_cores=corrected)
         if report.kernel_read_ns is not None:
             self.db.set_kernel_read(session_id, report.kernel_read_ns)
         self.db.checkpoint()
@@ -647,6 +649,11 @@ class LiveRig:
                 self.timer = None
             case ForgetResident():
                 self.resident = {}
+            case MarkSurvived(exclude=exclude):
+                try:
+                    self.store.mark_survived(acting.session_id, self.boot, exclude)
+                except sqlite3.Error as exc:
+                    return DatabaseFailed(f"the survival mark could not be written: {exc}")
             case ReadCrashEvidence():
                 return self._crash_evidence(acting)
             case WriteStockMarker():

@@ -131,6 +131,7 @@ class FakeRunner:
     evidence: tuple = ()
     read_ns: int | None = None
     speeds: tuple = ()
+    group: Group | None = None
 
     def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
         self.seen.append(spec)
@@ -141,7 +142,7 @@ class FakeRunner:
         assert live_value == spec.value
         failed = live_value < EDGES[spec.core]
         return Report(
-            Group.SILICON if failed else Group.PASS,
+            self.group or (Group.SILICON if failed else Group.PASS),
             1.0,
             evidence=self.evidence,
             kernel_read_ns=self.read_ns,
@@ -557,6 +558,34 @@ def test_a_test_that_comes_back_marks_its_values_survived_unless_a_corrected_che
     first = r.runner.seen[0]
     marks = rows(r, "SELECT survived FROM tuner_co_journal WHERE core_id=? AND value=?", (first.core, first.value))
     assert marks == [{"survived": survived}]
+
+
+@pytest.mark.req("PRELUDE.4c")
+@pytest.mark.parametrize("group", [Group.APPARATUS, Group.ENVIRONMENT])
+def test_a_test_that_proves_nothing_marks_no_value_survived(tmp_path, group):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware, FakeRunner(hardware, group=group))
+    r.start(config(), 1, 7, True)
+    while not rows(r, "SELECT id FROM tuner_tests WHERE ended_at IS NOT NULL"):
+        r.step(0.01)
+    first = r.runner.seen[0]
+    marks = rows(r, "SELECT survived FROM tuner_co_journal WHERE core_id=? AND value=?", (first.core, first.value))
+    assert marks and all(mark == {"survived": 0} for mark in marks)
+
+
+def test_a_survival_mark_that_cannot_be_written_is_a_database_failure_naming_it(tmp_path):
+    said = []
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.say = said.append
+
+    def broken(session_id, boot, exclude):
+        raise sqlite3.Error("disk full")
+
+    r.store.mark_survived = broken
+    r.start(config(), 1, 7, True)
+    r.run_until_rest(0.01)
+    assert any(line.startswith("database_failed: the survival mark could not be written: disk full") for line in said)
 
 
 def in_flight(r: LiveRig):

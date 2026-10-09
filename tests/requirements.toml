@@ -921,8 +921,7 @@ proof = "built"
 [[requirement]]
 id = "PRELUDE.4c"
 statement = "No survival mark for apparatus, environment, unblamed records or kernel trouble"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "PRELUDE.4d"

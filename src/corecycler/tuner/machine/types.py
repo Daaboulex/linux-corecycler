@@ -571,6 +571,11 @@ class ForgetResident:
 
 
 @dataclass(frozen=True, slots=True)
+class MarkSurvived:
+    exclude: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ReadCrashEvidence:
     session_id: int
 
@@ -597,7 +602,8 @@ class CloseDb:
 
 
 Effect = (
-    WriteCO
+    MarkSurvived
+    | WriteCO
     | RevertAll
     | StopWorker
     | AwaitWorker
