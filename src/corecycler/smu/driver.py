@@ -14,7 +14,7 @@ import logging
 import os
 import struct
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .commands import (
@@ -143,6 +143,7 @@ class RyzenSMU:
         dry_run: bool = False,
     ) -> None:
         self.commands = commands
+        self._original_commands = commands
         self.sysfs = sysfs_path
         self.dry_run = dry_run
         self._smu_lock = threading.Lock()
@@ -208,6 +209,26 @@ class RyzenSMU:
         self._core_map_error = "core map discovery in progress"
         ids = sorted(topology.cores)
         self._known_core_ids = ids or None
+        self.commands = self._original_commands
+        if self._set_verified_strix_topology(topology):
+            return
+        if self.commands.generation == CPUGeneration.ZEN5_STRIX_POINT and ids:
+            # HX 370 / older firmware can acknowledge the documented read while
+            # returning 600 for every index. An ACK alone is not a valid CO
+            # baseline. Probe before GUI/tuner availability is decided; never
+            # try a tuning write to discover what an invalid response means.
+            response = self._send_get_co(0)
+            value = decode_co_arg(0, response.args[0], self.commands.generation)
+            minimum, maximum = self.commands.co_range
+            if not response.success or not minimum <= value <= maximum:
+                detail = f"returned {value}" if response.success else "failed"
+                self._core_map_error = (
+                    f"Strix Point CO readback {detail}; expected [{minimum}, {maximum}]. "
+                    "Individual-core tuning is unavailable until the readback protocol "
+                    "and core addressing are verified."
+                )
+                log.warning(self._core_map_error)
+                return
         if not ids or not self.commands.has_co or not self.commands.uniform_8core_ccds:
             self._core_map_error = None
             return
@@ -231,6 +252,66 @@ class RyzenSMU:
             return
         self._core_map = core_map
         self._core_map_error = None
+
+    def _set_verified_strix_topology(self, topology) -> bool:
+        """Apply the locally verified FA608WV.309 / HX 370 protocol only.
+
+        Firmware trace: RSMU 0x5E forwards CCX 0x53, which reads the same
+        margin field MP1 0x4B writes. Initialization at SMU 0x28A40 compacts
+        populated slots into APIC core numbers. Live tests confirm group 0
+        slots 0,2,4,6 and group 1 slots 0..7, including -1/read/restore tests.
+        Unknown images keep the existing guard, not this addressing profile.
+        """
+        if (self.commands.generation != CPUGeneration.ZEN5_STRIX_POINT
+                or topology.family != 0x1A or topology.model != 0x24
+                or topology.stepping != 0 or "HX 370" not in topology.model_name):
+            return False
+        try:
+            bios = Path("/sys/class/dmi/id/bios_version").read_text().strip()
+        except OSError:
+            return False
+        if bios != "FA608WV.309":
+            return False
+
+        def block(reason: str) -> bool:
+            self._core_map_error = f"Verified Strix CO profile unavailable: {reason}"
+            log.warning(self._core_map_error)
+            return True
+
+        version = self._send_rsmu_command(0x02)
+        if not version.success or version.args[0] != 0x0B5D0B00:
+            return block("SMU version differs from 11.93.11.0")
+        expected = {cid: (0, cid * 2) for cid in range(4)}
+        expected.update({cid: (1, cid - 8) for cid in range(8, 16)})
+        if (set(topology.cores) != set(expected) or not topology.cpus_all_online
+                or any(core.ccd != expected[cid][0] or len(core.logical_cpus) != 2
+                       for cid, core in topology.cores.items())):
+            return block("online core/SMT/L3 layout differs from the verified 4+8 layout")
+        # The old ryzen_smu driver converts a fast firmware rejection into
+        # success. Check a traced, absent slot before allowing any writes.
+        rejected = self._send_rsmu_command(0x5E, (1 << 20,))
+        if rejected.success:
+            return block("driver hides firmware rejections; install the response fix")
+        capability = self._send_rsmu_command(0x82)
+        if not capability.success or not capability.args[0] & 4:
+            return block("firmware does not report CO permission")
+        minimum, maximum = self.commands.co_range
+        for group in range(2):
+            for slot in range(8):
+                response = self._send_rsmu_command(0x5E, (group << 28 | slot << 20,))
+                populated = group == 1 or slot % 2 == 0
+                if response.success != populated:
+                    return block(f"unexpected presence/status for group {group}, slot {slot}")
+                if populated:
+                    raw = response.args[0]
+                    value = raw if raw < 0x80000000 else raw - 0x100000000
+                    if not minimum <= value <= maximum:
+                        return block(f"invalid margin {value} for group {group}, slot {slot}")
+        self.commands = replace(self.commands, get_co_cmd=0x5E, get_co_mailbox="rsmu")
+        self._core_map = expected
+        self._core_map_error = None
+        log.info("Using verified FA608WV.309 / SMU 11.93.11.0 CO getter and core mapping")
+        return True
 
     @staticmethod
     def _derive_group_slots(group_ids: list[int], holes_trusted: bool) -> list[int] | None:
