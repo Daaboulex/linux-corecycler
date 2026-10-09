@@ -64,6 +64,7 @@ class TestArgHandling:
 
 
 class TestForwarding:
+    @pytest.mark.req("E6.cli")
     def test_tune_starts_the_driver_with_writes_on(self, driven):
         assert cli.cli_main(["tune", "--config", "c.json", "--acknowledge"]) == 42
         assert driven == [["--start", "--write", "--config", "c.json", "--acknowledge"]]

@@ -61,6 +61,7 @@ class TestPresets:
         assert (p.idle_stability_test, p.idle_between_cores) == (idle, pause)
         assert p.test_mode == preset
 
+    @pytest.mark.req("UI3")
     def test_each_preset_s_line_names_its_own_values(self):
         from corecycler.gui.config_tab import PRESETS
 

@@ -700,6 +700,7 @@ class TestJournalReadFailures:
         "failure",
         [FileNotFoundError(errno.ENOENT, "No such file or directory"), subprocess.TimeoutExpired("journalctl", 15)],
     )
+    @pytest.mark.req("L01.g")
     def test_a_journal_that_cannot_run_is_a_problem(self, failure):
         with patch("subprocess.run", side_effect=failure):
             end = boot_end(self.DEAD)
@@ -766,6 +767,7 @@ class TestKernelLogProblem:
         assert args[args.index("-b") + 1] == "0"
         assert "_TRANSPORT=kernel" in args
 
+    @pytest.mark.req("L01.4")
     def test_an_unopenable_kernel_log_is_a_problem(self, tmp_path):
         with patch("subprocess.run", return_value=_completed(THIS_BOOT_KERNEL_LINE)):
             assert "absent" in kernel_log_problem(tmp_path / "absent")

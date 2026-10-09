@@ -60,12 +60,14 @@ def run_frozen(tmp_path: Path, frozen, duration: float, busy_for: float = math.i
         return run_one(supervisor, lane(tmp_path), duration)
 
 
+@pytest.mark.req("K22", "U12")
 @pytest.mark.real_cpu_time
 def test_a_lane_frozen_for_most_of_its_run_is_neither_stalled_nor_short_of_work(tmp_path: Path):
     verdict = run_frozen(tmp_path, lambda elapsed, _reading: 0.3 <= elapsed < 1.6, 2.0)
     assert verdict.outcome is Outcome.PASS, verdict.detail
 
 
+@pytest.mark.req("L25.d.watchdog")
 @pytest.mark.real_cpu_time
 def test_a_lane_that_stops_working_after_a_thaw_is_still_a_stall(tmp_path: Path):
     verdict = run_frozen(tmp_path, lambda elapsed, _reading: 0.2 <= elapsed < 0.6, 3.0, busy_for=0.4)
@@ -78,6 +80,7 @@ def test_a_lane_still_frozen_at_its_deadline_stops_cleanly_and_its_frozen_time_i
     assert verdict.outcome is Outcome.PASS, verdict.detail
 
 
+@pytest.mark.req("H29")
 def test_a_frozen_lane_is_really_stopped_and_runs_again_when_thawed(tmp_path: Path):
     backend = FakeBackend(_child(BUSY))
     supervisor, _, _ = make_supervisor(backend, stall_timeout=5.0)
@@ -118,6 +121,7 @@ def test_under_a_hold_cap_the_time_a_lane_is_held_does_not_count_toward_its_run(
     assert wall >= 1.6
 
 
+@pytest.mark.req("D58")
 @pytest.mark.real_cpu_time
 def test_a_hold_longer_than_its_cap_ends_the_run_as_thermal(tmp_path: Path):
     verdict, wall = run_held(tmp_path, lambda elapsed, _reading: elapsed >= 0.2, 1.0, 0.5)

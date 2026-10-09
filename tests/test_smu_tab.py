@@ -148,6 +148,7 @@ class TestCoreMapRefusal:
 class TestPlainWords:
     ACRONYMS = frozenset({"CCD", "CO", "CPU", "BIOS", "SMU", "JSON"})
 
+    @pytest.mark.req("UI2")
     def test_no_visible_text_keeps_a_code_name(self):
         import re
 

@@ -89,6 +89,7 @@ def launched(monkeypatch):
     return calls
 
 
+@pytest.mark.req("D81", "UI1.shown")
 def test_every_machine_knob_is_offered_once(db, home):
     t = tab(db)
     names = {f.name for f in fields(MachineConfig)}
@@ -97,6 +98,7 @@ def test_every_machine_knob_is_offered_once(db, home):
     assert set(tt.KNOB_TEXT[tt.SHOWN]) <= set(t._knobs)
 
 
+@pytest.mark.req("UI1.knobs")
 def test_a_setting_without_a_name_fails_the_tab(monkeypatch):
     texts = {group: dict(knobs) for group, knobs in tt.KNOB_TEXT.items()}
     del texts["Temperature"]["cool_min_s"]
@@ -120,6 +122,7 @@ def test_every_setting_shows_its_name_unit_and_what_it_does(db, home):
 @pytest.mark.parametrize(
     ("seconds", "said"), [(59.0, ""), (60.0, "1 min"), (90.0, "1 min 30 s"), (5400.0, "1 h 30 min"), (7200.0, "2 h")]
 )
+@pytest.mark.req("UI1.minutes")
 def test_a_duration_is_also_said_in_minutes_and_hours(seconds, said):
     assert spoken(seconds) == said
 
@@ -225,6 +228,7 @@ def test_a_paused_session_shows_its_cores_and_offers_resume(db, home, tmp_path):
     assert "paused by the owner" in t._events.toPlainText()
 
 
+@pytest.mark.req("E6.B2.controls")
 def test_continue_and_restart_follow_a_setup_pause_only(db, home, tmp_path):
     saved = save_machine_session(db, tmp_path, "paused")
     db.insert_tuner_event(saved.session_id, "setup_changed: bios was A, is now B", this_boot(), "paused")
@@ -322,6 +326,7 @@ def test_a_signal_without_a_driver_or_permission_is_said(db, home, monkeypatch):
     assert t._driver.text() == f"could not ask driver {os.getpid()} to pause: not yours"
 
 
+@pytest.mark.req("D79", "E6.B2.launch")
 def test_start_writes_the_configuration_and_launches_the_driver(db, home, launched, monkeypatch):
     monkeypatch.setattr(db, "_db_path", Path("/data/history.db"))
     t = tab(db)
@@ -367,6 +372,7 @@ def test_a_session_action_names_the_session_in_view(db, home, launched, tmp_path
     assert "--acknowledge" not in launched[0][0]
 
 
+@pytest.mark.req("L01.15.list", "Q7", "UI1.bios")
 def test_start_over_set_values_asks_first_and_names_them(db, home, launched):
     t = tab(db, reads={1: -20, 3: -10, 2: None})
     tt.QMessageBox.question.return_value = tt.QMessageBox.StandardButton.Cancel
@@ -380,6 +386,7 @@ def test_start_over_set_values_asks_first_and_names_them(db, home, launched):
     assert launched[0][0][-3:] == ["--acknowledge", "--db", str(db.path)]
 
 
+@pytest.mark.req("L01.15.zero")
 def test_start_over_zero_values_asks_nothing(db, home, launched):
     t = tab(db)
     t._buttons["Start"].click()
@@ -410,6 +417,7 @@ def test_restart_without_a_co_reader_leaves_the_question_to_the_driver(db, home,
     assert launched[0][0][4:] == ["--restart", "--session", str(saved.session_id), "--db", str(db.path)]
 
 
+@pytest.mark.req("INT.4")
 def test_a_running_sched_ext_scheduler_is_asked_about_before_any_test_starts(db, home, launched, tmp_path, monkeypatch):
     monkeypatch.setattr(tt, "sched_ext_note", lambda: "the sched_ext scheduler lavd runs every task")
     saved = save_machine_session(db, tmp_path, "paused")
@@ -484,6 +492,7 @@ def test_only_an_enabled_and_stopped_service_is_named(monkeypatch):
     assert tt.stopped_services() == []
 
 
+@pytest.mark.req("E6.B2.follow")
 def test_the_driver_s_end_is_said_with_its_refusal(db, home, launched):
     t = tab(db)
     t._on_start()
@@ -525,6 +534,7 @@ class TestAutoResume:
         assert t._driver.text() == "auto-resume: no history database"
         assert launched == []
 
+    @pytest.mark.req("INV.L28", "L28.d")
     @pytest.mark.parametrize("statuses", [[], ["paused"], ["running", "running"]])
     def test_only_exactly_one_interrupted_session_resumes(self, db, home, launched, tmp_path, statuses):
         for number, status in enumerate(statuses, start=1):
@@ -546,6 +556,7 @@ class TestAutoResume:
         assert t._driver.text() == "auto-resume: another test is running"
         assert launched == []
 
+    @pytest.mark.req("K51", "L28.a")
     def test_an_interrupted_session_resumes_and_a_refusal_tries_again(self, db, home, launched, tmp_path, monkeypatch):
         saved = save_machine_session(db, tmp_path, "running")
         timers = []

@@ -300,6 +300,7 @@ class TestMaintenance:
         finally:
             db.close()
 
+    @pytest.mark.req("D72")
     def test_only_the_samples_of_tests_that_passed_before_the_cutoff_go(self, db):
         sid = db.next_tuner_session_id()
         fields = {"config_json": "{}", "bios_version": "2401", "cpu_model": "9950X3D", "context_id": None}
@@ -411,6 +412,7 @@ class TestMachineSessionMethods:
         with pytest.raises(sqlite3.IntegrityError, match="missing"):
             db.end_tuner_test(row + 1, "pass", 1.0, "[]", None, "{}", "", "[]", "")
 
+    @pytest.mark.req("D77", "SC.3")
     def test_a_block_takes_its_test_s_tail_and_samples_read_back_in_order(self, db):
         sid = db.next_tuner_session_id()
         fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
@@ -927,6 +929,7 @@ class TestMergeFrom:
         ]
         assert samples == [sample, sample | {"mono_ns": 8}]
 
+    @pytest.mark.req("L24.l24b.schema")
     def test_merge_keeps_a_child_session_linked_to_its_parent_under_the_new_ids(self, tmp_path):
         src = HistoryDB(tmp_path / "src.db")
         fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
@@ -1415,6 +1418,7 @@ class TestPeakClocks:
             context_id=None,
         )
 
+    @pytest.mark.req("CR.3")
     def test_a_core_s_peak_per_session_and_per_range(self, db):
         self._session(db, 1)
         self._session(db, 2)

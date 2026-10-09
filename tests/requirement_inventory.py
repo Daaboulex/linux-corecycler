@@ -2,73 +2,29 @@ from __future__ import annotations
 
 import ast
 import re
+import tomllib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from pathlib import Path
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
-ID_FORM = re.compile(r"[A-Z][A-Z0-9]*(\.[A-Za-z0-9_]+)*")
+INVENTORY = Path(__file__).with_name("requirements.toml")
+ID_FORM = re.compile(r"[A-Z][A-Z0-9_]*(\.[A-Za-z0-9_]+)*")
 TASK_FORM = re.compile(r"[TSHO][0-9]+[a-z]?")
-
-
-@dataclass(frozen=True, slots=True)
-class Built:
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class NotBuilt:
-    task: str
+PROOFS = ("built", "untested", "not built", "open")
 
 
 @dataclass(frozen=True, slots=True)
 class Requirement:
     id: str
     statement: str
-    proof: Built | NotBuilt
+    proof: str
+    task: str | None = None
 
 
-BUILT = Built()
+def load(path: Path = INVENTORY) -> tuple[Requirement, ...]:
+    return tuple(Requirement(**entry) for entry in tomllib.loads(path.read_text())["requirement"])
 
-REQUIREMENTS: tuple[Requirement, ...] = (
-    Requirement(
-        "GUI.SIGNAL_QUIT",
-        "A stop signal schedules the GUI's quit on the event loop and never closes the window inside the slot it "
-        "interrupted.",
-        BUILT,
-    ),
-    Requirement(
-        "TRUTH.TEMPERATURE_UNREAD",
-        "An unreadable required CPU temperature is an UNVERIFIED result, never a thermal verdict, and a thermal stop "
-        "names the temperature it read.",
-        BUILT,
-    ),
-    Requirement(
-        "TRUTH.REVERT_RESULT",
-        "Every core a revert could not write back is named with its value and reason and stored as a revert_failed "
-        "event; no text states that the cores reached their baseline.",
-        BUILT,
-    ),
-    Requirement(
-        "TRUTH.BOOT_END_UNREAD",
-        "A boot whose end cannot be read is treated as a crash and recorded as that assumption with its reason, before "
-        "anything the attribution announces.",
-        BUILT,
-    ),
-    Requirement(
-        "L01.12",
-        "Every mode reads the BIOS Curve Shaper (RSMU 0x84) at Start with the band self-check where the generation has "
-        "it, records it with the session's setup, and refuses Start when the read fails.",
-        NotBuilt("S0"),
-    ),
-    Requirement(
-        "U18",
-        "A core's search starts from a hint, the newest completed session with the same setup and Shaper, and a failed "
-        "hint restarts the walk from 0 with the hint as its fail bound (D20).",
-        NotBuilt("T25"),
-    ),
-)
+
+REQUIREMENTS = load()
 
 
 def scan(test_dir: Path) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
@@ -117,13 +73,20 @@ def problems(
         if '"' in req.statement:
             found.append(f"{req.id} quotes someone; a statement is technical only")
         proving = markers.get(req.id, ())
-        match req.proof:
-            case Built() if not proving:
+        if req.proof not in PROOFS:
+            found.append(f"{req.id} has the proof {req.proof!r}, not one of {', '.join(PROOFS)}")
+        elif req.proof == "built":
+            if req.task is not None:
+                found.append(f"{req.id} is built and still names the task {req.task}")
+            if not proving:
                 found.append(f"{req.id} is listed built but no test carries its marker")
-            case NotBuilt(task=task) if not TASK_FORM.fullmatch(task):
-                found.append(f"{req.id} is listed not built under {task!r}, which is not a task id")
-            case NotBuilt(task=task) if proving:
-                found.append(f"{req.id} is listed not built ({task}) but {', '.join(proving)} prove it: mark it built")
+        else:
+            if req.task is None or not TASK_FORM.fullmatch(req.task):
+                found.append(f"{req.id} is listed {req.proof} under {req.task!r}, which is not a task id")
+            if proving:
+                found.append(
+                    f"{req.id} is listed {req.proof} ({req.task}) but {', '.join(proving)} prove it: mark it built"
+                )
     for key, where in sorted(markers.items()):
         if key not in seen:
             found.append(f"{', '.join(where)} name {key}, which the inventory does not list")

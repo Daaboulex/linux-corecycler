@@ -42,6 +42,7 @@ def values(fake: Fake) -> dict[int, int]:
     return {r.core: r.value for r in fake.state.cores}
 
 
+@pytest.mark.req("INV.L30", "L00.b", "L30.a", "L30.d.co")
 def test_a_clean_validation_proves_the_values_again_through_its_own_stages_and_ends_completed():
     fake = completed()
     before = values(fake)
@@ -70,6 +71,7 @@ def test_a_value_that_fails_validation_is_backed_off_and_the_session_completes_w
     assert set(stages) <= {Stage.LIVE1, Stage.ENDURANCE, Stage.MEMORY, Stage.SOAK}
 
 
+@pytest.mark.req("L30.e")
 def test_an_abort_with_nothing_changed_returns_the_session_to_completed_with_its_values_applied():
     fake = completed()
     before = values(fake)
@@ -118,7 +120,7 @@ def test_an_abort_after_a_back_off_ends_the_session_aborted():
         ),
     ],
 )
-@pytest.mark.req("TRUTH.BOOT_END_UNREAD")
+@pytest.mark.req("L26.c.method", "L30.b.order", "TRUTH.BOOT_END_UNREAD")
 def test_validation_is_refused_naming_why(change, reason):
     fake = completed()
     result = transition(fake.state, ValidateProfile(1), change(fake, fake.world()))
@@ -126,6 +128,7 @@ def test_validation_is_refused_naming_why(change, reason):
     assert result.state == fake.state
 
 
+@pytest.mark.req("L24.b", "L30.b.setup")
 def test_validation_on_a_changed_setup_pauses_and_can_be_continued_under_it():
     fake = completed()
     moved = replace(fake.world(), setup=(("bios", "B"),))
@@ -139,6 +142,7 @@ def test_validation_on_a_changed_setup_pauses_and_can_be_continued_under_it():
     assert child.flow.validating == result.state.flow.validating
 
 
+@pytest.mark.req("EVENTS.user.validate_held")
 def test_validation_is_refused_while_a_session_is_held():
     fake = fresh(2, [-3, -2], 2, max_offset=-5, k_1t=1, wait_between_cores_s=0.0)
     start(fake)

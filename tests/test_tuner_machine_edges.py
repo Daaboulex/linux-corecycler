@@ -100,6 +100,7 @@ def running_fake():
         (replace(CFG, stage_seconds=(("burst", 1.0), ("warm", 0.0), ("idle", 1.0))), LAYOUT, True, "each above 0"),
     ],
 )
+@pytest.mark.req("C16", "D82", "E6.B0", "L01.1", "L01.11", "L01.15.cli")
 def test_start_is_refused_naming_the_first_gate_that_fails(config, world, acknowledged, says):
     assert says in refusal(SessionState(), Start(config, 1, 0, acknowledged), world)
 
@@ -111,6 +112,7 @@ def test_every_numeric_knob_but_the_offset_has_a_floor_and_the_defaults_pass_it(
     assert config_problem(replace(CFG, max_offset=-50, fine_step=1), (-50, 10)) is None
 
 
+@pytest.mark.req("K4")
 def test_a_stored_configuration_outside_its_ranges_is_not_resumed_or_validated():
     fake = running_fake()
     bad = replace(stored(fake.state), status="paused", config=replace(CFG, coarse_step=0))
@@ -130,11 +132,13 @@ def test_start_with_a_bios_co_runs_once_acknowledged():
     assert result.state.lifecycle is Lifecycle.RUNNING
 
 
+@pytest.mark.req("L01.2")
 def test_start_is_refused_while_a_session_is_held():
     fake = running_fake()
     assert "held" in refusal(fake.state, Start(fake.config, 2, 0, True))
 
 
+@pytest.mark.req("EVENTS.user.resume_running")
 def test_resume_is_refused_while_running_and_for_another_session_while_paused():
     fake = running_fake()
     assert "running" in refusal(fake.state, Resume(1))
@@ -149,12 +153,14 @@ def test_resume_is_refused_while_running_and_for_another_session_while_paused():
     ("status", "says"),
     [("completed", "Validate Profile"), ("quarantined", "cannot be resumed"), ("superseded", "cannot be resumed")],
 )
+@pytest.mark.req("EVENTS.user.superseded", "L17.h", "L24.l24b.terminal")
 def test_resume_is_refused_for_a_stored_session_that_cannot_continue(status, says):
     fake = running_fake()
     row = replace(stored(fake.state), status=status)
     assert says in refusal(SessionState(), Resume(1), replace(LAYOUT, stored=row))
 
 
+@pytest.mark.req("L01.a", "L18.d.1", "ORDER.refuse")
 def test_resume_is_refused_for_a_session_that_is_not_stored_or_fails_a_gate_or_its_order():
     fake = running_fake()
     row = stored(fake.state)
@@ -165,6 +171,7 @@ def test_resume_is_refused_for_a_session_that_is_not_stored_or_fails_a_gate_or_i
     assert "abort session 1" in refusal(SessionState(), Resume(1), replace(LAYOUT, stored=alternate))
 
 
+@pytest.mark.req("L19.G8")
 def test_pause_and_abort_are_refused_when_there_is_nothing_to_act_on():
     assert "nothing is running" in refusal(SessionState(), PauseRequest())
     assert "nothing to abort" in refusal(SessionState(), Abort())
@@ -173,6 +180,7 @@ def test_pause_and_abort_are_refused_when_there_is_nothing_to_act_on():
     assert "already paused" in refusal(fake.state, PauseRequest())
 
 
+@pytest.mark.req("D21", "EVENTS.machine.paused_smu", "EVENTS.machine.tokens", "L23.G1_G7")
 def test_late_or_stale_machine_events_are_dropped_without_effects():
     fake = running_fake()
     dropped(fake.state, ContinuationDue(999))
@@ -192,6 +200,7 @@ def test_an_unknown_event_is_a_programming_error():
         transition(SessionState(), object(), LAYOUT)
 
 
+@pytest.mark.req("L23.G11_G13", "L23.c")
 def test_a_database_failure_while_already_failed_or_idle_changes_nothing():
     fake = running_fake()
     fake.faults.fail_commits = 1
@@ -204,6 +213,7 @@ def test_a_database_failure_while_already_failed_or_idle_changes_nothing():
     assert after.state == fake.state and after.effects[0].kind == "internal_error"
 
 
+@pytest.mark.req("G13", "L01.G13", "VERDICT.38")
 def test_an_internal_error_pauses_a_held_session_and_is_only_announced_when_idle():
     fake = running_fake()
     fake.post(InternalError("bug"))
@@ -218,6 +228,7 @@ def test_only_a_session_can_be_stored():
         stored(SessionState())
 
 
+@pytest.mark.req("K7", "L04.d.pick", "L19.d.waiting")
 def test_a_pause_during_the_wait_between_cores_keeps_the_picked_core_owed():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2, wait_between_cores_s=15.0)
     start(fake)
@@ -232,6 +243,7 @@ def test_a_pause_during_the_wait_between_cores_keeps_the_picked_core_owed():
     assert fake.worker.spec.core == 1
 
 
+@pytest.mark.req("D2", "G3.held", "L08.G3", "TERMS.owned_co")
 def test_a_machine_check_on_a_core_the_session_does_not_own_pauses_naming_it():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     fake.config = replace(fake.config, selected=(0,))
@@ -250,6 +262,7 @@ def test_a_machine_check_found_at_resume_pauses_as_stock_unstable():
     assert result.state.pause.reason is PauseReason.STOCK_UNSTABLE
 
 
+@pytest.mark.req("CR.1", "L01.9", "L31.2")
 def test_a_capped_power_state_is_the_session_s_range_and_tests_run_in_it():
     capped = (("boost", "1"), ("platform profile", "power-saver"), ("scaling maximum MHz", "4300"))
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
@@ -261,6 +274,7 @@ def test_a_capped_power_state_is_the_session_s_range_and_tests_run_in_it():
     assert fake.worker is not None
 
 
+@pytest.mark.req("D69", "L31.2a")
 def test_a_power_state_change_between_tests_pauses_naming_it_and_restoring_it_lets_a_resume_continue():
     fake = running_fake()
     assert fake.db.power == fake.power
@@ -281,6 +295,7 @@ def test_a_power_state_change_between_tests_pauses_naming_it_and_restoring_it_le
     assert fake.state.pause is None
 
 
+@pytest.mark.req("L31.5")
 def test_a_test_at_or_past_a_fail_bound_is_never_started():
     from corecycler.tuner.machine.session import _start_test
 
@@ -304,6 +319,7 @@ def test_a_test_at_or_past_a_fail_bound_is_never_started():
     assert _start_test(bounded, waiting.flow, stock, fake.world()).state.pause is None
 
 
+@pytest.mark.req("L18.d.2")
 def test_a_resume_over_a_changed_power_state_pauses_before_any_test_and_keeps_the_turn():
     fake = running_fake()
     fake.power = (("platform profile", "power-saver"),)
@@ -318,6 +334,7 @@ def test_a_resume_over_a_changed_power_state_pauses_before_any_test_and_keeps_th
     assert fake.worker is None
 
 
+@pytest.mark.req("INV.L24", "L18.d.8.setup", "L24.a", "L24.l24a.read", "VERDICT.35")
 def test_a_setup_changed_while_paused_pauses_the_resume_and_putting_it_back_lets_it_continue():
     fake = running_fake()
     assert fake.db.setup == fake.setup
@@ -352,6 +369,7 @@ def paused_on_a_new_setup():
     return fake
 
 
+@pytest.mark.req("G12", "L24.d.continue", "L24.l24b.continue")
 def test_continue_carries_the_session_into_a_child_under_the_new_setup_and_supersedes_the_parent():
     fake = paused_on_a_new_setup()
     parent = fake.state
@@ -365,6 +383,7 @@ def test_continue_carries_the_session_into_a_child_under_the_new_setup_and_super
     assert result.effects[0] is supersede
 
 
+@pytest.mark.req("L24.d.restart", "L24.l24b.restart")
 def test_restart_begins_a_fresh_session_from_the_parent_s_config_and_supersedes_the_parent():
     fake = paused_on_a_new_setup()
     parent = fake.state
@@ -383,6 +402,7 @@ def test_restart_begins_a_fresh_session_from_the_parent_s_config_and_supersedes_
     assert result.effects[0] is supersede
 
 
+@pytest.mark.req("L24.d.refuse", "L24.l24b.events")
 @pytest.mark.parametrize("choice", [ContinueOnSetup(2), RestartOnSetup(2, acknowledged=True)])
 def test_a_choice_is_refused_unless_the_session_paused_on_a_setup_that_still_differs(choice):
     fake = paused_on_a_new_setup()
@@ -449,6 +469,9 @@ def test_a_stage_entry_with_every_co_as_left_starts_the_test_and_remembers_the_s
         (None, PauseReason.SMU_READ, (0, 1, 2), "the CO of core 0, 1, 2 could not be read"),
     ],
 )
+@pytest.mark.req(
+    "D3", "INV.L31", "L08.d.l31", "L31.4", "ENTRY_READS.2", "TM.I_M1", "VERDICT.31", "VERDICT.32", "WRITER.held"
+)
 def test_a_stage_entry_with_a_moved_or_unread_co_pauses_before_any_test(reads, reason, cores, says):
     co_now = None if reads is None else tuple(sorted(reads.items()))
     result = first_test_of_a_session_with_a_held_core(co_now=co_now)
@@ -469,6 +492,7 @@ def test_after_a_sleep_gap_only_the_held_cores_are_compared():
     assert held_moved.state.pause.reason is PauseReason.OUTSIDE_WRITE
 
 
+@pytest.mark.req("L31.b", "ENTRY_READS.1")
 def test_within_a_stage_the_co_is_not_read_again():
     started = transition(SessionState(), Start(CFG, 1, 0, True), HELD).state
     entered = replace(started, knobs_stage=Stage.SEARCH)
@@ -493,11 +517,13 @@ def completed_with_a_held_core():
         ),
     ],
 )
+@pytest.mark.req("KC.7")
 def test_validate_refuses_a_moved_held_core_an_unread_co_or_a_moved_power_state(world, says):
     done = completed_with_a_held_core()
     assert says in refusal(SessionState(), ValidateProfile(1), replace(world, stored=done))
 
 
+@pytest.mark.req("D86")
 def test_validate_on_a_moved_held_core_pauses_as_setup_changed_naming_it():
     done = completed_with_a_held_core()
     moved = replace(HELD, bios_co=((0, 0), (1, 0), (2, -9)), stored=done)
@@ -512,6 +538,7 @@ def test_validate_starts_when_the_held_cores_and_the_power_state_are_as_recorded
     assert transition(SessionState(), ValidateProfile(1), owned_moved).state.lifecycle is Lifecycle.RUNNING
 
 
+@pytest.mark.req("D48", "D7", "G10.read", "KC.4", "L18.d.8.read", "TERMS.pause_reasons", "VERDICT.40")
 def test_a_core_whose_co_cannot_be_read_pauses_as_smu_read_naming_it():
     result = transition(resuming_with_a_held_core(), evidence(True, {0: 0, 1: None, 2: -5}), HELD)
     assert result.state.pause.reason is PauseReason.SMU_READ
@@ -521,6 +548,7 @@ def test_a_core_whose_co_cannot_be_read_pauses_as_smu_read_naming_it():
     assert missing.state.pause.cores == (2,)
 
 
+@pytest.mark.req("L18.d.8.reboot", "TM.I_M5", "VERDICT.36")
 def test_after_a_reboot_only_a_held_core_s_bios_change_pauses_as_setup_changed():
     owned_moved = transition(resuming_with_a_held_core(), evidence(False, {0: -7, 1: 0, 2: -5}), HELD)
     assert owned_moved.state.lifecycle is Lifecycle.RUNNING
@@ -530,6 +558,7 @@ def test_after_a_reboot_only_a_held_core_s_bios_change_pauses_as_setup_changed()
     assert held_moved.state.pause.cores == (2,)
 
 
+@pytest.mark.req("KC.1")
 def test_a_held_core_s_bios_change_can_be_continued_and_the_child_takes_the_co_read_now_as_its_base():
     paused = transition(resuming_with_a_held_core(), evidence(False, {0: 0, 1: 0, 2: -9}), HELD).state
     now = replace(HELD, bios_co=((0, 0), (1, 0), (2, -9)))
@@ -538,6 +567,7 @@ def test_a_held_core_s_bios_change_can_be_continued_and_the_child_takes_the_co_r
     assert "nothing that affects a verdict changed" in transition(paused, ContinueOnSetup(2), HELD).refused
 
 
+@pytest.mark.req("G10.outside", "KC.2", "L18.d.8.sameboot")
 def test_in_the_same_boot_a_core_off_its_last_write_or_its_base_pauses_as_an_outside_write():
     owned = transition(resuming_with_a_held_core(), evidence(True, {0: -4, 1: 0, 2: -5}, {0: -3, 1: 0}), HELD)
     assert owned.state.pause.reason is PauseReason.OUTSIDE_WRITE
@@ -549,6 +579,7 @@ def test_in_the_same_boot_a_core_off_its_last_write_or_its_base_pauses_as_an_out
     assert left.state.lifecycle is Lifecycle.RUNNING
 
 
+@pytest.mark.req("KC.3")
 def test_stock_on_an_owned_core_is_the_tool_s_own_revert_only_in_the_boot_the_marker_names():
     reads, written = {0: 0, 1: 0, 2: -5}, {0: -3, 1: 0}
     marked = transition(resuming_with_a_held_core(), evidence(True, reads, written, marked=True), HELD)
@@ -566,6 +597,7 @@ def test_a_test_value_at_or_past_its_fail_bound_pauses_as_internal_instead_of_ru
     assert fake.worker is None
 
 
+@pytest.mark.req("L31.1", "VERDICT.39")
 def test_a_sleep_between_tests_rewrites_every_owned_core():
     fake = running_fake()
     fake.gap_grew = True
@@ -575,6 +607,7 @@ def test_a_sleep_between_tests_rewrites_every_owned_core():
     assert fake.co[0] == fake.worker.spec.value
 
 
+@pytest.mark.req("INV.L21", "K15", "L21.a")
 def test_consecutive_first_value_fails_pause_at_the_threshold():
     fake = fresh(2, [0, 0], 1, max_offset=-20, k_1t=2, start_failure_threshold=2)
     start(fake)
@@ -583,6 +616,7 @@ def test_consecutive_first_value_fails_pause_at_the_threshold():
     assert fake.state.pause.reason is PauseReason.START_FAILURES
 
 
+@pytest.mark.req("C5", "G5", "K17.retries", "L20.G5")
 def test_the_fourth_thermal_stop_in_a_row_gives_up():
     fake = running_fake()
     fake.fire()
@@ -601,6 +635,7 @@ def test_a_failed_hint_at_minus_one_settles_at_stock():
     assert (rec.phase, rec.value) == (Phase.PROVEN, 0)
 
 
+@pytest.mark.req("K14", "L04.budget")
 def test_the_walk_budget_ends_the_walk_at_the_best_pass():
     cfg = MachineConfig(Mode.CO, Method.SEQUENTIAL, (0,), walk_budget_s=100.0)
     rec = search.resolve_start(CoreRecord(0), cfg)
@@ -661,6 +696,7 @@ def test_a_full_run_after_every_edge_still_completes():
     assert fake.state.lifecycle is Lifecycle.COMPLETED
 
 
+@pytest.mark.req("D53", "K17.limit", "L20.d.wait")
 @pytest.mark.parametrize(("tjmax", "limit"), [(None, 95.0), (89.0, 89.0), (100.0, 95.0)])
 def test_each_test_runs_under_the_lower_of_the_set_limit_and_the_model_tjmax_and_cools_below_it(tjmax, limit):
     fake = running_fake()

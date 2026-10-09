@@ -108,6 +108,7 @@ class TestCloseDuringTest:
         with pytest.raises(Exception, match="[Cc]losed"):
             db.list_runs(limit=1)
 
+    @pytest.mark.req("E6.B2.close")
     def test_close_leaves_a_tuner_driver_running_and_stops_memory_stress(self, window, no_modal, monkeypatch):
         from corecycler.smu.writer_lock import co_writer, running_driver
 

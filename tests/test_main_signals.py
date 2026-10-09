@@ -44,8 +44,8 @@ class App:
         self.qapp.exit()
 
 
-@pytest.mark.parametrize("number", STOPS)
 @pytest.mark.req("GUI.SIGNAL_QUIT")
+@pytest.mark.parametrize("number", STOPS)
 def test_a_stop_signal_during_a_slot_closes_the_window_after_the_slot(qapp, restored_handlers, number):
     window = Window()
     window.show()

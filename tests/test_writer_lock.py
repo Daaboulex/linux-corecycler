@@ -26,6 +26,7 @@ def test_a_second_writer_is_refused_while_the_first_holds_the_lock(writer_dir):
         pass
 
 
+@pytest.mark.req("E6.B1")
 def test_a_recording_writer_names_itself_until_it_lets_go():
     assert running_driver() is None
     with co_writer(record=True):

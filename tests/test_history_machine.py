@@ -76,6 +76,7 @@ def test_a_proven_session_counts_its_proven_cores(db, tmp_path):
     assert cell(tab, 0, 4) == "2/2"
 
 
+@pytest.mark.req("E6.C", "UI4")
 def test_the_detail_shows_cores_tests_events_and_boots(db, tmp_path):
     saved = save_machine_session(db, tmp_path, "paused")
     core = saved.cores[0].core

@@ -278,6 +278,7 @@ class TestSupervisorInternalsEdges:
         supervisor._note_exit(run)
         assert supervisor._grade(run).outcome is Outcome.CUT_SHORT
 
+    @pytest.mark.req("VERDICT.10")
     def test_a_lane_never_reaped_after_sigkill_keeps_did_not_stop(self, tmp_path):
         supervisor = _idle_supervisor()
         run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), stopped_at=5.0, sent=signal.SIGKILL)

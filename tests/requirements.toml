@@ -1,0 +1,4795 @@
+[[requirement]]
+id = "RV1"
+statement = "Entering the pass start clears dirty: LIVE1 in CO only, CONFIRM in Shaper only and Both; a back-off before that pass never forces a second pass"
+proof = "built"
+
+[[requirement]]
+id = "RV2"
+statement = "A SOAK back-off queues a LIVE1 slot that FINALIZE drains before CONFIRM"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "RV4"
+statement = "Bisect halving never enqueues an empty group or the parent again"
+proof = "built"
+
+[[requirement]]
+id = "RV5"
+statement = "The only loosenings inside TIGHTEN are evidence back-offs and convictions, each setting an FB"
+proof = "built"
+
+[[requirement]]
+id = "RV6"
+statement = "A SOAK incident redirects through FINALIZE and incidents bound it at K19"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "C1"
+statement = "The session stores mode, base_co, the allcore cursor and the Bisect queue"
+proof = "built"
+
+[[requirement]]
+id = "C1.base_shaper"
+statement = "The session stores base_shaper"
+proof = "not built"
+task = "S0"
+
+[[requirement]]
+id = "C2"
+statement = "Proof is Q3's k passes with a 1-step back-off; the midpoint jump and mprime tiers 2-3 are retired"
+proof = "built"
+
+[[requirement]]
+id = "C3"
+statement = "The coarse step is 5 everywhere, with no ramp near max"
+proof = "built"
+
+[[requirement]]
+id = "C4"
+statement = "Bisect replaces the hunt; a crash with nobody convicted follows the flow rule of the loop that crashed"
+proof = "built"
+
+[[requirement]]
+id = "C5"
+statement = "A thermal give-up pauses as P(THERMAL) instead of aborting"
+proof = "built"
+
+[[requirement]]
+id = "C6"
+statement = "The plan per mode follows Q1 and TM B1: CO only has no CONFIRM, Both has no LIVE1, Shaper only has no MEMORY"
+proof = "built"
+
+[[requirement]]
+id = "C7"
+statement = "BASECHECK uses the steady rule with its no-probe fallback, or a cached probe map"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "C8"
+statement = "Minimum cells, base-0 cells and cells at 0 are never probed or moved"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "C9"
+statement = "In Both, Bisect (c) uses the cell rule, Q6 the fallback"
+proof = "not built"
+task = "S4"
+
+[[requirement]]
+id = "C10"
+statement = "Owned knobs go to baseline after every AllCore stage run and the next run writes its vector right before its load"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "C11"
+statement = "F2 convictions come first; the flow rule applies only when nobody is convicted"
+proof = "built"
+
+[[requirement]]
+id = "C12"
+statement = "The stage hot hold (95 C) and the ThermalWatch limit are both kept"
+proof = "built"
+
+[[requirement]]
+id = "C13"
+statement = "Only 90C cells use HOT-T in TIGHTEN; every per-core item, Q6 items included, uses the K32 window"
+proof = "built"
+
+[[requirement]]
+id = "C14"
+statement = "At Start a change against the newest session's base_co is named in the acknowledgement; at Resume it pauses (L24)"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "C15"
+statement = "CLOCK_STRETCH is not produced"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "C16"
+statement = "An unreadable BIOS CO refuses Start in every mode"
+proof = "built"
+
+[[requirement]]
+id = "C17"
+statement = "PAUSED puts owned knobs at baseline, PROFILE_APPLY included"
+proof = "built"
+
+[[requirement]]
+id = "C18"
+statement = "A TIGHTEN failure freezes the item, never enters Bisect"
+proof = "built"
+
+[[requirement]]
+id = "C19"
+statement = "Evidence at stock is STOCK_UNSTABLE in Search, an incident in validation, a warning on a clean end"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "C20"
+statement = "The 15 s wait runs before a test of a different core, never before an immediate repeat"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "C21"
+statement = "UNEXPLAINED stays apparatus"
+proof = "built"
+
+[[requirement]]
+id = "K1"
+statement = "Coarse step 5, no ramp near max"
+proof = "built"
+
+[[requirement]]
+id = "K2"
+statement = "Fine step 1"
+proof = "built"
+
+[[requirement]]
+id = "K3"
+statement = "Direction -1 only"
+proof = "built"
+
+[[requirement]]
+id = "K4"
+statement = "max_offset -50; Start, Resume and Validate refuse a value outside [co_min, -fine_step]"
+proof = "built"
+
+[[requirement]]
+id = "K5"
+statement = "k = 10 consecutive interleaved passes for 1T"
+proof = "built"
+
+[[requirement]]
+id = "K6"
+statement = "k = 6 for 2T"
+proof = "built"
+
+[[requirement]]
+id = "K7"
+statement = "15 s wait before a per-core test of a different core than the last"
+proof = "built"
+
+[[requirement]]
+id = "K8.tests"
+statement = "1T detector: y-cruncher auto binary, SFTv4 FFTv4 N63 at 20 s each"
+proof = "built"
+
+[[requirement]]
+id = "K8.cpu"
+statement = "1T runs on the core's first CPU, core 0 on its second, a one-CPU core on its only CPU"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "K8.memory"
+statement = "1T TotalMemory about 13 MiB"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "K8.freeze"
+statement = "1T lane frozen 1 s periodically as the record ran it"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "K9.tests"
+statement = "2T class: 19-ZN2 Kagari named explicitly, SFTv4 N63 VT3 at 30 s each"
+proof = "built"
+
+[[requirement]]
+id = "K9.cpus"
+statement = "2T runs 2 threads on both CPUs of the core"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "K9.memory"
+statement = "2T TotalMemory about 41 MiB"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "K9.smt"
+statement = "The 2T class runs only if every owned core has two online CPUs"
+proof = "built"
+
+[[requirement]]
+id = "K9.capability"
+statement = "Start refuses the 2T class, naming it, when the Kagari binary or AVX2 is missing"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "K11"
+statement = "A failed core is tested again at once at its new value, then the round continues"
+proof = "built"
+
+[[requirement]]
+id = "K12"
+statement = "Crash penalty 3 steps toward 0"
+proof = "built"
+
+[[requirement]]
+id = "K14"
+statement = "Walk time budget 7200 s per core, walk tests only"
+proof = "built"
+
+[[requirement]]
+id = "K15"
+statement = "Start-failure threshold 0 means off"
+proof = "built"
+
+[[requirement]]
+id = "K16"
+statement = "Apparatus retries 3; the 4th consecutive apparatus outcome pauses"
+proof = "built"
+
+[[requirement]]
+id = "K17.limit"
+statement = "Thermal limit is min(config 95 C, the model's Tjmax); an unknown model uses the lowest known Tjmax"
+proof = "built"
+
+[[requirement]]
+id = "K17.grace"
+statement = "Thermal grace 3 s counted in a window W = max(10 s, 2 x grace)"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "K17.margin"
+statement = "Hard thermal margin 8 C"
+proof = "built"
+
+[[requirement]]
+id = "K17.retries"
+statement = "The 4th consecutive THERMAL gives up"
+proof = "built"
+
+[[requirement]]
+id = "K17.cooldown"
+statement = "Cooldown at least 5 s, then until below limit - 5 C, capped at 300 s"
+proof = "built"
+
+[[requirement]]
+id = "K17.missing"
+statement = "A missing temperature reading means not cooled"
+proof = "built"
+
+[[requirement]]
+id = "K18"
+statement = "Quarantine after 3 consecutive crash-resumes with no survival mark"
+proof = "built"
+
+[[requirement]]
+id = "K19"
+statement = "Incident maximum 2"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "K20"
+statement = "Worker stop: SIGTERM grace 3 s, then kill wait 2 s"
+proof = "built"
+
+[[requirement]]
+id = "K21"
+statement = "Stall: no payload CPU progress for 30 s"
+proof = "built"
+
+[[requirement]]
+id = "K21.hang"
+statement = "y-cruncher hang: no new Running line in its output for 2 x seconds-per-test is a STALL"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "K22"
+statement = "Load floor 0.5 x CPUs x seconds, counted over thawed time only"
+proof = "built"
+
+[[requirement]]
+id = "K23"
+statement = "Sleep tolerance 1 s"
+proof = "built"
+
+[[requirement]]
+id = "K24"
+statement = "HOT: 510 s, 60 s per test, the 8 tests, one process on all selected CPUs, memory min(16 GB, 50 % of free)"
+proof = "built"
+
+[[requirement]]
+id = "K25"
+statement = "HOT-T: 345 s, 40 s per test"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K26"
+statement = "WARM: 480 s of run time, 30 s per test, one 60 s slice per test, hold above 65 C to below 55 C, held time not counted, an unthawed hold past 300 s is THERMAL"
+proof = "built"
+
+[[requirement]]
+id = "K27"
+statement = "BURST: 480 s, 15 s per test, 2 GB, power-of-two draws plus all, first restart 60 s then 40-80 s, first switch 3 s then 1 or 2 s, run 200-3000 ms, frozen 300-4000 ms"
+proof = "built"
+
+[[requirement]]
+id = "K28"
+statement = "IDLE: 360 s, 10 s per test, 1 GB, 1, 2 or 4 random selected cores, frozen 15-40 s, awake 100-400 ms, random first test"
+proof = "built"
+
+[[requirement]]
+id = "K29"
+statement = "HOT stage hot hold: freeze at the limit, thaw 10 C under it"
+proof = "built"
+
+[[requirement]]
+id = "K29.burst_idle"
+statement = "The stage hot hold also runs in BURST and IDLE"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "K30"
+statement = "Telemetry every 100 ms in every stage, ring of 20 (2 s), stored as one zstd block per 10 s"
+proof = "built"
+
+[[requirement]]
+id = "K31"
+statement = "Failure context from facts: working cores = the segment's cores; band clock = the named core's clock in the hottest running sample, else the working cores' mean; Tctl from that sample; paused when the last sample was frozen"
+proof = "built"
+
+[[requirement]]
+id = "K32"
+statement = "TRANSIENT window 3600 s failure-free, cycle burst, warm, burst, idle"
+proof = "built"
+
+[[requirement]]
+id = "K33"
+statement = "CONFIRM: hot, warm, burst, idle once each"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K34"
+statement = "ENDURANCE: hot, burst, warm, burst, idle in a cycle until 10800 s failure-free"
+proof = "built"
+
+[[requirement]]
+id = "K35"
+statement = "TIGHTEN tests one item one step tighter with only it changed"
+proof = "built"
+
+[[requirement]]
+id = "K35.retry"
+statement = "A transient-class FAIL of a HOT-T item is retried up to 2 times"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K36.1"
+statement = "Each transient failure loosens one value by +1"
+proof = "built"
+
+[[requirement]]
+id = "K36.2"
+statement = "Band borders 4400, 5175, 5650 MHz on the measured model; column split 75 C"
+proof = "built"
+
+[[requirement]]
+id = "K36.2b"
+statement = "Off the measured model the band comes from the probe map; an unmapped clock pauses P(APPARATUS, no band)"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K36.3"
+statement = "A named core's CCD gives the band clock and controlling delta; else the CCD with the strongest probe delta"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K36.4"
+statement = "Ambiguity zones +-150 MHz around a border and +-5 C around 75 C"
+proof = "built"
+
+[[requirement]]
+id = "K36.5"
+statement = "Kind: step when at least half the selected cores work, boost when fewer, light when frozen or none working"
+proof = "built"
+
+[[requirement]]
+id = "K36.6"
+statement = "Recurrence and rotation counted per type key; light is one key"
+proof = "built"
+
+[[requirement]]
+id = "K36.7"
+statement = "A busy core becomes a candidate after 2 or more failures of the same type key"
+proof = "built"
+
+[[requirement]]
+id = "K36.8"
+statement = "No background cores: working cores are the segment's cores"
+proof = "built"
+
+[[requirement]]
+id = "K36.9"
+statement = "Ties by least loosened, then the owner's order on his model and core map, elsewhere lowest id"
+proof = "built"
+
+[[requirement]]
+id = "K36.9b"
+statement = "The owner's priority order applies on his model and core map"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "K37"
+statement = "Steady rule: +1 on the top 90C cell by probe delta; only that cell; no room goes transient"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K38"
+statement = "BASECHECK steps +2 per calc error, +4 per crash or freeze, capped at room"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K39.1"
+statement = "Probe: 25 s warm-up; per cell A 8 s, cell + s, settle 2 s, B 8 s, restore, settle 2 s, A 8 s; delta = B - mean(A1, A2) per CCD"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K39.2"
+statement = "Probe step s = min(10, -(base + k)); Minimum, base-0 and cells at 0 skipped"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K39.3"
+statement = "A cell controls when its delta is at or below min(-15, strongest / 3)"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K39.4"
+statement = "Probe memory 8 GB; loads: the 8 tests on all selected cores, BKT SFTv4 VT3 at a quarter and a half of the cores spread over the domains; a duplicate load dropped"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K39.5"
+statement = "Two temperature points per load"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K39.6"
+statement = "A probe failure voids the load, restores base + k, marks the cell crash at +s, loosens nothing"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K40"
+statement = "Bisect tree: baseline, halves of U, halves of each failing group; multi-CCD groups split by sorted CCD list, one CCD by index, unknown L3 by index"
+proof = "built"
+
+[[requirement]]
+id = "K40.slot"
+statement = "A Bisect slot runs the failing stage's tests at 20 s per test"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "K40.memory"
+statement = "A MEMORY Bisect slot runs K42's stressapptest at its full 300 s"
+proof = "built"
+
+[[requirement]]
+id = "K41"
+statement = "LIVE1: one K8 pass per core with every value live"
+proof = "built"
+
+[[requirement]]
+id = "K42"
+statement = "MEMORY: stressapptest 300 s, per-instance -M from the budget"
+proof = "built"
+
+[[requirement]]
+id = "K43"
+statement = "SOAK: 1800 s with no load"
+proof = "built"
+
+[[requirement]]
+id = "K44"
+statement = "Cell range [BIOS base, 0]; Minimum and base-0 cells never move"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "K45"
+statement = "CO range [max_offset, 0]"
+proof = "built"
+
+[[requirement]]
+id = "K45.inherit"
+statement = "Under inherit_current the range is [max_offset, max(0, base)]"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "K46"
+statement = "Q5: 2 tests of the same core at the same value and no record in another core's test"
+proof = "built"
+
+[[requirement]]
+id = "K47"
+statement = "Q6: +1 on every tuned core of the smallest failing group"
+proof = "built"
+
+[[requirement]]
+id = "K48"
+statement = "The v5f seed is listed for reference only; no loop reads it"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "K49"
+statement = "HOT budget below 16 GB warns"
+proof = "built"
+
+[[requirement]]
+id = "K50"
+statement = "Background load above 5 % per CPU over 5 s warns"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "K51"
+statement = "AutoResume: 3 tries 60 s apart, off by default"
+proof = "built"
+
+[[requirement]]
+id = "TERMS.owned_co"
+statement = "CO only owns exactly the selected cores' per-core CO and holds every other knob"
+proof = "built"
+
+[[requirement]]
+id = "TERMS.owned_shaper"
+statement = "Curve Shaper only owns the cells and holds per-core CO"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "TERMS.owned_both"
+statement = "Both owns the selected cores' CO and the cells"
+proof = "not built"
+task = "S4"
+
+[[requirement]]
+id = "TERMS.select_all"
+statement = "Shaper only and Both require every core selected"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "TERMS.cpus"
+statement = "Every all, random or spread CPU set means the selected CPUs"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "TERMS.base_shaper"
+statement = "base_shaper is read with the band self-check wherever the generation has the shaper ids; elsewhere none and every shaper read is skipped"
+proof = "not built"
+task = "S0"
+
+[[requirement]]
+id = "TERMS.revertall"
+statement = "RevertAll touches owned knobs only, CO to baseline or 0"
+proof = "built"
+
+[[requirement]]
+id = "TERMS.order"
+statement = "Where a worker may be alive: StopWorker, RevertAll, AwaitWorker(K20), then the commit"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "TERMS.allcore_run"
+statement = "An AllCore stage run writes its vector right before its load starts"
+proof = "built"
+
+[[requirement]]
+id = "TERMS.allcore_baseline"
+statement = "After every AllCore stage run, whatever its outcome, owned knobs go to baseline"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "TERMS.failing_effect"
+statement = "Effects run in order, stop at the first failure, keep the new state and post the failure event"
+proof = "built"
+
+[[requirement]]
+id = "TERMS.kvw"
+statement = "A knob write: durable journal intent, SMU write, read-back, confirm"
+proof = "built"
+
+[[requirement]]
+id = "TERMS.kvw_cache"
+statement = "Only knobs whose resident cache differs from the target are written"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "TERMS.kvw_order"
+statement = "Loosening writes go before tightening writes"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "TERMS.kvw_refused"
+statement = "A False write or a read-back mismatch becomes SmuRefused"
+proof = "built"
+
+[[requirement]]
+id = "TERMS.kvw_raised"
+statement = "A raised SMU error becomes SmuRefused"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "TERMS.kvw_intent"
+statement = "A failed journal intent becomes DatabaseFailed and the write does not happen"
+proof = "built"
+
+[[requirement]]
+id = "TERMS.room"
+statement = "Every loop is bounded by the room R and the incident count; every future comes to rest"
+proof = "built"
+
+[[requirement]]
+id = "TERMS.stock_unstable"
+statement = "A silicon FAIL or crash at 0 in isolation, the first FAIL at 0 in a live test with no other non-zero owned value, or nothing left to loosen, is P(STOCK_UNSTABLE)"
+proof = "built"
+
+[[requirement]]
+id = "TERMS.pause_reasons"
+statement = "Pause reasons include OUTSIDE_WRITE, HELD_KNOB and SMU_READ; a failed CO read is SMU_READ, never OUTSIDE_WRITE or SETUP_CHANGED"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.1"
+statement = "PASS: no signal and the load floor met"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.2"
+statement = "COMPUTATION (backend error text) is silicon"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.3"
+statement = "Death by SIGILL, SIGBUS, SIGFPE or SIGSEGV is CPU_SIGNAL, silicon"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.4"
+statement = "A core-bank record on the lane's CPUs, siblings included, is OWN_CORE_MCE, silicon"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.5"
+statement = "CLOCK_STRETCH is not produced"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "VERDICT.6"
+statement = "THERMAL (ThermalWatch over the limit) is environment, group G5"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.7"
+statement = "UNATTRIBUTED_MCE (no core, or a shared bank) is environment"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.8"
+statement = "KERNEL_TROUBLE (lockup, panic, Oops) is environment"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.9"
+statement = "OUTSIDE_KILL (outside SIGKILL or SIGTERM, OOM kill) is apparatus"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.10"
+statement = "DID_NOT_STOP (alive after the grace) is apparatus"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.11"
+statement = "CONTAINMENT_BROKE (scope or cpuset fault) is apparatus"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.12"
+statement = "STALL (no CPU progress) is apparatus"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.13"
+statement = "NOT_STARTED (launch refused or failed) is apparatus"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.14"
+statement = "UNEXPLAINED (unknown exit code) is apparatus"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.15"
+statement = "NO_WORK_DONE (load floor not met) is apparatus"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.16"
+statement = "UNVERIFIED (output or kernel read problem, no sensor) is apparatus"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.17"
+statement = "CUT_SHORT (stopped before the deadline) is apparatus"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.18"
+statement = "SLEPT (the machine slept during the test) is apparatus"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "VERDICT.20"
+statement = "A core-bank record naming a core not under test is evidence about that core (G3)"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.21"
+statement = "Q5 recurrence is silicon evidence, 1 step"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.22"
+statement = "A crash at resume with a core convicted is a silicon crash"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.23"
+statement = "A crash at resume with nobody convicted is an incident or the flow rule"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.24"
+statement = "A clean shutdown with a stale in_test flag is no penalty"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.25"
+statement = "User Pause is a control (G8)"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.27"
+statement = "SIGTERM and SIGINT to the driver close the session (G8)"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.27b"
+statement = "SIGHUP and process exit (atexit) close the session (G8)"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "VERDICT.28"
+statement = "User Abort is G9"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.29"
+statement = "An SMU write refusal is apparatus (G10)"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.30"
+statement = "An unverified CO write (read-back mismatch) is G10"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.30b"
+statement = "A shaper 5-word read-back mismatch is G10"
+proof = "not built"
+task = "S1"
+
+[[requirement]]
+id = "VERDICT.31"
+statement = "An outside write to a held CO (read differs from base) is a G10 control"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.32"
+statement = "An outside write to an owned CO (stage-entry read differs from the cache) is G10"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.34"
+statement = "A database failure is apparatus (storage), G11"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.35"
+statement = "A setup change at resume is G12"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.36"
+statement = "A base mismatch after a reboot is G12"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.37"
+statement = "A thermal give-up (streak or cooldown cap) is environment, G5"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.38"
+statement = "An internal error is G13"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.39"
+statement = "A sleep between tests is no verdict and forgets the resident cache"
+proof = "built"
+
+[[requirement]]
+id = "VERDICT.40"
+statement = "A failed SMU read is G10 (SMU_READ)"
+proof = "built"
+
+[[requirement]]
+id = "PRELUDE.1"
+statement = "The WorkerReported prelude first checks SLEPT"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "PRELUDE.2"
+statement = "The prelude applies evidence about named cores (G3)"
+proof = "built"
+
+[[requirement]]
+id = "PRELUDE.3"
+statement = "Every returned test leaves its row with its verdict"
+proof = "built"
+
+[[requirement]]
+id = "PRELUDE.4"
+statement = "At the test end in_test is cleared for the whole stressed set"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "PRELUDE.4b"
+statement = "At the test end this boot's confirmed resident rows are marked survived, except cores a corrected record named"
+proof = "built"
+
+[[requirement]]
+id = "PRELUDE.4c"
+statement = "No survival mark for apparatus, environment, unblamed records or kernel trouble"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "PRELUDE.4d"
+statement = "The resume streak is reset only when the survival mark was made"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "PRELUDE.4e"
+statement = "kernel_read_ns is stored at the test end"
+proof = "built"
+
+[[requirement]]
+id = "G1"
+statement = "A PASS sets the apparatus and thermal streaks to 0, then the loop's pass rule runs"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "G2"
+statement = "A silicon FAIL on a per-core lane sets FB to the tested value, then the loop's fail rule"
+proof = "built"
+
+[[requirement]]
+id = "G2.zero"
+statement = "A FAIL at 0 sets no FB; at 0 in isolation it is stock-unstable"
+proof = "built"
+
+[[requirement]]
+id = "G2.allcore"
+statement = "On a one-process all-CPU lane an own-core machine check names its core and is handled as G3"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "G3.backoff"
+statement = "Evidence on an owned non-zero core backs it off in place (1 step corrected, K12 uncorrected), sets FB, never counts as a crash, marks dirty after Search"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "G3.search_zero"
+statement = "Evidence on a core at 0 in Search is P(STOCK_UNSTABLE)"
+proof = "built"
+
+[[requirement]]
+id = "G3.zero_elsewhere"
+statement = "Evidence on a core at 0 outside Search is incident +1, P(INCIDENTS) at K19"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "G3.held"
+statement = "Evidence on a held core is P(HELD_KNOB) naming it"
+proof = "built"
+
+[[requirement]]
+id = "G4"
+statement = "A crash is decided only in L18 at CrashEvidenceRead: conviction, flow rule, incident or nothing"
+proof = "built"
+
+[[requirement]]
+id = "G5"
+statement = "THERMAL: no verdict, thermal streak +1, cooldown, the same spec retried; the 4th or the cap pauses P(THERMAL)"
+proof = "built"
+
+[[requirement]]
+id = "G6"
+statement = "Environment outside SOAK is handled as G7; a corrected UNATTRIBUTED_MCE in Search or LIVE1 first feeds L27"
+proof = "built"
+
+[[requirement]]
+id = "G6.soak"
+statement = "Environment in SOAK is incident +1 and dirty, P(INCIDENTS) at K19"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "G7"
+statement = "Apparatus: no verdict, streak +1, the same spec retried, the 4th pauses P(APPARATUS) with the tool's last lines"
+proof = "built"
+
+[[requirement]]
+id = "G7.slept"
+statement = "SLEPT also forgets the resident cache"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "G8"
+statement = "Pause finishes the in-flight test; Close and signal stop the worker; owned knobs go to baseline; status paused"
+proof = "built"
+
+[[requirement]]
+id = "G9"
+statement = "Abort: CancelSchedule, StopWorker, RevertAll(baseline, journal), AwaitWorker, stored aborted with in_test 0 and the Bisect queue kept"
+proof = "built"
+
+[[requirement]]
+id = "G10"
+statement = "A refused or unverified write pauses P(SMU_WRITE), or P(PROFILE_APPLY) from FINALIZE, with owned knobs at baseline"
+proof = "built"
+
+[[requirement]]
+id = "G10.outside"
+statement = "An outside write pauses P(OUTSIDE_WRITE) naming the knob, expected and found"
+proof = "built"
+
+[[requirement]]
+id = "G10.read"
+statement = "A failed SMU read pauses P(SMU_READ) naming the read"
+proof = "built"
+
+[[requirement]]
+id = "G11"
+statement = "A database failure puts owned knobs at stock with no journal after the stock marker and holds P(DATABASE) in memory"
+proof = "built"
+
+[[requirement]]
+id = "G11.ui"
+statement = "A database failure shows a GUI modal; the CLI exits 8"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "G12"
+statement = "A setup change is raised at resume; after Continue the child resumes the same loop at the same cursor"
+proof = "built"
+
+[[requirement]]
+id = "G13"
+statement = "Internal error: StopWorker, RevertAll(baseline), AwaitWorker, paused with in_test cleared, P(INTERNAL)"
+proof = "built"
+
+[[requirement]]
+id = "INV.L00"
+statement = "Inventory claim: CO only built; Shaper only and Both not built"
+proof = "built"
+
+[[requirement]]
+id = "INV.L01"
+statement = "Inventory claim: Start and baselines built; BIOS values asked in the tab; machine-side gates built for Start, Resume and Validate"
+proof = "built"
+
+[[requirement]]
+id = "INV.L02"
+statement = "Inventory claim: BASECHECK and PROBE not built"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "INV.L04"
+statement = "Inventory claim: Search built with L21 and L27"
+proof = "built"
+
+[[requirement]]
+id = "INV.L05"
+statement = "Inventory claim: k-pass proof in rounds with the 15 s wait"
+proof = "built"
+
+[[requirement]]
+id = "INV.L06"
+statement = "Inventory claim: 2T built with Kagari 19-ZN2"
+proof = "built"
+
+[[requirement]]
+id = "INV.L07"
+statement = "Inventory claim: LIVE1 built with solo retest and requeue"
+proof = "built"
+
+[[requirement]]
+id = "INV.L08"
+statement = "Inventory claim: STEADY built for CO, HOT on every owned CPU, named core first"
+proof = "built"
+
+[[requirement]]
+id = "INV.L09"
+statement = "Inventory claim: Bisect built with halves by CCD then index, Q6 re-run, HOT and MEMORY slots"
+proof = "built"
+
+[[requirement]]
+id = "INV.L10"
+statement = "Inventory claim: fix loop built for CO with the transient rule and the K31 ring; shaper cells not built"
+proof = "built"
+
+[[requirement]]
+id = "INV.L11"
+statement = "Inventory claim: TRANSIENT built for CO"
+proof = "built"
+
+[[requirement]]
+id = "INV.L12"
+statement = "Inventory claim: TIGHTEN built for CO window items; CONFIRM not built; ENDURANCE built for CO, off by default"
+proof = "built"
+
+[[requirement]]
+id = "INV.L15"
+statement = "Inventory claim: MEMORY built, one stressapptest lane per core, skip with reason"
+proof = "built"
+
+[[requirement]]
+id = "INV.L16"
+statement = "Inventory claim: SOAK built as a kernel log watch"
+proof = "built"
+
+[[requirement]]
+id = "INV.L17"
+statement = "Inventory claim: FINALIZE built, the dirty pass re-enters LIVE1"
+proof = "built"
+
+[[requirement]]
+id = "INV.L18"
+statement = "Inventory claim: resume built with EX1, EX6, EX7 and the step 8 knob check; the shaper 0x84 half waits for slice D"
+proof = "built"
+
+[[requirement]]
+id = "INV.L19"
+statement = "Inventory claim: pause and resume built"
+proof = "built"
+
+[[requirement]]
+id = "INV.L20"
+statement = "Inventory claim: thermal cooldown built"
+proof = "built"
+
+[[requirement]]
+id = "INV.L21"
+statement = "Inventory claim: start-failure stop built"
+proof = "built"
+
+[[requirement]]
+id = "INV.L22"
+statement = "Inventory claim: apparatus retry built; a payload thread reniced or rescheduled is apparatus, retried, then pauses naming the program"
+proof = "built"
+
+[[requirement]]
+id = "INV.L23"
+statement = "Inventory claim: database-failure path built with the stock marker"
+proof = "built"
+
+[[requirement]]
+id = "INV.L24"
+statement = "Inventory claim: setup recorded and compared, Continue and Restart, Validate pauses; backend pins wait for the manifest"
+proof = "built"
+
+[[requirement]]
+id = "INV.L25"
+statement = "Inventory claim: stage engine built in the live runner, durable tail five samples at a time, lane watch every 2 s"
+proof = "built"
+
+[[requirement]]
+id = "INV.L26"
+statement = "Inventory claim: round picker built with alternate, sequential and seeded random"
+proof = "built"
+
+[[requirement]]
+id = "INV.L27"
+statement = "Inventory claim: Q5 counter built"
+proof = "built"
+
+[[requirement]]
+id = "INV.L28"
+statement = "Inventory claim: AutoResume built in the tab, exactly one interrupted session, three tries a minute apart"
+proof = "built"
+
+[[requirement]]
+id = "INV.L29"
+statement = "Inventory claim: worker stop bound built"
+proof = "built"
+
+[[requirement]]
+id = "INV.L30"
+statement = "Inventory claim: Validate built for CO; the setup check at entry is the power check of L31 2a"
+proof = "built"
+
+[[requirement]]
+id = "INV.L31"
+statement = "Inventory claim: sleep gap, check 2a, check 4 and check 5 built; check 2 no longer pauses; check 3 waits for slice D"
+proof = "built"
+
+[[requirement]]
+id = "L00.a"
+statement = "A session runs its mode's plan from Start to a terminal lifecycle"
+proof = "built"
+
+[[requirement]]
+id = "L00.b"
+statement = "Entry: Start after L01, Resume of a stored session, ValidateProfile"
+proof = "built"
+
+[[requirement]]
+id = "L00.c.stored"
+statement = "mode (fixed), base_co, setup, the flow cursors, dirty and the owed Search retry are stored and survive crash and resume"
+proof = "built"
+
+[[requirement]]
+id = "L00.c.memory"
+statement = "Streaks live in memory and are reset to 0 at resume; the pause reason lives in events, the status column holds paused"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L00.d"
+statement = "One event is drained FIFO with its transition; effects run in prefix-safe order"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L00.e"
+statement = "G8 goes to L19, G9 ABORTED, G10 the hardware pauses, G11 L23, G12 L24, G13 P(INTERNAL)"
+proof = "built"
+
+[[requirement]]
+id = "L00.f"
+statement = "Exits: COMPLETED, ABORTED, QUARANTINED, SUPERSEDED, or a resumable P(reason)"
+proof = "built"
+
+[[requirement]]
+id = "L00.g"
+statement = "The plan is finite and every backward move is bounded by (R, incidents); nothing restarts without Resume"
+proof = "built"
+
+[[requirement]]
+id = "L00.h"
+statement = "After a crash the stored status stays running or paused and Resume re-enters the loop the stored cursors name"
+proof = "built"
+
+[[requirement]]
+id = "L01.a"
+statement = "The L01 gate subset also runs before Resume and ValidateProfile"
+proof = "built"
+
+[[requirement]]
+id = "L01.c.ack"
+statement = "The acknowledgement is logged as a session event"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L01.1"
+statement = "Gate 1: the configuration is validated, order_problem runs on the method with no fallback, a mode that is not built refuses"
+proof = "built"
+
+[[requirement]]
+id = "L01.1.grey"
+statement = "A mode the CPU cannot run is offered greyed with its first missing proof as the reason"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L01.2"
+statement = "Gate 2: Start refuses while a session is held in this driver"
+proof = "built"
+
+[[requirement]]
+id = "L01.2.stored"
+statement = "Start refuses while another stored session is held (running or paused), offering Resume N or Abort N"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L01.3"
+statement = "Gate 3: the driver is loaded and the core map present"
+proof = "built"
+
+[[requirement]]
+id = "L01.4"
+statement = "Gate 4: the kernel log and the boot identity are readable"
+proof = "built"
+
+[[requirement]]
+id = "L01.5"
+statement = "Gate 5: memory accounting is available"
+proof = "built"
+
+[[requirement]]
+id = "L01.6"
+statement = "Gate 6: a thermal sensor reads"
+proof = "built"
+
+[[requirement]]
+id = "L01.6.optout"
+statement = "The sensor gate has an opt-out key"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L01.7"
+statement = "Gate 7: containment (cpuset delegation, memory controller)"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L01.8"
+statement = "Gate 8: a known SMU tool by name, or a process holding the ryzen_smu files, refuses Start"
+proof = "built"
+
+[[requirement]]
+id = "L01.9"
+statement = "Gate 9: a frequency cap or boost off does not refuse; the power state is recorded at Start"
+proof = "built"
+
+[[requirement]]
+id = "L01.9.epp"
+statement = "EPP power or balance_power warns at Start"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L01.10"
+statement = "Gate 10: the app's own SCHED_IDLE or BATCH policy refuses"
+proof = "built"
+
+[[requirement]]
+id = "L01.11"
+statement = "Gate 11: 0xD5 is read on every core; an unreadable core refuses"
+proof = "built"
+
+[[requirement]]
+id = "L01.12"
+statement = "Gate 12: in every mode, where the generation has the shaper ids, read RSMU 0x84 with the band self-check; a failed read refuses Start"
+proof = "not built"
+task = "S0"
+
+[[requirement]]
+id = "L01.12.modes"
+statement = "The Shaper modes need H5w, H5p and H5c proven for the model class; a base of all 0 greys them"
+proof = "not built"
+task = "S1"
+
+[[requirement]]
+id = "L01.13"
+statement = "Gate 13: a HOT budget below 16 GB warns"
+proof = "built"
+
+[[requirement]]
+id = "L01.14"
+statement = "Gate 14: the backends resolve"
+proof = "built"
+
+[[requirement]]
+id = "L01.14.manifest"
+statement = "Gate 14: the setup manifest is readable"
+proof = "not built"
+task = "T31"
+
+[[requirement]]
+id = "L01.15.zero"
+statement = "All BIOS CO at 0: Start needs no acknowledgement and no dialog shows"
+proof = "built"
+
+[[requirement]]
+id = "L01.15.list"
+statement = "Any non-zero BIOS CO: one dialog listing every core's value; declined refuses and writes no session row"
+proof = "built"
+
+[[requirement]]
+id = "L01.15.names"
+statement = "The acknowledgement names every positive value, any value at or past a known FB, and any core changed since the newest session's base_co"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L01.15.changed"
+statement = "A change against the newest session's base_co needs the acknowledgement even when the BIOS CO is all 0"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L01.15.cli"
+statement = "The CLI without an acknowledgement refuses a non-zero BIOS CO"
+proof = "built"
+
+[[requirement]]
+id = "L01.c1"
+statement = "SM C1 in one transaction: session row with mode, base_co, setup, boot and config, every core NOT_STARTED; an owned baseline is 0; a held core keeps its BIOS value unwritten"
+proof = "built"
+
+[[requirement]]
+id = "L01.baselines"
+statement = "Start writes every owned baseline through journal, write, read-back, confirm"
+proof = "built"
+
+[[requirement]]
+id = "L01.announce"
+statement = "Start announces and schedules the first plan loop"
+proof = "built"
+
+[[requirement]]
+id = "L01.G10"
+statement = "A refused baseline write at Start pauses P(SMU_WRITE)"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L01.G11"
+statement = "SM C1 fails: no session row, a message, idle"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L01.G13"
+statement = "An internal error before C1 is a message and idle; after C1 P(INTERNAL)"
+proof = "built"
+
+[[requirement]]
+id = "L01.g"
+statement = "Start is a single pass with bounded reads (journalctl 15 s)"
+proof = "built"
+
+[[requirement]]
+id = "L02.a"
+statement = "BASECHECK proves the BIOS Curve Shaper base under HOT before any per-core work (Shaper only, Both)"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L02.c"
+statement = "The cell loosening map k and the fix log are stored in the allcore cursor"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L02.d"
+statement = "One iteration: L31, per-core 0 (Both) or held BIOS values, cells base + k written right before the load, in_test on every selected core, HOT, knobs to baseline after"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L02.G1"
+statement = "BASECHECK PASS exits to PROBE"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L02.G2.steady"
+statement = "A steady-class FAIL: the steady rule with the cached probe map or its no-probe fallback, min(2, room) on the top 90C cell, else the transient rule; re-run"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L02.G2.transient"
+statement = "A transient-class FAIL: L10 transient rule; a core candidate in Shaper only gives P(HELD_KNOB); nothing to loosen gives P(STOCK_UNSTABLE)"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L02.G2.mce"
+statement = "An OWN_CORE_MCE naming c: Both handles it as G2 with min(2 or 4, room); Shaper only gives P(HELD_KNOB)"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L02.G4"
+statement = "A crash: L18 convictions; with none, a FAIL of kind crash classed by its tail, min(4, room) on the steady cell or the transient rule"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L02.G8"
+statement = "Pause waits for the 510 s run; Resume re-runs BASECHECK with k as committed"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L02.g"
+statement = "Every BASECHECK FAIL loosens at least one value by what landed; nothing left pauses"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L03.b"
+statement = "PROBE runs after BASECHECK and is skipped when a map exists for the same setup and table"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L03.c"
+statement = "The probe cursor and per-cell deltas are stored per completed cell"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L03.d"
+statement = "One worker per load reports ProbeDone(A1, B, A2); the engine writes cell + s and restores it, journaled and read back; the engine is the only writer"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L03.G1"
+statement = "A finished load is stored; after the last load PROBE exits to Search 1T (Both) or STEADY (Shaper only)"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L03.G2"
+statement = "A FAIL voids the load: partial map dropped, the cell restored and marked crash at +s, nothing loosened, the load not re-run"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L03.G3"
+statement = "A record on a core outside a partial-load lane: at 0 incident +1 and the load re-runs; held gives P(HELD_KNOB)"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L03.G4"
+statement = "Probe-window rows are never crash suspects and never set an FB; with nobody convicted the load is voided"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L03.G8"
+statement = "Pause lets the load finish; Resume restarts an unfinished load"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L03.G10"
+statement = "A read-back mismatch between windows is G10"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L03.g"
+statement = "At most 14 loads x temperature points; one run per load"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L04.a"
+statement = "Search walks each owned core down from 0 with coarse 5 then fine 1 and hands the deepest pass to the proof"
+proof = "built"
+
+[[requirement]]
+id = "L04.a.hint"
+statement = "Search starts a core from a same-setup, same-shaper hint"
+proof = "not built"
+task = "T25"
+
+[[requirement]]
+id = "L04.b"
+statement = "CO only starts with Search; each core starts NOT_STARTED"
+proof = "built"
+
+[[requirement]]
+id = "L04.c.fb"
+statement = "FB only tightens; best stays strictly inside FB; walk_seconds is bounded by K14"
+proof = "built"
+
+[[requirement]]
+id = "L04.c.round"
+statement = "The round position and any owed retry survive resume"
+proof = "built"
+
+[[requirement]]
+id = "L04.d.pick"
+statement = "L26 picks c; a different core than the last waits 15 s first"
+proof = "built"
+
+[[requirement]]
+id = "L04.d.vector"
+statement = "Every other owned core at its baseline 0, held cores at their BIOS values, c at v, written journaled and read back"
+proof = "built"
+
+[[requirement]]
+id = "L04.d.first"
+statement = "The first walk value is s - 5 when s = 0"
+proof = "built"
+
+[[requirement]]
+id = "L04.G1.coarse"
+statement = "A PASS in COARSE at v: best = v, then COARSE v - 5, FINE v - 1 at FB or max, or PROVE at v"
+proof = "built"
+
+[[requirement]]
+id = "L04.G1.fine"
+statement = "A PASS in FINE at v: best = v, then FINE v - 1 if inside FB, else PROVE at best"
+proof = "built"
+
+[[requirement]]
+id = "L04.G2"
+statement = "A FAIL at v: FB = v; COARSE with a best goes FINE at best - 1 or PROVE at best; from 0 FINE at -1 or PROVEN 0 with no best; FINE goes PROVE at best or PROVEN 0; the same core next at once"
+proof = "built"
+
+[[requirement]]
+id = "L04.G3.zero"
+statement = "A record about another core at 0 in Search is P(STOCK_UNSTABLE) naming it"
+proof = "built"
+
+[[requirement]]
+id = "L04.G3.inherit"
+statement = "An inherited non-zero baseline: FB = b, b steps toward 0, the core owes PROVE_1T at the new b"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L04.G4"
+statement = "A conviction at v: FB = v, v + 3 toward 0, crash_count + 1, PROVE_1T with count 0, tested again at once; at 0 P(STOCK_UNSTABLE)"
+proof = "built"
+
+[[requirement]]
+id = "L04.G5"
+statement = "THERMAL: c back to baseline during the cooldown, walk_seconds += the partial seconds, the same spec retried"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L04.G6"
+statement = "A corrected UNATTRIBUTED_MCE goes to L27 first; on its evidence branch it is a G2 at v with 1 step"
+proof = "built"
+
+[[requirement]]
+id = "L04.G7"
+statement = "Apparatus: c back to baseline, the same spec retried"
+proof = "built"
+
+[[requirement]]
+id = "L04.G8"
+statement = "Pause: the in-flight verdict is applied in PAUSING; the next pick follows Resume"
+proof = "built"
+
+[[requirement]]
+id = "L04.budget"
+statement = "After every walk verdict walk_seconds += duration; over K14 the core goes PROVE at best or PROVEN 0, never overriding the verdict"
+proof = "built"
+
+[[requirement]]
+id = "L04.f"
+statement = "Walk and proof tests interleave in one round; the class ends when every owned core is PROVEN in 1T"
+proof = "built"
+
+[[requirement]]
+id = "L04.g"
+statement = "Walk tests are bounded; a crash moves the value toward 0"
+proof = "built"
+
+[[requirement]]
+id = "L04.h"
+statement = "Resume re-enters at the core's stored phase and value and re-picks an owed retry first"
+proof = "built"
+
+[[requirement]]
+id = "L05.a"
+statement = "A per-core value is proven by k consecutive interleaved passes; a FAIL backs off 1 step and restarts the count"
+proof = "built"
+
+[[requirement]]
+id = "L05.b"
+statement = "PROVE_1T starts at best (or the budget or crash value); PROVE_2T at the 1T proven value"
+proof = "built"
+
+[[requirement]]
+id = "L05.c.count"
+statement = "The pass count survives crash and resume and restarts after a FAIL, crash or evidence"
+proof = "built"
+
+[[requirement]]
+id = "L05.c.single"
+statement = "A one-core selection runs back to back and Start names it as not interleaved"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L05.G1"
+statement = "A PASS adds 1; at k the core is PROVEN in the class (1T goes to L06, or PROVEN when L06 is skipped)"
+proof = "built"
+
+[[requirement]]
+id = "L05.G2"
+statement = "A FAIL at p: FB = p, p + 1, count 0, same core next; at 0 PROVEN; a FAIL at 0 sets no FB and is P(STOCK_UNSTABLE)"
+proof = "built"
+
+[[requirement]]
+id = "L05.G3"
+statement = "A record about another core at 0 is P(STOCK_UNSTABLE); Q5 against the tested core is a G2"
+proof = "built"
+
+[[requirement]]
+id = "L05.G4"
+statement = "A conviction: FB = p, p + 3 clamped at 0, count 0, crash_count + 1, tested again at once; at 0 P(STOCK_UNSTABLE)"
+proof = "built"
+
+[[requirement]]
+id = "L05.G5_G8"
+statement = "THERMAL, apparatus, environment and pause leave the count unchanged"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L05.g"
+statement = "Per core at most k x (abs(p0) + 1) verdicts; at the bound p = 0 is PROVEN"
+proof = "built"
+
+[[requirement]]
+id = "L06.a"
+statement = "The 2T class re-proves every value with both SMT threads under Kagari, backing off where it fails"
+proof = "built"
+
+[[requirement]]
+id = "L06.skip"
+statement = "The 2T class is skipped, with its reason named and recorded, when an owned core has one online CPU"
+proof = "built"
+
+[[requirement]]
+id = "L06.c"
+statement = "2T is never deeper than the 1T value"
+proof = "built"
+
+[[requirement]]
+id = "L06.first"
+statement = "The 2T class starts at its sequence's first position"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L07.a"
+statement = "LIVE1: one 1T pass per core with every value live, CO only"
+proof = "built"
+
+[[requirement]]
+id = "L07.b"
+statement = "LIVE1 follows the last Search class; FINALIZE's dirty redirect re-enters it and clears dirty; it is the solo requeue slot after MEMORY back-offs"
+proof = "built"
+
+[[requirement]]
+id = "L07.c"
+statement = "The LIVE1 cursor (index, requeue, solo, return stage) is stored"
+proof = "built"
+
+[[requirement]]
+id = "L07.d"
+statement = "The slot core is the round-0 sequence of class live1 at the index, then the requeue in back-off order; every owned knob at its value; 15 s wait when the core differs"
+proof = "built"
+
+[[requirement]]
+id = "L07.G1"
+statement = "A LIVE1 PASS moves the index on"
+proof = "built"
+
+[[requirement]]
+id = "L07.G2"
+statement = "A FAIL below 0: FB = v, v + 1 in place, dirty, the slot retried with the index kept"
+proof = "built"
+
+[[requirement]]
+id = "L07.G2.zero"
+statement = "A FAIL at 0 sets no FB; with another owned value non-zero a solo retest with the others at 0; a second FAIL P(STOCK_UNSTABLE); a PASS backs every other non-zero core off 1, dirty; with none non-zero P(STOCK_UNSTABLE) at once"
+proof = "built"
+
+[[requirement]]
+id = "L07.G3"
+statement = "A record about another core: back it off in place, dirty, requeue it; at 0 incident + 1"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L07.G4"
+statement = "A crash with nobody convicted in LIVE1 is Bisect over the live cores with this LIVE1 slot as the spec"
+proof = "built"
+
+[[requirement]]
+id = "L07.G6"
+statement = "A corrected unblamed record in LIVE1 feeds L27 (Q5 applies in LIVE1)"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L07.G5_G8"
+statement = "THERMAL, apparatus and pause keep the slot and the index"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L07.f"
+statement = "index = n and an empty requeue go to the next plan loop"
+proof = "built"
+
+[[requirement]]
+id = "L07.h"
+statement = "The LIVE1 sequence is rebuilt from the stored method and seed; the interrupted slot re-runs"
+proof = "built"
+
+[[requirement]]
+id = "L08.a"
+statement = "STEADY runs HOT with every value live and fixes what fails"
+proof = "built"
+
+[[requirement]]
+id = "L08.b"
+statement = "STEADY follows LIVE1 (CO only) and is re-entered after every Bisect exit and fix"
+proof = "built"
+
+[[requirement]]
+id = "L08.c"
+statement = "The allcore cursor is stored"
+proof = "built"
+
+[[requirement]]
+id = "L08.d.l31"
+statement = "At stage entry every held and owned CO is read back"
+proof = "built"
+
+[[requirement]]
+id = "L08.d.vector"
+statement = "The vector (proven values with any loosening) is written right before the load starts"
+proof = "built"
+
+[[requirement]]
+id = "L08.d.intest"
+statement = "in_test is set on every selected core for an all-core run"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L08.d.after"
+statement = "After the run owned knobs go to baseline"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L08.G1"
+statement = "A HOT PASS exits to TRANSIENT"
+proof = "built"
+
+[[requirement]]
+id = "L08.G2.steady"
+statement = "A steady-class FAIL with per-core owned enters Bisect with the HOT spec"
+proof = "built"
+
+[[requirement]]
+id = "L08.G2.transient"
+statement = "A transient-class FAIL in STEADY runs the transient rule and re-runs"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L08.G2.mce"
+statement = "An OWN_CORE_MCE naming an owned non-zero core backs it off in place (1 or 3 steps) with FB and re-runs; a held core gives P(HELD_KNOB)"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L08.G2.named"
+statement = "A FAIL naming owned cores backs each named core below 0 off in place with FB, dirty, re-run, no Bisect; a named core not owned gives P(HELD_KNOB)"
+proof = "built"
+
+[[requirement]]
+id = "L08.G3"
+statement = "A record naming an unselected core in CO only is P(HELD_KNOB)"
+proof = "built"
+
+[[requirement]]
+id = "L08.G4"
+statement = "A crash with nobody convicted: the telemetry tail is a FAIL of kind crash classed by its context"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L08.G8"
+statement = "Pause waits for the run to finish"
+proof = "built"
+
+[[requirement]]
+id = "L08.f"
+statement = "STEADY exits to TRANSIENT, Bisect, P(STOCK_UNSTABLE) when nothing is left to loosen, or P(HELD_KNOB)"
+proof = "built"
+
+[[requirement]]
+id = "L09.a"
+statement = "Bisect finds which values fail together under the failing all-core load and fixes the smallest failing group"
+proof = "built"
+
+[[requirement]]
+id = "L09.b"
+statement = "Bisect is entered on a steady FAIL in STEADY or ENDURANCE, and on a LIVE1 or MEMORY crash with nobody convicted; never from TIGHTEN"
+proof = "built"
+
+[[requirement]]
+id = "L09.b.universe"
+statement = "The universe is the owned cores not at 0, with their values frozen"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L09.c"
+statement = "The bisect record is stored and survives crash, resume and Abort"
+proof = "built"
+
+[[requirement]]
+id = "L09.d"
+statement = "A slot runs the cores of the group at V, every other owned core at 0; the queue starts with the baseline then halves breadth first"
+proof = "built"
+
+[[requirement]]
+id = "L09.G1"
+statement = "A slot PASS is recorded and popped; an empty queue resolves"
+proof = "built"
+
+[[requirement]]
+id = "L09.G2.baseline"
+statement = "The baseline slot FAILs: CO only P(STOCK_UNSTABLE); with the shaper owned the steady cell rule"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L09.G2.single"
+statement = "A single-core group FAILs: FB_c = V_c, v_c = V_c + 1, exit to the entry loop"
+proof = "built"
+
+[[requirement]]
+id = "L09.G2.group"
+statement = "A larger group FAILs: recorded and its two halves enqueued"
+proof = "built"
+
+[[requirement]]
+id = "L09.resolve"
+statement = "Resolve: the smallest FAIL group whose children all passed (tie lowest id) gets Q6; its slot re-runs at the new values; a FAIL there gives another +1; a PASS exits; nothing to loosen pauses"
+proof = "built"
+
+[[requirement]]
+id = "L09.G3"
+statement = "A record about an owned non-zero core ends Bisect after backing it off in place; at 0 incident + 1 and the slot retries"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L09.G4"
+statement = "A single-core slot crash convicts c (3 steps) and ends Bisect; a larger group's crash is that group's FAIL with V unchanged"
+proof = "built"
+
+[[requirement]]
+id = "L09.G5_G9"
+statement = "THERMAL, apparatus and pause retry the same slot; Pause and Abort keep the queue"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L09.skip"
+statement = "A memory skip reported inside a Bisect slot is apparatus and the slot runs again"
+proof = "built"
+
+[[requirement]]
+id = "L09.f"
+statement = "Bisect returns to the entry loop, which re-runs its failed stage at full length"
+proof = "built"
+
+[[requirement]]
+id = "L09.g"
+statement = "At most 1 + (2 abs(U) - 2) slots per run plus re-runs that each lower R"
+proof = "built"
+
+[[requirement]]
+id = "L10.a"
+statement = "The fix loop chooses the single value to loosen after a failure and enforces ownership"
+proof = "built"
+
+[[requirement]]
+id = "L10.d.steady"
+statement = "Steady class: the controlling 90C cell by the failing test's probe (or the no-probe fallback) gets +1; only the top cell; no room goes transient"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L10.d.transient"
+statement = "Transient class: record the failure and its type key, rotate candidates from n = tTypes[key]++ (core if light, core if boost and a busy core recurs), first that can loosen wins, else the least-loosened selected core"
+proof = "built"
+
+[[requirement]]
+id = "L10.d.cells"
+statement = "Transient candidates include cell(band, column), the neighbour band's cell near a border and the other column's cell near 75 C"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L10.d.cell_co"
+statement = "A cell candidate is skipped in CO only"
+proof = "built"
+
+[[requirement]]
+id = "L10.d.held"
+statement = "A held core candidate gives P(HELD_KNOB) naming it"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L10.d.bound"
+statement = "An owned value at its bound is skipped"
+proof = "built"
+
+[[requirement]]
+id = "L10.d.apply"
+statement = "The chosen value gets +1, written with the next test's vector; rung + 1"
+proof = "built"
+
+[[requirement]]
+id = "L10.e"
+statement = "Nothing left to loosen gives P(STOCK_UNSTABLE, nothing left to loosen)"
+proof = "built"
+
+[[requirement]]
+id = "L10.h"
+statement = "The fix commits with the cursor before the next write"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L11.a"
+statement = "TRANSIENT runs load steps until 3600 s failure-free; each failure loosens one value; it always runs in CO only"
+proof = "built"
+
+[[requirement]]
+id = "L11.b"
+statement = "Entering TRANSIENT from STEADY sets tClean to 0"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L11.c"
+statement = "tClean, tIdx and the fix state are stored; tClean is kept across a pause"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L11.d"
+statement = "The stage is [burst, warm, burst, idle][tIdx mod 4]"
+proof = "built"
+
+[[requirement]]
+id = "L11.G1"
+statement = "A PASS adds the stage seconds to tClean and moves tIdx; at 3600 s exit to TIGHTEN, or in a CO second pass to the step after TIGHTEN"
+proof = "built"
+
+[[requirement]]
+id = "L11.G2"
+statement = "A FAIL runs the transient rule (named cores first); tClean = 0, tIdx unchanged so the failed stage runs again"
+proof = "built"
+
+[[requirement]]
+id = "L11.G3"
+statement = "A record about a core outside a partial lane follows the G3 rule; tClean = 0 when something changed"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L11.G4"
+statement = "A crash with nobody convicted is a FAIL of kind crash under the G2 rule"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L11.G5_G8"
+statement = "THERMAL, apparatus and pause leave tClean unchanged"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L11.h"
+statement = "After a crash tClean goes to 0"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L12.a"
+statement = "TIGHTEN takes every loosened value back one step at a time with only it changed until it fails or reaches its floor"
+proof = "built"
+
+[[requirement]]
+id = "L12.b"
+statement = "TIGHTEN runs once; a second pass never runs it; with no items it exits at once"
+proof = "built"
+
+[[requirement]]
+id = "L12.c"
+statement = "Entering TIGHTEN and picking each item set tClean, tIdx and sRetry to 0"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L12.floor"
+statement = "A CO item's floor is its proven value; never at or past FB; a step onto the floor is tested; an item at its floor or one step from FB freezes"
+proof = "built"
+
+[[requirement]]
+id = "L12.floor_cell"
+statement = "A cell item's floor is the BIOS base (Shaper only) or its Search-time value (Both)"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L12.d.window"
+statement = "Every per-core item runs one stage of the K32 window"
+proof = "built"
+
+[[requirement]]
+id = "L12.d.hott"
+statement = "A 90C cell item runs HOT-T"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L12.G1.window"
+statement = "A window item PASS adds to tClean; at 3600 s the tighter value is kept and the next item picked"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L12.G1.hott"
+statement = "A HOT-T item PASS keeps the tighter value"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L12.G2.hott"
+statement = "A HOT-T steady FAIL freezes the item; a transient FAIL retries up to 2 times, then freezes"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L12.G2.window"
+statement = "A window item FAIL freezes it, picks the next item, tClean = 0"
+proof = "built"
+
+[[requirement]]
+id = "L12.G2.mce"
+statement = "An OWN_CORE_MCE naming another owned core backs it off in place; the item test is void and repeats"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L12.G2.named"
+statement = "A FAIL naming the item's own core keeps the item rule; naming only other owned cores backs them off with FB and repeats the item test"
+proof = "built"
+
+[[requirement]]
+id = "L12.G3"
+statement = "A record about another core follows the G3 rule and the item test repeats"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L12.G4.own"
+statement = "A conviction of the item's own core sets FB, backs it off 3 steps and freezes the item"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L12.G4.other"
+statement = "A conviction of another core voids the item test, which repeats"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L12.G4.none"
+statement = "A crash with nobody convicted becomes G2 by its context (a window item freezes)"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L12.f"
+statement = "With every item frozen TIGHTEN goes to ENDURANCE, MEMORY or SOAK in CO only"
+proof = "built"
+
+[[requirement]]
+id = "L13.a"
+statement = "CONFIRM runs HOT, WARM, BURST and IDLE once each at full length on the final values (Shaper only, Both)"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L13.b"
+statement = "CONFIRM follows TIGHTEN or the dirty redirect; entering it clears dirty"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L13.c"
+statement = "confirmStage is stored"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L13.G1"
+statement = "A PASS moves confirmStage; at 4 the next plan loop"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L13.G2"
+statement = "A steady FAIL with per-core owned goes to L09 then the same stage; otherwise L10 and the same stage repeats"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L13.G3_G4"
+statement = "A record follows the G3 rule; a crash with no conviction is a FAIL of kind crash"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L13.f"
+statement = "CONFIRM exits to ENDURANCE, MEMORY (Both) or SOAK per the plan"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L14.a"
+statement = "ENDURANCE cycles HOT, BURST, WARM, BURST, IDLE until 3 h pass with no failure; optional in CO only, off by default"
+proof = "built"
+
+[[requirement]]
+id = "L14.b"
+statement = "In CO only ENDURANCE follows TIGHTEN, or TRANSIENT in a second pass"
+proof = "built"
+
+[[requirement]]
+id = "L14.c"
+statement = "endStage and endClean are stored"
+proof = "built"
+
+[[requirement]]
+id = "L14.c.display"
+statement = "endLoops and endFails are counted for the display"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L14.G1"
+statement = "A PASS adds to endClean and moves endStage mod 5; at 10800 s the next plan loop"
+proof = "built"
+
+[[requirement]]
+id = "L14.G2"
+statement = "A FAIL backs named owned cores off first, else L09 (steady) or L10; endClean = 0; the failed stage runs again"
+proof = "built"
+
+[[requirement]]
+id = "L14.G3_G7"
+statement = "A record follows the G3 rule (endClean 0 when changed); a crash is a FAIL of kind crash; THERMAL and apparatus leave endClean"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L15.a"
+statement = "MEMORY runs all cores at once under stressapptest with every value live; optional"
+proof = "built"
+
+[[requirement]]
+id = "L15.b"
+statement = "MEMORY is skipped with no verdict when off, when the tool is missing or the budget does not fit, decided at stage start with its reason"
+proof = "built"
+
+[[requirement]]
+id = "L15.d"
+statement = "One stressapptest lane per core with its budgeted -M for 300 s, in_test on every core"
+proof = "built"
+
+[[requirement]]
+id = "L15.G1"
+statement = "MEMORY PASS goes to SOAK"
+proof = "built"
+
+[[requirement]]
+id = "L15.G2"
+statement = "A silicon lane below 0 backs off 1 in place, its core is requeued for a LIVE1 slot, dirty, MEMORY re-runs after the requeue"
+proof = "built"
+
+[[requirement]]
+id = "L15.G2.zero"
+statement = "A lane at 0 sets no FB; with another owned value non-zero its solo retest is one LIVE1 slot; with none non-zero P(STOCK_UNSTABLE)"
+proof = "built"
+
+[[requirement]]
+id = "L15.G2.held"
+statement = "A lane on a held core gives P(HELD_KNOB) naming it"
+proof = "built"
+
+[[requirement]]
+id = "L15.G3"
+statement = "A record about a core follows the G3 rule"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L15.G4"
+statement = "A crash with nobody convicted is Bisect with the MEMORY slot spec"
+proof = "built"
+
+[[requirement]]
+id = "L15.G7"
+statement = "OUTSIDE_KILL in MEMORY names the budget"
+proof = "built"
+
+[[requirement]]
+id = "L16.a"
+statement = "SOAK watches the kernel stream for 1800 s with no load and every value live"
+proof = "built"
+
+[[requirement]]
+id = "L16.b"
+statement = "SOAK is skipped when off or when the profile is dirty"
+proof = "built"
+
+[[requirement]]
+id = "L16.G1"
+statement = "A quiet SOAK goes to FINALIZE"
+proof = "built"
+
+[[requirement]]
+id = "L16.G2"
+statement = "SOAK gives no silicon verdict; a core-bank record is evidence"
+proof = "built"
+
+[[requirement]]
+id = "L16.G3"
+statement = "Evidence in SOAK backs the core off in place, requeues a LIVE1 slot, marks dirty, then goes to FINALIZE"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L16.G4"
+statement = "A crash in SOAK with nobody convicted is incident + 1 and dirty"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L16.G6"
+statement = "An unblamed record or kernel trouble in SOAK is incident + 1 and dirty, P(INCIDENTS) at K19"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L16.G8"
+statement = "A Pause in SOAK stops the worker, reverts, waits K20, pauses P(USER); Resume re-runs the full SOAK"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L17.d.requeue"
+statement = "A dirty FINALIZE with a requeue runs the requeued LIVE1 solo slots first"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L17.d.redirect"
+statement = "A dirty FINALIZE re-enters the pass start (LIVE1 in CO only), clearing dirty; the second pass never runs TIGHTEN"
+proof = "built"
+
+[[requirement]]
+id = "L17.d.clean"
+statement = "A clean FINALIZE first writes every owned knob to its final value, then on the next continuation stores completed, sets unattributed to 0 and announces the values"
+proof = "built"
+
+[[requirement]]
+id = "L17.G10"
+statement = "A refused final write reverts to baseline and pauses P(PROFILE_APPLY) at FINALIZE; Resume only applies the profile"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L17.G11"
+statement = "A database failure in FINALIZE takes the stock marker then stock; the next resume re-attributes"
+proof = "built"
+
+[[requirement]]
+id = "L17.h"
+statement = "A completed session is not resumable; Validate Profile is the way"
+proof = "built"
+
+[[requirement]]
+id = "L18.b"
+statement = "Resume enters for a stored running or paused session and an explicitly picked aborted one"
+proof = "built"
+
+[[requirement]]
+id = "L18.b.quarantine"
+statement = "A quarantined session resumes only interactive and confirmed, re-engaging on proven ground"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L18.c.marker"
+statement = "The stock marker is one fsynced file in the machine state directory naming the boot and the cores put at stock"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.1"
+statement = "Step 1: the L01 gate subset, order_problem on the stored method included; a refusal changes nothing"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.2"
+statement = "Step 2: P(RESUMING) reads the crash evidence and the stock marker; no knob is written before C8 and the step 8 checks"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.3"
+statement = "Step 3, same boot: in_test cleared with no penalty; with this boot's stock marker each in-test core takes its stage's FAIL rule; this boot's records go through the active loop's G3 rule"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.0"
+statement = "A dead boot whose kernel log cannot be read is attributed without its records and named in a session event and the announcement"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.1"
+statement = "Another session wrote CO later in the dead boot: no penalty"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.2"
+statement = "A clean end gives named records as evidence only"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.3a"
+statement = "A stock marker naming the dead boot: each in-test core takes its stage's FAIL rule, the crash is an incident, records count at stock, nothing below applies"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.3b"
+statement = "An uncorrected core-bank record on a non-zero resident value convicts that core; one naming a held core is evidence plus P(HELD_KNOB)"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.3c"
+statement = "Only an unblamed uncorrected record: incident, nobody convicted"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.3d"
+statement = "A Bisect single-core head with in_test set is convicted"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.3e"
+statement = "A single in-test core that was not live is convicted"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.3f"
+statement = "Unproven resident journal rows are crash suspects and convicted; a Bisect group's slot rows never are"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.3g"
+statement = "Otherwise, with in_test set, the flow rule of the loop that crashed"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.3h"
+statement = "Otherwise, with in_test clear, an incident if the session was running, nothing if paused"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.4.allcore"
+statement = "Flow rule in STEADY, TRANSIENT, a TIGHTEN item, ENDURANCE: a FAIL of kind crash classed by its tail"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L18.d.4.4.bisect"
+statement = "Flow rule in a Bisect group: the group's FAIL"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.4.live1"
+statement = "Flow rule in LIVE1: Bisect over the live cores"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.4.memory"
+statement = "Flow rule in MEMORY: Bisect with the MEMORY slot spec"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L18.d.4.4.soak"
+statement = "Flow rule in SOAK: incident"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L18.d.4.4.probe"
+statement = "Flow rule in PROBE: void"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L18.d.4.5"
+statement = "The resume streak rises on a conviction or a flow-rule FAIL, not on a void or an incident"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.5"
+statement = "SM C8 commits rows, states, counters, streak, dirty, the Bisect queue and status in one transaction, the boot stamped with it"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.5.marker"
+statement = "The stock marker is deleted after C8 once step 8 used it, or on the way into a step 6 or 7 stop"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L18.d.6"
+statement = "A streak of 3 or more reverts owned knobs to stock, journaled, and quarantines"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.7"
+statement = "Early pauses revert to baseline first: a conviction at 0 P(STOCK_UNSTABLE), this pass's incident at K19 P(INCIDENTS), a held core P(HELD_KNOB)"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.8.setup"
+statement = "Step 8 runs the L24 setup comparison"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.8.reboot"
+statement = "After a reboot a held core's 0xD5 must equal base_co, else P(SETUP_CHANGED)"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.8.shaper"
+statement = "After a reboot 0x84 must equal base_shaper, else P(SETUP_CHANGED)"
+proof = "not built"
+task = "S0"
+
+[[requirement]]
+id = "L18.d.8.sameboot"
+statement = "In the same boot owned reads must equal the last confirmed rows and held reads base, else P(OUTSIDE_WRITE); the marker's stock reads are accepted in its boot"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.8.read"
+statement = "A failed read is P(SMU_READ) naming it; every step 8 pause reverts first"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.8.reengage"
+statement = "Re-engage on proven ground (from quarantine, interactive only)"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L18.d.8.reconcile"
+statement = "Reconcile: clamp each core's value and phase inside FB"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L18.d.8.drift"
+statement = "Drift announce"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L18.d.8.baselines"
+statement = "Every owned CO is written to its baseline, then the session runs at the stored loop"
+proof = "built"
+
+[[requirement]]
+id = "L18.e.G9"
+statement = "An Abort during P(RESUMING) waits for C8, then aborts"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L18.e.G11"
+statement = "C8 failing reloads states, then P(DATABASE)"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L18.g"
+statement = "Quarantine after 3 consecutive crash-resumes with no survival mark between them"
+proof = "built"
+
+[[requirement]]
+id = "L19.c"
+statement = "The paused status is written before the announcement and clears in_test"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L19.d.inflight"
+statement = "Pause with a test in flight stores paused, announces finishing the current test and enters PAUSING"
+proof = "built"
+
+[[requirement]]
+id = "L19.d.soak"
+statement = "A Pause in SOAK stops the worker, reverts, waits K20 and pauses P(USER)"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L19.d.waiting"
+statement = "Pause while waiting, an L20 cooldown included, cancels the timer, reverts and pauses P(USER)"
+proof = "built"
+
+[[requirement]]
+id = "L19.d.report"
+statement = "A report arriving in PAUSING is applied as from RUNNING without a schedule, then reverts and pauses P(USER) or a more specific reason"
+proof = "built"
+
+[[requirement]]
+id = "L19.d.close"
+statement = "Close or signal: cancel, stop the worker, revert, wait K20, store paused, close the database"
+proof = "built"
+
+[[requirement]]
+id = "L19.G5"
+statement = "A THERMAL report in PAUSING adds 1 to the thermal streak; past 3 P(THERMAL), else P(USER) with the retry owed"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L19.G6_G7"
+statement = "An apparatus report in PAUSING adds 1 to the streak, then P(USER), or P(APPARATUS) at the limit"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L19.G8"
+statement = "A second Pause is a no-op"
+proof = "built"
+
+[[requirement]]
+id = "L19.h"
+statement = "While paused the knobs are at baseline and in_test is 0, so a reboot gives no flow-rule verdict and no incident"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L20.a"
+statement = "After a thermal stop the session cools down, retries the same step and gives up into a pause"
+proof = "built"
+
+[[requirement]]
+id = "L20.c"
+statement = "The thermal streak lives in memory, is reset by any verdict and is fresh at resume"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L20.d.percore"
+statement = "In per-core loops the tested core goes back to baseline during the cooldown and walk_seconds takes the partial seconds"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L20.d.allcore"
+statement = "In all-core stage loops owned knobs go to baseline after a THERMAL run"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L20.d.wait"
+statement = "Wait at least 5 s, then sample once a second; below limit - 5 C the same spec is retried; a missing reading counts as not cooled"
+proof = "built"
+
+[[requirement]]
+id = "L20.G5"
+statement = "A THERMAL past 3 in a row reverts, stores paused and pauses P(THERMAL)"
+proof = "built"
+
+[[requirement]]
+id = "L20.G5.name"
+statement = "The thermal give-up after a streak names the temperature"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L20.G6_G7"
+statement = "Apparatus during a thermal retry goes to L22 with the thermal streak unchanged"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L20.cap"
+statement = "The 300 s cap without cooling gives up into P(THERMAL)"
+proof = "built"
+
+[[requirement]]
+id = "L20.h"
+statement = "No worker is in flight and in_test is 0 during the cooldown, so a dirty end there is an incident"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L21.a"
+statement = "N consecutive cores failing their first walk value pause P(START_FAILURES)"
+proof = "built"
+
+[[requirement]]
+id = "L21.c"
+statement = "The count lives in memory, fresh at resume; K15 = 0 means off"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L21.d"
+statement = "A PASS at a first walk value resets the count; every other verdict leaves it, so a stock re-check PASS never resets it"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L22.a"
+statement = "A step with no verdict is retried, then pauses"
+proof = "built"
+
+[[requirement]]
+id = "L22.c"
+statement = "The apparatus streak lives in memory, is reset by any verdict and is fresh at resume"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L22.d.percore"
+statement = "In Search the tested core goes to baseline before the retry"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L22.d.allcore"
+statement = "In all-core stage loops owned knobs go to baseline after an apparatus run"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L22.d.retry"
+statement = "The same spec is retried after Waiting(t, 0)"
+proof = "built"
+
+[[requirement]]
+id = "L22.G6_G7"
+statement = "At the 4th consecutive apparatus outcome: revert, store paused (Bisect head kept), P(APPARATUS) with the tool's last lines"
+proof = "built"
+
+[[requirement]]
+id = "L22.G5"
+statement = "A THERMAL during an apparatus retry goes to L20 with the apparatus streak unchanged"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L22.h"
+statement = "In Search the owed retry is stored with the round position, so the resume re-picks that core first"
+proof = "built"
+
+[[requirement]]
+id = "L23.a"
+statement = "On any database error every owned knob goes to stock without the journal and the session stops"
+proof = "built"
+
+[[requirement]]
+id = "L23.b"
+statement = "Any commit, journal, test-row, sample or event write raising sqlite3.Error enters L23"
+proof = "built"
+
+[[requirement]]
+id = "L23.c"
+statement = "The failure is latched in memory and reset at start, resume and validate"
+proof = "built"
+
+[[requirement]]
+id = "L23.d"
+statement = "StopWorker, write and fsync the stock marker, RevertAll(stock, no journal) on owned knobs, AwaitWorker, P(DATABASE) in memory only"
+proof = "built"
+
+[[requirement]]
+id = "L23.G1_G7"
+statement = "Late reports after the failure are dropped by their token"
+proof = "built"
+
+[[requirement]]
+id = "L23.G9"
+statement = "Abort after a database failure tries to store aborted; if that fails, ABORTED in memory, not saved"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L23.G10"
+statement = "A refused stock write is named as not reverted; RevertAll never fails as an effect"
+proof = "built"
+
+[[requirement]]
+id = "L23.G11_G13"
+statement = "A second database failure and an internal error leave P(DATABASE)"
+proof = "built"
+
+[[requirement]]
+id = "L23.resume"
+statement = "Resume after a database failure resets the latch and re-attributes from the stored row, never twice"
+proof = "built"
+
+[[requirement]]
+id = "L23.h"
+statement = "In the same boot the stock marker makes L18 take the stock reads as the tool's own revert"
+proof = "built"
+
+[[requirement]]
+id = "L24.a"
+statement = "At resume anything that can change a verdict and differs from the start pauses the session, offering Continue or Restart"
+proof = "built"
+
+[[requirement]]
+id = "L24.b"
+statement = "The comparison also runs at ValidateProfile"
+proof = "built"
+
+[[requirement]]
+id = "L24.c.keys"
+statement = "The pausing keys are the setup facts (app, bios, kernel, microcode, pbo, ryzen_smu, smu_firmware) plus one topology key"
+proof = "built"
+
+[[requirement]]
+id = "L24.c.shaper"
+statement = "curve_shaper is a pausing setup key"
+proof = "not built"
+task = "S0"
+
+[[requirement]]
+id = "L24.c.backends"
+statement = "The backends' version pins are pausing setup keys"
+proof = "not built"
+task = "T31"
+
+[[requirement]]
+id = "L24.d.pause"
+statement = "A change with no choice reverts to baseline, stores paused, announces each change and pauses P(SETUP_CHANGED)"
+proof = "built"
+
+[[requirement]]
+id = "L24.d.continue"
+statement = "Continue seeds a child from the parent under the current setup and supersedes the parent"
+proof = "built"
+
+[[requirement]]
+id = "L24.d.restart"
+statement = "Restart passes Start's gates on the stored config and starts a new session, superseding the parent"
+proof = "built"
+
+[[requirement]]
+id = "L24.d.refuse"
+statement = "A choice with no verdict-changing difference is refused"
+proof = "built"
+
+[[requirement]]
+id = "L24.d.nochange"
+statement = "With no change event lines are written and L18 continues"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L24.G11"
+statement = "A failed supersede or new-session write enters L23 and leaves the parent paused"
+proof = "built"
+
+[[requirement]]
+id = "L24.g"
+statement = "The child's setup equals the current setup, so its comparison is equal and nothing loops"
+proof = "built"
+
+[[requirement]]
+id = "L25.a"
+statement = "The stage engine shapes the load inside one run and never writes a knob"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L25.d.sample"
+statement = "Every 100 ms tick samples each core's clock, Tctl, Tccd per CCD and the voltages into the telemetry"
+proof = "built"
+
+[[requirement]]
+id = "L25.d.power"
+statement = "Each sample carries the pm_table power"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L25.d.hold"
+statement = "The hot hold freezes at the hot mark and thaws below the cool mark"
+proof = "built"
+
+[[requirement]]
+id = "L25.d.warm"
+statement = "WARM restarts y-cruncher with only the next test at each 60 s slice and holds above 65 C to below 55 C"
+proof = "built"
+
+[[requirement]]
+id = "L25.d.burst"
+statement = "BURST restarts at a random test with a random draw and alternates run and freeze"
+proof = "built"
+
+[[requirement]]
+id = "L25.d.idle"
+statement = "IDLE alternates frozen 15-40 s and awake 100-400 ms"
+proof = "built"
+
+[[requirement]]
+id = "L25.d.restart"
+statement = "Never restart over an error: a segment that fails ends the stage"
+proof = "built"
+
+[[requirement]]
+id = "L25.d.watchdog"
+statement = "The stall watchdog counts thawed time only; the deadline extends by held time under a hold cap"
+proof = "built"
+
+[[requirement]]
+id = "L25.e"
+statement = "The engine reports PASS, COMPUTATION, CPU_SIGNAL, UNEXPLAINED (no error text), NOT_STARTED, STALL, OUTSIDE_KILL, THERMAL, the MCE classes, UNVERIFIED, CUT_SHORT and DID_NOT_STOP"
+proof = "built"
+
+[[requirement]]
+id = "L25.f"
+statement = "A run ends at the deadline, at the first signal on any lane, or at a stop"
+proof = "built"
+
+[[requirement]]
+id = "L25.g"
+statement = "A run lasts at most its stage length plus K20; 8 WARM slices; BURST restarts every 40-80 s"
+proof = "built"
+
+[[requirement]]
+id = "L25.h"
+statement = "The durable telemetry tail survives a crash and is the failure context for L18's flow rule"
+proof = "built"
+
+[[requirement]]
+id = "L26.a"
+statement = "The round picker gives one visit per owned core per round, repeat on FAIL and the 15 s wait between different cores"
+proof = "built"
+
+[[requirement]]
+id = "L26.c.method"
+statement = "The method and seed are stored with the session; order_problem runs on the stored method at Start, Resume and Validate with no fallback"
+proof = "built"
+
+[[requirement]]
+id = "L26.c.position"
+statement = "The class, round number and round position survive a resume"
+proof = "built"
+
+[[requirement]]
+id = "L26.d.done"
+statement = "When every owned core of the class is proven the class ends at once and the rest of the round is not run"
+proof = "built"
+
+[[requirement]]
+id = "L26.d.repeat"
+statement = "After a FAIL or a conviction the same core is picked again at once at its new value"
+proof = "built"
+
+[[requirement]]
+id = "L26.d.next"
+statement = "Otherwise the next round position; a finished round raises the round number and rebuilds the sequence, random from seed, class and round"
+proof = "built"
+
+[[requirement]]
+id = "L26.d.recheck"
+statement = "A proven core's visit is a re-check at its proven value; a FAIL there reopens it"
+proof = "built"
+
+[[requirement]]
+id = "L27.a"
+statement = "A repeating, unblamed, corrected machine check in single-core tests becomes 1-step evidence against the tested core"
+proof = "built"
+
+[[requirement]]
+id = "L27.c"
+statement = "Counts are kept per (core, value) with the set of cores that logged one, stored with the session"
+proof = "built"
+
+[[requirement]]
+id = "L27.d"
+statement = "Two records at the same (c, v) with no other core: evidence, the loop's G2 rule at v; otherwise an L22 retry"
+proof = "built"
+
+[[requirement]]
+id = "L27.e.uncorrected"
+statement = "An uncorrected record or kernel trouble is not counted"
+proof = "built"
+
+[[requirement]]
+id = "L27.e.reset"
+statement = "A class change (a LIVE1 pass is its own class) resets the counters"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "L28.a"
+statement = "AutoResume resumes at app start without a click when safe; off by default"
+proof = "built"
+
+[[requirement]]
+id = "L28.d"
+statement = "It resumes exactly one interrupted session with no driver or test running, else waits 60 s and tries again, up to 3 tries"
+proof = "built"
+
+[[requirement]]
+id = "L28.d.modal"
+statement = "AutoResume waits while a modal dialog is open or the app is closing"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L29.a"
+statement = "A worker is stopped within a bound and a thread is never terminated"
+proof = "built"
+
+[[requirement]]
+id = "L29.d"
+statement = "SIGTERM every lane, 3 s grace, SIGKILL and stop the scope, 2 s kill wait"
+proof = "built"
+
+[[requirement]]
+id = "L29.d.log"
+statement = "AwaitWorker returns at the bound plus a margin, logs, and keeps the reference"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "L29.e"
+statement = "A late report is dropped by its token"
+proof = "built"
+
+[[requirement]]
+id = "L30.a"
+statement = "Validate Profile re-proves a completed session's values"
+proof = "built"
+
+[[requirement]]
+id = "L30.b.crash"
+statement = "Validate is refused when the boot the session completed in crashed with unproven values held"
+proof = "built"
+
+[[requirement]]
+id = "L30.b.order"
+statement = "Validate runs order_problem on the stored method with no fallback"
+proof = "built"
+
+[[requirement]]
+id = "L30.b.setup"
+statement = "Validate checks the setup and pauses SETUP_CHANGED on a change"
+proof = "built"
+
+[[requirement]]
+id = "L30.d.co"
+statement = "The CO-only validation plan is LIVE1, ENDURANCE if on, MEMORY, SOAK, FINALIZE"
+proof = "built"
+
+[[requirement]]
+id = "L30.d.shaper"
+statement = "The Shaper only and Both validation plans start at CONFIRM"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "L30.e"
+statement = "Abort with no value changed returns to completed; abort after a back-off ends aborted"
+proof = "built"
+
+[[requirement]]
+id = "L31.b"
+statement = "The prechecks run at every ContinuationDue before StartWorker; the CO is read over the core map and compared only at stage entry"
+proof = "built"
+
+[[requirement]]
+id = "L31.1"
+statement = "A grown sleep gap forgets the resident cache so every knob is rewritten"
+proof = "built"
+
+[[requirement]]
+id = "L31.2"
+statement = "A frequency cap or boost off does not pause"
+proof = "built"
+
+[[requirement]]
+id = "L31.2a"
+statement = "A power state differing from Start's pauses P(SETUP_CHANGED) naming what changed"
+proof = "built"
+
+[[requirement]]
+id = "L31.3"
+statement = "In CO only, where base_shaper is not none, each test reads 0x84 with the band self-check and pauses OUTSIDE_WRITE on a difference, SMU_READ on a failed read"
+proof = "not built"
+task = "S1"
+
+[[requirement]]
+id = "L31.4"
+statement = "At stage entry every held CO must equal base_co and every owned CO the cache, else P(OUTSIDE_WRITE); a failed read P(SMU_READ)"
+proof = "built"
+
+[[requirement]]
+id = "L31.5"
+statement = "A value to test at or past FB or outside the range pauses P(INTERNAL) instead of running"
+proof = "built"
+
+[[requirement]]
+id = "PLAN.co"
+statement = "The CO-only plan: L01, Search 1T, 2T when every owned core has two CPUs, LIVE1, STEADY with Bisect, TRANSIENT, TIGHTEN (never in the dirty pass), ENDURANCE if on, MEMORY if on and it fits, SOAK if on and clean, FINALIZE (dirty goes back to LIVE1)"
+proof = "built"
+
+[[requirement]]
+id = "PLAN.shaper"
+statement = "The Curve Shaper only plan: L01, BASECHECK, PROBE, STEADY (cell rule), TRANSIENT, TIGHTEN, CONFIRM, ENDURANCE, SOAK, FINALIZE (dirty to CONFIRM)"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "PLAN.both"
+statement = "The Both plan: L01, BASECHECK (per-core 0), PROBE, Search 1T, 2T, STEADY (cell rule, Q6 fallback), TRANSIENT, TIGHTEN, CONFIRM, ENDURANCE, MEMORY, SOAK, FINALIZE (dirty to CONFIRM)"
+proof = "not built"
+task = "S4"
+
+[[requirement]]
+id = "PLAN.r3"
+statement = "The optional R3-class tier (Prime95 SSE Huge, 1T, restart per core) is listed in every mode, off by default"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "EVENTS.user.abort_stored"
+statement = "Abort of a stored session from idle (CLI abort N) attributes its crash (SM C8), then stores it aborted"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "EVENTS.user.resume_running"
+statement = "Resume while running is refused"
+proof = "built"
+
+[[requirement]]
+id = "EVENTS.user.validate_held"
+statement = "Validate Profile while a session is held is refused"
+proof = "built"
+
+[[requirement]]
+id = "EVENTS.user.dbfailed_start"
+statement = "Start while a session is held after a database failure is refused"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "EVENTS.user.superseded"
+statement = "Resume and Validate of a superseded session are refused"
+proof = "built"
+
+[[requirement]]
+id = "EVENTS.machine.tokens"
+statement = "Stale ContinuationDue, WorkerReported and cooldown events are dropped by their token"
+proof = "built"
+
+[[requirement]]
+id = "EVENTS.machine.paused_smu"
+statement = "An SMU refusal arriving in a pause is a no-op"
+proof = "built"
+
+[[requirement]]
+id = "EVENTS.machine.paused_internal"
+statement = "An internal error in a pause replaces the reason with INTERNAL"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "RESIDENCY"
+statement = "Every PAUSED state has owned knobs at baseline; DATABASE holds them at stock with no journal; QUARANTINED at stock journaled; RESUMING writes nothing before C8"
+proof = "built"
+
+[[requirement]]
+id = "U3"
+statement = "Q5's window for no record in another core's test"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U4"
+statement = "Q5 in Bisect and AllCore"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U6"
+statement = "Minimum and base-0 cells unmovable, so BBP's Minimum dependence cannot be fixed"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U10"
+statement = "PROBE writes mid-load: one worker per load with ProbeDone steps"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U11"
+statement = "The 1T lane freeze interval"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U12"
+statement = "Load floor and stall watchdog while frozen count thawed time only"
+proof = "built"
+
+[[requirement]]
+id = "U13"
+statement = "y-cruncher hang rule"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "U15"
+statement = "After a Bisect culprit: continue the tree or re-run the parent"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U16"
+statement = "Bisect (c) tie between equal-size groups"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U18"
+statement = "The Q4 hint source: the newest completed session with the same setup and the same Search-time shaper table"
+proof = "not built"
+task = "T25"
+
+[[requirement]]
+id = "U19"
+statement = "F2 crash suspects for shaper bands"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U22"
+statement = "A Pause during a 480-510 s AllCore stage waits for its end"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U24"
+statement = "Validate Profile plan in the new modes"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U25"
+statement = "The stage hot hold against the ThermalWatch limit"
+proof = "built"
+
+[[requirement]]
+id = "U27"
+statement = "Detecting an outside write to an owned knob"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U28"
+statement = "New pause reasons OUTSIDE_WRITE and HELD_KNOB"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U29"
+statement = "Shaper stock in quarantine and on a database failure"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U31"
+statement = "The first test from a hint is h itself"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U32"
+statement = "Coarse step past max_offset: fine walk toward max"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U33"
+statement = "First coarse FAIL with no pass: fine walk -1..-4"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U35"
+statement = "A per-phase cap on fixes below R"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U36"
+statement = "Q7 acknowledgement on the CLI with no terminal"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U37"
+statement = "The known fail bound in the Q7 acknowledgement"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U38"
+statement = "Evidence at stock: live Search vs clean-end warning"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U39"
+statement = "After Search a conviction backs off in place with no re-proof"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U41"
+statement = "CO-only transient candidates and the Shaper-only core-candidate pause"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U42"
+statement = "The Both stacking fix fallback"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U43"
+statement = "AutoResume tries"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U44"
+statement = "tCores seed and core priority on other CPUs"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U45"
+statement = "ENDURANCE default in CO only"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U46"
+statement = "Pause reason when a clock off the measured model has no band"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U47"
+statement = "After a voided probe load: re-run or move on"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U48"
+statement = "The MEMORY Bisect slot spec"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U49"
+statement = "Probe partial-load core counts that are not whole"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U50"
+statement = "An uncorrected record at a dirty end naming an unselected, held core in CO only"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U51"
+statement = "A failed hint at -1, where -1 is not inside FB, ends PROVEN at 0 with no best"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U52"
+statement = "The solo requeue slot after MEMORY or SOAK back-offs in Both"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U53"
+statement = "P(RESUMING) is the resume pass, not a resting pause, ending in baselines or a pause at baseline"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U54"
+statement = "tClean when a CO second pass re-runs TRANSIENT"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "U55"
+statement = "When L18 deletes the stock marker"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.SM_E1"
+statement = "The breaker is removed"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.SM_E2"
+statement = "After Search a back-off is in place"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.SM_E3"
+statement = "A FAIL at 0 with another value non-zero retests the core alone"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.SM_E4"
+statement = "Close pauses the session"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.SM_E5"
+statement = "An owned baseline is 0 unless inherit_current"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.SM_E6"
+statement = "Validate reuses the same row; abort with no change returns to completed"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.order_card"
+statement = "The cycling methods and the tail rule of part 8"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.thermal_veto"
+statement = "A thermal give-up pauses"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.TSM_D8_1"
+statement = "CLOCK_STRETCH is not produced"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.TSM_D8_2"
+statement = "The 300 s cooldown cap gives up"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.FOR_OWNER_E6"
+statement = "Direction -1 only"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.F12_V4"
+statement = "F12-V4 card"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.TM_R10_4"
+statement = "MEMORY on when it fits"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "OWNER.D53"
+statement = "An unknown model uses the lowest known Tjmax"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "H1"
+statement = "SmuRefused fires only if the driver reports a refusal"
+proof = "open"
+task = "T32"
+
+[[requirement]]
+id = "H4"
+statement = "The crash penalty of 3 steps"
+proof = "open"
+task = "T32"
+
+[[requirement]]
+id = "H5.w"
+statement = "One shaper band written, read back and restored"
+proof = "not built"
+task = "S1"
+
+[[requirement]]
+id = "H5.p"
+statement = "A shaper write does not survive a reboot or s2idle"
+proof = "not built"
+task = "S1"
+
+[[requirement]]
+id = "H5.c"
+statement = "One shaper write affects both CCDs"
+proof = "not built"
+task = "S1"
+
+[[requirement]]
+id = "H9"
+statement = "The worker stop bound"
+proof = "open"
+task = "T32"
+
+[[requirement]]
+id = "H10"
+statement = "Journal markers"
+proof = "open"
+task = "T32"
+
+[[requirement]]
+id = "H11"
+statement = "Lanes (cpuset containment)"
+proof = "open"
+task = "T32"
+
+[[requirement]]
+id = "H15"
+statement = "Sensors and jitter"
+proof = "open"
+task = "T32"
+
+[[requirement]]
+id = "H16"
+statement = "CO write encoding"
+proof = "open"
+task = "T32"
+
+[[requirement]]
+id = "H28"
+statement = "The per-CPU clock source"
+proof = "open"
+task = "T32"
+
+[[requirement]]
+id = "H29"
+statement = "Lane freeze"
+proof = "built"
+
+[[requirement]]
+id = "H30"
+statement = "y-cruncher per-core memory"
+proof = "open"
+task = "T32"
+
+[[requirement]]
+id = "H31"
+statement = "mprime threads after the R10-7 fix"
+proof = "open"
+task = "T32"
+
+[[requirement]]
+id = "INTERRUPT.bisect_clock"
+statement = "A Bisect from a caller resets the caller's clock (tClean or endClean to 0) and returns to the caller's stage"
+proof = "built"
+
+[[requirement]]
+id = "INTERRUPT.fifo"
+statement = "Events are drained FIFO one at a time; no transition runs inside another"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "NESTING"
+statement = "A sub-loop returns to its caller's stored cursor; L18 re-enters exactly the stored loop"
+proof = "built"
+
+[[requirement]]
+id = "WRITER.owned"
+statement = "Owned per-core CO is written only by the engine's WriteCO and RevertAll effects, never by the worker; one CO writer per machine"
+proof = "built"
+
+[[requirement]]
+id = "WRITER.set_all"
+statement = "The tuner never issues set_all_co"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "WRITER.held"
+statement = "Held per-core CO is written by nobody; a change is OUTSIDE_WRITE"
+proof = "built"
+
+[[requirement]]
+id = "WRITER.cells"
+statement = "Owned shaper cells are written only by WriteShaper; the Curve Shaper tab is locked"
+proof = "not built"
+task = "S2"
+
+[[requirement]]
+id = "WRITER.held_shaper"
+statement = "The held shaper in CO only is never written; a change is OUTSIDE_WRITE"
+proof = "not built"
+task = "S1"
+
+[[requirement]]
+id = "ORDER.where"
+statement = "The order decides Search rounds (L04, L05), fresh 2T rounds and the one LIVE1 pass in the round-0 sequence of class live1; other loops run all selected CPUs or their own order"
+proof = "built"
+
+[[requirement]]
+id = "ORDER.round"
+statement = "A class runs in rounds visiting every owned core once in the method's sequence, proven cores included, until every core is proven"
+proof = "built"
+
+[[requirement]]
+id = "ORDER.single"
+statement = "One owned core runs back to back and Start names it as not interleaved"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "ORDER.retries"
+statement = "Apparatus and thermal retries re-run the same step and do not move the round"
+proof = "built"
+
+[[requirement]]
+id = "ORDER.alternate"
+statement = "alternate: first core of each domain in domain order, then the second; an exhausted domain drops out; default on two or more domains; refused on fewer or an unknown domain"
+proof = "built"
+
+[[requirement]]
+id = "ORDER.sequential"
+statement = "sequential: ascending core id; the default on one domain; never refused"
+proof = "built"
+
+[[requirement]]
+id = "ORDER.random"
+statement = "random: a shuffle drawn from the session seed, the class and the round number; never the default"
+proof = "built"
+
+[[requirement]]
+id = "ORDER.domain"
+statement = "A domain is the L3 group; domains ordered by lowest selected id; ids compared by rank"
+proof = "built"
+
+[[requirement]]
+id = "ORDER.seed"
+statement = "The seed is drawn once at Start and stored with the session"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "ORDER.refuse"
+statement = "A stored method the CPU cannot run refuses with the way out to abort and start a new session"
+proof = "built"
+
+[[requirement]]
+id = "ORDER.resume"
+statement = "At resume the round position comes back; a last test with no verdict re-picks its core; random rebuilds the same sequence"
+proof = "built"
+
+[[requirement]]
+id = "D2"
+statement = "Every RevertAll, baseline or stock, journaled or not, touches owned knobs only; held knobs are never written"
+proof = "built"
+
+[[requirement]]
+id = "D3"
+statement = "CO only owns exactly the selected cores' CO; unselected cores are held; every all, random or spread CPU set means the selected CPUs"
+proof = "built"
+
+[[requirement]]
+id = "D3.select_all"
+statement = "Shaper only and Both require every core selected"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D4"
+statement = "base_shaper is read with the band self-check in every mode where the generation has the shaper ids, and Start refuses if that read fails; elsewhere every shaper read is skipped"
+proof = "not built"
+task = "S0"
+
+[[requirement]]
+id = "D5"
+statement = "Every PAUSED state has owned knobs at baseline; every entry into PAUSED, L18's early branches included, reverts first"
+proof = "built"
+
+[[requirement]]
+id = "D6"
+statement = "Where a worker may be alive the order is StopWorker, RevertAll, AwaitWorker(K20), then the commit"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "D7"
+statement = "A failed 0xD5 read is P(SMU_READ) naming the read, never OUTSIDE_WRITE or SETUP_CHANGED"
+proof = "built"
+
+[[requirement]]
+id = "D7.shaper"
+statement = "A failed 0x84 read or band self-check is P(SMU_READ)"
+proof = "not built"
+task = "S0"
+
+[[requirement]]
+id = "D8"
+statement = "Probe step s = min(10, -(base + k)); cells at 0, Minimum and base-0 cells skipped"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D9"
+statement = "A BASECHECK step is min(K38 step, the cell's room); L10 g counts what landed"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D10"
+statement = "A probe failure or crash voids the load, restores base + k, marks the cell crash at +s, loosens nothing; probe-window rows are never suspects or FB setters"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D11"
+statement = "The Bisect-head conviction and every flow-rule verdict apply only when in_test was set at the dirty end; with in_test clear a dirty end is an incident only if running"
+proof = "built"
+
+[[requirement]]
+id = "D12"
+statement = "A Bisect group's own slot rows are not crash suspects; a crash in a group slot is that group's FAIL and the queue continues with V unchanged"
+proof = "built"
+
+[[requirement]]
+id = "D13"
+statement = "Only an unblamed uncorrected record sits inside the dirty end after the core-bank conviction and before the Bisect head, in-test, suspect and flow rules"
+proof = "built"
+
+[[requirement]]
+id = "D14"
+statement = "In Shaper only an uncorrected core-bank record naming a held core is evidence plus P(HELD_KNOB)"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D15"
+statement = "L18 step 7 pauses P(INCIDENTS) only when this pass's incident reached K19"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "D16"
+statement = "The flow rule per loop: all-core stages a FAIL of kind crash, a Bisect group its FAIL, LIVE1 Bisect over the live cores, MEMORY Bisect with its slot, SOAK an incident; a flow-rule FAIL raises the streak, a void or incident does not"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "D16.shaper"
+statement = "The flow rule for BASECHECK, TIGHTEN HOT-T items, CONFIRM and PROBE (void)"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D17"
+statement = "Before L23's unjournaled stock write a fsynced stock marker names the boot; L18 accepts stock reads in that boot as its own revert and deletes the marker after C8"
+proof = "built"
+
+[[requirement]]
+id = "D18"
+statement = "At 0, G2 and G3 set no FB; with no other non-zero owned value the first FAIL at 0 is P(STOCK_UNSTABLE); the solo retest runs only while another value is non-zero; MEMORY's solo retest is one LIVE1 slot"
+proof = "built"
+
+[[requirement]]
+id = "D19"
+statement = "Entering TIGHTEN and picking each item set tClean, tIdx and sRetry to 0"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "D20"
+statement = "A failed hint sets s to 0, then the from-0 rule applies"
+proof = "built"
+
+[[requirement]]
+id = "D21"
+statement = "The cooldown temperature event is dropped by its token outside a matching Waiting(cool)"
+proof = "built"
+
+[[requirement]]
+id = "D22"
+statement = "A THERMAL in PAUSING adds 1 to the thermal streak and gives P(THERMAL) past 3"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "D23"
+statement = "In TIGHTEN a conviction of another core voids the item test, which repeats"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "D24"
+statement = "Every backward move is bounded by the pair (R, incidents); TIGHTEN raises R once"
+proof = "built"
+
+[[requirement]]
+id = "D25"
+statement = "An owed retry is stored with the round position; a Search resume re-picks that core first"
+proof = "built"
+
+[[requirement]]
+id = "D26"
+statement = "A Pause during an L20 cooldown takes the global L19 rule"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "D28"
+statement = "K27 as v5i: draws, first restart 60 s, first switch 3 s, then 1 or 2 s"
+proof = "built"
+
+[[requirement]]
+id = "D29"
+statement = "K36 counts recurrence and rotation per type key, light one key; kinds by share; ties least loosened then lowest id"
+proof = "built"
+
+[[requirement]]
+id = "D30"
+statement = "TIGHTEN freezes an item at its floor or when one step tighter is at or past FB; a step onto the floor is tested"
+proof = "built"
+
+[[requirement]]
+id = "D31"
+statement = "Every per-core item, Q6 items included, uses the K32 window"
+proof = "built"
+
+[[requirement]]
+id = "D31.hott"
+statement = "Only 90C cells use HOT-T; an unconvicted crash in a HOT-T test becomes G2 by its context, then the retry rule"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D32"
+statement = "Bisect (c) re-runs the parent group's slot after the +1; a FAIL gives another +1; a PASS returns to the entry loop"
+proof = "built"
+
+[[requirement]]
+id = "D34"
+statement = "Owned knobs go to baseline after every AllCore stage run and the next run writes its vector right before its load"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "D35"
+statement = "Plan per mode: CO only has no CONFIRM; Both has no LIVE1; Shaper only has no MEMORY"
+proof = "built"
+
+[[requirement]]
+id = "D35.r3"
+statement = "The optional R3-class tier is listed off by default and blocked by R10-7"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "D36"
+statement = "The 1T class uses the lane freeze as the record ran it"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "D37"
+statement = "The 15 s wait runs before a test of a different core than the last; an immediate repeat runs with no wait"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "D38"
+statement = "L04's crash rule: v + 3 toward 0, never across 0, kept even when deeper than best"
+proof = "built"
+
+[[requirement]]
+id = "D39"
+statement = "The steady rule tries only the top 90C cell and goes transient without room; a crash within 2 s of a test's end also counts the next test's cells"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D40.2t"
+statement = "The 2T start is the 1T value"
+proof = "built"
+
+[[requirement]]
+id = "D40.slot"
+statement = "The Bisect slot is 20 s per test"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "D40.ccd"
+statement = "One CCD splits by index"
+proof = "built"
+
+[[requirement]]
+id = "D40.basecheck"
+statement = "BASECHECK uses the steady rule with its no-probe fallback"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D40.both"
+statement = "The stacking fix in Both is the cell rule"
+proof = "not built"
+task = "S4"
+
+[[requirement]]
+id = "D40.k48"
+statement = "K48 is listed for reference and no loop reads it"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "D41"
+statement = "The 1T lane runs on the core's first CPU, except core 0, which runs on its second"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "D42"
+statement = "UNEXPLAINED stays apparatus"
+proof = "built"
+
+[[requirement]]
+id = "D43"
+statement = "Q5 applies in LIVE1"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "D44"
+statement = "The dirty pass starts at LIVE1 in CO only; entering it clears dirty; the redirect re-enters there; a second pass never runs TIGHTEN"
+proof = "built"
+
+[[requirement]]
+id = "D44.confirm"
+statement = "The dirty pass starts at CONFIRM in Shaper only and Both"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D45"
+statement = "Domains are counted over the selected cores; an unknown L3 group refuses alternate and makes Bisect split by index"
+proof = "built"
+
+[[requirement]]
+id = "D46"
+statement = "Bisect halves a multi-CCD group by its sorted CCD list, then by index inside one CCD"
+proof = "built"
+
+[[requirement]]
+id = "D46.probe"
+statement = "Probe partial loads run at a quarter and a half of the selected cores over the domains; a duplicate load is dropped"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D47"
+statement = "A named core's CCD gives the band clock and the controlling delta; else the CCD with the strongest probe delta"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D48"
+statement = "The CO reads in L31 and L18 run over the core map"
+proof = "built"
+
+[[requirement]]
+id = "D49"
+statement = "A setup key holds the online CPU list, each core's siblings and its L3 group"
+proof = "built"
+
+[[requirement]]
+id = "D50"
+statement = "SMT off or one online CPU: the 1T lane runs on the only CPU; L06 runs only with two CPUs per owned core, else skipped with the reason named"
+proof = "built"
+
+[[requirement]]
+id = "D51"
+statement = "The 2T class names its binary (19-ZN2 Kagari) explicitly"
+proof = "built"
+
+[[requirement]]
+id = "D51.capability"
+statement = "Capability checks the binary exists and the CPU has its ISA; Start refuses the 2T class, naming it, when either is missing"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "D52"
+statement = "The K36 band borders apply only on the measured model; elsewhere the probe map gives the band and an unmapped clock pauses"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D53"
+statement = "The thermal limit is the smaller of the config value and the model's Tjmax; an unknown model uses the lowest known Tjmax; L20 cools to limit - 5 C"
+proof = "built"
+
+[[requirement]]
+id = "D54"
+statement = "A positive BIOS CO is named in the acknowledgement; under inherit_current K45's upper bound is max(0, base); a change against the newest session's base_co is acknowledged even when all 0"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "D55"
+statement = "Part 8 holds the cycling methods: the round model, alternate, sequential, random, resume"
+proof = "built"
+
+[[requirement]]
+id = "D57"
+statement = "In every all-core stage a FAIL naming cores backs each named owned core below 0 off 1 in place with FB, dirty, tClean 0, the same load again, no Bisect; in TIGHTEN a FAIL naming the item's own core freezes it; a named core at 0 leaves the FAIL to the stage rule; a named core not owned is P(HELD_KNOB)"
+proof = "built"
+
+[[requirement]]
+id = "D58"
+statement = "A WARM slice counts run time; a hold not thawed within 300 s ends the run as THERMAL; frozen time past the deadline does not count"
+proof = "built"
+
+[[requirement]]
+id = "D63"
+statement = "Curve Shaper rule: a freeze or crash blamed on a cell +2, a calc error +1, capped at room; a recurring signature escalates to an A-B comparison; a targeted probe before any cell moves; two temperature points per load"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "D64"
+statement = "The failure context is built from facts: the segment's cores, the named core's own clock in the hottest running sample, else the working mean; a frozen load is light"
+proof = "built"
+
+[[requirement]]
+id = "D67"
+statement = "The new tuner has no hardening step (issue 18 dropped with the old engine)"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "D69"
+statement = "The power state (profile, EPP, governor, boost, scaling maximum) is recorded at Start and on every test row and compared before each test; a change pauses naming it"
+proof = "built"
+
+[[requirement]]
+id = "D70"
+statement = "A dead boot whose kernel log cannot be read is attributed without its records, recorded as a session event and named in the resume announcement"
+proof = "built"
+
+[[requirement]]
+id = "D71"
+statement = "Sampling every 100 ms in every stage, IDLE included; the failure context reads the last 2 s (20 samples)"
+proof = "built"
+
+[[requirement]]
+id = "D72"
+statement = "Samples of a test that passed are pruned after 30 days; every test row and every sample of a non-passing test is kept; freed pages shrink by incremental vacuum"
+proof = "built"
+
+[[requirement]]
+id = "D73"
+statement = "A run that does not pass keeps a bounded output tail (about 64 KB) on its test row; its run directory is always removed"
+proof = "built"
+
+[[requirement]]
+id = "D77"
+statement = "Tuner samples are held in RAM and stored as one zstd level 19 JSON-lines block per test every 10 s and at the test's end; a durable tail only in the all-core stages, deleted by the transaction that writes its block"
+proof = "built"
+
+[[requirement]]
+id = "D77.layout"
+statement = "The sample layout is stored once on the test row and a sample holds values only"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "D78"
+statement = "Manual Stress runs hold their telemetry in RAM and write one block every 10 s and at the end of the run"
+proof = "built"
+
+[[requirement]]
+id = "D79"
+statement = "The GUI runs a session by starting the driver as its own process; closing or crashing the GUI never stops or strands a session"
+proof = "built"
+
+[[requirement]]
+id = "D80"
+statement = "The new tuner tab replaces the old Auto-Tuner tab and the old engine is deleted"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "D81"
+statement = "The tuner tab offers the curated settings up front and an Advanced section with every other setting, editable"
+proof = "built"
+
+[[requirement]]
+id = "D82"
+statement = "Start, Resume and Validate refuse a max_offset outside [co_min, -fine_step], naming the range"
+proof = "built"
+
+[[requirement]]
+id = "D83"
+statement = "A capped machine runs; every test row records its power state and each core's highest observed clock; per-session and per-range peaks are derived"
+proof = "built"
+
+[[requirement]]
+id = "D84"
+statement = "The SMU-holder gate checks every process by name and, where readable, for a ryzen_smu handle; unreadable processes are counted by name only as a warning"
+proof = "built"
+
+[[requirement]]
+id = "D85"
+statement = "Old-engine sessions are archived once to a self-describing JSON next to the database, the rows kept, History lists only machine sessions"
+proof = "built"
+
+[[requirement]]
+id = "D86"
+statement = "Validate on a changed setup or a moved held core pauses SETUP_CHANGED offering Continue or Restart; an unreadable CO or a moved power state still refuses"
+proof = "built"
+
+[[requirement]]
+id = "D87"
+statement = "The CO tab may write while a session is paused with no driver; the next resume pauses OUTSIDE_WRITE naming the core"
+proof = "built"
+
+[[requirement]]
+id = "D88"
+statement = "The all-core durable tail is written five samples at a time"
+proof = "built"
+
+[[requirement]]
+id = "D89"
+statement = "A payload thread reniced or rescheduled is a fault, retried then paused naming it; an enabled sched_ext is shown before Start; a stopped scheduling service is named at session end; the driver under idle or batch refuses"
+proof = "built"
+
+[[requirement]]
+id = "Q1"
+statement = "Both runs BASECHECK with per-core 0, then per-core 1T and 2T on that shaper, then all-core with every value live (Bisect, then loosen), TIGHTEN, CONFIRM, ENDURANCE"
+proof = "not built"
+task = "S4"
+
+[[requirement]]
+id = "Q2"
+statement = "A shaper cell moves only within [BIOS base, 0]; Minimum stays at its base"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "Q3"
+statement = "A per-core value is proven by k consecutive interleaved passes at its final value, k = 10 for 1T and 6 for 2T; a FAIL backs off 1 step and restarts the count"
+proof = "built"
+
+[[requirement]]
+id = "Q4"
+statement = "Search walks down from 0 with coarse 5 and fine 1, then the Q3 proof"
+proof = "built"
+
+[[requirement]]
+id = "Q4.hint"
+statement = "Search may start at a hint from the same setup and shaper"
+proof = "not built"
+task = "T25"
+
+[[requirement]]
+id = "Q5"
+statement = "In single-core tests an unblamed corrected record that recurs in 2 tests of the same core at the same value, and in no other core's test, is 1-step evidence against that core"
+proof = "built"
+
+[[requirement]]
+id = "Q6"
+statement = "CO-only stacking: +1 on every tuned core of the smallest failing group until it passes"
+proof = "built"
+
+[[requirement]]
+id = "Q6.tighten"
+statement = "After Q6 those cores are tightened back one at a time with only that core changed"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "Q7"
+statement = "Start asks once per session for an acknowledgement listing every core's BIOS value; all 0 asks nothing; an unreadable core refuses; positive values are shown"
+proof = "built"
+
+[[requirement]]
+id = "Q7.fb"
+statement = "The acknowledgement names any value past a known fail bound"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "Q8"
+statement = "In Curve Shaper only the per-core values are held, never written; a fix that points at a per-core value pauses naming the core"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "Q9"
+statement = "In CO only the 60-minute TRANSIENT window always runs after the all-core check; the 3-hour ENDURANCE is optional"
+proof = "built"
+
+[[requirement]]
+id = "TM.A1.co"
+statement = "Per-core CO runs only on a generation with CO and a verified core map; elsewhere the driver refuses"
+proof = "built"
+
+[[requirement]]
+id = "TM.A1.shaper"
+statement = "The Curve Shaper is offered only on Granite Ridge desktop names after H5w, H5p and H5c, never on Raphael or Shimada Peak"
+proof = "not built"
+task = "S0"
+
+[[requirement]]
+id = "TM.A2.x3d"
+statement = "On an X3D part the V-cache CCD is recorded and numbers are kept per CCD"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "TM.A3.co"
+statement = "Per-core CO detection: the driver loaded, the model routed, the generation has CO, the core map built, every core read as the base"
+proof = "built"
+
+[[requirement]]
+id = "TM.A3.shaper"
+statement = "Curve Shaper detection: the ids, 0x84 byte 0 equal to the band index, H5 proven for the model class, a base not all 0"
+proof = "not built"
+task = "S0"
+
+[[requirement]]
+id = "TM.A4.mode"
+statement = "A Tuning mode control with three items, an item the CPU cannot run greyed with its first missing proof"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "TM.A4.orders"
+statement = "CCD orders are greyed on one domain"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "TM.B1.co"
+statement = "CO only stops, aborts and closes with owned knobs at the session baseline and completes with the profile applied and its values shown"
+proof = "built"
+
+[[requirement]]
+id = "TM.B1.shaper_journal"
+statement = "A shaper journal: one row per band write with boot, mono, confirmed, survived, retracted; all five words read back"
+proof = "not built"
+task = "S1"
+
+[[requirement]]
+id = "TM.I_M1"
+statement = "A session writes only its owned knobs; every other CO is re-read at stage entry and a change pauses OUTSIDE_WRITE"
+proof = "built"
+
+[[requirement]]
+id = "TM.I_M2"
+statement = "No CO write without a durable intent row; confirm after read-back"
+proof = "built"
+
+[[requirement]]
+id = "TM.I_M3"
+statement = "A CO write is read back; a mismatch takes the SmuRefused path"
+proof = "built"
+
+[[requirement]]
+id = "TM.I_M5"
+statement = "Before any write after a reboot the held knobs read their Start base, else SETUP_CHANGED; in the same boot a read equals the last confirmed write"
+proof = "built"
+
+[[requirement]]
+id = "TM.I_M7"
+statement = "Per-core evidence holds only for the shaper table it was found under; after Search a cell never goes tighter than its Search-time value"
+proof = "not built"
+task = "S4"
+
+[[requirement]]
+id = "TM.I_M8"
+statement = "CO stays in [max_offset, 0]"
+proof = "built"
+
+[[requirement]]
+id = "TM.I_M9"
+statement = "One session in flight"
+proof = "built"
+
+[[requirement]]
+id = "TM.E2.ccd"
+statement = "Tccd and clock are recorded per CCD"
+proof = "built"
+
+[[requirement]]
+id = "TM.E2.freeze"
+statement = "A lane is frozen through cgroup.freeze on its scope, SIGSTOP and SIGCONT to the group as the fallback"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "TM.E2.pstore"
+statement = "Crash evidence also reads /sys/fs/pstore"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "TM.E2.sync"
+statement = "The history database commits with synchronous=FULL"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "TM.F.preexec"
+statement = "The payload preexec sets SCHED_OTHER at nice 0 explicitly so the load is the same from the GUI, the CLI and ssh"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "TM.F.rtprio"
+statement = "Payloads run with RLIMIT_RTPRIO 0"
+proof = "built"
+
+[[requirement]]
+id = "TM.H.probe_map"
+statement = "A probe map table per fingerprint"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "TM.I1.11"
+statement = "No mprime stage runs before R10-7 is fixed"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "CR.1"
+statement = "The machine neither refuses nor pauses on a frequency cap or boost off; the power state stays recorded and compared per test"
+proof = "built"
+
+[[requirement]]
+id = "CR.2"
+statement = "Each test row records each core's highest sampled clock from the one sample store; an internal-error row records none"
+proof = "built"
+
+[[requirement]]
+id = "CR.2.merge"
+statement = "A merged database carries peaks_json"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "CR.3"
+statement = "Per-session and per-range peaks are derived, never stored twice; History shows Peak MHz and the range; the tab names the session's range"
+proof = "built"
+
+[[requirement]]
+id = "CR.later"
+statement = "Whether a profile proven in one range is offered in another"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "INT.1"
+statement = "The spawner's nice and policy are captured at launch; every payload thread's nice and policy is read from /proc, a vanished thread skipped alone"
+proof = "built"
+
+[[requirement]]
+id = "INT.2"
+statement = "Every 2 s watchdog look compares each payload thread with the launch; a change is a fault naming the process, the new nice and policy and the remedy, retried then paused"
+proof = "built"
+
+[[requirement]]
+id = "INT.3"
+statement = "Preflight drops the blanket ananicy warning and warns, naming the scheduler, when sched_ext is enabled"
+proof = "built"
+
+[[requirement]]
+id = "INT.4"
+statement = "Before Start an enabled sched_ext shows one dialog (Start anyway, Cancel); at a session's end an enabled but stopped scheduling service is named with its start command; a failed check is said"
+proof = "built"
+
+[[requirement]]
+id = "INT.mprime"
+statement = "The mprime backend keeps its torture threads at their starting nice (EnableSetPriority=0)"
+proof = "built"
+
+[[requirement]]
+id = "KC.1"
+statement = "After a reboot every held core's CO must equal its base, else P(SETUP_CHANGED); Continue and Restart accept it and the child takes the CO read now as its base"
+proof = "built"
+
+[[requirement]]
+id = "KC.2"
+statement = "In the same boot an owned core must read its last confirmed write and a held core its base, else P(OUTSIDE_WRITE) naming the core, the read and the expected value"
+proof = "built"
+
+[[requirement]]
+id = "KC.3"
+statement = "In the boot the stock marker names a stock read on an owned core is accepted"
+proof = "built"
+
+[[requirement]]
+id = "KC.4"
+statement = "A failed read is P(SMU_READ) naming the core"
+proof = "built"
+
+[[requirement]]
+id = "KC.5"
+statement = "base_co is stored with the session; a session stored without it does not load"
+proof = "built"
+
+[[requirement]]
+id = "KC.6"
+statement = "The rig reads every core's CO with the crash evidence before any write, with this boot's last confirmed values for the same boot"
+proof = "built"
+
+[[requirement]]
+id = "KC.7"
+statement = "At Validate an unreadable CO and a moved power state refuse; owned cores are not compared"
+proof = "built"
+
+[[requirement]]
+id = "KC.8"
+statement = "No test starts after an outside write to a held core while paused, without the pause"
+proof = "built"
+
+[[requirement]]
+id = "L24.l24a.keys"
+statement = "The setup is a flat map of key to string (app, bios, kernel with build id, microcode, pbo, ryzen_smu, smu_firmware, topology); an unreadable value records unreadable with its reason"
+proof = "built"
+
+[[requirement]]
+id = "L24.l24a.read"
+statement = "The rig reads the setup for Start, Resume and Validate; Start stores it"
+proof = "built"
+
+[[requirement]]
+id = "L24.l24a.compare"
+statement = "At Resume, after the attribution and before any write, a differing key (readable against unreadable included) pauses SETUP_CHANGED naming each key with its old and new value, every core at baseline"
+proof = "built"
+
+[[requirement]]
+id = "L24.l24a.old"
+statement = "A session stored before L24a has no setup and does not load"
+proof = "built"
+
+[[requirement]]
+id = "L24.l24b.events"
+statement = "Continue and Restart are valid only while paused SETUP_CHANGED with a setup or held base that still differs; a power-only change refuses them"
+proof = "built"
+
+[[requirement]]
+id = "L24.l24b.continue"
+statement = "Continue: the child is the parent's state under a new id and the setup now; it commits, clears the marker, writes the baseline and schedules"
+proof = "built"
+
+[[requirement]]
+id = "L24.l24b.restart"
+statement = "Restart: Start's gates on the parent's config, then a new session under the child id"
+proof = "built"
+
+[[requirement]]
+id = "L24.l24b.supersede"
+statement = "One transaction stores the superseded parent, the child linked with its origin and, for Continue, the parent's proven values as confirmed survived journal rows; a failed write is DATABASE with the parent paused"
+proof = "built"
+
+[[requirement]]
+id = "L24.l24b.terminal"
+statement = "superseded is terminal: Resume and Validate refuse it"
+proof = "built"
+
+[[requirement]]
+id = "L24.l24b.schema"
+statement = "tuner_sessions holds parent_session_id and origin; the merge remaps the parent"
+proof = "built"
+
+[[requirement]]
+id = "L24.l24b.cli"
+statement = "The driver takes --continue N and --restart N"
+proof = "built"
+
+[[requirement]]
+id = "L24.l24b.laws"
+statement = "A superseded session never runs a test; the child's first test runs on the setup now"
+proof = "built"
+
+[[requirement]]
+id = "ENTRY_READS.1"
+statement = "World.co_now carries every core's CO with each continuation; knobs_stage is runtime only, so the first test after a load reads again"
+proof = "built"
+
+[[requirement]]
+id = "ENTRY_READS.2"
+statement = "At stage entry no reads or an unread core is SMU_READ; a held core off base_co or an owned core off the resident cache is OUTSIDE_WRITE with the resume check's wording; an owned core with an unknown cache is not compared"
+proof = "built"
+
+[[requirement]]
+id = "ENTRY_READS.3"
+statement = "An outside write while running is caught at the next stage entry in the explorer"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "SC.1"
+statement = "A test row holds the sample layout once and a sample holds values only"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "SC.2"
+statement = "The rig keeps the current block's samples in RAM and writes one zstd level 19 JSON-lines block every 10 s and at the test's end"
+proof = "built"
+
+[[requirement]]
+id = "SC.3"
+statement = "In the all-core stages samples are also written as lean tail rows; the transaction that writes a block deletes its tail rows"
+proof = "built"
+
+[[requirement]]
+id = "SC.4"
+statement = "crash_context reads the open test's last block plus its tail rows"
+proof = "built"
+
+[[requirement]]
+id = "SC.4b"
+statement = "A resume after a crash packs the tail rows into a final block"
+proof = "not built"
+task = "T28"
+
+[[requirement]]
+id = "UI1.knobs"
+statement = "Every tab setting is built from KNOB_TEXT (group, label, unit, description); a MachineConfig field without an entry fails the tab's build; stored names unchanged"
+proof = "built"
+
+[[requirement]]
+id = "UI1.minutes"
+statement = "A duration of a minute or more also shows minutes or hours next to the unit, updated as the box changes"
+proof = "built"
+
+[[requirement]]
+id = "UI1.shown"
+statement = "Core order, max offset, temperature limit, memory, idle watch and endurance are shown up front; the rest in an Advanced section of four groups"
+proof = "built"
+
+[[requirement]]
+id = "UI1.bios"
+statement = "Start and Restart read every selected core's CO; non-zero values show one dialog listing them and Start passes --acknowledge; all 0 shows none"
+proof = "built"
+
+[[requirement]]
+id = "UI1.pause"
+statement = "The status line names the pause reason in words from one table keyed on PauseReason; a reason without a label fails the build"
+proof = "built"
+
+[[requirement]]
+id = "UI1.stage"
+statement = "The phase column and the test line use word labels from tables keyed on Phase and Stage"
+proof = "built"
+
+[[requirement]]
+id = "UI1.range"
+statement = "The range line reads the power state in words"
+proof = "built"
+
+[[requirement]]
+id = "UI2"
+statement = "The Curve Optimizer tab uses plain texts, no visible code names, and names a profile's source in its banner"
+proof = "built"
+
+[[requirement]]
+id = "UI3"
+statement = "Configuration presets come from one table whose description is built from its values; only the program's instruction sets and FFT sizes are offered; cores to test as checkboxes with retest of failed cores"
+proof = "built"
+
+[[requirement]]
+id = "UI4"
+statement = "History shows one Show selector with three views and counts; the sessions table, per-core table with Peak MHz and the detail log use the tab's names and word labels"
+proof = "built"
+
+[[requirement]]
+id = "E6.cli"
+statement = "cli.py tune and the session commands forward to the live driver, each session command taking its SESSION_ID first"
+proof = "built"
+
+[[requirement]]
+id = "E6.lock"
+statement = "One CO writer lock per machine (tuner.lock in the data directory); a second driver exits 7 naming it"
+proof = "built"
+
+[[requirement]]
+id = "E6.config"
+statement = "--config FILE or the shorthand flags, exclusive, with --start only; the flags default to nothing so MachineConfig holds the defaults"
+proof = "built"
+
+[[requirement]]
+id = "E6.exit"
+statement = "The driver maps the lifecycle at rest to its exit code (0, 3, 4, 6, 130; refusal and usage 5) and sends the desktop note"
+proof = "built"
+
+[[requirement]]
+id = "E6.B0"
+statement = "Start, Resume and Validate refuse a configuration outside its ranges: no or a repeated core, a knob under its floor, fine above coarse, an unknown CO range, max_offset outside, cool_min above cool_cap, stage_seconds not burst, warm and idle once each above 0"
+proof = "built"
+
+[[requirement]]
+id = "E6.B1"
+statement = "co_writer holds the lock with a pid and start-time record; running_driver never takes it; the CO tab takes it around each write and refuses while a driver holds it, controls staying locked"
+proof = "built"
+
+[[requirement]]
+id = "E6.B2.launch"
+statement = "The tab starts the driver as its own session (start_new_session), output to tuner/driver.log truncated per launch, PYTHONPATH from the GUI's sys.path"
+proof = "built"
+
+[[requirement]]
+id = "E6.B2.follow"
+statement = "The tab follows the newest machine session on the tick: driver, exit code, stored session, open test, events and a refusal's last driver line"
+proof = "built"
+
+[[requirement]]
+id = "E6.B2.controls"
+statement = "Pause is SIGUSR1, Stop SIGTERM, Abort SIGUSR2 behind a confirmation; Resume, Validate, Continue and Restart pass --session; Continue and Restart only after a setup_changed pause"
+proof = "built"
+
+[[requirement]]
+id = "E6.B2.close"
+statement = "Closing the GUI no longer stops the tuner or counts it as busy"
+proof = "built"
+
+[[requirement]]
+id = "E6.C"
+statement = "History lists machine sessions with their tests, events and boots, read-only"
+proof = "built"
+
+[[requirement]]
+id = "E7.A"
+statement = "The old-engine sessions and their four tables' rows are archived once to a self-describing JSON next to the database; a database without old rows or in memory writes nothing; a failure is reported and the rows stay"
+proof = "built"
+
+[[requirement]]
+id = "E7.A.drop"
+statement = "The old tables are dropped by a later migration only after the owner confirms the archive"
+proof = "open"
+task = "O7"
+
+[[requirement]]
+id = "E7.B"
+statement = "The old engine and everything only it used are deleted"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "E7.B.import"
+statement = "The driver imports without the engine loading PySide6"
+proof = "untested"
+task = "T29"
+
+[[requirement]]
+id = "SR.R1"
+statement = "The failure context's working cores are the segment's assigned cores and its band clock the named core's clock, else the assigned cores' mean"
+proof = "built"
+
+[[requirement]]
+id = "SR.R1.column"
+statement = "The column temperature is the named or assigned cores' CCD Tccd, never the maximum of all sensors"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "SR.R1.fields"
+statement = "The context carries the test, the time into the test, the time since the last thaw or restart and the kind"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "SR.R2"
+statement = "A crash's context is read from the durable telemetry tail"
+proof = "built"
+
+[[requirement]]
+id = "SR.R3"
+statement = "Every failure takes the cell with the strongest probe delta for the failing test at the context's band and temperature"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "SR.R4"
+statement = "A failure with no probe point gets a targeted probe before any cell moves"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "SR.R5"
+statement = "Step size by kind: a calc error +1, a freeze or crash +2, each capped at the cell's room"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "SR.R6"
+statement = "A recurring failure signature escalates to an A-B comparison of the candidate cells; no arm helping pauses naming the signature"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "SR.R7"
+statement = "In Shaper only a named core is the clock and CCD source, not a held-knob pause; in Both a per-core CO fix first"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "SR.R8"
+statement = "An offline acceptance replay checks that no pick contradicts a probe in the record"
+proof = "not built"
+task = "S3"
+
+[[requirement]]
+id = "SR.gates"
+statement = "No shaper write before H5w, H5p, H5c, the durable ring and a PBO stable under all-core load"
+proof = "not built"
+task = "S1"
+
+[[requirement]]
+id = "GUI.SIGNAL_QUIT"
+statement = "A stop signal schedules the GUI's quit on the event loop and never closes the window inside the slot it interrupted."
+proof = "built"
+
+[[requirement]]
+id = "TRUTH.TEMPERATURE_UNREAD"
+statement = "An unreadable required CPU temperature is an UNVERIFIED result, never a thermal verdict, and a thermal stop names the temperature it read."
+proof = "built"
+
+[[requirement]]
+id = "TRUTH.REVERT_RESULT"
+statement = "Every core a revert could not write back is named with its value and reason and stored as a revert_failed event; no text states that the cores reached their baseline."
+proof = "built"
+
+[[requirement]]
+id = "TRUTH.BOOT_END_UNREAD"
+statement = "A boot whose end cannot be read is treated as a crash and recorded as that assumption with its reason, before anything the attribution announces."
+proof = "built"

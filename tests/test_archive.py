@@ -17,6 +17,7 @@ def db(tmp_path):
     d.close()
 
 
+@pytest.mark.req("D85", "E7.A")
 def test_every_old_session_and_its_rows_are_archived_as_stored(db, tmp_path):
     first = seed_old_session(db, "completed", "hardened")
     second = seed_old_session(db, "quarantined", "fine_search")

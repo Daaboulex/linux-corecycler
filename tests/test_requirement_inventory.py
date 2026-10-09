@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from tests.requirement_inventory import BUILT, REQUIREMENTS, NotBuilt, Requirement, problems, scan
+from tests.requirement_inventory import REQUIREMENTS, Requirement, load, problems, scan
 
 TESTS = Path(__file__).parent
 
 
-def test_every_requirement_is_proven_or_listed_not_built_and_every_marker_is_listed():
+def test_every_requirement_is_proven_or_owed_under_a_task_and_every_marker_is_listed():
     markers, unreadable = scan(TESTS)
     assert problems(REQUIREMENTS, markers, unreadable) == []
 
@@ -17,26 +17,49 @@ def test_every_requirement_is_proven_or_listed_not_built_and_every_marker_is_lis
 @pytest.mark.parametrize(
     ("requirements", "markers", "expected"),
     [
-        ((Requirement("A.ONE", "does one thing.", BUILT),), {}, "A.ONE is listed built but no test carries its marker"),
         (
-            (Requirement("A.ONE", "does one thing.", NotBuilt("T9")),),
+            (Requirement("A.ONE", "does one thing.", "built"),),
+            {},
+            "A.ONE is listed built but no test carries its marker",
+        ),
+        (
+            (Requirement("A.ONE", "does one thing.", "not built", "T9"),),
             {"A.ONE": ("test_x.py::test_y",)},
             "A.ONE is listed not built (T9) but test_x.py::test_y prove it: mark it built",
         ),
+        (
+            (Requirement("A.ONE", "does one thing.", "untested", "T29"),),
+            {"A.ONE": ("test_x.py::test_y",)},
+            "A.ONE is listed untested (T29) but test_x.py::test_y prove it: mark it built",
+        ),
         ((), {"GONE.1": ("test_x.py::test_y",)}, "test_x.py::test_y name GONE.1, which the inventory does not list"),
         (
-            (Requirement("A.ONE", "does one thing.", NotBuilt("T9")), Requirement("A.ONE", "again.", NotBuilt("T9"))),
+            (
+                Requirement("A.ONE", "does one thing.", "open", "O7"),
+                Requirement("A.ONE", "again.", "open", "O7"),
+            ),
             {},
             "A.ONE is listed twice",
         ),
-        ((Requirement("A.ONE", "one\ntwo", NotBuilt("T9")),), {}, "A.ONE needs a one-line statement"),
+        ((Requirement("A.ONE", "one\ntwo", "open", "O7"),), {}, "A.ONE needs a one-line statement"),
         (
-            (Requirement("A.ONE", 'he said "go"', NotBuilt("T9")),),
+            (Requirement("A.ONE", 'he said "go"', "open", "O7"),),
             {},
             "A.ONE quotes someone; a statement is technical only",
         ),
-        ((Requirement("A.ONE", "does one thing.", NotBuilt("later")),), {}, "which is not a task id"),
-        ((Requirement("a one", "does one thing.", NotBuilt("T9")),), {}, "'a one' is not a requirement id"),
+        ((Requirement("A.ONE", "does one thing.", "not built", "later"),), {}, "which is not a task id"),
+        (
+            (Requirement("A.ONE", "does one thing.", "open"),),
+            {},
+            "A.ONE is listed open under None, which is not a task id",
+        ),
+        ((Requirement("a one", "does one thing.", "open", "O7"),), {}, "'a one' is not a requirement id"),
+        ((Requirement("A.ONE", "does one thing.", "maybe", "O7"),), {}, "A.ONE has the proof 'maybe'"),
+        (
+            (Requirement("A.ONE", "does one thing.", "built", "T9"),),
+            {"A.ONE": ("test_x.py::test_y",)},
+            "A.ONE is built and still names the task T9",
+        ),
     ],
 )
 def test_the_gate_names_each_kind_of_drift(requirements, markers, expected):
@@ -44,8 +67,23 @@ def test_the_gate_names_each_kind_of_drift(requirements, markers, expected):
 
 
 def test_a_consistent_inventory_has_no_problem():
-    requirements = (Requirement("A.ONE", "does one thing.", BUILT), Requirement("A.TWO", "not yet.", NotBuilt("S0")))
+    requirements = (
+        Requirement("A.ONE", "does one thing.", "built"),
+        Requirement("A.TWO", "not yet.", "not built", "S0"),
+        Requirement("A.THREE", "unproven.", "untested", "T29"),
+        Requirement("A.FOUR", "a question.", "open", "O7"),
+    )
     assert problems(requirements, {"A.ONE": ("test_x.py::test_y",)}) == []
+
+
+def test_the_inventory_file_loads_every_field_and_refuses_an_unknown_one(tmp_path):
+    good = tmp_path / "good.toml"
+    good.write_text('[[requirement]]\nid = "A.ONE"\nstatement = "does one thing."\nproof = "open"\ntask = "O7"\n')
+    assert load(good) == (Requirement("A.ONE", "does one thing.", "open", "O7"),)
+    bad = tmp_path / "bad.toml"
+    bad.write_text('[[requirement]]\nid = "A.ONE"\nstatement = "x."\nproof = "open"\nowner = "me"\n')
+    with pytest.raises(TypeError, match="owner"):
+        load(bad)
 
 
 def test_the_scan_finds_markers_on_functions_methods_and_classes_and_refuses_a_non_literal(tmp_path):

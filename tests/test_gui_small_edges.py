@@ -64,6 +64,7 @@ class TestTunerWords:
         assert pause_text("not_a_reason: as stored") == "not_a_reason: as stored"
         assert pause_text("thermal") == "thermal"
 
+    @pytest.mark.req("UI1.range")
     def test_the_power_state_reads_as_words(self):
         from corecycler.gui.style import power_text
 
@@ -80,6 +81,7 @@ class TestTunerWords:
         )
         assert power_text((("boost", "0"),)) == "boost off"
 
+    @pytest.mark.req("UI1.stage")
     def test_a_stage_is_said_in_words(self):
         from corecycler.gui.style import stage_label
 
@@ -93,6 +95,7 @@ class TestStyleCompletenessGuard:
     @pytest.mark.parametrize(
         ("table", "kind"), [("TUNER_PHASE_LABELS", "Phase"), ("PAUSE_LABELS", "PauseReason"), ("STAGE_LABELS", "Stage")]
     )
+    @pytest.mark.req("UI1.pause")
     def test_a_member_without_a_label_raises(self, monkeypatch, table, kind):
         from corecycler.gui import style
 

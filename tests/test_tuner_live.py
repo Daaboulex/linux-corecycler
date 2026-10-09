@@ -246,6 +246,19 @@ def snapshots() -> list:
     return seen
 
 
+@pytest.mark.req(
+    "C1",
+    "KC.5",
+    "L00.c.stored",
+    "L01.c1",
+    "L05.c.count",
+    "L07.c",
+    "L08.c",
+    "L14.c",
+    "L24.l24a.old",
+    "L26.c.position",
+    "L27.c",
+)
 def test_every_stored_state_of_a_run_survives_the_session_file_round_trip():
     stored = snapshots()
     assert len(stored) > 20
@@ -300,6 +313,7 @@ def test_the_store_hands_its_state_directory_back_to_the_invoking_user(tmp_path,
     assert handed == [tmp_path / "state"]
 
 
+@pytest.mark.req("L18.c.marker")
 def test_the_store_keeps_the_session_in_the_database_and_the_stock_marker_apart(tmp_path):
     store = Store(database(tmp_path / "history.db"), tmp_path / "s", IDENTITY)
     st = snapshots()[-1]
@@ -317,6 +331,7 @@ def test_the_store_keeps_the_session_in_the_database_and_the_stock_marker_apart(
     assert store.marker_boot() is None
 
 
+@pytest.mark.req("L17.d.clean")
 def test_a_live_rig_finds_every_edge_and_leaves_the_final_values_applied(tmp_path):
     r = rig(tmp_path)
     r.start(config(), 1, 7, True)
@@ -328,6 +343,7 @@ def test_a_live_rig_finds_every_edge_and_leaves_the_final_values_applied(tmp_pat
     assert {spec.klass for spec in r.runner.seen} == {Klass.T1, Klass.T2}
 
 
+@pytest.mark.req("L18.d.8.baselines")
 def test_a_close_mid_run_then_a_resume_in_the_same_boot_continues_without_a_penalty(tmp_path):
     r = rig(tmp_path)
     r.start(config(), 1, 7, True)
@@ -344,6 +360,7 @@ def test_a_close_mid_run_then_a_resume_in_the_same_boot_continues_without_a_pena
     assert all(c.crash_count == 0 for c in final.cores)
 
 
+@pytest.mark.req("L00.h")
 def test_a_reboot_during_a_test_convicts_the_tested_core_on_resume(tmp_path):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
@@ -401,6 +418,7 @@ def test_a_completed_profile_is_validated_in_a_later_boot_and_names_a_crash_of_i
     assert ("crashed" in opening) is not clean
 
 
+@pytest.mark.req("L30.b.crash")
 def test_a_crash_over_an_unproven_value_refuses_validation_naming_the_core(tmp_path):
     r, said = completed_then_rebooted(tmp_path, clean=False)
     r.store.journal_confirm(r.store.journal_intent(1, 0, EDGES[0] - 3, "boot-a", 0))
@@ -423,6 +441,7 @@ def broken(*_):
     raise sqlite3.OperationalError("disk I/O error")
 
 
+@pytest.mark.req("INV.L23", "L23.a", "L23.d")
 def test_a_database_that_cannot_be_written_puts_the_cores_at_stock(tmp_path, monkeypatch):
     r = rig(tmp_path)
     r.start(config(), 1, 7, True)
@@ -471,6 +490,7 @@ def test_a_deleted_session_s_id_is_never_handed_out_again(tmp_path):
     assert r.store.new_session_id() == 2
 
 
+@pytest.mark.req("L23.b")
 def test_a_database_that_fails_every_write_still_comes_to_rest_at_stock(tmp_path, monkeypatch):
     r = rig(tmp_path)
     events = []
@@ -490,6 +510,7 @@ def test_a_database_that_fails_every_write_still_comes_to_rest_at_stock(tmp_path
     assert r.hardware.co == {0: 0, 1: 0, 8: 0}
 
 
+@pytest.mark.req("PRELUDE.3")
 def test_every_test_leaves_one_row_that_its_verdict_completes(tmp_path):
     r = rig(tmp_path)
     r.runner.speeds = (("SFTv4", 6.56e9, True), ("VT3", 2.37e9, False))
@@ -523,6 +544,7 @@ def test_a_reboot_during_a_test_leaves_that_test_s_row_open(tmp_path):
     assert open_rows == [{"core": in_test.core, "value": in_test.value}]
 
 
+@pytest.mark.req("PRELUDE.4b")
 @pytest.mark.parametrize(("evidence", "survived"), [((), 1), (tuple(Evidence(c, True) for c in (0, 1, 8)), 0)])
 def test_a_test_that_comes_back_marks_its_values_survived_unless_a_corrected_check_named_the_core(
     tmp_path, evidence, survived
@@ -596,6 +618,7 @@ def test_a_stage_whose_crash_rule_reads_no_context_keeps_its_samples_in_memory_u
     assert rows(r, "SELECT count(*) AS n FROM tuner_sample_blocks") == [{"n": 0}]
 
 
+@pytest.mark.req("SC.2")
 def test_the_store_writes_a_block_every_block_of_samples_and_at_the_test_s_end(tmp_path):
     store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
     store.save(stored_with_fb(None), "boot-a")
@@ -617,6 +640,7 @@ def test_the_store_writes_a_block_every_block_of_samples_and_at_the_test_s_end(t
     assert [s["mono_ns"] for s in store.db.tuner_test_samples(row)] == [1_000 + n for n in range(telemetry.BLOCK + 1)]
 
 
+@pytest.mark.req("D88", "INV.L25")
 def test_the_durable_tail_is_written_a_group_at_a_time_and_only_in_durable_tests(tmp_path, monkeypatch):
     store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
     store.save(stored_with_fb(None), "boot-a")
@@ -642,6 +666,7 @@ def test_the_durable_tail_is_written_a_group_at_a_time_and_only_in_durable_tests
     assert writes == [group]
 
 
+@pytest.mark.req("CR.2", "D83")
 def test_a_test_row_keeps_each_core_s_highest_clock_from_every_sample_it_took(tmp_path):
     store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
     store.save(stored_with_fb(None), "boot-a")
@@ -726,6 +751,7 @@ def test_a_sample_that_cannot_be_written_pauses_as_database(tmp_path, monkeypatc
     assert hardware.co == {0: 0, 1: 0, 8: 0}
 
 
+@pytest.mark.req("L25.h", "SR.R2")
 def test_a_crash_s_context_is_rebuilt_from_the_samples_its_test_left(tmp_path, monkeypatch):
     monkeypatch.setattr(live, "ALLCORE", frozenset(Stage))
     hardware = FakeHardware()
@@ -759,6 +785,7 @@ def test_a_crash_read_names_the_unproven_values_resident_at_death(tmp_path, monk
     assert hardware.harvests == [("boot-a", first_write, True)]
 
 
+@pytest.mark.req("PRELUDE.4e")
 def test_a_crash_read_starts_where_the_last_test_s_kernel_read_stopped(tmp_path, monkeypatch):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware, FakeRunner(hardware, read_ns=123_456))
@@ -817,6 +844,7 @@ def test_samples_a_test_left_unwritten_go_into_its_block_when_the_next_test_samp
 @pytest.mark.parametrize(
     ("load", "frozen_last", "steady"), [("hot", False, True), ("hot", True, False), ("burst", False, False)]
 )
+@pytest.mark.req("SC.4")
 def test_a_crash_context_reads_the_last_ring_of_the_open_test_only(tmp_path, load, frozen_last, steady, count):
     store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
     store.save(stored_with_fb(None), "boot-a")
@@ -847,6 +875,7 @@ def test_a_commit_retracts_survived_values_at_or_past_a_new_fail_bound(tmp_path)
     assert store.db.journal_envelope(1, 0) == -2
 
 
+@pytest.mark.req("L18.d.4.1")
 def test_another_session_writing_later_in_the_dead_boot_is_seen(tmp_path, monkeypatch):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
@@ -878,6 +907,7 @@ def test_machine_check_records_of_the_dead_boot_become_evidence(tmp_path, monkey
     assert read.kernel_problem is None
 
 
+@pytest.mark.req("D70")
 def test_a_dead_boot_whose_kernel_log_cannot_be_read_is_resumed_and_named(tmp_path, monkeypatch):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
@@ -901,6 +931,7 @@ def test_a_resume_in_the_same_boot_reads_only_this_boot_s_records(tmp_path, monk
     assert [(boot, next_boot) for boot, _, next_boot in hardware.harvests] == [("boot-a", False)]
 
 
+@pytest.mark.req("L01.baselines", "TERMS.kvw", "TM.I_M2")
 def test_every_co_write_is_journaled_before_it_lands_and_confirmed_once_it_does(tmp_path):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
@@ -930,6 +961,7 @@ def test_a_refused_write_leaves_its_journal_row_unconfirmed(tmp_path):
     assert rows(r, "SELECT count(*) AS n FROM tuner_co_journal WHERE confirmed=0") == [{"n": 1}]
 
 
+@pytest.mark.req("TERMS.failing_effect", "TERMS.kvw_intent")
 def test_a_journal_that_cannot_be_written_stops_the_write_and_pauses_as_database(tmp_path, monkeypatch):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
@@ -987,6 +1019,7 @@ def test_a_test_result_that_cannot_be_written_pauses_as_database(tmp_path, monke
     assert len(r.runner.seen) == 1
 
 
+@pytest.mark.req("L29.e")
 def test_a_late_report_for_an_old_test_changes_no_row(tmp_path):
     r = rig(tmp_path)
     r.start(config(), 1, 7, True)
@@ -1018,6 +1051,7 @@ def test_a_session_that_cannot_be_read_back_at_resume_pauses_as_database(tmp_pat
     assert reads == [1, 1]
 
 
+@pytest.mark.req("L01.announce")
 def test_every_announcement_is_kept_as_a_session_event(tmp_path):
     said = []
     r = rig(tmp_path)
@@ -1055,6 +1089,7 @@ def test_a_runner_that_raises_pauses_as_internal(tmp_path):
     ]
 
 
+@pytest.mark.req("L19.d.inflight")
 def test_a_pause_signal_finishes_the_test_and_a_refusal_is_said(tmp_path):
     said = []
     r = rig(tmp_path)
@@ -1129,6 +1164,7 @@ def sysfs(tmp_path: Path, scaling: int, top: int, boost: str | None, pstate: boo
     return tmp_path / "cpu"
 
 
+@pytest.mark.req("TERMS.kvw_refused", "TM.I_M3", "VERDICT.30")
 def test_the_smu_adapter_writes_only_when_asked_and_checks_the_read_back():
     said = []
     dry = live_hw.SmuHardware(FakeSmu(), False, said.append, warm)
@@ -1247,6 +1283,7 @@ def test_the_app_version_is_the_installed_package_s_or_says_it_is_not_installed(
     assert live_hw.app_version() == "unreadable: not installed"
 
 
+@pytest.mark.req("D49", "L24.c.keys", "L24.l24a.keys")
 def test_the_setup_holds_one_line_per_key_with_the_reason_for_what_could_not_be_read(tmp_path, monkeypatch):
     dmi = tmp_path / "dmi"
     dmi.mkdir()
@@ -1276,6 +1313,7 @@ def test_the_setup_holds_one_line_per_key_with_the_reason_for_what_could_not_be_
     }
 
 
+@pytest.mark.req("D87", "KC.6")
 def test_a_resume_in_the_same_boot_after_another_tool_wrote_a_core_pauses_as_an_outside_write(tmp_path):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
@@ -1294,6 +1332,7 @@ def test_a_resume_in_the_same_boot_after_another_tool_wrote_a_core_pauses_as_an_
     assert hardware.co[1] == 0
 
 
+@pytest.mark.req("D17", "L17.G11", "L23.h")
 def test_a_resume_after_a_database_pause_in_the_same_boot_takes_the_stock_reads_as_the_tool_s_own(
     tmp_path, monkeypatch
 ):
@@ -1313,6 +1352,7 @@ def test_a_resume_after_a_database_pause_in_the_same_boot_takes_the_stock_reads_
     assert again.state.pause is None
 
 
+@pytest.mark.req("L24.d.pause", "L24.l24a.compare")
 def test_a_session_resumed_on_a_changed_setup_pauses_before_any_test_and_names_the_change(tmp_path):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
@@ -1370,6 +1410,7 @@ def test_each_outcome_becomes_its_verdict_group(outcome, group):
     assert report.detail == ("" if outcome is Outcome.PASS else f"{outcome.value}: d")
 
 
+@pytest.mark.req("L27.e.uncorrected")
 def test_machine_checks_on_other_cores_become_evidence_and_unblamed_corrected_ones_are_flagged():
     result = StressResult(core_id=0, outcome=Outcome.UNATTRIBUTED_MCE, detail="d", duration_seconds=1.0)
     observed = [
@@ -1385,6 +1426,7 @@ def test_machine_checks_on_other_cores_become_evidence_and_unblamed_corrected_on
     assert live_hw.report_from(result, trouble, (0,), {0: 0, 8: 8}).unblamed_corrected is False
 
 
+@pytest.mark.req("D51", "K8.tests", "K9.tests")
 def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, monkeypatch):
     seen = []
 
@@ -1502,6 +1544,7 @@ def paused_then_moved_to_a_new_setup(tmp_path):
     return hardware, rig(tmp_path, hardware, db=r.store.db)
 
 
+@pytest.mark.req("L24.l24b.cli")
 @pytest.mark.parametrize(("flag", "origin"), [("--continue", "continue"), ("--restart", "restart")])
 def test_the_command_line_carries_a_session_onto_a_new_setup(tmp_path, flag, origin):
     hardware, again = paused_then_moved_to_a_new_setup(tmp_path)
@@ -1534,6 +1577,7 @@ def test_a_resume_that_pauses_exits_paused(tmp_path):
     ("control", "code", "rest"),
     [(Close(), live_hw.EXIT_SIGNAL, "idle"), (live.Abort(), live_hw.EXIT_ABORTED, "aborted")],
 )
+@pytest.mark.req("E6.exit")
 def test_a_signal_s_outcome_is_the_driver_s_exit_code(tmp_path, control, code, rest):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
@@ -1563,6 +1607,7 @@ def test_a_restart_refused_at_start_s_gates_is_a_refusal(tmp_path):
     assert rows(again, "SELECT id, status FROM tuner_sessions") == [{"id": 1, "status": "paused"}]
 
 
+@pytest.mark.req("L24.l24b.supersede")
 def test_a_continued_session_inherits_its_parent_s_proven_values_and_a_restart_does_not(tmp_path):
     for choice in ("continue", "restart"):
         folder = tmp_path / choice
@@ -1589,6 +1634,7 @@ def test_a_continued_session_inherits_its_parent_s_proven_values_and_a_restart_d
             assert inherited == []
 
 
+@pytest.mark.req("L24.G11")
 def test_a_supersede_that_cannot_be_written_pauses_as_database_and_leaves_the_parent_paused(tmp_path, monkeypatch):
     hardware, again = paused_then_moved_to_a_new_setup(tmp_path)
     again.resume(1)
@@ -1610,6 +1656,7 @@ def test_the_command_line_validates_a_completed_session(tmp_path):
     assert "rest: completed" in said
 
 
+@pytest.mark.req("VERDICT.27")
 def test_signals_queue_the_owner_s_controls(tmp_path, monkeypatch):
     installed = {}
     monkeypatch.setattr(live_hw.signal, "signal", lambda number, handler: installed.__setitem__(number, handler))
@@ -1639,6 +1686,7 @@ def driver_home(tmp_path, monkeypatch):
     return tmp_path / "home" / ".local" / "share" / "corecycler", notified
 
 
+@pytest.mark.req("L01.3", "TM.A1.co")
 def test_main_refuses_without_an_smu_and_runs_with_one(tmp_path, driver_home, monkeypatch, capsys):
     _, notified = driver_home
     monkeypatch.setattr(live_hw, "build_smu", lambda topo: None)
@@ -1651,6 +1699,7 @@ def test_main_refuses_without_an_smu_and_runs_with_one(tmp_path, driver_home, mo
     assert notified == [live_hw.EXIT_REFUSED, live_hw.EXIT_REFUSED]
 
 
+@pytest.mark.req("E6.lock", "TM.I_M9", "WRITER.owned")
 def test_one_co_writer_at_a_time_on_a_machine(tmp_path, driver_home, writer_dir, capsys):
     from corecycler.smu.writer_lock import co_writer, running_driver
 
@@ -1692,6 +1741,7 @@ def test_the_state_directory_defaults_under_the_user_s_data(driver_home):
         (["--validate", "--session", "1", "--max-offset", "-9"], "go with --start only"),
     ],
 )
+@pytest.mark.req("E6.config")
 def test_a_start_has_exactly_one_configuration_source(argv, problem, capsys):
     with pytest.raises(SystemExit):
         live_hw.parse(["--state-dir", "s", *argv])
@@ -1792,6 +1842,7 @@ class TestBuildSmu:
         monkeypatch.setattr(live_hw.RyzenSMU, "is_available", staticmethod(lambda *a, **k: False))
         assert live_hw.build_smu(CPUTopology(family=26, model=0x44, model_name="Test 9950X")) is None
 
+    @pytest.mark.req("TM.A3.co")
     def test_the_driver_when_available(self, monkeypatch):
         from corecycler.engine.topology import CPUTopology, PhysicalCore
 
@@ -1806,7 +1857,7 @@ def test_the_live_module_exports_the_controls():
     assert run_to_rest
 
 
-@pytest.mark.req("TRUTH.REVERT_RESULT")
+@pytest.mark.req("L23.G10", "TRUTH.REVERT_RESULT")
 def test_a_revert_that_fails_is_said_and_the_core_left_unknown(tmp_path):
     said = []
     hardware = FakeHardware()
@@ -1856,6 +1907,7 @@ def test_a_failed_revert_that_cannot_be_recorded_is_said_and_reported_as_a_datab
     assert "database_failed: the failed revert could not be recorded: disk full" in said
 
 
+@pytest.mark.req("K23")
 def test_a_sleep_between_tests_makes_the_rig_rewrite_every_core(tmp_path):
     hardware = FakeHardware()
     asleep = iter([0.0] * 3 + [600.0] * 10_000)
@@ -1953,6 +2005,7 @@ def test_a_ready_machine_passes_preflight_without_warnings(tmp_path, monkeypatch
         ({"tools": (Tool("stressapptest", "not on PATH"),)}, "stressapptest is not installed: not on PATH"),
     ],
 )
+@pytest.mark.req("INV.L01", "L01.14", "L01.6")
 def test_each_preflight_gate_refuses_naming_its_reason(tmp_path, monkeypatch, changes, says):
     refusal, _ = preflight(tmp_path, monkeypatch, **changes)
     assert says in refusal
@@ -1966,6 +2019,7 @@ def test_the_first_failing_gate_wins_and_the_later_ones_never_run(tmp_path, monk
     assert "no CPU temperature" in refusal
 
 
+@pytest.mark.req("L01.10")
 def test_a_scheduling_policy_that_could_starve_the_watch_refuses(monkeypatch):
     monkeypatch.setattr(live_hw.os, "sched_getscheduler", lambda pid: live_hw.os.SCHED_IDLE)
     assert "idle or batch" in live_hw.scheduling_problem()
@@ -1984,6 +2038,7 @@ def unreadable(monkeypatch, proc, *pids):
     monkeypatch.setattr(Path, "iterdir", denied)
 
 
+@pytest.mark.req("D84")
 def test_a_process_whose_files_cannot_be_read_is_checked_by_name(tmp_path, monkeypatch):
     proc = proc_tree(
         tmp_path / "proc",
@@ -1998,6 +2053,7 @@ def test_a_process_whose_files_cannot_be_read_is_checked_by_name(tmp_path, monke
     assert live_hw.smu_holder(quiet) == (None, 2)
 
 
+@pytest.mark.req("L01.8")
 def test_a_known_smu_tool_refuses_even_without_a_driver_handle(tmp_path):
     proc = proc_tree(tmp_path / "proc", {5: ("ryzenadj", ())})
     assert live_hw.smu_holder(proc) == (
@@ -2022,12 +2078,14 @@ def sched_ext(root: Path, state: str | None, ops: str | None = None) -> Path:
     return root
 
 
+@pytest.mark.req("K49", "L01.13")
 def test_a_running_ananicy_alone_is_not_a_warning_and_a_short_hot_budget_is(tmp_path, monkeypatch):
     refusal, warnings = preflight(tmp_path, monkeypatch, usable=8000, procs={9: ("ananicy-cpp", ())})
     assert refusal is None
     assert warnings == (f"HOT runs y-cruncher with 4000 MB, under its {stages.HOT_MEMORY_CAP_MB} MB cap",)
 
 
+@pytest.mark.req("INT.3")
 def test_an_enabled_sched_ext_scheduler_is_a_warning_naming_it(tmp_path, monkeypatch):
     root = sched_ext(tmp_path / "scx", "enabled", "lavd_1.0.13")
     refusal, warnings = preflight(tmp_path, monkeypatch, sched_ext=root)

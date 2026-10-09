@@ -332,6 +332,21 @@ ONE_OF_EACH = {fault: 1 for fault in FAULTS if fault not in ("profile", "setup",
         (2, [0, -3], 2, 1, (((0,), (0, 1), 2),)),
     ],
 )
+@pytest.mark.req(
+    "C17",
+    "D5",
+    "K47",
+    "L00.e",
+    "L04.c.fb",
+    "L04.g",
+    "L09.G1",
+    "L09.G2.group",
+    "L09.a",
+    "L09.g",
+    "Q6",
+    "RESIDENCY",
+    "TERMS.room",
+)
 def test_every_future_of_a_tiny_cpu_ends_completed_or_quarantined_and_breaks_no_rule(
     cores, edges, domains, total, stacks
 ):
@@ -353,6 +368,7 @@ def test_every_future_of_a_tiny_cpu_ends_completed_or_quarantined_and_breaks_no_
         ([-3, -2], None, {0: -2, 1: -1}, True, True),
     ],
 )
+@pytest.mark.req("D24", "L00.g")
 def test_every_future_of_a_cpu_whose_all_core_loads_fail_reaches_a_rest(edges, hot, transient, endurance, names):
     fake = tiny(2, edges, 2, endurance=endurance, endurance_window_s=2.0)
     fake.names_cores = names
@@ -378,6 +394,7 @@ def test_no_future_runs_a_test_on_a_setup_changed_while_the_session_was_away():
     assert "completed" in survey.leaves
 
 
+@pytest.mark.req("L00.f", "L24.g", "L24.l24b.laws")
 def test_a_session_continued_or_restarted_on_a_new_setup_never_runs_its_parent_again():
     budget = {"setup": 1, "pause": 1, "crash": 1, "continue": 1, "restart": 1, "total": 3}
     survey = explore(tiny(2, [-3, -2], 2), budget, cap=2_000_000)
@@ -392,6 +409,7 @@ def test_no_future_resumes_round_a_power_state_changed_while_the_session_was_awa
     assert "completed" in survey.leaves
 
 
+@pytest.mark.req("KC.8")
 def test_no_future_resumes_over_a_co_another_tool_wrote_while_the_session_was_paused():
     budget = {"outside": 2, "pause": 2, "crash": 1, "dbfail": 1, "total": 3}
     survey = explore(tiny(2, [-3, -2], 2), budget, cap=2_000_000)
@@ -440,6 +458,7 @@ def worlds(draw):
     deadline=None,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
 )
+@pytest.mark.req("L05.g", "L18.d.5")
 @given(worlds(), st.lists(st.sampled_from(("deliver", "fire", "resume", *FAULTS)), max_size=80))
 def test_a_random_future_never_breaks_a_rule_and_always_comes_to_rest(fake, script):
     start(fake)

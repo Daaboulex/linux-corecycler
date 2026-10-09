@@ -33,6 +33,7 @@ def plan(load: Load, seconds: float = 480.0, seed: int = 1):
     return stages.plan(load, seconds, CPUS, FIRSTS, 60_000, random.Random(seed), 95.0)
 
 
+@pytest.mark.req("K24")
 def test_hot_is_one_all_cpu_segment_of_every_test_with_the_hot_hold():
     (hot,) = plan(Load.HOT, 510.0)
     assert (hot.cpus, hot.tests, hot.seconds_per_test, hot.duration) == (CPUS, ALL_TESTS, 60, 510.0)
@@ -41,6 +42,7 @@ def test_hot_is_one_all_cpu_segment_of_every_test_with_the_hot_hold():
     assert small.memory_mb == 2000
 
 
+@pytest.mark.req("K26", "L25.g")
 def test_warm_is_one_sixty_second_slice_per_test_in_the_record_order_with_the_warm_hold():
     slices = plan(Load.WARM, 480.0)
     assert [s.tests for s in slices] == [(test,) for test in ALL_TESTS]
@@ -48,6 +50,7 @@ def test_warm_is_one_sixty_second_slice_per_test_in_the_record_order_with_the_wa
     assert len(plan(Load.WARM, 150.0)) == 3 and plan(Load.WARM, 150.0)[-1].duration == 30.0
 
 
+@pytest.mark.req("K27", "L25.d.burst")
 @pytest.mark.parametrize("seed", range(20))
 def test_burst_restarts_at_60_seconds_then_every_40_to_80_and_alternates_short_runs_and_freezes(seed):
     segments = plan(Load.BURST, 480.0, seed)
@@ -63,6 +66,7 @@ def test_burst_restarts_at_60_seconds_then_every_40_to_80_and_alternates_short_r
             assert 0.3 <= stop - start <= 4.0 and 0.2 <= after - stop <= 3.0
 
 
+@pytest.mark.req("K28", "L25.d.idle")
 @pytest.mark.parametrize("seed", range(20))
 def test_idle_wakes_a_few_cores_for_a_moment_between_long_freezes(seed):
     (idle,) = plan(Load.IDLE, 360.0, seed)
@@ -80,6 +84,7 @@ def test_a_plan_is_reproducible_from_its_seed_and_refuses_a_per_core_load():
         plan(Load.ONE_T)
 
 
+@pytest.mark.req("K29", "L25.d.hold")
 def test_the_hold_freezes_at_the_hot_mark_and_releases_below_the_cool_one():
     readings = iter([90.0, 96.0, 88.0, None, 84.0])
     hold = live_hw.Hold(plan(Load.HOT)[0], dict, CORE_OF_CPU, 0.25)
@@ -169,6 +174,7 @@ def test_a_single_core_test_is_sampled_only_when_a_sink_is_given():
     assert unsampled.seen[0][3] is None
 
 
+@pytest.mark.req("L25.d.warm")
 def test_an_all_core_stage_runs_every_segment_and_passes():
     script = Script([Outcome.PASS] * 8)
     report = runner(script).run(spec(Load.WARM), threading.Event())
@@ -185,6 +191,7 @@ def test_every_segment_s_speeds_reach_the_report_in_order_whether_the_stage_pass
     assert runner(Script([Outcome.PASS], sampled=False)).run(one, threading.Event()).speeds == (("seg1", 1e9, True),)
 
 
+@pytest.mark.req("L25.d.restart")
 def test_a_failing_segment_reports_its_cores_and_whether_the_load_was_paused():
     script = Script([Outcome.PASS, Outcome.COMPUTATION])
     report = runner(script).run(spec(Load.HOT, 510.0), threading.Event())
@@ -246,6 +253,7 @@ def soak_detector(reads):
         ((), "kmsg unreadable", Group.APPARATUS),
     ],
 )
+@pytest.mark.req("INV.L16", "K43", "L16.G2", "L16.a")
 def test_the_soak_watch_reports_what_the_kernel_logged(events, problem, group):
     reads = [kernel.KernelRead(events, problem)]
     report = runner(Script([]), detector=soak_detector(reads)).run(spec(Load.SOAK, 0.05), threading.Event())
@@ -287,6 +295,7 @@ def test_a_cpu_the_topology_does_not_have_is_refused():
         runner(script).run(spec(Load.HOT, 510.0), threading.Event())
 
 
+@pytest.mark.req("D28")
 def test_burst_draws_powers_of_two_up_to_the_cpu_count_on_first_cpus_and_all_cpus_as_the_last_draw():
     cpus = tuple(range(32))
     firsts = tuple(range(16))
@@ -302,6 +311,7 @@ def sample(running, mhz, tctl=70.0):
     return telemetry.Sample(running, tuple(enumerate(mhz)), tctl)
 
 
+@pytest.mark.req("D64", "K36.8", "SR.R1")
 def test_the_working_cores_are_the_cores_the_failing_segment_ran_on_whatever_their_clocks():
     ring = [sample(True, [5600, 600, 5600, 600]), sample(True, [5600, 600, 5600, 600])]
     ctx = telemetry.context(ring, True, (1, 3), ())
@@ -309,6 +319,7 @@ def test_the_working_cores_are_the_cores_the_failing_segment_ran_on_whatever_the
     assert ctx.mhz == 600.0
 
 
+@pytest.mark.req("K31")
 def test_the_band_clock_is_the_named_cores_own_clock_in_the_hottest_running_sample():
     ring = [
         sample(True, [5000, 4000, 2000, 1000], 80.0),
@@ -411,6 +422,7 @@ def memory_runner(outcomes, budget=None, available=True, seen=None):
     )
 
 
+@pytest.mark.req("K42", "L15.d")
 def test_memory_runs_one_stressapptest_lane_per_core_with_the_budgeted_memory():
     seen = []
     tool, run = memory_runner({}, seen=seen)
@@ -419,6 +431,7 @@ def test_memory_runs_one_stressapptest_lane_per_core_with_the_budgeted_memory():
     assert seen == [(((0, (0, 4)), (1, (1, 5)), (2, (2, 6)), (3, (3, 7))), 2, 512, tool)]
 
 
+@pytest.mark.req("L15.G7")
 def test_memory_names_each_silicon_lane_and_an_apparatus_lane_alone_is_no_silicon_verdict():
     _, run = memory_runner({2: Outcome.COMPUTATION, 3: Outcome.STALL}, seen=[])
     report = run.run(spec(Load.MEMORY, 300.0), threading.Event())
@@ -447,6 +460,7 @@ def unavailable(n, floor):
         (None, False, "stressapptest is not installed: not on PATH"),
     ],
 )
+@pytest.mark.req("INV.L15")
 def test_memory_that_cannot_run_is_skipped_with_its_reason(budget, available, reason):
     seen = []
     _, run = memory_runner({}, budget=budget, available=available, seen=seen)
@@ -476,6 +490,7 @@ def test_the_working_cores_of_a_failing_burst_segment_are_the_cores_it_drew():
     raise AssertionError("no seed drew a partial segment")
 
 
+@pytest.mark.req("L25.d.sample", "TM.E2.ccd")
 def test_a_sample_stores_the_labelled_tctl_and_each_ccd_while_the_hold_judges_the_hottest():
     got = []
     reading = SensorRead(hottest=97.0, tctl=71.0, tccd=((0, 97.0), (1, None)), volts=(("nct6799:in0", 1.1),))
@@ -510,6 +525,7 @@ def test_y_cruncher_speeds_are_read_per_test_with_their_verdict():
     assert ycruncher.YCruncherBackend().speeds("") == ()
 
 
+@pytest.mark.req("D71", "K30")
 def test_every_stage_samples_at_the_one_rate():
     holds = []
     for load in (Load.HOT, Load.WARM, Load.BURST, Load.IDLE):
@@ -533,6 +549,7 @@ def test_an_all_core_load_sizes_its_memory_from_the_one_budget():
     assert script.memory == [2000]
 
 
+@pytest.mark.req("C12", "U25")
 def test_the_hot_hold_band_sits_at_the_thermal_limit_and_ten_degrees_under_it():
     (hot,) = stages.plan(Load.HOT, 510.0, CPUS, FIRSTS, 60_000, random.Random(1), 89.0)
     assert hot.hold == (89.0, 79.0)

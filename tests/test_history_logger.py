@@ -192,6 +192,7 @@ class TestTelemetry:
         assert [(s.freq_mhz, s.temp_c) for s in samples] == [(5500.0, 75.0), (5600.0, 76.0)]
         assert all(s.timestamp for s in samples)
 
+    @pytest.mark.req("D78")
     def test_a_block_is_written_once_its_first_sample_is_a_block_period_old(self, db, logger, monkeypatch):
         now = [100.0]
         monkeypatch.setattr(logger_module.time, "monotonic", lambda: now[0])

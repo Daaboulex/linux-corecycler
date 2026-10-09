@@ -452,6 +452,7 @@ def two_lanes(tmp_path: Path) -> list[Lane]:
 
 
 class TestLaunchRefusals:
+    @pytest.mark.req("VERDICT.13")
     def test_prepare_failure_is_not_started(self, tmp_path):
         backend = FakeBackend(prepare_exc=OSError("read-only work dir"))
         supervisor, _, _ = make_supervisor(backend)
@@ -498,12 +499,14 @@ class TestLaunchRefusals:
 
 
 class TestOutcomeGrading:
+    @pytest.mark.req("VERDICT.2")
     def test_a_computation_error_before_an_instant_exit_is_a_fail(self, tmp_path):
         supervisor, _, _ = make_supervisor(FakeMprime(FATAL_AT_ONCE))
         verdict = run_one(supervisor, lane(tmp_path), 10.0)
         assert verdict.outcome is Outcome.COMPUTATION
         assert "FATAL ERROR" in verdict.detail
 
+    @pytest.mark.req("VERDICT.3")
     def test_a_cpu_signal_death_at_once_is_silicon(self, tmp_path):
         code = "import os, signal, time; time.sleep(0.05); os.kill(os.getpid(), signal.SIGSEGV)"
         supervisor, _, _ = make_supervisor(FakeBackend(_child(code)))
@@ -540,6 +543,7 @@ class TestOutcomeGrading:
         assert verdict.outcome is Outcome.NO_WORK_DONE
         assert "last-line" in verdict.detail
 
+    @pytest.mark.req("C21", "D42", "VERDICT.14")
     def test_an_unrecognised_exit_code_is_unexplained(self, tmp_path):
         supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY_THEN_EXIT_SEVEN)))
         verdict = run_one(supervisor, lane(tmp_path), 10.0)
@@ -611,6 +615,7 @@ class TestOutcomeGrading:
             (139, None, Outcome.UNEXPLAINED),
         ],
     )
+    @pytest.mark.req("L25.e")
     def test_exit_signal_maps_each_exit(self, returncode, sent, expected):
         found = exit_signal(returncode, sent)
         assert (found.outcome if found is not None else None) is expected
@@ -654,6 +659,7 @@ class TestVerdicts:
         assert verdict.outcome is Outcome.COMPUTATION
         assert "FATAL" in verdict.detail
 
+    @pytest.mark.req("VERDICT.1")
     @pytest.mark.real_cpu_time
     def test_a_clean_exit_that_did_its_work_passes(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(1.5)"))
@@ -663,6 +669,7 @@ class TestVerdicts:
         assert verdict.outcome is Outcome.PASS
         assert verdict.duration_seconds < 2.0
 
+    @pytest.mark.req("VERDICT.15")
     @pytest.mark.real_cpu_time
     def test_a_clean_exit_that_did_no_work_is_not_a_pass(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(0.3)"))
@@ -682,12 +689,14 @@ class TestVerdicts:
         assert verdict.outcome is Outcome.COMPUTATION
         assert "SUMOUT" in verdict.detail
 
+    @pytest.mark.req("VERDICT.9")
     def test_an_external_kill_is_an_apparatus_fault_not_a_verdict(self, tmp_path):
         backend = FakeBackend(_child("import os, signal, time; time.sleep(0.1); os.kill(os.getpid(), signal.SIGKILL)"))
         supervisor, _, _ = make_supervisor(backend)
         verdict = run_one(supervisor, lane(tmp_path), 4.0)
         assert verdict.outcome is Outcome.OUTSIDE_KILL
 
+    @pytest.mark.req("L25.f", "VERDICT.17")
     def test_an_interrupted_lane_is_cut_short(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(5)"))
         supervisor, stop, _ = make_supervisor(backend)
@@ -778,6 +787,7 @@ class TestTeardown:
         assert verdict.outcome is Outcome.OUTSIDE_KILL
         assert "externally" in verdict.detail
 
+    @pytest.mark.req("L29.d")
     def test_a_payload_that_needs_sigkill_never_passes(self, tmp_path):
         one = lane(tmp_path)
         supervisor, _, _ = make_supervisor(
@@ -789,6 +799,7 @@ class TestTeardown:
         assert verdict.outcome is Outcome.DID_NOT_STOP
         assert "did not stop" in verdict.detail
 
+    @pytest.mark.req("INV.L29", "K20", "L29.a")
     def test_stopping_takes_one_grace_whatever_the_lane_count(self, tmp_path):
         backend = FakeBackend(_child(DEAF_TO_SIGTERM))
         supervisor, stop, _ = make_supervisor(backend)
@@ -914,6 +925,7 @@ class TestOutputFiles:
         assert verdict.outcome is Outcome.COMPUTATION
         assert "verification failed" in verdict.detail
 
+    @pytest.mark.req("D73")
     def test_every_run_dir_goes_and_a_failed_runs_output_stays_on_its_result(self, tmp_path):
         failing = lane(tmp_path, 0)
         supervisor, _, _ = make_supervisor(scripted(StressNgBackend, FAILS_AT_ONCE))
@@ -968,6 +980,7 @@ class TestOutputFiles:
 
 
 class TestMceAttribution:
+    @pytest.mark.req("VERDICT.4")
     def test_an_own_cpu_event_fails_the_lane(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(5)"))
         detector = FakeDetector([[own(16)]])
@@ -976,6 +989,7 @@ class TestMceAttribution:
         assert verdict.outcome is Outcome.OWN_CORE_MCE
         assert len(seen) == 1
 
+    @pytest.mark.req("VERDICT.20")
     def test_a_foreign_event_is_evidence_not_a_verdict(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
         detector = FakeDetector([[own(9)]])
@@ -1017,6 +1031,7 @@ class TestMceAttribution:
         assert detector.finals[-1] is True
         assert not any(detector.finals[:-1])
 
+    @pytest.mark.req("VERDICT.16")
     def test_a_failed_final_kernel_read_is_never_a_pass(self, tmp_path):
         detector = FakeDetector(final_problem="kernel log overran; records lost")
         supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), detector=detector)
@@ -1037,6 +1052,7 @@ class TestMceAttribution:
         verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.OWN_CORE_MCE
 
+    @pytest.mark.req("VERDICT.7")
     def test_a_shared_bank_error_during_a_batch_blames_no_lane(self, tmp_path):
         shared = UnblamedMachineCheck(logged_by_cpu=0, bank=21, corrected=True, message="UMC", raw_ts=1.0)
         detector = FakeDetector([[shared]])
@@ -1045,6 +1061,7 @@ class TestMceAttribution:
         assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.UNATTRIBUTED_MCE] * 2
         assert seen == [shared]
 
+    @pytest.mark.req("VERDICT.8")
     def test_kernel_trouble_during_a_batch_is_its_own_type(self, tmp_path):
         detector = FakeDetector([[trouble()]])
         supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), detector=detector)
@@ -1054,6 +1071,7 @@ class TestMceAttribution:
 
 @pytest.mark.real_cpu_time
 class TestStallWatchdog:
+    @pytest.mark.req("K21", "VERDICT.12")
     def test_an_idle_lane_is_failed_as_stalled(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
         supervisor, _, _ = make_supervisor(backend, stall_timeout=0.05)
@@ -1127,6 +1145,7 @@ class TestContainmentWatchdog:
         scope_kills.assert_called_once_with("/user.slice/cc-test.scope")
         assert {r.levelname for r in caplog.records if "permission denied" in r.getMessage()} == {"ERROR"}
 
+    @pytest.mark.req("VERDICT.11")
     def test_a_widened_kernel_record_is_a_containment_fault(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(30)"))
         supervisor, _, _ = make_supervisor(backend, containment_for=self._contained)
@@ -1415,6 +1434,7 @@ class TestThermalGuard:
         assert watch.safe(next(temps)) is True
         assert watch._over_since is not None
 
+    @pytest.mark.req("K17.margin")
     def test_the_hard_ceiling_trips_immediately(self):
         watch = ThermalWatch(
             max_temperature=95,
@@ -1437,7 +1457,7 @@ class TestThermalGuard:
         assert watch.safe(next(temps)) is False
         assert watch.safe(next(temps)) is True
 
-    @pytest.mark.req("TRUTH.TEMPERATURE_UNREAD")
+    @pytest.mark.req("TRUTH.TEMPERATURE_UNREAD", "VERDICT.6")
     def test_a_trip_is_a_batch_outcome_and_fires_the_hook(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(5)"))
         seen_temps: list[float] = []
@@ -1602,6 +1622,7 @@ class TestPreexec:
         )
         assert done.stdout == "(0, 0)\n"
 
+    @pytest.mark.req("TM.F.rtprio")
     def test_the_preexec_drops_the_realtime_limit_to_zero(self, monkeypatch):
         limits = []
         monkeypatch.setattr(os, "setsid", lambda: None)
@@ -1772,6 +1793,7 @@ class TestContainment:
         ("subtree_control", "refused"),
         [("cpu io memory pids\n", False), ("cpu io pids\n", True), ("", True), (None, True)],
     )
+    @pytest.mark.req("L01.5")
     def test_the_lane_cgroup_must_give_its_scopes_the_memory_controller(self, tmp_path, subtree_control, refused):
         parent = tmp_path / "user.slice" / "app.slice"
         parent.mkdir(parents=True)
@@ -1898,6 +1920,7 @@ def _process(base: Path, pid: int, comm: str, ppid: int, threads: dict[int, tupl
 
 
 class TestScheduling:
+    @pytest.mark.req("INT.1")
     def test_every_thread_of_the_tree_is_read(self, tmp_path):
         _process(tmp_path, 100, "y-cruncher", 1, {100: (0, 0), 102: (0, 0)})
         _process(tmp_path, 101, "24-ZN5 ~ Kom", 100, {101: (16, os.SCHED_IDLE)})
@@ -1940,6 +1963,7 @@ class TestScheduling:
         assert execution._scheduling_fault(run) is None
         assert execution._scheduling_fault(execution._LaneRun(lane=lane(tmp_path))) is None
 
+    @pytest.mark.req("D89", "INT.2", "INV.L22")
     def test_a_payload_that_is_reniced_while_it_runs_is_not_a_core_verdict(self, tmp_path):
         code = "import os\nos.nice(5)\nwhile True:\n    pass\n"
         supervisor, _, _ = make_supervisor(FakeBackend(_child(code)))

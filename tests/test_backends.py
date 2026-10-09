@@ -377,6 +377,7 @@ class TestMprimeBackend:
             assert "TortureWeak" not in content
         assert "EnableSetAffinity=0" in (tmp_path / "prime.txt").read_text()
 
+    @pytest.mark.req("INT.mprime")
     def test_prepare_keeps_the_torture_threads_at_the_nice_they_start_with(self, tmp_path):
         MprimeBackend().prepare(tmp_path, StressConfig())
         assert "EnableSetPriority=0" in (tmp_path / "prime.txt").read_text().splitlines()
