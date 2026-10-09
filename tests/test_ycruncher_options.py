@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from corecycler.engine.backends.base import StressConfig
+from corecycler.engine.backends.ycruncher import YCruncherBackend
 from tests.test_backends import (
     _BULLDOZER_FLAGS,
     _ZEN5_FLAGS,
@@ -54,3 +55,22 @@ def test_a_named_binary_that_cannot_run_here_is_refused_naming_why(tmp_path, mon
     _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", flags)
     with pytest.raises(OSError, match=says):
         _prepared(launcher, tmp_path, StressConfig(cpus=(3,), binary=name))
+
+
+@pytest.mark.req("K9.capability")
+@pytest.mark.parametrize(
+    ("flags", "installed", "name", "says"),
+    [
+        (_ZEN5_FLAGS, None, "19-ZN2 ~ Kagari", None),
+        (_ZEN5_FLAGS, None, "99-XX ~ Nobody", "no binary named"),
+        (_BULLDOZER_FLAGS, None, "19-ZN2 ~ Kagari", "lacks"),
+        (_ZEN5_FLAGS, ("24-ZN5 ~ Komari",), "19-ZN2 ~ Kagari", "is not in"),
+    ],
+)
+def test_a_binary_s_problem_is_known_before_any_test_runs(tmp_path, monkeypatch, flags, installed, name, says):
+    launcher = _install(tmp_path / "yc", installed) if installed else _install(tmp_path / "yc")
+    _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", flags)
+    backend = YCruncherBackend()
+    backend._binary = str(launcher)
+    problem = backend.binary_problem(name)
+    assert problem is None if says is None else says in problem

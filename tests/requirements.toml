@@ -226,8 +226,7 @@ proof = "built"
 [[requirement]]
 id = "K9.capability"
 statement = "Start refuses the 2T class, naming it, when the Kagari binary or AVX2 is missing"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "K11"

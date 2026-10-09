@@ -155,16 +155,27 @@ class YCruncherBackend(StressBackend):
     def prepare(self, work_dir: Path, config: StressConfig) -> None:
         if not config.cpus:
             raise RuntimeError("y-cruncher pins one thread per lane CPU, and this lane names no CPUs")
-        binaries = _binaries_dir(Path(self.require_binary()))
-        vendor, flags = topology.common_cpu_flags()
         if config.binary:
-            compute = named_binary(binaries, config.binary, flags, vendor)
+            compute = self._named(config.binary)
         else:
+            vendor, flags = topology.common_cpu_flags()
+            binaries = _binaries_dir(Path(self.require_binary()))
             compute = compute_binary(binaries, flags, vendor)
-        if compute is None:
-            raise OSError(f"no y-cruncher binary for this CPU ({vendor or 'unknown vendor'}) in {binaries}")
+            if compute is None:
+                raise OSError(f"no y-cruncher binary for this CPU ({vendor or 'unknown vendor'}) in {binaries}")
         (work_dir / CONFIG_FILE).write_text(_stress_config(config))
         self._compute = compute
+
+    def _named(self, name: str) -> Path:
+        vendor, flags = topology.common_cpu_flags()
+        return named_binary(_binaries_dir(Path(self.require_binary())), name, flags, vendor)
+
+    def binary_problem(self, name: str) -> str | None:
+        try:
+            self._named(name)
+        except (OSError, RuntimeError) as exc:
+            return str(exc)
+        return None
 
     def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
         if self._compute is None:

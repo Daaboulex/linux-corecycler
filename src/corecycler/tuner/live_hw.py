@@ -710,6 +710,7 @@ def build_rig(
         co_range=smu.commands.co_range,
         tjmax_c=tjmax_c(topology.model_name),
         say=say,
+        two_t_problem=backend_factory().binary_problem(TWO_T["binary"]),
     )
 
 

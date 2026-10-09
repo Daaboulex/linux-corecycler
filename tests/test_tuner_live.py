@@ -1500,6 +1500,7 @@ def topology():
     return SimpleNamespace(cores=cores, model_name="cpu-1")
 
 
+@pytest.mark.req("K9.capability")
 def test_the_command_line_starts_or_resumes_and_reports_where_it_came_to_rest(tmp_path):
     lines = []
     args = live_hw.parse(
@@ -1522,8 +1523,10 @@ def test_the_command_line_starts_or_resumes_and_reports_where_it_came_to_rest(tm
         ]
     )
     db = database(tmp_path / "built.db")
-    built = live_hw.build_rig(args, topology(), FakeSmu(), lambda: None, lines.append, db, IDENTITY)
+    kagari = SimpleNamespace(binary_problem=lambda name: f"the y-cruncher binary {name!r} is not in /nowhere")
+    built = live_hw.build_rig(args, topology(), FakeSmu(), lambda: kagari, lines.append, db, IDENTITY)
     assert built.hardware.write is True and built.cpus_of == CPUS and built.domain_of == DOMAINS
+    assert built.two_t_problem == "the y-cruncher binary '19-ZN2 ~ Kagari' is not in /nowhere"
     assert built.co_range == (-50, 10)
     assert built.store.db is db
     hardware = FakeHardware()

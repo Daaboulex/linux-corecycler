@@ -822,7 +822,7 @@ class TestYCruncherBackend:
     def test_prepare_refuses_when_no_binary_fits(self, tmp_path, monkeypatch):
         launcher = _install(tmp_path / "yc", ("24-ZN5 ~ Komari", "22-ZN4 ~ Kizuna"))
         _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", _ZEN3_FLAGS)
-        with pytest.raises(OSError, match="no y-cruncher binary for this CPU"):
+        with pytest.raises(OSError, match=r"no y-cruncher binary for this CPU \(AuthenticAMD\)"):
             _prepared(launcher, tmp_path)
 
     def test_the_config_names_exactly_the_lane_cpus(self, tmp_path, monkeypatch):
@@ -887,6 +887,14 @@ class TestYCruncherBackend:
         cpuinfo.write_text("processor\t: 0\nvendor_id\t: AuthenticAMD\nFeatures\t: fp asimd\n")
         monkeypatch.setattr(topology, "CPUINFO", cpuinfo)
         with pytest.raises(OSError, match="no y-cruncher binary for this CPU"):
+            _prepared(launcher, tmp_path)
+
+    def test_a_cpuinfo_without_a_vendor_says_so_when_no_binary_fits(self, tmp_path, monkeypatch):
+        launcher = _install(tmp_path / "yc")
+        cpuinfo = tmp_path / "cpuinfo"
+        cpuinfo.write_text("processor\t: 0\nflags\t: fpu sse sse2 avx avx2\n")
+        monkeypatch.setattr(topology, "CPUINFO", cpuinfo)
+        with pytest.raises(OSError, match=r"no y-cruncher binary for this CPU \(unknown vendor\)"):
             _prepared(launcher, tmp_path)
 
     def test_an_unreadable_cpuinfo_starts_nothing(self, tmp_path, monkeypatch):
