@@ -75,6 +75,7 @@
                   pythonPkgs.pytestCheckHook
                   pythonPkgs.hypothesis
                   pythonPkgs.pytest-cov
+                  pythonPkgs.pytest-xdist
                 ];
                 doCheck = true;
                 preCheck = ''
@@ -88,6 +89,10 @@
                 # batch lands. It is measured WITHOUT the slow tests, so it
                 # trails the out-of-sandbox number.
                 pytestFlags = [
+                  "-n"
+                  "auto"
+                  "--dist"
+                  "worksteal"
                   "--cov=corecycler"
                   "--cov-report=term-missing"
                   "--cov-fail-under=100"
