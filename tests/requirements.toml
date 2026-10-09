@@ -82,8 +82,7 @@ task = "S4"
 [[requirement]]
 id = "C10"
 statement = "Owned knobs go to baseline after every AllCore stage run and the next run writes its vector right before its load"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "C11"
@@ -3895,8 +3894,7 @@ proof = "built"
 [[requirement]]
 id = "D34"
 statement = "Owned knobs go to baseline after every AllCore stage run and the next run writes its vector right before its load"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "D35"

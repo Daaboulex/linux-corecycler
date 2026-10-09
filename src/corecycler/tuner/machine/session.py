@@ -1398,13 +1398,15 @@ def _next_wait(after: SessionState, spec: TestSpec, pausing: bool) -> Transition
         return _enter_pause(after, PauseReason.USER, "paused by the user")
     token = after.next_token
     waiting = replace(after, slot=Waiting(token, 0.0), next_token=token + 1)
-    effects: list = [_commit(waiting)]
-    if spec.stage is Stage.SEARCH:
-        effects.append(WriteCO(spec.core, after.baseline_of(spec.core)))
+    return Transition(waiting, (_commit(waiting), *_back_to_baseline(after, spec), Schedule(token, 0.0)))
+
+
+def _back_to_baseline(s: SessionState, spec: TestSpec) -> tuple[WriteCO, ...]:
     if spec.load in ALLCORE_LOADS:
-        effects += [WriteCO(core, base) for core, base in after.baseline]
-    effects.append(Schedule(token, 0.0))
-    return Transition(waiting, tuple(effects))
+        return tuple(WriteCO(core, base) for core, base in s.baseline)
+    if spec.stage is Stage.SEARCH:
+        return (WriteCO(spec.core, s.baseline_of(spec.core)),)
+    return ()
 
 
 def _retry_flow(s: SessionState, spec: TestSpec) -> Flow:
@@ -1429,11 +1431,7 @@ def _thermal(s: SessionState, spec: TestSpec, rep: Report, pausing: bool, w: Wor
         slot=Waiting(token, cfg.cool_min_s, cool_below_c=limit, cool_deadline=w.now + cfg.cool_cap_s),
         next_token=token + 1,
     )
-    effects: list = [_commit(waiting)]
-    if spec.stage is Stage.SEARCH:
-        effects.append(WriteCO(spec.core, after.baseline_of(spec.core)))
-    effects.append(Schedule(token, cfg.cool_min_s))
-    return Transition(waiting, tuple(effects))
+    return Transition(waiting, (_commit(waiting), *_back_to_baseline(after, spec), Schedule(token, cfg.cool_min_s)))
 
 
 def _apparatus(s: SessionState, spec: TestSpec, rep: Report, pausing: bool) -> Transition:
@@ -1449,10 +1447,7 @@ def _apparatus(s: SessionState, spec: TestSpec, rep: Report, pausing: bool) -> T
     effects: list = []
     if rep.group is Group.SLEPT:
         effects.append(ForgetResident())
-    effects.append(_commit(waiting))
-    if spec.stage is Stage.SEARCH:
-        effects.append(WriteCO(spec.core, after.baseline_of(spec.core)))
-    effects.append(Schedule(token, 0.0))
+    effects += [_commit(waiting), *_back_to_baseline(after, spec), Schedule(token, 0.0)]
     return Transition(waiting, tuple(effects))
 
 

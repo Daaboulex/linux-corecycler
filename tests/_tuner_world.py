@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, replace
 
 from corecycler.history.db import JournalRow
 from corecycler.tuner.live import crash_suspects, resident_at_death
-from corecycler.tuner.machine.session import transition
+from corecycler.tuner.machine.session import ALLCORE_LOADS, transition
 from corecycler.tuner.machine.types import (
     Abort,
     Announce,
@@ -35,12 +35,14 @@ from corecycler.tuner.machine.types import (
     Schedule,
     SessionState,
     SmuRefused,
+    Stage,
     Start,
     StartWorker,
     StopWorker,
     Stored,
     Supersede,
     Transition,
+    Waiting,
     WorkerReported,
     World,
     WriteCO,
@@ -165,6 +167,8 @@ class Fake:
             follow = self.run(before, result)
             self.state = result.state
             self.check(before, ev, result)
+            if follow is None:
+                self.check_settled(before, ev, result)
             if isinstance(ev, CrashEvidenceRead) and ev.dirty_end and stored_before is not None:
                 for name in ("incidents", "resume_streak"):
                     if getattr(result.state, name) > getattr(stored_before, name) + 1:
@@ -314,6 +318,23 @@ class Fake:
         for core, value in vector.items():
             if self.co.get(core) != value:
                 raise Broken(f"core {core} sits at {self.co.get(core)} during a {spec.stage} test that needs {value}")
+
+    def check_settled(self, before: SessionState, event, result: Transition) -> None:
+        s = result.state
+        if (
+            isinstance(event, WorkerReported)
+            and isinstance(before.slot, InFlight)
+            and before.slot.token == event.token
+            and (before.slot.spec.load in ALLCORE_LOADS or before.slot.spec.stage is Stage.SEARCH)
+            and s.lifecycle is Lifecycle.RUNNING
+            and isinstance(s.slot, Waiting)
+        ):
+            for core, base in s.baseline:
+                if self.co.get(core) != base and core not in self.outside:
+                    raise Broken(
+                        f"core {core} waits at {self.co.get(core)} after a {before.slot.spec.stage} test "
+                        f"reported {event.report.group}, not at its baseline {base}"
+                    )
 
     def check(self, before: SessionState, event, result: Transition) -> None:
         s = result.state

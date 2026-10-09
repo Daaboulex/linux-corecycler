@@ -5,7 +5,7 @@ from dataclasses import fields, replace
 import pytest
 
 from corecycler.tuner.machine import search
-from corecycler.tuner.machine.session import config_problem, stored, transition
+from corecycler.tuner.machine.session import ALLCORE_LOADS, config_problem, stored, transition
 from corecycler.tuner.machine.types import (
     KNOB_FLOOR,
     ContinuationDue,
@@ -75,6 +75,18 @@ def running_fake():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     start(fake)
     return fake
+
+
+@pytest.mark.req("C10", "D34")
+@pytest.mark.parametrize("report", [Report(Group.THERMAL, 5.0), Report(Group.APPARATUS, 1.0, detail="tool died")])
+def test_an_all_core_test_that_ends_without_a_verdict_sends_every_owned_core_back_to_baseline(report):
+    fake = running_fake()
+    while fake.worker is None or fake.worker.spec.load not in ALLCORE_LOADS:
+        assert fake.progress()
+    assert any(value != 0 for _, value in fake.worker.spec.vector)
+    fake.deliver(report)
+    assert fake.state.lifecycle is Lifecycle.RUNNING
+    assert {core: fake.co[core] for core, _ in fake.state.baseline} == dict(fake.state.baseline)
 
 
 @pytest.mark.parametrize(
