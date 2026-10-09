@@ -1276,8 +1276,7 @@ proof = "built"
 [[requirement]]
 id = "L01.2.stored"
 statement = "Start refuses while another stored session is held (running or paused), offering Resume N or Abort N"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L01.3"

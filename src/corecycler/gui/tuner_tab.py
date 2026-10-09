@@ -53,7 +53,16 @@ from corecycler.gui.widgets import add_setting, note, setting_grid, spoken
 from corecycler.smu.writer_lock import running_driver
 from corecycler.tuner.live import config_to_json, read_stored
 from corecycler.tuner.live_hw import sched_ext_note
-from corecycler.tuner.machine.types import KNOB_FLOOR, MachineConfig, Mode, PauseReason, Phase, Stage, Stored
+from corecycler.tuner.machine.types import (
+    HELD_STATUSES,
+    KNOB_FLOOR,
+    MachineConfig,
+    Mode,
+    PauseReason,
+    Phase,
+    Stage,
+    Stored,
+)
 from corecycler.tuner.orders import Method, default_method
 from corecycler.tuner.stages import WARM_HOLD
 
@@ -501,7 +510,7 @@ class TunerTab(QWidget):
 
     def waiting_session(self) -> SessionView | None:
         view = self._view
-        return view if view is not None and view.status in ("running", "paused") else None
+        return view if view is not None and view.status in HELD_STATUSES else None
 
     def _show(self) -> None:
         view = self._view

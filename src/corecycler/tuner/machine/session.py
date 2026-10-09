@@ -252,6 +252,9 @@ def _start(s: SessionState, e: Start, w: World) -> Transition:
 def _start_problem(cfg, e: Start, w: World) -> str | None:
     if w.preflight_refusal is not None:
         return w.preflight_refusal
+    if w.held_session is not None:
+        held, status = w.held_session
+        return f"session {held} is {status}: resume it or abort it before starting another"
     if cfg.mode is not Mode.CO:
         return f"the {cfg.mode.value} mode is not built yet; only per-core CO runs"
     problem = config_problem(cfg, w.co_range)
@@ -382,7 +385,9 @@ def _restart_on_setup(s: SessionState, e: RestartOnSetup, w: World) -> Transitio
     problem = _setup_choice_problem(s, w)
     if problem is not None:
         return Transition(s, refused=problem)
-    started = _start(SessionState(next_token=s.next_token), Start(s.config, e.child_id, s.seed, e.acknowledged), w)
+    parent_held = w.held_session is not None and w.held_session[0] == s.session_id
+    world = replace(w, held_session=None) if parent_held else w
+    started = _start(SessionState(next_token=s.next_token), Start(s.config, e.child_id, s.seed, e.acknowledged), world)
     if started.refused is not None:
         return Transition(s, refused=started.refused)
     rest = tuple(effect for effect in started.effects if not isinstance(effect, Commit))

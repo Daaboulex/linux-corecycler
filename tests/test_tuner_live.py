@@ -589,6 +589,22 @@ def test_a_survival_mark_that_cannot_be_written_is_a_database_failure_naming_it(
     assert any(line.startswith("database_failed: the survival mark could not be written: disk full") for line in said)
 
 
+@pytest.mark.req("L01.2.stored")
+def test_a_new_start_is_refused_while_the_newest_session_is_held_and_allowed_once_it_is_not(tmp_path):
+    db = database(tmp_path / "held.db")
+    first = rig(tmp_path, FakeHardware(), db=db)
+    first.start(config(), 1, 7, True)
+    first.post(PauseRequest())
+    assert first.state.lifecycle in (Lifecycle.PAUSING, Lifecycle.PAUSED)
+    second = rig(tmp_path, FakeHardware(), db=db)
+    second.start(config(), 2, 7, True)
+    assert second.refused is not None and second.refused.startswith("session 1 is paused")
+    first.post(live.Abort())
+    third = rig(tmp_path, FakeHardware(), db=db)
+    third.start(config(), 2, 7, True)
+    assert third.refused is None
+
+
 def in_flight(r: LiveRig):
     r.start(config(), 1, 7, True)
     while r.worker is None:

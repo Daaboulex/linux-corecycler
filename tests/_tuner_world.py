@@ -7,6 +7,7 @@ from corecycler.history.db import JournalRow
 from corecycler.tuner.live import crash_suspects, resident_at_death
 from corecycler.tuner.machine.session import ALLCORE_LOADS, transition
 from corecycler.tuner.machine.types import (
+    HELD_STATUSES,
     Abort,
     Announce,
     AwaitWorker,
@@ -149,6 +150,9 @@ class Fake:
             cpus_of=self.layout.cpus_of,
             domain_of=self.layout.domain_of,
             two_t_problem=self.two_t_problem,
+            held_session=(self.db.session_id, self.db.status)
+            if self.db is not None and self.db.status in HELD_STATUSES
+            else None,
         )
 
     def post(self, event) -> None:

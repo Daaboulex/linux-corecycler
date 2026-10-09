@@ -25,6 +25,9 @@ class Lifecycle(StrEnum):
 TERMINAL = frozenset({Lifecycle.COMPLETED, Lifecycle.ABORTED, Lifecycle.QUARANTINED})
 
 
+HELD_STATUSES = frozenset({"running", "paused"})
+
+
 class PauseReason(StrEnum):
     USER = "user"
     RESUMING = "resuming"
@@ -500,6 +503,7 @@ class World:
     now: float = 0.0
     temperature_c: float | None = None
     stored: Stored | None = None
+    held_session: tuple[int, str] | None = None
     cpus_of: tuple[tuple[int, tuple[int, ...]], ...] = ()
     domain_of: tuple[tuple[int, int | None], ...] = ()
     two_t_problem: str | None = None

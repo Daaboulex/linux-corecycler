@@ -142,6 +142,7 @@ def test_an_all_core_test_that_ends_without_a_verdict_sends_every_owned_core_bac
         (replace(CFG, wait_between_cores_s=-1.0), LAYOUT, True, "wait_between_cores_s -1.0 is below 0.0"),
         (replace(CFG, fine_step=3, coarse_step=2), LAYOUT, True, "fine_step 3 is above coarse_step 2"),
         (CFG, replace(LAYOUT, co_range=None), True, "CO range is unknown"),
+        (CFG, replace(LAYOUT, held_session=(4, "paused")), True, "session 4 is paused: resume it or abort it"),
         (replace(CFG, max_offset=-51), LAYOUT, True, "max_offset -51 is outside -50..-1"),
         (replace(CFG, max_offset=0), LAYOUT, True, "max_offset 0 is outside -50..-1"),
         (replace(CFG, max_offset=-2, fine_step=3, coarse_step=3), LAYOUT, True, "outside -50..-3"),
@@ -432,6 +433,14 @@ def test_continue_carries_the_session_into_a_child_under_the_new_setup_and_super
     assert (supersede.parent.session_id, supersede.parent.status, supersede.origin) == (1, "superseded", "continue")
     assert supersede.child.session_id == 2
     assert result.effects[0] is supersede
+
+
+@pytest.mark.req("L01.2.stored")
+@pytest.mark.parametrize(("held", "refused"), [((1, "paused"), None), ((9, "paused"), "session 9 is paused")])
+def test_a_restart_supersedes_its_own_held_parent_but_not_another_held_session(held, refused):
+    fake = paused_on_a_new_setup()
+    result = transition(fake.state, RestartOnSetup(2, acknowledged=True), replace(fake.world(), held_session=held))
+    assert result.refused == refused or (refused is not None and result.refused.startswith(refused))
 
 
 @pytest.mark.req("L24.d.restart", "L24.l24b.restart")
