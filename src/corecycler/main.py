@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import signal
 import sys
 from pathlib import Path
 
@@ -208,6 +209,20 @@ def _bootstrap_sudo_session() -> None:
         log.debug("session bus %s refuses this user; dropped so nothing tries it", address)
 
 
+def _install_signal_handlers(app, cleanup) -> None:
+    from PySide6.QtCore import QTimer
+
+    def quit_from_event_loop() -> None:
+        cleanup()
+        app.quit()
+
+    def handler(signum, frame) -> None:
+        QTimer.singleShot(0, quit_from_event_loop)
+
+    for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(number, handler)
+
+
 def _install_exception_hooks(window) -> None:
     """Uncaught exceptions must SURFACE, never vanish: log the full traceback
     and tell the user. The tuner runs in its own driver process, which a GUI
@@ -384,7 +399,6 @@ def main() -> int:
         QTimer.singleShot(auto_resume_delay * 1000, window.attempt_auto_resume)
 
     import atexit
-    import signal
 
     def _cleanup_on_exit():
         """Kill any running stress processes on forced exit."""
@@ -404,16 +418,7 @@ def main() -> int:
             print(f"exit cleanup: memory stop failed: {e}", file=sys.stderr)
 
     atexit.register(_cleanup_on_exit)
-
-    def _signal_handler(signum, frame):
-        _cleanup_on_exit()
-        app.quit()
-
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
-    if hasattr(signal, "SIGHUP"):
-        signal.signal(signal.SIGHUP, _signal_handler)
-
+    _install_signal_handlers(app, _cleanup_on_exit)
     _install_exception_hooks(window)
 
     window.show()
