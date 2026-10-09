@@ -934,8 +934,7 @@ proof = "built"
 [[requirement]]
 id = "G1"
 statement = "A PASS sets the apparatus and thermal streaks to 0, then the loop's pass rule runs"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "G2"
