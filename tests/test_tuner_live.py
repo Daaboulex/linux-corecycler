@@ -1796,8 +1796,43 @@ def test_a_revert_that_fails_is_said_and_the_core_left_unknown(tmp_path):
     r.start(config(), 1, 7, True)
     hardware.refuse = 4
     r.run_until_rest(0.01)
-    assert any(line.startswith("revert of core") for line in said)
+    assert any(line.startswith("revert_failed: core") for line in said)
     assert None in r.resident.values()
+    stored = rows(r, "SELECT message FROM tuner_events WHERE session_id=1 AND severity='revert_failed'")
+    assert stored and "could not be written back" in stored[0]["message"]
+    assert "refused for the test" in stored[0]["message"]
+
+
+def test_an_abort_never_claims_the_cores_are_at_baseline(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    hardware.refuse = 4
+    r.post(live.Abort())
+    aborted = rows(r, "SELECT message FROM tuner_events WHERE session_id=1 AND severity='aborted'")
+    assert aborted == [{"message": "aborted on request; every owned core is sent back to its baseline"}]
+    failed = rows(r, "SELECT message FROM tuner_events WHERE session_id=1 AND severity='revert_failed'")
+    assert len(failed) == 1
+
+
+def test_a_failed_revert_that_cannot_be_recorded_is_said_and_reported_as_a_database_failure(tmp_path):
+    said = []
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.say = said.append
+    r.start(config(), 1, 7, True)
+    record = r.store.event
+
+    def event(session, kind, text, boot):
+        if kind == "revert_failed":
+            raise sqlite3.Error("disk full")
+        return record(session, kind, text, boot)
+
+    r.store.event = event
+    hardware.refuse = 4
+    r.post(live.Abort())
+    assert any(line.startswith("revert_failed: core") for line in said)
+    assert "database_failed: the failed revert could not be recorded: disk full" in said
 
 
 def test_a_sleep_between_tests_makes_the_rig_rewrite_every_core(tmp_path):

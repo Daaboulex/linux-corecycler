@@ -28,7 +28,7 @@ EXIT_MEANINGS = {
     EXIT_REFUSED: "refused (bad config or environment)",
     EXIT_ABORTED: "aborted",
     EXIT_LOCKED: "another CO writer holds the lock",
-    EXIT_SIGNAL: "stopped by a signal (offsets reverted to baseline)",
+    EXIT_SIGNAL: "stopped by a signal; every owned core is sent back to its baseline",
 }
 
 SESSION_COMMANDS = ("resume", "validate", "continue", "restart")

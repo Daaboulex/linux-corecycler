@@ -729,12 +729,15 @@ def _abort(s: SessionState) -> Transition:
     if profile is not None and tuple((r.core, r.value) for r in s.cores) == profile:
         effects = _stop_effects(s, profile, journal=True)
         done = replace(s, lifecycle=Lifecycle.COMPLETED, flow=None, slot=None, pause=None, streaks=Streaks())
-        effects += [_commit(done), Announce("completed", "validation aborted: the completed values stand")]
+        effects += [
+            _commit(done),
+            Announce("completed", "validation aborted; the session stays completed and its values are sent back"),
+        ]
         return Transition(done, tuple(effects))
     effects = _stop_effects(s, s.baseline, journal=True)
     effects += [
         Commit(replace(stored(s), status="aborted")),
-        Announce("aborted", "every owned core is at its baseline"),
+        Announce("aborted", "aborted on request; every owned core is sent back to its baseline"),
     ]
     aborted = replace(s, lifecycle=Lifecycle.ABORTED, flow=None, slot=None, pause=None, streaks=Streaks())
     return Transition(aborted, tuple(effects))
@@ -1462,7 +1465,7 @@ def _database_failed(s: SessionState, e: DatabaseFailed) -> Transition:
     failed = _clear_in_test(
         replace(s, lifecycle=Lifecycle.PAUSED, slot=None, pause=Pause(PauseReason.DATABASE, e.error), streaks=Streaks())
     )
-    effects.append(Announce("database_failed", f"every owned core is at stock; {e.error}"))
+    effects.append(Announce("database_failed", f"{e.error}; every owned core is sent back to stock"))
     return Transition(failed, tuple(effects))
 
 

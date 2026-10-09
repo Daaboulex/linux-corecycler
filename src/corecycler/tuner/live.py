@@ -580,6 +580,7 @@ class LiveRig:
                     return DatabaseFailed(f"the CO journal could not be confirmed: {exc}")
             case RevertAll(values=values, journal=journal):
                 failed: sqlite3.Error | None = None
+                refused: list[str] = []
                 for core, value in values:
                     row = None
                     if journal and failed is None:
@@ -590,12 +591,21 @@ class LiveRig:
                     problem = self.hardware.write_co(core, value)
                     self.resident[core] = None if problem else value
                     if problem is not None:
-                        self.say(f"revert of core {core} to {value} failed: {problem}")
+                        refused.append(
+                            f"core {core} could not be written back to {value} ({problem}); its value is unknown"
+                        )
                     elif row is not None:
                         try:
                             self.store.journal_confirm(row)
                         except sqlite3.Error as exc:
                             failed = exc
+                if refused:
+                    self.say("revert_failed: " + "; ".join(refused))
+                    if journal and failed is None:
+                        try:
+                            self.store.event(acting.session_id, "revert_failed", "; ".join(refused), self.boot)
+                        except sqlite3.Error as exc:
+                            return DatabaseFailed(f"the failed revert could not be recorded: {exc}")
                 if failed is not None:
                     return DatabaseFailed(f"the CO journal failed during a revert: {failed}")
             case StopWorker(token=token):

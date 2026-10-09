@@ -733,8 +733,16 @@ EXIT_OF = {
 OUTCOME_NOTES = {
     EXIT_COMPLETED: ("Tuning complete", "The session finished and confirmed a profile.", "normal"),
     EXIT_PAUSED: ("Tuning paused", "The tuner stopped for attention: check the log.", "critical"),
-    EXIT_QUARANTINED: ("Tuning quarantined", "The profile is unsafe; cores forced to stock.", "critical"),
-    EXIT_ABORTED: ("Tuning aborted", "Every owned core is back at its baseline.", "critical"),
+    EXIT_QUARANTINED: (
+        "Tuning quarantined",
+        "The found values were judged unsafe; every owned core is sent back to stock. A failed write is in the log.",
+        "critical",
+    ),
+    EXIT_ABORTED: (
+        "Tuning aborted",
+        "Every owned core is sent back to its baseline. A failed write is in the log.",
+        "critical",
+    ),
 }
 
 
