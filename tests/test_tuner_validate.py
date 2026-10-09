@@ -118,6 +118,7 @@ def test_an_abort_after_a_back_off_ends_the_session_aborted():
         ),
     ],
 )
+@pytest.mark.req("TRUTH.BOOT_END_UNREAD")
 def test_validation_is_refused_naming_why(change, reason):
     fake = completed()
     result = transition(fake.state, ValidateProfile(1), change(fake, fake.world()))

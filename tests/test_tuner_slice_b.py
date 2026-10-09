@@ -190,6 +190,7 @@ def test_a_readable_kernel_log_adds_no_note():
     assert not [e for e in result.effects if isinstance(e, Announce) and e.kind == "kernel_log_unread"]
 
 
+@pytest.mark.req("TRUTH.BOOT_END_UNREAD")
 def test_a_boot_whose_end_cannot_be_read_is_treated_as_a_crash_and_says_so_first():
     result = transition(SEARCHING, evidence_read(end_unread="journalctl -b exited 1"), WORLD)
     assert result.state.core(0).crash_count == 1

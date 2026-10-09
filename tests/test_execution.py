@@ -1437,6 +1437,7 @@ class TestThermalGuard:
         assert watch.safe(next(temps)) is False
         assert watch.safe(next(temps)) is True
 
+    @pytest.mark.req("TRUTH.TEMPERATURE_UNREAD")
     def test_a_trip_is_a_batch_outcome_and_fires_the_hook(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(5)"))
         seen_temps: list[float] = []
@@ -1448,6 +1449,7 @@ class TestThermalGuard:
         assert "104.0 C" in verdicts[0].detail
         assert seen_temps == [104.0]
 
+    @pytest.mark.req("TRUTH.TEMPERATURE_UNREAD")
     def test_an_unreadable_required_sensor_is_no_verdict_and_never_reported_as_heat(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(5)"))
         seen_temps: list[float] = []
@@ -1518,6 +1520,7 @@ class TestWatchIdle:
         assert "104.0 C" in found.text
         assert not stop.is_set()
 
+    @pytest.mark.req("TRUTH.TEMPERATURE_UNREAD")
     def test_an_unreadable_required_sensor_during_idle_is_no_verdict(self):
         blind = ThermalWatch(max_temperature=95, grace_seconds=0, hard_margin=8, require_sensor=True)
         found = watch_idle(**self._args(thermal=blind, sensors=at(None), duration=5.0))

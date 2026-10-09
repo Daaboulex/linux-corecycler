@@ -176,6 +176,7 @@ def test_the_fourth_apparatus_failure_in_a_row_pauses_and_a_verdict_resets_the_s
     assert fake.co == {0: 0}
 
 
+@pytest.mark.req("TRUTH.TEMPERATURE_UNREAD")
 def test_a_thermal_stop_waits_for_the_cpu_to_cool_and_gives_up_at_the_cap():
     fake = fresh(1, [-30], max_offset=-40, k_1t=2)
     start(fake)
@@ -189,6 +190,7 @@ def test_a_thermal_stop_waits_for_the_cpu_to_cool_and_gives_up_at_the_cap():
     assert fake.co == {0: 0}
 
 
+@pytest.mark.req("TRUTH.TEMPERATURE_UNREAD")
 def test_a_temperature_unreadable_while_cooling_pauses_as_no_verdict_not_as_heat():
     fake = fresh(1, [-30], max_offset=-40, k_1t=2)
     start(fake)

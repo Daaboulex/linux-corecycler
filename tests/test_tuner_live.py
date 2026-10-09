@@ -361,6 +361,7 @@ def test_a_reboot_during_a_test_convicts_the_tested_core_on_resume(tmp_path):
     assert again.run_until_rest(0.01).lifecycle is Lifecycle.COMPLETED
 
 
+@pytest.mark.req("TRUTH.BOOT_END_UNREAD")
 def test_a_reboot_whose_end_cannot_be_read_is_treated_as_a_crash_and_recorded_as_such(tmp_path):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
@@ -1805,6 +1806,7 @@ def test_the_live_module_exports_the_controls():
     assert run_to_rest
 
 
+@pytest.mark.req("TRUTH.REVERT_RESULT")
 def test_a_revert_that_fails_is_said_and_the_core_left_unknown(tmp_path):
     said = []
     hardware = FakeHardware()
@@ -1820,6 +1822,7 @@ def test_a_revert_that_fails_is_said_and_the_core_left_unknown(tmp_path):
     assert "refused for the test" in stored[0]["message"]
 
 
+@pytest.mark.req("TRUTH.REVERT_RESULT")
 def test_an_abort_never_claims_the_cores_are_at_baseline(tmp_path):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
@@ -1832,6 +1835,7 @@ def test_an_abort_never_claims_the_cores_are_at_baseline(tmp_path):
     assert len(failed) == 1
 
 
+@pytest.mark.req("TRUTH.REVERT_RESULT")
 def test_a_failed_revert_that_cannot_be_recorded_is_said_and_reported_as_a_database_failure(tmp_path):
     said = []
     hardware = FakeHardware()
