@@ -145,6 +145,15 @@ class ThermalWatch:
             require_sensor=config.require_thermal_sensor,
         )
 
+    def stop_signal(self, phase: str) -> LaneSignal:
+        if self.last_temperature is None:
+            return LaneSignal(Outcome.UNVERIFIED, f"the CPU temperature could not be read during {phase}")
+        return LaneSignal(
+            Outcome.THERMAL,
+            f"CPU temperature {self.last_temperature:.1f} C at the {self.max_temperature} C safety limit "
+            f"during {phase}",
+        )
+
     def safe(self, temp: float | None) -> bool:
         self.last_temperature = temp
         if temp is None:
@@ -375,10 +384,7 @@ class Supervisor:
                 temp = self.thermal.last_temperature
                 if self.hooks.on_thermal and temp is not None:
                     self.hooks.on_thermal(temp)
-                tripped = LaneSignal(
-                    Outcome.THERMAL,
-                    f"CPU temperature exceeded {self.thermal.max_temperature} C safety limit during {self.phase}",
-                )
+                tripped = self.thermal.stop_signal(self.phase)
                 for run in runs:
                     run.signals.append(tripped)
             self._take_kernel_events(runs)
@@ -650,11 +656,7 @@ def watch_idle(
         final = bool(found) or time.monotonic() - start >= duration or stop_event.is_set()
         if not final and not thermal.safe(sensors().hottest):
             final = True
-            found.append(
-                LaneSignal(
-                    Outcome.THERMAL, f"CPU temperature exceeded {thermal.max_temperature} C safety limit during {phase}"
-                )
-            )
+            found.append(thermal.stop_signal(phase))
         read = detector.read_new(final=final)
         observed.extend(read.events)
         found.extend(hit for hit in (kernel_signal(event, cpus, phase) for event in read.events) if hit is not None)

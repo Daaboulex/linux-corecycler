@@ -1445,7 +1445,21 @@ class TestThermalGuard:
         )
         verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 5.0)
         assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.THERMAL] * 2
+        assert "104.0 C" in verdicts[0].detail
         assert seen_temps == [104.0]
+
+    def test_an_unreadable_required_sensor_is_no_verdict_and_never_reported_as_heat(self, tmp_path):
+        backend = FakeBackend(_child("import time; time.sleep(5)"))
+        seen_temps: list[float] = []
+        blind = ThermalWatch(max_temperature=95, grace_seconds=0, hard_margin=8, require_sensor=True)
+        supervisor, _, _ = make_supervisor(
+            backend, thermal=blind, sensors=at(None), hooks=SuperviseHooks(on_thermal=seen_temps.append)
+        )
+        verdicts = supervisor.run(two_lanes(tmp_path), StressConfig(), 5.0)
+        assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.UNVERIFIED] * 2
+        assert "could not be read" in verdicts[0].detail
+        assert "safety limit" not in verdicts[0].detail
+        assert seen_temps == []
 
     def test_a_trip_reaches_a_lane_that_had_already_ended(self, tmp_path):
         alive_by_tick: dict[float, set[int]] = {}
@@ -1501,8 +1515,14 @@ class TestWatchIdle:
         stop = threading.Event()
         found = watch_idle(**self._args(thermal=hot_thermal(), sensors=at(104.0), duration=5.0, stop_event=stop))
         assert found is not None and found.outcome is Outcome.THERMAL
-        assert "temperature" in found.text
+        assert "104.0 C" in found.text
         assert not stop.is_set()
+
+    def test_an_unreadable_required_sensor_during_idle_is_no_verdict(self):
+        blind = ThermalWatch(max_temperature=95, grace_seconds=0, hard_margin=8, require_sensor=True)
+        found = watch_idle(**self._args(thermal=blind, sensors=at(None), duration=5.0))
+        assert found is not None and found.outcome is Outcome.UNVERIFIED
+        assert "could not be read" in found.text
 
     def test_an_own_core_record_outranks_a_thermal_trip_during_idle(self):
         detector = FakeDetector([[own(0)]])

@@ -796,7 +796,16 @@ def _cooling(s: SessionState, slot: Waiting, w: World) -> Transition:
     if w.temperature_c is not None and slot.cool_below_c is not None and w.temperature_c < slot.cool_below_c:
         return _next(replace(s, slot=Waiting(slot.token, 0.0)), w, None)
     if slot.cool_deadline is not None and w.now >= slot.cool_deadline:
-        return _enter_pause(s, PauseReason.THERMAL, "the CPU did not cool below the limit within the cap")
+        if w.temperature_c is None:
+            return _enter_pause(
+                s, PauseReason.APPARATUS, "the CPU temperature could not be read, so cooling was never confirmed"
+            )
+        return _enter_pause(
+            s,
+            PauseReason.THERMAL,
+            f"the CPU was at {w.temperature_c:.1f} C, not below {slot.cool_below_c:.1f} C, "
+            "when the cool-down cap ran out",
+        )
     token = s.next_token
     waiting = replace(slot, token=token, seconds=COOL_POLL_S)
     return Transition(replace(s, slot=waiting, next_token=token + 1), (Schedule(token, COOL_POLL_S),))

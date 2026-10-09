@@ -185,6 +185,21 @@ def test_a_thermal_stop_waits_for_the_cpu_to_cool_and_gives_up_at_the_cap():
     while fake.timer is not None and fake.state.lifecycle is Lifecycle.RUNNING:
         fake.fire()
     assert fake.state.pause.reason is PauseReason.THERMAL
+    assert "99.0 C" in fake.state.pause.detail
+    assert fake.co == {0: 0}
+
+
+def test_a_temperature_unreadable_while_cooling_pauses_as_no_verdict_not_as_heat():
+    fake = fresh(1, [-30], max_offset=-40, k_1t=2)
+    start(fake)
+    fake.fire()
+    fake.temperature = 99.0
+    fake.deliver(Report(Group.THERMAL, 5.0))
+    fake.temperature = None
+    while fake.timer is not None and fake.state.lifecycle is Lifecycle.RUNNING:
+        fake.fire()
+    assert fake.state.pause.reason is PauseReason.APPARATUS
+    assert "could not be read" in fake.state.pause.detail
     assert fake.co == {0: 0}
 
 
