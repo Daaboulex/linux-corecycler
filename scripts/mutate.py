@@ -139,25 +139,28 @@ def _build(path: Path, index: int) -> Mutant | None:
 
 
 def _run(tests: list[str], timeout: int) -> bool:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-x",
-            "-q",
-            "--no-header",
-            "-p",
-            "no:cacheprovider",
-            "-m",
-            "not slow",
-            f"--timeout={timeout}",
-            *tests,
-        ],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-x",
+                "-q",
+                "--no-header",
+                "-p",
+                "no:cacheprovider",
+                "-m",
+                "not slow",
+                *tests,
+            ],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return True
     return result.returncode != 0
 
 
@@ -166,7 +169,7 @@ def main() -> int:
     parser.add_argument("--src", action="append", required=True)
     parser.add_argument("--tests", nargs="+", required=True)
     parser.add_argument("--max", type=int, default=0)
-    parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--timeout", type=int, default=600)
     args = parser.parse_args()
 
     targets: list[Path] = []
@@ -175,7 +178,7 @@ def main() -> int:
         targets.extend(sorted(path.rglob("*.py")) if path.is_dir() else [path])
 
     if _run(args.tests, args.timeout):
-        print("BASELINE FAILED: the test selection is already red -- fix that first")
+        print("BASELINE FAILED: the test selection is already red or did not finish within --timeout")
         return 2
 
     killed, survived = 0, []
