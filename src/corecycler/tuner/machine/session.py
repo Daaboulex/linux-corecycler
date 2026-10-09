@@ -722,6 +722,9 @@ def _apply_evidence(s: SessionState, ev, at_stock: bool = False) -> SessionState
 
 
 def _pause_request(s: SessionState) -> Transition:
+    if s.lifecycle is Lifecycle.RUNNING and isinstance(s.slot, InFlight) and s.slot.spec.load in ALLCORE_LOADS:
+        stage = s.slot.spec.stage
+        return _enter_pause(s, PauseReason.USER, f"paused by the user; the cut {stage} test runs again on resume")
     if s.lifecycle is Lifecycle.RUNNING and isinstance(s.slot, InFlight):
         pausing = replace(s, lifecycle=Lifecycle.PAUSING, pause=Pause(PauseReason.USER, "paused by the user"))
         return Transition(pausing, (_commit(pausing), Announce("pausing", "finishing the current test")))

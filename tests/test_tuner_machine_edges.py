@@ -19,6 +19,7 @@ from corecycler.tuner.machine.types import (
     InternalError,
     Klass,
     Lifecycle,
+    Load,
     MachineConfig,
     Mode,
     Pause,
@@ -75,6 +76,23 @@ def running_fake():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     start(fake)
     return fake
+
+
+@pytest.mark.req("L19.d.soak", "U22")
+@pytest.mark.parametrize("load", [Load.HOT, Load.SOAK])
+def test_a_pause_during_an_all_core_test_stops_it_at_once_and_resume_runs_the_same_test_again(load):
+    fake = running_fake()
+    while fake.worker is None or fake.worker.spec.load is not load:
+        assert fake.progress()
+    cut = fake.worker.spec
+    fake.post(PauseRequest())
+    assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.USER)
+    assert fake.worker is None
+    assert {core: fake.co[core] for core, _ in fake.state.baseline} == dict(fake.state.baseline)
+    fake.post(Resume(1))
+    while fake.worker is None:
+        assert fake.progress()
+    assert (fake.worker.spec.stage, fake.worker.spec.load, fake.worker.spec.vector) == (cut.stage, cut.load, cut.vector)
 
 
 @pytest.mark.req("C10", "D34")

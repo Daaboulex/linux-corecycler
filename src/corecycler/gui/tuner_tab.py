@@ -430,7 +430,7 @@ class TunerTab(QWidget):
         self._buttons: dict[str, QPushButton] = {}
         for name, action in (
             ("Start", self._on_start),
-            ("Pause", lambda: self._signal(signal.SIGUSR1, "pause after the current test")),
+            ("Pause", lambda: self._signal(signal.SIGUSR1, "pause: a one-core test finishes, an all-core test stops")),
             ("Stop", lambda: self._signal(signal.SIGTERM, "stop now; the session stays paused")),
             ("Abort", self._on_abort),
             ("Resume", lambda: self._on_session("resume")),

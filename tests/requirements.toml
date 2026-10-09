@@ -2613,14 +2613,13 @@ task = "T29"
 
 [[requirement]]
 id = "L19.d.inflight"
-statement = "Pause with a test in flight stores paused, announces finishing the current test and enters PAUSING"
+statement = "Pause with a per-core test in flight stores paused, announces finishing the current test and enters PAUSING; an all-core test is stopped at once instead (U22)"
 proof = "built"
 
 [[requirement]]
 id = "L19.d.soak"
 statement = "A Pause in SOAK stops the worker, reverts, waits K20 and pauses P(USER)"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L19.d.waiting"
@@ -3267,8 +3266,7 @@ task = "O7"
 [[requirement]]
 id = "U22"
 statement = "A Pause during any all-core stage stops the running test at once; the cut test gives no verdict and runs again from its start on resume (D92)"
-proof = "not built"
-task = "T27"
+proof = "built"
 
 [[requirement]]
 id = "U24"
