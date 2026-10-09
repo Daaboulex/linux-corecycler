@@ -1724,6 +1724,23 @@ def test_the_command_line_validates_a_completed_session(tmp_path):
     assert "rest: completed" in said
 
 
+@pytest.mark.req("ORDER.seed")
+@pytest.mark.parametrize(
+    ("given", "seed", "says"),
+    [((), 424242, "order seed 424242, drawn at Start"), (("--seed", "7"), 7, "order seed 7, given")],
+)
+def test_a_start_draws_its_order_seed_unless_one_is_given(tmp_path, monkeypatch, given, seed, says):
+    monkeypatch.setattr(live_hw.secrets, "randbelow", lambda bound: 424242)
+    args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--start", "--cores", "0,1,8", "--write", *given])
+    started, said = [], []
+    r = rig(tmp_path)
+    r.start = lambda config, session, chosen, acknowledged: started.append(chosen)
+    r.run_until_rest = lambda wait=1.0: r.state
+    live_hw.run(args, r, said.append)
+    assert started == [seed]
+    assert says in said
+
+
 @pytest.mark.req("VERDICT.27")
 @pytest.mark.req("VERDICT.27b")
 def test_signals_queue_the_owner_s_controls(tmp_path, monkeypatch):

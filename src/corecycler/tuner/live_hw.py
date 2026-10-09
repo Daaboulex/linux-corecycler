@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import random
+import secrets
 import signal
 import struct
 import sys
@@ -661,7 +662,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--k1", dest="k_1t", type=int)
     parser.add_argument("--k2", dest="k_2t", type=int)
     parser.add_argument("--wait-between-cores", dest="wait_between_cores_s", type=float)
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--acknowledge", action="store_true")
     args = parser.parse_args(argv)
@@ -781,8 +782,12 @@ def _run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> 
             say(f"refused: the start configuration: {e}")
             return EXIT_REFUSED
         session = rig.store.new_session_id()
+        seed, origin = args.seed, "given"
+        if seed is None:
+            seed, origin = secrets.randbelow(1 << 31), "drawn at Start"  # equivalent-mutant: any positive bound works
         say(f"session {session}")
-        rig.start(config, session, args.seed, args.acknowledge)
+        say(f"order seed {seed}, {origin}")
+        rig.start(config, session, seed, args.acknowledge)
     elif args.validate:
         rig.validate(args.session)
     else:
