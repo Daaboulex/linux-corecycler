@@ -13,6 +13,12 @@ COLUMN_SPLIT_C = 75.0
 NEAR_BAND_MHZ = 150
 NEAR_COLUMN_C = 5.0
 OWNER_PRIORITY = (8, 0, 9, 10, 11, 13, 12, 2, 1, 3, 4, 5, 6, 7, 14, 15)
+OWNER_MODEL = "AMD Ryzen 9 9950X3D 16-Core Processor"
+OWNER_CORE_MAP = tuple((core, core // 8) for core in range(16))
+
+
+def is_owner_layout(model_name: str, domain_of: tuple[tuple[int, int | None], ...]) -> bool:
+    return model_name.strip() == OWNER_MODEL and tuple(sorted(domain_of)) == OWNER_CORE_MAP
 
 
 @dataclass(frozen=True, slots=True)

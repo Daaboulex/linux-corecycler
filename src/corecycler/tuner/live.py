@@ -481,25 +481,26 @@ class LiveRig:
     cpus_of: tuple[tuple[int, tuple[int, ...]], ...]
     domain_of: tuple[tuple[int, int | None], ...]
     co_range: tuple[int, int] | None
+    owner_layout: bool
     two_t_problem: str | None = None
     tjmax_c: float | None = None
     say: Callable[[str], None] = print
     clock: Callable[[], float] = time.monotonic
-    state: SessionState = field(default_factory=SessionState)
-    resident: dict[int, int | None] = field(default_factory=dict)
-    timer: tuple[int, float] | None = None
-    worker: _Worker | None = None
-    inbox: queue.Queue = field(default_factory=queue.Queue)
-    signals: list = field(default_factory=list)
-    asleep_at_last_check: float = 0.0
-    stored_boot: str | None = None
-    stored_read_ns: int | None = None
-    test_row: tuple[int, int, bool] | None = None
-    boot_recorded: bool = False
-    refused: str | None = None
+    state: SessionState = field(init=False, default_factory=SessionState)
+    resident: dict[int, int | None] = field(init=False, default_factory=dict)
+    timer: tuple[int, float] | None = field(init=False, default=None)
+    worker: _Worker | None = field(init=False, default=None)
+    inbox: queue.Queue = field(init=False, default_factory=queue.Queue)
+    signals: list = field(init=False, default_factory=list)
+    asleep_at_last_check: float = field(init=False, default=0.0)
+    stored_boot: str | None = field(init=False, default=None)
+    stored_read_ns: int | None = field(init=False, default=None)
+    test_row: tuple[int, int, bool] | None = field(init=False, default=None)
+    boot_recorded: bool = field(init=False, default=False)
+    refused: str | None = field(init=False, default=None)
     boot: str = field(init=False)
     setup: tuple[tuple[str, str], ...] = field(init=False)
-    power: PowerState = field(default_factory=PowerState)
+    power: PowerState = field(init=False, default_factory=PowerState)
 
     def __post_init__(self) -> None:
         self.boot = self.hardware.boot_id()
@@ -520,6 +521,7 @@ class LiveRig:
             cpus_of=self.cpus_of,
             domain_of=self.domain_of,
             two_t_problem=self.two_t_problem,
+            owner_layout=self.owner_layout,
             tjmax_c=self.tjmax_c,
             co_range=self.co_range,
         )

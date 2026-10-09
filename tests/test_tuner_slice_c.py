@@ -399,3 +399,17 @@ def once(fake, report):
         return report
 
     fake.verdict_for = first
+
+
+@pytest.mark.req("K36.9b")
+@pytest.mark.parametrize(
+    ("model", "domain_of", "owner"),
+    [
+        ("AMD Ryzen 9 9950X3D 16-Core Processor", tuple((core, core // 8) for core in range(16)), True),
+        ("AMD Ryzen 9 9950X 16-Core Processor", tuple((core, core // 8) for core in range(16)), False),
+        ("AMD Ryzen 9 9950X3D 16-Core Processor", tuple((core, 0) for core in range(16)), False),
+        ("AMD Ryzen 9 9950X3D 16-Core Processor", tuple((core, core // 8) for core in range(15)), False),
+    ],
+)
+def test_the_owner_order_applies_only_on_his_model_and_core_map(model, domain_of, owner):
+    assert allcore.is_owner_layout(model, domain_of) is owner

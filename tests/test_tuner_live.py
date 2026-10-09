@@ -221,6 +221,7 @@ def rig(tmp_path: Path, hardware: FakeHardware | None = None, runner=None, db: H
         cpus_of=CPUS,
         domain_of=DOMAINS,
         co_range=(-50, 10),
+        owner_layout=False,
         say=lambda line: None,
     )
 

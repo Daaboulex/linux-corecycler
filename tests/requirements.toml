@@ -450,8 +450,7 @@ proof = "built"
 [[requirement]]
 id = "K36.9b"
 statement = "The owner's priority order applies on his model and core map"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "K37"
