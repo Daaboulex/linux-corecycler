@@ -1312,8 +1312,7 @@ task = "T28"
 [[requirement]]
 id = "L01.7"
 statement = "Gate 7: containment (cpuset delegation, memory controller)"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L01.8"

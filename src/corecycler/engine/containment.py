@@ -42,6 +42,7 @@ class Containment:
 class Probe:
     mechanism: str | None
     lane_cgroup_parent: str | None
+    problem: str | None = None
 
 
 _probe_cache: dict[str, Probe] = {}
@@ -154,7 +155,7 @@ def _probe_mechanism() -> Probe:
     cmd = [systemd_run, "--scope", "--quiet", "--collect", "-p", "AllowedCPUs=0"]
     if user_mode:
         cmd.insert(1, "--user")
-    cmd += ["--", "cat", "/proc/self/cgroup"]
+    cmd += ["--", "cat", "/proc/self/cgroup", "/proc/self/status"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=_PROBE_TIMEOUT)
     except (subprocess.TimeoutExpired, OSError) as exc:
@@ -167,7 +168,31 @@ def _probe_mechanism() -> Probe:
             (result.stderr or result.stdout).strip()[:200],
         )
         return Probe(None, None)
-    return Probe(MECHANISM_USER if user_mode else MECHANISM_SYSTEM, _parent_of(unified_cgroup_path(result.stdout)))
+    parent = _parent_of(unified_cgroup_path(result.stdout))
+    allowed = _allowed_cpus(result.stdout)
+    if allowed != {0}:
+        return Probe(None, parent, _not_enforced(allowed, parent, user_mode))
+    return Probe(MECHANISM_USER if user_mode else MECHANISM_SYSTEM, parent)
+
+
+def _allowed_cpus(text: str) -> set[int] | None:
+    for line in text.splitlines():
+        if line.startswith("Cpus_allowed_list:"):
+            return _parse_cpu_ranges(line.partition(":")[2].strip())
+    return None
+
+
+def _not_enforced(
+    allowed: set[int] | None, parent: str | None, user_mode: bool, cgroup_base: Path | None = None
+) -> str:
+    ran = "an unreadable set of CPUs" if allowed is None else f"CPUs {cpu_list(allowed)}"
+    controllers = _controllers(parent, cgroup_base)
+    manager = "this user's systemd (user@.service)" if user_mode else "systemd"
+    return (
+        f"a test scope limited to CPU 0 ran on {ran}: AllowedCPUs is not enforced because {manager} does not "
+        f"delegate the cpuset controller (the lane cgroup offers: {controllers}); add cpuset to its "
+        "DelegateControllers, or run as root, so a stress test cannot run on cores outside its lane"
+    )
 
 
 def _parent_of(cgroup_path: str | None) -> str | None:
@@ -184,8 +209,29 @@ def _probe(*, refresh: bool = False) -> Probe:
     return _probe_cache[key]
 
 
+def _controllers(parent: str | None, cgroup_base: Path | None) -> str:
+    if parent is None:
+        return "unknown, the probe reported no cgroup"
+    path = (cgroup_base or Path("/sys/fs/cgroup")) / parent.lstrip("/") / "cgroup.controllers"
+    try:
+        return path.read_text().strip() or "none"
+    except OSError as exc:
+        return f"unreadable ({exc.strerror})"
+
+
 def available_mechanism(*, refresh: bool = False) -> str | None:
     return _probe(refresh=refresh).mechanism
+
+
+def containment_problem(*, refresh: bool = False) -> str | None:
+    probe = _probe(refresh=refresh)
+    if probe.mechanism is not None:
+        return None
+    return probe.problem or "no systemd scope could be started (the probe failed), so no stress test can be contained"
+
+
+def lane_problem() -> str | None:
+    return containment_problem() or memory_accounting_problem()
 
 
 def lane_cgroup_parent() -> str | None:
@@ -221,10 +267,7 @@ def contain(cpus: set[int] | tuple[int, ...] | list[int]) -> Containment:
         raise ContainmentUnavailable(f"invalid CPU set {cpus!r}")
     mechanism = available_mechanism()
     if mechanism is None:
-        raise ContainmentUnavailable(
-            "no cgroup cpuset mechanism available (systemd-run scope probe failed); "
-            "refusing to launch an uncontained stress process"
-        )
+        raise ContainmentUnavailable(f"{containment_problem()}; refusing to launch an uncontained stress process")
     systemd_run = _systemd_run_path()
     if systemd_run is None:
         raise ContainmentUnavailable("systemd-run disappeared after probe")

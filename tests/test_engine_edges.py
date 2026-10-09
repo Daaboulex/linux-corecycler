@@ -43,7 +43,9 @@ class TestContainmentProbe:
 
     def test_a_green_probe_names_the_user_mechanism_and_the_lanes_cgroup(self):
         good = SimpleNamespace(
-            returncode=0, stdout="0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u12.scope\n", stderr=""
+            returncode=0,
+            stdout="0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u12.scope\nCpus_allowed_list:\t0\n",
+            stderr="",
         )
         with (
             patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
@@ -53,10 +55,10 @@ class TestContainmentProbe:
             probe = containment._probe_mechanism()
         assert probe.mechanism == containment.MECHANISM_USER
         assert probe.lane_cgroup_parent == "/user.slice/user-1000.slice/user@1000.service/app.slice"
-        assert run.call_args[0][0][-2:] == ["cat", "/proc/self/cgroup"]
+        assert run.call_args[0][0][-3:] == ["cat", "/proc/self/cgroup", "/proc/self/status"]
 
     def test_a_green_probe_as_root_names_the_system_mechanism_and_the_system_slice(self):
-        good = SimpleNamespace(returncode=0, stdout="0::/system.slice/run-u5.scope\n", stderr="")
+        good = SimpleNamespace(returncode=0, stdout="0::/system.slice/run-u5.scope\nCpus_allowed_list:\t0\n", stderr="")
         with (
             patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
             patch.object(containment.subprocess, "run", return_value=good),
@@ -67,7 +69,7 @@ class TestContainmentProbe:
         assert probe.lane_cgroup_parent == "/system.slice"
 
     def test_a_scope_at_the_root_names_the_root(self):
-        good = SimpleNamespace(returncode=0, stdout="0::/run-u5.scope\n", stderr="")
+        good = SimpleNamespace(returncode=0, stdout="0::/run-u5.scope\nCpus_allowed_list:\t0\n", stderr="")
         with (
             patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
             patch.object(containment.subprocess, "run", return_value=good),
@@ -76,7 +78,9 @@ class TestContainmentProbe:
             assert containment._probe_mechanism().lane_cgroup_parent == "/"
 
     def test_a_probe_without_a_unified_hierarchy_knows_no_lane_cgroup(self):
-        good = SimpleNamespace(returncode=0, stdout="12:cpuset:/system.slice/run-u5.scope\n", stderr="")
+        good = SimpleNamespace(
+            returncode=0, stdout="12:cpuset:/system.slice/run-u5.scope\nCpus_allowed_list:\t0\n", stderr=""
+        )
         with (
             patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
             patch.object(containment.subprocess, "run", return_value=good),
@@ -85,6 +89,95 @@ class TestContainmentProbe:
             probe = containment._probe_mechanism()
         assert probe.mechanism == containment.MECHANISM_SYSTEM
         assert probe.lane_cgroup_parent is None
+
+    @pytest.mark.parametrize(
+        ("status", "ran"),
+        [("Cpus_allowed_list:\t0-9\n", "ran on CPUs 0,1,2,3,4,5,6,7,8,9"), ("", "ran on an unreadable set of CPUs")],
+    )
+    @pytest.mark.req("L01.7")
+    def test_a_probe_whose_cpu_limit_is_not_enforced_is_no_mechanism_and_says_why(self, status, ran):
+        loose = SimpleNamespace(
+            returncode=0,
+            stdout="0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u9.scope\n" + status,
+            stderr="",
+        )
+        with (
+            patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
+            patch.object(containment.subprocess, "run", return_value=loose),
+            patch.object(containment.os, "geteuid", return_value=1000),
+        ):
+            probe = containment._probe_mechanism()
+        assert probe.mechanism is None
+        assert probe.lane_cgroup_parent == "/user.slice/user-1000.slice/user@1000.service/app.slice"
+        assert ran in probe.problem
+        assert "AllowedCPUs is not enforced" in probe.problem
+        assert "does not delegate the cpuset controller" in probe.problem
+
+    def test_the_refusal_names_the_controllers_the_lane_cgroup_offers(self, tmp_path):
+        lane = tmp_path / "user.slice" / "app.slice"
+        lane.mkdir(parents=True)
+        (lane / "cgroup.controllers").write_text("cpu io memory pids\n")
+        assert "(the lane cgroup offers: cpu io memory pids)" in containment._not_enforced(
+            set(range(4)), "/user.slice/app.slice", True, cgroup_base=tmp_path
+        )
+        assert "offers: unreadable (No such file or directory)" in containment._not_enforced(
+            {0, 1}, "/gone", True, cgroup_base=tmp_path
+        )
+        assert "offers: unknown, the probe reported no cgroup" in containment._not_enforced({0, 1}, None, False)
+
+
+class TestContainmentProblem:
+    @pytest.fixture(autouse=True)
+    def fresh_probe(self):
+        containment._probe_cache.clear()
+        yield
+        containment._probe_cache.clear()
+
+    @pytest.mark.parametrize(
+        ("probe", "expected"),
+        [
+            (containment.Probe(containment.MECHANISM_USER, "/app.slice"), None),
+            (containment.Probe(None, "/app.slice", "AllowedCPUs is not enforced"), "AllowedCPUs is not enforced"),
+            (containment.Probe(None, None), "no systemd scope could be started (the probe failed)"),
+        ],
+    )
+    def test_the_problem_is_the_probe_s_own_reason(self, probe, expected):
+        with patch.object(containment, "_probe_mechanism", return_value=probe):
+            problem = containment.containment_problem()
+        assert problem == expected or (expected is not None and expected in problem)
+
+    def test_the_probe_runs_once_until_a_refresh_is_asked_for(self):
+        probe = containment.Probe(None, "/a", "AllowedCPUs is not enforced")
+        with patch.object(containment, "_probe_mechanism", return_value=probe) as run:
+            containment.containment_problem()
+            containment.containment_problem()
+            assert run.call_count == 1
+            containment.containment_problem(refresh=True)
+            assert run.call_count == 2
+
+    @pytest.mark.req("L01.7")
+    def test_a_lane_problem_names_containment_before_memory_accounting(self):
+        with (
+            patch.object(containment, "containment_problem", return_value="cannot contain"),
+            patch.object(containment, "memory_accounting_problem", return_value="cannot count"),
+        ):
+            assert containment.lane_problem() == "cannot contain"
+        with (
+            patch.object(containment, "containment_problem", return_value=None),
+            patch.object(containment, "memory_accounting_problem", return_value="cannot count"),
+        ):
+            assert containment.lane_problem() == "cannot count"
+
+    def test_contain_refuses_naming_the_probe_s_reason(self):
+        with (
+            patch.object(
+                containment,
+                "_probe_mechanism",
+                return_value=containment.Probe(None, "/a", "AllowedCPUs is not enforced"),
+            ),
+            pytest.raises(containment.ContainmentUnavailable, match="AllowedCPUs is not enforced; refusing to launch"),
+        ):
+            containment.contain((0,))
 
 
 class TestContainRefusals:

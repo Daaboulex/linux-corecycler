@@ -23,8 +23,20 @@ ALLOWED = (0, 1)
 
 
 def _require_mechanism() -> None:
-    if containment.available_mechanism(refresh=True) is None:
-        pytest.skip("no systemd cgroup scope available on this host")
+    problem = containment.containment_problem(refresh=True)
+    if problem is not None:
+        pytest.skip(f"this host cannot contain a stress test: {problem}")
+
+
+@pytest.mark.req("L01.7")
+def test_a_host_that_does_not_enforce_allowed_cpus_refuses_to_contain():
+    problem = containment.containment_problem(refresh=True)
+    if problem is None:
+        pytest.skip("this host enforces AllowedCPUs; the containment tests below cover it")
+    if "AllowedCPUs is not enforced" not in problem:
+        pytest.skip(f"no systemd scope runs here at all: {problem}")
+    with pytest.raises(containment.ContainmentUnavailable, match="does not delegate the cpuset controller"):
+        containment.contain(ALLOWED)
 
 
 def test_a_contained_child_cannot_escape_its_cpuset():

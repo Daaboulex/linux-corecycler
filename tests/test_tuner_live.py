@@ -1977,9 +1977,10 @@ def preflight(
     scheduling=None,
     unread=(),
     sched_ext=None,
+    lane=None,
 ):
     monkeypatch.setattr(live_hw.kernel, "kernel_log_problem", lambda: None)
-    monkeypatch.setattr(live_hw, "memory_accounting_problem", lambda: None)
+    monkeypatch.setattr(live_hw, "lane_problem", lane or (lambda: None))
     monkeypatch.setattr(live_hw, "scheduling_problem", scheduling or (lambda: None))
     proc = proc_tree(tmp_path / "proc", procs or {})
     unreadable(monkeypatch, proc, *unread)
@@ -2009,6 +2010,13 @@ def test_a_ready_machine_passes_preflight_without_warnings(tmp_path, monkeypatch
 def test_each_preflight_gate_refuses_naming_its_reason(tmp_path, monkeypatch, changes, says):
     refusal, _ = preflight(tmp_path, monkeypatch, **changes)
     assert says in refusal
+
+
+@pytest.mark.req("L01.7")
+def test_a_host_that_cannot_contain_or_count_a_lane_is_refused_at_start_naming_why(tmp_path, monkeypatch):
+    problem = "a test scope limited to CPU 0 ran on CPUs 0-9: AllowedCPUs is not enforced"
+    refusal, _ = preflight(tmp_path, monkeypatch, lane=lambda: problem)
+    assert refusal == problem
 
 
 def test_the_first_failing_gate_wins_and_the_later_ones_never_run(tmp_path, monkeypatch):

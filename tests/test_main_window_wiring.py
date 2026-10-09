@@ -95,7 +95,7 @@ def _build(
     monkeypatch.setattr(mw, "Ticker", FakeTicker)
     monkeypatch.setattr(mw, "Sensors", FakeSensors)
     monkeypatch.setattr(mw, "Clocks", lambda: FakeClocks({0: 4400.0, 8: 4500.0, 1: 4400.0}))
-    monkeypatch.setattr(mw, "memory_accounting_problem", lambda: None)
+    monkeypatch.setattr(mw, "lane_problem", lambda: None)
     return mw.MainWindow()
 
 
@@ -283,7 +283,7 @@ class TestStartTest:
     def test_a_host_whose_lanes_cannot_count_oom_kills_is_refused(self, window, monkeypatch, no_modal):
         self._ready(window, monkeypatch)
         problem = "the lane cgroup /user.slice/app.slice does not give its scopes the memory controller"
-        monkeypatch.setattr(mw, "memory_accounting_problem", lambda: problem)
+        monkeypatch.setattr(mw, "lane_problem", lambda: problem)
         window._start_test()
         assert window._worker is None
         assert no_modal.warning.call_args.args[2] == f"Cannot start: {problem}"

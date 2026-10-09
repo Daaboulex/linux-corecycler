@@ -30,7 +30,7 @@ from corecycler.engine import detector as kernel
 from corecycler.engine.backends import get_backend, ycruncher
 from corecycler.engine.backends.base import OutcomeKind, StressConfig, StressMode
 from corecycler.engine.backends.stressapptest import StressapptestBackend
-from corecycler.engine.containment import lane_cgroup_parent, memory_accounting_problem
+from corecycler.engine.containment import lane_cgroup_parent, lane_problem
 from corecycler.engine.execution import Lane, Supervisor, ThermalWatch
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.history.context import read_bios_version
@@ -329,7 +329,7 @@ def preflight(
     gates = (
         lambda: core_map_blocked(smu),
         kernel.kernel_log_problem,
-        memory_accounting_problem,
+        lane_problem,
         lambda: (
             None
             if sensors().hottest is not None
