@@ -44,6 +44,7 @@ from corecycler.smu.writer_lock import WriterBusy, co_writer
 from corecycler.tuner import stages, telemetry
 from corecycler.tuner.live import BootFacts, Identity, LiveRig, Store, config_from_json
 from corecycler.tuner.machine import allcore
+from corecycler.tuner.machine.session import HELD
 from corecycler.tuner.machine.types import (
     Abort,
     Close,
@@ -720,6 +721,7 @@ def build_rig(
 def install_signals(rig: LiveRig) -> None:
     signal.signal(signal.SIGINT, lambda *_: rig.signals.append(Close()))
     signal.signal(signal.SIGTERM, lambda *_: rig.signals.append(Close()))
+    signal.signal(signal.SIGHUP, lambda *_: rig.signals.append(Close()))
     signal.signal(signal.SIGUSR1, lambda *_: rig.signals.append(PauseRequest()))
     signal.signal(signal.SIGUSR2, lambda *_: rig.signals.append(Abort()))
 
@@ -759,6 +761,19 @@ def start_config(args: argparse.Namespace, domain_of: tuple[tuple[int, int | Non
 
 
 def run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> int:
+    try:
+        return _run(args, rig, say)
+    except BaseException:
+        if rig.state.lifecycle in HELD:
+            say(
+                "the driver stopped on an unexpected error: closing the session, "
+                "every owned core goes back to its baseline"
+            )
+            rig.post(Close())
+        raise
+
+
+def _run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> int:
     if args.start:
         try:
             config = start_config(args, rig.domain_of)

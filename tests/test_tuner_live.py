@@ -1501,6 +1501,41 @@ def topology():
     return SimpleNamespace(cores=cores, model_name="cpu-1")
 
 
+@pytest.mark.req("VERDICT.27b")
+def test_an_unexpected_error_in_the_driver_closes_the_session_with_every_core_at_baseline(tmp_path):
+    lines = []
+    args = live_hw.parse(
+        [
+            "--state-dir",
+            str(tmp_path / "s"),
+            "--start",
+            "--cores",
+            "0,1,8",
+            "--max-offset",
+            "-8",
+            "--write",
+            "--acknowledge",
+        ]
+    )
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware, db=database(tmp_path / "broken.db"))
+    r.say = lines.append
+
+    def broken(wait=1.0):
+        while r.worker is None:
+            r.step(0.01)
+        assert any(value != 0 for value in hardware.co.values())
+        raise RuntimeError("the run loop broke")
+
+    r.run_until_rest = broken
+    with pytest.raises(RuntimeError, match="the run loop broke"):
+        live_hw.run(args, r, lines.append)
+    assert hardware.co == {0: 0, 1: 0, 8: 0}
+    assert any(line.startswith("the driver stopped on an unexpected error") for line in lines)
+    reopened = database(tmp_path / "broken.db")
+    assert [session.status for session in reopened.list_machine_sessions(limit=1)] == ["paused"]
+
+
 @pytest.mark.req("K9.capability")
 def test_the_command_line_starts_or_resumes_and_reports_where_it_came_to_rest(tmp_path):
     lines = []
@@ -1690,14 +1725,15 @@ def test_the_command_line_validates_a_completed_session(tmp_path):
 
 
 @pytest.mark.req("VERDICT.27")
+@pytest.mark.req("VERDICT.27b")
 def test_signals_queue_the_owner_s_controls(tmp_path, monkeypatch):
     installed = {}
     monkeypatch.setattr(live_hw.signal, "signal", lambda number, handler: installed.__setitem__(number, handler))
     r = rig(tmp_path)
     live_hw.install_signals(r)
-    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGUSR1, signal.SIGUSR2):
+    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGUSR1, signal.SIGUSR2):
         installed[number](number, None)
-    assert [type(event).__name__ for event in r.signals] == ["Close", "Close", "PauseRequest", "Abort"]
+    assert [type(event).__name__ for event in r.signals] == ["Close", "Close", "Close", "PauseRequest", "Abort"]
 
 
 @pytest.fixture

@@ -820,8 +820,7 @@ proof = "built"
 [[requirement]]
 id = "VERDICT.27b"
 statement = "SIGHUP and process exit (atexit) close the session (G8)"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "VERDICT.28"
