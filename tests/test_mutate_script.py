@@ -62,3 +62,14 @@ def test_a_change_with_no_test_file_runs_the_tests_that_import_the_changed_modul
     (tmp_path / "test_c.py").write_text("from corecycler.tuner.live_hw import main\n")
     (tmp_path / "helper.py").write_text("import corecycler.tuner.live\n")
     assert mutate.importers(["src/corecycler/tuner/live.py"], tmp_path) == ["tests/test_a.py", "tests/test_b.py"]
+
+
+def test_every_mutant_is_built_from_the_original_text_even_after_one_was_written(tmp_path):
+    path = tmp_path / "sample.py"
+    original = "first = 1 < 2\nsecond = 3 < 4\n"
+    path.write_text(original)
+    total = mutate._count(original, {1, 2})
+    path.write_text(mutate._build(path, original, 0, {1, 2}).source)
+    built = [mutate._build(path, original, index, {1, 2}) for index in range(total)]
+    assert None not in built
+    assert len({mutant.source for mutant in built}) == total

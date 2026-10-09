@@ -152,8 +152,7 @@ def _count(source: str, lines: set[int] | None = None) -> int:
     return counter.seen
 
 
-def _build(path: Path, index: int, lines: set[int] | None = None) -> Mutant | None:
-    original = path.read_text()
+def _build(path: Path, original: str, index: int, lines: set[int] | None = None) -> Mutant | None:
     tree = ast.parse(original)
     mutator = _Mutator(target=index, inert=_inert(tree), lines=lines, skip=_reviewed(original))
     mutated = mutator.visit(tree)
@@ -265,7 +264,7 @@ def _mutate(targets: list[tuple[Path, set[int] | None]], tests: list[str], timeo
         print(f"== {path.relative_to(root)} ({len(indices)} of {total} mutants)")
         try:
             for index in indices:
-                mutant = _build(path, index, lines)
+                mutant = _build(path, original, index, lines)
                 if mutant is None:
                     continue
                 path.write_text(mutant.source)
