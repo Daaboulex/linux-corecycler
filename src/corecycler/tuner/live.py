@@ -94,7 +94,7 @@ class Hardware(Protocol):
     def power(self) -> PowerState: ...
     def preflight(self) -> tuple[str | None, tuple[str, ...]]: ...
     def boot_id(self) -> str: ...
-    def boot_ended_clean(self, boot_id: str) -> bool: ...
+    def boot_end(self, boot_id: str) -> kernel.BootEnd: ...
     def boot_facts(self, boot_id: str) -> BootFacts: ...
     def setup(
         self, cpus_of: tuple[tuple[int, tuple[int, ...]], ...], domain_of: tuple[tuple[int, int | None], ...]
@@ -687,7 +687,8 @@ class LiveRig:
         now = self.boot
         last = self.stored_boot or now
         same = last == now
-        dirty = not same and not self.hardware.boot_ended_clean(last)
+        end = None if same else self.hardware.boot_end(last)
+        dirty = end is not None and not end.clean
         marker = self.store.marker_boot()
         session = acting.session_id
         try:
@@ -703,6 +704,7 @@ class LiveRig:
         evidence, shared = self._kernel_evidence((*harvest.dead_boot, *harvest.next_boot))
         return CrashEvidenceRead(
             dirty_end=dirty,
+            end_unread=end.problem if dirty else None,
             same_boot=same,
             was_running=loaded is not None and loaded[0].status == "running",
             stale_db=marker == (now if same else last),
@@ -817,11 +819,15 @@ class LiveRig:
     def validate(self, session_id: int) -> None:
         world = replace(self.world_for_resume(session_id), bios_co=self.co_reads())
         last = self.stored_boot
-        if world.stored is None or last == self.boot or self.hardware.boot_ended_clean(last):
+        end = None if world.stored is None or last == self.boot else self.hardware.boot_end(last)
+        if end is None or end.clean:
             self.post(ValidateProfile(session_id), world)
             return
         suspects = _unproven(self.store.journal_rows(session_id, last))
-        self.post(ValidateProfile(session_id), replace(world, stored_crash_suspects=suspects))
+        self.post(
+            ValidateProfile(session_id),
+            replace(world, stored_crash_suspects=suspects, stored_end_unread=end.problem),
+        )
 
     def run_until_rest(self, wait: float = 1.0) -> SessionState:
         while not self.at_rest():

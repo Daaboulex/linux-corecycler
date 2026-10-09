@@ -190,6 +190,20 @@ def test_a_readable_kernel_log_adds_no_note():
     assert not [e for e in result.effects if isinstance(e, Announce) and e.kind == "kernel_log_unread"]
 
 
+def test_a_boot_whose_end_cannot_be_read_is_treated_as_a_crash_and_says_so_first():
+    result = transition(SEARCHING, evidence_read(end_unread="journalctl -b exited 1"), WORLD)
+    assert result.state.core(0).crash_count == 1
+    assert isinstance(result.effects[0], Announce) and result.effects[0].kind == "boot_end_unread"
+    assert result.effects[0].text == (
+        "the last boot's end could not be read, so it is treated as a crash: journalctl -b exited 1"
+    )
+
+
+def test_a_readable_boot_end_adds_no_note():
+    result = transition(SEARCHING, evidence_read(), WORLD)
+    assert not [e for e in result.effects if isinstance(e, Announce) and e.kind == "boot_end_unread"]
+
+
 def test_a_crash_in_a_multi_core_bisect_slot_is_the_group_s_fail_not_a_conviction_of_its_members():
     run = BisectRun(Stage.LIVE1, 0, Klass.T1, (0, 1), ((0, -5), (1, -3)), ((0, 1),))
     cores = (replace(proven(0, -5), in_test=True), replace(proven(1, -3), in_test=True), proven(2, 0))

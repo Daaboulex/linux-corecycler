@@ -110,7 +110,11 @@ def test_an_abort_after_a_back_off_ends_the_session_aborted():
         ),
         (
             lambda fake, world: replace(world, stored_crash_suspects=(0, 1)),
-            "cores 0, 1 held unproven values",
+            "completed in crashed, while cores 0, 1 held unproven values",
+        ),
+        (
+            lambda fake, world: replace(world, stored_crash_suspects=(0, 1), stored_end_unread="journal rotated"),
+            "completed in an end that could not be read (journal rotated), treated as a crash, while cores 0, 1",
         ),
     ],
 )

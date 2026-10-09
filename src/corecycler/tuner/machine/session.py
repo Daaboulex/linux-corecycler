@@ -410,7 +410,7 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
         cores = ", ".join(map(str, w.stored_crash_suspects))
         return Transition(
             s,
-            refused=f"the boot session {st.session_id} completed in crashed while cores {cores} held unproven "
+            refused=f"the boot session {st.session_id} completed in {_ending(w)}, while cores {cores} held unproven "
             "values, and a completed session has no step that attributes it: start a new session",
         )
     reads = dict(w.bios_co)
@@ -450,7 +450,7 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
         Announce(
             "validating",
             f"session {st.session_id}: proving its completed values again"
-            + ("" if w.stored_crash_suspects is None else ", after the boot it completed in crashed"),
+            + ("" if w.stored_crash_suspects is None else f", after the boot it completed in {_ending(w)}"),
         ),
         Schedule(token, 0.0),
     ]
@@ -477,6 +477,11 @@ def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transiti
     if s.lifecycle is not Lifecycle.PAUSED or s.pause is None or s.pause.reason is not PauseReason.RESUMING:
         return Transition(s)
     result = _attributed(s, e, w)
+    if e.end_unread is not None:
+        unread = Announce(
+            "boot_end_unread", f"the last boot's end could not be read, so it is treated as a crash: {e.end_unread}"
+        )
+        result = replace(result, effects=(unread, *result.effects))
     if e.kernel_problem is None:
         return result
     note = Announce(
@@ -484,6 +489,12 @@ def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transiti
         f"the crashed boot's kernel log could not be read, so the crash was attributed without it: {e.kernel_problem}",
     )
     return replace(result, effects=(*result.effects, note))
+
+
+def _ending(w: World) -> str:
+    if w.stored_end_unread is None:
+        return "crashed"
+    return f"an end that could not be read ({w.stored_end_unread}), treated as a crash"
 
 
 def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:

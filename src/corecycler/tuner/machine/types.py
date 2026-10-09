@@ -430,6 +430,7 @@ class CrashEvidenceRead:
     context: FailContext | None = None
     evidence: tuple[Evidence, ...] = ()
     kernel_problem: str | None = None
+    end_unread: str | None = None
     co_now: tuple[tuple[int, int | None], ...] = ()
     last_written: tuple[tuple[int, int], ...] = ()
     marked_now: bool = False
@@ -503,6 +504,7 @@ class World:
     domain_of: tuple[tuple[int, int | None], ...] = ()
     two_t_problem: str | None = None
     stored_crash_suspects: tuple[int, ...] | None = None
+    stored_end_unread: str | None = None
     owner_layout: bool = False
     co_range: tuple[int, int] | None = None
     co_now: tuple[tuple[int, int | None], ...] | None = None

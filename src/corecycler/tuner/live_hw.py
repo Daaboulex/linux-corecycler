@@ -135,8 +135,8 @@ class SmuHardware:
     def boot_id(self) -> str:
         return kernel.read_boot_id()
 
-    def boot_ended_clean(self, boot_id: str) -> bool:
-        return kernel.boot_end(boot_id).clean
+    def boot_end(self, boot_id: str) -> kernel.BootEnd:
+        return kernel.boot_end(boot_id)
 
     def setup(
         self, cpus_of: tuple[tuple[int, tuple[int, ...]], ...], domain_of: tuple[tuple[int, int | None], ...]

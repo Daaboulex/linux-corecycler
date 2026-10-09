@@ -71,6 +71,7 @@ class FakeHardware:
     co: dict[int, int] = field(default_factory=lambda: {0: 0, 1: 0, 8: 0})
     boot: str = "boot-a"
     clean: bool = False
+    end_problem: str | None = None
     refuse: int = 0
     power_state: PowerState = field(default_factory=lambda: UNCAPPED)
     records: kernel.JournalHarvest = field(default_factory=lambda: kernel.JournalHarvest((), (), None))
@@ -115,8 +116,8 @@ class FakeHardware:
         self.boot_reads += 1
         return self.boot
 
-    def boot_ended_clean(self, boot_id):
-        return self.clean
+    def boot_end(self, boot_id):
+        return kernel.BootEnd(clean=self.clean, problem=self.end_problem)
 
     def asleep_seconds(self):
         return 0.0
@@ -358,6 +359,22 @@ def test_a_reboot_during_a_test_convicts_the_tested_core_on_resume(tmp_path):
     assert tested is not None
     assert again.state.core(in_test.core).crash_count == 1
     assert again.run_until_rest(0.01).lifecycle is Lifecycle.COMPLETED
+
+
+def test_a_reboot_whose_end_cannot_be_read_is_treated_as_a_crash_and_recorded_as_such(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    in_test = next(c for c in r.state.cores if c.in_test)
+    hardware.boot, hardware.co, hardware.end_problem = "boot-b", {0: 0, 1: 0, 8: 0}, "journalctl -b exited 1"
+    again = rig(tmp_path, hardware, db=r.store.db)
+    again.resume(1)
+    assert again.state.core(in_test.core).crash_count == 1
+    assert rows(again, "SELECT message FROM tuner_events WHERE session_id=1 AND severity='boot_end_unread'") == [
+        {"message": "the last boot's end could not be read, so it is treated as a crash: journalctl -b exited 1"}
+    ]
 
 
 def completed_then_rebooted(tmp_path, clean: bool) -> tuple[LiveRig, list[str]]:
@@ -1316,7 +1333,7 @@ def test_the_adapter_reads_the_kernel_facts_it_needs(monkeypatch):
     monkeypatch.setattr(live_hw.kernel, "read_boot_id", lambda: "b1")
     monkeypatch.setattr(live_hw.kernel, "boot_end", lambda boot: kernel.BootEnd(clean=boot == "b0", problem=None))
     hw = live_hw.SmuHardware(FakeSmu(), False, print, warm)
-    assert (hw.boot_id(), hw.boot_ended_clean("b0"), hw.boot_ended_clean("b9"), hw.temperature()) == (
+    assert (hw.boot_id(), hw.boot_end("b0").clean, hw.boot_end("b9").clean, hw.temperature()) == (
         "b1",
         True,
         False,
