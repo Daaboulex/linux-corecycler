@@ -7,20 +7,25 @@ it scores identically to one that pins its behaviour. This applies one small
 semantic change at a time and reports every mutant that no test caught. A
 survivor is a line the suite executes but does not check.
 
-Deliberate, not a gate: it rewrites source files in place (restoring them
-afterwards) and runs the test selection once per mutant, so it is minutes of
-work and belongs to the dev loop, like re-recording a cassette.
+With --src it rewrites the given files in place (restoring them afterwards).
+With --staged or --commit it mutates only the lines that diff adds, in a
+throwaway copy of exactly that content (the index, or the commit), and runs the
+test files the same change touches unless --tests names others.
 
     python3 scripts/mutate.py --src src/corecycler/smu/commands.py \\
         --tests tests/test_smu_commands.py --max 60
+    python3 scripts/mutate.py --staged
+    python3 scripts/mutate.py --commit HEAD
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,15 +70,20 @@ def _inert(tree: ast.Module) -> set[int]:
 
 
 class _Mutator(ast.NodeTransformer):
-    def __init__(self, target: int, inert: set[int] | None = None) -> None:
+    def __init__(
+        self, target: int, inert: set[int] | None = None, lines: set[int] | None = None, skip: set[int] | None = None
+    ) -> None:
         self.target = target
         self.inert = inert or set()
+        self.lines = lines
+        self.skip = skip or set()
         self.seen = 0
         self.applied: str | None = None
         self.lineno = 0
 
     def _take(self, node: ast.AST, description: str) -> bool:
-        if id(node) in self.inert:
+        line = getattr(node, "lineno", 0)
+        if id(node) in self.inert or line in self.skip or (self.lines is not None and line not in self.lines):
             return False
         hit = self.seen == self.target
         self.seen += 1
@@ -120,17 +130,32 @@ class _Mutator(ast.NodeTransformer):
         return node
 
 
-def _count(source: str) -> int:
+EQUIVALENT = re.compile(r"#\s*equivalent-mutant:(.*)$")
+
+
+def _reviewed(source: str) -> set[int]:
+    reviewed = set()
+    for number, line in enumerate(source.splitlines(), start=1):
+        match = EQUIVALENT.search(line)
+        if match is None:
+            continue
+        if not match.group(1).strip():
+            raise ValueError(f"line {number} marks an equivalent mutant without saying why")
+        reviewed.add(number)
+    return reviewed
+
+
+def _count(source: str, lines: set[int] | None = None) -> int:
     tree = ast.parse(source)
-    counter = _Mutator(target=-1, inert=_inert(tree))
+    counter = _Mutator(target=-1, inert=_inert(tree), lines=lines, skip=_reviewed(source))
     counter.visit(tree)
     return counter.seen
 
 
-def _build(path: Path, index: int) -> Mutant | None:
+def _build(path: Path, index: int, lines: set[int] | None = None) -> Mutant | None:
     original = path.read_text()
     tree = ast.parse(original)
-    mutator = _Mutator(target=index, inert=_inert(tree))
+    mutator = _Mutator(target=index, inert=_inert(tree), lines=lines, skip=_reviewed(original))
     mutated = mutator.visit(tree)
     if mutator.applied is None:
         return None
@@ -138,7 +163,7 @@ def _build(path: Path, index: int) -> Mutant | None:
     return Mutant(path, mutator.lineno, mutator.applied, ast.unparse(mutated))
 
 
-def _run(tests: list[str], timeout: int) -> bool:
+def _run(tests: list[str], timeout: int, root: Path = REPO) -> bool:
     try:
         result = subprocess.run(
             [
@@ -154,7 +179,7 @@ def _run(tests: list[str], timeout: int) -> bool:
                 "not slow",
                 *tests,
             ],
-            cwd=REPO,
+            cwd=root,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -164,37 +189,87 @@ def _run(tests: list[str], timeout: int) -> bool:
     return result.returncode != 0
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--src", action="append", required=True)
-    parser.add_argument("--tests", nargs="+", required=True)
-    parser.add_argument("--max", type=int, default=0)
-    parser.add_argument("--timeout", type=int, default=600)
-    args = parser.parse_args()
+HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 
-    targets: list[Path] = []
-    for entry in args.src:
-        path = Path(entry)
-        targets.extend(sorted(path.rglob("*.py")) if path.is_dir() else [path])
 
-    if _run(args.tests, args.timeout):
-        print("BASELINE FAILED: the test selection is already red or did not finish within --timeout")
+def added_lines(diff: str) -> dict[str, set[int]]:
+    found: dict[str, set[int]] = {}
+    for part in re.split(r"^diff --git ", diff, flags=re.MULTILINE)[1:]:
+        name = re.search(r"^\+\+\+ b/(\S+)$", part, re.MULTILINE)
+        if name is None or not name.group(1).endswith(".py"):
+            continue
+        lines = set()
+        for start, count in HUNK.findall(part):
+            lines.update(range(int(start), int(start) + int(count or 1)))
+        if lines:
+            found[name.group(1)] = lines
+    return found
+
+
+def _git(*args: str) -> str:
+    return subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, check=True).stdout
+
+
+def _export(commit: str | None, into: Path) -> None:
+    if commit is None:
+        _git("checkout-index", "--all", f"--prefix={into}/")
+        return
+    archive = subprocess.run(["git", "archive", commit], cwd=REPO, capture_output=True, check=True).stdout
+    subprocess.run(["tar", "-x", "-C", str(into)], input=archive, check=True)
+
+
+def importers(changed: list[str], test_dir: Path) -> list[str]:
+    patterns = []
+    for name in changed:
+        module = name.removeprefix("src/").removesuffix(".py").replace("/", ".")
+        parent, _, leaf = module.rpartition(".")
+        patterns.append(re.compile(rf"\b{re.escape(module)}\b|^from {re.escape(parent)} import [^\n]*\b{leaf}\b", re.M))
+    return [
+        f"tests/{path.name}"
+        for path in sorted(test_dir.glob("test_*.py"))
+        if any(pattern.search(path.read_text()) for pattern in patterns)
+    ]
+
+
+def _diff_mode(commit: str | None, tests: list[str] | None, timeout: int) -> int:
+    span = ("--cached",) if commit is None else (f"{commit}~1", commit)
+    changed = added_lines(_git("diff", "-U0", "--no-color", *span, "--", "src/"))
+    touched = _git("diff", "--name-only", "--diff-filter=AM", *span, "--", "tests/").split()
+    if not changed:
+        print("no source lines changed: nothing to mutate")
+        return 0
+    selection = (
+        tests
+        or [name for name in touched if Path(name).name.startswith("test_")]
+        or importers(list(changed), REPO / "tests")
+    )
+    if not selection:
+        print("no test file touches or imports the changed modules: name the tests that prove it with --tests")
         return 2
+    with tempfile.TemporaryDirectory(prefix="mutate-") as copy:
+        root = Path(copy)
+        _export(commit, root)
+        if _run(selection, timeout, root):
+            print("BASELINE FAILED: the test selection is already red or did not finish within --timeout")
+            return 2
+        return _mutate([(root / name, lines) for name, lines in sorted(changed.items())], selection, timeout, root, 0)
 
+
+def _mutate(targets: list[tuple[Path, set[int] | None]], tests: list[str], timeout: int, root: Path, cap: int) -> int:
     killed, survived = 0, []
-    for path in targets:
+    for path, lines in targets:
         original = path.read_text()
-        total = _count(original)
-        step = max(1, total // args.max) if args.max and args.max < total else 1
+        total = _count(original, lines)
+        step = max(1, total // cap) if cap and cap < total else 1
         indices = list(range(0, total, step))
-        print(f"== {path} ({len(indices)} of {total} mutants)")
+        print(f"== {path.relative_to(root)} ({len(indices)} of {total} mutants)")
         try:
             for index in indices:
-                mutant = _build(path, index)
+                mutant = _build(path, index, lines)
                 if mutant is None:
                     continue
                 path.write_text(mutant.source)
-                if _run(args.tests, args.timeout):
+                if _run(tests, timeout, root):
                     killed += 1
                     print(".", end="", flush=True)
                 else:
@@ -208,8 +283,32 @@ def main() -> int:
     score = (killed / total * 100) if total else 100.0
     print(f"\nmutants {total}  killed {killed}  survived {len(survived)}  score {score:.1f}%")
     for mutant in survived:
-        print(f"  SURVIVED {mutant.path}:{mutant.lineno}  {mutant.description}")
+        print(f"  SURVIVED {mutant.path.relative_to(root)}:{mutant.lineno}  {mutant.description}")
     return 1 if survived else 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--src", action="append")
+    mode.add_argument("--staged", action="store_true")
+    mode.add_argument("--commit")
+    parser.add_argument("--tests", nargs="+")
+    parser.add_argument("--max", type=int, default=0)
+    parser.add_argument("--timeout", type=int, default=600)
+    args = parser.parse_args()
+    if args.src is None:
+        return _diff_mode(args.commit, args.tests, args.timeout)
+    if not args.tests:
+        parser.error("--src needs --tests")
+    targets: list[tuple[Path, set[int] | None]] = []
+    for entry in args.src:
+        path = Path(entry).resolve()
+        targets.extend((found, None) for found in (sorted(path.rglob("*.py")) if path.is_dir() else [path]))
+    if _run(args.tests, args.timeout):
+        print("BASELINE FAILED: the test selection is already red or did not finish within --timeout")
+        return 2
+    return _mutate(targets, args.tests, args.timeout, REPO, args.max)
 
 
 if __name__ == "__main__":

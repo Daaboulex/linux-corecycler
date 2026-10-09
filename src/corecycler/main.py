@@ -217,7 +217,7 @@ def _install_signal_handlers(app, cleanup) -> None:
         app.quit()
 
     def handler(signum, frame) -> None:
-        QTimer.singleShot(0, quit_from_event_loop)
+        QTimer.singleShot(0, quit_from_event_loop)  # equivalent-mutant: any delay defers the quit to the event loop
 
     for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(number, handler)
