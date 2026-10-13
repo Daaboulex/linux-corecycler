@@ -79,13 +79,18 @@ root or appropriate sysfs permissions.
 | Zen 5 / 5D | Yes | Full | -50 to +10 |
 | Intel | Yes | No | -- |
 
-## Curve Shaper (Zen 5)
+## Curve Shaper (Ryzen 9000)
 
-Curve Shaper is a Zen 5 feature that adjusts voltage across 5 frequency regions and 3
-temperature points (15 tuning parameters total), stacking on top of Curve Optimizer
-offsets. **Curve Shaper is BIOS-only** -- there are no known SMU commands to read or
-write it at runtime, so this tool cannot interact with it. Configure Curve Shaper in
-your BIOS alongside CO, then use this tool to validate the combined result.
+Curve Shaper offsets voltage across 5 frequency bands and 3 temperature points (15
+values) for every core of a core type, on top of per-core Curve Optimizer offsets. This
+tool reads and writes it at runtime on Granite Ridge: RSMU `0x84` reads all five bands and
+RSMU `0xA6` sets one band's three temperature offsets, as
+[ZenStates-Core ae877b6](https://github.com/irusanov/ZenStates-Core/commit/ae877b6) does.
+Proven on a 9950X3D on 2026-10-13: a write reads back, one write moves the voltage of
+both CCDs, and a reboot brings the BIOS values back, so a runtime write lasts until the
+next reboot; set the values in the BIOS to keep them. Per-core results are valid only for
+the Curve Shaper values they were found under, and every tuning session records the
+Shaper it ran with.
 
 ## PBO Boost Override and BCLK
 
