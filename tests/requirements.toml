@@ -4918,9 +4918,8 @@ task = "T23"
 
 [[requirement]]
 id = "T23.startstop"
-statement = "The toolbar's Start and Stop buttons line up."
-proof = "not built"
-task = "T23"
+statement = "The toolbar's Start and Stop buttons line up: plain words in one font, the same top and height (owner 2026-10-09; his card 2026-10-13 chose plain words over the two glyphs)."
+proof = "built"
 
 [[requirement]]
 id = "T23.abort_interrupted"

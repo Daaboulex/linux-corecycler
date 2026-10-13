@@ -724,3 +724,17 @@ def test_the_window_fits_a_half_screen_tile_and_keeps_its_text(monkeypatch, tmp_
     assert warnings
     assert all(label.isVisible() and label.width() > 0 for label in warnings)
     win._history_db = None
+
+
+@pytest.mark.req("T23.startstop")
+def test_the_toolbar_s_start_and_stop_are_plain_words_on_one_line(monkeypatch, tmp_path, db):
+    from PySide6.QtWidgets import QApplication
+
+    win = _build(monkeypatch, tmp_path, db=db)
+    win.show()
+    QApplication.processEvents()
+    start, stop = win._start_btn, win._stop_btn
+    assert start.text().isascii() and stop.text().isascii()
+    assert start.text().split()[0] == "Start" and stop.text().split()[0] == "Stop"
+    assert (start.y(), start.height()) == (stop.y(), stop.height())
+    win._history_db = None

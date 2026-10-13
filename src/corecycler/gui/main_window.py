@@ -263,7 +263,7 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
-        self._start_btn = QPushButton("▶ Start Test")
+        self._start_btn = QPushButton("Start test")
         self._start_btn.setFixedHeight(36)
         self._start_btn.setStyleSheet(
             f"QPushButton {{ background: {theme.BTN_GREEN}; color: white; padding: 0 16px; "
@@ -274,7 +274,7 @@ class MainWindow(QMainWindow):
         self._start_btn.clicked.connect(self._start_test)
         toolbar.addWidget(self._start_btn)
 
-        self._stop_btn = QPushButton("⏹ Stop")
+        self._stop_btn = QPushButton("Stop test")
         self._stop_btn.setFixedHeight(36)
         self._stop_btn.setEnabled(False)
         self._stop_btn.setStyleSheet(
