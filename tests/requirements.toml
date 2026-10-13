@@ -292,8 +292,7 @@ proof = "built"
 [[requirement]]
 id = "K19"
 statement = "Incident maximum 2"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "K20"
@@ -1769,8 +1768,7 @@ proof = "built"
 [[requirement]]
 id = "L07.G3"
 statement = "A record about another core: back it off in place, dirty, requeue it; at 0 incident + 1"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L07.G4"
@@ -2338,8 +2336,7 @@ task = "T28"
 [[requirement]]
 id = "L16.G4"
 statement = "A crash in SOAK with nobody convicted is incident + 1 and dirty"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L16.G6"
@@ -2496,8 +2493,7 @@ task = "T29"
 [[requirement]]
 id = "L18.d.4.4.soak"
 statement = "Flow rule in SOAK: incident"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L18.d.4.4.probe"

@@ -179,6 +179,14 @@ class Fake:
                 for name in ("incidents", "resume_streak"):
                     if getattr(result.state, name) > getattr(stored_before, name) + 1:
                         raise Broken(f"one dead boot raised {name} by more than one: it was attributed twice")
+                after = result.state
+                if (
+                    ev.was_running
+                    and after.lifecycle is Lifecycle.RUNNING
+                    and after.incidents <= stored_before.incidents
+                    and after.resume_streak <= stored_before.resume_streak
+                ):
+                    raise Broken("a crash raised neither the incidents nor the resume streak, so it can repeat forever")
             if follow is not None:
                 queue.append(follow)
 

@@ -116,6 +116,46 @@ def test_a_pause_during_an_all_core_test_stops_it_at_once_and_resume_runs_the_sa
     assert (fake.worker.spec.stage, fake.worker.spec.load, fake.worker.spec.vector) == (cut.stage, cut.load, cut.vector)
 
 
+@pytest.mark.req("L16.G4", "L18.d.4.4.soak", "K19")
+def test_a_crash_in_soak_with_nobody_to_blame_counts_one_incident_and_the_second_pauses():
+    fake = running_fake()
+    for crashes in (1, 2):
+        while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
+            assert fake.progress()
+        fake.crash()
+        fake.post(Resume(1))
+        assert fake.state.incidents == crashes
+    assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.INCIDENTS)
+
+
+@pytest.mark.req("L18.d.4.5")
+def test_a_crash_that_leaves_a_machine_check_on_a_stock_core_counts_one_incident():
+    fake = fresh(2, [-12, 0], 1, max_offset=-20, k_1t=2, wait_between_cores_s=0.0)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.load is not Load.HOT:
+        assert fake.progress()
+    assert dict(fake.worker.spec.vector)[1] == 0
+    fake.crash(evidence=(Evidence(1, False),))
+    fake.post(Resume(1))
+    assert (fake.state.incidents, fake.state.resume_streak) == (1, 1)
+
+
+@pytest.mark.req("L07.G3")
+@pytest.mark.parametrize(("edges", "backed", "incidents"), [([-12, -6], True, 0), ([-12, 0], False, 1)])
+def test_a_record_about_another_core_in_live1_backs_it_off_and_requeues_it_or_counts_an_incident_at_0(
+    edges, backed, incidents
+):
+    fake = fresh(2, edges, 1, max_offset=-20, k_1t=2, wait_between_cores_s=0.0)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.LIVE1 or fake.worker.spec.core != 0:
+        assert fake.progress()
+    value = dict(fake.worker.spec.vector)[1]
+    fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(1, True),)))
+    flow = fake.state.flow
+    assert (fake.state.core(1).value > value, 1 in flow.live1.requeue, flow.dirty) == (backed, backed, backed)
+    assert fake.state.incidents == incidents
+
+
 @pytest.mark.req("C10", "D34")
 @pytest.mark.parametrize("report", [Report(Group.THERMAL, 5.0), Report(Group.APPARATUS, 1.0, detail="tool died")])
 def test_an_all_core_test_that_ends_without_a_verdict_sends_every_owned_core_back_to_baseline(report):

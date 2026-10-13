@@ -521,7 +521,7 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
             return _enter_pause(_clear_in_test(after), PauseReason.STOCK_UNSTABLE, stock)
     after = _owe_interrupted(_clear_in_test(after), tuple(r.core for r in s.cores if r.in_test))
     streak = s.resume_streak + 1 if verdict.convict or flow_crash else s.resume_streak
-    incidents = s.incidents + 1 if verdict.incident else s.incidents
+    incidents = s.incidents + 1 if verdict.incident or after.incidents > s.incidents else s.incidents
     after = replace(after, resume_streak=streak, incidents=incidents)
     if verdict.held is not None:
         return _enter_pause(
@@ -531,7 +531,7 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
             (verdict.held,),
         )
     for ev in verdict.evidence:
-        applied = _apply_evidence(after, ev, at_stock=verdict.at_stock)
+        applied = _apply_evidence(after, ev, at_stock=verdict.at_stock, counted=after.incidents > s.incidents)
         if isinstance(applied, Transition):
             return applied
         after = applied
@@ -692,7 +692,7 @@ def _flow_crash(s: SessionState, w: World, context=None) -> tuple[SessionState, 
     raise ValueError(f"a crash with a core in test has no flow rule in {flow.stage}")
 
 
-def _apply_evidence(s: SessionState, ev, at_stock: bool = False) -> SessionState | Transition:
+def _apply_evidence(s: SessionState, ev, at_stock: bool = False, counted: bool = False) -> SessionState | Transition:
     owned = {r.core for r in s.cores}
     if ev.core not in owned:
         return _enter_pause(
@@ -708,6 +708,8 @@ def _apply_evidence(s: SessionState, ev, at_stock: bool = False) -> SessionState
             return _enter_pause(
                 s, PauseReason.STOCK_UNSTABLE, f"core {ev.core} logged a machine check at its stock value", (ev.core,)
             )
+        if counted:
+            return s
         incidents = s.incidents + 1
         out = replace(s, incidents=incidents)
         if incidents >= INCIDENT_LIMIT:
