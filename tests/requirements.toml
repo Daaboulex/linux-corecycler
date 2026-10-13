@@ -2153,8 +2153,7 @@ task = "T29"
 [[requirement]]
 id = "L12.G4.own"
 statement = "A conviction of the item's own core sets FB, backs it off 3 steps and freezes the item"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L12.G4.other"

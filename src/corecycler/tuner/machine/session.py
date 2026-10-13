@@ -482,6 +482,8 @@ def _convict(s: SessionState, core: int) -> tuple[SessionState, bool]:
     flow = out.flow
     if flow.stage is Stage.BISECT and core in bisect.current_group(flow.bisect):
         flow = _bisect_exit(flow)
+    if flow.stage is Stage.TIGHTEN and flow.allcore.item == core:
+        flow = replace(flow, allcore=allcore.frozen_item(flow.allcore))
     return replace(out, flow=replace(flow, dirty=True)), False
 
 
@@ -1003,8 +1005,7 @@ def _allcore_next(s: SessionState, w: World) -> Transition:
             flow = replace(flow, allcore=cursor)
         item = s.core(cursor.item)
         if not item.inside(item.value - cfg.fine_step, cfg.max_offset):
-            frozen = replace(cursor, frozen=(*cursor.frozen, item.core), item=None, t_idx=0, t_clean=0.0)
-            return _allcore_next(replace(s, flow=replace(flow, allcore=frozen)), w)
+            return _allcore_next(replace(s, flow=replace(flow, allcore=allcore.frozen_item(cursor))), w)
         values[cursor.item] -= cfg.fine_step
         load = TRANSIENT_CYCLE[cursor.t_idx % len(TRANSIENT_CYCLE)]
     elif flow.stage is Stage.STEADY:
@@ -1029,8 +1030,7 @@ def _allcore_fail(s: SessionState, ctx, w: World) -> tuple[SessionState, str | N
     if stage is Stage.SOAK:
         return replace(s, incidents=s.incidents + 1, flow=replace(flow, dirty=True)), None
     if stage is Stage.TIGHTEN:
-        frozen = replace(cursor, frozen=(*cursor.frozen, cursor.item), item=None, t_idx=0, t_clean=0.0)
-        return replace(s, flow=replace(flow, allcore=frozen)), None
+        return replace(s, flow=replace(flow, allcore=allcore.frozen_item(cursor))), None
     if stage in (Stage.STEADY, Stage.ENDURANCE) and allcore.steady_class(ctx):
         values = {r.core: r.value for r in s.cores}
         if not any(values.values()):

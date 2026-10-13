@@ -15,7 +15,7 @@ from corecycler.tuner.machine.types import (
     Phase,
     Stage,
 )
-from tests._tuner_world import Group, Report, fresh, run_to_rest, start
+from tests._tuner_world import Evidence, Group, Report, Resume, fresh, run_to_rest, start
 
 FAST = {
     "hot_seconds": 1.0,
@@ -423,3 +423,19 @@ def test_cores_that_fail_only_together_are_loosened_without_a_fail_bound_and_tig
     tighten = [vector for stage, _, vector in stages if stage is Stage.TIGHTEN]
     assert {0: -6, 1: -5} in tighten
     assert {r.core: r.value for r in fake.state.cores} == {0: -6, 1: -5}
+
+
+@pytest.mark.req("L12.G4.own")
+def test_a_crash_blamed_on_the_tighten_item_s_own_core_backs_it_off_three_steps_and_freezes_it():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
+    fake.edges_transient = {0: -5, 1: -5}
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.TIGHTEN:
+        assert fake.progress()
+    item = fake.state.flow.allcore.item
+    trial = dict(fake.worker.spec.vector)[item]
+    fake.crash(evidence=(Evidence(item, False),))
+    fake.post(Resume(1))
+    cursor = fake.state.flow.allcore
+    assert (item in cursor.frozen, cursor.item) == (True, None)
+    assert (fake.state.core(item).fb, fake.state.core(item).value) == (trial, trial + 3)

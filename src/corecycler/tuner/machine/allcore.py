@@ -107,6 +107,10 @@ def _loosened(cursor: AllCore, core: int, why: str) -> Fix:
     return Fix(loosened(cursor, core), core, why)
 
 
+def frozen_item(cursor: AllCore) -> AllCore:
+    return replace(cursor, frozen=(*cursor.frozen, cursor.item), item=None)
+
+
 def tighten_items(cursor: AllCore) -> tuple[int, ...]:
     return tuple(sorted(core for core, delta in cursor.co_delta if delta > 0))
 
