@@ -18,9 +18,10 @@ def test_a_passing_selection_is_not_reported_as_failed_in_this_project_s_own_env
     assert mutate._failure(["tests/test_main_args.py"], 120) is None
 
 
-def test_a_failing_selection_is_reported_with_pytest_s_own_reason():
-    failure = mutate._failure(["tests/test_main_args.py::TestParseAutoResume::test_no_such_test"], 120)
-    assert "test_no_such_test" in failure
+def test_a_failing_selection_is_reported_with_pytest_s_own_reason(tmp_path):
+    (tmp_path / "test_red.py").write_text("def test_red():\n    assert 1 == 2\n")
+    failure = mutate._failure(["test_red.py"], 120, tmp_path)
+    assert "assert 1 == 2" in failure
 
 
 def test_the_copy_lets_a_test_binary_run_and_a_red_baseline_prints_why(monkeypatch, capsys):
