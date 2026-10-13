@@ -162,7 +162,7 @@ def _build(path: Path, original: str, index: int, lines: set[int] | None = None)
     return Mutant(path, mutator.lineno, mutator.applied, ast.unparse(mutated))
 
 
-def _run(tests: list[str], timeout: int, root: Path = REPO) -> bool:
+def _failure(tests: list[str], timeout: int, root: Path = REPO) -> str | None:
     try:
         result = subprocess.run(
             [
@@ -184,8 +184,17 @@ def _run(tests: list[str], timeout: int, root: Path = REPO) -> bool:
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return True
-    return result.returncode != 0
+        return f"the test selection did not finish within {timeout} s"
+    return None if result.returncode == 0 else result.stdout + result.stderr
+
+
+def _baseline_red(tests: list[str], timeout: int, root: Path) -> bool:
+    failure = _failure(tests, timeout, root)
+    if failure is None:
+        return False
+    print(failure)
+    print("BASELINE FAILED: the test selection is already red or did not finish within --timeout")
+    return True
 
 
 HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
@@ -245,11 +254,12 @@ def _diff_mode(commit: str | None, tests: list[str] | None, timeout: int) -> int
     if not selection:
         print("no test file touches or imports the changed modules: name the tests that prove it with --tests")
         return 2
-    with tempfile.TemporaryDirectory(prefix="mutate-") as copy:
+    workdir = REPO / ".devshell"
+    workdir.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="mutate-", dir=workdir) as copy:
         root = Path(copy)
         _export(commit, root)
-        if _run(selection, timeout, root):
-            print("BASELINE FAILED: the test selection is already red or did not finish within --timeout")
+        if _baseline_red(selection, timeout, root):
             return 2
         return _mutate([(root / name, lines) for name, lines in sorted(changed.items())], selection, timeout, root, 0)
 
@@ -268,7 +278,7 @@ def _mutate(targets: list[tuple[Path, set[int] | None]], tests: list[str], timeo
                 if mutant is None:
                     continue
                 path.write_text(mutant.source)
-                if _run(tests, timeout, root):
+                if _failure(tests, timeout, root) is not None:
                     killed += 1
                     print(".", end="", flush=True)
                 else:
@@ -304,8 +314,7 @@ def main() -> int:
     for entry in args.src:
         path = Path(entry).resolve()
         targets.extend((found, None) for found in (sorted(path.rglob("*.py")) if path.is_dir() else [path]))
-    if _run(args.tests, args.timeout):
-        print("BASELINE FAILED: the test selection is already red or did not finish within --timeout")
+    if _baseline_red(args.tests, args.timeout, REPO):
         return 2
     return _mutate(targets, args.tests, args.timeout, REPO, args.max)
 

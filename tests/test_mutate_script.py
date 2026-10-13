@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -14,11 +15,32 @@ _spec.loader.exec_module(mutate)
 
 
 def test_a_passing_selection_is_not_reported_as_failed_in_this_project_s_own_environment():
-    assert mutate._run(["tests/test_main_args.py"], 120) is False
+    assert mutate._failure(["tests/test_main_args.py"], 120) is None
 
 
-def test_a_failing_selection_is_reported_as_failed():
-    assert mutate._run(["tests/test_main_args.py::TestParseAutoResume::test_no_such_test"], 120) is True
+def test_a_failing_selection_is_reported_with_pytest_s_own_reason():
+    failure = mutate._failure(["tests/test_main_args.py::TestParseAutoResume::test_no_such_test"], 120)
+    assert "test_no_such_test" in failure
+
+
+def test_the_copy_lets_a_test_binary_run_and_a_red_baseline_prints_why(monkeypatch, capsys):
+    runnable = []
+
+    def red(tests, timeout, root):
+        probe = root / "probe"
+        probe.write_text("#!/bin/sh\n")
+        probe.chmod(0o755)
+        runnable.append(os.access(probe, os.X_OK))
+        return "E   assert 1 == 2"
+
+    diff = "diff --git a/src/x.py b/src/x.py\n+++ b/src/x.py\n@@ -0,0 +1 @@\n+x = 1\n"
+    monkeypatch.setattr(mutate, "_failure", red)
+    monkeypatch.setattr(mutate, "_git", lambda *args: diff if "src/" in args else "")
+    monkeypatch.setattr(mutate, "_export", lambda commit, into: None)
+    assert [mutate._diff_mode(None, ["tests/test_x.py"], 10) for _ in range(2)] == [2, 2]
+    assert runnable == [True, True]
+    out = capsys.readouterr().out
+    assert out.count("E   assert 1 == 2\nBASELINE FAILED") == 2
 
 
 def test_the_diff_mode_takes_exactly_the_added_python_lines():
