@@ -738,3 +738,20 @@ def test_the_toolbar_s_start_and_stop_are_plain_words_on_one_line(monkeypatch, t
     assert start.text().split()[0] == "Start" and stop.text().split()[0] == "Stop"
     assert (start.y(), start.height()) == (stop.y(), stop.height())
     win._history_db = None
+
+
+@pytest.mark.req("T23.style")
+def test_a_style_fallback_is_said_in_the_status_bar(monkeypatch, tmp_path, db):
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    win = _build(monkeypatch, tmp_path, db=db)
+    win.show()
+    win.show_style_fallback(None)
+    QApplication.processEvents()
+    assert not [label for label in win.statusBar().findChildren(QLabel) if "Fusion" in label.text()]
+    win.show_style_fallback("system Qt style crashed in a probe (SIGSEGV)")
+    QApplication.processEvents()
+    said = [label for label in win.statusBar().findChildren(QLabel) if "Fusion" in label.text()]
+    assert [label.toolTip() for label in said] == ["system Qt style crashed in a probe (SIGSEGV): running in Fusion"]
+    assert said[0].isVisible()
+    win._history_db = None

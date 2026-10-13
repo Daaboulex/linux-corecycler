@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -88,6 +89,10 @@ def ensure_work_dir(configured: str = "") -> Path:
     work.mkdir(parents=True, exist_ok=True)
     hand_back(work)
     return work
+
+
+def child_environment() -> dict[str, str]:
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(path for path in sys.path if path)}
 
 
 def hand_back(path: Path) -> None:

@@ -4913,8 +4913,7 @@ proof = "built"
 [[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
-proof = "not built"
-task = "T23"
+proof = "built"
 
 [[requirement]]
 id = "T23.startstop"

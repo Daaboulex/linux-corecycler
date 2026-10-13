@@ -352,6 +352,10 @@ def main() -> int:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
+    from corecycler.gui import style
+
+    style_problem = style.fall_back_to_fusion()
+
     # high DPI support
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
@@ -383,7 +387,6 @@ def main() -> int:
         app.setWindowIcon(QIcon(str(icon_path)))
 
     from corecycler.config import tools
-    from corecycler.gui import style
     from corecycler.gui.main_window import MainWindow
 
     style.follow(app)
@@ -391,6 +394,7 @@ def main() -> int:
     tools.load_configured_paths()
 
     window = MainWindow()
+    window.show_style_fallback(style_problem)
 
     auto_resume_delay = _parse_auto_resume(sys.argv[1:])
     if auto_resume_delay is not None:

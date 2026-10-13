@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 
 from corecycler.cli import EXIT_LOCKED, EXIT_MEANINGS, EXIT_REFUSED
 from corecycler.config import tools
-from corecycler.config.paths import atomic_write, data_dir, hand_back
+from corecycler.config.paths import atomic_write, child_environment, data_dir, hand_back
 from corecycler.engine import detector as kernel
 from corecycler.gui.style import (
     SESSION_STATUS_LABELS,
@@ -714,7 +714,7 @@ class TunerTab(QWidget):
         command = [sys.executable, "-m", "corecycler.tuner.live_hw", "--write", *args]
         if self._db is not None:
             command += ["--db", str(self._db.path)]
-        environment = {**os.environ, "PYTHONPATH": os.pathsep.join(path for path in sys.path if path)}
+        environment = child_environment()
         with output.open("w") as out:
             self._child = subprocess.Popen(
                 command,

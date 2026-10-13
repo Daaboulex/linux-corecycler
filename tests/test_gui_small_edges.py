@@ -3,6 +3,8 @@ layout teardown, config profile application."""
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys as _sys
 
 import pytest
@@ -186,3 +188,79 @@ class TestConfigTabProfile:
         assert tab._fft_min_spin.value() == 16
         assert tab._fft_max_spin.value() == 4096
         assert tab.get_profile().cores_to_test is None
+
+
+@pytest.mark.req("T23.style")
+@pytest.mark.parametrize(
+    ("outcome", "said"),
+    [
+        (subprocess.CompletedProcess([], 0, "breeze\n", ""), None),
+        (subprocess.CompletedProcess([], -11, "", ""), "system Qt style crashed in a probe (SIGSEGV)"),
+        (subprocess.CompletedProcess([], -250, "", ""), "system Qt style crashed in a probe (signal 250)"),
+        (
+            subprocess.CompletedProcess([], 1, "", "start\nqt.qpa.plugin: could not load\n\n"),
+            "system Qt style probe exited 1: qt.qpa.plugin: could not load",
+        ),
+        (subprocess.CompletedProcess([], 3, "", ""), "system Qt style probe exited 3: no output"),
+        (subprocess.TimeoutExpired("probe", 15), "system Qt style probe did not finish in 15 s"),
+        (OSError("no interpreter"), "system Qt style probe could not run: no interpreter"),
+    ],
+)
+def test_the_style_probe_names_why_the_system_style_cannot_run(monkeypatch, outcome, said):
+    from corecycler.gui import style
+
+    monkeypatch.delenv("QT_STYLE_OVERRIDE", raising=False)
+    asked = []
+
+    def run(command, **kwargs):
+        asked.append((command, kwargs))
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    assert style.style_problem(run) == said
+    ((command, kwargs),) = asked
+    assert command[:2] == [_sys.executable, "-c"]
+    assert kwargs["env"]["PYTHONPATH"].split(os.pathsep) == [path for path in _sys.path if path]
+
+
+@pytest.mark.req("T23.style")
+def test_a_style_the_owner_chose_is_not_probed(monkeypatch):
+    from corecycler.gui import style
+
+    monkeypatch.setenv("QT_STYLE_OVERRIDE", "Fusion")
+    assert style.style_problem(lambda *a, **k: pytest.fail("probed a style the owner chose")) is None
+
+
+@pytest.mark.req("T23.style")
+def test_the_real_probe_starts_qt_and_finds_no_problem_offscreen(monkeypatch):
+    from corecycler.gui import style
+
+    monkeypatch.delenv("QT_STYLE_OVERRIDE", raising=False)
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    assert style.style_problem() is None
+
+
+@pytest.mark.req("T23.style")
+def test_a_real_probe_that_fails_names_its_last_error_line(monkeypatch):
+    from corecycler.gui import style
+
+    monkeypatch.delenv("QT_STYLE_OVERRIDE", raising=False)
+    monkeypatch.setattr(style, "STYLE_PROBE", "import sys\nsys.stderr.write('first\\nprobe said no\\n')\nsys.exit(2)\n")
+    assert style.style_problem() == "system Qt style probe exited 2: probe said no"
+
+
+@pytest.mark.req("T23.style")
+@pytest.mark.parametrize("code", [0, -11])
+def test_the_fallback_sets_fusion_only_when_the_probe_fails(monkeypatch, caplog, code):
+    from corecycler.gui import style
+
+    monkeypatch.setenv("QT_STYLE_OVERRIDE", "recorded so teardown removes it")
+    monkeypatch.delenv("QT_STYLE_OVERRIDE")
+    problem = style.fall_back_to_fusion(lambda *a, **k: subprocess.CompletedProcess([], code, "", ""))
+    if code == 0:
+        assert problem is None and "QT_STYLE_OVERRIDE" not in os.environ and caplog.text == ""
+    else:
+        assert problem == "system Qt style crashed in a probe (SIGSEGV)"
+        assert os.environ["QT_STYLE_OVERRIDE"] == "Fusion"
+        assert f"{problem}: running in Fusion" in caplog.text

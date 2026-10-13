@@ -323,6 +323,13 @@ class MainWindow(QMainWindow):
             history_label.setStyleSheet(f"color: {theme.COLOR_FAIL}; font: 10px monospace;")
             self._status_bar.addPermanentWidget(narrowable(history_label))
 
+    def show_style_fallback(self, problem: str | None) -> None:
+        if problem is None:
+            return
+        label = QLabel(f"  {problem}: running in Fusion")
+        label.setStyleSheet(f"color: {theme.COLOR_WARN_SOFT}; font: 10px monospace;")
+        self._status_bar.addPermanentWidget(narrowable(label))
+
     def _setup_timer(self) -> None:
         self._elapsed_timer = QTimer(self)
         self._elapsed_timer.timeout.connect(self._update_elapsed)

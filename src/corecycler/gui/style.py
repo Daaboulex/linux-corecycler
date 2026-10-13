@@ -8,11 +8,17 @@ value freezes it at import time and a scheme change is then never seen.
 
 from __future__ import annotations
 
+import logging
+import os
+import signal
+import subprocess
+import sys
 from datetime import datetime
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPalette
 
+from corecycler.config.paths import child_environment
 from corecycler.tuner.machine.types import Group, PauseReason, Phase, Stage
 
 DARK = "dark"
@@ -369,3 +375,44 @@ def _assert_complete() -> None:
 
 
 _assert_complete()
+
+
+STYLE_PROBE = (
+    "import sys\nfrom PySide6.QtWidgets import QApplication\nprint(QApplication(sys.argv[:1]).style().name())\n"
+)
+STYLE_PROBE_S = 15
+
+
+def style_problem(run=subprocess.run) -> str | None:
+    if os.environ.get("QT_STYLE_OVERRIDE"):
+        return None
+    try:
+        probe = run(
+            [sys.executable, "-c", STYLE_PROBE],
+            capture_output=True,
+            text=True,
+            timeout=STYLE_PROBE_S,
+            env=child_environment(),
+        )
+    except subprocess.TimeoutExpired:
+        return f"system Qt style probe did not finish in {STYLE_PROBE_S} s"
+    except OSError as e:
+        return f"system Qt style probe could not run: {e}"
+    if probe.returncode < 0:
+        try:
+            name = signal.Signals(-probe.returncode).name
+        except ValueError:
+            name = f"signal {-probe.returncode}"
+        return f"system Qt style crashed in a probe ({name})"
+    if probe.returncode != 0:
+        said = [line for line in probe.stderr.splitlines() if line.strip()]
+        return f"system Qt style probe exited {probe.returncode}: {said[-1] if said else 'no output'}"
+    return None
+
+
+def fall_back_to_fusion(run=subprocess.run) -> str | None:
+    problem = style_problem(run)
+    if problem is not None:
+        os.environ["QT_STYLE_OVERRIDE"] = "Fusion"
+        logging.getLogger(__name__).warning("%s: running in Fusion", problem)
+    return problem
