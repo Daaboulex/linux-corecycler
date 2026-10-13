@@ -26,15 +26,16 @@ from PySide6.QtWidgets import (
 from corecycler.config.paths import user_home
 from corecycler.gui.style import theme
 from corecycler.smu.commands import CPUGeneration, SMUCommandSet, detect_generation, get_commands
-from corecycler.smu.driver import RyzenSMU, core_map_blocked
+from corecycler.smu.driver import SHAPER_BAND_NAMES, SHAPER_MARGINS, RyzenSMU, core_map_blocked
 from corecycler.smu.writer_lock import WriterBusy, co_writer
-from corecycler.tuner.live_hw import shaper_fact
+from corecycler.tuner.live_hw import shaper_read, shaper_words
 
 if TYPE_CHECKING:
     from corecycler.engine.topology import CPUTopology
 
 
 SET_ALL = "Set all"
+SHAPER_POINTS = ("-5 C", "50 C", "90 C")
 SET_ZERO = "Set all to 0"
 UNREADABLE = "unreadable"
 
@@ -161,16 +162,37 @@ class SMUTab(QWidget):
 
         layout.addWidget(co_group)
 
-        shaper_group = QGroupBox("Curve Shaper now on the CPU, read only")
+        shaper_group = QGroupBox("Curve Shaper")
         shaper_layout = QVBoxLayout(shaper_group)
+        self._shaper_table = QTableWidget(len(SHAPER_BAND_NAMES), len(SHAPER_POINTS))
+        self._shaper_table.setHorizontalHeaderLabels(list(SHAPER_POINTS))
+        self._shaper_table.setVerticalHeaderLabels(list(SHAPER_BAND_NAMES))
+        self._shaper_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        low, high = SHAPER_MARGINS
+        self._shaper_spins: list[list[QSpinBox]] = []
+        for row in range(len(SHAPER_BAND_NAMES)):
+            spins = []
+            for column in range(len(SHAPER_POINTS)):
+                spin = QSpinBox()
+                spin.setRange(low, high)
+                self._shaper_table.setCellWidget(row, column, spin)
+                spins.append(spin)
+            self._shaper_spins.append(spins)
+        shaper_layout.addWidget(self._shaper_table)
         self._shaper_label = QLabel("Not read yet: Read from CPU reads it")
-        self._shaper_label.setFont(QFont("monospace", 9))  # equivalent-mutant: style only, layout checks come with T23
-        self._shaper_label.setWordWrap(True)  # equivalent-mutant: style only, layout checks come with T23
         self._shaper_label.setToolTip(
             "Each band's margins at -5 C, 50 C and 90 C as the CPU runs them now; "
-            "a Shaper set at runtime differs from the BIOS until the next reboot"
+            "a Shaper written here differs from the BIOS until the next reboot"
         )
         shaper_layout.addWidget(self._shaper_label)
+        shaper_buttons = QHBoxLayout()
+        self._shaper_write_btn = QPushButton("Write Shaper")
+        self._shaper_write_btn.clicked.connect(self._write_shaper)
+        shaper_buttons.addWidget(self._shaper_write_btn)
+        self._shaper_zero_btn = QPushButton("Shaper to 0")
+        self._shaper_zero_btn.clicked.connect(self._zero_shaper)
+        shaper_buttons.addWidget(self._shaper_zero_btn)
+        shaper_layout.addLayout(shaper_buttons)
         layout.addWidget(shaper_group)
 
         self._spinboxes: dict[int, QSpinBox] = {}
@@ -263,11 +285,11 @@ class SMUTab(QWidget):
         self._apply_all_btn.setText(f"{SET_ALL} (practice)" if checked else SET_ALL)
         self._reset_btn.setText(f"{SET_ZERO} (practice)" if checked else SET_ZERO)
 
-    def _confirm_co_write(self, detail: str) -> bool:
+    def _confirm_write(self, what: str, detail: str) -> bool:
         practice = " (practice mode, nothing is written)" if self._dry_run_cb.isChecked() else ""
         reply = QMessageBox.warning(
             self,
-            f"Write Curve Optimizer values{practice}",
+            f"Write {what}{practice}",
             f"{detail}\n\n"
             "They last until the next reboot and the BIOS settings do not change. "
             "A value that is too negative can crash the machine until it reboots.\n\n"
@@ -295,7 +317,36 @@ class SMUTab(QWidget):
             self._table.setItem(row, 2, _item(text))
             if val is not None and core_id in self._spinboxes:
                 self._spinboxes[core_id].setValue(val)
-        self._shaper_label.setText(shaper_fact(self._smu))
+        self._read_shaper()
+
+    def _read_shaper(self) -> None:
+        bands, said = shaper_read(self._smu)
+        self._shaper_label.setText(said)
+        for row, margins in enumerate(bands or ()):
+            for column, margin in enumerate(margins):
+                self._shaper_spins[row][column].setValue(margin)
+
+    def _write_shaper(self) -> None:
+        self._shaper_write(tuple(tuple(spin.value() for spin in spins) for spins in self._shaper_spins))
+
+    def _zero_shaper(self) -> None:
+        self._shaper_write(tuple((0, 0, 0) for _ in SHAPER_BAND_NAMES))
+
+    def _shaper_write(self, bands: tuple[tuple[int, int, int], ...]) -> None:
+        if not self._smu:
+            QMessageBox.warning(self, "No driver", "The ryzen_smu driver is not available.")
+            return
+        if self._refused_while_tuning():
+            return
+        if not self._confirm_write("the Curve Shaper", f"The Curve Shaper becomes: {shaper_words(bands)}."):
+            return
+        self._write(lambda: self._set_shaper(bands))
+
+    def _set_shaper(self, bands: tuple[tuple[int, int, int], ...]) -> None:
+        problem = self._smu.set_curve_shaper(bands)
+        if problem is not None:
+            QMessageBox.warning(self, "Write failed", f"The Curve Shaper was not set: {problem}.")
+        self._read_shaper()
 
     def _refresh_writes(self) -> None:
         can_write = (
@@ -315,6 +366,17 @@ class SMUTab(QWidget):
         for spin in self._spinboxes.values():
             spin.setEnabled(not self._tuner_active)
         self._apply_all_btn.setToolTip("Off while the Auto-Tuner runs" if self._tuner_active else "")
+        can_shape = (
+            not self._tuner_active
+            and self._smu is not None
+            and self._commands is not None
+            and self._commands.set_curve_shaper_cmd is not None
+        )
+        self._shaper_write_btn.setEnabled(can_shape)
+        self._shaper_zero_btn.setEnabled(can_shape)
+        for spins in self._shaper_spins:
+            for spin in spins:
+                spin.setEnabled(not self._tuner_active)
 
     def _refused_while_tuning(self) -> bool:
         if self._tuner_active:
@@ -343,7 +405,7 @@ class SMUTab(QWidget):
 
         value = spin.value()
 
-        if not self._confirm_co_write(f"Core {core_id} gets {value}."):
+        if not self._confirm_write("Curve Optimizer values", f"Core {core_id} gets {value}."):
             return
         self._write(lambda: self._set_one(core_id, value))
 
@@ -363,7 +425,7 @@ class SMUTab(QWidget):
             return
 
         summary = ", ".join(f"C{cid} {spin.value()}" for cid, spin in sorted(self._spinboxes.items()))
-        if not self._confirm_co_write(f"Every core gets its value to set:\n{summary}"):
+        if not self._confirm_write("Curve Optimizer values", f"Every core gets its value to set:\n{summary}"):
             return
 
         self._apply_all_btn.setEnabled(False)
@@ -389,7 +451,7 @@ class SMUTab(QWidget):
         if self._refused_while_tuning():
             return
 
-        if not self._confirm_co_write("Every core gets 0."):
+        if not self._confirm_write("Curve Optimizer values", "Every core gets 0."):
             return
 
         self._apply_all_btn.setEnabled(False)
@@ -426,7 +488,7 @@ class SMUTab(QWidget):
         if self._refused_while_tuning():
             return
 
-        if not self._confirm_co_write("Every core gets its remembered value back."):
+        if not self._confirm_write("Curve Optimizer values", "Every core gets its remembered value back."):
             return
         self._write(self._set_backup)
 

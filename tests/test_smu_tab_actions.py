@@ -34,7 +34,7 @@ def tab(monkeypatch):
     _qapp()
     t = st.SMUTab(topology=_topo())
     t._tuner_active = False
-    monkeypatch.setattr(t, "_confirm_co_write", lambda _detail: True)
+    monkeypatch.setattr(t, "_confirm_write", lambda _what, _detail: True)
     return t
 
 
@@ -113,7 +113,7 @@ class TestApplySingle:
 
     def test_declined_confirmation_does_not_write(self, tab, monkeypatch):
         tab._smu = _smu()
-        monkeypatch.setattr(tab, "_confirm_co_write", lambda _d: False)
+        monkeypatch.setattr(tab, "_confirm_write", lambda _w, _d: False)
         tab._apply_single(0)
         tab._smu.set_co_offset.assert_not_called()
 
@@ -142,7 +142,7 @@ class TestApplyAllAndReset:
 
     def test_apply_all_declined(self, tab, monkeypatch):
         tab._smu = _smu()
-        monkeypatch.setattr(tab, "_confirm_co_write", lambda _d: False)
+        monkeypatch.setattr(tab, "_confirm_write", lambda _w, _d: False)
         tab._apply_all_co()
         tab._smu.set_co_offset.assert_not_called()
 
@@ -170,7 +170,7 @@ class TestApplyAllAndReset:
 
     def test_reset_declined(self, tab, monkeypatch):
         tab._smu = _smu()
-        monkeypatch.setattr(tab, "_confirm_co_write", lambda _d: False)
+        monkeypatch.setattr(tab, "_confirm_write", lambda _w, _d: False)
         tab._reset_all_co()
         tab._smu.reset_all_co.assert_not_called()
 
@@ -203,7 +203,7 @@ class TestBackupRestore:
 
     def test_restore_declined(self, tab, monkeypatch):
         tab._smu = _smu()
-        monkeypatch.setattr(tab, "_confirm_co_write", lambda _d: False)
+        monkeypatch.setattr(tab, "_confirm_write", lambda _w, _d: False)
         tab._restore_co()
         tab._smu.restore_co_offsets.assert_not_called()
 
@@ -255,3 +255,81 @@ class TestOneWriter:
         tab._apply_all_co()
         assert not tab._apply_all_btn.isEnabled()
         assert not tab._reset_btn.isEnabled()
+
+
+LOW_ONLY = ((0, 0, 0), (-30, -27, -12), (0, 0, 0), (0, 0, 0), (0, 0, 0))
+
+
+def _shown_shaper(tab) -> tuple[tuple[int, ...], ...]:
+    return tuple(tuple(spin.value() for spin in spins) for spins in tab._shaper_spins)
+
+
+class TestCurveShaper:
+    @pytest.mark.req("S1.gui")
+    def test_the_table_shows_the_shaper_read_from_the_cpu(self, tab):
+        tab._smu = _smu(shaper=LOW_ONLY)
+        tab._read_all_co()
+        assert _shown_shaper(tab) == LOW_ONLY
+        assert tab._shaper_table.verticalHeaderItem(1).text() == "Low"
+        assert [tab._shaper_table.horizontalHeaderItem(c).text() for c in range(3)] == ["-5 C", "50 C", "90 C"]
+
+    @pytest.mark.req("S1.gui")
+    def test_write_shaper_writes_the_table_and_reads_it_back(self, tab):
+        smu = _smu(shaper=LOW_ONLY)
+        smu.set_curve_shaper.return_value = None
+        tab._smu = smu
+        tab._read_all_co()
+        tab._shaper_spins[4][2].setValue(-2)
+        smu.get_curve_shaper.return_value = ((0, 0, 0), (-30, -27, -12), (0, 0, 0), (0, 0, 0), (0, 0, -2))
+        tab._refresh_writes()
+        tab._shaper_write_btn.click()
+        smu.set_curve_shaper.assert_called_once_with(((0, 0, 0), (-30, -27, -12), (0, 0, 0), (0, 0, 0), (0, 0, -2)))
+        assert tab._shaper_label.text().endswith("Max 0/0/-2")
+
+    @pytest.mark.req("S1.gui")
+    def test_shaper_to_0_writes_every_band_to_0(self, tab):
+        smu = _smu(shaper=LOW_ONLY)
+        smu.set_curve_shaper.return_value = None
+        tab._smu = smu
+        tab._refresh_writes()
+        tab._shaper_zero_btn.click()
+        smu.set_curve_shaper.assert_called_once_with(((0, 0, 0),) * 5)
+
+    @pytest.mark.req("S1.gui")
+    def test_a_refused_shaper_write_is_said_and_the_cpu_is_read_again(self, tab):
+        import corecycler.gui.smu_tab as st
+
+        smu = _smu(shaper=LOW_ONLY)
+        smu.set_curve_shaper.return_value = "the SMU refused band Low"
+        tab._smu = smu
+        tab._refresh_writes()
+        tab._shaper_zero_btn.click()
+        assert "The Curve Shaper was not set: the SMU refused band Low." in str(st.QMessageBox.warning.call_args)
+        assert _shown_shaper(tab) == LOW_ONLY
+
+    @pytest.mark.req("S1.gui")
+    def test_a_declined_confirmation_writes_nothing(self, tab, monkeypatch):
+        smu = _smu(shaper=LOW_ONLY)
+        tab._smu = smu
+        monkeypatch.setattr(tab, "_confirm_write", lambda _w, _d: False)
+        tab._refresh_writes()
+        tab._shaper_zero_btn.click()
+        smu.set_curve_shaper.assert_not_called()
+
+    @pytest.mark.req("S1.gui")
+    def test_the_shaper_is_locked_while_the_tuner_runs(self, tab):
+        smu = _smu(shaper=LOW_ONLY)
+        tab._smu = smu
+        tab.set_tuner_running(True)
+        assert not tab._shaper_write_btn.isEnabled() and not tab._shaper_zero_btn.isEnabled()
+        assert not tab._shaper_spins[0][0].isEnabled()
+        tab._zero_shaper()
+        smu.set_curve_shaper.assert_not_called()
+
+    @pytest.mark.req("S1.gui")
+    def test_without_a_driver_the_shaper_write_says_so(self, tab):
+        import corecycler.gui.smu_tab as st
+
+        tab._smu = None
+        tab._zero_shaper()
+        assert "The ryzen_smu driver is not available." in str(st.QMessageBox.warning.call_args)

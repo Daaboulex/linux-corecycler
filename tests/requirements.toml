@@ -4781,6 +4781,11 @@ statement = "The Curve Optimizer tab shows the Curve Shaper now on the CPU, read
 proof = "built"
 
 [[requirement]]
+id = "S1.gui"
+statement = "The Curve Optimizer tab shows the Curve Shaper as a table of five bands by three temperatures read from the CPU; Write Shaper and Shaper to 0 write it at runtime after a confirmation and read it back, a refused write is said, and the table is locked while a tuning session runs (owner card 2026-10-13)."
+proof = "built"
+
+[[requirement]]
 id = "T22.F1"
 statement = "The CO tab's Now on the CPU column and the core grid show each core's CO read from the CPU, never the session's working value."
 proof = "built"

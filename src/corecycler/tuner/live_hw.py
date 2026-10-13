@@ -188,15 +188,23 @@ class SmuHardware:
         return time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
 
 
-def shaper_fact(smu) -> str:
-    if smu.commands.get_curve_shaper_cmd is None:
-        return "none on this generation"
-    bands = smu.get_curve_shaper()
-    if bands is None:
-        return "unreadable: the SMU refused the read or its band check failed"
+def shaper_words(bands: tuple[tuple[int, int, int], ...]) -> str:
     return ", ".join(
         f"{name} {'/'.join(map(str, margins))}" for name, margins in zip(SHAPER_BAND_NAMES, bands, strict=True)
     )
+
+
+def shaper_read(smu) -> tuple[tuple[tuple[int, int, int], ...] | None, str]:
+    if smu.commands.get_curve_shaper_cmd is None:
+        return None, "none on this generation"
+    bands = smu.get_curve_shaper()
+    if bands is None:
+        return None, "unreadable: the SMU refused the read or its band check failed"
+    return bands, shaper_words(bands)
+
+
+def shaper_fact(smu) -> str:
+    return shaper_read(smu)[1]
 
 
 def shaper_problem(smu) -> str | None:
