@@ -4783,8 +4783,7 @@ proof = "built"
 [[requirement]]
 id = "T22.F2"
 statement = "The power state label shows every CPU's governor, EPP and clock ceiling as read now, naming the CPUs that differ, never cpu0 read once."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F6"

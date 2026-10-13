@@ -104,7 +104,7 @@ def test_the_detail_shows_cores_tests_events_and_boots(db, tmp_path):
     assert "paused: user: paused by the owner" in text
     assert f"  {this_boot()}  first seen " in text and "BIOS 2402" in text
     assert f", deepest offset {cfg.max_offset}, {cfg.k_1t} and {cfg.k_2t} passes to prove" in tab._detail_info.text()
-    assert tab._detail_info.text().endswith("power state: balanced profile")
+    assert tab._detail_info.text().endswith("power at start: platform profile balanced")
     assert f"  core {core}: 4421 MHz with the scaling maximum at unknown, boost unknown" in text
     assert not tab._load_co_btn.isEnabled()
 

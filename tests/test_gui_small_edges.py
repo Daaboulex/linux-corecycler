@@ -69,6 +69,7 @@ class TestTunerWords:
         from corecycler.gui.style import power_text
 
         pairs = (
+            ("power profile", "balanced"),
             ("platform profile", "power-saver"),
             ("governor", "powersave"),
             ("EPP", "power"),
@@ -77,7 +78,8 @@ class TestTunerWords:
             ("new knob", "x"),
         )
         assert power_text(pairs) == (
-            "power-saver profile, powersave governor, EPP power, boost on, up to 4300 MHz, new knob x"
+            "profile balanced, platform profile power-saver, governor powersave, EPP power, boost on, max MHz 4300,"
+            " new knob x"
         )
         assert power_text((("boost", "0"),)) == "boost off"
 

@@ -222,6 +222,30 @@ def test_the_power_state_is_read_from_cpufreq_and_the_platform_profile(tmp_path)
     )
 
 
+@pytest.mark.req("T22.F2")
+def test_the_power_state_is_read_from_every_cpu_and_names_the_cpus_that_differ(tmp_path):
+    reads = {
+        0: ("4300000", "powersave", "balance_performance", "5756452"),
+        1: ("4300000", "powersave", "balance_performance", "5756452"),
+        2: ("5100000", "performance", "balance_performance", "5500000"),
+        3: ("5100000", "powersave", None, "5500000"),
+    }
+    for cpu, (ceiling, governor, epp, top) in reads.items():
+        cpufreq(tmp_path, cpu, "624000", ceiling)
+        folder = tmp_path / f"cpu{cpu}" / "cpufreq"
+        (folder / "scaling_governor").write_text(governor + "\n")
+        (folder / "cpuinfo_max_freq").write_text(top + "\n")
+        if epp is not None:
+            (folder / "energy_performance_preference").write_text(epp + "\n")
+    state = read_power_state(tmp_path, tmp_path / "no_profile")
+    assert (state.governor, state.epp, state.max_mhz, state.top_mhz) == (None, None, None, 5756.452)
+    assert state.named() == (
+        ("governor", "powersave on cpus 0-1,3; performance on cpus 2"),
+        ("EPP", "balance_performance on cpus 0-2; unreadable on cpus 3"),
+        ("scaling maximum MHz", "4300 on cpus 0-1; 5100 on cpus 2-3"),
+    )
+
+
 def test_a_machine_without_the_power_files_names_nothing(tmp_path):
     state = read_power_state(tmp_path / "missing", tmp_path / "no_profile")
     assert state == PowerState()

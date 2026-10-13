@@ -22,6 +22,7 @@ from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.gui import tuner_tab as tt
 from corecycler.gui.widgets import spoken
 from corecycler.history.db import HistoryDB
+from corecycler.monitor.frequency import PowerState
 from corecycler.smu.writer_lock import co_writer
 from corecycler.tuner.live import config_from_json
 from corecycler.tuner.machine.session import config_problem
@@ -207,6 +208,28 @@ def test_without_a_writable_co_or_a_database_start_is_off(home):
     assert t._view is None
 
 
+@pytest.mark.req("T22.F2")
+def test_the_power_line_is_read_now_at_every_refresh_not_taken_from_the_session(db, home, tmp_path, monkeypatch):
+    read = {"profile": "balanced", "state": PowerState(None, "powersave", "balance_performance", "1", 5756.452)}
+    monkeypatch.setattr(tt, "power_profile", lambda: read["profile"])
+    monkeypatch.setattr(tt, "read_power_state", lambda: read["state"])
+    save_machine_session(db, tmp_path, "paused")
+    t = tab(db)
+    t.refresh()
+    assert t._range.text() == (
+        "Power now: profile balanced, governor powersave, EPP balance_performance, boost on, max MHz 5756"
+    )
+    read["profile"], read["state"] = (
+        None,
+        PowerState(split=(("governor", "powersave on cpus 0-1; performance on cpus 2"),)),
+    )
+    t.refresh()
+    assert t._range.text() == "Power now: governor powersave on cpus 0-1; performance on cpus 2"
+    read["state"] = PowerState()
+    t.refresh()
+    assert t._range.text() == "Power now: unreadable"
+
+
 def test_a_paused_session_shows_its_cores_and_offers_resume(db, home, tmp_path):
     t = tab(db)
     infos = []
@@ -216,7 +239,6 @@ def test_a_paused_session_shows_its_cores_and_offers_resume(db, home, tmp_path):
     t.refresh()
     assert t._status.text() == f"Session {saved.session_id}: Paused. Asked by you: paused by the owner"
     assert t._cores.rowCount() == len(saved.cores)
-    assert t._range.text() == "Power state: balanced profile"
     assert t._cores.item(0, 1).text() == str(saved.cores[0].value)
     assert infos == [(r.core, r.value, r.phase.value) for r in saved.cores]
     t.refresh()

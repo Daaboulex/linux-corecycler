@@ -846,7 +846,7 @@ class HistoryTab(QWidget):
             info.append(f"{ORIGINS.get(sess.origin, sess.origin)} session {sess.parent_session_id}")
         if sess.bios_version:
             info.append(f"BIOS {sess.bios_version}")
-        info.append("power state: " + (power_text(saved.power) or "unknown"))
+        info.append("power at start: " + (power_text(saved.power) or "none recorded"))
         self._detail_info.setText("  |  ".join(info))
         self._detail_info.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 2px;")
         tests = self._db.list_tuner_tests(sess.id)

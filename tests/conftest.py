@@ -597,6 +597,13 @@ def writer_dir(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def no_system_bus(monkeypatch):
+    from corecycler.gui import tuner_tab
+
+    monkeypatch.setattr(tuner_tab, "power_profile", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def no_blocking_dialogs(monkeypatch):
     """A modal dialog in a test hangs the suite forever -- fail loudly instead.
 

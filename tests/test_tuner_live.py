@@ -550,7 +550,7 @@ def test_every_test_leaves_one_row_that_its_verdict_completes(tmp_path):
     assert all(t["ended_at"] is not None and t["seconds_run"] == 1.0 for t in tests)
     assert {t["verdict"] for t in tests} == {"pass", "silicon"}
     assert all(json.loads(t["speeds_json"]) == [["SFTv4", 6.56e9, True], ["VT3", 2.37e9, False]] for t in tests)
-    assert all(json.loads(t["power_json"]) == asdict(UNCAPPED) for t in tests)
+    assert all(json.loads(t["power_json"]) == json.loads(json.dumps(asdict(UNCAPPED))) for t in tests)
     assert {(t["verdict"], t["output"]) for t in tests} == {
         ("pass", ""),
         ("silicon", "Error(s) encountered on logical core 0."),
@@ -1233,6 +1233,7 @@ class FakeSmu:
 def sysfs(tmp_path: Path, scaling: int, top: int, boost: str | None, pstate: bool = True) -> Path:
     freq = tmp_path / "cpu" / "cpu0" / "cpufreq"
     freq.mkdir(parents=True)
+    (freq / "scaling_cur_freq").write_text("624000")
     (freq / "scaling_max_freq").write_text(str(scaling))
     (freq / ("amd_pstate_max_freq" if pstate else "cpuinfo_max_freq")).write_text(str(top))
     if boost is not None:

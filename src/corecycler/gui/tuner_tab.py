@@ -50,6 +50,8 @@ from corecycler.gui.style import (
 )
 from corecycler.gui.tool_prompt import ensure_tool
 from corecycler.gui.widgets import add_setting, note, setting_grid, spoken
+from corecycler.monitor.frequency import read_power_state
+from corecycler.monitor.power_profile import power_profile
 from corecycler.smu.writer_lock import running_driver
 from corecycler.tuner.live import config_to_json, read_stored
 from corecycler.tuner.live_hw import sched_ext_note
@@ -241,6 +243,11 @@ def settings_lines(cfg: MachineConfig) -> list[str]:
     return lines
 
 
+def power_now() -> tuple[tuple[str, str], ...]:
+    profile = power_profile()
+    return ((("power profile", profile),) if profile is not None else ()) + read_power_state().named()
+
+
 def stopped_services() -> list[str]:
     systemctl = tools.resolve("systemctl").path
     if systemctl is None:
@@ -428,6 +435,7 @@ class TunerTab(QWidget):
         column = QVBoxLayout()
         self._status = QLabel("No tuning session")
         self._range = QLabel("")
+        self._range.setWordWrap(True)
         self._driver = QLabel("")
         self._driver.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM};")
         self._test = QLabel("")
@@ -494,6 +502,7 @@ class TunerTab(QWidget):
         self._view = read_view(self._db, kernel.read_boot_id()) if self._db is not None else None
         if seen is not None and self._view is not None and seen.status not in ENDED and self._view.status in ENDED:
             self._remind()
+        self._range.setText("Power now: " + (power_text(power_now()) or "unreadable"))
         self._show()
         self._enable_controls()
 
@@ -526,8 +535,6 @@ class TunerTab(QWidget):
         self._status.setText(f"Session {view.session_id}: {status}{reason}")
         if view.problem is not None:
             self._status.setText(view.problem)
-        power = view.stored.power if view.stored is not None else ()
-        self._range.setText("Power state: " + (power_text(power) or "unknown"))
         self._show_test(view)
         self._show_cores(view)
         self._show_events(view)

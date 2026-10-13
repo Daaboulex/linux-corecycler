@@ -124,11 +124,12 @@ VERDICT_LABELS: dict[str, str] = {
 }
 
 POWER_LABELS = {
-    "platform profile": "{} profile",
-    "governor": "{} governor",
+    "power profile": "profile {}",
+    "platform profile": "platform profile {}",
+    "governor": "governor {}",
     "EPP": "EPP {}",
     "boost": "boost {}",
-    "scaling maximum MHz": "up to {} MHz",
+    "scaling maximum MHz": "max MHz {}",
 }
 ON_OFF = {"1": "on", "0": "off"}
 
