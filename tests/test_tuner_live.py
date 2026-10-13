@@ -2261,7 +2261,7 @@ def test_a_known_smu_tool_refuses_even_without_a_driver_handle(tmp_path):
 def test_processes_checked_by_name_only_are_a_warning(tmp_path, monkeypatch):
     refusal, warnings = preflight(tmp_path, monkeypatch, procs={77: ("systemd", ())}, unread=(77,))
     assert refusal is None
-    assert warnings == ("1 processes were checked for an SMU tool by name only; their open files need root",)
+    assert warnings == ("SMU tool check by name only for 1 processes: their open files need root",)
 
 
 def sched_ext(root: Path, state: str | None, ops: str | None = None) -> Path:
@@ -2286,20 +2286,17 @@ def test_an_enabled_sched_ext_scheduler_is_a_warning_naming_it(tmp_path, monkeyp
     root = sched_ext(tmp_path / "scx", "enabled", "lavd_1.0.13")
     refusal, warnings = preflight(tmp_path, monkeypatch, sched_ext=root)
     assert refusal is None
-    assert warnings == (
-        "the sched_ext scheduler lavd_1.0.13 runs every task in place of the kernel's, the tests included; for"
-        " clean results stop it (scxctl stop, or systemctl stop scx_loader) and start it again afterwards",
-    )
+    assert warnings == ("sched_ext scheduler lavd_1.0.13 is running; tests run under it",)
 
 
 def test_sched_ext_absent_or_disabled_is_silent_and_unreadable_is_said(tmp_path, monkeypatch):
     assert live_hw.sched_ext_note(tmp_path / "absent") is None
     assert live_hw.sched_ext_note(sched_ext(tmp_path / "off", "disabled")) is None
     nameless = live_hw.sched_ext_note(sched_ext(tmp_path / "nameless", "enabled"))
-    assert nameless.startswith("the sched_ext scheduler whose name cannot be read (")
+    assert nameless.startswith("sched_ext scheduler (name unreadable: ")
     blocked = sched_ext(tmp_path / "blocked", None)
     (blocked / "state").mkdir()
-    assert live_hw.sched_ext_note(blocked).startswith("the sched_ext state cannot be read (")
+    assert live_hw.sched_ext_note(blocked).startswith("sched_ext state unreadable: ")
 
 
 def test_a_process_that_vanishes_mid_scan_is_skipped(tmp_path):

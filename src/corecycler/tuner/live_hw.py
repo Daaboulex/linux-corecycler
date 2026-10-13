@@ -317,17 +317,14 @@ def sched_ext_note(root: Path = SCHED_EXT) -> str | None:
     except FileNotFoundError:
         return None
     except OSError as e:
-        return f"the sched_ext state cannot be read ({e}), so another scheduler may be running every task"
+        return f"sched_ext state unreadable: {e}"
     if state != "enabled":
         return None
     try:
         name = (root / "root" / "ops").read_text().strip()
     except OSError as e:
-        name = f"whose name cannot be read ({e})"
-    return (
-        f"the sched_ext scheduler {name} runs every task in place of the kernel's, the tests included; "
-        "for clean results stop it (scxctl stop, or systemctl stop scx_loader) and start it again afterwards"
-    )
+        name = f"(name unreadable: {e})"
+    return f"sched_ext scheduler {name} is running; tests run under it"
 
 
 def scheduling_problem() -> str | None:
@@ -370,9 +367,7 @@ def preflight(
     refusal = next((problem for gate in gates if (problem := gate()) is not None), None)
     warnings = []
     if by_name_only and by_name_only[0]:
-        warnings.append(
-            f"{by_name_only[0]} processes were checked for an SMU tool by name only; their open files need root"
-        )
+        warnings.append(f"SMU tool check by name only for {by_name_only[0]} processes: their open files need root")
     scheduler = sched_ext_note(sched_ext)
     if scheduler is not None:
         warnings.append(scheduler)

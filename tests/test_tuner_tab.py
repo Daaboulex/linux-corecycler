@@ -247,6 +247,20 @@ def test_a_held_session_s_settings_are_shown_from_its_record_and_locked_until_it
     assert t._knobs["max_offset"].isEnabled() and t._order.isEnabled()
 
 
+@pytest.mark.req("T22.F24")
+def test_session_events_read_in_local_time(db, home, tmp_path):
+    from corecycler.history.timefmt import format_local
+
+    saved = save_machine_session(db, tmp_path, "paused")
+    db.insert_tuner_event(saved.session_id, "user: paused by the owner", this_boot(), "paused")
+    t = tab(db)
+    t.refresh()
+    stamps = [event["timestamp"] for event in t._view.events]
+    lines = t._events.toPlainText().splitlines()
+    assert lines[-1] == f"{format_local(stamps[-1])}  paused: user: paused by the owner"
+    assert all(stamp not in t._events.toPlainText() for stamp in stamps)
+
+
 def test_a_paused_session_shows_its_cores_and_offers_resume(db, home, tmp_path):
     t = tab(db)
     infos = []
@@ -475,14 +489,17 @@ def test_restart_without_a_co_reader_leaves_the_question_to_the_driver(db, home,
 
 @pytest.mark.req("INT.4")
 def test_a_running_sched_ext_scheduler_is_asked_about_before_any_test_starts(db, home, launched, tmp_path, monkeypatch):
-    monkeypatch.setattr(tt, "sched_ext_note", lambda: "the sched_ext scheduler lavd runs every task")
+    monkeypatch.setattr(tt, "sched_ext_note", lambda: "sched_ext scheduler lavd is running; tests run under it")
     saved = save_machine_session(db, tmp_path, "paused")
     t = tab(db)
     tt.QMessageBox.question.return_value = tt.QMessageBox.StandardButton.Cancel
     t._buttons["Start"].click()
     t._buttons["Resume"].click()
     assert launched == []
-    assert tt.QMessageBox.question.call_args.args[2] == "The sched_ext scheduler lavd runs every task.\n\nStart anyway?"
+    assert tt.QMessageBox.question.call_args.args[2] == (
+        "sched_ext scheduler lavd is running; tests run under it\n\n"
+        "For clean results stop it first: scxctl stop, or systemctl stop scx_loader.\n\nStart anyway?"
+    )
     tt.QMessageBox.question.return_value = tt.QMessageBox.StandardButton.Yes
     t._buttons["Resume"].click()
     assert launched[0][0][4:7] == ["--resume", "--session", str(saved.session_id)]

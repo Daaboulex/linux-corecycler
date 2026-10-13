@@ -4881,6 +4881,11 @@ statement = "While a session is held, the settings form shows that session's set
 proof = "built"
 
 [[requirement]]
+id = "T22.F24"
+statement = "Session event lines read in local time, and the run warnings are short lines in the GNU style: the subject, then the fact, no advice (ryzen 2026-10-13: UTC with microseconds and two paragraph warnings)."
+proof = "built"
+
+[[requirement]]
 id = "T22.F21"
 statement = "A refused start names no session: the log gives a session id only once Start has created it (ryzen 2026-10-13 18:29: a refused start logged the next session id and an order seed before its refusal)."
 proof = "built"

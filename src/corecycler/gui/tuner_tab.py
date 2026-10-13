@@ -50,6 +50,7 @@ from corecycler.gui.style import (
 )
 from corecycler.gui.tool_prompt import ensure_tool
 from corecycler.gui.widgets import add_setting, note, setting_grid, spoken
+from corecycler.history.timefmt import format_local
 from corecycler.monitor.frequency import read_power_state
 from corecycler.monitor.power_profile import power_profile
 from corecycler.smu.writer_lock import running_driver
@@ -596,7 +597,9 @@ class TunerTab(QWidget):
             return
         self._newest_event = newest
         self._events.setPlainText(
-            "\n".join(f"{event['timestamp']}  {event['severity']}: {event['message']}" for event in view.events)
+            "\n".join(
+                f"{format_local(event['timestamp'])}  {event['severity']}: {event['message']}" for event in view.events
+            )
         )
         self._events.verticalScrollBar().setValue(self._events.verticalScrollBar().maximum())
 
@@ -627,7 +630,8 @@ class TunerTab(QWidget):
         answer = QMessageBox.question(
             self,
             "Another scheduler is running",
-            f"{problem[0].upper()}{problem[1:]}.\n\nStart anyway?",
+            f"{problem}\n\nFor clean results stop it first: scxctl stop, or systemctl stop scx_loader."
+            "\n\nStart anyway?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
