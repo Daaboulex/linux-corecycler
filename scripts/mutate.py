@@ -258,6 +258,7 @@ def _diff_mode(commit: str | None, tests: list[str] | None, timeout: int) -> int
     if not selection:
         print("no test file touches or imports the changed modules: name the tests that prove it with --tests")
         return 2
+    tree = _git("write-tree").strip() if commit is None else None
     workdir = REPO / ".devshell"
     workdir.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="mutate-", dir=workdir) as copy:
@@ -265,7 +266,16 @@ def _diff_mode(commit: str | None, tests: list[str] | None, timeout: int) -> int
         _export(commit, root)
         if _baseline_red(selection, timeout, root):
             return 2
-        return _mutate([(root / name, lines) for name, lines in sorted(changed.items())], selection, timeout, root, 0)
+        verdict = _mutate(
+            [(root / name, lines) for name, lines in sorted(changed.items())], selection, timeout, root, 0
+        )
+    if verdict == 0 and tree is not None:
+        stamp_path().write_text(tree + "\n")
+    return verdict
+
+
+def stamp_path() -> Path:
+    return Path(_git("rev-parse", "--path-format=absolute", "--git-dir").strip()) / "mutation-stamp"
 
 
 def _mutate(targets: list[tuple[Path, set[int] | None]], tests: list[str], timeout: int, root: Path, cap: int) -> int:

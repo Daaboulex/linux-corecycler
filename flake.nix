@@ -256,6 +256,15 @@
               always_run = true;
             };
 
+            pre-commit.settings.hooks.mutation-stamp = {
+              enable = true;
+              name = "mutation-stamp";
+              entry = "${b.pkgs.python3}/bin/python3 scripts/check_mutation_stamp.py";
+              language = "system";
+              stages = [ "commit-msg" ];
+              always_run = true;
+            };
+
             checks = {
               # Eval-only gate for the off-CI `full`: force its full build graph to
               # EVALUATE (catching dep/version/unfree breakage) without realizing the

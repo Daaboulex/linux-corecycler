@@ -96,3 +96,25 @@ def test_every_mutant_is_built_from_the_original_text_even_after_one_was_written
     built = [mutate._build(path, original, index, {1, 2}) for index in range(total)]
     assert None not in built
     assert len({mutant.source for mutant in built}) == total
+
+
+@pytest.mark.req("T26.mutation_hook")
+def test_only_a_clean_staged_run_stamps_the_tree_it_checked(monkeypatch, tmp_path):
+    diff = "diff --git a/src/x.py b/src/x.py\n+++ b/src/x.py\n@@ -0,0 +1 @@\n+x = 1\n"
+
+    def git(*args):
+        if args[0] == "write-tree":
+            return "tree-1\n"
+        if args[0] == "rev-parse":
+            return f"{tmp_path}\n"
+        return diff if "src/" in args else ""
+
+    monkeypatch.setattr(mutate, "_git", git)
+    monkeypatch.setattr(mutate, "_export", lambda commit, into: None)
+    monkeypatch.setattr(mutate, "_failure", lambda tests, timeout, root: None)
+    stamp = tmp_path / "mutation-stamp"
+    for verdict, commit, stamped in ((1, None, False), (0, "HEAD", False), (0, None, True)):
+        monkeypatch.setattr(mutate, "_mutate", lambda *args, verdict=verdict: verdict)
+        assert mutate._diff_mode(commit, ["tests/test_x.py"], 10) == verdict
+        assert stamp.is_file() is stamped
+    assert stamp.read_text() == "tree-1\n"

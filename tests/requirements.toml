@@ -4906,3 +4906,8 @@ id = "T24.board_temps"
 statement = "Every board temperature input is recorded with each test, named by its chip and label, read safely (an unreadable input recorded as unreadable), shown in History, and never called room temperature."
 proof = "not built"
 task = "T24"
+
+[[requirement]]
+id = "T26.mutation_hook"
+statement = "A commit that changes source is refused unless a mutation run with no survivor stamped its exact staged tree (the commit-msg hook mutation-stamp)."
+proof = "built"
