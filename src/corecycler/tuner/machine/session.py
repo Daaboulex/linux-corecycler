@@ -273,9 +273,13 @@ def _start_problem(cfg, e: Start, w: World) -> str | None:
     bios = dict(w.bios_co)
     unreadable = sorted(core for core in cfg.selected if bios.get(core) is None)
     if unreadable:
-        return f"the BIOS CO of cores {unreadable} could not be read"
-    if any(bios[core] != 0 for core in cfg.selected) and not e.acknowledged:
-        return "the BIOS sets a CO on some cores; acknowledge the listed values to start"
+        return f"the CO of cores {unreadable} could not be read at Start"
+    already = sorted(core for core in cfg.selected if bios[core] != 0)
+    if already and not e.acknowledged:
+        return (
+            f"cores {already} read a CO other than 0 at Start, set by the BIOS or written since boot:"
+            " acknowledge to start"
+        )
     return None
 
 
@@ -609,7 +613,7 @@ def _knob_problem(s: SessionState, e: CrashEvidenceRead, w: World) -> tuple[Paus
             moved = _held_moved(s, e.co_now)
             return (
                 PauseReason.SETUP_CHANGED,
-                f"the BIOS CO of a core the session does not own changed: {changed}",
+                f"the CO of a core the session does not own differs from its read at Start: {changed}",
                 moved,
             )
         if not e.marked_now:

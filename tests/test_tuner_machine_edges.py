@@ -238,6 +238,7 @@ def test_an_all_core_test_that_ends_without_a_verdict_sends_every_owned_core_bac
     assert {core: fake.co[core] for core, _ in fake.state.baseline} == dict(fake.state.baseline)
 
 
+@pytest.mark.req("T22.F6")
 @pytest.mark.parametrize(
     ("config", "world", "acknowledged", "says"),
     [
@@ -245,8 +246,13 @@ def test_an_all_core_test_that_ends_without_a_verdict_sends_every_owned_core_bac
         (replace(CFG, mode=Mode.SHAPER), LAYOUT, True, "not built yet"),
         (replace(CFG, method=Method.ALTERNATE), LAYOUT, True, "one"),
         (replace(CFG, selected=(0, 1, 5)), LAYOUT, True, "core map"),
-        (CFG, replace(LAYOUT, bios_co=((0, 0), (1, None))), True, "could not be read"),
-        (CFG, replace(LAYOUT, bios_co=((0, -10), (1, -10))), False, "acknowledge"),
+        (CFG, replace(LAYOUT, bios_co=((0, 0), (1, None))), True, "the CO of cores [1] could not be read at Start"),
+        (
+            CFG,
+            replace(LAYOUT, bios_co=((0, -10), (1, -10))),
+            False,
+            "cores [0, 1] read a CO other than 0 at Start, set by the BIOS or written since boot: acknowledge to start",
+        ),
         (replace(CFG, fine_step=0), LAYOUT, True, "fine_step 0 is below 1"),
         (replace(CFG, k_1t=0, test_seconds_1t=0.5), LAYOUT, True, "k_1t 0 is below 1; test_seconds_1t 0.5 is"),
         (replace(CFG, wait_between_cores_s=-1.0), LAYOUT, True, "wait_between_cores_s -1.0 is below 0.0"),
@@ -880,3 +886,10 @@ def test_each_test_runs_under_the_lower_of_the_set_limit_and_the_model_tjmax_and
     assert fake.worker.spec.thermal_limit_c == limit
     fake.deliver(Report(Group.THERMAL, 5.0))
     assert fake.state.slot.cool_below_c == limit - fake.state.config.cool_margin_c
+
+
+@pytest.mark.req("T22.F6")
+def test_a_start_where_every_core_reads_0_needs_no_acknowledgement():
+    started = transition(SessionState(), Start(CFG, 1, 0, False), LAYOUT)
+    assert started.refused is None
+    assert started.state.session_id == 1

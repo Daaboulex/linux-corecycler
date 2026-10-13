@@ -4793,8 +4793,7 @@ proof = "built"
 [[requirement]]
 id = "T22.F6"
 statement = "A CO read at Start is named the CO read at Start; a BIOS value is stated only from a read before any write that boot (confirmed on the ryzen 2026-10-13: session 2 recorded 0 as the BIOS CO after a runtime write)."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F7"
