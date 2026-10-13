@@ -88,9 +88,10 @@ class TestGrid:
         grid = _grid(_topo())
         grid.update_core_status(0, CoreTestStatus(core_id=0, state="testing"))
         grid.update_core_telemetry(
-            0, freq_mhz=5200, temp_c=78, vcore_v=1.234, stretch_pct=2.5, co_offset=-30, tuner_phase="confirm"
+            0, freq_mhz=5200, temp_c=78, vcore_v=1.234, stretch_pct=2.5, tuner_value=-30, tuner_phase="confirm"
         )
-        assert "CO:-30" in grid._cells[0]._detail_label.text()
+        assert "tuner -30" in grid._cells[0]._detail_label.text()
+        assert "CO" not in grid._cells[0]._detail_label.text()
         assert "5200MHz" in grid._cells[0]._telemetry_label.text()
 
     def test_telemetry_unknown_core_is_noop(self):

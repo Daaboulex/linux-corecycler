@@ -676,10 +676,9 @@ class MainWindow(QMainWindow):
         self._core_grid.update_core_status(core_id, status)
 
     @Slot(int, int, str)
-    def _on_tuner_core_info(self, core_id: int, co_offset: int, phase: str) -> None:
-        """Pass CO offset and tuner phase to core grid and CO tab."""
-        self._core_grid.update_core_telemetry(core_id, co_offset=co_offset, tuner_phase=phase)
-        self._smu_tab.update_current_co(core_id, co_offset)
+    def _on_tuner_core_info(self, core_id: int, tuner_value: int, phase: str) -> None:
+        self._core_grid.update_core_telemetry(core_id, tuner_value=tuner_value, tuner_phase=phase)
+        self._smu_tab.read_core(core_id)
 
     @Slot()
     def _on_memory_stress_started(self) -> None:

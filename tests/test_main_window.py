@@ -143,7 +143,7 @@ class TestGridAndCacheSlots:
         ns = _mw()
         _call("_on_tuner_core_info", ns, 3, -35, "confirm")
         ns._core_grid.update_core_telemetry.assert_called()
-        ns._smu_tab.update_current_co.assert_called_with(3, -35)
+        ns._smu_tab.read_core.assert_called_with(3)
 
     def test_core_finished_failed_adds_error(self):
         ns = _mw(_core_status_cache={4: MagicMock(state="failed")})

@@ -445,11 +445,12 @@ class SMUTab(QWidget):
         if not running and self._smu is not None:
             self._read_all_co()
 
-    def update_current_co(self, core_id: int, offset: int) -> None:
-        row_map = self._core_row_map()
-        row = row_map.get(core_id)
-        if row is not None:
-            self._table.setItem(row, 2, _item(str(offset)))
+    def read_core(self, core_id: int) -> None:
+        row = self._core_row_map().get(core_id)
+        if row is None or self._smu is None or core_map_blocked(self._smu) is not None:
+            return
+        value = self._smu.get_co_offset(core_id)
+        self._table.setItem(row, 2, _item(UNREADABLE if value is None else str(value)))
 
     def _save_co_profile(self) -> None:
         from corecycler.config.settings import save_co_profile

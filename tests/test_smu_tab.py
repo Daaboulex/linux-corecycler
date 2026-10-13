@@ -90,11 +90,22 @@ class TestTunerLock:
 
 
 class TestLiveUpdate:
-    def test_update_current_co_writes_the_cell(self):
+    @pytest.mark.req("T22.F1")
+    @pytest.mark.parametrize(("read", "shown"), [(-37, "-37"), (None, "unreadable")])
+    def test_a_tuner_update_shows_the_co_read_from_the_cpu_never_the_tuner_s_value(self, read, shown):
         tab = _tab()
-        tab.update_current_co(3, -37)
-        row = tab._core_row_map()[3]
-        assert tab._table.item(row, 2).text() == "-37"
+        tab._smu = MagicMock()
+        tab._smu.get_co_offset.return_value = read
+        tab._smu.core_map_error = None
+        tab.read_core(3)
+        tab._smu.get_co_offset.assert_called_once_with(3)
+        assert tab._table.item(tab._core_row_map()[3], 2).text() == shown
+
+    def test_without_a_driver_a_tuner_update_reads_nothing(self):
+        tab = _tab()
+        tab._smu = None
+        tab.read_core(3)
+        assert tab._table.item(tab._core_row_map()[3], 2).text() == "--"
 
     def test_core_row_map_matches_sorted_cores(self):
         tab = _tab()

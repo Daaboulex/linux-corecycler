@@ -4778,8 +4778,7 @@ proof = "built"
 [[requirement]]
 id = "T22.F1"
 statement = "The CO tab's Now on the CPU column and the core grid show each core's CO read from the CPU, never the session's working value."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F2"

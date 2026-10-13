@@ -31,7 +31,7 @@ class CoreCell(QWidget):
         self._state = "pending"
         self._scheduler_phase = ""
         self._tuner_phase: str | None = None
-        self._co_offset: int | None = None
+        self._tuner_value: int | None = None
         self._errors: int = 0
         self._elapsed: float = 0
 
@@ -93,7 +93,7 @@ class CoreCell(QWidget):
             text += f" ({self._errors}e)"
         self._status_label.setText(text)
         self._time_label.setText(duration_str(self._elapsed) if self._elapsed > 0 else "")
-        self._detail_label.setText(f"CO:{self._co_offset}" if self._co_offset is not None else "")
+        self._detail_label.setText(f"tuner {self._tuner_value}" if self._tuner_value is not None else "")
 
     def update_status(self, status: CoreTestStatus) -> None:
         self._errors = status.errors
@@ -124,10 +124,10 @@ class CoreCell(QWidget):
         temp_c: float | None = None,
         vcore_v: float | None = None,
         stretch_pct: float | None = None,
-        co_offset: int | None = None,
+        tuner_value: int | None = None,
         tuner_phase: str | None = None,
     ) -> None:
-        self._co_offset = co_offset
+        self._tuner_value = tuner_value
         self._tuner_phase = tuner_phase
         self._refresh_labels()
 
@@ -219,12 +219,12 @@ class CoreGridWidget(QWidget):
         temp_c: float | None = None,
         vcore_v: float | None = None,
         stretch_pct: float | None = None,
-        co_offset: int | None = None,
+        tuner_value: int | None = None,
         tuner_phase: str | None = None,
     ) -> None:
         cell = self._cells.get(core_id)
         if cell:
-            cell.update_telemetry(freq_mhz, temp_c, vcore_v, stretch_pct, co_offset, tuner_phase)
+            cell.update_telemetry(freq_mhz, temp_c, vcore_v, stretch_pct, tuner_value, tuner_phase)
 
     def _clear_layout(self, layout) -> None:
         while layout.count():
