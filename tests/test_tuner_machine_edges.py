@@ -893,3 +893,16 @@ def test_a_start_where_every_core_reads_0_needs_no_acknowledgement():
     started = transition(SessionState(), Start(CFG, 1, 0, False), LAYOUT)
     assert started.refused is None
     assert started.state.session_id == 1
+
+
+@pytest.mark.req("EC.G5")
+@pytest.mark.parametrize(("evidence", "failed"), [(True, True), (False, False)])
+def test_a_search_pass_with_a_record_from_the_tested_core_fails_that_value(evidence, failed):
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2, wait_between_cores_s=0.0)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.SEARCH:
+        assert fake.progress()
+    core = fake.worker.spec.core
+    value = dict(fake.worker.spec.vector)[core]
+    fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(core, True),) if evidence else ()))
+    assert (fake.state.core(core).fb == value) is failed

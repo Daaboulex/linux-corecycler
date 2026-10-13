@@ -4963,3 +4963,8 @@ proof = "built"
 id = "EC.G9"
 statement = "The GUI memory test passes only on a clean run judged by the engine's own stressapptest and stress-ng findings; a silicon finding fails it; any other finding, an exit or signal it did not ask for (an out-of-memory kill included), an overrun it had to kill and a launch error give no verdict naming what was read; the user's Stop says Stopped (scratch/design/error-capture.md gap 9)."
 proof = "built"
+
+[[requirement]]
+id = "EC.G5"
+statement = "A one-core SEARCH test that reports a pass while a kernel record names the tested core fails that value as silicon; the same pass without the record stands (scratch/design/error-capture.md gap 5)."
+proof = "built"
