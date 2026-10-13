@@ -18,6 +18,19 @@ MSR_MPERF = 0xE7  # Maximum Performance — counts at TSC/reference frequency
 MSR_PWR_UNIT = 0xC0010299  # RAPL power unit (energy scale factor)
 MSR_CORE_ENERGY = 0xC001029A  # Per-core cumulative energy counter
 MSR_PKG_ENERGY = 0xC001029B  # Package cumulative energy counter
+MSR_DEVICE = "/dev/cpu/0/msr"
+
+
+def msr_problem(device: str = MSR_DEVICE) -> str | None:
+    try:
+        fd = os.open(device, os.O_RDONLY)
+        try:
+            os.pread(fd, 8, MSR_MPERF)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        return f"{device}: {exc.strerror}"
+    return None
 
 
 @dataclass(slots=True)
@@ -73,17 +86,8 @@ class MSRReader:
 
     def is_available(self) -> bool:
         """Check if MSR reads are possible (root + msr module loaded)."""
-        if self._available is not None:
-            return self._available
-        try:
-            fd = os.open("/dev/cpu/0/msr", os.O_RDONLY)
-            try:
-                os.pread(fd, 8, MSR_MPERF)
-            finally:
-                os.close(fd)
-            self._available = True
-        except OSError, PermissionError:
-            self._available = False
+        if self._available is None:
+            self._available = msr_problem() is None
         return self._available
 
     def read_clock_stretch(self, cpu_ids: list[int]) -> dict[int, ClockStretchReading]:

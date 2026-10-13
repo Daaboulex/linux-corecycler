@@ -35,6 +35,16 @@ log = logging.getLogger(__name__)
 
 SYSFS_BASE = Path("/sys/kernel/ryzen_smu_drv")
 
+
+def smu_problem(sysfs: Path = SYSFS_BASE) -> str | None:
+    args = sysfs / "smu_args"
+    try:
+        os.close(os.open(args, os.O_WRONLY))
+    except OSError as exc:
+        return f"{args}: {exc.strerror}"
+    return None
+
+
 # Sane bounds for PBO power/current limits (PPT watts, TDC/EDC amps). The firmware
 # enforces the true per-chip cap; this only rejects the unambiguously malformed:
 # non-positive (a negative wraps to a huge unsigned limit once encoded as value*1000,

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import errno
+import os
 import struct
 from unittest.mock import patch
+
+import pytest
 
 from corecycler.monitor.msr import (
     MSR_APERF,
@@ -11,7 +15,40 @@ from corecycler.monitor.msr import (
     MSRReader,
     _EnergySnapshot,
     _PerfSnapshot,
+    msr_problem,
 )
+
+
+class TestMsrProblem:
+    def test_a_readable_device_has_no_problem(self, tmp_path):
+        device = tmp_path / "msr"
+        device.write_bytes(bytes(16))
+        assert msr_problem(str(device)) is None
+
+    def test_the_probe_reads_whole_registers_as_the_msr_driver_requires(self, tmp_path, monkeypatch):
+        device = tmp_path / "msr"
+        device.write_bytes(bytes(256))
+        real_pread = os.pread
+
+        def msr_driver_pread(fd, count, offset):
+            if count % 8:
+                raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+            return real_pread(fd, count, offset)
+
+        monkeypatch.setattr(os, "pread", msr_driver_pread)
+        assert msr_problem(str(device)) is None
+
+    def test_a_missing_device_names_its_path_and_the_error_read(self, tmp_path):
+        device = tmp_path / "absent"
+        assert msr_problem(str(device)) == f"{device}: {os.strerror(errno.ENOENT)}"
+
+    def test_an_unreadable_device_names_its_path_and_the_error_read(self, tmp_path):
+        if os.geteuid() == 0:
+            pytest.skip("root reads a file whatever its mode")
+        device = tmp_path / "msr"
+        device.write_bytes(bytes(16))
+        device.chmod(0)
+        assert msr_problem(str(device)) == f"{device}: {os.strerror(errno.EACCES)}"
 
 
 class TestMSRReaderAvailability:

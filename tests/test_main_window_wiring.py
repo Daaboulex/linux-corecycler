@@ -9,7 +9,6 @@ hwmon are stand-ins, and the worker thread is never started.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import sys as _sys
 from unittest.mock import MagicMock, patch
@@ -241,20 +240,25 @@ class TestConstruction:
         win = _build(monkeypatch, tmp_path, db=db, settings=_settings(tmp_path, record_history=False))
         assert win._history_db is None
 
-    def test_a_readable_msr_is_left_out_of_the_privilege_warning(self, monkeypatch, tmp_path, db):
+    def test_the_device_line_says_what_each_probe_read(self, monkeypatch, tmp_path, db):
         from PySide6.QtWidgets import QLabel
 
-        real_open = os.open
-
-        def fake_open(path, *args, **kwargs):
-            if path == "/dev/cpu/0/msr":
-                return real_open(os.devnull, os.O_RDONLY)
-            return real_open(path, *args, **kwargs)
-
-        monkeypatch.setattr(os, "open", fake_open)
+        monkeypatch.setattr(mw, "msr_problem", lambda: "/dev/cpu/0/msr: Permission denied")
+        monkeypatch.setattr(mw, "smu_problem", lambda: None)
         win = _build(monkeypatch, tmp_path, db=db)
-        warnings = [label.text() for label in win._status_bar.findChildren(QLabel) if "unavailable" in label.text()]
-        assert not any("MSR" in text for text in warnings)
+        shown = [label.text() for label in win._status_bar.findChildren(QLabel)]
+        assert "  MSR /dev/cpu/0/msr: Permission denied" in shown
+        assert not any("SMU" in text for text in shown)
+        win._history_db = None
+
+    def test_no_device_line_when_both_probes_read_cleanly(self, monkeypatch, tmp_path, db):
+        from PySide6.QtWidgets import QLabel
+
+        monkeypatch.setattr(mw, "msr_problem", lambda: None)
+        monkeypatch.setattr(mw, "smu_problem", lambda: None)
+        win = _build(monkeypatch, tmp_path, db=db)
+        shown = [label.text() for label in win._status_bar.findChildren(QLabel)]
+        assert not any("MSR" in text or "SMU" in text for text in shown)
         win._history_db = None
 
 

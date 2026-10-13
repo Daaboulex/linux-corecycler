@@ -782,3 +782,18 @@ def test_an_unwritable_driver_sends_no_shaper_write():
     smu.check_writable = lambda: (False, "smu_args is not writable")
     assert smu.set_curve_shaper(TABLE_WITH_MIN_RAISED) == "smu_args is not writable"
     assert sent == []
+
+
+def test_smu_problem_names_smu_args_and_the_error_read_when_it_cannot_be_opened_for_writing(tmp_path):
+    import errno
+    import os
+
+    from corecycler.smu.driver import smu_problem
+
+    args = tmp_path / "smu_args"
+    assert smu_problem(tmp_path) == f"{args}: {os.strerror(errno.ENOENT)}"
+    args.write_bytes(b"")
+    assert smu_problem(tmp_path) is None
+    if os.geteuid() != 0:
+        args.chmod(0o444)
+        assert smu_problem(tmp_path) == f"{args}: {os.strerror(errno.EACCES)}"

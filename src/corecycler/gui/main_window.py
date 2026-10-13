@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import os
 import sqlite3
 import time
 from dataclasses import asdict
@@ -51,8 +50,9 @@ from corecycler.history.db import HistoryDB, adopt_legacy_root_db
 from corecycler.history.logger import TestRunLogger
 from corecycler.monitor.frequency import Clocks, fastest
 from corecycler.monitor.hwmon import Sensors
+from corecycler.monitor.msr import msr_problem
 from corecycler.monitor.tick import Tick, Ticker, first_cpus
-from corecycler.smu.driver import core_map_blocked
+from corecycler.smu.driver import core_map_blocked, smu_problem
 
 log = logging.getLogger(__name__)
 
@@ -301,20 +301,13 @@ class MainWindow(QMainWindow):
         self._status_msg = QLabel("Ready")
         self._status_bar.addWidget(self._status_msg)
 
-        missing: list[str] = []
-        try:
-            fd = os.open("/dev/cpu/0/msr", os.O_RDONLY)
-            os.close(fd)
-        except OSError, PermissionError:
-            missing.append("MSR (clock stretch, per-core power, package power)")
-        if not Path("/sys/kernel/ryzen_smu_drv/smu_args").exists() or not os.access(
-            "/sys/kernel/ryzen_smu_drv/smu_args", os.W_OK
-        ):
-            missing.append("Curve Optimizer (SMU)")
-        if missing:
-            priv_label = QLabel(
-                "  ⚠ " + " and ".join(missing) + " unavailable — check device permissions or run as root"
-            )
+        problems = [
+            f"{name} {problem}"
+            for name, problem in (("MSR", msr_problem()), ("SMU", smu_problem()))
+            if problem is not None
+        ]
+        if problems:
+            priv_label = QLabel("  " + "; ".join(problems))
             priv_label.setStyleSheet(f"color: {theme.COLOR_WARN_SOFT}; font: 10px monospace;")
             self._status_bar.addPermanentWidget(narrowable(priv_label))
         if self._history_problem is not None:
