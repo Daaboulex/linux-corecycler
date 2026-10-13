@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QThread, Signal, Slot
@@ -26,7 +27,8 @@ from PySide6.QtWidgets import (
 
 from corecycler.config import tools
 from corecycler.engine import execution
-from corecycler.engine.backends.base import KILLED_BY_US_CODES
+from corecycler.engine.backends.base import OutcomeKind
+from corecycler.engine.backends.stress_ng import StressNgBackend
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.memory_budget import memory_budget
 from corecycler.gui.style import theme
@@ -41,16 +43,38 @@ log = logging.getLogger(__name__)
 PART_NUMBER_COL = 6
 
 
+PASS = "PASS"
+FAIL = "FAIL"
+STOPPED = "Stopped"
+NO_VERDICT = "No verdict"
+
+
+def memory_verdict(tool: str, output: str, returncode: int) -> tuple[str, str]:
+    backend = StressapptestBackend() if tool == "stressapptest" else StressNgBackend()
+    findings = backend.findings(output, Path())
+    silicon = [signal.text for signal in findings if signal.outcome.kind is OutcomeKind.SILICON]
+    if silicon:
+        return FAIL, "\n".join(silicon)
+    if findings:
+        return NO_VERDICT, "\n".join(signal.text for signal in findings)
+    clean = "Status: PASS" in output if tool == "stressapptest" else returncode == 0
+    if clean:
+        return PASS, output
+    ended = f"killed by signal {-returncode}" if returncode < 0 else f"exit {returncode}"
+    return NO_VERDICT, f"{output}\n{tool} ended with {ended} and reported no result"
+
+
 class _StressWorker(QThread):
     """Runs memory stress test in background."""
 
-    done = Signal(bool, str)
+    done = Signal(str, str)
 
     def __init__(self, tool: str, duration_minutes: int, parent=None) -> None:
         super().__init__(parent)
         self._tool = tool
         self._duration = duration_minutes
         self._process: subprocess.Popen | None = None
+        self._stopped = False
 
     def run(self) -> None:
         import contextlib
@@ -59,10 +83,11 @@ class _StressWorker(QThread):
 
         try:
             seconds = self._duration * 60
+            window = seconds + 60  # equivalent-mutant: the grace past the tool's own timeout is a choice
             if self._tool == "stressapptest":
                 budget = memory_budget(1, StressapptestBackend.minimum_memory_mb(os.cpu_count() or 1))
                 if not budget.fits:
-                    self.done.emit(False, f"Not enough free memory for stressapptest: {budget.describe()}")
+                    self.done.emit(NO_VERDICT, f"Not enough free memory for stressapptest: {budget.describe()}")
                     return
                 cmd = [
                     tools.command_name("stressapptest"),
@@ -84,7 +109,7 @@ class _StressWorker(QThread):
                     f"{seconds}s",
                 ]
             else:
-                self.done.emit(False, f"Unknown tool: {self._tool}")
+                self.done.emit(NO_VERDICT, f"Unknown tool: {self._tool}")
                 return
 
             self._process = subprocess.Popen(
@@ -94,26 +119,30 @@ class _StressWorker(QThread):
                 text=True,
                 preexec_fn=execution.make_preexec(),
             )
+            overran = False
             try:
-                stdout, stderr = self._process.communicate(timeout=seconds + 60)
+                stdout, stderr = self._process.communicate(timeout=window)
             except subprocess.TimeoutExpired:
+                overran = True
                 with contextlib.suppress(OSError, ProcessLookupError):
                     os.killpg(os.getpgid(self._process.pid), sig.SIGKILL)
                 stdout, stderr = self._process.communicate()
 
-            if self._tool == "stressapptest":
-                passed = "Status: PASS" in stdout
+            output = stdout + stderr
+            if self._stopped:
+                self.done.emit(STOPPED, output)
+            elif overran:
+                self.done.emit(NO_VERDICT, f"{self._tool} did not stop within {window} s and was killed")
             else:
-                passed = self._process.returncode == 0 or self._process.returncode in KILLED_BY_US_CODES
-            output = (stdout + stderr)[-500:]
-            self.done.emit(passed, output)
+                self.done.emit(*memory_verdict(self._tool, output, self._process.returncode))
         except Exception as e:
-            self.done.emit(False, str(e))
+            self.done.emit(NO_VERDICT, str(e))
 
     def stop(self) -> None:
         proc = self._process
         if proc is None or proc.poll() is not None:
             return
+        self._stopped = True
         import contextlib
         import os
         import signal as sig
@@ -126,7 +155,7 @@ class MemoryTab(QWidget):
     """Memory information tab showing DIMM details and live temperatures."""
 
     memory_stress_started = Signal()
-    memory_stress_done = Signal(bool)  # passed
+    memory_stress_done = Signal()
 
     def __init__(self, pm_available: bool, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -519,15 +548,15 @@ class MemoryTab(QWidget):
             if self._stress_worker.isRunning():
                 self._stress_worker.terminate()
 
-    @Slot(bool, str)
-    def _on_stress_done(self, passed: bool, output: str) -> None:
+    @Slot(str, str)
+    def _on_stress_done(self, verdict: str, output: str) -> None:
         self._stress_btn.setEnabled(not self._external_test_running)
         self._stop_btn.setEnabled(False)
         self._stress_duration.setEnabled(True)
         self._stress_tool.setEnabled(True)
-        status = "PASS" if passed else "FAIL"
-        self._stress_status.setText(f"Result: {status}")
-        self.memory_stress_done.emit(passed)
-        # Strip ANSI escape sequences before displaying
+        self._stress_status.setText(f"Result: {verdict}")
+        self.memory_stress_done.emit()
+        if verdict == STOPPED:
+            return
         clean_output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", output[-500:])
-        QMessageBox.information(self, f"Memory Stress: {status}", clean_output)
+        QMessageBox.information(self, f"Memory Stress: {verdict}", clean_output)

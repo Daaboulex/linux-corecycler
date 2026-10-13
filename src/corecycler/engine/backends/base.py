@@ -13,8 +13,6 @@ from corecycler.config import tools
 if TYPE_CHECKING:
     from pathlib import Path
 
-KILLED_BY_US_CODES: frozenset[int] = frozenset({-9, -15, 137, 143})
-
 
 class OutcomeKind(Enum):
     SILICON = auto()

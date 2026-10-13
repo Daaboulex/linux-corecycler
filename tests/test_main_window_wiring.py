@@ -515,12 +515,12 @@ class TestTunerAndMemoryBridges:
 
     def test_memory_stress_completion_releases_the_starters(self, window):
         window._start_btn.setEnabled(False)
-        window._on_memory_stress_done(True)
+        window._on_memory_stress_done()
         assert window._start_btn.isEnabled()
 
     def test_memory_stress_completion_keeps_start_locked_during_a_run(self, window):
         window._worker = _mock_worker()
-        window._on_memory_stress_done(False)
+        window._on_memory_stress_done()
         assert not window._start_btn.isEnabled()
 
     def test_a_loaded_profile_switches_to_the_curve_tuner(self, window):

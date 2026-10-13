@@ -697,8 +697,8 @@ class MainWindow(QMainWindow):
             status = CoreTestStatus(core_id=core_id, state="mem_stress")
             self._core_grid.update_core_status(core_id, status)
 
-    @Slot(bool)
-    def _on_memory_stress_done(self, passed: bool) -> None:
+    @Slot()
+    def _on_memory_stress_done(self) -> None:
         """Reset cores to pending; release the other test starters."""
         self._start_btn.setEnabled(
             (self._worker is None or not self._worker.isRunning()) and not self._tuner_tab.is_running

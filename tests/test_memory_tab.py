@@ -62,9 +62,18 @@ class TestStressGuards:
     def test_on_stress_done_reenables_and_signals(self, qtbot=None):
         tab = _tab()
         seen = []
-        tab.memory_stress_done.connect(lambda ok: seen.append(ok))
-        with patch("corecycler.gui.memory_tab.QMessageBox.information"):
-            tab._on_stress_done(True, "Status: PASS")
-        assert seen == [True]
+        tab.memory_stress_done.connect(lambda: seen.append("done"))
+        with patch("corecycler.gui.memory_tab.QMessageBox.information") as shown:
+            tab._on_stress_done("PASS", "Status: PASS")
+        assert seen == ["done"]
+        assert tab._stress_status.text() == "Result: PASS"
+        assert shown.call_args.args[1] == "Memory Stress: PASS"
+
+    def test_a_stopped_run_says_stopped_without_a_result_box(self):
+        tab = _tab()
+        with patch("corecycler.gui.memory_tab.QMessageBox.information") as shown:
+            tab._on_stress_done("Stopped", "")
+        assert tab._stress_status.text() == "Result: Stopped"
+        shown.assert_not_called()
         assert tab._stress_btn.isEnabled()
         assert not tab._stop_btn.isEnabled()
