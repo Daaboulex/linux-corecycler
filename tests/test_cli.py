@@ -181,3 +181,71 @@ class TestDoctor:
         monkeypatch.setattr(cli.tools, "report", lambda: self._resolutions({"setpriv"}))
         assert cli.cmd_doctor() == cli.EXIT_REFUSED
         assert "doctor: FAILED" in capsys.readouterr().out
+
+
+class ShaperSmu:
+    def __init__(self, problem=None):
+        self.problem, self.written = problem, []
+
+    def set_curve_shaper(self, bands):
+        if any(len(band) != 3 for band in bands):
+            raise ValueError("a Curve Shaper is five bands of three margins within -50..30")
+        self.written.append(bands)
+        return self.problem
+
+
+@pytest.fixture
+def shaper(monkeypatch):
+    from contextlib import contextmanager
+
+    from corecycler.engine import topology
+    from corecycler.smu import writer_lock
+    from corecycler.tuner import live_hw
+
+    state = {"smu": ShaperSmu(), "busy": False}
+
+    @contextmanager
+    def lock():
+        if state["busy"]:
+            raise writer_lock.WriterBusy("another CO writer holds tuner.lock")
+        yield
+
+    monkeypatch.setattr(topology, "detect_topology", lambda: "topology")
+    monkeypatch.setattr(live_hw, "build_smu", lambda topo: state["smu"])
+    monkeypatch.setattr(live_hw, "shaper_fact", lambda smu: f"table after {len(smu.written)} writes")
+    monkeypatch.setattr(writer_lock, "co_writer", lock)
+    return state
+
+
+ZERO = ["0/0/0"] * 5
+
+
+@pytest.mark.parametrize(
+    ("argv", "busy", "problem", "code", "written"),
+    [
+        ([], False, None, cli.EXIT_COMPLETED, []),
+        (["--set", *ZERO], False, None, cli.EXIT_COMPLETED, [((0, 0, 0),) * 5]),
+        (["--set", *ZERO], True, None, cli.EXIT_LOCKED, []),
+        (["--set", *ZERO], False, "the SMU refused band Min", cli.EXIT_REFUSED, [((0, 0, 0),) * 5]),
+        (["--set", *ZERO[:4]], False, None, cli.EXIT_REFUSED, []),
+        (["--set", "a/0/0", *ZERO[1:]], False, None, cli.EXIT_REFUSED, []),
+        (["--set", "0/0", *ZERO[1:]], False, None, cli.EXIT_REFUSED, []),
+    ],
+)
+def test_the_shaper_command_prints_or_sets_the_table_and_refuses_what_it_cannot_do(
+    shaper, capsys, argv, busy, problem, code, written
+):
+    shaper["busy"], shaper["smu"].problem = busy, problem
+    assert cli.cli_main(["shaper", *argv]) == code
+    assert shaper["smu"].written == written
+    out = capsys.readouterr()
+    if code == cli.EXIT_COMPLETED:
+        assert out.out == f"table after {len(written)} writes\n"
+    else:
+        assert out.err.startswith("corecycler shaper: ")
+
+
+def test_the_shaper_command_refuses_without_an_smu(shaper, capsys):
+    shaper["smu"] = None
+    assert cli.cli_main(["shaper"]) == cli.EXIT_REFUSED
+    assert "the SMU or its core map is unavailable" in capsys.readouterr().err

@@ -60,6 +60,11 @@ def _check_pbo_limit(name: str, value: int) -> None:
         raise ValueError(f"{name} limit {value} out of sane range [{_PBO_LIMIT_MIN}, {_PBO_LIMIT_MAX}]")
 
 
+SHAPER_BAND_NAMES = ("Min", "Low", "Medium", "High", "Max")
+SHAPER_MARGINS = (-50, 30)
+SHAPER_SET_BIT = 0x80
+
+
 class CoreMapError(Exception):
     """The OS-core to SMU-slot mapping could not be discovered.
 
@@ -658,6 +663,31 @@ class RyzenSMU:
         if not resp.success or [band[0] for band in bands] != list(range(5)):
             return None
         return tuple(band[1:] for band in bands)
+
+    def set_curve_shaper(self, bands: tuple[tuple[int, int, int], ...]) -> str | None:
+        cmd = self.commands.set_curve_shaper_cmd
+        if cmd is None:
+            return f"{self.commands.generation.name} has no Curve Shaper write"
+        low, high = SHAPER_MARGINS
+        if len(bands) != len(SHAPER_BAND_NAMES) or any(
+            len(band) != 3 or not all(low <= margin <= high for margin in band) for band in bands
+        ):
+            raise ValueError(f"a Curve Shaper is five bands of three margins within {low}..{high}, not {bands}")
+        if self.dry_run:
+            log.info("[DRY RUN] Would set the Curve Shaper to %s (not written)", bands)
+            return None
+        ok, msg = self.check_writable()
+        if not ok:
+            return msg
+        for index, margins in enumerate(bands):
+            cold, warm, hot = (margin & 0xFF for margin in margins)
+            resp = self._send_rsmu_command(cmd, ((hot << 24) | (warm << 16) | (cold << 8) | SHAPER_SET_BIT | index,))
+            if not resp.success:
+                return f"the SMU refused band {SHAPER_BAND_NAMES[index]}"
+        back = self.get_curve_shaper()
+        if back != tuple(tuple(band) for band in bands):
+            return f"the read-back gave {back}"
+        return None
 
     def get_boost_limit(self) -> int | None:
         """Read the boost frequency limit (MHz). Zen 4/5 only."""

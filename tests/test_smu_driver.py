@@ -723,3 +723,74 @@ def test_the_curve_shaper_read_gives_five_bands_only_when_every_band_names_its_o
     smu = RyzenSMU(get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE), MagicMock())
     smu._send_rsmu_command = lambda cmd, args=(0,) * 6: SMUResponse(success, words, b"")
     assert smu.get_curve_shaper() == bands
+
+
+WRITES_FOR_THE_READ_TABLE = [0xF4E5E281, 0xF3EEE782, 0xF6EFEB83, 0xFEFDFA84]
+TABLE_WITH_MIN_RAISED = ((1, 1, 1), (-30, -27, -12), (-25, -18, -13), (-21, -17, -10), (-6, -3, -2))
+
+
+def shaper_smu(refuse: int | None = None, keep: bool = True):
+    smu = RyzenSMU(get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE), MagicMock())
+    smu.check_writable = lambda: (True, "OK")
+    table = {band: band for band in range(5)}
+    sent = []
+
+    def rsmu(cmd, args=(0,) * 6):
+        if cmd == smu.commands.set_curve_shaper_cmd:
+            sent.append(args[0])
+            band = args[0] & 0x7F
+            if band == refuse:
+                return SMUResponse(False, (0,) * 6, b"")
+            if keep:
+                table[band] = args[0] & ~0xFF | band
+            return SMUResponse(True, (args[0],) + (0,) * 5, b"")
+        return SMUResponse(True, (*(table[band] for band in range(5)), 0), b"")
+
+    smu._send_rsmu_command = rsmu
+    return smu, sent
+
+
+@pytest.mark.req("H5.w")
+def test_a_shaper_write_sends_every_band_as_measured_and_needs_the_whole_table_back():
+    smu, sent = shaper_smu()
+    assert smu.set_curve_shaper(TABLE_WITH_MIN_RAISED) is None
+    assert sent == [0x01010180, *WRITES_FOR_THE_READ_TABLE]
+    assert smu.get_curve_shaper() == TABLE_WITH_MIN_RAISED
+
+
+@pytest.mark.parametrize(
+    ("refuse", "keep", "says"),
+    [
+        (2, True, "the SMU refused band Medium"),
+        (None, False, "the read-back gave ((0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0))"),
+    ],
+)
+def test_a_shaper_write_that_is_refused_or_not_read_back_says_so(refuse, keep, says):
+    smu, _ = shaper_smu(refuse, keep)
+    assert smu.set_curve_shaper(TABLE_WITH_MIN_RAISED) == says
+
+
+@pytest.mark.parametrize(
+    "bands",
+    [
+        TABLE_WITH_MIN_RAISED[:4],
+        ((31, 0, 0), *TABLE_WITH_MIN_RAISED[1:]),
+        ((-51, 0, 0), *TABLE_WITH_MIN_RAISED[1:]),
+        ((0, 0), *TABLE_WITH_MIN_RAISED[1:]),
+    ],
+)
+def test_a_malformed_shaper_is_refused_before_anything_is_sent(bands):
+    smu, sent = shaper_smu()
+    with pytest.raises(ValueError, match="five bands of three margins within -50..30"):
+        smu.set_curve_shaper(bands)
+    assert sent == []
+
+
+def test_a_dry_run_or_an_unwritable_driver_sends_no_shaper_write():
+    smu, sent = shaper_smu()
+    smu.dry_run = True
+    assert smu.set_curve_shaper(TABLE_WITH_MIN_RAISED) is None
+    smu.dry_run = False
+    smu.check_writable = lambda: (False, "smu_args is not writable")
+    assert smu.set_curve_shaper(TABLE_WITH_MIN_RAISED) == "smu_args is not writable"
+    assert sent == []

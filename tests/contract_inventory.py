@@ -123,10 +123,11 @@ def _pin_dmidecode_dimm_parse() -> None:
     assert dimms[0].mem_type == "DDR5"
 
 
-def _pin_zen5_curve_shaper_read() -> None:
+def _pin_zen5_curve_shaper_ids() -> None:
     for gen, cmds in COMMAND_SETS.items():
-        expected = 0x84 if gen is CPUGeneration.ZEN5_GRANITE_RIDGE else None
-        assert cmds.get_curve_shaper_cmd == expected, (gen.name, cmds.get_curve_shaper_cmd)
+        granite = gen is CPUGeneration.ZEN5_GRANITE_RIDGE
+        ids = (cmds.get_curve_shaper_cmd, cmds.set_curve_shaper_cmd)
+        assert ids == ((0x84, 0xA6) if granite else (None, None)), (gen.name, ids)
 
 
 def _pin_zen5_co_range() -> None:
@@ -390,14 +391,16 @@ CONTRACTS: list[Contract] = [
         ring_b_test=("test_containment_live.py::test_a_contained_child_cannot_escape_its_cpuset"),
     ),
     Contract(
-        name="zen5-curve-shaper-read",
+        name="zen5-curve-shaper-ids",
         kind="arch",
         source=(
             "RSMU 0x84 with no arguments returns five words, byte 0 the band index 0 to 4 and bytes 1 to 3 "
-            "the -5C, 50C and 90C margins as signed bytes; read only on the owner's 9950X3D 2026-10-09 and "
-            "2026-10-13; no other generation's id is measured"
+            "the -5C, 50C and 90C margins as signed bytes; RSMU 0xA6 writes one band, (90C << 24) | "
+            "(50C << 16) | (-5C << 8) | 0x80 | band (ZenStates-Core SetCurveShaperMargin); both measured on "
+            "the owner's 9950X3D 2026-10-13 (H5w: one band written, read back, restored); 0xA6 is "
+            "GetLN2Mode on Shimada Peak, and no other generation's ids are measured"
         ),
-        ring_a=_pin_zen5_curve_shaper_read,
+        ring_a=_pin_zen5_curve_shaper_ids,
         live_verifiable=False,
     ),
     Contract(

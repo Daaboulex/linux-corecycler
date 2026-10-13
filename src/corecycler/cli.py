@@ -32,13 +32,16 @@ EXIT_MEANINGS = {
 }
 
 SESSION_COMMANDS = ("resume", "validate", "continue", "restart")
-COMMANDS = ("doctor", "status", "tune", *SESSION_COMMANDS)
+COMMANDS = ("doctor", "status", "shaper", "tune", *SESSION_COMMANDS)
 
 USAGE = f"""\
 corecycler headless commands:
 
   corecycler doctor                report every external tool and where it resolved
   corecycler status                list tuning sessions and their state
+  corecycler shaper [--set BANDS]  print the Curve Shaper, or set its five bands Min Low
+                                   Medium High Max, each -5C/50C/90C like -30/-27/-12;
+                                   volatile, refused while a tuning session runs
   corecycler tune OPTIONS          start a new tuning session from --config FILE, a whole
                                    configuration as JSON, or from --cores 0,1,... with
                                    --max-offset N, --k1 N, --k2 N and --wait-between-cores S
@@ -63,6 +66,8 @@ def cli_main(argv: list[str]) -> int:
         return cmd_doctor()
     if command == "status":
         return cmd_status()
+    if command == "shaper":
+        return cmd_shaper(rest)
     if command == "tune":
         return drive(["--start", "--write", *rest])
     if command in SESSION_COMMANDS:
@@ -75,6 +80,36 @@ def drive(argv: list[str]) -> int:
     from corecycler.tuner.live_hw import main
 
     return main(argv)
+
+
+def cmd_shaper(rest: list[str]) -> int:
+    from corecycler.engine.topology import detect_topology
+    from corecycler.smu.writer_lock import WriterBusy, co_writer
+    from corecycler.tuner.live_hw import build_smu, shaper_fact
+
+    if rest and (rest[0] != "--set" or len(rest) != 6):
+        print("corecycler shaper: --set takes five bands, Min Low Medium High Max, like 0/0/0", file=sys.stderr)
+        return EXIT_REFUSED
+    smu = build_smu(detect_topology())
+    if smu is None:
+        print("corecycler shaper: the SMU or its core map is unavailable", file=sys.stderr)
+        return EXIT_REFUSED
+    if rest:
+        try:
+            bands = tuple(tuple(int(margin) for margin in band.split("/")) for band in rest[1:])
+            with co_writer():
+                problem = smu.set_curve_shaper(bands)
+        except WriterBusy as e:
+            print(f"corecycler shaper: {e}", file=sys.stderr)
+            return EXIT_LOCKED
+        except ValueError as e:
+            print(f"corecycler shaper: {e}", file=sys.stderr)
+            return EXIT_REFUSED
+        if problem is not None:
+            print(f"corecycler shaper: {problem}", file=sys.stderr)
+            return EXIT_REFUSED
+    print(shaper_fact(smu))
+    return EXIT_COMPLETED
 
 
 def cmd_session(command: str, rest: list[str]) -> int:

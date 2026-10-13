@@ -3516,8 +3516,7 @@ task = "T32"
 [[requirement]]
 id = "H5.w"
 statement = "One shaper band written, read back and restored"
-proof = "not built"
-task = "S1"
+proof = "built"
 
 [[requirement]]
 id = "H5.p"

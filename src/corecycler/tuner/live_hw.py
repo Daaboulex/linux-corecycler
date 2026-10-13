@@ -39,7 +39,7 @@ from corecycler.history.db import HistoryDB
 from corecycler.monitor.frequency import Clocks, PowerState, fastest, read_power_state
 from corecycler.monitor.hwmon import SensorRead, Sensors
 from corecycler.smu.commands import detect_generation, get_commands, tjmax_c
-from corecycler.smu.driver import RyzenSMU, core_map_blocked
+from corecycler.smu.driver import SHAPER_BAND_NAMES, RyzenSMU, core_map_blocked
 from corecycler.smu.pmtable import PMTableReader, read_power_limits
 from corecycler.smu.writer_lock import WriterBusy, co_writer
 from corecycler.tuner import stages, telemetry
@@ -188,16 +188,15 @@ class SmuHardware:
         return time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
 
 
-SHAPER_BANDS = ("Min", "Low", "Medium", "High", "Max")
-
-
 def shaper_fact(smu) -> str:
     if smu.commands.get_curve_shaper_cmd is None:
         return "none on this generation"
     bands = smu.get_curve_shaper()
     if bands is None:
         return "unreadable: the SMU refused the read or its band check failed"
-    return ", ".join(f"{name} {'/'.join(map(str, margins))}" for name, margins in zip(SHAPER_BANDS, bands, strict=True))
+    return ", ".join(
+        f"{name} {'/'.join(map(str, margins))}" for name, margins in zip(SHAPER_BAND_NAMES, bands, strict=True)
+    )
 
 
 def shaper_problem(smu) -> str | None:
