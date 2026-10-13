@@ -56,12 +56,36 @@ def _smu(**kw):
 class TestReadAllCo:
     def test_no_smu_is_a_noop(self, tab):
         tab._smu = None
-        tab._read_all_co()
+        tab._fill_from_cpu()
 
-    def test_reads_and_fills_spinboxes(self, tab):
-        tab._smu = _smu(get=-20)
-        tab._read_all_co()
+    @pytest.mark.req("S1.read")
+    def test_fill_from_cpu_puts_the_cpu_values_into_the_values_to_set(self, tab):
+        tab._smu = _smu(get=-20, shaper=LOW_ONLY)
+        tab._fill_btn.click()
         assert tab._spinboxes[0].value() == -20
+        assert _shown_shaper(tab) == LOW_ONLY
+
+    @pytest.mark.req("S1.read")
+    def test_the_shown_tab_reads_the_cpu_and_keeps_the_values_being_edited(self, tab):
+        tab._smu = _smu(get=-20, shaper=LOW_ONLY)
+        tab._spinboxes[0].setValue(-5)
+        tab._shaper_spins[4][2].setValue(-2)
+        tab.show()
+        assert tab._table.item(0, 2).text() == "-20"
+        assert "Low -30/-27/-12" in tab._shaper_label.text()
+        assert tab._spinboxes[0].value() == -5
+        assert tab._shaper_spins[4][2].value() == -2
+
+    @pytest.mark.req("S1.read")
+    def test_the_shown_tab_rereads_on_its_timer_and_stops_when_hidden(self, tab):
+        tab._smu = _smu(get=-20)
+        tab.show()
+        assert tab._reader.isActive()
+        tab._smu.get_co_offset.return_value = -21
+        tab._reader.timeout.emit()
+        assert tab._table.item(0, 2).text() == "-21"
+        tab.hide()
+        assert not tab._reader.isActive()
 
     @pytest.mark.req("S0.view")
     @pytest.mark.parametrize(
@@ -79,21 +103,21 @@ class TestReadAllCo:
     def test_read_from_cpu_shows_the_curve_shaper_now_on_the_cpu(self, tab, shaper_cmd, shaper, shown):
         assert tab._shaper_label.text().startswith("Not read yet")
         tab._smu = _smu(shaper_cmd=shaper_cmd, shaper=shaper)
-        tab._read_all_co()
+        tab._fill_from_cpu()
         assert shown in tab._shaper_label.text()
 
     def test_retries_then_succeeds(self, tab):
         smu = _smu()
         smu.get_co_offset.side_effect = [None, -7] + [-7] * 32
         tab._smu = smu
-        tab._read_all_co()
+        tab._fill_from_cpu()
         assert tab._spinboxes[0].value() == -7
 
     def test_persistent_failure_marks_err(self, tab):
         smu = _smu()
         smu.get_co_offset.return_value = None
         tab._smu = smu
-        tab._read_all_co()
+        tab._fill_from_cpu()
         assert tab._table.item(0, 2).text() == "unreadable"
 
 
@@ -119,11 +143,12 @@ class TestApplySingle:
         tab._apply_single(0)
         tab._smu.set_co_offset.assert_not_called()
 
-    def test_successful_write_updates_table(self, tab):
-        tab._smu = _smu(set=True)
+    @pytest.mark.req("S1.read")
+    def test_a_written_core_shows_the_value_read_back(self, tab):
+        tab._smu = _smu(set=True, get=-14)
         tab._spinboxes[0].setValue(-15)
         tab._apply_single(0)
-        assert tab._table.item(0, 2).text() == "-15"
+        assert tab._table.item(0, 2).text() == "-14"
 
     def test_failed_write_warns(self, tab):
         tab._smu = _smu(set=False)
@@ -270,7 +295,7 @@ class TestCurveShaper:
     @pytest.mark.req("S1.gui")
     def test_the_table_shows_the_shaper_read_from_the_cpu(self, tab):
         tab._smu = _smu(shaper=LOW_ONLY)
-        tab._read_all_co()
+        tab._fill_from_cpu()
         assert _shown_shaper(tab) == LOW_ONLY
         labels = [label.text() for label in tab._shaper_group.findChildren(QLabel)]
         assert {"-5 C", "50 C", "90 C", "Min", "Low", "Medium", "High", "Max"} <= set(labels)
@@ -280,7 +305,7 @@ class TestCurveShaper:
         smu = _smu(shaper=LOW_ONLY)
         smu.set_curve_shaper.return_value = None
         tab._smu = smu
-        tab._read_all_co()
+        tab._fill_from_cpu()
         tab._shaper_spins[4][2].setValue(-2)
         smu.get_curve_shaper.return_value = ((0, 0, 0), (-30, -27, -12), (0, 0, 0), (0, 0, 0), (0, 0, -2))
         tab._refresh_writes()

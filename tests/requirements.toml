@@ -4777,12 +4777,17 @@ proof = "built"
 
 [[requirement]]
 id = "S0.view"
-statement = "The Curve-Tuner tab shows the Curve Shaper now on the CPU, read with Read from CPU, or why it cannot; History shows each tuning session's recorded setup, the Curve Shaper included (owner 2026-10-13: the Shaper has no screen until it is built)."
+statement = "The Curve-Tuner tab shows the Curve Shaper now on the CPU, read whenever the tab is shown, or why it cannot; History shows each tuning session's recorded setup, the Curve Shaper included (owner 2026-10-13: the Shaper has no screen until it is built)."
 proof = "built"
 
 [[requirement]]
 id = "S1.gui"
 statement = "The Curve-Tuner tab shows the Curve Shaper as a table of five bands by three temperatures read from the CPU; Write Shaper and Shaper to 0 write it at runtime after a confirmation and read it back, a refused write is said, and the table is locked while a tuning session runs (owner card 2026-10-13)."
+proof = "built"
+
+[[requirement]]
+id = "S1.read"
+statement = "The Curve-Tuner tab reads every core's CO and the Curve Shaper when it is shown and every 5 s while it stays shown, into Now on the CPU and the Shaper line, never over a value being edited, and stops reading when hidden; Fill from CPU copies them into the values to set; a single Set shows the value read back (owner 2026-10-13: the GUI is automatic and shows what it reads)."
 proof = "built"
 
 [[requirement]]

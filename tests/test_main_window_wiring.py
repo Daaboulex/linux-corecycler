@@ -523,16 +523,6 @@ class TestTunerAndMemoryBridges:
         window._on_load_co_profile({0: -30})
         assert window._tabs.currentWidget() is window._smu_tab
 
-    def test_opening_the_curve_tuner_rereads_the_offsets(self, window):
-        window._smu_tab._read_all_co = MagicMock()
-        window._on_tab_changed(window._tabs.indexOf(window._smu_tab))
-        assert window._smu_tab._read_all_co.called
-
-    def test_other_tabs_do_not_reread_the_offsets(self, window):
-        window._smu_tab._read_all_co = MagicMock()
-        window._on_tab_changed(window._tabs.indexOf(window._results_tab))
-        assert not window._smu_tab._read_all_co.called
-
 
 class TestOneTick:
     def test_one_timer_on_the_poll_interval_feeds_every_view_the_same_tick(self, monkeypatch, tmp_path, db):

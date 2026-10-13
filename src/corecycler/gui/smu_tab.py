@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont, QHideEvent, QShowEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from corecycler.engine.topology import CPUTopology
 
 
+READ_EVERY_MS = 5000  # equivalent-mutant: a period chosen for the eye, no check can tell 5 s from 5.001 s
 SET_ALL = "Set all"
 SHAPER_POINTS = ("-5 C", "50 C", "90 C")
 SET_ZERO = "Set all to 0"
@@ -54,6 +55,8 @@ class SMUTab(QWidget):
         self._smu: RyzenSMU | None = None
         self._commands: SMUCommandSet | None = None
         self._tuner_active = False
+        self._reader = QTimer(self)
+        self._reader.timeout.connect(self._read_now)
         self._setup_ui()
 
         if topology:
@@ -62,6 +65,15 @@ class SMUTab(QWidget):
     @property
     def smu(self) -> RyzenSMU | None:
         return self._smu
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._read_now()
+        self._reader.start(READ_EVERY_MS)
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        self._reader.stop()
+        super().hideEvent(event)
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -107,9 +119,10 @@ class SMUTab(QWidget):
 
         bulk_layout = QHBoxLayout()
 
-        self._read_all_btn = QPushButton("Read from CPU")
-        self._read_all_btn.clicked.connect(self._read_all_co)
-        bulk_layout.addWidget(self._read_all_btn)
+        self._fill_btn = QPushButton("Fill from CPU")
+        self._fill_btn.setToolTip("Puts the values now on the CPU into Value to set and the Curve Shaper grid")
+        self._fill_btn.clicked.connect(self._fill_from_cpu)
+        bulk_layout.addWidget(self._fill_btn)
 
         self._apply_all_btn = QPushButton(SET_ALL)
         self._apply_all_btn.clicked.connect(self._apply_all_co)
@@ -183,7 +196,7 @@ class SMUTab(QWidget):
             self._shaper_spins.append(spins)
         grid.setColumnStretch(len(SHAPER_POINTS) + 1, 1)  # equivalent-mutant: any empty right column keeps it compact
         shaper_layout.addLayout(grid)
-        self._shaper_label = QLabel("Not read yet: Read from CPU reads it")
+        self._shaper_label = QLabel("Not read yet")
         self._shaper_label.setToolTip(
             "Each band's margins at -5 C, 50 C and 90 C as the CPU runs them now; "
             "a Shaper written here differs from the BIOS until the next reboot"
@@ -273,7 +286,7 @@ class SMUTab(QWidget):
 
         self._refresh_writes()
         if self._smu:
-            self._read_all_co()
+            self._fill_from_cpu()
 
     def _on_dry_run_toggled(self, checked: bool) -> None:
         if self._smu:
@@ -303,13 +316,14 @@ class SMUTab(QWidget):
         )
         return reply == QMessageBox.StandardButton.Yes
 
-    def _read_all_co(self) -> None:
+    def _read_now(self) -> tuple[dict[int, int], tuple[tuple[int, int, int], ...] | None]:
         if not self._smu or not self._topology:
-            return
+            return {}, None
         if core_map_blocked(self._smu) is not None:
-            return
+            return {}, None
 
         max_retries = 2
+        offsets = {}
         for core_id, row in self._core_row_map().items():
             val = self._smu.get_co_offset(core_id)
             if val is None:
@@ -319,13 +333,23 @@ class SMUTab(QWidget):
                         break
             text = str(val) if val is not None else UNREADABLE
             self._table.setItem(row, 2, _item(text))
-            if val is not None and core_id in self._spinboxes:
-                self._spinboxes[core_id].setValue(val)
-        self._read_shaper()
+            if val is not None:
+                offsets[core_id] = val
+        return offsets, self._read_shaper()
 
-    def _read_shaper(self) -> None:
+    def _fill_from_cpu(self) -> None:
+        offsets, bands = self._read_now()
+        for core_id, val in offsets.items():
+            if core_id in self._spinboxes:
+                self._spinboxes[core_id].setValue(val)
+        self._fill_shaper(bands)
+
+    def _read_shaper(self) -> tuple[tuple[int, int, int], ...] | None:
         bands, said = shaper_read(self._smu)
         self._shaper_label.setText(said)
+        return bands
+
+    def _fill_shaper(self, bands: tuple[tuple[int, int, int], ...] | None) -> None:
         for row, margins in enumerate(bands or ()):
             for column, margin in enumerate(margins):
                 self._shaper_spins[row][column].setValue(margin)
@@ -350,7 +374,7 @@ class SMUTab(QWidget):
         problem = self._smu.set_curve_shaper(bands)
         if problem is not None:
             QMessageBox.warning(self, "Write failed", f"The Curve Shaper was not set: {problem}.")
-        self._read_shaper()
+        self._fill_shaper(self._read_shaper())
 
     def _refresh_writes(self) -> None:
         can_write = (
@@ -415,9 +439,7 @@ class SMUTab(QWidget):
 
     def _set_one(self, core_id: int, value: int) -> None:
         if self._smu.set_co_offset(core_id, value):
-            row = self._core_row_map().get(core_id)
-            if row is not None:
-                self._table.setItem(row, 2, _item(str(value)))
+            self.read_core(core_id)
         else:
             QMessageBox.warning(self, "Write failed", f"Core {core_id} could not be set.")
 
@@ -446,7 +468,7 @@ class SMUTab(QWidget):
         if failed:
             QMessageBox.warning(self, "Write failed", f"These cores could not be set: {failed}.")
         else:
-            self._read_all_co()
+            self._fill_from_cpu()
             self._profile_banner.setVisible(False)
 
     def _reset_all_co(self) -> None:
@@ -469,7 +491,7 @@ class SMUTab(QWidget):
         if not self._smu.reset_all_co():
             for core_id in self._spinboxes:
                 self._smu.set_co_offset(core_id, 0)
-        self._read_all_co()
+        self._fill_from_cpu()
 
     def _backup_co(self) -> None:
         if not self._smu or not self._topology:
@@ -499,17 +521,17 @@ class SMUTab(QWidget):
     def _set_backup(self) -> None:
         ok, failed = self._smu.restore_co_offsets()
         if ok:
-            self._read_all_co()
+            self._fill_from_cpu()
             QMessageBox.information(self, "Values put back", "Every core has its remembered value again.")
         else:
             QMessageBox.warning(self, "Write failed", f"These cores could not be put back: {failed}.")
-            self._read_all_co()
+            self._fill_from_cpu()
 
     def set_tuner_running(self, running: bool) -> None:
         self._tuner_active = running
         self._refresh_writes()
         if not running and self._smu is not None:
-            self._read_all_co()
+            self._fill_from_cpu()
 
     def read_core(self, core_id: int) -> None:
         row = self._core_row_map().get(core_id)

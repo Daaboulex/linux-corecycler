@@ -118,7 +118,7 @@ class TestReadBack:
         tab._smu = MagicMock()
         tab._smu.get_co_offset.return_value = None
         tab._smu.commands.get_curve_shaper_cmd = None
-        tab._read_all_co()
+        tab._fill_from_cpu()
         assert tab._table.item(0, 2).text() == "unreadable"
 
     def test_dry_run_toggle_propagates_to_driver(self):
@@ -154,7 +154,7 @@ class TestCoreMapRefusal:
         assert tab._gen_label.text().startswith("CPU generation Zen ")
         row0_btn = tab._table.cellWidget(0, 4)
         assert row0_btn is not None and not row0_btn.isEnabled()
-        tab._read_all_co()
+        tab._fill_from_cpu()
         assert tab._table.item(0, 2).text() == "--"
 
 

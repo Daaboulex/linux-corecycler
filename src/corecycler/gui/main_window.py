@@ -255,7 +255,6 @@ class MainWindow(QMainWindow):
         self._memory_tab.memory_stress_done.connect(self._on_memory_stress_done)
         self._tabs.addTab(self._memory_tab, "Memory")
 
-        self._tabs.currentChanged.connect(self._on_tab_changed)
         main_layout.addWidget(self._tabs, stretch=2)
 
     def _setup_toolbar(self) -> None:
@@ -721,13 +720,6 @@ class MainWindow(QMainWindow):
         """Load CO profile from history into the Curve-Tuner tab."""
         self._smu_tab.set_co_profile(profile)
         self._tabs.setCurrentWidget(self._smu_tab)
-
-    @Slot(int)
-    def _on_tab_changed(self, index: int) -> None:
-        """Refresh data when switching tabs."""
-        widget = self._tabs.widget(index)
-        if widget is self._smu_tab and hasattr(self._smu_tab, "_read_all_co") and not self._tuner_tab.is_running:
-            self._smu_tab._read_all_co()
 
     def _update_elapsed(self) -> None:
         if not self._worker:
