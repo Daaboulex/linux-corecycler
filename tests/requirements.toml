@@ -33,8 +33,7 @@ proof = "built"
 [[requirement]]
 id = "C1.base_shaper"
 statement = "The session stores base_shaper"
-proof = "not built"
-task = "S0"
+proof = "built"
 
 [[requirement]]
 id = "C2"
@@ -610,8 +609,7 @@ task = "T29"
 [[requirement]]
 id = "TERMS.base_shaper"
 statement = "base_shaper is read with the band self-check wherever the generation has the shaper ids; elsewhere none and every shaper read is skipped"
-proof = "not built"
-task = "S0"
+proof = "built"
 
 [[requirement]]
 id = "TERMS.revertall"
@@ -1335,8 +1333,7 @@ proof = "built"
 [[requirement]]
 id = "L01.12"
 statement = "Gate 12: in every mode, where the generation has the shaper ids, read RSMU 0x84 with the band self-check; a failed read refuses Start"
-proof = "not built"
-task = "S0"
+proof = "built"
 
 [[requirement]]
 id = "L01.12.modes"
@@ -2539,8 +2536,7 @@ proof = "built"
 [[requirement]]
 id = "L18.d.8.shaper"
 statement = "After a reboot 0x84 must equal base_shaper, else P(SETUP_CHANGED)"
-proof = "not built"
-task = "S0"
+proof = "built"
 
 [[requirement]]
 id = "L18.d.8.sameboot"
@@ -2832,8 +2828,7 @@ proof = "built"
 [[requirement]]
 id = "L24.c.shaper"
 statement = "curve_shaper is a pausing setup key"
-proof = "not built"
-task = "S0"
+proof = "built"
 
 [[requirement]]
 id = "L24.c.backends"
@@ -3708,8 +3703,7 @@ task = "S3"
 [[requirement]]
 id = "D4"
 statement = "base_shaper is read with the band self-check in every mode where the generation has the shaper ids, and Start refuses if that read fails; elsewhere every shaper read is skipped"
-proof = "not built"
-task = "S0"
+proof = "built"
 
 [[requirement]]
 id = "D5"
@@ -4245,7 +4239,7 @@ proof = "built"
 id = "TM.A1.shaper"
 statement = "The Curve Shaper is offered only on Granite Ridge desktop names after H5w, H5p and H5c, never on Raphael or Shimada Peak"
 proof = "not built"
-task = "S0"
+task = "S3"
 
 [[requirement]]
 id = "TM.A2.x3d"
@@ -4262,7 +4256,7 @@ proof = "built"
 id = "TM.A3.shaper"
 statement = "Curve Shaper detection: the ids, 0x84 byte 0 equal to the band index, H5 proven for the model class, a base not all 0"
 proof = "not built"
-task = "S0"
+task = "S3"
 
 [[requirement]]
 id = "TM.A4.mode"

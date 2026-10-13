@@ -163,6 +163,12 @@ class TestScalarBoostFastestWiring:
             assert result is False
             assert rec.calls == []
 
+    def test_curve_shaper_get(self, gen):
+        smu, rec, cmds = _smu(gen)
+        assert smu.get_curve_shaper() is None
+        expected = [] if cmds.get_curve_shaper_cmd is None else [("rsmu", cmds.get_curve_shaper_cmd, 0)]
+        assert rec.calls == expected
+
     def test_boost_get(self, gen):
         smu, rec, cmds = _smu(gen)
         result = smu.get_boost_limit()

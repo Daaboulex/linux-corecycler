@@ -157,6 +157,7 @@ class SmuHardware:
         return (
             ("app", app_version()),
             ("bios", " ".join(bios)),
+            ("curve_shaper", shaper_fact(self.smu)),
             ("kernel", kernel_build()),
             ("microcode", microcode()),
             ("pbo", pbo),
@@ -185,6 +186,24 @@ class SmuHardware:
 
     def asleep_seconds(self) -> float:
         return time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
+
+
+SHAPER_BANDS = ("Min", "Low", "Medium", "High", "Max")
+
+
+def shaper_fact(smu) -> str:
+    if smu.commands.get_curve_shaper_cmd is None:
+        return "none on this generation"
+    bands = smu.get_curve_shaper()
+    if bands is None:
+        return "unreadable: the SMU refused the read or its band check failed"
+    return ", ".join(f"{name} {'/'.join(map(str, margins))}" for name, margins in zip(SHAPER_BANDS, bands, strict=True))
+
+
+def shaper_problem(smu) -> str | None:
+    if smu.commands.get_curve_shaper_cmd is None or smu.get_curve_shaper() is not None:
+        return None
+    return "the BIOS Curve Shaper could not be read, so a session could not record the Shaper it tunes under"
 
 
 def _setting(path: Path) -> str:
@@ -341,6 +360,7 @@ def preflight(
         ),
         holder,
         scheduling_problem,
+        lambda: shaper_problem(smu),
         *(
             lambda tool=tool: (
                 None if tool.is_available() else f"{tool.name} is not installed: {tool.resolution().problem}"

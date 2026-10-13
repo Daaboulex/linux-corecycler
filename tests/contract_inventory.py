@@ -123,6 +123,12 @@ def _pin_dmidecode_dimm_parse() -> None:
     assert dimms[0].mem_type == "DDR5"
 
 
+def _pin_zen5_curve_shaper_read() -> None:
+    for gen, cmds in COMMAND_SETS.items():
+        expected = 0x84 if gen is CPUGeneration.ZEN5_GRANITE_RIDGE else None
+        assert cmds.get_curve_shaper_cmd == expected, (gen.name, cmds.get_curve_shaper_cmd)
+
+
 def _pin_zen5_co_range() -> None:
     for gen in (
         CPUGeneration.ZEN5_GRANITE_RIDGE,
@@ -382,6 +388,17 @@ CONTRACTS: list[Contract] = [
         ring_a=_pin_proc_cpus_allowed_list,
         live_verifiable=True,
         ring_b_test=("test_containment_live.py::test_a_contained_child_cannot_escape_its_cpuset"),
+    ),
+    Contract(
+        name="zen5-curve-shaper-read",
+        kind="arch",
+        source=(
+            "RSMU 0x84 with no arguments returns five words, byte 0 the band index 0 to 4 and bytes 1 to 3 "
+            "the -5C, 50C and 90C margins as signed bytes; read only on the owner's 9950X3D 2026-10-09 and "
+            "2026-10-13; no other generation's id is measured"
+        ),
+        ring_a=_pin_zen5_curve_shaper_read,
+        live_verifiable=False,
     ),
     Contract(
         name="zen5-co-range",

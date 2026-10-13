@@ -649,6 +649,16 @@ class RyzenSMU:
     # Boost frequency
     # ------------------------------------------------------------------
 
+    def get_curve_shaper(self) -> tuple[tuple[int, int, int], ...] | None:
+        cmd = self.commands.get_curve_shaper_cmd
+        if cmd is None:
+            return None
+        resp = self._send_rsmu_command(cmd)
+        bands = [struct.unpack("<Bbbb", struct.pack("<I", word)) for word in resp.args[:5]]
+        if not resp.success or [band[0] for band in bands] != list(range(5)):
+            return None
+        return tuple(band[1:] for band in bands)
+
     def get_boost_limit(self) -> int | None:
         """Read the boost frequency limit (MHz). Zen 4/5 only."""
         cmd = self.commands.get_boost_limit_cmd

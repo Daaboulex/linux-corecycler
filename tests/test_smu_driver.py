@@ -700,3 +700,26 @@ class TestOneMailboxAcrossProcesses:
         response = RyzenSMU(zen5_cmds, smu_dir)._send_command(0x99)
         assert response.success is False
         assert RyzenSMU(zen5_cmds, smu_dir)._send_rsmu_command(0x99).success is False
+
+
+SHAPER_WORDS_READ_ON_THE_9950X3D = (0x0, 0xF4E5E201, 0xF3EEE702, 0xF6EFEB03, 0xFEFDFA04, 0x0)
+
+
+@pytest.mark.req("TERMS.base_shaper", "D4")
+@pytest.mark.parametrize(
+    ("success", "words", "bands"),
+    [
+        (
+            True,
+            SHAPER_WORDS_READ_ON_THE_9950X3D,
+            ((0, 0, 0), (-30, -27, -12), (-25, -18, -13), (-21, -17, -10), (-6, -3, -2)),
+        ),
+        (False, SHAPER_WORDS_READ_ON_THE_9950X3D, None),
+        (True, (0,) * 6, None),
+        (True, (0x0, 0xF4E5E202, 0xF3EEE701, 0xF6EFEB03, 0xFEFDFA04, 0x0), None),
+    ],
+)
+def test_the_curve_shaper_read_gives_five_bands_only_when_every_band_names_its_own_index(success, words, bands):
+    smu = RyzenSMU(get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE), MagicMock())
+    smu._send_rsmu_command = lambda cmd, args=(0,) * 6: SMUResponse(success, words, b"")
+    assert smu.get_curve_shaper() == bands

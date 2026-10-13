@@ -1182,7 +1182,13 @@ class FakeSmu:
     echo: int | None = None
     scalar: float | None = 10.0
     boost: int | None = None
-    commands: SimpleNamespace = field(default_factory=lambda: SimpleNamespace(co_range=(-50, 10)))
+    commands: SimpleNamespace = field(
+        default_factory=lambda: SimpleNamespace(co_range=(-50, 10), get_curve_shaper_cmd=None)
+    )
+    shaper: tuple | None = None
+
+    def get_curve_shaper(self):
+        return self.shaper
 
     def get_pbo_scalar(self):
         return self.scalar
@@ -1350,6 +1356,7 @@ def test_the_setup_holds_one_line_per_key_with_the_reason_for_what_could_not_be_
     assert setup == {
         "app": "1.2.3",
         "bios": "ASUS 2401 05/01/2026 unreadable: No such file or directory",
+        "curve_shaper": "none on this generation",
         "kernel": "7.2.7 build abc",
         "microcode": "0xb404023",
         "pbo": "ppt 200.0 tdc unreadable edc 230.0 scalar 10.0 boost unreadable",
@@ -2112,6 +2119,33 @@ def test_a_ready_machine_passes_preflight_without_warnings(tmp_path, monkeypatch
 def test_each_preflight_gate_refuses_naming_its_reason(tmp_path, monkeypatch, changes, says):
     refusal, _ = preflight(tmp_path, monkeypatch, **changes)
     assert says in refusal
+
+
+@pytest.mark.req("L01.12", "C1.base_shaper", "L24.c.shaper", "L18.d.8.shaper")
+@pytest.mark.parametrize(
+    ("shaper", "fact", "refused"),
+    [
+        (
+            ((0, 0, 0), (-30, -27, -12), (-25, -18, -13), (-21, -17, -10), (-6, -3, -2)),
+            "Min 0/0/0, Low -30/-27/-12, Medium -25/-18/-13, High -21/-17/-10, Max -6/-3/-2",
+            False,
+        ),
+        (None, "unreadable: the SMU refused the read or its band check failed", True),
+    ],
+)
+def test_the_bios_shaper_joins_the_setup_and_an_unreadable_one_refuses_start(
+    tmp_path, monkeypatch, shaper, fact, refused
+):
+    smu = FakeSmu(shaper=shaper, commands=SimpleNamespace(co_range=(-50, 10), get_curve_shaper_cmd=0x84))
+    assert live_hw.shaper_fact(smu) == fact
+    refusal, _ = preflight(tmp_path, monkeypatch, smu=smu)
+    assert (refusal is not None and "Curve Shaper could not be read" in refusal) is refused
+
+
+def test_a_shaper_read_of_the_wrong_length_is_never_shown_as_a_partial_table():
+    smu = FakeSmu(shaper=((0, 0, 0),) * 4, commands=SimpleNamespace(co_range=(-50, 10), get_curve_shaper_cmd=0x84))
+    with pytest.raises(ValueError):
+        live_hw.shaper_fact(smu)
 
 
 @pytest.mark.req("L01.7")

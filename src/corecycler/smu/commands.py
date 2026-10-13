@@ -80,6 +80,7 @@ class SMUCommandSet:
     get_co_cmd: int | None = None
     get_co_mailbox: str | None = None
     get_co_by_slot: bool = False
+    get_curve_shaper_cmd: int | None = None
 
     # PBO power limits, all sent on the RSMU mailbox. Desktop dies use the
     # RSMU SetFastLimit(=PPT)/SetTDCVDDLimit/SetEDCVDDLimit/SetTctlMax ids.
@@ -387,6 +388,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xD5,
+        get_curve_shaper_cmd=0x84,
         set_ppt_cmd=0x56,
         set_tdc_cmd=0x57,
         set_edc_cmd=0x58,
