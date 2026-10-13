@@ -115,12 +115,14 @@ class TestViewSelector:
 
     def test_all_view_populates_runs_table(self, db):
         _seed_run(db, "2026-07-20T10:00:00+00:00")
-        _seed_run(db, "2026-07-21T10:00:00+00:00")
+        _seed_run(db, "2026-07-21T10:00:00+00:00", status="crashed")
         tab = _tab(db)
         self._show(tab, tab.VIEW_ALL)
         assert tab._runs_table.rowCount() == 2
         assert tab._context_table.isHidden()
         assert tab._total_label.text() == "Stress test runs: 2"
+        assert "Completed: 1" in tab._counts_label.text()
+        assert "Crashed: 1" in tab._counts_label.text()
 
     def test_the_choices_read_as_words(self, db):
         tab = _tab(db)
@@ -803,3 +805,17 @@ class TestMalformedContextData:
     )
     def test_no_stored_json_value_can_break_the_summary(self, value):
         assert isinstance(ht._co_summary(json.dumps(value)), str)
+
+
+@pytest.mark.req("T22.F25")
+def test_the_counts_name_every_status_read_in_the_label_order_with_its_colour():
+    from collections import Counter
+
+    from corecycler.gui.style import theme
+
+    shown = ht.counts_html(Counter({"stopped": 2, "new-status": 1, "completed": 3, "paused": 0}))
+    assert shown.index("Completed: 3") < shown.index("Stopped: 2") < shown.index("new-status: 1")
+    assert "Paused" not in shown
+    assert f'color: {theme.STATUS_COLORS["completed"]};">Completed: 3' in shown
+    assert f'color: {theme.COLOR_MUTED};">new-status: 1' in shown
+    assert ht.counts_html(Counter()) == ""

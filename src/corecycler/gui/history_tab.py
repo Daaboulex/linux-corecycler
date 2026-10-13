@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -75,6 +76,16 @@ def open_test_text(test: dict, newest: bool, boot: str, driver: bool) -> str:
     return "running" if newest and driver else "no verdict: the driver stopped"
 
 
+def counts_html(counts: Counter[str]) -> str:
+    order = [*SESSION_STATUS_LABELS, *sorted(set(counts) - set(SESSION_STATUS_LABELS))]
+    return "&nbsp;&nbsp;&nbsp;".join(
+        f'<span style="color: {theme.STATUS_COLORS.get(status, theme.COLOR_MUTED)};">'
+        f"{SESSION_STATUS_LABELS.get(status, status)}: {counts[status]}</span>"
+        for status in order
+        if counts[status]
+    )
+
+
 class HistoryTab(QWidget):
     """Tab showing historical test runs grouped by tuning context."""
 
@@ -117,14 +128,11 @@ class HistoryTab(QWidget):
         summary_rows.addLayout(controls_row)
 
         self._total_label = QLabel("Stress test runs: 0")
-        self._completed_label = QLabel("Completed: 0")
-        self._completed_label.setStyleSheet(f"color: {theme.COLOR_PASS}; font-weight: bold;")
-        self._crashed_label = QLabel("Crashed: 0")
-        self._crashed_label.setStyleSheet(f"color: {theme.COLOR_FAIL}; font-weight: bold;")
-        self._stopped_label = QLabel("Stopped: 0")
-        self._stopped_label.setStyleSheet(f"color: {theme.COLOR_WARN}; font-weight: bold;")
+        self._counts_label = QLabel("")
+        self._counts_label.setTextFormat(Qt.TextFormat.RichText)
+        self._counts_label.setStyleSheet("font-weight: bold;")
 
-        for w in (self._total_label, self._completed_label, self._crashed_label, self._stopped_label):
+        for w in (self._total_label, self._counts_label):
             w.setFont(QFont("monospace", 10))
             counts_row.addWidget(w)
 
@@ -378,18 +386,13 @@ class HistoryTab(QWidget):
 
     def _update_summary(self) -> None:
         if self._view_mode == self.VIEW_TUNER:
-            statuses = [s.status for s in self._tuner_sessions]
-            self._total_label.setText(f"Tuning sessions: {len(statuses)}")
-            self._completed_label.setText(f"Completed: {statuses.count('completed')}")
-            self._crashed_label.setText(f"Quarantined: {statuses.count('quarantined')}")
-            self._stopped_label.setText(f"Running: {statuses.count('running')}  Paused: {statuses.count('paused')}")
+            driver = running_driver() is not None
+            counts = Counter(shown_status(s.status, driver) for s in self._tuner_sessions)
+            self._total_label.setText(f"Tuning sessions: {counts.total()}")
         else:
-            counts = self._db.get_status_counts() if self._db else {}
-            total = sum(counts.values())
-            self._total_label.setText(f"Stress test runs: {total}")
-            self._completed_label.setText(f"Completed: {counts.get('completed', 0)}")
-            self._crashed_label.setText(f"Crashed: {counts.get('crashed', 0)}")
-            self._stopped_label.setText(f"Stopped: {counts.get('stopped', 0)}")
+            counts = Counter(self._db.get_status_counts() if self._db else {})
+            self._total_label.setText(f"Stress test runs: {counts.total()}")
+        self._counts_label.setText(counts_html(counts))
         self._update_toggle_labels()
 
     def _populate_context_table(self) -> None:

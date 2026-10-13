@@ -8,6 +8,7 @@ import pytest
 if not hasattr(sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("History tab tests require real PySide6", allow_module_level=True)
 
+from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from corecycler.gui.history_tab import HistoryTab
@@ -55,6 +56,12 @@ def tuner_view(db) -> HistoryTab:
 
 def cell(tab: HistoryTab, row: int, column: int) -> str:
     return tab._runs_table.item(row, column).text()
+
+
+def plain(label) -> str:
+    document = QTextDocument()
+    document.setHtml(label.text())
+    return document.toPlainText()
 
 
 def test_sessions_list_newest_first_and_leave_out_old_engine_rows(db, tmp_path):
@@ -176,13 +183,16 @@ class TestDelete:
         assert db.list_machine_sessions() == []
 
 
-@pytest.mark.req("T22.F8")
+@pytest.mark.req("T22.F8", "T22.F25")
 @pytest.mark.parametrize("driver", [True, False])
 def test_the_session_list_says_interrupted_once_the_driver_is_gone(db, tmp_path, driver):
     save_machine_session(db, tmp_path, "running")
+    save_machine_session(db, tmp_path, "completed", session_id=2)
     with co_writer(record=driver):
         tab = tuner_view(db)
-    assert cell(tab, 0, 1) == ("Running" if driver else "Interrupted")
+    shown = "Running" if driver else "Interrupted"
+    assert cell(tab, 1, 1) == shown
+    assert plain(tab._counts_label).split() == ["Completed:", "1", f"{shown}:", "1"]
 
 
 @pytest.mark.req("T22.F7")
