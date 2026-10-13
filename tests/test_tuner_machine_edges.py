@@ -169,6 +169,22 @@ def test_evidence_in_soak_backs_the_core_off_and_sends_the_profile_through_live1
     assert {r.core: r.value for r in fake.state.cores}[core] > value
 
 
+@pytest.mark.req("G6.soak", "L16.G6")
+def test_an_unblamed_event_in_soak_counts_an_incident_and_reproves_the_profile_and_the_second_pauses():
+    fake = running_fake()
+    for incidents in (1, 2):
+        while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
+            assert fake.progress()
+        fake.deliver(Report(Group.ENVIRONMENT, 1.0, detail="soft lockup on CPU 3"))
+        assert fake.state.incidents == incidents
+        if incidents == 1:
+            while fake.worker is None:
+                assert fake.progress()
+            assert fake.worker.spec.stage is Stage.LIVE1
+    assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.INCIDENTS)
+    assert "soft lockup on CPU 3" in fake.state.pause.detail
+
+
 @pytest.mark.req("C10", "D34")
 @pytest.mark.parametrize("report", [Report(Group.THERMAL, 5.0), Report(Group.APPARATUS, 1.0, detail="tool died")])
 def test_an_all_core_test_that_ends_without_a_verdict_sends_every_owned_core_back_to_baseline(report):

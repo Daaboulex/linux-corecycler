@@ -988,8 +988,7 @@ proof = "built"
 [[requirement]]
 id = "G6.soak"
 statement = "Environment in SOAK is incident +1 and dirty, P(INCIDENTS) at K19"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "G7"
@@ -2337,8 +2336,7 @@ proof = "built"
 [[requirement]]
 id = "L16.G6"
 statement = "An unblamed record or kernel trouble in SOAK is incident + 1 and dirty, P(INCIDENTS) at K19"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L16.G8"

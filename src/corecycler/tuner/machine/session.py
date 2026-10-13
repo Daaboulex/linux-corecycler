@@ -1301,7 +1301,18 @@ def _judged(s: SessionState, rep: Report, w: World) -> Transition:
         return _verdict(after, spec, rep, group, pausing, w)
     if group is Group.THERMAL:
         return _thermal(after, spec, rep, pausing, w)
+    if group is Group.ENVIRONMENT and spec.stage is Stage.SOAK:
+        return _soak_incident(after, spec, rep, pausing, w)
     return _apparatus(after, spec, rep, pausing)
+
+
+def _soak_incident(s: SessionState, spec: TestSpec, rep: Report, pausing: bool, w: World) -> Transition:
+    s, _ = _allcore_fail(s, rep.context, w)
+    if s.incidents >= INCIDENT_LIMIT:
+        return _enter_pause(
+            s, PauseReason.INCIDENTS, f"{s.incidents} incidents nobody could be blamed for: {rep.detail}"
+        )
+    return _next_wait(s, spec, pausing)
 
 
 def _q5(s: SessionState, spec: TestSpec) -> tuple[bool, SessionState]:
