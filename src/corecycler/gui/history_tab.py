@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from corecycler.engine import detector as kernel
 from corecycler.gui.style import (
     SESSION_STATUS_LABELS,
     duration_str,
@@ -66,6 +67,12 @@ SETUP_LABELS = {
     "topology": "Topology",
 }
 ORIGINS = {"continue": "continued from", "restart": "started over from"}
+
+
+def open_test_text(test: dict, newest: bool, boot: str, driver: bool) -> str:
+    if test["boot_id"] != boot:
+        return "no verdict: its boot ended"
+    return "running" if newest and driver else "no verdict: the driver stopped"
 
 
 class HistoryTab(QWidget):
@@ -853,6 +860,7 @@ class HistoryTab(QWidget):
         self._detail_info.setText("  |  ".join(info))
         self._detail_info.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 2px;")
         tests = self._db.list_tuner_tests(sess.id)
+        boot, driver = kernel.read_boot_id(), running_driver() is not None
         peaks = self._db.core_peaks(sess.id)
         per_core: dict[int, list[dict]] = {}
         for test in tests:
@@ -881,7 +889,11 @@ class HistoryTab(QWidget):
         lines += [
             f"  {format_local(test['started_at'])}  core {test['core']}, {stage_label(test['stage'])}, "
             f"{THREADS.get(test['klass'], test['klass'])}, at {test['value']}: "
-            + (verdict_text(test["verdict"]) if test["verdict"] else "running")
+            + (
+                verdict_text(test["verdict"])
+                if test["verdict"]
+                else open_test_text(test, test is tests[-1], boot, driver)
+            )
             + (f"  {test['detail']}" if test["detail"] else "")
             for test in tests
         ]

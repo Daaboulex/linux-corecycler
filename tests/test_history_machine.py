@@ -183,3 +183,24 @@ def test_the_session_list_says_interrupted_once_the_driver_is_gone(db, tmp_path,
     with co_writer(record=driver):
         tab = tuner_view(db)
     assert cell(tab, 0, 1) == ("Running" if driver else "Interrupted")
+
+
+@pytest.mark.req("T22.F7")
+@pytest.mark.parametrize(
+    ("boot", "driver", "said"),
+    [
+        ("0" * 32, False, "no verdict: its boot ended"),
+        (None, False, "no verdict: the driver stopped"),
+        (None, True, "running"),
+    ],
+)
+def test_an_open_test_says_how_it_ended(db, tmp_path, boot, driver, said):
+    saved = save_machine_session(db, tmp_path, "running")
+    core = saved.cores[0].core
+    db.insert_tuner_test(
+        saved.session_id, boot or this_boot(), 1, "search", "1t", "1t", core, -3, "[]", "[0]", 60.0, "{}"
+    )
+    with co_writer(record=driver):
+        tab = tuner_view(db)
+    lines = tab._events_log.toPlainText().splitlines()
+    assert any(line.endswith(f"core {core}, Search, one thread, at -3: {said}") for line in lines)

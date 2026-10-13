@@ -4798,8 +4798,7 @@ proof = "built"
 [[requirement]]
 id = "T22.F7"
 statement = "A test with no verdict says running only while its worker runs; one left open by an abort or a crash says how it ended."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F8"
