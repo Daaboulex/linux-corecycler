@@ -4202,8 +4202,7 @@ proof = "built"
 [[requirement]]
 id = "Q6.tighten"
 statement = "After Q6 those cores are tightened back one at a time with only that core changed"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "Q7"

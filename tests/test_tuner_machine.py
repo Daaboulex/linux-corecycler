@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from corecycler.tuner.machine import search
+from corecycler.tuner.machine import allcore, search
 from corecycler.tuner.machine.types import (
+    AllCore,
     CoreRecord,
     Klass,
     Lifecycle,
@@ -294,3 +295,9 @@ def test_the_harness_catches_a_machine_that_retests_a_failed_value(monkeypatch):
     monkeypatch.setattr(search, "on_fail", lambda rec, cfg, klass, seconds: search.CoreStep(rec))
     with pytest.raises(Broken, match="after a FAIL"):
         run_to_rest(fake, 2000)
+
+
+@pytest.mark.req("L10.d.apply")
+def test_each_loosening_counts_one_rung_and_one_step_for_its_core():
+    cursor = allcore.loosened(allcore.loosened(allcore.loosened(AllCore(), 1), 0), 1)
+    assert (dict(cursor.co_delta), cursor.rung) == ({0: 1, 1: 2}, 3)

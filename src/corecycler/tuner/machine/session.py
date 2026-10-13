@@ -1397,9 +1397,12 @@ def _q6(s: SessionState, group: tuple[int, ...]) -> tuple[SessionState, str | No
     loosen = [r for r in s.cores if r.core in group and r.value != 0]
     if not loosen:
         return s, f"the cores {list(group)} fail together and none can loosen"
-    cores = tuple(search.back_off_in_place(r, s.config, 1) if r in loosen else r for r in s.cores)
+    cores = tuple(search.loosen(r, s.config) if r in loosen else r for r in s.cores)
     flow = s.flow
-    return replace(s, cores=cores, flow=replace(flow, bisect=replace(flow.bisect, rerun=group))), None
+    cursor = flow.allcore
+    for r in () if cursor is None else loosen:
+        cursor = allcore.loosened(cursor, r.core)
+    return replace(s, cores=cores, flow=replace(flow, bisect=replace(flow.bisect, rerun=group), allcore=cursor)), None
 
 
 def _bisect_outcome(s: SessionState, passed: bool, w: World) -> tuple[SessionState, str | None]:

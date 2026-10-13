@@ -413,3 +413,13 @@ def once(fake, report):
 )
 def test_the_owner_order_applies_only_on_his_model_and_core_map(model, domain_of, owner):
     assert allcore.is_owner_layout(model, domain_of) is owner
+
+
+@pytest.mark.req("Q6.tighten")
+def test_cores_that_fail_only_together_are_loosened_without_a_fail_bound_and_tightened_back_one_at_a_time():
+    fake, stages = run([-6, -6], stacks=(((), (0, 1), 11),))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert any(stage is Stage.BISECT for stage, _, _ in stages)
+    tighten = [vector for stage, _, vector in stages if stage is Stage.TIGHTEN]
+    assert {0: -6, 1: -5} in tighten
+    assert {r.core: r.value for r in fake.state.cores} == {0: -6, 1: -5}

@@ -99,8 +99,12 @@ def transient_fix(
     return _loosened(cursor, core, f"{kind} failure, key {key}, least loosened core")
 
 
+def loosened(cursor: AllCore, core: int) -> AllCore:
+    return replace(cursor, co_delta=_bump(cursor.co_delta, core), rung=cursor.rung + 1)
+
+
 def _loosened(cursor: AllCore, core: int, why: str) -> Fix:
-    return Fix(replace(cursor, co_delta=_bump(cursor.co_delta, core), rung=cursor.rung + 1), core, why)
+    return Fix(loosened(cursor, core), core, why)
 
 
 def tighten_items(cursor: AllCore) -> tuple[int, ...]:
