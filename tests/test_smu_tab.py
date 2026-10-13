@@ -66,7 +66,7 @@ class TestTunerLock:
         tab._smu.is_available.return_value = True
         tab.set_tuner_running(True)
         assert tab._tuner_active is True
-        assert not tab._apply_all_btn.isEnabled()
+        assert not tab._set_changed_btn.isEnabled()
         assert not tab._reset_btn.isEnabled()
         for spin in tab._spinboxes.values():
             assert not spin.isEnabled()
@@ -82,7 +82,7 @@ class TestTunerLock:
         assert tab._table.item(0, 2).text() == "--"
         tab.set_tuner_running(False)
         assert tab._tuner_active is False
-        assert tab._apply_all_btn.isEnabled()
+        assert tab._set_changed_btn.isEnabled()
         assert not tab._restore_btn.isEnabled()
         assert tab._table.item(0, 2).text() == "-7"
         for spin in tab._spinboxes.values():
@@ -140,13 +140,11 @@ class TestCoreMapRefusal:
         tab = st.SMUTab(topo)
         assert tab._smu is not None
         assert tab._smu.core_map_error is not None
-        assert not tab._apply_all_btn.isEnabled()
+        assert not tab._set_changed_btn.isEnabled()
         assert not tab._reset_btn.isEnabled()
         assert not tab._backup_btn.isEnabled()
         assert "Writes are off: " in tab._range_label.text()
         assert tab._gen_label.text().startswith("CPU generation Zen ")
-        row0_btn = tab._table.cellWidget(0, 4)
-        assert row0_btn is not None and not row0_btn.isEnabled()
         tab._fill_from_cpu()
         assert tab._table.item(0, 2).text() == "--"
 
@@ -184,5 +182,5 @@ class TestPlainWords:
         tab.set_co_profile({0: -5})
         assert (
             tab._profile_banner.text()
-            == "Values from a tuning session are in Value to set. Press Set all to write them."
+            == "Values from a tuning session are in Value to set. Press Set changed to write them."
         )

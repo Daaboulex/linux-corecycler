@@ -77,9 +77,10 @@ class TestSMUColdTab:
         tab._smu = _available_smu()
         with patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.Yes):
             tab._reset_all_co()
-            tab._apply_all_co()
-            tab._apply_single(next(iter(tab._spinboxes)))
-        assert tab._smu.set_co_offset.called or tab._smu.reset_all_co.called
+            next(iter(tab._spinboxes.values())).setValue(-1)
+            tab._apply_changed()
+        assert tab._smu.set_co_offset.called
+        assert tab._smu.reset_all_co.called
 
     def test_every_button_clickable_on_cold_tab(self):
         _qapp()

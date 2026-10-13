@@ -56,12 +56,13 @@ per-step reboots.
 
 Reads and writes each core's Curve Optimizer value and the Curve Shaper at runtime
 through `ryzen_smu`. The Curve Optimizer table shows the value **Now on the CPU** and a
-**Value to set** per core, with a **Set** button per core; **Set all** and **Set all to
-0** act on every core, each write after a confirmation. While the tab is shown it reads
-the CPU every 5 s into Now on the CPU and the line under the Curve Shaper grid, and
-leaves the values being edited alone; **Fill from CPU** copies what is on the CPU into
-them. **Remember current values** keeps every core's value until the app closes and
-**Put remembered values back** writes them again. **Save values to file** and **Load
+**Value to set** per core. **Set changed** writes each core whose Value to set differs
+from Now on the CPU (an unreadable core counts as different) and **Set all to 0** writes
+0 to every core, each after a confirmation that names what it writes. While the tab is
+shown it reads the CPU every 5 s into Now on the CPU and the line under the Curve Shaper
+grid, and leaves the values being edited alone; **Fill from CPU** copies what is on the
+CPU into them. **Remember current values** keeps every core's value until the app closes
+and **Put remembered values back** writes them again. **Save values to file** and **Load
 values from file** use JSON, the same values History loads from a completed tuning
 session.
 
@@ -236,7 +237,7 @@ core's phase, value, the value it failed at, its tests, its last result and its 
 clock. The log below lists the session's settings by the Auto-Tuner tab's names, every
 test, the events, the boots it saw and each core's highest clock at every power-state
 range. **Load these values into Curve-Tuner** fills the Curve-Tuner tab's Value
-to set column from a completed session; nothing reaches the CPU until Set all.
+to set column from a completed session; nothing reaches the CPU until Set changed.
 
 ## Understanding results
 

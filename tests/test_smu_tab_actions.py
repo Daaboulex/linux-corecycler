@@ -121,70 +121,98 @@ class TestReadAllCo:
         assert tab._table.item(0, 2).text() == "unreadable"
 
 
-class TestApplySingle:
+def _recorded_confirmation(tab, monkeypatch) -> list[str]:
+    asked = []
+    monkeypatch.setattr(tab, "_confirm_write", lambda _what, detail: asked.append(detail) or True)
+    return asked
+
+
+class TestSetChanged:
     def test_without_driver_warns(self, tab):
+        import corecycler.gui.smu_tab as st
+
         tab._smu = None
-        tab._apply_single(0)
+        tab._apply_changed()
+        assert st.QMessageBox.warning.call_args.args[1] == "No driver"
 
     def test_blocked_while_tuner_active(self, tab):
         tab._smu = _smu()
         tab._tuner_active = True
-        tab._apply_single(0)
-        tab._smu.set_co_offset.assert_not_called()
-
-    def test_unknown_core_is_a_noop(self, tab):
-        tab._smu = _smu()
-        tab._apply_single(999)
+        tab._apply_changed()
         tab._smu.set_co_offset.assert_not_called()
 
     def test_declined_confirmation_does_not_write(self, tab, monkeypatch):
         tab._smu = _smu()
         monkeypatch.setattr(tab, "_confirm_write", lambda _w, _d: False)
-        tab._apply_single(0)
+        tab._apply_changed()
         tab._smu.set_co_offset.assert_not_called()
+
+    @pytest.mark.req("S1.setchanged")
+    def test_only_the_cores_whose_value_differs_are_written_and_named(self, tab, monkeypatch):
+        tab._smu = _smu(get=-10)
+        tab._fill_from_cpu()
+        tab._spinboxes[1].setValue(-12)
+        asked = _recorded_confirmation(tab, monkeypatch)
+        tab._apply_changed()
+        tab._smu.set_co_offset.assert_called_once_with(1, -12)
+        assert asked == ["These cores change: C1 -10 to -12"]
+
+    @pytest.mark.req("S1.setchanged")
+    def test_an_unreadable_core_counts_as_changed(self, tab, monkeypatch):
+        smu = _smu()
+        smu.get_co_offset.side_effect = lambda core: None if core == 2 else -10
+        tab._smu = smu
+        tab._fill_from_cpu()
+        asked = _recorded_confirmation(tab, monkeypatch)
+        tab._apply_changed()
+        smu.set_co_offset.assert_called_once_with(2, 0)
+        assert asked == ["These cores change: C2 unreadable to 0"]
+
+    @pytest.mark.req("S1.setchanged")
+    def test_nothing_changed_writes_nothing_and_says_so(self, tab):
+        import corecycler.gui.smu_tab as st
+
+        tab._smu = _smu(get=-10)
+        tab._fill_from_cpu()
+        tab._apply_changed()
+        tab._smu.set_co_offset.assert_not_called()
+        assert st.QMessageBox.information.call_args.args[1] == "Nothing to set"
 
     @pytest.mark.req("S1.read")
     def test_a_written_core_shows_the_value_read_back(self, tab):
-        tab._smu = _smu(set=True, get=-14)
+        smu = _smu(get=-10)
+        tab._smu = smu
+        tab._fill_from_cpu()
         tab._spinboxes[0].setValue(-15)
-        tab._apply_single(0)
+
+        def lands_one_off(core, value):
+            smu.get_co_offset.side_effect = lambda c: value + 1 if c == core else -10
+            return True
+
+        smu.set_co_offset.side_effect = lands_one_off
+        tab._apply_changed()
         assert tab._table.item(0, 2).text() == "-14"
 
-    def test_failed_write_warns(self, tab):
-        tab._smu = _smu(set=False)
-        tab._apply_single(0)
-        tab._smu.set_co_offset.assert_called_once()
-
-
-class TestApplyAllAndReset:
-    def test_apply_all_without_driver(self, tab):
-        tab._smu = None
-        tab._apply_all_co()
-
-    def test_apply_all_blocked_while_tuner_active(self, tab):
-        tab._smu = _smu()
-        tab._tuner_active = True
-        tab._apply_all_co()
-        tab._smu.set_co_offset.assert_not_called()
-
-    def test_apply_all_declined(self, tab, monkeypatch):
-        tab._smu = _smu()
-        monkeypatch.setattr(tab, "_confirm_write", lambda _w, _d: False)
-        tab._apply_all_co()
-        tab._smu.set_co_offset.assert_not_called()
-
-    def test_apply_all_success_hides_banner_and_reenables(self, tab):
+    def test_a_written_profile_hides_its_banner_and_leaves_the_controls_usable(self, tab):
         tab._smu = _smu(set=True)
-        tab._apply_all_co()
+        tab._refresh_writes()
+        tab.set_co_profile({0: -5})
+        tab._apply_changed()
         assert tab._profile_banner.isHidden()
-        assert tab._apply_all_btn.isEnabled()
+        assert tab._set_changed_btn.isEnabled()
 
-    def test_apply_all_partial_failure_reenables(self, tab):
+    def test_a_failed_write_is_named_and_the_buttons_come_back(self, tab):
+        import corecycler.gui.smu_tab as st
+
         tab._smu = _smu(set=False)
-        tab._apply_all_co()
-        assert tab._apply_all_btn.isEnabled()
+        tab._refresh_writes()
+        tab._apply_changed()
+        assert st.QMessageBox.warning.call_args.args[1] == "Write failed"
+        assert tab._set_changed_btn.isEnabled()
         assert tab._reset_btn.isEnabled()
 
+
+class TestReset:
     def test_reset_without_driver(self, tab):
         tab._smu = None
         tab._reset_all_co()
@@ -251,17 +279,17 @@ class TestOneWriter:
         from corecycler.smu.writer_lock import co_writer
 
         tab._smu = _smu()
+        tab._refresh_writes()
         with co_writer(record=True):
-            tab._apply_single(0)
-            tab._apply_all_co()
+            tab._apply_changed()
             tab._reset_all_co()
             tab._restore_co()
         tab._smu.set_co_offset.assert_not_called()
         tab._smu.reset_all_co.assert_not_called()
         tab._smu.restore_co_offsets.assert_not_called()
-        assert st.QMessageBox.warning.call_count == 4
+        assert st.QMessageBox.warning.call_count == 3
         assert "another CO writer holds" in st.QMessageBox.warning.call_args.args[2]
-        assert tab._apply_all_btn.isEnabled()
+        assert tab._set_changed_btn.isEnabled()
 
     def test_restore_is_refused_while_the_tuner_runs(self, tab):
         tab._smu = _smu()
@@ -275,12 +303,12 @@ class TestOneWriter:
         tab._backup_co()
         assert not tab._restore_btn.isEnabled()
         tab._populate_table()
-        assert not any(tab._table.cellWidget(row, 4).isEnabled() for row in range(tab._table.rowCount()))
         assert not any(spin.isEnabled() for spin in tab._spinboxes.values())
         tab.set_tuner_running(False)
-        monkeypatch.setattr(tab, "_set_all", lambda: tab.set_tuner_running(True))
-        tab._apply_all_co()
-        assert not tab._apply_all_btn.isEnabled()
+        monkeypatch.setattr(tab, "_set_changed", lambda _changed: tab.set_tuner_running(True))
+        tab._spinboxes[0].setValue(-11)
+        tab._apply_changed()
+        assert not tab._set_changed_btn.isEnabled()
         assert not tab._reset_btn.isEnabled()
 
 
@@ -394,5 +422,5 @@ def test_each_shaper_box_sits_under_its_temperature_and_beside_its_band_and_the_
             assert centre(labels[point]).y() < centre(tab._shaper_spins[0][column]).y()
     right = tab._shaper_spins[0][2].mapTo(tab, tab._shaper_spins[0][2].rect().topRight()).x()
     assert right < tab.width() / 2
-    widths = [tab._table.columnWidth(column) for column in range(5)]
-    assert min(widths[2], widths[3]) > 2 * max(widths[0], widths[1], widths[4])
+    widths = [tab._table.columnWidth(column) for column in range(tab._table.columnCount())]
+    assert min(widths[2], widths[3]) > 2 * max(widths[0], widths[1])

@@ -4787,7 +4787,12 @@ proof = "built"
 
 [[requirement]]
 id = "S1.read"
-statement = "The Curve-Tuner tab reads every core's CO and the Curve Shaper when it is shown and every 5 s while it stays shown, into Now on the CPU and the Shaper line, never over a value being edited, and stops reading when hidden; Fill from CPU copies them into the values to set; a single Set shows the value read back (owner 2026-10-13: the GUI is automatic and shows what it reads)."
+statement = "The Curve-Tuner tab reads every core's CO and the Curve Shaper when it is shown and every 5 s while it stays shown, into Now on the CPU and the Shaper line, never over a value being edited, and stops reading when hidden; Fill from CPU copies them into the values to set; a written core shows the value read back (owner 2026-10-13: the GUI is automatic and shows what it reads)."
+proof = "built"
+
+[[requirement]]
+id = "S1.setchanged"
+statement = "Set changed writes only the cores whose Value to set differs from the CO read at that moment, an unreadable core counting as different, after a confirmation naming each core with its read and its new value; with nothing different it writes nothing and says so; there is no per-core Set (owner card 2026-10-13)."
 proof = "built"
 
 [[requirement]]

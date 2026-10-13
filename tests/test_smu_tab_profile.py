@@ -55,7 +55,7 @@ class TestSetTopologyStates:
         tab.set_topology(_topo())
         assert tab._status_label.text() == "ryzen_smu driver connected"
         assert tab._gen_label.text() == "CPU generation Zen 5 Granite Ridge"
-        assert tab._apply_all_btn.isEnabled()
+        assert tab._set_changed_btn.isEnabled()
         assert tab._range_label.text().startswith("Allowed values -")
 
     def test_connected_without_co_support(self, tab, monkeypatch):
@@ -65,7 +65,7 @@ class TestSetTopologyStates:
         tab.set_topology(_topo(model_name="AMD Ryzen 9 3950X", family=23, model=0x71))
         assert tab._range_label.text() == "This CPU generation has no Curve Optimizer"
         assert tab._gen_label.text() == "CPU generation Zen 2 Matisse"
-        assert tab._apply_all_btn.isEnabled() is False
+        assert tab._set_changed_btn.isEnabled() is False
 
     def test_driver_not_loaded(self, tab, monkeypatch):
         import corecycler.gui.smu_tab as st

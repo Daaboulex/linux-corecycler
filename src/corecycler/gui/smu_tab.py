@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 
 READ_EVERY_MS = 5000  # equivalent-mutant: a period chosen for the eye, no check can tell 5 s from 5.001 s
-SET_ALL = "Set all"
+SET_CHANGED = "Set changed"
 SHAPER_POINTS = ("-5 C", "50 C", "90 C")
 UNREADABLE = "unreadable"
 
@@ -105,11 +105,11 @@ class SMUTab(QWidget):
         co_layout = QVBoxLayout(co_group)
 
         self._table = QTableWidget()
-        self._table.setColumnCount(5)
-        self._table.setHorizontalHeaderLabels(["Core", "CCD", "Now on the CPU", "Value to set", ""])
+        self._table.setColumnCount(4)
+        self._table.setHorizontalHeaderLabels(["Core", "CCD", "Now on the CPU", "Value to set"])
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        for column in (0, 1, 4):
+        for column in (0, 1):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         self._table.setAlternatingRowColors(True)
         self._table.verticalHeader().setVisible(False)
@@ -122,9 +122,10 @@ class SMUTab(QWidget):
         self._fill_btn.clicked.connect(self._fill_from_cpu)
         bulk_layout.addWidget(self._fill_btn)
 
-        self._apply_all_btn = QPushButton(SET_ALL)
-        self._apply_all_btn.clicked.connect(self._apply_all_co)
-        bulk_layout.addWidget(self._apply_all_btn)
+        self._set_changed_btn = QPushButton(SET_CHANGED)
+        self._set_changed_btn.setToolTip("Writes each core whose Value to set differs from Now on the CPU")
+        self._set_changed_btn.clicked.connect(self._apply_changed)
+        bulk_layout.addWidget(self._set_changed_btn)
 
         self._reset_btn = QPushButton("Set all to 0")
         self._reset_btn.clicked.connect(self._reset_all_co)
@@ -273,10 +274,6 @@ class SMUTab(QWidget):
             self._spinboxes[core.core_id] = spin
             self._table.setCellWidget(row, 3, spin)
 
-            apply_btn = QPushButton("Set")
-            apply_btn.clicked.connect(lambda checked, cid=core.core_id: self._apply_single(cid))
-            self._table.setCellWidget(row, 4, apply_btn)
-
         self._refresh_writes()
         if self._smu:
             self._fill_from_cpu()
@@ -362,16 +359,12 @@ class SMUTab(QWidget):
             and self._commands.has_co
             and core_map_blocked(self._smu) is None
         )
-        self._apply_all_btn.setEnabled(can_write)
+        self._set_changed_btn.setEnabled(can_write)
         self._reset_btn.setEnabled(can_write)
         self._restore_btn.setEnabled(can_write and self._smu.has_backup())
-        for row in range(self._table.rowCount()):
-            button = self._table.cellWidget(row, 4)
-            if button is not None:
-                button.setEnabled(can_write)
         for spin in self._spinboxes.values():
             spin.setEnabled(not self._tuner_active)
-        self._apply_all_btn.setToolTip("Off while the Auto-Tuner runs" if self._tuner_active else "")
+        self._set_changed_btn.setToolTip("Off while the Auto-Tuner runs" if self._tuner_active else "")
         can_shape = (
             not self._tuner_active
             and self._smu is not None
@@ -398,55 +391,34 @@ class SMUTab(QWidget):
         except WriterBusy as busy:
             QMessageBox.warning(self, "Tuner running", f"{busy}: writes wait until the Auto-Tuner stops.")
 
-    def _apply_single(self, core_id: int) -> None:
+    def _apply_changed(self) -> None:
         if not self._smu:
             QMessageBox.warning(self, "No driver", "The ryzen_smu driver is not available.")
             return
         if self._refused_while_tuning():
             return
 
-        spin = self._spinboxes.get(core_id)
-        if not spin:
+        now, _bands = self._read_now()
+        changed = {
+            core_id: spin.value()
+            for core_id, spin in sorted(self._spinboxes.items())
+            if now.get(core_id) != spin.value()
+        }
+        if not changed:
+            QMessageBox.information(self, "Nothing to set", "Every core is already at its Value to set.")
+            return
+        summary = ", ".join(f"C{core} {now.get(core, UNREADABLE)} to {value}" for core, value in changed.items())
+        if not self._confirm_write("Curve Optimizer values", f"These cores change: {summary}"):
             return
 
-        value = spin.value()
+        self._write(lambda: self._set_changed(changed))
 
-        if not self._confirm_write("Curve Optimizer values", f"Core {core_id} gets {value}."):
-            return
-        self._write(lambda: self._set_one(core_id, value))
-
-    def _set_one(self, core_id: int, value: int) -> None:
-        if self._smu.set_co_offset(core_id, value):
-            self.read_core(core_id)
-        else:
-            QMessageBox.warning(self, "Write failed", f"Core {core_id} could not be set.")
-
-    def _apply_all_co(self) -> None:
-        if not self._smu:
-            QMessageBox.warning(self, "No driver", "The ryzen_smu driver is not available.")
-            return
-        if self._refused_while_tuning():
-            return
-
-        summary = ", ".join(f"C{cid} {spin.value()}" for cid, spin in sorted(self._spinboxes.items()))
-        if not self._confirm_write("Curve Optimizer values", f"Every core gets its value to set:\n{summary}"):
-            return
-
-        self._apply_all_btn.setEnabled(False)
-        self._reset_btn.setEnabled(False)
-        try:
-            self._write(self._set_all)
-        finally:
-            self._refresh_writes()
-
-    def _set_all(self) -> None:
-        failed = [
-            core_id for core_id, spin in self._spinboxes.items() if not self._smu.set_co_offset(core_id, spin.value())
-        ]
+    def _set_changed(self, changed: dict[int, int]) -> None:
+        failed = [core_id for core_id, value in changed.items() if not self._smu.set_co_offset(core_id, value)]
+        self._read_now()
         if failed:
             QMessageBox.warning(self, "Write failed", f"These cores could not be set: {failed}.")
         else:
-            self._fill_from_cpu()
             self._profile_banner.setVisible(False)
 
     def _reset_all_co(self) -> None:
@@ -458,12 +430,7 @@ class SMUTab(QWidget):
         if not self._confirm_write("Curve Optimizer values", "Every core gets 0."):
             return
 
-        self._apply_all_btn.setEnabled(False)
-        self._reset_btn.setEnabled(False)
-        try:
-            self._write(self._set_zero)
-        finally:
-            self._refresh_writes()
+        self._write(self._set_zero)
 
     def _set_zero(self) -> None:
         if not self._smu.reset_all_co():
@@ -575,7 +542,7 @@ class SMUTab(QWidget):
             spin.setValue(offset)
             if spin.value() != offset:
                 altered.append(f"core {core_id}: {offset} is outside the allowed values, {spin.value()} is set")
-        self._profile_banner.setText(f"Values from {source} are in Value to set. Press {SET_ALL} to write them.")
+        self._profile_banner.setText(f"Values from {source} are in Value to set. Press {SET_CHANGED} to write them.")
         self._profile_banner.setVisible(True)
         if altered:
             QMessageBox.warning(
