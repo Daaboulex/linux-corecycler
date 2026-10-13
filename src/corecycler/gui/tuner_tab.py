@@ -468,7 +468,7 @@ class TunerTab(QWidget):
         self._buttons["Abort"].setStyleSheet(button_qss(theme.BTN_RED))
         column.addLayout(buttons)
         self._cores = QTableWidget(0, 4)
-        self._cores.setHorizontalHeaderLabels(["Core", "Value", "Phase", "Failed at"])
+        self._cores.setHorizontalHeaderLabels(["Core", "Tuner value", "Phase", "Failed at"])
         self._cores.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._cores.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         column.addWidget(self._cores, 1)

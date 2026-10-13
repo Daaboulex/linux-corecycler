@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -15,7 +16,7 @@ import pytest
 if not hasattr(sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("tuner tab tests require real PySide6", allow_module_level=True)
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from corecycler.cli import EXIT_PAUSED
 from corecycler.engine.topology import CPUTopology, PhysicalCore
@@ -684,3 +685,42 @@ def test_the_settings_list_names_each_given_start():
     cfg = MachineConfig(Mode.CO, Method.SEQUENTIAL, (0, 1), starts=((0, -18), (1, -38)))
     assert "  Starting values: core 0 at -18, core 1 at -38" in tt.settings_lines(cfg)
     assert not any("Starting values" in line for line in tt.settings_lines(replace(cfg, starts=())))
+
+
+SHOWN_FACTS = (
+    (r"No tuning session", "no session in the database"),
+    (r"Session \d+: .+", "the session record's status and its last pause reason"),
+    (r"Power now: .+", "read_power_state and power_profile, read at this refresh"),
+    (r"Testing .+: .+, \d+ of \d+ s", "the open test row, its seconds counted from its start"),
+    (r"(asked driver \d+ to |started the driver: |no tuner driver is running).*", "the signal or launch just made"),
+    (r"The session has ended and .+", "systemctl is-enabled and is-active, read when the session ended"),
+    (r"Session \d+ settings|Settings", "the held session's record, else the form"),
+    (r"Core|Tuner value|Phase|Failed at", "the session record's core, value, phase and fail bound"),
+)
+
+
+def shown_facts(t: tt.TunerTab) -> list[str]:
+    labels = [label.text() for label in t.findChildren(QLabel) if label.text() and not t._settings.isAncestorOf(label)]
+    heads = [t._cores.horizontalHeaderItem(column).text() for column in range(t._cores.columnCount())]
+    return [*labels, *heads, t._settings.title()]
+
+
+@pytest.mark.req("T22.contract")
+@pytest.mark.parametrize("held", [None, "paused", "running"])
+def test_every_fact_the_tuner_tab_shows_is_listed_with_its_source(db, home, tmp_path, monkeypatch, held):
+    monkeypatch.setattr(
+        tt, "read_power_state", lambda: PowerState(None, "powersave", "balance_performance", "1", 5756.0)
+    )
+    if held is not None:
+        saved = save_machine_session(db, tmp_path, held)
+        db.insert_tuner_event(saved.session_id, "user: paused by the owner", this_boot(), "paused")
+        db.insert_tuner_test(
+            saved.session_id, this_boot(), 1, "search", "1t", "1t", saved.cores[0].core, -3, "[]", "[0]", 60.0, "{}"
+        )
+    t = tab(db)
+    with co_writer(record=held == "running"):
+        t.refresh()
+        texts = shown_facts(t)
+    assert texts
+    assert (held == "running") == any(text.startswith("Testing ") for text in texts)
+    assert [text for text in texts if not any(re.fullmatch(pattern, text) for pattern, _ in SHOWN_FACTS)] == []

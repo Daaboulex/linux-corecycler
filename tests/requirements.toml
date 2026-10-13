@@ -4896,6 +4896,11 @@ statement = "A refused start names no session: the log gives a session id only o
 proof = "built"
 
 [[requirement]]
+id = "T22.contract"
+statement = "Every text the Auto-Tuner tab shows in its live column, its core table headings and its settings title is listed in the tests with its source; a test renders the tab with no session, a paused session and a running test and fails on any text not listed (ryzen 2026-10-13: the tab showed a Start record as the current power state)."
+proof = "built"
+
+[[requirement]]
 id = "T23.contract"
 statement = "Every interactive control is listed with its action and expected reaction; a test fails on an unlisted control, a listed control that is gone, or a check that passes with its control disconnected."
 proof = "not built"
