@@ -795,3 +795,19 @@ class TestKernelLogProblem:
 def test_the_clock_seam_reads_the_clock_it_is_given(clock):
     before = time.clock_gettime_ns(clock)
     assert before <= _clock_ns(clock) <= time.clock_gettime_ns(clock)
+
+
+@pytest.mark.req("L18.d.4.poll")
+def test_the_machine_check_poll_must_be_at_most_five_seconds(tmp_path):
+    path = tmp_path / "check_interval"
+    path.write_text("5\n")
+    assert detector_mod.mce_poll_problem(path) is None
+    path.write_text("6\n")
+    assert detector_mod.mce_poll_problem(path) == (
+        f"machine-check poll every 6 s, above 5 s, so corrected errors log late: echo 5 | sudo tee {path}"
+    )
+    path.write_text("300\n")
+    assert detector_mod.mce_poll_problem(path).startswith("machine-check poll every 300 s, above 5 s")
+    path.write_text("often\n")
+    assert detector_mod.mce_poll_problem(path).startswith("machine-check poll interval unreadable: ")
+    assert detector_mod.mce_poll_problem(tmp_path / "absent").startswith("machine-check poll interval unreadable: ")

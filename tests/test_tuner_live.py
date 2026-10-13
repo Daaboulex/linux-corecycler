@@ -2139,8 +2139,10 @@ def preflight(
     unread=(),
     sched_ext=None,
     lane=None,
+    mce=None,
 ):
     monkeypatch.setattr(live_hw.kernel, "kernel_log_problem", lambda: None)
+    monkeypatch.setattr(live_hw.kernel, "mce_poll_problem", mce or (lambda: None))
     monkeypatch.setattr(live_hw, "lane_problem", lane or (lambda: None))
     monkeypatch.setattr(live_hw, "scheduling_problem", scheduling or (lambda: None))
     proc = proc_tree(tmp_path / "proc", procs or {})
@@ -2340,3 +2342,9 @@ def test_the_hardware_adapter_reads_the_power_state_under_its_cpu_root(tmp_path)
     hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, sysfs(tmp_path, 4300000, 5756452, "1"))
     state = hw.power()
     assert (state.max_mhz, state.top_mhz, state.boost) == (4300.0, 5756.452, "1")
+
+
+@pytest.mark.req("L18.d.4.poll")
+def test_a_slow_machine_check_poll_refuses_the_start(tmp_path, monkeypatch):
+    late = "machine-check poll every 300 s, above 5 s, so corrected errors log late: echo 5 | sudo tee x"
+    assert preflight(tmp_path, monkeypatch, mce=lambda: late, tools=(Tool("y-cruncher"),)) == (late, ())

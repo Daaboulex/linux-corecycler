@@ -348,6 +348,7 @@ def preflight(
     gates = (
         lambda: core_map_blocked(smu),
         kernel.kernel_log_problem,
+        kernel.mce_poll_problem,
         lane_problem,
         lambda: (
             None

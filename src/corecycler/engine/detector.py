@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 KMSG = Path("/dev/kmsg")
+MCE_POLL = Path("/sys/devices/system/machinecheck/machinecheck0/check_interval")
+MCE_POLL_MAX_S = 5
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 KMSG_READ_SIZE = 8192
 KMSG_MAX_READS = 4096
@@ -427,6 +429,19 @@ def harvest_after(
             later = _events(early)
             problems.append(problem)
     return JournalHarvest(dead_boot, later, "; ".join(filter(None, problems)) or None)
+
+
+def mce_poll_problem(path: Path = MCE_POLL) -> str | None:
+    command = f"echo {MCE_POLL_MAX_S} | sudo tee {path}"
+    try:
+        seconds = int(path.read_text().strip())
+    except (OSError, ValueError) as exc:
+        return f"machine-check poll interval unreadable: {exc}; set it: {command}"
+    if seconds > MCE_POLL_MAX_S:
+        return (
+            f"machine-check poll every {seconds} s, above {MCE_POLL_MAX_S} s, so corrected errors log late: {command}"
+        )
+    return None
 
 
 def kernel_log_problem(kmsg: Path | None = None, timeout: float = 15.0) -> str | None:
