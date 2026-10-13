@@ -314,6 +314,8 @@ class Fake:
     def check_start(self, state: SessionState, spec) -> None:
         if state.session_id in self.superseded:
             raise Broken(f"superseded session {state.session_id} ran a test")
+        if spec.stage is Stage.SOAK and state.flow.dirty:
+            raise Broken("a SOAK test started on a dirty profile, which must be proven again first")
         if state.setup != self.setup:
             raise Broken(f"a test started on the setup {self.setup}, not the session's {state.setup}")
         for core, value in spec.vector:

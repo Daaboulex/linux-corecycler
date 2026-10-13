@@ -801,6 +801,8 @@ def _continuation(s: SessionState, e: ContinuationDue, w: World) -> Transition:
 
 
 def _next(s: SessionState, w: World, picked: int | None) -> Transition:
+    if s.flow.stage is Stage.SOAK:
+        s = replace(s, flow=_past_memory(s.flow, s.config))
     stage = s.flow.stage
     if stage is Stage.FINALIZE:
         return _finalize(s, w)

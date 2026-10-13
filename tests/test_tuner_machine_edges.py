@@ -156,6 +156,19 @@ def test_a_record_about_another_core_in_live1_backs_it_off_and_requeues_it_or_co
     assert fake.state.incidents == incidents
 
 
+@pytest.mark.req("L16.G3")
+def test_evidence_in_soak_backs_the_core_off_and_sends_the_profile_through_live1_instead_of_soaking_again():
+    fake = running_fake()
+    while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
+        assert fake.progress()
+    core, value = next((core, value) for core, value in fake.worker.spec.vector if value != 0)
+    fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(core, True),)))
+    while fake.worker is None:
+        assert fake.progress()
+    assert fake.worker.spec.stage is Stage.LIVE1
+    assert {r.core: r.value for r in fake.state.cores}[core] > value
+
+
 @pytest.mark.req("C10", "D34")
 @pytest.mark.parametrize("report", [Report(Group.THERMAL, 5.0), Report(Group.APPARATUS, 1.0, detail="tool died")])
 def test_an_all_core_test_that_ends_without_a_verdict_sends_every_owned_core_back_to_baseline(report):

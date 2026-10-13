@@ -2329,9 +2329,8 @@ proof = "built"
 
 [[requirement]]
 id = "L16.G3"
-statement = "Evidence in SOAK backs the core off in place, requeues a LIVE1 slot, marks dirty, then goes to FINALIZE"
-proof = "not built"
-task = "T28"
+statement = "Evidence in SOAK backs the core off in place, marks dirty and goes to FINALIZE, whose dirty pass re-proves every core from LIVE1 (D93)"
+proof = "built"
 
 [[requirement]]
 id = "L16.G4"
