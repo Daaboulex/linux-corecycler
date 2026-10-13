@@ -121,13 +121,6 @@ class TestReadBack:
         tab._fill_from_cpu()
         assert tab._table.item(0, 2).text() == "unreadable"
 
-    def test_dry_run_toggle_propagates_to_driver(self):
-        tab = _tab()
-        tab._smu = MagicMock()
-        tab._dry_run_cb.setChecked(True)
-        assert tab._smu.dry_run is True
-        assert tab._apply_all_btn.text() == "Set all (practice)"
-
 
 class TestCoreMapRefusal:
     def test_map_error_disables_co_controls_and_reads(self, monkeypatch):

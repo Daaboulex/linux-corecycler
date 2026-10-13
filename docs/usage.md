@@ -60,9 +60,8 @@ through `ryzen_smu`. The Curve Optimizer table shows the value **Now on the CPU*
 0** act on every core, each write after a confirmation. While the tab is shown it reads
 the CPU every 5 s into Now on the CPU and the line under the Curve Shaper grid, and
 leaves the values being edited alone; **Fill from CPU** copies what is on the CPU into
-them. **Remember current values** keeps every core's value
-until the app closes and **Put remembered values back** writes them again. **Practice
-mode** logs every write without touching the CPU. **Save values to file** and **Load
+them. **Remember current values** keeps every core's value until the app closes and
+**Put remembered values back** writes them again. **Save values to file** and **Load
 values from file** use JSON, the same values History loads from a completed tuning
 session.
 

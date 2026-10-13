@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QHideEvent, QShowEvent
 from PySide6.QtWidgets import (
-    QCheckBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -38,7 +37,6 @@ if TYPE_CHECKING:
 READ_EVERY_MS = 5000  # equivalent-mutant: a period chosen for the eye, no check can tell 5 s from 5.001 s
 SET_ALL = "Set all"
 SHAPER_POINTS = ("-5 C", "50 C", "90 C")
-SET_ZERO = "Set all to 0"
 UNREADABLE = "unreadable"
 
 
@@ -128,7 +126,7 @@ class SMUTab(QWidget):
         self._apply_all_btn.clicked.connect(self._apply_all_co)
         bulk_layout.addWidget(self._apply_all_btn)
 
-        self._reset_btn = QPushButton(SET_ZERO)
+        self._reset_btn = QPushButton("Set all to 0")
         self._reset_btn.clicked.connect(self._reset_all_co)
         bulk_layout.addWidget(self._reset_btn)
 
@@ -146,11 +144,6 @@ class SMUTab(QWidget):
         self._restore_btn.clicked.connect(self._restore_co)
         self._restore_btn.setEnabled(False)
         safety_layout.addWidget(self._restore_btn)
-
-        self._dry_run_cb = QCheckBox("Practice mode (nothing is written)")
-        self._dry_run_cb.setToolTip("Every write is logged and shown, but no value reaches the CPU")
-        self._dry_run_cb.toggled.connect(self._on_dry_run_toggled)
-        safety_layout.addWidget(self._dry_run_cb)
 
         co_layout.addLayout(safety_layout)
 
@@ -224,7 +217,7 @@ class SMUTab(QWidget):
         has_co = self._commands is not None and self._commands.has_co
 
         if smu_available and has_co:
-            self._smu = RyzenSMU(self._commands, dry_run=self._dry_run_cb.isChecked())
+            self._smu = RyzenSMU(self._commands)
             self._smu.set_topology(topology)
             map_err = core_map_blocked(self._smu)
             if map_err is not None:
@@ -241,7 +234,7 @@ class SMUTab(QWidget):
                 co_min, co_max = self._commands.co_range
                 self._range_label.setText(f"Allowed values {co_min} to {co_max}")
         elif smu_available and not has_co:
-            self._smu = RyzenSMU(self._commands, dry_run=self._dry_run_cb.isChecked())
+            self._smu = RyzenSMU(self._commands)
             self._smu.set_topology(topology)
             self._status_label.setText("ryzen_smu driver connected")
             self._status_label.setStyleSheet(f"color: {theme.COLOR_ORANGE};")
@@ -288,25 +281,10 @@ class SMUTab(QWidget):
         if self._smu:
             self._fill_from_cpu()
 
-    def _on_dry_run_toggled(self, checked: bool) -> None:
-        if self._smu:
-            self._smu.dry_run = checked
-
-        dry_style = (
-            f"QPushButton {{ border: 2px dashed {theme.COLOR_ORANGE}; color: {theme.COLOR_ORANGE}; }}"
-            if checked
-            else ""
-        )
-        self._apply_all_btn.setStyleSheet(dry_style)
-        self._reset_btn.setStyleSheet(dry_style)
-        self._apply_all_btn.setText(f"{SET_ALL} (practice)" if checked else SET_ALL)
-        self._reset_btn.setText(f"{SET_ZERO} (practice)" if checked else SET_ZERO)
-
     def _confirm_write(self, what: str, detail: str) -> bool:
-        practice = " (practice mode, nothing is written)" if self._dry_run_cb.isChecked() else ""
         reply = QMessageBox.warning(
             self,
-            f"Write {what}{practice}",
+            f"Write {what}",
             f"{detail}\n\n"
             "They last until the next reboot and the BIOS settings do not change. "
             "A value that is too negative can crash the machine until it reboots.\n\n"

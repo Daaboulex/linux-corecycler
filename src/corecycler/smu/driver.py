@@ -104,7 +104,6 @@ class RyzenSMU:
     are never touched.
 
     Safety features:
-      - ``dry_run`` mode: logs intended writes without touching hardware
       - Read-back verification after every CO write
       - ``backup_co_offsets()`` / ``restore_co_offsets()`` for save/restore
       - Permission pre-check before attempting writes
@@ -114,11 +113,9 @@ class RyzenSMU:
         self,
         commands: SMUCommandSet,
         sysfs_path: Path = SYSFS_BASE,
-        dry_run: bool = False,
     ) -> None:
         self.commands = commands
         self.sysfs = sysfs_path
-        self.dry_run = dry_run
         self._smu_lock = threading.Lock()
         self._backup: dict[int, int] | None = None
         # Legacy CCD map {core_id: ccd_index} from L3 topology, used only when
@@ -521,7 +518,6 @@ class RyzenSMU:
 
         Safety:
           - Range-checked against the generation's CO limits
-          - In ``dry_run`` mode, logs the intended write without touching HW
           - Verifies via read-back that the value was applied correctly
           - Pre-checks file permissions before writing
         """
@@ -546,11 +542,6 @@ class RyzenSMU:
                 self._core_map_error or "core is not in the discovered core map",
             )
             return False
-
-        # --- dry-run guard ---
-        if self.dry_run:
-            log.info("[DRY RUN] Would set core %d CO to %d (not written)", core_id, value)
-            return True
 
         # --- permission pre-check ---
         ok, msg = self.check_writable()
@@ -598,10 +589,6 @@ class RyzenSMU:
         if self._core_map_error is not None:
             log.error("set_all_co refused: %s", self._core_map_error)
             return False
-
-        if self.dry_run:
-            log.info("[DRY RUN] Would set all cores CO to %d (not written)", value)
-            return True
 
         if self.commands.set_all_co_cmd is not None:
             margin = value & 0xFFFF
@@ -673,9 +660,6 @@ class RyzenSMU:
             len(band) != 3 or not all(low <= margin <= high for margin in band) for band in bands
         ):
             raise ValueError(f"a Curve Shaper is five bands of three margins within {low}..{high}, not {bands}")
-        if self.dry_run:
-            log.info("[DRY RUN] Would set the Curve Shaper to %s (not written)", bands)
-            return None
         ok, msg = self.check_writable()
         if not ok:
             return msg
@@ -710,9 +694,6 @@ class RyzenSMU:
         cmd = self.commands.set_boost_limit_cmd
         if cmd is None:
             return False
-        if self.dry_run:
-            log.info("[DRY RUN] Would set boost limit to %d MHz (not written)", mhz)
-            return True
         resp = self._send_rsmu_command(cmd, (encode_boost_limit_arg(mhz),))
         return resp.success
 
@@ -729,9 +710,6 @@ class RyzenSMU:
         if cmd is None:
             return False
         _check_pbo_limit("PPT", watts)
-        if self.dry_run:
-            log.info("[DRY RUN] Would set PPT limit to %d W", watts)
-            return True
         resp = self._send_rsmu_command(cmd, (encode_pbo_limit_arg(watts),))
         return resp.success
 
@@ -744,9 +722,6 @@ class RyzenSMU:
         if cmd is None:
             return False
         _check_pbo_limit("TDC", amps)
-        if self.dry_run:
-            log.info("[DRY RUN] Would set TDC limit to %d A", amps)
-            return True
         resp = self._send_rsmu_command(cmd, (encode_pbo_limit_arg(amps),))
         return resp.success
 
@@ -759,9 +734,6 @@ class RyzenSMU:
         if cmd is None:
             return False
         _check_pbo_limit("EDC", amps)
-        if self.dry_run:
-            log.info("[DRY RUN] Would set EDC limit to %d A", amps)
-            return True
         resp = self._send_rsmu_command(cmd, (encode_pbo_limit_arg(amps),))
         return resp.success
 
@@ -788,9 +760,6 @@ class RyzenSMU:
             return False
         if not 0.0 <= scalar <= 10.0:
             raise ValueError(f"PBO scalar {scalar} out of range [0.0, 10.0]")
-        if self.dry_run:
-            log.info("[DRY RUN] Would set PBO scalar to %.1f", scalar)
-            return True
         resp = self._send_rsmu_command(cmd, (encode_pbo_scalar_arg(scalar),))
         return resp.success
 

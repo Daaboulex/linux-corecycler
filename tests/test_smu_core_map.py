@@ -262,10 +262,12 @@ class TestFuseFailClosed:
         assert "CCD 1" in smu.core_map_error
         assert reads == [_fuse_addr(CEZANNE, 0)]
 
-    def test_dry_run_refuses_an_unaddressable_write(self):
-        smu, _silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: set(range(8))}, dry_run=True)
+    def test_an_unaddressable_write_is_refused(self):
+        smu, silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: set(range(8))})
+        silicon.writes.clear()
         assert smu.set_co_offset(0, -5) is False
         assert smu.reset_all_co() is False
+        assert silicon.writes == []
 
     def test_unknown_core_id_refuses_instead_of_guessing(self):
         smu, silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: REPORTED_5600X_LIVE_SLOTS})
