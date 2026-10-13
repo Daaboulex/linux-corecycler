@@ -54,14 +54,21 @@ per-step reboots.
 
 ## Curve-Tuner tab
 
-Reads and writes each core's Curve Optimizer value at runtime through `ryzen_smu`. The
-table shows the value **Now on the CPU** and a **Value to set** per core, with a **Set**
+Reads and writes each core's Curve Optimizer value and the Curve Shaper at runtime
+through `ryzen_smu`. The Curve Optimizer table shows the value **Now on the CPU** and a **Value to set** per core, with a **Set**
 button per core; **Read from CPU**, **Set all** and **Set all to 0** act on every core,
 each write after a confirmation. **Remember current values** keeps every core's value
 until the app closes and **Put remembered values back** writes them again. **Practice
 mode** logs every write without touching the CPU. **Save values to file** and **Load
 values from file** use JSON, the same values History loads from a completed tuning
 session.
+
+The **Curve Shaper** grid holds the margin of each of its five frequency bands, Min to
+Max, at -5 C, 50 C and 90 C, read from the CPU, with the read or its reason below it.
+**Write Shaper** writes the grid and **Shaper to 0** writes every margin 0, each after a
+confirmation, and both read it back. The Curve Shaper applies to every core and stacks
+on each core's Curve Optimizer value; only Ryzen 9000 (Granite Ridge) has it here.
+`corecycler shaper` prints it and `corecycler shaper --set` writes it from a terminal.
 
 All values written here are **volatile** and reset on reboot; set them in BIOS to make
 them permanent. For Zen 2 the tab says "This CPU generation has no Curve Optimizer".

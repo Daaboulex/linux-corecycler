@@ -24,7 +24,7 @@ Please do **not** open public issues for security problems.
 
 ### Hardware Write Surface
 
-The one hardware setting the tool changes is the per-core **Curve Optimizer offset** (negative = undervolt, positive = overvolt), sent to the AMD SMU (System Management Unit) through `/sys/kernel/ryzen_smu_drv/`. The writers are the Curve-Tuner tab, the Auto-Tuner (its tab or `corecycler tune`) and the developer rig `python -m corecycler.tuner.live_hw --write`.
+The tool changes two hardware settings, both sent to the AMD SMU (System Management Unit) through `/sys/kernel/ryzen_smu_drv/`: the per-core **Curve Optimizer offset** and, on Ryzen 9000, the **Curve Shaper**, a margin for each of five frequency bands at three temperatures that applies to every core on top of its offset (negative = undervolt, positive = overvolt, for both). The Curve Optimizer writers are the Curve-Tuner tab, the Auto-Tuner (its tab or `corecycler tune`) and the developer rig `python -m corecycler.tuner.live_hw --write`. The Curve Shaper writers are the Curve-Tuner tab and `corecycler shaper --set`; both refuse while a tuning session runs.
 
 The SMU driver (`src/corecycler/smu/driver.py`) also has setters for the PPT, TDC and EDC limits, the boost limit and the PBO scalar. No GUI or CLI path calls them. There is no OC-mode write.
 
@@ -32,8 +32,8 @@ All writes are volatile (reset on reboot) but can cause immediate instability, c
 
 ### Hardware Damage Risk
 
-- **Positive CO offsets increase CPU voltage.** On V-Cache processors (5800X3D, 7800X3D, 9800X3D, 9950X3D), positive offsets can degrade or permanently damage the 3D V-Cache die under thermal load.
-- **The application enforces a fixed CO range per CPU generation, not a "safe" range.** The range comes from a static table in `src/corecycler/smu/commands.py`, not from the hardware (e.g., -30 to +30 for Zen 3).
+- **Positive CO offsets and Curve Shaper margins increase CPU voltage.** On V-Cache processors (5800X3D, 7800X3D, 9800X3D, 9950X3D), positive offsets can degrade or permanently damage the 3D V-Cache die under thermal load.
+- **The application enforces a fixed CO range per CPU generation, not a "safe" range.** The range comes from a static table in `src/corecycler/smu/commands.py`, not from the hardware (e.g., -30 to +30 for Zen 3). Every Curve Shaper margin is held to -50 to +30 (`SHAPER_MARGINS` in `src/corecycler/smu/driver.py`), also not a safe range.
 - **The Auto-Tuner amplifies risk** by iteratively modifying offsets during extended stress tests.
 
 ### MSR Read Surface
