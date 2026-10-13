@@ -12,7 +12,7 @@ class Attribution:
     held: int | None = None
     incident: bool = False
     flow_crash: bool = False
-    stale_fail: tuple[int, ...] = ()
+    lost: int | None = None
     evidence: tuple[Evidence, ...] = ()
     at_stock: bool = False
 
@@ -46,13 +46,13 @@ def attribute(s: SessionState, e: CrashEvidenceRead) -> Attribution:
     in_test = tuple(r.core for r in s.cores if r.in_test)
     owned = {r.core for r in s.cores}
     if e.same_boot:
-        return Attribution(stale_fail=in_test if e.stale_db else (), evidence=e.evidence)
+        return Attribution(lost=in_test[0] if e.stale_db and in_test else None, evidence=e.evidence)
     if e.other_session_wrote:
         return Attribution()
     if not e.dirty_end:
         return Attribution(evidence=e.evidence)
     if e.stale_db:
-        return Attribution(stale_fail=in_test, incident=True, evidence=e.evidence, at_stock=True)
+        return Attribution(lost=in_test[0] if in_test else None, incident=True, evidence=e.evidence, at_stock=True)
     corrected = tuple(ev for ev in e.evidence if ev.corrected)
     uncorrected = [ev for ev in e.evidence if not ev.corrected]
     for ev in uncorrected:

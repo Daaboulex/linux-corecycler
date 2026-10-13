@@ -152,7 +152,7 @@ LIVE = held(Flow(Stage.LIVE1, live1=Live1()), (replace(proven(0, -5), in_test=Tr
 @pytest.mark.parametrize(
     ("state", "event", "expected"),
     [
-        (SEARCHING, evidence_read(same_boot=True, dirty_end=False, stale_db=True), {"stale_fail": (0,)}),
+        (SEARCHING, evidence_read(same_boot=True, dirty_end=False, stale_db=True), {"lost": 0}),
         (SEARCHING, evidence_read(other_session_wrote=True), {}),
         (SEARCHING, evidence_read(dirty_end=False, evidence=(Evidence(1, True),)), {"evidence": (Evidence(1, True),)}),
         (SEARCHING, evidence_read(evidence=(Evidence(7, False),)), {"held": 7}),
@@ -166,7 +166,7 @@ LIVE = held(Flow(Stage.LIVE1, live1=Live1()), (replace(proven(0, -5), in_test=Tr
         ),
         (LIVE, evidence_read(), {"flow_crash": True}),
         (replace(LIVE, cores=(proven(0, -5), proven(1, -3), proven(2, 0))), evidence_read(), {"incident": True}),
-        (LIVE, evidence_read(stale_db=True), {"stale_fail": (0,), "incident": True, "at_stock": True}),
+        (LIVE, evidence_read(stale_db=True), {"lost": 0, "incident": True, "at_stock": True}),
     ],
 )
 @pytest.mark.req(

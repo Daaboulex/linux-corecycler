@@ -209,6 +209,23 @@ def test_a_core_given_a_start_tests_it_first_and_a_failed_start_walks_again_from
     assert {r.core: r.value for r in fake.state.cores} == {0: -12, 1: -6}
 
 
+@pytest.mark.req("L18.d.4.3a")
+@pytest.mark.parametrize("stage", [Stage.STEADY, Stage.TRANSIENT])
+def test_the_lost_verdict_of_an_all_core_test_is_one_fail_of_that_test(stage):
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, k_1t=1, k_2t=1, wait_between_cores_s=0.0, transient_window_s=2.0)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not stage:
+        assert fake.progress()
+    before = sum(delta for _, delta in fake.state.flow.allcore.co_delta)
+    fake.faults.fail_commits = 1
+    fake.deliver()
+    assert fake.state.pause.reason is PauseReason.DATABASE
+    fake.crash()
+    fake.post(Resume(1))
+    assert fake.state.lifecycle is Lifecycle.RUNNING
+    assert sum(delta for _, delta in fake.state.flow.allcore.co_delta) == before + 1
+
+
 @pytest.mark.req("C10", "D34")
 @pytest.mark.parametrize("report", [Report(Group.THERMAL, 5.0), Report(Group.APPARATUS, 1.0, detail="tool died")])
 def test_an_all_core_test_that_ends_without_a_verdict_sends_every_owned_core_back_to_baseline(report):

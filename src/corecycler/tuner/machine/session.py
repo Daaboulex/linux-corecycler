@@ -514,10 +514,10 @@ def _ending(w: World) -> str:
 def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
     verdict = attribute(s, e)
     after = s
-    for core in verdict.stale_fail:
-        after, stock = _stale_fail(after, core, w)
+    if verdict.lost is not None:
+        after, stock = _stale_fail(after, verdict.lost, w)
         if stock is not None:
-            return _enter_pause(_clear_in_test(after), PauseReason.STOCK_UNSTABLE, stock, (core,))
+            return _enter_pause(_clear_in_test(after), PauseReason.STOCK_UNSTABLE, stock, (verdict.lost,))
     for core in verdict.convict:
         after, at_stock = _convict(after, core)
         if at_stock:
