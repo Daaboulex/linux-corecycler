@@ -77,6 +77,7 @@ class TestTunerLock:
         tab._smu.is_available.return_value = True
         tab._smu.has_backup.return_value = False
         tab._smu.get_co_offset.return_value = -7
+        tab._smu.commands.get_curve_shaper_cmd = None
         tab.set_tuner_running(True)
         assert tab._table.item(0, 2).text() == "--"
         tab.set_tuner_running(False)
@@ -105,6 +106,7 @@ class TestReadBack:
         tab = _tab()
         tab._smu = MagicMock()
         tab._smu.get_co_offset.return_value = None
+        tab._smu.commands.get_curve_shaper_cmd = None
         tab._read_all_co()
         assert tab._table.item(0, 2).text() == "unreadable"
 

@@ -53,6 +53,17 @@ if TYPE_CHECKING:
 
 
 VIEW_LABELS = {"grouped": "Stress tests by setup", "all": "All stress tests", "tuner": "Tuning sessions"}
+SETUP_LABELS = {
+    "app": "App",
+    "bios": "BIOS",
+    "curve_shaper": "Curve Shaper",
+    "kernel": "Kernel",
+    "microcode": "Microcode",
+    "pbo": "PBO limits",
+    "ryzen_smu": "ryzen_smu driver",
+    "smu_firmware": "SMU firmware",
+    "topology": "Topology",
+}
 ORIGINS = {"continue": "continued from", "restart": "started over from"}
 
 
@@ -858,7 +869,8 @@ class HistoryTab(QWidget):
             for column, text in enumerate(texts):
                 self._core_results_table.setItem(row, column, _item(text, Qt.AlignmentFlag.AlignCenter))
         self._auto_size_core_results_table()
-        lines = ["-- Settings --", *settings_lines(cfg), "", "-- Tests --"]
+        setup = [f"  {SETUP_LABELS.get(key, key)}: {value}" for key, value in saved.setup]
+        lines = ["-- Settings --", *settings_lines(cfg), "", "-- Setup --", *setup, "", "-- Tests --"]
         lines += [
             f"  {format_local(test['started_at'])}  core {test['core']}, {stage_label(test['stage'])}, "
             f"{THREADS.get(test['klass'], test['klass'])}, at {test['value']}: "

@@ -46,6 +46,8 @@ def _smu(**kw):
     smu.has_backup.return_value = kw.get("has_backup", True)
     smu.backup_co_offsets.return_value = kw.get("backup", {0: -10, 1: -5})
     smu.restore_co_offsets.return_value = kw.get("restore", (True, []))
+    smu.commands.get_curve_shaper_cmd = kw.get("shaper_cmd", 0x84)
+    smu.get_curve_shaper.return_value = kw.get("shaper", ((0, 0, 0), (-30, -27, -12), (0, 0, 0), (0, 0, 0), (0, 0, 0)))
     return smu
 
 
@@ -58,6 +60,25 @@ class TestReadAllCo:
         tab._smu = _smu(get=-20)
         tab._read_all_co()
         assert tab._spinboxes[0].value() == -20
+
+    @pytest.mark.req("S0.view")
+    @pytest.mark.parametrize(
+        ("shaper_cmd", "shaper", "shown"),
+        [
+            (
+                0x84,
+                ((0, 0, 0), (-30, -27, -12), (0, 0, 0), (0, 0, 0), (0, 0, 0)),
+                "Min 0/0/0, Low -30/-27/-12, Medium 0/0/0",
+            ),
+            (0x84, None, "unreadable: the SMU refused the read or its band check failed"),
+            (None, None, "none on this generation"),
+        ],
+    )
+    def test_read_from_cpu_shows_the_curve_shaper_now_on_the_cpu(self, tab, shaper_cmd, shaper, shown):
+        assert tab._shaper_label.text().startswith("Not read yet")
+        tab._smu = _smu(shaper_cmd=shaper_cmd, shaper=shaper)
+        tab._read_all_co()
+        assert shown in tab._shaper_label.text()
 
     def test_retries_then_succeeds(self, tab):
         smu = _smu()

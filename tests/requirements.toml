@@ -4769,3 +4769,8 @@ proof = "built"
 id = "T25.start"
 statement = "A core given a start in the configuration is first tested at it and walks on from there; a failed start walks again from 0 with it as the fail bound (D20); a start on an unselected core, a second start for a core, or one outside max_offset..-1 refuses Start; the settings list names every start."
 proof = "built"
+
+[[requirement]]
+id = "S0.view"
+statement = "The Curve Optimizer tab shows the Curve Shaper now on the CPU, read with Read from CPU, or why it cannot; History shows each tuning session's recorded setup, the Curve Shaper included (owner 2026-10-13: the Shaper has no screen until it is built)."
+proof = "built"

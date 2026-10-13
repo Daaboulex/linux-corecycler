@@ -28,6 +28,7 @@ from corecycler.gui.style import theme
 from corecycler.smu.commands import CPUGeneration, SMUCommandSet, detect_generation, get_commands
 from corecycler.smu.driver import RyzenSMU, core_map_blocked
 from corecycler.smu.writer_lock import WriterBusy, co_writer
+from corecycler.tuner.live_hw import shaper_fact
 
 if TYPE_CHECKING:
     from corecycler.engine.topology import CPUTopology
@@ -160,6 +161,18 @@ class SMUTab(QWidget):
 
         layout.addWidget(co_group)
 
+        shaper_group = QGroupBox("Curve Shaper now on the CPU, read only")
+        shaper_layout = QVBoxLayout(shaper_group)
+        self._shaper_label = QLabel("Not read yet: Read from CPU reads it")
+        self._shaper_label.setFont(QFont("monospace", 9))  # equivalent-mutant: style only, layout checks come with T23
+        self._shaper_label.setWordWrap(True)  # equivalent-mutant: style only, layout checks come with T23
+        self._shaper_label.setToolTip(
+            "Each band's margins at -5 C, 50 C and 90 C as the CPU runs them now; "
+            "a Shaper set at runtime differs from the BIOS until the next reboot"
+        )
+        shaper_layout.addWidget(self._shaper_label)
+        layout.addWidget(shaper_group)
+
         self._spinboxes: dict[int, QSpinBox] = {}
 
     def set_topology(self, topology: CPUTopology) -> None:
@@ -282,6 +295,7 @@ class SMUTab(QWidget):
             self._table.setItem(row, 2, _item(text))
             if val is not None and core_id in self._spinboxes:
                 self._spinboxes[core_id].setValue(val)
+        self._shaper_label.setText(shaper_fact(self._smu))
 
     def _refresh_writes(self) -> None:
         can_write = (

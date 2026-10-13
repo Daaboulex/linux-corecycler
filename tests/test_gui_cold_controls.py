@@ -48,6 +48,7 @@ def _topo() -> CPUTopology:
 
 def _available_smu() -> MagicMock:
     smu = MagicMock()
+    smu.commands.get_curve_shaper_cmd = None
     smu.get_co_offset.return_value = 0
     smu.reset_all_co.return_value = True
     smu.set_co_offset.return_value = True

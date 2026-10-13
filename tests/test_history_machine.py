@@ -109,6 +109,16 @@ def test_the_detail_shows_cores_tests_events_and_boots(db, tmp_path):
     assert not tab._load_co_btn.isEnabled()
 
 
+@pytest.mark.req("S0.view")
+def test_the_detail_shows_the_setup_the_session_recorded_its_curve_shaper_included(db, tmp_path):
+    saved = save_machine_session(db, tmp_path, "paused")
+    shaper = "Min 0/0/0, Low 0/0/0, Medium 0/0/0, High 0/0/0, Max 0/0/0"
+    recorded = replace(saved, setup=(("bios", "A"), ("curve_shaper", shaper), ("future_key", "kept")))
+    Store(db, tmp_path / "state", Identity("bios-1", "cpu-1", None)).save(recorded, this_boot())
+    text = tuner_view(db)._events_log.toPlainText()
+    assert f"-- Setup --\n  BIOS: A\n  Curve Shaper: {shaper}\n  future_key: kept\n" in text
+
+
 def test_a_completed_session_loads_its_values_into_the_co_tab(db, tmp_path):
     saved = save_machine_session(db, tmp_path, "completed")
     tab = tuner_view(db)
