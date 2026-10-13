@@ -238,8 +238,8 @@ class HistoryTab(QWidget):
         self._tuner_actions_row = QWidget()
         tuner_actions_layout = QHBoxLayout(self._tuner_actions_row)
         tuner_actions_layout.setContentsMargins(0, 0, 0, 0)
-        self._load_co_btn = QPushButton("Load these values into Curve Optimizer")
-        self._load_co_btn.setToolTip("Fills the Curve Optimizer tab's Value to set column; nothing is written")
+        self._load_co_btn = QPushButton("Load these values into Curve-Tuner")
+        self._load_co_btn.setToolTip("Fills the Curve-Tuner tab's Value to set column; nothing is written")
         self._load_co_btn.clicked.connect(self._on_load_co_profile)
         tuner_actions_layout.addWidget(self._load_co_btn)
         tuner_actions_layout.addStretch()
@@ -918,7 +918,7 @@ class HistoryTab(QWidget):
 
     @Slot()
     def _on_load_co_profile(self) -> None:
-        """Load the selected tuner session's best CO offsets into the CO tab."""
+        """Load the selected tuner session's best CO offsets into the Curve-Tuner tab."""
         if not self._db or self._selected_tuner_session is None:
             return
         saved = read_stored(self._db, self._selected_tuner_session.id)

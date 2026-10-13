@@ -228,7 +228,7 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._monitor_tab, "Monitor")
 
         self._smu_tab = SMUTab(self._topology)
-        self._tabs.addTab(self._smu_tab, "Curve Optimizer")
+        self._tabs.addTab(self._smu_tab, "Curve-Tuner")
 
         smu = self._smu_tab.smu
         writable = smu is not None and smu.commands.has_co and core_map_blocked(smu) is None
@@ -718,7 +718,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_load_co_profile(self, profile) -> None:
-        """Load CO profile from history into Curve Optimizer tab."""
+        """Load CO profile from history into the Curve-Tuner tab."""
         self._smu_tab.set_co_profile(profile)
         self._tabs.setCurrentWidget(self._smu_tab)
 

@@ -10,6 +10,8 @@ import pytest
 if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
+from PySide6.QtWidgets import QLabel
+
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 
 
@@ -270,8 +272,8 @@ class TestCurveShaper:
         tab._smu = _smu(shaper=LOW_ONLY)
         tab._read_all_co()
         assert _shown_shaper(tab) == LOW_ONLY
-        assert tab._shaper_table.verticalHeaderItem(1).text() == "Low"
-        assert [tab._shaper_table.horizontalHeaderItem(c).text() for c in range(3)] == ["-5 C", "50 C", "90 C"]
+        labels = [label.text() for label in tab._shaper_group.findChildren(QLabel)]
+        assert {"-5 C", "50 C", "90 C", "Min", "Low", "Medium", "High", "Max"} <= set(labels)
 
     @pytest.mark.req("S1.gui")
     def test_write_shaper_writes_the_table_and_reads_it_back(self, tab):
@@ -333,3 +335,39 @@ class TestCurveShaper:
         tab._smu = None
         tab._zero_shaper()
         assert "The ryzen_smu driver is not available." in str(st.QMessageBox.warning.call_args)
+
+
+@pytest.mark.req("S1.gui")
+def test_the_shaper_keeps_its_natural_height_and_the_co_table_takes_the_rest(tab):
+    from PySide6.QtWidgets import QApplication
+
+    tab.resize(960, 1400)
+    tab.show()
+    QApplication.processEvents()
+    assert tab._shaper_group.height() == tab._shaper_group.sizeHint().height()
+    assert tab._table.height() > tab._shaper_group.height()
+
+
+@pytest.mark.req("S1.gui")
+def test_each_shaper_box_sits_under_its_temperature_and_beside_its_band_and_the_value_columns_get_the_width(tab):
+    from PySide6.QtWidgets import QApplication
+
+    tab.resize(960, 1400)
+    tab.show()
+    QApplication.processEvents()
+    labels = {label.text(): label for label in tab._shaper_group.findChildren(QLabel)}
+
+    def centre(widget):
+        return widget.mapTo(tab, widget.rect().center())
+
+    for row, band in enumerate(("Min", "Low", "Medium", "High", "Max")):
+        for column, point in enumerate(("-5 C", "50 C", "90 C")):
+            spin = tab._shaper_spins[row][column]
+            assert abs(centre(spin).x() - centre(labels[point]).x()) <= 2
+            assert abs(centre(spin).y() - centre(labels[band]).y()) <= 2
+            assert centre(labels[band]).x() < centre(spin).x()
+            assert centre(labels[point]).y() < centre(tab._shaper_spins[0][column]).y()
+    right = tab._shaper_spins[0][2].mapTo(tab, tab._shaper_spins[0][2].rect().topRight()).x()
+    assert right < tab.width() / 2
+    widths = [tab._table.columnWidth(column) for column in range(5)]
+    assert min(widths[2], widths[3]) > 2 * max(widths[0], widths[1], widths[4])

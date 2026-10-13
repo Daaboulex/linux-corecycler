@@ -24,7 +24,7 @@ Please do **not** open public issues for security problems.
 
 ### Hardware Write Surface
 
-The one hardware setting the tool changes is the per-core **Curve Optimizer offset** (negative = undervolt, positive = overvolt), sent to the AMD SMU (System Management Unit) through `/sys/kernel/ryzen_smu_drv/`. The writers are the Curve Optimizer tab, the Auto-Tuner (its tab or `corecycler tune`) and the developer rig `python -m corecycler.tuner.live_hw --write`.
+The one hardware setting the tool changes is the per-core **Curve Optimizer offset** (negative = undervolt, positive = overvolt), sent to the AMD SMU (System Management Unit) through `/sys/kernel/ryzen_smu_drv/`. The writers are the Curve-Tuner tab, the Auto-Tuner (its tab or `corecycler tune`) and the developer rig `python -m corecycler.tuner.live_hw --write`.
 
 The SMU driver (`src/corecycler/smu/driver.py`) also has setters for the PPT, TDC and EDC limits, the boost limit and the PBO scalar. No GUI or CLI path calls them. There is no OC-mode write.
 

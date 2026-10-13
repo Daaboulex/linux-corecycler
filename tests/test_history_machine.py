@@ -119,7 +119,7 @@ def test_the_detail_shows_the_setup_the_session_recorded_its_curve_shaper_includ
     assert f"-- Setup --\n  BIOS: A\n  Curve Shaper: {shaper}\n  future_key: kept\n" in text
 
 
-def test_a_completed_session_loads_its_values_into_the_co_tab(db, tmp_path):
+def test_a_completed_session_loads_its_values_into_the_curve_tuner(db, tmp_path):
     saved = save_machine_session(db, tmp_path, "completed")
     tab = tuner_view(db)
     assert tab._load_co_btn.isEnabled()

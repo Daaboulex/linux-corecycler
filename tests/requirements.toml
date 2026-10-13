@@ -4152,7 +4152,7 @@ proof = "built"
 
 [[requirement]]
 id = "D87"
-statement = "The CO tab may write while a session is paused with no driver; the next resume pauses OUTSIDE_WRITE naming the core"
+statement = "The Curve-Tuner tab may write while a session is paused with no driver; the next resume pauses OUTSIDE_WRITE naming the core"
 proof = "built"
 
 [[requirement]]
@@ -4595,7 +4595,7 @@ proof = "built"
 
 [[requirement]]
 id = "UI2"
-statement = "The Curve Optimizer tab uses plain texts, no visible code names, and names a profile's source in its banner"
+statement = "The Curve-Tuner tab uses plain texts, no visible code names, and names a profile's source in its banner"
 proof = "built"
 
 [[requirement]]
@@ -4635,7 +4635,7 @@ proof = "built"
 
 [[requirement]]
 id = "E6.B1"
-statement = "co_writer holds the lock with a pid and start-time record; running_driver never takes it; the CO tab takes it around each write and refuses while a driver holds it, controls staying locked"
+statement = "co_writer holds the lock with a pid and start-time record; running_driver never takes it; the Curve-Tuner tab takes it around each write and refuses while a driver holds it, controls staying locked"
 proof = "built"
 
 [[requirement]]
@@ -4777,17 +4777,17 @@ proof = "built"
 
 [[requirement]]
 id = "S0.view"
-statement = "The Curve Optimizer tab shows the Curve Shaper now on the CPU, read with Read from CPU, or why it cannot; History shows each tuning session's recorded setup, the Curve Shaper included (owner 2026-10-13: the Shaper has no screen until it is built)."
+statement = "The Curve-Tuner tab shows the Curve Shaper now on the CPU, read with Read from CPU, or why it cannot; History shows each tuning session's recorded setup, the Curve Shaper included (owner 2026-10-13: the Shaper has no screen until it is built)."
 proof = "built"
 
 [[requirement]]
 id = "S1.gui"
-statement = "The Curve Optimizer tab shows the Curve Shaper as a table of five bands by three temperatures read from the CPU; Write Shaper and Shaper to 0 write it at runtime after a confirmation and read it back, a refused write is said, and the table is locked while a tuning session runs (owner card 2026-10-13)."
+statement = "The Curve-Tuner tab shows the Curve Shaper as a table of five bands by three temperatures read from the CPU; Write Shaper and Shaper to 0 write it at runtime after a confirmation and read it back, a refused write is said, and the table is locked while a tuning session runs (owner card 2026-10-13)."
 proof = "built"
 
 [[requirement]]
 id = "T22.F1"
-statement = "The CO tab's Now on the CPU column and the core grid show each core's CO read from the CPU, never the session's working value."
+statement = "The Curve-Tuner tab's Now on the CPU column and the core grid show each core's CO read from the CPU, never the session's working value."
 proof = "built"
 
 [[requirement]]

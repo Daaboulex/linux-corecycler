@@ -211,7 +211,7 @@ None are required for basic stress testing; each unlocks more functionality.
 | Module | Type | Purpose | Required for |
 |---|---|---|---|
 | `msr` | In-tree | `/dev/cpu/N/msr` for APERF/MPERF and per-core RAPL (root only) | Clock stretch, per-core power |
-| [`ryzen_smu`](https://github.com/amkillam/ryzen_smu) (amkillam fork) | Out-of-tree | SMU sysfs for CO read/write, PBO limit reads, PM table | Curve Optimizer tab, Auto-Tuner |
+| [`ryzen_smu`](https://github.com/amkillam/ryzen_smu) (amkillam fork) | Out-of-tree | SMU sysfs for CO read/write, PBO limit reads, PM table | Curve-Tuner tab, Auto-Tuner |
 | `zenpower` ([zenpower5](https://github.com/mattkeenan/zenpower5)) | Out-of-tree | Richer AMD hwmon than k10temp: SVI2 voltage and current (Zen 1-4), RAPL power | Better voltage/power monitoring |
 | `nct6683` / `nct6775` | In-tree | Nuvoton Super I/O (Vcore via label scan): NCT6683/6686/6687 on modern MSI boards, NCT6775-NCT6799 on ASUS, MSI and ASRock boards | Motherboard Vcore |
 | [`it87`](https://github.com/frankcrawford/it87) (frankcrawford fork) | Out-of-tree | ITE Super I/O, common on Gigabyte boards | Motherboard Vcore |
@@ -283,7 +283,7 @@ without asking.
 
 ## ryzen_smu kernel module
 
-Required for the Curve Optimizer tab and Auto-Tuner; not for stress testing. The
+Required for the Curve-Tuner tab and Auto-Tuner; not for stress testing. The
 [amkillam fork](https://github.com/amkillam/ryzen_smu) supports Zen 1 through Zen 5. On
 NixOS the module handles it when `ryzenSmu = true` (default). On other distros:
 

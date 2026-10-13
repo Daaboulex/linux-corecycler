@@ -1,4 +1,4 @@
-"""Curve Optimizer tab: reads and writes each core's Curve Optimizer value through ryzen_smu."""
+"""Curve-Tuner tab: reads and writes each core's Curve Optimizer value and the Curve Shaper through ryzen_smu."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -98,6 +99,8 @@ class SMUTab(QWidget):
         self._table.setHorizontalHeaderLabels(["Core", "CCD", "Now on the CPU", "Value to set", ""])
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        for column in (0, 1, 4):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         self._table.setAlternatingRowColors(True)
         self._table.verticalHeader().setVisible(False)
         co_layout.addWidget(self._table)
@@ -160,25 +163,26 @@ class SMUTab(QWidget):
         warn.setStyleSheet(f"color: {theme.COLOR_ORANGE}; padding: 8px;")
         co_layout.addWidget(warn)
 
-        layout.addWidget(co_group)
+        layout.addWidget(co_group, 1)  # equivalent-mutant: the only stretching item, any factor fills
 
-        shaper_group = QGroupBox("Curve Shaper")
-        shaper_layout = QVBoxLayout(shaper_group)
-        self._shaper_table = QTableWidget(len(SHAPER_BAND_NAMES), len(SHAPER_POINTS))
-        self._shaper_table.setHorizontalHeaderLabels(list(SHAPER_POINTS))
-        self._shaper_table.setVerticalHeaderLabels(list(SHAPER_BAND_NAMES))
-        self._shaper_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._shaper_group = QGroupBox("Curve Shaper")
+        shaper_layout = QVBoxLayout(self._shaper_group)
+        grid = QGridLayout()
+        for column, point in enumerate(SHAPER_POINTS, start=1):
+            grid.addWidget(QLabel(point), 0, column, Qt.AlignmentFlag.AlignCenter)
         low, high = SHAPER_MARGINS
         self._shaper_spins: list[list[QSpinBox]] = []
-        for row in range(len(SHAPER_BAND_NAMES)):
+        for row, band in enumerate(SHAPER_BAND_NAMES, start=1):  # equivalent-mutant: an empty grid row takes no height
+            grid.addWidget(QLabel(band), row, 0)
             spins = []
-            for column in range(len(SHAPER_POINTS)):
+            for column in range(1, len(SHAPER_POINTS) + 1):
                 spin = QSpinBox()
                 spin.setRange(low, high)
-                self._shaper_table.setCellWidget(row, column, spin)
+                grid.addWidget(spin, row, column)
                 spins.append(spin)
             self._shaper_spins.append(spins)
-        shaper_layout.addWidget(self._shaper_table)
+        grid.setColumnStretch(len(SHAPER_POINTS) + 1, 1)  # equivalent-mutant: any empty right column keeps it compact
+        shaper_layout.addLayout(grid)
         self._shaper_label = QLabel("Not read yet: Read from CPU reads it")
         self._shaper_label.setToolTip(
             "Each band's margins at -5 C, 50 C and 90 C as the CPU runs them now; "
@@ -193,7 +197,7 @@ class SMUTab(QWidget):
         self._shaper_zero_btn.clicked.connect(self._zero_shaper)
         shaper_buttons.addWidget(self._shaper_zero_btn)
         shaper_layout.addLayout(shaper_buttons)
-        layout.addWidget(shaper_group)
+        layout.addWidget(self._shaper_group)
 
         self._spinboxes: dict[int, QSpinBox] = {}
 

@@ -1,8 +1,8 @@
-"""Remaining display and lifecycle edges of the Memory, Monitor and CO tabs.
+"""Remaining display and lifecycle edges of the Memory, Monitor and Curve-Tuner tabs.
 
 These are the branches a developer box never takes on its own: populated DIMM
 tables, an SPD hwmon that answers, a missing thermal sensor, a topology-less
-Curve Optimizer tab, and the memory stress lifecycle (driven with a stand-in
+Curve-Tuner tab, and the memory stress lifecycle (driven with a stand-in
 worker so no stress binary is ever launched).
 """
 

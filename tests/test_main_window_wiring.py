@@ -519,11 +519,11 @@ class TestTunerAndMemoryBridges:
         window._on_memory_stress_done(False)
         assert not window._start_btn.isEnabled()
 
-    def test_a_loaded_profile_switches_to_the_curve_optimizer(self, window):
+    def test_a_loaded_profile_switches_to_the_curve_tuner(self, window):
         window._on_load_co_profile({0: -30})
         assert window._tabs.currentWidget() is window._smu_tab
 
-    def test_opening_the_curve_optimizer_rereads_the_offsets(self, window):
+    def test_opening_the_curve_tuner_rereads_the_offsets(self, window):
         window._smu_tab._read_all_co = MagicMock()
         window._on_tab_changed(window._tabs.indexOf(window._smu_tab))
         assert window._smu_tab._read_all_co.called

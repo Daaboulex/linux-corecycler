@@ -52,7 +52,7 @@ The manual workflow for tuning AMD PBO Curve Optimizer:
 The **Auto-Tuner** (below) automates this whole loop via runtime SMU writes, with no
 per-step reboots.
 
-## Curve Optimizer tab
+## Curve-Tuner tab
 
 Reads and writes each core's Curve Optimizer value at runtime through `ryzen_smu`. The
 table shows the value **Now on the CPU** and a **Value to set** per core, with a **Set**
@@ -164,7 +164,7 @@ Hard crashes are expected during CO tuning; that is how each core's limit is fou
   setup) or **Restart** (start over with the same settings).
 - **Outside writes**: at resume and at the start of each stage every core's CO is read
   back. A value the session did not write pauses it, and so does a CO that cannot be read.
-- **One writer**: the driver holds a lock for its whole run and the Curve Optimizer tab
+- **One writer**: the driver holds a lock for its whole run and the Curve-Tuner tab
   takes it for each write, so the two never write at once.
 - **Temperature**: above the thermal limit, or the CPU's Tjmax when that is lower, the
   test stops and the tuner cools down and retries the same value; after three such
@@ -225,7 +225,7 @@ core order, deepest offset, passes to prove, BIOS and power state; its table sho
 core's phase, value, the value it failed at, its tests, its last result and its highest
 clock. The log below lists the session's settings by the Auto-Tuner tab's names, every
 test, the events, the boots it saw and each core's highest clock at every power-state
-range. **Load these values into Curve Optimizer** fills the Curve Optimizer tab's Value
+range. **Load these values into Curve-Tuner** fills the Curve-Tuner tab's Value
 to set column from a completed session; nothing reaches the CPU until Set all.
 
 ## Understanding results
