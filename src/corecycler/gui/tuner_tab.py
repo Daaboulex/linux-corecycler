@@ -44,6 +44,7 @@ from corecycler.gui.style import (
     button_qss,
     pause_text,
     power_text,
+    shown_status,
     stage_label,
     theme,
     tuner_phase_label,
@@ -552,7 +553,8 @@ class TunerTab(QWidget):
             return
         pause = [event for event in view.events if event["severity"] == "paused"]
         reason = f". {pause_text(pause[-1]['message'])}" if view.status == "paused" and pause else ""
-        status = SESSION_STATUS_LABELS.get(view.status, view.status)
+        shown = shown_status(view.status, self._running)
+        status = SESSION_STATUS_LABELS.get(shown, shown)
         self._status.setText(f"Session {view.session_id}: {status}{reason}")
         if view.problem is not None:
             self._status.setText(view.problem)

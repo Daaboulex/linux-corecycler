@@ -154,6 +154,7 @@ GRID_STATE_LABELS: dict[str, str] = {
 SESSION_STATUS_LABELS: dict[str, str] = {
     "completed": "Completed",
     "running": "Running",
+    "interrupted": "Interrupted",
     "validating": "Validating",
     "paused": "Paused",
     "quarantined": "Quarantined",
@@ -222,6 +223,7 @@ def _status_colors(c: dict[str, str]) -> dict[str, str]:
         "stopped": c["COLOR_WARN"],
         "aborted": c["COLOR_WARN"],
         "running": c["COLOR_ACTIVE"],
+        "interrupted": c["COLOR_WARN"],
         "validating": c["COLOR_ACTIVE"],
         "paused": c["COLOR_MUTED"],
         "idle": c["COLOR_MUTED"],
@@ -325,6 +327,10 @@ def power_text(pairs: tuple[tuple[str, str], ...]) -> str:
         else f"{name} {value}"
         for name, value in pairs
     )
+
+
+def shown_status(status: str, driver_running: bool) -> str:
+    return "interrupted" if status == "running" and not driver_running else status
 
 
 def state_label(state: str) -> str:

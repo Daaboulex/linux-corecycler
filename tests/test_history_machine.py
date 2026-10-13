@@ -174,3 +174,12 @@ class TestDelete:
         assert [sess.id for sess in db.list_machine_sessions()] == [2, 1]
         tab._delete_tuner_sessions([0, 1])
         assert db.list_machine_sessions() == []
+
+
+@pytest.mark.req("T22.F8")
+@pytest.mark.parametrize("driver", [True, False])
+def test_the_session_list_says_interrupted_once_the_driver_is_gone(db, tmp_path, driver):
+    save_machine_session(db, tmp_path, "running")
+    with co_writer(record=driver):
+        tab = tuner_view(db)
+    assert cell(tab, 0, 1) == ("Running" if driver else "Interrupted")

@@ -26,7 +26,7 @@ GRAPHIC_MIN = 3.0
 
 VERDICT_STATES = ("testing", "passed", "failed", "warned", "backoff", "mem_stress")
 QUIET_STATES = ("pending", "queued", "skipped")
-VERDICT_STATUSES = ("completed", "crashed", "quarantined", "stopped", "aborted", "running", "validating")
+VERDICT_STATUSES = ("completed", "crashed", "quarantined", "stopped", "aborted", "running", "interrupted", "validating")
 QUIET_STATUSES = ("paused", "idle")
 
 

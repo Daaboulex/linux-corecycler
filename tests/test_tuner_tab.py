@@ -836,3 +836,14 @@ def test_every_settings_input_changes_the_configuration_start_sends(db, home):
         else:
             widget.stepBy(1 if widget.value() < widget.maximum() else -1)
         assert t.config() != before, widget
+
+
+@pytest.mark.req("T22.F8")
+@pytest.mark.parametrize("driver", [True, False])
+def test_a_running_session_says_interrupted_once_its_driver_is_gone(db, home, tmp_path, driver):
+    saved = save_machine_session(db, tmp_path, "running")
+    t = tab(db)
+    with co_writer(record=driver):
+        t.refresh()
+        said = t._status.text()
+    assert said == f"Session {saved.session_id}: {'Running' if driver else 'Interrupted'}"

@@ -4804,8 +4804,7 @@ task = "T22"
 [[requirement]]
 id = "T22.F8"
 statement = "A session says running only while a driver holds it; after a crash or a kill it says interrupted."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F9"

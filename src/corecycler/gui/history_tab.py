@@ -35,6 +35,7 @@ from corecycler.gui.style import (
     duration_str,
     font_mono,
     power_text,
+    shown_status,
     span_str,
     stage_label,
     theme,
@@ -783,16 +784,18 @@ class HistoryTab(QWidget):
         self._runs_table.setColumnWidth(5, 100)
 
         self._runs_table.setRowCount(len(sessions))
+        driver = running_driver() is not None
         for row, sess in enumerate(sessions):
             if not self._db:
                 continue
 
             cores_text, confirmed_text, unreadable, all_confirmed = self._progress(sess)
             date_str = format_local(sess.created_at)
+            shown = shown_status(sess.status, driver)
 
             items = [
                 (date_str, Qt.AlignmentFlag.AlignLeft),
-                (SESSION_STATUS_LABELS.get(sess.status, sess.status), Qt.AlignmentFlag.AlignCenter),
+                (SESSION_STATUS_LABELS.get(shown, shown), Qt.AlignmentFlag.AlignCenter),
                 (sess.cpu_model or "-", Qt.AlignmentFlag.AlignLeft),
                 (cores_text, Qt.AlignmentFlag.AlignCenter),
                 (confirmed_text, Qt.AlignmentFlag.AlignCenter),
@@ -800,7 +803,7 @@ class HistoryTab(QWidget):
                 (sess.bios_version or "-", Qt.AlignmentFlag.AlignCenter),
             ]
 
-            status_color = theme.STATUS_COLORS.get(sess.status, theme.COLOR_MUTED)
+            status_color = theme.STATUS_COLORS.get(shown, theme.COLOR_MUTED)
             for col, (text, align) in enumerate(items):
                 cell = _item(str(text), align)
                 if col == 1:
