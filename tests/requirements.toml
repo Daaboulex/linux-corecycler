@@ -4774,3 +4774,135 @@ proof = "built"
 id = "S0.view"
 statement = "The Curve Optimizer tab shows the Curve Shaper now on the CPU, read with Read from CPU, or why it cannot; History shows each tuning session's recorded setup, the Curve Shaper included (owner 2026-10-13: the Shaper has no screen until it is built)."
 proof = "built"
+
+[[requirement]]
+id = "T22.F1"
+statement = "The CO tab's Now on the CPU column and the core grid show each core's CO read from the CPU, never the session's working value."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F2"
+statement = "The power state label shows every CPU's governor, EPP and clock ceiling as read now, naming the CPUs that differ, never cpu0 read once."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F6"
+statement = "A CO read at Start is named the CO read at Start; a BIOS value is stated only from a read before any write that boot (confirmed on the ryzen 2026-10-13: session 2 recorded 0 as the BIOS CO after a runtime write)."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F7"
+statement = "A test with no verdict says running only while its worker runs; one left open by an abort or a crash says how it ended."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F8"
+statement = "A session says running only while a driver holds it; after a crash or a kill it says interrupted."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F9"
+statement = "An all-core test is shown and counted as all-core with its vector and CPUs, never as one core at one thread."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F10"
+statement = "A core's peak MHz counts only that core's own tests, against that core's own ceiling."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F11"
+statement = "Unblamed crashes, machine checks at stock and soak failures are counted and named separately."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F12"
+statement = "Tuning complete is said only when a profile was confirmed; an aborted validation says aborted."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F13"
+statement = "A setup check that finds no change says what it checked, never that nothing affecting a verdict changed."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F14"
+statement = "The cgroup memory in use is a read value or named unreadable, never 0 by default; an unreadable limit is named, never no limit."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F15"
+statement = "A stall is declared only from a measured near-zero CPU time; an unreadable CPU time is named, never treated as a stall."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F16"
+statement = "A verdict's run time is the measured run time, never the configured seconds or 0.0."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F17"
+statement = "Fabric and memory clocks are recorded only when read in range; 0.0 or out of range is recorded as unread."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F18"
+statement = "Tctl is recorded only from the input labelled Tctl and the hottest temperature only over inputs that read; an unread label is named."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F19"
+statement = "A setting that could not be read says unreadable with the reason, never that it is absent."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T22.F20"
+statement = "The memory a HOT run uses is logged per run from that run's own computation, not a Start-time figure."
+proof = "not built"
+task = "T22"
+
+[[requirement]]
+id = "T23.contract"
+statement = "Every interactive control is listed with its action and expected reaction; a test fails on an unlisted control, a listed control that is gone, or a check that passes with its control disconnected."
+proof = "not built"
+task = "T23"
+
+[[requirement]]
+id = "T23.style"
+statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
+proof = "not built"
+task = "T23"
+
+[[requirement]]
+id = "T23.startstop"
+statement = "The toolbar's Start and Stop buttons line up."
+proof = "not built"
+task = "T23"
+
+[[requirement]]
+id = "T23.halfscreen"
+statement = "Every tab stays usable at half-screen width (owner 2026-10-13: the Auto-Tuner tab looked compressed in a split window)."
+proof = "not built"
+task = "T23"
+
+[[requirement]]
+id = "T24.board_temps"
+statement = "Every board temperature input is recorded with each test, named by its chip and label, read safely (an unreadable input recorded as unreadable), shown in History, and never called room temperature."
+proof = "not built"
+task = "T24"
