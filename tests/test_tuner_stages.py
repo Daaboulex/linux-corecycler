@@ -30,7 +30,7 @@ CORE_OF_CPU = {cpu: cpu % 4 for cpu in CPUS}
 
 
 def plan(load: Load, seconds: float = 480.0, seed: int = 1):
-    return stages.plan(load, seconds, CPUS, FIRSTS, 60_000, random.Random(seed), 95.0)
+    return stages.plan(load, seconds, CPUS, FIRSTS, 60_000, random.Random(seed), 95.0, quick=False)
 
 
 @pytest.mark.req("K24")
@@ -38,7 +38,7 @@ def test_hot_is_one_all_cpu_segment_of_every_test_with_the_hot_hold():
     (hot,) = plan(Load.HOT, 510.0)
     assert (hot.cpus, hot.tests, hot.seconds_per_test, hot.duration) == (CPUS, ALL_TESTS, 60, 510.0)
     assert hot.memory_mb == 16384 and hot.hold == (95.0, 85.0) and hot.frozen == ()
-    (small,) = stages.plan(Load.HOT, 10.0, CPUS, FIRSTS, 4000, random.Random(1), 95.0)
+    (small,) = stages.plan(Load.HOT, 10.0, CPUS, FIRSTS, 4000, random.Random(1), 95.0, quick=False)
     assert small.memory_mb == 2000
 
 
@@ -96,6 +96,7 @@ class Script:
     outcomes: list
     events: list = field(default_factory=list)
     seen: list = field(default_factory=list)
+    paces: list = field(default_factory=list)
     output: str = ""
     sampled: bool = True
     caps: list = field(default_factory=list)
@@ -115,6 +116,7 @@ def runner(script: Script, readings=None, detector=None, clocks=None, usable_mb=
         def run(self, lanes, cfg, duration):
             outcome = script.outcomes.pop(0)
             script.seen.append((lanes[0].cpus, cfg.tests, duration, self.freeze))
+            script.paces.append(cfg.seconds_per_test)
             script.memory.append(cfg.memory_mb)
             if script.sampled:
                 self.freeze(duration / 2, self.sensors())
@@ -172,6 +174,17 @@ def test_a_single_core_test_is_sampled_only_when_a_sink_is_given():
     unsampled = Script([Outcome.PASS], sampled=False)
     runner(unsampled).run(one, threading.Event())
     assert unsampled.seen[0][3] is None
+
+
+@pytest.mark.req("K40.slot")
+def test_a_bisect_slot_runs_every_hot_test_at_twenty_seconds_and_steady_keeps_sixty():
+    (quick,) = stages.plan(Load.HOT, 160.0, CPUS, FIRSTS, 60_000, random.Random(1), 95.0, quick=True)
+    assert quick.tests == ALL_TESTS and quick.seconds_per_test * len(quick.tests) == quick.duration
+    slot, steady = Script([Outcome.PASS]), Script([Outcome.PASS])
+    bisect = Spec(Klass.T1, 0, -5, CPUS, 160.0, tuple((c, -5) for c in range(4)), Stage.BISECT, Load.HOT, 95.0)
+    runner(slot).run(bisect, threading.Event())
+    runner(steady).run(replace(bisect, stage=Stage.STEADY, seconds=510.0), threading.Event())
+    assert (slot.paces, steady.paces) == ([20], [60])
 
 
 @pytest.mark.req("L25.d.warm")
@@ -301,7 +314,7 @@ def test_burst_draws_powers_of_two_up_to_the_cpu_count_on_first_cpus_and_all_cpu
     firsts = tuple(range(16))
     seen = set()
     for seed in range(200):
-        for s in stages.plan(Load.BURST, 480.0, cpus, firsts, 60_000, random.Random(seed), 95.0):
+        for s in stages.plan(Load.BURST, 480.0, cpus, firsts, 60_000, random.Random(seed), 95.0, quick=False):
             seen.add(len(s.cpus))
             assert s.cpus == cpus or set(s.cpus) <= set(firsts)
     assert seen == {2, 4, 8, 16, 32}
@@ -551,9 +564,9 @@ def test_an_all_core_load_sizes_its_memory_from_the_one_budget():
 
 @pytest.mark.req("C12", "U25")
 def test_the_hot_hold_band_sits_at_the_thermal_limit_and_ten_degrees_under_it():
-    (hot,) = stages.plan(Load.HOT, 510.0, CPUS, FIRSTS, 60_000, random.Random(1), 89.0)
+    (hot,) = stages.plan(Load.HOT, 510.0, CPUS, FIRSTS, 60_000, random.Random(1), 89.0, quick=False)
     assert hot.hold == (89.0, 79.0)
-    (warm, *_) = stages.plan(Load.WARM, 480.0, CPUS, FIRSTS, 60_000, random.Random(1), 89.0)
+    (warm, *_) = stages.plan(Load.WARM, 480.0, CPUS, FIRSTS, 60_000, random.Random(1), 89.0, quick=False)
     assert warm.hold == stages.WARM_HOLD
 
 

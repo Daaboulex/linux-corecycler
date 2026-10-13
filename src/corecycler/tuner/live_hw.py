@@ -59,6 +59,7 @@ from corecycler.tuner.machine.types import (
     PauseReason,
     PauseRequest,
     Report,
+    Stage,
 )
 from corecycler.tuner.orders import default_method
 
@@ -547,7 +548,14 @@ class StressRunner:
         )
         rng = random.Random(f"{spec.stage.value}:{spec.load.value}:{spec.vector}:{self.runs}")
         segments = stages.plan(
-            spec.load, spec.seconds, spec.cpus, firsts, self.budget(1, 0).usable_mb, rng, spec.thermal_limit_c
+            spec.load,
+            spec.seconds,
+            spec.cpus,
+            firsts,
+            self.budget(1, 0).usable_mb,  # equivalent-mutant: usable memory ignores both arguments
+            rng,
+            spec.thermal_limit_c,
+            quick=spec.stage is Stage.BISECT,
         )
         done = 0.0
         speeds: list[tuple[str, float, bool]] = []

@@ -508,8 +508,7 @@ proof = "built"
 [[requirement]]
 id = "K40.slot"
 statement = "A Bisect slot runs the failing stage's tests at 20 s per test"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "K40.memory"

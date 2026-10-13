@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     import random
 
 HOT_PER_TEST_S = 60
+BISECT_PER_TEST_S = 20
 WARM_SLICE_S = 60.0
 WARM_PER_TEST_S = 30
 BURST_PER_TEST_S = 15
@@ -66,11 +67,20 @@ def plan(
     usable_mb: int,
     rng: random.Random,
     limit_c: float,
+    *,
+    quick: bool,
 ) -> tuple[Segment, ...]:
     hot_memory = max(1, min(HOT_MEMORY_CAP_MB, usable_mb // 2))
     if load is Load.HOT:
         return (
-            Segment(cpus, ALL_TESTS, HOT_PER_TEST_S, hot_memory, seconds, hold=(limit_c, limit_c - HOT_HOLD_SPAN_C)),
+            Segment(
+                cpus,
+                ALL_TESTS,
+                BISECT_PER_TEST_S if quick else HOT_PER_TEST_S,
+                hot_memory,
+                seconds,
+                hold=(limit_c, limit_c - HOT_HOLD_SPAN_C),
+            ),
         )
     if load is Load.WARM:
         slices = []
