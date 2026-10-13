@@ -4897,8 +4897,7 @@ task = "T23"
 [[requirement]]
 id = "T23.halfscreen"
 statement = "Every tab stays usable at half-screen width (owner 2026-10-13: the Auto-Tuner tab looked compressed in a split window)."
-proof = "not built"
-task = "T23"
+proof = "built"
 
 [[requirement]]
 id = "T24.board_temps"

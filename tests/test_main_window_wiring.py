@@ -690,3 +690,37 @@ class TestCloseEvent:
         assert worker.scheduler.force_stop.called
         assert worker.terminate.called
         assert event.accept.called
+
+
+HALF_SCREEN = 960
+
+
+def _whole_text_shown(label) -> bool:
+    if label.wordWrap():
+        return label.heightForWidth(label.width()) <= label.height()
+    return label.fontMetrics().horizontalAdvance(label.text()) <= label.width()
+
+
+@pytest.mark.req("T23.halfscreen")
+def test_the_window_fits_a_half_screen_tile_and_keeps_its_text(monkeypatch, tmp_path, db):
+    from PySide6.QtWidgets import QApplication, QLabel, QScrollArea
+
+    win = _build(monkeypatch, tmp_path, db=db, topology=_topo(16))
+    win.show()
+    win._tabs.setCurrentWidget(win._tuner_tab)
+    scroll = win._tuner_tab.findChild(QScrollArea)
+    for advanced in (False, True):
+        win._tuner_tab._advanced_toggle.setChecked(advanced)
+        QApplication.processEvents()
+        narrowest = win.minimumSizeHint().width()
+        assert narrowest <= HALF_SCREEN - 20
+        win.resize(narrowest, 1000)
+        QApplication.processEvents()
+        assert scroll.viewport().width() >= scroll.widget().minimumSizeHint().width() > 0
+        texts = [label for label in win.centralWidget().findChildren(QLabel) if label.isVisible() and label.text()]
+        assert texts
+        assert [label.text() for label in texts if not _whole_text_shown(label)] == []
+    warnings = [label for label in win.statusBar().findChildren(QLabel) if label.toolTip()]
+    assert warnings
+    assert all(label.isVisible() and label.width() > 0 for label in warnings)
+    win._history_db = None

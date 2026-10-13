@@ -102,7 +102,11 @@ class HistoryTab(QWidget):
         layout = QVBoxLayout(self)
 
         summary_group = QGroupBox("")
-        summary_layout = QHBoxLayout(summary_group)
+        summary_rows = QVBoxLayout(summary_group)
+        counts_row = QHBoxLayout()
+        controls_row = QHBoxLayout()
+        summary_rows.addLayout(counts_row)
+        summary_rows.addLayout(controls_row)
 
         self._total_label = QLabel("Stress test runs: 0")
         self._completed_label = QLabel("Completed: 0")
@@ -114,33 +118,33 @@ class HistoryTab(QWidget):
 
         for w in (self._total_label, self._completed_label, self._crashed_label, self._stopped_label):
             w.setFont(QFont("monospace", 10))
-            summary_layout.addWidget(w)
+            counts_row.addWidget(w)
 
         self._bios_label = QLabel("")
         self._bios_label.setFont(font_mono(9))
         self._bios_label.setStyleSheet(f"color: {theme.COLOR_WARN}; font-weight: bold; padding-left: 8px;")
         self._bios_label.setVisible(False)
-        summary_layout.addWidget(self._bios_label)
+        counts_row.addWidget(self._bios_label)
+        counts_row.addStretch()
 
-        summary_layout.addStretch()
-
-        summary_layout.addWidget(QLabel("Show"))
+        controls_row.addWidget(QLabel("Show"))
         self._view_select = QComboBox()
         for mode, label in VIEW_LABELS.items():
             self._view_select.addItem(label, mode)
         self._view_select.currentIndexChanged.connect(self._on_view_selected)
-        summary_layout.addWidget(self._view_select)
+        controls_row.addWidget(self._view_select)
+        controls_row.addStretch()
 
         self._delete_btn = QPushButton("Delete Selected")
         self._delete_btn.setEnabled(False)
         self._delete_btn.clicked.connect(self._delete_selected)
-        summary_layout.addWidget(self._delete_btn)
+        controls_row.addWidget(self._delete_btn)
 
         self._compare_btn = QPushButton("Compare Selected")
         self._compare_btn.setEnabled(False)
         self._compare_btn.setToolTip("Select at least 2 test runs to compare results side-by-side")
         self._compare_btn.clicked.connect(self._compare_selected)
-        summary_layout.addWidget(self._compare_btn)
+        controls_row.addWidget(self._compare_btn)
 
         layout.addWidget(summary_group)
 

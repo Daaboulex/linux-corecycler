@@ -199,6 +199,7 @@ STAGE_DEFAULT = next(f.default for f in fields(MachineConfig) if f.name == "stag
 STAGE_ORDER = tuple(load for load, _ in STAGE_DEFAULT)
 CEILING = 1_000_000_000
 BOX_WIDTH = 110
+CORES_PER_ROW = 4  # equivalent-mutant: five boxes a row are no wider than the setting rows, six are
 GRID_STATE = {
     Phase.NOT_STARTED: "pending",
     Phase.COARSE: "queued",
@@ -341,7 +342,6 @@ class TunerTab(QWidget):
     def _build_settings(self) -> QWidget:
         group = QGroupBox("Settings")
         column = QVBoxLayout(group)
-        column.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
         cores = QGridLayout()
         domain_of = {}
         for index, (core, info) in enumerate(sorted(self._topology.cores.items()) if self._topology else ()):
@@ -349,7 +349,7 @@ class TunerTab(QWidget):
             box.setChecked(True)
             self._core_boxes[core] = box
             domain_of[core] = info.ccd
-            cores.addWidget(box, index // 8, index % 8)
+            cores.addWidget(box, index // CORES_PER_ROW, index % CORES_PER_ROW)
         column.addWidget(QLabel("Cores to tune"))
         column.addLayout(cores)
         column.addWidget(note("An unticked core keeps its value and is not tested."))
@@ -387,14 +387,15 @@ class TunerTab(QWidget):
                 add_setting(rows, row, label, self._knob(name, defaults[name]), unit, about)
             box.setLayout(rows)
             advanced.addWidget(box)
-        self._advanced.setVisible(False)
-        self._advanced_toggle.toggled.connect(self._advanced.setVisible)
         column.addWidget(self._advanced)
         column.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setMinimumWidth(group.minimumSizeHint().width() + scroll.verticalScrollBar().sizeHint().width())
         scroll.setWidget(group)
+        self._advanced.setVisible(False)
+        self._advanced_toggle.toggled.connect(self._advanced.setVisible)
         return scroll
 
     def _knob(self, name: str, default) -> QWidget:
@@ -437,7 +438,7 @@ class TunerTab(QWidget):
         column.addWidget(self._driver)
         column.addWidget(self._test)
         column.addWidget(self._reminder)
-        buttons = QHBoxLayout()
+        buttons = QGridLayout()
         self._buttons: dict[str, QPushButton] = {}
         for name, action in (
             ("Start", self._on_start),
@@ -451,8 +452,8 @@ class TunerTab(QWidget):
         ):
             button = QPushButton(name)
             button.clicked.connect(action)
+            buttons.addWidget(button, *divmod(len(self._buttons), 4))
             self._buttons[name] = button
-            buttons.addWidget(button)
         self._buttons["Start"].setStyleSheet(button_qss(theme.BTN_GREEN))
         self._buttons["Abort"].setStyleSheet(button_qss(theme.BTN_RED))
         column.addLayout(buttons)

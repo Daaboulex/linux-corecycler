@@ -57,6 +57,15 @@ from corecycler.smu.driver import core_map_blocked
 log = logging.getLogger(__name__)
 
 
+NARROWEST_STATUS = 120  # equivalent-mutant: a pixel either way keeps the warning readable and the window in the tile
+
+
+def narrowable(label: QLabel) -> QLabel:
+    label.setToolTip(label.text().strip())
+    label.setMinimumWidth(NARROWEST_STATUS)
+    return label
+
+
 class TestWorker(QThread):
     """Worker thread that runs the core scheduler."""
 
@@ -101,7 +110,6 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("CoreCycler")
-        self.setMinimumSize(1000, 700)
 
         load_all()
 
@@ -196,6 +204,7 @@ class MainWindow(QMainWindow):
                 info_parts.append("SMT")
             info_label = QLabel(" | ".join(info_parts))
             info_label.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 0 6px;")
+            info_label.setWordWrap(True)
             left.addWidget(info_label)
 
         self._core_grid = CoreGridWidget(self._topology)
@@ -308,11 +317,11 @@ class MainWindow(QMainWindow):
                 "  ⚠ " + " and ".join(missing) + " unavailable — check device permissions or run as root"
             )
             priv_label.setStyleSheet(f"color: {theme.COLOR_WARN_SOFT}; font: 10px monospace;")
-            self._status_bar.addPermanentWidget(priv_label)
+            self._status_bar.addPermanentWidget(narrowable(priv_label))
         if self._history_problem is not None:
             history_label = QLabel(f"  {self._history_problem}")
             history_label.setStyleSheet(f"color: {theme.COLOR_FAIL}; font: 10px monospace;")
-            self._status_bar.addPermanentWidget(history_label)
+            self._status_bar.addPermanentWidget(narrowable(history_label))
 
     def _setup_timer(self) -> None:
         self._elapsed_timer = QTimer(self)

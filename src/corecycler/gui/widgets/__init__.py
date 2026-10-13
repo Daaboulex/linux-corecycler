@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QTableWidgetItem
 
 from corecycler.gui.style import theme
 
-LABEL_WIDTH = 190
+LABEL_WIDTH = 120  # equivalent-mutant: a pixel either way keeps the window in the tile and every name whole
 
 
 def table_item(text: str, alignment: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignLeft) -> QTableWidgetItem:
@@ -43,6 +43,7 @@ def setting_grid() -> QGridLayout:
 
 def add_setting(grid: QGridLayout, row: int, label: str, widget: QWidget, unit: str, about: str) -> None:
     name = QLabel(label)
+    name.setWordWrap(True)
     name.setMinimumHeight(widget.sizeHint().height())
     grid.addWidget(name, row, 0, Qt.AlignmentFlag.AlignTop)
     field = QVBoxLayout()
@@ -51,6 +52,7 @@ def add_setting(grid: QGridLayout, row: int, label: str, widget: QWidget, unit: 
     line.addWidget(widget)
     if unit:
         shown = QLabel(unit)
+        shown.setWordWrap(True)
         line.addWidget(shown)
         if unit == "s":
 
