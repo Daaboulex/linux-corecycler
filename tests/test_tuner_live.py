@@ -1886,6 +1886,8 @@ WRONG_TYPES = [
     ("thermal_limit_c", "95"),
     ("selected", ["0"]),
     ("stage_seconds", [["burst", "480"], ["warm", 480.0], ["idle", 360.0]]),
+    ("starts", [["0", -3]]),
+    ("starts", [[0, True]]),
 ]
 
 
@@ -1895,6 +1897,15 @@ def test_a_configuration_with_a_wrong_type_is_refused_at_the_boundary(name, valu
     assert live.config_from_json(raw) == config()
     with pytest.raises(ValueError, match=f"wrong types for {name}"):
         live.config_from_json({**raw, name: value})
+
+
+@pytest.mark.req("T25.start")
+def test_starts_survive_the_stored_configuration_and_a_configuration_stored_before_them_has_none():
+    wanted = config(starts=((0, -3), (1, -5)))
+    raw = live.config_to_json(wanted)
+    assert live.config_from_json(json.loads(json.dumps(raw))) == wanted
+    del raw["starts"]
+    assert live.config_from_json(raw).starts == ()
 
 
 @pytest.mark.parametrize("content", [None, "{", '{"mode": "co"}', "[]"])

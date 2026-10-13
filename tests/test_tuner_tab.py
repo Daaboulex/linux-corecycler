@@ -604,3 +604,10 @@ def test_the_real_driver_starts_from_the_tab_and_its_refusal_comes_back(db, tmp_
     on_disk.close()
     assert t._child is None
     assert t._driver.text().startswith("the driver ended: refused (bad config or environment): ")
+
+
+@pytest.mark.req("T25.start")
+def test_the_settings_list_names_each_given_start():
+    cfg = MachineConfig(Mode.CO, Method.SEQUENTIAL, (0, 1), starts=((0, -18), (1, -38)))
+    assert "  Starting values: core 0 at -18, core 1 at -38" in tt.settings_lines(cfg)
+    assert not any("Starting values" in line for line in tt.settings_lines(replace(cfg, starts=())))

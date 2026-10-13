@@ -124,6 +124,7 @@ def config_from_json(raw: dict) -> MachineConfig:
             "method": Method(raw["method"]),
             "selected": tuple(raw["selected"]),
             "stage_seconds": _pairs(raw["stage_seconds"]),
+            "starts": _pairs(raw.get("starts", ())),
         }
     )
     wrong = [
@@ -141,6 +142,10 @@ def config_from_json(raw: dict) -> MachineConfig:
         len(pair) == 2 and isinstance(pair[0], str) and isinstance(pair[1], int | float) for pair in cfg.stage_seconds
     ):
         wrong.append("stage_seconds")
+    if not all(
+        len(pair) == 2 and all(isinstance(n, int) and not isinstance(n, bool) for n in pair) for pair in cfg.starts
+    ):
+        wrong.append("starts")
     if wrong:
         raise ValueError(f"wrong types for {', '.join(wrong)}")
     return cfg

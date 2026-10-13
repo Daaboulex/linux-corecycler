@@ -185,6 +185,30 @@ def test_an_unblamed_event_in_soak_counts_an_incident_and_reproves_the_profile_a
     assert "soft lockup on CPU 3" in fake.state.pause.detail
 
 
+@pytest.mark.req("T25.start")
+def test_a_start_at_minus_1_is_accepted_and_a_core_given_no_start_has_none():
+    assert config_problem(replace(CFG, starts=((0, -1),)), (-50, 10)) is None
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2, starts=((0, -10),))
+    start(fake)
+    assert (fake.state.core(0).start, fake.state.core(1).start) == (-10, 0)
+
+
+@pytest.mark.req("T25.start", "D20")
+def test_a_core_given_a_start_tests_it_first_and_a_failed_start_walks_again_from_0_above_it():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2, wait_between_cores_s=0.0, starts=((0, -10), (1, -8)))
+    start(fake)
+    first: dict[int, int] = {}
+    while len(first) < 2:
+        while fake.worker is None:
+            assert fake.progress()
+        first.setdefault(fake.worker.spec.core, fake.worker.spec.value)
+        fake.deliver()
+    assert first == {0: -10, 1: -8}
+    assert fake.state.core(1).fb == -8
+    run_to_rest(fake, 4000)
+    assert {r.core: r.value for r in fake.state.cores} == {0: -12, 1: -6}
+
+
 @pytest.mark.req("C10", "D34")
 @pytest.mark.parametrize("report", [Report(Group.THERMAL, 5.0), Report(Group.APPARATUS, 1.0, detail="tool died")])
 def test_an_all_core_test_that_ends_without_a_verdict_sends_every_owned_core_back_to_baseline(report):
@@ -219,9 +243,13 @@ def test_an_all_core_test_that_ends_without_a_verdict_sends_every_owned_core_bac
         (replace(CFG, stage_seconds=(("burst", 1.0), ("warm", 1.0))), LAYOUT, True, "burst, idle, warm once each"),
         (replace(CFG, stage_seconds=(("burst", 1.0), ("burst", 1.0), ("idle", 1.0))), LAYOUT, True, "once each"),
         (replace(CFG, stage_seconds=(("burst", 1.0), ("warm", 0.0), ("idle", 1.0))), LAYOUT, True, "each above 0"),
+        (replace(CFG, starts=((5, -3),)), LAYOUT, True, "starts must name each selected core at most once"),
+        (replace(CFG, starts=((0, -3), (0, -4))), LAYOUT, True, "at most once: [(0, -3), (0, -4)]"),
+        (replace(CFG, starts=((0, -21),)), LAYOUT, True, "a start must be within -20..-1: core 0 at -21"),
+        (replace(CFG, starts=((1, 0),)), LAYOUT, True, "a start must be within -20..-1: core 1 at 0"),
     ],
 )
-@pytest.mark.req("C16", "D82", "E6.B0", "L01.1", "L01.11", "L01.15.cli")
+@pytest.mark.req("C16", "D82", "E6.B0", "L01.1", "L01.11", "L01.15.cli", "T25.start")
 def test_start_is_refused_naming_the_first_gate_that_fails(config, world, acknowledged, says):
     assert says in refusal(SessionState(), Start(config, 1, 0, acknowledged), world)
 

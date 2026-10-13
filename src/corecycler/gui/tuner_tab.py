@@ -194,7 +194,7 @@ ORDER_LABELS = {
 ONE_CORE = frozenset({Stage.SEARCH, Stage.LIVE1})
 THREADS = {"1t": "one thread", "2t": "two threads"}
 SINGULAR = {"counts": "count", "passes": "pass", "times": "time", "cores": "core"}
-SET_BY_THE_TAB = ("mode", "method", "selected", "stage_seconds")
+SET_BY_THE_TAB = ("mode", "method", "selected", "stage_seconds", "starts")
 STAGE_DEFAULT = next(f.default for f in fields(MachineConfig) if f.name == "stage_seconds")
 STAGE_ORDER = tuple(load for load, _ in STAGE_DEFAULT)
 CEILING = 1_000_000_000
@@ -226,6 +226,8 @@ _assert_every_knob_named()
 def settings_lines(cfg: MachineConfig) -> list[str]:
     stage_seconds = dict(cfg.stage_seconds)
     lines = [f"  Cores to tune: {', '.join(map(str, cfg.selected))}", f"  Core order: {ORDER_LABELS[cfg.method]}"]
+    if cfg.starts:
+        lines.append(f"  Starting values: {', '.join(f'core {core} at {value}' for core, value in cfg.starts)}")
     for knobs in KNOB_TEXT.values():
         for name, (label, unit, _) in knobs.items():
             value = stage_seconds[name] if name in STAGE_ORDER else getattr(cfg, name)

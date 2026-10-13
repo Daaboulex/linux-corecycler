@@ -231,7 +231,7 @@ def _start(s: SessionState, e: Start, w: World) -> Transition:
         config=cfg,
         seed=e.seed,
         baseline=baseline,
-        cores=tuple(CoreRecord(core) for core in sorted(cfg.selected)),
+        cores=tuple(CoreRecord(core, start=dict(cfg.starts).get(core, 0)) for core in sorted(cfg.selected)),
         flow=Flow(Stage.SEARCH, Klass.T1),
         slot=Waiting(token, 0.0),
         next_token=token + 1,
@@ -308,6 +308,12 @@ def config_problem(cfg: MachineConfig, co_range: tuple[int, int] | None) -> str 
         return "this CPU's CO range is unknown"
     if not co_range[0] <= cfg.max_offset <= -cfg.fine_step:
         return f"max_offset {cfg.max_offset} is outside {co_range[0]}..{-cfg.fine_step}, the CPU's range to one step"
+    starts = [core for core, _ in cfg.starts]
+    if len(set(starts)) != len(starts) or not set(starts) <= set(cfg.selected):
+        return f"starts must name each selected core at most once: {list(cfg.starts)}"
+    outside = [f"core {core} at {value}" for core, value in cfg.starts if not cfg.max_offset <= value <= -1]
+    if outside:
+        return f"a start must be within {cfg.max_offset}..-1: {', '.join(outside)}"
     if cfg.cool_min_s > cfg.cool_cap_s:
         return f"cool_min_s {cfg.cool_min_s} is above cool_cap_s {cfg.cool_cap_s}"
     names = [name for name, _ in cfg.stage_seconds]

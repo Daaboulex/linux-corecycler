@@ -133,6 +133,7 @@ class MachineConfig:
     cool_cap_s: float = 300.0
     start_failure_threshold: int = 0
     stop_bound_s: float = 5.0
+    starts: tuple[tuple[int, int], ...] = ()
 
     def k(self, klass: Klass) -> int:
         return self.k_1t if klass is Klass.T1 else self.k_2t
