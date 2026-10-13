@@ -4877,6 +4877,11 @@ proof = "not built"
 task = "T22"
 
 [[requirement]]
+id = "T22.F21"
+statement = "A refused start names no session: the log gives a session id only once Start has created it (ryzen 2026-10-13 18:29: a refused start logged the next session id and an order seed before its refusal)."
+proof = "built"
+
+[[requirement]]
 id = "T23.contract"
 statement = "Every interactive control is listed with its action and expected reaction; a test fails on an unlisted control, a listed control that is gone, or a check that passes with its control disconnected."
 proof = "not built"
@@ -4891,6 +4896,12 @@ task = "T23"
 [[requirement]]
 id = "T23.startstop"
 statement = "The toolbar's Start and Stop buttons line up."
+proof = "not built"
+task = "T23"
+
+[[requirement]]
+id = "T23.abort_interrupted"
+statement = "Abort takes a session whose driver died in a crash to aborted without running a test, from the GUI and the command line (ryzen 2026-10-13: the GUI Abort only reported that no driver runs, the command line has no abort, and the start refusal still said to abort it)."
 proof = "not built"
 task = "T23"
 

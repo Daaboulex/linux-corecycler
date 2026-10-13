@@ -812,9 +812,9 @@ def _run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> 
         seed, origin = args.seed, "given"
         if seed is None:
             seed, origin = secrets.randbelow(1 << 31), "drawn at Start"  # equivalent-mutant: any positive bound works
-        say(f"session {session}")
-        say(f"order seed {seed}, {origin}")
         rig.start(config, session, seed, args.acknowledge)
+        if rig.refused is None:
+            say(f"order seed {seed}, {origin}")
     elif args.validate:
         rig.validate(args.session)
     else:

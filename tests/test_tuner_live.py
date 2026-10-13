@@ -1594,7 +1594,7 @@ def test_the_command_line_starts_or_resumes_and_reports_where_it_came_to_rest(tm
     r.runner = FakeRunner(hardware)
     args.state_dir = tmp_path / "state"
     assert live_hw.run(args, r, lines.append) == live_hw.EXIT_COMPLETED
-    assert "session 1" in lines
+    assert any(line.startswith("started: session 1,") for line in lines)
     assert "rest: completed" in lines
     resumed = live_hw.parse(["--state-dir", str(tmp_path / "state"), "--session", "1", "--resume"])
     again = rig(tmp_path, hardware, db=r.store.db)
@@ -1764,6 +1764,20 @@ def test_a_start_draws_its_order_seed_unless_one_is_given(tmp_path, monkeypatch,
     assert says in said
 
 
+@pytest.mark.req("T22.F21")
+def test_a_refused_start_names_no_session_and_no_seed(tmp_path):
+    db = database(tmp_path / "held.db")
+    first = rig(tmp_path, FakeHardware(), db=db)
+    first.start(config(), 1, 7, True)
+    first.post(PauseRequest())
+    said = []
+    second = rig(tmp_path, FakeHardware(), db=db)
+    second.say = said.append
+    args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--start", "--cores", "0,1,8", "--write", "--seed", "7"])
+    assert live_hw.run(args, second, said.append) == live_hw.EXIT_REFUSED
+    assert said == ["refused: session 1 is paused: resume it or abort it before starting another"]
+
+
 @pytest.mark.req("VERDICT.27")
 @pytest.mark.req("VERDICT.27b")
 def test_signals_queue_the_owner_s_controls(tmp_path, monkeypatch):
@@ -1872,9 +1886,10 @@ def test_a_config_file_starts_the_session_it_describes(tmp_path):
     r = rig(tmp_path, hardware)
     r.runner = FakeRunner(hardware)
     said = []
+    r.say = said.append
     args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--start", "--config", str(path), "--acknowledge"])
     live_hw.run(args, r, said.append)
-    assert "session 1" in said
+    assert any(line.startswith("started: session 1,") for line in said)
     (stored,) = rows(r, "SELECT config_json FROM tuner_sessions WHERE id=1")
     assert live.config_from_json(json.loads(stored["config_json"])) == wanted
 
