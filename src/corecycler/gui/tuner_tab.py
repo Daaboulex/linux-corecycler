@@ -348,6 +348,7 @@ class TunerTab(QWidget):
 
     def _build_settings(self) -> QWidget:
         group = QGroupBox("Settings")
+        self._settings = group
         column = QVBoxLayout(group)
         cores = QGridLayout()
         domain_of = {}
@@ -488,6 +489,24 @@ class TunerTab(QWidget):
             **values,
         )
 
+    def _show_settings(self, view: SessionView | None) -> None:
+        held = view.stored if view is not None and view.status in HELD_STATUSES else None
+        if held is not None:
+            cfg = held.config
+            for name, widget in self._knobs.items():
+                if isinstance(widget, QCheckBox):
+                    widget.setChecked(getattr(cfg, name))
+                else:
+                    widget.setValue(getattr(cfg, name))
+            for load, seconds in cfg.stage_seconds:
+                self._stage_spins[load].setValue(seconds)
+            self._order.setCurrentIndex(self._order.findData(cfg.method.value))
+            for core, box in self._core_boxes.items():
+                box.setChecked(core in cfg.selected)
+        self._settings.setTitle("Settings" if held is None else f"Session {held.session_id} settings")
+        for widget in (*self._knobs.values(), *self._stage_spins.values(), self._order, *self._core_boxes.values()):
+            widget.setEnabled(held is None)
+
     def set_test_running(self, running: bool) -> None:
         self._test_running = running
         self._enable_controls()
@@ -500,6 +519,7 @@ class TunerTab(QWidget):
             self.tuner_running_changed.emit(running)
         seen = self._view
         self._view = read_view(self._db, kernel.read_boot_id()) if self._db is not None else None
+        self._show_settings(self._view)
         if seen is not None and self._view is not None and seen.status not in ENDED and self._view.status in ENDED:
             self._remind()
         self._range.setText("Power now: " + (power_text(power_now()) or "unreadable"))

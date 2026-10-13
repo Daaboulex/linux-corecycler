@@ -4876,6 +4876,11 @@ proof = "not built"
 task = "T22"
 
 [[requirement]]
+id = "T22.F22"
+statement = "While a session is held, the settings form shows that session's settings read from its record, locked and titled with the session; it unlocks when the session ends (ryzen 2026-10-13: the form showed the defaults beside a running session)."
+proof = "built"
+
+[[requirement]]
 id = "T22.F21"
 statement = "A refused start names no session: the log gives a session id only once Start has created it (ryzen 2026-10-13 18:29: a refused start logged the next session id and an order seed before its refusal)."
 proof = "built"

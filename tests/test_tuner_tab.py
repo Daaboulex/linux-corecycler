@@ -230,6 +230,23 @@ def test_the_power_line_is_read_now_at_every_refresh_not_taken_from_the_session(
     assert t._range.text() == "Power now: unreadable"
 
 
+@pytest.mark.req("T22.F22")
+def test_a_held_session_s_settings_are_shown_from_its_record_and_locked_until_it_ends(db, home, tmp_path):
+    t = tab(db)
+    defaults = t.config()
+    saved = save_machine_session(db, tmp_path, "paused")
+    assert saved.config != defaults
+    t.refresh()
+    assert t.config() == saved.config
+    assert t._settings.title() == f"Session {saved.session_id} settings"
+    assert not t._knobs["max_offset"].isEnabled() and not t._order.isEnabled()
+    assert t._advanced_toggle.isEnabled()
+    save_machine_session(db, tmp_path, "completed", session_id=saved.session_id)
+    t.refresh()
+    assert t._settings.title() == "Settings"
+    assert t._knobs["max_offset"].isEnabled() and t._order.isEnabled()
+
+
 def test_a_paused_session_shows_its_cores_and_offers_resume(db, home, tmp_path):
     t = tab(db)
     infos = []
