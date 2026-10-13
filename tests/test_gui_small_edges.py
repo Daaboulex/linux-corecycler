@@ -264,3 +264,19 @@ def test_the_fallback_sets_fusion_only_when_the_probe_fails(monkeypatch, caplog,
         assert problem == "system Qt style crashed in a probe (SIGSEGV)"
         assert os.environ["QT_STYLE_OVERRIDE"] == "Fusion"
         assert f"{problem}: running in Fusion" in caplog.text
+
+
+def test_a_real_modal_dialog_in_a_test_fails_at_once_instead_of_hanging():
+    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+
+    QApplication.instance() or QApplication([])
+    for opened in (
+        lambda: QMessageBox.information(None, "t", "t"),
+        lambda: QMessageBox.warning(None, "t", "t"),
+        lambda: QMessageBox.question(None, "t", "t"),
+        lambda: QMessageBox.critical(None, "t", "t"),
+        lambda: QMessageBox().exec(),
+        lambda: QDialog().exec(),
+    ):
+        with pytest.raises(AssertionError, match="real modal dialog"):
+            opened()

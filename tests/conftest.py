@@ -608,8 +608,9 @@ def no_blocking_dialogs(monkeypatch):
     """A modal dialog in a test hangs the suite forever -- fail loudly instead.
 
     Tests that exercise the missing-tool prompt patch ensure_tool, _run_dialog
-    or _browse themselves; anything else reaching the real Qt modal is a bug in
-    the test, and a named failure beats a stuck run.
+    or _browse themselves, and tests of a dialog stub QMessageBox or the dialog;
+    anything else reaching a real Qt modal is a bug in the test, and a named
+    failure beats a stuck run.
     """
     try:
         from corecycler.gui import tool_prompt
@@ -624,6 +625,16 @@ def no_blocking_dialogs(monkeypatch):
 
     monkeypatch.setattr(tool_prompt, "_run_dialog", refuse)
     monkeypatch.setattr(tool_prompt, "_browse", refuse)
+
+    from PySide6.QtWidgets import QDialog, QMessageBox
+
+    def refuse_modal(*_args, **_kwargs):
+        raise AssertionError("a test opened a real modal dialog: stub QMessageBox or the dialog in that test")
+
+    for name in ("information", "warning", "question", "critical"):
+        monkeypatch.setattr(QMessageBox, name, refuse_modal)
+    monkeypatch.setattr(QMessageBox, "exec", refuse_modal)
+    monkeypatch.setattr(QDialog, "exec", refuse_modal)
 
 
 @pytest.fixture
