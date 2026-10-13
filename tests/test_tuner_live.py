@@ -380,6 +380,31 @@ def test_a_reboot_during_a_test_convicts_the_tested_core_on_resume(tmp_path):
     assert again.run_until_rest(0.01).lifecycle is Lifecycle.COMPLETED
 
 
+@pytest.mark.req("T23.abort_interrupted")
+@pytest.mark.parametrize("crashed", [True, False])
+def test_abort_attributes_a_held_session_then_stops_it_without_running_a_test(tmp_path, crashed):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    in_test = next(c for c in r.state.cores if c.in_test)
+    if crashed:
+        hardware.boot = "boot-b"
+    else:
+        r.post(PauseRequest())
+        r.run_until_rest(0.01)
+    hardware.co = {0: -7, 1: -7, 8: -7}
+    runner = FakeRunner(hardware)
+    again = rig(tmp_path, hardware, runner=runner, db=r.store.db)
+    args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--abort", "--session", "1", "--write"])
+    assert live_hw.run(args, again, lambda line: None) == live_hw.EXIT_ABORTED
+    assert again.state.core(in_test.core).crash_count == int(crashed)
+    assert hardware.co == {0: 0, 1: 0, 8: 0}
+    assert runner.seen == []
+    assert rows(again, "SELECT status FROM tuner_sessions WHERE id=1") == [{"status": "aborted"}]
+
+
 @pytest.mark.req("TRUTH.BOOT_END_UNREAD")
 def test_a_reboot_whose_end_cannot_be_read_is_treated_as_a_crash_and_recorded_as_such(tmp_path):
     hardware = FakeHardware()

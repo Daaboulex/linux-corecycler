@@ -372,6 +372,23 @@ def test_a_session_action_names_the_session_in_view(db, home, launched, tmp_path
     assert "--acknowledge" not in launched[0][0]
 
 
+@pytest.mark.req("T23.abort_interrupted")
+@pytest.mark.parametrize(
+    ("status", "offered"), [("paused", True), ("running", True), ("completed", False), ("aborted", False)]
+)
+def test_abort_is_offered_for_a_held_session_without_a_driver_and_launches_one(
+    db, home, launched, tmp_path, status, offered
+):
+    saved = save_machine_session(db, tmp_path, status)
+    t = tab(db, reads={0: -20})
+    assert t._buttons["Abort"].isEnabled() is offered
+    tt.QMessageBox.question.return_value = tt.QMessageBox.StandardButton.Yes
+    t._buttons["Abort"].click()
+    assert [command[4:7] for command, _ in launched] == (
+        [["--abort", "--session", str(saved.session_id)]] if offered else []
+    )
+
+
 @pytest.mark.req("L01.15.list", "Q7", "UI1.bios")
 def test_start_over_set_values_asks_first_and_names_them(db, home, launched):
     t = tab(db, reads={1: -20, 3: -10, 2: None})

@@ -31,7 +31,7 @@ EXIT_MEANINGS = {
     EXIT_SIGNAL: "stopped by a signal; every owned core is sent back to its baseline",
 }
 
-SESSION_COMMANDS = ("resume", "validate", "continue", "restart")
+SESSION_COMMANDS = ("resume", "validate", "continue", "restart", "abort")
 COMMANDS = ("doctor", "status", "shaper", "tune", *SESSION_COMMANDS)
 
 USAGE = f"""\
@@ -50,6 +50,9 @@ corecycler headless commands:
   corecycler validate SESSION_ID   prove a completed session's values again
   corecycler continue SESSION_ID   carry a session paused on a changed setup into a new one
   corecycler restart SESSION_ID    start a session paused on a changed setup over
+  corecycler abort SESSION_ID      stop a held session without a driver as aborted: its
+                                   last boot is attributed first, then every owned core
+                                   goes back to its baseline; no test runs
 
 tune and restart take --acknowledge to start over a CO the BIOS already sets.
 Every tuning command takes --db FILE and --state-dir DIR; one runs at a time.

@@ -683,6 +683,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
     action.add_argument("--validate", action="store_true")
     action.add_argument("--continue", dest="continue_on", action="store_true")
     action.add_argument("--restart", action="store_true")
+    action.add_argument("--abort", action="store_true")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--cores")
     parser.add_argument("--max-offset", dest="max_offset", type=int)
@@ -698,6 +699,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
         ("validate", "validate"),
         ("continue_on", "continue"),
         ("restart", "restart"),
+        ("abort", "abort"),
     ):
         if getattr(args, named) and args.session is None:
             parser.error(f"--{flag} needs --session")
@@ -821,6 +823,8 @@ def _run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> 
         rig.resume(args.session)
     if rig.refused is not None:
         return EXIT_REFUSED
+    if args.abort:
+        rig.post(Abort())
     final = rig.run_until_rest()
     if (
         (args.continue_on or args.restart)

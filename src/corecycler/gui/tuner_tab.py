@@ -578,8 +578,9 @@ class TunerTab(QWidget):
         idle = not self._running and not self._test_running and self._child is None
         status = view.status if view is not None else None
         self._buttons["Start"].setEnabled(idle and self._co_range is not None and bool(self._core_boxes))
-        for name in ("Pause", "Stop", "Abort"):
+        for name in ("Pause", "Stop"):
             self._buttons[name].setEnabled(self._running)
+        self._buttons["Abort"].setEnabled(self._running or (idle and status in ("running", "paused")))
         self._buttons["Resume"].setEnabled(idle and status in ("running", "paused", "aborted"))
         self._buttons["Validate"].setEnabled(idle and status == "completed")
         for name in ("Continue", "Restart"):
@@ -656,7 +657,11 @@ class TunerTab(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
-        if answer == QMessageBox.StandardButton.Yes:
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if running_driver() is None and self._view is not None:
+            self._launch(["--abort", "--session", str(self._view.session_id)])
+        else:
             self._signal(signal.SIGUSR2, "abort")
 
     def _signal(self, number: signal.Signals, meaning: str) -> None:

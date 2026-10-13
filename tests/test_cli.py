@@ -43,7 +43,9 @@ class TestArgHandling:
         assert cli.cli_main(["bogus"]) == cli.EXIT_REFUSED
         assert "headless commands" in capsys.readouterr().err
 
-    @pytest.mark.parametrize("command", ["doctor", "status", "tune", "resume", "validate", "continue", "restart"])
+    @pytest.mark.parametrize(
+        "command", ["doctor", "status", "tune", "resume", "validate", "continue", "restart", "abort"]
+    )
     def test_the_binary_hands_every_command_to_the_cli(self, monkeypatch, command):
         from corecycler import main as entry
 
