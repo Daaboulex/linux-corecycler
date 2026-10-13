@@ -4906,6 +4906,11 @@ proof = "not built"
 task = "T23"
 
 [[requirement]]
+id = "T23.contract.tuner"
+statement = "Every button of the Auto-Tuner tab is listed with its reaction, and the tests fail on an unlisted or missing button; each button's reaction (a launch with its flag, a signal, the advanced section shown) is observed through its connection and absent with the connection cut; every settings input changes the configuration Start sends."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "not built"

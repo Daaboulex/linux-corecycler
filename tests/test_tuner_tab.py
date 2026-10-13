@@ -16,7 +16,15 @@ import pytest
 if not hasattr(sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("tuner tab tests require real PySide6", allow_module_level=True)
 
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import (
+    QAbstractButton,
+    QAbstractSpinBox,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QLabel,
+    QWidget,
+)
 
 from corecycler.cli import EXIT_PAUSED
 from corecycler.engine.topology import CPUTopology, PhysicalCore
@@ -724,3 +732,107 @@ def test_every_fact_the_tuner_tab_shows_is_listed_with_its_source(db, home, tmp_
     assert texts
     assert (held == "running") == any(text.startswith("Testing ") for text in texts)
     assert [text for text in texts if not any(re.fullmatch(pattern, text) for pattern, _ in SHOWN_FACTS)] == []
+
+
+TUNER_CONTROLS = {
+    "Start": "launches the driver with --start and the form's configuration",
+    "Pause": "sends SIGUSR1 to the running driver",
+    "Stop": "sends SIGTERM to the running driver",
+    "Abort": "after a yes, sends SIGUSR2 to a running driver, else launches --abort for the session in view",
+    "Resume": "launches --resume for the session in view",
+    "Validate": "launches --validate for the session in view",
+    "Continue": "launches --continue for the session in view",
+    "Restart": "launches --restart for the session in view",
+    "Advanced settings": "shows or hides the advanced settings",
+    "QTableCornerButton": "selects every row of the core table",
+}
+SETUP_PAUSE = "setup_changed: bios was A, is now B"
+LAUNCHES = {
+    "Start": (None, None, "--start"),
+    "Resume": ("paused", None, "--resume"),
+    "Validate": ("completed", None, "--validate"),
+    "Continue": ("paused", SETUP_PAUSE, "--continue"),
+    "Restart": ("paused", SETUP_PAUSE, "--restart"),
+    "Abort": ("paused", None, "--abort"),
+}
+SIGNALS = {"Pause": signal.SIGUSR1, "Stop": signal.SIGTERM, "Abort": signal.SIGUSR2}
+
+
+@pytest.mark.req("T23.contract.tuner")
+def test_every_button_of_the_tuner_tab_is_listed_with_its_reaction(db, home):
+    t = tab(db)
+    buttons = {
+        button.text() or button.metaObject().className()
+        for button in t.findChildren(QAbstractButton)
+        if not isinstance(button, QCheckBox)
+    }
+    assert buttons == set(TUNER_CONTROLS)
+
+
+@pytest.mark.req("T23.contract.tuner")
+@pytest.mark.parametrize("connected", [True, False])
+@pytest.mark.parametrize("name", sorted(LAUNCHES))
+def test_a_launching_button_reacts_only_through_its_connection(db, home, launched, tmp_path, name, connected):
+    status, event, flag = LAUNCHES[name]
+    if status is not None:
+        saved = save_machine_session(db, tmp_path, status)
+        if event is not None:
+            db.insert_tuner_event(saved.session_id, event, this_boot(), "paused")
+    t = tab(db)
+    tt.QMessageBox.question.return_value = tt.QMessageBox.StandardButton.Yes
+    assert t._buttons[name].isEnabled()
+    if not connected:
+        t._buttons[name].clicked.disconnect()
+    t._buttons[name].click()
+    assert any(flag in command for command, _ in launched) is connected
+
+
+@pytest.mark.req("T23.contract.tuner")
+@pytest.mark.parametrize("connected", [True, False])
+@pytest.mark.parametrize("name", sorted(SIGNALS))
+def test_a_signalling_button_reacts_only_through_its_connection(db, home, tmp_path, monkeypatch, name, connected):
+    saved = save_machine_session(db, tmp_path, "running")
+    db.insert_tuner_test(
+        saved.session_id, this_boot(), 1, "search", "1t", "1t", saved.cores[0].core, -3, "[]", "[0]", 60.0, "{}"
+    )
+    kills = []
+    monkeypatch.setattr(tt.os, "kill", lambda pid, number: kills.append(number))
+    tt.QMessageBox.question.return_value = tt.QMessageBox.StandardButton.Yes
+    t = tab(db)
+    with co_writer(record=True):
+        t.refresh()
+        assert t._buttons[name].isEnabled()
+        if not connected:
+            t._buttons[name].clicked.disconnect()
+        t._buttons[name].click()
+    assert (SIGNALS[name] in kills) is connected
+
+
+@pytest.mark.req("T23.contract.tuner")
+@pytest.mark.parametrize("connected", [True, False])
+def test_the_advanced_toggle_reacts_only_through_its_connection(db, home, connected):
+    t = tab(db)
+    if not connected:
+        t._advanced_toggle.toggled.disconnect()
+    t._advanced_toggle.setChecked(True)
+    assert (not t._advanced.isHidden()) is connected
+
+
+@pytest.mark.req("T23.contract.tuner")
+def test_every_settings_input_changes_the_configuration_start_sends(db, home):
+    t = tab(db)
+    inputs = [
+        widget
+        for widget in t._settings.findChildren(QWidget)
+        if isinstance(widget, (QAbstractSpinBox, QComboBox, QCheckBox))
+    ]
+    assert inputs
+    for widget in inputs:
+        before = t.config()
+        if isinstance(widget, QCheckBox):
+            widget.setChecked(not widget.isChecked())
+        elif isinstance(widget, QComboBox):
+            widget.setCurrentIndex((widget.currentIndex() + 1) % widget.count())
+        else:
+            widget.stepBy(1 if widget.value() < widget.maximum() else -1)
+        assert t.config() != before, widget
