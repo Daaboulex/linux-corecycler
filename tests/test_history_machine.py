@@ -214,3 +214,23 @@ def test_an_open_test_says_how_it_ended(db, tmp_path, boot, driver, said):
         tab = tuner_view(db)
     lines = tab._events_log.toPlainText().splitlines()
     assert any(line.endswith(f"core {core}, Search, one thread, at -3: {said}") for line in lines)
+
+
+@pytest.mark.req("A2.coverage")
+@pytest.mark.parametrize(
+    ("record", "said"),
+    [
+        (None, ""),
+        ('{"0": {"cells": [], "unreadable_s": 0.0}}', ""),
+        ('{"1": {"cells": [[5000, 60, 1.0]], "unreadable_s": 0.0}}', ""),
+        (
+            '{"0": {"cells": [[4800, 55, 9.5], [5600, 75, 10.1]], "unreadable_s": 0.4}}',
+            "  covered 4800-5700 MHz at 55-80 C for 19.6 s, 0.4 s unreadable",
+        ),
+        ('{"0": {"cells": [], "unreadable_s": 2.0}}', "  2.0 s unreadable"),
+    ],
+)
+def test_a_test_line_says_the_tested_core_s_coverage_as_read(record, said):
+    from corecycler.gui.history_tab import coverage_text
+
+    assert coverage_text(record, 0) == said

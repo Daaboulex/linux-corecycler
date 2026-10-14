@@ -151,6 +151,36 @@ def config_from_json(raw: dict) -> MachineConfig:
     return cfg
 
 
+MHZ_BIN = 100
+TEMP_BIN = 5
+STEP_CAP_S = 1.0
+
+
+def coverage(samples: list[dict], ccd_of: dict[int, int | None]) -> dict[int, dict]:
+    cells: dict[int, dict[tuple[int, int], float]] = {core: {} for core in ccd_of}
+    unreadable = dict.fromkeys(ccd_of, 0.0)
+    for sample, following in zip(samples, samples[1:], strict=False):
+        if not sample["running"]:
+            continue
+        seconds = max(0.0, min((following["mono_ns"] - sample["mono_ns"]) / 1e9, STEP_CAP_S))
+        clocks = dict(sample["clocks"])
+        temps = dict(sample["tccd"])
+        for core, ccd in ccd_of.items():
+            mhz, temp = clocks.get(core), temps.get(ccd)
+            if mhz is None or temp is None:
+                unreadable[core] += seconds
+                continue
+            cell = (int(mhz // MHZ_BIN) * MHZ_BIN, int(temp // TEMP_BIN) * TEMP_BIN)
+            cells[core][cell] = cells[core].get(cell, 0.0) + seconds
+    return {
+        core: {
+            "cells": [[mhz, temp, round(seconds, 2)] for (mhz, temp), seconds in sorted(cells[core].items())],
+            "unreadable_s": round(unreadable[core], 2),
+        }
+        for core in ccd_of
+    }
+
+
 def peaks(samples: list[dict]) -> dict[int, float]:
     highest: dict[int, float] = {}
     for sample in samples:
@@ -337,9 +367,12 @@ class Store:
     def mark_survived(self, session_id: int, boot: str, exclude: tuple[int, ...]) -> None:
         self.db.journal_mark_survived(session_id, boot_id=boot, exclude_cores=exclude)
 
-    def test_returned(self, session_id: int, boot: str, row: int, report: Report) -> None:
+    def test_returned(
+        self, session_id: int, boot: str, row: int, report: Report, ccd_of: dict[int, int | None]
+    ) -> None:
         evidence = {"records": [asdict(e) for e in report.evidence], "unblamed_corrected": report.unblamed_corrected}
         self.write_block()
+        samples = self.db.tuner_test_samples(row)
         self.db.end_tuner_test(
             row,
             report.group.value,
@@ -350,7 +383,8 @@ class Store:
             report.detail,
             json.dumps(report.speeds),
             report.output,
-            peaks_json=json.dumps(peaks(self.db.tuner_test_samples(row))),
+            peaks_json=json.dumps(peaks(samples)),
+            coverage_json=json.dumps(coverage(samples, ccd_of)),
         )
         if report.kernel_read_ns is not None:
             self.db.set_kernel_read(session_id, report.kernel_read_ns)
@@ -811,7 +845,10 @@ class LiveRig:
                 detail = f" {report.detail}" if report.detail else ""
                 self.say(f"verdict {event.token}: {report.group.value} after {report.seconds:.0f} s{detail}")
             session, boot = self.state.session_id, self.boot
-            failed = self._end_test(event.token, lambda row: self.store.test_returned(session, boot, row, event.report))
+            failed = self._end_test(
+                event.token,
+                lambda row: self.store.test_returned(session, boot, row, event.report, dict(self.domain_of)),
+            )
         elif isinstance(event, InternalError) and self.test_row is not None:
             failed = self._end_test(self.test_row[0], lambda row: self.store.test_broken(row, event.error))
         self.post(event if failed is None else failed)

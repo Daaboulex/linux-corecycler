@@ -48,7 +48,7 @@ from corecycler.gui.tuner_tab import ORDER_LABELS, THREADS, settings_lines
 from corecycler.gui.widgets import table_item as _item
 from corecycler.history.timefmt import format_local
 from corecycler.smu.writer_lock import running_driver
-from corecycler.tuner.live import read_stored
+from corecycler.tuner.live import MHZ_BIN, TEMP_BIN, read_stored
 from corecycler.tuner.machine.types import Phase
 
 if TYPE_CHECKING:
@@ -84,6 +84,27 @@ def counts_html(counts: Counter[str]) -> str:
         for status in order
         if counts[status]
     )
+
+
+def coverage_text(coverage_json: str | None, core: int) -> str:
+    if coverage_json is None:
+        return ""
+    record = json.loads(coverage_json).get(str(core))
+    if record is None:
+        return ""
+    cells, unreadable = record["cells"], record["unreadable_s"]
+    said = (
+        []
+        if not cells
+        else [
+            f"covered {min(c[0] for c in cells)}-{max(c[0] for c in cells) + MHZ_BIN} MHz"
+            f" at {min(c[1] for c in cells)}-{max(c[1] for c in cells) + TEMP_BIN} C"
+            f" for {sum(c[2] for c in cells):.1f} s"
+        ]
+    )
+    if unreadable:
+        said.append(f"{unreadable:.1f} s unreadable")
+    return "  " + ", ".join(said) if said else ""
 
 
 class HistoryTab(QWidget):
@@ -898,6 +919,7 @@ class HistoryTab(QWidget):
                 else open_test_text(test, test is tests[-1], boot, driver)
             )
             + (f"  {test['detail']}" if test["detail"] else "")
+            + coverage_text(test["coverage_json"], test["core"])
             for test in tests
         ]
         lines += ["", "-- Events --"]

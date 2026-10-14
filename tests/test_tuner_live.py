@@ -20,7 +20,7 @@ from corecycler.history.db import HistoryDB
 from corecycler.monitor.frequency import PowerState
 from corecycler.monitor.hwmon import SensorRead
 from corecycler.tuner import live, live_hw, stages, telemetry
-from corecycler.tuner.live import BootFacts, Identity, LiveRig, Store, stored_from_json, stored_to_json
+from corecycler.tuner.live import BootFacts, Identity, LiveRig, Store, coverage, stored_from_json, stored_to_json
 from corecycler.tuner.machine.types import (
     Close,
     CrashEvidenceRead,
@@ -48,6 +48,7 @@ CPUS = ((0, (0, 16)), (1, (1, 17)), (8, (8, 24)))
 DOMAINS = ((0, 0), (1, 0), (8, 1))
 EDGES = {0: -6, 1: -2, 8: -4}
 IDENTITY = Identity("bios-1", "cpu-1", None)
+ONE_CCD = {0: 0, 1: 0}
 
 
 def config(**changes) -> MachineConfig:
@@ -706,7 +707,7 @@ def test_the_store_writes_a_block_every_block_of_samples_and_at_the_test_s_end(t
     assert counts() == (0, 1)
     store.sample(row, taken(0, telemetry.BLOCK), durable=False)
     assert counts() == (0, 1)
-    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0))
+    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0), ONE_CCD)
     assert counts() == (0, 2)
     assert [s["mono_ns"] for s in store.db.tuner_test_samples(row)] == [1_000 + n for n in range(telemetry.BLOCK + 1)]
 
@@ -744,7 +745,7 @@ def test_a_test_row_keeps_each_core_s_highest_clock_from_every_sample_it_took(tm
     row = store.db.insert_tuner_test(1, "boot-a", 1, "steady", "hot", "1t", 0, -3, "[]", "[0, 1]", 60.0, "{}")
     for n, clocks in enumerate((((0, 4100.0), (1, 4200.0)), ((0, 4290.0), (1, None)), ((0, 4150.0), (1, 4310.0)))):
         store.sample(row, telemetry.Sample(True, clocks, 60.0, mono_ns=n), durable=n == 2)
-    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0))
+    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0), ONE_CCD)
     (saved,) = rows(SimpleNamespace(store=store), "SELECT peaks_json FROM tuner_tests WHERE id=?", (row,))
     assert json.loads(saved["peaks_json"]) == {"0": 4290.0, "1": 4310.0}
     assert store.db.core_peaks(1) == {0: 4290.0, 1: 4310.0}
@@ -754,7 +755,7 @@ def test_a_test_without_samples_keeps_an_empty_peak_record(tmp_path):
     store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
     store.save(stored_with_fb(None), "boot-a")
     row = store.db.insert_tuner_test(1, "boot-a", 1, "search", None, "1t", 0, -3, "[]", "[0]", 60.0, "{}")
-    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0))
+    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0), ONE_CCD)
     assert rows(SimpleNamespace(store=store), "SELECT peaks_json FROM tuner_tests") == [{"peaks_json": "{}"}]
     assert store.db.core_peaks(1) == {}
 
@@ -767,7 +768,7 @@ def test_every_test_end_checkpoints_the_database(tmp_path, monkeypatch):
     )
     checkpoints = []
     monkeypatch.setattr(store.db, "checkpoint", lambda: checkpoints.append(1))
-    store.test_returned(1, "boot-a", returned, Report(Group.PASS, 60.0))
+    store.test_returned(1, "boot-a", returned, Report(Group.PASS, 60.0), ONE_CCD)
     store.test_broken(broken, "the test runner raised")
     assert len(checkpoints) == 2
 
@@ -2348,3 +2349,46 @@ def test_the_hardware_adapter_reads_the_power_state_under_its_cpu_root(tmp_path)
 def test_a_slow_machine_check_poll_refuses_the_start(tmp_path, monkeypatch):
     late = "machine-check poll every 300 s, above 5 s, so corrected errors log late: echo 5 | sudo tee x"
     assert preflight(tmp_path, monkeypatch, mce=lambda: late, tools=(Tool("y-cruncher"),)) == (late, ())
+
+
+@pytest.mark.req("A2.coverage")
+def test_coverage_counts_each_core_s_seconds_per_clock_and_ccd_temperature_cell_while_the_load_runs():
+    second = 1_000_000_000
+    samples = [
+        {"running": True, "mono_ns": 0, "clocks": [[0, 5040.0], [1, 4410.0]], "tccd": [[0, 61.0], [1, 54.9]]},
+        {"running": True, "mono_ns": second // 2, "clocks": [[0, 5099.0], [1, None]], "tccd": [[0, 64.9], [1, 55.0]]},
+        {"running": False, "mono_ns": second, "clocks": [[0, 3000.0], [1, 3000.0]], "tccd": [[0, 40.0], [1, 40.0]]},
+        {"running": True, "mono_ns": 5 * second, "clocks": [[0, 5100.0]], "tccd": [[0, 66.0]]},
+        {"running": True, "mono_ns": 20 * second, "clocks": [], "tccd": []},
+    ]
+    assert coverage(samples, {0: 0, 1: 1}) == {
+        0: {"cells": [[5000, 60, 1.0], [5100, 65, 1.0]], "unreadable_s": 0.0},
+        1: {"cells": [[4400, 50, 0.5]], "unreadable_s": 1.5},
+    }
+
+
+def test_coverage_keeps_hundredths_of_a_second():
+    third = 1_000_000_000 // 3
+    samples = [
+        {"running": True, "mono_ns": 0, "clocks": [[0, 5000.0]], "tccd": [[0, 60.0]]},
+        {"running": True, "mono_ns": third, "clocks": [], "tccd": []},
+        {"running": True, "mono_ns": 2 * third, "clocks": [], "tccd": []},
+    ]
+    assert coverage(samples, {0: 0}) == {0: {"cells": [[5000, 60, 0.33]], "unreadable_s": 0.33}}
+
+
+def test_coverage_of_no_samples_is_empty_for_every_core():
+    assert coverage([], {0: 0}) == {0: {"cells": [], "unreadable_s": 0.0}}
+
+
+@pytest.mark.req("A2.coverage")
+def test_a_returned_test_stores_each_core_s_coverage_from_its_own_samples(tmp_path):
+    store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
+    store.save(stored_with_fb(None), "boot-a")
+    row = store.db.insert_tuner_test(1, "boot-a", 1, "search", None, "1t", 0, -3, "[]", "[0]", 60.0, "{}")
+    for n, temp in enumerate((61.0, 62.0, 63.0)):
+        sample = telemetry.Sample(True, ((0, 5040.0),), 60.0, mono_ns=n * 100_000_000, tccd=((0, temp),))
+        store.sample(row, sample, durable=n == 2)
+    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0), {0: 0})
+    (saved,) = rows(SimpleNamespace(store=store), "SELECT coverage_json FROM tuner_tests WHERE id=?", (row,))
+    assert json.loads(saved["coverage_json"]) == {"0": {"cells": [[5000, 60, 0.2]], "unreadable_s": 0.0}}

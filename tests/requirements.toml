@@ -4968,3 +4968,8 @@ proof = "built"
 id = "EC.G5"
 statement = "A one-core SEARCH test that reports a pass while a kernel record names the tested core fails that value as silicon; the same pass without the record stands (scratch/design/error-capture.md gap 5)."
 proof = "built"
+
+[[requirement]]
+id = "A2.coverage"
+statement = "Every tuner test stores, for every core, the seconds it spent in each 100 MHz by 5 C cell of its own clock and its CCD's temperature while the load ran, each step capped at 1 s, and the seconds unreadable; History's test line shows the tested core's range from that record (scratch/design/coverage-record.md)."
+proof = "built"

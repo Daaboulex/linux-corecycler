@@ -223,7 +223,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 28
+    SCHEMA_VERSION = 29
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -340,7 +340,8 @@ CREATE TABLE IF NOT EXISTS tuner_tests (
     speeds_json     TEXT,
     power_json      TEXT,
     output          TEXT,
-    peaks_json      TEXT
+    peaks_json      TEXT,
+    coverage_json   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tuner_tests_session ON tuner_tests(session_id, core);
 """
@@ -963,6 +964,10 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     def _migrate_v28(conn: sqlite3.Connection) -> None:
         HistoryDB._add_columns(conn, "tuner_tests", [("peaks_json", "TEXT")])
 
+    @staticmethod
+    def _migrate_v29(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(conn, "tuner_tests", [("coverage_json", "TEXT")])
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
@@ -991,6 +996,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         26: _DDL_TUNER_BOOTS,
         27: _migrate_v27,
         28: _migrate_v28,
+        29: _migrate_v29,
     }
 
     # ------------------------------------------------------------------
@@ -1470,7 +1476,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     def list_tuner_tests(self, session_id: int) -> list[dict]:
         rows = self.__conn.execute(
             "SELECT id, boot_id, started_at, ended_at, stage, load, klass, core, value, seconds_asked, seconds_run,"
-            " verdict, detail FROM tuner_tests WHERE session_id=? ORDER BY id",
+            " verdict, detail, coverage_json FROM tuner_tests WHERE session_id=? ORDER BY id",
             (session_id,),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -1581,11 +1587,13 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         output: str,
         *,
         peaks_json: str | None = None,
+        coverage_json: str | None = None,
     ) -> None:
         cur = self.__conn.execute(
             """\
             UPDATE tuner_tests SET ended_at=?, verdict=?, seconds_run=?, named_json=?,
-                context_json=?, evidence_json=?, detail=?, speeds_json=?, output=?, peaks_json=?
+                context_json=?, evidence_json=?, detail=?, speeds_json=?, output=?, peaks_json=?,
+                coverage_json=?
             WHERE id=? AND ended_at IS NULL
             """,
             (
@@ -1599,6 +1607,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
                 speeds_json,
                 output,
                 peaks_json,
+                coverage_json,
                 row_id,
             ),
         )
