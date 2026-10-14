@@ -82,7 +82,8 @@ Memory tab's test is never pinned.
 ## Other distros
 
 PySide6 is installed into a venv because `pip3 install` is blocked by PEP 668 on recent
-Ubuntu / Fedora / Mint; `sudo` must then use the venv's python.
+Ubuntu / Fedora / Mint; `sudo` must then use the venv's python. The kernel drivers are built
+separately, each at the commit this repository pins: see [Kernel modules](#kernel-modules).
 
 ### Arch Linux
 
@@ -92,9 +93,6 @@ yay -S stressapptest        # AUR -- not in the official repos
 yay -S mprime-bin           # AUR, optional -- unfree, best backend for CO tuning
 yay -S y-cruncher           # AUR, optional -- unfree, secondary validation
 
-git clone https://github.com/amkillam/ryzen_smu.git
-cd ryzen_smu && make && sudo make install && sudo modprobe ryzen_smu
-
 git clone https://github.com/Daaboulex/linux-corecycler.git
 cd linux-corecycler && sudo python src/corecycler/main.py
 ```
@@ -103,9 +101,6 @@ cd linux-corecycler && sudo python src/corecycler/main.py
 
 ```bash
 sudo apt install python3 python3-venv stress-ng stressapptest dmidecode build-essential linux-headers-$(uname -r)
-
-git clone https://github.com/amkillam/ryzen_smu.git
-cd ryzen_smu && make && sudo make install && sudo modprobe ryzen_smu
 
 git clone https://github.com/Daaboulex/linux-corecycler.git
 cd linux-corecycler
@@ -117,9 +112,6 @@ sudo .venv/bin/python src/corecycler/main.py
 
 ```bash
 sudo dnf install python3 stress-ng stressapptest dmidecode kernel-devel gcc make
-
-git clone https://github.com/amkillam/ryzen_smu.git
-cd ryzen_smu && make && sudo make install && sudo modprobe ryzen_smu && cd ..
 
 git clone https://github.com/Daaboulex/linux-corecycler.git
 cd linux-corecycler
@@ -231,7 +223,10 @@ None are required for basic stress testing; each unlocks more functionality.
 | [`ryzen_smu`](https://github.com/amkillam/ryzen_smu) (amkillam fork) | Out-of-tree | SMU sysfs for CO read/write, PBO limit reads, PM table | Curve-Tuner tab, Auto-Tuner |
 | `zenpower` ([zenpower5](https://github.com/mattkeenan/zenpower5)) | Out-of-tree | Richer AMD hwmon than k10temp: SVI2 voltage and current (Zen 1-4), RAPL power | Better voltage/power monitoring |
 | `nct6683` / `nct6775` | In-tree | Nuvoton Super I/O (Vcore via label scan): NCT6683/6686/6687 on modern MSI boards, NCT6775-NCT6799 on ASUS, MSI and ASRock boards | Motherboard Vcore |
+| [`nct6687`](https://github.com/Fred78290/nct6687d) (Fred78290) | Out-of-tree | Fuller NCT6687 support than the in-tree nct6683, which it replaces | Motherboard Vcore on MSI boards |
 | [`it87`](https://github.com/frankcrawford/it87) (frankcrawford fork) | Out-of-tree | ITE Super I/O, common on Gigabyte boards | Motherboard Vcore |
+| [`asus_ec_sensors`](https://github.com/zeule/asus-ec-sensors) (zeule) | Out-of-tree | ASUS embedded controller: VRM, chipset and board readings, for newer boards than the kernel's own copy names | Motherboard voltages on ASUS boards |
+| `asus_wmi_sensors` | In-tree | ASUS WMI sensor interface on older ASUS boards | Motherboard voltages on ASUS boards |
 | `spd5118` + `i2c_dev` | In-tree | DDR5 DIMM temperature via the SPD hub | Live DIMM temperatures |
 | `coretemp` | In-tree | Intel CPU temperature | Intel systems only |
 
@@ -240,8 +235,12 @@ back to the motherboard Super I/O chip (Nuvoton NCT668x/NCT677x-NCT679x, ITE
 IT862x-IT877x), scanning input labels for the Vcore channel. If neither source is
 available, Vcore shows "N/A".
 
-On non-NixOS distros, load in-tree modules with `sudo modprobe <name>`; build
-out-of-tree modules from source.
+On NixOS each row is a switch in the drivers module ([Module options](#module-options)). On
+other distros, load an in-tree module with `sudo modprobe <name>`, and build an out-of-tree one
+at the commit this repository pins and tests, the `rev` in its recipe: `nix/ryzen-smu.nix`,
+`nix/zenpower.nix`, `nix/nct6687d.nix`, `nix/it87.nix` or `nix/asus-ec-sensors.nix`.
+[ryzen_smu kernel module](#ryzen_smu-kernel-module) shows the steps; the others take the same
+checkout and their own README's build.
 
 ## Stress backends
 
@@ -302,11 +301,14 @@ without asking.
 
 Required for the Curve-Tuner tab and Auto-Tuner; not for stress testing. The
 [amkillam fork](https://github.com/amkillam/ryzen_smu) supports Zen 1 through Zen 5. On
-NixOS turn on `hardware.corecycler.ryzenSmu.enable`. On other distros:
+NixOS turn on `hardware.corecycler.ryzenSmu.enable`. On other distros, from the
+linux-corecycler checkout, build the commit pinned in `nix/ryzen-smu.nix`:
 
 ```bash
-git clone https://github.com/amkillam/ryzen_smu.git
-cd ryzen_smu && make && sudo make install && sudo modprobe ryzen_smu
+rev=$(sed -n 's/^ *rev = "\(.*\)";$/\1/p' nix/ryzen-smu.nix) && test -n "$rev" &&
+  git clone https://github.com/amkillam/ryzen_smu.git ../ryzen_smu &&
+  git -C ../ryzen_smu checkout -q "$rev" &&
+  cd ../ryzen_smu && make && sudo make install && sudo modprobe ryzen_smu
 
 ls /sys/kernel/ryzen_smu_drv/
 # Expected to include: mp1_smu_cmd  rsmu_cmd  smu_args  smn  version  pm_table

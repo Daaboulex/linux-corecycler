@@ -162,6 +162,14 @@ Hardware-touching code (SMU driver, hwmon, topology) has higher review standards
 - **Document the source** — cite ZenStates-Core, kernel driver docs, or AMD documentation
 - **Safety: all SMU writes are volatile** — never modify BIOS/UEFI
 
+### Driver pins
+
+Each out-of-tree driver is pinned in its recipe under `nix/` (`rev` and `hash`), and both the
+NixOS drivers module and the other-distro steps in the install guide build that commit. A pin
+moves to a newer upstream commit only when the change between them is small, keeps the
+driver's behaviour, and adds safety or stability. Before it lands, the x86 `kernel-modules`
+check builds it against nixpkgs' default and latest kernels.
+
 ### Adding Support for a New CPU
 
 1. Add `CPUGeneration` enum value in `src/corecycler/smu/commands.py`

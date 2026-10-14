@@ -61,10 +61,11 @@ Add the flake input and enable the NixOS module:
 }
 ```
 
-The module handles the package, the in-tree kernel modules, udev rules, and permissions.
-The out-of-tree drivers (ryzen_smu, zenpower5, it87) are a separate module,
-`nixosModules.drivers`, which the tuner module includes; each is off until turned on, and a
-machine can import the drivers module alone. Or run it directly:
+The module handles the package, the msr kernel module, udev rules, and permissions. The
+sensor drivers are a separate module, `nixosModules.drivers`, which the tuner module
+includes: ryzen_smu, zenpower5, asus-ec-sensors, nct6687d and it87 built from pinned sources
+with your kernel's own toolchain, and the in-tree board sensors loaded by name. Each is off
+until turned on, and a machine can import the drivers module alone. Or run it directly:
 
 ```bash
 nix run github:Daaboulex/linux-corecycler        # FOSS-only
