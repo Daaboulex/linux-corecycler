@@ -36,6 +36,7 @@ from corecycler.engine.execution import Lane, Supervisor, ThermalWatch
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.history.context import read_bios_version
 from corecycler.history.db import HistoryDB
+from corecycler.monitor.cpu_usage import CPUUsageReader
 from corecycler.monitor.frequency import Clocks, PowerState, fastest, read_power_state
 from corecycler.monitor.hwmon import SensorRead, Sensors
 from corecycler.smu.commands import detect_generation, get_commands, tjmax_c
@@ -282,6 +283,15 @@ def igpu(pci: Path = PCI) -> dict:
 SMU_DRIVER = "/sys/kernel/ryzen_smu_drv"
 PROC = Path("/proc")
 SCHED_EXT = Path("/sys/kernel/sched_ext")
+BACKGROUND_WINDOW_S = 5.0
+BACKGROUND_BUSY_PERCENT = 5.0
+
+
+def background_load(wait=time.sleep) -> dict[int, float]:
+    reader = CPUUsageReader()
+    reader.read()
+    wait(BACKGROUND_WINDOW_S)
+    return reader.read()
 
 
 def _others(proc: Path) -> list[Path]:
@@ -343,7 +353,7 @@ def scheduling_problem() -> str | None:
 
 
 def preflight(
-    smu, sensors, tools, budget, proc: Path = PROC, sched_ext: Path = SCHED_EXT
+    smu, sensors, tools, budget, proc: Path = PROC, sched_ext: Path = SCHED_EXT, load=background_load
 ) -> tuple[str | None, tuple[str, ...]]:
     """The first gate of L01 that refuses (in L01 order, later gates not run), and the warnings."""
     by_name_only: list[int] = []
@@ -383,6 +393,13 @@ def preflight(
     hot_mb = budget(1, 0).usable_mb // 2
     if hot_mb < stages.HOT_MEMORY_CAP_MB:
         warnings.append(f"HOT runs y-cruncher with {hot_mb} MB, under its {stages.HOT_MEMORY_CAP_MB} MB cap")
+    busy = [
+        f"CPU {cpu} {percent:.0f} %" for cpu, percent in sorted(load().items()) if percent > BACKGROUND_BUSY_PERCENT
+    ]
+    if busy:
+        warnings.append(
+            f"background load above {BACKGROUND_BUSY_PERCENT:g} % over {BACKGROUND_WINDOW_S:g} s: {', '.join(busy)}"
+        )
     return refusal, tuple(warnings)
 
 

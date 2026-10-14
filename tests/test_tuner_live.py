@@ -2155,6 +2155,7 @@ def preflight(
     sched_ext=None,
     lane=None,
     mce=None,
+    load=None,
 ):
     monkeypatch.setattr(live_hw.kernel, "kernel_log_problem", lambda: None)
     monkeypatch.setattr(live_hw.kernel, "mce_poll_problem", mce or (lambda: None))
@@ -2169,11 +2170,28 @@ def preflight(
         lambda n, floor: SimpleNamespace(usable_mb=usable),
         proc,
         sched_ext or tmp_path / "no-sched-ext",
+        load or (lambda: {0: 5.0, 1: 0.4}),
     )
 
 
 def test_a_ready_machine_passes_preflight_without_warnings(tmp_path, monkeypatch):
     assert preflight(tmp_path, monkeypatch, tools=(Tool("y-cruncher"),)) == (None, ())
+
+
+@pytest.mark.req("K50")
+def test_a_cpu_busy_above_5_percent_over_the_sample_warns_naming_each_such_cpu(tmp_path, monkeypatch):
+    refusal, warnings = preflight(tmp_path, monkeypatch, load=lambda: {8: 7.2, 0: 12.6, 1: 5.0, 2: 0.0})
+    assert refusal is None
+    assert warnings == ("background load above 5 % over 5 s: CPU 0 13 %, CPU 8 7 %",)
+
+
+@pytest.mark.req("K50")
+def test_the_background_load_is_the_busy_share_between_two_reads_5_s_apart(monkeypatch):
+    events = []
+    reads = iter([{}, {0: 30.0}])
+    monkeypatch.setattr(live_hw.CPUUsageReader, "read", lambda self: events.append("read") or next(reads))
+    assert live_hw.background_load(events.append) == {0: 30.0}
+    assert events == ["read", 5.0, "read"]
 
 
 @pytest.mark.parametrize(

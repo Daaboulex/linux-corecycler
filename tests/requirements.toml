@@ -564,8 +564,7 @@ proof = "built"
 [[requirement]]
 id = "K50"
 statement = "Background load above 5 % per CPU over 5 s warns"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "K51"
