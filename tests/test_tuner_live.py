@@ -2196,6 +2196,7 @@ def preflight(
     lane=None,
     mce=None,
     load=None,
+    power=UNCAPPED,
 ):
     monkeypatch.setattr(live_hw.kernel, "kernel_log_problem", lambda: None)
     monkeypatch.setattr(live_hw.kernel, "mce_poll_problem", mce or (lambda: None))
@@ -2208,6 +2209,7 @@ def preflight(
         lambda: SensorRead(hottest=temp),
         tools,
         lambda n, floor: SimpleNamespace(usable_mb=usable),
+        power,
         proc,
         sched_ext or tmp_path / "no-sched-ext",
         load or (lambda: {0: 5.0, 1: 0.4}),
@@ -2223,6 +2225,27 @@ def test_a_cpu_busy_above_5_percent_over_the_sample_warns_naming_each_such_cpu(t
     refusal, warnings = preflight(tmp_path, monkeypatch, load=lambda: {8: 7.2, 0: 12.6, 1: 5.0, 2: 0.0})
     assert refusal is None
     assert warnings == ("background load above 5 % over 5 s: CPU 0 13 %, CPU 8 7 %",)
+
+
+@pytest.mark.req("L01.9.epp")
+@pytest.mark.parametrize(
+    ("power", "warned"),
+    [
+        (PowerState(epp="balance_power"), "EPP is balance_power, which holds the clocks under performance"),
+        (PowerState(epp="power"), "EPP is power, which holds the clocks under performance"),
+        (
+            PowerState(split=(("EPP", "performance on cpus 0-7; balance_power on cpus 8-15"),)),
+            "EPP is performance on cpus 0-7; balance_power on cpus 8-15, which holds the clocks under performance",
+        ),
+        (PowerState(epp="balance_performance"), None),
+        (PowerState(split=(("EPP", "performance on cpus 0-7; balance_performance on cpus 8-15"),)), None),
+        (PowerState(), None),
+    ],
+)
+def test_an_epp_that_saves_power_on_any_cpu_warns_at_start_naming_it(tmp_path, monkeypatch, power, warned):
+    refusal, warnings = preflight(tmp_path, monkeypatch, power=power)
+    assert refusal is None
+    assert warnings == (() if warned is None else (warned,))
 
 
 @pytest.mark.req("K50")
@@ -2391,13 +2414,14 @@ def test_a_process_that_vanishes_mid_scan_is_skipped(tmp_path):
     assert live_hw.smu_holder(quiet) == (None, 0)
 
 
-def test_the_hardware_adapter_checks_its_own_smu_sensors_tools_and_budget(monkeypatch):
+def test_the_hardware_adapter_checks_its_own_smu_sensors_tools_budget_and_power_state(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(live_hw, "preflight", lambda *parts: seen.append(parts) or ("refused", ()))
     tools = (Tool("y-cruncher"),)
-    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, tools=tools, budget=len)
+    cpu = sysfs(tmp_path, 4300000, 5756452, "1")
+    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, cpu, tools=tools, budget=len)
     assert hw.preflight() == ("refused", ())
-    assert seen == [(hw.smu, warm, tools, len)]
+    assert seen == [(hw.smu, warm, tools, len, live_hw.read_power_state(cpu))]
 
 
 def test_the_lane_budget_reads_the_budget_under_the_lane_cgroup(monkeypatch):

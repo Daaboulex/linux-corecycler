@@ -1304,8 +1304,7 @@ proof = "built"
 [[requirement]]
 id = "L01.9.epp"
 statement = "EPP power or balance_power warns at Start"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L01.10"

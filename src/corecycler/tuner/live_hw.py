@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import random
+import re
 import secrets
 import signal
 import struct
@@ -114,7 +115,7 @@ class SmuHardware:
         self.budget = budget
 
     def preflight(self) -> tuple[str | None, tuple[str, ...]]:
-        return preflight(self.smu, self.sensors, self.tools, self.budget)
+        return preflight(self.smu, self.sensors, self.tools, self.budget, self.power())
 
     def read_co(self, core: int) -> int | None:
         return self.smu.get_co_offset(core)
@@ -289,6 +290,7 @@ PROC = Path("/proc")
 SCHED_EXT = Path("/sys/kernel/sched_ext")
 BACKGROUND_WINDOW_S = 5.0
 BACKGROUND_BUSY_PERCENT = 5.0
+EPP_SAVING = re.compile(r"\b(balance_)?power\b")
 
 
 def background_load(wait=time.sleep) -> dict[int, float]:
@@ -357,7 +359,7 @@ def scheduling_problem() -> str | None:
 
 
 def preflight(
-    smu, sensors, tools, budget, proc: Path = PROC, sched_ext: Path = SCHED_EXT, load=background_load
+    smu, sensors, tools, budget, power: PowerState, proc: Path = PROC, sched_ext: Path = SCHED_EXT, load=background_load
 ) -> tuple[str | None, tuple[str, ...]]:
     """The first gate of L01 that refuses (in L01 order, later gates not run), and the warnings."""
     by_name_only: list[int] = []
@@ -397,6 +399,9 @@ def preflight(
     hot_mb = budget(1, 0).usable_mb // 2
     if hot_mb < stages.HOT_MEMORY_CAP_MB:
         warnings.append(f"HOT runs y-cruncher with {hot_mb} MB, under its {stages.HOT_MEMORY_CAP_MB} MB cap")
+    epp = dict(power.named()).get("EPP")
+    if epp is not None and EPP_SAVING.search(epp):
+        warnings.append(f"EPP is {epp}, which holds the clocks under performance")
     busy = [
         f"CPU {cpu} {percent:.0f} %" for cpu, percent in sorted(load().items()) if percent > BACKGROUND_BUSY_PERCENT
     ]
