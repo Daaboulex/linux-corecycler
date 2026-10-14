@@ -402,6 +402,33 @@ def test_the_shaper_keeps_its_natural_height_and_the_co_table_takes_the_rest(tab
 
 
 @pytest.mark.req("S1.gui")
+def test_the_shaper_read_line_wraps_instead_of_widening_the_tab(tab):
+    tab._smu = _smu(shaper=LOW_ONLY)
+    tab._fill_from_cpu()
+    said = tab._shaper_label.text()
+    assert said.startswith("Min 0/0/0, Low -30/-27/-12")
+    assert tab._shaper_label.minimumSizeHint().width() < tab._shaper_label.fontMetrics().horizontalAdvance(said)
+
+
+@pytest.mark.req("S1.gui")
+def test_the_shaper_read_line_and_buttons_sit_beside_the_grid_not_under_it(tab):
+    from PySide6.QtWidgets import QApplication
+
+    tab.resize(960, 1400)
+    tab.show()
+    QApplication.processEvents()
+
+    def box(widget):
+        return widget.geometry().translated(widget.parentWidget().mapTo(tab, widget.parentWidget().rect().topLeft()))
+
+    grid_right = box(tab._shaper_spins[0][2]).right()
+    grid_bottom = box(tab._shaper_spins[-1][2]).bottom()
+    for widget in (tab._shaper_label, tab._shaper_write_btn, tab._shaper_zero_btn):
+        assert box(widget).left() > grid_right
+        assert box(widget).bottom() <= grid_bottom
+
+
+@pytest.mark.req("S1.gui")
 def test_each_shaper_box_sits_under_its_temperature_and_beside_its_band_and_the_value_columns_get_the_width(tab):
     from PySide6.QtWidgets import QApplication
 

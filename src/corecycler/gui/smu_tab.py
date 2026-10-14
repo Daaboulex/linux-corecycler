@@ -162,10 +162,7 @@ class SMUTab(QWidget):
 
         co_layout.addLayout(profile_layout)
 
-        warn = QLabel(
-            "Values set here last until the next reboot; the BIOS keeps its own. "
-            "Writing needs the ryzen_smu kernel module and permission to use it."
-        )
+        warn = QLabel("Values set here last until the next reboot; the BIOS keeps its own.")
         warn.setWordWrap(True)
         warn.setStyleSheet(f"color: {theme.COLOR_ORANGE}; padding: 8px;")
         co_layout.addWidget(warn)
@@ -173,7 +170,7 @@ class SMUTab(QWidget):
         layout.addWidget(co_group, 1)  # equivalent-mutant: the only stretching item, any factor fills
 
         self._shaper_group = QGroupBox("Curve Shaper")
-        shaper_layout = QVBoxLayout(self._shaper_group)
+        shaper_layout = QHBoxLayout(self._shaper_group)
         grid = QGridLayout()
         for column, point in enumerate(SHAPER_POINTS, start=1):
             grid.addWidget(QLabel(point), 0, column, Qt.AlignmentFlag.AlignCenter)
@@ -188,14 +185,16 @@ class SMUTab(QWidget):
                 grid.addWidget(spin, row, column)
                 spins.append(spin)
             self._shaper_spins.append(spins)
-        grid.setColumnStretch(len(SHAPER_POINTS) + 1, 1)  # equivalent-mutant: any empty right column keeps it compact
         shaper_layout.addLayout(grid)
+        side = QVBoxLayout()
+        shaper_layout.addLayout(side, 1)  # equivalent-mutant: the only stretching item, any factor fills
         self._shaper_label = QLabel("Not read yet")
+        self._shaper_label.setWordWrap(True)
         self._shaper_label.setToolTip(
             "Each band's margins at -5 C, 50 C and 90 C as the CPU runs them now; "
             "a Shaper written here differs from the BIOS until the next reboot"
         )
-        shaper_layout.addWidget(self._shaper_label)
+        side.addWidget(self._shaper_label)
         shaper_buttons = QHBoxLayout()
         self._shaper_write_btn = QPushButton("Write Shaper")
         self._shaper_write_btn.clicked.connect(self._write_shaper)
@@ -203,7 +202,8 @@ class SMUTab(QWidget):
         self._shaper_zero_btn = QPushButton("Shaper to 0")
         self._shaper_zero_btn.clicked.connect(self._zero_shaper)
         shaper_buttons.addWidget(self._shaper_zero_btn)
-        shaper_layout.addLayout(shaper_buttons)
+        side.addLayout(shaper_buttons)
+        side.addStretch()
         layout.addWidget(self._shaper_group)
 
         self._spinboxes: dict[int, QSpinBox] = {}
