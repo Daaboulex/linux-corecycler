@@ -368,6 +368,7 @@
                       hardware.corecycler = {
                         ryzenSmu.enable = true;
                         zenpower.enable = true;
+                        asusEcSensors.enable = true;
                         it87.enable = true;
                       };
                     }
@@ -379,12 +380,13 @@
                       !lib.all (name: lib.elem name drivers.boot.kernelModules) [
                         "ryzen_smu"
                         "zenpower"
+                        "asus_ec_sensors"
                         "it87"
                       ]
-                    ) "the drivers module alone does not load ryzen_smu, zenpower and it87"
+                    ) "the drivers module alone does not load every driver it builds"
                     ++
-                      lib.optional (lib.length drivers.boot.extraModulePackages != 3)
-                        "the drivers module alone builds ${toString (lib.length drivers.boot.extraModulePackages)} drivers, not 3"
+                      lib.optional (lib.length drivers.boot.extraModulePackages != 4)
+                        "the drivers module alone builds ${toString (lib.length drivers.boot.extraModulePackages)} drivers, not 4"
                     ++ lib.optional (
                       tunerAlone.boot.extraModulePackages != [ ]
                     ) "the tuner module alone builds a driver"
@@ -463,6 +465,7 @@
                   sources = {
                     ryzen-smu = ./nix/ryzen-smu.nix;
                     zenpower = ./nix/zenpower.nix;
+                    asus-ec-sensors = ./nix/asus-ec-sensors.nix;
                     it87 = ./nix/it87.nix;
                   };
                   forKernel =

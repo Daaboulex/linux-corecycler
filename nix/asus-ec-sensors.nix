@@ -1,0 +1,61 @@
+{
+  lib,
+  stdenv,
+  fetchFromGitHub,
+  kernel,
+  llvmPackages_latest,
+}:
+let
+  kernelUsesLLVM = builtins.any (
+    flag:
+    builtins.match ".*LLVM=1.*" (toString flag) != null
+    || builtins.match ".*CC=clang.*" (toString flag) != null
+  ) (kernel.makeFlags or [ ]);
+
+  buildStdenv = if kernelUsesLLVM then llvmPackages_latest.stdenv else stdenv;
+in
+buildStdenv.mkDerivation {
+  pname = "asus-ec-sensors";
+  version = "0.1.0-unstable-2026-10-08";
+
+  src = fetchFromGitHub {
+    owner = "zeule";
+    repo = "asus-ec-sensors";
+    rev = "33ac3ac4dc63ba6bb98824328e9712a965e7e875";
+    hash = "sha256-vOBe9LQe4KXhx42xDi/NaE+602TikcbaMP8HnXLQ39U=";
+  };
+
+  hardeningDisable = [ "pic" ];
+
+  nativeBuildInputs =
+    kernel.moduleBuildDependencies
+    ++ lib.optionals kernelUsesLLVM [
+      llvmPackages_latest.lld
+    ];
+
+  makeFlags = [
+    "KVER=${kernel.modDirVersion}"
+    "KDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}"
+  ]
+  ++ lib.optionals kernelUsesLLVM [
+    "LLVM=1"
+    "CC=clang"
+    "LD=ld.lld"
+    "KCFLAGS=-Wno-unused-command-line-argument"
+  ];
+
+  buildFlags = [ "modules" ];
+
+  installPhase = ''
+    runHook preInstall
+    install -D asus-ec-sensors.ko -t "$out/lib/modules/${kernel.modDirVersion}/updates/drivers/hwmon/"
+    runHook postInstall
+  '';
+
+  meta = {
+    homepage = "https://github.com/zeule/asus-ec-sensors";
+    description = "ASUS motherboard embedded-controller sensors driver, ahead of the in-tree one: VRM, chipset, CPU package and water temperatures on boards mainline does not list yet";
+    license = lib.licenses.gpl2Plus;
+    platforms = [ "x86_64-linux" ];
+  };
+}
