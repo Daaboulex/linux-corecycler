@@ -773,8 +773,7 @@ proof = "built"
 [[requirement]]
 id = "VERDICT.18"
 statement = "SLEPT (the machine slept during the test) is apparatus"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "VERDICT.20"
@@ -885,8 +884,7 @@ proof = "built"
 [[requirement]]
 id = "PRELUDE.1"
 statement = "The WorkerReported prelude first checks SLEPT"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "PRELUDE.2"

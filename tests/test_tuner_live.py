@@ -2392,3 +2392,42 @@ def test_a_returned_test_stores_each_core_s_coverage_from_its_own_samples(tmp_pa
     store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0), {0: 0})
     (saved,) = rows(SimpleNamespace(store=store), "SELECT coverage_json FROM tuner_tests WHERE id=?", (row,))
     assert json.loads(saved["coverage_json"]) == {"0": {"cells": [[5000, 60, 0.2]], "unreadable_s": 0.0}}
+
+
+@pytest.mark.req("VERDICT.18", "PRELUDE.1")
+@pytest.mark.parametrize(
+    ("asleep_after", "group", "detail"),
+    [
+        (5.0, Group.SLEPT, "the machine slept 5 s during the test; y-cruncher passed"),
+        (0.5, Group.PASS, "y-cruncher passed"),
+        (1.0, Group.PASS, "y-cruncher passed"),
+    ],
+)
+def test_a_test_the_machine_slept_through_is_reported_slept_first(tmp_path, asleep_after, group, detail):
+    from corecycler.tuner.machine.types import WorkerReported
+
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.asleep_at_worker_start = 0.0
+    hardware.asleep_seconds = lambda: asleep_after
+    reported = r.slept_through(WorkerReported(1, Report(Group.PASS, 60.0, detail="y-cruncher passed")))
+    assert (reported.report.group, reported.report.detail) == (group, detail)
+
+
+def test_a_report_already_slept_is_left_as_it_came(tmp_path):
+    from corecycler.tuner.machine.types import WorkerReported
+
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    hardware.asleep_seconds = lambda: 9.0
+    came = WorkerReported(1, Report(Group.SLEPT, 60.0, detail="slept"))
+    assert r.slept_through(came) is came
+
+
+@pytest.mark.req("K23")
+def test_the_gap_counts_only_what_grew_past_one_second_since_the_last_check(tmp_path):
+    hardware = FakeHardware()
+    asleep = iter([5.0, 5.0, 6.0, 7.5])
+    hardware.asleep_seconds = lambda: next(asleep)
+    r = rig(tmp_path, hardware)
+    assert [r.world().gap_grew for _ in range(4)] == [True, False, False, True]

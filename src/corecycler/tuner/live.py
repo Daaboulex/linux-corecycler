@@ -285,6 +285,7 @@ class Identity:
 
 
 PASSED_SAMPLES_KEPT_DAYS = 30
+SLEEP_GAP_S = 1.0
 
 
 class Store:
@@ -537,6 +538,7 @@ class LiveRig:
     inbox: queue.Queue = field(init=False, default_factory=queue.Queue)
     signals: list = field(init=False, default_factory=list)
     asleep_at_last_check: float = field(init=False, default=0.0)
+    asleep_at_worker_start: float = field(init=False, default=0.0)
     stored_boot: str | None = field(init=False, default=None)
     stored_read_ns: int | None = field(init=False, default=None)
     test_row: tuple[int, int, bool] | None = field(init=False, default=None)
@@ -553,7 +555,7 @@ class LiveRig:
     def world(self) -> World:
         self.power = self.hardware.power()
         asleep = self.hardware.asleep_seconds()
-        gap = asleep - self.asleep_at_last_check > 1.0
+        gap = asleep - self.asleep_at_last_check > SLEEP_GAP_S
         self.asleep_at_last_check = asleep
         return World(
             resident=tuple(sorted(self.resident.items())),
@@ -688,6 +690,7 @@ class LiveRig:
                 except sqlite3.Error as exc:
                     return DatabaseFailed(f"the test row could not be written: {exc}")
                 self.test_row = (token, row, spec.stage in ALLCORE)
+                self.asleep_at_worker_start = self.hardware.asleep_seconds()
                 self._start(token, spec)
             case Schedule(token=token, seconds=seconds):
                 self.timer = (token, self.clock() + seconds)
@@ -841,6 +844,7 @@ class LiveRig:
         if isinstance(event, WorkerReported):
             if self.worker is not None and self.worker.token == event.token:
                 self.worker = None
+                event = self.slept_through(event)
                 report = event.report
                 detail = f" {report.detail}" if report.detail else ""
                 self.say(f"verdict {event.token}: {report.group.value} after {report.seconds:.0f} s{detail}")
@@ -853,6 +857,14 @@ class LiveRig:
             failed = self._end_test(self.test_row[0], lambda row: self.store.test_broken(row, event.error))
         self.post(event if failed is None else failed)
         return True
+
+    def slept_through(self, event: WorkerReported) -> WorkerReported:
+        slept = self.hardware.asleep_seconds() - self.asleep_at_worker_start
+        if slept <= SLEEP_GAP_S or event.report.group is Group.SLEPT:
+            return event
+        said = f"the machine slept {slept:.0f} s during the test"
+        detail = f"{said}; {event.report.detail}" if event.report.detail else said
+        return replace(event, report=replace(event.report, group=Group.SLEPT, detail=detail))
 
     def at_rest(self) -> bool:
         s = self.state
