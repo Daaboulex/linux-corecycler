@@ -19,6 +19,7 @@ let
   inherit (pkgs.stdenv.hostPlatform) system;
   package =
     if cfg.unfreeBackends then self.packages.${system}.full else self.packages.${system}.default;
+  machineCheckPoll = "/sys/devices/system/machinecheck/machinecheck0/check_interval";
   smuDriverLoaded = lib.any (name: builtins.elem name config.boot.kernelModules) [
     "ryzen_smu"
     "ryzen-smu"
@@ -102,6 +103,12 @@ in
       description = "Username to grant device access to (added to the corecycler group). Required when deviceAccess is true.";
     };
 
+    machineCheckPoll.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Whether to let the corecycler group raise the kernel's machine-check poll to 5 s while a tuning run lasts, so a corrected error is logged within seconds instead of minutes. The tuner puts the old value back when the run ends or pauses, and a reboot restores the kernel default after a killed run. Needs deviceAccess.";
+    };
+
     autoResume = {
       enable = lib.mkEnableOption "resuming the active tuner session automatically after login (freeze-and-continue without clicks). Runs sudo-less via the corecycler device-access group.";
       delaySeconds = lib.mkOption {
@@ -117,6 +124,10 @@ in
       {
         assertion = cfg.deviceAccess -> cfg.deviceAccessUser != "";
         message = "services.corecycler.deviceAccessUser must be set when deviceAccess is enabled.";
+      }
+      {
+        assertion = cfg.machineCheckPoll.enable -> cfg.deviceAccess;
+        message = "services.corecycler.machineCheckPoll grants the corecycler group, which only deviceAccess creates: enable deviceAccess or turn machineCheckPoll off.";
       }
     ];
 
@@ -196,6 +207,20 @@ in
               chmod 0660 "$f"
             done
           '';
+      };
+    };
+
+    systemd.services.corecycler-machinecheck-poll = lib.mkIf cfg.machineCheckPoll.enable {
+      description = "Let the corecycler group set the machine-check poll interval";
+      wantedBy = [ "multi-user.target" ];
+      unitConfig.ConditionPathExists = machineCheckPoll;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = [
+          "${pkgs.coreutils}/bin/chgrp corecycler ${machineCheckPoll}"
+          "${pkgs.coreutils}/bin/chmod 0664 ${machineCheckPoll}"
+        ];
       };
     };
 

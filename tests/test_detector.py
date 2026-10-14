@@ -804,10 +804,67 @@ def test_the_machine_check_poll_must_be_at_most_five_seconds(tmp_path):
     assert detector_mod.mce_poll_problem(path) is None
     path.write_text("6\n")
     assert detector_mod.mce_poll_problem(path) == (
-        f"machine-check poll every 6 s, above 5 s, so corrected errors log late: echo 5 | sudo tee {path}"
+        f"machine-check poll every 6 s, above 5 s, so corrected errors log late: echo 5 | sudo tee {path},"
+        " or on NixOS services.corecycler.machineCheckPoll.enable"
     )
     path.write_text("300\n")
     assert detector_mod.mce_poll_problem(path).startswith("machine-check poll every 300 s, above 5 s")
     path.write_text("often\n")
     assert detector_mod.mce_poll_problem(path).startswith("machine-check poll interval unreadable: ")
     assert detector_mod.mce_poll_problem(tmp_path / "absent").startswith("machine-check poll interval unreadable: ")
+
+
+def test_a_run_raises_a_slow_machine_check_poll_to_5_s_and_puts_it_back_even_when_it_fails(tmp_path):
+    path = tmp_path / "check_interval"
+    path.write_text("300\n")
+    said = []
+    with pytest.raises(RuntimeError), detector_mod.fast_mce_poll(said.append, path):
+        assert path.read_text() == "5\n"
+        assert detector_mod.mce_poll_problem(path) is None
+        raise RuntimeError("the run failed")
+    assert path.read_text() == "300\n"
+    assert said == ["machine-check poll raised from 300 s to 5 s for this run", "machine-check poll back to 300 s"]
+
+
+def test_a_machine_check_poll_already_at_5_s_is_left_alone(tmp_path):
+    path = tmp_path / "check_interval"
+    path.write_text("5\n")
+    said = []
+    with detector_mod.fast_mce_poll(said.append, path):
+        assert path.read_text() == "5\n"
+    assert (path.read_text(), said) == ("5\n", [])
+
+
+def test_a_machine_check_poll_that_cannot_be_raised_is_said_and_left_to_the_preflight(tmp_path):
+    path = tmp_path / "check_interval"
+    path.write_text("300\n")
+    path.chmod(0o444)
+    said = []
+    with detector_mod.fast_mce_poll(said.append, path):
+        assert "every 300 s" in detector_mod.mce_poll_problem(path)
+    assert path.read_text() == "300\n"
+    assert len(said) == 1
+    assert said[0].startswith(f"machine-check poll stays at 300 s: writing 5 to {path} failed: ")
+
+
+def test_a_machine_check_poll_that_cannot_be_put_back_is_said(tmp_path):
+    path = tmp_path / "check_interval"
+    path.write_text("300\n")
+    said = []
+    with detector_mod.fast_mce_poll(said.append, path):
+        path.chmod(0o444)
+    assert path.read_text() == "5\n"
+    assert said[-1].startswith(f"machine-check poll stays at 5 s: writing 300 back to {path} failed: ")
+
+
+@pytest.mark.parametrize("text", [None, "often\n"])
+def test_an_unreadable_machine_check_poll_is_said_and_not_written(tmp_path, text):
+    path = tmp_path / "check_interval"
+    if text is not None:
+        path.write_text(text)
+    said = []
+    with detector_mod.fast_mce_poll(said.append, path):
+        pass
+    assert len(said) == 1
+    assert said[0].startswith(f"machine-check poll not raised: {path} unreadable: ")
+    assert path.exists() is (text is not None)

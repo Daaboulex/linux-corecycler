@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,7 +16,7 @@ from typing import TYPE_CHECKING
 from corecycler.config import tools
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable, Iterator
 
 KMSG = Path("/dev/kmsg")
 MCE_POLL = Path("/sys/devices/system/machinecheck/machinecheck0/check_interval")
@@ -432,7 +433,7 @@ def harvest_after(
 
 
 def mce_poll_problem(path: Path = MCE_POLL) -> str | None:
-    command = f"echo {MCE_POLL_MAX_S} | sudo tee {path}"
+    command = f"echo {MCE_POLL_MAX_S} | sudo tee {path}, or on NixOS services.corecycler.machineCheckPoll.enable"
     try:
         seconds = int(path.read_text().strip())
     except (OSError, ValueError) as exc:
@@ -442,6 +443,34 @@ def mce_poll_problem(path: Path = MCE_POLL) -> str | None:
             f"machine-check poll every {seconds} s, above {MCE_POLL_MAX_S} s, so corrected errors log late: {command}"
         )
     return None
+
+
+@contextmanager
+def fast_mce_poll(say: Callable[[str], None], path: Path = MCE_POLL) -> Iterator[None]:
+    try:
+        before = int(path.read_text().strip())
+    except (OSError, ValueError) as exc:
+        say(f"machine-check poll not raised: {path} unreadable: {exc}")
+        before = None
+    raised = False
+    if before is not None and before > MCE_POLL_MAX_S:
+        try:
+            path.write_text(f"{MCE_POLL_MAX_S}\n")
+        except OSError as exc:
+            say(f"machine-check poll stays at {before} s: writing {MCE_POLL_MAX_S} to {path} failed: {exc}")
+        else:
+            raised = True
+            say(f"machine-check poll raised from {before} s to {MCE_POLL_MAX_S} s for this run")
+    try:
+        yield
+    finally:
+        if raised:
+            try:
+                path.write_text(f"{before}\n")
+            except OSError as exc:
+                say(f"machine-check poll stays at {MCE_POLL_MAX_S} s: writing {before} back to {path} failed: {exc}")
+            else:
+                say(f"machine-check poll back to {before} s")
 
 
 def kernel_log_problem(kmsg: Path | None = None, timeout: float = 15.0) -> str | None:

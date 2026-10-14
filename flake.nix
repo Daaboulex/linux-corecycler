@@ -373,6 +373,49 @@
                   b.pkgs.runCommand "module-drivers-split" { } "touch $out"
                 else
                   throw (lib.concatStringsSep "; " problems);
+
+              module-machinecheck-poll =
+                let
+                  inherit (inputs.nixpkgs) lib;
+                  eval =
+                    corecycler:
+                    (lib.nixosSystem {
+                      inherit system;
+                      modules = [
+                        (import ./nix/module.nix { inherit (inputs) self; })
+                        {
+                          services.corecycler = {
+                            enable = true;
+                            deviceAccessUser = "corecycler-test";
+                          }
+                          // corecycler;
+                          users.users.corecycler-test = {
+                            isSystemUser = true;
+                            group = "corecycler-test";
+                          };
+                          users.groups.corecycler-test = { };
+                          boot.isContainer = true;
+                          system.stateVersion = lib.trivial.release;
+                          nixpkgs.config.allowUnfree = true;
+                        }
+                      ];
+                    }).config;
+                  granted = config: config.systemd.services ? corecycler-machinecheck-poll;
+                  failed = config: map (a: a.message) (lib.filter (a: !a.assertion) config.assertions);
+                  byDefault = eval { };
+                  off = eval { machineCheckPoll.enable = false; };
+                  noGroup = eval { deviceAccess = false; };
+                  problems =
+                    lib.optional (!granted byDefault) "the tuner by default does not grant the machine-check poll"
+                    ++ lib.optional (granted off) "machineCheckPoll = false still grants the poll"
+                    ++ lib.optional (
+                      !lib.any (lib.hasInfix "machineCheckPoll grants the corecycler group") (failed noGroup)
+                    ) "the poll without deviceAccess is not refused";
+                in
+                if problems == [ ] then
+                  b.pkgs.runCommand "module-machinecheck-poll" { } "touch $out"
+                else
+                  throw (lib.concatStringsSep "; " problems);
             }
             // inputs.nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
               # The out-of-tree modules compile against the user's own kernel, so an

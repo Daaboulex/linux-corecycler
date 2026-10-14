@@ -943,7 +943,8 @@ def _drive(args: argparse.Namespace) -> int:
         identity = read_identity(db, smu, topology)
         rig = build_rig(args, topology, smu, lambda: get_backend("y-cruncher"), say, db, identity)
         install_signals(rig)
-        return run(args, rig, say)
+        with kernel.fast_mce_poll(say):
+            return run(args, rig, say)
     finally:
         db.close()
 

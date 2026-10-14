@@ -64,6 +64,10 @@ already holds by typing `sudo corecycler`.
 - A dedicated `corecycler` system group provides SMU and SMN access without sudo. It gives no MSR access.
 - **MSR:** `MODE="0640"`: root read/write, group read-only, world none. The kernel still refuses the group without `CAP_SYS_RAWIO`.
 - **SMU sysfs:** `0660 root:corecycler` — group read/write (enables CO writes without root).
+- **Machine-check poll:** `/sys/devices/system/machinecheck/machinecheck0/check_interval` is
+  `0664 root:corecycler` when `machineCheckPoll.enable` is on (the default with
+  `deviceAccess`). A group member can change how often the kernel polls every CPU's
+  machine-check banks; the tuner sets 5 s for its run and puts the old value back.
 - Any user in the `corecycler` group can send arbitrary SMU commands, not limited to CO.
 - **SMN (`smn`):** also `0660 root:corecycler`. Reading an SMN register is a *write* of its
   address, so read access is unobtainable without write access, and write access to that file

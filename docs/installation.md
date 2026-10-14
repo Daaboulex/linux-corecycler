@@ -10,7 +10,9 @@ systemd oneshot for SMU sysfs permissions, and the `corecycler` group. The out-o
 are their own module, `nixosModules.drivers` (`hardware.corecycler`), which the tuner module
 includes: each driver is off until turned on, and a machine that wants the drivers without the
 tuner imports only `nixosModules.drivers`. The old `services.corecycler.ryzenSmu`, `zenpower`
-and `it87` options still work as renames.
+and `it87` options still work as renames. `machineCheckPoll.enable` (on by default) lets the
+`corecycler` group raise the kernel's machine-check poll to 5 s, which the tuner does only
+while a run lasts.
 
 Fuller example (AMD Zen 5 desktop, Nuvoton Super I/O, DDR5 temps):
 

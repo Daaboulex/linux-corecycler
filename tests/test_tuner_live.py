@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -1922,6 +1923,22 @@ def test_one_co_writer_at_a_time_on_a_machine(tmp_path, driver_home, writer_dir,
         live_hw._drive = drive
     assert seen == [os.getpid()]
     assert running_driver() is None
+
+
+def test_the_driver_runs_its_session_inside_a_raised_machine_check_poll(tmp_path, driver_home, monkeypatch):
+    events = []
+
+    @contextlib.contextmanager
+    def poll(say):
+        events.append("raised")
+        yield
+        events.append("restored")
+
+    monkeypatch.setattr(live_hw.kernel, "fast_mce_poll", poll)
+    monkeypatch.setattr(live_hw, "run", lambda args, rig, say: events.append("ran") or live_hw.EXIT_REFUSED)
+    argv = ["--state-dir", str(tmp_path / "s"), "--db", str(tmp_path / "h.db"), "--session", "1", "--resume"]
+    assert live_hw.main(argv) == live_hw.EXIT_REFUSED
+    assert events == ["raised", "ran", "restored"]
 
 
 def test_a_usage_error_is_a_refusal_and_help_is_not(driver_home, capsys):
