@@ -12,7 +12,10 @@ includes: each driver is off until turned on, and a machine that wants the drive
 tuner imports only `nixosModules.drivers`. The old `services.corecycler.ryzenSmu`, `zenpower`
 and `it87` options still work as renames. `machineCheckPoll.enable` (on by default) lets the
 `corecycler` group raise the kernel's machine-check poll to 5 s, which the tuner does only
-while a run lasts.
+while a run lasts. `hangReset.enable` (off by default) makes a hung machine reset itself so an
+unattended run resumes after the reboot: it panics on an oops, a soft or hard lockup and an RCU
+stall, reboots 10 s after a panic, and has systemd feed the board's hardware watchdog; it acts on
+every stall on the machine, and it refuses when the watchdog driver is blacklisted.
 
 Fuller example (AMD Zen 5 desktop, Nuvoton Super I/O, DDR5 temps):
 

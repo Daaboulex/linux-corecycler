@@ -20,6 +20,11 @@ let
   package =
     if cfg.unfreeBackends then self.packages.${system}.full else self.packages.${system}.default;
   machineCheckPoll = "/sys/devices/system/machinecheck/machinecheck0/check_interval";
+  blacklistedWatchdogs = lib.filter (driver: lib.elem driver config.boot.blacklistedKernelModules) [
+    "sp5100_tco"
+    "iTCO_wdt"
+    "wdat_wdt"
+  ];
   smuDriverLoaded = lib.any (name: builtins.elem name config.boot.kernelModules) [
     "ryzen_smu"
     "ryzen-smu"
@@ -109,6 +114,8 @@ in
       description = "Whether to let the corecycler group raise the kernel's machine-check poll to 5 s while a tuning run lasts, so a corrected error is logged within seconds instead of minutes. The tuner puts the old value back when the run ends or pauses, and a reboot restores the kernel default after a killed run. Needs deviceAccess.";
     };
 
+    hangReset.enable = lib.mkEnableOption "resetting the machine by itself when a test hangs it, so an unattended run resumes after the reboot: the kernel panics on an oops, a soft or hard lockup and an RCU stall (a core that stops dead while the others run on) and reboots 10 s later, and systemd feeds the board's hardware watchdog every 30 s for a hang that stops everything. Each value is a default the host can override. It acts on every stall on the machine, not only during a run";
+
     autoResume = {
       enable = lib.mkEnableOption "resuming the active tuner session automatically after login (freeze-and-continue without clicks). Runs sudo-less via the corecycler device-access group.";
       delaySeconds = lib.mkOption {
@@ -124,6 +131,10 @@ in
       {
         assertion = cfg.deviceAccess -> cfg.deviceAccessUser != "";
         message = "services.corecycler.deviceAccessUser must be set when deviceAccess is enabled.";
+      }
+      {
+        assertion = cfg.hangReset.enable -> blacklistedWatchdogs == [ ];
+        message = "services.corecycler.hangReset needs the board's hardware watchdog driver, but boot.blacklistedKernelModules lists ${lib.concatStringsSep ", " blacklistedWatchdogs}: take it off the blacklist (CachyOS's settings put it there by default) or turn hangReset off.";
       }
       {
         assertion = cfg.machineCheckPoll.enable -> cfg.deviceAccess;
@@ -224,9 +235,23 @@ in
       };
     };
 
+    systemd.settings.Manager.RuntimeWatchdogSec = lib.mkIf cfg.hangReset.enable (lib.mkDefault "30s");
+
     # Allow unprivileged dmesg access for MCE error detection
-    boot.kernel.sysctl = lib.mkIf cfg.deviceAccess {
-      "kernel.dmesg_restrict" = lib.mkDefault 0;
-    };
+    boot.kernel.sysctl = lib.mkMerge [
+      (lib.mkIf cfg.deviceAccess {
+        "kernel.dmesg_restrict" = lib.mkDefault 0;
+      })
+      (lib.mkIf cfg.hangReset.enable (
+        lib.mapAttrs (_: lib.mkDefault) {
+          "kernel.panic" = 10;
+          "kernel.panic_on_oops" = 1;
+          "kernel.softlockup_panic" = 1;
+          "kernel.hardlockup_panic" = 1;
+          "kernel.nmi_watchdog" = 1;
+          "kernel.panic_on_rcu_stall" = 1;
+        }
+      ))
+    ];
   };
 }

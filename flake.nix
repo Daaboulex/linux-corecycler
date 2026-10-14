@@ -235,6 +235,32 @@
           { system, ... }:
           let
             b = buildFor system;
+            inherit (inputs.nixpkgs) lib;
+            tunerEval =
+              corecycler: host:
+              (lib.nixosSystem {
+                inherit system;
+                modules = [
+                  (import ./nix/module.nix { inherit (inputs) self; })
+                  {
+                    services.corecycler = {
+                      enable = true;
+                      deviceAccessUser = "corecycler-test";
+                    }
+                    // corecycler;
+                    users.users.corecycler-test = {
+                      isSystemUser = true;
+                      group = "corecycler-test";
+                    };
+                    users.groups.corecycler-test = { };
+                    boot.isContainer = true;
+                    system.stateVersion = lib.trivial.release;
+                    nixpkgs.config.allowUnfree = true;
+                  }
+                  host
+                ];
+              }).config;
+            failedAssertions = config: map (a: a.message) (lib.filter (a: !a.assertion) config.assertions);
           in
           {
             # The FOSS default builds on CI (stress-ng/stressapptest are cached).
@@ -376,44 +402,55 @@
 
               module-machinecheck-poll =
                 let
-                  inherit (inputs.nixpkgs) lib;
-                  eval =
-                    corecycler:
-                    (lib.nixosSystem {
-                      inherit system;
-                      modules = [
-                        (import ./nix/module.nix { inherit (inputs) self; })
-                        {
-                          services.corecycler = {
-                            enable = true;
-                            deviceAccessUser = "corecycler-test";
-                          }
-                          // corecycler;
-                          users.users.corecycler-test = {
-                            isSystemUser = true;
-                            group = "corecycler-test";
-                          };
-                          users.groups.corecycler-test = { };
-                          boot.isContainer = true;
-                          system.stateVersion = lib.trivial.release;
-                          nixpkgs.config.allowUnfree = true;
-                        }
-                      ];
-                    }).config;
                   granted = config: config.systemd.services ? corecycler-machinecheck-poll;
-                  failed = config: map (a: a.message) (lib.filter (a: !a.assertion) config.assertions);
-                  byDefault = eval { };
-                  off = eval { machineCheckPoll.enable = false; };
-                  noGroup = eval { deviceAccess = false; };
+                  byDefault = tunerEval { } { };
+                  off = tunerEval { machineCheckPoll.enable = false; } { };
+                  noGroup = tunerEval { deviceAccess = false; } { };
                   problems =
                     lib.optional (!granted byDefault) "the tuner by default does not grant the machine-check poll"
                     ++ lib.optional (granted off) "machineCheckPoll = false still grants the poll"
                     ++ lib.optional (
-                      !lib.any (lib.hasInfix "machineCheckPoll grants the corecycler group") (failed noGroup)
+                      !lib.any (lib.hasInfix "machineCheckPoll grants the corecycler group") (failedAssertions noGroup)
                     ) "the poll without deviceAccess is not refused";
                 in
                 if problems == [ ] then
                   b.pkgs.runCommand "module-machinecheck-poll" { } "touch $out"
+                else
+                  throw (lib.concatStringsSep "; " problems);
+
+              module-hang-reset =
+                let
+                  byDefault = tunerEval { } { };
+                  on = tunerEval { hangReset.enable = true; } { };
+                  hostWins = tunerEval { hangReset.enable = true; } { boot.kernel.sysctl."kernel.panic" = 30; };
+                  blacklisted = tunerEval { hangReset.enable = true; } {
+                    boot.blacklistedKernelModules = [ "sp5100_tco" ];
+                  };
+                  sysctl = config: name: config.boot.kernel.sysctl.${name} or null;
+                  problems =
+                    lib.optional (
+                      sysctl byDefault "kernel.panic_on_rcu_stall" != null
+                    ) "the tuner by default changes the panic policy"
+                    ++ lib.optional (
+                      !lib.all (name: sysctl on name == 1) [
+                        "kernel.panic_on_oops"
+                        "kernel.softlockup_panic"
+                        "kernel.hardlockup_panic"
+                        "kernel.nmi_watchdog"
+                        "kernel.panic_on_rcu_stall"
+                      ]
+                      || sysctl on "kernel.panic" != 10
+                      || on.systemd.settings.Manager.RuntimeWatchdogSec or null != "30s"
+                    ) "hangReset does not set the panic policy and the watchdog feed"
+                    ++ lib.optional (
+                      sysctl hostWins "kernel.panic" != 30
+                    ) "a host's own kernel.panic does not win over hangReset"
+                    ++ lib.optional (
+                      !lib.any (lib.hasInfix "lists sp5100_tco") (failedAssertions blacklisted)
+                    ) "hangReset with a blacklisted watchdog driver is not refused";
+                in
+                if problems == [ ] then
+                  b.pkgs.runCommand "module-hang-reset" { } "touch $out"
                 else
                   throw (lib.concatStringsSep "; " problems);
             }
