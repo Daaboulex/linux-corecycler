@@ -1269,6 +1269,18 @@ def test_the_smu_adapter_writes_only_when_asked_and_checks_the_read_back():
     assert "-4" in live_hw.SmuHardware(FakeSmu(echo=-4), True, said.append, warm).write_co(3, -5)
 
 
+@pytest.mark.req("TERMS.kvw_raised")
+@pytest.mark.parametrize("error", [ValueError("CO value -60 out of range [-50, 10]"), OSError(5, "Input/output error")])
+def test_a_write_the_smu_driver_raises_on_is_a_refusal_naming_the_error(error):
+    smu = FakeSmu()
+
+    def raising(core, value):
+        raise error
+
+    smu.set_co_offset = raising
+    assert live_hw.SmuHardware(smu, True, print, warm).write_co(3, -5) == f"the SMU write raised {error}"
+
+
 def pci_device(root, address, vendor, device, driver=None, vram=None):
     node = root / address
     node.mkdir(parents=True)

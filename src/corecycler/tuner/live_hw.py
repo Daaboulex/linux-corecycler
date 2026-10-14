@@ -123,7 +123,11 @@ class SmuHardware:
         if not self.write:
             self.say(f"dry: core {core} would be set to {value}")
             return None
-        if not self.smu.set_co_offset(core, value):
+        try:
+            accepted = self.smu.set_co_offset(core, value)
+        except (OSError, ValueError) as exc:
+            return f"the SMU write raised {exc}"
+        if not accepted:
             return "the SMU refused the write"
         back = self.smu.get_co_offset(core)
         self.say(f"core {core} set to {value}, read back {back}")

@@ -655,8 +655,7 @@ proof = "built"
 [[requirement]]
 id = "TERMS.kvw_raised"
 statement = "A raised SMU error becomes SmuRefused"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "TERMS.kvw_intent"
