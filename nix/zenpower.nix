@@ -2,25 +2,16 @@
 # Provides Tctl/Tdie/Tccd temps + RAPL package power on Zen 5.
 # SVI3 voltage/current is NOT available on Zen 5 (undocumented register format).
 #
-# Supports both GCC and Clang/LLVM kernels (auto-detected from kernel makeFlags).
 # Source: https://github.com/mattkeenan/zenpower5
 {
   lib,
-  stdenv,
   fetchFromGitHub,
   kernel,
-  llvmPackages_latest,
 }:
 let
-  kernelUsesLLVM = builtins.any (
-    flag:
-    builtins.match ".*LLVM=1.*" (toString flag) != null
-    || builtins.match ".*CC=clang.*" (toString flag) != null
-  ) (kernel.makeFlags or [ ]);
-
-  buildStdenv = if kernelUsesLLVM then llvmPackages_latest.stdenv else stdenv;
+  toolchain = import ./kernel-toolchain.nix { inherit lib; } kernel;
 in
-buildStdenv.mkDerivation {
+toolchain.stdenv.mkDerivation {
   pname = "zenpower";
   version = "0.5.0-unstable-2026-03-13";
 
@@ -35,27 +26,22 @@ buildStdenv.mkDerivation {
 
   # Clang rejects GCC-specific -Wimplicit-fallthrough=3 (with -Werror).
   # Replace with the clang-compatible form (no level suffix).
-  postPatch = lib.optionalString kernelUsesLLVM ''
+  postPatch = lib.optionalString toolchain.isClang ''
     substituteInPlace Makefile --replace-fail "-Wimplicit-fallthrough=3" "-Wimplicit-fallthrough"
   '';
 
   hardeningDisable = [ "pic" ];
 
-  nativeBuildInputs =
-    kernel.moduleBuildDependencies
-    ++ lib.optionals kernelUsesLLVM [
-      llvmPackages_latest.lld
-    ];
+  inherit (toolchain) nativeBuildInputs;
 
-  makeFlags = [
-    "KERNEL_BUILD=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
-  ]
-  ++ lib.optionals kernelUsesLLVM [
-    "LLVM=1"
-    "CC=clang"
-    "LD=ld.lld"
-    "KCFLAGS=-Wno-unused-command-line-argument -Wno-unknown-warning-option"
-  ];
+  makeFlags =
+    toolchain.makeFlags
+    ++ [
+      "KERNEL_BUILD=${toolchain.build}"
+    ]
+    ++ lib.optionals toolchain.isClang [
+      "KCFLAGS=-Wno-unused-command-line-argument -Wno-unknown-warning-option"
+    ];
 
   installPhase = ''
     runHook preInstall

@@ -1,20 +1,12 @@
 {
   lib,
-  stdenv,
   fetchFromGitHub,
   kernel,
-  llvmPackages_latest,
 }:
 let
-  kernelUsesLLVM = builtins.any (
-    flag:
-    builtins.match ".*LLVM=1.*" (toString flag) != null
-    || builtins.match ".*CC=clang.*" (toString flag) != null
-  ) (kernel.makeFlags or [ ]);
-
-  buildStdenv = if kernelUsesLLVM then llvmPackages_latest.stdenv else stdenv;
+  toolchain = import ./kernel-toolchain.nix { inherit lib; } kernel;
 in
-buildStdenv.mkDerivation {
+toolchain.stdenv.mkDerivation {
   pname = "asus-ec-sensors";
   version = "0.1.0-unstable-2026-10-08";
 
@@ -27,22 +19,17 @@ buildStdenv.mkDerivation {
 
   hardeningDisable = [ "pic" ];
 
-  nativeBuildInputs =
-    kernel.moduleBuildDependencies
-    ++ lib.optionals kernelUsesLLVM [
-      llvmPackages_latest.lld
-    ];
+  inherit (toolchain) nativeBuildInputs;
 
-  makeFlags = [
-    "KVER=${kernel.modDirVersion}"
-    "KDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}"
-  ]
-  ++ lib.optionals kernelUsesLLVM [
-    "LLVM=1"
-    "CC=clang"
-    "LD=ld.lld"
-    "KCFLAGS=-Wno-unused-command-line-argument"
-  ];
+  makeFlags =
+    toolchain.makeFlags
+    ++ [
+      "KVER=${kernel.modDirVersion}"
+      "KDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}"
+    ]
+    ++ lib.optionals toolchain.isClang [
+      "KCFLAGS=-Wno-unused-command-line-argument"
+    ];
 
   buildFlags = [ "modules" ];
 

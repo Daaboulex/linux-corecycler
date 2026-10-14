@@ -470,16 +470,41 @@
                   };
                   forKernel =
                     kernel:
-                    inputs.nixpkgs.lib.mapAttrs' (
-                      name: f:
-                      inputs.nixpkgs.lib.nameValuePair "${name}-${kernel.version}" (
-                        b.pkgs.callPackage f { inherit kernel; }
-                      )
-                    ) sources;
+                    let
+                      drivers = lib.mapAttrsToList (_: f: b.pkgs.callPackage f { inherit kernel; }) sources;
+                      tree = "${lib.getOutput "modules" kernel}/lib/modules/${kernel.modDirVersion}";
+                    in
+                    b.pkgs.runCommand "corecycler-drivers-${kernel.version}"
+                      {
+                        nativeBuildInputs = [
+                          b.pkgs.binutils
+                          b.pkgs.xz
+                          b.pkgs.zstd
+                        ];
+                      }
+                      ''
+                        compiler() { readelf -p .comment "$1" | grep -o 'GCC: .*\|clang version .*' | sort -u; }
+                        reference=$(find -L ${tree}/kernel/drivers/hwmon -name 'k10temp.ko*' | head -n 1)
+                        case "$reference" in
+                          *.xz) xz -dc "$reference" > k10temp.ko ;;
+                          *.zst) zstd -dcq "$reference" > k10temp.ko ;;
+                          *) cp "$reference" k10temp.ko ;;
+                        esac
+                        want=$(compiler k10temp.ko)
+                        [ -n "$want" ] || { echo "the kernel's own k10temp names no compiler"; exit 1; }
+                        for ko in $(find -L ${lib.concatStringsSep " " drivers} -name '*.ko'); do
+                          got=$(compiler "$ko")
+                          [ "$got" = "$want" ] || { echo "$ko was built by '$got', the kernel by '$want'"; exit 1; }
+                        done
+                        mkdir -p $out
+                        printf '%s\n' ${lib.concatStringsSep " " drivers} > $out/drivers
+                        echo "$want" > $out/compiler
+                      '';
                 in
-                b.pkgs.linkFarm "corecycler-kernel-modules" (
-                  forKernel b.pkgs.linuxPackages.kernel // forKernel b.pkgs.linuxPackages_latest.kernel
-                );
+                b.pkgs.linkFarm "corecycler-kernel-modules" {
+                  default = forKernel b.pkgs.linuxPackages.kernel;
+                  latest = forKernel b.pkgs.linuxPackages_latest.kernel;
+                };
             };
           };
       }
