@@ -153,7 +153,8 @@ def moves(fake: Fake, budget: dict[str, int]) -> list[tuple[str, dict[str, int]]
         if fault == "setup" and s.lifecycle in (Lifecycle.RUNNING, Lifecycle.PAUSING):
             continue
         if fault == "outside" and not (
-            s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is not PauseReason.RESUMING
+            s.lifecycle is Lifecycle.RUNNING
+            or (s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is not PauseReason.RESUMING)
         ):
             continue
         if fault in ("continue", "restart") and not (
@@ -413,6 +414,13 @@ def test_no_future_resumes_round_a_power_state_changed_while_the_session_was_awa
 def test_no_future_resumes_over_a_co_another_tool_wrote_while_the_session_was_paused():
     budget = {"outside": 2, "pause": 2, "crash": 1, "dbfail": 1, "total": 3}
     survey = explore(tiny(2, [-3, -2], 2), budget, cap=2_000_000)
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+@pytest.mark.req("ENTRY_READS.3")
+def test_an_outside_write_while_running_is_caught_at_the_next_stage_entry():
+    survey = explore(tiny(2, [-3, -2], 2), {"outside": 2, "pause": 1, "total": 2}, cap=2_000_000)
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
 

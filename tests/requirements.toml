@@ -4506,8 +4506,7 @@ proof = "built"
 [[requirement]]
 id = "ENTRY_READS.3"
 statement = "An outside write while running is caught at the next stage entry in the explorer"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "SC.1"
