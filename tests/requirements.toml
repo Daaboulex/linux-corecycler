@@ -3061,7 +3061,7 @@ proof = "built"
 
 [[requirement]]
 id = "L31.b"
-statement = "The prechecks run at every ContinuationDue before StartWorker; the CO is read over the core map and compared only at stage entry"
+statement = "The prechecks run at every ContinuationDue before StartWorker; the CO is read over the core map and compared before every test (owner 2026-10-14, O23)"
 proof = "built"
 
 [[requirement]]
@@ -4495,17 +4495,17 @@ proof = "built"
 
 [[requirement]]
 id = "ENTRY_READS.1"
-statement = "World.co_now carries every core's CO with each continuation; knobs_stage is runtime only, so the first test after a load reads again"
+statement = "World.co_now carries every core's CO with each continuation, and every test compares it before it starts (owner 2026-10-14, O23)"
 proof = "built"
 
 [[requirement]]
 id = "ENTRY_READS.2"
-statement = "At stage entry no reads or an unread core is SMU_READ; a held core off base_co or an owned core off the resident cache is OUTSIDE_WRITE with the resume check's wording; an owned core with an unknown cache is not compared"
+statement = "Before every test no reads or an unread core is SMU_READ; a held core off base_co or an owned core off the resident cache is OUTSIDE_WRITE with the resume check's wording; an owned core with an unknown cache is not compared"
 proof = "built"
 
 [[requirement]]
 id = "ENTRY_READS.3"
-statement = "An outside write while running is caught at the next stage entry in the explorer"
+statement = "An outside write while running is caught before the next test in the explorer"
 proof = "built"
 
 [[requirement]]

@@ -27,6 +27,7 @@ from corecycler.tuner.machine.types import (
     CrashEvidenceRead,
     Evidence,
     Group,
+    InFlight,
     InternalError,
     Klass,
     Lifecycle,
@@ -2143,13 +2144,23 @@ def test_a_failed_revert_that_cannot_be_recorded_is_said_and_reported_as_a_datab
 @pytest.mark.req("K23")
 def test_a_sleep_between_tests_makes_the_rig_rewrite_every_core(tmp_path):
     hardware = FakeHardware()
-    asleep = iter([0.0] * 3 + [600.0] * 10_000)
-    hardware.asleep_seconds = lambda: next(asleep)
+    slept = [0.0]
+    hardware.asleep_seconds = lambda: slept[0]
     r = rig(tmp_path, hardware)
     r.start(config(), 1, 7, True)
-    for _ in range(3):
+    for _ in range(10_000):
+        if isinstance(r.state.slot, InFlight):
+            break
         r.step(0.01)
+    before = r.state.slot.token
     hardware.co = {0: -3, 1: -3, 8: -3}
+    slept[0] = 600.0
+    for _ in range(10_000):
+        if isinstance(r.state.slot, InFlight) and r.state.slot.token != before:
+            break
+        r.step(0.01)
+    assert isinstance(r.state.slot, InFlight)
+    assert hardware.co == dict(r.state.slot.spec.vector)
     r.run_until_rest(0.01)
     assert r.state.lifecycle is Lifecycle.COMPLETED
     assert hardware.co == EDGES

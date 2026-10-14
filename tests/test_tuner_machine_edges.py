@@ -634,10 +634,9 @@ def first_test_of_a_session_with_a_held_core(**world):
     return transition(started, ContinuationDue(started.slot.token), replace(seen, **world))
 
 
-def test_a_stage_entry_with_every_co_as_left_starts_the_test_and_remembers_the_stage():
+def test_a_test_with_every_co_as_left_starts():
     result = first_test_of_a_session_with_a_held_core()
     assert isinstance(result.state.slot, InFlight)
-    assert result.state.knobs_stage is Stage.SEARCH
 
 
 @pytest.mark.parametrize(
@@ -652,7 +651,7 @@ def test_a_stage_entry_with_every_co_as_left_starts_the_test_and_remembers_the_s
 @pytest.mark.req(
     "D3", "INV.L31", "L08.d.l31", "L31.4", "ENTRY_READS.2", "TM.I_M1", "VERDICT.31", "VERDICT.32", "WRITER.held"
 )
-def test_a_stage_entry_with_a_moved_or_unread_co_pauses_before_any_test(reads, reason, cores, says):
+def test_a_moved_or_unread_co_pauses_before_the_test_starts(reads, reason, cores, says):
     co_now = None if reads is None else tuple(sorted(reads.items()))
     result = first_test_of_a_session_with_a_held_core(co_now=co_now)
     assert (result.state.pause.reason, result.state.pause.cores) == (reason, cores)
@@ -673,12 +672,22 @@ def test_after_a_sleep_gap_only_the_held_cores_are_compared():
 
 
 @pytest.mark.req("L31.b", "ENTRY_READS.1")
-def test_within_a_stage_the_co_is_not_read_again():
-    started = transition(SessionState(), Start(CFG, 1, 0, True), HELD).state
-    entered = replace(started, knobs_stage=Stage.SEARCH)
-    moved = replace(HELD, co_now=((0, 0), (1, 0), (2, -9)), resident=((0, 0), (1, 0)))
-    result = transition(entered, ContinuationDue(entered.slot.token), moved)
-    assert isinstance(result.state.slot, InFlight)
+def test_an_outside_write_between_two_tests_of_one_stage_pauses_the_second():
+    fake = fresh(2, [-3, -2], 1, max_offset=-5, k_1t=2)
+    start(fake)
+    fake.fire()
+    stage = fake.state.flow.stage
+    fake.deliver()
+    fake.co[0] = -9
+    fake.outside.add(0)
+    while fake.worker is None and fake.state.lifecycle is Lifecycle.RUNNING:
+        fake.fire()
+    assert fake.state.lifecycle is Lifecycle.PAUSED
+    assert (fake.state.pause.reason, fake.state.pause.cores, fake.state.flow.stage) == (
+        PauseReason.OUTSIDE_WRITE,
+        (0,),
+        stage,
+    )
 
 
 def completed_with_a_held_core():

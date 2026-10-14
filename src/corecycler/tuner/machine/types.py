@@ -308,7 +308,6 @@ class SessionState:
     power: tuple[tuple[str, str], ...] = ()
     setup: tuple[tuple[str, str], ...] = ()
     base_co: tuple[tuple[int, int | None], ...] = ()
-    knobs_stage: Stage | None = None
 
     def __post_init__(self) -> None:
         problems = list(_state_problems(self))

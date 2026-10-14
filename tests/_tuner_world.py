@@ -194,10 +194,6 @@ class Fake:
         acting = result.state if result.state.session_id is not None else before
         tightened = None
         for effect in result.effects:
-            if isinstance(effect, StartWorker) and result.state.knobs_stage is not before.knobs_stage:
-                known = sorted(core for core in self.outside if self.resident.get(core) is not None)
-                if known:
-                    raise Broken(f"entered {result.state.knobs_stage} over an outside write on cores {known}")
             if isinstance(effect, WriteCO) and self.resident.get(effect.core) is not None:
                 if effect.value < self.resident[effect.core]:
                     tightened = effect.core
@@ -348,7 +344,7 @@ class Fake:
         if set(vector) != {core for core, _ in state.baseline}:
             raise Broken(f"the test vector {sorted(vector)} does not cover exactly the owned cores")
         for core, value in vector.items():
-            if self.co.get(core) != value and core not in self.outside:
+            if self.co.get(core) != value:
                 raise Broken(f"core {core} sits at {self.co.get(core)} during a {spec.stage} test that needs {value}")
 
     def check_settled(self, before: SessionState, event, result: Transition) -> None:

@@ -419,7 +419,7 @@ def test_no_future_resumes_over_a_co_another_tool_wrote_while_the_session_was_pa
 
 
 @pytest.mark.req("ENTRY_READS.3")
-def test_an_outside_write_while_running_is_caught_at_the_next_stage_entry():
+def test_an_outside_write_while_running_is_caught_before_the_next_test():
     survey = explore(tiny(2, [-3, -2], 2), {"outside": 2, "pause": 1, "total": 2}, cap=2_000_000)
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves

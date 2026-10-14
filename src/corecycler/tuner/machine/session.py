@@ -655,7 +655,7 @@ def _left(moved: tuple[int, ...], reads: dict[int, int | None], expected: dict[i
     return "; ".join(f"core {c} reads {reads[c]}, the session left it at {expected[c]}" for c in moved)
 
 
-def _stage_entry_problem(s: SessionState, w: World) -> tuple[PauseReason, str, tuple[int, ...]] | None:
+def _co_reads_problem(s: SessionState, w: World) -> tuple[PauseReason, str, tuple[int, ...]] | None:
     cores = tuple(core for core, _ in w.cpus_of)
     reads = dict(w.co_now or ())
     unread = tuple(core for core in cores if reads.get(core) is None)
@@ -1232,11 +1232,9 @@ def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transi
             f"or at or past its fail bound {s.core(core).fb}"
         )
         return _enter_pause(replace(s, flow=flow), PauseReason.INTERNAL, detail)
-    if flow.stage is not s.knobs_stage:
-        problem = _stage_entry_problem(s, w)
-        if problem is not None:
-            return _enter_pause(replace(s, flow=flow), *problem)
-        s = replace(s, knobs_stage=flow.stage)
+    problem = _co_reads_problem(s, w)
+    if problem is not None:
+        return _enter_pause(replace(s, flow=flow), *problem)
     limit = s.config.thermal_limit_c if w.tjmax_c is None else min(s.config.thermal_limit_c, w.tjmax_c)
     spec = replace(spec, thermal_limit_c=limit)
     token = s.next_token
@@ -1271,7 +1269,7 @@ def _finalize(s: SessionState, w: World) -> Transition:
         effects: list = [WriteCO(r.core, r.value) for r in s.cores if w.resident_of(r.core) != r.value]
         effects += [Schedule(token, 0.0)]
         return Transition(applied, tuple(effects))
-    problem = _stage_entry_problem(s, w)
+    problem = _co_reads_problem(s, w)
     if problem is not None:
         return _enter_pause(s, *problem)
     done = replace(s, lifecycle=Lifecycle.COMPLETED, flow=None, slot=None, incidents=0)
