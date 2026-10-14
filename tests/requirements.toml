@@ -306,8 +306,7 @@ proof = "built"
 [[requirement]]
 id = "K21.hang"
 statement = "y-cruncher hang: no new Running line in its output for 2 x seconds-per-test is a STALL"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "K22"
@@ -3213,8 +3212,7 @@ proof = "built"
 [[requirement]]
 id = "U13"
 statement = "y-cruncher hang rule"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "U15"

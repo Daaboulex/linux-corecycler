@@ -188,6 +188,9 @@ class YCruncherBackend(StressBackend):
     def findings(self, output: str, work_dir: Path) -> tuple[LaneSignal, ...]:
         return scan(_ANSI_RE.sub("", output), FINDINGS)
 
+    def progress_window(self, config: StressConfig) -> float | None:
+        return 2.0 * (config.seconds_per_test if config.seconds_per_test else _PER_TEST_SECONDS)
+
     def speeds(self, output: str) -> tuple[tuple[str, float, bool], ...]:
         return tuple(
             (test, float(mantissa) * 10 ** int(exponent), verdict == "Passed")

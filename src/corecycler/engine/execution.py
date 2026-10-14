@@ -93,6 +93,8 @@ class _LaneRun:
     frozen_since: float | None = None
     frozen_total: float = 0.0
     scheduled_as: tuple[int, int] | None = None
+    progress_window: float | None = None
+    last_progress: float = 0.0
 
     @property
     def alive(self) -> bool:
@@ -357,6 +359,8 @@ class Supervisor:
             return False
         run.started_at = time.monotonic()
         run.last_active = run.started_at
+        run.last_progress = run.started_at
+        run.progress_window = self.backend.progress_window(cfg)
         return True
 
     def _watch(self, runs: list[_LaneRun], start: float, deadline: float) -> None:
@@ -392,13 +396,29 @@ class Supervisor:
                 last_scan = now
                 for run in runs:
                     if run.alive:
+                        finished = len(run.speeds)
                         self._scan_output(run)
+                        self._check_progress(run, now, finished)
             if any(run.faulted for run in runs) or not any(run.alive for run in runs):
                 return
             for run in runs:
                 if run.alive and self.hooks.on_status:
                     self.hooks.on_status(run.lane.core_id, now - start)
             self.stop_event.wait(self.poll_interval)
+
+    def _check_progress(self, run: _LaneRun, now: float, finished_before: int) -> None:
+        if run.progress_window is None or run.frozen:
+            return
+        if len(run.speeds) > finished_before:
+            run.last_progress = now
+        elif now - run.last_progress > run.progress_window:  # equivalent-mutant: two float clock reads are never equal
+            run.signals.append(
+                LaneSignal(
+                    Outcome.STALL,
+                    f"Stress test hung on core {run.lane.core_id}: no test finished for "
+                    f"{now - run.last_progress:.0f}s, past its {run.progress_window:.0f}s window",
+                )
+            )
 
     def _check(self, run: _LaneRun, now: float, start: float) -> None:
         self._sample_cpu(run, now)
@@ -446,6 +466,7 @@ class Supervisor:
             else:
                 self._signal_group(run, signal.SIGCONT)
                 run.frozen_total += max(0.0, min(now, run.deadline) - run.frozen_since)
+                run.last_progress += now - run.frozen_since
                 run.frozen_since = None
                 run.last_active = now
             run.frozen = frozen

@@ -168,6 +168,10 @@ class StressBackend(ABC):
         """Each finished test's own speed figure, as (test, value, passed); none for a backend that prints none."""
         return ()
 
+    def progress_window(self, config: StressConfig) -> float | None:
+        """Seconds with no newly finished test after which a run is hung; None when the backend cannot tell."""
+        return None
+
     @abstractmethod
     def get_supported_modes(self) -> list[StressMode]:
         """Return list of stress modes this backend supports."""

@@ -16,7 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1970,3 +1970,56 @@ class TestScheduling:
         verdict = run_one(supervisor, lane(tmp_path), execution.WATCHDOG_INTERVAL * 3)
         assert verdict.outcome is Outcome.CONTAINMENT_BROKE
         assert "runs at nice " in verdict.detail and "scheduling fault, not a core verdict" in verdict.detail
+
+
+class ProgressBackend(FakeBackend):
+    def __init__(self, command: list[str], window: float) -> None:
+        super().__init__(command)
+        self.window = window
+
+    def progress_window(self, config: StressConfig) -> float | None:
+        return self.window
+
+    def speeds(self, output: str) -> tuple[tuple[str, float, bool], ...]:
+        return tuple(("T", 1.0, True) for line in output.splitlines() if line == "done")
+
+
+FINISHES_A_TEST_EVERY_200_MS = "import time\nwhile True:\n    print('done', flush=True)\n    time.sleep(0.2)"
+
+
+class TestHungPayload:
+    @pytest.mark.req("K21.hang", "U13")
+    def test_a_busy_payload_that_finishes_no_test_within_its_window_is_hung(self, tmp_path):
+        supervisor, _, _ = make_supervisor(ProgressBackend(_child(BUSY), window=1.5))
+        with patch.object(execution, "OUTPUT_SCAN_INTERVAL", 0.05):
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 4.0)
+        assert verdict.outcome is Outcome.STALL
+        waited = float(verdict.detail.split("no test finished for ")[1].split("s,")[0])
+        assert 1.0 <= waited < 4.0
+
+    @pytest.mark.req("K21.hang", "U13")
+    def test_a_payload_that_keeps_finishing_tests_is_not_accused(self, tmp_path):
+        supervisor, _, _ = make_supervisor(ProgressBackend(_child(FINISHES_A_TEST_EVERY_200_MS), window=0.6))
+        with patch.object(execution, "OUTPUT_SCAN_INTERVAL", 0.05):
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 1.5)
+        assert verdict.outcome is Outcome.PASS
+
+    def test_a_backend_without_a_progress_signal_is_never_judged_by_it(self, tmp_path):
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)))
+        with patch.object(execution, "OUTPUT_SCAN_INTERVAL", 0.05):
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 1.0)
+        assert verdict.outcome is Outcome.PASS
+
+    @pytest.mark.req("K21.hang", "U13")
+    def test_y_cruncher_waits_two_of_its_tests_for_the_next_to_finish(self):
+        from corecycler.engine.backends.ycruncher import YCruncherBackend
+
+        assert YCruncherBackend().progress_window(StressConfig(seconds_per_test=20)) == 40.0
+
+    def test_frozen_time_does_not_count_toward_the_window(self, tmp_path):
+        supervisor, _, _ = make_supervisor(FakeBackend())
+        run = execution._LaneRun(lane(tmp_path, cpus=(0,)), proc=MagicMock(returncode=None))
+        run.last_progress, run.frozen, run.frozen_since = 10.0, True, 12.0
+        with patch.object(supervisor, "_signal_group"):
+            supervisor._set_frozen([run], False, 20.0)
+        assert run.last_progress == 18.0
