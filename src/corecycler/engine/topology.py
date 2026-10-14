@@ -15,7 +15,7 @@ class LogicalCPU:
     logical_id: int
     physical_core: int
     package_id: int
-    core_cpus: tuple[int, ...]  # all logical CPUs sharing this physical core (SMT siblings)
+    core_cpus: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,9 +40,7 @@ class CPUTopology:
     ccds: int = 0
     is_x3d: bool = False
     vcache_ccd: int | None = None
-    # False when a present CPU is offline. A fully-offlined core vanishes from
-    # /proc/cpuinfo and fakes a hole in the core-id space, so gap-based
-    # physical-numbering proofs are only trustworthy when this is True.
+    # False when a present CPU is offline: an offlined core leaves a hole in the core ids.
     cpus_all_online: bool = True
     cores: dict[int, PhysicalCore] = field(default_factory=dict)
     logical_map: dict[int, LogicalCPU] = field(default_factory=dict)
@@ -97,7 +95,7 @@ def _parse_cpuinfo(topo: CPUTopology) -> None:
         return
     text = CPUINFO.read_text()
 
-    cores_seen: dict[int, list[int]] = {}  # physical_core -> [logical_ids]
+    cores_seen: dict[int, list[int]] = {}
     current_proc = -1
     current_core = -1
     current_pkg = 0
@@ -136,12 +134,11 @@ def _parse_cpuinfo(topo: CPUTopology) -> None:
                     logical_id=current_proc,
                     physical_core=current_core,
                     package_id=current_pkg,
-                    core_cpus=(),  # filled later
+                    core_cpus=(),
                 )
             current_proc = -1
             current_core = -1
 
-    # handle last entry (no trailing blank line)
     if current_proc >= 0 and current_core >= 0:
         cores_seen.setdefault(current_core, []).append(current_proc)
         topo.logical_map[current_proc] = LogicalCPU(
@@ -155,7 +152,6 @@ def _parse_cpuinfo(topo: CPUTopology) -> None:
     topo.logical_cpus_count = sum(len(v) for v in cores_seen.values())
     topo.smt_enabled = any(len(v) > 1 for v in cores_seen.values())
 
-    # backfill core_cpus tuples
     for logical_id, lcpu in list(topo.logical_map.items()):
         siblings = tuple(sorted(cores_seen.get(lcpu.physical_core, [logical_id])))
         topo.logical_map[logical_id] = LogicalCPU(
@@ -204,17 +200,14 @@ def _parse_sysfs(topo: CPUTopology) -> None:
 
 def _detect_ccd_layout(topo: CPUTopology) -> None:
     """Detect CCD assignment for each core using L3 cache topology."""
-    l3_groups: dict[str, list[int]] = {}  # l3_id -> [core_ids]
+    l3_groups: dict[str, list[int]] = {}
 
     for core_id in sorted(topo.logical_map.keys()):
-        # find the first logical CPU for each physical core
         lcpu = topo.logical_map[core_id]
-        # use the first logical CPU of this physical core
         first_logical = lcpu.logical_id if lcpu.logical_id == min(lcpu.core_cpus) else None
         if first_logical is None:
             continue
 
-        # check L3 cache index
         cache_dir = SYSFS_CPU / f"cpu{first_logical}" / "cache"
         if not cache_dir.exists():
             continue
@@ -227,15 +220,13 @@ def _detect_ccd_layout(topo: CPUTopology) -> None:
                     l3_groups.setdefault(l3_id, []).append(lcpu.physical_core)
                 break
 
-    # map L3 groups to CCD indices
-    ccd_map: dict[int, int] = {}  # physical_core -> ccd_index
+    ccd_map: dict[int, int] = {}
     for ccd_idx, (_l3_id, core_ids) in enumerate(sorted(l3_groups.items(), key=_l3_id_sort_key)):
         for cid in core_ids:
             ccd_map[cid] = ccd_idx
 
     topo.ccds = len(l3_groups) if l3_groups else 1
 
-    # build PhysicalCore entries
     seen_cores: set[int] = set()
     for lcpu in topo.logical_map.values():
         pc = lcpu.physical_core
@@ -245,30 +236,23 @@ def _detect_ccd_layout(topo: CPUTopology) -> None:
         topo.cores[pc] = PhysicalCore(
             core_id=pc,
             ccd=ccd_map.get(pc),
-            ccx=None,  # CCX detection needs more info, skip for now
+            ccx=None,
             logical_cpus=lcpu.core_cpus,
         )
 
 
 def _detect_x3d(topo: CPUTopology) -> None:
     """Detect X3D processors and identify V-Cache CCD."""
-    name_lower = topo.model_name.lower()
-
-    # X3D detection: model name contains "x3d" or known X3D part numbers
-    x3d_patterns = ["x3d", "7800x3d", "7900x3d", "7950x3d", "9800x3d", "9900x3d", "9950x3d"]
-    topo.is_x3d = any(pat in name_lower for pat in x3d_patterns)
+    topo.is_x3d = "x3d" in topo.model_name.lower()
 
     if not topo.is_x3d or topo.ccds < 2:
         if topo.is_x3d and topo.ccds == 1:
-            # single CCD X3D (e.g., 7800X3D) — the one CCD has V-Cache
             topo.vcache_ccd = 0
             for pc in topo.cores.values():
                 if pc.ccd == 0:
                     object.__setattr__(pc, "has_vcache", True)
         return
 
-    # multi-CCD X3D: CCD0 has V-Cache (larger L3)
-    # detect by comparing L3 sizes per CCD
     ccd_l3_sizes: dict[int, int] = {}
     for core in topo.cores.values():
         if core.ccd is None:
@@ -285,13 +269,12 @@ def _detect_x3d(topo: CPUTopology) -> None:
                 size_file = idx_dir / "size"
                 if size_file.exists():
                     size_str = size_file.read_text().strip()
-                    # parse "96M" or "32768K" etc
                     m = re.match(r"(\d+)([KMG])?", size_str)
                     if m:
                         val = int(m.group(1))
                         unit = m.group(2) or "K"
                         multiplier = {"K": 1, "M": 1024, "G": 1048576}
-                        ccd_l3_sizes[core.ccd] = val * multiplier.get(unit, 1)
+                        ccd_l3_sizes[core.ccd] = val * multiplier[unit]
                 break
 
     known = {core.ccd for core in topo.cores.values() if core.ccd is not None}
