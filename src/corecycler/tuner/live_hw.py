@@ -549,10 +549,16 @@ class StressRunner:
             settings = ONE_T if spec.klass is Klass.T1 else TWO_T
             config = StressConfig(mode=StressMode.CUSTOM, **settings)
             lane = Lane(core_id=spec.core, cpus=spec.cpus, work_dir=self.work_dir / f"core_{spec.core}")
+            frozen = stages.record_freezes(spec.seconds) if spec.klass is Klass.T1 else ()
             sampler = None
-            if self.sink is not None:
+            if self.sink is not None or frozen:
                 flat = stages.Segment(
-                    spec.cpus, settings["tests"], settings["seconds_per_test"], settings["memory_mb"], spec.seconds
+                    spec.cpus,
+                    settings["tests"],
+                    settings["seconds_per_test"],
+                    settings["memory_mb"],
+                    spec.seconds,
+                    frozen,
                 )
                 sampler = Hold(flat, self.clocks, self.core_of_cpu, telemetry.SAMPLE_S, self.sink)
             results, observed = self._supervise(

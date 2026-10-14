@@ -197,8 +197,7 @@ task = "T29"
 [[requirement]]
 id = "K8.freeze"
 statement = "1T lane frozen 1 s periodically as the record ran it"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "K9.tests"
@@ -3878,8 +3877,7 @@ task = "T28"
 [[requirement]]
 id = "D36"
 statement = "The 1T class uses the lane freeze as the record ran it"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "D37"

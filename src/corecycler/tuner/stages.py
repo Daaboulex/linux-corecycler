@@ -40,6 +40,25 @@ def frozen_at(segment: Segment, elapsed: float) -> bool:
     return any(start <= elapsed < end for start, end in segment.frozen)
 
 
+RECORD_TICK_S = 10.0
+
+
+def record_freezes(seconds: float) -> tuple[tuple[float, float], ...]:
+    intervals = []
+    t = 0.0
+    while True:
+        remaining = seconds - t
+        last = remaining <= RECORD_TICK_S
+        start = t + (remaining - 2.0 if last else RECORD_TICK_S - 1.0)
+        if start < t:
+            break
+        intervals.append((start, start + 1.0))
+        if last:
+            break
+        t = start + 2.0
+    return tuple(intervals)
+
+
 def _alternate(rng: random.Random, duration: float, first: float, run: tuple, rest: tuple) -> tuple:
     intervals = []
     t = first

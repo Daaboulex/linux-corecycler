@@ -173,7 +173,7 @@ def test_a_single_core_test_is_sampled_only_when_a_sink_is_given():
     assert [s.mhz for s in got] == [tuple((core, 5000.0) for core in range(4))]
     unsampled = Script([Outcome.PASS], sampled=False)
     runner(unsampled).run(one, threading.Event())
-    assert unsampled.seen[0][3] is None
+    assert unsampled.seen[0][3] is not None
 
 
 @pytest.mark.req("K40.slot", "D40.slot")
@@ -581,3 +581,32 @@ def test_the_thermal_stop_of_every_run_is_the_spec_s_limit():
     script = Script([Outcome.PASS] * 8)
     runner(script).run(replace(spec(Load.WARM), thermal_limit_c=89.0), threading.Event())
     assert set(script.limits) == {89.0}
+
+
+@pytest.mark.req("K8.freeze", "D36")
+@pytest.mark.parametrize(
+    ("seconds", "frozen"),
+    [
+        (20.0, ((9.0, 10.0), (18.0, 19.0))),
+        (60.0, ((9.0, 10.0), (20.0, 21.0), (31.0, 32.0), (42.0, 43.0), (53.0, 54.0), (58.0, 59.0))),
+        (10.0, ((8.0, 9.0),)),
+        (5.0, ((3.0, 4.0),)),
+        (2.0, ((0.0, 1.0),)),
+        (1.0, ()),
+    ],
+)
+def test_the_record_suspends_one_second_per_tick_and_on_its_last_tick_two_seconds_before_the_end(seconds, frozen):
+    assert stages.record_freezes(seconds) == frozen
+
+
+@pytest.mark.req("K8.freeze", "D36")
+def test_a_one_core_test_freezes_its_lane_as_the_record_did_and_a_two_thread_test_does_not():
+    one = Spec(Klass.T1, 0, -5, (0,), 20.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0)
+    two = replace(one, klass=Klass.T2, cpus=(0, 16))
+    reading = at(70.0)
+    script = Script([Outcome.PASS, Outcome.PASS], sampled=False)
+    runner(script).run(one, threading.Event())
+    runner(script).run(two, threading.Event())
+    one_freeze, two_freeze = script.seen[0][3], script.seen[1][3]
+    assert [one_freeze(t, reading) for t in (8.9, 9.5, 10.1, 18.5, 19.5)] == [False, True, False, True, False]
+    assert two_freeze is None
