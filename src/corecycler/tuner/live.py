@@ -729,7 +729,10 @@ class LiveRig:
                 try:
                     self.store.event(acting.session_id, kind, text, self.boot)
                 except sqlite3.Error as exc:
-                    return DatabaseFailed(f"the event could not be written: {exc}")
+                    if kind == "database_failed":
+                        self.say(f"the database failure could not be recorded: {exc}")
+                    else:
+                        return DatabaseFailed(f"the event could not be written: {exc}")
             case CloseDb():
                 pass
         return None

@@ -26,6 +26,7 @@ from corecycler.tuner.machine.types import (
     CrashEvidenceRead,
     Evidence,
     Group,
+    InternalError,
     Klass,
     Lifecycle,
     MachineConfig,
@@ -478,6 +479,23 @@ def test_a_database_that_cannot_be_written_puts_the_cores_at_stock(tmp_path, mon
     assert final.pause.reason is PauseReason.DATABASE
     assert r.store.marker_boot() == "boot-a"
     assert r.hardware.co == {0: 0, 1: 0, 8: 0}
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_a_database_failure_that_cannot_itself_be_recorded_is_said_and_goes_no_further(tmp_path, monkeypatch, held):
+    said = []
+    r = rig(tmp_path)
+    if held:
+        r.start(config(), 1, 7, True)
+        r.post(live.Abort())
+    r.say = said.append
+    monkeypatch.setattr(r.store, "event", broken)
+    r.post(InternalError("the runner raised"))
+    assert said[-3:] == [
+        "internal_error: the runner raised",
+        "database_failed: the event could not be written: disk I/O error",
+        "the database failure could not be recorded: disk I/O error",
+    ]
 
 
 def test_a_stock_marker_that_cannot_be_written_still_puts_the_cores_at_stock(tmp_path, monkeypatch):
