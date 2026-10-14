@@ -67,6 +67,7 @@ def test_a_named_binary_that_cannot_run_here_is_refused_naming_why(tmp_path, mon
         (_ZEN5_FLAGS, ("24-ZN5 ~ Komari",), "19-ZN2 ~ Kagari", "is not in"),
     ],
 )
+@pytest.mark.req("D51.capability")
 def test_a_binary_s_problem_is_known_before_any_test_runs(tmp_path, monkeypatch, flags, installed, name, says):
     launcher = _install(tmp_path / "yc", installed) if installed else _install(tmp_path / "yc")
     _on_cpu(monkeypatch, tmp_path, "AuthenticAMD", flags)

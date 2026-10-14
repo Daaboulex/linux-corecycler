@@ -176,7 +176,7 @@ def test_a_single_core_test_is_sampled_only_when_a_sink_is_given():
     assert unsampled.seen[0][3] is None
 
 
-@pytest.mark.req("K40.slot")
+@pytest.mark.req("K40.slot", "D40.slot")
 def test_a_bisect_slot_runs_every_hot_test_at_twenty_seconds_and_steady_keeps_sixty():
     (quick,) = stages.plan(Load.HOT, 160.0, CPUS, FIRSTS, 60_000, random.Random(1), 95.0, quick=True)
     assert quick.tests == ALL_TESTS and quick.seconds_per_test * len(quick.tests) == quick.duration

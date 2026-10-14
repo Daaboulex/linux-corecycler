@@ -99,7 +99,7 @@ def test_only_a_test_that_ran_and_saw_nothing_unblamed_marks_its_values_survived
     assert any(isinstance(effect, MarkSurvived) for effect in result.effects) is marks
 
 
-@pytest.mark.req("L19.d.soak", "U22")
+@pytest.mark.req("L19.d.soak", "U22", "L16.G8")
 @pytest.mark.parametrize("load", [Load.HOT, Load.SOAK])
 def test_a_pause_during_an_all_core_test_stops_it_at_once_and_resume_runs_the_same_test_again(load):
     fake = running_fake()
@@ -226,7 +226,7 @@ def test_the_lost_verdict_of_an_all_core_test_is_one_fail_of_that_test(stage):
     assert sum(delta for _, delta in fake.state.flow.allcore.co_delta) == before + 1
 
 
-@pytest.mark.req("C10", "D34")
+@pytest.mark.req("C10", "D34", "TERMS.allcore_baseline", "L08.d.after", "L20.d.allcore", "L22.d.allcore")
 @pytest.mark.parametrize("report", [Report(Group.THERMAL, 5.0), Report(Group.APPARATUS, 1.0, detail="tool died")])
 def test_an_all_core_test_that_ends_without_a_verdict_sends_every_owned_core_back_to_baseline(report):
     fake = running_fake()

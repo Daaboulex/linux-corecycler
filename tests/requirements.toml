@@ -630,8 +630,7 @@ proof = "built"
 [[requirement]]
 id = "TERMS.allcore_baseline"
 statement = "After every AllCore stage run, whatever its outcome, owned knobs go to baseline"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "TERMS.failing_effect"
@@ -1827,8 +1826,7 @@ task = "T29"
 [[requirement]]
 id = "L08.d.after"
 statement = "After the run owned knobs go to baseline"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L08.G1"
@@ -2340,8 +2338,7 @@ proof = "built"
 [[requirement]]
 id = "L16.G8"
 statement = "A Pause in SOAK stops the worker, reverts, waits K20, pauses P(USER); Resume re-runs the full SOAK"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L17.d.requeue"
@@ -2576,8 +2573,7 @@ proof = "built"
 [[requirement]]
 id = "L18.e.G9"
 statement = "An Abort during P(RESUMING) waits for C8, then aborts"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L18.e.G11"
@@ -2664,8 +2660,7 @@ task = "T29"
 [[requirement]]
 id = "L20.d.allcore"
 statement = "In all-core stage loops owned knobs go to baseline after a THERMAL run"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L20.d.wait"
@@ -2737,8 +2732,7 @@ task = "T29"
 [[requirement]]
 id = "L22.d.allcore"
 statement = "In all-core stage loops owned knobs go to baseline after an apparatus run"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L22.d.retry"
@@ -3137,8 +3131,7 @@ task = "T28"
 [[requirement]]
 id = "EVENTS.user.abort_stored"
 statement = "Abort of a stored session from idle (CLI abort N) attributes its crash (SM C8), then stores it aborted"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "EVENTS.user.resume_running"
@@ -3917,8 +3910,7 @@ proof = "built"
 [[requirement]]
 id = "D40.slot"
 statement = "The Bisect slot is 20 s per test"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "D40.ccd"
@@ -4016,8 +4008,7 @@ proof = "built"
 [[requirement]]
 id = "D51.capability"
 statement = "Capability checks the binary exists and the CPU has its ISA; Start refuses the 2T class, naming it, when either is missing"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "D52"

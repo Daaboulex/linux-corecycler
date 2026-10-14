@@ -381,7 +381,7 @@ def test_a_reboot_during_a_test_convicts_the_tested_core_on_resume(tmp_path):
     assert again.run_until_rest(0.01).lifecycle is Lifecycle.COMPLETED
 
 
-@pytest.mark.req("T23.abort_interrupted")
+@pytest.mark.req("T23.abort_interrupted", "L18.e.G9", "EVENTS.user.abort_stored")
 @pytest.mark.parametrize("crashed", [True, False])
 def test_abort_attributes_a_held_session_then_stops_it_without_running_a_test(tmp_path, crashed):
     hardware = FakeHardware()
