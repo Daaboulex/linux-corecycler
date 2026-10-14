@@ -199,6 +199,7 @@
         flake = {
           # NixOS module - kernel modules, device access, udev rules, package
           nixosModules.default = import ./nix/module.nix { inherit (inputs) self; };
+          nixosModules.drivers = ./nix/drivers.nix;
 
           overlays = {
             default = inputs.nixpkgs.lib.composeManyExtensions ([ glueOverlay ] ++ fixOverlays);
@@ -305,6 +306,73 @@
                   users.groups.corecycler-test = { };
                 };
               };
+
+              module-drivers-split =
+                let
+                  inherit (inputs.nixpkgs) lib;
+                  eval =
+                    modules:
+                    (lib.nixosSystem {
+                      inherit system;
+                      modules = modules ++ [
+                        {
+                          boot.isContainer = true;
+                          system.stateVersion = lib.trivial.release;
+                          nixpkgs.config.allowUnfree = true;
+                        }
+                      ];
+                    }).config;
+                  tuner = [
+                    (import ./nix/module.nix { inherit (inputs) self; })
+                    {
+                      services.corecycler = {
+                        enable = true;
+                        deviceAccessUser = "corecycler-test";
+                      };
+                      users.users.corecycler-test = {
+                        isSystemUser = true;
+                        group = "corecycler-test";
+                      };
+                      users.groups.corecycler-test = { };
+                    }
+                  ];
+                  drivers = eval [
+                    ./nix/drivers.nix
+                    {
+                      hardware.corecycler = {
+                        ryzenSmu.enable = true;
+                        zenpower.enable = true;
+                        it87.enable = true;
+                      };
+                    }
+                  ];
+                  tunerAlone = eval tuner;
+                  renamed = eval (tuner ++ [ { services.corecycler.ryzenSmu = true; } ]);
+                  problems =
+                    lib.optional (
+                      !lib.all (name: lib.elem name drivers.boot.kernelModules) [
+                        "ryzen_smu"
+                        "zenpower"
+                        "it87"
+                      ]
+                    ) "the drivers module alone does not load ryzen_smu, zenpower and it87"
+                    ++
+                      lib.optional (lib.length drivers.boot.extraModulePackages != 3)
+                        "the drivers module alone builds ${toString (lib.length drivers.boot.extraModulePackages)} drivers, not 3"
+                    ++ lib.optional (
+                      tunerAlone.boot.extraModulePackages != [ ]
+                    ) "the tuner module alone builds a driver"
+                    ++ lib.optional (
+                      !lib.any (lib.hasInfix "no ryzen_smu driver") tunerAlone.warnings
+                    ) "the tuner without ryzen_smu does not warn"
+                    ++ lib.optional (
+                      !lib.elem "ryzen_smu" renamed.boot.kernelModules
+                    ) "services.corecycler.ryzenSmu no longer turns ryzen_smu on";
+                in
+                if problems == [ ] then
+                  b.pkgs.runCommand "module-drivers-split" { } "touch $out"
+                else
+                  throw (lib.concatStringsSep "; " problems);
             }
             // inputs.nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
               # The out-of-tree modules compile against the user's own kernel, so an

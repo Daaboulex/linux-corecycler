@@ -5,9 +5,12 @@
 ## NixOS module
 
 The flake input and the minimal module setup are in the [README](../README.md#installation).
-The module handles the package, kernel modules, a udev rule for the MSR devices, a systemd
-oneshot for SMU sysfs permissions, and the `corecycler` group. No manual kernel-module
-setup is needed.
+The module handles the package, the in-tree kernel modules, a udev rule for the MSR devices, a
+systemd oneshot for SMU sysfs permissions, and the `corecycler` group. The out-of-tree drivers
+are their own module, `nixosModules.drivers` (`hardware.corecycler`), which the tuner module
+includes: each driver is off until turned on, and a machine that wants the drivers without the
+tuner imports only `nixosModules.drivers`. The old `services.corecycler.ryzenSmu`, `zenpower`
+and `it87` options still work as renames.
 
 Fuller example (AMD Zen 5 desktop, Nuvoton Super I/O, DDR5 temps):
 
@@ -16,16 +19,20 @@ services.corecycler = {
   enable = true;
   deviceAccessUser = "your-username";
   unfreeBackends = true;   # include mprime (best for CO tuning) and y-cruncher
-  zenpower = true;         # zenpower5: richer monitoring than k10temp
   nct6775 = true;          # Nuvoton Super I/O: motherboard Vcore fallback
   spd5118 = true;          # DDR5 DIMM temperatures via the SPD hub
+};
+hardware.corecycler = {
+  ryzenSmu.enable = true;  # the SMU driver the Curve-Tuner and Auto-Tuner talk to
+  zenpower.enable = true;  # zenpower5: richer monitoring than k10temp
 };
 ```
 
 ### Module options
 
 Every option, with its type, default and description, is declared in
-[`nix/module.nix`](../nix/module.nix).
+[`nix/module.nix`](../nix/module.nix) and, for the drivers,
+[`nix/drivers.nix`](../nix/drivers.nix).
 
 Out-of-tree modules (ryzen_smu, zenpower5, it87) are built against the kernel your
 configuration selects (`boot.kernelPackages`), with GCC or Clang to match how that kernel
@@ -285,7 +292,7 @@ without asking.
 
 Required for the Curve-Tuner tab and Auto-Tuner; not for stress testing. The
 [amkillam fork](https://github.com/amkillam/ryzen_smu) supports Zen 1 through Zen 5. On
-NixOS the module handles it when `ryzenSmu = true` (default). On other distros:
+NixOS turn on `hardware.corecycler.ryzenSmu.enable`. On other distros:
 
 ```bash
 git clone https://github.com/amkillam/ryzen_smu.git

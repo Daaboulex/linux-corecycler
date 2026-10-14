@@ -1,0 +1,35 @@
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
+let
+  cfg = config.hardware.corecycler;
+  build = file: pkgs.callPackage file { inherit (config.boot.kernelPackages) kernel; };
+in
+{
+  _class = "nixos";
+
+  options.hardware.corecycler = {
+    ryzenSmu.enable = lib.mkEnableOption "the ryzen_smu kernel driver (amkillam fork, Zen 1 to Zen 5), which every Curve Optimizer and Curve Shaper read and write goes through, built against the configured kernel";
+    zenpower.enable = lib.mkEnableOption "the zenpower5 kernel driver in place of k10temp, which it blacklists: Tctl, Tdie, Tccd and RAPL power, plus SVI2 voltage and current on Zen 1 to 4";
+    it87.enable = lib.mkEnableOption "the it87 kernel driver (frankcrawford fork) for ITE Super I/O chips: motherboard Vcore, fans and temperatures on most Gigabyte boards";
+  };
+
+  config = lib.mkMerge [
+    (lib.mkIf cfg.ryzenSmu.enable {
+      boot.kernelModules = [ "ryzen_smu" ];
+      boot.extraModulePackages = [ (build ./ryzen-smu.nix) ];
+    })
+    (lib.mkIf cfg.zenpower.enable {
+      boot.kernelModules = [ "zenpower" ];
+      boot.extraModulePackages = [ (build ./zenpower.nix) ];
+      boot.blacklistedKernelModules = [ "k10temp" ];
+    })
+    (lib.mkIf cfg.it87.enable {
+      boot.kernelModules = [ "it87" ];
+      boot.extraModulePackages = [ (build ./it87.nix) ];
+    })
+  ];
+}

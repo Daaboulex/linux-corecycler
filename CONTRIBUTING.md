@@ -176,7 +176,8 @@ Hardware-touching code (SMU driver, hwmon, topology) has higher review standards
 
 1. Add the chip name prefix to `_SUPERIO_CHIPS` in `src/corecycler/monitor/hwmon.py`
 2. If the Vcore input is not `in0`, the label-scanning code handles it automatically
-3. If the chip needs a new kernel module, add an option to `nix/module.nix`
+3. If the chip needs a new kernel module, add an option to `nix/module.nix` for an in-tree one,
+   or to `nix/drivers.nix` for an out-of-tree driver this repository builds
 4. Add a test in `tests/test_monitor.py`
 
 ## Commit Messages

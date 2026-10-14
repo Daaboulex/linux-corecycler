@@ -57,11 +57,14 @@ Add the flake input and enable the NixOS module:
     enable = true;
     deviceAccessUser = "your-username";  # required: SMU and CO access without sudo; MSR reads still need root
   };
+  hardware.corecycler.ryzenSmu.enable = true;  # the SMU driver the Curve-Tuner and Auto-Tuner talk to
 }
 ```
 
-The module handles the package, kernel modules (ryzen_smu and friends), udev rules, and
-permissions. Or run it directly:
+The module handles the package, the in-tree kernel modules, udev rules, and permissions.
+The out-of-tree drivers (ryzen_smu, zenpower5, it87) are a separate module,
+`nixosModules.drivers`, which the tuner module includes; each is off until turned on, and a
+machine can import the drivers module alone. Or run it directly:
 
 ```bash
 nix run github:Daaboulex/linux-corecycler        # FOSS-only

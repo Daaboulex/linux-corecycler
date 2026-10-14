@@ -1,12 +1,6 @@
 # NixOS module for CoreCycler — per-core CPU stability tester and
 # PBO Curve Optimizer tuner for AMD Ryzen.
 #
-# Handles all kernel modules needed for monitoring and SMU access:
-#   Out-of-tree: ryzen_smu (AMD SMU), zenpower5 (AMD hwmon), it87 (ITE Super I/O)
-#   In-tree:     msr, nct6775 (Nuvoton Super I/O), coretemp (Intel), cpuid
-#
-# Also handles device access (udev, systemd oneshot, group) and the corecycler package.
-#
 # Usage in a consumer flake:
 #   imports = [ inputs.linux-corecycler.nixosModules.default ];
 #   services.corecycler = {
@@ -25,18 +19,29 @@ let
   inherit (pkgs.stdenv.hostPlatform) system;
   package =
     if cfg.unfreeBackends then self.packages.${system}.full else self.packages.${system}.default;
-  zenpowerPkg = pkgs.callPackage ./zenpower.nix {
-    inherit (config.boot.kernelPackages) kernel;
-  };
-  ryzenSmuPkg = pkgs.callPackage ./ryzen-smu.nix {
-    inherit (config.boot.kernelPackages) kernel;
-  };
-  it87Pkg = pkgs.callPackage ./it87.nix {
-    inherit (config.boot.kernelPackages) kernel;
-  };
+  smuDriverLoaded = lib.any (name: builtins.elem name config.boot.kernelModules) [
+    "ryzen_smu"
+    "ryzen-smu"
+  ];
 in
 {
   _class = "nixos";
+
+  imports = [
+    ./drivers.nix
+    (lib.mkRenamedOptionModule
+      [ "services" "corecycler" "ryzenSmu" ]
+      [ "hardware" "corecycler" "ryzenSmu" "enable" ]
+    )
+    (lib.mkRenamedOptionModule
+      [ "services" "corecycler" "zenpower" ]
+      [ "hardware" "corecycler" "zenpower" "enable" ]
+    )
+    (lib.mkRenamedOptionModule
+      [ "services" "corecycler" "it87" ]
+      [ "hardware" "corecycler" "it87" "enable" ]
+    )
+  ];
 
   options.services.corecycler = {
     enable = lib.mkEnableOption "CoreCycler per-core CPU stability tester and PBO Curve Optimizer tuner";
@@ -47,21 +52,7 @@ in
       description = "Whether to include the unfree backends (mprime, y-cruncher). When false, only the FOSS backends (stress-ng, stressapptest) are bundled.";
     };
 
-    # --- AMD SMU access ---
-
-    ryzenSmu = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = "Whether to load the ryzen_smu kernel module (amkillam fork) for Curve Optimizer read/write via SMU. Supports Zen 1 through Zen 5.";
-    };
-
     # --- CPU hwmon drivers ---
-
-    zenpower = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Whether to use zenpower5 instead of k10temp for AMD CPU monitoring. Provides Tctl/Tdie/Tccd temps, SVI2 voltage/current (Zen 1-4), and RAPL power. Replaces k10temp (blacklisted). Zen 1 through Zen 5.";
-    };
 
     coretemp = lib.mkOption {
       type = lib.types.bool;
@@ -81,12 +72,6 @@ in
       type = lib.types.bool;
       default = false;
       description = "Whether to load the in-tree nct6683 module for Nuvoton NCT6683/NCT6686/NCT6687 Super I/O chips. Common on modern MSI boards (B550, B650, X570, X670). Needed for Zen 5 Vcore fallback when nct6775 does not cover your chip.";
-    };
-
-    it87 = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Whether to load the out-of-tree it87 module (frankcrawford fork) for ITE Super I/O chips. Provides motherboard Vcore (in0), fan speeds, and temperatures. Common on Gigabyte boards. Supports 38+ chip models including IT8686E, IT8689E. Needed for Zen 5 Vcore fallback on ITE boards.";
     };
 
     # --- Utility modules ---
@@ -135,6 +120,10 @@ in
       }
     ];
 
+    warnings =
+      lib.optional (!smuDriverLoaded)
+        "services.corecycler: no ryzen_smu driver is loaded, so the Curve-Tuner tab and the Auto-Tuner cannot read or write the CPU; enable hardware.corecycler.ryzenSmu.enable (this repository's drivers module) or nixpkgs' hardware.cpu.amd.ryzen-smu.enable";
+
     environment.systemPackages = [ package ];
 
     # Login autostart: the app itself enforces the guards (mid-run sessions
@@ -166,27 +155,14 @@ in
     boot.kernelModules = [
       "msr" # always needed for APERF/MPERF and RAPL MSR access
     ]
-    ++ lib.optional cfg.ryzenSmu "ryzen_smu"
-    ++ lib.optional cfg.zenpower "zenpower"
     ++ lib.optional cfg.coretemp "coretemp"
     ++ lib.optional cfg.nct6775 "nct6775"
     ++ lib.optional cfg.nct6683 "nct6683"
-    ++ lib.optional cfg.it87 "it87"
     ++ lib.optional cfg.cpuid "cpuid"
     ++ lib.optionals cfg.spd5118 [
       "i2c_dev"
       "spd5118"
     ];
-
-    # Out-of-tree kernel modules — custom derivations that build with
-    # clang/LLVM when kernel makeFlags indicate LLVM build, gcc otherwise
-    boot.extraModulePackages =
-      lib.optional cfg.ryzenSmu ryzenSmuPkg
-      ++ lib.optional cfg.zenpower zenpowerPkg
-      ++ lib.optional cfg.it87 it87Pkg;
-
-    # Blacklist k10temp when zenpower is used (they conflict — same PCI device)
-    boot.blacklistedKernelModules = lib.mkIf cfg.zenpower [ "k10temp" ];
 
     # SMU sysfs: grant group read/write for Curve Optimizer access.
     # A systemd oneshot is used because tmpfiles z-rules and udev module events
