@@ -647,8 +647,7 @@ task = "T29"
 [[requirement]]
 id = "TERMS.kvw_order"
 statement = "Loosening writes go before tightening writes"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "TERMS.kvw_refused"

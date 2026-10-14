@@ -192,7 +192,13 @@ class Fake:
 
     def run(self, before: SessionState, result: Transition):
         acting = result.state if result.state.session_id is not None else before
+        tightened = None
         for effect in result.effects:
+            if isinstance(effect, WriteCO) and self.resident.get(effect.core) is not None:
+                if effect.value < self.resident[effect.core]:
+                    tightened = effect.core
+                elif effect.value > self.resident[effect.core] and tightened is not None:
+                    raise Broken(f"core {effect.core} loosened after core {tightened} tightened in one vector change")
             follow = self.apply(acting, effect)
             if follow is not None:
                 return follow

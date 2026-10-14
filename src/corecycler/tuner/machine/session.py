@@ -1235,11 +1235,17 @@ def _start_test(s: SessionState, flow: Flow, spec: TestSpec, w: World) -> Transi
     effects: list = []
     if w.gap_grew:
         effects.append(ForgetResident())
-    for core, value in spec.vector:
-        if w.gap_grew or w.resident_of(core) != value:
-            effects.append(WriteCO(core, value))
+    writes = [(core, value) for core, value in spec.vector if w.gap_grew or w.resident_of(core) != value]
+    effects += [WriteCO(core, value) for core, value in sorted(writes, key=lambda write: _write_rank(w, *write))]
     effects += [_commit(started), StartWorker(token, spec)]
     return Transition(started, tuple(effects))
+
+
+def _write_rank(w: World, core: int, value: int) -> int:
+    held = None if w.gap_grew else w.resident_of(core)
+    if held is None:
+        return 1
+    return 0 if value > held else 2  # equivalent-mutant: only the ranks' order counts, held never equals value
 
 
 def _finalize(s: SessionState, w: World) -> Transition:

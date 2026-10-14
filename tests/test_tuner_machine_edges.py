@@ -906,3 +906,55 @@ def test_a_search_pass_with_a_record_from_the_tested_core_fails_that_value(evide
     value = dict(fake.worker.spec.vector)[core]
     fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(core, True),) if evidence else ()))
     assert (fake.state.core(core).fb == value) is failed
+
+
+@pytest.mark.req("TERMS.kvw_order")
+@pytest.mark.parametrize(
+    ("vector", "order"),
+    [
+        (((1, -10), (0, -5)), [0, 1]),
+        (((0, -12), (1, -3)), [1, 0]),
+    ],
+)
+def test_a_vector_change_writes_its_loosening_cores_before_its_tightening_ones(vector, order):
+    from corecycler.tuner.machine.session import _start_test
+    from corecycler.tuner.machine.types import WriteCO
+
+    fake = running_fake()
+    waiting = fake.state
+    fake.fire()
+    spec = replace(fake.state.slot.spec, vector=vector)
+    spec = replace(spec, value=dict(vector)[spec.core])
+    held = replace(fake.world(), resident=((0, -10), (1, -5)), co_now=((0, -10), (1, -5)), gap_grew=False)
+    result = _start_test(waiting, waiting.flow, spec, held)
+    assert [effect.core for effect in result.effects if isinstance(effect, WriteCO)] == order
+
+
+@pytest.mark.req("TERMS.kvw_order")
+def test_a_core_whose_held_value_is_unknown_is_written_between_the_loosening_and_the_tightening_ones():
+    from corecycler.tuner.machine.session import _start_test
+    from corecycler.tuner.machine.types import WriteCO
+
+    fake = running_fake()
+    waiting = fake.state
+    fake.fire()
+    vector = ((1, -10), (0, -5))
+    spec = replace(fake.state.slot.spec, vector=vector, value=dict(vector)[fake.state.slot.spec.core])
+    held = replace(fake.world(), resident=((1, -5),), co_now=((0, -10), (1, -5)), gap_grew=False)
+    result = _start_test(waiting, waiting.flow, spec, held)
+    assert [effect.core for effect in result.effects if isinstance(effect, WriteCO)] == [0, 1]
+
+
+@pytest.mark.req("TERMS.kvw_order")
+def test_a_loosening_core_is_written_before_a_core_whose_held_value_is_unknown():
+    from corecycler.tuner.machine.session import _start_test
+    from corecycler.tuner.machine.types import WriteCO
+
+    fake = running_fake()
+    waiting = fake.state
+    fake.fire()
+    vector = ((1, -10), (0, -5))
+    spec = replace(fake.state.slot.spec, vector=vector, value=dict(vector)[fake.state.slot.spec.core])
+    held = replace(fake.world(), resident=((0, -10),), co_now=((0, -10), (1, -5)), gap_grew=False)
+    result = _start_test(waiting, waiting.flow, spec, held)
+    assert [effect.core for effect in result.effects if isinstance(effect, WriteCO)] == [0, 1]
