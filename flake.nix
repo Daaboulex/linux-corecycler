@@ -381,6 +381,13 @@
                     }
                   ];
                   tunerAlone = eval tuner;
+                  twoSmu = eval [
+                    ./nix/drivers.nix
+                    {
+                      hardware.corecycler.ryzenSmu.enable = true;
+                      hardware.cpu.amd.ryzen-smu.enable = true;
+                    }
+                  ];
                   bothNuvoton = eval [
                     ./nix/drivers.nix
                     {
@@ -422,7 +429,13 @@
                     ) "services.corecycler.ryzenSmu no longer turns ryzen_smu on"
                     ++ lib.optional (
                       !lib.any (lib.hasInfix "drives the NCT6687D in place of nct6683") (failedAssertions bothNuvoton)
-                    ) "nct6687 beside a loaded nct6683 is not refused";
+                    ) "nct6687 beside a loaded nct6683 is not refused"
+                    ++ lib.optional (
+                      !lib.any (lib.hasInfix "builds its own ryzen-smu") (failedAssertions twoSmu)
+                    ) "ryzen_smu from here beside nixpkgs' copy is not refused"
+                    ++ lib.optional (
+                      failedAssertions drivers != [ ]
+                    ) "the drivers module alone refuses: ${toString (failedAssertions drivers)}";
                 in
                 if problems == [ ] then
                   b.pkgs.runCommand "module-drivers-split" { } "touch $out"

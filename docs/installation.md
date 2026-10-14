@@ -45,7 +45,9 @@ pinned sources against the kernel your configuration selects (`boot.kernelPackag
 kernel's own compiler and linker; asus-ec-sensors and it87 install where they win over the
 kernel's own copies of the same name. The in-tree ones (nct6775, nct6683, coretemp, spd5118 with
 i2c_dev, asus_wmi_sensors, gigabyte_wmi, drivetemp) load by name. The tuner module itself loads
-only msr, and cpuid when asked.
+only msr, and cpuid when asked. A driver turned on here while the configuration also carries another
+copy of it (nixpkgs' `hardware.cpu.amd.ryzen-smu`, a `linuxPackages.zenpower` and the like) is refused
+at build, naming both: a kernel loads one module of a name.
 
 ### Package-only (no module)
 

@@ -7,6 +7,15 @@
 let
   cfg = config.hardware.corecycler;
   build = file: pkgs.callPackage file { inherit (config.boot.kernelPackages) kernel; };
+  families = {
+    ryzenSmu = "ryzen-smu";
+    zenpower = "zenpower";
+    asusEcSensors = "asus-ec-sensors";
+    nct6687 = "nct6687d";
+    it87 = "it87";
+  };
+  copiesOf =
+    family: lib.filter (p: lib.hasPrefix family (lib.getName p)) config.boot.extraModulePackages;
 in
 {
   _class = "nixos";
@@ -27,6 +36,14 @@ in
   };
 
   config = lib.mkMerge [
+    {
+      assertions = lib.mapAttrsToList (option: family: {
+        assertion = !(cfg.${option}.enable && lib.length (copiesOf family) > 1);
+        message = "hardware.corecycler.${option} builds its own ${family}, but boot.extraModulePackages also carries ${
+          lib.concatMapStringsSep ", " lib.getName (copiesOf family)
+        }: a kernel loads one module of a name, so turn the other copy off (nixpkgs' ryzen_smu: hardware.cpu.amd.ryzen-smu.enable)";
+      }) families;
+    }
     (lib.mkIf cfg.ryzenSmu.enable {
       boot.kernelModules = [ "ryzen_smu" ];
       boot.extraModulePackages = [ (build ./ryzen-smu.nix) ];
