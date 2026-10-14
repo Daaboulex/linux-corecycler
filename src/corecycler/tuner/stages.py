@@ -90,6 +90,7 @@ def plan(
     quick: bool,
 ) -> tuple[Segment, ...]:
     hot_memory = max(1, min(HOT_MEMORY_CAP_MB, usable_mb // 2))
+    hot_hold = (limit_c, limit_c - HOT_HOLD_SPAN_C)
     if load is Load.HOT:
         return (
             Segment(
@@ -98,7 +99,7 @@ def plan(
                 BISECT_PER_TEST_S if quick else HOT_PER_TEST_S,
                 hot_memory,
                 seconds,
-                hold=(limit_c, limit_c - HOT_HOLD_SPAN_C),
+                hold=hot_hold,
             ),
         )
     if load is Load.WARM:
@@ -129,7 +130,9 @@ def plan(
             chosen = cpus if draw >= len(cpus) else tuple(sorted(rng.sample(firsts, min(len(firsts), draw))))
             first = 3.0 if not segments else rng.choice((1.0, 2.0))
             frozen = _alternate(rng, length, first, (0.2, 3.0), (0.3, 4.0))
-            segments.append(Segment(chosen, ALL_TESTS[start:], BURST_PER_TEST_S, BURST_MEMORY_MB, length, frozen))
+            segments.append(
+                Segment(chosen, ALL_TESTS[start:], BURST_PER_TEST_S, BURST_MEMORY_MB, length, frozen, hold=hot_hold)
+            )
             t += length
         return tuple(segments)
     if load is Load.IDLE:
@@ -137,5 +140,5 @@ def plan(
         chosen = tuple(sorted(rng.sample(firsts, count)))
         start = rng.randrange(len(ALL_TESTS))
         frozen = _alternate(rng, seconds, rng.uniform(0.1, 0.4), (0.1, 0.4), (15.0, 40.0))
-        return (Segment(chosen, ALL_TESTS[start:], IDLE_PER_TEST_S, IDLE_MEMORY_MB, seconds, frozen),)
+        return (Segment(chosen, ALL_TESTS[start:], IDLE_PER_TEST_S, IDLE_MEMORY_MB, seconds, frozen, hold=hot_hold),)
     raise ValueError(f"{load} has no stage plan")

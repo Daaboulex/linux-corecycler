@@ -348,8 +348,7 @@ proof = "built"
 [[requirement]]
 id = "K29.burst_idle"
 statement = "The stage hot hold also runs in BURST and IDLE"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "K30"

@@ -78,6 +78,12 @@ def test_idle_wakes_a_few_cores_for_a_moment_between_long_freezes(seed):
     assert stages.frozen_at(idle, idle.frozen[0][0] + 1.0) and not stages.frozen_at(idle, 0.0)
 
 
+@pytest.mark.req("K29.burst_idle")
+@pytest.mark.parametrize("load", [Load.BURST, Load.IDLE])
+def test_burst_and_idle_freeze_at_the_thermal_limit_and_thaw_10_c_under_it_as_hot_does(load):
+    assert {s.hold for s in plan(load)} == {(95.0, 85.0)}
+
+
 def test_a_plan_is_reproducible_from_its_seed_and_refuses_a_per_core_load():
     assert plan(Load.BURST, 480.0, 5) == plan(Load.BURST, 480.0, 5)
     with pytest.raises(ValueError):
