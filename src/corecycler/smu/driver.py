@@ -542,8 +542,6 @@ class RyzenSMU:
         if not co_min <= value <= co_max:
             raise ValueError(f"CO value {value} out of range [{co_min}, {co_max}] for {self.commands.generation.name}")
 
-        # --- core-address guard (before dry-run: never simulate an
-        # unaddressable write) ---
         addr = self._co_address(core_id)
         if addr is None:
             log.error(
@@ -553,7 +551,6 @@ class RyzenSMU:
             )
             return False
 
-        # --- permission pre-check ---
         ok, msg = self.check_writable()
         if not ok:
             log.error("Permission check failed before CO write: %s", msg)
@@ -566,7 +563,6 @@ class RyzenSMU:
             log.error("SMU rejected CO write for core %d value %d", core_id, value)
             return False
 
-        # --- read-back verification ---
         readback = self.get_co_offset(core_id)
         if readback != value:
             log.error(
@@ -626,8 +622,8 @@ class RyzenSMU:
         """Reset all CO offsets to 0 by delegating to ``set_all_co``.
 
         The delegate owns the whole refusal contract (range check, core-map
-        guard, dry-run), so a dry-run reset can never report success for an
-        operation the real path refuses.
+        guard, read-back), so a reset never reports success for a
+        write ``set_all_co`` refuses.
 
         CO values are VOLATILE — this resets them to 0 for the current
         session only.  On reboot they return to whatever the BIOS sets.
