@@ -369,11 +369,19 @@
                         ryzenSmu.enable = true;
                         zenpower.enable = true;
                         asusEcSensors.enable = true;
+                        nct6687.enable = true;
                         it87.enable = true;
                       };
                     }
                   ];
                   tunerAlone = eval tuner;
+                  bothNuvoton = eval [
+                    ./nix/drivers.nix
+                    {
+                      hardware.corecycler.nct6687.enable = true;
+                      boot.kernelModules = [ "nct6683" ];
+                    }
+                  ];
                   renamed = eval (tuner ++ [ { services.corecycler.ryzenSmu = true; } ]);
                   problems =
                     lib.optional (
@@ -381,12 +389,13 @@
                         "ryzen_smu"
                         "zenpower"
                         "asus_ec_sensors"
+                        "nct6687"
                         "it87"
                       ]
                     ) "the drivers module alone does not load every driver it builds"
                     ++
-                      lib.optional (lib.length drivers.boot.extraModulePackages != 4)
-                        "the drivers module alone builds ${toString (lib.length drivers.boot.extraModulePackages)} drivers, not 4"
+                      lib.optional (lib.length drivers.boot.extraModulePackages != 5)
+                        "the drivers module alone builds ${toString (lib.length drivers.boot.extraModulePackages)} drivers, not 5"
                     ++ lib.optional (
                       tunerAlone.boot.extraModulePackages != [ ]
                     ) "the tuner module alone builds a driver"
@@ -395,7 +404,10 @@
                     ) "the tuner without ryzen_smu does not warn"
                     ++ lib.optional (
                       !lib.elem "ryzen_smu" renamed.boot.kernelModules
-                    ) "services.corecycler.ryzenSmu no longer turns ryzen_smu on";
+                    ) "services.corecycler.ryzenSmu no longer turns ryzen_smu on"
+                    ++ lib.optional (
+                      !lib.any (lib.hasInfix "drives the NCT6687D in place of nct6683") (failedAssertions bothNuvoton)
+                    ) "nct6687 beside a loaded nct6683 is not refused";
                 in
                 if problems == [ ] then
                   b.pkgs.runCommand "module-drivers-split" { } "touch $out"
@@ -466,6 +478,7 @@
                     ryzen-smu = ./nix/ryzen-smu.nix;
                     zenpower = ./nix/zenpower.nix;
                     asus-ec-sensors = ./nix/asus-ec-sensors.nix;
+                    nct6687d = ./nix/nct6687d.nix;
                     it87 = ./nix/it87.nix;
                   };
                   forKernel =
