@@ -275,12 +275,24 @@ def _start_problem(cfg, e: Start, w: World) -> str | None:
     if unreadable:
         return f"the CO of cores {unreadable} could not be read at Start"
     already = sorted(core for core in cfg.selected if bios[core] != 0)
-    if already and not e.acknowledged:
-        return (
-            f"cores {already} read a CO other than 0 at Start, set by the BIOS or written since boot:"
-            " acknowledge to start"
-        )
+    changed = [] if w.newest_base is None else co_changed_since(w.newest_base[1], bios, cfg.selected)
+    if (already or changed) and not e.acknowledged:
+        named = []
+        if already:
+            named.append(f"cores {already} read a CO other than 0 at Start, set by the BIOS or written since boot")
+        if changed:
+            named.append(f"the CO differs from when session {w.newest_base[0]} started: {', '.join(changed)}")
+        return f"{'; '.join(named)}: acknowledge to start"
     return None
+
+
+def co_changed_since(base_co, reads: dict[int, int | None], cores) -> list[str]:
+    base = dict(base_co)
+    return [
+        f"C{core} {'unread' if base.get(core) is None else base[core]} to {reads[core]}"
+        for core in sorted(cores)
+        if reads[core] is not None and base.get(core) != reads[core]
+    ]
 
 
 def _resume(s: SessionState, e: Resume, w: World) -> Transition:

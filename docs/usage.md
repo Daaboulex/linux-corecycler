@@ -145,7 +145,9 @@ Every setting has its unit to the right of its box and a line saying what it doe
 duration also reads in minutes or hours. Start refuses a setting outside its range and
 names it. When a selected core already runs a CO value, set by the BIOS or written since
 boot, Start lists those values and asks before it starts over them; the tuner searches
-every core from 0, and a reboot brings the BIOS values back. From the command line,
+every core from 0, and a reboot brings the BIOS values back. Start also asks, naming the
+values then and now, when a selected core reads another CO than when the newest session
+started, even when every core reads 0. From the command line,
 `tune` and `restart` take `--acknowledge` for the same answer.
 
 ### Power state and clocks

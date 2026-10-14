@@ -631,6 +631,20 @@ def test_a_new_start_is_refused_while_the_newest_session_is_held_and_allowed_onc
     assert third.refused is None
 
 
+@pytest.mark.req("C14", "L01.15.changed")
+def test_a_new_start_asks_about_a_core_whose_co_differs_from_the_newest_session_s_base_even_at_0(tmp_path):
+    db = database(tmp_path / "changed.db")
+    first = rig(tmp_path, FakeHardware(co={0: -10, 1: 0, 8: 0}), db=db)
+    first.start(config(), 1, 7, True)
+    first.post(live.Abort())
+    second = rig(tmp_path, FakeHardware(), db=db)
+    second.start(config(), 2, 7, False)
+    assert second.refused == "the CO differs from when session 1 started: C0 -10 to 0: acknowledge to start"
+    third = rig(tmp_path, FakeHardware(), db=db)
+    third.start(config(), 2, 7, True)
+    assert third.refused is None
+
+
 def in_flight(r: LiveRig):
     r.start(config(), 1, 7, True)
     while r.worker is None:

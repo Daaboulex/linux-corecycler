@@ -57,6 +57,7 @@ from corecycler.monitor.power_profile import power_profile
 from corecycler.smu.writer_lock import running_driver
 from corecycler.tuner.live import config_to_json, read_stored
 from corecycler.tuner.live_hw import sched_ext_note
+from corecycler.tuner.machine.session import co_changed_since
 from corecycler.tuner.machine.types import (
     HELD_STATUSES,
     KNOB_FLOOR,
@@ -657,14 +658,25 @@ class TunerTab(QWidget):
             return []
         values = {core: self._read_co(core) for core in cores}
         already = ", ".join(f"C{core} {value}" for core, value in sorted(values.items()) if value not in (0, None))
-        if not already:
+        newest = self._view
+        changed = (
+            [] if newest is None or newest.stored is None else co_changed_since(newest.stored.base_co, values, cores)
+        )
+        if not already and not changed:
             return []
+        said = []
+        if already:
+            said.append(
+                f"These cores already run a Curve Optimizer value, set by the BIOS or written since boot: {already}."
+                "\n\nThe tuner searches every core from 0 and replaces these values while it runs."
+                " A reboot brings the BIOS values back."
+            )
+        if changed:
+            said.append(f"The CO differs from when session {newest.session_id} started: {', '.join(changed)}.")
         answer = QMessageBox.question(
             self,
-            "Curve Optimizer values already set",
-            f"These cores already run a Curve Optimizer value, set by the BIOS or written since boot: {already}."
-            "\n\nThe tuner searches every core from 0 and replaces these values while it runs."
-            " A reboot brings the BIOS values back.\n\nStart anyway?",
+            "Curve Optimizer values at Start",
+            "\n\n".join([*said, "Start anyway?"]),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )

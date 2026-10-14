@@ -101,8 +101,7 @@ proof = "built"
 [[requirement]]
 id = "C14"
 statement = "At Start a change against the newest session's base_co is named in the acknowledgement; at Resume it pauses (L24)"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "C15"
@@ -1367,8 +1366,7 @@ task = "T28"
 [[requirement]]
 id = "L01.15.changed"
 statement = "A change against the newest session's base_co needs the acknowledgement even when the BIOS CO is all 0"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L01.15.cli"

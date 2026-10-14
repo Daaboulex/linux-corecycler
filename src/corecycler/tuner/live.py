@@ -308,6 +308,10 @@ class Store:
         newest = self.db.list_machine_sessions(limit=1)  # equivalent-mutant: only the first row is read
         return (newest[0].id, newest[0].status) if newest and newest[0].status in HELD_STATUSES else None
 
+    def newest_base(self) -> tuple[int, tuple[tuple[int, int | None], ...]] | None:
+        newest = self.db.list_machine_sessions(limit=1)  # equivalent-mutant: only the first row is read
+        return (newest[0].id, read_stored(self.db, newest[0].id).base_co) if newest else None
+
     def save(self, st: Stored, boot: str) -> None:
         tightened = {
             (st.session_id, r.core): r.fb
@@ -580,7 +584,12 @@ class LiveRig:
         return tuple((core, self.hardware.read_co(core)) for core, _ in self.cpus_of)
 
     def world_for_start(self) -> World:
-        return replace(self.world_checked(), bios_co=self.co_reads(), held_session=self.store.held_session())
+        return replace(
+            self.world_checked(),
+            bios_co=self.co_reads(),
+            held_session=self.store.held_session(),
+            newest_base=self.store.newest_base(),
+        )
 
     def world_for_resume(self, session_id: int) -> World:
         loaded = self.store.load(session_id)

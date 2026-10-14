@@ -33,7 +33,7 @@ from corecycler.gui.widgets import spoken
 from corecycler.history.db import HistoryDB
 from corecycler.monitor.frequency import PowerState
 from corecycler.smu.writer_lock import co_writer
-from corecycler.tuner.live import config_from_json
+from corecycler.tuner.live import Identity, Store, config_from_json
 from corecycler.tuner.machine.session import config_problem
 from corecycler.tuner.machine.types import MachineConfig, Mode
 from corecycler.tuner.orders import Method
@@ -471,6 +471,22 @@ def test_start_over_zero_values_asks_nothing(db, home, launched):
     t._buttons["Start"].click()
     tt.QMessageBox.question.assert_not_called()
     assert "--acknowledge" not in launched[0][0]
+
+
+@pytest.mark.req("C14", "L01.15.changed")
+def test_start_names_a_core_whose_co_differs_from_the_newest_session_s_base_even_at_0(db, home, launched, tmp_path):
+    saved = save_machine_session(db, tmp_path, "completed")
+    Store(db, tmp_path / "state", Identity("bios-1", "cpu-1", None)).save(
+        replace(saved, base_co=((0, -10), (1, -4), (2, 0), (3, 0))), this_boot()
+    )
+    t = tab(db, reads={1: None})
+    tt.QMessageBox.question.return_value = tt.QMessageBox.StandardButton.Yes
+    t._buttons["Start"].click()
+    assert tt.QMessageBox.question.call_args.args[1:3] == (
+        "Curve Optimizer values at Start",
+        f"The CO differs from when session {saved.session_id} started: C0 -10 to 0.\n\nStart anyway?",
+    )
+    assert "--acknowledge" in launched[0][0]
 
 
 def test_restart_asks_about_the_session_s_own_cores(db, home, launched, tmp_path):
