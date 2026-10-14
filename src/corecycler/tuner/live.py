@@ -675,11 +675,11 @@ class LiveRig:
                     self.worker.thread.join(bound)
                     if not self.worker.thread.is_alive():
                         self.worker = None
-            case Commit(stored=st):
+            case Commit(stored=st, first=first):
                 try:
                     self.store.save(st, self.boot)
                 except sqlite3.Error as exc:
-                    return DatabaseFailed(f"the session could not be written: {exc}")
+                    return DatabaseFailed(f"the session could not be written: {exc}", first)
                 self.stored_boot = self.boot
             case Supersede(parent=parent, child=child, origin=origin):
                 try:

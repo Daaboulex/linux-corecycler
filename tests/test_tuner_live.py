@@ -498,6 +498,16 @@ def test_a_database_failure_that_cannot_itself_be_recorded_is_said_and_goes_no_f
     ]
 
 
+@pytest.mark.req("L01.G11")
+def test_a_session_whose_first_write_to_the_database_fails_never_starts_and_touches_no_core(tmp_path, monkeypatch):
+    r = rig(tmp_path, FakeHardware(co={0: -10, 1: 0, 8: 0}))
+    monkeypatch.setattr(r.store, "save", broken)
+    r.start(config(), 1, 7, True)
+    assert (r.state.lifecycle, r.state.session_id) == (Lifecycle.IDLE, None)
+    assert r.hardware.co == {0: -10, 1: 0, 8: 0}
+    assert r.store.marker_boot() is None
+
+
 def test_a_stock_marker_that_cannot_be_written_still_puts_the_cores_at_stock(tmp_path, monkeypatch):
     said = []
     r = rig(tmp_path)

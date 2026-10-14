@@ -240,10 +240,10 @@ class Fake:
                     self.worker = None
             case AwaitWorker():
                 pass
-            case Commit(stored=st):
+            case Commit(stored=st, first=first):
                 if self.faults.fail_commits > 0:
                     self.faults.fail_commits -= 1
-                    return DatabaseFailed("injected database failure")
+                    return DatabaseFailed("injected database failure", first)
                 if self.db is not None and st.session_id == self.db.session_id:
                     self.check_bounds_only_tighten(self.db, st)
                 self.db = st

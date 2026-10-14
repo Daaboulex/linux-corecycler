@@ -1394,8 +1394,7 @@ task = "T29"
 [[requirement]]
 id = "L01.G11"
 statement = "SM C1 fails: no session row, a message, idle"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L01.G13"

@@ -1013,3 +1013,13 @@ def test_a_co_another_tool_writes_after_the_final_values_pauses_the_session_inst
         fake.fire()
     assert fake.state.lifecycle is Lifecycle.COMPLETED
     assert {core: fake.co[core] for core in final} == final
+
+
+@pytest.mark.req("L01.G11")
+def test_a_first_commit_that_fails_at_start_leaves_no_session_and_writes_nothing():
+    fake = fresh(2, [-3, -2], 1, bios=-4, max_offset=-5, k_1t=1)
+    fake.faults.fail_commits = 1
+    start(fake)
+    assert (fake.state.lifecycle, fake.state.session_id, fake.db) == (Lifecycle.IDLE, None, None)
+    assert fake.co == {0: -4, 1: -4}
+    assert fake.log[-1] == "database_failed: injected database failure; session 1 was not started"

@@ -239,7 +239,7 @@ def _start(s: SessionState, e: Start, w: World) -> Transition:
         setup=w.setup,
         base_co=w.bios_co,
     )
-    effects: list = [_commit(new)]
+    effects: list = [Commit(stored(new), first=True)]
     effects += [WriteCO(core, value) for core, value in baseline if w.resident_of(core) != value]
     effects += [
         Announce("started", f"session {e.session_id}, {len(baseline)} cores, {cfg.method.value} order"),
@@ -1536,6 +1536,9 @@ def _smu_refused(s: SessionState, e: SmuRefused) -> Transition:
 def _database_failed(s: SessionState, e: DatabaseFailed) -> Transition:
     if s.lifecycle not in HELD:
         return Transition(s, (Announce("database_failed", e.error),))
+    if e.first:
+        idle = SessionState(next_token=s.next_token)
+        return Transition(idle, (Announce("database_failed", f"{e.error}; session {s.session_id} was not started"),))
     if _database_paused(s):
         return Transition(s)
     effects = _stop_effects(s, tuple((core, 0) for core, _ in s.baseline), journal=False)

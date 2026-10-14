@@ -450,6 +450,7 @@ class SmuRefused:
 @dataclass(frozen=True, slots=True)
 class DatabaseFailed:
     error: str
+    first: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -545,6 +546,7 @@ class AwaitWorker:
 @dataclass(frozen=True, slots=True)
 class Commit:
     stored: Stored
+    first: bool = False
 
 
 @dataclass(frozen=True, slots=True)
