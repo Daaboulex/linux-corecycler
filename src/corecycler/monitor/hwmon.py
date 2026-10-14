@@ -11,32 +11,8 @@ HWMON_BASE = Path("/sys/class/hwmon")
 
 log = logging.getLogger(__name__)
 
-SUPERIO_CHIPS = (
-    "nct6687",
-    "nct6686",
-    "nct6683",
-    "nct6799",
-    "nct6798",
-    "nct6797",
-    "nct6796",
-    "nct6795",
-    "nct6793",
-    "nct6792",
-    "nct6791",
-    "nct6779",
-    "nct6776",
-    "nct6775",
-    "it8689",
-    "it8688",
-    "it8686",
-    "it8665",
-    "it8628",
-    "it8625",
-    "it8720",
-    "it8728",
-    "it8771",
-    "it8772",
-)
+SUPERIO_FAMILIES = ("nct6", "it8")
+BOARD_CHIPS = (*SUPERIO_FAMILIES, "asusec", "asus_wmi_sensors")
 
 
 CPU_DRIVERS = ("zenpower", "zenpower3", "zenpower5", "k10temp")
@@ -101,7 +77,7 @@ class Sensors:
         self.volts: list[tuple[str, Path]] = []
         own, labelled, board_in0 = [], [], []
         for device, name in devices:
-            if device != cpu and name != "amdgpu" and not name.startswith(SUPERIO_CHIPS):
+            if device != cpu and name != "amdgpu" and not name.startswith(BOARD_CHIPS):
                 continue
             prefix = f"{name}@{(device / 'device').resolve().name}" if names.count(name) > 1 else name
             for value in device.glob("in*_input"):
@@ -110,7 +86,7 @@ class Sensors:
                 self.volts.append((source, value))
                 if "vcore" in label.lower() or label.lower() in ("svi2_core", "svi2_vdd"):
                     (own if device == cpu else labelled).append(source)
-                elif name.startswith(SUPERIO_CHIPS) and value.name == "in0_input":
+                elif name.startswith(SUPERIO_FAMILIES) and value.name == "in0_input":
                     board_in0.append(source)
         self.volts.sort()
         self.vcore_source = next((min(tier) for tier in (own, labelled, board_in0) if tier), None)

@@ -58,6 +58,30 @@ def test_the_board_and_gpu_voltages_are_read_under_their_sources_and_a_failed_re
     assert sensors.read().volts[3:5] == (("nct6799:in0", None), ("nct6799:in10", None))
 
 
+@pytest.mark.parametrize(
+    ("name", "read", "vcore"),
+    [
+        ("nct6798", True, True),
+        ("nct6687", True, True),
+        ("nct6683", True, True),
+        ("it8613", True, True),
+        ("it8696", True, True),
+        ("asusec", True, False),
+        ("asus_wmi_sensors", True, False),
+        ("gigabyte_wmi", False, False),
+        ("drivetemp", False, False),
+    ],
+)
+def test_every_board_chip_the_drivers_module_loads_gives_its_voltages_and_only_super_io_stands_in_for_vcore(
+    tmp_path, name, read, vcore
+):
+    hwmon(tmp_path, "k10temp", K10)
+    hwmon(tmp_path, name, {"in0_input": "712"})
+    sensors = Sensors(tmp_path / "class")
+    assert (sensors.read().volts == ((f"{name}:in0", 0.712),)) is read
+    assert (sensors.vcore_source == f"{name}:in0") is vcore
+
+
 def test_an_unreadable_temperature_is_none_and_the_hottest_comes_from_what_was_read(tmp_path):
     device = hwmon(tmp_path, "k10temp", K10)
     sensors = Sensors(tmp_path / "class")
