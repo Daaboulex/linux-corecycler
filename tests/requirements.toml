@@ -1656,8 +1656,7 @@ proof = "built"
 [[requirement]]
 id = "L05.c.single"
 statement = "A one-core selection runs back to back and Start names it as not interleaved"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L05.G1"
@@ -3625,8 +3624,7 @@ proof = "built"
 [[requirement]]
 id = "ORDER.single"
 statement = "One owned core runs back to back and Start names it as not interleaved"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "ORDER.retries"

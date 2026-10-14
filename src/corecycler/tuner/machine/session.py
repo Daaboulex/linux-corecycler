@@ -239,10 +239,11 @@ def _start(s: SessionState, e: Start, w: World) -> Transition:
         setup=w.setup,
         base_co=w.bios_co,
     )
+    order = "1 core, not interleaved" if len(baseline) == 1 else f"{len(baseline)} cores, {cfg.method.value} order"
     effects: list = [Commit(stored(new), first=True)]
     effects += [WriteCO(core, value) for core, value in baseline if w.resident_of(core) != value]
     effects += [
-        Announce("started", f"session {e.session_id}, {len(baseline)} cores, {cfg.method.value} order"),
+        Announce("started", f"session {e.session_id}, {order}"),
         *(Announce("warning", warning) for warning in w.preflight_warnings),
         Schedule(token, 0.0),
     ]

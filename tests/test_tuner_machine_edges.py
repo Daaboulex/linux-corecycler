@@ -1023,3 +1023,15 @@ def test_a_first_commit_that_fails_at_start_leaves_no_session_and_writes_nothing
     assert (fake.state.lifecycle, fake.state.session_id, fake.db) == (Lifecycle.IDLE, None, None)
     assert fake.co == {0: -4, 1: -4}
     assert fake.log[-1] == "database_failed: injected database failure; session 1 was not started"
+
+
+@pytest.mark.req("ORDER.single", "L05.c.single")
+@pytest.mark.parametrize(
+    ("selected", "named"),
+    [((1,), "session 1, 1 core, not interleaved"), ((0, 1), "session 1, 2 cores, sequential order")],
+)
+def test_start_names_a_one_core_selection_as_not_interleaved(selected, named):
+    result = transition(SessionState(), Start(replace(CFG, selected=selected), 1, 0, True), LAYOUT)
+    assert ("started", named) in [
+        (effect.kind, effect.text) for effect in result.effects if type(effect).__name__ == "Announce"
+    ]
