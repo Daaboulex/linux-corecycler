@@ -263,3 +263,17 @@ class TestStressWorkerStop:
         monkeypatch.setattr("os.getpgid", MagicMock(side_effect=ProcessLookupError))
         self._worker(proc).stop()
         proc.wait.assert_not_called()
+
+
+@pytest.mark.req("EC.real")
+@pytest.mark.parametrize(
+    ("tool", "captured"),
+    [("stress-ng --vm", "stress-ng-0.22.01-vm-clean.txt"), ("stressapptest", "stressapptest-1.0.11-clean.txt")],
+)
+def test_the_memory_test_passes_a_real_clean_run(tool, captured):
+    from pathlib import Path
+
+    from corecycler.gui.memory_tab import memory_verdict
+
+    output = (Path(__file__).parent / "fixtures" / "backends" / captured).read_text()
+    assert memory_verdict(tool, output, 0) == ("PASS", output)

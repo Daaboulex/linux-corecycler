@@ -1,0 +1,9 @@
+stress-ng: info:  [1590108] setting to a 5 secs run per stressor
+stress-ng: info:  [1590108] dispatching hogs: 1 vm
+stress-ng: info:  [1590109] vm: non-temporal memory stores not supported, dropping back to plain memory stores
+stress-ng: info:  [1590109] vm: using 64MB per stressor instance (total 64MB of 5.76GB available memory)
+stress-ng: info:  [1590108] skipped: 0
+stress-ng: info:  [1590108] passed: 1: vm (1)
+stress-ng: info:  [1590108] failed: 0
+stress-ng: info:  [1590108] metrics untrustworthy: 0
+stress-ng: info:  [1590108] successful run completed in 5.19 secs
