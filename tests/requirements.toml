@@ -2348,6 +2348,11 @@ statement = "A clean FINALIZE first writes every owned knob to its final value, 
 proof = "built"
 
 [[requirement]]
+id = "L17.d.readback"
+statement = "The completing continuation compares its CO read as a stage entry does; a moved core pauses P(OUTSIDE_WRITE) and Resume applies the profile again"
+proof = "built"
+
+[[requirement]]
 id = "L17.G10"
 statement = "A refused final write reverts to baseline and pauses P(PROFILE_APPLY) at FINALIZE; Resume only applies the profile"
 proof = "untested"

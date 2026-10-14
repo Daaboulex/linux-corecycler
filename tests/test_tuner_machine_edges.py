@@ -990,3 +990,26 @@ def test_a_start_asks_nothing_when_no_selected_core_changed_and_starts_once_a_ch
     result = transition(SessionState(), Start(CFG, 4, 0, acknowledged), replace(LAYOUT, newest_base=newest))
     assert result.refused is None
     assert result.state.session_id == 4
+
+
+@pytest.mark.req("L17.d.readback")
+def test_a_co_another_tool_writes_after_the_final_values_pauses_the_session_instead_of_completing_it():
+    fake = fresh(2, [-3, -2], 1, max_offset=-5, k_1t=1)
+    start(fake)
+    while not (fake.state.flow.stage is Stage.FINALIZE and fake.state.flow.applied):
+        fake.deliver() if fake.worker is not None else fake.fire()
+    final = {r.core: r.value for r in fake.state.cores}
+    fake.co[0] = -9
+    fake.outside.add(0)
+    fake.fire()
+    assert (fake.state.lifecycle, fake.state.pause.reason, fake.state.pause.cores) == (
+        Lifecycle.PAUSED,
+        PauseReason.OUTSIDE_WRITE,
+        (0,),
+    )
+    assert "core 0 reads -9" in fake.state.pause.detail
+    fake.post(Resume(fake.state.session_id))
+    while fake.state.lifecycle is Lifecycle.RUNNING:
+        fake.fire()
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert {core: fake.co[core] for core in final} == final

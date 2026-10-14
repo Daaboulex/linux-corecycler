@@ -1270,6 +1270,9 @@ def _finalize(s: SessionState, w: World) -> Transition:
         effects: list = [WriteCO(r.core, r.value) for r in s.cores if w.resident_of(r.core) != r.value]
         effects += [Schedule(token, 0.0)]
         return Transition(applied, tuple(effects))
+    problem = _stage_entry_problem(s, w)
+    if problem is not None:
+        return _enter_pause(s, *problem)
     done = replace(s, lifecycle=Lifecycle.COMPLETED, flow=None, slot=None, incidents=0)
     values = ", ".join(f"{r.core}: {r.value}" for r in s.cores)
     return Transition(done, (_commit(done), Announce("completed", f"final values {values}")))
