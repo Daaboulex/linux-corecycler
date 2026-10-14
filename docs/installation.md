@@ -24,12 +24,12 @@ services.corecycler = {
   enable = true;
   deviceAccessUser = "your-username";
   unfreeBackends = true;   # include mprime (best for CO tuning) and y-cruncher
-  nct6775 = true;          # Nuvoton Super I/O: motherboard Vcore fallback
-  spd5118 = true;          # DDR5 DIMM temperatures via the SPD hub
 };
 hardware.corecycler = {
   ryzenSmu.enable = true;  # the SMU driver the Curve-Tuner and Auto-Tuner talk to
   zenpower.enable = true;  # zenpower5: richer monitoring than k10temp
+  nct6775.enable = true;   # Nuvoton Super I/O: motherboard Vcore fallback
+  spd5118.enable = true;   # DDR5 DIMM temperatures via the SPD hub
 };
 ```
 
@@ -39,10 +39,13 @@ Every option, with its type, default and description, is declared in
 [`nix/module.nix`](../nix/module.nix) and, for the drivers,
 [`nix/drivers.nix`](../nix/drivers.nix).
 
-Out-of-tree modules (ryzen_smu, zenpower5, it87) are built against the kernel your
-configuration selects (`boot.kernelPackages`), with GCC or Clang to match how that kernel
-was built. In-tree modules (msr, nct6775, nct6683, coretemp, cpuid, spd5118 + i2c_dev)
-load via `boot.kernelModules`.
+The drivers module carries every sensor driver the tool reads, each off until a host turns it
+on. The out-of-tree ones (ryzen_smu, zenpower5, asus-ec-sensors, nct6687d, it87) are built from
+pinned sources against the kernel your configuration selects (`boot.kernelPackages`), with that
+kernel's own compiler and linker; asus-ec-sensors and it87 install where they win over the
+kernel's own copies of the same name. The in-tree ones (nct6775, nct6683, coretemp, spd5118 with
+i2c_dev, asus_wmi_sensors, gigabyte_wmi, drivetemp) load by name. The tuner module itself loads
+only msr, and cpuid when asked.
 
 ### Package-only (no module)
 

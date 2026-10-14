@@ -47,6 +47,22 @@ in
       [ "services" "corecycler" "it87" ]
       [ "hardware" "corecycler" "it87" "enable" ]
     )
+    (lib.mkRenamedOptionModule
+      [ "services" "corecycler" "coretemp" ]
+      [ "hardware" "corecycler" "coretemp" "enable" ]
+    )
+    (lib.mkRenamedOptionModule
+      [ "services" "corecycler" "nct6775" ]
+      [ "hardware" "corecycler" "nct6775" "enable" ]
+    )
+    (lib.mkRenamedOptionModule
+      [ "services" "corecycler" "nct6683" ]
+      [ "hardware" "corecycler" "nct6683" "enable" ]
+    )
+    (lib.mkRenamedOptionModule
+      [ "services" "corecycler" "spd5118" ]
+      [ "hardware" "corecycler" "spd5118" "enable" ]
+    )
   ];
 
   options.services.corecycler = {
@@ -58,40 +74,12 @@ in
       description = "Whether to include the unfree backends (mprime, y-cruncher). When false, only the FOSS backends (stress-ng, stressapptest) are bundled.";
     };
 
-    # --- CPU hwmon drivers ---
-
-    coretemp = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Whether to load the in-tree coretemp module for Intel CPU temperature monitoring. Per-core and per-package DTS readings. Only needed on Intel systems.";
-    };
-
-    # --- Super I/O (motherboard voltage/fan/temp) ---
-
-    nct6775 = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Whether to load the in-tree nct6775 module for Nuvoton NCT6775–NCT6799 Super I/O chips. Provides motherboard Vcore, fan speeds, and temperatures. Common on ASUS, MSI, ASRock boards. Needed for Zen 5 Vcore fallback on Nuvoton boards.";
-    };
-
-    nct6683 = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Whether to load the in-tree nct6683 module for Nuvoton NCT6683/NCT6686/NCT6687 Super I/O chips. Common on modern MSI boards (B550, B650, X570, X670). Needed for Zen 5 Vcore fallback when nct6775 does not cover your chip.";
-    };
-
     # --- Utility modules ---
 
     cpuid = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = "Whether to load the in-tree cpuid module. Exposes /dev/cpu/*/cpuid for CPUID leaf access. Useful for CPU topology and feature detection.";
-    };
-
-    spd5118 = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Whether to load spd5118 and i2c_dev modules for DDR5 DIMM temperature monitoring via the SPD5118 hub chip.";
     };
 
     # --- Device access ---
@@ -177,14 +165,7 @@ in
     boot.kernelModules = [
       "msr" # always needed for APERF/MPERF and RAPL MSR access
     ]
-    ++ lib.optional cfg.coretemp "coretemp"
-    ++ lib.optional cfg.nct6775 "nct6775"
-    ++ lib.optional cfg.nct6683 "nct6683"
-    ++ lib.optional cfg.cpuid "cpuid"
-    ++ lib.optionals cfg.spd5118 [
-      "i2c_dev"
-      "spd5118"
-    ];
+    ++ lib.optional cfg.cpuid "cpuid";
 
     # SMU sysfs: grant group read/write for Curve Optimizer access.
     # A systemd oneshot is used because tmpfiles z-rules and udev module events

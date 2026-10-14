@@ -39,7 +39,7 @@ toolchain.stdenv.mkDerivation {
 
   installPhase = ''
     runHook preInstall
-    install -D it87.ko -t "$out/lib/modules/${kernel.modDirVersion}/kernel/drivers/hwmon/"
+    install -D it87.ko -t "$out/lib/modules/${kernel.modDirVersion}/updates/drivers/hwmon/"
     runHook postInstall
   '';
 

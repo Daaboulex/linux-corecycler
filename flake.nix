@@ -371,6 +371,12 @@
                         asusEcSensors.enable = true;
                         nct6687.enable = true;
                         it87.enable = true;
+                        nct6775.enable = true;
+                        coretemp.enable = true;
+                        spd5118.enable = true;
+                        asusWmiSensors.enable = true;
+                        gigabyteWmi.enable = true;
+                        drivetemp.enable = true;
                       };
                     }
                   ];
@@ -391,6 +397,12 @@
                         "asus_ec_sensors"
                         "nct6687"
                         "it87"
+                        "nct6775"
+                        "coretemp"
+                        "spd5118"
+                        "asus_wmi_sensors"
+                        "gigabyte_wmi"
+                        "drivetemp"
                       ]
                     ) "the drivers module alone does not load every driver it builds"
                     ++
@@ -399,6 +411,9 @@
                     ++ lib.optional (
                       tunerAlone.boot.extraModulePackages != [ ]
                     ) "the tuner module alone builds a driver"
+                    ++ lib.optional (
+                      tunerAlone.boot.kernelModules != [ "msr" ]
+                    ) "the tuner module alone loads ${toString tunerAlone.boot.kernelModules}, not only msr"
                     ++ lib.optional (
                       !lib.any (lib.hasInfix "no ryzen_smu driver") tunerAlone.warnings
                     ) "the tuner without ryzen_smu does not warn"
