@@ -294,13 +294,17 @@ def _detect_x3d(topo: CPUTopology) -> None:
                         ccd_l3_sizes[core.ccd] = val * multiplier.get(unit, 1)
                 break
 
-    if ccd_l3_sizes:
-        # V-Cache CCD has the largest L3
-        vcache_ccd = max(ccd_l3_sizes, key=lambda c: ccd_l3_sizes[c])
-        topo.vcache_ccd = vcache_ccd
-        for pc in topo.cores.values():
-            if pc.ccd == vcache_ccd:
-                object.__setattr__(pc, "has_vcache", True)
+    known = {core.ccd for core in topo.cores.values() if core.ccd is not None}
+    if not ccd_l3_sizes or set(ccd_l3_sizes) != known:
+        return
+    largest = max(ccd_l3_sizes.values())
+    holders = [ccd for ccd, size in ccd_l3_sizes.items() if size == largest]
+    if len(holders) != 1:
+        return
+    topo.vcache_ccd = holders[0]
+    for pc in topo.cores.values():
+        if pc.ccd == topo.vcache_ccd:
+            object.__setattr__(pc, "has_vcache", True)
 
 
 def get_first_logical_cpu(topo: CPUTopology, physical_core: int) -> int:
