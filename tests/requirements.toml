@@ -213,8 +213,7 @@ task = "T29"
 [[requirement]]
 id = "K9.memory"
 statement = "2T TotalMemory about 41 MiB"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "K9.smt"

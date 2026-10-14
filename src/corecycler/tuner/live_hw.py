@@ -80,7 +80,7 @@ NT_GNU_BUILD_ID = 3
 IGPU_IDS = frozenset({("0x1002", "0x13c0"), ("0x1002", "0x164e")})
 FREEZE_TICK_S = 0.05
 ONE_T = {"tests": ("SFTv4", "FFTv4", "N63"), "seconds_per_test": 20, "memory_mb": 13}
-TWO_T = {"tests": ("SFTv4", "N63", "VT3"), "seconds_per_test": 30, "memory_mb": 26, "binary": "19-ZN2 ~ Kagari"}
+TWO_T = {"tests": ("SFTv4", "N63", "VT3"), "seconds_per_test": 30, "memory_mb": 41, "binary": "19-ZN2 ~ Kagari"}
 GROUPS = {
     OutcomeKind.PASS: Group.PASS,
     OutcomeKind.SILICON: Group.SILICON,

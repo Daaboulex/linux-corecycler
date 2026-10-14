@@ -610,3 +610,13 @@ def test_a_one_core_test_freezes_its_lane_as_the_record_did_and_a_two_thread_tes
     one_freeze, two_freeze = script.seen[0][3], script.seen[1][3]
     assert [one_freeze(t, reading) for t in (8.9, 9.5, 10.1, 18.5, 19.5)] == [False, True, False, True, False]
     assert two_freeze is None
+
+
+@pytest.mark.req("K9.memory")
+def test_a_two_thread_test_gives_y_cruncher_the_memory_the_owner_s_r4_record_ran_with():
+    two = Spec(Klass.T2, 0, -5, (0, 16), 30.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0)
+    one = replace(two, klass=Klass.T1, cpus=(0,))
+    script = Script([Outcome.PASS, Outcome.PASS], sampled=False)
+    runner(script).run(two, threading.Event())
+    runner(script).run(one, threading.Event())
+    assert script.memory == [41, 13]
