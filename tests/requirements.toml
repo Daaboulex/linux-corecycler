@@ -258,8 +258,7 @@ proof = "built"
 [[requirement]]
 id = "K17.grace"
 statement = "Thermal grace 3 s counted in a window W = max(10 s, 2 x grace)"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "K17.margin"

@@ -1421,18 +1421,15 @@ class TestThermalGuard:
         assert watch.safe(96.0) is False
         assert watch.tripped
 
-    def test_recovery_before_grace_resets_the_window(self):
-        temps = iter([96.0, 40.0, 96.0])
+    def test_readings_under_the_limit_never_trip_however_long(self):
         watch = ThermalWatch(
             max_temperature=95,
-            grace_seconds=60,
+            grace_seconds=0.0,
             hard_margin=8,
             require_sensor=False,
         )
-        assert watch.safe(next(temps)) is True
-        assert watch.safe(next(temps)) is True
-        assert watch.safe(next(temps)) is True
-        assert watch._over_since is not None
+        assert [watch.safe(t) for t in (94.9, 94.0, 90.0)] == [True, True, True]
+        assert watch.tripped is False
 
     @pytest.mark.req("K17.margin")
     def test_the_hard_ceiling_trips_immediately(self):

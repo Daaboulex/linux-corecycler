@@ -13,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import time
+from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -121,6 +122,7 @@ class ThermalWatch:
     """Debounced soft limit, instant hard ceiling, hysteresis after a trip."""
 
     HYSTERESIS = 5.0
+    GRACE_WINDOW_MIN_S = 10.0
 
     def __init__(
         self,
@@ -135,7 +137,7 @@ class ThermalWatch:
         self.hard_margin = hard_margin
         self.require_sensor = require_sensor
         self.tripped = False
-        self._over_since: float | None = None
+        self._readings: deque[tuple[float, bool]] = deque()
         self.last_temperature: float | None = None
 
     @classmethod
@@ -161,26 +163,33 @@ class ThermalWatch:
         if temp is None:
             return not self.require_sensor
         limit = self.max_temperature
-        if temp >= limit:
-            if temp >= limit + self.hard_margin:
-                self.tripped = True
-                return False
-            if self.tripped:
-                return False
-            now = time.monotonic()
-            if self._over_since is None:
-                self._over_since = now
-            if now - self._over_since >= self.grace_seconds:
-                self.tripped = True
-                return False
-            return True
-        self._over_since = None
+        now = time.monotonic()
+        window = max(self.GRACE_WINDOW_MIN_S, 2.0 * self.grace_seconds)
+        self._readings.append((now, temp >= limit))
+        start = now - window
+        while len(self._readings) > 1 and self._readings[1][0] <= start:  # equivalent-mutant: the sum clips to start
+            self._readings.popleft()
+        if temp >= limit + self.hard_margin:
+            self.tripped = True
+            return False
         if self.tripped:
             if temp < limit - self.HYSTERESIS:
                 self.tripped = False
+                self._readings.clear()
                 return True
             return False
+        if temp >= limit and self._over_seconds(start) >= self.grace_seconds:
+            self.tripped = True
+            return False
         return True
+
+    def _over_seconds(self, since: float) -> float:
+        readings = list(self._readings)
+        return sum(
+            max(0.0, end - max(start, since))
+            for (start, over), (end, _) in zip(readings, readings[1:], strict=False)
+            if over
+        )
 
 
 _PR_SET_PDEATHSIG = 1
