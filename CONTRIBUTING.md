@@ -174,11 +174,13 @@ Hardware-touching code (SMU driver, hwmon, topology) has higher review standards
 
 ### Adding a Super I/O Chip
 
-1. Add the chip name prefix to `_SUPERIO_CHIPS` in `src/corecycler/monitor/hwmon.py`
+1. A Nuvoton (`nct6`) or ITE (`it8`) chip is read already. Add a new Super I/O family's name
+   prefix to `SUPERIO_FAMILIES` in `src/corecycler/monitor/hwmon.py`, and a board chip that
+   is not Super I/O (an embedded controller, a WMI interface) to `BOARD_CHIPS`
 2. If the Vcore input is not `in0`, the label-scanning code handles it automatically
-3. If the chip needs a new kernel module, add an option to `nix/module.nix` for an in-tree one,
-   or to `nix/drivers.nix` for an out-of-tree driver this repository builds
-4. Add a test in `tests/test_monitor.py`
+3. If the chip needs a new kernel module, add its switch to `nix/drivers.nix`: loaded by name
+   for an in-tree one, built from a pinned recipe under `nix/` for an out-of-tree one
+4. Add a test in `tests/test_sensors.py`
 
 ## Commit Messages
 
