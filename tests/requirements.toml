@@ -1867,8 +1867,7 @@ proof = "built"
 [[requirement]]
 id = "L09.G3"
 statement = "A record about an owned non-zero core ends Bisect after backing it off in place; at 0 incident + 1 and the slot retries"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L09.G4"

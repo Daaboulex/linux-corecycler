@@ -1389,6 +1389,8 @@ def _judged(s: SessionState, rep: Report, w: World) -> Transition:
         after = applied
     if s.flow.stage is Stage.BISECT and after.flow.stage is not Stage.BISECT:
         return _next_wait(after, spec, pausing)
+    if spec.stage is Stage.BISECT and any(ev.core != spec.core for ev in rep.evidence):
+        return _next_wait(replace(after, streaks=Streaks()), spec, pausing)
     group = Group.APPARATUS if rep.skipped and spec.stage is not Stage.MEMORY else rep.group
     if any(ev.core == spec.core for ev in rep.evidence) and group is Group.PASS:
         group = Group.SILICON

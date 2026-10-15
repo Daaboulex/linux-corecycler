@@ -184,6 +184,27 @@ def test_a_record_about_another_core_in_live1_backs_it_off_and_requeues_it_or_co
     assert fake.state.incidents == incidents
 
 
+@pytest.mark.req("L09.G3")
+def test_a_record_about_a_core_at_0_in_a_1t_bisect_slot_counts_an_incident_and_runs_the_slot_again():
+    fake = fresh(3, [-12, -6, -8], 1, max_offset=-20, k_1t=2, wait_between_cores_s=0.0)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.LIVE1:
+        assert fake.progress()
+    fake.crash()
+    fake.post(Resume(1))
+    while fake.worker is None:
+        assert fake.progress()
+    slot = fake.worker.spec
+    assert (slot.stage, slot.load) == (Stage.BISECT, Load.ONE_T)
+    at_zero = next(core for core, value in slot.vector if value == 0 and core != slot.core)
+    run, incidents = fake.state.flow.bisect, fake.state.incidents
+    fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(at_zero, True),)))
+    while fake.worker is None:
+        assert fake.progress()
+    assert (fake.state.incidents, fake.state.flow.bisect) == (incidents + 1, run)
+    assert (fake.worker.spec.stage, fake.worker.spec.vector) == (Stage.BISECT, slot.vector)
+
+
 @pytest.mark.req("L16.G3")
 def test_evidence_in_soak_backs_the_core_off_and_sends_the_profile_through_live1_instead_of_soaking_again():
     fake = running_fake()
