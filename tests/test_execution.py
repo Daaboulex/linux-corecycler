@@ -1961,9 +1961,10 @@ class TestScheduling:
         assert execution._scheduling_fault(execution._LaneRun(lane=lane(tmp_path))) is None
 
     @pytest.mark.req("D89", "INT.2", "INV.L22")
-    def test_a_payload_that_is_reniced_while_it_runs_is_not_a_core_verdict(self, tmp_path):
-        code = "import os\nos.nice(5)\nwhile True:\n    pass\n"
-        supervisor, _, _ = make_supervisor(FakeBackend(_child(code)))
+    def test_a_payload_that_is_reniced_while_it_runs_is_not_a_core_verdict(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(containment, "own_scheduling", lambda: (0, os.SCHED_OTHER))
+        monkeypatch.setattr(containment, "tree_scheduling", lambda pid: [("python", pid, 5, os.SCHED_OTHER)])
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)))
         verdict = run_one(supervisor, lane(tmp_path), execution.WATCHDOG_INTERVAL * 3)
         assert verdict.outcome is Outcome.CONTAINMENT_BROKE
         assert "runs at nice " in verdict.detail and "scheduling fault, not a core verdict" in verdict.detail
