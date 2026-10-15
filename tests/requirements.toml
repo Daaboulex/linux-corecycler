@@ -2154,9 +2154,8 @@ proof = "built"
 
 [[requirement]]
 id = "L14.c.display"
-statement = "endLoops and endFails are counted for the display"
-proof = "not built"
-task = "T28"
+statement = "While an endurance test runs, the tuner tab's test line counts the session's ended endurance tests and the failed ones (in place of endLoops and endFails, which no stored row can rebuild)"
+proof = "built"
 
 [[requirement]]
 id = "L14.G1"

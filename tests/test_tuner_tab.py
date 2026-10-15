@@ -389,6 +389,27 @@ def test_an_all_core_test_names_its_cores_and_stage(db, home, tmp_path, stage, l
         assert t._test.text().endswith(" of 510 s")
 
 
+@pytest.mark.req("L14.c.display")
+def test_an_endurance_test_line_counts_the_ended_endurance_tests_and_the_failed_ones(db, home, tmp_path):
+    saved = save_machine_session(db, tmp_path, "running")
+    core = saved.cores[0].core
+    for token, verdict in enumerate(("pass", "silicon", "pass", "thermal"), start=1):
+        row = db.insert_tuner_test(
+            saved.session_id, this_boot(), token, "endurance", "hot", "1t", core, -3, "[]", "[0]", 60.0, "{}"
+        )
+        db.end_tuner_test(row, verdict, 60.0, "[]", None, "{}", "", "[]", "")
+    db.insert_tuner_test(saved.session_id, this_boot(), 9, "steady", "hot", "1t", core, -3, "[]", "[0]", 60.0, "{}")
+    t = tab(db)
+    with co_writer(record=True):
+        t.refresh()
+        assert "endurance tests" not in t._test.text()
+        db.insert_tuner_test(
+            saved.session_id, this_boot(), 10, "endurance", "warm", "1t", core, -3, "[]", "[0]", 60.0, "{}"
+        )
+        t.refresh()
+        assert t._test.text().endswith(" of 60 s; 4 endurance tests ended, 1 failed")
+
+
 def test_a_signal_without_a_driver_or_permission_is_said(db, home, monkeypatch):
     t = tab(db)
     t._signal(signal.SIGUSR1, "pause")

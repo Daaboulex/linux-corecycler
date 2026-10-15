@@ -1668,6 +1668,14 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             _tail_sample(row) for row in tail.fetchall()
         ]
 
+    def endurance_tally(self, session_id: int) -> tuple[int, int]:
+        ended, failed = self.__conn.execute(
+            "SELECT count(*), coalesce(sum(verdict = 'silicon'), 0) FROM tuner_tests"
+            " WHERE session_id=? AND stage='endurance' AND ended_at IS NOT NULL",
+            (session_id,),
+        ).fetchone()
+        return ended, failed
+
     def open_tuner_test(self, session_id: int, boot_id: str) -> dict | None:
         row = self.__conn.execute(
             "SELECT * FROM tuner_tests WHERE session_id=? AND boot_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1",

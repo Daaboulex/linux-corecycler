@@ -280,6 +280,7 @@ class SessionView:
     problem: str | None
     test: dict | None
     events: tuple[dict, ...]
+    endurance: tuple[int, int] | None = None
 
     def setup_changed(self) -> bool:
         paused = [event for event in self.events if event["severity"] == "paused"]
@@ -300,13 +301,16 @@ def read_view(db: HistoryDB, boot: str) -> SessionView | None:
         stored = read_stored(db, session_id)
     except (TypeError, KeyError, ValueError) as e:
         problem = f"session {session_id} cannot be read: {e!r}"
+    test = db.open_tuner_test(session_id, boot)
+    enduring = test is not None and test["stage"] == Stage.ENDURANCE
     return SessionView(
         session_id,
         status,
         stored,
         problem,
-        db.open_tuner_test(session_id, boot),
+        test,
         tuple(db.get_tuner_events(session_id, limit=30)),
+        db.endurance_tally(session_id) if enduring else None,
     )
 
 
@@ -580,8 +584,9 @@ class TunerTab(QWidget):
             what = f"core {test['core']} at {test['value']}, {THREADS.get(test['klass'], test['klass'])}"
         else:
             what = "a group of cores" if test["stage"] == Stage.BISECT else "every core"
+        tally = "" if view.endurance is None else "; {} endurance tests ended, {} failed".format(*view.endurance)
         self._test.setText(
-            f"Testing {what}: {stage_label(test['stage'])}, {elapsed:.0f} of {test['seconds_asked']:.0f} s"
+            f"Testing {what}: {stage_label(test['stage'])}, {elapsed:.0f} of {test['seconds_asked']:.0f} s{tally}"
         )
         self.tuner_core_elapsed.emit(test["core"], elapsed)
 
