@@ -50,6 +50,14 @@ bits 18:11 of SMN `0x5D448`; the desktop fuse address reads `0xFFFFFFFF` there. 
 5600GE (issue #18) confirmed it: the register fused off slots 0 and 1, the same two
 slots whose PM table rows read all zero, so its cores 0-5 are slots 2-7.
 
+On Vermeer, Linux can also number a surviving physical CCD 1 as CCD 0. The
+driver reads the CCD-disable fuses at `0x5D218` and `0x5D21C` to map L3 groups
+onto active physical CCDs before reading their core fuses or sending CO commands.
+For example, a 5600X with physical CCD 0 disabled uses the core fuse at
+`0x32081D98`, whose mask `0x0C` leaves slots 0, 1, 4, 5, 6, and 7 active.
+This follows [ryzen_smu's CCD fuse decoding](https://github.com/amkillam/ryzen_smu/blob/d2983668300dd2a598e5a7dc40e71ce0678cc270/userspace/monitor_cpu.c#L342).
+Per-core CO stays disabled if the active CCD count disagrees with the OS.
+
 Reading an SMN register is a *write* of the address, so this needs write access to
 `/sys/kernel/ryzen_smu_drv/smn`, which `ryzen_smu` ships root-only -- the NixOS
 module grants it to the `corecycler` group alongside the mailbox files, and

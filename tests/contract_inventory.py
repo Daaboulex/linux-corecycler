@@ -259,6 +259,7 @@ def _pin_core_slot_mapping() -> None:
     vermeer = get_commands(CPUGeneration.ZEN3_VERMEER)
     assert vermeer is not None and vermeer.uniform_8core_ccds
     assert vermeer.core_fuse_addr == 0x30081D98
+    assert vermeer.ccd_fuse_addr == 0x5D218
     smu = RyzenSMU(vermeer, Path("/nonexistent"))
     topo = MagicMock()
     topo.cores = {c: MagicMock(ccd=0) for c in range(6)}
@@ -272,6 +273,10 @@ def _pin_core_slot_mapping() -> None:
 
     def read_smn(address: int) -> int:
         fuse_reads.append(address)
+        if address == 0x5D218:
+            return 0x80400000
+        if address == 0x5D21C:
+            return 0x3F
         return sum(1 << slot for slot in fused_off)
 
     smu._send_command = responder
@@ -279,7 +284,7 @@ def _pin_core_slot_mapping() -> None:
     smu.read_smn = read_smn
     smu.set_topology(topo)
     assert co_calls == []
-    assert fuse_reads == [vermeer.core_fuse_addr]
+    assert fuse_reads == [0x5D218, 0x5D21C, vermeer.core_fuse_addr]
     assert smu.core_map == {0: (0, 0), 1: (0, 1), 2: (0, 4), 3: (0, 5), 4: (0, 6), 5: (0, 7)}
     fused = {
         gen: (cmds.core_fuse_addr, cmds.core_fuse_shift) for gen, cmds in COMMAND_SETS.items() if cmds.core_fuse_addr
