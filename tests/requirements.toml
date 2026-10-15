@@ -94,11 +94,6 @@ statement = "The stage hot hold (95 C) and the ThermalWatch limit are both kept"
 proof = "built"
 
 [[requirement]]
-id = "C13"
-statement = "Only 90C cells use HOT-T in TIGHTEN; every per-core item, Q6 items included, uses the K32 window"
-proof = "built"
-
-[[requirement]]
 id = "C14"
 statement = "At Start a change against the newest session's base_co is named in the acknowledgement; at Resume it pauses (L24)"
 proof = "built"
@@ -121,7 +116,7 @@ proof = "built"
 
 [[requirement]]
 id = "C18"
-statement = "A TIGHTEN failure freezes the item, never enters Bisect"
+statement = "A round failure naming a round core freezes it; one naming no core ends the reclaim with no record moved; TIGHTEN never enters Bisect"
 proof = "built"
 
 [[requirement]]
@@ -377,19 +372,28 @@ statement = "ENDURANCE: hot, burst, warm, burst, idle in a cycle until 10800 s f
 proof = "built"
 
 [[requirement]]
-id = "K35"
-statement = "TIGHTEN tests one item one step tighter with only it changed"
+id = "ALLCORE.margin"
+statement = "The all-core stages start every core 3 steps looser than its proven value, 0 at most, its FB untouched (owner 2026-10-15, allcore-entry.md A)"
 proof = "built"
 
 [[requirement]]
-id = "K35.retry"
-statement = "A transient-class FAIL of a HOT-T item is retried up to 2 times"
-proof = "not built"
-task = "S3"
+id = "ALLCORE.rounds"
+statement = "A round runs one HOT and one transient cycle; a passed round moves each round core one step tighter; at most 3 rounds"
+proof = "built"
 
 [[requirement]]
-id = "K36.1"
-statement = "Each transient failure loosens one value by +1"
+id = "ALLCORE.freeze"
+statement = "A core a group loosening or a conviction moved in the all-core stages leaves the reclaim"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.second_pass"
+statement = "A reclaim that ends with every core at its proven value sends the session through no second LIVE1 pass"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.unnamed"
+statement = "An all-core failure that names no core loosens every owned core with room by one step (owner 2026-10-15, allcore-entry.md option A)"
 proof = "built"
 
 [[requirement]]
@@ -1947,7 +1951,7 @@ proof = "built"
 
 [[requirement]]
 id = "L10.a"
-statement = "The fix loop chooses the single value to loosen after a failure and enforces ownership"
+statement = "The fix loop loosens the named cores, or every owned core with room when none is named (owner 2026-10-15, allcore-entry.md A), and enforces ownership"
 proof = "built"
 
 [[requirement]]
@@ -2001,7 +2005,7 @@ task = "T29"
 
 [[requirement]]
 id = "L11.a"
-statement = "TRANSIENT runs load steps until 3600 s failure-free; each failure loosens one value; it always runs in CO only"
+statement = "TRANSIENT runs load steps until 3600 s failure-free; a named failure loosens that core, one naming none every core (owner 2026-10-15); it always runs in CO only"
 proof = "built"
 
 [[requirement]]
@@ -2057,7 +2061,7 @@ task = "T29"
 
 [[requirement]]
 id = "L12.a"
-statement = "TIGHTEN takes every loosened value back one step at a time with only it changed until it fails or reaches its floor"
+statement = "TIGHTEN reclaims in rounds: every reclaimable core one step tighter at once, one HOT and one transient cycle per round, at most 3 rounds (owner 2026-10-15, allcore-entry.md A)"
 proof = "built"
 
 [[requirement]]
@@ -2073,7 +2077,7 @@ task = "T29"
 
 [[requirement]]
 id = "L12.floor"
-statement = "A CO item's floor is its proven value; never at or past FB; a step onto the floor is tested; an item at its floor or one step from FB freezes"
+statement = "A core's floor is its proven value; a round never takes it at or past FB; a step onto the floor is tested; a core at its floor or one step from FB leaves the round"
 proof = "built"
 
 [[requirement]]
@@ -2081,11 +2085,6 @@ id = "L12.floor_cell"
 statement = "A cell item's floor is the BIOS base (Shaper only) or its Search-time value (Both)"
 proof = "not built"
 task = "S3"
-
-[[requirement]]
-id = "L12.d.window"
-statement = "Every per-core item runs one stage of the K32 window"
-proof = "built"
 
 [[requirement]]
 id = "L12.d.hott"
@@ -2112,11 +2111,6 @@ proof = "not built"
 task = "S3"
 
 [[requirement]]
-id = "L12.G2.window"
-statement = "A window item FAIL freezes it, picks the next item, tClean = 0"
-proof = "built"
-
-[[requirement]]
 id = "L12.G2.mce"
 statement = "An OWN_CORE_MCE naming another owned core backs it off in place; the item test is void and repeats"
 proof = "untested"
@@ -2124,7 +2118,7 @@ task = "T29"
 
 [[requirement]]
 id = "L12.G2.named"
-statement = "A FAIL naming the item's own core keeps the item rule; naming only other owned cores backs them off with FB and repeats the item test"
+statement = "A failure naming a round core freezes it and the round repeats without it; naming only cores outside the round backs them off with FB and repeats the round"
 proof = "built"
 
 [[requirement]]
@@ -2135,7 +2129,7 @@ task = "T29"
 
 [[requirement]]
 id = "L12.G4.own"
-statement = "A conviction of the item's own core sets FB, backs it off 3 steps and freezes the item"
+statement = "A conviction in the all-core stages sets FB, backs the core off 3 steps and takes it out of the reclaim"
 proof = "built"
 
 [[requirement]]
@@ -3832,12 +3826,7 @@ proof = "built"
 
 [[requirement]]
 id = "D30"
-statement = "TIGHTEN freezes an item at its floor or when one step tighter is at or past FB; a step onto the floor is tested"
-proof = "built"
-
-[[requirement]]
-id = "D31"
-statement = "Every per-core item, Q6 items included, uses the K32 window"
+statement = "A round leaves out a core at its floor or one step from FB; a step onto the floor is tested"
 proof = "built"
 
 [[requirement]]
@@ -4179,11 +4168,6 @@ proof = "built"
 [[requirement]]
 id = "Q6"
 statement = "CO-only stacking: +1 on every tuned core of the smallest failing group until it passes"
-proof = "built"
-
-[[requirement]]
-id = "Q6.tighten"
-statement = "After Q6 those cores are tightened back one at a time with only that core changed"
 proof = "built"
 
 [[requirement]]

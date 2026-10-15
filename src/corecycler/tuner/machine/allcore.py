@@ -3,10 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from corecycler.tuner.machine.types import FailContext
-
 if TYPE_CHECKING:
-    from corecycler.tuner.machine.types import AllCore, CoreRecord
+    from corecycler.tuner.machine.types import AllCore, CoreRecord, FailContext, MachineConfig
 
 BAND_BORDERS_MHZ = (4400, 5175, 5650)
 COLUMN_SPLIT_C = 75.0
@@ -15,6 +13,7 @@ NEAR_COLUMN_C = 5.0
 OWNER_PRIORITY = (8, 0, 9, 10, 11, 13, 12, 2, 1, 3, 4, 5, 6, 7, 14, 15)
 OWNER_MODEL = "AMD Ryzen 9 9950X3D 16-Core Processor"
 OWNER_CORE_MAP = tuple((core, core // 8) for core in range(16))
+ENTRY_MARGIN_STEPS = 3
 
 
 def is_owner_layout(model_name: str, domain_of: tuple[tuple[int, int | None], ...]) -> bool:
@@ -107,17 +106,16 @@ def _loosened(cursor: AllCore, core: int, why: str) -> Fix:
     return Fix(loosened(cursor, core), core, why)
 
 
-def frozen_item(cursor: AllCore) -> AllCore:
-    return replace(cursor, frozen=(*cursor.frozen, cursor.item), item=None)
-
-
-def tighten_items(cursor: AllCore) -> tuple[int, ...]:
-    return tuple(sorted(core for core, delta in cursor.co_delta if delta > 0))
+def round_members(cores: tuple[CoreRecord, ...], cfg: MachineConfig, cursor: AllCore) -> tuple[int, ...]:
+    floors = dict(cursor.floors)
+    return tuple(
+        r.core
+        for r in cores
+        if r.core not in cursor.frozen
+        and r.value > floors.get(r.core, r.value)
+        and r.inside(r.value - cfg.fine_step, cfg.max_offset)
+    )
 
 
 def steady_class(ctx: FailContext | None) -> bool:
     return ctx is not None and ctx.steady
-
-
-def context_or_unknown(ctx: FailContext | None) -> FailContext:
-    return ctx if ctx is not None else FailContext(steady=False, working=(), paused=True)

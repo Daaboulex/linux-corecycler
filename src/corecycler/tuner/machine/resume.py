@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from corecycler.tuner.machine.allcore import round_members
 from corecycler.tuner.machine.bisect import current_group
 from corecycler.tuner.machine.types import ALLCORE, CrashEvidenceRead, Evidence, SessionState, Stage
 
@@ -37,7 +38,7 @@ def resident(s: SessionState, core: int) -> int:
         if not rec.in_test:
             return s.baseline_of(core)
         cursor = flow.allcore
-        trial = flow.stage is Stage.TIGHTEN and cursor is not None and cursor.item == core
+        trial = flow.stage is Stage.TIGHTEN and cursor is not None and core in round_members(s.cores, s.config, cursor)
         return rec.value - s.config.fine_step if trial else rec.value
     return rec.value if flow.applied else s.baseline_of(core)
 

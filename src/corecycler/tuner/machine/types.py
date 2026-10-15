@@ -98,6 +98,7 @@ class Load(StrEnum):
 
 TRANSIENT_CYCLE = (Load.BURST, Load.WARM, Load.BURST, Load.IDLE)
 ENDURANCE_CYCLE = (Load.HOT, Load.BURST, Load.WARM, Load.BURST, Load.IDLE)
+ROUND_CYCLE = (Load.HOT, *TRANSIENT_CYCLE)
 STAGE_LOADS = frozenset(load.value for load in (*TRANSIENT_CYCLE, *ENDURANCE_CYCLE) if load is not Load.HOT)
 
 
@@ -271,6 +272,7 @@ class AllCore:
     frozen: tuple[int, ...] = ()
     tightened: bool = False
     pass_no: int = 1
+    rounds: int = 0
 
 
 @dataclass(frozen=True, slots=True)

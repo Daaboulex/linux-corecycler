@@ -216,14 +216,14 @@ def test_the_lost_verdict_of_an_all_core_test_is_one_fail_of_that_test(stage):
     start(fake)
     while fake.worker is None or fake.worker.spec.stage is not stage:
         assert fake.progress()
-    before = sum(delta for _, delta in fake.state.flow.allcore.co_delta)
+    before = {r.core: r.value for r in fake.state.cores}
     fake.faults.fail_commits = 1
     fake.deliver()
     assert fake.state.pause.reason is PauseReason.DATABASE
     fake.crash()
     fake.post(Resume(1))
     assert fake.state.lifecycle is Lifecycle.RUNNING
-    assert sum(delta for _, delta in fake.state.flow.allcore.co_delta) == before + 1
+    assert {r.core: r.value for r in fake.state.cores} == {core: value + 1 for core, value in before.items()}
 
 
 @pytest.mark.req("C10", "D34", "TERMS.allcore_baseline", "L08.d.after", "L20.d.allcore", "L22.d.allcore")

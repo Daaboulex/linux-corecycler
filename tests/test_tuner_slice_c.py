@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from itertools import takewhile
+from itertools import pairwise, takewhile
 
 import pytest
 
@@ -74,41 +74,64 @@ def test_a_clean_co_only_run_walks_every_stage_once_in_the_planned_order():
     fake, stages = run([-4, -2])
     assert fake.state.lifecycle is Lifecycle.COMPLETED
     order = list(dict.fromkeys(stage for stage, _, _ in stages))
-    assert order == [Stage.SEARCH, Stage.LIVE1, Stage.STEADY, Stage.TRANSIENT, Stage.MEMORY, Stage.SOAK]
+    assert order == [
+        Stage.SEARCH,
+        Stage.LIVE1,
+        Stage.STEADY,
+        Stage.TRANSIENT,
+        Stage.TIGHTEN,
+        Stage.MEMORY,
+        Stage.SOAK,
+    ]
     assert {r.core: r.value for r in fake.state.cores} == {0: -4, 1: -2}
 
 
-@pytest.mark.req("L08.G2.steady", "L08.a", "L08.b", "L09.G2.single", "L09.d")
+@pytest.mark.req("ALLCORE.unnamed", "L10.a", "L11.a")
+def test_a_failure_that_names_no_core_loosens_every_core_by_one_step():
+    fake, stages = run([-6, -5], transient={0: -2, 1: -1})
+    allcore_runs = [vector for stage, _, vector in stages if stage in (Stage.TRANSIENT, Stage.TIGHTEN)]
+    changes = [
+        {core: after[core] - before[core] for core in before}
+        for before, after in pairwise(allcore_runs)
+        if after != before
+    ]
+    assert {0: 1, 1: 1} in changes
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    order = [stage for stage, _, _ in stages]
+    assert max(i for i, stage in enumerate(order) if stage is Stage.LIVE1) > order.index(Stage.STEADY)
+
+
+@pytest.mark.req("ALLCORE.margin", "ALLCORE.rounds", "ALLCORE.second_pass", "L12.a", "L12.floor")
+def test_the_all_core_stages_start_every_core_three_steps_looser_and_reclaim_it_in_three_rounds():
+    fake, stages = run([-6, -2])
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert next(vector for stage, _, vector in stages if stage is Stage.STEADY) == {0: -3, 1: 0}
+    tighten = [(load, vector) for stage, load, vector in stages if stage is Stage.TIGHTEN]
+    assert [load for load, _ in tighten] == [Load.HOT, Load.BURST, Load.WARM, Load.BURST, Load.IDLE] * 3
+    assert [vector for _, vector in tighten[::5]] == [{0: -4, 1: -1}, {0: -5, 1: -2}, {0: -6, 1: -2}]
+    assert {r.core: r.value for r in fake.state.cores} == {0: -6, 1: -2}
+    assert [stage for stage, _, _ in stages].count(Stage.LIVE1) == 2
+
+
+@pytest.mark.req("ALLCORE.freeze", "L08.G2.steady", "L08.a", "L08.b", "L09.G2.single", "L09.d")
 def test_a_steady_failure_bisects_to_the_failing_core_and_reruns_steady():
-    fake, stages = run([-6, -2], hot={0: -4, 1: -2})
+    fake, stages = run([-6, -2], hot={0: -2, 1: -2})
     assert fake.state.lifecycle is Lifecycle.COMPLETED
     assert Stage.BISECT in {stage for stage, _, _ in stages}
-    assert fake.state.core(0).value >= -4
+    assert {r.core: r.value for r in fake.state.cores} == {0: -2, 1: -2}
     hot_runs = [vector for stage, load, vector in stages if stage is Stage.STEADY]
     assert len(hot_runs) >= 2
+    assert all(vector[0] == -2 for stage, _, vector in stages if stage is Stage.TIGHTEN)
 
 
-@pytest.mark.req(
-    "C13",
-    "C18",
-    "D30",
-    "D31",
-    "INV.L11",
-    "K35",
-    "K36.1",
-    "L10.a",
-    "L11.a",
-    "L12.G2.window",
-    "L12.a",
-    "L12.d.window",
-    "L12.floor",
-)
-def test_a_transient_failure_loosens_one_working_core_and_tighten_tries_it_back():
+@pytest.mark.req("ALLCORE.rounds", "C18", "INV.L11", "L12.a", "L12.floor")
+def test_an_unnamed_failure_in_a_round_ends_the_reclaim_with_no_record_moved():
     fake, stages = run([-6, -3], transient={0: -5, 1: -3})
     assert fake.state.lifecycle is Lifecycle.COMPLETED
-    assert fake.state.core(0).value == -5
+    assert {r.core: r.value for r in fake.state.cores} == {0: -5, 1: -2}
     tighten = [vector for stage, _, vector in stages if stage is Stage.TIGHTEN]
-    assert tighten and all(vector[0] == -6 for vector in tighten)
+    assert {0: -6, 1: -3} in tighten
+    assert Stage.BISECT not in {stage for stage, _, _ in stages}
 
 
 @pytest.mark.req("D44", "L11.G1", "L17.d.redirect", "RV1")
@@ -196,6 +219,7 @@ def test_endurance_is_off_unless_asked_and_when_on_cycles_its_five_loads_before_
         Stage.LIVE1,
         Stage.STEADY,
         Stage.TRANSIENT,
+        Stage.TIGHTEN,
         Stage.ENDURANCE,
         Stage.MEMORY,
         Stage.SOAK,
@@ -240,21 +264,22 @@ def test_a_transient_failure_in_endurance_loosens_one_core_and_runs_the_same_loa
 
 @pytest.mark.req("D57", "INV.L08", "L08.G2.named", "L08.d.vector")
 def test_a_steady_failure_that_names_a_core_backs_that_core_off_in_place_without_a_bisect():
-    fake, stages = run([-6, -2], hot={0: -4, 1: -2}, names=True)
+    fake, stages = run([-6, -2], hot={0: -2, 1: -2}, names=True)
     assert fake.state.lifecycle is Lifecycle.COMPLETED
     assert Stage.BISECT not in {stage for stage, _, _ in stages}
-    assert (fake.state.core(0).value, fake.state.core(0).fb) == (-4, -5)
-    assert [vector[0] for stage, _, vector in stages if stage is Stage.STEADY][:3] == [-6, -5, -4]
+    assert (fake.state.core(0).value, fake.state.core(0).fb) == (-2, -3)
+    assert [vector[0] for stage, _, vector in stages if stage is Stage.STEADY][:2] == [-3, -2]
     order = [stage for stage, _, _ in stages]
     assert len(order) - order[::-1].index(Stage.LIVE1) > order.index(Stage.STEADY)
 
 
-@pytest.mark.req("L12.b")
-def test_a_transient_failure_that_names_a_core_backs_off_that_core_and_leaves_nothing_to_tighten():
-    fake, stages = run([-6, -3], transient={0: -5, 1: -3}, names=True)
+@pytest.mark.req("L12.b", "D30")
+def test_a_transient_failure_that_names_a_core_backs_it_off_and_the_reclaim_leaves_it_there():
+    fake, stages = run([-6, -3], transient={0: -2, 1: -3}, names=True)
     assert fake.state.lifecycle is Lifecycle.COMPLETED
-    assert (fake.state.core(0).value, fake.state.core(0).fb) == (-5, -6)
-    assert Stage.TIGHTEN not in {stage for stage, _, _ in stages}
+    assert (fake.state.core(0).value, fake.state.core(0).fb) == (-2, -3)
+    assert fake.state.core(1).value == -3
+    assert all(vector[0] == -2 for stage, _, vector in stages if stage is Stage.TIGHTEN)
 
 
 def name_from(stage, hot=None, transient=None):
@@ -267,11 +292,16 @@ def name_from(stage, hot=None, transient=None):
     return on_start
 
 
-def test_a_tighten_trial_that_names_its_own_core_freezes_the_item_as_before():
+@pytest.mark.req("C18", "L12.G2.named")
+def test_a_round_failure_that_names_a_round_core_freezes_it_and_the_round_repeats_without_it():
     fake, stages = run([-6, -3], transient={0: -5, 1: -3}, on_start=name_from(Stage.TIGHTEN))
     assert fake.state.lifecycle is Lifecycle.COMPLETED
-    assert (fake.state.core(0).value, fake.state.core(0).fb) == (-5, -7)
-    assert [vector[0] for stage, _, vector in stages if stage is Stage.TIGHTEN] == [-6]
+    assert {r.core: r.value for r in fake.state.cores} == {0: -5, 1: -3}
+    tighten = [vector for stage, _, vector in stages if stage is Stage.TIGHTEN]
+    failing = len(tighten) - 1 - tighten[::-1].index({0: -6, 1: -3})
+    assert tighten[failing + 1] == {0: -5, 1: -3}
+    loads = [load for stage, load, _ in stages if stage is Stage.TIGHTEN]
+    assert loads[failing + 1] is Load.HOT
 
 
 def report_once(stage, report, nth=1):
@@ -294,13 +324,14 @@ def report_once(stage, report, nth=1):
 
 
 @pytest.mark.req("L12.G2.named", "RV5")
-def test_a_tighten_trial_that_names_another_core_backs_that_core_off_and_repeats_the_trial():
+def test_a_round_failure_that_names_a_core_outside_the_round_backs_it_off_and_repeats_the_round():
     named = Report(Group.SILICON, 1.0, named=(1,))
-    fake, stages = run([-6, -3], transient={0: -5, 1: -3}, on_start=report_once(Stage.TIGHTEN, named))
+    fake, stages = run([-6, -1], on_start=report_once(Stage.TIGHTEN, named, nth=6))
     assert fake.state.lifecycle is Lifecycle.COMPLETED
-    assert (fake.state.core(1).value, fake.state.core(1).fb) == (-2, -3)
-    trials = [(vector[0], vector[1]) for stage, _, vector in stages if stage is Stage.TIGHTEN]
-    assert trials[:2] == [(-6, -3), (-6, -2)]
+    assert (fake.state.core(1).value, fake.state.core(1).fb) == (0, -1)
+    assert fake.state.core(0).value == -6
+    tighten = [(load, vector) for stage, load, vector in stages if stage is Stage.TIGHTEN]
+    assert tighten[5:7] == [(Load.HOT, {0: -5, 1: -1}), (Load.HOT, {0: -5, 1: 0})]
 
 
 def test_a_named_core_outside_the_session_pauses_as_a_held_knob():
@@ -311,7 +342,7 @@ def test_a_named_core_outside_the_session_pauses_as_a_held_knob():
 
 
 def test_a_named_core_already_at_zero_leaves_the_failure_to_the_stage_rule():
-    fake, stages = run([0, -2], hot={0: 1, 1: -2}, names=True)
+    fake, stages = run([0, -6], hot={0: 1, 1: -6}, names=True)
     assert Stage.BISECT in {stage for stage, _, _ in stages}
 
 
@@ -322,7 +353,7 @@ def test_a_named_back_off_in_transient_restarts_the_clean_window_on_the_same_loa
     begin = next(i for i, (stage, _, _) in enumerate(stages) if stage is Stage.TRANSIENT)
     first_pass = [load for _, load, _ in takewhile(lambda run: run[0] is Stage.TRANSIENT, stages[begin:])]
     assert first_pass == [Load.BURST, Load.WARM, Load.WARM, Load.BURST]
-    assert (fake.state.core(0).value, fake.state.core(0).fb) == (-5, -6)
+    assert (fake.state.core(0).value, fake.state.core(0).fb) == (-2, -3)
 
 
 def test_memory_can_be_switched_off():
@@ -415,27 +446,58 @@ def test_the_owner_order_applies_only_on_his_model_and_core_map(model, domain_of
     assert allcore.is_owner_layout(model, domain_of) is owner
 
 
-@pytest.mark.req("Q6.tighten")
-def test_cores_that_fail_only_together_are_loosened_without_a_fail_bound_and_tightened_back_one_at_a_time():
-    fake, stages = run([-6, -6], stacks=(((), (0, 1), 11),))
+@pytest.mark.req("ALLCORE.freeze", "K47")
+def test_cores_that_fail_only_together_are_loosened_without_a_fail_bound_and_left_out_of_the_reclaim():
+    fake, stages = run([-6, -6], stacks=(((), (0, 1), 5),))
     assert fake.state.lifecycle is Lifecycle.COMPLETED
     assert any(stage is Stage.BISECT for stage, _, _ in stages)
-    tighten = [vector for stage, _, vector in stages if stage is Stage.TIGHTEN]
-    assert {0: -6, 1: -5} in tighten
-    assert {r.core: r.value for r in fake.state.cores} == {0: -6, 1: -5}
+    assert {r.core: (r.value, r.fb) for r in fake.state.cores} == {0: (-2, -7), 1: (-2, -7)}
+    assert Stage.TIGHTEN not in {stage for stage, _, _ in stages}
 
 
 @pytest.mark.req("L12.G4.own")
-def test_a_crash_blamed_on_the_tighten_item_s_own_core_backs_it_off_three_steps_and_freezes_it():
+def test_a_crash_blamed_on_a_round_core_backs_it_off_three_steps_and_takes_it_out_of_the_reclaim():
     fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
     fake.edges_transient = {0: -5, 1: -5}
     start(fake)
     while fake.worker is None or fake.worker.spec.stage is not Stage.TIGHTEN:
         assert fake.progress()
-    item = fake.state.flow.allcore.item
-    trial = dict(fake.worker.spec.vector)[item]
-    fake.crash(evidence=(Evidence(item, False),))
+    trial = dict(fake.worker.spec.vector)[0]
+    fake.crash(evidence=(Evidence(0, False),))
     fake.post(Resume(1))
-    cursor = fake.state.flow.allcore
-    assert (item in cursor.frozen, cursor.item) == (True, None)
-    assert (fake.state.core(item).fb, fake.state.core(item).value) == (trial, trial + 3)
+    assert 0 in fake.state.flow.allcore.frozen
+    assert (fake.state.core(0).fb, fake.state.core(0).value) == (trial, trial + 3)
+
+
+@pytest.mark.req("ALLCORE.rounds")
+def test_the_reclaim_stops_after_three_rounds_even_with_more_steps_to_take_back():
+    unnamed = Report(Group.SILICON, 1.0)
+    fake, stages = run([-6, -5], on_start=report_once(Stage.TRANSIENT, unnamed))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert sum(1 for stage, _, _ in stages if stage is Stage.TIGHTEN) == 3 * 5
+    assert {r.core: r.value for r in fake.state.cores} == {0: -5, 1: -4}
+
+
+@pytest.mark.req("L12.floor")
+@pytest.mark.parametrize(
+    ("value", "fb", "frozen", "member"),
+    [(-2, -9, (), True), (-3, -9, (), False), (-2, -3, (), False), (-2, -9, (0,), False)],
+)
+def test_a_round_takes_a_core_only_above_its_floor_short_of_its_fail_bound_and_not_frozen(value, fb, frozen, member):
+    from corecycler.tuner.machine.types import MachineConfig, Mode
+    from corecycler.tuner.orders import Method
+
+    cfg = MachineConfig(Mode.CO, Method.ALTERNATE, (0,), max_offset=-10)
+    core = CoreRecord(0, phase=Phase.PROVEN, value=value, fb=fb)
+    cursor = AllCore(floors=((0, -3),), frozen=frozen)
+    assert allcore.round_members((core,), cfg, cursor) == ((0,) if member else ())
+
+
+@pytest.mark.req("D44", "L17.d.redirect")
+@pytest.mark.parametrize("named", [(0,), ()])
+def test_a_back_off_after_the_reclaim_sends_the_session_through_another_live1_pass(named):
+    report = Report(Group.SILICON, 1.0, named=named)
+    fake, stages = run([-4, -2], endurance=True, on_start=report_once(Stage.ENDURANCE, report))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    order = [stage for stage, _, _ in stages]
+    assert max(i for i, stage in enumerate(order) if stage is Stage.LIVE1) > order.index(Stage.ENDURANCE)

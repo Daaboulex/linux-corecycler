@@ -8,6 +8,7 @@ from corecycler.tuner.machine.types import (
     ALLCORE,
     ENDURANCE_CYCLE,
     KNOB_FLOOR,
+    ROUND_CYCLE,
     STAGE_LOADS,
     TRANSIENT_CYCLE,
     Abort,
@@ -499,8 +500,10 @@ def _convict(s: SessionState, core: int) -> tuple[SessionState, bool]:
     flow = out.flow
     if flow.stage is Stage.BISECT and core in bisect.current_group(flow.bisect):
         flow = _bisect_exit(flow)
-    if flow.stage is Stage.TIGHTEN and flow.allcore.item == core:
-        flow = replace(flow, allcore=allcore.frozen_item(flow.allcore))
+    if flow.stage is Stage.TIGHTEN:
+        flow = replace(flow, allcore=_frozen(flow.allcore, (core,)))
+    elif flow.stage in ALLCORE:
+        flow = replace(flow, allcore=replace(flow.allcore, frozen=(*flow.allcore.frozen, core)))
     return replace(out, flow=replace(flow, dirty=True)), False
 
 
@@ -954,14 +957,39 @@ def _live1_next(s: SessionState, w: World, picked: int | None) -> Transition:
 
 def _end_live1(s: SessionState, w: World) -> Transition:
     cursor = s.flow.allcore
-    if cursor is None:
+    fresh = cursor is None
+    if fresh:
         cursor = AllCore(floors=tuple((r.core, r.value) for r in s.cores))
     else:
         cursor = replace(cursor, t_idx=0, t_clean=0.0, pass_no=cursor.pass_no + 1)
     if s.flow.validating is not None:
         return _next(replace(s, flow=_past_tighten(replace(s.flow, live1=None, allcore=cursor), s.config)), w, None)
+    if fresh:
+        s = _entry_margin(s)
     flow = replace(s.flow, stage=Stage.STEADY, live1=None, allcore=cursor)
     return _allcore_next(replace(s, flow=flow), w)
+
+
+def _entry_margin(s: SessionState) -> SessionState:
+    return replace(s, cores=tuple(search.loosen(r, s.config, allcore.ENTRY_MARGIN_STEPS) for r in s.cores))
+
+
+def _frozen(cursor: AllCore, cores: tuple[int, ...]) -> AllCore:
+    return replace(cursor, frozen=(*cursor.frozen, *cores), t_idx=0, t_clean=0.0)
+
+
+def _round_passed(s: SessionState, cursor: AllCore) -> tuple[SessionState, AllCore]:
+    for core in allcore.round_members(s.cores, s.config, cursor):
+        rec = s.core(core)
+        s = s.with_core(replace(rec, value=rec.value - s.config.fine_step))
+    return s, replace(cursor, rounds=cursor.rounds + 1, t_idx=0, t_clean=0.0)
+
+
+def _reclaim_ended(s: SessionState) -> SessionState:
+    floors = dict(s.flow.allcore.floors)
+    off_floor = any(r.value != floors.get(r.core, r.value) for r in s.cores)
+    flow = replace(s.flow, dirty=s.flow.dirty or off_floor)
+    return replace(s, flow=_past_tighten(flow, s.config))
 
 
 def _load_seconds(cfg, load: Load) -> float:
@@ -997,8 +1025,7 @@ def _past_memory(flow: Flow, cfg) -> Flow:
 
 
 def _after_tighten(s: SessionState, w: World) -> Transition:
-    flow = _past_tighten(s.flow, s.config)
-    return _next(replace(s, flow=flow), w, None)
+    return _next(_reclaim_ended(s), w, None)
 
 
 def _allcore_next(s: SessionState, w: World) -> Transition:
@@ -1007,24 +1034,12 @@ def _allcore_next(s: SessionState, w: World) -> Transition:
     cursor = flow.allcore
     values = {r.core: r.value for r in s.cores}
     if flow.stage is Stage.TIGHTEN:
-        if cursor.item is None:
-            waiting = [core for core in allcore.tighten_items(cursor) if core not in cursor.frozen]
-            if not waiting:
-                return _after_tighten(s, w)
-            core = waiting[0]
-            rec = s.core(core)
-            floor = dict(cursor.floors).get(core, rec.value)
-            target = rec.value - cfg.fine_step
-            if rec.value <= floor or not rec.inside(target, cfg.max_offset):
-                frozen = replace(cursor, frozen=(*cursor.frozen, core))
-                return _allcore_next(replace(s, flow=replace(flow, allcore=frozen)), w)
-            cursor = replace(cursor, item=core, t_idx=0, t_clean=0.0)
-            flow = replace(flow, allcore=cursor)
-        item = s.core(cursor.item)
-        if not item.inside(item.value - cfg.fine_step, cfg.max_offset):
-            return _allcore_next(replace(s, flow=replace(flow, allcore=allcore.frozen_item(cursor))), w)
-        values[cursor.item] -= cfg.fine_step
-        load = TRANSIENT_CYCLE[cursor.t_idx % len(TRANSIENT_CYCLE)]
+        members = allcore.round_members(s.cores, s.config, cursor)
+        if not members or cursor.rounds >= allcore.ENTRY_MARGIN_STEPS:
+            return _after_tighten(s, w)
+        for core in members:
+            values[core] -= cfg.fine_step
+        load = ROUND_CYCLE[cursor.t_idx % len(ROUND_CYCLE)]
     elif flow.stage is Stage.STEADY:
         load = Load.HOT
     elif flow.stage is Stage.TRANSIENT:
@@ -1047,7 +1062,7 @@ def _allcore_fail(s: SessionState, ctx, w: World) -> tuple[SessionState, str | N
     if stage is Stage.SOAK:
         return replace(s, incidents=s.incidents + 1, flow=replace(flow, dirty=True)), None
     if stage is Stage.TIGHTEN:
-        return replace(s, flow=replace(flow, allcore=allcore.frozen_item(cursor))), None
+        return _reclaim_ended(s), None
     if stage in (Stage.STEADY, Stage.ENDURANCE) and allcore.steady_class(ctx):
         values = {r.core: r.value for r in s.cores}
         if not any(values.values()):
@@ -1055,12 +1070,14 @@ def _allcore_fail(s: SessionState, ctx, w: World) -> tuple[SessionState, str | N
         run = bisect.begin(stage, s.cores[0].core, Klass.T1, values, dict(w.domain_of))
         cursor = replace(cursor, t_clean=0.0)
         return replace(s, flow=replace(flow, stage=Stage.BISECT, bisect=run, allcore=cursor)), None
-    fix = allcore.transient_fix(cursor, allcore.context_or_unknown(ctx), s.cores, len(s.cores), w.owner_layout)
-    if fix.core is None:
+    looser = s
+    for r in s.cores:
+        moved = search.loosen(r, s.config)
+        if moved.value != r.value:
+            looser = looser.with_core(moved)
+    if looser is s:
         return s, "a transient failure found nothing left to loosen"
-    loosened = s.with_core(search.loosen(s.core(fix.core), s.config))
-    cursor = replace(fix.cursor, t_clean=0.0)
-    return replace(loosened, flow=replace(flow, allcore=cursor, dirty=True)), None
+    return replace(looser, flow=replace(flow, allcore=replace(cursor, t_clean=0.0), dirty=True)), None
 
 
 def _memory_next(s: SessionState, w: World) -> Transition:
@@ -1134,14 +1151,17 @@ def _allcore_named(s: SessionState, named: tuple[int, ...]) -> SessionState | Tr
             s, PauseReason.HELD_KNOB, f"y-cruncher named core {held[0]}, whose value this session does not own", held
         )
     flow = s.flow
-    if flow.stage is Stage.TIGHTEN and flow.allcore.item in named:
-        return None
+    if flow.stage is Stage.TIGHTEN:
+        hit = tuple(core for core in allcore.round_members(s.cores, s.config, flow.allcore) if core in named)
+        if hit:
+            return replace(s, flow=replace(flow, allcore=_frozen(flow.allcore, hit)))
     movable = [core for core in named if s.core(core).value < 0]
     if not movable:
         return None
     for core in movable:
         s = s.with_core(search.back_off_in_place(s.core(core), s.config, 1))
-    return replace(s, flow=replace(flow, allcore=replace(flow.allcore, t_clean=0.0), dirty=True))
+    restart = 0 if flow.stage is Stage.TIGHTEN else flow.allcore.t_idx
+    return replace(s, flow=replace(flow, allcore=replace(flow.allcore, t_idx=restart, t_clean=0.0), dirty=True))
 
 
 def _allcore_verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing: bool, w: World) -> Transition:
@@ -1166,19 +1186,16 @@ def _allcore_verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group,
     else:
         cursor = replace(cursor, t_idx=cursor.t_idx + 1, t_clean=cursor.t_clean + rep.seconds)
         window = cfg.endurance_window_s if flow.stage is Stage.ENDURANCE else cfg.transient_window_s
-        if cursor.t_clean < window:
+        if flow.stage is Stage.TIGHTEN:
+            if cursor.t_idx >= len(ROUND_CYCLE):
+                s, cursor = _round_passed(s, cursor)
+            flow = replace(flow, allcore=cursor)
+        elif cursor.t_clean < window:
             flow = replace(flow, allcore=cursor)
         elif flow.stage is Stage.ENDURANCE:
             flow = _past_endurance(replace(flow, allcore=cursor), cfg)
-        elif flow.stage is Stage.TIGHTEN:
-            rec = s.core(cursor.item)
-            s = s.with_core(replace(rec, value=rec.value - cfg.fine_step, count=0))
-            delta = dict(cursor.co_delta)
-            delta[cursor.item] -= 1
-            cursor = replace(cursor, co_delta=tuple(sorted(delta.items())), item=None, t_idx=0, t_clean=0.0)
-            flow = replace(flow, allcore=cursor, dirty=True)
         elif not cursor.tightened:
-            flow = replace(flow, stage=Stage.TIGHTEN, allcore=replace(cursor, item=None, t_idx=0, t_clean=0.0))
+            flow = replace(flow, stage=Stage.TIGHTEN, allcore=replace(cursor, t_idx=0, t_clean=0.0))
         else:
             flow = _past_tighten(replace(flow, allcore=cursor), cfg)
     return _next_wait(replace(s, flow=flow), spec, pausing)
@@ -1430,8 +1447,8 @@ def _q6(s: SessionState, group: tuple[int, ...]) -> tuple[SessionState, str | No
     cores = tuple(search.loosen(r, s.config) if r in loosen else r for r in s.cores)
     flow = s.flow
     cursor = flow.allcore
-    for r in () if cursor is None else loosen:
-        cursor = allcore.loosened(cursor, r.core)
+    if cursor is not None:
+        cursor = replace(cursor, frozen=(*cursor.frozen, *(r.core for r in loosen)))
     return replace(s, cores=cores, flow=replace(flow, bisect=replace(flow.bisect, rerun=group), allcore=cursor)), None
 
 
