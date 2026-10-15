@@ -85,7 +85,9 @@ runtime SMU writes (requires `ryzen_smu`), then proves the whole set under all-c
 loads. It runs as its own process, the tuner driver
 (`python -m corecycler.tuner.live_hw`): the Auto-Tuner tab and the `corecycler` tuning
 commands start it, and closing or crashing the GUI leaves a running session running.
-Every test, CO write, sample and event lands in the history database. The tests use
+Every test, CO write, sample and event lands in the history database. When the database
+fails, the session pauses with every core it owns back at stock, and a tuner run the tab
+started raises a dialog naming the failure. The tests use
 y-cruncher, and the memory stage stressapptest; the tab asks for either when it is not
 found.
 

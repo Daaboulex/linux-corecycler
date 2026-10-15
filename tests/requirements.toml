@@ -983,9 +983,8 @@ proof = "built"
 
 [[requirement]]
 id = "G11.ui"
-statement = "A database failure shows a GUI modal; the CLI exits 8"
-proof = "not built"
-task = "T28"
+statement = "A tuner run the GUI started that logged a database failure raises a dialog naming the failure, whatever its exit; the CLI exits 3 as for any pause (E6, superseding the exit 8 of tuning-loops.md G11)"
+proof = "built"
 
 [[requirement]]
 id = "G12"

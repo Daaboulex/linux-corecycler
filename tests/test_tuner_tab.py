@@ -608,6 +608,33 @@ def test_the_driver_s_end_is_said_with_its_refusal(db, home, launched):
     assert t._driver.text() == "the driver ended: completed"
 
 
+@pytest.mark.req("G11.ui")
+@pytest.mark.parametrize("code", [EXIT_PAUSED, 0])
+def test_a_driver_run_that_logged_a_database_failure_raises_a_dialog_naming_it(db, home, launched, code):
+    t = tab(db)
+    t._on_start()
+    (home / "tuner" / "driver.log").write_text(
+        "10:00:00 session 1\n"
+        "10:00:05 database_failed: disk I/O error; every owned core is sent back to stock\n"
+        "10:00:06 paused\n"
+    )
+    t._child.code = code
+    t.refresh()
+    assert [call.args[1:] for call in tt.QMessageBox.critical.call_args_list] == [
+        ("The history database failed", "disk I/O error; every owned core is sent back to stock")
+    ]
+
+
+def test_a_driver_run_with_no_database_failure_raises_no_dialog(db, home, launched):
+    t = tab(db)
+    t._on_start()
+    (home / "tuner" / "driver.log").write_text("10:00:00 session 1\n10:00:06 paused: user: paused by the user\n")
+    t._child.code = EXIT_PAUSED
+    t.refresh()
+    assert t._driver.text() == "the driver ended: paused (needs attention)"
+    assert tt.QMessageBox.critical.call_args_list == []
+
+
 def test_an_unreadable_driver_output_is_said(db, home, launched):
     t = tab(db)
     t._on_start()

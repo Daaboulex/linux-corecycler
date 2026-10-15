@@ -203,6 +203,7 @@ SET_BY_THE_TAB = ("mode", "method", "selected", "stage_seconds", "starts")
 STAGE_DEFAULT = next(f.default for f in fields(MachineConfig) if f.name == "stage_seconds")
 STAGE_ORDER = tuple(load for load, _ in STAGE_DEFAULT)
 CEILING = 1_000_000_000
+DATABASE_FAILED = "database_failed: "
 BOX_WIDTH = 110
 CORES_PER_ROW = 4  # equivalent-mutant: five boxes a row are no wider than the setting rows, six are
 GRID_STATE = {
@@ -751,18 +752,23 @@ class TunerTab(QWidget):
             return
         self._child = None
         meaning = EXIT_MEANINGS.get(code, f"exit {code}")
-        last = self._last_driver_line() if code in (EXIT_REFUSED, EXIT_LOCKED) else ""
+        lines = self._driver_output()
+        last = (
+            next((line for line in reversed(lines) if line.strip()), "") if code in (EXIT_REFUSED, EXIT_LOCKED) else ""
+        )
         self._note(f"the driver ended: {meaning}" + (f": {labelled(last)}" if last else ""))
+        failure = next((line.partition(DATABASE_FAILED)[2] for line in reversed(lines) if DATABASE_FAILED in line), "")
+        if failure:
+            QMessageBox.critical(self, "The history database failed", failure)
         if self._child_auto and code in (EXIT_REFUSED, EXIT_LOCKED) and self._auto_tries_left > 0:
             self._note(f"auto-resume: trying again in {AUTO_RESUME_GAP_MS // 1000} s ({meaning})")
             QTimer.singleShot(AUTO_RESUME_GAP_MS, lambda: self.attempt_auto_resume(self._auto_tries_left))
 
-    def _last_driver_line(self) -> str:
+    def _driver_output(self) -> list[str]:
         try:
-            lines = (data_dir() / "tuner" / "driver.log").read_text().splitlines()
+            return (data_dir() / "tuner" / "driver.log").read_text().splitlines()
         except OSError as e:
-            return f"its output cannot be read: {e}"
-        return next((line for line in reversed(lines) if line.strip()), "")
+            return [f"its output cannot be read: {e}"]
 
     def attempt_auto_resume(self, tries: int = AUTO_RESUME_TRIES) -> None:
         if self._db is None:
