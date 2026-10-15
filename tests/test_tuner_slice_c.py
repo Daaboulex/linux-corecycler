@@ -68,6 +68,7 @@ def run(
     "L15.a",
     "L16.G1",
     "TERMS.allcore_run",
+    "D67",
 )
 def test_a_clean_co_only_run_walks_every_stage_once_in_the_planned_order():
     fake, stages = run([-4, -2])

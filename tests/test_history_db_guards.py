@@ -198,6 +198,7 @@ class TestDurability:
         assert failing.closed is True
         db.close()
 
+    @pytest.mark.req("TM.E2.sync")
     def test_every_commit_is_synced(self, tmp_path):
         db = HistoryDB(tmp_path / "history.db")
         synchronous = db._HistoryDB__conn.execute("PRAGMA synchronous").fetchone()[0]

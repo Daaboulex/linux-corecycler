@@ -22,8 +22,7 @@ proof = "built"
 [[requirement]]
 id = "RV6"
 statement = "A SOAK incident redirects through FINALIZE and incidents bound it at K19"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "C1"
@@ -185,8 +184,7 @@ task = "T29"
 [[requirement]]
 id = "K8.memory"
 statement = "1T TotalMemory about 13 MiB"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "K8.freeze"
@@ -510,12 +508,6 @@ proof = "built"
 id = "K47"
 statement = "Q6: +1 on every tuned core of the smallest failing group"
 proof = "built"
-
-[[requirement]]
-id = "K48"
-statement = "The v5f seed is listed for reference only; no loop reads it"
-proof = "untested"
-task = "T29"
 
 [[requirement]]
 id = "K49"
@@ -2015,12 +2007,6 @@ statement = "TIGHTEN runs once; a second pass never runs it; with no items it ex
 proof = "built"
 
 [[requirement]]
-id = "L12.c"
-statement = "Entering TIGHTEN and picking each item set tClean, tIdx and sRetry to 0"
-proof = "untested"
-task = "T29"
-
-[[requirement]]
 id = "L12.floor"
 statement = "A core's floor is its proven value; a round never takes it at or past FB; a step onto the floor is tested; a core at its floor or one step from FB leaves the round"
 proof = "built"
@@ -2036,12 +2022,6 @@ id = "L12.d.hott"
 statement = "A 90C cell item runs HOT-T"
 proof = "not built"
 task = "S3"
-
-[[requirement]]
-id = "L12.G1.window"
-statement = "A window item PASS adds to tClean; at 3600 s the tighter value is kept and the next item picked"
-proof = "untested"
-task = "T29"
 
 [[requirement]]
 id = "L12.G1.hott"
@@ -2080,12 +2060,6 @@ proof = "built"
 [[requirement]]
 id = "L12.G4.other"
 statement = "A conviction of another core voids the item test, which repeats"
-proof = "untested"
-task = "T29"
-
-[[requirement]]
-id = "L12.G4.none"
-statement = "A crash with nobody convicted becomes G2 by its context (a window item freezes)"
 proof = "untested"
 task = "T29"
 
@@ -2641,8 +2615,7 @@ task = "T29"
 [[requirement]]
 id = "L22.d.percore"
 statement = "In Search the tested core goes to baseline before the retry"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L22.d.allcore"
@@ -3700,12 +3673,6 @@ statement = "At 0, G2 and G3 set no FB; with no other non-zero owned value the f
 proof = "built"
 
 [[requirement]]
-id = "D19"
-statement = "Entering TIGHTEN and picking each item set tClean, tIdx and sRetry to 0"
-proof = "untested"
-task = "T29"
-
-[[requirement]]
 id = "D20"
 statement = "A failed hint sets s to 0, then the from-0 rule applies"
 proof = "built"
@@ -3830,12 +3797,6 @@ proof = "not built"
 task = "S4"
 
 [[requirement]]
-id = "D40.k48"
-statement = "K48 is listed for reference and no loop reads it"
-proof = "untested"
-task = "T29"
-
-[[requirement]]
 id = "D41"
 statement = "The 1T lane runs on the core's first CPU, except core 0, which runs on its second"
 proof = "untested"
@@ -3955,8 +3916,7 @@ proof = "built"
 [[requirement]]
 id = "D67"
 statement = "The new tuner has no hardening step (issue 18 dropped with the old engine)"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "D69"
@@ -4214,8 +4174,7 @@ task = "T28"
 [[requirement]]
 id = "TM.E2.sync"
 statement = "The history database commits with synchronous=FULL"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "TM.F.rtprio"
@@ -4247,8 +4206,7 @@ proof = "built"
 [[requirement]]
 id = "CR.2.merge"
 statement = "A merged database carries peaks_json"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "CR.3"

@@ -169,7 +169,7 @@ def test_evidence_in_soak_backs_the_core_off_and_sends_the_profile_through_live1
     assert {r.core: r.value for r in fake.state.cores}[core] > value
 
 
-@pytest.mark.req("G6.soak", "L16.G6")
+@pytest.mark.req("G6.soak", "L16.G6", "RV6")
 def test_an_unblamed_event_in_soak_counts_an_incident_and_reproves_the_profile_and_the_second_pauses():
     fake = running_fake()
     for incidents in (1, 2):

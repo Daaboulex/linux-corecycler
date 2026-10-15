@@ -956,6 +956,7 @@ class TestMergeFrom:
         dst.close()
         assert boots == {"b1": '{"from": "dst"}', "b2": '{"from": "src"}'}
 
+    @pytest.mark.req("CR.2.merge")
     def test_merge_carries_every_column_of_every_table(self, tmp_path):
         src_path = tmp_path / "src.db"
         HistoryDB(src_path).close()

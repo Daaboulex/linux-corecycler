@@ -618,7 +618,7 @@ def test_a_one_core_test_freezes_its_lane_as_the_record_did_and_a_two_thread_tes
     assert two_freeze is None
 
 
-@pytest.mark.req("K9.memory")
+@pytest.mark.req("K9.memory", "K8.memory")
 def test_a_two_thread_test_gives_y_cruncher_the_memory_the_owner_s_r4_record_ran_with():
     two = Spec(Klass.T2, 0, -5, (0, 16), 30.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0)
     one = replace(two, klass=Klass.T1, cpus=(0,))

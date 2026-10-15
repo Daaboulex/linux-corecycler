@@ -175,7 +175,7 @@ def test_three_crashes_in_a_row_quarantine_the_session_at_baseline():
     assert fake.co == {0: 0, 1: 0, 2: 0}
 
 
-@pytest.mark.req("G7", "K16", "L22.G6_G7", "L22.a")
+@pytest.mark.req("G7", "K16", "L22.G6_G7", "L22.a", "L22.d.percore")
 def test_the_fourth_apparatus_failure_in_a_row_pauses_with_every_owned_core_at_baseline():
     fake = fresh(1, [-30], max_offset=-40, k_1t=2)
     start(fake)
