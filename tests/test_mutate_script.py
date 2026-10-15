@@ -32,10 +32,10 @@ def test_the_copy_lets_a_test_binary_run_and_a_red_baseline_prints_why(monkeypat
         probe.write_text("#!/bin/sh\n")
         probe.chmod(0o755)
         runnable.append(os.access(probe, os.X_OK))
-        return "E   assert 1 == 2"
+        return False, "E   assert 1 == 2"
 
     diff = "diff --git a/src/x.py b/src/x.py\n+++ b/src/x.py\n@@ -0,0 +1 @@\n+x = 1\n"
-    monkeypatch.setattr(mutate, "_failure", red)
+    monkeypatch.setattr(mutate, "_outcome", red)
     monkeypatch.setattr(mutate, "_git", lambda *args: diff if "src/" in args else "")
     monkeypatch.setattr(mutate, "_export", lambda commit, into: None)
     assert [mutate._diff_mode(None, ["tests/test_x.py"], 10) for _ in range(2)] == [2, 2]
@@ -111,7 +111,7 @@ def test_only_a_clean_staged_run_stamps_the_tree_it_checked(monkeypatch, tmp_pat
 
     monkeypatch.setattr(mutate, "_git", git)
     monkeypatch.setattr(mutate, "_export", lambda commit, into: None)
-    monkeypatch.setattr(mutate, "_baseline", lambda tests, timeout, root: {})
+    monkeypatch.setattr(mutate, "_baseline", lambda tests, timeout, root: ({}, {}))
     stamp = tmp_path / "mutation-stamp"
     for verdict, commit, stamped in ((1, None, False), (0, "HEAD", False), (0, None, True)):
         monkeypatch.setattr(mutate, "_mutate", lambda *args, verdict=verdict: verdict)
@@ -126,17 +126,38 @@ def test_a_mutant_knows_the_whole_statement_it_sits_in(tmp_path):
     assert (mutant.description, mutant.lineno, mutant.span) == ("Lt -> LtE", 3, (2, 5))
 
 
-def test_a_mutant_runs_only_the_tests_that_executed_its_statement_else_the_whole_selection(tmp_path):
+def test_a_mutant_runs_only_the_tests_that_executed_its_statement_short_ones_first_else_the_whole_selection(
+    tmp_path,
+):
     mutant = mutate.Mutant(tmp_path / "src" / "m.py", 3, "Lt -> LtE", "", (2, 5))
-    covered = {"src/m.py": {2: frozenset({"tests/test_a.py::test_one"}), 4: frozenset({"tests/test_b.py::test_two"})}}
+    one, two, slow = "tests/test_a.py::test_one", "tests/test_b.py::test_two", "tests/test_b.py::test_slow"
+    covered = {"src/m.py": {2: frozenset({one, slow}), 4: frozenset({two}), 9: frozenset({"tests/test_c.py::x"})}}
+    durations = {one: 0.1, slow: mutate.SHORT_S + 0.1}
     everything = ["tests/test_a.py", "tests/test_b.py"]
-    assert mutate._selected(mutant, covered, everything, tmp_path) == [
-        "tests/test_a.py::test_one",
-        "tests/test_b.py::test_two",
-    ]
-    at_import = {"src/m.py": {3: frozenset({"", "tests/test_a.py::test_one"})}}
-    assert mutate._selected(mutant, at_import, everything, tmp_path) == everything
-    assert mutate._selected(mutant, {}, everything, tmp_path) == everything
+    assert mutate._tiers(mutant, covered, durations, everything, tmp_path) == [[one, two], [slow]]
+    assert mutate._tiers(mutant, covered, {}, everything, tmp_path) == [[one, slow, two]]
+    at_import = {"src/m.py": {3: frozenset({"", one})}}
+    assert mutate._tiers(mutant, at_import, durations, everything, tmp_path) == [everything]
+    assert mutate._tiers(mutant, {}, durations, everything, tmp_path) == [everything]
+
+
+def test_a_mutant_killed_by_a_short_test_never_starts_the_long_ones_and_a_survivor_runs_both(monkeypatch, tmp_path):
+    source = tmp_path / "src" / "m.py"
+    source.parent.mkdir()
+    source.write_text("flag = 1 < 2\n")
+    short, long = "tests/test_m.py::test_short", "tests/test_m.py::test_long"
+    baseline = ({"src/m.py": {1: frozenset({short, long})}}, {long: mutate.SHORT_S * 10})
+    for killing, verdict, runs in ((short, 0, [[short]]), (None, 1, [[short], [long]])):
+        ran = []
+
+        def failure(tests, timeout, root, killing=killing, ran=ran):
+            ran.append(tests)
+            return "killed" if killing in tests else None
+
+        monkeypatch.setattr(mutate, "_failure", failure)
+        assert mutate._mutate([(source, None)], [], 10, tmp_path, 0, baseline) == verdict
+        assert ran == runs * mutate._count("flag = 1 < 2\n")
+    assert source.read_text() == "flag = 1 < 2\n"
 
 
 def test_a_handful_of_named_tests_runs_without_workers_and_anything_larger_with_them():
@@ -159,10 +180,13 @@ def test_the_baseline_maps_each_line_to_the_tests_that_executed_it(tmp_path):
         head + "from pkg.mod import two\n\n\ndef test_two():\n    assert two() == 2\n"
     )
     (tmp_path / "tests" / "test_three.py").write_text(
-        head + "from pkg.mod import one\n\n\ndef test_three():\n    assert one() == 1\n"
+        head
+        + "import time\n\nfrom pkg.mod import one\n\n\ndef test_three():\n    time.sleep(0.3)\n    assert one() == 1\n"
     )
     named = ["tests/test_one.py::test_one", "tests/test_three.py::test_three", "tests/test_two.py::test_two"]
-    cover = mutate._baseline(named, 120, tmp_path)
+    cover, durations = mutate._baseline(named, 120, tmp_path)
+    assert set(durations) == set(named)
+    assert durations["tests/test_three.py::test_three"] >= 0.3 > durations["tests/test_one.py::test_one"]
     lines = cover["src/pkg/mod.py"]
     assert lines[2] == frozenset({"tests/test_one.py::test_one", "tests/test_three.py::test_three"})
     assert lines[6] == frozenset({"tests/test_two.py::test_two"})

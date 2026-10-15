@@ -199,31 +199,46 @@ def _pytest(tests: list[str], extra: list[str]) -> list[str]:
     ]
 
 
-def _failure(
+def _outcome(
     tests: list[str], timeout: int, root: Path = REPO, extra: list[str] | None = None, env: dict | None = None
-) -> str | None:
+) -> tuple[bool, str]:
     try:
         result = subprocess.run(
             _pytest(tests, extra or []), cwd=root, capture_output=True, text=True, timeout=timeout, env=env
         )
     except subprocess.TimeoutExpired:
-        return f"the test selection did not finish within {timeout} s"
-    return None if result.returncode == 0 else result.stdout + result.stderr
+        return False, f"the test selection did not finish within {timeout} s"
+    return result.returncode == 0, result.stdout + result.stderr
+
+
+def _failure(tests: list[str], timeout: int, root: Path = REPO) -> str | None:
+    passed, output = _outcome(tests, timeout, root)
+    return None if passed else output
 
 
 Cover = dict[str, dict[int, frozenset[str]]]
+Durations = dict[str, float]
+DURATION = re.compile(r"^\s*([\d.]+)s (?:setup|call|teardown) +(.+?)\s*$", re.MULTILINE)
 
 
-def _baseline(tests: list[str], timeout: int, root: Path) -> Cover | None:
+def _durations(output: str) -> Durations:
+    found: Durations = {}
+    for seconds, test in DURATION.findall(output):
+        found[test] = found.get(test, 0.0) + float(seconds)
+    return found
+
+
+def _baseline(tests: list[str], timeout: int, root: Path) -> tuple[Cover, Durations] | None:
     with tempfile.TemporaryDirectory(prefix="mutate-cover-") as scratch:
         data_file = Path(scratch) / "coverage"
         env = {**os.environ, "COVERAGE_FILE": str(data_file), "COVERAGE_CORE": "ctrace"}
-        failure = _failure(tests, timeout, root, ["--cov=src", "--cov-context=test", "--cov-report="], env)
-        if failure is not None:
-            print(failure)
+        extra = ["--cov=src", "--cov-context=test", "--cov-report=", "--durations=0", "--durations-min=0"]
+        passed, output = _outcome(tests, timeout, root, extra, env)
+        if not passed:
+            print(output)
             print("BASELINE FAILED: the test selection is already red or did not finish within --timeout")
             return None
-        return _contexts(data_file, root)
+        return _contexts(data_file, root), _durations(output)
 
 
 def _contexts(data_file: Path, root: Path) -> Cover:
@@ -244,13 +259,18 @@ def _contexts(data_file: Path, root: Path) -> Cover:
     return cover
 
 
-def _selected(mutant: Mutant, cover: Cover, tests: list[str], root: Path) -> list[str]:
+SHORT_S = 2.0
+
+
+def _tiers(mutant: Mutant, cover: Cover, durations: Durations, tests: list[str], root: Path) -> list[list[str]]:
     lines = cover.get(str(mutant.path.relative_to(root)), {})
     first, last = mutant.span
     contexts = frozenset().union(*(lines.get(number, frozenset()) for number in range(first, last + 1)))
     if not contexts or "" in contexts:
-        return tests
-    return sorted(contexts)
+        return [tests]
+    short = sorted(test for test in contexts if durations.get(test, 0.0) <= SHORT_S)
+    long = sorted(contexts.difference(short))
+    return [tier for tier in (short, long) if tier]
 
 
 HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
@@ -316,11 +336,11 @@ def _diff_mode(commit: str | None, tests: list[str] | None, timeout: int) -> int
     with tempfile.TemporaryDirectory(prefix="mutate-", dir=workdir) as copy:
         root = Path(copy)
         _export(commit, root)
-        cover = _baseline(selection, timeout, root)
-        if cover is None:
+        baseline = _baseline(selection, timeout, root)
+        if baseline is None:
             return 2
         verdict = _mutate(
-            [(root / name, lines) for name, lines in sorted(changed.items())], selection, timeout, root, 0, cover
+            [(root / name, lines) for name, lines in sorted(changed.items())], selection, timeout, root, 0, baseline
         )
     if verdict == 0 and tree is not None:
         stamp_path().write_text(tree + "\n")
@@ -332,7 +352,12 @@ def stamp_path() -> Path:
 
 
 def _mutate(
-    targets: list[tuple[Path, set[int] | None]], tests: list[str], timeout: int, root: Path, cap: int, cover: Cover
+    targets: list[tuple[Path, set[int] | None]],
+    tests: list[str],
+    timeout: int,
+    root: Path,
+    cap: int,
+    baseline: tuple[Cover, Durations],
 ) -> int:
     killed, survived = 0, []
     for path, lines in targets:
@@ -347,7 +372,8 @@ def _mutate(
                 if mutant is None:
                     continue
                 path.write_text(mutant.source)
-                if _failure(_selected(mutant, cover, tests, root), timeout, root) is not None:
+                tiers = _tiers(mutant, *baseline, tests, root)
+                if any(_failure(tier, timeout, root) is not None for tier in tiers):
                     killed += 1
                     print(".", end="", flush=True)
                 else:
@@ -383,10 +409,10 @@ def main() -> int:
     for entry in args.src:
         path = Path(entry).resolve()
         targets.extend((found, None) for found in (sorted(path.rglob("*.py")) if path.is_dir() else [path]))
-    cover = _baseline(args.tests, args.timeout, REPO)
-    if cover is None:
+    baseline = _baseline(args.tests, args.timeout, REPO)
+    if baseline is None:
         return 2
-    return _mutate(targets, args.tests, args.timeout, REPO, args.max, cover)
+    return _mutate(targets, args.tests, args.timeout, REPO, args.max, baseline)
 
 
 if __name__ == "__main__":
