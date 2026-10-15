@@ -433,10 +433,12 @@ class SMUTab(QWidget):
         self._write(self._set_zero)
 
     def _set_zero(self) -> None:
+        failed = []
         if not self._smu.reset_all_co():
-            for core_id in self._spinboxes:
-                self._smu.set_co_offset(core_id, 0)
+            failed = [core_id for core_id in self._spinboxes if not self._smu.set_co_offset(core_id, 0)]
         self._fill_from_cpu()
+        if failed:
+            QMessageBox.warning(self, "Write failed", f"These cores could not be set to 0: {failed}.")
 
     def _backup_co(self) -> None:
         if not self._smu or not self._topology:

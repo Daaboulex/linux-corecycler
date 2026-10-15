@@ -238,7 +238,23 @@ class TestReset:
     def test_reset_falls_back_to_per_core_writes(self, tab):
         tab._smu = _smu(reset=False)
         tab._reset_all_co()
-        assert tab._smu.set_co_offset.call_count == len(tab._spinboxes)
+        assert [call.args for call in tab._smu.set_co_offset.call_args_list] == [(core, 0) for core in tab._spinboxes]
+
+    @pytest.mark.req("T23.curve.zero")
+    def test_a_core_the_fallback_cannot_set_to_0_is_named_in_a_warning(self, tab):
+        import corecycler.gui.smu_tab as st
+
+        tab._smu = _smu(reset=False)
+        tab._smu.set_co_offset.side_effect = lambda core_id, value: core_id != 2
+        tab._reset_all_co()
+        assert st.QMessageBox.warning.call_args.args[1:] == ("Write failed", "These cores could not be set to 0: [2].")
+
+    def test_a_fallback_that_sets_every_core_to_0_warns_nothing(self, tab):
+        import corecycler.gui.smu_tab as st
+
+        tab._smu = _smu(reset=False)
+        tab._reset_all_co()
+        assert not st.QMessageBox.warning.called
 
 
 class TestBackupRestore:

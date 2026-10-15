@@ -4762,6 +4762,11 @@ statement = "Deleting a setup in History deletes its stress runs only; a setup t
 proof = "built"
 
 [[requirement]]
+id = "T23.curve.zero"
+statement = "Set all to 0 names every core its per-core fallback could not set to 0 in a Write failed warning; a fallback that set every core warns nothing (scratch/design/t23-curve-history.md defect 7)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"
