@@ -298,10 +298,18 @@ def test_a_stored_configuration_outside_its_ranges_is_not_resumed_or_validated()
     )
 
 
-def test_start_with_a_bios_co_runs_once_acknowledged():
+@pytest.mark.req("L01.c.ack")
+def test_start_with_a_bios_co_runs_once_acknowledged_and_logs_what_was_acknowledged():
     world = replace(LAYOUT, bios_co=((0, -10), (1, -10)))
     result = transition(SessionState(), Start(CFG, 1, 0, acknowledged=True), world)
     assert result.state.lifecycle is Lifecycle.RUNNING
+    said = [(effect.kind, effect.text) for effect in result.effects if type(effect).__name__ == "Announce"]
+    assert (
+        "acknowledged",
+        "cores [0, 1] read a CO other than 0 at Start, set by the BIOS or written since boot",
+    ) in said
+    plain = transition(SessionState(), Start(CFG, 1, 0, acknowledged=True), LAYOUT)
+    assert [effect.kind for effect in plain.effects if type(effect).__name__ == "Announce"] == ["started"]
 
 
 @pytest.mark.req("L01.2")

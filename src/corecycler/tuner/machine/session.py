@@ -243,8 +243,10 @@ def _start(s: SessionState, e: Start, w: World) -> Transition:
     order = "1 core, not interleaved" if len(baseline) == 1 else f"{len(baseline)} cores, {cfg.method.value} order"
     effects: list = [Commit(stored(new), first=True)]
     effects += [WriteCO(core, value) for core, value in baseline if w.resident_of(core) != value]
+    acknowledged = _to_acknowledge(cfg, w)
     effects += [
         Announce("started", f"session {e.session_id}, {order}"),
+        *([Announce("acknowledged", acknowledged)] if acknowledged else []),
         *(Announce("warning", warning) for warning in w.preflight_warnings),
         Schedule(token, 0.0),
     ]
@@ -276,16 +278,22 @@ def _start_problem(cfg, e: Start, w: World) -> str | None:
     unreadable = sorted(core for core in cfg.selected if bios.get(core) is None)
     if unreadable:
         return f"the CO of cores {unreadable} could not be read at Start"
+    named = _to_acknowledge(cfg, w)
+    if named and not e.acknowledged:
+        return f"{named}: acknowledge to start"
+    return None
+
+
+def _to_acknowledge(cfg: MachineConfig, w: World) -> str:
+    bios = dict(w.bios_co)
     already = sorted(core for core in cfg.selected if bios[core] != 0)
     changed = [] if w.newest_base is None else co_changed_since(w.newest_base[1], bios, cfg.selected)
-    if (already or changed) and not e.acknowledged:
-        named = []
-        if already:
-            named.append(f"cores {already} read a CO other than 0 at Start, set by the BIOS or written since boot")
-        if changed:
-            named.append(f"the CO differs from when session {w.newest_base[0]} started: {', '.join(changed)}")
-        return f"{'; '.join(named)}: acknowledge to start"
-    return None
+    named = []
+    if already:
+        named.append(f"cores {already} read a CO other than 0 at Start, set by the BIOS or written since boot")
+    if changed:
+        named.append(f"the CO differs from when session {w.newest_base[0]} started: {', '.join(changed)}")
+    return "; ".join(named)
 
 
 def co_changed_since(base_co, reads: dict[int, int | None], cores) -> list[str]:

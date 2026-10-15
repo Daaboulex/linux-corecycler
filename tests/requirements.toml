@@ -1197,8 +1197,7 @@ proof = "built"
 [[requirement]]
 id = "L01.c.ack"
 statement = "The acknowledgement is logged as a session event"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L01.1"
