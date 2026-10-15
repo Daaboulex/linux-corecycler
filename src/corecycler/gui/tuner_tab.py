@@ -69,7 +69,7 @@ from corecycler.tuner.machine.types import (
     Stage,
     Stored,
 )
-from corecycler.tuner.orders import Method, default_method
+from corecycler.tuner.orders import Method, default_method, order_problem
 from corecycler.tuner.stages import WARM_HOLD
 
 if TYPE_CHECKING:
@@ -370,6 +370,11 @@ class TunerTab(QWidget):
         self._order = QComboBox()
         for method in Method:
             self._order.addItem(ORDER_LABELS[method], method.value)
+            problem = order_problem(method, tuple(self._core_boxes), domain_of)
+            if problem is not None:
+                item = self._order.model().item(self._order.count() - 1)
+                item.setEnabled(False)
+                item.setToolTip(problem)
         self._order.setCurrentIndex(self._order.findData(default_method(tuple(self._core_boxes), domain_of).value))
         add_setting(
             shown,

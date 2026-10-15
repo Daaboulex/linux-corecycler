@@ -4154,9 +4154,8 @@ task = "S3"
 
 [[requirement]]
 id = "TM.A4.orders"
-statement = "CCD orders are greyed on one domain"
-proof = "not built"
-task = "T28"
+statement = "CCD orders are greyed on one domain, the reason as the item's tooltip"
+proof = "built"
 
 [[requirement]]
 id = "TM.B1.co"

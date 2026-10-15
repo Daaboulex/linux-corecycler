@@ -76,6 +76,21 @@ def tab(db, co_range=CO_RANGE, reads=None) -> tt.TunerTab:
     return tt.TunerTab(db, topology(), co_range, lambda core: (reads or {}).get(core, 0))
 
 
+@pytest.mark.req("TM.A4.orders")
+@pytest.mark.parametrize(("ccd_of", "greyed"), [(lambda core: core // 2, False), (lambda core: 0, True)])
+def test_the_ccd_order_is_greyed_with_its_reason_when_every_core_sits_on_one_ccd(db, ccd_of, greyed):
+    topo = topology()
+    for core, info in topo.cores.items():
+        topo.cores[core] = replace(info, ccd=ccd_of(core))
+    t = tt.TunerTab(db, topo, CO_RANGE, lambda core: 0)
+    items = [t._order.model().item(index) for index in range(t._order.count())]
+    alternate = items[t._order.findData(tt.Method.ALTERNATE.value)]
+    assert alternate.isEnabled() is not greyed
+    assert ("one" in alternate.toolTip()) is greyed
+    assert all(item.isEnabled() for item in items if item is not alternate)
+    assert t._order.currentData() == (tt.Method.SEQUENTIAL if greyed else tt.Method.ALTERNATE).value
+
+
 class FakeChild:
     def __init__(self, code=None):
         self.code = code
