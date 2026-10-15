@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).parent.parent / "scripts" / "mutate.py"
+sys.path.insert(0, str(SCRIPT.parent))
 _spec = importlib.util.spec_from_file_location("mutate", SCRIPT)
 mutate = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = mutate
@@ -160,11 +161,13 @@ def test_a_mutant_killed_by_a_short_test_never_starts_the_long_ones_and_a_surviv
     assert source.read_text() == "flag = 1 < 2\n"
 
 
-def test_a_handful_of_named_tests_runs_without_workers_and_anything_larger_with_them():
+def test_a_handful_of_named_tests_runs_on_one_worker_and_anything_larger_as_the_machine_allows(monkeypatch):
+    asked = []
+    monkeypatch.setattr(mutate.fit, "run", lambda args, timeout, root, env, most: asked.append(most) or (True, ""))
     few = [f"tests/test_a.py::test_{n}" for n in range(mutate.SERIAL_UP_TO)]
-    assert "-n" not in mutate._pytest(few, [])
-    assert "-n" in mutate._pytest([*few, "tests/test_a.py::test_more"], [])
-    assert "-n" in mutate._pytest(["tests/test_a.py"], [])
+    for tests in (few, [*few, "tests/test_a.py::test_more"], ["tests/test_a.py"]):
+        mutate._outcome(tests, 10)
+    assert asked == [1, None, None]
 
 
 def test_the_baseline_maps_each_line_to_the_tests_that_executed_it(tmp_path):

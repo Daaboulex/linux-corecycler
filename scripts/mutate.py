@@ -25,10 +25,11 @@ import ast
 import os
 import re
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+import fit
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -179,36 +180,12 @@ def _statement_span(tree: ast.Module, first: int, last: int) -> tuple[int, int]:
 SERIAL_UP_TO = 8
 
 
-def _pytest(tests: list[str], extra: list[str]) -> list[str]:
-    serial = len(tests) <= SERIAL_UP_TO and all("::" in test for test in tests)
-    workers = [] if serial else ["-n", "auto", "--dist", "worksteal"]
-    return [
-        sys.executable,
-        "-m",
-        "pytest",
-        "-x",
-        "-q",
-        "--no-header",
-        "-p",
-        "no:cacheprovider",
-        "-m",
-        "not slow",
-        *workers,
-        *extra,
-        *tests,
-    ]
-
-
 def _outcome(
     tests: list[str], timeout: int, root: Path = REPO, extra: list[str] | None = None, env: dict | None = None
 ) -> tuple[bool, str]:
-    try:
-        result = subprocess.run(
-            _pytest(tests, extra or []), cwd=root, capture_output=True, text=True, timeout=timeout, env=env
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"the test selection did not finish within {timeout} s"
-    return result.returncode == 0, result.stdout + result.stderr
+    serial = len(tests) <= SERIAL_UP_TO and all("::" in test for test in tests)
+    args = ["-x", "-q", "--no-header", "-p", "no:cacheprovider", "-m", "not slow", *(extra or []), *tests]
+    return fit.run(args, timeout, root, env, most=1 if serial else None)
 
 
 def _failure(tests: list[str], timeout: int, root: Path = REPO) -> str | None:
@@ -416,4 +393,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except fit.Starved as starved:
+        print(f"STARVED: {starved}; no verdict")
+        raise SystemExit(3) from starved
