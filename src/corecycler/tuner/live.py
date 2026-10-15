@@ -715,7 +715,9 @@ class LiveRig:
             case AwaitWorker(token=token, bound_s=bound):
                 if self.worker is not None and self.worker.token == token:
                     self.worker.thread.join(bound)
-                    if not self.worker.thread.is_alive():
+                    if self.worker.thread.is_alive():
+                        self.say(f"test {token} did not stop within {bound:g} s; its worker is kept until it ends")
+                    else:
                         self.worker = None
             case Commit(stored=st, first=first):
                 try:

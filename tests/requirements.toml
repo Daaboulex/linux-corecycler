@@ -2940,9 +2940,8 @@ proof = "built"
 
 [[requirement]]
 id = "L29.d.log"
-statement = "AwaitWorker returns at the bound plus a margin, logs, and keeps the reference"
-proof = "not built"
-task = "T28"
+statement = "AwaitWorker returns at the bound, says which test did not stop within it, and keeps the reference; the margin waits on H9"
+proof = "built"
 
 [[requirement]]
 id = "L29.e"

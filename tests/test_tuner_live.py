@@ -1143,6 +1143,25 @@ def test_a_test_result_that_cannot_be_written_pauses_as_database(tmp_path, monke
     assert len(r.runner.seen) == 1
 
 
+@pytest.mark.req("L29.d.log")
+def test_a_worker_that_outlives_its_bound_is_said_and_kept(tmp_path):
+    from corecycler.tuner.machine.types import AwaitWorker
+
+    r = rig(tmp_path)
+    said = []
+    r.say = said.append
+    release = threading.Event()
+    stuck = threading.Thread(target=release.wait, daemon=True)
+    stuck.start()
+    r.worker = live._Worker(5, threading.Event(), stuck)
+    r._apply(r.state, AwaitWorker(5, 0.05))
+    assert said == ["test 5 did not stop within 0.05 s; its worker is kept until it ends"]
+    assert r.worker.thread is stuck
+    release.set()
+    r._apply(r.state, AwaitWorker(5, 5.0))
+    assert (r.worker, len(said)) == (None, 1)
+
+
 @pytest.mark.req("L29.e")
 def test_a_late_report_for_an_old_test_changes_no_row(tmp_path):
     r = rig(tmp_path)
