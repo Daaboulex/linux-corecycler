@@ -597,6 +597,13 @@ def writer_dir(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def no_machine_check_settle(monkeypatch):
+    from corecycler.engine import detector
+
+    monkeypatch.setattr(detector, "mce_settle_s", lambda: 0.0)
+
+
+@pytest.fixture(autouse=True)
 def no_system_bus(monkeypatch):
     from corecycler.gui import tuner_tab
 

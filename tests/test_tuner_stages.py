@@ -282,6 +282,36 @@ def test_the_soak_watch_reports_what_the_kernel_logged(events, problem, group):
         assert [e.core for e in report.evidence] == [1]
 
 
+@pytest.mark.req("EC.G1")
+def test_the_soak_reads_the_kernel_log_once_more_after_one_machine_check_poll(monkeypatch):
+    monkeypatch.setattr(kernel, "mce_settle_s", lambda: 6.0)
+    logged = []
+
+    class LoggedDuringTheSettle(threading.Event):
+        def wait(self, timeout=None):
+            if timeout == 6.0:
+                logged.append(kernel.CoreMachineCheck(cpu=5, bank=1, corrected=True, message="m", raw_ts=0.0))
+                return False
+            return super().wait(timeout)
+
+    class Detector:
+        read_started_ns = 7_000
+
+        def reset(self):
+            pass
+
+        def close(self):
+            pass
+
+        def read_new(self, final=False):
+            found = tuple(logged)
+            logged.clear()
+            return kernel.KernelRead(found, None)
+
+    report = runner(Script([]), detector=Detector).run(spec(Load.SOAK, 0.05), LoggedDuringTheSettle())
+    assert [e.core for e in report.evidence] == [1]
+
+
 def test_a_stopped_soak_is_no_verdict():
     stop = threading.Event()
     stop.set()

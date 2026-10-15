@@ -410,6 +410,7 @@ def make_supervisor(
     sensors=None,
     stop_event: threading.Event | None = None,
     observed: list | None = None,
+    settle_s: float = 0.0,
     poll_interval: float = 0.02,
     stall_timeout: float = 30.0,
     phase: str = "stress",
@@ -425,6 +426,7 @@ def make_supervisor(
         sensors=sensors or at(40.0),
         stop_event=stop,
         observed=seen,
+        settle_s=settle_s,
         poll_interval=poll_interval,
         stall_timeout=stall_timeout,
         phase=phase,
@@ -1016,6 +1018,30 @@ class TestMceAttribution:
         assert verdict.outcome is Outcome.OWN_CORE_MCE
         assert verdict.duration_seconds < 5.0
         assert [type(event) for event in seen] == [CoreMachineCheck]
+
+    @pytest.mark.req("EC.G1")
+    @pytest.mark.parametrize(("settle_s", "outcome"), [(0.0, Outcome.PASS), (7.5, Outcome.OWN_CORE_MCE)])
+    def test_a_record_logged_within_the_settle_after_the_payload_stops_grades_the_lane(
+        self, tmp_path, settle_s, outcome
+    ):
+        kmsg = tmp_path / "kmsg"
+        kmsg.write_text("")
+        reader = ErrorDetector(kmsg)
+        reader.reset()
+
+        class LoggedDuringTheSettle(threading.Event):
+            def wait(self, timeout=None):
+                if timeout == 7.5:
+                    _append(kmsg, _kmsg(LONE_DECODER_RECORD, first_seq=100))
+                    return False
+                return super().wait(timeout)
+
+        supervisor, _, _ = make_supervisor(
+            FakeBackend(_child(BUSY)), detector=reader, stop_event=LoggedDuringTheSettle(), settle_s=settle_s
+        )
+        verdict = run_one(supervisor, lane(tmp_path, cpus=(9,)), 0.3)
+        reader.close()
+        assert verdict.outcome is outcome
 
     def test_late_events_read_after_the_teardown_still_grade_the_lane(self, tmp_path):
         backend = FakeBackend(_child("import time; time.sleep(60)"))
@@ -1893,6 +1919,7 @@ def test_each_tick_reads_the_sensors_once_and_the_hold_and_the_stop_judge_that_r
         sensors=sensors,
         stop_event=threading.Event(),
         observed=[],
+        settle_s=0.0,
         poll_interval=0.02,
         containment_for=lambda cpus: None,
         freeze=freeze,

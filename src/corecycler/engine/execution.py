@@ -293,6 +293,7 @@ class Supervisor:
         sensors: Callable[[], SensorRead],
         stop_event: threading.Event,
         observed: list[KernelEvent],
+        settle_s: float,
         poll_interval: float = 1.0,
         stall_timeout: float = 30.0,
         phase: str = "stress",
@@ -307,6 +308,7 @@ class Supervisor:
         self.sensors = sensors
         self.stop_event = stop_event
         self.observed = observed
+        self.settle_s = settle_s
         self.poll_interval = poll_interval
         self.stall_timeout = stall_timeout
         self.phase = phase
@@ -329,6 +331,7 @@ class Supervisor:
             for run in runs:
                 if run.proc is not None:
                     self._scan_output(run)
+            self.stop_event.wait(self.settle_s)
             self._take_kernel_events(runs, final=True)
             return {run.lane.core_id: self._grade(run) for run in runs}
         finally:

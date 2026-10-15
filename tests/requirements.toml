@@ -4788,6 +4788,11 @@ statement = "The GUI memory test passes only on a clean run judged by the engine
 proof = "built"
 
 [[requirement]]
+id = "EC.G1"
+statement = "After a tuner test's payload stops, and after a soak, the kernel log is read once more one machine-check poll later (the poll read from check_interval, at most 5 s, plus the 1 s the kernel rounds its timer to; 6 s when unreadable), so a corrected error the poller logs after the test still grades it (scratch/design/error-capture.md gap 1, owner card O18 A)."
+proof = "built"
+
+[[requirement]]
 id = "EC.G5"
 statement = "A one-core SEARCH test that reports a pass while a kernel record names the tested core fails that value as silicon; the same pass without the record stands (scratch/design/error-capture.md gap 5)."
 proof = "built"

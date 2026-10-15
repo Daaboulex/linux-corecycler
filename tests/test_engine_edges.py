@@ -290,6 +290,7 @@ def _idle_supervisor(backend=None, **overrides):
         sensors=lambda: SensorRead(hottest=40.0),
         stop_event=threading.Event(),
         observed=[],
+        settle_s=0.0,
         poll_interval=0.01,
         containment_for=lambda cpus: None,
     )

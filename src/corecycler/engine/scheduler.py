@@ -167,6 +167,7 @@ class CoreScheduler:
             sensors=self._sensors.read,
             stop_event=self._stop_event,
             observed=self.observed_mce,
+            settle_s=0.0,
             poll_interval=self.config.poll_interval,
             stall_timeout=stall_timeout or self.config.stall_timeout,
             phase=phase,

@@ -35,6 +35,8 @@ from corecycler.engine.detector import (
 )
 from tests._machine import core_bank_record
 
+REAL_MCE_SETTLE_S = detector_mod.mce_settle_s
+
 ZEN_BLOCK_HEADER = "mce: [Hardware Error]: Machine check events logged"
 ZEN_SEVERITY = "[Hardware Error]: Corrected error, no action required."
 ZEN_BLOCK_STATUS = (
@@ -812,6 +814,20 @@ def test_the_machine_check_poll_must_be_at_most_five_seconds(tmp_path):
     path.write_text("often\n")
     assert detector_mod.mce_poll_problem(path).startswith("machine-check poll interval unreadable: ")
     assert detector_mod.mce_poll_problem(tmp_path / "absent").startswith("machine-check poll interval unreadable: ")
+
+
+@pytest.mark.req("EC.G1")
+@pytest.mark.parametrize(
+    ("written", "settle"),
+    [("0\n", 1.0), ("2\n", 3.0), ("5\n", 6.0), ("300\n", 6.0), ("-3\n", 6.0), ("often\n", 6.0), (None, 6.0)],
+)
+def test_a_test_settles_one_machine_check_poll_and_the_timer_s_rounding_at_most_the_five_second_poll(
+    tmp_path, written, settle
+):
+    path = tmp_path / "check_interval"
+    if written is not None:
+        path.write_text(written)
+    assert REAL_MCE_SETTLE_S(path) == settle
 
 
 def test_a_run_raises_a_slow_machine_check_poll_to_5_s_and_puts_it_back_even_when_it_fails(tmp_path):

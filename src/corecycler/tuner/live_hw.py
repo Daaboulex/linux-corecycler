@@ -601,6 +601,7 @@ class StressRunner:
                 sensors=self.sensors,
                 stop_event=stop,
                 observed=observed,
+                settle_s=kernel.mce_settle_s(),
                 poll_interval=poll,
                 phase=f"{spec.stage.value} {(spec.load or spec.klass).value}",
                 freeze=freeze,
@@ -743,6 +744,7 @@ class StressRunner:
                 read = watch.read_new()
                 observed.extend(read.events)
                 problem = problem or read.problem
+            stop.wait(kernel.mce_settle_s())
             read = watch.read_new(final=True)
             observed.extend(read.events)
             problem = problem or read.problem

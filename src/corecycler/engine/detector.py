@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 KMSG = Path("/dev/kmsg")
 MCE_POLL = Path("/sys/devices/system/machinecheck/machinecheck0/check_interval")
 MCE_POLL_MAX_S = 5
+MCE_TIMER_ROUNDING_S = 1
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 KMSG_READ_SIZE = 8192
 KMSG_MAX_READS = 4096
@@ -443,6 +444,16 @@ def mce_poll_problem(path: Path = MCE_POLL) -> str | None:
             f"machine-check poll every {seconds} s, above {MCE_POLL_MAX_S} s, so corrected errors log late: {command}"
         )
     return None
+
+
+def mce_settle_s(path: Path = MCE_POLL) -> float:
+    try:
+        seconds = int(path.read_text().strip())
+    except OSError, ValueError:
+        seconds = MCE_POLL_MAX_S
+    if seconds < 0:
+        seconds = MCE_POLL_MAX_S
+    return float(min(seconds, MCE_POLL_MAX_S) + MCE_TIMER_ROUNDING_S)
 
 
 @contextmanager

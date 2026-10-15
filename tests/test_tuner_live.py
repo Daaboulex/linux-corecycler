@@ -1655,7 +1655,7 @@ def test_machine_checks_on_other_cores_become_evidence_and_unblamed_corrected_on
     assert live_hw.report_from(result, trouble, (0,), {0: 0, 8: 8}).unblamed_corrected is False
 
 
-@pytest.mark.req("D51", "K8.tests", "K9.tests")
+@pytest.mark.req("D51", "K8.tests", "K9.tests", "EC.G1")
 def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, monkeypatch):
     seen = []
 
@@ -1671,6 +1671,7 @@ def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, 
     class FakeSupervisor:
         def __init__(self, **kwargs):
             seen.append(kwargs["phase"])
+            seen.append(kwargs["settle_s"])
 
         def run(self, lanes, cfg, duration):
             seen.append((lanes[0].cpus, cfg.tests, cfg.seconds_per_test, cfg.binary, duration))
@@ -1681,6 +1682,7 @@ def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, 
             }
 
     monkeypatch.setattr(live_hw.kernel, "ErrorDetector", FakeDetector)
+    monkeypatch.setattr(live_hw.kernel, "mce_settle_s", lambda: 6.0)
     runner = live_hw.StressRunner(lambda: "backend", tmp_path, {0: 0, 16: 0}, warm, dict, supervisor=FakeSupervisor)
     one = runner.run(
         Spec(Klass.T1, 0, -5, (16,), 60.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0), threading.Event()
@@ -1693,6 +1695,7 @@ def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, 
     assert ((16,), ("SFTv4", "FFTv4", "N63"), 20, None, 60.0) in seen
     assert ((0, 16), ("SFTv4", "N63", "VT3"), 30, "19-ZN2 ~ Kagari", 90.0) in seen
     assert seen.count("reset") == 2 and seen.count("close") == 2
+    assert seen.count(6.0) == 2
 
 
 def topology():
