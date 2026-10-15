@@ -96,6 +96,7 @@ def test_a_real_worker_over_its_limit_is_stopped_before_it_finishes(monkeypatch,
 def test_the_first_measured_peak_replaces_the_starting_guess_and_later_ones_only_raise_it(monkeypatch, tmp_path):
     calls = scripted(monkeypatch, [("done", 0, 1000, 20000, "")] + [("done", 0, 500, 20000, "")] * 2)
     monkeypatch.setattr(fit, "learned_peak_mb", None)
+    monkeypatch.setattr(fit, "FIRST_PEAK_MB", 4096)
     for _ in range(3):
         fit.run(["t.py"], 60, tmp_path)
     assert [spread(cmd) for cmd in calls] == [6, 10, 10]

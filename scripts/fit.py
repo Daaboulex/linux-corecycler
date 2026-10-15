@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 FLOOR_SHARE = 0.10
-FIRST_PEAK_MB = 4096
+FIRST_PEAK_MB = 1024
 READ_EVERY_S = 0.5
 BUSY_WINDOW_S = 0.25
 GRACE_S = 5.0
