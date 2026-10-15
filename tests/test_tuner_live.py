@@ -1298,13 +1298,15 @@ def sysfs(tmp_path: Path, scaling: int, top: int, boost: str | None, pstate: boo
 @pytest.mark.req("TERMS.kvw_refused", "TM.I_M3", "VERDICT.30")
 def test_the_smu_adapter_writes_only_when_asked_and_checks_the_read_back():
     said = []
-    dry = live_hw.SmuHardware(FakeSmu(), False, said.append, warm)
+    dry = live_hw.SmuHardware(FakeSmu(), False, said.append, warm, vcache="none")
     assert dry.write_co(3, -5) is None and dry.smu.co == {} and said == ["dry: core 3 would be set to -5"]
-    real = live_hw.SmuHardware(FakeSmu(), True, said.append, warm)
+    real = live_hw.SmuHardware(FakeSmu(), True, said.append, warm, vcache="none")
     assert real.write_co(3, -5) is None and real.read_co(3) == -5
     assert said[-1] == "core 3 set to -5, read back -5"
-    assert "refused" in live_hw.SmuHardware(FakeSmu(accept=False), True, said.append, warm).write_co(3, -5)
-    assert "-4" in live_hw.SmuHardware(FakeSmu(echo=-4), True, said.append, warm).write_co(3, -5)
+    assert "refused" in live_hw.SmuHardware(FakeSmu(accept=False), True, said.append, warm, vcache="none").write_co(
+        3, -5
+    )
+    assert "-4" in live_hw.SmuHardware(FakeSmu(echo=-4), True, said.append, warm, vcache="none").write_co(3, -5)
 
 
 @pytest.mark.req("TERMS.kvw_raised")
@@ -1316,7 +1318,7 @@ def test_a_write_the_smu_driver_raises_on_is_a_refusal_naming_the_error(error):
         raise error
 
     smu.set_co_offset = raising
-    assert live_hw.SmuHardware(smu, True, print, warm).write_co(3, -5) == f"the SMU write raised {error}"
+    assert live_hw.SmuHardware(smu, True, print, warm, vcache="none").write_co(3, -5) == f"the SMU write raised {error}"
 
 
 def pci_device(root, address, vendor, device, driver=None, vram=None):
@@ -1377,7 +1379,7 @@ def test_the_adapter_gathers_the_boot_s_facts(monkeypatch, calibrated):
     asked = []
     monkeypatch.setattr(live_hw.kernel, "reset_reasons", lambda boot: asked.append(boot) or (("a line",), None))
     monkeypatch.setattr(live_hw, "igpu", lambda: {"present": False})
-    facts = live_hw.SmuHardware(FakeSmu(), False, print, warm).boot_facts("b1")
+    facts = live_hw.SmuHardware(FakeSmu(), False, print, warm, vcache="none").boot_facts("b1")
     clocks = (2033.0, 3000.0, 3000.0) if calibrated else (None, None, None)
     assert facts == BootFacts("2401", *clocks, ("a line",), None, {"present": False})
     assert asked == ["b1"]
@@ -1442,7 +1444,7 @@ def test_the_setup_holds_one_line_per_key_with_the_reason_for_what_could_not_be_
     monkeypatch.setattr(live_hw, "app_version", lambda: "1.2.3")
     monkeypatch.setattr(live_hw, "kernel_build", lambda: "7.2.7 build abc")
     monkeypatch.setattr(live_hw, "microcode", lambda: "0xb404023")
-    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, cpu)
+    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, cpu, vcache="ccd 0")
     setup = dict(hw.setup(((0, (0, 2)), (1, (1, 3))), ((0, 0), (1, 1))))
     assert setup == {
         "app": "1.2.3",
@@ -1454,7 +1456,17 @@ def test_the_setup_holds_one_line_per_key_with_the_reason_for_what_could_not_be_
         "ryzen_smu": "unreadable: No such file or directory unreadable: No such file or directory",
         "smu_firmware": "unreadable: No such file or directory",
         "topology": "online 0-3; 0: 0,2 l3 0; 1: 1,3 l3 1",
+        "vcache": "ccd 0",
     }
+
+
+@pytest.mark.req("TM.A2.x3d")
+@pytest.mark.parametrize(
+    ("is_x3d", "ccd", "fact"),
+    [(True, 1, "ccd 1"), (True, None, "unknown"), (False, None, "none")],
+)
+def test_the_setup_names_the_v_cache_ccd_and_says_when_it_cannot_tell(is_x3d, ccd, fact):
+    assert live_hw.vcache_fact(SimpleNamespace(is_x3d=is_x3d, vcache_ccd=ccd)) == fact
 
 
 @pytest.mark.req("D87", "KC.6")
@@ -1517,7 +1529,7 @@ def test_a_session_resumed_on_a_changed_setup_pauses_before_any_test_and_names_t
 def test_the_adapter_reads_the_kernel_facts_it_needs(monkeypatch):
     monkeypatch.setattr(live_hw.kernel, "read_boot_id", lambda: "b1")
     monkeypatch.setattr(live_hw.kernel, "boot_end", lambda boot: kernel.BootEnd(clean=boot == "b0", problem=None))
-    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm)
+    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, vcache="none")
     assert (hw.boot_id(), hw.boot_end("b0").clean, hw.boot_end("b9").clean, hw.temperature()) == (
         "b1",
         True,
@@ -1612,7 +1624,7 @@ def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, 
 
 def topology():
     cores = {core: SimpleNamespace(logical_cpus=cpus, ccd=dict(DOMAINS)[core]) for core, cpus in CPUS}
-    return SimpleNamespace(cores=cores, model_name="cpu-1")
+    return SimpleNamespace(cores=cores, model_name="cpu-1", is_x3d=False, vcache_ccd=None)
 
 
 @pytest.mark.req("VERDICT.27b")
@@ -1676,6 +1688,7 @@ def test_the_command_line_starts_or_resumes_and_reports_where_it_came_to_rest(tm
     kagari = SimpleNamespace(binary_problem=lambda name: f"the y-cruncher binary {name!r} is not in /nowhere")
     built = live_hw.build_rig(args, topology(), FakeSmu(), lambda: kagari, lines.append, db, IDENTITY)
     assert built.hardware.write is True and built.cpus_of == CPUS and built.domain_of == DOMAINS
+    assert built.hardware.vcache == "none"
     assert built.two_t_problem == "the y-cruncher binary '19-ZN2 ~ Kagari' is not in /nowhere"
     assert built.co_range == (-50, 10)
     assert built.store.db is db
@@ -2455,7 +2468,7 @@ def test_the_hardware_adapter_checks_its_own_smu_sensors_tools_budget_and_power_
     monkeypatch.setattr(live_hw, "preflight", lambda *parts: seen.append(parts) or ("refused", ()))
     tools = (Tool("y-cruncher"),)
     cpu = sysfs(tmp_path, 4300000, 5756452, "1")
-    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, cpu, tools=tools, budget=len)
+    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, cpu, tools=tools, budget=len, vcache="none")
     assert hw.preflight() == ("refused", ())
     assert seen == [(hw.smu, warm, tools, len, live_hw.read_power_state(cpu))]
 
@@ -2472,7 +2485,7 @@ def test_a_session_that_is_not_stored_cannot_be_read(tmp_path):
 
 
 def test_the_hardware_adapter_reads_the_power_state_under_its_cpu_root(tmp_path):
-    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, sysfs(tmp_path, 4300000, 5756452, "1"))
+    hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, sysfs(tmp_path, 4300000, 5756452, "1"), vcache="none")
     state = hw.power()
     assert (state.max_mhz, state.top_mhz, state.boost) == (4300.0, 5756.452, "1")
 

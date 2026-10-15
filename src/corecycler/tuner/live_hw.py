@@ -104,6 +104,8 @@ class SmuHardware:
         cpu_root: Path = CPU,
         tools: tuple = (),
         budget=lane_budget,
+        *,
+        vcache: str,
     ) -> None:
         self.smu = smu
         self.write = write
@@ -112,6 +114,7 @@ class SmuHardware:
         self.cpu_root = cpu_root
         self.tools = tools
         self.budget = budget
+        self.vcache = vcache
 
     def preflight(self) -> tuple[str | None, tuple[str, ...]]:
         return preflight(self.smu, self.sensors, self.tools, self.budget, self.power())
@@ -169,6 +172,7 @@ class SmuHardware:
             ("ryzen_smu", " ".join(smu)),
             ("smu_firmware", _setting(Path(SMU_DRIVER) / "version")),
             ("topology", f"online {_setting(self.cpu_root / 'online')}; {cores}"),
+            ("vcache", self.vcache),
         )
 
     def boot_facts(self, boot_id: str) -> BootFacts:
@@ -191,6 +195,14 @@ class SmuHardware:
 
     def asleep_seconds(self) -> float:
         return time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
+
+
+def vcache_fact(topology) -> str:
+    if not topology.is_x3d:
+        return "none"
+    if topology.vcache_ccd is None:
+        return "unknown"
+    return f"ccd {topology.vcache_ccd}"
 
 
 def shaper_words(bands: tuple[tuple[int, int, int], ...]) -> str:
@@ -776,7 +788,14 @@ def build_rig(
     core_of_cpu = {cpu: core for core, cpus in cpus_of for cpu in cpus}
     sensors = Sensors().read
     return LiveRig(
-        hardware=SmuHardware(smu, args.write, say, sensors, tools=(backend_factory(), get_backend("stressapptest"))),
+        hardware=SmuHardware(
+            smu,
+            args.write,
+            say,
+            sensors,
+            tools=(backend_factory(), get_backend("stressapptest")),
+            vcache=vcache_fact(topology),
+        ),
         runner=StressRunner(backend_factory, args.state_dir / "runs", core_of_cpu, sensors, Clocks().read),
         store=Store(db, args.state_dir, identity),
         cpus_of=cpus_of,

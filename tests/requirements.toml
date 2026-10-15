@@ -4137,8 +4137,7 @@ task = "S3"
 [[requirement]]
 id = "TM.A2.x3d"
 statement = "On an X3D part the V-cache CCD is recorded and numbers are kept per CCD"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "TM.A3.co"
