@@ -2623,12 +2623,40 @@ def test_a_report_already_slept_is_left_as_it_came(tmp_path):
 
 
 @pytest.mark.req("K23")
-def test_the_gap_counts_only_what_grew_past_one_second_since_the_last_check(tmp_path):
+def test_the_gap_counts_what_grew_past_one_second_since_the_last_test_started_and_holds_until_the_next(tmp_path):
     hardware = FakeHardware()
-    asleep = iter([5.0, 5.0, 6.0, 7.5])
+    asleep = iter([5.0, 6.0, 6.5, 6.5])
     hardware.asleep_seconds = lambda: next(asleep)
     r = rig(tmp_path, hardware)
-    assert [r.world().gap_grew for _ in range(4)] == [True, False, False, True]
+    r.asleep_at_worker_start = 5.0
+    assert [r.world().gap_grew for _ in range(4)] == [False, False, True, True]
+
+
+@pytest.mark.req("K23")
+def test_a_sleep_while_a_thermal_cool_down_polls_still_makes_the_next_test_rewrite_every_core(tmp_path):
+    hardware = FakeHardware()
+    slept, heat = [0.0], [99.0]
+    hardware.asleep_seconds = lambda: slept[0]
+    hardware.temperature = lambda: heat[0]
+    runner = FakeRunner(hardware, group=Group.THERMAL)
+    r = rig(tmp_path, hardware, runner=runner)
+    r.start(config(), 1, 7, True)
+    for _ in range(10_000):
+        if getattr(r.state.slot, "cool_below_c", None) is not None:
+            break
+        r.step(0.01)
+    runner.group = None
+    hardware.co = {0: -3, 1: -3, 8: -3}
+    slept[0] = 600.0
+    r.step(0.01)
+    assert getattr(r.state.slot, "cool_below_c", None) is not None
+    heat[0] = 50.0
+    for _ in range(10_000):
+        if isinstance(r.state.slot, InFlight):
+            break
+        r.step(0.01)
+    assert isinstance(r.state.slot, InFlight)
+    assert hardware.co == dict(r.state.slot.spec.vector)
 
 
 def test_a_stored_all_core_cursor_from_before_the_rounds_loads_without_its_retired_fields():

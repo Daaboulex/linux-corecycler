@@ -587,7 +587,6 @@ class LiveRig:
     worker: _Worker | None = field(init=False, default=None)
     inbox: queue.Queue = field(init=False, default_factory=queue.Queue)
     signals: list = field(init=False, default_factory=list)
-    asleep_at_last_check: float = field(init=False, default=0.0)
     asleep_at_worker_start: float = field(init=False, default=0.0)
     stored_boot: str | None = field(init=False, default=None)
     stored_read_ns: int | None = field(init=False, default=None)
@@ -604,9 +603,7 @@ class LiveRig:
 
     def world(self) -> World:
         self.power = self.hardware.power()
-        asleep = self.hardware.asleep_seconds()
-        gap = asleep - self.asleep_at_last_check > SLEEP_GAP_S
-        self.asleep_at_last_check = asleep
+        gap = self.hardware.asleep_seconds() - self.asleep_at_worker_start > SLEEP_GAP_S
         return World(
             resident=tuple(sorted(self.resident.items())),
             gap_grew=gap,
