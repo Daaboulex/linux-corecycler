@@ -1539,7 +1539,10 @@ def _thermal(s: SessionState, spec: TestSpec, rep: Report, pausing: bool, w: Wor
     streak = s.streaks.thermal + 1
     after = replace(s, streaks=replace(s.streaks, thermal=streak), resume_streak=0, flow=_retry_flow(s, spec))
     if streak > cfg.thermal_retries:
-        return _enter_pause(after, PauseReason.THERMAL, f"{streak} thermal stops in a row")
+        last = f"; the last: {rep.detail}" if rep.detail else ""
+        return _enter_pause(
+            after, PauseReason.THERMAL, f"{streak} thermal stops in a row at the {spec.thermal_limit_c:g} C limit{last}"
+        )
     if pausing:
         return _enter_pause(after, PauseReason.USER, "paused by the user")
     token = after.next_token

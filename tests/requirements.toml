@@ -2593,8 +2593,7 @@ proof = "built"
 [[requirement]]
 id = "L20.G5.name"
 statement = "The thermal give-up after a streak names the temperature"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L20.G6_G7"

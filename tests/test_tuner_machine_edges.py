@@ -884,16 +884,27 @@ def test_consecutive_first_value_fails_pause_at_the_threshold():
     assert fake.state.pause.reason is PauseReason.START_FAILURES
 
 
-@pytest.mark.req("C5", "G5", "K17.retries", "L20.G5")
-def test_the_fourth_thermal_stop_in_a_row_gives_up():
+@pytest.mark.req("C5", "G5", "K17.retries", "L20.G5", "L20.G5.name")
+@pytest.mark.parametrize(
+    ("detail", "said"),
+    [
+        (
+            "CPU temperature 96.3 C at the 95 C safety limit during the test",
+            "4 thermal stops in a row at the 95 C limit; the last: CPU temperature 96.3 C at the 95 C safety limit"
+            " during the test",
+        ),
+        ("", "4 thermal stops in a row at the 95 C limit"),
+    ],
+)
+def test_the_fourth_thermal_stop_in_a_row_gives_up_naming_the_temperature(detail, said):
     fake = running_fake()
     fake.fire()
     for _ in range(4):
-        fake.deliver(Report(Group.THERMAL, 5.0))
+        fake.deliver(Report(Group.THERMAL, 5.0, detail=detail))
         if fake.state.lifecycle is not Lifecycle.RUNNING:
             break
         fake.fire()
-    assert fake.state.pause.reason is PauseReason.THERMAL
+    assert (fake.state.pause.reason, fake.state.pause.detail) == (PauseReason.THERMAL, said)
 
 
 def test_a_failed_hint_at_minus_one_settles_at_stock():
