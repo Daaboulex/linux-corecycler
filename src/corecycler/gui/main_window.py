@@ -127,7 +127,6 @@ class MainWindow(QMainWindow):
         self._telemetry_failing = False
         self._core_telemetry: dict[int, dict] = {}  # core_id -> {max_freq, max_temp, last_vcore}
         self._core_status_cache: dict[int, CoreTestStatus] = {}
-        self._cached_cycle: int = 0
         self._active_test_core: int | None = None
         self._logger: TestRunLogger | None = None
 
@@ -434,7 +433,10 @@ class MainWindow(QMainWindow):
         self._results_tab.init_cores(scheduler.core_status)
 
         self._core_status_cache.clear()
-        self._cached_cycle = 0
+        self._run_cores = len(scheduler.core_status)
+        self._run_rounds = scheduler_config.cycle_count
+        self._run_round = 0
+        self._rounds_done = 0
         self._active_test_core = None
         self._worker = TestWorker(scheduler)
         self._worker.core_started.connect(self._on_core_started)
@@ -536,6 +538,7 @@ class MainWindow(QMainWindow):
     @Slot(int, int)
     def _on_core_started(self, core_id: int, cycle: int) -> None:
         self._status_msg.setText(f"Testing core {core_id} (cycle {cycle + 1})")
+        self._run_round = cycle + 1
         self._monitor_tab.set_active_core(core_id)
         self._active_test_core = core_id
 
@@ -546,8 +549,8 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _on_cycle_cached(self, cycle: int) -> None:
-        """Cache cycle number from worker thread — signal/slot is thread-safe."""
-        self._cached_cycle = cycle
+        """Count the rounds the scheduler completed; the summary reads it."""
+        self._rounds_done = cycle + 1
 
     @Slot(int, object)
     def _on_core_finished(self, core_id: int, result: StressResult) -> None:
@@ -617,14 +620,13 @@ class MainWindow(QMainWindow):
         failed = total - passed
         elapsed = time.monotonic() - self._test_start_time
 
-        profile = self._config_tab.get_profile()
         self._results_tab.update_summary(
             total=total,
             passed=passed,
             failed=failed,
             elapsed=elapsed,
-            cycle=profile.cycle_count,
-            total_cycles=profile.cycle_count,
+            cycle=self._rounds_done,
+            total_cycles=self._run_rounds,
         )
 
         failed_cores = []
@@ -667,7 +669,6 @@ class MainWindow(QMainWindow):
         self._monitor_tab.set_active_core(None)
         self._elapsed_timer.stop()
         self._core_status_cache.clear()
-        self._cached_cycle = 0
         self._active_test_core = None
         self._worker = None
 
@@ -730,18 +731,16 @@ class MainWindow(QMainWindow):
             return
         elapsed = time.monotonic() - self._test_start_time
         cache = self._core_status_cache
-        total = len(cache)
         passed = sum(1 for s in cache.values() if s.state == "passed")
         failed = sum(1 for s in cache.values() if s.state == "failed")
 
-        profile = self._config_tab.get_profile()
         self._results_tab.update_summary(
-            total=total,
+            total=self._run_cores,
             passed=passed,
             failed=failed,
             elapsed=elapsed,
-            cycle=self._cached_cycle + 1,
-            total_cycles=profile.cycle_count,
+            cycle=self._run_round,
+            total_cycles=self._run_rounds,
         )
 
     def _feed_core_grid_telemetry(self, tick: Tick) -> None:

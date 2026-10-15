@@ -293,6 +293,19 @@ class TestStartTest:
         assert window._worker is None
         assert no_modal.warning.call_args.args[2] == f"Cannot start: {problem}"
 
+    @pytest.mark.req("T23.results.summary")
+    def test_a_started_run_counts_from_round_0_of_its_own_rounds(self, window, monkeypatch):
+        self._ready(window, monkeypatch)
+        window._config_tab._cycles_spin.setValue(3)
+        window._start_test()
+        update = MagicMock()
+        monkeypatch.setattr(window._results_tab, "update_summary", update)
+        window._update_elapsed()
+        assert (update.call_args.kwargs["cycle"], update.call_args.kwargs["total_cycles"]) == (0, 3)
+        window._on_test_completed(json.dumps({"0": []}))
+        assert (update.call_args.kwargs["cycle"], update.call_args.kwargs["total_cycles"]) == (0, 3)
+        window._worker = None
+
     def test_no_ticked_core_is_refused(self, window, monkeypatch, no_modal):
         self._ready(window, monkeypatch)
         for box in window._config_tab._core_boxes.values():
@@ -495,6 +508,7 @@ class TestStatusSlots:
 
     def test_a_non_numeric_core_key_is_skipped(self, window):
         window._config_tab.set_failed_cores = MagicMock()
+        window._run_rounds, window._rounds_done = 1, 1
         window._on_test_completed(json.dumps({"abc": [{"passed": False}], "2": [{"passed": False}]}))
         assert window._config_tab.set_failed_cores.call_args.args == ([2],)
 

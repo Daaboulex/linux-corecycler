@@ -19,6 +19,7 @@ _sys.path.insert(0, str(Path(__file__).parent))
 
 from test_main_window_wiring import _build, _qapp
 
+from corecycler.engine.scheduler import CoreTestStatus
 from corecycler.gui import main_window as mw
 from corecycler.history.db import HistoryDB
 
@@ -161,12 +162,34 @@ class TestWorkerFinishAlive:
 
 
 class TestHonestSummary:
-    def _summary(self, window, monkeypatch, payload: dict) -> dict:
+    def _summary(self, window, monkeypatch, payload: dict, rounds: tuple[int, int] = (1, 1)) -> dict:
         update = MagicMock()
         monkeypatch.setattr(window._results_tab, "update_summary", update)
         window._test_start_time = time.monotonic()
+        window._run_rounds, window._rounds_done = rounds
         window._on_test_completed(json.dumps(payload))
         return update.call_args.kwargs
+
+    @pytest.mark.req("T23.results.summary")
+    def test_a_run_stopped_in_its_first_round_says_no_round_completed_of_the_run_s_rounds(self, window, monkeypatch):
+        window._config_tab._cycles_spin.setValue(7)
+        kwargs = self._summary(window, monkeypatch, {"0": [{"passed": True}], "1": []}, rounds=(3, 0))
+        assert (kwargs["cycle"], kwargs["total_cycles"]) == (0, 3)
+
+    @pytest.mark.req("T23.results.summary")
+    def test_the_live_summary_counts_the_run_s_cores_and_the_round_under_test(self, window, monkeypatch):
+        update = MagicMock()
+        monkeypatch.setattr(window._results_tab, "update_summary", update)
+        window._worker = MagicMock(isRunning=MagicMock(return_value=True))
+        window._test_start_time = time.monotonic()
+        window._run_cores, window._run_rounds = 8, 3
+        window._config_tab._cycles_spin.setValue(5)
+        window._on_core_started(0, 1)
+        window._on_status_cached(0, CoreTestStatus(core_id=0, state="passed"))
+        window._update_elapsed()
+        kwargs = update.call_args.kwargs
+        assert (kwargs["total"], kwargs["passed"], kwargs["cycle"], kwargs["total_cycles"]) == (8, 1, 2, 3)
+        window._worker = None
 
     def test_a_stopped_core_is_not_counted_as_failed(self, window, monkeypatch):
         kwargs = self._summary(window, monkeypatch, {"0": [{"passed": True}], "1": []})

@@ -29,7 +29,10 @@ def _make_mock_mainwindow(**overrides):
     ns = types.SimpleNamespace()
     ns._worker = overrides.get("_worker", MagicMock(isRunning=MagicMock(return_value=True)))
     ns._core_status_cache = overrides.get("_core_status_cache", {})
-    ns._cached_cycle = overrides.get("_cached_cycle", 0)
+    ns._run_cores = overrides.get("_run_cores", 0)
+    ns._run_rounds = overrides.get("_run_rounds", 0)
+    ns._run_round = overrides.get("_run_round", 0)
+    ns._rounds_done = overrides.get("_rounds_done", 0)
     ns._test_start_time = overrides.get("_test_start_time", time.monotonic())
     ns._results_tab = overrides.get("_results_tab", MagicMock())
     ns._config_tab = overrides.get("_config_tab", MagicMock())
@@ -68,7 +71,8 @@ class TestOnTestCompletedFailsClosed:
         ns = types.SimpleNamespace()
         ns._test_start_time = time.monotonic()
         ns._config_tab = MagicMock()
-        ns._config_tab.get_profile.return_value = MagicMock(cycle_count=1)
+        ns._run_rounds = 1
+        ns._rounds_done = 0
         ns._results_tab = MagicMock()
         ns._on_test_completed = types.MethodType(MainWindow._on_test_completed, ns)
         for bad in ("", "not json", "[1,2,3]", "null", "42", '{"0": "x"}', '{"0": [42]}', '{"0": [{"no_passed": 1}]}'):

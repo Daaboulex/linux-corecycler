@@ -4772,6 +4772,11 @@ statement = "A core's peak clock or temperature that no tick read is shown as un
 proof = "built"
 
 [[requirement]]
+id = "T23.results.summary"
+statement = "The Results summary counts the run, not the form or the status cache: Cores is the run's core count, the round shown while it runs is the round under test, and at the end the rounds completed of the run's own total; a stop in round 1 of 3 reads 0/3 (scratch/design/t23-config-results.md R3 to R6, t23-monitor-memory-window.md D5)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"
