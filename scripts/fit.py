@@ -26,6 +26,7 @@ READ_EVERY_S = 0.5
 BUSY_WINDOW_S = 0.25
 GRACE_S = 5.0
 STOPS_AT_ONE = 3
+RUNAWAY_FACTOR = 10
 WAIT_SAY_S = 60.0
 CRASHED = ("node down", "replacing crashed worker")
 
@@ -108,7 +109,9 @@ def _stop(child: subprocess.Popen) -> None:
         child.wait()
 
 
-def _step(cmd: list[str], cwd: Path, env: dict | None, timeout: int, sink) -> tuple[str, int | None, int, int]:
+def _step(
+    cmd: list[str], cwd: Path, env: dict | None, timeout: int, sink, limit_mb: int | None = None
+) -> tuple[str, int | None, int, int]:
     started = time.monotonic()
     child = subprocess.Popen(
         cmd, cwd=cwd, env=env, stdout=sink, stderr=subprocess.STDOUT, start_new_session=True, preexec_fn=_first_to_kill
@@ -118,6 +121,9 @@ def _step(cmd: list[str], cwd: Path, env: dict | None, timeout: int, sink) -> tu
         info = _memory()
         lowest = info["MemAvailable"] if lowest is None else min(lowest, info["MemAvailable"])
         peak = max(peak, *(_rss_mb(pid) for pid in _tree(child.pid)))
+        if limit_mb is not None and peak > limit_mb:
+            _stop(child)
+            return "outgrew", None, peak, lowest
         if info["MemAvailable"] < floor_mb(info):
             _stop(child)
             return "short", None, peak, lowest
@@ -155,10 +161,20 @@ def run(args: list[str], timeout: int, cwd: Path, env: dict | None = None, most:
             f" {busy:.0%} of the cores busy, {per_worker} MiB per worker"
         )
         spread = ["-n", str(count), "--dist", "worksteal"] if count > 1 else []
+        limit = None if learned_peak_mb is None else RUNAWAY_FACTOR * learned_peak_mb
         with tempfile.TemporaryFile("w+") as sink:
-            kind, code, peak, lowest = _step([sys.executable, "-m", "pytest", *spread, *args], cwd, env, timeout, sink)
+            kind, code, peak, lowest = _step(
+                [sys.executable, "-m", "pytest", *spread, *args], cwd, env, timeout, sink, limit
+            )
             sink.seek(0)
             output = sink.read()
+        if kind == "outgrew":
+            return False, output + (
+                f"\nthe test selection outgrew its memory: one worker held {peak} MiB,"
+                f" over {RUNAWAY_FACTOR} times the {learned_peak_mb} MiB measured"
+            )
+        if kind == "short" and 2 * peak >= room:
+            return False, output + f"\nthe test selection outgrew its memory: one worker held {peak} MiB of {room} MiB"
         learned_peak_mb = peak if learned_peak_mb is None else max(learned_peak_mb, peak)
         if kind == "late":
             return False, output + f"\nthe test selection did not finish within {timeout} s"
@@ -167,8 +183,6 @@ def run(args: list[str], timeout: int, cwd: Path, env: dict | None = None, most:
         )
         if not short:
             return code == 0, output
-        if kind == "short" and 2 * peak >= room:
-            return False, output + f"\nthe test selection outgrew its memory: one worker held {peak} MiB of {room} MiB"
         _say(f"stopped at {count} workers: free memory fell to {lowest} MiB, the floor is {floor_mb(info)} MiB")
         if count == 1:
             stops_at_one += 1

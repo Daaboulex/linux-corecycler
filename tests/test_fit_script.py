@@ -37,7 +37,7 @@ def test_the_worker_count_follows_the_free_cores_and_the_memory_above_the_floor(
 def scripted(monkeypatch, steps):
     calls = []
 
-    def step(cmd, cwd, env, timeout, sink):
+    def step(cmd, cwd, env, timeout, sink, limit):
         kind, code, peak, lowest, text = steps[len(calls)]
         calls.append(cmd)
         sink.write(text)
@@ -74,8 +74,23 @@ def test_a_crashed_worker_counts_as_a_memory_stop_only_when_memory_ran_short(
 def test_a_worker_that_takes_half_the_room_by_itself_fails_the_step_without_a_rerun(monkeypatch, tmp_path):
     calls = scripted(monkeypatch, [("short", None, 13400, 2000, "partial")])
     passed, output = fit.run(["t.py"], 60, tmp_path)
-    assert (passed, len(calls)) == (False, 1)
+    assert (passed, len(calls), fit.learned_peak_mb) == (False, 1, 4000)
     assert output.endswith("the test selection outgrew its memory: one worker held 13400 MiB of 26800 MiB")
+
+
+def test_a_worker_past_ten_times_the_measured_peak_fails_its_step_at_once_and_teaches_nothing(monkeypatch, tmp_path):
+    calls = scripted(monkeypatch, [("outgrew", None, 41000, 20000, "partial")])
+    passed, output = fit.run(["t.py"], 60, tmp_path)
+    assert (passed, len(calls), fit.learned_peak_mb) == (False, 1, 4000)
+    assert output.endswith("one worker held 41000 MiB, over 10 times the 4000 MiB measured")
+
+
+@pytest.mark.parametrize(("limit", "kind"), [(50, "outgrew"), (None, "done")])
+def test_a_real_worker_over_its_limit_is_stopped_before_it_finishes(monkeypatch, tmp_path, limit, kind):
+    monkeypatch.setattr(fit, "_memory", lambda: ROOMY)
+    hog = [sys.executable, "-c", "import time; held = bytearray(300 * 1024 * 1024); time.sleep(3)"]
+    with tempfile.TemporaryFile("w+") as sink:
+        assert fit._step(hog, tmp_path, None, 60, sink, limit)[0] == kind
 
 
 def test_the_first_measured_peak_replaces_the_starting_guess_and_later_ones_only_raise_it(monkeypatch, tmp_path):
