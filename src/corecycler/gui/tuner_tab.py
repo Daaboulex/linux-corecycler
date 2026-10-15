@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -773,6 +774,13 @@ class TunerTab(QWidget):
     def attempt_auto_resume(self, tries: int = AUTO_RESUME_TRIES) -> None:
         if self._db is None:
             self._note("auto-resume: no history database")
+            return
+        if QApplication.closingDown():
+            self._note("auto-resume: the app is closing")
+            return
+        if QApplication.activeModalWidget() is not None:
+            self._note(f"auto-resume: a dialog is open; trying again in {AUTO_RESUME_GAP_MS // 1000} s")
+            QTimer.singleShot(AUTO_RESUME_GAP_MS, lambda: self.attempt_auto_resume(tries))
             return
         if self.is_running or self._child is not None:
             self._note("auto-resume: a tuner driver already runs")

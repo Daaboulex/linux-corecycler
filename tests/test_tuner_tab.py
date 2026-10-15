@@ -670,6 +670,28 @@ class TestAutoResume:
         assert t._driver.text() == f"auto-resume: {running} interrupted sessions; resume one by hand"
         assert launched == []
 
+    @pytest.mark.req("L28.d.modal")
+    def test_an_open_dialog_defers_it_a_minute_and_a_closing_app_ends_it(
+        self, db, home, launched, tmp_path, monkeypatch
+    ):
+        saved = save_machine_session(db, tmp_path, "running")
+        timers, modal, closing = [], [object()], [False]
+        monkeypatch.setattr(tt.QTimer, "singleShot", lambda ms, action: timers.append((ms, action)))
+        monkeypatch.setattr(tt.QApplication, "activeModalWidget", staticmethod(lambda: modal[0]))
+        monkeypatch.setattr(tt.QApplication, "closingDown", staticmethod(lambda: closing[0]))
+        t = tab(db)
+        t.attempt_auto_resume()
+        assert t._driver.text() == "auto-resume: a dialog is open; trying again in 60 s"
+        assert ([ms for ms, _ in timers], launched) == ([tt.AUTO_RESUME_GAP_MS], [])
+        modal[0] = None
+        timers[-1][1]()
+        assert launched[-1][0][4:7] == ["--resume", "--session", str(saved.session_id)]
+        closing[0] = True
+        t._child = None
+        t.attempt_auto_resume()
+        assert t._driver.text() == "auto-resume: the app is closing"
+        assert (len(timers), len(launched)) == (1, 1)
+
     def test_a_running_driver_or_test_blocks_it(self, db, home, launched, tmp_path):
         save_machine_session(db, tmp_path, "running")
         t = tab(db)

@@ -2925,9 +2925,8 @@ proof = "built"
 
 [[requirement]]
 id = "L28.d.modal"
-statement = "AutoResume waits while a modal dialog is open or the app is closing"
-proof = "not built"
-task = "T28"
+statement = "AutoResume waits 60 s and tries again while a modal dialog is open, and does not resume while the app is closing"
+proof = "built"
 
 [[requirement]]
 id = "L29.a"
