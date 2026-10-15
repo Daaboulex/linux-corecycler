@@ -613,6 +613,27 @@ class TestDeleteSelected:
         assert db.list_contexts() == []
         assert db.list_runs() == []
 
+    @pytest.mark.req("T23.history.delete")
+    def test_a_setup_holding_tuner_sessions_is_refused_naming_them_and_nothing_is_asked_or_deleted(self, db, tmp_path):
+        cid = _seed_context(db, "2402", {"0": -20})
+        _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
+        saved = save_machine_session(db, tmp_path, "running")
+        db._execute_raw("UPDATE tuner_sessions SET context_id=? WHERE id=?", (cid, saved.session_id))
+        tab = _grouped_tab(db)
+        tab._context_table.selectRow(0)
+        tab._runs_table.clearSelection()
+        with (
+            patch("corecycler.gui.history_tab.QMessageBox.question") as ask,
+            patch("corecycler.gui.history_tab.QMessageBox.warning") as warn,
+        ):
+            tab._delete_selected()
+        assert not ask.called
+        assert warn.call_args.args[1:] == (
+            "Setup Holds Tuner Sessions",
+            f"setup {cid} holds tuner sessions [{saved.session_id}]: delete those under Tuning sessions first.",
+        )
+        assert (len(db.list_contexts()), len(db.list_runs()), len(db.list_machine_sessions())) == (1, 1, 1)
+
     def test_declined_context_delete_keeps_everything(self, db):
         cid = _seed_context(db, "2402", {"0": -20})
         _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)

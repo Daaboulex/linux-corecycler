@@ -513,15 +513,25 @@ class TestMachineSessionMethods:
     def test_delete_context_cascade(self, db):
         ctx_id = db.create_context(TuningContextRecord(bios_version="v1"))
         db.create_run(RunRecord(cpu_model="test", context_id=ctx_id))
-        sid = seed_old_session(db)
-        db._execute_raw("UPDATE tuner_sessions SET context_id=? WHERE id=?", (ctx_id, sid))
 
         db.delete_context_cascade(ctx_id)
 
-        runs = db.list_runs_for_context(ctx_id)
-        assert len(runs) == 0
-        assert db._execute_raw("SELECT id FROM tuner_sessions").fetchall() == []
+        assert db.list_runs_for_context(ctx_id) == []
         assert db.get_context(ctx_id) is None
+
+    @pytest.mark.req("T23.history.delete")
+    def test_a_setup_that_tuner_sessions_name_is_never_deleted_with_them(self, db):
+        ctx_id = db.create_context(TuningContextRecord(bios_version="v1"))
+        db.create_run(RunRecord(cpu_model="test", context_id=ctx_id))
+        sid = seed_old_session(db)
+        db._execute_raw("UPDATE tuner_sessions SET context_id=? WHERE id=?", (ctx_id, sid))
+
+        with pytest.raises(ValueError, match=rf"setup {ctx_id} holds tuner sessions \[{sid}\]"):
+            db.delete_context_cascade(ctx_id)
+
+        assert db.context_sessions(ctx_id) == [sid]
+        assert len(db.list_runs_for_context(ctx_id)) == 1
+        assert db.get_context(ctx_id) is not None
 
 
 class TestBooleanConversion:

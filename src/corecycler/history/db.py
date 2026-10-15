@@ -1868,10 +1868,18 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     # at most [-60, +30]; anything outside is corruption, not a tuning value).
     _CO_SANE_RANGE = (-100, 100)
 
+    def context_sessions(self, context_id: int) -> list[int]:
+        rows = self.__conn.execute(
+            "SELECT id FROM tuner_sessions WHERE context_id=? ORDER BY id", (context_id,)
+        ).fetchall()
+        return [row["id"] for row in rows]
+
     def delete_context_cascade(self, context_id: int) -> None:
-        """Delete a tuning context and all associated runs and tuner sessions."""
+        """Delete a tuning context and its runs; refused while tuner sessions name the context."""
+        held = self.context_sessions(context_id)
+        if held:
+            raise ValueError(f"setup {context_id} holds tuner sessions {held}")
         self.__conn.execute("DELETE FROM runs WHERE context_id=?", (context_id,))
-        self.__conn.execute("DELETE FROM tuner_sessions WHERE context_id=?", (context_id,))
         self.__conn.execute("DELETE FROM tuning_contexts WHERE id=?", (context_id,))
 
     def get_status_counts(self) -> dict[str, int]:

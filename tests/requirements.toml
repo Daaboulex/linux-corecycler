@@ -4757,6 +4757,11 @@ statement = "A profile, loaded from a file or the saved settings, is shown only 
 proof = "built"
 
 [[requirement]]
+id = "T23.history.delete"
+statement = "Deleting a setup in History deletes its stress runs only; a setup that tuner sessions name is refused, naming the sessions to delete first under Tuning sessions, where the mid-run and successor guards apply (scratch/design/t23-curve-history.md defect 1: a running session held by a live driver was deleted with its setup)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

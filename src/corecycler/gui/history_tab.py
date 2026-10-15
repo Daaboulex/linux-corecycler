@@ -1102,6 +1102,14 @@ class HistoryTab(QWidget):
                     ctx_ids.append(ctx_id)
         if not ctx_ids:
             return
+        held = [f"setup {cid} holds tuner sessions {ids}" for cid in ctx_ids if (ids := self._db.context_sessions(cid))]
+        if held:
+            QMessageBox.warning(
+                self,
+                "Setup Holds Tuner Sessions",
+                "; ".join(held) + ": delete those under Tuning sessions first.",
+            )
+            return
 
         total_runs = sum(len(self._context_runs.get(cid, [])) for cid in ctx_ids)
 
