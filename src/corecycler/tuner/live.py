@@ -181,6 +181,50 @@ def coverage(samples: list[dict], ccd_of: dict[int, int | None]) -> dict[int, di
     }
 
 
+MARGIN_STAGES = frozenset({Stage.SEARCH, Stage.LIVE1})
+MARGIN_SIDES = {Group.PASS: "passes", Group.SILICON: "fails"}
+
+
+def margins(tests: list[dict]) -> dict[int, dict]:
+    found: dict[int, dict] = {}
+    for test in tests:
+        if test["stage"] not in MARGIN_STAGES:
+            continue
+        core = found.setdefault(test["core"], {"bins": {}, "open": [], "unrecorded": 0})
+        if test["ended_at"] is None:
+            core["open"].append(test["value"])
+            continue
+        side = MARGIN_SIDES.get(test["verdict"])
+        if side is None:
+            continue
+        record = None if test["coverage_json"] is None else json.loads(test["coverage_json"]).get(str(test["core"]))
+        if record is None:
+            core["unrecorded"] += 1
+            continue
+        for mhz, temp, seconds in record["cells"]:
+            seen = core["bins"].setdefault(mhz, {"passes": {}, "fails": {}, "temps": set()})
+            seen[side][test["value"]] = seen[side].get(test["value"], 0.0) + seconds
+            seen["temps"].add(temp)
+    return {
+        number: {**core, "bins": {mhz: _margin(seen) for mhz, seen in sorted(core["bins"].items())}}
+        for number, core in sorted(found.items())
+    }
+
+
+def _margin(seen: dict) -> dict:
+    failed = max(seen["fails"], default=None)
+    passed = min((value for value in seen["passes"] if failed is None or value > failed), default=None)
+    return {
+        "passed": passed,
+        "passed_s": round(seen["passes"].get(passed, 0.0), 1),
+        "failed": failed,
+        "failed_s": round(seen["fails"].get(failed, 0.0), 1),
+        "deeper": sorted(value for value in seen["passes"] if failed is not None and value <= failed),
+        "seconds": round(sum(seen["passes"].values()) + sum(seen["fails"].values()), 1),
+        "temp": [min(seen["temps"]), max(seen["temps"]) + TEMP_BIN],
+    }
+
+
 def peaks(samples: list[dict]) -> dict[int, float]:
     highest: dict[int, float] = {}
     for sample in samples:

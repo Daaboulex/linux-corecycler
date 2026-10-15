@@ -12,6 +12,7 @@ from corecycler.config import tools
 if TYPE_CHECKING:
     from corecycler.config.tools import Resolution
     from corecycler.history.db import HistoryDB
+    from corecycler.tuner.machine.types import CoreRecord
 
 EXIT_COMPLETED = 0
 EXIT_PAUSED = 3
@@ -32,7 +33,7 @@ EXIT_MEANINGS = {
 }
 
 SESSION_COMMANDS = ("resume", "validate", "continue", "restart", "abort")
-COMMANDS = ("doctor", "status", "shaper", "tune", *SESSION_COMMANDS)
+COMMANDS = ("doctor", "status", "shaper", "margins", "tune", *SESSION_COMMANDS)
 
 USAGE = f"""\
 corecycler headless commands:
@@ -42,6 +43,10 @@ corecycler headless commands:
   corecycler shaper [--set BANDS]  print the Curve Shaper, or set its five bands Min Low
                                    Medium High Max, each -5C/50C/90C like -30/-27/-12;
                                    volatile, refused while a tuning session runs
+  corecycler margins SESSION_ID    per core and 100 MHz of its clock, the deepest offset
+                                   that passed above the shallowest that failed in the
+                                   session's single-core tests; refused for a session
+                                   that ran with a Curve Shaper other than 0
   corecycler tune OPTIONS          start a new tuning session from --config FILE, a whole
                                    configuration as JSON, or from --cores 0,1,... with
                                    --max-offset N, --k1 N, --k2 N and --wait-between-cores S
@@ -71,6 +76,8 @@ def cli_main(argv: list[str]) -> int:
         return cmd_status()
     if command == "shaper":
         return cmd_shaper(rest)
+    if command == "margins":
+        return cmd_margins(rest)
     if command == "tune":
         return drive(["--start", "--write", *rest])
     if command in SESSION_COMMANDS:
@@ -113,6 +120,77 @@ def cmd_shaper(rest: list[str]) -> int:
             return EXIT_REFUSED
     print(shaper_fact(smu))
     return EXIT_COMPLETED
+
+
+def cmd_margins(rest: list[str], db: HistoryDB | None = None) -> int:
+    from corecycler.history.db import HistoryDB
+    from corecycler.tuner.live import margins, read_stored
+    from corecycler.tuner.live_hw import shaper_at_zero
+
+    if len(rest) != 1 or not rest[0].isdigit():
+        print("corecycler margins: needs one SESSION_ID; corecycler status lists them", file=sys.stderr)
+        return EXIT_REFUSED
+    session_id = int(rest[0])
+    own = HistoryDB() if db is None else db
+    try:
+        try:
+            stored = read_stored(own, session_id)
+        except ValueError as e:
+            print(f"corecycler margins: {e}", file=sys.stderr)
+            return EXIT_REFUSED
+        shaper = dict(stored.setup).get("curve_shaper")
+        if not shaper_at_zero(shaper):
+            print(
+                f"corecycler margins: session {session_id} ran with the Curve Shaper {shaper or 'not recorded'},"
+                " so its offsets are not the whole offset and no margin is read from them",
+                file=sys.stderr,
+            )
+            return EXIT_REFUSED
+        found = margins(own.list_tuner_tests(session_id))
+    finally:
+        if db is None:
+            own.close()
+    results = {record.core: record for record in stored.cores}
+    print("\n".join(margin_lines(found, results)) if found else f"no single-core tests in session {session_id}")
+    return EXIT_COMPLETED
+
+
+MARGIN_SHOWN_S = 1.0
+
+
+def margin_lines(found: dict[int, dict], results: dict[int, CoreRecord]) -> list[str]:
+    from corecycler.tuner.live import MHZ_BIN
+
+    lines = []
+    for core, record in found.items():
+        lines.append(f"core {core}")
+        result = results.get(core)
+        if result is not None:
+            bound = "none" if result.fb is None else result.fb
+            lines.append(
+                f"  the session holds {result.value}, failure bound {bound}, crashes attributed {result.crash_count}"
+            )
+        shown = {mhz: cell for mhz, cell in record["bins"].items() if cell["seconds"] >= MARGIN_SHOWN_S}
+        for mhz, cell in shown.items():
+            passed = (
+                "nothing passed above the failure"
+                if cell["passed"] is None
+                else f"passed {cell['passed']} for {cell['passed_s']} s"
+            )
+            failed = "no failure" if cell["failed"] is None else f"failed {cell['failed']} for {cell['failed_s']} s"
+            deeper = ", ".join(map(str, cell["deeper"]))
+            low, high = cell["temp"]
+            lines.append(
+                f"  {mhz}-{mhz + MHZ_BIN} MHz at {low}-{high} C: {passed}, {failed}"
+                + (f"; also passed at or below the failure: {deeper}" if deeper else "")
+            )
+        if len(shown) < len(record["bins"]):
+            lines.append(f"  clock bins under {MARGIN_SHOWN_S} s each, not shown: {len(record['bins']) - len(shown)}")
+        if record["open"]:
+            lines.append(f"  no verdict (a hang, or a test still running) at {', '.join(map(str, record['open']))}")
+        if record["unrecorded"]:
+            lines.append(f"  tests without a coverage record: {record['unrecorded']}")
+    return lines
 
 
 def cmd_session(command: str, rest: list[str]) -> int:

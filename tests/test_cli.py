@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from corecycler import cli
 from corecycler.history.db import HistoryDB
+from tests._machine import this_boot
 from tests._old_rows import seed_old_session
+from tests._tuner_world import save_machine_session
 
 
 @pytest.fixture
@@ -44,7 +48,7 @@ class TestArgHandling:
         assert "headless commands" in capsys.readouterr().err
 
     @pytest.mark.parametrize(
-        "command", ["doctor", "status", "tune", "resume", "validate", "continue", "restart", "abort"]
+        "command", ["doctor", "status", "margins", "tune", "resume", "validate", "continue", "restart", "abort"]
     )
     def test_the_binary_hands_every_command_to_the_cli(self, monkeypatch, command):
         from corecycler import main as entry
@@ -83,6 +87,98 @@ class TestForwarding:
         monkeypatch.setattr(live_hw, "main", lambda argv: seen.append(argv) or 7)
         assert cli.drive(["--resume", "--session", "1"]) == 7
         assert seen == [["--resume", "--session", "1"]]
+
+
+ZERO_SHAPER = "Min 0/0/0, Low 0/0/0, Medium 0/0/0, High 0/0/0, Max 0/0/0"
+
+
+def session_with_shaper(db, root, shaper):
+    from corecycler.tuner.live import Identity, Store
+
+    saved = save_machine_session(db, root, "paused")
+    setup = () if shaper is None else (("curve_shaper", shaper),)
+    convicted = replace(saved.cores[0], value=-29, fb=-32, crash_count=1)
+    recorded = replace(saved, setup=setup, cores=(convicted, *saved.cores[1:]))
+    Store(db, root / "state", Identity("bios-1", "cpu-1", None)).save(recorded, this_boot())
+    return saved.session_id, convicted.core
+
+
+def ran(db, session_id, value, verdict, cells, core=9):
+    row = db.insert_tuner_test(session_id, "b", 1, "search", "1t", "1t", core, value, "[]", f"[{core}]", 20.0, "{}")
+    if verdict is not None:
+        coverage = None if cells is None else json.dumps({str(core): {"cells": cells, "unreadable_s": 0.0}})
+        db.end_tuner_test(row, verdict, 20.0, "[]", None, "{}", "", "[]", "", coverage_json=coverage)
+
+
+class TestMargins:
+    @pytest.mark.req("A2.margins")
+    @pytest.mark.parametrize("shaper", [ZERO_SHAPER, "none on this generation"])
+    def test_prints_each_core_s_margin_per_clock_when_the_session_ran_with_no_shaper_offset(
+        self, db, tmp_path, capsys, shaper
+    ):
+        session_id, convicted = session_with_shaper(db, tmp_path, shaper)
+        ran(db, session_id, -30, "pass", [[5400, 55, 20.0], [5800, 45, 1.0], [5900, 45, 0.5]])
+        ran(db, session_id, -31, "silicon", [[5400, 60, 4.5], [5700, 45, 0.9]])
+        ran(db, session_id, -35, "pass", [[5400, 55, 20.0]])
+        ran(db, session_id, -33, None, None)
+        ran(db, session_id, -29, "pass", None)
+        ran(db, session_id, -33, "silicon", [[4800, 50, 3.0]], core=convicted)
+        assert cli.cmd_margins([str(session_id)], db) == cli.EXIT_COMPLETED
+        assert capsys.readouterr().out.splitlines() == [
+            f"core {convicted}",
+            "  the session holds -29, failure bound -32, crashes attributed 1",
+            "  4800-4900 MHz at 50-55 C: nothing passed above the failure, failed -33 for 3.0 s",
+            "core 9",
+            "  5400-5500 MHz at 55-65 C: passed -30 for 20.0 s, failed -31 for 4.5 s;"
+            " also passed at or below the failure: -35",
+            "  5800-5900 MHz at 45-50 C: passed -30 for 1.0 s, no failure",
+            "  clock bins under 1.0 s each, not shown: 2",
+            "  no verdict (a hang, or a test still running) at -33",
+            "  tests without a coverage record: 1",
+        ]
+
+    @pytest.mark.req("A2.margins")
+    @pytest.mark.parametrize(
+        ("shaper", "said"),
+        [
+            ("Min 0/0/0, Low -30/-27/-12, Medium 0/0/0, High 0/0/0, Max 0/0/0", "Min 0/0/0, Low -30/-27/-12"),
+            ("unreadable: the SMU refused the read or its band check failed", "unreadable: the SMU refused"),
+            (None, "not recorded"),
+        ],
+    )
+    def test_a_session_run_with_any_other_shaper_is_refused(self, db, tmp_path, capsys, shaper, said):
+        session_id, _ = session_with_shaper(db, tmp_path, shaper)
+        ran(db, session_id, -30, "pass", [[5400, 55, 20.0]])
+        assert cli.cmd_margins([str(session_id)], db) == cli.EXIT_REFUSED
+        out = capsys.readouterr()
+        assert f"ran with the Curve Shaper {said}" in out.err
+        assert out.out == ""
+
+    def test_a_session_with_no_single_core_test_says_so(self, db, tmp_path, capsys):
+        session_id, _ = session_with_shaper(db, tmp_path, ZERO_SHAPER)
+        assert cli.cmd_margins([str(session_id)], db) == cli.EXIT_COMPLETED
+        assert capsys.readouterr().out == f"no single-core tests in session {session_id}\n"
+
+    @pytest.mark.parametrize("rest", [[], ["x"], ["1", "2"]])
+    def test_needs_exactly_one_session_id(self, db, capsys, rest):
+        assert cli.cmd_margins(rest, db) == cli.EXIT_REFUSED
+        assert "needs one SESSION_ID" in capsys.readouterr().err
+
+    def test_an_unknown_session_is_refused_by_name(self, db, capsys):
+        assert cli.cmd_margins(["99"], db) == cli.EXIT_REFUSED
+        assert "session 99 is not stored" in capsys.readouterr().err
+
+    def test_the_command_reads_the_default_database_and_closes_it(self, monkeypatch, capsys):
+        closed = []
+
+        class Own(HistoryDB):
+            def close(self):
+                closed.append(True)
+                super().close()
+
+        monkeypatch.setattr("corecycler.history.db.HistoryDB", lambda: Own(":memory:"))
+        assert cli.cli_main(["margins", "7"]) == cli.EXIT_REFUSED
+        assert closed == [True]
 
 
 class TestStatus:

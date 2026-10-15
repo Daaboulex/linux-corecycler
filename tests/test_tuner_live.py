@@ -21,7 +21,16 @@ from corecycler.history.db import HistoryDB
 from corecycler.monitor.frequency import PowerState
 from corecycler.monitor.hwmon import SensorRead
 from corecycler.tuner import live, live_hw, stages, telemetry
-from corecycler.tuner.live import BootFacts, Identity, LiveRig, Store, coverage, stored_from_json, stored_to_json
+from corecycler.tuner.live import (
+    BootFacts,
+    Identity,
+    LiveRig,
+    Store,
+    coverage,
+    margins,
+    stored_from_json,
+    stored_to_json,
+)
 from corecycler.tuner.machine.types import (
     Close,
     CrashEvidenceRead,
@@ -2516,6 +2525,72 @@ def test_a_returned_test_stores_each_core_s_coverage_from_its_own_samples(tmp_pa
     store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0), {0: 0})
     (saved,) = rows(SimpleNamespace(store=store), "SELECT coverage_json FROM tuner_tests WHERE id=?", (row,))
     assert json.loads(saved["coverage_json"]) == {"0": {"cells": [[5000, 60, 0.2]], "unreadable_s": 0.0}}
+
+
+def single_core_row(stage, core, value, verdict, cells, ended=True, recorded_core=None):
+    record = {str(core if recorded_core is None else recorded_core): {"cells": cells, "unreadable_s": 0.0}}
+    return {
+        "stage": stage,
+        "core": core,
+        "value": value,
+        "verdict": verdict,
+        "ended_at": "2026-10-15T15:00:00+00:00" if ended else None,
+        "coverage_json": None if cells is None else json.dumps(record),
+    }
+
+
+@pytest.mark.req("A2.margins")
+def test_the_margin_map_keeps_per_clock_the_deepest_pass_above_the_shallowest_failure_of_single_core_tests():
+    found = margins(
+        [
+            single_core_row("search", 9, -35, "pass", [[5400, 55, 20.0]]),
+            single_core_row("search", 9, -30, "pass", [[5400, 60, 20.0], [5800, 50, 1.0]]),
+            single_core_row("search", 9, -28, "silicon", [[5400, 60, 12.03], [5500, 65, 6.0]]),
+            single_core_row("search", 9, -28, "pass", [[5400, 55, 0.07]]),
+            single_core_row("live1", 9, -27, "pass", [[5400, 55, 20.04]]),
+            single_core_row("search", 9, -29, "thermal", [[5400, 80, 20.0]]),
+            single_core_row("steady", 9, -40, "silicon", [[4400, 80, 20.0]]),
+            single_core_row("search", 9, -44, None, None, ended=False),
+            single_core_row("search", 9, -26, "pass", None),
+            single_core_row("search", 9, -25, "pass", [[5400, 55, 20.0]], recorded_core=3),
+            single_core_row("search", 4, -39, "pass", [[4800, 55, 20.0]]),
+        ]
+    )
+    assert list(found) == [4, 9]
+    assert found[9] == {
+        "bins": {
+            5400: {
+                "passed": -27,
+                "passed_s": 20.0,
+                "failed": -28,
+                "failed_s": 12.0,
+                "deeper": [-35, -30, -28],
+                "temp": [55, 65],
+                "seconds": 72.1,
+            },
+            5500: {
+                "passed": None,
+                "passed_s": 0.0,
+                "failed": -28,
+                "failed_s": 6.0,
+                "deeper": [],
+                "temp": [65, 70],
+                "seconds": 6.0,
+            },
+            5800: {
+                "passed": -30,
+                "passed_s": 1.0,
+                "failed": None,
+                "failed_s": 0.0,
+                "deeper": [],
+                "temp": [50, 55],
+                "seconds": 1.0,
+            },
+        },
+        "open": [-44],
+        "unrecorded": 2,
+    }
+    assert found[4]["bins"][4800]["passed"] == -39
 
 
 @pytest.mark.req("VERDICT.18", "PRELUDE.1")

@@ -134,6 +134,9 @@ so a driver started from a terminal shows there too and its controls work on it.
 The same actions run headless: `corecycler tune` (with `--config FILE` or `--cores`),
 `resume`, `validate`, `continue` and `restart` take a session id, `corecycler status`
 lists the sessions, and `corecycler --help` lists the flags and exit codes.
+`corecycler margins SESSION_ID` prints, for each core and each 100 MHz of its clock, the
+deepest offset its one-core tests passed above the shallowest that failed there, beside
+the session's own result; it reads only a session that ran with the Curve Shaper at 0.
 
 ### Settings
 

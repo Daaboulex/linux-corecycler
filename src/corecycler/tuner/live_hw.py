@@ -200,9 +200,16 @@ def shaper_words(bands: tuple[tuple[int, int, int], ...]) -> str:
     )
 
 
+NO_SHAPER = "none on this generation"
+
+
+def shaper_at_zero(fact: str | None) -> bool:
+    return fact in (NO_SHAPER, shaper_words(((0, 0, 0),) * len(SHAPER_BAND_NAMES)))
+
+
 def shaper_read(smu) -> tuple[tuple[tuple[int, int, int], ...] | None, str]:
     if smu.commands.get_curve_shaper_cmd is None:
-        return None, "none on this generation"
+        return None, NO_SHAPER
     bands = smu.get_curve_shaper()
     if bands is None:
         return None, "unreadable: the SMU refused the read or its band check failed"

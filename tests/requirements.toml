@@ -4936,6 +4936,11 @@ statement = "Every tuner test stores, for every core, the seconds it spent in ea
 proof = "built"
 
 [[requirement]]
+id = "A2.margins"
+statement = "corecycler margins SESSION_ID prints, per core and per 100 MHz of its clock, the shallowest offset that failed in the session's single-core search tests and the deepest that passed above it, each with its seconds there, the values that passed at or below the failure, the temperature range, the tests with no verdict and those with no coverage record; a session recorded with any Curve Shaper other than 0 on a CPU that has one is refused, since its offsets are not the whole offset (scratch/design/margin-walk.md)."
+proof = "built"
+
+[[requirement]]
 id = "EC.real"
 statement = "A real clean run of stress-ng 0.22.01 (the tuner's cpu fft verify shape and the memory test's vm verify shape) and of stressapptest 1.0.11, captured 2026-10-14 on the M1 from the repository's pinned nixpkgs, raises no finding in its backend, and the GUI memory test calls each a pass (scratch/design/error-capture.md gaps 4 and 12, the clean half)."
 proof = "built"
