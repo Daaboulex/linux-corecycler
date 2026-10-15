@@ -555,6 +555,77 @@ def test_continue_carries_the_session_into_a_child_under_the_new_setup_and_super
     assert result.effects[0] is supersede
 
 
+def paused_on_a_new_setup_in(stage, **world):
+    fake = fresh(2, [-6, -3], 2, max_offset=-8, k_1t=1, k_2t=1, wait_between_cores_s=0.0, transient_window_s=600.0)
+    for name, value in world.items():
+        setattr(fake, name, value)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not stage:
+        assert fake.progress()
+    fake.post(PauseRequest())
+    while fake.state.lifecycle is not Lifecycle.PAUSED:
+        assert fake.progress()
+    fake.setup = (("bios", "B"),)
+    fake.post(Resume(1))
+    while fake.state.pause.reason is PauseReason.RESUMING:
+        assert fake.progress()
+    assert fake.state.pause.reason is PauseReason.SETUP_CHANGED
+    return fake
+
+
+@pytest.mark.req("ALLCORE.continue")
+def test_a_child_continued_from_the_all_core_stages_re_enters_steady_with_the_margin_over_its_floors():
+    fake = paused_on_a_new_setup_in(Stage.TRANSIENT)
+    floors = dict(fake.state.flow.allcore.floors)
+    parent = fake.state.with_core(replace(fake.state.core(0), value=floors[0] + 1))
+    parent = parent.with_core(replace(parent.core(1), value=0))
+    moved = replace(parent.flow.allcore, frozen=(1,), rounds=2, t_idx=1, t_clean=30.0)
+    parent = replace(parent, flow=replace(parent.flow, allcore=moved))
+    child = transition(parent, ContinueOnSetup(2), fake.world()).state
+    assert child.flow.stage is Stage.STEADY
+    assert {r.core: r.value for r in child.cores} == {0: floors[0] + 3, 1: 0}
+    cursor = child.flow.allcore
+    assert (cursor.floors, cursor.frozen, cursor.rounds, cursor.tightened, cursor.t_idx, cursor.t_clean) == (
+        parent.flow.allcore.floors,
+        (1,),
+        0,
+        False,
+        0,
+        0.0,
+    )
+    assert child.slot.token >= parent.next_token
+    assert child.next_token > child.slot.token
+    said = [
+        effect.text
+        for effect in transition(parent, ContinueOnSetup(2), fake.world()).effects
+        if type(effect).__name__ == "Announce"
+    ]
+    assert said[0].endswith("it re-enters the all-core stages from steady with the margin")
+
+
+@pytest.mark.req("ALLCORE.continue")
+def test_a_child_continued_from_a_bisect_of_steady_re_enters_steady_without_the_bisect():
+    fake = paused_on_a_new_setup_in(Stage.BISECT, edges_hot={0: -2, 1: -2})
+    assert fake.state.flow.bisect.entry is Stage.STEADY
+    child = transition(fake.state, ContinueOnSetup(2), fake.world()).state
+    assert (child.flow.stage, child.flow.bisect) == (Stage.STEADY, None)
+
+
+@pytest.mark.req("ALLCORE.continue", "G12")
+@pytest.mark.parametrize("validating", [False, True])
+def test_a_child_continued_from_memory_or_a_validation_keeps_its_stage(validating):
+    stage = Stage.TRANSIENT if validating else Stage.MEMORY
+    fake = paused_on_a_new_setup_in(stage)
+    parent = fake.state
+    if validating:
+        profile = tuple((r.core, r.value) for r in parent.cores)
+        parent = replace(parent, flow=replace(parent.flow, validating=profile))
+    result = transition(parent, ContinueOnSetup(2), fake.world())
+    assert (result.state.flow.stage, result.state.cores) == (parent.flow.stage, parent.cores)
+    said = [effect.text for effect in result.effects if type(effect).__name__ == "Announce"]
+    assert "re-enters" not in said[0]
+
+
 @pytest.mark.req("L01.2.stored")
 @pytest.mark.parametrize(("held", "refused"), [((1, "paused"), None), ((9, "paused"), "session 9 is paused")])
 def test_a_restart_supersedes_its_own_held_parent_but_not_another_held_session(held, refused):

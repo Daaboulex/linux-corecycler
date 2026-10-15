@@ -379,27 +379,36 @@ def _superseded(s: SessionState) -> Stored:
     return replace(stored(s), status="superseded")
 
 
+REENTRY = "; it re-enters the all-core stages from steady with the margin"
+
+
 def _continue_on_setup(s: SessionState, e: ContinueOnSetup, w: World) -> Transition:
     problem = _setup_choice_problem(s, w)
     if problem is not None:
         return Transition(s, refused=problem)
     changed = "; ".join(filter(None, (_changes(s.setup, w.setup), _held_base_changes(s, w.bios_co))))
     token = s.next_token
-    child = replace(
-        s,
-        lifecycle=Lifecycle.RUNNING,
-        session_id=e.child_id,
-        setup=w.setup,
-        base_co=w.bios_co,
-        pause=None,
-        slot=Waiting(token, 0.0),
-        streaks=Streaks(),
-        next_token=token + 1,
+    child = _reentered(
+        replace(
+            s,
+            lifecycle=Lifecycle.RUNNING,
+            session_id=e.child_id,
+            setup=w.setup,
+            base_co=w.bios_co,
+            pause=None,
+            slot=Waiting(token, 0.0),
+            streaks=Streaks(),
+            next_token=token + 1,  # equivalent-mutant: tokens only need to rise, nothing reads their step
+        )
     )
     effects: list = [Supersede(_superseded(s), stored(child), "continue"), ClearStockMarker()]
     effects += [WriteCO(core, value) for core, value in s.baseline]
     effects += [
-        Announce("continued", f"session {e.child_id} continues session {s.session_id} under a new setup: {changed}"),
+        Announce(
+            "continued",
+            f"session {e.child_id} continues session {s.session_id} under a new setup: {changed}"
+            + (REENTRY if child.flow is not s.flow else ""),
+        ),
         Schedule(token, 0.0),
     ]
     return Transition(child, tuple(effects))
@@ -965,13 +974,26 @@ def _end_live1(s: SessionState, w: World) -> Transition:
     if s.flow.validating is not None:
         return _next(replace(s, flow=_past_tighten(replace(s.flow, live1=None, allcore=cursor), s.config)), w, None)
     if fresh:
-        s = _entry_margin(s)
+        s = _entry_margin(s, cursor)
     flow = replace(s.flow, stage=Stage.STEADY, live1=None, allcore=cursor)
     return _allcore_next(replace(s, flow=flow), w)
 
 
-def _entry_margin(s: SessionState) -> SessionState:
-    return replace(s, cores=tuple(search.loosen(r, s.config, allcore.ENTRY_MARGIN_STEPS) for r in s.cores))
+def _entry_margin(s: SessionState, cursor: AllCore) -> SessionState:
+    floors, margin = dict(cursor.floors), allcore.ENTRY_MARGIN_STEPS * s.config.fine_step
+    entered = (replace(r, value=max(r.value, min(0, floors.get(r.core, r.value) + margin))) for r in s.cores)
+    return replace(s, cores=tuple(entered))
+
+
+def _reentered(s: SessionState) -> SessionState:
+    flow = s.flow
+    if flow is None or flow.validating is not None:
+        return s
+    entry = flow.bisect.entry if flow.stage is Stage.BISECT else flow.stage
+    if entry not in ALLCORE:
+        return s
+    cursor = replace(flow.allcore, t_idx=0, t_clean=0.0, rounds=0, tightened=False)
+    return _entry_margin(replace(s, flow=replace(flow, stage=Stage.STEADY, bisect=None, allcore=cursor)), cursor)
 
 
 def _frozen(cursor: AllCore, cores: tuple[int, ...]) -> AllCore:

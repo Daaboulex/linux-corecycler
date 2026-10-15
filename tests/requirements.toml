@@ -372,6 +372,11 @@ statement = "ENDURANCE: hot, burst, warm, burst, idle in a cycle until 10800 s f
 proof = "built"
 
 [[requirement]]
+id = "ALLCORE.continue"
+statement = "A child continued from an all-core stage, or a Bisect of one, re-enters STEADY with each core at the looser of its value and its floor plus the margin; floors and frozen kept, the reclaim run again; validating flows and other stages keep their stage"
+proof = "built"
+
+[[requirement]]
 id = "ALLCORE.margin"
 statement = "The all-core stages start every core 3 steps looser than its proven value, 0 at most, its FB untouched (owner 2026-10-15, allcore-entry.md A)"
 proof = "built"
@@ -1031,7 +1036,7 @@ task = "T28"
 
 [[requirement]]
 id = "G12"
-statement = "A setup change is raised at resume; after Continue the child resumes the same loop at the same cursor"
+statement = "A setup change is raised at resume; after Continue the child resumes the same loop at the same cursor, but a child continued from the all-core stages re-enters STEADY with the margin (owner 2026-10-15)"
 proof = "built"
 
 [[requirement]]
