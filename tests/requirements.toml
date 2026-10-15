@@ -4767,6 +4767,11 @@ statement = "Set all to 0 names every core its per-core fallback could not set t
 proof = "built"
 
 [[requirement]]
+id = "T22.peaks"
+statement = "A core's peak clock or temperature that no tick read is shown as unread in the Results log and stored as nothing in history, never as 0; a core with no clock read still gets its line (scratch/design/t23-config-results.md R7)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

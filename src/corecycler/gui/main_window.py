@@ -106,6 +106,10 @@ class TestWorker(QThread):
             self.crashed.emit(str(exc))
 
 
+def _read(value: float | None, spec: str, unit: str) -> str:
+    return "unread" if value is None else f"{value:{spec}}{unit}"
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -499,17 +503,16 @@ class MainWindow(QMainWindow):
                 with contextlib.suppress(RuntimeError):
                     signal.disconnect(slot)
         for core_id, peaks in self._core_telemetry.items():
-            if peaks["max_freq"] > 0:
-                try:
-                    logger.update_core_telemetry_peaks(
-                        core_id,
-                        peak_freq_mhz=peaks["max_freq"],
-                        max_temp_c=peaks["max_temp"],
-                        min_vcore_v=peaks["min_vcore"],
-                        max_vcore_v=peaks["max_vcore"],
-                    )
-                except Exception:
-                    log.exception("Failed to record telemetry peaks of core %d", core_id)
+            try:
+                logger.update_core_telemetry_peaks(
+                    core_id,
+                    peak_freq_mhz=peaks["max_freq"],
+                    max_temp_c=peaks["max_temp"],
+                    min_vcore_v=peaks["min_vcore"],
+                    max_vcore_v=peaks["max_vcore"],
+                )
+            except Exception:
+                log.exception("Failed to record telemetry peaks of core %d", core_id)
         try:
             logger.on_test_stopped()
         except Exception:
@@ -557,7 +560,7 @@ class MainWindow(QMainWindow):
             self._results_tab.add_error(core_id, result.detail)
 
         t = self._core_telemetry.pop(core_id, None)
-        if t and t["max_freq"] > 0:
+        if t:
             extra_parts = []
             if t["min_vcore"] is not None and t["max_vcore"] is not None:
                 extra_parts.append(f"Vcore: {t['min_vcore']:.4f}-{t['max_vcore']:.4f}V")
@@ -567,10 +570,9 @@ class MainWindow(QMainWindow):
                 extra_parts.append(f"Power: {t['core_watts']:.1f}W")
             extra = ("  " + "  ".join(extra_parts)) if extra_parts else ""
             state = "PASS" if (result and result.passed) else "FAIL"
-            self._results_tab.add_log(
-                core_id,
-                f"[{state}] Peak: {t['max_freq']:.0f} MHz, Max temp: {t['max_temp']:.1f}C{extra}",
-            )
+            peak = _read(t["max_freq"], ".0f", " MHz")
+            hottest = _read(t["max_temp"], ".1f", "C")
+            self._results_tab.add_log(core_id, f"[{state}] Peak: {peak}, Max temp: {hottest}{extra}")
 
             if self._logger:
                 try:
@@ -780,23 +782,23 @@ class MainWindow(QMainWindow):
 
         if current_core not in self._core_telemetry:
             self._core_telemetry[current_core] = {
-                "max_freq": 0.0,
+                "max_freq": None,
                 "max_stretch_pct": 0.0,
                 "core_watts": None,
-                "max_temp": 0.0,
+                "max_temp": None,
                 "last_vcore": None,
                 "min_vcore": None,
                 "max_vcore": None,
             }
         t = self._core_telemetry[current_core]
-        if freq is not None and freq > t["max_freq"]:
-            t["max_freq"] = freq
+        if freq is not None:
+            t["max_freq"] = freq if t["max_freq"] is None else max(t["max_freq"], freq)
         if stretch_pct is not None and stretch_pct > t["max_stretch_pct"]:
             t["max_stretch_pct"] = stretch_pct
         if core_watts is not None:
             t["core_watts"] = core_watts
-        if temp is not None and temp > t["max_temp"]:
-            t["max_temp"] = temp
+        if temp is not None:
+            t["max_temp"] = temp if t["max_temp"] is None else max(t["max_temp"], temp)
         if core_vcore is not None:
             t["last_vcore"] = core_vcore
             if t["min_vcore"] is None or core_vcore < t["min_vcore"]:

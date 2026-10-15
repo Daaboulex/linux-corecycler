@@ -455,6 +455,23 @@ class TestCoreFinished:
         assert logger.update_core_telemetry_peaks.called
         assert 0 not in window._core_telemetry
 
+    @pytest.mark.req("T22.peaks")
+    @pytest.mark.parametrize(
+        ("unread", "line"),
+        [
+            ("max_temp", "[Core 0] [PASS] Peak: 5000 MHz, Max temp: unread"),
+            ("max_freq", "[Core 0] [PASS] Peak: unread, Max temp: 81.5C"),
+        ],
+    )
+    def test_a_peak_never_read_is_said_unread_and_stored_as_nothing(self, window, unread, line):
+        window._core_telemetry[0] = {**self._telemetry(), "max_stretch_pct": 0.0, "core_watts": None, unread: None}
+        logger = MagicMock()
+        window._logger = logger
+        window._on_core_finished(0, StressResult(core_id=0, outcome=Outcome.PASS, detail="", duration_seconds=10.0))
+        assert window._results_tab._log.toPlainText().splitlines()[-1].startswith(line)
+        stored = logger.update_core_telemetry_peaks.call_args.kwargs
+        assert stored["max_temp_c" if unread == "max_temp" else "peak_freq_mhz"] is None
+
     def test_a_failed_peak_write_is_surfaced(self, window, caplog):
         window._core_telemetry[0] = self._telemetry()
         logger = MagicMock()
@@ -580,13 +597,23 @@ class TestElapsedWatchdog:
         assert caplog.text.count("disk full") == 1
         assert "recorded again" in caplog.text
 
+    @pytest.mark.req("T22.peaks")
+    def test_the_peaks_keep_the_highest_reading_and_skip_an_unread_one(self, window):
+        window._active_test_core = 0
+        for clocks, tctl in (({0: 4500.0, 8: 4500.0}, 72.0), ({0: 4400.0, 8: 4400.0}, 65.0), ({}, None)):
+            window._sensors.give(tctl=tctl)
+            window._ticker.clocks.clocks = clocks
+            window._feed_core_grid_telemetry(window._ticker.read([]))
+        peaks = window._core_telemetry[0]
+        assert (peaks["max_freq"], peaks["max_temp"]) == (4500.0, 72.0)
+
     def test_a_core_with_no_temperature_read_records_none_not_zero(self, window):
         window._sensors.give()
         window._logger = MagicMock()
         window._active_test_core = 0
         window._feed_core_grid_telemetry(window._ticker.read([]))
         assert window._logger.record_telemetry_sample.call_args.args[2] is None
-        assert window._core_telemetry[0]["max_temp"] == 0.0
+        assert window._core_telemetry[0]["max_temp"] is None
 
 
 class TestProfileIo:
