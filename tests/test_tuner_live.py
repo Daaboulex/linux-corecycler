@@ -876,7 +876,8 @@ def test_a_sample_that_cannot_be_written_pauses_as_database(tmp_path, monkeypatc
 
 
 @pytest.mark.req("L25.h", "SR.R2")
-def test_a_crash_s_context_is_rebuilt_from_the_samples_its_test_left(tmp_path, monkeypatch):
+@pytest.mark.req("SC.4b")
+def test_a_crash_s_context_is_rebuilt_from_the_samples_its_test_left_and_its_tail_packed(tmp_path, monkeypatch):
     monkeypatch.setattr(live, "ALLCORE", frozenset(Stage))
     hardware = FakeHardware()
     hold = threading.Event()
@@ -887,10 +888,14 @@ def test_a_crash_s_context_is_rebuilt_from_the_samples_its_test_left(tmp_path, m
         assert time.monotonic() < deadline, "the durable tail never reached one group"
         r.step(0.01)
     tested = next(c for c in r.state.cores if c.in_test)
-    cpus = tuple(json.loads(rows(r, "SELECT cpus_json FROM tuner_tests WHERE ended_at IS NULL")[0]["cpus_json"]))
+    dead = rows(r, "SELECT id, cpus_json FROM tuner_tests WHERE ended_at IS NULL")[0]
+    cpus = tuple(json.loads(dead["cpus_json"]))
+    left = r.store.db.tuner_test_samples(dead["id"])
     hardware.boot = "boot-b"
     read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
     hold.set()
+    assert rows(r, "SELECT count(*) AS n FROM tuner_samples WHERE test_id=?", (dead["id"],))[0]["n"] == 0
+    assert r.store.db.tuner_test_samples(dead["id"]) == left
     working = tuple(sorted({core for core, owned in CPUS for cpu in owned if cpu in cpus}))
     expected = telemetry.context([taken(tested.core, n) for n in range(telemetry.TAIL_GROUP)], False, working, ())
     assert read.context == expected

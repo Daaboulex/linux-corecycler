@@ -1638,6 +1638,11 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             )
             conn.execute("DELETE FROM tuner_samples WHERE test_id=?", (test_id,))
 
+    def pack_tuner_tail(self, test_id: int) -> None:
+        rows = self.__conn.execute("SELECT * FROM tuner_samples WHERE test_id=? ORDER BY id", (test_id,)).fetchall()
+        if rows:
+            self.insert_tuner_block(test_id, [_tail_sample(row) for row in rows])
+
     def prune_tuner_samples(self, verdict: str, ended_before: str) -> None:
         self.__conn.execute(
             "DELETE FROM tuner_sample_blocks WHERE test_id IN"

@@ -4381,9 +4381,8 @@ proof = "built"
 
 [[requirement]]
 id = "SC.4b"
-statement = "A resume after a crash packs the tail rows into a final block"
-proof = "not built"
-task = "T28"
+statement = "A resume after a crash packs the dead test's tail rows into a final block, its samples read back the same"
+proof = "built"
 
 [[requirement]]
 id = "UI1.knobs"

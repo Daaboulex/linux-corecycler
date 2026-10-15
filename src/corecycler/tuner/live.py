@@ -495,6 +495,11 @@ class Store:
         assigned = tuple(sorted({core_of_cpu[cpu] for cpu in json.loads(test["cpus_json"]) if cpu in core_of_cpu}))
         return telemetry.context(ring, test["load"] == Load.HOT.value, assigned, ())
 
+    def pack_dead_tail(self, session_id: int, boot: str) -> None:
+        test = self.db.open_tuner_test(session_id, boot)
+        if test is not None:
+            self.db.pack_tuner_tail(test["id"])
+
     def test_broken(self, row: int, detail: str) -> None:
         evidence = {"records": [], "unblamed_corrected": False}
         self.write_block()
@@ -808,6 +813,8 @@ class LiveRig:
             rows = self.store.journal_rows(session, last)
             other = not same and self.store.taken_over(session, last)
             context = None if same else self.store.crash_context(session, last, self._core_of_cpu())
+            if not same:
+                self.store.pack_dead_tail(session, last)
         except sqlite3.Error as exc:
             return DatabaseFailed(f"the session could not be read back: {exc}")
         stamps = [row.mono_ns for row in rows if row.mono_ns is not None]
