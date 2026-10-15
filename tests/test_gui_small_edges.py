@@ -180,14 +180,13 @@ class TestConfigTabProfile:
 
         tab = ConfigTab()
         profile = tab.get_profile()
+        profile.fft_preset = "CUSTOM"
         profile.fft_min = 16
         profile.fft_max = 4096
-        profile.cores_to_test = []
-        tab.set_profile(profile)
+        assert tab.set_profile(profile) == ()
 
         assert tab._fft_min_spin.value() == 16
         assert tab._fft_max_spin.value() == 4096
-        assert tab.get_profile().cores_to_test is None
 
 
 @pytest.mark.req("T23.style")

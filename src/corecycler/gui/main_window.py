@@ -172,6 +172,7 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._setup_toolbar()
         self._setup_status_bar()
+        self._show_saved_profile()
         self._setup_timer()
 
         self.resize(self._settings.window_width, self._settings.window_height)
@@ -218,7 +219,6 @@ class MainWindow(QMainWindow):
         self._tabs.setDocumentMode(True)
 
         self._config_tab = ConfigTab(self._topology)
-        self._config_tab.set_profile(self._settings.active_profile)
         self._tabs.addTab(self._config_tab, "Configuration")
 
         self._results_tab = ResultsTab()
@@ -294,6 +294,11 @@ class MainWindow(QMainWindow):
         load_action = QAction("Load Profile", self)
         load_action.triggered.connect(self._load_profile)
         toolbar.addAction(load_action)
+
+    def _show_saved_profile(self) -> None:
+        refused = self._config_tab.set_profile(self._settings.active_profile)
+        if refused:
+            self._status_msg.setText("Saved profile not loaded: " + "; ".join(refused))
 
     def _setup_status_bar(self) -> None:
         self._status_bar = QStatusBar()
@@ -817,7 +822,9 @@ class MainWindow(QMainWindow):
         if path:
             try:
                 profile = load_profile(Path(path))
-                self._config_tab.set_profile(profile)
+                refused = self._config_tab.set_profile(profile)
+                if refused:
+                    QMessageBox.warning(self, "Profile not loaded", "\n".join(refused))
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"Failed to load profile: {e}")
 

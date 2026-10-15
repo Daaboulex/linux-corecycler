@@ -4752,6 +4752,11 @@ statement = "Every button of the Auto-Tuner tab is listed with its reaction, and
 proof = "built"
 
 [[requirement]]
+id = "T23.config.load"
+statement = "A profile, loaded from a file or the saved settings, is shown only when the Configuration tab holds every field as stored; otherwise nothing changes and each field is named with the stored value and what the form would show (a temperature limit of 40.0 would have shown 50.0, raising the thermal stop; scratch/design/t23-config-results.md C1)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

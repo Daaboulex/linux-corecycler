@@ -212,6 +212,31 @@ class TestRoundTrip:
         assert tab.get_profile().cores_to_test is None
 
 
+class TestRefusedProfile:
+    @pytest.mark.req("T23.config.load")
+    def test_a_profile_the_form_cannot_show_exactly_is_refused_and_the_form_keeps_its_values(self):
+        from corecycler.config.settings import TestProfile
+
+        tab = _tab()
+        before = tab.get_profile()
+        refused = tab.set_profile(TestProfile(max_temperature=40.0, cores_to_test=[1, 9], cycle_count=0))
+        assert refused == (
+            "Rounds: the profile has 0, the form would show 1",
+            "Cores to test: the profile has [1, 9], the form would show [1]",
+            "Temperature limit: the profile has 40.0, the form would show 50.0",
+        )
+        assert tab.get_profile() == before
+
+    @pytest.mark.req("T23.config.load")
+    def test_a_profile_the_form_shows_exactly_is_applied_with_nothing_refused(self):
+        from corecycler.config.settings import TestProfile
+
+        tab = _tab()
+        assert tab.set_profile(TestProfile(max_temperature=80.0, cores_to_test=[1, 7], cycle_count=2)) == ()
+        shown = tab.get_profile()
+        assert (shown.max_temperature, shown.cores_to_test, shown.cycle_count) == (80.0, [1, 7], 2)
+
+
 class TestRetestFailed:
     def test_failed_cores_enable_button_and_tick_only_them(self):
         tab = _tab()

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys as _sys
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,7 +19,7 @@ import pytest
 if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
-from corecycler.config.settings import AppSettings, save_profile
+from corecycler.config.settings import AppSettings, TestProfile, save_profile
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.scheduler import CoreTestStatus
 from corecycler.engine.topology import CPUTopology, PhysicalCore
@@ -635,6 +636,34 @@ class TestProfileIo:
         ):
             window._load_profile()
         assert window._config_tab.get_profile().seconds_per_core == 123
+
+    @pytest.mark.req("T23.config.load")
+    def test_a_profile_the_form_cannot_show_is_refused_naming_each_field(self, window, tmp_path, no_modal):
+        src = tmp_path / "profile.json"
+        before = window._config_tab.get_profile()
+        save_profile(replace(before, max_temperature=40.0), src)
+        with patch(
+            "corecycler.gui.main_window.QFileDialog.getOpenFileName",
+            return_value=(str(src), ""),
+        ):
+            window._load_profile()
+        assert no_modal.warning.call_args.args[1:] == (
+            "Profile not loaded",
+            "Temperature limit: the profile has 40.0, the form would show 50.0",
+        )
+        assert window._config_tab.get_profile() == before
+
+    @pytest.mark.req("T23.config.load")
+    def test_a_saved_profile_the_form_cannot_show_is_not_loaded_at_start_and_the_status_says_why(
+        self, monkeypatch, tmp_path, db
+    ):
+        settings = _settings(tmp_path, profiles=[TestProfile(max_temperature=40.0)])
+        window = _build(monkeypatch, tmp_path, db=db, settings=settings)
+        assert window._status_msg.text() == (
+            "Saved profile not loaded: Temperature limit: the profile has 40.0, the form would show 50.0"
+        )
+        assert window._config_tab.get_profile().max_temperature == 95.0
+        window._history_db = None
 
     def test_a_failed_load_is_reported(self, window, tmp_path, no_modal):
         with patch(

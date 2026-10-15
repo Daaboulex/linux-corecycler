@@ -97,6 +97,24 @@ def fft_label(preset: FFTPreset) -> str:
     return f"{FFT_NAMES[preset]}, {low}K to {high}K"
 
 
+FORM_FIELDS = (
+    ("backend", "Program"),
+    ("stress_mode", "Instruction set"),
+    ("fft_preset", "FFT size"),
+    ("fft_min", "Smallest FFT"),
+    ("fft_max", "Largest FFT"),
+    ("threads", "Threads per core"),
+    ("seconds_per_core", "Time per core"),
+    ("cycle_count", "Rounds"),
+    ("stop_on_error", "Stop at the first error"),
+    ("cores_to_test", "Cores to test"),
+    ("max_temperature", "Temperature limit"),
+    ("variable_load", "Changing load"),
+    ("idle_stability_test", "Idle watch after each core"),
+    ("idle_between_cores", "Pause between cores"),
+)
+
+
 class ConfigTab(QWidget):
     def __init__(self, topology: CPUTopology | None = None) -> None:
         super().__init__()
@@ -336,7 +354,26 @@ class ConfigTab(QWidget):
             idle_between_cores=self._idle_between_spin.value(),
         )
 
-    def set_profile(self, profile: TestProfile) -> None:
+    def set_profile(self, profile: TestProfile) -> tuple[str, ...]:
+        before = self.get_profile()
+        self._show_profile(profile)
+        shown = self.get_profile()
+        changed = tuple(
+            f"{label}: the profile has {getattr(profile, name)!r}, the form would show {getattr(shown, name)!r}"
+            for name, label in FORM_FIELDS
+            if self._held(profile, name) != self._held(shown, name)
+        )
+        if changed:
+            self._show_profile(before)
+        return changed
+
+    def _held(self, profile: TestProfile, name: str) -> object:
+        value = getattr(profile, name)
+        if name == "cores_to_test":
+            return sorted(self._core_boxes) if value is None else sorted(value)
+        return value
+
+    def _show_profile(self, profile: TestProfile) -> None:
         self._backend_combo.setCurrentText(profile.backend)
         self._stress_mode_combo.setCurrentIndex(max(self._stress_mode_combo.findData(profile.stress_mode), 0))
         self._fft_combo.setCurrentIndex(max(self._fft_combo.findData(profile.fft_preset), 0))
