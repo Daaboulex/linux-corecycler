@@ -668,6 +668,9 @@ def test_a_choice_is_refused_unless_the_session_paused_on_a_setup_that_still_dif
     fake.setup = (("bios", "A"),)
     unchanged = transition(fake.state, choice, fake.world())
     assert "nothing that affects a verdict changed since session 1 started" in unchanged.refused
+    fake.setup = (("bios", "A"), ("python", "3.14.7"), ("zenpower", "0.4.0"))
+    recorded_only = transition(fake.state, choice, fake.world())
+    assert "nothing that affects a verdict changed since session 1 started" in recorded_only.refused
     running = running_fake()
     assert "only a session paused as setup_changed" in transition(running.state, choice, running.world()).refused
 

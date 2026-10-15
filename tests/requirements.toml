@@ -2742,9 +2742,8 @@ proof = "built"
 
 [[requirement]]
 id = "L24.d.nochange"
-statement = "With no change event lines are written and L18 continues"
-proof = "not built"
-task = "T28"
+statement = "The setup records pm_table, python, qt and zenpower too, but never compares them for a pause; on a resume with no verdict change, each of them that changed is written as one setup_noted event line, the session goes on, and its setup takes the new values (design-packaging-trust.md B1 and B4)"
+proof = "built"
 
 [[requirement]]
 id = "L24.G11"

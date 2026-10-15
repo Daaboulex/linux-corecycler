@@ -1447,6 +1447,23 @@ def test_the_app_version_is_the_installed_package_s_or_says_it_is_not_installed(
     assert live_hw.app_version() == "unreadable: not installed"
 
 
+def test_the_qt_version_is_the_installed_pyside6_s_or_says_it_is_not_installed(monkeypatch):
+    asked = []
+
+    def installed(name):
+        asked.append(name)
+        return "6.10.1"
+
+    monkeypatch.setattr(live_hw.metadata, "version", installed)
+    assert (live_hw.qt_version(), asked) == ("6.10.1", ["PySide6"])
+
+    def absent(name):
+        raise live_hw.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(live_hw.metadata, "version", absent)
+    assert live_hw.qt_version() == "not installed"
+
+
 @pytest.mark.req("D49", "L24.c.keys", "L24.l24a.keys")
 def test_the_setup_holds_one_line_per_key_with_the_reason_for_what_could_not_be_read(tmp_path, monkeypatch):
     dmi = tmp_path / "dmi"
@@ -1463,6 +1480,8 @@ def test_the_setup_holds_one_line_per_key_with_the_reason_for_what_could_not_be_
     monkeypatch.setattr(live_hw, "app_version", lambda: "1.2.3")
     monkeypatch.setattr(live_hw, "kernel_build", lambda: "7.2.7 build abc")
     monkeypatch.setattr(live_hw, "microcode", lambda: "0xb404023")
+    monkeypatch.setattr(live_hw, "pm_table_version", lambda: "0x00620205")
+    monkeypatch.setattr(live_hw, "qt_version", lambda: "6.10.1")
     hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, cpu, vcache="ccd 0")
     setup = dict(hw.setup(((0, (0, 2)), (1, (1, 3))), ((0, 0), (1, 1))))
     assert setup == {
@@ -1472,11 +1491,18 @@ def test_the_setup_holds_one_line_per_key_with_the_reason_for_what_could_not_be_
         "kernel": "7.2.7 build abc",
         "microcode": "0xb404023",
         "pbo": "ppt 200.0 tdc unreadable edc 230.0 scalar 10.0 boost unreadable",
+        "pm_table": "0x00620205",
+        "python": live_hw.platform.python_version(),
+        "qt": "6.10.1",
         "ryzen_smu": "unreadable: No such file or directory unreadable: No such file or directory",
         "smu_firmware": "unreadable: No such file or directory",
         "topology": "online 0-3; 0: 0,2 l3 0; 1: 1,3 l3 1",
         "vcache": "ccd 0",
+        "zenpower": "not loaded",
     }
+    (tmp_path / "modules" / "zenpower").mkdir(parents=True)
+    (tmp_path / "modules" / "zenpower" / "version").write_text("0.4.0\n")
+    assert dict(hw.setup((), ()))["zenpower"] == "0.4.0 unreadable: No such file or directory"
 
 
 @pytest.mark.req("TM.A2.x3d")
@@ -1543,6 +1569,27 @@ def test_a_session_resumed_on_a_changed_setup_pauses_before_any_test_and_names_t
     assert final.pause.reason is PauseReason.SETUP_CHANGED
     assert "bios was A, is now B" in final.pause.detail
     assert again.worker is None
+
+
+@pytest.mark.req("L24.d.nochange")
+def test_a_resume_where_only_recorded_only_facts_changed_notes_them_and_goes_on(tmp_path):
+    hardware = FakeHardware()
+    hardware.setup_now = (("bios", "A"), ("python", "3.14.6"))
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    r.post(PauseRequest())
+    r.run_until_rest(0.01)
+    hardware.setup_now = (("bios", "A"), ("python", "3.14.7"), ("qt", "6.10.1"))
+    again = rig(tmp_path, hardware, db=r.store.db)
+    again.resume(1)
+    while again.worker is None and again.state.pause is None:
+        again.step(0.01)
+    assert again.state.pause is None
+    noted = [e["message"] for e in again.store.db.get_tuner_events(1) if e["severity"] == "setup_noted"]
+    assert noted == ["python was 3.14.6, is now 3.14.7", "qt was absent, is now 6.10.1"]
+    assert dict(again.state.setup) == {"bios": "A", "python": "3.14.7", "qt": "6.10.1"}
 
 
 def test_the_adapter_reads_the_kernel_facts_it_needs(monkeypatch):

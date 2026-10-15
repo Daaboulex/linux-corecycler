@@ -78,6 +78,9 @@ RESUMABLE = frozenset({"running", "paused", "aborted"})
 SETUP_REMEDY = "put it back and resume, or continue or restart under it"
 
 
+RECORDED_ONLY = frozenset({"pm_table", "python", "qt", "zenpower"})
+
+
 def transition(s: SessionState, e: Event, w: World) -> Transition:
     match e:
         case Start():
@@ -378,7 +381,7 @@ def _resume_stored(s: SessionState, e: Resume, w: World) -> Transition:
 def _setup_choice_problem(s: SessionState, w: World) -> str | None:
     if s.lifecycle is not Lifecycle.PAUSED or s.pause is None or s.pause.reason is not PauseReason.SETUP_CHANGED:
         return "only a session paused as setup_changed can continue or restart under a new setup"
-    if not _changes(s.setup, w.setup) and not _held_base_changes(s, w.bios_co):
+    if not _setup_changes(s.setup, w.setup) and not _held_base_changes(s, w.bios_co):
         return f"nothing that affects a verdict changed since session {s.session_id} started; resume it"
     return None
 
@@ -394,7 +397,7 @@ def _continue_on_setup(s: SessionState, e: ContinueOnSetup, w: World) -> Transit
     problem = _setup_choice_problem(s, w)
     if problem is not None:
         return Transition(s, refused=problem)
-    changed = "; ".join(filter(None, (_changes(s.setup, w.setup), _held_base_changes(s, w.bios_co))))
+    changed = "; ".join(filter(None, (_setup_changes(s.setup, w.setup), _held_base_changes(s, w.bios_co))))
     token = s.next_token
     child = _reentered(
         replace(
@@ -435,7 +438,7 @@ def _restart_on_setup(s: SessionState, e: RestartOnSetup, w: World) -> Transitio
     restarted = Announce(
         "restarted",
         f"session {e.child_id} restarts session {s.session_id} under a new setup: "
-        + "; ".join(filter(None, (_changes(s.setup, w.setup), _held_base_changes(s, w.bios_co)))),
+        + "; ".join(filter(None, (_setup_changes(s.setup, w.setup), _held_base_changes(s, w.bios_co)))),
     )
     return Transition(started.state, (Supersede(_superseded(s), stored(started.state), "restart"), *rest, restarted))
 
@@ -487,7 +490,7 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
         setup=st.setup,
         base_co=st.base_co,
     )
-    changed = "; ".join(filter(None, (_changes(st.setup, w.setup), _held_base_changes(st, w.bios_co))))
+    changed = "; ".join(filter(None, (_setup_changes(st.setup, w.setup), _held_base_changes(st, w.bios_co))))
     if changed:
         detail = f"the setup changed since session {st.session_id} started: {changed}; {SETUP_REMEDY}"
         return _enter_pause(running, PauseReason.SETUP_CHANGED, detail, _held_moved(st, w.bios_co))
@@ -592,7 +595,7 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
         )
     if after.incidents > s.incidents and after.incidents >= INCIDENT_LIMIT:
         return _enter_pause(after, PauseReason.INCIDENTS, f"{after.incidents} crashes nobody could be blamed for")
-    changed = _changes(after.setup, w.setup)
+    changed = _setup_changes(after.setup, w.setup)
     if changed:
         return _enter_pause(
             after,
@@ -606,6 +609,7 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
     if knobs is not None:
         return _enter_pause(after, *knobs)
     token = after.next_token
+    noted = tuple(item for item in w.setup if item[0] in RECORDED_ONLY)
     running = replace(
         after,
         lifecycle=Lifecycle.RUNNING,
@@ -613,10 +617,11 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
         slot=Waiting(token, 0.0),
         streaks=Streaks(),
         next_token=token + 1,
+        setup=tuple(sorted((*_verdict_part(after.setup), *noted))),
     )
     effects: list = [_commit(running), ClearStockMarker()]
     effects += [WriteCO(core, value) for core, value in s.baseline]
-    effects += [Announce("resumed", f"session {s.session_id}"), Schedule(token, 0.0)]
+    effects += [Announce("resumed", f"session {s.session_id}"), *_noted(after.setup, w.setup), Schedule(token, 0.0)]
     return Transition(running, tuple(effects))
 
 
@@ -1246,6 +1251,23 @@ def _bisect_next(s: SessionState, w: World) -> Transition:
         cpus, seconds, load = _cpus_for(lane, run.klass, w), s.config.test_seconds_1t, Load.ONE_T
     spec = TestSpec(run.klass, lane, dict(vector)[lane], cpus, seconds, vector, Stage.BISECT, load)
     return _start_test(s, flow, spec, w)
+
+
+def _verdict_part(setup: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
+    return tuple(item for item in setup if item[0] not in RECORDED_ONLY)
+
+
+def _setup_changes(recorded: tuple[tuple[str, str], ...], now: tuple[tuple[str, str], ...]) -> str:
+    return _changes(_verdict_part(recorded), _verdict_part(now))
+
+
+def _noted(recorded: tuple[tuple[str, str], ...], now: tuple[tuple[str, str], ...]) -> tuple[Announce, ...]:
+    was, found = dict(recorded), dict(now)
+    return tuple(
+        Announce("setup_noted", f"{name} was {was.get(name, 'absent')}, is now {found.get(name, 'absent')}")
+        for name in sorted(RECORDED_ONLY)
+        if was.get(name) != found.get(name)
+    )
 
 
 def _changes(recorded: tuple[tuple[str, str], ...], now: tuple[tuple[str, str], ...]) -> str:

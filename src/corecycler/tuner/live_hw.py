@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import random
 import re
 import secrets
@@ -169,10 +170,14 @@ class SmuHardware:
             ("kernel", kernel_build()),
             ("microcode", microcode()),
             ("pbo", pbo),
+            ("pm_table", pm_table_version()),
+            ("python", platform.python_version()),
+            ("qt", qt_version()),
             ("ryzen_smu", " ".join(smu)),
             ("smu_firmware", _setting(Path(SMU_DRIVER) / "version")),
             ("topology", f"online {_setting(self.cpu_root / 'online')}; {cores}"),
             ("vcache", self.vcache),
+            ("zenpower", _module_version("zenpower")),
         )
 
     def boot_facts(self, boot_id: str) -> BootFacts:
@@ -282,6 +287,24 @@ def microcode(cpuinfo: Path = CPUINFO) -> str:
         return f"unreadable: {exc.strerror}"
     found = {line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith("microcode")}
     return ",".join(sorted(found)) or "absent"
+
+
+def qt_version() -> str:
+    try:
+        return metadata.version("PySide6")
+    except metadata.PackageNotFoundError:
+        return "not installed"
+
+
+def pm_table_version() -> str:
+    data = PMTableReader().read()
+    return "unreadable" if data is None else f"0x{data.pm_table_version:08x}"
+
+
+def _module_version(name: str) -> str:
+    if not (MODULES / name).exists():
+        return "not loaded"
+    return " ".join(_setting(MODULES / name / part) for part in ("version", "srcversion"))
 
 
 def app_version() -> str:
