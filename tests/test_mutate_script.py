@@ -27,7 +27,7 @@ def test_a_failing_selection_is_reported_with_pytest_s_own_reason(tmp_path):
 def test_the_copy_lets_a_test_binary_run_and_a_red_baseline_prints_why(monkeypatch, capsys):
     runnable = []
 
-    def red(tests, timeout, root):
+    def red(tests, timeout, root, extra=None, env=None):
         probe = root / "probe"
         probe.write_text("#!/bin/sh\n")
         probe.chmod(0o755)
@@ -111,10 +111,59 @@ def test_only_a_clean_staged_run_stamps_the_tree_it_checked(monkeypatch, tmp_pat
 
     monkeypatch.setattr(mutate, "_git", git)
     monkeypatch.setattr(mutate, "_export", lambda commit, into: None)
-    monkeypatch.setattr(mutate, "_failure", lambda tests, timeout, root: None)
+    monkeypatch.setattr(mutate, "_baseline", lambda tests, timeout, root: {})
     stamp = tmp_path / "mutation-stamp"
     for verdict, commit, stamped in ((1, None, False), (0, "HEAD", False), (0, None, True)):
         monkeypatch.setattr(mutate, "_mutate", lambda *args, verdict=verdict: verdict)
         assert mutate._diff_mode(commit, ["tests/test_x.py"], 10) == verdict
         assert stamp.is_file() is stamped
     assert stamp.read_text() == "tree-1\n"
+
+
+def test_a_mutant_knows_the_whole_statement_it_sits_in(tmp_path):
+    source = "def f(a, b):\n    return (\n        a\n        < b\n    )\n"
+    mutant = mutate._build(tmp_path / "m.py", source, 0)
+    assert (mutant.description, mutant.lineno, mutant.span) == ("Lt -> LtE", 3, (2, 5))
+
+
+def test_a_mutant_runs_only_the_tests_that_executed_its_statement_else_the_whole_selection(tmp_path):
+    mutant = mutate.Mutant(tmp_path / "src" / "m.py", 3, "Lt -> LtE", "", (2, 5))
+    covered = {"src/m.py": {2: frozenset({"tests/test_a.py::test_one"}), 4: frozenset({"tests/test_b.py::test_two"})}}
+    everything = ["tests/test_a.py", "tests/test_b.py"]
+    assert mutate._selected(mutant, covered, everything, tmp_path) == [
+        "tests/test_a.py::test_one",
+        "tests/test_b.py::test_two",
+    ]
+    at_import = {"src/m.py": {3: frozenset({"", "tests/test_a.py::test_one"})}}
+    assert mutate._selected(mutant, at_import, everything, tmp_path) == everything
+    assert mutate._selected(mutant, {}, everything, tmp_path) == everything
+
+
+def test_a_handful_of_named_tests_runs_without_workers_and_anything_larger_with_them():
+    few = [f"tests/test_a.py::test_{n}" for n in range(mutate.SERIAL_UP_TO)]
+    assert "-n" not in mutate._pytest(few, [])
+    assert "-n" in mutate._pytest([*few, "tests/test_a.py::test_more"], [])
+    assert "-n" in mutate._pytest(["tests/test_a.py"], [])
+
+
+def test_the_baseline_maps_each_line_to_the_tests_that_executed_it(tmp_path):
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "src" / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "src" / "pkg" / "mod.py").write_text("def one():\n    return 1\n\n\ndef two():\n    return 2\n")
+    (tmp_path / "tests").mkdir()
+    head = 'import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).parent.parent / "src"))\n'
+    (tmp_path / "tests" / "test_one.py").write_text(
+        head + "from pkg.mod import one\n\n\ndef test_one():\n    assert one() == 1\n"
+    )
+    (tmp_path / "tests" / "test_two.py").write_text(
+        head + "from pkg.mod import two\n\n\ndef test_two():\n    assert two() == 2\n"
+    )
+    (tmp_path / "tests" / "test_three.py").write_text(
+        head + "from pkg.mod import one\n\n\ndef test_three():\n    assert one() == 1\n"
+    )
+    named = ["tests/test_one.py::test_one", "tests/test_three.py::test_three", "tests/test_two.py::test_two"]
+    cover = mutate._baseline(named, 120, tmp_path)
+    lines = cover["src/pkg/mod.py"]
+    assert lines[2] == frozenset({"tests/test_one.py::test_one", "tests/test_three.py::test_three"})
+    assert lines[6] == frozenset({"tests/test_two.py::test_two"})
+    assert "" in lines[1]

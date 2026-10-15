@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
 import re
 import subprocess
 import sys
@@ -52,6 +53,7 @@ class Mutant:
     lineno: int
     description: str
     source: str
+    span: tuple[int, int] = (0, 0)
 
 
 def _inert(tree: ast.Module) -> set[int]:
@@ -80,6 +82,7 @@ class _Mutator(ast.NodeTransformer):
         self.seen = 0
         self.applied: str | None = None
         self.lineno = 0
+        self.end_lineno = 0
 
     def _take(self, node: ast.AST, description: str) -> bool:
         line = getattr(node, "lineno", 0)
@@ -90,6 +93,7 @@ class _Mutator(ast.NodeTransformer):
         if hit:
             self.applied = description
             self.lineno = getattr(node, "lineno", 0)
+            self.end_lineno = getattr(node, "end_lineno", self.lineno)
         return hit
 
     def visit_Compare(self, node: ast.Compare) -> ast.AST:
@@ -159,46 +163,94 @@ def _build(path: Path, original: str, index: int, lines: set[int] | None = None)
     if mutator.applied is None:
         return None
     ast.fix_missing_locations(mutated)
-    return Mutant(path, mutator.lineno, mutator.applied, ast.unparse(mutated))
+    span = _statement_span(ast.parse(original), mutator.lineno, mutator.end_lineno)
+    return Mutant(path, mutator.lineno, mutator.applied, ast.unparse(mutated), span)
 
 
-def _failure(tests: list[str], timeout: int, root: Path = REPO) -> str | None:
+def _statement_span(tree: ast.Module, first: int, last: int) -> tuple[int, int]:
+    spans = [
+        (node.lineno, node.end_lineno or node.lineno)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.stmt) and node.lineno <= first and (node.end_lineno or node.lineno) >= last
+    ]
+    return min(spans, key=lambda span: span[1] - span[0], default=(first, last))
+
+
+SERIAL_UP_TO = 8
+
+
+def _pytest(tests: list[str], extra: list[str]) -> list[str]:
+    serial = len(tests) <= SERIAL_UP_TO and all("::" in test for test in tests)
+    workers = [] if serial else ["-n", "auto", "--dist", "worksteal"]
+    return [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-x",
+        "-q",
+        "--no-header",
+        "-p",
+        "no:cacheprovider",
+        "-m",
+        "not slow",
+        *workers,
+        *extra,
+        *tests,
+    ]
+
+
+def _failure(
+    tests: list[str], timeout: int, root: Path = REPO, extra: list[str] | None = None, env: dict | None = None
+) -> str | None:
     try:
         result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "-x",
-                "-q",
-                "--no-header",
-                "-p",
-                "no:cacheprovider",
-                "-m",
-                "not slow",
-                "-n",
-                "auto",
-                "--dist",
-                "worksteal",
-                *tests,
-            ],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            _pytest(tests, extra or []), cwd=root, capture_output=True, text=True, timeout=timeout, env=env
         )
     except subprocess.TimeoutExpired:
         return f"the test selection did not finish within {timeout} s"
     return None if result.returncode == 0 else result.stdout + result.stderr
 
 
-def _baseline_red(tests: list[str], timeout: int, root: Path) -> bool:
-    failure = _failure(tests, timeout, root)
-    if failure is None:
-        return False
-    print(failure)
-    print("BASELINE FAILED: the test selection is already red or did not finish within --timeout")
-    return True
+Cover = dict[str, dict[int, frozenset[str]]]
+
+
+def _baseline(tests: list[str], timeout: int, root: Path) -> Cover | None:
+    with tempfile.TemporaryDirectory(prefix="mutate-cover-") as scratch:
+        data_file = Path(scratch) / "coverage"
+        env = {**os.environ, "COVERAGE_FILE": str(data_file), "COVERAGE_CORE": "ctrace"}
+        failure = _failure(tests, timeout, root, ["--cov=src", "--cov-context=test", "--cov-report="], env)
+        if failure is not None:
+            print(failure)
+            print("BASELINE FAILED: the test selection is already red or did not finish within --timeout")
+            return None
+        return _contexts(data_file, root)
+
+
+def _contexts(data_file: Path, root: Path) -> Cover:
+    from coverage import CoverageData
+
+    data = CoverageData(basename=str(data_file))
+    data.read()
+    cover: Cover = {}
+    for measured in data.measured_files():
+        path = Path(measured)
+        if not path.is_relative_to(root):
+            continue
+        by_line = data.contexts_by_lineno(measured)
+        cover[str(path.relative_to(root))] = {
+            line: frozenset(context.rpartition("|")[0] if "|" in context else context for context in contexts)
+            for line, contexts in by_line.items()
+        }
+    return cover
+
+
+def _selected(mutant: Mutant, cover: Cover, tests: list[str], root: Path) -> list[str]:
+    lines = cover.get(str(mutant.path.relative_to(root)), {})
+    first, last = mutant.span
+    contexts = frozenset().union(*(lines.get(number, frozenset()) for number in range(first, last + 1)))
+    if not contexts or "" in contexts:
+        return tests
+    return sorted(contexts)
 
 
 HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
@@ -264,10 +316,11 @@ def _diff_mode(commit: str | None, tests: list[str] | None, timeout: int) -> int
     with tempfile.TemporaryDirectory(prefix="mutate-", dir=workdir) as copy:
         root = Path(copy)
         _export(commit, root)
-        if _baseline_red(selection, timeout, root):
+        cover = _baseline(selection, timeout, root)
+        if cover is None:
             return 2
         verdict = _mutate(
-            [(root / name, lines) for name, lines in sorted(changed.items())], selection, timeout, root, 0
+            [(root / name, lines) for name, lines in sorted(changed.items())], selection, timeout, root, 0, cover
         )
     if verdict == 0 and tree is not None:
         stamp_path().write_text(tree + "\n")
@@ -278,7 +331,9 @@ def stamp_path() -> Path:
     return Path(_git("rev-parse", "--path-format=absolute", "--git-dir").strip()) / "mutation-stamp"
 
 
-def _mutate(targets: list[tuple[Path, set[int] | None]], tests: list[str], timeout: int, root: Path, cap: int) -> int:
+def _mutate(
+    targets: list[tuple[Path, set[int] | None]], tests: list[str], timeout: int, root: Path, cap: int, cover: Cover
+) -> int:
     killed, survived = 0, []
     for path, lines in targets:
         original = path.read_text()
@@ -292,7 +347,7 @@ def _mutate(targets: list[tuple[Path, set[int] | None]], tests: list[str], timeo
                 if mutant is None:
                     continue
                 path.write_text(mutant.source)
-                if _failure(tests, timeout, root) is not None:
+                if _failure(_selected(mutant, cover, tests, root), timeout, root) is not None:
                     killed += 1
                     print(".", end="", flush=True)
                 else:
@@ -328,9 +383,10 @@ def main() -> int:
     for entry in args.src:
         path = Path(entry).resolve()
         targets.extend((found, None) for found in (sorted(path.rglob("*.py")) if path.is_dir() else [path]))
-    if _baseline_red(args.tests, args.timeout, REPO):
+    cover = _baseline(args.tests, args.timeout, REPO)
+    if cover is None:
         return 2
-    return _mutate(targets, args.tests, args.timeout, REPO, args.max)
+    return _mutate(targets, args.tests, args.timeout, REPO, args.max, cover)
 
 
 if __name__ == "__main__":
