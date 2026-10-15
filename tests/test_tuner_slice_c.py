@@ -8,7 +8,6 @@ from corecycler.tuner.machine import allcore
 from corecycler.tuner.machine.types import (
     AllCore,
     CoreRecord,
-    FailContext,
     Lifecycle,
     Load,
     PauseReason,
@@ -86,7 +85,7 @@ def test_a_clean_co_only_run_walks_every_stage_once_in_the_planned_order():
     assert {r.core: r.value for r in fake.state.cores} == {0: -4, 1: -2}
 
 
-@pytest.mark.req("ALLCORE.unnamed", "L10.a", "L11.a")
+@pytest.mark.req("ALLCORE.unnamed", "INV.L10", "L10.a", "L11.a")
 def test_a_failure_that_names_no_core_loosens_every_core_by_one_step():
     fake, stages = run([-6, -5], transient={0: -2, 1: -1})
     allcore_runs = [vector for stage, _, vector in stages if stage in (Stage.TRANSIENT, Stage.TIGHTEN)]
@@ -151,53 +150,12 @@ def test_soak_can_be_switched_off():
     assert Stage.SOAK not in {stage for stage, _, _ in stages}
 
 
-@pytest.mark.req("INV.L10", "L10.d.cell_co")
-def test_the_transient_rule_takes_the_least_loosened_working_core_for_a_light_failure():
-    cursor = AllCore(co_delta=((0, 2),))
-    cores = (CoreRecord(0, Phase.PROVEN, -5), CoreRecord(1, Phase.PROVEN, -5), CoreRecord(2, Phase.PROVEN, -5))
-    fix = allcore.transient_fix(cursor, FailContext(False, (0, 1), True), cores, 3, False)
-    assert fix.core == 1
-
-
-@pytest.mark.req("K36.6", "K36.7", "L10.d.transient")
-def test_a_boost_failure_names_a_core_only_when_it_recurs_under_the_same_type_key():
-    cores = tuple(CoreRecord(c, Phase.PROVEN, -5) for c in range(8))
-    ctx = FailContext(False, (0, 3), False, mhz=5300.0, tctl=60.0)
-    first = allcore.transient_fix(AllCore(), ctx, cores, 8, False)
-    second = allcore.transient_fix(first.cursor, ctx, cores, 8, False)
-    assert "least loosened" in first.detail and first.core == 0
-    assert second.core == 3 and "least loosened" not in second.detail
-
-
-@pytest.mark.req("K36.5")
-def test_a_failure_while_the_load_was_frozen_is_light_and_loosens_a_core_that_ran_it():
-    cores = tuple(CoreRecord(c, Phase.PROVEN, -5) for c in range(8))
-    fix = allcore.transient_fix(AllCore(), FailContext(False, (3,), True, 5300.0, 60.0), cores, 8, False)
-    assert fix.detail.startswith("light")
-    assert fix.core == 3
-    running = allcore.transient_fix(AllCore(), FailContext(False, (3,), False, 5300.0, 60.0), cores, 8, False)
-    assert running.detail.startswith("boost")
-
-
-@pytest.mark.req("D29", "K36.9")
-def test_a_step_failure_falls_back_to_the_least_loosened_core_and_the_owner_order_breaks_ties():
-    cores = tuple(CoreRecord(c, Phase.PROVEN, -5) for c in range(16))
-    ctx = FailContext(False, tuple(range(16)), False, mhz=5000.0, tctl=80.0)
-    assert allcore.transient_fix(AllCore(), ctx, cores, 16, True).core == 8
-    assert allcore.transient_fix(AllCore(), ctx, cores, 16, False).core == 0
-
-
 @pytest.mark.req("L10.d.bound", "L10.e")
-def test_nothing_left_to_loosen_is_reported():
-    cores = (CoreRecord(0, Phase.PROVEN, 0),)
-    assert allcore.transient_fix(AllCore(), FailContext(False, (0,), True), cores, 1, False).core is None
-
-
-@pytest.mark.req("K36.2", "K36.4")
-def test_bands_and_columns_follow_the_record_and_an_unknown_reading_is_the_middle():
-    assert [allcore.band(m) for m in (None, 4000, 4400, 5200, 5700)] == [2, 1, 2, 3, 4]
-    assert [allcore.column(c) for c in (None, 60.0, 80.0)] == [1, 1, 2]
-    assert allcore.type_key(FailContext(False, (1,), False, 4450.0, 72.0), False, "boost") == "boost-21bc"
+def test_a_failure_naming_no_core_with_every_core_at_zero_pauses_as_nothing_left_to_loosen():
+    fake, _ = run([0, 0], transient={0: 1, 1: 1})
+    assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.STOCK_UNSTABLE)
+    assert "nothing left to loosen" in fake.state.pause.detail
+    assert {r.core: r.value for r in fake.state.cores} == {0: 0, 1: 0}
 
 
 @pytest.mark.req("L08.f")
@@ -254,12 +212,16 @@ def test_a_steady_failure_in_endurance_bisects_and_comes_back_to_endurance_at_ho
 
 
 @pytest.mark.req("L10.d.apply")
-def test_a_transient_failure_in_endurance_loosens_one_core_and_runs_the_same_load_again():
+def test_a_transient_failure_in_endurance_loosens_every_core_and_runs_the_same_load_again():
     fake, stages = run([-6, -3], endurance=True, on_start=degrade(transient={0: -5, 1: -3}))
     assert fake.state.lifecycle is Lifecycle.COMPLETED
     assert fake.state.core(0).value == -5
-    endurance = [(load, vector[0]) for stage, load, vector in stages if stage is Stage.ENDURANCE]
-    assert endurance[:3] == [(Load.HOT, -6), (Load.BURST, -6), (Load.BURST, -5)]
+    endurance = [(load, vector) for stage, load, vector in stages if stage is Stage.ENDURANCE]
+    assert endurance[:3] == [
+        (Load.HOT, {0: -6, 1: -3}),
+        (Load.BURST, {0: -6, 1: -3}),
+        (Load.BURST, {0: -5, 1: -2}),
+    ]
 
 
 @pytest.mark.req("D57", "INV.L08", "L08.G2.named", "L08.d.vector")
@@ -430,20 +392,6 @@ def once(fake, report):
         return report
 
     fake.verdict_for = first
-
-
-@pytest.mark.req("K36.9b")
-@pytest.mark.parametrize(
-    ("model", "domain_of", "owner"),
-    [
-        ("AMD Ryzen 9 9950X3D 16-Core Processor", tuple((core, core // 8) for core in range(16)), True),
-        ("AMD Ryzen 9 9950X 16-Core Processor", tuple((core, core // 8) for core in range(16)), False),
-        ("AMD Ryzen 9 9950X3D 16-Core Processor", tuple((core, 0) for core in range(16)), False),
-        ("AMD Ryzen 9 9950X3D 16-Core Processor", tuple((core, core // 8) for core in range(15)), False),
-    ],
-)
-def test_the_owner_order_applies_only_on_his_model_and_core_map(model, domain_of, owner):
-    assert allcore.is_owner_layout(model, domain_of) is owner
 
 
 @pytest.mark.req("ALLCORE.freeze", "K47")

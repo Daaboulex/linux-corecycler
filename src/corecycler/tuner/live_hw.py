@@ -46,7 +46,6 @@ from corecycler.smu.pmtable import PMTableReader, read_power_limits
 from corecycler.smu.writer_lock import WriterBusy, co_writer
 from corecycler.tuner import stages, telemetry
 from corecycler.tuner.live import BootFacts, Identity, LiveRig, Store, config_from_json
-from corecycler.tuner.machine import allcore
 from corecycler.tuner.machine.session import HELD
 from corecycler.tuner.machine.types import (
     Abort,
@@ -783,7 +782,6 @@ def build_rig(
         cpus_of=cpus_of,
         domain_of=domain_of,
         co_range=smu.commands.co_range,
-        owner_layout=allcore.is_owner_layout(topology.model_name, domain_of),
         tjmax_c=tjmax_c(topology.model_name),
         say=say,
         two_t_problem=backend_factory().binary_problem(TWO_T["binary"]),

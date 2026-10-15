@@ -402,55 +402,8 @@ statement = "An all-core failure that names no core loosens every owned core wit
 proof = "built"
 
 [[requirement]]
-id = "K36.2"
-statement = "Band borders 4400, 5175, 5650 MHz on the measured model; column split 75 C"
-proof = "built"
-
-[[requirement]]
-id = "K36.2b"
-statement = "Off the measured model the band comes from the probe map; an unmapped clock pauses P(APPARATUS, no band)"
-proof = "not built"
-task = "S3"
-
-[[requirement]]
-id = "K36.3"
-statement = "A named core's CCD gives the band clock and controlling delta; else the CCD with the strongest probe delta"
-proof = "not built"
-task = "S3"
-
-[[requirement]]
-id = "K36.4"
-statement = "Ambiguity zones +-150 MHz around a border and +-5 C around 75 C"
-proof = "built"
-
-[[requirement]]
-id = "K36.5"
-statement = "Kind: step when at least half the selected cores work, boost when fewer, light when frozen or none working"
-proof = "built"
-
-[[requirement]]
-id = "K36.6"
-statement = "Recurrence and rotation counted per type key; light is one key"
-proof = "built"
-
-[[requirement]]
-id = "K36.7"
-statement = "A busy core becomes a candidate after 2 or more failures of the same type key"
-proof = "built"
-
-[[requirement]]
 id = "K36.8"
 statement = "No background cores: working cores are the segment's cores"
-proof = "built"
-
-[[requirement]]
-id = "K36.9"
-statement = "Ties by least loosened, then the owner's order on his model and core map, elsewhere lowest id"
-proof = "built"
-
-[[requirement]]
-id = "K36.9b"
-statement = "The owner's priority order applies on his model and core map"
 proof = "built"
 
 [[requirement]]
@@ -1092,7 +1045,7 @@ proof = "built"
 
 [[requirement]]
 id = "INV.L10"
-statement = "Inventory claim: fix loop built for CO with the transient rule and the K31 ring; shaper cells not built"
+statement = "Inventory claim: fix loop built for CO: named cores back off alone, a failure naming none loosens every core (owner 2026-10-15); shaper cells not built"
 proof = "built"
 
 [[requirement]]
@@ -1966,20 +1919,10 @@ proof = "not built"
 task = "S3"
 
 [[requirement]]
-id = "L10.d.transient"
-statement = "Transient class: record the failure and its type key, rotate candidates from n = tTypes[key]++ (core if light, core if boost and a busy core recurs), first that can loosen wins, else the least-loosened selected core"
-proof = "built"
-
-[[requirement]]
 id = "L10.d.cells"
 statement = "Transient candidates include cell(band, column), the neighbour band's cell near a border and the other column's cell near 75 C"
 proof = "not built"
 task = "S3"
-
-[[requirement]]
-id = "L10.d.cell_co"
-statement = "A cell candidate is skipped in CO only"
-proof = "built"
 
 [[requirement]]
 id = "L10.d.held"
@@ -1994,7 +1937,7 @@ proof = "built"
 
 [[requirement]]
 id = "L10.d.apply"
-statement = "The chosen value gets +1, written with the next test's vector; rung + 1"
+statement = "Each loosened value gets +1, written with the next test's vector"
 proof = "built"
 
 [[requirement]]
@@ -3810,11 +3753,6 @@ task = "T29"
 [[requirement]]
 id = "D28"
 statement = "K27 as v5i: draws, first restart 60 s, first switch 3 s, then 1 or 2 s"
-proof = "built"
-
-[[requirement]]
-id = "D29"
-statement = "K36 counts recurrence and rotation per type key, light one key; kinds by share; ties least loosened then lowest id"
 proof = "built"
 
 [[requirement]]

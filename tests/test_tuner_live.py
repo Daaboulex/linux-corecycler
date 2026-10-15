@@ -234,7 +234,6 @@ def rig(tmp_path: Path, hardware: FakeHardware | None = None, runner=None, db: H
         cpus_of=CPUS,
         domain_of=DOMAINS,
         co_range=(-50, 10),
-        owner_layout=False,
         say=lambda line: None,
     )
 
@@ -2630,3 +2629,25 @@ def test_the_gap_counts_only_what_grew_past_one_second_since_the_last_check(tmp_
     hardware.asleep_seconds = lambda: next(asleep)
     r = rig(tmp_path, hardware)
     assert [r.world().gap_grew for _ in range(4)] == [True, False, False, True]
+
+
+def test_a_stored_all_core_cursor_from_before_the_rounds_loads_without_its_retired_fields():
+    from corecycler.tuner.live import _allcore_from_json
+
+    old = {
+        "t_idx": 2,
+        "t_clean": 30.0,
+        "t_types": [["light", 1]],
+        "t_busy": [],
+        "co_delta": [[0, 1]],
+        "rung": 1,
+        "floors": [[0, -6], [1, -3]],
+        "item": 0,
+        "frozen": [1],
+        "tightened": False,
+        "pass_no": 1,
+    }
+    cursor = _allcore_from_json(old)
+    assert (cursor.t_idx, cursor.floors, cursor.frozen, cursor.rounds) == (2, ((0, -6), (1, -3)), (1,), 0)
+    with pytest.raises(TypeError):
+        _allcore_from_json({**old, "unknown": 1})

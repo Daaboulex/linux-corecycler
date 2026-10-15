@@ -265,11 +265,14 @@ def _bisect_from_json(raw: dict | None) -> BisectRun | None:
     )
 
 
+RETIRED_ALLCORE = frozenset({"t_types", "t_busy", "co_delta", "rung", "item"})
+
+
 def _allcore_from_json(raw: dict | None) -> AllCore | None:
     if raw is None:
         return None
-    pairs = ("t_types", "t_busy", "co_delta", "floors")
-    return AllCore(**{**raw, **{name: _pairs(raw[name]) for name in pairs}, "frozen": tuple(raw["frozen"])})
+    kept = {name: value for name, value in raw.items() if name not in RETIRED_ALLCORE}
+    return AllCore(**{**kept, "floors": _pairs(kept["floors"]), "frozen": tuple(kept["frozen"])})
 
 
 def _live1_from_json(raw: dict) -> Live1:
@@ -574,7 +577,6 @@ class LiveRig:
     cpus_of: tuple[tuple[int, tuple[int, ...]], ...]
     domain_of: tuple[tuple[int, int | None], ...]
     co_range: tuple[int, int] | None
-    owner_layout: bool
     two_t_problem: str | None = None
     tjmax_c: float | None = None
     say: Callable[[str], None] = print
@@ -615,7 +617,6 @@ class LiveRig:
             cpus_of=self.cpus_of,
             domain_of=self.domain_of,
             two_t_problem=self.two_t_problem,
-            owner_layout=self.owner_layout,
             tjmax_c=self.tjmax_c,
             co_range=self.co_range,
         )

@@ -263,12 +263,7 @@ class FailContext:
 class AllCore:
     t_idx: int = 0
     t_clean: float = 0.0
-    t_types: tuple = ()
-    t_busy: tuple = ()
-    co_delta: tuple = ()
-    rung: int = 0
     floors: tuple[tuple[int, int], ...] = ()
-    item: int | None = None
     frozen: tuple[int, ...] = ()
     tightened: bool = False
     pass_no: int = 1
@@ -513,7 +508,6 @@ class World:
     two_t_problem: str | None = None
     stored_crash_suspects: tuple[int, ...] | None = None
     stored_end_unread: str | None = None
-    owner_layout: bool = False
     co_range: tuple[int, int] | None = None
     co_now: tuple[tuple[int, int | None], ...] | None = None
 

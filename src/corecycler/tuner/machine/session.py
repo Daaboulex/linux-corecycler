@@ -1028,7 +1028,7 @@ def _all_cpus(s: SessionState, w: World) -> tuple[int, ...]:
 
 
 def _past_tighten(flow: Flow, cfg) -> Flow:
-    cursor = replace(flow.allcore, tightened=True, item=None, t_idx=0, t_clean=0.0)
+    cursor = replace(flow.allcore, tightened=True, t_idx=0, t_clean=0.0)
     if cfg.endurance:
         return replace(flow, stage=Stage.ENDURANCE, allcore=cursor)
     return _past_endurance(replace(flow, allcore=cursor), cfg)
