@@ -99,6 +99,34 @@ def test_only_a_test_that_ran_and_saw_nothing_unblamed_marks_its_values_survived
     assert any(isinstance(effect, MarkSurvived) for effect in result.effects) is marks
 
 
+def _reported_after_two_resumes(fake, report, **flow):
+    state = replace(fake.state, resume_streak=2, flow=replace(fake.state.flow, **flow))
+    result = transition(state, WorkerReported(fake.worker.token, report), fake.world())
+    marked = any(isinstance(effect, MarkSurvived) for effect in result.effects)
+    return marked, result.state.resume_streak
+
+
+@pytest.mark.req("PRELUDE.4d")
+def test_the_resume_streak_is_reset_by_a_test_that_marks_survival_and_by_no_other():
+    fake = running_fake()
+    while fake.worker is None:
+        assert fake.progress()
+    assert _reported_after_two_resumes(fake, Report(Group.PASS, 1.0)) == (True, 0)
+    spec = fake.worker.spec
+    recurring = Report(Group.ENVIRONMENT, 1.0, unblamed_corrected=True)
+    seen_once = {"q5": (((spec.core, spec.value), 1),), "q5_others": (spec.core,)}
+    assert _reported_after_two_resumes(fake, recurring, **seen_once) == (False, 2)
+    while fake.worker is None or fake.worker.spec.load is not Load.HOT:
+        assert fake.progress()
+    evidence = Report(Group.APPARATUS, 1.0, evidence=(Evidence(0, True),))
+    assert _reported_after_two_resumes(fake, evidence) == (False, 2)
+    fake.memory_skip = "no memory to give the lanes"
+    while fake.worker is None or fake.worker.spec.load is not Load.MEMORY:
+        assert fake.progress()
+    skipped = Report(Group.PASS, 0.0, skipped=fake.memory_skip)
+    assert _reported_after_two_resumes(fake, skipped) == (False, 2)
+
+
 @pytest.mark.req("L19.d.soak", "U22", "L16.G8")
 @pytest.mark.parametrize("load", [Load.HOT, Load.SOAK])
 def test_a_pause_during_an_all_core_test_stops_it_at_once_and_resume_runs_the_same_test_again(load):

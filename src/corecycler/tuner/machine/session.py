@@ -1165,7 +1165,7 @@ def _memory_lanes(s: SessionState, named: tuple[int, ...], w: World) -> SessionS
 
 
 def _memory_verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing: bool, w: World) -> Transition:
-    s = replace(s, streaks=Streaks(), resume_streak=0)
+    s = replace(s, streaks=Streaks())
     if rep.skipped:
         skipped = _next_wait(replace(s, flow=_past_memory(s.flow, s.config)), spec, pausing)
         notice = Announce("memory_skipped", f"MEMORY skipped, not a stability verdict: {rep.skipped}")
@@ -1203,7 +1203,7 @@ def _allcore_verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group,
     cfg = s.config
     flow = s.flow
     cursor = flow.allcore
-    s = replace(s, streaks=Streaks(), resume_streak=0)
+    s = replace(s, streaks=Streaks())
     if group is Group.SILICON:
         fixed = _allcore_named(s, rep.named)
         if isinstance(fixed, Transition):
@@ -1360,8 +1360,8 @@ def _reported(s: SessionState, e: WorkerReported, w: World) -> Transition:
         return Transition(s)
     if s.slot.token != e.token:
         return Transition(s)
-    result = _judged(s, e.report, w)
     mark = _survival_mark(e.report)
+    result = _judged(s if mark is None else replace(s, resume_streak=0), e.report, w)
     return result if mark is None else replace(result, effects=(mark, *result.effects))
 
 
@@ -1377,7 +1377,7 @@ def _judged(s: SessionState, rep: Report, w: World) -> Transition:
             after = applied
         after = _clear_in_test(after)
         if rep.evidence:
-            return _next_wait(replace(after, streaks=Streaks(), resume_streak=0), spec, pausing)
+            return _next_wait(replace(after, streaks=Streaks()), spec, pausing)
     else:
         after = _after_test(s, spec.core)
     for ev in () if spec.load in ALLCORE_LOADS else rep.evidence:
@@ -1451,7 +1451,6 @@ def _verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing
     after = replace(
         s.with_core(step.record),
         streaks=Streaks(start_failures=starts),
-        resume_streak=0,
         flow=replace(s.flow, owed=spec.core if group is Group.SILICON else None),
     )
     if cfg.start_failure_threshold > 0 and starts >= cfg.start_failure_threshold:
@@ -1481,7 +1480,7 @@ def _live1_outcome(s: SessionState, core: int, value: int, passed: bool, w: Worl
 
 
 def _live1_verdict(s: SessionState, spec: TestSpec, group: Group, pausing: bool, w: World) -> Transition:
-    s = replace(s, streaks=Streaks(), resume_streak=0)
+    s = replace(s, streaks=Streaks())
     s, stock = _live1_outcome(s, spec.core, spec.value, group is Group.PASS, w)
     if stock is not None:
         return _enter_pause(s, PauseReason.STOCK_UNSTABLE, stock, (spec.core,))
@@ -1526,7 +1525,7 @@ def _bisect_outcome(s: SessionState, passed: bool, w: World) -> tuple[SessionSta
 
 
 def _bisect_verdict(s: SessionState, spec: TestSpec, group: Group, pausing: bool, w: World) -> Transition:
-    s = replace(s, streaks=Streaks(), resume_streak=0)
+    s = replace(s, streaks=Streaks())
     s, stock = _bisect_outcome(s, group is Group.PASS, w)
     if stock is not None:
         return _enter_pause(s, PauseReason.STOCK_UNSTABLE, stock)
@@ -1559,7 +1558,7 @@ def _thermal(s: SessionState, spec: TestSpec, rep: Report, pausing: bool, w: Wor
     if spec.stage is Stage.SEARCH and rec.phase in (Phase.COARSE, Phase.FINE):
         s = s.with_core(replace(rec, walk_seconds=rec.walk_seconds + rep.seconds))
     streak = s.streaks.thermal + 1
-    after = replace(s, streaks=replace(s.streaks, thermal=streak), resume_streak=0, flow=_retry_flow(s, spec))
+    after = replace(s, streaks=replace(s.streaks, thermal=streak), flow=_retry_flow(s, spec))
     if streak > cfg.thermal_retries:
         last = f"; the last: {rep.detail}" if rep.detail else ""
         return _enter_pause(

@@ -861,8 +861,7 @@ proof = "built"
 [[requirement]]
 id = "PRELUDE.4d"
 statement = "The resume streak is reset only when the survival mark was made"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "PRELUDE.4e"
