@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Run pytest on as many workers as the free cores and memory allow, decided again at every step.
+"""Run pytest on as many workers as the cores and the free memory allow, decided again at every step.
 
-Before a step it counts the idle cores and the memory free above the desktop's floor, divided by
-the largest worker seen so far. While the step runs it reads free memory twice a second; when free
+Before a step it takes the cores and the memory free above the desktop's floor, divided by the
+largest worker seen so far. While the step runs it reads free memory twice a second; when free
 memory falls under the floor it stops the step, waits for room and runs the step again, smaller.
-A step stopped that way gives no verdict. Every worker is marked first to kill.
+A step stopped that way gives no verdict. Every worker runs at a low priority, so other work keeps
+the CPU, and is marked first to kill.
 
     python3 scripts/fit.py -- -q -m "not slow" tests/test_cli.py
 """
@@ -23,7 +24,7 @@ from pathlib import Path
 FLOOR_SHARE = 0.10
 FIRST_PEAK_MB = 1024
 READ_EVERY_S = 0.5
-BUSY_WINDOW_S = 0.25
+NICE = 10
 GRACE_S = 5.0
 STOPS_AT_ONE = 3
 RUNAWAY_FACTOR = 10
@@ -45,30 +46,14 @@ def floor_mb(info: dict[str, int]) -> int:
     return int(info["MemTotal"] * FLOOR_SHARE)
 
 
-def busy_share(before: list[int], after: list[int]) -> float:
-    total = sum(after) - sum(before)
-    idle = after[3] + after[4] - before[3] - before[4]
-    return 0.0 if total <= 0 else 1.0 - idle / total
-
-
-def workers(info: dict[str, int], cores: int, busy: float, peak_mb: int, most: int | None = None) -> int:
+def workers(info: dict[str, int], cores: int, peak_mb: int, most: int | None = None) -> int:
     room = (info["MemAvailable"] - floor_mb(info)) // max(peak_mb, 1)
-    count = max(1, min(round(cores * (1.0 - busy)), room))
+    count = max(1, min(cores, room))
     return count if most is None else min(count, most)
 
 
 def _memory() -> dict[str, int]:
     return meminfo(Path("/proc/meminfo").read_text())
-
-
-def _cpu() -> list[int]:
-    return [int(field) for field in Path("/proc/stat").read_text().split("\n", 1)[0].split()[1:]]
-
-
-def _busy() -> float:
-    before = _cpu()
-    time.sleep(BUSY_WINDOW_S)
-    return busy_share(before, _cpu())
 
 
 def _tree(pid: int) -> list[int]:
@@ -92,8 +77,9 @@ def _rss_mb(pid: int) -> int:
     return next((int(line.split()[1]) // 1024 for line in status.splitlines() if line.startswith("VmRSS:")), 0)
 
 
-def _first_to_kill() -> None:
+def _yield() -> None:
     Path("/proc/self/oom_score_adj").write_text("1000")
+    os.nice(NICE)
 
 
 def _say(text: str) -> None:
@@ -114,7 +100,7 @@ def _step(
 ) -> tuple[str, int | None, int, int]:
     started = time.monotonic()
     child = subprocess.Popen(
-        cmd, cwd=cwd, env=env, stdout=sink, stderr=subprocess.STDOUT, start_new_session=True, preexec_fn=_first_to_kill
+        cmd, cwd=cwd, env=env, stdout=sink, stderr=subprocess.STDOUT, start_new_session=True, preexec_fn=_yield
     )
     peak, lowest = 0, None
     while child.poll() is None:
@@ -154,11 +140,10 @@ def run(args: list[str], timeout: int, cwd: Path, env: dict | None = None, most:
         per_worker = FIRST_PEAK_MB if learned_peak_mb is None else learned_peak_mb
         info = _room(per_worker)
         room = info["MemAvailable"] - floor_mb(info)
-        busy = _busy()
-        count = workers(info, os.cpu_count() or 1, busy, per_worker, most)
+        count = workers(info, os.cpu_count() or 1, per_worker, most)
         _say(
             f"{count} workers: {info['MemAvailable']} MiB free, the floor {floor_mb(info)} MiB,"
-            f" {busy:.0%} of the cores busy, {per_worker} MiB per worker"
+            f" {per_worker} MiB per worker"
         )
         spread = ["-n", str(count), "--dist", "worksteal"] if count > 1 else []
         limit = None if learned_peak_mb is None else RUNAWAY_FACTOR * learned_peak_mb

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 import tempfile
 import time
@@ -19,19 +20,11 @@ def test_the_meminfo_text_reads_in_mib():
     assert fit.meminfo(text) == {"MemTotal": 31785, "MemAvailable": 14147, "HugePages_Total": 0}
 
 
-def test_the_busy_share_is_the_part_of_the_window_no_core_was_idle():
-    before = [100, 0, 100, 700, 100, 0, 0, 0, 0, 0]
-    after = [200, 0, 200, 900, 100, 0, 0, 0, 0, 0]
-    assert fit.busy_share(before, after) == 0.5
-    assert fit.busy_share(before, before) == 0.0
-
-
 @pytest.mark.parametrize(
-    ("available", "busy", "most", "expected"),
-    [(20000, 0.0, None, 4), (20000, 0.8, None, 2), (60000, 0.0, None, 10), (3000, 0.0, None, 1), (20000, 0.0, 1, 1)],
+    ("available", "most", "expected"), [(20000, None, 4), (60000, None, 10), (3000, None, 1), (20000, 1, 1)]
 )
-def test_the_worker_count_follows_the_free_cores_and_the_memory_above_the_floor(available, busy, most, expected):
-    assert fit.workers({"MemTotal": 32000, "MemAvailable": available}, 10, busy, 4000, most) == expected
+def test_the_worker_count_follows_the_cores_and_the_memory_above_the_floor(available, most, expected):
+    assert fit.workers({"MemTotal": 32000, "MemAvailable": available}, 10, 4000, most) == expected
 
 
 def scripted(monkeypatch, steps):
@@ -45,7 +38,6 @@ def scripted(monkeypatch, steps):
 
     monkeypatch.setattr(fit, "_step", step)
     monkeypatch.setattr(fit, "_room", lambda peak: ROOMY)
-    monkeypatch.setattr(fit, "_busy", lambda: 0.0)
     monkeypatch.setattr(fit, "learned_peak_mb", 4000)
     monkeypatch.setattr(fit.os, "cpu_count", lambda: 10)
     return calls
@@ -147,11 +139,12 @@ def test_a_stopped_step_takes_its_whole_process_group_with_it(monkeypatch, tmp_p
     assert not Path(f"/proc/{marker.read_text()}").exists()
 
 
-def test_a_real_step_marks_its_workers_first_to_kill_and_returns_pytest_s_verdict(monkeypatch, tmp_path):
+def test_a_real_step_runs_its_workers_low_and_first_to_kill_and_returns_pytest_s_verdict(monkeypatch, tmp_path):
     monkeypatch.setattr(fit, "learned_peak_mb", 64)
     adj = (
-        "from pathlib import Path\n\n\n"
+        "import os\nfrom pathlib import Path\n\n\n"
         "def test_adj():\n    assert Path('/proc/self/oom_score_adj').read_text() == '1000\\n'\n"
+        f"    assert os.nice(0) == {min(19, os.nice(0) + fit.NICE)}\n"
     )
     (tmp_path / "test_adj.py").write_text(adj)
     (tmp_path / "test_red.py").write_text("def test_red():\n    assert 1 == 2\n")
