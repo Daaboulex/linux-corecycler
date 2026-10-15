@@ -3924,9 +3924,8 @@ proof = "built"
 
 [[requirement]]
 id = "D54"
-statement = "A positive BIOS CO is named in the acknowledgement; under inherit_current K45's upper bound is max(0, base); a change against the newest session's base_co is acknowledged even when all 0"
-proof = "not built"
-task = "T28"
+statement = "A positive BIOS CO is named in the acknowledgement like any value other than 0, and a change against the newest session's base_co is acknowledged even when the BIOS CO is all 0; its inherit_current bound waits with K45.inherit, on the owner's card"
+proof = "built"
 
 [[requirement]]
 id = "D55"

@@ -1059,11 +1059,16 @@ def test_a_loosening_core_is_written_before_a_core_whose_held_value_is_unknown()
     assert [effect.core for effect in result.effects if isinstance(effect, WriteCO)] == [0, 1]
 
 
-@pytest.mark.req("C14", "L01.15.changed")
+@pytest.mark.req("C14", "L01.15.changed", "D54")
 @pytest.mark.parametrize(
     ("bios", "newest", "says"),
     [
         (((0, 0), (1, 0)), ((0, -10), (1, 0)), "the CO differs from when session 3 started: C0 -10 to 0"),
+        (
+            ((0, 5), (1, 0)),
+            ((0, 5), (1, 0)),
+            "cores [0] read a CO other than 0 at Start, set by the BIOS or written since boot",
+        ),
         (
             ((0, -5), (1, 0)),
             ((0, 0), (1, 0)),
