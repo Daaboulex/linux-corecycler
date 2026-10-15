@@ -520,7 +520,7 @@ def _convict(s: SessionState, core: int) -> tuple[SessionState, bool]:
     if flow.stage is Stage.TIGHTEN:
         flow = replace(flow, allcore=_frozen(flow.allcore, (core,)))
     elif flow.stage in ALLCORE:
-        flow = replace(flow, allcore=replace(flow.allcore, frozen=(*flow.allcore.frozen, core)))
+        flow = replace(flow, allcore=replace(flow.allcore, frozen=(*flow.allcore.frozen, core), t_clean=0.0))
     return replace(out, flow=replace(flow, dirty=True)), False
 
 

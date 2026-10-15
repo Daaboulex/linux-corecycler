@@ -2001,9 +2001,8 @@ task = "T29"
 
 [[requirement]]
 id = "L11.h"
-statement = "After a crash tClean goes to 0"
-proof = "untested"
-task = "T29"
+statement = "After a crash tClean goes to 0, whether the flow rule loosens the vector or a conviction backs a core off"
+proof = "built"
 
 [[requirement]]
 id = "L12.a"

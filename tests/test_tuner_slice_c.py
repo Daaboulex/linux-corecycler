@@ -417,6 +417,20 @@ def test_a_crash_blamed_on_a_round_core_backs_it_off_three_steps_and_takes_it_ou
     assert (fake.state.core(0).fb, fake.state.core(0).value) == (trial, trial + 3)
 
 
+@pytest.mark.req("L11.h")
+def test_a_crash_convicted_in_transient_restarts_its_clean_time_and_freezes_the_core():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.TRANSIENT or fake.state.flow.allcore.t_clean == 0:
+        assert fake.progress()
+    before = fake.state.core(0).value
+    fake.crash(evidence=(Evidence(0, False),))
+    fake.post(Resume(1))
+    cursor = fake.state.flow.allcore
+    assert (fake.state.flow.stage, cursor.t_clean, 0 in cursor.frozen) == (Stage.TRANSIENT, 0.0, True)
+    assert fake.state.core(0).value > before
+
+
 @pytest.mark.req("ALLCORE.rounds")
 def test_the_reclaim_stops_after_three_rounds_even_with_more_steps_to_take_back():
     unnamed = Report(Group.SILICON, 1.0)
