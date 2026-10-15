@@ -148,6 +148,7 @@ _CLOCK_MIN_MHZ = 200.0
 _CLOCK_MAX_MHZ = 6000.0
 _VOLT_MIN_V = 0.3
 _VOLT_MAX_V = 2.0
+_WATT_MAX_W = 1000.0
 
 
 def _plausible(value: float, lo: float, hi: float) -> bool:
@@ -155,6 +156,13 @@ def _plausible(value: float, lo: float, hi: float) -> bool:
     if value == 0.0:
         return True
     return math.isfinite(value) and lo <= value <= hi
+
+
+def package_watts(data: PMTableData) -> tuple[tuple[str, float | None], ...]:
+    if (data.pm_table_version >> 16) & 0xFF != _ZEN5_PREFIX:
+        return ()
+    value = data.package_power_w
+    return (("pm_table:package", value if value != 0.0 and _plausible(value, 0.0, _WATT_MAX_W) else None),)
 
 
 def rail_volts(data: PMTableData) -> tuple[tuple[str, float | None], ...]:

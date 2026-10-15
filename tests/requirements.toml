@@ -2768,9 +2768,8 @@ proof = "built"
 
 [[requirement]]
 id = "L25.d.power"
-statement = "Each sample carries the pm_table power"
-proof = "not built"
-task = "T28"
+statement = "Each sample carries the PM table's package power as pm_table:package (Zen 5 tables; a value outside 0 to 1000 W unread), stored with the sample and read back"
+proof = "built"
 
 [[requirement]]
 id = "L25.d.hold"

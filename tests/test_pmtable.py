@@ -16,6 +16,7 @@ from corecycler.smu.pmtable import (
     PMTableOffsets,
     PMTableReader,
     compute_fclk_uclk_ratio,
+    package_watts,
     rail_volts,
 )
 
@@ -157,6 +158,13 @@ class TestPMTableReader:
 
     def test_a_table_other_than_zen_5_names_no_core_rail_source(self):
         assert rail_volts(PMTableData(vdd_vid_v=1.3, vdd_v=1.2, pm_table_version=0x00540208)) == ()
+
+    @pytest.mark.req("L25.d.power")
+    @pytest.mark.parametrize(("watts", "read"), [(142.5, 142.5), (0.0, None), (1500.0, None), (float("nan"), None)])
+    def test_the_package_power_is_read_on_zen_5_and_an_impossible_value_is_unread(self, watts, read):
+        data = PMTableData(package_power_w=watts, pm_table_version=0x00620205)
+        assert package_watts(data) == (("pm_table:package", read),)
+        assert package_watts(PMTableData(package_power_w=watts, pm_table_version=0x00540208)) == ()
 
     def test_fewer_than_200_floats_skips_parsing(self, tmp_path):
         """PM table with < 200 floats should skip Granite Ridge parsing."""

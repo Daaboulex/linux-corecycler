@@ -322,6 +322,7 @@ class TestMaintenance:
                     "clocks": [[c, noise.random()] for c in range(16)],
                     "tccd": [],
                     "volts": [],
+                    "watts": [],
                 }
                 for n in range(500)
             ]
@@ -421,7 +422,15 @@ class TestMachineSessionMethods:
             db.insert_tuner_test(sid, "a", n, "steady", "hot", "1t", 0, -5, "[]", "[0]", 60.0, "{}") for n in (1, 2)
         )
         taken = [
-            {"mono_ns": n, "running": n % 2 == 0, "tctl": None, "clocks": [[0, 5000.0]], "tccd": [], "volts": []}
+            {
+                "mono_ns": n,
+                "running": n % 2 == 0,
+                "tctl": None,
+                "clocks": [[0, 5000.0]],
+                "tccd": [],
+                "volts": [],
+                "watts": [],
+            }
             for n in range(4)
         ]
         db.insert_tuner_samples(row, taken[:2])
@@ -461,7 +470,7 @@ class TestMachineSessionMethods:
         db.save_machine_session(sid, status="running", machine_json="1", boot_id="a", **fields)
         row = db.insert_tuner_test(sid, "a", 1, "steady", "hot", "1t", 0, -5, "[]", "[0]", 60.0, "{}")
         db.insert_tuner_block(
-            row, [{"mono_ns": 1, "running": True, "tctl": 60.0, "clocks": [], "tccd": [], "volts": []}]
+            row, [{"mono_ns": 1, "running": True, "tctl": 60.0, "clocks": [], "tccd": [], "volts": [], "watts": []}]
         )
         data = bytearray(db._execute_raw("SELECT data FROM tuner_sample_blocks").fetchone()[0])
         data[-1] ^= 1
@@ -907,7 +916,15 @@ class TestMergeFrom:
         src.end_tuner_test(
             row, "silicon", 12.5, "[8]", None, "[]", "error on core 8", "[]", "Error(s) encountered on logical core 8."
         )
-        sample = {"mono_ns": 7, "running": True, "tctl": 61.5, "clocks": [[8, 5000.0]], "tccd": [], "volts": []}
+        sample = {
+            "mono_ns": 7,
+            "running": True,
+            "tctl": 61.5,
+            "clocks": [[8, 5000.0]],
+            "tccd": [],
+            "volts": [],
+            "watts": [],
+        }
         src.insert_tuner_block(row, [sample])
         src.insert_tuner_samples(row, [sample | {"mono_ns": 8}])
         src.close()
@@ -1179,6 +1196,7 @@ class TestMigrationV24:
                 "clocks": [[0, 5000.0]],
                 "tccd": [[0, 55.0]],
                 "volts": [["vcore", 1.1]],
+                "watts": [],
             }
 
         assert read == {rows[0]: [sample(1, 1, 60.5), sample(3, 1, 61.0)], rows[1]: [sample(2, 0, None)]}
@@ -1192,7 +1210,15 @@ class TestMigrationV24:
         fields = {"config_json": "{}", "bios_version": "2401", "cpu_model": "9950X3D", "context_id": None}
         db.save_machine_session(sid, status="paused", machine_json="1", boot_id="a", **fields)
         row = db.insert_tuner_test(sid, "a", 1, "steady", "hot", "1t", 0, -5, "[]", "[0]", 60.0, "{}")
-        sample = {"mono_ns": 1, "running": True, "tctl": 60.5, "clocks": [[0, 5000.0]], "tccd": [], "volts": []}
+        sample = {
+            "mono_ns": 1,
+            "running": True,
+            "tctl": 60.5,
+            "clocks": [[0, 5000.0]],
+            "tccd": [],
+            "volts": [],
+            "watts": [],
+        }
         db.insert_tuner_samples(row, [sample])
         db.close()
         conn = sqlite3.connect(path)

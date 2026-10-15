@@ -194,6 +194,7 @@ def taken(core: int, n: int) -> telemetry.Sample:
         mono_ns=1_000 + n,
         tccd=((0, 55.0 + n),),
         volts=(("sio_in0_vcore", 1.1),),
+        watts=(("pm_table:package", 120.0 + n),),
     )
 
 
@@ -723,6 +724,7 @@ def test_every_sample_a_test_takes_is_kept_under_its_row(tmp_path):
             "clocks": [[first["core"], 5000.0 + n]],
             "tccd": [[0, 55.0 + n]],
             "volts": [["sio_in0_vcore", 1.1]],
+            "watts": [["pm_table:package", 120.0 + n]],
         }
         for n in range(telemetry.TAIL_GROUP)
     ]
@@ -2765,16 +2767,18 @@ def test_a_stored_all_core_cursor_from_before_the_rounds_loads_without_its_retir
         _allcore_from_json({**old, "unknown": 1})
 
 
-def test_every_sensor_reading_carries_the_core_rail_beside_the_board_voltages():
+@pytest.mark.req("L25.d.power")
+def test_every_sensor_reading_carries_the_core_rail_and_the_package_power_beside_the_board_voltages():
     from corecycler.monitor.hwmon import SensorRead
     from corecycler.smu.pmtable import PMTableData
 
     board = SensorRead(tctl=60.0, volts=(("nct6799:in0", 1.25),))
-    table = PMTableData(vdd_vid_v=1.3, vdd_v=1.29, pm_table_version=0x00620205)
-    read = live_hw.with_rail(lambda: board, lambda: table)
-    assert read().volts == (
+    table = PMTableData(vdd_vid_v=1.3, vdd_v=1.29, package_power_w=142.5, pm_table_version=0x00620205)
+    read = live_hw.with_pm_table(lambda: board, lambda: table)()
+    assert read.volts == (
         ("nct6799:in0", 1.25),
         ("pm_table:vdd", pytest.approx(1.29)),
         ("pm_table:vdd_vid", pytest.approx(1.3)),
     )
-    assert live_hw.with_rail(lambda: board, lambda: None)() == board
+    assert read.watts == (("pm_table:package", pytest.approx(142.5)),)
+    assert live_hw.with_pm_table(lambda: board, lambda: None)() == board

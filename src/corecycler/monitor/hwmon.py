@@ -25,6 +25,7 @@ class SensorRead:
     tctl: float | None = None
     tccd: tuple[tuple[int, float | None], ...] = ()
     volts: tuple[tuple[str, float | None], ...] = ()
+    watts: tuple[tuple[str, float | None], ...] = ()
 
 
 def _milli(path: Path) -> float | None:

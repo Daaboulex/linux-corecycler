@@ -21,6 +21,7 @@ class Sample:
     mono_ns: int = 0
     tccd: tuple[tuple[int, float | None], ...] = ()
     volts: tuple[tuple[str, float | None], ...] = ()
+    watts: tuple[tuple[str, float | None], ...] = ()
 
 
 def band_clock(sample: Sample, cores: tuple[int, ...]) -> float | None:

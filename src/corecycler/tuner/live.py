@@ -470,6 +470,7 @@ class Store:
             "clocks": sample.mhz,
             "tccd": sample.tccd,
             "volts": sample.volts,
+            "watts": sample.watts,
         }
         self.unwritten.append(taken)
         if len(self.unwritten) >= telemetry.BLOCK:

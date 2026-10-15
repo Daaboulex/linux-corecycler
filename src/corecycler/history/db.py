@@ -34,7 +34,8 @@ log = logging.getLogger(__name__)
 SAMPLE_BLOCK_S = 10.0
 INCREMENTAL_VACUUM = 2
 SAMPLE_BLOCK_OPTIONS = {zstd.CompressionParameter.compression_level: 19, zstd.CompressionParameter.checksum_flag: 1}
-SAMPLE_LISTS = ("clocks", "tccd", "volts")
+SAMPLE_LISTS = ("clocks", "tccd", "volts", "watts")
+SAMPLE_COLUMNS = tuple((name, name) for name in SAMPLE_LISTS)
 OLD_TUNER_TABLES = ("tuner_core_states", "tuner_test_log", "tuner_events", "tuner_co_journal")
 
 
@@ -47,9 +48,9 @@ def _unpack_samples(data: bytes) -> list[dict]:
     return [json.loads(line) for line in zstd.decompress(data).decode().splitlines()]
 
 
-def _tail_sample(row: sqlite3.Row, lists: tuple[str, ...] = SAMPLE_LISTS) -> dict:
+def _tail_sample(row: sqlite3.Row, columns: tuple[tuple[str, str], ...] = SAMPLE_COLUMNS) -> dict:
     sample = {"mono_ns": row["mono_ns"], "running": bool(row["running"]), "tctl": row["tctl"]}
-    return sample | {name: json.loads(row[column]) for name, column in zip(SAMPLE_LISTS, lists, strict=True)}
+    return sample | {name: json.loads(row[column]) for name, column in columns}
 
 
 class SchemaTooNewError(RuntimeError):
@@ -223,7 +224,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 29
+    SCHEMA_VERSION = 30
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -355,7 +356,8 @@ CREATE TABLE IF NOT EXISTS tuner_samples (
     tctl            REAL,
     clocks          TEXT    NOT NULL,
     tccd            TEXT    NOT NULL,
-    volts           TEXT    NOT NULL
+    volts           TEXT    NOT NULL,
+    watts           TEXT    NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS tuner_sample_blocks (
     id              INTEGER PRIMARY KEY,
@@ -930,7 +932,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         if HistoryDB._column_exists(conn, "tuner_samples", "clocks_json"):
             conn.execute("ALTER TABLE tuner_samples RENAME TO tuner_samples_v23")
             conn.executescript(HistoryDB._DDL_TUNER_SAMPLES)
-            lists = tuple(f"{name}_json" for name in SAMPLE_LISTS)
+            lists = tuple((name, f"{name}_json") for name in ("clocks", "tccd", "volts"))
             tests = [row[0] for row in conn.execute("SELECT DISTINCT test_id FROM tuner_samples_v23 ORDER BY test_id")]
             for test_id in tests:
                 taken = conn.execute("SELECT * FROM tuner_samples_v23 WHERE test_id=? ORDER BY id", (test_id,))
@@ -968,6 +970,10 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     def _migrate_v29(conn: sqlite3.Connection) -> None:
         HistoryDB._add_columns(conn, "tuner_tests", [("coverage_json", "TEXT")])
 
+    @staticmethod
+    def _migrate_v30(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(conn, "tuner_samples", [("watts", "TEXT NOT NULL DEFAULT '[]'")])
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
@@ -997,6 +1003,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         27: _migrate_v27,
         28: _migrate_v28,
         29: _migrate_v29,
+        30: _migrate_v30,
     }
 
     # ------------------------------------------------------------------
@@ -1617,8 +1624,8 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     def insert_tuner_samples(self, test_id: int, samples: list[dict]) -> None:
         with self.transaction() as conn:
             conn.executemany(
-                "INSERT INTO tuner_samples (test_id, mono_ns, running, tctl, clocks, tccd, volts)"
-                " VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO tuner_samples (test_id, mono_ns, running, tctl, clocks, tccd, volts, watts)"
+                " VALUES (?,?,?,?,?,?,?,?)",
                 [
                     (
                         test_id,
@@ -1669,9 +1676,11 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     def tuner_test_samples(self, test_id: int) -> list[dict]:
         blocks = self.__conn.execute("SELECT data FROM tuner_sample_blocks WHERE test_id=? ORDER BY id", (test_id,))
         tail = self.__conn.execute("SELECT * FROM tuner_samples WHERE test_id=? ORDER BY id", (test_id,))
-        return [sample for (data,) in blocks.fetchall() for sample in _unpack_samples(data)] + [
-            _tail_sample(row) for row in tail.fetchall()
-        ]
+        return [
+            {name: [] for name in SAMPLE_LISTS} | sample
+            for (data,) in blocks.fetchall()
+            for sample in _unpack_samples(data)
+        ] + [_tail_sample(row) for row in tail.fetchall()]
 
     def endurance_tally(self, session_id: int) -> tuple[int, int]:
         ended, failed = self.__conn.execute(
