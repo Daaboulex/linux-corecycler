@@ -72,7 +72,7 @@
                 # scopes + wall-clock polling and belong to the dev loop, not
                 # the gate.
                 nativeCheckInputs = [
-                  pythonPkgs.pytestCheckHook
+                  pythonPkgs.pytest
                   pythonPkgs.hypothesis
                   pythonPkgs.pytest-cov
                   pythonPkgs.pytest-xdist
@@ -82,21 +82,12 @@
                   export QT_QPA_PLATFORM=offscreen
                   export HOME=$TMPDIR
                 '';
-                disabledTestMarks = [ "slow" ];
-
-                # Coverage ratchet: line coverage may never fall below this floor.
-                # Raise the floor to the percentage this check prints whenever a
-                # batch lands. It is measured WITHOUT the slow tests, so it
-                # trails the out-of-sandbox number.
-                pytestFlags = [
-                  "-n"
-                  "auto"
-                  "--dist"
-                  "worksteal"
-                  "--cov=corecycler"
-                  "--cov-report=term-missing"
-                  "--cov-fail-under=100"
-                ];
+                checkPhase = ''
+                  runHook preCheck
+                  python scripts/fit.py -- -m "not slow" -p no:cacheprovider \
+                    --cov=corecycler --cov-report=term-missing --cov-fail-under=100
+                  runHook postCheck
+                '';
 
                 # Qt6 runtime needs
                 nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];
