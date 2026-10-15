@@ -42,7 +42,7 @@ from corecycler.monitor.frequency import Clocks, PowerState, fastest, read_power
 from corecycler.monitor.hwmon import SensorRead, Sensors
 from corecycler.smu.commands import detect_generation, get_commands, tjmax_c
 from corecycler.smu.driver import SHAPER_BAND_NAMES, RyzenSMU, core_map_blocked
-from corecycler.smu.pmtable import PMTableReader, read_power_limits
+from corecycler.smu.pmtable import PMTableData, PMTableReader, rail_volts, read_power_limits
 from corecycler.smu.writer_lock import WriterBusy, co_writer
 from corecycler.tuner import stages, telemetry
 from corecycler.tuner.live import BootFacts, Identity, LiveRig, Store, config_from_json
@@ -203,6 +203,17 @@ def vcache_fact(topology) -> str:
     if topology.vcache_ccd is None:
         return "unknown"
     return f"ccd {topology.vcache_ccd}"
+
+
+def with_rail(
+    sensors: Callable[[], SensorRead], pm_table: Callable[[], PMTableData | None]
+) -> Callable[[], SensorRead]:
+    def read() -> SensorRead:
+        reading = sensors()
+        data = pm_table()
+        return reading if data is None else replace(reading, volts=(*reading.volts, *rail_volts(data)))
+
+    return read
 
 
 def shaper_words(bands: tuple[tuple[int, int, int], ...]) -> str:
@@ -786,7 +797,7 @@ def build_rig(
     cpus_of = tuple(sorted((core, tuple(info.logical_cpus)) for core, info in topology.cores.items()))
     domain_of = tuple(sorted((core, info.ccd) for core, info in topology.cores.items()))
     core_of_cpu = {cpu: core for core, cpus in cpus_of for cpu in cpus}
-    sensors = Sensors().read
+    sensors = with_rail(Sensors().read, PMTableReader().read)
     return LiveRig(
         hardware=SmuHardware(
             smu,

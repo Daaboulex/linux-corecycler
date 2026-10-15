@@ -157,6 +157,16 @@ def _plausible(value: float, lo: float, hi: float) -> bool:
     return math.isfinite(value) and lo <= value <= hi
 
 
+def rail_volts(data: PMTableData) -> tuple[tuple[str, float | None], ...]:
+    if (data.pm_table_version >> 16) & 0xFF != _ZEN5_PREFIX:
+        return ()
+    readings = (("pm_table:vdd", data.vdd_v), ("pm_table:vdd_vid", data.vdd_vid_v))
+    return tuple(
+        (source, value if value != 0.0 and _plausible(value, _VOLT_MIN_V, _VOLT_MAX_V) else None)
+        for source, value in readings
+    )
+
+
 def _find_prefix_offsets(version: int) -> PMTableOffsets | None:
     """Find offset map by version prefix family.
 
@@ -206,6 +216,8 @@ class PMTableData:
     vddcr_soc_v: float = 0.0
     vdd_mem_v: float = 0.0
     vddq_v: float = 0.0
+    vdd_vid_v: float = 0.0
+    vdd_v: float = 0.0
     pm_table_version: int = 0
     is_calibrated: bool = False
     is_verified: bool = False  # offsets confirmed on real silicon (not just sourced)
@@ -423,3 +435,5 @@ class PMTableReader:
             data.tctl_c = floats[11]
             # PPT value IS the package power the limit governs.
             data.package_power_w = floats[3]
+            data.vdd_vid_v = floats[48]
+            data.vdd_v = floats[49]

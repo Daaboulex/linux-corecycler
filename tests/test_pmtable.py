@@ -16,6 +16,7 @@ from corecycler.smu.pmtable import (
     PMTableOffsets,
     PMTableReader,
     compute_fclk_uclk_ratio,
+    rail_volts,
 )
 
 # ===========================================================================
@@ -130,6 +131,32 @@ class TestPMTableReader:
         assert result.edc_value_a is None
         assert result.tctl_c == pytest.approx(70.0)
         assert result.package_power_w == pytest.approx(142.0)
+
+    def test_granite_ridge_reads_the_core_rail_request_and_measured_voltage(self, tmp_path):
+        smu_dir = tmp_path / "ryzen_smu_drv"
+        smu_dir.mkdir()
+        (smu_dir / "pm_table_version").write_bytes(struct.pack("<I", 0x00620205))
+        floats = [0.0] * 420
+        floats[48] = 1.296
+        floats[49] = 1.291
+        (smu_dir / "pm_table").write_bytes(struct.pack(f"<{len(floats)}f", *floats))
+
+        result = PMTableReader(sysfs_path=smu_dir).read()
+
+        assert result is not None
+        assert (result.vdd_vid_v, result.vdd_v) == (pytest.approx(1.296), pytest.approx(1.291))
+        assert rail_volts(result) == (
+            ("pm_table:vdd", pytest.approx(1.291)),
+            ("pm_table:vdd_vid", pytest.approx(1.296)),
+        )
+
+    @pytest.mark.parametrize("vid", [0.0, 0.1, 3.5, float("nan")])
+    def test_a_core_rail_value_outside_physical_bounds_is_stored_as_unread(self, vid):
+        data = PMTableData(vdd_vid_v=vid, vdd_v=1.2, pm_table_version=0x00620205)
+        assert dict(rail_volts(data)) == {"pm_table:vdd": pytest.approx(1.2), "pm_table:vdd_vid": None}
+
+    def test_a_table_other_than_zen_5_names_no_core_rail_source(self):
+        assert rail_volts(PMTableData(vdd_vid_v=1.3, vdd_v=1.2, pm_table_version=0x00540208)) == ()
 
     def test_fewer_than_200_floats_skips_parsing(self, tmp_path):
         """PM table with < 200 floats should skip Granite Ridge parsing."""

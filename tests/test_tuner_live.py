@@ -2692,3 +2692,18 @@ def test_a_stored_all_core_cursor_from_before_the_rounds_loads_without_its_retir
     assert (cursor.t_idx, cursor.floors, cursor.frozen, cursor.rounds) == (2, ((0, -6), (1, -3)), (1,), 0)
     with pytest.raises(TypeError):
         _allcore_from_json({**old, "unknown": 1})
+
+
+def test_every_sensor_reading_carries_the_core_rail_beside_the_board_voltages():
+    from corecycler.monitor.hwmon import SensorRead
+    from corecycler.smu.pmtable import PMTableData
+
+    board = SensorRead(tctl=60.0, volts=(("nct6799:in0", 1.25),))
+    table = PMTableData(vdd_vid_v=1.3, vdd_v=1.29, pm_table_version=0x00620205)
+    read = live_hw.with_rail(lambda: board, lambda: table)
+    assert read().volts == (
+        ("nct6799:in0", 1.25),
+        ("pm_table:vdd", pytest.approx(1.29)),
+        ("pm_table:vdd_vid", pytest.approx(1.3)),
+    )
+    assert live_hw.with_rail(lambda: board, lambda: None)() == board
