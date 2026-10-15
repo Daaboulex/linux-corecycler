@@ -510,7 +510,9 @@ class TestSchedulerHookGlue:
         from test_scheduler import ok
 
         found = LaneSignal(Outcome.OWN_CORE_MCE, "MCE during inter-core idle: bang")
-        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: found)
+        monkeypatch.setattr(
+            execution, "watch_idle", lambda **kwargs: found if kwargs["phase"] == "inter-core idle" else None
+        )
         sched, scripted = self._scheduler(tmp_path, monkeypatch, idle_between_cores=0.01, stop_on_error=True)
         scripted.script = [lambda sup, lanes, c, d: {0: ok(0)}]
         results = sched.run()

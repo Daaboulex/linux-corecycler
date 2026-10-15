@@ -11,6 +11,7 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from corecycler.config.paths import resolve_work_dir
+from corecycler.engine import detector as kernel
 from corecycler.engine import execution
 from corecycler.engine.backends.base import LaneSignal, Outcome, OutcomeKind, StressResult
 from corecycler.engine.detector import ErrorDetector, KernelEvent
@@ -25,6 +26,8 @@ if TYPE_CHECKING:
     from .topology import CPUTopology
 
 log = logging.getLogger(__name__)
+
+LATE_RECORDS = "late machine checks"
 
 
 class TestState(Enum):
@@ -237,6 +240,8 @@ class CoreScheduler:
             result = self._run_variable_load(lane, self.config.seconds_per_core / 3.0)
         if result.passed and self.config.idle_stability_test > 0:
             result = self._run_idle_stability(core_id, result)
+        if result.passed:
+            result = self._late_records(core_id, result)
         if result.outcome is Outcome.CUT_SHORT:
             log.info("core %d: %s", core_id, result.detail)
             status.state = "pending"
@@ -312,6 +317,12 @@ class CoreScheduler:
                 duration_seconds=elapsed,
             )
         return StressResult(core_id=lane.core_id, outcome=Outcome.PASS, detail="", duration_seconds=elapsed)
+
+    def _late_records(self, core_id: int, passed: StressResult) -> StressResult:
+        found = self._watch_idle(core_id, kernel.mce_settle_s(), LATE_RECORDS)
+        if found is None:
+            return passed
+        return StressResult(core_id=core_id, outcome=found.outcome, detail=found.text, duration_seconds=0.0)
 
     def _run_idle_stability(self, core_id: int, passed: StressResult) -> StressResult:
         phase = "idle stability"

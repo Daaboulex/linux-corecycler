@@ -11,6 +11,7 @@ from typing import ClassVar
 
 import pytest
 
+from corecycler.engine import detector as kernel
 from corecycler.engine import execution
 from corecycler.engine import scheduler as scheduler_mod
 from corecycler.engine.backends.base import LaneSignal, Outcome, StressConfig, StressResult
@@ -323,7 +324,36 @@ class TestRunOrchestration:
         assert sched._stop_requested
 
 
+def in_phase(phase: str, found: LaneSignal):
+    return lambda **kwargs: found if kwargs["phase"] == phase else None
+
+
 class TestIdleComposition:
+    @pytest.mark.req("EC.G1.scheduler")
+    def test_a_record_logged_one_poll_after_a_core_s_last_phase_fails_that_core(self, tmp_path, monkeypatch):
+        found = LaneSignal(Outcome.OWN_CORE_MCE, "MCE during late machine checks: bang")
+        watched = []
+
+        def watch(**kwargs):
+            watched.append((kwargs["phase"], kwargs["cpus"], kwargs["duration"]))
+            return found if kwargs["phase"] == "late machine checks" else None
+
+        monkeypatch.setattr(execution, "watch_idle", watch)
+        monkeypatch.setattr(kernel, "mce_settle_s", lambda: 6.0)
+        sched = make_scheduler(tmp_path, cores_to_test=[0])
+        ScriptedSupervisor.script = [step_pass]
+        results = sched.run()
+        assert results[0][0].outcome is Outcome.OWN_CORE_MCE
+        assert watched == [("late machine checks", sched.topology.cores[0].logical_cpus, 6.0)]
+
+    def test_a_failed_core_is_not_watched_again_after_its_test(self, tmp_path, monkeypatch):
+        watched = []
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: watched.append(kwargs["phase"]))
+        sched = make_scheduler(tmp_path, cores_to_test=[0])
+        ScriptedSupervisor.script = [step_fail]
+        sched.run()
+        assert watched == []
+
     def test_inter_core_idle_runs_between_cores(self, tmp_path, monkeypatch):
         calls: list[str] = []
 
@@ -335,11 +365,11 @@ class TestIdleComposition:
         sched = make_scheduler(tmp_path, idle_between_cores=0.01)
         ScriptedSupervisor.script = [step_pass, step_pass]
         sched.run()
-        assert calls == ["inter-core idle", "inter-core idle"]
+        assert calls == ["late machine checks", "inter-core idle", "late machine checks", "inter-core idle"]
 
     def test_an_idle_error_is_recorded_without_a_verdict_change(self, tmp_path, monkeypatch):
         found = LaneSignal(Outcome.OWN_CORE_MCE, "MCE during inter-core idle: bang")
-        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: found)
+        monkeypatch.setattr(execution, "watch_idle", in_phase("inter-core idle", found))
         sched = make_scheduler(tmp_path, idle_between_cores=0.01)
         ScriptedSupervisor.script = [step_pass, step_pass]
         results = sched.run()
@@ -350,7 +380,7 @@ class TestIdleComposition:
 
     def test_an_environment_event_while_idle_between_cores_stops_the_run(self, tmp_path, monkeypatch):
         found = LaneSignal(Outcome.THERMAL, "CPU temperature exceeded 95.0 C safety limit during inter-core idle")
-        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: found)
+        monkeypatch.setattr(execution, "watch_idle", in_phase("inter-core idle", found))
         sched = make_scheduler(tmp_path, idle_between_cores=0.01)
         ScriptedSupervisor.script = [step_pass, step_pass]
         results = sched.run()

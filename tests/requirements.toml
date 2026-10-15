@@ -4793,6 +4793,11 @@ statement = "After a tuner test's payload stops, and after a soak, the kernel lo
 proof = "built"
 
 [[requirement]]
+id = "EC.G1.scheduler"
+statement = "After a core's last phase passes in the stress scheduler, its CPUs are watched one machine-check poll longer (check_interval plus the 1 s timer rounding, at most 6 s) and a record found there fails that core, so a corrected error logged after the test is not read during the next core's test, where it matches no lane (scratch/design/error-capture.md gap 1, the scheduler's half)."
+proof = "built"
+
+[[requirement]]
 id = "EC.G5"
 statement = "A one-core SEARCH test that reports a pass while a kernel record names the tested core fails that value as silicon; the same pass without the record stands (scratch/design/error-capture.md gap 5)."
 proof = "built"
