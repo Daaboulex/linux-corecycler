@@ -2543,18 +2543,6 @@ proof = "not built"
 task = "T28"
 
 [[requirement]]
-id = "L18.d.8.reconcile"
-statement = "Reconcile: clamp each core's value and phase inside FB"
-proof = "not built"
-task = "T28"
-
-[[requirement]]
-id = "L18.d.8.drift"
-statement = "Drift announce"
-proof = "not built"
-task = "T28"
-
-[[requirement]]
 id = "L18.d.8.baselines"
 statement = "Every owned CO is written to its baseline, then the session runs at the stored loop"
 proof = "built"
@@ -4290,12 +4278,6 @@ statement = "Tccd and clock are recorded per CCD"
 proof = "built"
 
 [[requirement]]
-id = "TM.E2.freeze"
-statement = "A lane is frozen through cgroup.freeze on its scope, SIGSTOP and SIGCONT to the group as the fallback"
-proof = "not built"
-task = "T28"
-
-[[requirement]]
 id = "TM.E2.pstore"
 statement = "Crash evidence also reads /sys/fs/pstore"
 proof = "not built"
@@ -4306,12 +4288,6 @@ id = "TM.E2.sync"
 statement = "The history database commits with synchronous=FULL"
 proof = "untested"
 task = "T29"
-
-[[requirement]]
-id = "TM.F.preexec"
-statement = "The payload preexec sets SCHED_OTHER at nice 0 explicitly so the load is the same from the GUI, the CLI and ssh"
-proof = "not built"
-task = "T28"
 
 [[requirement]]
 id = "TM.F.rtprio"
