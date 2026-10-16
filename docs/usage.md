@@ -168,8 +168,9 @@ and the scaling maximum frequency. A capped machine (power-saver holding every c
 4300 MHz, for example) runs, and the cap is the session's range: every result belongs to
 it, and a session that changes range midway pauses until the power state is put back. A
 later session at another range tests the cores there. Every test also records each core's
-highest observed clock, sampled ten times a second; History shows each core's peak in a
-session and its highest clock at every range seen so far.
+highest observed clock, sampled ten times a second, and each CPU's scaling maximum;
+History shows each core's peak in its own single-core tests of a session, and its highest
+clock at every range seen so far beside the scaling maximum of the CPUs it ran on.
 
 ### Crash safety
 
@@ -249,11 +250,13 @@ different things per program:
 profile and PBO scalar, **All stress tests** lists them one by one, and **Tuning
 sessions** lists the Auto-Tuner's sessions, newest first. A session's line names its
 core order, deepest offset, passes to prove, BIOS and power state; its table shows each
-core's phase, value, the value it failed at, its tests, its last result and its highest
-clock. The log below lists the session's settings by the Auto-Tuner tab's names, every
-test, the events, the boots it saw and each core's highest clock at every power-state
-range. **Load these values into Curve-Tuner** fills the Curve-Tuner tab's Value
-to set column from a completed session; nothing reaches the CPU until Set changed.
+core's phase, value and the value it failed at, and from its own single-core tests their
+count, the last result and its highest clock. The log below lists the session's settings
+by the Auto-Tuner tab's names, every test (an all-core or group test with the CPUs it
+loaded and each core's value), the events, the boots it saw and each core's highest clock
+at every power-state range. **Load these values into Curve-Tuner** fills the Curve-Tuner
+tab's Value to set column from a completed session; nothing reaches the CPU until Set
+changed.
 
 ## Understanding results
 

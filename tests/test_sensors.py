@@ -236,7 +236,7 @@ def test_the_power_state_is_read_from_cpufreq_and_the_platform_profile(tmp_path)
     profile = tmp_path / "platform_profile"
     profile.write_text("low-power\n")
     state = read_power_state(tmp_path, profile)
-    assert state == PowerState("low-power", "powersave", "power", "1", 4300.0, 5756.452)
+    assert state == PowerState("low-power", "powersave", "power", "1", 4300.0, 5756.452, ceilings=((0, 4300.0),))
     assert state.named() == (
         ("platform profile", "low-power"),
         ("governor", "powersave"),
@@ -268,6 +268,14 @@ def test_the_power_state_is_read_from_every_cpu_and_names_the_cpus_that_differ(t
         ("EPP", "balance_performance on cpus 0-2; unreadable on cpus 3"),
         ("scaling maximum MHz", "4300 on cpus 0-1; 5100 on cpus 2-3"),
     )
+
+
+@pytest.mark.req("T22.F10")
+def test_the_power_state_keeps_each_cpu_s_own_scaling_maximum_as_read(tmp_path):
+    for cpu, ceiling in ((0, "2064000"), (1, "3228000"), (2, "unreadable")):
+        cpufreq(tmp_path, cpu, "624000", ceiling)
+    state = read_power_state(tmp_path, tmp_path / "no_profile")
+    assert state.ceilings == ((0, 2064.0), (1, 3228.0), (2, None))
 
 
 def test_a_machine_without_the_power_files_names_nothing(tmp_path):

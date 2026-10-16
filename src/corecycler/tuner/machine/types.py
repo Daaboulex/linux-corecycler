@@ -46,6 +46,13 @@ class PauseReason(StrEnum):
     SETUP_CHANGED = "setup_changed"
 
 
+class Incident(StrEnum):
+    CRASH = "crash"
+    STOCK_MACHINE_CHECK = "stock_machine_check"
+    SOAK_FAILURE = "soak_failure"
+    UNRECORDED = "unrecorded"
+
+
 class Klass(StrEnum):
     T1 = "1t"
     T2 = "2t"
@@ -302,7 +309,7 @@ class SessionState:
     pause: Pause | None = None
     streaks: Streaks = Streaks()
     resume_streak: int = 0
-    incidents: int = 0
+    incidents: tuple[Incident, ...] = ()
     next_token: int = 1
     power: tuple[tuple[str, str], ...] = ()
     setup: tuple[tuple[str, str], ...] = ()
@@ -485,7 +492,7 @@ class Stored:
     cores: tuple[CoreRecord, ...]
     flow: Flow | None
     resume_streak: int = 0
-    incidents: int = 0
+    incidents: tuple[Incident, ...] = ()
     power: tuple[tuple[str, str], ...] = ()
     setup: tuple[tuple[str, str], ...] = ()
     base_co: tuple[tuple[int, int | None], ...] = ()

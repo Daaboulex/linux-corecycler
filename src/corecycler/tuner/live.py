@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from corecycler.config.paths import atomic_write, hand_back
 from corecycler.engine import detector as kernel
-from corecycler.monitor.frequency import PowerState
+from corecycler.monitor.frequency import PowerState, cpu_ranges
 from corecycler.tuner import telemetry
 from corecycler.tuner.machine.session import transition
 from corecycler.tuner.machine.types import (
@@ -37,6 +37,7 @@ from corecycler.tuner.machine.types import (
     Flow,
     ForgetResident,
     Group,
+    Incident,
     InternalError,
     Klass,
     Lifecycle,
@@ -181,14 +182,14 @@ def coverage(samples: list[dict], ccd_of: dict[int, int | None]) -> dict[int, di
     }
 
 
-MARGIN_STAGES = frozenset({Stage.SEARCH, Stage.LIVE1})
+ONE_CORE_STAGES = frozenset({Stage.SEARCH, Stage.LIVE1})
 MARGIN_SIDES = {Group.PASS: "passes", Group.SILICON: "fails"}
 
 
 def margins(tests: list[dict]) -> dict[int, dict]:
     found: dict[int, dict] = {}
     for test in tests:
-        if test["stage"] not in MARGIN_STAGES:
+        if test["stage"] not in ONE_CORE_STAGES:
             continue
         core = found.setdefault(test["core"], {"bins": {}, "open": [], "unrecorded": 0})
         if test["ended_at"] is None:
@@ -232,6 +233,31 @@ def peaks(samples: list[dict]) -> dict[int, float]:
             if mhz is not None and mhz > highest.get(core, 0.0):
                 highest[core] = mhz
     return dict(sorted(highest.items()))
+
+
+def own_peaks(tests: list[dict]) -> list[dict]:
+    highest: dict[tuple[int, float | None, str | None], float] = {}
+    for test in tests:
+        if test["stage"] not in ONE_CORE_STAGES or test["peaks_json"] is None:
+            continue
+        mhz = json.loads(test["peaks_json"]).get(str(test["core"]))
+        if mhz is None:
+            continue
+        power = {} if test["power_json"] is None else json.loads(test["power_json"])
+        key = (test["core"], _own_ceiling(power, json.loads(test["cpus_json"])), power.get("boost"))
+        highest[key] = max(mhz, highest.get(key, mhz))
+    return [
+        {"core": core, "cap_mhz": cap, "boost": boost, "mhz": mhz}
+        for (core, cap, boost), mhz in sorted(highest.items(), key=lambda item: item[0][0])
+    ]
+
+
+def _own_ceiling(power: dict, cpus: list[int]) -> float | None:
+    if "ceilings" not in power:
+        return power["max_mhz"] if "split" in power else None
+    read = dict(power["ceilings"])
+    own = [read.get(cpu) for cpu in cpus]
+    return max(own) if own and None not in own else None
 
 
 def read_stored(db: HistoryDB, session_id: int) -> Stored:
@@ -317,11 +343,19 @@ def stored_from_json(raw: dict) -> Stored:
         cores=tuple(CoreRecord(**{**core, "phase": Phase(core["phase"])}) for core in raw["cores"]),
         flow=_flow_from_json(raw["flow"]),
         resume_streak=raw["resume_streak"],
-        incidents=raw["incidents"],
+        incidents=_incidents(raw["incidents"]),
         power=tuple((name, value) for name, value in raw["power"]),
         setup=tuple((name, value) for name, value in raw["setup"]),
         base_co=tuple((core, value) for core, value in raw["base_co"]),
     )
+
+
+def _incidents(raw: list[str] | int) -> tuple[Incident, ...]:
+    if not isinstance(raw, int):
+        return tuple(Incident(kind) for kind in raw)
+    if raw < 0:
+        raise ValueError(f"the stored incidents count {raw} is negative")
+    return (Incident.UNRECORDED,) * raw
 
 
 @dataclass(frozen=True, slots=True)
@@ -611,6 +645,10 @@ class LiveRig:
     test_row: tuple[int, int, bool] | None = field(init=False, default=None)
     boot_recorded: bool = field(init=False, default=False)
     refused: str | None = field(init=False, default=None)
+    abort_taken: bool = field(
+        init=False,  # equivalent-mutant: init only lets a caller pass the flag, and no caller does
+        default=False,
+    )
     boot: str = field(init=False)
     setup: tuple[tuple[str, str], ...] = field(init=False)
     power: PowerState = field(init=False, default_factory=PowerState)
@@ -672,6 +710,8 @@ class LiveRig:
             if result.refused is not None:
                 self.refused = result.refused
                 self.say(f"refused: {result.refused}")
+            elif isinstance(ev, Abort):
+                self.abort_taken = True
             self.state = result.state
             acting = result.state if result.state.session_id is not None else before
             follow = self._run(acting, result.effects)
@@ -879,11 +919,12 @@ class LiveRig:
 
     def _start(self, token: int, spec: TestSpec) -> None:
         load = "" if spec.load is None else f" {spec.load.value}"
-        cpus = ",".join(str(cpu) for cpu in spec.cpus)
-        self.say(
-            f"test {token}: core {spec.core} {spec.stage.value} {spec.klass.value}{load} "
-            f"at {spec.value} for {spec.seconds:g} s on cpus {cpus}"
-        )
+        if spec.stage in ONE_CORE_STAGES:
+            scope = f"core {spec.core} {spec.stage.value} {spec.klass.value}{load} at {spec.value}"
+        else:
+            scope = f"{spec.stage.value}{load}, cores {', '.join(f'{core} at {value}' for core, value in spec.vector)}"
+        where = f"on cpus {cpu_ranges(list(spec.cpus))}" if spec.cpus else "with no cpus loaded"
+        self.say(f"test {token}: {scope} for {spec.seconds:g} s {where}")
         stop = threading.Event()
 
         def work() -> None:

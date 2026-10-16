@@ -20,6 +20,7 @@ EXIT_QUARANTINED = 4
 EXIT_REFUSED = 5
 EXIT_ABORTED = 6
 EXIT_LOCKED = 7
+EXIT_VALIDATION_ABORTED = 8  # equivalent-mutant: any free code below 128 reads the same through EXIT_MEANINGS
 EXIT_SIGNAL = 130
 
 EXIT_MEANINGS = {
@@ -29,6 +30,7 @@ EXIT_MEANINGS = {
     EXIT_REFUSED: "refused (bad config or environment)",
     EXIT_ABORTED: "aborted",
     EXIT_LOCKED: "another CO writer holds the lock",
+    EXIT_VALIDATION_ABORTED: "validation aborted; the session stays completed",
     EXIT_SIGNAL: "stopped by a signal; every owned core is sent back to its baseline",
 }
 

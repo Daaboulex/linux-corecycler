@@ -4595,38 +4595,32 @@ proof = "built"
 [[requirement]]
 id = "T22.F9"
 statement = "An all-core test is shown and counted as all-core with its vector and CPUs, never as one core at one thread."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F10"
 statement = "A core's peak MHz counts only that core's own tests, against that core's own ceiling."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F11"
 statement = "Unblamed crashes, machine checks at stock and soak failures are counted and named separately."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F12"
 statement = "Tuning complete is said only when a profile was confirmed; an aborted validation says aborted."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F13"
 statement = "A setup check that finds no change says what it checked, never that nothing affecting a verdict changed."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F14"
 statement = "The cgroup memory in use is a read value or named unreadable, never 0 by default; an unreadable limit is named, never no limit."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F15"

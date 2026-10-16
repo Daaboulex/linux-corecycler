@@ -52,10 +52,10 @@ from corecycler.gui.style import (
 from corecycler.gui.tool_prompt import ensure_tool
 from corecycler.gui.widgets import add_setting, note, setting_grid, spoken
 from corecycler.history.timefmt import format_local
-from corecycler.monitor.frequency import read_power_state
+from corecycler.monitor.frequency import cpu_ranges, read_power_state
 from corecycler.monitor.power_profile import power_profile
 from corecycler.smu.writer_lock import running_driver
-from corecycler.tuner.live import config_to_json, read_stored
+from corecycler.tuner.live import ONE_CORE_STAGES, config_to_json, read_stored
 from corecycler.tuner.live_hw import sched_ext_note
 from corecycler.tuner.machine.session import co_changed_since
 from corecycler.tuner.machine.types import (
@@ -196,7 +196,6 @@ ORDER_LABELS = {
     Method.SEQUENTIAL: "One after another",
     Method.RANDOM: "Random",
 }
-ONE_CORE = frozenset({Stage.SEARCH, Stage.LIVE1})
 THREADS = {"1t": "one thread", "2t": "two threads"}
 SINGULAR = {"counts": "count", "passes": "pass", "times": "time", "cores": "core"}
 SET_BY_THE_TAB = ("mode", "method", "selected", "stage_seconds", "starts")
@@ -243,6 +242,14 @@ def settings_lines(cfg: MachineConfig) -> list[str]:
             shown = SINGULAR.get(unit, unit) if value == 1 else unit
             lines.append(f"  {label}: {value:g} {shown}".rstrip() + (f" ({said})" if said else ""))
     return lines
+
+
+def scope_text(test: dict) -> str:
+    cpus = json.loads(test["cpus_json"])
+    vector = json.loads(test["vector_json"])
+    load = f"cpus {cpu_ranges(cpus)}" if cpus else "no cpus loaded"
+    values = ", ".join(f"{core} at {value}" for core, value in vector) if vector else "none recorded"
+    return f"{load}, cores {values}"
 
 
 def power_now() -> tuple[tuple[str, str], ...]:
@@ -449,6 +456,7 @@ class TunerTab(QWidget):
         self._driver = QLabel("")
         self._driver.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM};")
         self._test = QLabel("")
+        self._test.setWordWrap(True)
         self._reminder = QLabel("")
         self._reminder.setWordWrap(True)
         column.addWidget(self._status)
@@ -575,26 +583,34 @@ class TunerTab(QWidget):
             self._test.setText("")
             return
         elapsed = (datetime.now(UTC) - datetime.fromisoformat(test["started_at"])).total_seconds()
-        if test["stage"] in ONE_CORE:
+        if test["stage"] in ONE_CORE_STAGES:
             what = f"core {test['core']} at {test['value']}, {THREADS.get(test['klass'], test['klass'])}"
         else:
-            what = "a group of cores" if test["stage"] == Stage.BISECT else "every core"
+            what = scope_text(test)
         tally = "" if view.endurance is None else "; {} endurance tests ended, {} failed".format(*view.endurance)
         self._test.setText(
             f"Testing {what}: {stage_label(test['stage'])}, {elapsed:.0f} of {test['seconds_asked']:.0f} s{tally}"
         )
-        self.tuner_core_elapsed.emit(test["core"], elapsed)
+        for core in self._loaded_cores(test):
+            self.tuner_core_elapsed.emit(core, elapsed)
+
+    def _loaded_cores(self, test: dict) -> tuple[int, ...]:
+        if test["stage"] in ONE_CORE_STAGES:
+            return (test["core"],)
+        cpus = set(json.loads(test["cpus_json"]))
+        cores = sorted(self._topology.cores.items()) if self._topology is not None else ()
+        return tuple(core for core, info in cores if cpus.intersection(info.logical_cpus))
 
     def _show_cores(self, view: SessionView) -> None:
         records = view.stored.cores if view.stored is not None else ()
         self._cores.setRowCount(len(records))
-        testing = view.test["core"] if view.test is not None and self._running else None
+        testing = self._loaded_cores(view.test) if view.test is not None and self._running else ()
         for row, record in enumerate(records):
             fail = "" if record.fb is None else str(record.fb)
             texts = (str(record.core), str(record.value), tuner_phase_label(record.phase), fail)
             for column, text in enumerate(texts):
                 self._cores.setItem(row, column, QTableWidgetItem(text))
-            state = "testing" if record.core == testing else GRID_STATE[record.phase]
+            state = "testing" if record.core in testing else GRID_STATE[record.phase]
             shown = (state, record.value, record.phase.value)
             if self._shown.get(record.core) != shown:
                 self._shown[record.core] = shown

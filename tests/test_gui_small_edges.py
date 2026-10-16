@@ -66,6 +66,13 @@ class TestTunerWords:
         assert pause_text("not_a_reason: as stored") == "not_a_reason: as stored"
         assert pause_text("thermal") == "thermal"
 
+    @pytest.mark.req("T22.F11")
+    def test_an_incidents_pause_is_labelled_without_naming_one_kind_for_all(self):
+        from corecycler.gui.style import pause_text
+
+        detail = "1 crash nobody could be blamed for, 1 soak failure"
+        assert pause_text(f"incidents: {detail}") == f"Incidents: {detail}"
+
     @pytest.mark.req("UI1.range")
     def test_the_power_state_reads_as_words(self):
         from corecycler.gui.style import power_text

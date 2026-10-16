@@ -25,6 +25,7 @@ from corecycler.cli import (
     EXIT_QUARANTINED,
     EXIT_REFUSED,
     EXIT_SIGNAL,
+    EXIT_VALIDATION_ABORTED,
 )
 from corecycler.config import tools
 from corecycler.config.paths import data_dir
@@ -462,9 +463,15 @@ def preflight(
     scheduler = sched_ext_note(sched_ext)
     if scheduler is not None:
         warnings.append(scheduler)
-    hot_mb = budget(1, 0).usable_mb // 2
-    if hot_mb < stages.HOT_MEMORY_CAP_MB:
-        warnings.append(f"HOT runs y-cruncher with {hot_mb} MB, under its {stages.HOT_MEMORY_CAP_MB} MB cap")
+    try:
+        usable_mb = budget(1, 0).usable_mb  # equivalent-mutant: usable_mb ignores the instance count and launch minimum
+    except MemoryBudgetUnavailable as exc:
+        if refusal is None:
+            refusal = f"the memory budget is unavailable: {exc}"
+    else:
+        hot_mb = usable_mb // 2
+        if hot_mb < stages.HOT_MEMORY_CAP_MB:
+            warnings.append(f"HOT runs y-cruncher with {hot_mb} MB, under its {stages.HOT_MEMORY_CAP_MB} MB cap")
     epp = dict(power.named()).get("EPP")
     if epp is not None and EPP_SAVING.search(epp):
         warnings.append(f"EPP is {epp}, which holds the clocks under performance")
@@ -892,6 +899,12 @@ OUTCOME_NOTES = {
         "Every owned core is sent back to its baseline. A failed write is in the log.",
         "critical",
     ),
+    EXIT_VALIDATION_ABORTED: (
+        "Validation aborted",
+        "The validation stopped before it ended; the session stays completed and its values are sent back. "
+        "A failed write is in the log.",
+        "normal",
+    ),
 }
 
 
@@ -954,6 +967,8 @@ def _run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> 
     reason = f" ({final.pause.reason.value}: {final.pause.detail})" if final.pause is not None else ""
     say(f"rest: {final.lifecycle.value}{reason}")
     say("values: " + ", ".join(f"{r.core}={r.value} ({r.phase.value}, fb {r.fb})" for r in final.cores))
+    if final.lifecycle is Lifecycle.COMPLETED and rig.abort_taken:
+        return EXIT_VALIDATION_ABORTED
     return EXIT_OF[final.lifecycle]
 
 

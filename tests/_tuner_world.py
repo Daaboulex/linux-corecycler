@@ -182,14 +182,18 @@ class Fake:
             if follow is None:
                 self.check_settled(before, ev, result)
             if isinstance(ev, CrashEvidenceRead) and ev.dirty_end and stored_before is not None:
-                for name in ("incidents", "resume_streak"):
-                    if getattr(result.state, name) > getattr(stored_before, name) + 1:
-                        raise Broken(f"one dead boot raised {name} by more than one: it was attributed twice")
                 after = result.state
+                counts = (
+                    ("incidents", len(after.incidents), len(stored_before.incidents)),
+                    ("resume_streak", after.resume_streak, stored_before.resume_streak),
+                )
+                for name, now, before_boot in counts:
+                    if now > before_boot + 1:
+                        raise Broken(f"one dead boot raised {name} by more than one: it was attributed twice")
                 if (
                     ev.was_running
                     and after.lifecycle is Lifecycle.RUNNING
-                    and after.incidents <= stored_before.incidents
+                    and len(after.incidents) <= len(stored_before.incidents)
                     and after.resume_streak <= stored_before.resume_streak
                 ):
                     raise Broken("a crash raised neither the incidents nor the resume streak, so it can repeat forever")

@@ -29,6 +29,7 @@ from corecycler.tuner.machine.types import (
     Flow,
     ForgetResident,
     Group,
+    Incident,
     InFlight,
     InternalError,
     Klass,
@@ -79,6 +80,18 @@ SETUP_REMEDY = "put it back and resume, or continue or restart under it"
 
 
 RECORDED_ONLY = frozenset({"pm_table", "python", "qt", "zenpower"})
+
+INCIDENT_NAMES = {
+    Incident.CRASH: ("crash nobody could be blamed for", "crashes nobody could be blamed for"),
+    Incident.STOCK_MACHINE_CHECK: ("machine check at a stock value", "machine checks at stock values"),
+    Incident.SOAK_FAILURE: ("soak failure", "soak failures"),
+    Incident.UNRECORDED: ("stored without its kind", "stored without their kind"),
+}
+
+
+def _incidents_text(incidents: tuple[Incident, ...]) -> str:
+    counts = [(kind, incidents.count(kind)) for kind in Incident if kind in incidents]
+    return ", ".join(f"{count} {INCIDENT_NAMES[kind][count > 1]}" for kind, count in counts)
 
 
 def transition(s: SessionState, e: Event, w: World) -> Transition:
@@ -430,9 +443,15 @@ def _reengage(s: SessionState, e: Resume, w: World) -> Transition:
 def _setup_choice_problem(s: SessionState, w: World) -> str | None:
     if s.lifecycle is not Lifecycle.PAUSED or s.pause is None or s.pause.reason is not PauseReason.SETUP_CHANGED:
         return "only a session paused as setup_changed can continue or restart under a new setup"
-    if not _setup_changes(s.setup, w.setup) and not _held_base_changes(s, w.bios_co):
-        return f"nothing that affects a verdict changed since session {s.session_id} started; resume it"
-    return None
+    if _setup_changes(s.setup, w.setup) or _held_base_changes(s, w.bios_co):
+        return None
+    moved = _changes(s.power, w.power)
+    if moved:
+        return f"only the power state changed since session {s.session_id} started: {moved}; restore it and resume"
+    return (
+        f"the setup a verdict depends on, the power state and the CO of the cores session {s.session_id} "
+        "does not own read as at its start; resume it"
+    )
 
 
 def _superseded(s: SessionState) -> Stored:
@@ -620,7 +639,8 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
             return _enter_pause(_clear_in_test(after), PauseReason.STOCK_UNSTABLE, stock)
     after = _owe_interrupted(_clear_in_test(after), tuple(r.core for r in s.cores if r.in_test))
     streak = s.resume_streak + 1 if verdict.convict or flow_crash else s.resume_streak
-    incidents = s.incidents + 1 if verdict.incident or after.incidents > s.incidents else s.incidents
+    counted = verdict.incident or len(after.incidents) > len(s.incidents)
+    incidents = (*s.incidents, Incident.CRASH) if counted else s.incidents
     after = replace(after, resume_streak=streak, incidents=incidents)
     if verdict.held is not None:
         return _enter_pause(
@@ -630,7 +650,7 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
             (verdict.held,),
         )
     for ev in verdict.evidence:
-        applied = _apply_evidence(after, ev, at_stock=verdict.at_stock, counted=after.incidents > s.incidents)
+        applied = _apply_evidence(after, ev, at_stock=verdict.at_stock, counted=counted)
         if isinstance(applied, Transition):
             return applied
         after = applied
@@ -644,8 +664,8 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
                 Announce("quarantined", f"{streak} crashes in a row with no test surviving"),
             ),
         )
-    if after.incidents > s.incidents and after.incidents >= INCIDENT_LIMIT:
-        return _enter_pause(after, PauseReason.INCIDENTS, f"{after.incidents} crashes nobody could be blamed for")
+    if len(after.incidents) > len(s.incidents) and len(after.incidents) >= INCIDENT_LIMIT:
+        return _enter_pause(after, PauseReason.INCIDENTS, _incidents_text(after.incidents))
     changed = _setup_changes(after.setup, w.setup)
     if changed:
         return _enter_pause(
@@ -811,10 +831,10 @@ def _apply_evidence(s: SessionState, ev, at_stock: bool = False, counted: bool =
             )
         if counted:
             return s
-        incidents = s.incidents + 1
+        incidents = (*s.incidents, Incident.STOCK_MACHINE_CHECK)
         out = replace(s, incidents=incidents)
-        if incidents >= INCIDENT_LIMIT:
-            return _enter_pause(out, PauseReason.INCIDENTS, f"{incidents} machine checks at stock values")
+        if len(incidents) >= INCIDENT_LIMIT:
+            return _enter_pause(out, PauseReason.INCIDENTS, _incidents_text(incidents))
         return out
     steps = 1 if ev.corrected else UNCORRECTED_STEPS
     rec = s.core(ev.core)
@@ -1146,7 +1166,7 @@ def _allcore_fail(s: SessionState, ctx, w: World) -> tuple[SessionState, str | N
     cursor = flow.allcore
     stage = flow.stage
     if stage is Stage.SOAK:
-        return replace(s, incidents=s.incidents + 1, flow=replace(flow, dirty=True)), None
+        return replace(s, incidents=(*s.incidents, Incident.SOAK_FAILURE), flow=replace(flow, dirty=True)), None
     if stage is Stage.TIGHTEN:
         return _reclaim_ended(s), None
     if stage in (Stage.STEADY, Stage.ENDURANCE) and allcore.steady_class(ctx):
@@ -1392,7 +1412,7 @@ def _finalize(s: SessionState, w: World) -> Transition:
     problem = _co_reads_problem(s, w)
     if problem is not None:
         return _enter_pause(s, *problem)
-    done = replace(s, lifecycle=Lifecycle.COMPLETED, flow=None, slot=None, incidents=0)
+    done = replace(s, lifecycle=Lifecycle.COMPLETED, flow=None, slot=None, incidents=())
     values = ", ".join(f"{r.core}: {r.value}" for r in s.cores)
     return Transition(done, (_commit(done), Announce("completed", f"final values {values}")))
 
@@ -1460,10 +1480,8 @@ def _judged(s: SessionState, rep: Report, w: World) -> Transition:
 
 def _soak_incident(s: SessionState, spec: TestSpec, rep: Report, pausing: bool, w: World) -> Transition:
     s, _ = _allcore_fail(s, rep.context, w)
-    if s.incidents >= INCIDENT_LIMIT:
-        return _enter_pause(
-            s, PauseReason.INCIDENTS, f"{s.incidents} incidents nobody could be blamed for: {rep.detail}"
-        )
+    if len(s.incidents) >= INCIDENT_LIMIT:
+        return _enter_pause(s, PauseReason.INCIDENTS, f"{_incidents_text(s.incidents)}; the newest: {rep.detail}")
     return _next_wait(s, spec, pausing)
 
 

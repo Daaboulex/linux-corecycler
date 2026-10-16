@@ -115,10 +115,8 @@ def unified_cgroup_path(text: str) -> str | None:
 
 
 def _own_cgroup(self_cgroup: Path) -> str | None:
-    try:
-        return unified_cgroup_path(self_cgroup.read_text())
-    except OSError:
-        return None
+    text = _present_text(self_cgroup)
+    return None if text is None else unified_cgroup_path(text)
 
 
 def _cgroup_memory(own: str | None, cgroup_base: Path) -> tuple[int | None, int | None, str | None]:
@@ -128,7 +126,7 @@ def _cgroup_memory(own: str | None, cgroup_base: Path) -> tuple[int | None, int 
     node = cgroup_base / own.lstrip("/")
     while True:
         for name in _CGROUP_LIMIT_FILES:
-            limit = _cgroup_int(node / name)
+            limit = _cgroup_limit(node / name)
             if limit is not None and (tightest is None or limit < tightest[0]):
                 tightest = (limit, node, name)
         if node == cgroup_base or node.parent == node:
@@ -137,19 +135,36 @@ def _cgroup_memory(own: str | None, cgroup_base: Path) -> tuple[int | None, int 
     if tightest is None:
         return None, None, None
     limit_bytes, node, name = tightest
-    used_bytes = _cgroup_int(node / "memory.current") or 0
+    used_bytes = _cgroup_used(node / "memory.current")
     relative = node.relative_to(cgroup_base).as_posix()
     source = f"{name} at /{'' if relative == '.' else relative}"
     return limit_bytes // _BYTES_PER_MIB, used_bytes // _BYTES_PER_MIB, source
 
 
-def _cgroup_int(path: Path) -> int | None:
+def _present_text(path: Path) -> str | None:
     try:
-        text = path.read_text().strip()
-    except OSError:
+        return path.read_text()
+    except FileNotFoundError:
         return None
-    if text == "max":
+    except OSError as exc:
+        raise MemoryBudgetUnavailable(f"{path} is unreadable: {exc}") from exc
+
+
+def _cgroup_limit(path: Path) -> int | None:
+    text = _present_text(path)
+    if text is None or text.strip() == "max":
         return None
+    return _byte_count(path, text.strip(), "a byte count or 'max'")
+
+
+def _cgroup_used(path: Path) -> int:
+    text = _present_text(path)
+    if text is None:
+        raise MemoryBudgetUnavailable(f"{path} is missing, so the memory in use under its limit is unknown")
+    return _byte_count(path, text.strip(), "a byte count")
+
+
+def _byte_count(path: Path, text: str, expected: str) -> int:
     if not text.isdigit():
-        raise MemoryBudgetUnavailable(f"{path} holds {text!r}, expected a byte count or 'max'")
+        raise MemoryBudgetUnavailable(f"{path} holds {text!r}, expected {expected}")
     return int(text)

@@ -1426,34 +1426,20 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         ).fetchall()
         return [MachineSessionRecord(**dict(row)) for row in rows]
 
+    _TUNER_TEST_COLUMNS = (
+        "id, boot_id, started_at, ended_at, stage, load, klass, core, value, vector_json, cpus_json, seconds_asked,"
+        " seconds_run, verdict, detail, coverage_json, power_json, peaks_json"
+    )
+
     def list_tuner_tests(self, session_id: int) -> list[dict]:
         rows = self.__conn.execute(
-            "SELECT id, boot_id, started_at, ended_at, stage, load, klass, core, value, seconds_asked, seconds_run,"
-            " verdict, detail, coverage_json FROM tuner_tests WHERE session_id=? ORDER BY id",
-            (session_id,),
+            f"SELECT {self._TUNER_TEST_COLUMNS} FROM tuner_tests WHERE session_id=? ORDER BY id", (session_id,)
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def core_peaks(self, session_id: int) -> dict[int, float]:
-        rows = self.__conn.execute(
-            "SELECT CAST(p.key AS INTEGER) AS peak_core, MAX(p.value) AS mhz FROM tuner_tests t,"
-            " json_each(t.peaks_json) p WHERE t.session_id=?"
-            " GROUP BY peak_core ORDER BY peak_core",
-            (session_id,),
-        ).fetchall()
-        return {row["peak_core"]: row["mhz"] for row in rows}
-
-    def peaks_by_range(self) -> list[dict]:
-        rows = self.__conn.execute(
-            "SELECT CAST(p.key AS INTEGER) AS peak_core, json_extract(t.power_json, '$.max_mhz') AS cap_mhz,"
-            " json_extract(t.power_json, '$.boost') AS boost, MAX(p.value) AS mhz"
-            " FROM tuner_tests t, json_each(t.peaks_json) p"
-            " GROUP BY peak_core, cap_mhz, boost ORDER BY peak_core, cap_mhz, boost"
-        ).fetchall()
-        return [
-            {"core": row["peak_core"], "cap_mhz": row["cap_mhz"], "boost": row["boost"], "mhz": row["mhz"]}
-            for row in rows
-        ]
+    def list_every_tuner_test(self) -> list[dict]:
+        rows = self.__conn.execute(f"SELECT {self._TUNER_TEST_COLUMNS} FROM tuner_tests ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
 
     def session_boots(self, session_id: int) -> list[dict]:
         rows = self.__conn.execute(

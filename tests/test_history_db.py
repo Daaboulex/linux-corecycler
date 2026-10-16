@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 import sqlite3
 from compression import zstd
@@ -17,6 +18,7 @@ from corecycler.history.db import (
     TelemetrySample,
     TuningContextRecord,
 )
+from corecycler.tuner.live import own_peaks
 from tests._machine import this_boot
 from tests._old_rows import seed_old_session
 
@@ -1472,20 +1474,9 @@ class TestAdoptLegacyRootDb:
 
 
 class TestPeakClocks:
-    def _test(self, db, session_id, peaks_json, cap, boost="1"):
+    def _test(self, db, session_id, peaks_json, power, core=0):
         row = db.insert_tuner_test(
-            session_id,
-            this_boot(),
-            1,
-            "search",
-            None,
-            "1t",
-            0,
-            -3,
-            "[]",
-            "[0]",
-            60.0,
-            f'{{"max_mhz": {cap}, "boost": "{boost}"}}',
+            session_id, this_boot(), 1, "search", None, "1t", core, -3, "[]", f"[{core}]", 60.0, json.dumps(power)
         )
         db.end_tuner_test(row, "pass", 60.0, "[]", None, "{}", "", "[]", "", peaks_json=peaks_json)
 
@@ -1501,22 +1492,26 @@ class TestPeakClocks:
             context_id=None,
         )
 
-    @pytest.mark.req("CR.3")
-    def test_a_core_s_peak_per_session_and_per_range(self, db):
+    @pytest.mark.req("CR.3", "T22.F10")
+    def test_a_core_s_peaks_come_from_its_own_tests_per_session_and_per_range(self, db):
+        capped = {"boost": "1", "ceilings": [[0, 4300.0], [1, 4300.0]]}
         self._session(db, 1)
         self._session(db, 2)
-        self._test(db, 1, '{"0": 4300.0, "1": 4280.0}', 4300.0)
-        self._test(db, 1, '{"0": 4420.0}', 4300.0)
-        self._test(db, 1, None, 4300.0)
-        self._test(db, 2, '{"0": 5700.0}', 5756.0)
-        self._test(db, 2, '{"0": 4000.0}', 4300.0, boost="0")
-        assert db.core_peaks(1) == {0: 4420.0, 1: 4280.0}
-        assert db.core_peaks(2) == {0: 5700.0}
-        assert db.peaks_by_range() == [
-            {"core": 0, "cap_mhz": 4300.0, "boost": "0", "mhz": 4000.0},
+        self._test(db, 1, '{"0": 4300.0, "1": 4280.0}', capped)
+        self._test(db, 1, '{"0": 4420.0}', capped)
+        self._test(db, 1, None, capped)
+        self._test(db, 1, '{"0": 4410.0, "1": 4290.0}', capped, core=1)
+        self._test(db, 2, '{"0": 5700.0}', {"boost": "1", "ceilings": [[0, 5756.0]]})
+        self._test(db, 2, '{"0": 4000.0}', {"boost": "0", "ceilings": [[0, 4300.0]]})
+        assert own_peaks(db.list_tuner_tests(1)) == [
+            {"core": 0, "cap_mhz": 4300.0, "boost": "1", "mhz": 4420.0},
+            {"core": 1, "cap_mhz": 4300.0, "boost": "1", "mhz": 4290.0},
+        ]
+        assert own_peaks(db.list_every_tuner_test()) == [
             {"core": 0, "cap_mhz": 4300.0, "boost": "1", "mhz": 4420.0},
             {"core": 0, "cap_mhz": 5756.0, "boost": "1", "mhz": 5700.0},
-            {"core": 1, "cap_mhz": 4300.0, "boost": "1", "mhz": 4280.0},
+            {"core": 0, "cap_mhz": 4300.0, "boost": "0", "mhz": 4000.0},
+            {"core": 1, "cap_mhz": 4300.0, "boost": "1", "mhz": 4290.0},
         ]
 
     def test_v28_adds_the_peak_column_to_a_v27_database(self, tmp_path):

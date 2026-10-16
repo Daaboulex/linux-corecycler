@@ -15,6 +15,7 @@ from corecycler.tuner.machine.types import (
     DatabaseFailed,
     Evidence,
     Flow,
+    Incident,
     InFlight,
     InternalError,
     Klass,
@@ -154,8 +155,50 @@ def test_a_crash_in_soak_with_nobody_to_blame_counts_one_incident_and_the_second
             assert fake.progress()
         fake.crash()
         fake.post(Resume(1))
-        assert fake.state.incidents == crashes
+        assert fake.state.incidents == (Incident.CRASH,) * crashes
     assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.INCIDENTS)
+
+
+@pytest.mark.req("T22.F11")
+def test_a_machine_check_at_stock_then_an_unblamed_crash_pause_naming_each_kind_with_its_own_count():
+    fake = fresh(2, [-12, 0], 1, max_offset=-20, k_1t=2, wait_between_cores_s=0.0)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.LIVE1 or fake.worker.spec.core != 0:
+        assert fake.progress()
+    assert dict(fake.worker.spec.vector)[1] == 0
+    fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(1, True),)))
+    while fake.worker is None:
+        assert fake.progress()
+    fake.crash(shared=True)
+    fake.post(Resume(1))
+    assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.INCIDENTS)
+    assert fake.state.pause.detail == "1 crash nobody could be blamed for, 1 machine check at a stock value"
+    assert fake.state.incidents == (Incident.STOCK_MACHINE_CHECK, Incident.CRASH)
+
+
+@pytest.mark.req("T22.F11")
+def test_a_soak_failure_then_a_crash_in_soak_pause_naming_each_kind_with_its_own_count():
+    fake = running_fake()
+    while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
+        assert fake.progress()
+    fake.deliver(Report(Group.ENVIRONMENT, 1.0, detail="soft lockup on CPU 3"))
+    while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
+        assert fake.progress()
+    fake.crash()
+    fake.post(Resume(1))
+    assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.INCIDENTS)
+    assert fake.state.pause.detail == "1 crash nobody could be blamed for, 1 soak failure"
+    assert fake.state.incidents == (Incident.SOAK_FAILURE, Incident.CRASH)
+
+
+@pytest.mark.req("T22.F11")
+def test_an_incident_stored_without_its_kind_is_named_so_beside_a_new_crash():
+    fake = running_fake()
+    fake.crash(shared=True)
+    fake.db = replace(fake.db, incidents=(Incident.UNRECORDED,))
+    fake.post(Resume(1))
+    assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.INCIDENTS)
+    assert fake.state.pause.detail == "1 crash nobody could be blamed for, 1 stored without its kind"
 
 
 @pytest.mark.req("L18.d.4.5")
@@ -167,7 +210,7 @@ def test_a_crash_that_leaves_a_machine_check_on_a_stock_core_counts_one_incident
     assert dict(fake.worker.spec.vector)[1] == 0
     fake.crash(evidence=(Evidence(1, False),))
     fake.post(Resume(1))
-    assert (fake.state.incidents, fake.state.resume_streak) == (1, 1)
+    assert (fake.state.incidents, fake.state.resume_streak) == ((Incident.STOCK_MACHINE_CHECK,), 1)
 
 
 @pytest.mark.req("L07.G3")
@@ -183,7 +226,7 @@ def test_a_record_about_another_core_in_live1_backs_it_off_and_requeues_it_or_co
     fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(1, True),)))
     flow = fake.state.flow
     assert (fake.state.core(1).value > value, 1 in flow.live1.requeue, flow.dirty) == (backed, backed, backed)
-    assert fake.state.incidents == incidents
+    assert fake.state.incidents == (Incident.STOCK_MACHINE_CHECK,) * incidents
 
 
 @pytest.mark.req("L09.G3")
@@ -203,7 +246,7 @@ def test_a_record_about_a_core_at_0_in_a_1t_bisect_slot_counts_an_incident_and_r
     fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(at_zero, True),)))
     while fake.worker is None:
         assert fake.progress()
-    assert (fake.state.incidents, fake.state.flow.bisect) == (incidents + 1, run)
+    assert (fake.state.incidents, fake.state.flow.bisect) == ((*incidents, Incident.STOCK_MACHINE_CHECK), run)
     assert (fake.worker.spec.stage, fake.worker.spec.vector) == (Stage.BISECT, slot.vector)
 
 
@@ -227,13 +270,13 @@ def test_an_unblamed_event_in_soak_counts_an_incident_and_reproves_the_profile_a
         while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
             assert fake.progress()
         fake.deliver(Report(Group.ENVIRONMENT, 1.0, detail="soft lockup on CPU 3"))
-        assert fake.state.incidents == incidents
+        assert fake.state.incidents == (Incident.SOAK_FAILURE,) * incidents
         if incidents == 1:
             while fake.worker is None:
                 assert fake.progress()
             assert fake.worker.spec.stage is Stage.LIVE1
     assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.INCIDENTS)
-    assert "soft lockup on CPU 3" in fake.state.pause.detail
+    assert fake.state.pause.detail == "2 soak failures; the newest: soft lockup on CPU 3"
 
 
 @pytest.mark.req("T25.start")
@@ -786,18 +829,38 @@ def test_restart_begins_a_fresh_session_from_the_parent_s_config_and_supersedes_
     assert result.effects[0] is supersede
 
 
-@pytest.mark.req("L24.d.refuse", "L24.l24b.events")
+@pytest.mark.req("L24.d.refuse", "L24.l24b.events", "T22.F13")
 @pytest.mark.parametrize("choice", [ContinueOnSetup(2), RestartOnSetup(2, acknowledged=True)])
 def test_a_choice_is_refused_unless_the_session_paused_on_a_setup_that_still_differs(choice):
     fake = paused_on_a_new_setup()
     fake.setup = (("bios", "A"),)
+    checked = (
+        "the setup a verdict depends on, the power state and the CO of the cores session 1 does not own"
+        " read as at its start"
+    )
     unchanged = transition(fake.state, choice, fake.world())
-    assert "nothing that affects a verdict changed since session 1 started" in unchanged.refused
+    assert unchanged.refused == f"{checked}; resume it"
     fake.setup = (("bios", "A"), ("python", "3.14.7"), ("zenpower", "0.4.0"))
     recorded_only = transition(fake.state, choice, fake.world())
-    assert "nothing that affects a verdict changed since session 1 started" in recorded_only.refused
+    assert recorded_only.refused == f"{checked}; resume it"
     running = running_fake()
     assert "only a session paused as setup_changed" in transition(running.state, choice, running.world()).refused
+
+
+@pytest.mark.req("T22.F13")
+@pytest.mark.parametrize("choice", [ContinueOnSetup(2), RestartOnSetup(2, acknowledged=True)])
+def test_a_choice_after_only_the_power_state_moved_names_that_move_and_asks_for_it_back(choice):
+    fake = running_fake()
+    recorded = dict(fake.power)["platform profile"]
+    fake.power = (("platform profile", "power-saver"),)
+    fake.fire()
+    assert fake.state.pause.reason is PauseReason.SETUP_CHANGED
+    result = transition(fake.state, choice, fake.world())
+    assert result.refused == (
+        f"only the power state changed since session 1 started: platform profile was {recorded}, "
+        "is now power-saver; restore it and resume"
+    )
+    assert result.state == fake.state
 
 
 def test_a_restart_the_start_gates_refuse_leaves_the_parent_paused_and_untouched():
@@ -978,7 +1041,7 @@ def test_a_held_core_s_bios_change_can_be_continued_and_the_child_takes_the_co_r
     now = replace(HELD, bios_co=((0, 0), (1, 0), (2, -9)))
     child = transition(paused, ContinueOnSetup(2), now).state
     assert (child.session_id, child.lifecycle, child.base_co) == (2, Lifecycle.RUNNING, now.bios_co)
-    assert "nothing that affects a verdict changed" in transition(paused, ContinueOnSetup(2), HELD).refused
+    assert transition(paused, ContinueOnSetup(2), HELD).refused.endswith("read as at its start; resume it")
 
 
 @pytest.mark.req("G10.outside", "KC.2", "L18.d.8.sameboot")

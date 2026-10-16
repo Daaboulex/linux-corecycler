@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import replace
 
@@ -11,7 +12,7 @@ if not hasattr(sys.modules.get("PySide6", None), "__path__"):
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from corecycler.gui.history_tab import HistoryTab
+from corecycler.gui.history_tab import HistoryTab, coverage_text
 from corecycler.gui.style import tuner_phase_label
 from corecycler.history.db import HistoryDB
 from corecycler.smu.writer_lock import co_writer
@@ -114,6 +115,76 @@ def test_the_detail_shows_cores_tests_events_and_boots(db, tmp_path):
     assert tab._detail_info.text().endswith("power at start: platform profile balanced")
     assert f"  core {core}: 4421 MHz with the scaling maximum at unknown, boost unknown" in text
     assert not tab._load_co_btn.isEnabled()
+
+
+@pytest.mark.req("T22.F9")
+def test_an_all_core_test_is_listed_and_counted_with_its_cpus_and_values_never_as_one_core(db, tmp_path):
+    saved = save_machine_session(db, tmp_path, "paused")
+    first, second = (record.core for record in saved.cores)
+    own = db.insert_tuner_test(
+        saved.session_id, this_boot(), 1, "search", "1t", "1t", first, -3, "[]", "[0]", 60.0, "{}"
+    )
+    covered = {str(core): {"cells": [[4300, 60, 30.0]], "unreadable_s": 0.0} for core in (first, second)}
+    db.end_tuner_test(own, "pass", 60.0, "[]", None, "[]", "", "{}", "", coverage_json=json.dumps(covered))
+    vector = json.dumps([[first, -5], [second, -7]])
+    hot = db.insert_tuner_test(
+        saved.session_id, this_boot(), 2, "steady", "hot", "1t", first, -5, vector, "[0, 1, 2, 3]", 300.0, "{}"
+    )
+    db.end_tuner_test(hot, "silicon", 300.0, "[]", None, "[]", "", "{}", "", coverage_json=json.dumps(covered))
+    tab = tuner_view(db)
+    text = tab._events_log.toPlainText()
+    assert f"core {first}, Search, one thread, at -3: Passed{coverage_text(json.dumps(covered), first)}\n" in text
+    assert f"  Hot all-core, cpus 0-3, cores {first} at -5, {second} at -7: Failed\n" in text
+    assert "-- Tests: 1 single-core, 1 all-core or group --" in text
+    tests_and_last = [tab._core_results_table.item(0, column).text() for column in (0, 4, 5)]
+    assert tests_and_last == [str(first), "1", "Passed"]
+    assert [tab._core_results_table.item(1, column).text() for column in (4, 5)] == ["0", "-"]
+
+
+def _ended_test(db, saved, token, stage, core, cpus, power, peaks):
+    vector = json.dumps([[record.core, -3] for record in saved.cores])
+    row = db.insert_tuner_test(
+        saved.session_id, this_boot(), token, stage, "1t", "1t", core, -3, vector, json.dumps(cpus), 60.0, power
+    )
+    db.end_tuner_test(row, "pass", 60.0, "[]", None, "[]", "", "{}", "", peaks_json=json.dumps(peaks))
+
+
+@pytest.mark.req("T22.F10")
+def test_a_core_s_peak_counts_only_its_own_tests_against_the_ceiling_of_the_cpus_it_ran_on(db, tmp_path):
+    saved = save_machine_session(db, tmp_path, "paused")
+    first, second = (record.core for record in saved.cores)
+    split = [["scaling maximum MHz", "2064 on cpus 0; 3228 on cpus 1"]]
+    power = json.dumps({"max_mhz": None, "boost": "1", "split": split, "ceilings": [[0, 2064.0], [1, 3228.0]]})
+    _ended_test(db, saved, 1, "search", first, [0], power, {first: 2050.0, second: 3200.0})
+    _ended_test(db, saved, 2, "steady", first, [0, 1], power, {first: 2060.0, second: 3220.0})
+    tab = tuner_view(db)
+    assert [tab._core_results_table.item(row, 6).text() for row in (0, 1)] == ["2050", "-"]
+    ranges = tab._events_log.toPlainText().split("-- Highest clock per core and range, every session --\n")[1]
+    assert ranges == f"  core {first}: 2050 MHz with the scaling maximum at 2064 MHz, boost 1"
+
+
+@pytest.mark.req("T22.F10")
+@pytest.mark.parametrize(
+    ("power", "cpus", "ceiling"),
+    [
+        ({"boost": "1", "ceilings": [[0, 4300.0], [1, 4500.0]]}, [0, 1], "4500 MHz"),
+        ({"boost": "1", "ceilings": [[0, 4300.0], [1, None]]}, [0, 1], "unknown"),
+        ({"boost": "1", "ceilings": [[0, 4300.0]]}, [1], "unknown"),
+        ({"max_mhz": 4300.0, "boost": "1", "split": []}, [1], "4300 MHz"),
+        ({"max_mhz": 4300.0, "boost": "1"}, [1], "unknown"),
+        (
+            {"max_mhz": None, "boost": "1", "split": [["scaling maximum MHz", "4300 on cpus 0; 5100 on cpus 1"]]},
+            [1],
+            "unknown",
+        ),
+    ],
+)
+def test_a_peak_names_a_ceiling_only_where_every_cpu_the_test_ran_on_was_read(db, tmp_path, power, cpus, ceiling):
+    saved = save_machine_session(db, tmp_path, "paused")
+    core = saved.cores[0].core
+    _ended_test(db, saved, 1, "live1", core, cpus, json.dumps(power), {core: 4290.0})
+    text = tuner_view(db)._events_log.toPlainText()
+    assert f"  core {core}: 4290 MHz with the scaling maximum at {ceiling}, boost 1" in text
 
 
 @pytest.mark.req("S0.view")

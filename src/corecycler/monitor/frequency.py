@@ -80,6 +80,7 @@ class PowerState:
     """The settings that can change a verdict without touching a core: read from every CPU before every test.
 
     A setting this machine does not have is None; one its CPUs read differently is None and named in split.
+    ceilings keeps each CPU's own scaling maximum, None where it could not be read.
     """
 
     profile: str | None = None
@@ -89,6 +90,7 @@ class PowerState:
     max_mhz: float | None = None
     top_mhz: float | None = None
     split: tuple[tuple[str, str], ...] = ()
+    ceilings: tuple[tuple[int, float | None], ...] = ()
 
     def named(self) -> tuple[tuple[str, str], ...]:
         """The settings a session records at Start and compares before each test."""
@@ -103,7 +105,7 @@ class PowerState:
         return tuple((name, shown) for name, value in pairs if (shown := differs.get(name, value)) is not None)
 
 
-def _ranges(cpus: list[int]) -> str:
+def cpu_ranges(cpus: list[int]) -> str:
     spans: list[list[int]] = []
     for cpu in cpus:
         if spans and cpu == spans[-1][1] + 1:
@@ -122,7 +124,8 @@ def _agreed[T](read: list[tuple[int, T | None]], shown: Callable[[T], str]) -> t
     if len(groups) == 1:
         return next(iter(groups)), None
     return None, "; ".join(
-        f"{'unreadable' if value is None else shown(value)} on cpus {_ranges(cpus)}" for value, cpus in groups.items()
+        f"{'unreadable' if value is None else shown(value)} on cpus {cpu_ranges(cpus)}"
+        for value, cpus in groups.items()
     )
 
 
@@ -135,8 +138,9 @@ def read_power_state(root: Path = CPUFREQ_BASE, profile: Path = PLATFORM_PROFILE
     cpus = _cpufreq(root)
     governor, governors = _agreed([(cpu, _text(folder / "scaling_governor")) for cpu, folder in cpus], str)
     epp, epps = _agreed([(cpu, _text(folder / "energy_performance_preference")) for cpu, folder in cpus], str)
-    ceiling, ceilings = _agreed([(cpu, _mhz(folder / "scaling_max_freq")) for cpu, folder in cpus], "{:.0f}".format)
-    split = (("governor", governors), ("EPP", epps), ("scaling maximum MHz", ceilings))
+    ceilings = [(cpu, _mhz(folder / "scaling_max_freq")) for cpu, folder in cpus]
+    ceiling, differing = _agreed(ceilings, "{:.0f}".format)
+    split = (("governor", governors), ("EPP", epps), ("scaling maximum MHz", differing))
     return PowerState(
         profile=_text(profile),
         governor=governor,
@@ -145,4 +149,5 @@ def read_power_state(root: Path = CPUFREQ_BASE, profile: Path = PLATFORM_PROFILE
         max_mhz=ceiling,
         top_mhz=max((mhz for _, folder in cpus if (mhz := _top(folder)) is not None), default=None),
         split=tuple((name, text) for name, text in split if text is not None),
+        ceilings=tuple(ceilings),
     )

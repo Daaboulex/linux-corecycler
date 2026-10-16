@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from corecycler.cli import EXIT_PAUSED
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.gui import tuner_tab as tt
+from corecycler.gui.style import stage_label
 from corecycler.gui.widgets import spoken
 from corecycler.history.db import HistoryDB
 from corecycler.monitor.frequency import PowerState
@@ -370,23 +371,33 @@ def test_a_running_driver_locks_start_and_offers_its_controls(db, home, tmp_path
     assert t._buttons["Start"].isEnabled()
 
 
+@pytest.mark.req("T22.F9")
 @pytest.mark.parametrize(
-    ("stage", "load", "said"),
+    ("stage", "load", "loaded", "said"),
     [
-        ("steady", "hot", "Testing every core: Hot all-core, "),
-        ("bisect", "hot", "Testing a group of cores: Narrowing, "),
+        ("steady", "hot", (0, 1), "cpus 0-1"),
+        ("bisect", "1t", (1,), "cpus 1"),
+        ("soak", "soak", (), "no cpus loaded"),
     ],
 )
-def test_an_all_core_test_names_its_cores_and_stage(db, home, tmp_path, stage, load, said):
+def test_a_test_of_several_cores_shows_its_cpus_and_values_and_marks_each_loaded_core(
+    db, home, tmp_path, stage, load, loaded, said
+):
     saved = save_machine_session(db, tmp_path, "running")
-    db.insert_tuner_test(
-        saved.session_id, this_boot(), 1, stage, load, "1t", saved.cores[0].core, -3, "[]", "[0, 1]", 510.0, "{}"
-    )
+    first, second = (record.core for record in saved.cores)
+    vector = json.dumps([[first, -3], [second, -4]])
+    cpus = json.dumps(list(loaded))
+    db.insert_tuner_test(saved.session_id, this_boot(), 1, stage, load, "1t", first, -3, vector, cpus, 510.0, "{}")
     t = tab(db)
+    grid, elapsed = [], []
+    t.tuner_core_testing.connect(lambda core, state: grid.append((core, state)))
+    t.tuner_core_elapsed.connect(lambda core, s: elapsed.append(core))
     with co_writer(record=True):
         t.refresh()
-        assert t._test.text().startswith(said)
+        assert t._test.text().startswith(f"Testing {said}, cores {first} at -3, {second} at -4: {stage_label(stage)}, ")
         assert t._test.text().endswith(" of 510 s")
+    assert sorted(core for core, state in grid if state == "testing") == list(loaded)
+    assert sorted(elapsed) == list(loaded)
 
 
 @pytest.mark.req("L14.c.display")

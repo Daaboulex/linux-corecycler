@@ -46,12 +46,12 @@ from corecycler.gui.style import (
     tuner_phase_label,
     verdict_text,
 )
-from corecycler.gui.tuner_tab import ORDER_LABELS, THREADS, settings_lines
+from corecycler.gui.tuner_tab import ORDER_LABELS, THREADS, scope_text, settings_lines
 from corecycler.gui.widgets import table_item as _item
 from corecycler.history.timefmt import format_local
 from corecycler.smu.pmtable import stretch_pct
 from corecycler.smu.writer_lock import running_driver
-from corecycler.tuner.live import MHZ_BIN, TEMP_BIN, read_stored
+from corecycler.tuner.live import MHZ_BIN, ONE_CORE_STAGES, TEMP_BIN, own_peaks, read_stored
 from corecycler.tuner.machine.types import Phase
 
 if TYPE_CHECKING:
@@ -71,6 +71,13 @@ SETUP_LABELS = {
     "topology": "Topology",
 }
 ORIGINS = {"continue": "continued from", "restart": "started over from"}
+
+
+def tested(test: dict) -> str:
+    if test["stage"] in ONE_CORE_STAGES:
+        threads = THREADS.get(test["klass"], test["klass"])
+        return f"core {test['core']}, {stage_label(test['stage'])}, {threads}, at {test['value']}"
+    return f"{stage_label(test['stage'])}, {scope_text(test)}"
 
 
 def open_test_text(test: dict, newest: bool, boot: str, driver: bool) -> str:
@@ -891,10 +898,13 @@ class HistoryTab(QWidget):
         self._detail_info.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 2px;")
         tests = self._db.list_tuner_tests(sess.id)
         boot, driver = kernel.read_boot_id(), running_driver() is not None
-        peaks = self._db.core_peaks(sess.id)
+        peaks: dict[int, float] = {}
+        for found in own_peaks(tests):
+            peaks[found["core"]] = max(found["mhz"], peaks.get(found["core"], found["mhz"]))
         per_core: dict[int, list[dict]] = {}
         for test in tests:
-            per_core.setdefault(test["core"], []).append(test)
+            if test["stage"] in ONE_CORE_STAGES:
+                per_core.setdefault(test["core"], []).append(test)
         headers = ["Core", "Phase", "Value", "Failed at", "Tests", "Last result", "Peak MHz"]
         self._core_results_table.setColumnCount(len(headers))
         self._core_results_table.setHorizontalHeaderLabels(headers)
@@ -915,17 +925,18 @@ class HistoryTab(QWidget):
                 self._core_results_table.setItem(row, column, _item(text, Qt.AlignmentFlag.AlignCenter))
         self._auto_size_core_results_table()
         setup = [f"  {SETUP_LABELS.get(key, key)}: {value}" for key, value in saved.setup]
-        lines = ["-- Settings --", *settings_lines(cfg), "", "-- Setup --", *setup, "", "-- Tests --"]
+        single = sum(len(own) for own in per_core.values())
+        lines = ["-- Settings --", *settings_lines(cfg), "", "-- Setup --", *setup, ""]
+        lines.append(f"-- Tests: {single} single-core, {len(tests) - single} all-core or group --")
         lines += [
-            f"  {format_local(test['started_at'])}  core {test['core']}, {stage_label(test['stage'])}, "
-            f"{THREADS.get(test['klass'], test['klass'])}, at {test['value']}: "
+            f"  {format_local(test['started_at'])}  {tested(test)}: "
             + (
                 verdict_text(test["verdict"])
                 if test["verdict"]
                 else open_test_text(test, test is tests[-1], boot, driver)
             )
             + (f"  {test['detail']}" if test["detail"] else "")
-            + coverage_text(test["coverage_json"], test["core"])
+            + (coverage_text(test["coverage_json"], test["core"]) if test["stage"] in ONE_CORE_STAGES else "")
             for test in tests
         ]
         lines += ["", "-- Events --"]
@@ -943,7 +954,7 @@ class HistoryTab(QWidget):
             f"  core {row['core']}: {row['mhz']:.0f} MHz with the scaling maximum at "
             + ("unknown" if row["cap_mhz"] is None else f"{row['cap_mhz']:.0f} MHz")
             + f", boost {row['boost'] if row['boost'] is not None else 'unknown'}"
-            for row in self._db.peaks_by_range()
+            for row in own_peaks(self._db.list_every_tuner_test())
         ]
         self._events_log.setPlainText("\n".join(lines))
 

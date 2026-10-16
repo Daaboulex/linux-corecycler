@@ -97,7 +97,7 @@ PAUSE_LABELS: dict[PauseReason, str] = {
     PauseReason.THERMAL: "Too hot",
     PauseReason.DATABASE: "The history database could not be written",
     PauseReason.STOCK_UNSTABLE: "A core fails at its stock value",
-    PauseReason.INCIDENTS: "Crashes no core could be blamed for",
+    PauseReason.INCIDENTS: "Incidents",
     PauseReason.PROFILE_APPLY: "The found values could not be applied",
     PauseReason.START_FAILURES: "Cores failed their first value",
     PauseReason.INTERNAL: "Internal error",

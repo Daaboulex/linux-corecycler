@@ -17,6 +17,7 @@ import pytest
 
 from corecycler.engine import detector as kernel
 from corecycler.engine.backends.base import Outcome, StressResult
+from corecycler.engine.memory_budget import MemoryBudgetUnavailable
 from corecycler.history.db import HistoryDB
 from corecycler.monitor.frequency import PowerState
 from corecycler.monitor.hwmon import SensorRead
@@ -28,6 +29,7 @@ from corecycler.tuner.live import (
     Store,
     coverage,
     margins,
+    own_peaks,
     stored_from_json,
     stored_to_json,
 )
@@ -37,6 +39,7 @@ from corecycler.tuner.machine.types import (
     CrashEvidenceRead,
     Evidence,
     Group,
+    Incident,
     InFlight,
     InternalError,
     Klass,
@@ -305,6 +308,20 @@ def test_every_stored_state_of_a_run_survives_the_session_file_round_trip():
     older = stored_to_json(stored[0])
     del older["base_co"]
     with pytest.raises(KeyError, match="base_co"):
+        stored_from_json(older)
+
+
+@pytest.mark.req("T22.F11")
+def test_incident_kinds_survive_the_session_file_and_an_older_count_reads_as_kinds_not_recorded():
+    st = replace(snapshots()[0], incidents=(Incident.STOCK_MACHINE_CHECK, Incident.CRASH))
+    assert stored_from_json(json.loads(json.dumps(stored_to_json(st)))) == st
+    older = stored_to_json(st)
+    older["incidents"] = 2
+    assert stored_from_json(older) == replace(st, incidents=(Incident.UNRECORDED, Incident.UNRECORDED))
+    older["incidents"] = 0
+    assert stored_from_json(older) == replace(st, incidents=())
+    older["incidents"] = -1
+    with pytest.raises(ValueError, match="incidents"):
         stored_from_json(older)
 
 
@@ -903,7 +920,7 @@ def test_a_test_row_keeps_each_core_s_highest_clock_from_every_sample_it_took(tm
     store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0), ONE_CCD)
     (saved,) = rows(SimpleNamespace(store=store), "SELECT peaks_json FROM tuner_tests WHERE id=?", (row,))
     assert json.loads(saved["peaks_json"]) == {"0": 4290.0, "1": 4310.0}
-    assert store.db.core_peaks(1) == {0: 4290.0, 1: 4310.0}
+    assert own_peaks(store.db.list_tuner_tests(1)) == []
 
 
 def test_a_test_without_samples_keeps_an_empty_peak_record(tmp_path):
@@ -912,7 +929,7 @@ def test_a_test_without_samples_keeps_an_empty_peak_record(tmp_path):
     row = store.db.insert_tuner_test(1, "boot-a", 1, "search", None, "1t", 0, -3, "[]", "[0]", 60.0, "{}")
     store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0), ONE_CCD)
     assert rows(SimpleNamespace(store=store), "SELECT peaks_json FROM tuner_tests") == [{"peaks_json": "{}"}]
-    assert store.db.core_peaks(1) == {}
+    assert own_peaks(store.db.list_tuner_tests(1)) == []
 
 
 def test_every_test_end_checkpoints_the_database(tmp_path, monkeypatch):
@@ -1363,6 +1380,22 @@ def test_the_log_names_every_test_and_its_verdict(tmp_path):
     assert tests and len(tests) == len(verdicts)
     assert all(t.split(":")[0][5:] == v.split(":")[0][8:] for t, v in zip(tests, verdicts, strict=True))
     assert any(" search 1t at " in t for t in tests) and any(": silicon after " in v for v in verdicts)
+
+
+@pytest.mark.req("T22.F9")
+def test_the_log_says_a_test_of_several_cores_with_each_core_s_value_never_one_core_as_its_subject(tmp_path):
+    said = []
+    r = rig(tmp_path)
+    r.say = said.append
+    r.start(config(), 1, 7, True)
+    r.run_until_rest(0.01)
+    tests = [line.split(": ", 1)[1] for line in said if line.startswith("test ")]
+    one_core = [line for line in tests if line.startswith("core ")]
+    several = [line for line in tests if not line.startswith("core ")]
+    assert {line.split()[2] for line in one_core} == {Stage.SEARCH.value, Stage.LIVE1.value}
+    assert several
+    first = config().selected[0]
+    assert all(f", cores {first} at " in line for line in several)
 
 
 def test_a_resume_of_an_unknown_session_is_refused(tmp_path):
@@ -2048,6 +2081,26 @@ def test_the_command_line_validates_a_completed_session(tmp_path):
     assert "rest: completed" in said
 
 
+@pytest.mark.req("T22.F12")
+def test_an_aborted_validation_exits_and_notifies_as_aborted_never_as_a_confirmed_profile(tmp_path, monkeypatch):
+    from corecycler.cli import EXIT_MEANINGS
+
+    r, said = completed_then_rebooted(tmp_path, clean=True)
+    r.signals.append(live.Abort())
+    args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--session", "1", "--validate"])
+    code = live_hw.run(args, r, said.append)
+    assert "rest: completed" in said
+    assert code != live_hw.EXIT_COMPLETED
+    assert EXIT_MEANINGS[code] == "validation aborted; the session stays completed"
+    monkeypatch.setattr(live_hw, "load_settings", lambda: SimpleNamespace(notify_on_completion=True))
+    sent = []
+    monkeypatch.setattr("corecycler.notify.desktop_notify", lambda title, body, urgency: sent.append((title, body)))
+    live_hw.notify_outcome(code)
+    [(title, body)] = sent
+    assert title == "Validation aborted"
+    assert body.startswith("The validation stopped before it ended; the session stays completed")
+
+
 @pytest.mark.req("ORDER.seed")
 @pytest.mark.parametrize(
     ("given", "seed", "says"),
@@ -2443,6 +2496,7 @@ def preflight(
     mce=None,
     load=None,
     power=UNCAPPED,
+    budget=None,
 ):
     monkeypatch.setattr(live_hw.kernel, "kernel_log_problem", lambda: None)
     monkeypatch.setattr(live_hw.kernel, "mce_poll_problem", mce or (lambda: None))
@@ -2454,7 +2508,7 @@ def preflight(
         smu or FakeSmu(),
         lambda: SensorRead(hottest=temp),
         tools,
-        lambda n, floor: SimpleNamespace(usable_mb=usable),
+        budget or (lambda n, floor: SimpleNamespace(usable_mb=usable)),
         power,
         proc,
         sched_ext or tmp_path / "no-sched-ext",
@@ -2464,6 +2518,19 @@ def preflight(
 
 def test_a_ready_machine_passes_preflight_without_warnings(tmp_path, monkeypatch):
     assert preflight(tmp_path, monkeypatch, tools=(Tool("y-cruncher"),)) == (None, ())
+
+
+@pytest.mark.req("T22.F14")
+@pytest.mark.parametrize("earlier", [None, "the tool runs under an idle or batch scheduling policy"])
+def test_an_unavailable_memory_budget_refuses_preflight_after_any_earlier_refusal(tmp_path, monkeypatch, earlier):
+    reason = "/sys/fs/cgroup/user.slice/memory.current is missing, so the memory in use under its limit is unknown"
+
+    def unavailable(instances, floor):
+        raise MemoryBudgetUnavailable(reason)
+
+    refusal, warnings = preflight(tmp_path, monkeypatch, budget=unavailable, scheduling=lambda: earlier)
+    assert refusal == (f"the memory budget is unavailable: {reason}" if earlier is None else earlier)
+    assert warnings == ()
 
 
 @pytest.mark.req("K50")
@@ -2623,6 +2690,11 @@ def test_a_running_ananicy_alone_is_not_a_warning_and_a_short_hot_budget_is(tmp_
     refusal, warnings = preflight(tmp_path, monkeypatch, usable=8000, procs={9: ("ananicy-cpp", ())})
     assert refusal is None
     assert warnings == (f"HOT runs y-cruncher with 4000 MB, under its {stages.HOT_MEMORY_CAP_MB} MB cap",)
+
+
+@pytest.mark.req("K49", "L01.13")
+def test_a_hot_budget_at_its_cap_is_not_below_it_and_warns_nothing(tmp_path, monkeypatch):
+    assert preflight(tmp_path, monkeypatch, usable=2 * stages.HOT_MEMORY_CAP_MB) == (None, ())
 
 
 @pytest.mark.req("INT.3")

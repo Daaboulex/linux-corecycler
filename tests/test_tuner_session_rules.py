@@ -16,6 +16,7 @@ from corecycler.tuner.machine.types import (
     Evidence,
     FailContext,
     ForgetResident,
+    Incident,
     InternalError,
     Klass,
     Lifecycle,
@@ -275,7 +276,7 @@ def test_evidence_on_a_core_at_stock_outside_search_counts_an_incident_and_the_s
         worker = _until(fake, lambda spec, state, core=tested: spec.stage is Stage.LIVE1 and spec.core == core)
         assert fake.state.core(2).value == 0
         fake.deliver(Report(Group.PASS, worker.spec.seconds, evidence=(Evidence(2, True),)))
-        assert fake.state.incidents == incidents
+        assert fake.state.incidents == (Incident.STOCK_MACHINE_CHECK,) * incidents
     assert fake.state.lifecycle is Lifecycle.PAUSED
     assert fake.state.pause.reason is PauseReason.INCIDENTS
 
@@ -529,7 +530,7 @@ def test_a_record_that_moves_a_core_in_transient_restarts_its_clean_time_and_one
         return transition(fake.state, WorkerReported(worker.token, report), fake.world()).state
 
     at_stock, moved = reported(2), reported(0)
-    assert (at_stock.flow.allcore.t_clean, at_stock.incidents) == (clean, incidents + 1)
+    assert (at_stock.flow.allcore.t_clean, at_stock.incidents) == (clean, (*incidents, Incident.STOCK_MACHINE_CHECK))
     assert (moved.flow.allcore.t_clean, moved.core(0).value) == (0.0, value + 1)
 
 
@@ -809,7 +810,7 @@ def test_a_reboot_while_cooling_counts_one_incident_and_convicts_nobody():
     records, incidents = fake.state.cores, fake.state.incidents
     fake.crash()
     fake.post(Resume(1))
-    assert fake.state.incidents == incidents + 1
+    assert fake.state.incidents == (*incidents, Incident.CRASH)
     assert [(r.value, r.fb, r.crash_count) for r in fake.state.cores] == [
         (r.value, r.fb, r.crash_count) for r in records
     ]
@@ -947,9 +948,10 @@ def test_a_resume_with_two_stored_incidents_and_no_new_one_does_not_pause():
     _until(fake, _live1)
     fake.deliver()
     fake.post(PauseRequest())
-    fake.state = replace(fake.state, incidents=2)
+    stored = (Incident.CRASH, Incident.STOCK_MACHINE_CHECK)
+    fake.state = replace(fake.state, incidents=stored)
     fake.post(Resume(1))
-    assert (fake.state.lifecycle, fake.state.incidents) == (Lifecycle.RUNNING, 2)
+    assert (fake.state.lifecycle, fake.state.incidents) == (Lifecycle.RUNNING, stored)
 
 
 @pytest.mark.req("D16")
@@ -974,7 +976,7 @@ def test_a_crash_in_soak_is_an_incident_that_leaves_the_resume_streak():
     _until(fake, lambda spec, state: spec.stage is Stage.SOAK)
     streak, incidents = fake.state.resume_streak, fake.state.incidents
     _crashed_with(fake, None)
-    assert (fake.state.resume_streak, fake.state.incidents) == (streak, incidents + 1)
+    assert (fake.state.resume_streak, fake.state.incidents) == (streak, (*incidents, Incident.CRASH))
 
 
 @pytest.mark.req("D26")

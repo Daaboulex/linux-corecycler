@@ -824,6 +824,57 @@ def test_the_window_fits_a_half_screen_tile_and_keeps_its_text(monkeypatch, tmp_
     win._history_db = None
 
 
+@pytest.mark.req("T22.F9", "T23.halfscreen")
+def test_a_running_all_core_test_on_sixteen_cores_shows_its_whole_line_without_widening_the_window(
+    monkeypatch, tmp_path, db
+):
+    from PySide6.QtWidgets import QApplication
+
+    from corecycler.smu.writer_lock import co_writer
+    from tests._machine import this_boot
+
+    win = _build(monkeypatch, tmp_path, db=db, topology=_topo(16))
+    win.show()
+    win._tabs.setCurrentWidget(win._tuner_tab)
+    saved = save_machine_session(db, tmp_path, "running")
+    vector = json.dumps([[core, -10 - core] for core in range(16)])
+
+    def refreshed() -> int:
+        for _ in range(2):
+            win._tuner_tab.refresh()
+            QApplication.processEvents()
+        return win.minimumSizeHint().width()
+
+    with co_writer(record=True):
+        one = db.insert_tuner_test(
+            saved.session_id, this_boot(), 1, "search", "1t", "1t", 0, -10, vector, "[8]", 60.0, "{}"
+        )
+        one_core = refreshed()
+        db.end_tuner_test(one, "pass", 60.0, "[]", None, "{}", "", "[]", "")
+        db.insert_tuner_test(
+            saved.session_id,
+            this_boot(),
+            2,
+            "steady",
+            "hot",
+            "1t",
+            0,
+            -10,
+            vector,
+            json.dumps(list(range(32))),
+            300.0,
+            "{}",
+        )
+        all_core = refreshed()
+        line = win._tuner_tab._test
+        assert line.text().startswith("Testing cpus 0-31, cores 0 at -10, 1 at -11, ")
+        assert all_core <= min(one_core, HALF_SCREEN - 20)
+        win.resize(win.minimumSizeHint().width(), 1000)
+        QApplication.processEvents()
+        assert _whole_text_shown(line)
+    win._history_db = None
+
+
 @pytest.mark.req("T23.halfscreen")
 def test_the_monitor_tab_with_every_power_limit_fits_a_half_screen_tile(monkeypatch, tmp_path, db):
     from PySide6.QtWidgets import QApplication, QLabel
