@@ -112,6 +112,9 @@ class _StressWorker(QThread):
                 self.done.emit(NO_VERDICT, f"Unknown tool: {self._tool}")
                 return
 
+            if self._stopped:
+                self.done.emit(STOPPED, "")
+                return
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -119,6 +122,9 @@ class _StressWorker(QThread):
                 text=True,
                 preexec_fn=execution.make_preexec(),
             )
+            if self._stopped:
+                with contextlib.suppress(OSError, ProcessLookupError):
+                    os.killpg(os.getpgid(self._process.pid), sig.SIGKILL)
             overran = False
             try:
                 stdout, stderr = self._process.communicate(timeout=window)
@@ -139,10 +145,10 @@ class _StressWorker(QThread):
             self.done.emit(NO_VERDICT, str(e))
 
     def stop(self) -> None:
+        self._stopped = True
         proc = self._process
         if proc is None or proc.poll() is not None:
             return
-        self._stopped = True
         import contextlib
         import os
         import signal as sig
@@ -534,8 +540,8 @@ class MemoryTab(QWidget):
         self._stress_worker.start()
 
     def _stop_memory_stress(self) -> None:
-        self._stop_btn.setEnabled(False)
         """Stop the running memory stress test."""
+        self._stop_btn.setEnabled(False)
         if self._stress_worker and self._stress_worker.isRunning():
             self._stress_status.setText("Stopping...")
             self._stress_worker.stop()

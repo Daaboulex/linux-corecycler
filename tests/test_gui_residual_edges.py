@@ -233,6 +233,45 @@ class TestMemoryStressLifecycle:
         assert sessions == [True]
         assert libc.prctl.call_args.args == (1, signal.SIGKILL)
 
+    @pytest.mark.req("T23.memory.stop")
+    def test_a_stop_before_the_tool_starts_ends_the_run_stopped_without_starting_it(self, tab, monkeypatch):
+        import subprocess
+
+        popen = MagicMock()
+        monkeypatch.setattr(subprocess, "Popen", popen)
+        worker = mem._StressWorker("stress-ng --vm", 1)
+        seen = []
+        worker.done.connect(lambda verdict, output: seen.append(verdict))
+        worker.stop()
+        worker.run()
+        assert (seen, popen.called) == ([mem.STOPPED], False)
+
+    @pytest.mark.req("T23.memory.stop")
+    def test_a_stop_while_the_tool_starts_kills_it_and_ends_the_run_stopped(self, tab, monkeypatch):
+        import os
+        import signal
+        import subprocess
+
+        from corecycler.engine import execution
+
+        monkeypatch.setattr(execution, "make_preexec", lambda: None)
+        worker = mem._StressWorker("stress-ng --vm", 1)
+        proc = MagicMock(pid=4242, returncode=-9)
+        proc.communicate.return_value = ("", "")
+
+        def started(*_args, **_kwargs):
+            worker.stop()
+            return proc
+
+        monkeypatch.setattr(subprocess, "Popen", started)
+        monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+        killed = []
+        monkeypatch.setattr(os, "killpg", lambda group, how: killed.append((group, how)))
+        seen = []
+        worker.done.connect(lambda verdict, output: seen.append(verdict))
+        worker.run()
+        assert (killed, seen) == ([(4242, signal.SIGKILL)], [mem.STOPPED])
+
     def test_force_stop_leaves_a_finished_worker_alone(self, tab):
         worker = MagicMock()
         worker.isRunning.return_value = False

@@ -4830,6 +4830,11 @@ statement = "A test worker that crashed still reads crashed, with its message, a
 proof = "built"
 
 [[requirement]]
+id = "T23.memory.stop"
+statement = "Stop in the Memory tab is never lost: pressed before the stress tool starts, the tool never starts and the run ends Stopped; pressed while it starts, the tool is killed and the run ends Stopped (scratch/design/t23-monitor-memory-window.md D7)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"
