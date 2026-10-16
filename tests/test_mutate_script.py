@@ -145,7 +145,7 @@ def test_a_mutant_runs_only_the_tests_that_executed_its_statement_short_ones_fir
 def test_a_mutant_in_code_that_runs_at_import_runs_the_whole_selection(tmp_path):
     source = (
         "LIMIT = 5\n\n\nclass C:\n    STEP = 2\n\n    def f(self, x=3):\n        return x > LIMIT\n\n\n"
-        "next_one = lambda y: y + 7\n"
+        "next_one = lambda y: y + 7\n\n\ndef g(z=11): return z\n"
     )
     built = [mutate._build(tmp_path / "src" / "m.py", source, index) for index in range(mutate._count(source))]
     assert {(mutant.description, mutant.at_import) for mutant in built} == {
@@ -155,11 +155,18 @@ def test_a_mutant_in_code_that_runs_at_import_runs_the_whole_selection(tmp_path)
         ("Gt -> GtE", False),
         ("7 -> 8", False),
         ("Add -> Sub", False),
+        ("11 -> 12", True),
     }
     limit = next(mutant for mutant in built if mutant.description == "5 -> 6")
     first_importer = {"src/m.py": {1: frozenset({"tests/test_a.py::test_one"})}}
     everything = ["tests/test_a.py", "tests/test_b.py"]
     assert mutate._tiers(limit, first_importer, {}, everything, tmp_path) == [everything]
+    compare = next(mutant for mutant in built if mutant.description == "Gt -> GtE")
+    one, two = "tests/test_a.py::test_one", "tests/test_b.py::test_two"
+    called_at_import = {"src/m.py": {1: frozenset({one}), compare.lineno: frozenset({one})}}
+    assert mutate._tiers(compare, called_at_import, {}, everything, tmp_path) == [everything]
+    called_by_two = {"src/m.py": {1: frozenset({one}), compare.lineno: frozenset({one, two})}}
+    assert mutate._tiers(compare, called_by_two, {}, everything, tmp_path) == [[one, two]]
 
 
 def test_a_mutant_killed_by_a_short_test_never_starts_the_long_ones_and_a_survivor_runs_both(monkeypatch, tmp_path):
@@ -167,7 +174,7 @@ def test_a_mutant_killed_by_a_short_test_never_starts_the_long_ones_and_a_surviv
     source.parent.mkdir()
     source.write_text("def flag():\n    return 1 < 2\n")
     short, long = "tests/test_m.py::test_short", "tests/test_m.py::test_long"
-    baseline = ({"src/m.py": {2: frozenset({short, long})}}, {long: mutate.SHORT_S * 10})
+    baseline = ({"src/m.py": {1: frozenset({short}), 2: frozenset({short, long})}}, {long: mutate.SHORT_S * 10})
     for killing, verdict, runs in ((short, 0, [[short]]), (None, 1, [[short], [long]])):
         ran = []
 

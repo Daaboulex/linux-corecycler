@@ -265,7 +265,8 @@ def _tiers(mutant: Mutant, cover: Cover, durations: Durations, tests: list[str],
     lines = cover.get(str(mutant.path.relative_to(root)), {})
     first, last = mutant.span
     contexts = frozenset().union(*(lines.get(number, frozenset()) for number in range(first, last + 1)))
-    if mutant.at_import or not contexts or "" in contexts:
+    importers = lines[min(lines)] if lines else frozenset()
+    if mutant.at_import or not contexts or "" in contexts or contexts <= importers:
         return [tests]
     short = sorted(test for test in contexts if durations.get(test, 0.0) <= SHORT_S)
     long = sorted(contexts.difference(short))
