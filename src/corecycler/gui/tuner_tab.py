@@ -626,7 +626,7 @@ class TunerTab(QWidget):
         for name in ("Pause", "Stop"):
             self._buttons[name].setEnabled(self._running)
         self._buttons["Abort"].setEnabled(self._running or (idle and status in ("running", "paused")))
-        self._buttons["Resume"].setEnabled(idle and status in ("running", "paused", "aborted"))
+        self._buttons["Resume"].setEnabled(idle and status in ("running", "paused", "aborted", "quarantined"))
         self._buttons["Validate"].setEnabled(idle and status == "completed")
         for name in ("Continue", "Restart"):
             self._buttons[name].setEnabled(idle and view is not None and view.setup_changed())
@@ -701,9 +701,23 @@ class TunerTab(QWidget):
         extra: list[str] | None = []
         if action == "restart":
             extra = self._over_set_values(view.stored.config.selected) if view.stored is not None else []
+        if action == "resume" and view.status == "quarantined":
+            extra = self._reengage(view.session_id)
         if extra is None:
             return
         self._launch([f"--{action}", "--session", str(view.session_id), *extra])
+
+    def _reengage(self, session_id: int) -> list[str] | None:
+        answer = QMessageBox.question(
+            self,
+            "Re-engage Tuning",
+            f"Session {session_id} is quarantined: it crashed three times in a row with no test surviving."
+            " Re-engage it on proven ground? Each core starts again from its last proven value, or from stock"
+            " where none is proven.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return ["--reengage"] if answer == QMessageBox.StandardButton.Yes else None
 
     def _on_abort(self) -> None:
         answer = QMessageBox.question(

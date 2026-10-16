@@ -948,3 +948,15 @@ def test_a_running_session_says_interrupted_once_its_driver_is_gone(db, home, tm
         t.refresh()
         said = t._status.text()
     assert said == f"Session {saved.session_id}: {'Running' if driver else 'Interrupted'}"
+
+
+@pytest.mark.req("L18.b.quarantine")
+@pytest.mark.parametrize(("answer", "flags"), [("Yes", ["--resume", "--reengage"]), ("No", None)])
+def test_resume_re_engages_a_quarantined_session_only_after_a_yes(db, home, launched, tmp_path, answer, flags):
+    save_machine_session(db, tmp_path, "quarantined")
+    t = tab(db)
+    assert t._buttons["Resume"].isEnabled()
+    tt.QMessageBox.question.return_value = getattr(tt.QMessageBox.StandardButton, answer)
+    t._buttons["Resume"].click()
+    sent = [flag for command, _ in launched for flag in command if flag in ("--resume", "--reengage")]
+    assert sent == (flags or [])

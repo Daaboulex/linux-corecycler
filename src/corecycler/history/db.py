@@ -1757,6 +1757,18 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             (session_id, boot_id, *exclude_cores),
         )
 
+    def journal_proven(self, session_id: int) -> tuple[tuple[int, tuple[int, ...]], ...]:
+        self.check_journal(session_id)
+        rows = self.__conn.execute(
+            "SELECT core_id, value FROM tuner_co_journal WHERE session_id=? AND survived=1 AND retracted=0 "
+            "ORDER BY id DESC",
+            (session_id,),
+        ).fetchall()
+        proven: dict[int, list[int]] = {}
+        for row in rows:
+            proven.setdefault(row["core_id"], []).append(row["value"])
+        return tuple((core, tuple(values)) for core, values in sorted(proven.items()))
+
     def check_journal(self, session_id: int) -> None:
         lo, hi = self._CO_SANE_RANGE
         row = self.__conn.execute(

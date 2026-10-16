@@ -389,6 +389,7 @@ class Close:
 @dataclass(frozen=True, slots=True)
 class Resume:
     session_id: int
+    reengage: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -510,6 +511,7 @@ class World:
     stored_end_unread: str | None = None
     co_range: tuple[int, int] | None = None
     co_now: tuple[tuple[int, int | None], ...] | None = None
+    proven: tuple[tuple[int, tuple[int, ...]], ...] = ()
 
     def resident_of(self, core: int) -> int | None:
         return dict(self.resident).get(core)

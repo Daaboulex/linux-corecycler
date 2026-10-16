@@ -645,7 +645,8 @@ class LiveRig:
         if loaded is None:
             return world
         stored, self.stored_boot, self.stored_read_ns = loaded
-        return replace(world, stored=stored)
+        proven = self.store.db.journal_proven(session_id) if stored.status == "quarantined" else ()
+        return replace(world, stored=stored, proven=proven)
 
     def post(self, event, world: World | None = None) -> None:
         pending = [event]
@@ -939,8 +940,8 @@ class LiveRig:
     def start(self, config: MachineConfig, session_id: int, seed: int, acknowledged: bool) -> None:
         self.post(Start(config, session_id, seed, acknowledged), self.world_for_start())
 
-    def resume(self, session_id: int) -> None:
-        self.post(Resume(session_id), self.world_for_resume(session_id))
+    def resume(self, session_id: int, reengage: bool = False) -> None:
+        self.post(Resume(session_id, reengage), self.world_for_resume(session_id))
 
     def continue_on_setup(self) -> None:
         self.post(ContinueOnSetup(self.store.new_session_id()), self.world_for_start())

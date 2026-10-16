@@ -51,7 +51,9 @@ corecycler headless commands:
                                    configuration as JSON, or from --cores 0,1,... with
                                    --max-offset N, --k1 N, --k2 N and --wait-between-cores S
                                    where the defaults do not fit
-  corecycler resume SESSION_ID     resume a paused, interrupted or aborted session
+  corecycler resume SESSION_ID     resume a paused, interrupted or aborted session; a
+                                   quarantined one only with --reengage, each core from
+                                   its last proven value or from stock
   corecycler validate SESSION_ID   prove a completed session's values again
   corecycler continue SESSION_ID   carry a session paused on a changed setup into a new one
   corecycler restart SESSION_ID    start a session paused on a changed setup over

@@ -2280,8 +2280,7 @@ proof = "built"
 [[requirement]]
 id = "L18.b.quarantine"
 statement = "A quarantined session resumes only interactive and confirmed, re-engaging on proven ground"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L18.c.marker"
@@ -2450,8 +2449,7 @@ proof = "built"
 [[requirement]]
 id = "L18.d.8.reengage"
 statement = "Re-engage on proven ground (from quarantine, interactive only)"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L18.d.8.baselines"

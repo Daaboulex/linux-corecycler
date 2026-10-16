@@ -786,6 +786,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--acknowledge", action="store_true")
+    parser.add_argument("--reengage", action="store_true")
     args = parser.parse_args(argv)
     for named, flag in (
         ("resume", "resume"),
@@ -919,7 +920,7 @@ def _run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> 
     elif args.validate:
         rig.validate(args.session)
     else:
-        rig.resume(args.session)
+        rig.resume(args.session, args.reengage)
     if rig.refused is not None:
         return EXIT_REFUSED
     if args.abort:

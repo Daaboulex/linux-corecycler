@@ -369,6 +369,8 @@ def _resume_stored(s: SessionState, e: Resume, w: World) -> Transition:
         return Transition(s, refused=f"session {e.session_id} is not stored")
     if st.status == "completed":
         return Transition(s, refused="the session is completed: use Validate Profile")
+    if st.status == "quarantined":
+        return _reengage(s, e, w)
     if st.status not in RESUMABLE:
         return Transition(s, refused=f"a session stored as {st.status} cannot be resumed")
     refusal = _stored_gates(st, w)
@@ -376,6 +378,32 @@ def _resume_stored(s: SessionState, e: Resume, w: World) -> Transition:
         return Transition(s, refused=refusal)
     resumed = replace(reconstruct(st), next_token=s.next_token)
     return Transition(resumed, (ReadCrashEvidence(e.session_id),))
+
+
+def _reengage(s: SessionState, e: Resume, w: World) -> Transition:
+    st = w.stored
+    if not e.reengage:
+        return Transition(
+            s,
+            refused=f"session {st.session_id} is quarantined: resume it with --reengage to go on from proven ground",
+        )
+    refusal = _stored_gates(st, w)
+    if refusal is not None:
+        return Transition(s, refused=refusal)
+    resumed = replace(reconstruct(st), next_token=s.next_token, resume_streak=0)
+    proven = dict(w.proven)
+    cores, said = [], []
+    for rec in resumed.cores:
+        ground = next((v for v in proven.get(rec.core, ()) if v != 0 and rec.inside(v, st.config.max_offset)), None)
+        if ground is None:
+            cores.append(replace(rec, phase=Phase.NOT_STARTED, value=0, start=0, count=0, in_test=False))
+            said.append(f"core {rec.core} from stock")
+        else:
+            cores.append(replace(rec, phase=Phase.PROVEN, value=ground, count=0, in_test=False))
+            said.append(f"core {rec.core} at {ground} (proven)")
+    reengaged = replace(resumed, cores=tuple(cores))
+    notice = Announce("reengaged", f"session {st.session_id} re-engaged on proven ground: " + ", ".join(said))
+    return Transition(reengaged, (notice, ReadCrashEvidence(e.session_id)))
 
 
 def _setup_choice_problem(s: SessionState, w: World) -> str | None:

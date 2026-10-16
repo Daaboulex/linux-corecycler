@@ -153,7 +153,13 @@ class Fake:
             held_session=(self.db.session_id, self.db.status)
             if self.db is not None and self.db.status in HELD_STATUSES
             else None,
+            proven=self.proven_newest_first() if self.db is not None and self.db.status == "quarantined" else (),
         )
+
+    def proven_newest_first(self) -> tuple[tuple[int, tuple[int, ...]], ...]:
+        kept = [row for row in reversed(self.journal) if row.survived and not row.retracted]
+        cores = sorted({row.core_id for row in kept})
+        return tuple((core, tuple(row.value for row in kept if row.core_id == core)) for core in cores)
 
     def post(self, event) -> None:
         queue = deque([event])

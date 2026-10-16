@@ -44,6 +44,7 @@ from corecycler.tuner.machine.types import (
     Mode,
     PauseReason,
     PauseRequest,
+    Phase,
     Report,
     Stage,
     Stored,
@@ -390,6 +391,28 @@ def test_a_reboot_during_a_test_convicts_the_tested_core_on_resume(tmp_path):
     again.resume(1)
     assert tested is not None
     assert again.state.core(in_test.core).crash_count == 1
+    assert again.run_until_rest(0.01).lifecycle is Lifecycle.COMPLETED
+
+
+@pytest.mark.req("L18.b.quarantine", "L18.d.8.reengage")
+def test_a_quarantined_session_resumes_only_when_reengaged_from_its_journal_s_survived_values(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(max_offset=-40, starts=((0, -30), (1, -30), (8, -30))), 1, 7, True)
+    for boot in ("boot-b", "boot-c", "boot-d"):
+        while r.worker is None:
+            r.step(0.01)
+        hardware.boot, hardware.co = boot, {0: 0, 1: 0, 8: 0}
+        r = rig(tmp_path, hardware, db=r.store.db)
+        r.resume(1)
+    assert r.state.lifecycle is Lifecycle.QUARANTINED
+    r.store.db.journal_co_intent(1, 8, -1, True, boot_id="boot-d", mono_ns=1)
+    again = rig(tmp_path, hardware, db=r.store.db)
+    again.resume(1)
+    assert "--reengage" in again.refused
+    again = rig(tmp_path, hardware, db=r.store.db)
+    again.resume(1, True)
+    assert (again.state.core(8).phase, again.state.core(8).value) == (Phase.PROVEN, -1)
     assert again.run_until_rest(0.01).lifecycle is Lifecycle.COMPLETED
 
 
@@ -1867,8 +1890,8 @@ def test_a_restart_refused_at_start_s_gates_is_a_refusal(tmp_path):
     again.say = said.append
     resume = again.resume
 
-    def resume_then_lose_the_kernel_log(session_id):
-        resume(session_id)
+    def resume_then_lose_the_kernel_log(session_id, reengage):
+        resume(session_id, reengage)
         hardware.refusal = "the kernel log /dev/kmsg cannot be read"
 
     again.resume = resume_then_lose_the_kernel_log

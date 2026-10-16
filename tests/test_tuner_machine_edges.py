@@ -26,6 +26,7 @@ from corecycler.tuner.machine.types import (
     Pause,
     PauseReason,
     Phase,
+    ReadCrashEvidence,
     Report,
     RestartOnSetup,
     SessionState,
@@ -380,7 +381,11 @@ def test_resume_is_refused_while_running_and_for_another_session_while_paused():
 
 @pytest.mark.parametrize(
     ("status", "says"),
-    [("completed", "Validate Profile"), ("quarantined", "cannot be resumed"), ("superseded", "cannot be resumed")],
+    [
+        ("completed", "Validate Profile"),
+        ("quarantined", "resume it with --reengage"),
+        ("superseded", "cannot be resumed"),
+    ],
 )
 @pytest.mark.req("EVENTS.user.superseded", "L17.h", "L24.l24b.terminal")
 def test_resume_is_refused_for_a_stored_session_that_cannot_continue(status, says):
@@ -1191,3 +1196,47 @@ def test_start_names_a_one_core_selection_as_not_interleaved(selected, named):
     assert ("started", named) in [
         (effect.kind, effect.text) for effect in result.effects if type(effect).__name__ == "Announce"
     ]
+
+
+@pytest.mark.req("L18.b.quarantine", "L18.d.8.reengage")
+def test_a_quarantined_session_reengages_each_core_from_its_newest_proven_value_inside_its_bound():
+    fake = running_fake()
+    cores = (
+        replace(fake.state.cores[0], value=-9, fb=-12, phase=Phase.PROVE),
+        replace(fake.state.cores[1], value=-3, fb=-5, phase=Phase.PROVE),
+    )
+    cores = tuple(replace(rec, count=1, in_test=True) for rec in cores)
+    row = replace(stored(replace(fake.state, cores=cores, resume_streak=3)), status="quarantined", flow=None)
+    world = replace(LAYOUT, stored=row, proven=((0, (-14, -10, -8)), (1, (0, -6))))
+    assert refusal(SessionState(), Resume(1, reengage=True), replace(world, preflight_refusal="no kmsg")) == "no kmsg"
+    result = transition(SessionState(), Resume(1, reengage=True), world)
+    first, second = result.state.cores
+    assert (first.phase, first.value, first.count, first.in_test) == (Phase.PROVEN, -10, 0, False)
+    assert (second.phase, second.value, second.start, second.count, second.in_test) == (
+        Phase.NOT_STARTED,
+        0,
+        0,
+        0,
+        False,
+    )
+    assert result.state.resume_streak == 0
+    assert result.effects[0].text == "session 1 re-engaged on proven ground: core 0 at -10 (proven), core 1 from stock"
+    assert isinstance(result.effects[-1], ReadCrashEvidence)
+
+
+@pytest.mark.req("L18.b.quarantine", "L18.d.8.reengage")
+def test_a_session_quarantined_by_three_crashes_runs_again_only_when_reengaged():
+    fake = fresh(2, [-40, -6], 1, max_offset=-40, k_1t=2, wait_between_cores_s=0.0, starts=((0, -30),))
+    start(fake)
+    while fake.state.lifecycle is not Lifecycle.QUARANTINED:
+        while fake.worker is None:
+            assert fake.progress()
+        fake.crash()
+        fake.post(Resume(1))
+    assert "--reengage" in refusal(SessionState(), Resume(1), fake.world())
+    fake.state = SessionState()
+    fake.post(Resume(1, reengage=True))
+    while fake.worker is None:
+        assert fake.progress()
+    assert fake.state.lifecycle is Lifecycle.RUNNING
+    assert fake.state.resume_streak == 0
