@@ -64,6 +64,10 @@ def memory_verdict(tool: str, output: str, returncode: int) -> tuple[str, str]:
     return NO_VERDICT, f"{output}\n{tool} ended with {ended} and reported no result"
 
 
+def _dimm_temperature(index: int, temp: float | None) -> str:
+    return f"DIMM {index + 1}: unread" if temp is None else f"DIMM {index + 1}: {temp:.1f}C"
+
+
 class _StressWorker(QThread):
     """Runs memory stress test in background."""
 
@@ -371,7 +375,7 @@ class MemoryTab(QWidget):
                 lbl.deleteLater()
             self._temp_labels.clear()
             for i, temp in enumerate(temps):
-                lbl = QLabel(f"DIMM {i + 1}: {temp:.1f}C")
+                lbl = QLabel(_dimm_temperature(i, temp))
                 lbl.setFont(QFont("monospace", 10))
                 lbl.setStyleSheet("padding: 4px;")
                 temp_layout.addWidget(lbl)
@@ -435,7 +439,7 @@ class MemoryTab(QWidget):
         temps = self._spd_reader.read_temperatures()
         for i, temp in enumerate(temps):
             if i < len(self._temp_labels):
-                self._temp_labels[i].setText(f"DIMM {i + 1}: {temp:.1f}C")
+                self._temp_labels[i].setText(_dimm_temperature(i, temp))
 
     def on_tick(self, tick: Tick) -> None:
         if self._pm_available:

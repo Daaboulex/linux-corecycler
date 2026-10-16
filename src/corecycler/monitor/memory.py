@@ -202,6 +202,18 @@ def read_dimm_info() -> list[DIMMInfo]:
     return []
 
 
+SPD5118_RANGE_C = (-40.0, 125.0)
+
+
+def _spd_temperature(path: Path) -> float | None:
+    try:
+        temp_c = int(path.read_text().strip()) / 1000.0
+    except ValueError, OSError:
+        return None
+    low, high = SPD5118_RANGE_C
+    return temp_c if low <= temp_c <= high else None
+
+
 class SPD5118Reader:
     """Read DDR5 DIMM temperatures from SPD5118 hwmon devices."""
 
@@ -253,15 +265,6 @@ class SPD5118Reader:
     def is_available(self) -> bool:
         return len(self._devices) > 0
 
-    def read_temperatures(self) -> list[float]:
-        """Read temperature from each SPD5118 device (Celsius)."""
-        temps: list[float] = []
-        for dev in self._devices:
-            temp_file = dev / "temp1_input"
-            if temp_file.exists():
-                with contextlib.suppress(ValueError, OSError):
-                    raw = int(temp_file.read_text().strip())
-                    temp_c = raw / 1000.0
-                    if -40.0 <= temp_c <= 125.0:  # SPD5118 sensor range
-                        temps.append(temp_c)
-        return temps
+    def read_temperatures(self) -> list[float | None]:
+        """One reading per SPD5118 device, in device order (Celsius); None where it could not be read."""
+        return [_spd_temperature(dev / "temp1_input") for dev in self._devices]

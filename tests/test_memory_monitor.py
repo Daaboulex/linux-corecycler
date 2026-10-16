@@ -712,13 +712,22 @@ class TestMemoryDriftEdges:
         reader._spd_loaded = False
         assert reader.spd_timings is None
 
+    @pytest.mark.req("T22.memory.dimms")
+    def test_an_unreadable_dimm_sensor_keeps_its_place_as_none(self, tmp_path):
+        for name, raw in (("hwmon10", "garbage\n"), ("hwmon2", "39000\n")):
+            dev = tmp_path / name
+            dev.mkdir()
+            (dev / "name").write_text("spd5118\n")
+            (dev / "temp1_input").write_text(raw)
+        assert SPD5118Reader(hwmon_base=tmp_path).read_temperatures() == [None, 39.0]
+
     def test_read_temperatures_garbage_value_skipped(self, tmp_path):
         dev = tmp_path / "hwmon" / "hwmon0"
         dev.mkdir(parents=True)
         (dev / "name").write_text("spd5118\n")
         (dev / "temp1_input").write_text("not-a-number\n")
         reader = SPD5118Reader(hwmon_base=tmp_path / "hwmon")
-        assert reader.read_temperatures() == []
+        assert reader.read_temperatures() == [None]
 
 
 class TestDimmInfoReader:

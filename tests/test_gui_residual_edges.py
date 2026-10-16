@@ -118,6 +118,13 @@ class TestMemoryTabInventory:
         tab.on_tick(a_tick(pm=MagicMock(is_calibrated=True)))
         assert tab._fclk_label.text() == before
 
+    @pytest.mark.req("T22.memory.dimms")
+    def test_an_unread_dimm_says_unread_and_the_next_keeps_its_own_label(self, monkeypatch):
+        tab = self._tab(monkeypatch, dimms=_dimms(), spd_available=True)
+        tab._spd_reader.read_temperatures.return_value = [None, 39.0]
+        tab._update_temperatures()
+        assert [label.text() for label in tab._temp_labels] == ["DIMM 1: unread", "DIMM 2: 39.0C"]
+
     def test_a_live_tick_refreshes_dimm_temperatures(self, monkeypatch):
         tab = self._tab(monkeypatch, dimms=_dimms(), spd_available=True)
         tab._spd_reader.read_temperatures.return_value = [60.0, 61.0]
