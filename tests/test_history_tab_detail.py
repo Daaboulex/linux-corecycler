@@ -150,6 +150,11 @@ class TestWithoutDatabase:
             tab._export_bulk_csv([0])
         assert not dlg.called
 
+    @pytest.mark.req("T22.history.off")
+    def test_without_a_database_the_tab_says_history_is_off_not_zero_runs(self, db):
+        assert _tab(None)._total_label.text() == "History is off: no history database is open, so nothing is shown"
+        assert _tab(db)._total_label.text() == "Stress test runs: 0"
+
     def test_run_delete_is_a_noop(self):
         tab = _tab(None)
         with patch("corecycler.gui.history_tab.QMessageBox.question") as ask:

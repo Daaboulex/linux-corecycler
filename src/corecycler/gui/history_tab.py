@@ -148,7 +148,9 @@ class HistoryTab(QWidget):
         summary_rows.addLayout(counts_row)
         summary_rows.addLayout(controls_row)
 
-        self._total_label = QLabel("Stress test runs: 0")
+        self._total_label = QLabel(
+            "Stress test runs: 0" if self._db else "History is off: no history database is open, so nothing is shown"
+        )
         self._counts_label = QLabel("")
         self._counts_label.setTextFormat(Qt.TextFormat.RichText)
         self._counts_label.setStyleSheet("font-weight: bold;")

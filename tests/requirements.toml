@@ -4810,6 +4810,11 @@ statement = "Every tuner sample records each core's clock, effective clock, C0 a
 proof = "built"
 
 [[requirement]]
+id = "T22.history.off"
+statement = "Without a history database the History tab says history is off, never zero runs (scratch/design/t23-curve-history.md defect 3)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"
