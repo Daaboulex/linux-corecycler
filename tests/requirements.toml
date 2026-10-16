@@ -4915,6 +4915,11 @@ statement = "Every control of the Curve-Tuner tab is listed with its reaction (t
 proof = "built"
 
 [[requirement]]
+id = "T23.contract.history"
+statement = "Every control of the History tab is listed with its reaction (tests/test_history_tab_detail.py HISTORY_CONTROLS, HISTORY_INPUTS and HISTORY_TABLES) and the test fails on an unlisted or missing control; the view box, each button, each table selection, click and right-click react only through their connection."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

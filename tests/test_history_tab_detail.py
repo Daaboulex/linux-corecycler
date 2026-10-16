@@ -909,3 +909,146 @@ def test_the_counts_name_every_status_read_in_the_label_order_with_its_colour():
     assert f'color: {theme.STATUS_COLORS["completed"]};">Completed: 3' in shown
     assert f'color: {theme.COLOR_MUTED};">new-status: 1' in shown
     assert ht.counts_html(Counter()) == ""
+
+
+HISTORY_CONTROLS = {
+    "Delete Selected": "after a yes, deletes the selected runs, setups or sessions",
+    "Compare Selected": "compares the selected runs core by core",
+    "Load these values into Curve-Tuner": "sends the session's values to the Curve-Tuner tab's Value to set",
+    "QTableCornerButton": "Qt's, hidden with the row headers, so nothing reaches it",
+}
+HISTORY_INPUTS = {"_view_select": "chooses the view: tuning sessions, stress tests by setup, or every stress test"}
+HISTORY_TABLES = {
+    "setup row selected": "the runs table shows that setup's runs and the detail closes",
+    "setup row clicked": "the runs of the clicked setup are shown again and the detail closes",
+    "setup right-click": "offers Add Note...",
+    "run rows selected": "Delete and Compare follow the selection and the run's or session's detail opens",
+    "run right-click": "offers the exports, Compare and Delete for the selected runs",
+}
+
+
+def _flat_tab(db):
+    tab = _tab(db)
+    tab._view_mode = tab.VIEW_ALL
+    tab.refresh()
+    return tab
+
+
+@pytest.mark.req("T23.contract.history")
+def test_every_control_of_the_history_tab_is_listed_with_its_reaction(db):
+    from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QComboBox, QLineEdit
+
+    tab = _tab(db)
+    assert {b.text() or b.metaObject().className() for b in tab.findChildren(QAbstractButton)} == set(HISTORY_CONTROLS)
+    assert set(tab.findChildren(QComboBox)) == {getattr(tab, name) for name in HISTORY_INPUTS}
+    assert [*tab.findChildren(QAbstractSpinBox), *tab.findChildren(QLineEdit)] == []
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_the_view_box_switches_the_view_only_through_its_connection(db, connected):
+    tab = _tab(db)
+    if not connected:
+        tab._view_select.currentIndexChanged.disconnect()
+    tab._view_select.setCurrentIndex(tab._view_select.findData(tab.VIEW_ALL))
+    assert (tab._view_mode == tab.VIEW_ALL) is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_delete_selected_deletes_only_through_its_connection(db, connected):
+    _seed_run(db, "2026-07-20T10:00:00+00:00")
+    tab = _flat_tab(db)
+    tab._runs_table.selectRow(0)
+    if not connected:
+        tab._delete_btn.clicked.disconnect()
+    with patch("corecycler.gui.history_tab.QMessageBox.question", return_value=_yes()):
+        tab._delete_btn.click()
+    assert (db.list_runs() == []) is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_compare_selected_compares_only_through_its_connection(db, connected):
+    _seed_run(db, "2026-07-20T10:00:00+00:00")
+    _seed_run(db, "2026-07-21T10:00:00+00:00")
+    tab = _flat_tab(db)
+    tab._runs_table.selectAll()
+    if not connected:
+        tab._compare_btn.clicked.disconnect()
+    tab._compare_btn.click()
+    assert ("Run Comparison" in tab._events_log.toPlainText()) is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_load_these_values_sends_them_only_through_its_connection(db, tmp_path, connected):
+    save_machine_session(db, tmp_path, "completed")
+    tab = _tab(db)
+    tab._view_mode = tab.VIEW_TUNER
+    tab.refresh()
+    sent = []
+    tab.load_profile_requested.connect(sent.append)
+    if not connected:
+        tab._load_co_btn.clicked.disconnect()
+    tab._load_co_btn.click()
+    assert bool(sent) is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_selecting_a_setup_shows_its_runs_only_through_its_connection(db, connected):
+    one = _seed_context(db, "2402", {"0": -20})
+    two = _seed_context(db, "2403", {"0": -25})
+    _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=one)
+    _seed_run(db, "2026-07-21T10:00:00+00:00", context_id=two)
+    _seed_run(db, "2026-07-22T10:00:00+00:00", context_id=two)
+    tab = _grouped_tab(db)
+    tab._context_table.selectRow(0)
+    if not connected:
+        tab._context_table.selectionModel().selectionChanged.disconnect()
+    tab._context_table.selectRow(1)
+    assert (tab._runs_table.rowCount() == 1) is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_clicking_the_selected_setup_closes_the_detail_only_through_its_connection(db, connected):
+    cid = _seed_context(db, "2402", {"0": -20})
+    _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
+    tab = _grouped_tab(db)
+    tab._context_table.selectRow(0)
+    tab._runs_table.selectRow(0)
+    assert not tab._detail_widget.isHidden()
+    if not connected:
+        tab._context_table.clicked.disconnect()
+    tab._context_table.clicked.emit(tab._context_table.model().index(0, 0))
+    assert tab._detail_widget.isHidden() is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+@pytest.mark.parametrize("table", ["_context_table", "_runs_table"])
+def test_a_right_click_opens_its_menu_only_through_its_connection(db, monkeypatch, table, connected):
+    cid = _seed_context(db, "2402", {"0": -20})
+    _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
+    tab = _grouped_tab(db)
+    tab._context_table.selectRow(0)
+    tab._runs_table.selectRow(0)
+    menu = MagicMock()
+    monkeypatch.setattr(ht, "QMenu", menu)
+    if not connected:
+        getattr(tab, table).customContextMenuRequested.disconnect()
+    getattr(tab, table).customContextMenuRequested.emit(_point())
+    assert menu.return_value.exec.called is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_selecting_a_run_opens_its_detail_only_through_its_connection(db, connected):
+    _seed_run(db, "2026-07-20T10:00:00+00:00")
+    tab = _flat_tab(db)
+    if not connected:
+        tab._runs_table.selectionModel().selectionChanged.disconnect()
+    tab._runs_table.selectRow(0)
+    assert tab._delete_btn.isEnabled() is connected
