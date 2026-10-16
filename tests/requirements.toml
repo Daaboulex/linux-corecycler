@@ -4926,7 +4926,7 @@ proof = "built"
 
 [[requirement]]
 id = "T34.telemetry"
-statement = "A stress run's telemetry sample records the tested core's boost ceiling as its per-core bar shows it, and History's run detail prints the ceiling per core where it was recorded and calls nothing stretch (scratch/design/telemetry-stretch.md)."
+statement = "A stress run's telemetry sample records the tested core's boost ceiling as its per-core bar shows it, and History's run detail prints the ceiling per core where it was recorded and labels no distance below the ceiling as stretch (scratch/design/telemetry-stretch.md)."
 proof = "built"
 
 [[requirement]]

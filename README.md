@@ -80,9 +80,9 @@ setup are in [docs/installation.md](docs/installation.md).
 
 Launch with `corecycler`. Curve Optimizer access needs SMU permissions. Grant them to your
 user once (`deviceAccessUser` on NixOS, a group and a oneshot service elsewhere, see
-[Device access](docs/installation.md#device-access)). Clock stretch, per-core power and MSR
-package power read model-specific registers, which need root today: run `sudo corecycler`
-for those.
+[Device access](docs/installation.md#device-access)). Clock stretch reads the SMU's PM table,
+which that access covers. Per-core power and MSR package power read model-specific
+registers, which need root today: run `sudo corecycler` for those.
 Pick a backend and preset in the Configuration tab and click **Start Test**, or use the
 **Auto-Tuner** tab to search every core's stable offset automatically. If a backend is
 reported as not found, `corecycler doctor` prints where it looked and what it found. The

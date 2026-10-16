@@ -45,7 +45,7 @@ src/corecycler/
     frequency.py       Per-core frequency (cpufreq), actual + boost ceiling
     memory.py          DIMM info (dmidecode), SPD5118 temps, DDR5 SPD timing decode
     power.py           Package power (RAPL sysfs, hwmon fallback)
-    msr.py             MSR (root): APERF/MPERF clock stretch, per-core RAPL power
+    msr.py             MSR (root): per-core and package RAPL power
   history/           SQLite persistence (WAL): run/context/tuner tables, migration registry, JSON/CSV export
   tuner/             Automated PBO Curve Optimizer tuner
     machine/           The tuner as a pure state machine: session.transition(state, event, world)

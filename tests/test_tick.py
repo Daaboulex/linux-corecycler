@@ -72,7 +72,8 @@ def test_a_tick_holds_one_read_of_every_source():
 @pytest.mark.req("O19.stretch")
 def test_the_stretch_is_each_loaded_core_s_effective_clock_below_its_clock_from_the_pm_table():
     table = pm_table(core0=(5.0, 4.9, 100.0, 1.1), core3=(5.2, 5.2, 94.9, 1.0), core5=(5.0, 5.1, 95.0, 1.2))
-    reading = ticker(pm=table).read([0, 16])
+    assert ticker(pm=table).read([0, 16], (*range(6), *range(8, 14))).stretch == {}
+    reading = ticker(pm=table).read([0, 16], range(16))
     assert reading.pm is table
     assert reading.cores[0] == (0, 5000.0, 4900.0, 100.0, 1.1)
     assert reading.stretch == {0: pytest.approx(2.0), 5: 0.0}

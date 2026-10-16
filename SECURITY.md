@@ -40,7 +40,7 @@ All writes are volatile (reset on reboot) but can cause immediate instability, c
 
 The tool reads Model-Specific Registers via `/dev/cpu/N/msr`:
 
-- APERF/MPERF (effective frequency / clock stretch detection)
+- MPERF, read once to check that the device opens
 - RAPL energy counters (per-core and package power)
 
 All MSR access is **read-only** (`O_RDONLY`). No MSR write path exists in the codebase.

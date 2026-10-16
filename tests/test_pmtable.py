@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from corecycler.smu.pmtable import (
+    MEASURED_CORE_IDS,
     PM_TABLE_OFFSETS,
     PMTableData,
     PMTableOffsets,
@@ -163,7 +164,7 @@ class TestPMTableReader:
         for offset, value in ((0x574, 5.438), (0x5B4, 5.459), (0x5F4, 99.87), (0x4F4, 1.149)):
             floats[offset // 4 + 12] = value
         floats[0x4F4 // 4 + 3], floats[0x574 // 4 + 4], floats[0x5F4 // 4 + 5] = 2.5, float("nan"), 100.5
-        reads = core_reads(PMTableData(pm_table_version=0x00620205, raw_floats=floats))
+        reads = core_reads(PMTableData(pm_table_version=0x00620205, raw_floats=floats), MEASURED_CORE_IDS)
         assert [read[0] for read in reads] == list(range(16))
         assert reads[12] == (
             12,
@@ -178,12 +179,17 @@ class TestPMTableReader:
     @pytest.mark.req("O19.record")
     @pytest.mark.parametrize(("version", "count"), [(0x00620105, 613), (0x00540208, 613), (0x00620205, 396)])
     def test_a_table_whose_core_layout_was_not_measured_records_no_core(self, version, count):
-        assert core_reads(PMTableData(pm_table_version=version, raw_floats=[1.0] * count)) == ()
+        assert core_reads(PMTableData(pm_table_version=version, raw_floats=[1.0] * count), MEASURED_CORE_IDS) == ()
 
     @pytest.mark.req("O19.record")
     def test_a_table_just_long_enough_for_the_last_core_reads_every_core(self):
-        reads = core_reads(PMTableData(pm_table_version=0x00620205, raw_floats=[1.0] * 397))
+        reads = core_reads(PMTableData(pm_table_version=0x00620205, raw_floats=[1.0] * 397), MEASURED_CORE_IDS)
         assert [read[0] for read in reads] == list(range(16))
+
+    @pytest.mark.req("O19.stretch")
+    @pytest.mark.parametrize("core_ids", [(*range(6), *range(8, 14)), range(8), (), range(17)])
+    def test_a_machine_whose_core_ids_are_not_the_measured_0_to_15_reads_no_core(self, core_ids):
+        assert core_reads(PMTableData(pm_table_version=0x00620205, raw_floats=[1.0] * 397), core_ids) == ()
 
     def test_fewer_than_200_floats_skips_parsing(self, tmp_path):
         """PM table with < 200 floats should skip Granite Ridge parsing."""
@@ -679,6 +685,7 @@ class TestReadPowerLimits:
         (5000.0, None, 100.0, None),
         (5000.0, 4900.0, None, None),
         (0.0, 4900.0, 100.0, None),
+        (5000.0, 0.0, 100.0, None),
     ],
 )
 def test_stretch_is_the_effective_clock_below_the_clock_for_a_core_at_least_95_percent_in_c0(

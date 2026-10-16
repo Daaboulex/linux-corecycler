@@ -9,6 +9,8 @@ from corecycler.monitor.power import PowerMonitor
 from corecycler.smu.pmtable import PMTableData, PMTableReader, core_reads, stretch_pct
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from corecycler.engine.topology import CPUTopology
     from corecycler.monitor.frequency import Clocks
     from corecycler.monitor.hwmon import CoreRead, SensorRead, Sensors
@@ -45,12 +47,12 @@ class Ticker:
     def power_available(self) -> bool:
         return self.power.is_available() or self.msr.is_available()
 
-    def read(self, cpus: list[int]) -> Tick:
+    def read(self, cpus: list[int], core_ids: Collection[int] = ()) -> Tick:
         package = self.power.read_power_watts()
         if package is None and self.msr.is_available():
             package = self.msr.read_package_power()
         pm = self.pm.read()
-        cores = () if pm is None else core_reads(pm)
+        cores = () if pm is None else core_reads(pm, core_ids)
         return Tick(
             clocks=self.clocks.read(),
             ceilings=self.clocks.ceilings(),

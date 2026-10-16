@@ -142,7 +142,7 @@ model-specific registers and some kernel interfaces need more:
 | Temperature, per-CCD temps, frequency | Full | Full | Full |
 | Package power | Via hwmon (zenpower) | Same | Full |
 | Per-core power (RAPL MSR) | N/A | N/A | Full |
-| Clock stretch detection (APERF/MPERF) | N/A | N/A | Full |
+| Clock stretch (PM table, a 16-core part on table 0x620205) | N/A | Full | Full |
 | Vcore voltage | Via Super I/O or zenpower | Same | Same |
 | DIMM info (dmidecode) | N/A | N/A | Full |
 | Curve Optimizer (SMU read/write) | N/A | Full | Full |
@@ -150,8 +150,8 @@ model-specific registers and some kernel interfaces need more:
 
 What device access does not cover:
 
-- **MSR reads need root.** Clock stretch, per-core power and the MSR fallback for package
-  power read `/dev/cpu/N/msr`. The kernel opens it only for a process holding
+- **MSR reads need root.** Per-core power and the MSR fallback for package power read
+  `/dev/cpu/N/msr`. The kernel opens it only for a process holding
   `CAP_SYS_RAWIO`, whatever the file's group and mode.
 - **DIMM details need root.** `dmidecode` reads the raw DMI table, which only root may open.
 - **MCE detection needs `/dev/kmsg`.** Where `kernel.dmesg_restrict` is 1, a non-root run
@@ -219,8 +219,8 @@ None are required for basic stress testing; each unlocks more functionality.
 
 | Module | Type | Purpose | Required for |
 |---|---|---|---|
-| `msr` | In-tree | `/dev/cpu/N/msr` for APERF/MPERF and per-core RAPL (root only) | Clock stretch, per-core power |
-| [`ryzen_smu`](https://github.com/amkillam/ryzen_smu) (amkillam fork) | Out-of-tree | SMU sysfs for CO read/write, PBO limit reads, PM table | Curve-Tuner tab, Auto-Tuner |
+| `msr` | In-tree | `/dev/cpu/N/msr` for per-core and package RAPL (root only) | Per-core power |
+| [`ryzen_smu`](https://github.com/amkillam/ryzen_smu) (amkillam fork) | Out-of-tree | SMU sysfs for CO read/write, PBO limit reads, PM table | Curve-Tuner tab, Auto-Tuner, clock stretch |
 | `zenpower` ([zenpower5](https://github.com/mattkeenan/zenpower5)) | Out-of-tree | Richer AMD hwmon than k10temp: SVI2 voltage and current (Zen 1-4), RAPL power | Better voltage/power monitoring |
 | `nct6683` / `nct6775` | In-tree | Nuvoton Super I/O (Vcore via label scan): NCT6683/6686/6687 on modern MSI boards, NCT6775-NCT6799 on ASUS, MSI and ASRock boards | Motherboard Vcore |
 | [`nct6687`](https://github.com/Fred78290/nct6687d) (Fred78290) | Out-of-tree | Fuller NCT6687 support than the in-tree nct6683, which it replaces | Motherboard Vcore on MSI boards |

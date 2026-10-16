@@ -7,7 +7,8 @@
 1. Launch CoreCycler (`corecycler` or `python src/corecycler/main.py`). The Curve
    Optimizer needs SMU access: grant it to your user once
    ([Device access](installation.md#device-access)) or launch with `sudo`. Clock stretch
-   and per-core power read model-specific registers, which need `sudo` today. Without
+   reads the SMU's PM table, which device access covers; per-core power reads
+   model-specific registers, which need `sudo` today. Without
    access it runs with reduced telemetry and a status-bar warning.
 2. The CPU topology (cores, CCDs, SMT, X3D) is detected automatically.
 3. In the Configuration tab, choose the test program. Use stress-ng if mprime is not

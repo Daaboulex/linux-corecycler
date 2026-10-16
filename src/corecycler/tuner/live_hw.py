@@ -74,7 +74,7 @@ from corecycler.tuner.orders import default_method
 
 if TYPE_CHECKING:
     import threading
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
 
     from corecycler.tuner.machine.types import TestSpec
 
@@ -218,7 +218,7 @@ def vcache_fact(topology) -> str:
 
 
 def with_pm_table(
-    sensors: Callable[[], SensorRead], pm_table: Callable[[], PMTableData | None]
+    sensors: Callable[[], SensorRead], pm_table: Callable[[], PMTableData | None], core_ids: Collection[int]
 ) -> Callable[[], SensorRead]:
     def read() -> SensorRead:
         reading = sensors()
@@ -226,7 +226,10 @@ def with_pm_table(
         if data is None:
             return reading
         return replace(
-            reading, volts=(*reading.volts, *rail_volts(data)), watts=package_watts(data), cores=core_reads(data)
+            reading,
+            volts=(*reading.volts, *rail_volts(data)),
+            watts=package_watts(data),
+            cores=core_reads(data, core_ids),
         )
 
     return read
@@ -836,7 +839,7 @@ def build_rig(
     cpus_of = tuple(sorted((core, tuple(info.logical_cpus)) for core, info in topology.cores.items()))
     domain_of = tuple(sorted((core, info.ccd) for core, info in topology.cores.items()))
     core_of_cpu = {cpu: core for core, cpus in cpus_of for cpu in cpus}
-    sensors = with_pm_table(Sensors().read, PMTableReader().read)
+    sensors = with_pm_table(Sensors().read, PMTableReader().read, topology.cores)
     return LiveRig(
         hardware=SmuHardware(
             smu,

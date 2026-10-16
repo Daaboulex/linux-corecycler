@@ -87,7 +87,7 @@ in
     deviceAccess = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Whether to grant the deviceAccessUser access to the SMU sysfs files via a dedicated group and a systemd oneshot for the ryzen_smu files, so CO access needs no sudo. A udev rule also gives the group read mode on the MSR devices, but the kernel refuses an MSR open without CAP_SYS_RAWIO, so clock stretch, per-core power and MSR package power still need root. The oneshot includes `smn`, which is arbitrary SMN register access. See SECURITY.md before enabling this for a user you would not trust with the SMU mailbox.";
+      description = "Whether to grant the deviceAccessUser access to the SMU sysfs files via a dedicated group and a systemd oneshot for the ryzen_smu files, so CO access needs no sudo. A udev rule also gives the group read mode on the MSR devices, but the kernel refuses an MSR open without CAP_SYS_RAWIO, so per-core power and MSR package power still need root; clock stretch reads the PM table the group already has. The oneshot includes `smn`, which is arbitrary SMN register access. See SECURITY.md before enabling this for a user you would not trust with the SMU mailbox.";
     };
 
     deviceAccessUser = lib.mkOption {
@@ -154,8 +154,6 @@ in
       ${cfg.deviceAccessUser}.extraGroups = [ "corecycler" ];
     };
 
-    # MSR devices: grant group read access for APERF/MPERF (clock stretch)
-    # and RAPL energy counters (per-core + package power)
     services.udev.extraRules = lib.mkIf cfg.deviceAccess ''
       SUBSYSTEM=="msr", KERNEL=="msr[0-9]*", GROUP="corecycler", MODE="0640"
     '';
@@ -163,7 +161,7 @@ in
     # --- Kernel modules ---
     # In-tree modules loaded via boot.kernelModules, out-of-tree via extraModulePackages
     boot.kernelModules = [
-      "msr" # always needed for APERF/MPERF and RAPL MSR access
+      "msr"
     ]
     ++ lib.optional cfg.cpuid "cpuid";
 

@@ -59,11 +59,13 @@ class FakeTicker:
         self.clocks = clocks
         self.pm = PMAbsent()
         self.closed = False
+        self.core_ids = None
 
     def power_available(self):
         return False
 
-    def read(self, cpus):
+    def read(self, cpus, core_ids=()):
+        self.core_ids = tuple(core_ids)
         return a_tick(self.sensors, clocks=self.clocks.read(), ceilings=self.clocks.ceilings())
 
     def close(self):

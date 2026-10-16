@@ -581,6 +581,7 @@ class TestOneTick:
         tick = window._monitor_tab.on_tick.call_args.args[0]
         window._memory_tab.on_tick.assert_called_once_with(tick)
         assert window._core_telemetry[0]["max_freq"] == 4500.0
+        assert window._ticker.core_ids == tuple(window._topology.cores)
         window._history_db = None
 
 

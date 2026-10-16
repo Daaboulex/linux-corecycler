@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from corecycler.monitor.hwmon import CoreRead
 
 log = logging.getLogger(__name__)
@@ -145,6 +147,7 @@ def rail_volts(data: PMTableData) -> tuple[tuple[str, float | None], ...]:
 
 CORE_TABLE_VERSION = 0x620205
 CORE_COUNT = 16
+MEASURED_CORE_IDS = frozenset(range(CORE_COUNT))
 CORE_ARRAYS = (
     ("clock MHz", 349, 0.0, 6.5, 1000.0),
     ("effective MHz", 365, 0.0, 6.5, 1000.0),
@@ -159,13 +162,16 @@ LOADED_C0_PCT = 95.0
 def stretch_pct(clock_mhz: float | None, effective_mhz: float | None, c0_pct: float | None) -> float | None:
     """How far a loaded core's effective clock falls below the clock it runs at, in percent, or None unless the
     core sat in C0 at LOADED_C0_PCT or more, where the hour probe of design/clock-stretch.md measured it."""
-    if clock_mhz is None or effective_mhz is None or c0_pct is None or c0_pct < LOADED_C0_PCT or not clock_mhz:
+    if not clock_mhz or not effective_mhz or c0_pct is None or c0_pct < LOADED_C0_PCT:
         return None
     return max(0.0, 1.0 - effective_mhz / (clock_mhz * c0_pct / 100.0)) * 100.0
 
 
-def core_reads(data: PMTableData) -> tuple[CoreRead, ...]:
-    """Each core's clock, effective clock, C0 and voltage on table 0x620205 only, each array at its first float."""
+def core_reads(data: PMTableData, core_ids: Collection[int]) -> tuple[CoreRead, ...]:
+    """Each core's clock, effective clock, C0 and voltage on table 0x620205 only, each array at its first float,
+    and only on a machine whose core ids are 0 to 15, the layout whose index-to-core mapping was measured."""
+    if set(core_ids) != MEASURED_CORE_IDS:
+        return ()
     floats = data.raw_floats
     if data.pm_table_version != CORE_TABLE_VERSION or len(floats) < max(i for _, i, *_ in CORE_ARRAYS) + CORE_COUNT:
         return ()

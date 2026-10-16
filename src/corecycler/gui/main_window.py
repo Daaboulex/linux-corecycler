@@ -341,7 +341,7 @@ class MainWindow(QMainWindow):
         self._tick_timer.start(int(self._settings.poll_interval * 1000))
 
     def _on_tick(self) -> None:
-        tick = self._ticker.read(first_cpus(self._topology))
+        tick = self._ticker.read(first_cpus(self._topology), self._topology.cores if self._topology else ())
         self._monitor_tab.on_tick(tick)
         self._memory_tab.on_tick(tick)
         self._tuner_tab.refresh()

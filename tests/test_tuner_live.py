@@ -1764,6 +1764,26 @@ def test_an_unexpected_error_in_the_driver_closes_the_session_with_every_core_at
     assert [session.status for session in reopened.list_machine_sessions(limit=1)] == ["paused"]
 
 
+@pytest.mark.req("O19.stretch")
+@pytest.mark.parametrize(
+    ("cores", "read"), [(CPUS, False), (tuple((core, (core, core + 16)) for core in range(16)), True)]
+)
+def test_the_rig_reads_the_pm_core_arrays_only_for_the_measured_core_layout(tmp_path, monkeypatch, cores, read):
+    from corecycler.smu.pmtable import PMTableData
+
+    table = PMTableData(pm_table_version=0x00620205, raw_floats=[1.0] * 397)
+    monkeypatch.setattr(live_hw, "PMTableReader", lambda: SimpleNamespace(read=lambda: table))
+    monkeypatch.setattr(live_hw, "Sensors", lambda: SimpleNamespace(read=lambda: SensorRead(tctl=50.0)))
+    layout = {core: SimpleNamespace(logical_cpus=cpus, ccd=0) for core, cpus in cores}
+    topo = SimpleNamespace(cores=layout, model_name="cpu-1", is_x3d=False, vcache_ccd=None)
+    args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--start", "--cores", "0,1", "--max-offset", "-8"])
+    kagari = SimpleNamespace(binary_problem=lambda name: None)
+    built = live_hw.build_rig(
+        args, topo, FakeSmu(), lambda: kagari, lambda line: None, database(tmp_path / "pm.db"), IDENTITY
+    )
+    assert bool(built.hardware.sensors().cores) is read
+
+
 @pytest.mark.req("K9.capability")
 def test_the_command_line_starts_or_resumes_and_reports_where_it_came_to_rest(tmp_path):
     lines = []
@@ -2812,7 +2832,7 @@ def test_every_sensor_reading_carries_the_core_rail_and_the_package_power_beside
     table = PMTableData(
         vdd_vid_v=1.3, vdd_v=1.29, package_power_w=142.5, pm_table_version=0x00620205, raw_floats=floats
     )
-    read = live_hw.with_pm_table(lambda: board, lambda: table)()
+    read = live_hw.with_pm_table(lambda: board, lambda: table, range(16))()
     assert read.cores[12] == (
         12,
         pytest.approx(5438.0),
@@ -2826,7 +2846,8 @@ def test_every_sensor_reading_carries_the_core_rail_and_the_package_power_beside
         ("pm_table:vdd_vid", pytest.approx(1.3)),
     )
     assert read.watts == (("pm_table:package", pytest.approx(142.5)),)
-    assert live_hw.with_pm_table(lambda: board, lambda: None)() == board
+    assert live_hw.with_pm_table(lambda: board, lambda: table, range(12))().cores == ()
+    assert live_hw.with_pm_table(lambda: board, lambda: None, range(16))() == board
 
 
 @pytest.mark.req("L00.d", "INTERRUPT.fifo")
