@@ -9,6 +9,7 @@ from corecycler.tuner.machine.session import ALLCORE_LOADS, transition
 from corecycler.tuner.machine.types import (
     Announce,
     AwaitWorker,
+    CancelSchedule,
     Commit,
     CrashEvidenceRead,
     Evidence,
@@ -25,6 +26,7 @@ from corecycler.tuner.machine.types import (
     RevertAll,
     Schedule,
     Stage,
+    Start,
     StartWorker,
     StopWorker,
     Waiting,
@@ -82,7 +84,7 @@ def _per_core(specs) -> set[tuple[Klass, int, tuple[int, ...]]]:
     return {(spec.klass, spec.core, spec.cpus) for spec in specs if spec.load in (None, Load.ONE_T, Load.TWO_T)}
 
 
-@pytest.mark.req("K8.cpu", "K9.cpus")
+@pytest.mark.req("K8.cpu", "K9.cpus", "D41")
 def test_one_thread_runs_on_the_first_cpu_core_0_on_its_second_and_two_threads_on_both():
     specs = _run(fresh(3, [-4, -3, -2], 1, max_offset=-6, k_1t=1, k_2t=1))
     assert _per_core(specs) == {
@@ -95,7 +97,7 @@ def test_one_thread_runs_on_the_first_cpu_core_0_on_its_second_and_two_threads_o
     }
 
 
-@pytest.mark.req("K8.cpu")
+@pytest.mark.req("K8.cpu", "D41")
 def test_a_core_with_one_cpu_runs_one_thread_on_it_core_0_included():
     specs = _run(fresh(2, [-4, -3], 1, smt=False, max_offset=-6, k_1t=1, k_2t=1))
     assert _per_core(specs) == {(Klass.T1, 0, (0,)), (Klass.T1, 1, (1,))}
@@ -202,7 +204,7 @@ def _steady(spec, state) -> bool:
     return spec.stage is Stage.STEADY
 
 
-@pytest.mark.req("C20")
+@pytest.mark.req("C20", "D37")
 def test_the_wait_between_cores_comes_before_a_different_core_and_never_before_a_repeat():
     fake = fresh(3, [-7, -4, -2], 1, max_offset=-9, k_1t=2, k_2t=1, wait_between_cores_s=15.0)
     _, effects = _recording(fake)
@@ -224,7 +226,7 @@ def test_the_wait_between_cores_comes_before_a_different_core_and_never_before_a
     assert {(a == b, wait) for a, b, wait in pairs} == {(True, False), (False, True)}
 
 
-@pytest.mark.req("C20")
+@pytest.mark.req("C20", "D37")
 def test_a_one_core_session_never_waits_between_its_tests():
     fake = fresh(1, [-5], 1, max_offset=-9, k_1t=2, k_2t=1, wait_between_cores_s=15.0)
     _, effects = _recording(fake)
@@ -692,7 +694,7 @@ def test_a_crash_in_a_tighten_round_ends_the_reclaim():
     assert fake.state.flow.stage is Stage.MEMORY and fake.state.flow.allcore.tightened
 
 
-@pytest.mark.req("L18.d.4.4.memory")
+@pytest.mark.req("L18.d.4.4.memory", "D16")
 def test_a_crash_in_memory_with_nobody_convicted_bisects_with_memory_slots():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     _until(fake, lambda spec, state: spec.stage is Stage.MEMORY)
@@ -731,7 +733,7 @@ def test_a_pause_is_stored_before_it_is_announced_with_no_core_left_in_test():
     assert not any(record.in_test for record in commit.stored.cores)
 
 
-@pytest.mark.req("L19.G5", "L19.G6_G7")
+@pytest.mark.req("L19.G5", "L19.G6_G7", "D22")
 @pytest.mark.parametrize(
     ("report", "streak", "reason"),
     [
@@ -835,3 +837,152 @@ def test_only_a_pass_at_a_first_walk_value_resets_the_first_value_failure_count(
     counted = replace(fake.state, streaks=replace(fake.state.streaks, start_failures=2))
     passed = WorkerReported(worker.token, Report(Group.PASS, 60.0))
     assert transition(counted, passed, fake.world()).state.streaks.start_failures == 2
+
+
+@pytest.mark.req("L22.G5")
+def test_a_thermal_stop_after_an_apparatus_failure_keeps_the_apparatus_streak():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _until(fake, _live1)
+    fake.deliver(Report(Group.APPARATUS, 5.0, detail="tool died"))
+    _next_worker(fake)
+    fake.deliver(Report(Group.THERMAL, 5.0))
+    assert (fake.state.streaks.apparatus, fake.state.streaks.thermal) == (1, 1)
+
+
+def _database_paused(fake: Fake) -> None:
+    _until(fake, _live1)
+    fake.faults.fail_commits = 1
+    fake.deliver()
+    assert fake.state.pause.reason is PauseReason.DATABASE
+
+
+@pytest.mark.req("L23.G9")
+def test_an_abort_after_a_database_failure_stores_aborted():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _database_paused(fake)
+    fake.post(Abort())
+    assert (fake.state.lifecycle, fake.db.status) == (Lifecycle.ABORTED, "aborted")
+
+
+@pytest.mark.req("L23.G9")
+def test_an_abort_while_the_database_still_fails_ends_aborted_in_memory_with_nothing_saved():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _database_paused(fake)
+    kept = fake.db
+    fake.faults.fail_commits = 1
+    fake.post(Abort())
+    assert fake.state.lifecycle is Lifecycle.ABORTED
+    assert fake.db == kept and kept.status != "aborted"
+
+
+def _q5_seen(fake: Fake, wanted) -> None:
+    _until(fake, wanted)
+    fake.deliver(Report(Group.ENVIRONMENT, 5.0, unblamed_corrected=True))
+    assert fake.state.flow.q5
+
+
+@pytest.mark.req("L27.e.reset")
+def test_the_unblamed_record_counts_start_empty_in_the_two_thread_class_and_in_live1():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2, k_2t=1)
+    _q5_seen(fake, lambda spec, state: spec.stage is Stage.SEARCH and spec.klass is Klass.T1)
+    two = _until(fake, lambda spec, state: spec.klass is Klass.T2)
+    assert two.spec.stage is Stage.SEARCH and fake.state.flow.q5 == ()
+    _q5_seen(fake, lambda spec, state: spec.stage is Stage.SEARCH and spec.klass is Klass.T2)
+    _until(fake, _live1)
+    assert fake.state.flow.q5 == ()
+
+
+@pytest.mark.req("L27.e.reset")
+def test_a_memory_requeue_keeps_the_live1_pass_s_unblamed_record_counts():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    worker = _until(fake, lambda spec, state: spec.stage is Stage.MEMORY)
+    seen = (((0, -3), 1),)
+    state = replace(fake.state, flow=replace(fake.state.flow, q5=seen, q5_others=(0,)))
+    report = Report(Group.SILICON, 30.0, named=(1,))
+    after = transition(state, WorkerReported(worker.token, report), fake.world()).state
+    assert after.flow.stage is Stage.LIVE1 and after.flow.live1.requeue == (1,)
+    assert (after.flow.q5, after.flow.q5_others) == (seen, (0,))
+
+
+@pytest.mark.req("EVENTS.user.dbfailed_start")
+def test_start_is_refused_while_a_session_is_held_after_a_database_failure():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _database_paused(fake)
+    unread = replace(fake.world(), held_session=None)
+    result = transition(fake.state, Start(fake.config, 2, 7, acknowledged=True), unread)
+    assert result.refused is not None and result.state == fake.state and result.effects == ()
+
+
+@pytest.mark.req("EVENTS.machine.paused_internal")
+def test_an_internal_error_while_paused_replaces_the_reason_with_internal():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _until(fake, _live1)
+    fake.deliver()
+    fake.post(PauseRequest())
+    assert fake.state.pause.reason is PauseReason.USER
+    fake.post(InternalError("boom"))
+    assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.INTERNAL)
+
+
+@pytest.mark.req("U15")
+def test_a_bisect_culprit_backs_off_one_step_and_its_entry_stage_runs_again_with_every_core():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _bisecting(fake)
+    fake.deliver()
+    slot = _next_worker(fake)
+    culprit, value = next((core, value) for core, value in slot.vector if value != 0)
+    others = {record.core: record.value for record in fake.state.cores if record.core != culprit}
+    fake.deliver(Report(Group.SILICON, 30.0))
+    record = fake.state.core(culprit)
+    assert (record.value, record.fb) == (value + 1, value)
+    again = _next_worker(fake)
+    assert again.stage is Stage.STEADY
+    assert dict(again.vector) == {culprit: value + 1, **others}
+
+
+@pytest.mark.req("D15")
+def test_a_resume_with_two_stored_incidents_and_no_new_one_does_not_pause():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _until(fake, _live1)
+    fake.deliver()
+    fake.post(PauseRequest())
+    fake.state = replace(fake.state, incidents=2)
+    fake.post(Resume(1))
+    assert (fake.state.lifecycle, fake.state.incidents) == (Lifecycle.RUNNING, 2)
+
+
+@pytest.mark.req("D16")
+def test_a_crash_in_a_bisect_slot_records_that_group_as_failing_and_raises_the_resume_streak():
+    fake = fresh(4, [-12, -6, -8, -4], 1, max_offset=-20, k_1t=2)
+    _until(fake, _steady)
+    fake.deliver(Report(Group.SILICON, 30.0, context=FailContext(steady=True, working=(0, 1, 2, 3), paused=False)))
+    _next_worker(fake)
+    fake.deliver()
+    _next_worker(fake)
+    group = fake.state.flow.bisect.queue[0]
+    assert len(group) == 2
+    streak = fake.state.resume_streak
+    _crashed_with(fake, None)
+    assert fake.state.flow.bisect.results[-1] == (group, False)
+    assert fake.state.resume_streak == streak + 1
+
+
+@pytest.mark.req("D16")
+def test_a_crash_in_soak_is_an_incident_that_leaves_the_resume_streak():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _until(fake, lambda spec, state: spec.stage is Stage.SOAK)
+    streak, incidents = fake.state.resume_streak, fake.state.incidents
+    _crashed_with(fake, None)
+    assert (fake.state.resume_streak, fake.state.incidents) == (streak, incidents + 1)
+
+
+@pytest.mark.req("D26")
+def test_a_pause_during_a_thermal_cooldown_cancels_the_schedule_and_keeps_the_core_owed():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    spec = _until(fake, lambda spec, state: spec.stage is Stage.SEARCH).spec
+    fake.deliver(Report(Group.THERMAL, 5.0))
+    assert isinstance(fake.state.slot, Waiting) and fake.state.slot.cool_below_c is not None
+    _, effects = _recording(fake)
+    fake.post(PauseRequest())
+    assert (fake.state.pause.reason, fake.state.flow.owed) == (PauseReason.USER, spec.core)
+    assert any(isinstance(effect, CancelSchedule) for effect in effects) and fake.timer is None

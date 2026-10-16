@@ -2592,8 +2592,7 @@ proof = "built"
 [[requirement]]
 id = "L22.G5"
 statement = "A THERMAL during an apparatus retry goes to L20 with the apparatus streak unchanged"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L22.h"
@@ -2628,8 +2627,7 @@ proof = "built"
 [[requirement]]
 id = "L23.G9"
 statement = "Abort after a database failure tries to store aborted; if that fails, ABORTED in memory, not saved"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L23.G10"
@@ -2836,8 +2834,7 @@ proof = "built"
 [[requirement]]
 id = "L27.e.reset"
 statement = "A class change (a LIVE1 pass is its own class) resets the counters"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L28.a"
@@ -2987,8 +2984,7 @@ proof = "built"
 [[requirement]]
 id = "EVENTS.user.dbfailed_start"
 statement = "Start while a session is held after a database failure is refused"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "EVENTS.user.superseded"
@@ -3008,8 +3004,7 @@ proof = "built"
 [[requirement]]
 id = "EVENTS.machine.paused_internal"
 statement = "An internal error in a pause replaces the reason with INTERNAL"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "RESIDENCY"
@@ -3059,8 +3054,7 @@ proof = "built"
 [[requirement]]
 id = "U15"
 statement = "After Bisect finds the culprit of an all-core failure, the culprit backs off one step and the whole entry stage runs again with every core (D90)"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "U16"
@@ -3601,14 +3595,12 @@ task = "S3"
 [[requirement]]
 id = "D15"
 statement = "L18 step 7 pauses P(INCIDENTS) only when this pass's incident reached K19"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "D16"
 statement = "The flow rule per loop: all-core stages a FAIL of kind crash, a Bisect group its FAIL, LIVE1 Bisect over the live cores, MEMORY Bisect with its slot, SOAK an incident; a flow-rule FAIL raises the streak, a void or incident does not"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "D16.shaper"
@@ -3639,8 +3631,7 @@ proof = "built"
 [[requirement]]
 id = "D22"
 statement = "A THERMAL in PAUSING adds 1 to the thermal streak and gives P(THERMAL) past 3"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "D23"
@@ -3660,8 +3651,7 @@ proof = "built"
 [[requirement]]
 id = "D26"
 statement = "A Pause during an L20 cooldown takes the global L19 rule"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "D28"
@@ -3708,8 +3698,7 @@ proof = "built"
 [[requirement]]
 id = "D37"
 statement = "The 15 s wait runs before a test of a different core than the last; an immediate repeat runs with no wait"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "D38"
@@ -3752,8 +3741,7 @@ task = "S4"
 [[requirement]]
 id = "D41"
 statement = "The 1T lane runs on the core's first CPU, except core 0, which runs on its second"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "D42"
