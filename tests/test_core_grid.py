@@ -41,6 +41,35 @@ def _grid(topo=None):
     return CoreGridWidget(topo)
 
 
+def _unread_ccd_topo():
+    topo = _topo(ccds=2)
+    topo.cores[2] = PhysicalCore(core_id=2, ccd=None, ccx=None, logical_cpus=(2, 10))
+    return topo
+
+
+@pytest.mark.req("T23.window.ccd")
+def test_cores_whose_ccd_was_not_read_come_last_under_ccd_unread():
+    from corecycler.gui.widgets.core_grid import ccd_groups
+
+    grouped = [(heading, [core.core_id for core in cores]) for heading, cores in ccd_groups(_unread_ccd_topo())]
+    assert grouped == [("CCD 0", [0, 1, 3]), ("CCD 1", [4, 5, 6, 7]), ("CCD unread", [2])]
+
+
+@pytest.mark.req("T23.window.ccd")
+def test_the_grid_and_the_monitor_head_an_unread_ccd_as_unread():
+    from PySide6.QtWidgets import QLabel
+
+    from corecycler.gui.monitor_tab import MonitorTab
+    from tests._sensors import FakeSensors
+
+    grid = _grid(_unread_ccd_topo())
+    monitor = MonitorTab(FakeSensors(), False, topology=_unread_ccd_topo())
+    for widget in (grid, monitor):
+        headings = [label.text() for label in widget.findChildren(QLabel) if label.text().startswith("CCD ")]
+        assert headings[-1] == "CCD unread"
+    assert grid._cells[2].ccd is None
+
+
 class TestGrid:
     def test_dual_ccd_builds_a_cell_per_core(self):
         grid = _grid(_topo(ccds=2))

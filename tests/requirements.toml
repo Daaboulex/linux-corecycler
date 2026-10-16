@@ -4770,6 +4770,11 @@ statement = "Every list History, the auto-resume and corecycler status read hold
 proof = "built"
 
 [[requirement]]
+id = "T23.window.ccd"
+statement = "A core's temperature is its own CCD's reading or none: the core grid and the recorded telemetry sample never take Tctl or CCD 0's reading for a core whose CCD was not read, and the grid and the Monitor head such cores CCD unread, after the read CCDs (scratch/design/t23-monitor-memory-window.md, Window and Monitor)."
+proof = "built"
+
+[[requirement]]
 id = "T23.curve.zero"
 statement = "Set all to 0 names every core its per-core fallback could not set to 0 in a Write failed warning; a fallback that set every core warns nothing (scratch/design/t23-curve-history.md defect 7)."
 proof = "built"

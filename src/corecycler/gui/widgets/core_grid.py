@@ -11,7 +11,17 @@ from corecycler.gui.style import duration_str, font_mono, scheduler_phase_label,
 
 if TYPE_CHECKING:
     from corecycler.engine.scheduler import CoreTestStatus
-    from corecycler.engine.topology import CPUTopology
+    from corecycler.engine.topology import CPUTopology, PhysicalCore
+
+
+def ccd_groups(topology: CPUTopology) -> list[tuple[str, list[PhysicalCore]]]:
+    """The cores by CCD in CCD order, each group with its heading; cores whose CCD was not read come last."""
+    groups: dict[int | None, list[PhysicalCore]] = {}
+    for core in sorted(topology.cores.values(), key=lambda c: c.core_id):
+        groups.setdefault(core.ccd, []).append(core)
+    ordered = sorted(groups.items(), key=lambda group: (group[0] is None, group[0]))
+    return [(f"CCD {'unread' if ccd is None else ccd}", cores) for ccd, cores in ordered]
+
 
 CELL_HEIGHT_NORMAL = 22
 CELL_HEIGHT_ACTIVE = 38
@@ -179,30 +189,17 @@ class CoreGridWidget(QWidget):
             elif item.layout():
                 self._clear_layout(item.layout())
 
-        ccd_groups: dict[int, list[int]] = {}
-        for core in sorted(topology.cores.values(), key=lambda c: c.core_id):
-            ccd = core.ccd if core.ccd is not None else 0
-            ccd_groups.setdefault(ccd, []).append(core.core_id)
-
-        for ccd_idx in sorted(ccd_groups.keys()):
-            core_ids = ccd_groups[ccd_idx]
-
-            has_vcache = any(topology.cores[cid].has_vcache for cid in core_ids if cid in topology.cores)
-            vcache_str = " (V-Cache)" if has_vcache else ""
-            ccd_label = QLabel(f"CCD {ccd_idx}{vcache_str}")
+        for heading, cores in ccd_groups(topology):
+            vcache_str = " (V-Cache)" if any(core.has_vcache for core in cores) else ""
+            ccd_label = QLabel(f"{heading}{vcache_str}")
             ccd_label.setFont(font_mono(8, bold=True))
             ccd_label.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 1px 4px;")
             ccd_label.setFixedHeight(18)
             self._layout.addWidget(ccd_label)
 
-            for core_id in core_ids:
-                core_info = topology.cores.get(core_id)
-                cell = CoreCell(
-                    core_id=core_id,
-                    ccd=ccd_idx,
-                    has_vcache=core_info.has_vcache if core_info else False,
-                )
-                self._cells[core_id] = cell
+            for core in cores:
+                cell = CoreCell(core_id=core.core_id, ccd=core.ccd, has_vcache=core.has_vcache)
+                self._cells[core.core_id] = cell
                 self._layout.addWidget(cell)
 
         self._layout.addStretch()

@@ -614,12 +614,24 @@ class TestElapsedWatchdog:
     @pytest.mark.req("T22.peaks")
     def test_the_peaks_keep_the_highest_reading_and_skip_an_unread_one(self, window):
         window._active_test_core = 0
-        for clocks, tctl in (({0: 4500.0, 8: 4500.0}, 72.0), ({0: 4400.0, 8: 4400.0}, 65.0), ({}, None)):
-            window._sensors.give(tctl=tctl)
+        for clocks, tccd in (({0: 4500.0, 8: 4500.0}, 72.0), ({0: 4400.0, 8: 4400.0}, 65.0), ({}, None)):
+            window._sensors.give(tctl=tccd, tccd=() if tccd is None else ((0, tccd),))
             window._ticker.clocks.clocks = clocks
             window._feed_core_grid_telemetry(window._ticker.read([]))
         peaks = window._core_telemetry[0]
         assert (peaks["max_freq"], peaks["max_temp"]) == (4500.0, 72.0)
+
+    @pytest.mark.req("T23.window.ccd")
+    def test_a_core_whose_own_ccd_was_not_read_records_none_never_tctl_or_ccd_0(self, window):
+        window._logger = MagicMock()
+        window._active_test_core = 0
+        window._sensors.give(tctl=65.0, tccd=((1, 59.0),))
+        window._feed_core_grid_telemetry(window._ticker.read([]))
+        assert window._logger.record_telemetry_sample.call_args.args[2] is None
+        window._topology.cores[0] = replace(window._topology.cores[0], ccd=None)
+        window._sensors.give(tctl=65.0, tccd=((0, 72.0),))
+        window._feed_core_grid_telemetry(window._ticker.read([]))
+        assert window._logger.record_telemetry_sample.call_args.args[2] is None
 
     def test_a_core_with_no_temperature_read_records_none_not_zero(self, window):
         window._sensors.give()

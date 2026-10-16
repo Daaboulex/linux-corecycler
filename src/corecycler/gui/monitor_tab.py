@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from corecycler.gui.style import theme
 from corecycler.gui.widgets.charts import LiveChart
+from corecycler.gui.widgets.core_grid import ccd_groups
 from corecycler.monitor.frequency import fastest, read_max_frequency
 
 MAX_FREQ_HISTORY = 60  # 1 minute at 1s
@@ -362,16 +363,9 @@ class MonitorTab(QWidget):
         self._per_core_bars.clear()
 
         if self._topology:
-            # group by CCD
-            ccd_groups: dict[int, list] = {}
-            for core in sorted(self._topology.cores.values(), key=lambda c: c.core_id):
-                ccd = core.ccd if core.ccd is not None else 0
-                ccd_groups.setdefault(ccd, []).append(core)
-
-            for ccd_idx in sorted(ccd_groups.keys()):
-                cores = ccd_groups[ccd_idx]
+            for heading, cores in ccd_groups(self._topology):
                 vcache_str = " (V-Cache)" if any(c.has_vcache for c in cores) else ""
-                header = QLabel(f"CCD {ccd_idx}{vcache_str}")
+                header = QLabel(f"{heading}{vcache_str}")
                 header.setFont(QFont("monospace", 8, QFont.Weight.Bold))
                 header.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 1px 4px;")
                 header.setFixedHeight(16)

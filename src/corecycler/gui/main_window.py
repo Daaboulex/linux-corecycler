@@ -762,7 +762,7 @@ class MainWindow(QMainWindow):
         stretch_pct = tick.stretch.get(core_info.logical_cpus[0])
         core_watts = tick.core_watts.get(core_info.logical_cpus[0])
         reading = tick.sensed
-        temp = dict(reading.tccd).get(core_info.ccd if core_info.ccd is not None else 0, reading.tctl)
+        temp = None if core_info.ccd is None else dict(reading.tccd).get(core_info.ccd)
         core_vcore = self._sensors.vcore(reading)
 
         self._core_grid.update_core_telemetry(
