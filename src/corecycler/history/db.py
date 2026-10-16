@@ -17,7 +17,7 @@ from compression import zstd
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from corecycler.config.paths import data_dir, hand_back
 
@@ -26,12 +26,12 @@ if TYPE_CHECKING:
 
 DEFAULT_DB_PATH = data_dir() / "history" / "history.db"
 
-# Legacy location of root-owned history data from sudo runs.
 LEGACY_ROOT_DB = Path("/root/.local/share/corecycler/history/history.db")
 
 log = logging.getLogger(__name__)
 
 SAMPLE_BLOCK_S = 10.0
+_SECOND_WRITER_WAIT_S = 5.0
 INCREMENTAL_VACUUM = 2
 SAMPLE_BLOCK_OPTIONS = {zstd.CompressionParameter.compression_level: 19, zstd.CompressionParameter.checksum_flag: 1}
 SAMPLE_LISTS = ("clocks", "tccd", "volts", "watts", "cores")
@@ -86,7 +86,7 @@ def adopt_legacy_root_db(db: HistoryDB, root_db: Path = LEGACY_ROOT_DB) -> dict[
         if not root_db.exists():
             return None
         if root_db.resolve() == db._db_path.resolve():
-            return None  # HOME really is /root (no SUDO_USER) — same file
+            return None
     except OSError:
         return None
     counts = db.merge_from(root_db)
@@ -99,23 +99,17 @@ def adopt_legacy_root_db(db: HistoryDB, root_db: Path = LEGACY_ROOT_DB) -> dict[
     return counts
 
 
-# ---------------------------------------------------------------------------
-# Record dataclasses
-# ---------------------------------------------------------------------------
-
-
 @dataclass(slots=True)
 class RunRecord:
     id: int | None = None
-    started_at: str = ""  # ISO 8601 UTC
+    started_at: str = ""
     finished_at: str | None = None
-    status: str = "running"  # running, completed, stopped, crashed
+    status: Literal["running", "completed", "stopped", "crashed"] = "running"
     cpu_model: str = ""
     physical_cores: int = 0
     logical_cpus: int = 0
     ccds: int = 0
     is_x3d: bool = False
-    # test settings snapshot (JSON blob)
     backend: str = ""
     stress_mode: str = ""
     fft_preset: str = ""
@@ -126,10 +120,8 @@ class RunRecord:
     idle_stability_test: float = 0.0
     max_temperature: float = 95.0
     settings_json: str = "{}"
-    # tuning context (v2)
     context_id: int | None = None
     bios_version: str = ""
-    # summary (filled on finish)
     total_cores: int = 0
     cores_passed: int = 0
     cores_failed: int = 0
@@ -145,7 +137,7 @@ class CoreResultRecord:
     cycle: int = 0
     started_at: str = ""
     finished_at: str | None = None
-    passed: bool | None = None  # None while running
+    passed: bool | None = None
     error_message: str | None = None
     error_type: str | None = None
     elapsed_seconds: float = 0.0
@@ -160,8 +152,10 @@ class CoreResultRecord:
 class EventRecord:
     id: int | None = None
     run_id: int = 0
-    timestamp: str = ""  # ISO 8601 UTC
-    event_type: str = ""  # core_start, core_finish, error, phase_change, thermal, stall, cycle, info
+    timestamp: str = ""
+    event_type: Literal[
+        "", "core_start", "core_finish", "error", "phase_change", "thermal", "stall", "cycle", "info"
+    ] = ""
     core_id: int | None = None
     message: str = ""
     details_json: str | None = None
@@ -186,7 +180,7 @@ class TuningContextRecord:
     created_at: str = ""
     bios_version: str = ""
     co_offsets_json: str = "{}"
-    co_hash: str = ""  # identity hash of CO offsets + power limits (v13+)
+    co_hash: str = ""
     pbo_scalar: float | None = None
     boost_limit_mhz: int | None = None
     notes: str = ""
@@ -201,7 +195,7 @@ class TelemetrySample:
     core_id: int = 0
     timestamp: str = ""
     freq_mhz: float | None = None
-    effective_max_mhz: float | None = None  # scaling_max_freq — boost ceiling for clock stretch detection
+    effective_max_mhz: float | None = None
     temp_c: float | None = None
     vcore_v: float | None = None
 
@@ -220,11 +214,6 @@ class JournalRow:
     written_at: str
 
 
-# ---------------------------------------------------------------------------
-# HistoryDB
-# ---------------------------------------------------------------------------
-
-
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
@@ -236,7 +225,7 @@ class HistoryDB:
         if str(self._db_path) != ":memory:":
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self.__conn = sqlite3.connect(str(self._db_path), autocommit=True)
+        self.__conn = sqlite3.connect(str(self._db_path), autocommit=True, timeout=_SECOND_WRITER_WAIT_S)
         try:
             self.__conn.row_factory = sqlite3.Row
             mode = self.__conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
@@ -247,11 +236,7 @@ class HistoryDB:
                 )
             self.__conn.execute("PRAGMA synchronous=FULL")
             self.__conn.execute("PRAGMA foreign_keys=ON")
-            # Sudo and non-sudo runs share ONE database; a second writer must wait
-            # for the WAL lock instead of failing with "database is locked".
-            self.__conn.execute("PRAGMA busy_timeout=5000")
             self.__conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
-            # Fail closed on a corrupted file BEFORE migrations touch it.
             check = self.__conn.execute("PRAGMA quick_check").fetchone()[0]
             if check != "ok":
                 raise RuntimeError(
@@ -269,10 +254,6 @@ class HistoryDB:
     def _hand_back_files(self) -> None:
         for path in (self._db_path, *(self._db_path.with_name(self._db_path.name + end) for end in ("-wal", "-shm"))):
             hand_back(path)
-
-    # ------------------------------------------------------------------
-    # Schema
-    # ------------------------------------------------------------------
 
     def _shrink(self) -> None:
         conn = self.__conn
@@ -578,7 +559,6 @@ CREATE INDEX IF NOT EXISTS idx_co_journal_proven ON tuner_co_journal(session_id,
         + _DDL_TUNER_BOOTS
     ).replace("__SCHEMA_VERSION__", str(SCHEMA_VERSION))
 
-    # Migration from v1 to v2
     _DDL_MIGRATE_V2_TABLES = """\
 CREATE TABLE IF NOT EXISTS tuning_contexts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -605,7 +585,6 @@ CREATE INDEX IF NOT EXISTS idx_context_hash ON tuning_contexts(co_hash, bios_ver
             ],
         )
 
-    # Migration from v2 to v3 — add tuner tables
     _DDL_MIGRATE_V3 = """\
 CREATE TABLE IF NOT EXISTS tuner_sessions (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -651,7 +630,6 @@ CREATE INDEX IF NOT EXISTS idx_tuner_log_session ON tuner_test_log(session_id, c
 CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC);
 """
 
-    # Migration from v3 to v4 — add effective_max_mhz for clock stretch detection
     @staticmethod
     def _migrate_v4(conn: sqlite3.Connection) -> None:
         HistoryDB._add_columns(conn, "telemetry_samples", [("effective_max_mhz", "REAL")])
@@ -673,12 +651,10 @@ CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC);
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_context_unique_hash ON tuning_contexts(co_hash, bios_version)"
         )
 
-    # Migration from v5 to v6 — add baseline_offset for CO isolation during tuning
     @staticmethod
     def _migrate_v6(conn: sqlite3.Connection) -> None:
         HistoryDB._add_columns(conn, "tuner_core_states", [("baseline_offset", "INTEGER NOT NULL DEFAULT 0")])
 
-    # Migration from v6 to v7 — add backoff algorithm columns
     _DDL_MIGRATE_V7_COLUMNS = [
         ("backoff_mode", "INTEGER NOT NULL DEFAULT 0"),
         ("consecutive_backoff_fails", "INTEGER NOT NULL DEFAULT 0"),
@@ -699,8 +675,6 @@ CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC);
     @staticmethod
     def _migrate_v7(conn: sqlite3.Connection) -> None:
         for col_name, col_def in HistoryDB._DDL_MIGRATE_V7_COLUMNS:
-            # Skip ONLY the known partial-migration case (column present);
-            # any other ALTER failure must raise, not hide a broken schema.
             if not HistoryDB._column_exists(conn, "tuner_core_states", col_name):
                 conn.execute(f"ALTER TABLE tuner_core_states ADD COLUMN {col_name} {col_def}")
 
@@ -731,9 +705,6 @@ CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC);
     def _migrate_v10(conn: sqlite3.Connection) -> None:
         HistoryDB._add_columns(conn, "tuner_core_states", [("thermal_aborts", "INTEGER DEFAULT 0")])
 
-    # v10 -> v11: CO write-ahead journal (crash-attributable SMU writes) +
-    # resume-crash circuit-breaker counter on the session. The ADD COLUMN is
-    # wrapped (like v7/v8) so a re-run or partial migration cannot fail.
     @staticmethod
     def _migrate_v11(conn: sqlite3.Connection) -> None:
         if not HistoryDB._column_exists(conn, "tuner_sessions", "resume_crash_streak"):
@@ -751,12 +722,6 @@ CREATE TABLE IF NOT EXISTS tuner_co_journal (
 """
         )
 
-    # v11 -> v12: rebuild tuner_core_states into the canonical (fresh-DDL)
-    # shape. The v9/v10 ALTERs added crash_count/crash_cooldown/thermal_aborts/
-    # cumulative_test_time/hardening_tier_index as NULLABLE, so a migrated
-    # database was structurally different from a fresh one (and could hold
-    # NULLs the code papers over with `or 0`). One canonical schema everywhere;
-    # tests/test_history_db.py::TestFreshEqualsMigrated enforces it stays that way.
     _DDL_MIGRATE_V12 = """\
 CREATE TABLE tuner_core_states_v12 (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -801,9 +766,6 @@ DROP TABLE tuner_core_states;
 ALTER TABLE tuner_core_states_v12 RENAME TO tuner_core_states;
 """
 
-    # v12 -> v13: power-limit capture on tuning contexts (PPT/TDC/EDC are part
-    # of the stability environment), crash-hunt bookkeeping on sessions, and
-    # peak clock stretch preserved per test instead of only inside fail text.
     @staticmethod
     def _migrate_v13(conn: sqlite3.Connection) -> None:
         HistoryDB._add_columns(
@@ -821,9 +783,6 @@ ALTER TABLE tuner_core_states_v12 RENAME TO tuner_core_states;
         )
         HistoryDB._add_columns(conn, "tuner_test_log", [("peak_stretch_pct", "REAL")])
 
-    # v13 -> v14: validation progress survives reboots and app restarts, so a
-    # back-off or crash never restarts the whole multi-core validation from
-    # stage 1.
     @staticmethod
     def _migrate_v14(conn: sqlite3.Connection) -> None:
         HistoryDB._add_columns(
@@ -838,9 +797,6 @@ ALTER TABLE tuner_core_states_v12 RENAME TO tuner_core_states;
             ],
         )
 
-    # v14 -> v15: the tuner narrative becomes durable — every log line the
-    # engine emits lands in tuner_events, so a session's story survives the
-    # terminal and can be replayed on resume.
     _DDL_MIGRATE_V15 = """\
 CREATE TABLE IF NOT EXISTS tuner_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1016,17 +972,9 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         31: _migrate_v31,
     }
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _now_iso() -> str:
         return datetime.now(UTC).isoformat()
-
-    # ------------------------------------------------------------------
-    # Runs
-    # ------------------------------------------------------------------
 
     def create_run(self, run: RunRecord) -> int:
         """Insert a new run record. Returns the run id."""
@@ -1151,10 +1099,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             total_seconds=row["total_seconds"],
         )
 
-    # ------------------------------------------------------------------
-    # Core results
-    # ------------------------------------------------------------------
-
     def insert_core_result(self, rec: CoreResultRecord) -> int:
         if not rec.started_at:
             rec.started_at = self._now_iso()
@@ -1275,10 +1219,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             max_vcore_v=row["max_vcore_v"],
         )
 
-    # ------------------------------------------------------------------
-    # Events
-    # ------------------------------------------------------------------
-
     def insert_event(self, event: EventRecord) -> int:
         if not event.timestamp:
             event.timestamp = self._now_iso()
@@ -1324,10 +1264,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             details_json=row["details_json"],
         )
 
-    # ------------------------------------------------------------------
-    # Telemetry
-    # ------------------------------------------------------------------
-
     def insert_telemetry_block(self, samples: list[TelemetrySample]) -> None:
         runs = {sample.run_id for sample in samples}
         if len(runs) != 1:
@@ -1345,10 +1281,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             TelemetrySample(run_id=run_id, **taken) for (data,) in blocks.fetchall() for taken in _unpack_samples(data)
         )
         return [sample for sample in samples if core_id is None or sample.core_id == core_id]
-
-    # ------------------------------------------------------------------
-    # Tuning contexts
-    # ------------------------------------------------------------------
 
     def create_context(self, ctx: TuningContextRecord) -> int:
         """Insert a new tuning context. Returns the context id.
@@ -1382,7 +1314,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         if cur.lastrowid and cur.rowcount > 0:
             ctx.id = cur.lastrowid
             return ctx.id
-        # Row already existed (concurrent insert) — fetch it
         existing = self.get_context_by_hash(ctx.co_hash, ctx.bios_version)
         if existing:
             ctx.id = existing.id
@@ -1432,10 +1363,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             tdc_limit_a=row["tdc_limit_a"],
             edc_limit_a=row["edc_limit_a"],
         )
-
-    # ------------------------------------------------------------------
-    # Tuner sessions
-    # ------------------------------------------------------------------
 
     def next_tuner_session_id(self) -> int:
         row = self.__conn.execute(
@@ -1712,10 +1639,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             (kernel_read_ns, self._now_iso(), session_id),
         )
 
-    # ------------------------------------------------------------------
-    # CO write-ahead journal + resume-crash circuit breaker
-    # ------------------------------------------------------------------
-
     def journal_co_intent(
         self, session_id: int, core_id: int, value: int, survived: bool, *, boot_id: str, mono_ns: int
     ) -> int:
@@ -1885,8 +1808,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         ).fetchall()
         return [dict(r) for r in rows]
 
-    # Hard silicon bounds for any Curve Optimizer offset (Zen generations use
-    # at most [-60, +30]; anything outside is corruption, not a tuning value).
     _CO_SANE_RANGE = (-100, 100)
 
     def context_sessions(self, context_id: int) -> list[int]:
@@ -1911,15 +1832,6 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         """Internal: raw SQL access for testing. Not for application code."""
         return self.__conn.execute(sql, params)
 
-    # ------------------------------------------------------------------
-    # Maintenance
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Merging another history database (one-database guarantee)
-    # ------------------------------------------------------------------
-
-    # Per-table copy columns (id excluded) and which columns remap to new ids.
     _MERGE_TABLES: tuple[tuple[str, dict[str, str]], ...] = (
         ("runs", {"context_id": "tuning_contexts"}),
         ("tuner_sessions", {"context_id": "tuning_contexts", "parent_session_id": "tuner_sessions"}),

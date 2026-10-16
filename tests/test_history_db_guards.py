@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 import time
 
 import pytest
@@ -94,6 +95,20 @@ class TestOpenGuards:
             HistoryDB(path)
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):
             opened[0].execute("SELECT 1")
+
+    def test_a_second_writer_waits_for_the_lock_instead_of_failing(self, tmp_path):
+        path = tmp_path / "history.db"
+        db = HistoryDB(path)
+        holder = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+        holder.execute("BEGIN IMMEDIATE")
+        release = threading.Timer(0.3, holder.execute, ("COMMIT",))
+        release.start()
+        try:
+            assert db.create_run(RunRecord(cpu_model="waited")) > 0
+        finally:
+            release.join()
+            holder.close()
+            db.close()
 
     def test_a_database_that_cannot_use_wal_is_refused_and_closed(self, tmp_path, monkeypatch):
         opened = []
