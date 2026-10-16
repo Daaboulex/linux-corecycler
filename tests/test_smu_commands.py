@@ -107,6 +107,10 @@ class TestDetectGeneration:
 
 
 class TestGetCommands:
+    def test_zen_2_offers_no_curve_optimizer_and_no_range_for_one(self):
+        matisse = get_commands(CPUGeneration.ZEN2_MATISSE)
+        assert (matisse.has_co, matisse.co_range) == (False, (0, 0))
+
     def test_zen2_matisse(self):
         cmds = get_commands(CPUGeneration.ZEN2_MATISSE)
         assert cmds is not None
