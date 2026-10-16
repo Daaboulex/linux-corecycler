@@ -2233,8 +2233,7 @@ proof = "built"
 [[requirement]]
 id = "L17.G10"
 statement = "A refused final write reverts to baseline and pauses P(PROFILE_APPLY) at FINALIZE; Resume only applies the profile"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L17.G11"
@@ -2339,8 +2338,7 @@ proof = "built"
 [[requirement]]
 id = "L18.d.4.4.allcore"
 statement = "Flow rule in STEADY, TRANSIENT, a TIGHTEN item, ENDURANCE: a FAIL of kind crash classed by its tail"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L18.d.4.4.bisect"
@@ -2355,8 +2353,7 @@ proof = "built"
 [[requirement]]
 id = "L18.d.4.4.memory"
 statement = "Flow rule in MEMORY: Bisect with the MEMORY slot spec"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L18.d.4.4.soak"
@@ -2438,8 +2435,7 @@ proof = "built"
 [[requirement]]
 id = "L18.e.G11"
 statement = "C8 failing reloads states, then P(DATABASE)"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L18.g"
@@ -2449,8 +2445,7 @@ proof = "built"
 [[requirement]]
 id = "L19.c"
 statement = "The paused status is written before the announcement and clears in_test"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L19.d.inflight"
@@ -2480,14 +2475,12 @@ proof = "built"
 [[requirement]]
 id = "L19.G5"
 statement = "A THERMAL report in PAUSING adds 1 to the thermal streak; past 3 P(THERMAL), else P(USER) with the retry owed"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L19.G6_G7"
 statement = "An apparatus report in PAUSING adds 1 to the streak, then P(USER), or P(APPARATUS) at the limit"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L19.G8"
@@ -2497,8 +2490,7 @@ proof = "built"
 [[requirement]]
 id = "L19.h"
 statement = "While paused the knobs are at baseline and in_test is 0, so a reboot gives no flow-rule verdict and no incident"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L20.a"
@@ -2514,8 +2506,7 @@ task = "T29"
 [[requirement]]
 id = "L20.d.percore"
 statement = "In per-core loops the tested core goes back to baseline during the cooldown and walk_seconds takes the partial seconds"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L20.d.allcore"
@@ -2540,8 +2531,7 @@ proof = "built"
 [[requirement]]
 id = "L20.G6_G7"
 statement = "Apparatus during a thermal retry goes to L22 with the thermal streak unchanged"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L20.cap"
@@ -2551,8 +2541,7 @@ proof = "built"
 [[requirement]]
 id = "L20.h"
 statement = "No worker is in flight and in_test is 0 during the cooldown, so a dirty end there is an incident"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L21.a"
@@ -2562,14 +2551,12 @@ proof = "built"
 [[requirement]]
 id = "L21.c"
 statement = "The count lives in memory, fresh at resume; K15 = 0 means off"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L21.d"
 statement = "A PASS at a first walk value resets the count; every other verdict leaves it, so a stock re-check PASS never resets it"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L22.a"
