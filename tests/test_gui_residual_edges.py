@@ -424,3 +424,72 @@ class TestSmuTabWithoutTopology:
         monkeypatch.setattr(st, "QMessageBox", MagicMock())
         tab = st.SMUTab(topology=None)
         assert tab._core_row_map() == {}
+
+
+MEMORY_CONTROLS = {
+    "Refresh": "reads the DIMMs, their temperatures and the tools again",
+    "Run": "starts the chosen tool for the chosen minutes and locks Run, Duration and Tool",
+    "Stop": "asks the running tool to stop and says Stopping...",
+    "QTableCornerButton": "selects every cell of the DIMM table",
+}
+MEMORY_INPUTS = {"_stress_duration": "the minutes Run gives the tool", "_stress_tool": "the tool Run starts"}
+
+
+class TestMemoryContract:
+    @pytest.fixture
+    def tab(self, monkeypatch):
+        _qapp()
+        monkeypatch.setattr(mem, "SPD5118Reader", lambda: _spd(False))
+        monkeypatch.setattr(mem, "read_dimm_info", lambda: ([], DENIED))
+        monkeypatch.setattr(mem.tools.shutil, "which", lambda name: "/usr/bin/" + name)
+        return mem.MemoryTab(False)
+
+    @pytest.mark.req("T23.contract.memory")
+    def test_every_control_of_the_memory_tab_is_listed_with_its_reaction(self, tab):
+        from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QComboBox
+
+        assert {b.text() or b.metaObject().className() for b in tab.findChildren(QAbstractButton)} == set(
+            MEMORY_CONTROLS
+        )
+        inputs = {*tab.findChildren(QAbstractSpinBox), *tab.findChildren(QComboBox)}
+        assert inputs == {getattr(tab, name) for name in MEMORY_INPUTS}
+
+    @pytest.mark.req("T23.contract.memory")
+    @pytest.mark.parametrize("connected", [True, False])
+    def test_refresh_reads_the_dimms_only_through_its_connection(self, tab, monkeypatch, connected):
+        from PySide6.QtWidgets import QPushButton
+
+        refresh = next(b for b in tab.findChildren(QPushButton) if b.text() == "Refresh")
+        if not connected:
+            refresh.clicked.disconnect()
+        monkeypatch.setattr(mem, "read_dimm_info", lambda: (_dimms(), ""))
+        refresh.click()
+        assert (tab._dimm_table.rowCount() == 2) is connected
+
+    @pytest.mark.req("T23.contract.memory")
+    @pytest.mark.parametrize("connected", [True, False])
+    def test_run_starts_the_chosen_tool_for_the_chosen_minutes_only_through_its_connection(
+        self, tab, monkeypatch, connected
+    ):
+        made = MagicMock()
+        monkeypatch.setattr(mem, "_StressWorker", made)
+        tab._stress_tool.setCurrentText("stress-ng --vm")
+        tab._stress_duration.setValue(7)
+        if not connected:
+            tab._stress_btn.clicked.disconnect()
+        tab._stress_btn.click()
+        assert made.called is connected
+        if connected:
+            assert made.call_args.args[:2] == ("stress-ng --vm", 7)
+
+    @pytest.mark.req("T23.contract.memory")
+    @pytest.mark.parametrize("connected", [True, False])
+    def test_stop_asks_the_tool_to_stop_only_through_its_connection(self, tab, connected):
+        worker = MagicMock()
+        worker.isRunning.return_value = True
+        tab._stress_worker = worker
+        tab._stop_btn.setEnabled(True)
+        if not connected:
+            tab._stop_btn.clicked.disconnect()
+        tab._stop_btn.click()
+        assert worker.stop.called is connected
