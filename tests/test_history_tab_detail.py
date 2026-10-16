@@ -653,6 +653,19 @@ class TestDeleteSelected:
         assert not ask.called
         assert len(db.list_contexts()) == 1
 
+    @pytest.mark.req("T22.history.unjudged")
+    @pytest.mark.parametrize(("status", "shown"), [("running", "..."), ("crashed", "no verdict")])
+    def test_a_core_without_a_verdict_reads_running_only_while_its_run_runs(self, db, status, shown):
+        rid = _seed_run(db, "2026-07-20T10:00:00+00:00", status=status)
+        db.insert_core_result(
+            CoreResultRecord(run_id=rid, core_id=0, ccd=0, cycle=0, started_at="2026-07-20T10:00:00+00:00", passed=None)
+        )
+        tab = _tab(db)
+        tab._view_mode = tab.VIEW_ALL
+        tab.refresh()
+        tab._show_run_detail(_run_by_id(db, rid))
+        assert tab._core_results_table.item(0, 3).text() == shown
+
     def test_flat_view_deletes_the_selected_run(self, db):
         _seed_run(db, "2026-07-20T10:00:00+00:00")
         tab = _tab(db)

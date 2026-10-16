@@ -4795,6 +4795,11 @@ statement = "When the CPU's cores cannot be read, the Configuration tab says so 
 proof = "built"
 
 [[requirement]]
+id = "T22.history.unjudged"
+statement = "In History, a core with no verdict reads as still running only while its run is running; in a crashed or stopped run it reads no verdict (scratch/design/t23-curve-history.md defect 4)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

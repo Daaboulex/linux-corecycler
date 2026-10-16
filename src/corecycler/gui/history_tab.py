@@ -671,7 +671,8 @@ class HistoryTab(QWidget):
             if r.min_vcore_v is not None and r.max_vcore_v is not None:
                 vcore_str = f"{r.min_vcore_v:.4f}-{r.max_vcore_v:.4f}V"
 
-            result_text = "PASS" if r.passed else ("FAIL" if r.passed is not None else "...")
+            unjudged = "..." if run.status == "running" else "no verdict"
+            result_text = "PASS" if r.passed else ("FAIL" if r.passed is not None else unjudged)
             color_map = {"PASS": theme.COLOR_PASS, "FAIL": theme.COLOR_FAIL, "...": theme.COLOR_ACTIVE}
             result_color = color_map.get(result_text, theme.COLOR_MUTED)
 
