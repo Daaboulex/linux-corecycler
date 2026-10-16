@@ -5,19 +5,15 @@ closed on a truncated/garbage response rather than raise into its caller.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from unittest.mock import patch
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from corecycler.engine.detector import ErrorDetector, parse_kernel_records  # noqa: E402
-from corecycler.history.timefmt import format_local  # noqa: E402
-from corecycler.smu.commands import CPUGeneration, SMUCommandSet  # noqa: E402
-from corecycler.smu.driver import RyzenSMU  # noqa: E402
+from corecycler.engine.detector import ErrorDetector, parse_kernel_records
+from corecycler.history.timefmt import format_local
+from corecycler.smu.commands import CPUGeneration, SMUCommandSet
+from corecycler.smu.driver import RyzenSMU
 
 _ZEN5 = SMUCommandSet(
     generation=CPUGeneration.ZEN5_GRANITE_RIDGE,
@@ -40,10 +36,8 @@ class TestSmuPrimitiveFailsClosed:
         with patch("pathlib.Path.read_bytes", return_value=resp):
             r = smu._send_command(0x06, (0, 1, 2))
             assert isinstance(r.success, bool)
-            # A truncated response (< 24 bytes) must fail closed, never raise.
             if len(resp) < 24:
                 assert r.success is False
-            # And the higher-level CO read must not raise either.
             assert smu.get_co_offset(0) is None or isinstance(smu.get_co_offset(0), int)
 
 

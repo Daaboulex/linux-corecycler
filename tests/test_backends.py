@@ -26,10 +26,6 @@ from corecycler.engine.backends.mprime import FFT_RANGES, MODE_TO_CPU_FLAGS, Mpr
 from corecycler.engine.backends.stress_ng import StressNgBackend, _mode_to_method
 from corecycler.engine.backends.ycruncher import ALL_TESTS, MODE_TO_ALGORITHMS, YCruncherBackend
 
-# ===========================================================================
-# Base class tests
-# ===========================================================================
-
 
 class TestStressConfig:
     def test_defaults(self):
@@ -191,11 +187,6 @@ class TestBaseBackendBinaryResolution:
         assert list(tmp_path.iterdir()) == []
 
 
-# ===========================================================================
-# mprime backend tests
-# ===========================================================================
-
-
 _ZEN1_FLAGS = (
     "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht "
     "syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl nonstop_tsc cpuid pni pclmulqdq "
@@ -301,8 +292,6 @@ class TestMprimeBackend:
         assert FFTPreset.LARGE in presets
         assert FFTPreset.CUSTOM in presets
 
-    # --- prepare tests ---
-
     @pytest.mark.parametrize(
         "preset,expected_min,expected_max",
         [
@@ -340,7 +329,6 @@ class TestMprimeBackend:
         cfg = StressConfig(fft_preset=FFTPreset.CUSTOM, fft_min=None, fft_max=None)
         backend.prepare(tmp_path, cfg)
         content = (tmp_path / "local.txt").read_text()
-        # should use fallback (4, 8192)
         assert "MinTortureFFT=4" in content
         assert "MaxTortureFFT=8192" in content
 
@@ -414,8 +402,6 @@ class TestMprimeBackend:
         assert "ResultsFile" not in content
         assert "LogFile" not in content
 
-    # --- output findings ---
-
     @pytest.mark.parametrize(
         "output",
         [
@@ -454,8 +440,6 @@ class TestMprimeBackend:
     def test_clean_lines_find_nothing(self, output, tmp_path):
         assert MprimeBackend().findings(output + "\n", tmp_path) == ()
 
-    # --- results file ---
-
     def test_a_fatal_line_in_results_txt_is_a_computation_error(self, tmp_path):
         (tmp_path / "results.txt").write_text(
             "[Worker #1] Self-test 240K passed!\nFATAL ERROR: Rounding was 0.4999, expected less than 0.4\n"
@@ -493,11 +477,6 @@ class TestMprimeBackend:
         found = MprimeBackend().findings("FATAL ERROR: Rounding was 0.5", tmp_path)
         assert {signal.outcome for signal in found} == {Outcome.COMPUTATION, Outcome.UNVERIFIED}
         assert any("results.txt unreadable" in signal.text for signal in found)
-
-
-# ===========================================================================
-# stress-ng backend tests
-# ===========================================================================
 
 
 def _ng_summary(passed: str, failed: str, skipped: str, verdict: str) -> str:
@@ -589,8 +568,6 @@ class TestStressNgBackend:
         assert "--matrix" in cmd
         assert cmd[cmd.index("--matrix") + 1] == "3"
 
-    # --- findings ---
-
     @pytest.mark.parametrize(
         "line",
         [
@@ -672,11 +649,6 @@ class TestModeToMethod:
     )
     def test_mode_mapping(self, mode, expected):
         assert _mode_to_method(mode) == expected
-
-
-# ===========================================================================
-# y-cruncher backend tests
-# ===========================================================================
 
 
 _CAPTURED_PASS_OUTPUT = """\
@@ -1054,11 +1026,6 @@ class TestYCruncherModeMapping:
     def test_every_mode_names_only_tests_the_binary_offers(self):
         for algos in MODE_TO_ALGORITHMS.values():
             assert algos and set(algos) <= set(ALL_TESTS)
-
-
-# ===========================================================================
-# FFT_RANGES and MODE_TO_CPU_FLAGS constants tests
-# ===========================================================================
 
 
 class TestMprimeConstants:

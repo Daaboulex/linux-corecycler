@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import struct
 import sys
 import time
 from pathlib import Path
@@ -11,22 +10,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from corecycler.engine import containment
 from corecycler.engine.backends.base import StressBackend, StressConfig, StressMode
 from corecycler.engine.execution import Supervisor
 from corecycler.engine.topology import CPUTopology, PhysicalCore
-from corecycler.smu.commands import CPUGeneration, SMUCommandSet
 
 QT_INSTALLED = importlib.util.find_spec("PySide6") is not None
 if QT_INSTALLED:
     importlib.import_module("PySide6")
 
-# ---------------------------------------------------------------------------
-# Mock cpuinfo data for various CPU configurations
-# ---------------------------------------------------------------------------
 
 CPUINFO_DUAL_CCD_SMT = """\
 processor\t: 0
@@ -309,91 +303,12 @@ def _gen_cpuinfo(family: int, model: int, name: str, cores: list[tuple[int, int]
     return "\n".join(lines) + "\n"
 
 
-# Zen 1 Summit Ridge (1700) — family 23, model 1, 8 cores single CCD
-CPUINFO_ZEN1_SUMMIT_RIDGE = _gen_cpuinfo(
-    23,
-    0x01,
-    "AMD Ryzen 7 1700 Eight-Core Processor",
-    [(i, 0) for i in range(8)],
-)
-
-# Zen+ Pinnacle Ridge (2600) — family 23, model 8, 6 cores
-CPUINFO_ZEN_PLUS = _gen_cpuinfo(
-    23,
-    0x08,
-    "AMD Ryzen 5 2600 Six-Core Processor",
-    [(i, 0) for i in range(6)],
-)
-
-# Zen 3 Cezanne APU (5700G) — family 25, model 0x50, 8 cores single CCD
-CPUINFO_ZEN3_CEZANNE_APU = _gen_cpuinfo(
-    25,
-    0x50,
-    "AMD Ryzen 7 5700G with Radeon Graphics",
-    [(i, 0) for i in range(8)],
-)
-
-# Zen 4 X3D single-CCD (7800X3D) — family 25, model 0x61, 8 cores
-CPUINFO_ZEN4_7800X3D = _gen_cpuinfo(
-    25,
-    0x61,
-    "AMD Ryzen 7 7800X3D 8-Core Processor",
-    [(i, 0) for i in range(8)],
-)
-
-# Zen 4 X3D dual-CCD (7950X3D) — family 25, model 0x61, 16 cores (8+8)
-CPUINFO_ZEN4_7950X3D = _gen_cpuinfo(
-    25,
-    0x61,
-    "AMD Ryzen 9 7950X3D 16-Core Processor",
-    [(i, 0) for i in range(8)] + [(i, 0) for i in range(8)],
-)
-
-# Zen 4 Phoenix APU (7840U) — family 25, model 0x74, 8 cores
-CPUINFO_ZEN4_PHOENIX_APU = _gen_cpuinfo(
-    25,
-    0x74,
-    "AMD Ryzen 7 7840U w/ Radeon 780M Graphics",
-    [(i, 0) for i in range(8)],
-)
-
-# Zen 4 Storm Peak ThreadRipper (7980X) — family 25, model 0x18, 64 cores (8 CCDs)
-CPUINFO_ZEN4_STORM_PEAK = _gen_cpuinfo(
-    25,
-    0x18,
-    "AMD Ryzen Threadripper PRO 7980X 64-Core Processor",
-    [(i % 8, 0) for i in range(64)],
-)
-
-# Zen 5 harvested (9900X) — family 26, model 0x44, 12 cores (6+6)
-# Kernel renumbers: CCD0 cores 0-5, CCD1 cores 8-13 (skipping 6,7)
 CPUINFO_ZEN5_9900X_HARVESTED = _gen_cpuinfo(
     26,
     0x44,
     "AMD Ryzen 9 9900X 12-Core Processor",
     [(i, 0) for i in range(6)] + [(i, 0) for i in range(8, 14)],
 )
-
-# Zen 5 Strix Point APU — family 26, model 0x24, 12 cores
-CPUINFO_ZEN5_STRIX_POINT = _gen_cpuinfo(
-    26,
-    0x24,
-    "AMD Ryzen AI 9 HX 370",
-    [(i, 0) for i in range(12)],
-)
-
-# Zen 5 Shimada Peak ThreadRipper — family 26, different SMU cmds
-CPUINFO_ZEN5_SHIMADA_PEAK = _gen_cpuinfo(
-    26,
-    0x44,
-    "AMD Ryzen Threadripper 9980X 64-Core Processor",
-    [(i % 8, 0) for i in range(64)],
-)
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -452,8 +367,6 @@ def build_topology(
         finally:
             tmod.CPUINFO = orig_cpuinfo
 
-    # build PhysicalCore entries manually (since we skip sysfs)
-    # collect unique physical cores first, then assign CCDs
     core_lcpus: dict[int, tuple[int, ...]] = {}
     for lcpu in topo.logical_map.values():
         pc = lcpu.physical_core
@@ -477,17 +390,10 @@ def build_topology(
 def topo_dual_ccd_x3d():
     """Topology fixture: 8-core dual-CCD X3D with SMT (16 logical)."""
     topo = build_topology(CPUINFO_DUAL_CCD_SMT, num_ccds=2)
-    # assign CCD manually: cores 0-3 = CCD0, cores 4-7 = CCD1
     for pc in topo.cores.values():
         ccd = 0 if pc.core_id < 4 else 1
         object.__setattr__(pc, "ccd", ccd)
     return topo
-
-
-@pytest.fixture
-def topo_intel():
-    """Topology fixture: 2-core Intel with SMT (4 logical)."""
-    return build_topology(CPUINFO_INTEL_10CORE_SMT, num_ccds=1)
 
 
 @pytest.fixture
@@ -521,50 +427,6 @@ def mock_backend():
             self.prepared_dirs.append(work_dir)
 
     return ControllableMockBackend()
-
-
-@pytest.fixture
-def zen3_commands():
-    return SMUCommandSet(
-        generation=CPUGeneration.ZEN3_VERMEER,
-        set_co_cmd=0x35,
-        get_co_cmd=0x48,
-        set_all_co_cmd=0x36,
-        mailbox="mp1",
-        co_range=(-30, 30),
-        encoding_scheme="zen3",
-    )
-
-
-@pytest.fixture
-def zen5_commands():
-    return SMUCommandSet(
-        generation=CPUGeneration.ZEN5_GRANITE_RIDGE,
-        set_co_cmd=0x06,
-        get_co_cmd=0xD5,
-        set_all_co_cmd=0x07,
-        mailbox="rsmu",
-        co_range=(-60, 10),
-        encoding_scheme="zen4_5",
-        set_boost_limit_cmd=0x70,
-        get_boost_limit_cmd=0x6E,
-    )
-
-
-@pytest.fixture
-def mock_ryzen_smu_sysfs(tmp_path):
-    """Create a mock ryzen_smu_drv sysfs tree that responds to reads/writes."""
-    smu_dir = tmp_path / "ryzen_smu_drv"
-    smu_dir.mkdir()
-
-    # create sysfs files with default content
-    (smu_dir / "smu_args").write_bytes(struct.pack("<6I", 0, 0, 0, 0, 0, 0))
-    # status=1 means success
-    (smu_dir / "rsmu_cmd").write_bytes(struct.pack("<I", 1))
-    (smu_dir / "mp1_smu_cmd").write_bytes(struct.pack("<I", 1))
-    (smu_dir / "pm_table").write_bytes(b"")
-
-    return smu_dir
 
 
 @pytest.fixture(autouse=True)

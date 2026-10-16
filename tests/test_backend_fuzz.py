@@ -9,21 +9,18 @@ crashing offset.
 from __future__ import annotations
 
 import signal
-import sys
 from pathlib import Path
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from corecycler.engine.backends.base import LaneSignal, Outcome, OutcomeKind  # noqa: E402
-from corecycler.engine.backends.mprime import MprimeBackend  # noqa: E402
-from corecycler.engine.backends.stress_ng import StressNgBackend  # noqa: E402
-from corecycler.engine.backends.stressapptest import StressapptestBackend  # noqa: E402
-from corecycler.engine.backends.ycruncher import YCruncherBackend  # noqa: E402
-from corecycler.engine.execution import CPU_SIGNALS, exit_signal  # noqa: E402
+from corecycler.engine.backends.base import LaneSignal, Outcome, OutcomeKind
+from corecycler.engine.backends.mprime import MprimeBackend
+from corecycler.engine.backends.stress_ng import StressNgBackend
+from corecycler.engine.backends.stressapptest import StressapptestBackend
+from corecycler.engine.backends.ycruncher import YCruncherBackend
+from corecycler.engine.execution import CPU_SIGNALS, exit_signal
 
 _BACKENDS = [MprimeBackend, YCruncherBackend, StressNgBackend, StressapptestBackend]
 _NO_RESULTS_DIR = Path("/nonexistent-corecycler-fuzz")

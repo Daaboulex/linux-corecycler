@@ -58,7 +58,6 @@ def _run_one(backend: MprimeBackend, work_dir: Path, seconds: int = 12):
             cores_to_test=[0],
             stop_on_error=True,
             cycle_count=1,
-            # this machine is not the DUT — no thermal gating in the replay
             require_thermal_sensor=False,
             max_temperature=110.0,
         ),
@@ -93,8 +92,7 @@ class TestStaleResultsDisasterReplay:
         assert result.passed is False
         assert result.outcome is Outcome.COMPUTATION
         assert "FATAL ERROR" in result.detail
-        # caught by the 5 s live poll, not the 30 s deadline
-        assert result.duration_seconds < 15, (
+        assert result.duration_seconds < 3 * execution.OUTPUT_SCAN_INTERVAL, (
             f"error detected only after {result.duration_seconds:.1f}s — live polling is not working"
         )
 
@@ -103,7 +101,6 @@ class TestStaleResultsDisasterReplay:
         must PASS: the failed run's kept results.txt must not poison it."""
         work_dir = tmp_path / "work"
 
-        # Run 1: genuine failure (error in results.txt).
         fail_bin = _fake_mprime(
             exec_dir,
             """
@@ -119,7 +116,6 @@ class TestStaleResultsDisasterReplay:
         assert "FATAL ERROR" in first.detail
         assert list((work_dir / "core_0").iterdir()) == []
 
-        # Run 2: clean run in the SAME work dir.
         clean_bin = _fake_mprime(
             exec_dir,
             """
@@ -164,7 +160,6 @@ class TestUnreadableResultsFailsClosed:
         silent pass."""
         if os.geteuid() == 0:
             pytest.skip("root bypasses file permissions")
-        # the fake makes results.txt unreadable before the deadline kill
         fake = _fake_mprime(
             exec_dir,
             """
