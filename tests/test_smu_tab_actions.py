@@ -500,3 +500,85 @@ def test_each_shaper_box_sits_under_its_temperature_and_beside_its_band_and_the_
     assert right < tab.width() / 2
     widths = [tab._table.columnWidth(column) for column in range(tab._table.columnCount())]
     assert min(widths[2], widths[3]) > 2 * max(widths[0], widths[1])
+
+
+CURVE_CONTROLS = {
+    "Fill from CPU": "reads every core's value and the Shaper into the table and Value to set",
+    "Set changed": "after a yes, writes each core whose Value to set differs from the CPU, then reads them back",
+    "Set all to 0": "after a yes, sets every core to 0, one write per core when the bulk reset is refused",
+    "Remember current values": "keeps the readable cores' values and names them",
+    "Put remembered values back": "after a yes, writes the remembered values back and names the cores",
+    "Save values to file": "saves Value to set to the chosen file",
+    "Load values from file": "puts the chosen file's values into Value to set",
+    "Write Shaper": "after a yes, writes the Shaper grid and reads it back",
+    "Shaper to 0": "after a yes, writes every Shaper band as 0/0/0 and reads it back",
+    "QTableCornerButton": "Qt's, hidden with the row header, so nothing reaches it",
+}
+CURVE_INPUTS = {
+    "_spinboxes": "Value to set, one per core: what Set changed writes and Save values to file keeps",
+    "_shaper_spins": "the Shaper grid, five bands by three temperatures: what Write Shaper writes",
+}
+
+
+def _saved_to(monkeypatch, tmp_path):
+    import corecycler.gui.smu_tab as st
+    from corecycler.config import settings as settings_mod
+
+    dialog = MagicMock()
+    dialog.getSaveFileName.return_value = (str(tmp_path / "co.json"), "")
+    dialog.getOpenFileName.return_value = (str(tmp_path / "co.json"), "")
+    monkeypatch.setattr(st, "QFileDialog", dialog)
+    saved = []
+    monkeypatch.setattr(settings_mod, "save_co_profile", lambda offsets, path, **kw: saved.append(offsets))
+    monkeypatch.setattr(settings_mod, "load_co_profile", lambda path: {0: -7})
+    return saved
+
+
+CURVE_REACTIONS = {
+    "Fill from CPU": (lambda t, saved: None, lambda t, saved: t._smu.get_co_offset.called),
+    "Set changed": (
+        lambda t, saved: t._spinboxes[0].setValue(-20),
+        lambda t, saved: (0, -20) in [c.args for c in t._smu.set_co_offset.call_args_list],
+    ),
+    "Set all to 0": (lambda t, saved: None, lambda t, saved: t._smu.reset_all_co.called),
+    "Remember current values": (lambda t, saved: None, lambda t, saved: t._smu.backup_co_offsets.called),
+    "Put remembered values back": (lambda t, saved: None, lambda t, saved: t._smu.restore_co_offsets.called),
+    "Save values to file": (lambda t, saved: None, lambda t, saved: saved != []),
+    "Load values from file": (lambda t, saved: None, lambda t, saved: t._spinboxes[0].value() == -7),
+    "Write Shaper": (lambda t, saved: None, lambda t, saved: t._smu.set_curve_shaper.called),
+    "Shaper to 0": (
+        lambda t, saved: None,
+        lambda t, saved: ((0, 0, 0),) * 5 in [c.args[0] for c in t._smu.set_curve_shaper.call_args_list],
+    ),
+}
+
+
+@pytest.mark.req("T23.contract.curve")
+def test_every_control_of_the_curve_tuner_tab_is_listed_with_its_reaction(tab):
+    from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QComboBox
+
+    buttons = {b.text() or b.metaObject().className() for b in tab.findChildren(QAbstractButton)}
+    assert buttons == set(CURVE_CONTROLS)
+    spins = {*tab.findChildren(QAbstractSpinBox)}
+    assert spins == {*tab._spinboxes.values(), *(spin for row in tab._shaper_spins for spin in row)}
+    assert tab.findChildren(QComboBox) == []
+    assert set(CURVE_REACTIONS) == set(CURVE_CONTROLS) - {"QTableCornerButton"}
+
+
+@pytest.mark.req("T23.contract.curve")
+@pytest.mark.parametrize("connected", [True, False])
+@pytest.mark.parametrize("name", sorted(CURVE_REACTIONS))
+def test_a_curve_tuner_button_reacts_only_through_its_connection(tab, monkeypatch, tmp_path, name, connected):
+    from PySide6.QtWidgets import QPushButton
+
+    tab._smu = _smu()
+    tab._smu.set_curve_shaper.return_value = None
+    saved = _saved_to(monkeypatch, tmp_path)
+    prepare, reacted = CURVE_REACTIONS[name]
+    prepare(tab, saved)
+    button = next(b for b in tab.findChildren(QPushButton) if b.text() == name)
+    button.setEnabled(True)
+    if not connected:
+        button.clicked.disconnect()
+    button.click()
+    assert bool(reacted(tab, saved)) is connected

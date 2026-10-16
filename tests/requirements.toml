@@ -4910,6 +4910,11 @@ statement = "Every control of the Memory tab is listed with its reaction (tests/
 proof = "built"
 
 [[requirement]]
+id = "T23.contract.curve"
+statement = "Every control of the Curve-Tuner tab is listed with its reaction (tests/test_smu_tab_actions.py CURVE_CONTROLS and CURVE_INPUTS) and the test fails on an unlisted or missing control; each button reacts only through its connection."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"
