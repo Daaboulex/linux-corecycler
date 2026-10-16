@@ -35,7 +35,6 @@ class ResultsTab(QWidget):
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        # summary bar
         summary_group = QGroupBox("Summary")
         summary_layout = QHBoxLayout(summary_group)
 
@@ -61,10 +60,8 @@ class ResultsTab(QWidget):
 
         layout.addWidget(summary_group)
 
-        # splitter: table + log
         splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # results table
         self._table = QTableWidget()
         self._table.setColumnCount(7)
         self._table.setHorizontalHeaderLabels(["Core", "CCD", "Status", "Errors", "Iterations", "Time", "Last Error"])
@@ -82,7 +79,6 @@ class ResultsTab(QWidget):
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         splitter.addWidget(self._table)
 
-        # error log
         log_group = QGroupBox("Test Log")
         log_layout = QVBoxLayout(log_group)
         self._log = QPlainTextEdit()
@@ -95,7 +91,7 @@ class ResultsTab(QWidget):
         splitter.setSizes([400, 200])
         layout.addWidget(splitter)
 
-        self._core_rows: dict[int, int] = {}  # core_id -> row index
+        self._row_by_core: dict[int, int] = {}
 
     def _show_no_summary(self) -> None:
         self._total_label.setText(f"Cores: {PENDING_VALUE}")
@@ -109,15 +105,15 @@ class ResultsTab(QWidget):
         self._show_no_summary()
         self._log.clear()
         self._table.setRowCount(len(core_statuses))
-        self._core_rows.clear()
+        self._row_by_core.clear()
 
         for row, (core_id, status) in enumerate(sorted(core_statuses.items())):
-            self._core_rows[core_id] = row
+            self._row_by_core[core_id] = row
             self._set_row(row, core_id, status)
 
     def update_core(self, core_id: int, status: CoreTestStatus) -> None:
         """Update a single core's row."""
-        row = self._core_rows.get(core_id)
+        row = self._row_by_core.get(core_id)
         if row is None:
             return
         self._set_row(row, core_id, status)

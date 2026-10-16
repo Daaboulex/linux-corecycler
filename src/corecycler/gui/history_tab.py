@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from collections import Counter
 from pathlib import Path
@@ -110,7 +111,7 @@ def coverage_text(coverage_json: str | None, core: int) -> str:
 class HistoryTab(QWidget):
     """Tab showing historical test runs grouped by tuning context."""
 
-    load_profile_requested = Signal(object)  # dict[int, int]
+    load_profile_requested = Signal(object, arguments=["offsets_by_core"])
 
     VIEW_GROUPED = "grouped"
     VIEW_ALL = "all"
@@ -334,7 +335,6 @@ class HistoryTab(QWidget):
             self._context_table.setVisible(False)
             self._populate_tuner_sessions()
             if self._tuner_sessions:
-                # the population opened the newest session's detail; clearing it would hide it again
                 return
         elif self._view_mode == self.VIEW_ALL:
             self._context_table.setVisible(False)
@@ -423,11 +423,11 @@ class HistoryTab(QWidget):
         row_count = len(self._contexts) + (1 if ungrouped else 0)
         self._context_table.setRowCount(row_count)
 
-        bios_changed_set: set[int] = set()
-        # contexts are newest first, so i + 1 is the older neighbour of i
-        for i in range(len(self._contexts) - 1):
-            if self._contexts[i].bios_version != self._contexts[i + 1].bios_version:
-                bios_changed_set.add(i)
+        bios_changed_set = {
+            i
+            for i, (newer, older) in enumerate(itertools.pairwise(self._contexts))
+            if newer.bios_version != older.bios_version
+        }
 
         row = 0
 

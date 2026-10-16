@@ -37,7 +37,7 @@ class TestResultsTab:
         tab = _tab()
         tab.init_cores(_statuses(4))
         tab.update_core(2, CoreTestStatus(core_id=2, state="passed", iterations=9))
-        assert tab._table.item(tab._core_rows[2], 4).text() == "9"
+        assert tab._table.item(tab._row_by_core[2], 4).text() == "9"
 
     def test_update_unknown_core_is_noop(self):
         tab = _tab()
@@ -54,7 +54,7 @@ class TestResultsTab:
         tab = _tab()
         tab.init_cores(_statuses(1))
         tab.update_core(0, CoreTestStatus(core_id=0, state="failed", errors=3, last_error="rounding"))
-        row = tab._core_rows[0]
+        row = tab._row_by_core[0]
         assert tab._table.item(row, 3).text() == "3"
         assert tab._table.item(row, 6).toolTip() == "rounding"
 
