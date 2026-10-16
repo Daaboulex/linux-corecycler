@@ -30,6 +30,7 @@ from tests._tuner_world import (
     PauseRequest,
     Report,
     Resume,
+    SessionState,
     fresh,
     start,
 )
@@ -57,6 +58,7 @@ FAULTS = (
     "continue",
     "restart",
     "outside",
+    "reengage",
 )
 
 
@@ -157,6 +159,10 @@ def moves(fake: Fake, budget: dict[str, int]) -> list[tuple[str, dict[str, int]]
             or (s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is not PauseReason.RESUMING)
         ):
             continue
+        if fault == "reengage" and not (
+            s.lifecycle is Lifecycle.QUARANTINED and fake.db is not None and fake.db.status == "quarantined"
+        ):
+            continue
         if fault in ("continue", "restart") and not (
             s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is PauseReason.SETUP_CHANGED
         ):
@@ -205,6 +211,9 @@ def act(fake: Fake, move: str) -> None:
             fake.post(ContinueOnSetup(fake.db.session_id + 1))
         case "restart":
             fake.post(RestartOnSetup(fake.db.session_id + 1, acknowledged=True))
+        case "reengage":
+            fake.state = SessionState()
+            fake.post(Resume(fake.db.session_id, reengage=True))
         case "pause":
             fake.post(PauseRequest())
         case "abort":
@@ -241,6 +250,7 @@ class Survey:
     states: int = 0
     leaves: dict[str, int] = field(default_factory=dict)
     deepest: int = 0
+    taken: dict[str, int] = field(default_factory=dict)
 
 
 def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
@@ -272,6 +282,7 @@ def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
                 raise Broken(f"a future ends at rest in {leaf}, neither completed nor quarantined: {path}")
             continue
         for move, after in options:
+            survey.taken[move] = survey.taken.get(move, 0) + 1
             child = clone(node)
             try:
                 act(child, move)
@@ -318,7 +329,7 @@ def tiny(cores: int, edges: list[int], domains: int = 1, **cfg) -> Fake:
 BALANCED = (("platform profile", "balanced"),)
 BIOS_A = (("bios", "A"),)
 
-ONE_OF_EACH = {fault: 1 for fault in FAULTS if fault not in ("profile", "setup", "outside")}
+ONE_OF_EACH = {fault: 1 for fault in FAULTS if fault not in ("profile", "setup", "outside", "reengage")}
 
 
 @pytest.mark.parametrize(
@@ -415,6 +426,15 @@ def test_no_future_resumes_over_a_co_another_tool_wrote_while_the_session_was_pa
     budget = {"outside": 2, "pause": 2, "crash": 1, "dbfail": 1, "total": 3}
     survey = explore(tiny(2, [-3, -2], 2), budget, cap=2_000_000)
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+@pytest.mark.req("L18.b.quarantine", "L18.d.8.reengage")
+def test_every_future_of_a_quarantined_session_re_engaged_on_proven_ground_reaches_a_rest():
+    fake = tiny(2, [-6, -4], 2, max_offset=-6, starts=((0, -5), (1, -5)))
+    survey = explore(fake, {"crash": 3, "reengage": 1, "total": 4}, cap=2_000_000)
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert survey.taken["reengage"] > 0
     assert "completed" in survey.leaves
 
 
