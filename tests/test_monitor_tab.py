@@ -43,6 +43,64 @@ def _tab(topo=None):
     return MonitorTab(Sensors(Path("/nonexistent")), False, topology=topo or _topo())
 
 
+class TestCoreFreqBarColumns:
+    @pytest.mark.req("T22.monitor.bars")
+    @pytest.mark.parametrize(
+        ("usage", "text", "busy"), [(None, " --%", False), (50.0, " 50%", False), (51.0, " 51%", True)]
+    )
+    def test_a_core_reads_busy_only_above_half_load(self, usage, text, busy):
+        from corecycler.gui.style import theme
+
+        bar = _bar()
+        bar.update_data(5000.0, usage_pct=usage)
+        assert bar._columns()[0] == (text, theme.COLOR_PASS if busy else theme.COLOR_MUTED)
+
+    @pytest.mark.req("T22.monitor.bars")
+    @pytest.mark.parametrize(
+        ("usage", "stretch", "shown"), [(6.0, 2.0, "S: 2.0%"), (5.0, 2.0, ""), (None, 2.0, ""), (6.0, None, "")]
+    )
+    def test_stretch_shows_only_for_a_loaded_core_with_a_reading(self, usage, stretch, shown):
+        bar = _bar()
+        bar.update_data(5000.0, usage_pct=usage, stretch_pct=stretch)
+        assert bar._columns()[2][0].strip() == shown
+
+    @pytest.mark.req("T22.monitor.bars")
+    @pytest.mark.parametrize(("freq", "ratio"), [(None, 0.0), (3000.0, 0.5), (7000.0, 1.0)])
+    def test_the_bar_fills_by_the_clock_against_its_scale(self, freq, ratio):
+        bar = _bar()
+        bar.update_data(freq)
+        assert bar._fill_ratio() == pytest.approx(ratio)
+
+    @pytest.mark.req("T22.monitor.bars")
+    @pytest.mark.parametrize(
+        ("stretch", "colour"),
+        [(1.0, "COLOR_MUTED_DARK"), (1.1, "COLOR_WARN_SOFT"), (3.0, "COLOR_WARN_SOFT"), (3.1, "CHART_TEMP")],
+    )
+    def test_stretch_colours_change_just_above_1_and_3_percent(self, stretch, colour):
+        from corecycler.gui.style import theme
+
+        bar = _bar()
+        bar.update_data(5000.0, usage_pct=90.0, stretch_pct=stretch)
+        assert bar._columns()[2][1] == getattr(theme, colour)
+
+    @pytest.mark.req("T22.monitor.bars")
+    @pytest.mark.parametrize(
+        ("temp", "colour"),
+        [(69.0, "COLOR_MUTED"), (70.0, "COLOR_WARN_SOFT"), (84.0, "COLOR_WARN_SOFT"), (85.0, "CHART_TEMP")],
+    )
+    def test_temperature_colours_change_at_70_and_85(self, temp, colour):
+        from corecycler.gui.style import theme
+
+        bar = _bar()
+        bar.update_data(5000.0, temp=temp)
+        assert bar._columns()[4] == (f"{temp:3.0f}C", getattr(theme, colour))
+
+    def test_any_positive_clock_is_shown(self):
+        from corecycler.gui.monitor_tab import CoreFreqBar
+
+        assert CoreFreqBar._freq_text(1.0, 0) == "1MHz"
+
+
 class TestCoreFreqBar:
     def test_idle_readout_has_no_false_ceiling(self):
         from corecycler.gui.monitor_tab import CoreFreqBar

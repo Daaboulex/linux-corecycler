@@ -4875,6 +4875,11 @@ statement = "A Monitor chart's heading shows no value until one is read and agai
 proof = "built"
 
 [[requirement]]
+id = "T22.monitor.bars"
+statement = "A Monitor per-core bar shows its own CCD's temperature or none, never Tctl in its place; a usage or clock not read shows as unread, never 0% or the last tick's value (scratch/design/t23-monitor-memory-window.md, the facts list)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

@@ -107,3 +107,24 @@ class TestMonitorUpdateMatrix:
         tab._topology = None
         tab.on_tick(_tick(watts=50.0))
         assert tab._per_core_bars
+
+
+@pytest.mark.req("T22.monitor.bars")
+def test_a_bar_shows_its_own_ccd_temperature_or_none_never_tctl_in_its_place():
+    sensors = FakeSensors(tctl=65.0, tccd=((0, None), (1, 59.0)))
+    tab = _tab(sensors)
+    tab.on_tick(_tick(sensors=sensors))
+    assert (tab._per_core_bars[0]._temp, tab._per_core_bars[2]._temp) == (None, 59.0)
+
+
+@pytest.mark.req("T22.monitor.bars")
+def test_a_bar_with_no_usage_or_clock_read_shows_none_not_zero_or_its_old_values():
+    from dataclasses import replace
+
+    tab = _tab()
+    tab.on_tick(_tick())
+    assert tab._per_core_bars[0]._freq == 5000.0
+    tab.on_tick(replace(_tick(), clocks={}, usage={}))
+    bar = tab._per_core_bars[0]
+    assert (bar._freq, bar._usage_pct) == (None, None)
+    assert bar._freq_text(bar._freq, bar._eff_max) == "  -- MHz"
