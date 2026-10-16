@@ -4782,6 +4782,11 @@ statement = "A new run starts the Results tab with no summary, rows or log from 
 proof = "built"
 
 [[requirement]]
+id = "T23.curve.remember"
+statement = "Remember current values names the cores it kept and those it could not read; Put remembered values back names the cores it wrote, never every core (scratch/design/t23-curve-history.md defect 6)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

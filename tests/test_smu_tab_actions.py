@@ -278,6 +278,23 @@ class TestBackupRestore:
         tab._restore_co()
         tab._smu.restore_co_offsets.assert_not_called()
 
+    @pytest.mark.req("T23.curve.remember")
+    def test_remember_and_put_back_name_the_cores_they_cover_and_the_unread_ones(self, tab):
+        import corecycler.gui.smu_tab as st
+
+        tab._smu = _smu(backup={0: -10, 1: -5, 3: -7}, restore=(True, []))
+        tab._backup_co()
+        assert st.QMessageBox.information.call_args.args[1:] == (
+            "Values remembered",
+            "The values of cores [0, 1, 3] are kept until the app closes. Cores [2] could not be read and are not "
+            "kept. Put remembered values back writes them again.",
+        )
+        tab._restore_co()
+        assert st.QMessageBox.information.call_args.args[1:] == (
+            "Values put back",
+            "Cores [0, 1, 3] have their remembered values again.",
+        )
+
     def test_restore_success_rereads(self, tab):
         tab._smu = _smu(restore=(True, []))
         tab._restore_co()

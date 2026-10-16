@@ -53,6 +53,7 @@ class SMUTab(QWidget):
         self._smu: RyzenSMU | None = None
         self._commands: SMUCommandSet | None = None
         self._tuner_active = False
+        self._remembered: list[int] = []
         self._reader = QTimer(self)
         self._reader.timeout.connect(self._read_now)
         self._setup_ui()
@@ -446,11 +447,14 @@ class SMUTab(QWidget):
 
         num_cores = len(self._topology.cores)
         backup = self._smu.backup_co_offsets(num_cores)
+        self._remembered = sorted(backup)
         self._refresh_writes()
+        unread = sorted(set(self._topology.cores) - set(backup))
+        missed = f"Cores {unread} could not be read and are not kept. " if unread else ""
         QMessageBox.information(
             self,
             "Values remembered",
-            f"The values of {len(backup)} cores are kept until the app closes. "
+            f"The values of cores {self._remembered} are kept until the app closes. {missed}"
             "Put remembered values back writes them again.",
         )
 
@@ -469,7 +473,8 @@ class SMUTab(QWidget):
         ok, failed = self._smu.restore_co_offsets()
         if ok:
             self._fill_from_cpu()
-            QMessageBox.information(self, "Values put back", "Every core has its remembered value again.")
+            again = f"Cores {self._remembered} have their remembered values again."
+            QMessageBox.information(self, "Values put back", again)
         else:
             QMessageBox.warning(self, "Write failed", f"These cores could not be put back: {failed}.")
             self._fill_from_cpu()
