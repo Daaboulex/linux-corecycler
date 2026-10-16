@@ -127,8 +127,7 @@ task = "T29"
 [[requirement]]
 id = "C20"
 statement = "The 15 s wait runs before a test of a different core, never before an immediate repeat"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "C21"
@@ -886,8 +885,7 @@ task = "T29"
 [[requirement]]
 id = "G3.backoff"
 statement = "Evidence on an owned non-zero core backs it off in place (1 step corrected, K12 uncorrected), sets FB, never counts as a crash, marks dirty after Search"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "G3.search_zero"
@@ -897,8 +895,7 @@ proof = "built"
 [[requirement]]
 id = "G3.zero_elsewhere"
 statement = "Evidence on a core at 0 outside Search is incident +1, P(INCIDENTS) at K19"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "G3.held"
@@ -1543,8 +1540,7 @@ proof = "built"
 [[requirement]]
 id = "L04.G5"
 statement = "THERMAL: c back to baseline during the cooldown, walk_seconds += the partial seconds, the same spec retried"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L04.G6"
@@ -1624,8 +1620,7 @@ proof = "built"
 [[requirement]]
 id = "L05.G5_G8"
 statement = "THERMAL, apparatus, environment and pause leave the count unchanged"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L05.g"
@@ -1650,8 +1645,7 @@ proof = "built"
 [[requirement]]
 id = "L06.first"
 statement = "The 2T class starts at its sequence's first position"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L07.a"
@@ -1701,14 +1695,12 @@ proof = "built"
 [[requirement]]
 id = "L07.G6"
 statement = "A corrected unblamed record in LIVE1 feeds L27 (Q5 applies in LIVE1)"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L07.G5_G8"
 statement = "THERMAL, apparatus and pause keep the slot and the index"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L07.f"
@@ -1748,8 +1740,7 @@ proof = "built"
 [[requirement]]
 id = "L08.d.intest"
 statement = "in_test is set on every selected core for an all-core run"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L08.d.after"
@@ -1769,14 +1760,12 @@ proof = "built"
 [[requirement]]
 id = "L08.G2.transient"
 statement = "A transient-class FAIL in STEADY runs the transient rule and re-runs"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L08.G2.mce"
 statement = "An OWN_CORE_MCE naming an owned non-zero core backs it off in place (1 or 3 steps) with FB and re-runs; a held core gives P(HELD_KNOB)"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L08.G2.named"
@@ -1791,8 +1780,7 @@ proof = "built"
 [[requirement]]
 id = "L08.G4"
 statement = "A crash with nobody convicted: the telemetry tail is a FAIL of kind crash classed by its context"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L08.G8"
@@ -3795,8 +3783,7 @@ proof = "built"
 [[requirement]]
 id = "D43"
 statement = "Q5 applies in LIVE1"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "D44"
