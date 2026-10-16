@@ -40,7 +40,7 @@ class TestRunLogger:
     ``TestWorker`` signals, and discard it in ``_on_worker_finished()``.
     """
 
-    __test__ = False  # Not a pytest test class
+    __test__ = False
 
     def __init__(
         self,
@@ -53,9 +53,8 @@ class TestRunLogger:
         self._start_time = time.monotonic()
         self._unwritten: list[TelemetrySample] = []
         self._unwritten_since = self._start_time
-        self._active_result_ids: dict[int, int] = {}  # core_id → core_results.id
+        self._result_id_by_core: dict[int, int] = {}
 
-        # Capture tuning context (CO offsets, BIOS version, PBO state)
         ctx = capture_system_context(smu=smu, num_cores=topology.physical_cores)
         context_id = find_or_create_context(db, ctx)
         log.info(
@@ -65,7 +64,6 @@ class TestRunLogger:
             ctx.co_hash[:12] if ctx.co_hash else "none",
         )
 
-        # snapshot settings as JSON
         settings_json = json.dumps(asdict(profile), default=str)
 
         run = RunRecord(
@@ -95,10 +93,6 @@ class TestRunLogger:
     def run_id(self) -> int:
         return self._run_id
 
-    # ------------------------------------------------------------------
-    # Signal handlers (wire to TestWorker signals)
-    # ------------------------------------------------------------------
-
     def on_core_started(self, core_id: int, cycle: int) -> None:
         rec = CoreResultRecord(
             run_id=self._run_id,
@@ -106,7 +100,7 @@ class TestRunLogger:
             cycle=cycle,
         )
         result_id = self._db.insert_core_result(rec)
-        self._active_result_ids[core_id] = result_id
+        self._result_id_by_core[core_id] = result_id
 
         self._db.insert_event(
             EventRecord(
@@ -118,7 +112,7 @@ class TestRunLogger:
         )
 
     def on_core_finished(self, core_id: int, result: StressResult) -> None:
-        result_id = self._active_result_ids.pop(core_id, None)
+        result_id = self._result_id_by_core.pop(core_id, None)
         if result_id is None:
             return
 
@@ -149,7 +143,7 @@ class TestRunLogger:
         )
 
     def on_status_updated(self, core_id: int, status: CoreTestStatus) -> None:
-        result_id = self._active_result_ids.get(core_id)
+        result_id = self._result_id_by_core.get(core_id)
         if result_id is None:
             return
         self._db.update_core_result(
@@ -168,15 +162,13 @@ class TestRunLogger:
 
     def on_test_completed(self, results_json: str) -> None:
         self.write_telemetry()
-        # Fail closed: a logging slot must never crash the GUI on a malformed or
-        # unexpectedly-shaped results payload.
         try:
             results = json.loads(results_json)
         except json.JSONDecodeError, TypeError:
             return
         if not isinstance(results, dict):
             return
-        tested = {k: v for k, v in results.items() if v}  # only cores with results
+        tested = {k: v for k, v in results.items() if v}
         total = len(tested)
         passed = sum(
             1
@@ -210,10 +202,6 @@ class TestRunLogger:
                 message="Test stopped by user",
             )
         )
-
-    # ------------------------------------------------------------------
-    # Telemetry recording (called from _poll_core_telemetry)
-    # ------------------------------------------------------------------
 
     def record_telemetry_sample(
         self,
@@ -254,9 +242,8 @@ class TestRunLogger:
         min_vcore_v: float | None = None,
         max_vcore_v: float | None = None,
     ) -> None:
-        result_id = self._active_result_ids.get(core_id)
+        result_id = self._result_id_by_core.get(core_id)
         if result_id is None:
-            # Core already finished — look up the last result for this core
             return
         kwargs = {}
         if peak_freq_mhz is not None:
@@ -269,10 +256,6 @@ class TestRunLogger:
             kwargs["max_vcore_v"] = max_vcore_v
         if kwargs:
             self._db.update_core_result(result_id, **kwargs)
-
-    # ------------------------------------------------------------------
-    # Event helpers
-    # ------------------------------------------------------------------
 
     def record_phase_change(self, core_id: int, phase: str) -> None:
         self._db.insert_event(

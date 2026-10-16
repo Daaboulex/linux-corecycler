@@ -60,7 +60,7 @@ class TestSettingsCoProfile:
 class TestLoggerEarlyReturns:
     def _logger(self) -> TestRunLogger:
         lg = TestRunLogger.__new__(TestRunLogger)
-        lg._active_result_ids = {}
+        lg._result_id_by_core = {}
         return lg
 
     def test_on_status_updated_unknown_core_returns(self):

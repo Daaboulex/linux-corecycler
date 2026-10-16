@@ -14,11 +14,6 @@ if TYPE_CHECKING:
     from corecycler.history.db import HistoryDB
 
 
-# ---------------------------------------------------------------------------
-# JSON export
-# ---------------------------------------------------------------------------
-
-
 def export_run_json(
     db: HistoryDB,
     run_id: int,
@@ -36,7 +31,6 @@ def export_run_json(
         "core_results": [asdict(r) for r in db.get_core_results(run_id)],
     }
 
-    # Include tuning context if available
     if run.context_id is not None:
         ctx = db.get_context(run.context_id)
         if ctx is not None:
@@ -67,10 +61,6 @@ def export_run_json_file(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
 
-
-# ---------------------------------------------------------------------------
-# CSV export
-# ---------------------------------------------------------------------------
 
 _CSV_COLUMNS = [
     "run_id",
@@ -135,11 +125,6 @@ def export_runs_bulk_csv_file(db: HistoryDB, run_ids: list[int], path: Path) -> 
     text = export_runs_bulk_csv(db, run_ids)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 
 def _build_csv(run, results) -> str:
