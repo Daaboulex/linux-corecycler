@@ -422,7 +422,7 @@ class TestDeterministicSlotMapping:
         assert calls == [], "set_topology sent SMU traffic for an unambiguous topology"
         assert smu.core_map_error is None
         assert smu.core_map == {c: (c // 8, c % 8) for c in cores}
-        assert smu._topology_ccd == {c: c // 8 for c in cores}
+        assert smu._legacy_ccd_by_core == {c: c // 8 for c in cores}
 
     def test_set_topology_does_not_probe_unambiguous(self, smu_dir, zen5_cmds):
         """A provably-physical numbering must be mapped with NO SMU command."""

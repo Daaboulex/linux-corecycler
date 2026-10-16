@@ -45,22 +45,12 @@ def smu_problem(sysfs: Path = SYSFS_BASE) -> str | None:
     return None
 
 
-# Sane bounds for PBO power/current limits (PPT watts, TDC/EDC amps). The firmware
-# enforces the true per-chip cap; this only rejects the unambiguously malformed:
-# non-positive (a negative wraps to a huge unsigned limit once encoded as value*1000,
-# effectively removing the cap) or absurdly large (a caller/UI bug). No real or
-# near-future AMD CPU approaches 2000 W / 2000 A.
 _PBO_LIMIT_MIN: int = 1
 _PBO_LIMIT_MAX: int = 2000
 
-# Physical core slots per CCD on every CO-capable generation this tool models
-# (Zen 3/4/5 classic layouts: one 8-core CCX per CCD). Dense-CCX APU dies
-# (Zen 4c/5c, >8 cores per L3 group) fall outside this model and keep the
-# legacy core_id-derived addressing.
 _SLOTS_PER_CCD: int = 8
 
-# CCD stride inside the core-disable fuse address space: CCD n's fuse sits at
-# ``core_fuse_addr + (n << 25)`` (ZenStates-Core Cpu.cs, ryzen_monitor).
+# Per-CCD fuse stride, from ZenStates-Core Cpu.cs and ryzen_monitor.
 _CCD_FUSE_SHIFT: int = 25
 
 
@@ -102,7 +92,6 @@ class SMUResponse:
     args: tuple[int, ...]
     raw: bytes
 
-    # Whether ryzen_smu driver is available
     smu_available: bool = False
 
 
@@ -128,15 +117,9 @@ class RyzenSMU:
         self.sysfs = sysfs_path
         self._smu_lock = threading.Lock()
         self._backup: dict[int, int] | None = None
-        # Legacy CCD map {core_id: ccd_index} from L3 topology, used only when
-        # no discovered core map exists (set_topology never called, or a dense
-        # layout outside the 8-slot-per-CCD model). The full addressing truth
-        # lives in _core_map.
-        self._topology_ccd: dict[int, int] | None = None
-        # Discovered addressing map {core_id: (ccd_index, physical_slot)} and
-        # its fail-closed error state. See set_topology.
-        self._core_map: dict[int, tuple[int, int]] | None = None
-        self._core_map_error: str | None = None
+        self._legacy_ccd_by_core: dict[int, int] | None = None
+        self._ccd_slot_by_core: dict[int, tuple[int, int]] | None = None
+        self._ccd_slot_error: str | None = None
         self._known_core_ids: list[int] | None = None
         self._offline_hint = ""
 
@@ -181,20 +164,20 @@ class RyzenSMU:
         Zen 4c/5c CCX dies), keeps the legacy core_id-derived addressing
         bit-for-bit.
         """
-        self._topology_ccd = {}
+        self._legacy_ccd_by_core = {}
         for core_id, core_info in topology.cores.items():
             if core_info.ccd is not None:
-                self._topology_ccd[core_id] = core_info.ccd
-        self._core_map = None
-        self._core_map_error = "core map discovery in progress"
+                self._legacy_ccd_by_core[core_id] = core_info.ccd
+        self._ccd_slot_by_core = None
+        self._ccd_slot_error = "core map discovery in progress"
         ids = sorted(topology.cores)
         self._known_core_ids = ids or None
         if not ids or not self.commands.has_co or not self.commands.uniform_8core_ccds:
-            self._core_map_error = None
+            self._ccd_slot_error = None
             return
         groups = self._group_cores(topology, ids)
         if groups is None:
-            self._core_map_error = None
+            self._ccd_slot_error = None
             return
         fully_online = getattr(topology, "cpus_all_online", True) is not False
         self._offline_hint = "" if fully_online else " (some present CPUs are offline — online all cores for CO tuning)"
@@ -207,11 +190,11 @@ class RyzenSMU:
                     slots = self._fuse_group_slots(encode_ccd, len(group_ids))
                 core_map.update((cid, (encode_ccd, slot)) for cid, slot in zip(group_ids, slots, strict=True))
         except CoreMapError as exc:
-            self._core_map_error = str(exc)
+            self._ccd_slot_error = str(exc)
             log.error("SMU core mapping unavailable: %s", exc)
             return
-        self._core_map = core_map
-        self._core_map_error = None
+        self._ccd_slot_by_core = core_map
+        self._ccd_slot_error = None
 
     @staticmethod
     def _derive_group_slots(group_ids: list[int], holes_trusted: bool) -> list[int] | None:
@@ -346,12 +329,12 @@ class RyzenSMU:
     @property
     def core_map(self) -> dict[int, tuple[int, int]] | None:
         """Discovered {core_id: (ccd, slot)} addressing map, if any."""
-        return dict(self._core_map) if self._core_map is not None else None
+        return dict(self._ccd_slot_by_core) if self._ccd_slot_by_core is not None else None
 
     @property
     def core_map_error(self) -> str | None:
         """Why per-core CO is refused, or None when addressing is usable."""
-        return self._core_map_error
+        return self._ccd_slot_error
 
     def _co_address(self, core_id: int) -> tuple[int | None, int | None] | None:
         """(ccd, slot) for encode_co_arg, or None when the write must refuse.
@@ -359,11 +342,11 @@ class RyzenSMU:
         None means either the map discovery failed (core_map_error holds why)
         or the caller named a core the discovered map does not contain.
         """
-        if self._core_map_error is not None:
+        if self._ccd_slot_error is not None:
             return None
-        if self._core_map is not None:
-            return self._core_map.get(core_id)
-        ccd = self._topology_ccd.get(core_id) if self._topology_ccd else None
+        if self._ccd_slot_by_core is not None:
+            return self._ccd_slot_by_core.get(core_id)
+        ccd = self._legacy_ccd_by_core.get(core_id) if self._legacy_ccd_by_core else None
         return (ccd, None)
 
     @staticmethod
@@ -385,10 +368,6 @@ class RyzenSMU:
                 return False, f"No write permission on {p} — run as root or fix udev rules"
         return True, "OK"
 
-    # ------------------------------------------------------------------
-    # Backup / restore
-    # ------------------------------------------------------------------
-
     def backup_co_offsets(self, num_cores: int) -> dict[int, int]:
         """Save current CO offsets for all cores before modification.
 
@@ -400,7 +379,6 @@ class RyzenSMU:
         This backup guards against accidental *within-session* mistakes only.
         """
         offsets = self.get_all_co_offsets(num_cores)
-        # Only store successfully-read values
         self._backup = {k: v for k, v in offsets.items() if v is not None}
         log.info("Backed up CO offsets for %d cores: %s", len(self._backup), self._backup)
         return dict(self._backup)
@@ -427,10 +405,6 @@ class RyzenSMU:
     def has_backup(self) -> bool:
         """Return True if a backup has been taken this session."""
         return self._backup is not None
-
-    # ------------------------------------------------------------------
-    # Low-level SMU communication
-    # ------------------------------------------------------------------
 
     def _get_cmd_filename(self) -> str:
         if self.commands.mailbox == "mp1":
@@ -460,9 +434,6 @@ class RyzenSMU:
         args_path = self.sysfs / "smu_args"
         if len(args) < 6:
             args = args + (0,) * (6 - len(args))
-        # Fail closed: an out-of-range arg, a permission error, or a truncated
-        # sysfs response must return a failed SMUResponse, never raise or write a
-        # coerced wrong value. A failed pack means we never write at all.
         try:
             packed_args = struct.pack("<6I", *args[:6])
             with self._held(args_path):
@@ -484,10 +455,6 @@ class RyzenSMU:
         """
         return self._mailbox(self.sysfs / "rsmu_cmd", cmd, args, "RSMU")
 
-    # ------------------------------------------------------------------
-    # CO offset read/write
-    # ------------------------------------------------------------------
-
     def get_co_offset(self, core_id: int) -> int | None:
         """Read the current CO offset for a physical core.
 
@@ -500,7 +467,7 @@ class RyzenSMU:
             log.error(
                 "CO read refused for core %d: %s",
                 core_id,
-                self._core_map_error or "core is not in the discovered core map",
+                self._ccd_slot_error or "core is not in the discovered core map",
             )
             return None
         ccd, slot = addr
@@ -547,7 +514,7 @@ class RyzenSMU:
             log.error(
                 "CO write refused for core %d: %s",
                 core_id,
-                self._core_map_error or "core is not in the discovered core map",
+                self._ccd_slot_error or "core is not in the discovered core map",
             )
             return False
 
@@ -589,11 +556,8 @@ class RyzenSMU:
         if not co_min <= value <= co_max:
             raise ValueError(f"CO value {value} out of range [{co_min}, {co_max}] for {self.commands.generation.name}")
 
-        # The all-cores command takes no core address, but its read-back
-        # verification does — with no usable core map the write would be
-        # unverifiable, so it refuses like the per-core path.
-        if self._core_map_error is not None:
-            log.error("set_all_co refused: %s", self._core_map_error)
+        if self._ccd_slot_error is not None:
+            log.error("set_all_co refused: %s", self._ccd_slot_error)
             return False
 
         if self.commands.set_all_co_cmd is not None:
@@ -603,8 +567,6 @@ class RyzenSMU:
                 log.error("SMU rejected set_all_co with value %d", value)
                 return False
 
-            # Read-back verification on the first known core (core id 0 can be
-            # a fused-off slot on harvested parts) to confirm the write took.
             readback_core = self._known_core_ids[0] if self._known_core_ids else 0
             readback = self.get_co_offset(readback_core)
             if readback != value:
@@ -642,10 +604,6 @@ class RyzenSMU:
         """
         core_ids = self._known_core_ids if self._known_core_ids is not None else range(num_cores)
         return {core_id: self.get_co_offset(core_id) for core_id in core_ids}
-
-    # ------------------------------------------------------------------
-    # Boost frequency
-    # ------------------------------------------------------------------
 
     def get_curve_shaper(self) -> tuple[tuple[int, int, int], ...] | None:
         cmd = self.commands.get_curve_shaper_cmd
@@ -703,10 +661,6 @@ class RyzenSMU:
         resp = self._send_rsmu_command(cmd, (encode_boost_limit_arg(mhz),))
         return resp.success
 
-    # ------------------------------------------------------------------
-    # PBO limits (PPT, TDC, EDC)
-    # ------------------------------------------------------------------
-
     def set_ppt_limit(self, watts: int) -> bool:
         """Set PPT (Package Power Tracking) limit in watts. VOLATILE.
 
@@ -743,10 +697,6 @@ class RyzenSMU:
         resp = self._send_rsmu_command(cmd, (encode_pbo_limit_arg(amps),))
         return resp.success
 
-    # ------------------------------------------------------------------
-    # PBO scalar
-    # ------------------------------------------------------------------
-
     def get_pbo_scalar(self) -> float | None:
         """Read current PBO scalar (1.0 to 10.0)."""
         cmd = self.commands.get_pbo_scalar_cmd
@@ -755,7 +705,6 @@ class RyzenSMU:
         resp = self._send_rsmu_command(cmd)
         if not resp.success:
             return None
-        # Response is an IEEE 754 float in the first arg word
         raw_bytes = struct.pack("<I", resp.args[0])
         return struct.unpack("<f", raw_bytes)[0]
 
@@ -768,10 +717,6 @@ class RyzenSMU:
             raise ValueError(f"PBO scalar {scalar} out of range [0.0, 10.0]")
         resp = self._send_rsmu_command(cmd, (encode_pbo_scalar_arg(scalar),))
         return resp.success
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def get_fastest_core(self) -> int | None:
         """Query the SMU for the fastest core index."""

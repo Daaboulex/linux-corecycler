@@ -192,7 +192,18 @@ class TestFuseFailClosed:
             assert smu.set_co_offset(0, -5) is False
             assert smu.set_all_co(-5) is False
             assert smu.reset_all_co() is False
-        assert "refused" in caplog.text
+        assert f"CO read refused for core 0: {smu.core_map_error}" in caplog.text
+        assert f"CO write refused for core 0: {smu.core_map_error}" in caplog.text
+        assert silicon.writes == []
+
+    def test_a_core_outside_a_good_map_is_refused_naming_why(self, caplog):
+        smu, silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: REPORTED_5600X_LIVE_SLOTS})
+        assert smu.core_map_error is None
+        with caplog.at_level(logging.ERROR):
+            assert smu.get_co_offset(9) is None
+            assert smu.set_co_offset(9, -5) is False
+        assert "CO read refused for core 9: core is not in the discovered core map" in caplog.text
+        assert "CO write refused for core 9: core is not in the discovered core map" in caplog.text
         assert silicon.writes == []
 
     def test_unreadable_smn_names_the_permission_fix(self):
