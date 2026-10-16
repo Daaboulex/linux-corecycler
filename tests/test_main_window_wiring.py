@@ -862,3 +862,76 @@ def test_a_style_fallback_is_said_in_the_status_bar(monkeypatch, tmp_path, db):
     assert [label.toolTip() for label in said] == ["system Qt style crashed in a probe (SIGSEGV): running in Fusion"]
     assert said[0].isVisible()
     win._history_db = None
+
+
+WINDOW_CONTROLS = {
+    "Start test": "after the start checks, runs the stress test on the ticked cores and locks the other starters",
+    "Stop test": "asks the running test to stop and says Stopping...",
+    "Save Profile": "saves the Configuration tab's profile to the chosen file",
+    "Load Profile": "shows the chosen file's profile in the Configuration tab when the form can hold it exactly",
+}
+
+
+def _toolbar_controls(window):
+    from PySide6.QtWidgets import QAbstractButton, QToolBar
+
+    toolbar = window.findChild(QToolBar)
+    buttons = {b.text() for b in toolbar.findChildren(QAbstractButton) if b.objectName() != "qt_toolbar_ext_button"}
+    actions = {a.text() for a in toolbar.actions() if a.text() and toolbar.widgetForAction(a) is None}
+    return toolbar, buttons | actions
+
+
+@pytest.mark.req("T23.contract.window")
+def test_every_toolbar_control_of_the_window_is_listed_with_its_reaction(window):
+    _, controls = _toolbar_controls(window)
+    assert controls == set(WINDOW_CONTROLS)
+
+
+@pytest.mark.req("T23.contract.window")
+@pytest.mark.parametrize("connected", [True, False])
+def test_start_test_runs_its_checks_only_through_its_connection(window, monkeypatch, no_modal, connected):
+    monkeypatch.setattr(mw, "get_backend", lambda _n: MagicMock())
+    for box in window._config_tab._core_boxes.values():
+        box.setChecked(False)
+    if not connected:
+        window._start_btn.clicked.disconnect()
+    window._start_btn.click()
+    assert (no_modal.warning.called and no_modal.warning.call_args.args[1] == "No cores") is connected
+
+
+@pytest.mark.req("T23.contract.window")
+@pytest.mark.parametrize("connected", [True, False])
+def test_stop_test_stops_the_run_only_through_its_connection(window, connected):
+    worker = _mock_worker()
+    window._worker = worker
+    window._logger = MagicMock()
+    window._stop_btn.setEnabled(True)
+    if not connected:
+        window._stop_btn.clicked.disconnect()
+    window._stop_btn.click()
+    assert worker.scheduler.stop.called is connected
+    window._worker = None
+
+
+@pytest.mark.req("T23.contract.window")
+@pytest.mark.parametrize("connected", [True, False])
+@pytest.mark.parametrize("name", ["Save Profile", "Load Profile"])
+def test_a_profile_action_reacts_only_through_its_connection(window, tmp_path, name, connected):
+    toolbar, _ = _toolbar_controls(window)
+    action = next(a for a in toolbar.actions() if a.text() == name)
+    path = tmp_path / "profile.json"
+    stored = window._config_tab.get_profile()
+    stored.seconds_per_core = 123
+    if name == "Load Profile":
+        save_profile(stored, path)
+    if not connected:
+        action.triggered.disconnect()
+    with (
+        patch("corecycler.gui.main_window.QFileDialog.getSaveFileName", return_value=(str(path), "")),
+        patch("corecycler.gui.main_window.QFileDialog.getOpenFileName", return_value=(str(path), "")),
+    ):
+        action.trigger()
+    if name == "Save Profile":
+        assert path.exists() is connected
+    else:
+        assert (window._config_tab.get_profile().seconds_per_core == 123) is connected

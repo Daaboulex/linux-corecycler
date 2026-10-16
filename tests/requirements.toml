@@ -4920,6 +4920,11 @@ statement = "Every control of the History tab is listed with its reaction (tests
 proof = "built"
 
 [[requirement]]
+id = "T23.contract.window"
+statement = "Every toolbar control of the main window is listed with its reaction (tests/test_main_window_wiring.py WINDOW_CONTROLS: Start test, Stop test, Save Profile, Load Profile) and the test fails on an unlisted or missing one; each reacts only through its connection."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"
