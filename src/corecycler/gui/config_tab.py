@@ -158,10 +158,12 @@ class ConfigTab(QWidget):
             "",
             "Which CPU instructions the test uses. Heavier ones draw more power and heat.",
         )
-        self._threads_spin = _spin(1, 2, 1)
-        add_setting(
-            program, 2, "Threads per core", self._threads_spin, "threads", "1 tests one thread of each core, 2 both."
+        threads = (
+            max((len(core.logical_cpus) for core in self._topology.cores.values()), default=1) if self._topology else 1
         )
+        self._threads_spin = _spin(1, threads, 1)
+        hint = "1 tests one thread of each core, 2 both." if threads > 1 else "This CPU runs one thread per core."
+        add_setting(program, 2, "Threads per core", self._threads_spin, "threads", hint)
         program_group.setLayout(program)
         self._fft_box = QWidget()
         fft = setting_grid()

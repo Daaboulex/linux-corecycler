@@ -4787,6 +4787,11 @@ statement = "Remember current values names the cores it kept and those it could 
 proof = "built"
 
 [[requirement]]
+id = "T23.config.threads"
+statement = "Threads per core offers up to the CPU's own threads per core: 2 with SMT, 1 without it or without a readable topology, with a hint saying the CPU runs one thread per core (scratch/design/t23-config-results.md C2: the form offered 2 and the run used 1)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

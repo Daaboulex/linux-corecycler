@@ -237,6 +237,53 @@ class TestRefusedProfile:
         assert (shown.max_temperature, shown.cores_to_test, shown.cycle_count) == (80.0, [1, 7], 2)
 
 
+class TestThreads:
+    @pytest.mark.req("T23.config.threads")
+    @pytest.mark.parametrize(("cpus", "top"), [(((0, 8),), 2), (((0,),), 1)])
+    def test_threads_per_core_offers_only_what_the_cpu_runs(self, cpus, top):
+        from corecycler.gui.config_tab import ConfigTab
+
+        _qapp()
+        topo = CPUTopology(model_name="Test", family=26, model=0x44, physical_cores=1, ccds=1)
+        topo.cores[0] = PhysicalCore(core_id=0, ccd=0, ccx=None, logical_cpus=cpus[0])
+        assert ConfigTab(topo)._threads_spin.maximum() == top
+
+    @pytest.mark.req("T23.config.threads")
+    @pytest.mark.parametrize(
+        ("cpus", "hint"),
+        [((0, 8), "1 tests one thread of each core, 2 both."), ((0,), "This CPU runs one thread per core.")],
+    )
+    def test_threads_per_core_starts_at_1_third_under_program_with_a_hint_that_fits_the_cpu(self, cpus, hint):
+        from PySide6.QtWidgets import QGroupBox, QLabel
+
+        from corecycler.gui.config_tab import ConfigTab
+
+        _qapp()
+        topo = CPUTopology(model_name="Test", family=26, model=0x44, physical_cores=1, ccds=1)
+        topo.cores[0] = PhysicalCore(core_id=0, ccd=0, ccx=None, logical_cpus=cpus)
+        tab = ConfigTab(topo)
+        spin = tab._threads_spin
+        assert (spin.minimum(), spin.value()) == (1, 1)
+        grid = next(g for g in tab.findChildren(QGroupBox) if g.title() == "Test program").layout()
+        assert grid.itemAtPosition(2, 0).widget().text() == "Threads per core"
+        assert hint in [label.text() for label in tab.findChildren(QLabel)]
+
+    @pytest.mark.req("T23.config.threads")
+    def test_a_topology_with_no_cores_offers_one_thread(self):
+        from corecycler.gui.config_tab import ConfigTab
+
+        _qapp()
+        empty = CPUTopology(model_name="Test", family=26, model=0x44, physical_cores=0, ccds=0)
+        assert ConfigTab(empty)._threads_spin.maximum() == 1
+
+    @pytest.mark.req("T23.config.threads")
+    def test_without_a_readable_topology_one_thread_is_offered(self):
+        from corecycler.gui.config_tab import ConfigTab
+
+        _qapp()
+        assert ConfigTab(None)._threads_spin.maximum() == 1
+
+
 class TestRetestFailed:
     def test_failed_cores_enable_button_and_tick_only_them(self):
         tab = _tab()
