@@ -127,4 +127,4 @@ def test_a_bar_with_no_usage_or_clock_read_shows_none_not_zero_or_its_old_values
     tab.on_tick(replace(_tick(), clocks={}, usage={}))
     bar = tab._per_core_bars[0]
     assert (bar._freq, bar._usage_pct) == (None, None)
-    assert bar._freq_text(bar._freq, bar._eff_max) == "  -- MHz"
+    assert bar._freq_text(bar._freq, bar._boost_ceiling_mhz) == "  -- MHz"

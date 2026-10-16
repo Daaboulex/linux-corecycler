@@ -131,6 +131,71 @@ class TestCoreFreqBar:
         bar.grab()
 
 
+def _painted(bar, width=400):
+    bar.resize(width, 24)
+    image = bar.grab().toImage()
+    return lambda x, y: image.pixelColor(x, y).name()
+
+
+def _named(colour):
+    from PySide6.QtGui import QColor
+
+    return QColor(colour).name()
+
+
+@pytest.fixture
+def desktop_colors():
+    from PySide6.QtGui import QPalette
+
+    from corecycler.gui import style
+
+    style.use_scheme(style.LIGHT, _qapp().palette())
+    yield
+    style.use_scheme(style.LIGHT, QPalette())
+
+
+@pytest.mark.usefixtures("desktop_colors")
+class TestCoreFreqBarPaint:
+    def test_a_bar_is_plain_with_a_hairline_border_until_its_core_is_under_test(self):
+        from corecycler.gui.style import theme
+
+        plain = _painted(_bar())
+        background, border = _named(theme.BG_PANEL_DARK), _named(theme.BORDER_DARKER)
+        assert plain(1, 12) == background
+        assert plain(0, 12) not in (background, border)
+        active = _bar()
+        active.set_active(True)
+        tinted = _painted(active)
+        assert tinted(0, 12) == _named(theme.COLOR_ACTIVE)
+        assert tinted(1, 12) == _named(theme.BG_ACTIVE_TINT)
+
+    def test_a_full_scale_clock_fills_the_bar_after_the_label_and_stops_before_the_text_columns(self):
+        from corecycler.gui.style import theme
+
+        bar = _bar()
+        bar.update_data(6000)
+        painted = _painted(bar)
+        filled, background = _named(theme.COLOR_PASS), _named(theme.BG_PANEL_DARK)
+        assert [painted(x, 4) for x in (39, 40, 130, 200)] == [background, filled, filled, background]
+
+    def test_a_known_ceiling_draws_one_dashed_mark_and_an_unknown_one_none(self):
+        plain, ceiled = _bar(), _bar()
+        plain.update_data(1200)
+        ceiled.update_data(1200, eff_max_mhz=4800)
+        unmarked, marked = _painted(plain), _painted(ceiled)
+        assert [unmarked(40, y) for y in range(3, 21)] == [unmarked(45, y) for y in range(3, 21)]
+        moved = {x for x in range(400) for y in (3, 4) if marked(x, y) != unmarked(x, y)}
+        assert moved
+        assert max(moved) - min(moved) <= 1
+        dashes = [marked(min(moved), y) != unmarked(min(moved), y) for y in range(3, 21)]
+        assert any(dashes) and not all(dashes)
+
+    def test_a_bar_given_a_clock_but_no_ceiling_shows_the_clock_alone(self):
+        bar = _bar()
+        bar.update_data(1200)
+        assert bar._columns()[1][0] == "1200MHz"
+
+
 class TestMonitorTab:
     def test_view_toggle_switches_panels(self):
         tab = _tab()
@@ -144,10 +209,10 @@ class TestMonitorTab:
     def test_set_active_core_highlights_only_that_cell(self):
         tab = _tab()
         tab.set_active_core(3)
-        assert tab._per_core_bars[3]._is_active is True
-        assert tab._per_core_bars[0]._is_active is False
+        assert tab._per_core_bars[3]._under_test is True
+        assert tab._per_core_bars[0]._under_test is False
         tab.set_active_core(None)
-        assert tab._per_core_bars[3]._is_active is False
+        assert tab._per_core_bars[3]._under_test is False
 
     def test_set_topology_rebuilds_bars(self):
         tab = _tab(_topo(ccds=2))

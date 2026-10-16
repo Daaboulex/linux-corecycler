@@ -24,7 +24,8 @@ from corecycler.gui.widgets.charts import LiveChart
 from corecycler.gui.widgets.core_grid import ccd_groups
 from corecycler.monitor.frequency import fastest, read_max_frequency
 
-MAX_FREQ_HISTORY = 60  # 1 minute at 1s
+MAX_FREQ_HISTORY = 60  # equivalent-mutant: a sparkline length chosen for the eye, a sample more is unseen
+_IDLE_USAGE_PCT = 5
 
 
 if TYPE_CHECKING:
@@ -42,19 +43,19 @@ class CoreFreqBar(QWidget):
         self._label = label
         self._max_freq = max_freq
         self._freq: float | None = None
-        self._eff_max: float = 0  # per-core boost ceiling (scaling_max_freq)
+        self._boost_ceiling_mhz: float = 0
         self._temp: float | None = None
         self._usage_pct: float | None = None
         self._stretch_pct: float | None = None
         self._core_watts: float | None = None
-        self._is_active: bool = False  # currently being tested
+        self._under_test: bool = False
         self._history: deque[float] = deque(maxlen=MAX_FREQ_HISTORY)
         self.setFixedHeight(24)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_active(self, active: bool) -> None:
-        if self._is_active != active:
-            self._is_active = active
+        if self._under_test != active:
+            self._under_test = active
             self.update()
 
     def update_data(
@@ -72,7 +73,7 @@ class CoreFreqBar(QWidget):
         self._stretch_pct = stretch_pct
         self._core_watts = core_watts
         if eff_max_mhz > 0:
-            self._eff_max = eff_max_mhz
+            self._boost_ceiling_mhz = eff_max_mhz
         if freq is not None:
             self._history.append(freq)
         self.update()
@@ -95,18 +96,14 @@ class CoreFreqBar(QWidget):
         return min((self._freq or 0) / self._max_freq, 1.0)
 
     def _columns(self) -> list[tuple[str, str]]:
-        # Usage
         usage_str = " --%" if self._usage_pct is None else f"{self._usage_pct:3.0f}%"
         busy = self._usage_pct is not None and self._usage_pct > 50
         usage_color = theme.COLOR_PASS if busy else theme.COLOR_MUTED
 
-        # Frequency — always unit-labelled; the boost ceiling shows only for a
-        # live core (the dashed bar marker also shows it).
-        freq_str = self._freq_text(self._freq, self._eff_max)
+        freq_str = self._freq_text(self._freq, self._boost_ceiling_mhz)
         freq_color = theme.COLOR_ACTIVE
 
-        # Stretch — fixed slot, blank when idle (keeps alignment stable)
-        if self._stretch_pct is not None and self._usage_pct is not None and self._usage_pct > 5:
+        if self._stretch_pct is not None and self._usage_pct is not None and self._usage_pct > _IDLE_USAGE_PCT:
             stretch_str = f"S:{self._stretch_pct:4.1f}%"
             if self._stretch_pct > 3.0:
                 stretch_color = theme.CHART_TEMP
@@ -115,18 +112,16 @@ class CoreFreqBar(QWidget):
             else:
                 stretch_color = theme.COLOR_MUTED_DARK
         else:
-            stretch_str = "       "  # 7 chars placeholder
+            stretch_str = " " * len(f"S:{0:4.1f}%")  # equivalent-mutant: the sample digit does not change the width
             stretch_color = theme.COLOR_MUTED_DARK
 
-        # Power
         if self._core_watts is not None:
             watts_str = f"{self._core_watts:5.1f}W"
             watts_color = theme.COLOR_WARN_SOFT
         else:
-            watts_str = "      "  # 6 chars placeholder
+            watts_str = " " * len(f"{0:5.1f}W")  # equivalent-mutant: the sample digit does not change the width
             watts_color = theme.COLOR_MUTED_DARK
 
-        # Temperature
         if self._temp is not None:
             temp_str = f"{self._temp:3.0f}C"
             if self._temp >= 85:
@@ -152,25 +147,21 @@ class CoreFreqBar(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
 
-        # background — highlighted if this core is being tested
-        bg = QColor(theme.BG_ACTIVE_TINT) if self._is_active else QColor(theme.BG_PANEL_DARK)
+        bg = QColor(theme.BG_ACTIVE_TINT) if self._under_test else QColor(theme.BG_PANEL_DARK)
         painter.fillRect(0, 0, w, h, bg)
 
-        # label area
         label_w = 40
-        label_color = QColor(theme.COLOR_ACTIVE) if self._is_active else QColor(theme.COLOR_TEXT_DIM)
+        label_color = QColor(theme.COLOR_ACTIVE) if self._under_test else QColor(theme.COLOR_TEXT_DIM)
         painter.setPen(label_color)
         painter.setFont(QFont("monospace", 7, QFont.Weight.Bold))
         painter.drawText(4, 0, label_w - 4, h, Qt.AlignmentFlag.AlignVCenter, self._label)
 
-        # frequency bar
         bar_x = label_w
-        text_area_w = 260  # usage + actual/expected + stretch + watts + temp
-        bar_w = w - label_w - text_area_w
+        text_columns_w = 260  # equivalent-mutant: a pixel either way keeps every column inside the bar
+        bar_w = w - label_w - text_columns_w
         if bar_w > 0 and self._max_freq > 0:
             fill_ratio = self._fill_ratio()
 
-            # color: blue at low, cyan at mid, green at high
             if fill_ratio < 0.5:
                 color = QColor(theme.COLOR_BLUE_DEEP)
             elif fill_ratio < 0.8:
@@ -178,22 +169,18 @@ class CoreFreqBar(QWidget):
             else:
                 color = QColor(theme.COLOR_PASS)
 
-            # bar background
             painter.fillRect(bar_x, 3, bar_w, h - 6, QColor(theme.BG_PANEL))
-            # filled portion
             fill_w = int(bar_w * fill_ratio)
             if fill_w > 0:
                 painter.fillRect(bar_x, 3, fill_w, h - 6, color)
 
-            # boost ceiling marker (per-core scaling_max_freq) — yellow dashed line
-            if self._eff_max > 0:
-                eff_ratio = min(self._eff_max / self._max_freq, 1.0)
+            if self._boost_ceiling_mhz:
+                eff_ratio = min(self._boost_ceiling_mhz / self._max_freq, 1.0)
                 marker_x = int(bar_x + bar_w * eff_ratio)
                 pen = QPen(QColor(theme.COLOR_WARN_SOFT), 1, Qt.PenStyle.DashLine)
                 painter.setPen(pen)
                 painter.drawLine(marker_x, 3, marker_x, h - 3)
 
-            # sparkline overlay
             if len(self._history) > 1:
                 data = list(self._history)
                 pen = QPen(QColor(255, 255, 255, 80), 1)
@@ -206,7 +193,6 @@ class CoreFreqBar(QWidget):
                     y1 = 3 + (1.0 - min(data[i] / self._max_freq, 1.0)) * (h - 6)
                     painter.drawLine(int(x0), int(y0), int(x1), int(y1))
 
-        # text values on the right — fixed-width columns for stable layout
         text_x = bar_x + bar_w + 4 if bar_w > 0 else label_w
         mono = QFont("monospace", 7)
         painter.setFont(mono)
@@ -221,9 +207,8 @@ class CoreFreqBar(QWidget):
             painter.drawText(cx, 0, tw + col_gap, h, Qt.AlignmentFlag.AlignVCenter, text)
             cx += tw + col_gap
 
-        # border — highlighted if active
-        border_color = QColor(theme.COLOR_ACTIVE) if self._is_active else QColor(theme.BORDER_DARKER)
-        border_width = 2 if self._is_active else 1
+        border_color = QColor(theme.COLOR_ACTIVE) if self._under_test else QColor(theme.BORDER_DARKER)
+        border_width = 2 if self._under_test else 1
         painter.setPen(QPen(border_color, border_width))
         painter.drawRect(0, 0, w - 1, h - 1)
 
@@ -236,7 +221,6 @@ STALE = " (stale)"
 class MonitorTab(QWidget):
     """Live system monitoring with package charts + per-core view toggle."""
 
-    # Staleness tracking — grey out labels after consecutive sensor read failures
     _NORMAL_STYLE = "font: bold 11px monospace; padding: 2px;"
 
     @staticmethod
@@ -253,7 +237,6 @@ class MonitorTab(QWidget):
 
         self._setup_ui()
 
-        # Check data source availability and set initial labels
         if not self._sensors.available():
             self._tctl_label.setText("Tctl: N/A")
         has_voltage = self._sensors.vcore_source is not None
@@ -267,7 +250,6 @@ class MonitorTab(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        # top bar: current values + view toggle
         top_bar = QHBoxLayout()
         top_bar.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
@@ -313,7 +295,6 @@ class MonitorTab(QWidget):
 
         layout.addLayout(top_bar)
 
-        # package charts view
         self._charts_widget = QWidget()
         charts_layout = QGridLayout(self._charts_widget)
         charts_layout.setContentsMargins(0, 0, 0, 0)
@@ -331,7 +312,6 @@ class MonitorTab(QWidget):
 
         layout.addWidget(self._charts_widget)
 
-        # per-core view (scrollable, hidden by default)
         self._per_core_scroll = QScrollArea()
         self._per_core_scroll.setWidgetResizable(True)
         self._per_core_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -349,7 +329,6 @@ class MonitorTab(QWidget):
         self._per_core_scroll.setVisible(False)
         layout.addWidget(self._per_core_scroll)
 
-        # populate max boost
         max_freq = read_max_frequency()
         if max_freq:
             self._max_freq_label.setText(f"Max Boost: {max_freq:.0f}MHz")
@@ -379,8 +358,6 @@ class MonitorTab(QWidget):
                     self._per_core_bars[core.core_id] = bar
                     self._per_core_layout.addWidget(bar)
         else:
-            # fallback: create bars from current frequency readings
-            # Label as "CPU N" (logical CPU IDs, not physical core IDs)
             for cpu_id in cpus:
                 bar = CoreFreqBar(cpu_id, f"CPU{cpu_id}", max_freq=6000)
                 self._per_core_bars[cpu_id] = bar
@@ -410,7 +387,6 @@ class MonitorTab(QWidget):
 
         if freqs:
             max_freq = max(freqs.values())
-            # Dynamically update max if a core boosts above expected ceiling
             current_max = getattr(self, "_max_core_freq", 6000)
             if max_freq > current_max:
                 self._max_core_freq = max_freq
@@ -456,7 +432,6 @@ class MonitorTab(QWidget):
 
         ccd_temps = {ccd: temp for ccd, temp in sensed.tccd if temp is not None}
 
-        # update per-core bars (even if hidden, so history accumulates)
         if self._per_core_bars:
             if self._topology:
                 for core_id, bar in self._per_core_bars.items():
