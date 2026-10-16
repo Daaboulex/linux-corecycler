@@ -775,6 +775,11 @@ class TestDimmInfoReader:
             ),
             (2, "\n", "dmidecode exited 2"),
             (0, "", "dmidecode listed no DIMMs"),
+            (
+                0,
+                "/sys/firmware/dmi/tables/smbios_entry_point: Permission denied\n",
+                "dmidecode listed no DIMMs: /sys/firmware/dmi/tables/smbios_entry_point: Permission denied",
+            ),
         ],
     )
     def test_no_dimm_listed_says_what_dmidecode_said(self, monkeypatch, returncode, stderr, why):

@@ -204,7 +204,7 @@ def read_dimm_info() -> tuple[list[DIMMInfo], str]:
     said = next((line.strip() for line in result.stderr.splitlines() if line.strip()), "")
     if result.returncode != 0:
         return [], f"dmidecode exited {result.returncode}" + (f": {said}" if said else "")
-    return [], "dmidecode listed no DIMMs"
+    return [], "dmidecode listed no DIMMs" + (f": {said}" if said else "")
 
 
 SPD5118_RANGE_C = (-40.0, 125.0)

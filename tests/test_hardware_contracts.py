@@ -79,7 +79,10 @@ def test_msr_reads_are_plausible():
 def test_dmidecode_parses_real_dimms():
     require(shutil.which("dmidecode") is not None, "requires dmidecode")
     result = subprocess.run(["dmidecode", "-t", "memory"], capture_output=True, text=True, timeout=15)
-    require_privileged(result.returncode == 0 and bool(result.stdout), "dmidecode -t memory needs root")
+    require_privileged(
+        result.returncode == 0 and bool(result.stdout) and "Permission denied" not in result.stderr,
+        "dmidecode -t memory needs root: the DMI tables are root-only and dmidecode 3.7 exits 0 without them",
+    )
     dimms = parse_dmidecode_output(result.stdout)
     assert len(dimms) >= 1, "no DIMMs parsed from real dmidecode output"
     assert all(d.size_gb > 0 for d in dimms)
