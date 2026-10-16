@@ -4,6 +4,7 @@ from dataclasses import replace
 
 import pytest
 
+from corecycler.tuner.machine import allcore
 from corecycler.tuner.machine.session import ALLCORE_LOADS, transition
 from corecycler.tuner.machine.types import (
     AwaitWorker,
@@ -437,3 +438,214 @@ def test_a_crash_in_steady_with_nobody_convicted_is_a_failure_classed_by_its_tel
     assert fake.state.flow.stage is stage
     loosened = {record.core: record.value for record in fake.state.cores}
     assert loosened == (values if steady else {c: v + 1 for c, v in values.items()})
+
+
+def _bisecting(fake: Fake):
+    _until(fake, _steady)
+    fake.deliver(Report(Group.SILICON, 30.0, context=FailContext(steady=True, working=(0, 1), paused=False)))
+    assert fake.state.flow.stage is Stage.BISECT
+    return _next_worker(fake)
+
+
+@pytest.mark.req("L09.G2.baseline")
+def test_a_failing_baseline_slot_in_co_only_pauses_as_stock_unstable():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    slot = _bisecting(fake)
+    assert dict(slot.vector) == {0: 0, 1: 0}
+    fake.deliver(Report(Group.SILICON, 30.0))
+    assert fake.state.pause.reason is PauseReason.STOCK_UNSTABLE
+
+
+@pytest.mark.req("L09.G5_G9")
+def test_a_thermal_stop_in_a_bisect_slot_retries_the_same_slot_and_keeps_the_queue():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _bisecting(fake)
+    fake.deliver()
+    slot = _next_worker(fake)
+    queue = fake.state.flow.bisect.queue
+    assert slot.stage is Stage.BISECT and queue
+    fake.deliver(Report(Group.THERMAL, 5.0))
+    again = _next_worker(fake)
+    assert (again.stage, again.vector) == (Stage.BISECT, slot.vector)
+    assert fake.state.flow.bisect.queue == queue
+
+
+@pytest.mark.req("L09.G5_G9")
+@pytest.mark.parametrize("event", [PauseRequest(), Abort()])
+def test_a_pause_or_an_abort_in_a_bisect_stores_its_queue(event):
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _bisecting(fake)
+    fake.deliver()
+    _next_worker(fake)
+    run = fake.state.flow.bisect
+    assert run.queue
+    fake.post(event)
+    assert fake.db.flow.bisect == run
+
+
+@pytest.mark.req("L10.h")
+def test_a_bisect_fix_is_committed_before_any_core_is_written_again():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _bisecting(fake)
+    fake.deliver()
+    slot = _next_worker(fake)
+    convicted = [core for core, value in slot.vector if value != 0]
+    assert len(convicted) == 1
+    _, effects = _recording(fake)
+    fake.deliver(Report(Group.SILICON, 30.0))
+    assert fake.state.flow.stage is Stage.STEADY and fake.state.core(convicted[0]).fb is not None
+    kinds = [type(effect) for effect in effects]
+    assert WriteCO in kinds and kinds.index(Commit) < kinds.index(WriteCO)
+
+
+@pytest.mark.req("L11.b")
+def test_a_steady_pass_enters_transient_with_its_clean_time_and_index_at_zero():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    worker = _until(fake, _steady)
+    flow = fake.state.flow
+    state = replace(fake.state, flow=replace(flow, allcore=replace(flow.allcore, t_clean=100.0, t_idx=2)))
+    after = transition(state, WorkerReported(worker.token, Report(Group.PASS, 30.0)), fake.world()).state
+    assert after.flow.stage is Stage.TRANSIENT
+    assert (after.flow.allcore.t_clean, after.flow.allcore.t_idx) == (0.0, 0)
+
+
+def _transient(spec, state) -> bool:
+    return spec.stage is Stage.TRANSIENT and state.flow.allcore.t_clean > 0
+
+
+@pytest.mark.req("L11.G3")
+def test_a_record_that_moves_a_core_in_transient_restarts_its_clean_time_and_one_at_stock_does_not():
+    fake = fresh(3, [-12, -6, 0], 1, max_offset=-20, k_1t=2)
+    worker = _until(fake, _transient)
+    clean, incidents, value = fake.state.flow.allcore.t_clean, fake.state.incidents, fake.state.core(0).value
+    assert fake.state.core(2).value == 0 and value < 0
+
+    def reported(core):
+        report = Report(Group.PASS, 30.0, evidence=(Evidence(core, True),))
+        return transition(fake.state, WorkerReported(worker.token, report), fake.world()).state
+
+    at_stock, moved = reported(2), reported(0)
+    assert (at_stock.flow.allcore.t_clean, at_stock.incidents) == (clean, incidents + 1)
+    assert (moved.flow.allcore.t_clean, moved.core(0).value) == (0.0, value + 1)
+
+
+@pytest.mark.req("L11.G4")
+def test_a_crash_in_transient_with_nobody_convicted_loosens_every_core_one_step():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _until(fake, _transient)
+    values = {record.core: record.value for record in fake.state.cores}
+    fake.crash()
+    fake.post(Resume(1))
+    assert (fake.state.lifecycle, fake.state.flow.stage) == (Lifecycle.RUNNING, Stage.TRANSIENT)
+    assert {record.core: record.value for record in fake.state.cores} == {c: v + 1 for c, v in values.items()}
+
+
+@pytest.mark.req("L11.G5_G8")
+@pytest.mark.parametrize("report", [Report(Group.THERMAL, 5.0), Report(Group.APPARATUS, 5.0, detail="tool died")])
+def test_a_transient_test_with_no_verdict_leaves_its_clean_time(report):
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    spec = _until(fake, _transient).spec
+    clean = fake.state.flow.allcore.t_clean
+    fake.deliver(report)
+    again = _next_worker(fake)
+    assert (again.stage, again.load, fake.state.flow.allcore.t_clean) == (Stage.TRANSIENT, spec.load, clean)
+
+
+@pytest.mark.req("L11.G5_G8")
+def test_a_pause_in_transient_leaves_its_clean_time_and_the_cut_test_runs_again():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    spec = _until(fake, _transient).spec
+    clean = fake.state.flow.allcore.t_clean
+    fake.post(PauseRequest())
+    assert fake.state.lifecycle is Lifecycle.PAUSED and fake.worker is None
+    fake.post(Resume(1))
+    again = _next_worker(fake)
+    assert (again.stage, again.load, fake.state.flow.allcore.t_clean) == (Stage.TRANSIENT, spec.load, clean)
+
+
+def _tightening(spec, state) -> bool:
+    return spec.stage is Stage.TIGHTEN and state.flow.allcore.t_idx > 0
+
+
+@pytest.mark.req("L12.G2.mce", "L12.G3")
+@pytest.mark.parametrize(("corrected", "steps"), [(True, 1), (False, 3)])
+def test_a_record_in_tighten_backs_its_core_off_in_place_and_the_round_s_load_repeats(corrected, steps):
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    spec = _until(fake, _tightening).spec
+    index, resident = fake.state.flow.allcore.t_idx, dict(spec.vector)[1]
+    fake.deliver(Report(Group.PASS, 30.0, evidence=(Evidence(1, corrected),)))
+    record = fake.state.core(1)
+    assert (record.value, record.fb) == (min(0, resident + steps), resident)
+    again = _next_worker(fake)
+    assert (again.stage, again.load, fake.state.flow.allcore.t_idx) == (Stage.TIGHTEN, spec.load, index)
+
+
+@pytest.mark.req("L12.G4.other", "D23")
+def test_a_conviction_in_tighten_freezes_that_core_and_restarts_the_round():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _until(fake, _tightening)
+    cursor = fake.state.flow.allcore
+    members = allcore.round_members(fake.state.cores, fake.state.config, cursor)
+    assert members and cursor.t_idx > 0
+    fake.deliver(Report(Group.SILICON, 30.0, named=(members[0],)))
+    after = fake.state.flow.allcore
+    assert (members[0] in after.frozen, after.t_idx, after.t_clean) == (True, 0, 0.0)
+    assert _next_worker(fake).stage is Stage.TIGHTEN
+
+
+def _enduring(spec, state) -> bool:
+    return spec.stage is Stage.ENDURANCE and state.flow.allcore.t_clean > 0
+
+
+@pytest.mark.req("L14.G3_G7")
+def test_a_record_that_moves_a_core_in_endurance_restarts_its_clean_time():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2, endurance=True)
+    worker = _until(fake, _enduring)
+    value = fake.state.core(0).value
+    report = Report(Group.PASS, 30.0, evidence=(Evidence(0, True),))
+    after = transition(fake.state, WorkerReported(worker.token, report), fake.world()).state
+    assert (after.flow.allcore.t_clean, after.core(0).value) == (0.0, value + 1)
+
+
+@pytest.mark.req("L14.G3_G7")
+@pytest.mark.parametrize("report", [Report(Group.THERMAL, 5.0), Report(Group.APPARATUS, 5.0, detail="tool died")])
+def test_an_endurance_test_with_no_verdict_leaves_its_clean_time(report):
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2, endurance=True)
+    spec = _until(fake, _enduring).spec
+    clean = fake.state.flow.allcore.t_clean
+    fake.deliver(report)
+    again = _next_worker(fake)
+    assert (again.stage, again.load, fake.state.flow.allcore.t_clean) == (Stage.ENDURANCE, spec.load, clean)
+
+
+@pytest.mark.req("L14.G3_G7")
+@pytest.mark.parametrize(("steady", "stage"), [(True, Stage.BISECT), (False, Stage.ENDURANCE)])
+def test_a_crash_in_endurance_takes_the_flow_rule_its_telemetry_classes(steady, stage):
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2, endurance=True)
+    _until(fake, _enduring)
+    values = {record.core: record.value for record in fake.state.cores}
+    context = FailContext(steady=steady, working=(0, 1), paused=False)
+    apply = fake.apply
+
+    def with_context(state, effect):
+        read = apply(state, effect)
+        return replace(read, context=context) if isinstance(read, CrashEvidenceRead) else read
+
+    fake.apply = with_context
+    fake.crash()
+    fake.post(Resume(1))
+    assert fake.state.flow.stage is stage
+    loosened = {record.core: record.value for record in fake.state.cores}
+    assert loosened == (values if steady else {c: v + 1 for c, v in values.items()})
+
+
+@pytest.mark.req("L15.G3")
+def test_a_record_in_memory_backs_its_core_off_marks_dirty_and_memory_runs_again():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    spec = _until(fake, lambda spec, state: spec.stage is Stage.MEMORY).spec
+    resident = dict(spec.vector)[1]
+    assert not fake.state.flow.dirty
+    fake.deliver(Report(Group.PASS, 30.0, evidence=(Evidence(1, True),)))
+    record = fake.state.core(1)
+    assert (record.value, record.fb, fake.state.flow.dirty) == (resident + 1, resident, True)
+    assert _next_worker(fake).stage is Stage.MEMORY

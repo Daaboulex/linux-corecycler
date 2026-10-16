@@ -1825,9 +1825,14 @@ proof = "built"
 
 [[requirement]]
 id = "L09.G2.baseline"
-statement = "The baseline slot FAILs: CO only P(STOCK_UNSTABLE); with the shaper owned the steady cell rule"
-proof = "untested"
-task = "T29"
+statement = "The baseline slot FAILs in CO only: P(STOCK_UNSTABLE)"
+proof = "built"
+
+[[requirement]]
+id = "L09.G2.baseline.shaper"
+statement = "The baseline slot FAILs with the shaper owned: the steady cell rule (split from L09.G2.baseline 2026-10-16; Shaper modes are refused until S3)"
+proof = "not built"
+task = "S3"
 
 [[requirement]]
 id = "L09.G2.single"
@@ -1857,8 +1862,7 @@ proof = "built"
 [[requirement]]
 id = "L09.G5_G9"
 statement = "THERMAL, apparatus and pause retry the same slot; Pause and Abort keep the queue"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L09.skip"
@@ -1916,8 +1920,7 @@ proof = "built"
 [[requirement]]
 id = "L10.h"
 statement = "The fix commits with the cursor before the next write"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L11.a"
@@ -1927,8 +1930,7 @@ proof = "built"
 [[requirement]]
 id = "L11.b"
 statement = "Entering TRANSIENT from STEADY sets tClean to 0"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L11.c"
@@ -1954,20 +1956,17 @@ proof = "built"
 [[requirement]]
 id = "L11.G3"
 statement = "A record about a core outside a partial lane follows the G3 rule; tClean = 0 when something changed"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L11.G4"
 statement = "A crash with nobody convicted is a FAIL of kind crash under the G2 rule"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L11.G5_G8"
 statement = "THERMAL, apparatus and pause leave tClean unchanged"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L11.h"
@@ -2016,8 +2015,7 @@ task = "S3"
 [[requirement]]
 id = "L12.G2.mce"
 statement = "An OWN_CORE_MCE naming another owned core backs it off in place; the item test is void and repeats"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L12.G2.named"
@@ -2027,8 +2025,7 @@ proof = "built"
 [[requirement]]
 id = "L12.G3"
 statement = "A record about another core follows the G3 rule and the item test repeats"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L12.G4.own"
@@ -2038,8 +2035,7 @@ proof = "built"
 [[requirement]]
 id = "L12.G4.other"
 statement = "A conviction of another core voids the item test, which repeats"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L12.f"
@@ -2121,8 +2117,7 @@ proof = "built"
 [[requirement]]
 id = "L14.G3_G7"
 statement = "A record follows the G3 rule (endClean 0 when changed); a crash is a FAIL of kind crash; THERMAL and apparatus leave endClean"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L15.a"
@@ -2162,8 +2157,7 @@ proof = "built"
 [[requirement]]
 id = "L15.G3"
 statement = "A record about a core follows the G3 rule"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L15.G4"
@@ -3664,8 +3658,7 @@ task = "T29"
 [[requirement]]
 id = "D23"
 statement = "In TIGHTEN a conviction of another core voids the item test, which repeats"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "D24"
