@@ -42,10 +42,6 @@ from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.smu.commands import CPUGeneration, encode_co_arg, get_commands
 from corecycler.smu.driver import RyzenSMU
 
-# ===========================================================================
-# SMU driver safety — graceful handling of missing driver
-# ===========================================================================
-
 
 class TestSMUDriverSafety:
     def test_is_available_missing_sysfs(self):
@@ -65,20 +61,17 @@ class TestSMUDriverSafety:
         (smu_dir / "smu_args").write_bytes(b"\x00" * 24)
         assert RyzenSMU.is_available(smu_dir) is True
 
-    def test_no_crash_on_permission_denied(self, tmp_path):
-        """is_available should handle permission errors gracefully."""
+    def test_a_driver_directory_it_may_not_read_is_unavailable_not_an_error(self, tmp_path):
+        if os.geteuid() == 0:
+            pytest.skip("root reads past file permissions")
         smu_dir = tmp_path / "ryzen_smu_drv"
         smu_dir.mkdir()
-        # Create but make inaccessible
-        args_file = smu_dir / "smu_args"
-        args_file.write_bytes(b"\x00" * 24)
-        # is_available only checks .exists(), which works even without read perm
-        assert RyzenSMU.is_available(smu_dir) is True
-
-
-# ===========================================================================
-# CO value bounds checking
-# ===========================================================================
+        (smu_dir / "smu_args").write_bytes(b"\x00" * 24)
+        smu_dir.chmod(0)
+        try:
+            assert RyzenSMU.is_available(smu_dir) is False
+        finally:
+            smu_dir.chmod(0o755)
 
 
 class TestCOBoundsChecking:
@@ -102,17 +95,16 @@ class TestCOBoundsChecking:
 
         smu = RyzenSMU(cmds, smu_dir)
 
-        # Value below min should raise
         with pytest.raises(ValueError, match="out of range"):
             smu.set_co_offset(0, min_val - 1)
 
-        # Value above max should raise
         with pytest.raises(ValueError, match="out of range"):
             smu.set_co_offset(0, max_val + 1)
 
-        # Boundary values should succeed (not raise)
-        smu.set_co_offset(0, min_val)
-        smu.set_co_offset(0, max_val)
+        for bound in (min_val, max_val):
+            smu.set_co_offset(0, bound)
+            sent = struct.unpack("<I", (smu_dir / "smu_args").read_bytes()[:4])[0]
+            assert sent == encode_co_arg(0, bound, gen), f"the bound {bound} never reached the SMU"
 
     def test_extreme_values_rejected(self, tmp_path):
         """Absurdly large CO values must be rejected."""
@@ -133,14 +125,8 @@ class TestCOBoundsChecking:
         """Encoding should not crash for any core ID 0-31."""
         for gen in [CPUGeneration.ZEN3_VERMEER, CPUGeneration.ZEN5_GRANITE_RIDGE]:
             for core_id in range(32):
-                # Should not raise
                 result = encode_co_arg(core_id, 0, gen)
                 assert isinstance(result, int)
-
-
-# ===========================================================================
-# Scheduler process killing safety
-# ===========================================================================
 
 
 class TestSchedulerProcessSafety:
@@ -223,11 +209,6 @@ class TestDetectorSafety:
         assert str(tmp_path) in read.problem
 
 
-# ===========================================================================
-# Settings safety — file paths
-# ===========================================================================
-
-
 class TestSettingsSafety:
     def test_save_only_writes_to_config_dir(self, tmp_path, monkeypatch):
         """save_settings must only create files within CONFIG_DIR."""
@@ -238,7 +219,6 @@ class TestSettingsSafety:
 
         save_settings(AppSettings())
 
-        # Verify files only exist in config_dir
         all_files = list(tmp_path.rglob("*.json"))
         for f in all_files:
             assert str(f).startswith(str(config_dir)), f"File written outside config dir: {f}"
@@ -250,7 +230,6 @@ class TestSettingsSafety:
         target = tmp_path / "profiles" / "test.json"
         save_profile(TestProfile(), target)
 
-        # Only one JSON file should exist
         all_json = list(tmp_path.rglob("*.json"))
         assert len(all_json) == 1
         assert all_json[0] == target
@@ -265,13 +244,7 @@ class TestSettingsSafety:
         s = AppSettings(work_dir="/tmp/../etc/passwd")
         save_settings(s)
         loaded = load_settings()
-        # Should store the string as-is (validation is caller's responsibility)
         assert loaded.work_dir == "/tmp/../etc/passwd"
-
-
-# ===========================================================================
-# Backend safety — file containment
-# ===========================================================================
 
 
 class TestBackendSafety:
@@ -279,14 +252,14 @@ class TestBackendSafety:
         """mprime prepare must only create files within work_dir."""
         work = tmp_path / "work"
         work.mkdir()
+        before = set(tmp_path.rglob("*"))
         backend = MprimeBackend()
         backend.prepare(work, StressConfig())
 
-        # All created files should be in work dir
-        for f in work.iterdir():
-            assert f.parent == work
+        created = set(tmp_path.rglob("*")) - before
+        assert created
+        assert all(path.is_relative_to(work) for path in created), sorted(created - set(work.rglob("*")))
 
-        # Nothing outside work dir
         sibling = tmp_path / "sibling.txt"
         assert not sibling.exists()
 
@@ -300,11 +273,6 @@ class TestBackendSafety:
         backend.prepare(work, StressConfig())
 
         assert (work / "existing.dat").read_text() == "preserve me"
-
-
-# ===========================================================================
-# Encode safety — no panics on edge values
-# ===========================================================================
 
 
 class TestEncodeSafety:
@@ -322,7 +290,7 @@ class TestEncodeSafety:
                 for value in [co_min, co_max, 0]:
                     result = encode_co_arg(core_id, value, gen)
                     assert isinstance(result, int)
-                    assert result >= 0  # should be unsigned
+                    assert result >= 0
 
     def test_unsupported_generation_raises_cleanly(self):
         """Unsupported generations must raise ValueError, not crash."""
@@ -330,11 +298,6 @@ class TestEncodeSafety:
             encode_co_arg(0, 0, CPUGeneration.UNKNOWN)
         with pytest.raises(ValueError):
             encode_co_arg(0, 0, CPUGeneration.ZEN2_MATISSE)
-
-
-# ===========================================================================
-# Topology safety
-# ===========================================================================
 
 
 class TestTopologySafety:

@@ -14,10 +14,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from corecycler.smu.commands import CPUGeneration, SMUCommandSet, get_commands
 from corecycler.smu.driver import SYSFS_BASE, RyzenSMU, SMUResponse
 
-# ===========================================================================
-# Fixtures
-# ===========================================================================
-
 
 @pytest.fixture
 def zen3_cmds():
@@ -72,7 +68,7 @@ class TestSMUResponse:
     def test_frozen(self):
         r = SMUResponse(success=True, args=(0,) * 6, raw=b"")
         with pytest.raises(AttributeError):
-            r.success = False  # type: ignore[misc]
+            r.success = False
 
 
 class TestIsAvailable:
@@ -442,7 +438,7 @@ class TestDeterministicSlotMapping:
         writes, store = _stateful_smu(smu, zen5_cmds)
         for c in (0, 1, 4, 5, 6, 7):
             assert smu.set_co_offset(c, -20) is True
-            assert store[(0, c % 8)] == -20  # landed on physical slot core_id % 8
+            assert store[(0, c % 8)] == -20
         assert all(slot not in (2, 3) for _ccd, slot, _v in writes), "wrote a fused slot"
 
     def test_harvested_2ccd_writes_land_on_physical_slot(self, smu_dir, zen5_cmds):
@@ -461,8 +457,10 @@ class TestDeterministicSlotMapping:
             assert store[(0, c % 8)] == -15
         for c in ccd1:
             assert store[(1, c % 8)] == -15
-        # no cross-CCD or fused-slot bleed
-        assert {(ccd, slot) for ccd, slot, _v in writes} == ({(0, c % 8) for c in ccd0} | {(1, c % 8) for c in ccd1})
+        landed = {(ccd, slot) for ccd, slot, _v in writes}
+        assert landed == {(0, c % 8) for c in ccd0} | {(1, c % 8) for c in ccd1}, (
+            "a write bled across CCDs or into a fused slot"
+        )
 
     def test_readback_of_written_core_matches(self, smu_dir, zen5_cmds):
         """get_co_offset re-derives the same physical slot, so a written value reads
@@ -515,7 +513,7 @@ class TestPBOLimitValidation:
         before validation -- never raises on a missing command."""
         smu = RyzenSMU(zen3_cmds, smu_dir)
         assert smu.set_ppt_limit(150) is False
-        assert smu.set_ppt_limit(-999) is False  # no cmd -> False, not ValueError
+        assert smu.set_ppt_limit(-999) is False
 
 
 class TestBackupRestore:

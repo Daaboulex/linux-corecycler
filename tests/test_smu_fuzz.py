@@ -9,15 +9,10 @@ wrong core target reads back "correct" and silently undervolts the wrong core).
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from corecycler.smu.commands import (  # noqa: E402
+from corecycler.smu.commands import (
     COMMAND_SETS,
     CPUGeneration,
     decode_co_arg,
@@ -28,14 +23,13 @@ from corecycler.smu.commands import (  # noqa: E402
     get_commands,
 )
 
-# Generations that support Curve Optimizer (have an encoding scheme != "none").
-_CO_GENS = [g for g, cs in COMMAND_SETS.items() if cs.encoding_scheme in ("zen3", "zen4_5")]
+_GENS_WITH_CO_ENCODING = [g for g, cs in COMMAND_SETS.items() if cs.encoding_scheme in ("zen3", "zen4_5")]
 _ALL_GENS = list(CPUGeneration)
 
 
 class TestCoArgRoundTrip:
     @settings(max_examples=400, deadline=None)
-    @given(gen=st.sampled_from(_CO_GENS), core_id=st.integers(min_value=0, max_value=63), value=st.data())
+    @given(gen=st.sampled_from(_GENS_WITH_CO_ENCODING), core_id=st.integers(min_value=0, max_value=63), value=st.data())
     def test_decode_inverts_encode_over_full_co_range(self, gen, core_id, value):
         """decode(encode(v)) == v for every value the generation supports."""
         co_min, co_max = COMMAND_SETS[gen].co_range
@@ -45,7 +39,7 @@ class TestCoArgRoundTrip:
 
     @settings(max_examples=400, deadline=None)
     @given(
-        gen=st.sampled_from(_CO_GENS),
+        gen=st.sampled_from(_GENS_WITH_CO_ENCODING),
         core_id=st.integers(min_value=0, max_value=63),
         v=st.integers(min_value=-32768, max_value=32767),
     )
@@ -75,9 +69,6 @@ class TestCoArgTargeting:
         assert (arg >> 28) & 0xF == exp_ccd, f"CCD bits wrong: {arg:#x}"
         assert (arg >> 20) & 0xF == exp_core, f"core bits wrong: {arg:#x}"
         assert arg & 0xFFFF == (v & 0xFFFF)
-        # The CCD/core bits must not collide with the 16-bit value field.
-        assert arg & 0xFFFF == (v & 0xFFFF)
-        # Write-target and read-target encode identically (same core addressed).
         read_arg = encode_co_arg(core_id, 0, gen, ccd=ccd, slot=slot)
         assert (read_arg >> 20) == (arg >> 20), "read targets a different core than write"
 
@@ -101,7 +92,6 @@ class TestGenerationDetectionRobust:
     def test_detect_never_crashes_and_returns_valid_gen(self, family, model, name):
         gen = detect_generation(family, model, name)
         assert isinstance(gen, CPUGeneration)
-        # Anything detected as a real generation must have a command set.
         if gen is not CPUGeneration.UNKNOWN:
             assert get_commands(gen) is not None
 

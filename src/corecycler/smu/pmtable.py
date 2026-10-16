@@ -21,8 +21,8 @@ SYSFS_BASE = Path("/sys/kernel/ryzen_smu_drv")
 class PMTableOffsets:
     """Named byte offsets for a specific PM table version.
 
-    Offsets are in bytes (not float indices). A value of -1 means the
-    field is not available for this version. ``verified`` is True only for
+    Offsets are in bytes (not float indices). vdd_mem is None where the
+    version has no such field. ``verified`` is True only for
     offsets confirmed against real silicon; it defaults to False so an
     unconfirmed entry fails closed (surfaced as community-sourced, never as
     Verified).
@@ -184,8 +184,8 @@ def _find_prefix_offsets(version: int) -> PMTableOffsets | None:
     """Find offset map by version prefix family.
 
     For Zen 5 (0x62xxxx), clock offsets are consistent across all known
-    versions, so prefix fallback is safe for clocks. Voltage offsets
-    (especially vdd_mem) are conservative (-1).
+    versions, so prefix fallback is safe for clocks; vdd_mem, which the
+    versions do not share, is None.
     """
     prefix = _version_prefix(version)
     if prefix == _ZEN5_PREFIX:
@@ -287,8 +287,8 @@ class PMTableReader:
     """Reads the SMU PM table for live telemetry data.
 
     Supports version-aware dispatch: reads pm_table_version from sysfs and
-    selects the correct offset map for known CPU generations. Falls back to
-    legacy approximate parsing for unknown versions.
+    selects the correct offset map for known CPU generations. A version
+    outside every known family parses nothing but the raw floats.
     """
 
     def __init__(self, sysfs_path: Path = SYSFS_BASE) -> None:
