@@ -12,13 +12,14 @@ import struct
 import time
 from dataclasses import dataclass
 
-# AMD MSR addresses (read-only)
-MSR_APERF = 0xE8  # Actual Performance — counts at actual core frequency
-MSR_MPERF = 0xE7  # Maximum Performance — counts at TSC/reference frequency
+MSR_APERF = 0xE8  # Actual Performance, counting at the actual core clock
+MSR_MPERF = 0xE7  # Maximum Performance, counting at the reference clock
 MSR_PWR_UNIT = 0xC0010299  # RAPL power unit (energy scale factor)
-MSR_CORE_ENERGY = 0xC001029A  # Per-core cumulative energy counter
-MSR_PKG_ENERGY = 0xC001029B  # Package cumulative energy counter
+MSR_CORE_ENERGY = 0xC001029A
+MSR_PKG_ENERGY = 0xC001029B
 MSR_DEVICE = "/dev/cpu/0/msr"
+_PERF_COUNTER_SPAN = 1 << 64
+_ENERGY_COUNTER_SPAN = 1 << 32
 
 
 def msr_problem(device: str = MSR_DEVICE) -> str | None:
@@ -38,9 +39,8 @@ class ClockStretchReading:
     """Result of APERF/MPERF sampling for one logical CPU."""
 
     cpu_id: int
-    effective_mhz: float  # actual clock from APERF/MPERF ratio * base_clock
-    ratio: float  # APERF_delta / MPERF_delta — 1.0 = no stretch, <0.97 = stretching
-    stretch_pct: float  # (1 - ratio) * 100 — 0% = perfect, >3% = suspicious
+    ratio: float
+    stretch_pct: float
 
 
 @dataclass(slots=True)
@@ -77,11 +77,11 @@ class MSRReader:
     """
 
     def __init__(self) -> None:
-        self._fds: dict[int, int] = {}  # cpu_id → file descriptor
-        self._perf_prev: dict[int, _PerfSnapshot] = {}  # clock stretch state
-        self._energy_prev: dict[int, _EnergySnapshot] = {}  # per-core power state
-        self._pkg_energy_prev: _EnergySnapshot | None = None  # package power state
-        self._energy_unit: float | None = None  # joules per energy counter tick
+        self._fd_by_cpu: dict[int, int] = {}
+        self._stretch_baseline: dict[int, _PerfSnapshot] = {}
+        self._core_energy_prev: dict[int, _EnergySnapshot] = {}
+        self._pkg_energy_prev: _EnergySnapshot | None = None
+        self._joules_per_tick: float | None = None
         self._available: bool | None = None
 
     def is_available(self) -> bool:
@@ -107,10 +107,9 @@ class MSRReader:
             if aperf is None or mperf is None:
                 continue
 
-            prev = self._perf_prev.get(cpu_id)
+            prev = self._stretch_baseline.get(cpu_id)
             if prev is None or prev.mperf == 0:
-                # First reading — store baseline
-                self._perf_prev[cpu_id] = _PerfSnapshot(aperf=aperf, mperf=mperf)
+                self._stretch_baseline[cpu_id] = _PerfSnapshot(aperf=aperf, mperf=mperf)
                 continue
 
             da = aperf - prev.aperf
@@ -118,12 +117,11 @@ class MSRReader:
 
             # Handle 64-bit counter wraparound (extremely rare but possible)
             if da < 0:
-                da += 1 << 64
+                da += _PERF_COUNTER_SPAN
             if dm < 0:
-                dm += 1 << 64
+                dm += _PERF_COUNTER_SPAN
 
-            # Update stored values
-            self._perf_prev[cpu_id] = _PerfSnapshot(aperf=aperf, mperf=mperf)
+            self._stretch_baseline[cpu_id] = _PerfSnapshot(aperf=aperf, mperf=mperf)
 
             if dm == 0:
                 continue
@@ -132,10 +130,8 @@ class MSRReader:
             stretch_pct = max(0.0, (1.0 - ratio) * 100.0)
 
             # Estimate effective MHz: ratio * nominal max boost
-            # (ratio > 1.0 is possible with turbo — clamp stretch to 0%)
             results[cpu_id] = ClockStretchReading(
                 cpu_id=cpu_id,
-                effective_mhz=0,  # caller fills from sysfs freq if needed
                 ratio=ratio,
                 stretch_pct=stretch_pct,
             )
@@ -162,17 +158,17 @@ class MSRReader:
             if raw is None:
                 continue
 
-            prev = self._energy_prev.get(cpu_id)
+            prev = self._core_energy_prev.get(cpu_id)
             if prev is not None and prev.energy_raw > 0 and prev.timestamp > 0:
                 dt = now - prev.timestamp
                 if dt > 0:
                     de = raw - prev.energy_raw
                     if de < 0:
-                        de += 1 << 32  # 32-bit energy counter wraparound
+                        de += _ENERGY_COUNTER_SPAN
                     watts = (de * unit) / dt
                     results[cpu_id] = CorePowerReading(core_id=cpu_id, watts=watts)
 
-            self._energy_prev[cpu_id] = _EnergySnapshot(energy_raw=raw, timestamp=now)
+            self._core_energy_prev[cpu_id] = _EnergySnapshot(energy_raw=raw, timestamp=now)
 
         return results
 
@@ -198,7 +194,7 @@ class MSRReader:
             if dt > 0:
                 de = raw - prev.energy_raw
                 if de < 0:
-                    de += 1 << 32
+                    de += _ENERGY_COUNTER_SPAN
                 watts = (de * unit) / dt
                 self._pkg_energy_prev = _EnergySnapshot(energy_raw=raw, timestamp=now)
                 return watts
@@ -208,21 +204,21 @@ class MSRReader:
 
     def close(self) -> None:
         """Close all cached file descriptors."""
-        for fd in self._fds.values():
+        for fd in self._fd_by_cpu.values():
             with contextlib.suppress(OSError):
                 os.close(fd)
-        self._fds.clear()
-        self._perf_prev.clear()
-        self._energy_prev.clear()
+        self._fd_by_cpu.clear()
+        self._stretch_baseline.clear()
+        self._core_energy_prev.clear()
         self._pkg_energy_prev = None
 
     def _get_fd(self, cpu_id: int) -> int | None:
         """Get or open a read-only fd for /dev/cpu/N/msr."""
-        if cpu_id in self._fds:
-            return self._fds[cpu_id]
+        if cpu_id in self._fd_by_cpu:
+            return self._fd_by_cpu[cpu_id]
         try:
             fd = os.open(f"/dev/cpu/{cpu_id}/msr", os.O_RDONLY)
-            self._fds[cpu_id] = fd
+            self._fd_by_cpu[cpu_id] = fd
             return fd
         except OSError, PermissionError:
             return None
@@ -240,17 +236,17 @@ class MSRReader:
 
     def _get_energy_unit(self) -> float | None:
         """Read AMD energy unit from MSR_PWR_UNIT (cached)."""
-        if self._energy_unit is not None:
-            return self._energy_unit
+        if self._joules_per_tick is not None:
+            return self._joules_per_tick
         raw = self._read_msr(0, MSR_PWR_UNIT)
         if raw is None:
             return None
         esu = (raw >> 8) & 0x1F
-        self._energy_unit = 1.0 / (1 << esu)
-        return self._energy_unit
+        self._joules_per_tick = 1.0 / (1 << esu)
+        return self._joules_per_tick
 
     def __del__(self) -> None:
         try:
             self.close()
         except Exception:
-            self._fds = {}
+            self._fd_by_cpu = {}

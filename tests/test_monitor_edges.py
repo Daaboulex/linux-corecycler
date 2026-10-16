@@ -56,12 +56,12 @@ class TestPowerMonitorEdges:
         mon._package_path = tmp_path / "gone" / "energy_uj"
         mon._last_energy_uj = None
         mon._last_time = None
-        assert mon._read_rapl() is None
+        assert mon._read_rapl(mon._package_path) is None
 
     def test_read_hwmon_power_unreadable_returns_none(self, tmp_path):
         mon = PowerMonitor.__new__(PowerMonitor)
         mon._hwmon_power_path = tmp_path / "gone" / "power1_input"
-        assert mon._read_hwmon_power() is None
+        assert mon._read_hwmon_power(mon._hwmon_power_path) is None
 
 
 class TestFrequencyEdges:
@@ -158,10 +158,10 @@ class TestRaplPowerReader:
     def test_power_is_the_energy_delta_over_time(self, tmp_path, monkeypatch):
         pw = self._rapl(tmp_path, monkeypatch, {"intel-rapl:0": {"energy_uj": "0\n"}})
         reader = pw.PowerMonitor()
-        assert reader._read_rapl() is None
+        assert reader._read_rapl(reader._package_path) is None
         reader._package_path.write_text("2000000\n")
         reader._last_time -= 2.0
-        watts = reader._read_rapl()
+        watts = reader._read_rapl(reader._package_path)
         assert watts is not None
         assert 0.0 < watts < 10.0
 
@@ -170,20 +170,20 @@ class TestRaplPowerReader:
         with caplog.at_level("WARNING", logger="corecycler.monitor.power"):
             reader = pw.PowerMonitor()
         assert "max_energy_range_uj" in caplog.text
-        reader._read_rapl()
+        reader._read_rapl(reader._package_path)
         reader._last_energy_uj = 5_000_000
         reader._last_time -= 1.0
-        assert reader._read_rapl() is None
+        assert reader._read_rapl(reader._package_path) is None
         reader._package_path.write_text("1000010\n")
         reader._last_time -= 1.0
-        assert reader._read_rapl() == pytest.approx(1.0, rel=0.05)
+        assert reader._read_rapl(reader._package_path) == pytest.approx(1.0, rel=0.05)
 
     def test_an_unreadable_counter_reads_as_unknown(self, tmp_path, monkeypatch):
         pw = self._rapl(tmp_path, monkeypatch, {"intel-rapl:0": {"energy_uj": "junk\n"}})
         reader = pw.PowerMonitor()
         assert reader._package_path is None
         reader._package_path = tmp_path / "powercap" / "intel-rapl" / "intel-rapl:0" / "energy_uj"
-        assert reader._read_rapl() is None
+        assert reader._read_rapl(reader._package_path) is None
 
 
 class TestHwmonPowerFallback:

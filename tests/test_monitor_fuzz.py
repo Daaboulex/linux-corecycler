@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -46,14 +47,14 @@ class TestProcStatRobust:
 
     def test_cpu_usage_parses_real_stat(self):
         reader = CPUUsageReader()
-        line = "cpu0 100 0 50 1000 10 0 5 0 0 0\ncpu1 200 0 60 900 20 0 5 0 0 0\n"
+        line = "cpu0 100 7 50 1000 10 3 5 0 0 0\ncpu1 200 0 60 900 20 0 5 0 0 0\n"
         with patch("pathlib.Path.read_text", return_value=line):
-            reader.read()  # baseline
-        line2 = "cpu0 150 0 70 1100 12 0 6 0 0 0\ncpu1 260 0 80 950 25 0 6 0 0 0\n"
+            reader.read()
+        line2 = "cpu0 150 9 70 1100 12 4 6 0 0 0\ncpu1 260 0 80 950 25 0 6 0 0 0\n"
         with patch("pathlib.Path.read_text", return_value=line2):
             usage = reader.read()
         assert set(usage) == {0, 1}
-        assert all(0.0 <= v <= 100.0 for v in usage.values())
+        assert usage[0] == pytest.approx(100.0 * 74 / 176)
 
     def test_cpu_usage_skips_malformed_cpu_lines(self):
         """A malformed cpuN line (non-numeric id/values, too few fields) is skipped,

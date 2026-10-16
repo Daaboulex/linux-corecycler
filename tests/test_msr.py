@@ -99,7 +99,7 @@ class TestClockStretch:
     def test_second_read_returns_stretch(self):
         reader = self._make_reader()
         # Simulate: APERF grew by 900, MPERF grew by 1000 → 10% stretch
-        reader._perf_prev[0] = _PerfSnapshot(aperf=1000, mperf=1000)
+        reader._stretch_baseline[0] = _PerfSnapshot(aperf=1000, mperf=1000)
 
         with patch.object(reader, "_read_msr", side_effect=[1900, 2000]):
             result = reader.read_clock_stretch([0])
@@ -110,7 +110,7 @@ class TestClockStretch:
 
     def test_no_stretch_when_ratio_is_one(self):
         reader = self._make_reader()
-        reader._perf_prev[0] = _PerfSnapshot(aperf=1000, mperf=1000)
+        reader._stretch_baseline[0] = _PerfSnapshot(aperf=1000, mperf=1000)
 
         with patch.object(reader, "_read_msr", side_effect=[2000, 2000]):
             result = reader.read_clock_stretch([0])
@@ -120,7 +120,7 @@ class TestClockStretch:
 
     def test_turbo_ratio_above_one_clamps_stretch_to_zero(self):
         reader = self._make_reader()
-        reader._perf_prev[0] = _PerfSnapshot(aperf=1000, mperf=1000)
+        reader._stretch_baseline[0] = _PerfSnapshot(aperf=1000, mperf=1000)
 
         # APERF > MPERF = turbo boost beyond reference
         with patch.object(reader, "_read_msr", side_effect=[2100, 2000]):
@@ -137,8 +137,8 @@ class TestClockStretch:
 
     def test_multiple_cpus(self):
         reader = self._make_reader()
-        reader._perf_prev[0] = _PerfSnapshot(aperf=100, mperf=100)
-        reader._perf_prev[1] = _PerfSnapshot(aperf=100, mperf=100)
+        reader._stretch_baseline[0] = _PerfSnapshot(aperf=100, mperf=100)
+        reader._stretch_baseline[1] = _PerfSnapshot(aperf=100, mperf=100)
 
         def mock_read(cpu_id, msr_addr):
             if cpu_id == 0:
@@ -155,7 +155,7 @@ class TestClockStretch:
 
     def test_zero_mperf_delta_skipped(self):
         reader = self._make_reader()
-        reader._perf_prev[0] = _PerfSnapshot(aperf=1000, mperf=1000)
+        reader._stretch_baseline[0] = _PerfSnapshot(aperf=1000, mperf=1000)
 
         # Same MPERF = 0 delta
         with patch.object(reader, "_read_msr", side_effect=[1100, 1000]):
@@ -167,7 +167,7 @@ class TestCorePower:
     def _make_reader(self):
         reader = MSRReader()
         reader._available = True
-        reader._energy_unit = 1.0 / (1 << 14)  # ~61 µJ per tick
+        reader._joules_per_tick = 1.0 / (1 << 14)  # ~61 µJ per tick
         return reader
 
     def test_first_read_returns_empty(self):
@@ -179,7 +179,7 @@ class TestCorePower:
     def test_second_read_returns_watts(self):
         reader = self._make_reader()
         # Seed with initial reading
-        reader._energy_prev[0] = _EnergySnapshot(energy_raw=1000000, timestamp=100.0)
+        reader._core_energy_prev[0] = _EnergySnapshot(energy_raw=1000000, timestamp=100.0)
 
         with (
             patch.object(reader, "_read_msr", return_value=1000000 + 163840),
@@ -194,7 +194,7 @@ class TestCorePower:
     def test_energy_unit_not_available(self):
         reader = MSRReader()
         reader._available = True
-        reader._energy_unit = None
+        reader._joules_per_tick = None
         with patch.object(reader, "_read_msr", return_value=None):
             result = reader.read_core_power([0])
         assert result == {}
@@ -204,17 +204,17 @@ class TestCorePower:
         reader = self._make_reader()
 
         # Seed perf snapshot (clock stretch baseline)
-        reader._perf_prev[0] = _PerfSnapshot(aperf=1000, mperf=1000)
+        reader._stretch_baseline[0] = _PerfSnapshot(aperf=1000, mperf=1000)
 
         # Seed energy snapshot (power baseline)
-        reader._energy_prev[0] = _EnergySnapshot(energy_raw=1000000, timestamp=100.0)
+        reader._core_energy_prev[0] = _EnergySnapshot(energy_raw=1000000, timestamp=100.0)
 
         # Read clock stretch — should NOT touch energy state
         with patch.object(reader, "_read_msr", side_effect=[2000, 2000]):
             reader.read_clock_stretch([0])
 
         # Energy snapshot should be untouched
-        assert reader._energy_prev[0].energy_raw == 1000000
+        assert reader._core_energy_prev[0].energy_raw == 1000000
 
         # Read power — should compute correct watts from energy snapshot
         with (
@@ -230,17 +230,17 @@ class TestCorePower:
 class TestMSRClose:
     def test_close_clears_state(self):
         reader = MSRReader()
-        reader._fds = {0: 10, 1: 11}
-        reader._perf_prev = {0: _PerfSnapshot(aperf=1, mperf=1)}
-        reader._energy_prev = {0: _EnergySnapshot(energy_raw=1, timestamp=1.0)}
+        reader._fd_by_cpu = {0: 10, 1: 11}
+        reader._stretch_baseline = {0: _PerfSnapshot(aperf=1, mperf=1)}
+        reader._core_energy_prev = {0: _EnergySnapshot(energy_raw=1, timestamp=1.0)}
         reader._pkg_energy_prev = _EnergySnapshot(energy_raw=1, timestamp=1.0)
 
         with patch("os.close"):
             reader.close()
 
-        assert reader._fds == {}
-        assert reader._perf_prev == {}
-        assert reader._energy_prev == {}
+        assert reader._fd_by_cpu == {}
+        assert reader._stretch_baseline == {}
+        assert reader._core_energy_prev == {}
         assert reader._pkg_energy_prev is None
 
 
@@ -283,7 +283,7 @@ class TestReadPackagePower:
     def _make_reader(self):
         reader = MSRReader()
         reader._available = True
-        reader._energy_unit = 1.0 / (1 << 14)
+        reader._joules_per_tick = 1.0 / (1 << 14)
         return reader
 
     def test_not_available_returns_none(self):
@@ -294,7 +294,7 @@ class TestReadPackagePower:
     def test_energy_unit_unavailable_returns_none(self):
         reader = MSRReader()
         reader._available = True
-        reader._energy_unit = None
+        reader._joules_per_tick = None
         with patch.object(reader, "_read_msr", return_value=None):
             assert reader.read_package_power() is None
 
@@ -349,31 +349,44 @@ class TestMSRExtraBranches:
     def test_core_power_raw_read_failure_skips_cpu(self):
         reader = MSRReader()
         reader._available = True
-        reader._energy_unit = 1.0 / (1 << 14)
+        reader._joules_per_tick = 1.0 / (1 << 14)
         with patch.object(reader, "_read_msr", return_value=None):
             assert reader.read_core_power([0]) == {}
 
     def test_clock_stretch_counter_wraparound(self):
         reader = MSRReader()
         reader._available = True
-        reader._perf_prev[0] = _PerfSnapshot(aperf=(1 << 64) - 50, mperf=(1 << 64) - 100)
+        reader._stretch_baseline[0] = _PerfSnapshot(aperf=(1 << 64) - 50, mperf=(1 << 64) - 100)
         with patch.object(reader, "_read_msr", side_effect=[50, 100]):
             result = reader.read_clock_stretch([0])
-        assert 0 in result
-        assert result[0].ratio > 0
+        assert result[0].ratio == pytest.approx(0.5)
 
     def test_core_power_counter_wraparound(self):
         reader = MSRReader()
         reader._available = True
-        reader._energy_unit = 1.0 / (1 << 14)
-        reader._energy_prev[0] = _EnergySnapshot(energy_raw=(1 << 32) - 100, timestamp=100.0)
+        reader._joules_per_tick = 1.0 / (1 << 14)
+        reader._core_energy_prev[0] = _EnergySnapshot(energy_raw=(1 << 32) - 100, timestamp=100.0)
         with (
             patch.object(reader, "_read_msr", return_value=60),
             patch("time.monotonic", return_value=101.0),
         ):
             result = reader.read_core_power([0])
-        assert 0 in result
-        assert result[0].watts > 0
+        assert result[0].watts == pytest.approx(160 / (1 << 14))
+
+    def test_each_reading_asks_the_register_amd_documents_for_it(self):
+        reader = MSRReader()
+        reader._available = True
+        asked = []
+
+        def read(cpu_id, register):
+            asked.append(register)
+            return 0x0A0E03
+
+        with patch.object(reader, "_read_msr", side_effect=read), patch("time.monotonic", return_value=1.0):
+            reader.read_clock_stretch([0])
+            reader.read_core_power([0])
+            reader.read_package_power()
+        assert asked == [0xE8, 0xE7, 0xC0010299, 0xC001029A, 0xC001029B]
 
     def test_read_msr_pread_failure_returns_none(self):
         reader = MSRReader()
@@ -403,4 +416,4 @@ class TestMSRExtraBranches:
         reader = MSRReader()
         with patch.object(reader, "close", side_effect=RuntimeError("shutdown")):
             reader.__del__()
-        assert reader._fds == {}
+        assert reader._fd_by_cpu == {}
