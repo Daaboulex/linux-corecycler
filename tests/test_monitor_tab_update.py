@@ -65,11 +65,13 @@ class TestMonitorUpdateMatrix:
         assert sorted(tab._ccd_temp_labels) == [1]
         assert "59.0" in tab._ccd_temp_labels[1].text()
 
-    def test_no_package_power_marks_power_stale(self):
+    @pytest.mark.req("T22.monitor.stale")
+    def test_a_missed_package_read_marks_the_last_one_stale_at_once(self):
         tab = _tab()
-        tab._power_fail_count = tab._STALE_THRESHOLD
+        tab.on_tick(_tick(watts=95.0))
         tab.on_tick(_tick(watts=None))
         assert tab._power_label.styleSheet() == tab._stale_style()
+        assert tab._power_label.text() == "Package: 95.0W (stale)"
 
     def test_boost_above_ceiling_raises_max(self):
         tab = _tab()
@@ -78,13 +80,17 @@ class TestMonitorUpdateMatrix:
         assert tab._max_core_freq == 6200.0
         assert "6200" in tab._max_freq_label.text()
 
-    def test_missing_hwmon_values_mark_stale(self):
-        sensors = FakeSensors(tctl=None, tccd=(), vcore=None)
+    @pytest.mark.req("T22.monitor.stale")
+    def test_missed_sensor_reads_mark_each_last_reading_stale_on_its_own(self):
+        sensors = FakeSensors(tctl=60.0, tccd=((0, 61.0), (1, 59.0)), vcore=1.2)
         tab = _tab(sensors)
-        tab._hwmon_fail_count = tab._STALE_THRESHOLD
         tab.on_tick(_tick(watts=50.0, sensors=sensors))
-        assert tab._tctl_label.styleSheet() == tab._stale_style()
-        assert tab._vcore_label.styleSheet() == tab._stale_style()
+        sensors.give(tctl=62.0, tccd=((0, None), (1, 58.0)), vcore=None)
+        tab.on_tick(_tick(watts=50.0, sensors=sensors))
+        assert tab._tctl_label.text() == "Tctl: 62.0\u00b0C"
+        assert tab._vcore_label.text() == "Vcore: 1.2000V (stale)"
+        assert tab._ccd_temp_labels[0].text().endswith("61.0\u00b0C (stale)")
+        assert tab._ccd_temp_labels[1].text().endswith("58.0\u00b0C")
 
     def test_the_bars_show_the_tick_s_stretch_and_core_power(self):
         tab = _tab()

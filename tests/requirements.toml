@@ -4865,6 +4865,11 @@ statement = "History's right-click menus and its export dialog are freed after u
 proof = "built"
 
 [[requirement]]
+id = "T22.monitor.stale"
+statement = "From the first missed read, the Monitor shows the last reading of Tctl, each CCD, Vcore and Package with (stale) in the stale style, each on its own count, and a fresh read restores it; a value never read keeps its placeholder (scratch/design/t23-monitor-memory-window.md, the facts list)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

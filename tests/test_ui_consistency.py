@@ -178,7 +178,7 @@ class TestMonitorTabSwallowsNothing:
 
 class TestStalenessIndicator:
     def test_staleness_indicator(self):
-        """After 3 consecutive None hwmon reads, tctl label should turn grey."""
+        """The first missed read marks the last reading stale."""
         from corecycler.gui.monitor_tab import MonitorTab
 
         tab = types.SimpleNamespace()
@@ -186,8 +186,7 @@ class TestStalenessIndicator:
         tab._topology = None
         tab._per_core_bars = {}
         tab._per_core_visible = False
-        tab._hwmon_fail_count = 0
-        tab._power_fail_count = 0
+        tab._last_read = {}
 
         # Mock labels
         tab._tctl_label = _MockStyleLabel("Tctl: 65.0\u00b0C")
@@ -203,26 +202,23 @@ class TestStalenessIndicator:
         tab._max_freq_label = MagicMock()
         tab._show_power_limits = MagicMock()
 
-        # hwmon returns None tctl for 3 consecutive reads
-        tab._sensors.give()
-
         tab.on_tick = MethodType(MonitorTab.on_tick, tab)
 
         # Access class constants
-        tab._STALE_THRESHOLD = MonitorTab._STALE_THRESHOLD
         tab._NORMAL_STYLE = MonitorTab._NORMAL_STYLE
+        tab._show_read = MethodType(MonitorTab._show_read, tab)
         tab._stale_style = MonitorTab._stale_style
 
-        # 3 consecutive failure reads
-        for _ in range(3):
-            tab.on_tick(a_tick(tab._sensors))
+        tab._sensors.give(tctl=65.0, vcore=1.25)
+        tab.on_tick(a_tick(tab._sensors))
+        tab._sensors.give()
+        tab.on_tick(a_tick(tab._sensors))
 
-        # After 3 failures, label should be grey
         assert tab._tctl_label.styleSheet() == MonitorTab._stale_style(), (
-            "tctl label should turn stale after 3 consecutive failures"
+            "tctl label should turn stale at the first missed read"
         )
-        # Last-known text must be preserved (not cleared)
-        assert "65.0" in tab._tctl_label.text(), "tctl label should preserve last-known value"
+        assert tab._tctl_label.text() == "Tctl: 65.0\u00b0C (stale)"
+        assert tab._vcore_label.text() == "Vcore: 1.2500V (stale)"
 
 
 class TestStalenessRecovery:
@@ -235,8 +231,7 @@ class TestStalenessRecovery:
         tab._topology = None
         tab._per_core_bars = {}
         tab._per_core_visible = False
-        tab._hwmon_fail_count = 0
-        tab._power_fail_count = 0
+        tab._last_read = {}
 
         tab._tctl_label = _MockStyleLabel("Tctl: 65.0\u00b0C")
         tab._vcore_label = _MockStyleLabel("Vcore: 1.2500V")
@@ -251,14 +246,14 @@ class TestStalenessRecovery:
         tab._show_power_limits = MagicMock()
 
         tab.on_tick = MethodType(MonitorTab.on_tick, tab)
-        tab._STALE_THRESHOLD = MonitorTab._STALE_THRESHOLD
         tab._NORMAL_STYLE = MonitorTab._NORMAL_STYLE
+        tab._show_read = MethodType(MonitorTab._show_read, tab)
         tab._stale_style = MonitorTab._stale_style
 
-        # First, trigger staleness with 3 failures
+        tab._sensors.give(tctl=65.0, vcore=1.25)
+        tab.on_tick(a_tick(tab._sensors))
         tab._sensors.give()
-        for _ in range(3):
-            tab.on_tick(a_tick(tab._sensors))
+        tab.on_tick(a_tick(tab._sensors))
 
         assert tab._tctl_label.styleSheet() == MonitorTab._stale_style()
 
@@ -266,11 +261,10 @@ class TestStalenessRecovery:
         tab._sensors.give(tctl=72.0, vcore=1.30)
         tab.on_tick(a_tick(tab._sensors))
 
-        # Grey should be removed, fail count reset
         assert tab._tctl_label.styleSheet() != MonitorTab._stale_style(), (
             "tctl label should recover from grey after successful read"
         )
-        assert tab._hwmon_fail_count == 0, "fail count should be reset on success"
+        assert tab._tctl_label.text() == "Tctl: 72.0\u00b0C"
 
 
 class TestNoStrayDisplayConstants:

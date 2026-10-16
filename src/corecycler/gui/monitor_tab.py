@@ -223,11 +223,13 @@ class CoreFreqBar(QWidget):
         painter.end()
 
 
+STALE = " (stale)"
+
+
 class MonitorTab(QWidget):
     """Live system monitoring with package charts + per-core view toggle."""
 
     # Staleness tracking — grey out labels after consecutive sensor read failures
-    _STALE_THRESHOLD = 3
     _NORMAL_STYLE = "font: bold 11px monospace; padding: 2px;"
 
     @staticmethod
@@ -240,8 +242,7 @@ class MonitorTab(QWidget):
         self._sensors = sensors
         self._per_core_bars: dict[int, CoreFreqBar] = {}
         self._per_core_visible = False
-        self._hwmon_fail_count: int = 0
-        self._power_fail_count: int = 0
+        self._last_read: dict[QLabel, str] = {}
 
         self._setup_ui()
 
@@ -390,6 +391,15 @@ class MonitorTab(QWidget):
         self._per_core_scroll.setVisible(checked)
         self._toggle_btn.setText("Package View" if checked else "Per-Core View")
 
+    def _show_read(self, label: QLabel, text: str | None) -> None:
+        if text is not None:
+            self._last_read[label] = text
+            label.setStyleSheet(self._NORMAL_STYLE)
+            label.setText(text)
+        elif label in self._last_read:
+            label.setStyleSheet(self._stale_style())
+            label.setText(self._last_read[label] + STALE)
+
     def on_tick(self, tick: Tick) -> None:
         clocks = tick.clocks
         if self._topology is None and not self._per_core_bars and clocks:
@@ -409,18 +419,13 @@ class MonitorTab(QWidget):
 
         sensed = tick.sensed
         tctl = sensed.tctl
+        self._show_read(self._tctl_label, None if tctl is None else f"Tctl: {tctl:.1f}°C")
         if tctl is not None:
-            self._hwmon_fail_count = 0
-            self._tctl_label.setStyleSheet(self._NORMAL_STYLE)
-            self._tctl_label.setText(f"Tctl: {tctl:.1f}°C")
             self._temp_chart.add_value(tctl)
-        else:
-            self._hwmon_fail_count += 1
-            if self._hwmon_fail_count >= self._STALE_THRESHOLD:
-                self._tctl_label.setStyleSheet(self._stale_style())
-            # Keep last-known text — don't clear it
         for ccd_idx, temp in sensed.tccd:
             if temp is None:
+                if ccd_idx in self._ccd_temp_labels:
+                    self._show_read(self._ccd_temp_labels[ccd_idx], None)
                 continue
             if ccd_idx not in self._ccd_temp_labels:
                 label = QLabel()
@@ -437,26 +442,16 @@ class MonitorTab(QWidget):
                     if core.ccd == ccd_idx and core.has_vcache:
                         vcache_tag = " VC"
                         break
-            self._ccd_temp_labels[ccd_idx].setText(f"CCD{ccd_idx}{vcache_tag}: {temp:.1f}°C")
+            self._show_read(self._ccd_temp_labels[ccd_idx], f"CCD{ccd_idx}{vcache_tag}: {temp:.1f}°C")
         core_vcore = self._sensors.vcore(sensed)
+        self._show_read(self._vcore_label, None if core_vcore is None else f"Vcore: {core_vcore:.4f}V")
         if core_vcore is not None:
-            self._vcore_label.setStyleSheet(self._NORMAL_STYLE)
-            self._vcore_label.setText(f"Vcore: {core_vcore:.4f}V")
             self._voltage_chart.add_value(core_vcore)
-        else:
-            if self._hwmon_fail_count >= self._STALE_THRESHOLD:
-                self._vcore_label.setStyleSheet(self._stale_style())
 
         watts = tick.package_watts
+        self._show_read(self._power_label, None if watts is None else f"Package: {watts:.1f}W")
         if watts is not None:
-            self._power_fail_count = 0
-            self._power_label.setStyleSheet(self._NORMAL_STYLE)
-            self._power_label.setText(f"Package: {watts:.1f}W")
             self._power_chart.add_value(watts)
-        else:
-            self._power_fail_count += 1
-            if self._power_fail_count >= self._STALE_THRESHOLD:
-                self._power_label.setStyleSheet(self._stale_style())
 
         usage_data = tick.usage
         stretch_data = tick.stretch
