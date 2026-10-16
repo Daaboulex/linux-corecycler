@@ -69,11 +69,12 @@ def narrowable(label: QLabel) -> QLabel:
 class TestWorker(QThread):
     """Worker thread that runs the core scheduler."""
 
-    core_started = Signal(int, int)  # core_id, cycle
-    core_finished = Signal(int, object)  # core_id, StressResult
-    status_updated = Signal(int, object)  # core_id, CoreTestStatus
+    core_started = Signal(int, int, arguments=["core_id", "cycle"])
+    core_finished = Signal(int, object, arguments=["core_id", "result"])
+    status_updated = Signal(int, object, arguments=["core_id", "status"])
     cycle_completed = Signal(int)
-    test_completed = Signal(str)  # JSON-encoded results — avoids PySide6 dict marshalling crash
+    # PySide6 crashes marshalling a dict, so the results travel as JSON.
+    test_completed = Signal(str)
     thermal_throttled = Signal(float)
     stall_detected = Signal(int)
     phase_changed = Signal(int, str)
@@ -125,7 +126,7 @@ class MainWindow(QMainWindow):
         self._sensors = Sensors()
         self._ticker = Ticker(self._sensors, Clocks())
         self._telemetry_failing = False
-        self._core_telemetry: dict[int, dict] = {}  # core_id -> {max_freq, max_temp, last_vcore}
+        self._core_telemetry: dict[int, dict] = {}
         self._core_status_cache: dict[int, CoreTestStatus] = {}
         self._active_test_core: int | None = None
         self._crash: str | None = None
@@ -616,7 +617,6 @@ class MainWindow(QMainWindow):
                 and all(isinstance(r, dict) and r.get("passed") for r in r_list)
             )
 
-        # a core with no verdict was not tested; counting it failed would read as a silicon fault
         tested = {cid: r_list for cid, r_list in results.items() if isinstance(r_list, list) and r_list}
         total = len(tested)
         passed = sum(1 for r_list in tested.values() if _all_passed(r_list))
