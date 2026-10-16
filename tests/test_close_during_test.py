@@ -98,7 +98,7 @@ class TestCloseDuringTest:
         assert event.ignore.called
         assert not event.accept.called
         assert window._closing is False
-        assert db.list_runs(limit=5) == []
+        assert db.list_runs() == []
         window._worker = None
         window._on_worker_finished()
 
@@ -107,7 +107,7 @@ class TestCloseDuringTest:
         assert event.accept.called
         assert mw.save_settings.called
         with pytest.raises(Exception, match="[Cc]losed"):
-            db.list_runs(limit=1)
+            db.list_runs()
 
     @pytest.mark.req("E6.B2.close")
     def test_close_leaves_a_tuner_driver_running_and_stops_memory_stress(self, window, no_modal, monkeypatch):

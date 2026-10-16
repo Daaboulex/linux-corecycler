@@ -67,6 +67,10 @@ class CorruptSessionError(ValueError):
         self.detail = detail
 
 
+def _newest(limit: int | None) -> tuple[str, tuple[int, ...]]:
+    return ("", ()) if limit is None else (" LIMIT ?", (limit,))
+
+
 def adopt_legacy_root_db(db: HistoryDB, root_db: Path = LEGACY_ROOT_DB) -> dict[str, int] | None:
     """One-time adoption of a root-owned history database.
 
@@ -1101,11 +1105,8 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             return None
         return self._row_to_run(row)
 
-    def list_runs(self, *, limit: int = 100, offset: int = 0) -> list[RunRecord]:
-        rows = self.__conn.execute(
-            "SELECT * FROM runs ORDER BY id DESC LIMIT ? OFFSET ?",
-            (limit, offset),
-        ).fetchall()
+    def list_runs(self) -> list[RunRecord]:
+        rows = self.__conn.execute("SELECT * FROM runs ORDER BY id DESC").fetchall()
         return [self._row_to_run(r) for r in rows]
 
     def delete_run(self, run_id: int) -> None:
@@ -1407,9 +1408,10 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             return None
         return self._row_to_context(row)
 
-    def list_contexts(self, *, limit: int = 100) -> list[TuningContextRecord]:
-        """List tuning contexts, newest first."""
-        rows = self.__conn.execute("SELECT * FROM tuning_contexts ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    def list_contexts(self, *, limit: int | None = None) -> list[TuningContextRecord]:
+        """List tuning contexts, newest first: every one, or the newest `limit`."""
+        clause, params = _newest(limit)
+        rows = self.__conn.execute(f"SELECT * FROM tuning_contexts ORDER BY id DESC{clause}", params).fetchall()
         return [self._row_to_context(r) for r in rows]
 
     def update_context_notes(self, context_id: int, notes: str) -> None:
@@ -1473,16 +1475,17 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         if cur.rowcount != 1:
             raise sqlite3.IntegrityError(f"session {session_id} belongs to the old engine")
 
-    def list_machine_sessions(self, limit: int = 50) -> list[MachineSessionRecord]:
+    def list_machine_sessions(self, limit: int | None = None) -> list[MachineSessionRecord]:
+        clause, params = _newest(limit)
         rows = self.__conn.execute(
-            """\
+            f"""\
             SELECT s.id, s.status, s.created_at, s.updated_at, s.cpu_model, s.bios_version, s.parent_session_id,
                 s.origin,
                 (SELECT e.message FROM tuner_events e WHERE e.session_id = s.id ORDER BY e.id DESC LIMIT 1)
                     AS last_event
-            FROM tuner_sessions s WHERE s.machine_json IS NOT NULL ORDER BY s.id DESC LIMIT ?
+            FROM tuner_sessions s WHERE s.machine_json IS NOT NULL ORDER BY s.id DESC{clause}
             """,
-            (limit,),
+            params,
         ).fetchall()
         return [MachineSessionRecord(**dict(row)) for row in rows]
 

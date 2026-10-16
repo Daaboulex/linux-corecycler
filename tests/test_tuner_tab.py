@@ -706,6 +706,14 @@ class TestAutoResume:
         assert t._driver.text() == f"auto-resume: {running} interrupted sessions; resume one by hand"
         assert launched == []
 
+    @pytest.mark.req("T23.history.uncapped")
+    def test_an_interrupted_session_older_than_the_newest_fifty_resumes(self, db, home, launched, tmp_path):
+        save_machine_session(db, tmp_path, "running", session_id=1)
+        for number in range(2, 52):
+            save_machine_session(db, tmp_path, "completed", session_id=number)
+        tab(db).attempt_auto_resume()
+        assert launched[-1][0][4:7] == ["--resume", "--session", "1"]
+
     @pytest.mark.req("L28.d.modal")
     def test_an_open_dialog_defers_it_a_minute_and_a_closing_app_ends_it(
         self, db, home, launched, tmp_path, monkeypatch

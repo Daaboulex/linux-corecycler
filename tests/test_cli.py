@@ -200,6 +200,14 @@ class TestStatus:
         assert lines[1].startswith("   1  superseded ")
         assert lines[1].endswith("  superseded by session 2 (continue)")
 
+    @pytest.mark.req("T23.history.uncapped")
+    def test_every_session_is_listed(self, db, capsys):
+        for number in range(1, 52):
+            machine_session(db, number, "paused")
+        assert cli.cmd_status(db) == cli.EXIT_COMPLETED
+        lines = capsys.readouterr().out.splitlines()
+        assert [int(line.split()[0]) for line in lines] == list(range(51, 0, -1))
+
     def test_old_engine_sessions_are_not_listed(self, db, capsys):
         seed_old_session(db)
         assert cli.cmd_status(db) == cli.EXIT_COMPLETED

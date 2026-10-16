@@ -4765,6 +4765,11 @@ statement = "The Memory tab shows only what it read: no DIMM listed says what dm
 proof = "built"
 
 [[requirement]]
+id = "T23.history.uncapped"
+statement = "Every list History, the auto-resume and corecycler status read holds every row, so no count shown as a total is a capped read: 501 runs show 501 and a setup's delete names all 501, 102 sessions show 102 rows, 101 setups 101, and an interrupted session older than the newest 50 still resumes (scratch/design/t23-curve-history.md defect 2)."
+proof = "built"
+
+[[requirement]]
 id = "T23.curve.zero"
 statement = "Set all to 0 names every core its per-core fallback could not set to 0 in a Write failed warning; a fallback that set every core warns nothing (scratch/design/t23-curve-history.md defect 7)."
 proof = "built"

@@ -398,7 +398,7 @@ class HistoryTab(QWidget):
         self._apply_view_mode()
 
     def _reload_data(self) -> None:
-        self._runs = self._db.list_runs(limit=500)
+        self._runs = self._db.list_runs()
         self._contexts = self._db.list_contexts()
 
         self._context_runs.clear()
@@ -790,7 +790,7 @@ class HistoryTab(QWidget):
     def _load_tuner_sessions(self) -> list[MachineSessionRecord]:
         if not self._db:
             return []
-        return self._db.list_machine_sessions(limit=100)
+        return self._db.list_machine_sessions()
 
     def _progress(self, sess: MachineSessionRecord) -> tuple[str, str, str | None, bool]:
         try:

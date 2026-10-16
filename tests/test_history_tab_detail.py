@@ -614,6 +614,28 @@ class TestLoadCoProfile:
         assert emitted == []
 
 
+@pytest.mark.req("T23.history.uncapped")
+def test_every_run_session_and_setup_is_listed_and_counted_past_the_old_caps(db, tmp_path):
+    setup = _seed_context(db, "2402", {"0": -20})
+    for second in range(501):
+        _seed_run(db, f"2026-07-20T10:{second // 60:02d}:{second % 60:02d}+00:00", context_id=setup)
+    for number in range(100):
+        _seed_context(db, f"b{number}", {"0": -number})
+    for number in range(1, 103):
+        save_machine_session(db, tmp_path, "completed", session_id=number)
+    tab = _grouped_tab(db)
+    assert (tab._context_table.rowCount(), tab._context_table.item(100, 3).text()) == (101, "501")
+    with patch("corecycler.gui.history_tab.QMessageBox.question", return_value=_no()) as ask:
+        tab._delete_contexts([100])
+    assert "ALL 501 associated test run(s)" in ask.call_args.args[2]
+    tab._view_mode = tab.VIEW_ALL
+    tab.refresh()
+    assert tab._runs_table.rowCount() == 501
+    tab._view_mode = tab.VIEW_TUNER
+    tab.refresh()
+    assert tab._runs_table.rowCount() == 102
+
+
 class TestDeleteSelected:
     def test_tuner_view_deletes_the_selected_session(self, db, tmp_path):
         save_machine_session(db, tmp_path, "completed")

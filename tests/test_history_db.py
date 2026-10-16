@@ -103,12 +103,12 @@ class TestRuns:
         assert runs[0].cpu_model == "third"
         assert runs[2].cpu_model == "first"
 
-    def test_list_runs_limit_offset(self, db):
-        for i in range(5):
+    @pytest.mark.req("T23.history.uncapped")
+    def test_list_runs_returns_every_run(self, db):
+        for i in range(101):
             db.create_run(RunRecord(cpu_model=f"run-{i}"))
-
-        page = db.list_runs(limit=2, offset=1)
-        assert len(page) == 2
+        runs = db.list_runs()
+        assert (len(runs), runs[0].cpu_model, runs[-1].cpu_model) == (101, "run-100", "run-0")
 
     def test_delete_run_cascades(self, db):
         run_id = db.create_run(RunRecord(cpu_model="test"))
@@ -369,6 +369,22 @@ class TestStatusCounts:
 class TestMachineSessionMethods:
     """Verify public tuner methods that both Grouped and Tuner views use."""
 
+    @pytest.mark.req("T23.history.uncapped")
+    def test_list_machine_sessions_returns_every_session_or_the_newest_asked_for(self, db):
+        for number in range(1, 52):
+            db.save_machine_session(
+                number,
+                status="paused",
+                config_json="{}",
+                machine_json="{}",
+                boot_id="b",
+                bios_version="bios-1",
+                cpu_model="cpu-1",
+                context_id=None,
+            )
+        assert [s.id for s in db.list_machine_sessions()] == list(range(51, 0, -1))
+        assert [s.id for s in db.list_machine_sessions(limit=2)] == [51, 50]
+
     def test_machine_readers_never_see_an_old_engine_row(self, db):
         old = seed_old_session(db)
         machine = db.next_tuner_session_id()
@@ -628,6 +644,13 @@ class TestTuningContexts:
         assert len(contexts) == 3
         assert contexts[0].bios_version == "third"  # newest first
         assert contexts[2].bios_version == "first"
+
+    @pytest.mark.req("T23.history.uncapped")
+    def test_list_contexts_returns_every_context_or_the_newest_asked_for(self, db):
+        for i in range(101):
+            db.create_context(TuningContextRecord(bios_version=f"b{i}"))
+        assert len(db.list_contexts()) == 101
+        assert [c.bios_version for c in db.list_contexts(limit=2)] == ["b100", "b99"]
 
     def test_update_notes(self, db):
         ctx_id = db.create_context(TuningContextRecord(bios_version="2101"))
