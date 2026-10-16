@@ -96,8 +96,10 @@ class TestMonitorTab:
         tab.set_topology(_topo(ccds=1))
         assert sorted(tab._per_core_bars) == list(range(8))
 
-    def test_a_machine_with_no_power_source_says_so_before_the_first_tick(self):
-        assert _tab()._power_label.text() == "Package: N/A (needs root)"
+    @pytest.mark.req("T22.monitor.fallbacks")
+    def test_a_machine_with_no_power_source_or_voltage_sensor_says_so_before_the_first_tick(self):
+        tab = _tab()
+        assert (tab._power_label.text(), tab._vcore_label.text()) == ("Package: unreadable", "Vcore: no sensor")
 
     def test_power_limits_na_when_pmtable_absent(self):
         tab = _tab()
@@ -130,4 +132,4 @@ class TestMonitorTab:
                 edc_limit_a=230.0,
             )
         )
-        assert tab._edc_label.text() == "EDC: limit 230A, live value not read"
+        assert tab._edc_label.text() == "EDC: unread/230A"

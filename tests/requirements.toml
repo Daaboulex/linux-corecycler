@@ -4820,6 +4820,11 @@ statement = "No menu of the window can hide the toolbar holding Start test and S
 proof = "built"
 
 [[requirement]]
+id = "T22.monitor.fallbacks"
+statement = "The Monitor tab says what was read when a value has no source: Package unreadable (not a guessed cause), Vcore no sensor, EDC unread/limit in the value/limit form of PPT and TDC; short enough that the window still fits a half-screen tile (scratch/design/t23-monitor-memory-window.md D1 and its facts list)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

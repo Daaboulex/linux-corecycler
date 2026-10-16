@@ -26,7 +26,7 @@ from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.gui import main_window as mw
 from corecycler.history.db import HistoryDB, RunRecord
 from tests._old_rows import seed_old_session
-from tests._sensors import FakeClocks, FakeSensors, FakeTicker
+from tests._sensors import FakeClocks, FakeSensors, FakeTicker, a_tick
 from tests._tuner_world import save_machine_session
 
 
@@ -795,6 +795,28 @@ def test_the_window_fits_a_half_screen_tile_and_keeps_its_text(monkeypatch, tmp_
     warnings = [label for label in win.statusBar().findChildren(QLabel) if label.toolTip()]
     assert warnings
     assert all(label.isVisible() and label.width() > 0 for label in warnings)
+    win._history_db = None
+
+
+@pytest.mark.req("T23.halfscreen")
+def test_the_monitor_tab_with_every_power_limit_fits_a_half_screen_tile(monkeypatch, tmp_path, db):
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    from corecycler.smu.pmtable import PMTableData
+
+    win = _build(monkeypatch, tmp_path, db=db, topology=_topo(16))
+    win.show()
+    win._tabs.setCurrentWidget(win._monitor_tab)
+    pm = PMTableData(ppt_limit_w=200.0, tdc_limit_a=160.0, edc_limit_a=225.0, ppt_value_w=120.0, tdc_value_a=90.0)
+    win._monitor_tab.on_tick(a_tick(pm=pm))
+    QApplication.processEvents()
+    narrowest = win.minimumSizeHint().width()
+    assert narrowest <= HALF_SCREEN - 20
+    win.resize(narrowest, 1000)
+    QApplication.processEvents()
+    texts = [label for label in win._monitor_tab.findChildren(QLabel) if label.isVisible() and label.text()]
+    assert "EDC: unread/225A" in [label.text() for label in texts]
+    assert [label.text() for label in texts if not _whole_text_shown(label)] == []
     win._history_db = None
 
 

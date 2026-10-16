@@ -250,9 +250,9 @@ class MonitorTab(QWidget):
             self._tctl_label.setText("Tctl: N/A")
         has_voltage = self._sensors.vcore_source is not None
         if not has_voltage:
-            self._vcore_label.setText("Vcore: N/A (no voltage source)")
+            self._vcore_label.setText("Vcore: no sensor")
         if not power_available:
-            self._power_label.setText("Package: N/A (needs root)")
+            self._power_label.setText("Package: unreadable")
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -509,7 +509,7 @@ class MonitorTab(QWidget):
 
         def fmt(label, name, value, limit, unit):
             if limit > 0 and value is None:
-                label.setText(f"{name}: limit {limit:.0f}{unit}, live value not read")
+                label.setText(f"{name}: unread/{limit:.0f}{unit}")
             elif limit > 0:
                 pct = (value / limit) * 100 if value >= 0 else 0
                 label.setText(f"{name}: {value:.0f}/{limit:.0f}{unit} ({pct:.0f}%)")
