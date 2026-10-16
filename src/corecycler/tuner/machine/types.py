@@ -514,6 +514,8 @@ class World:
     co_range: tuple[int, int] | None = None
     co_now: tuple[tuple[int, int | None], ...] | None = None
     proven: tuple[tuple[int, tuple[int, ...]], ...] = ()
+    completed: tuple[Stored, ...] = ()
+    completed_unread: str | None = None
 
     def resident_of(self, core: int) -> int | None:
         return dict(self.resident).get(core)

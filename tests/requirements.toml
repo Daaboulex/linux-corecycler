@@ -1493,8 +1493,7 @@ proof = "built"
 [[requirement]]
 id = "L04.a.hint"
 statement = "Search starts a core from a same-setup, same-shaper hint"
-proof = "not built"
-task = "T25"
+proof = "built"
 
 [[requirement]]
 id = "L04.b"
@@ -3074,8 +3073,7 @@ proof = "built"
 [[requirement]]
 id = "U18"
 statement = "The Q4 hint source: the newest completed session with the same setup and the same Search-time shaper table"
-proof = "not built"
-task = "T25"
+proof = "built"
 
 [[requirement]]
 id = "U19"
@@ -3986,8 +3984,7 @@ proof = "built"
 [[requirement]]
 id = "Q4.hint"
 statement = "Search may start at a hint from the same setup and shaper"
-proof = "not built"
-task = "T25"
+proof = "built"
 
 [[requirement]]
 id = "Q5"

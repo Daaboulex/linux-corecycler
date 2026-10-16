@@ -729,6 +729,61 @@ def test_a_new_start_asks_about_a_core_whose_co_differs_from_the_newest_session_
     assert third.refused is None
 
 
+def completed_session(tmp_path, db: HistoryDB) -> Stored:
+    first = rig(tmp_path, FakeHardware(), db=db)
+    first.start(config(), 1, 7, True)
+    assert first.run_until_rest(0.01).lifecycle is Lifecycle.COMPLETED
+    return live.read_stored(db, 1)
+
+
+def starts_said(r: LiveRig, session_id: int) -> list:
+    return rows(r, "SELECT message FROM tuner_events WHERE session_id=? AND severity='starts'", (session_id,))
+
+
+@pytest.mark.req("L04.a.hint", "Q4.hint")
+def test_a_new_session_starts_each_core_at_the_last_completed_value_and_its_stored_events_say_so(tmp_path):
+    db = database(tmp_path / "hints.db")
+    completed_session(tmp_path, db)
+    r = rig(tmp_path, FakeHardware(), db=db)
+    r.start(config(), 2, 7, True)
+    assert {record.core: record.start for record in live.read_stored(db, 2).cores} == EDGES
+    assert starts_said(r, 2) == [
+        {"message": "from session 1's values, core 0 at -6, core 1 at -2, core 8 at -4; any other core from 0"}
+    ]
+    assert r.run_until_rest(0.01).lifecycle is Lifecycle.COMPLETED
+    first: dict[int, int] = {}
+    for spec in r.runner.seen:
+        first.setdefault(spec.core, spec.value)
+    assert first == EDGES
+
+
+@pytest.mark.req("U18")
+@pytest.mark.parametrize("status", ["aborted", "quarantined", "superseded"])
+def test_the_hint_comes_from_the_newest_completed_session_and_never_one_that_ended_otherwise(tmp_path, status):
+    db = database(tmp_path / "hints.db")
+    first = completed_session(tmp_path, db)
+    r = rig(tmp_path, FakeHardware(), db=db)
+    r.store.save(replace(first, session_id=2, cores=tuple(replace(c, value=-1) for c in first.cores)), "boot-a")
+    r.store.save(
+        replace(first, session_id=3, status=status, cores=tuple(replace(c, value=-3) for c in first.cores)), "boot-a"
+    )
+    r.start(config(), 4, 7, True)
+    assert {record.core: record.start for record in r.state.cores} == {0: -1, 1: -1, 8: -1}
+
+
+@pytest.mark.req("U18")
+def test_a_completed_session_that_cannot_be_read_ends_the_search_and_the_start_names_it(tmp_path):
+    db = database(tmp_path / "hints.db")
+    first = completed_session(tmp_path, db)
+    r = rig(tmp_path, FakeHardware(), db=db)
+    r.store.save(replace(first, session_id=2), "boot-a")
+    r.store.save(replace(first, session_id=3, status="aborted"), "boot-a")
+    db._execute_raw("UPDATE tuner_sessions SET machine_json = json_remove(machine_json, '$.setup') WHERE id = 2")
+    r.start(config(), 4, 7, True)
+    assert {record.core: record.start for record in r.state.cores} == {0: 0, 1: 0, 8: 0}
+    assert starts_said(r, 4) == [{"message": "every core from 0; session 2 could not be read: KeyError('setup')"}]
+
+
 def in_flight(r: LiveRig):
     r.start(config(), 1, 7, True)
     while r.worker is None:

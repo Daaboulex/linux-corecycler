@@ -33,6 +33,7 @@ from corecycler.tuner.machine.types import (
     SmuRefused,
     Stage,
     Start,
+    Stored,
     Supersede,
     ValidateProfile,
     Waiting,
@@ -259,6 +260,76 @@ def test_a_core_given_a_start_tests_it_first_and_a_failed_start_walks_again_from
     assert {r.core: r.value for r in fake.state.cores} == {0: -12, 1: -6}
 
 
+SHAPED = (("bios", "A"), ("curve_shaper", "Min 0/0/0, Low -30/-27/-12"))
+
+
+def completed(session_id: int, values: tuple[tuple[int, int], ...], setup=SHAPED) -> Stored:
+    cores = tuple(CoreRecord(core, Phase.PROVEN, value) for core, value in values)
+    return Stored(session_id, "completed", CFG, 0, tuple((core, 0) for core, _ in values), cores, None, setup=setup)
+
+
+def started_from(sessions, cfg: MachineConfig = CFG, unread: str | None = None) -> tuple[dict[int, int], list[str]]:
+    world = replace(LAYOUT, setup=SHAPED, completed=sessions, completed_unread=unread)
+    result = transition(SessionState(), Start(cfg, 9, 0, True), world)
+    said = [effect.text for effect in result.effects if type(effect).__name__ == "Announce" and effect.kind == "starts"]
+    return {r.core: r.start for r in result.state.cores}, said
+
+
+@pytest.mark.req("U18", "L04.a.hint", "Q4.hint")
+@pytest.mark.parametrize(
+    "newer",
+    [(("bios", "B"), SHAPED[1]), (SHAPED[0], ("curve_shaper", "Min 0/0/0, Low -25/-27/-12"))],
+    ids=["setup", "shaper"],
+)
+def test_a_start_takes_the_final_values_of_the_newest_completed_session_with_this_setup_and_shaper(newer):
+    recorded_only = (*SHAPED, ("python", "3.13.0"))
+    starts, said = started_from(
+        (
+            completed(8, ((0, -3), (1, -2)), newer),
+            completed(7, ((0, -12), (1, -6)), recorded_only),
+            completed(6, ((0, -15), (1, -9))),
+        )
+    )
+    assert starts == {0: -12, 1: -6}
+    assert said == ["from session 7's values, core 0 at -12, core 1 at -6; any other core from 0"]
+
+
+@pytest.mark.req("L04.a.hint", "Q4.hint")
+@pytest.mark.parametrize(("final", "start"), [(0, 0), (-21, 0), (-20, -20), (-1, -1)])
+def test_a_final_value_at_0_or_past_the_deepest_offset_gives_that_core_no_hint(final, start):
+    starts, said = started_from((completed(7, ((0, final), (1, -6), (5, -4))),))
+    assert starts == {0: start, 1: -6}
+    listed = f"core 0 at {start}, " if start else ""
+    assert said == [f"from session 7's values, {listed}core 1 at -6; any other core from 0"]
+
+
+@pytest.mark.req("U18", "Q4.hint")
+@pytest.mark.parametrize(
+    ("sessions", "unread", "why"),
+    [
+        (
+            (completed(7, ((0, -12), (1, -6)), (("bios", "B"),)),),
+            None,
+            "no completed session has this setup and Curve Shaper",
+        ),
+        ((completed(7, ((0, 0), (1, -30))),), None, "session 7's values are 0 or outside -20..-1"),
+        ((), "session 4 could not be read: KeyError('setup')", "session 4 could not be read: KeyError('setup')"),
+    ],
+    ids=["no-match", "no-value", "unread"],
+)
+def test_with_no_hint_every_core_starts_from_0_and_the_start_says_why(sessions, unread, why):
+    starts, said = started_from(sessions, unread=unread)
+    assert starts == {0: 0, 1: 0}
+    assert said == [f"every core from 0; {why}"]
+
+
+@pytest.mark.req("Q4.hint", "T25.start")
+def test_starts_named_in_the_configuration_win_over_a_hint():
+    starts, said = started_from((completed(7, ((0, -12), (1, -6))),), cfg=replace(CFG, starts=((0, -10),)))
+    assert starts == {0: -10, 1: 0}
+    assert said == ["from the configuration, core 0 at -10; any other core from 0"]
+
+
 @pytest.mark.req("L18.d.4.3a")
 @pytest.mark.parametrize("stage", [Stage.STEADY, Stage.TRANSIENT])
 def test_the_lost_verdict_of_an_all_core_test_is_one_fail_of_that_test(stage):
@@ -359,7 +430,7 @@ def test_start_with_a_bios_co_runs_once_acknowledged_and_logs_what_was_acknowled
         "cores [0, 1] read a CO other than 0 at Start, set by the BIOS or written since boot",
     ) in said
     plain = transition(SessionState(), Start(CFG, 1, 0, acknowledged=True), LAYOUT)
-    assert [effect.kind for effect in plain.effects if type(effect).__name__ == "Announce"] == ["started"]
+    assert [effect.kind for effect in plain.effects if type(effect).__name__ == "Announce"] == ["started", "starts"]
 
 
 @pytest.mark.req("L01.2")
@@ -736,6 +807,24 @@ def test_a_restart_the_start_gates_refuse_leaves_the_parent_paused_and_untouched
     assert "held by ryzenadj" in result.refused
     assert result.state == fake.state
     assert result.effects == ()
+
+
+@pytest.mark.req("Q4.hint")
+@pytest.mark.parametrize(
+    ("choice", "kinds"),
+    [
+        (Resume(1), []),
+        (ContinueOnSetup(2), ["continued"]),
+        (RestartOnSetup(2, acknowledged=True), ["started", "restarted"]),
+    ],
+    ids=["resume", "continue", "restart"],
+)
+def test_resume_continue_and_restart_never_take_a_hint(choice, kinds):
+    fake = paused_on_a_new_setup()
+    world = replace(fake.world(), completed=(completed(7, ((0, -12), (1, -6)), fake.setup),))
+    result = transition(fake.state, choice, world)
+    assert {r.core: r.start for r in result.state.cores} == {0: 0, 1: 0}
+    assert [effect.kind for effect in result.effects if type(effect).__name__ == "Announce"] == kinds
 
 
 HELD = World(

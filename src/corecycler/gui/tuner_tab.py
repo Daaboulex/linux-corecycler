@@ -675,8 +675,8 @@ class TunerTab(QWidget):
         if already:
             said.append(
                 f"These cores already run a Curve Optimizer value, set by the BIOS or written since boot: {already}."
-                "\n\nThe tuner searches every core from 0 and replaces these values while it runs."
-                " A reboot brings the BIOS values back."
+                "\n\nThe tuner searches each core from 0, or from where the newest completed session with this setup"
+                " ended, and replaces these values while it runs. A reboot brings the BIOS values back."
             )
         if changed:
             said.append(f"The CO differs from when session {newest.session_id} started: {', '.join(changed)}.")

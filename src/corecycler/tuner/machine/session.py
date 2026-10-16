@@ -84,7 +84,7 @@ RECORDED_ONLY = frozenset({"pm_table", "python", "qt", "zenpower"})
 def transition(s: SessionState, e: Event, w: World) -> Transition:
     match e:
         case Start():
-            return _start(s, e, w)
+            return _start(s, e, w, hinted=True)
         case Resume():
             return _resume(s, e, w)
         case ValidateProfile():
@@ -220,7 +220,7 @@ def _two_cpus_everywhere(cores: tuple[int, ...], w: World) -> bool:
     return all(len(cpus.get(core, ())) >= 2 for core in cores)
 
 
-def _start(s: SessionState, e: Start, w: World) -> Transition:
+def _start(s: SessionState, e: Start, w: World, *, hinted: bool) -> Transition:
     if s.lifecycle in HELD:
         return Transition(s, refused="a session is held: pause or abort it first")
     cfg = e.config
@@ -229,13 +229,14 @@ def _start(s: SessionState, e: Start, w: World) -> Transition:
         return Transition(s, refused=problem)
     token = s.next_token
     baseline = tuple((core, 0) for core in sorted(cfg.selected))
+    starts, said = _starts(cfg, w, hinted)
     new = SessionState(
         lifecycle=Lifecycle.RUNNING,
         session_id=e.session_id,
         config=cfg,
         seed=e.seed,
         baseline=baseline,
-        cores=tuple(CoreRecord(core, start=dict(cfg.starts).get(core, 0)) for core in sorted(cfg.selected)),
+        cores=tuple(CoreRecord(core, start=dict(starts).get(core, 0)) for core in sorted(cfg.selected)),
         flow=Flow(Stage.SEARCH, Klass.T1),
         slot=Waiting(token, 0.0),
         next_token=token + 1,
@@ -249,11 +250,30 @@ def _start(s: SessionState, e: Start, w: World) -> Transition:
     acknowledged = _to_acknowledge(cfg, w)
     effects += [
         Announce("started", f"session {e.session_id}, {order}"),
+        *([Announce("starts", said)] if said else []),
         *([Announce("acknowledged", acknowledged)] if acknowledged else []),
         *(Announce("warning", warning) for warning in w.preflight_warnings),
         Schedule(token, 0.0),
     ]
     return Transition(new, tuple(effects))
+
+
+def _starts(cfg: MachineConfig, w: World, hinted: bool) -> tuple[tuple[tuple[int, int], ...], str | None]:
+    if cfg.starts:
+        return cfg.starts, _starts_from("the configuration", cfg.starts)
+    if not hinted:
+        return (), None
+    source = next((st for st in w.completed if not _setup_changes(st.setup, w.setup)), None)
+    if source is None:
+        return (), f"every core from 0; {w.completed_unread or 'no completed session has this setup and Curve Shaper'}"
+    hints = tuple((r.core, r.value) for r in source.cores if r.core in cfg.selected and cfg.max_offset <= r.value <= -1)
+    if not hints:
+        return (), f"every core from 0; session {source.session_id}'s values are 0 or outside {cfg.max_offset}..-1"
+    return hints, _starts_from(f"session {source.session_id}'s values", hints)
+
+
+def _starts_from(source: str, starts: tuple[tuple[int, int], ...]) -> str:
+    return f"from {source}, {', '.join(f'core {core} at {value}' for core, value in starts)}; any other core from 0"
 
 
 def _start_problem(cfg, e: Start, w: World) -> str | None:
@@ -460,7 +480,9 @@ def _restart_on_setup(s: SessionState, e: RestartOnSetup, w: World) -> Transitio
         return Transition(s, refused=problem)
     parent_held = w.held_session is not None and w.held_session[0] == s.session_id
     world = replace(w, held_session=None) if parent_held else w
-    started = _start(SessionState(next_token=s.next_token), Start(s.config, e.child_id, s.seed, e.acknowledged), world)
+    started = _start(
+        SessionState(next_token=s.next_token), Start(s.config, e.child_id, s.seed, e.acknowledged), world, hinted=False
+    )
     if started.refused is not None:
         return Transition(s, refused=started.refused)
     rest = tuple(effect for effect in started.effects if not isinstance(effect, Commit))
