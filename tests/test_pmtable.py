@@ -327,7 +327,7 @@ def _build_versioned_pm_table(
             struct.pack_into("<f", raw, offsets.mclk, mclk)
         if vddcr_soc != 0.0:
             struct.pack_into("<f", raw, offsets.vddcr_soc, vddcr_soc)
-        if vdd_mem != 0.0 and offsets.vdd_mem >= 0:
+        if vdd_mem != 0.0 and offsets.vdd_mem is not None:
             struct.pack_into("<f", raw, offsets.vdd_mem, vdd_mem)
 
     return bytes(raw)
@@ -336,6 +336,15 @@ def _build_versioned_pm_table(
 # ===========================================================================
 # PMTableOffsets tests
 # ===========================================================================
+
+
+class TestVddqOffset:
+    @pytest.mark.parametrize("version", [0x00620205, 0x00621102, 0x00621202, 0x00620105, 0x00620999])
+    def test_vddq_is_read_at_0xe8_on_every_zen_5_table(self, tmp_path, version):
+        raw = bytearray(0x994)
+        struct.pack_into("<f", raw, 0xE8, 1.1)
+        smu_dir = _make_smu_dir(tmp_path, version_int=version, raw_bytes=bytes(raw))
+        assert PMTableReader(sysfs_path=smu_dir).read().vddq_v == pytest.approx(1.1)
 
 
 class TestPMTableOffsets:
@@ -350,7 +359,7 @@ class TestPMTableOffsets:
             cldo_vddp=0x434,
             cldo_vddg_iod=0x40C,
             cldo_vddg_ccd=0x414,
-            vdd_misc=0xE8,
+            vddq=0xE8,
             vdd_mem=0x0A8,
         )
         assert offsets.fclk == 0x11C
@@ -377,7 +386,7 @@ class TestPMTableOffsets:
         assert offsets.fclk == 0x11C
         assert offsets.uclk == 0x12C
         assert offsets.mclk == 0x13C
-        assert offsets.vdd_mem == -1  # not available on this version
+        assert offsets.vdd_mem is None
 
     def test_known_version_0x540104_exists(self):
         """7700X (Zen 4) version 0x540104 exists with community offsets, unverified."""
@@ -388,8 +397,8 @@ class TestPMTableOffsets:
         assert offsets.mclk == 0x138
         assert offsets.vddcr_soc == 0xD0
         assert offsets.cldo_vddp == 0x430
-        assert offsets.vdd_misc == 0xE0
-        assert offsets.vdd_mem == -1
+        assert offsets.vddq == 0xE0
+        assert offsets.vdd_mem is None
         assert offsets.cldo_vddg_iod == -1
         assert offsets.cldo_vddg_ccd == -1
         assert offsets.verified is False
@@ -405,8 +414,8 @@ class TestPMTableOffsets:
             cldo_vddp=0x430,
             cldo_vddg_iod=-1,
             cldo_vddg_ccd=-1,
-            vdd_misc=0xE0,
-            vdd_mem=-1,
+            vddq=0xE0,
+            vdd_mem=None,
         )
         assert offsets.verified is False
 
@@ -591,14 +600,13 @@ class TestVersionDispatch:
 
     def test_vdd_mem_negative_offset_stays_zero(self, tmp_path):
         """offset -1 for vdd_mem means field stays at 0.0 (not read)."""
-        # 0x621102 has vdd_mem=-1
         raw = _build_versioned_pm_table(
             0x621102,
             fclk=2000.0,
             uclk=3000.0,
             mclk=3000.0,
             vddcr_soc=1.25,
-            vdd_mem=1.4,  # this should NOT be written since offset is -1
+            vdd_mem=1.4,
         )
         smu_dir = _make_smu_dir(tmp_path, version_int=0x00621102, raw_bytes=raw)
         reader = PMTableReader(sysfs_path=smu_dir)
@@ -657,6 +665,9 @@ class TestComputeFclkUclkRatio:
     def test_ratio_1_1(self):
         """FCLK=UCLK produces (1, 1) ratio."""
         assert compute_fclk_uclk_ratio(2000.0, 2000.0) == (1, 1)
+
+    def test_the_clocks_are_rounded_to_100_mhz_before_the_ratio(self):
+        assert compute_fclk_uclk_ratio(2150.0, 4300.0) == (22, 43)
 
     def test_ratio_1_2(self):
         """UCLK=2*FCLK produces (1, 2) ratio."""
