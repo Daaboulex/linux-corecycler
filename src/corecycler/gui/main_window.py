@@ -759,6 +759,7 @@ class MainWindow(QMainWindow):
             return
 
         freq = fastest(tick.clocks, core_info.logical_cpus)
+        ceiling = fastest(tick.ceilings, core_info.logical_cpus)
         stretch_pct = tick.stretch.get(core_info.logical_cpus[0])
         core_watts = tick.core_watts.get(core_info.logical_cpus[0])
         reading = tick.sensed
@@ -775,7 +776,7 @@ class MainWindow(QMainWindow):
 
         if self._logger and self._settings.record_telemetry:
             try:
-                self._logger.record_telemetry_sample(current_core, freq, temp, core_vcore, effective_max_mhz=None)
+                self._logger.record_telemetry_sample(current_core, freq, temp, core_vcore, effective_max_mhz=ceiling)
             except sqlite3.Error as exc:
                 if not self._telemetry_failing:
                     log.warning("telemetry samples are not being recorded: %s", exc)

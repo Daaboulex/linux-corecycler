@@ -192,6 +192,13 @@ class TestTelemetry:
         assert [(s.freq_mhz, s.temp_c) for s in samples] == [(5500.0, 75.0), (5600.0, 76.0)]
         assert all(s.timestamp for s in samples)
 
+    @pytest.mark.req("T34.telemetry")
+    def test_a_sample_keeps_the_boost_ceiling_it_was_given(self, db, logger):
+        logger.record_telemetry_sample(0, 5500.0, 75.0, 1.2, effective_max_mhz=5700.0)
+        logger.on_test_stopped()
+        [sample] = db.get_telemetry(logger.run_id)
+        assert (sample.freq_mhz, sample.effective_max_mhz) == (5500.0, 5700.0)
+
     @pytest.mark.req("D78")
     def test_a_block_is_written_once_its_first_sample_is_a_block_period_old(self, db, logger, monkeypatch):
         now = [100.0]

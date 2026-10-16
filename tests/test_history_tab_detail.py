@@ -480,7 +480,7 @@ def _seed_telemetry(db, rid):
                 core_id=0,
                 timestamp=f"2026-07-20T10:0{i}:00+00:00",
                 freq_mhz=3000.0 + i * 1000.0,
-                effective_max_mhz=5000.0,
+                effective_max_mhz=5000.0 + i * 100.0,
                 temp_c=70.0 + i,
                 vcore_v=1.1 + i * 0.01,
             )
@@ -491,7 +491,6 @@ def _seed_telemetry(db, rid):
                 core_id=1,
                 timestamp=f"2026-07-20T10:0{i}:00+00:00",
                 freq_mhz=4900.0 + i * 50.0,
-                effective_max_mhz=5000.0,
                 temp_c=72.0 + i,
                 vcore_v=1.2 + i * 0.01,
             )
@@ -504,6 +503,7 @@ def _run_by_id(db, rid):
 
 
 class TestRunDetail:
+    @pytest.mark.req("T34.telemetry")
     def test_detail_renders_context_events_and_telemetry(self, db):
         cid = _seed_context(db, "2402", {"0": -20, "1": -25}, notes="tuned", scalar=3.0, boost=5200)
         rid = _seed_detailed_run(db, cid)
@@ -545,9 +545,11 @@ class TestRunDetail:
         assert "[error] boom" in text
         assert "[info] note" in text
         assert "Total samples: 6" in text
-        assert "Boost ceiling: 5000 MHz" in text
-        assert "Clock stretch: 40.0%" in text
-        assert "Clock stretch: none" in text
+        core_0, core_1 = text.split("Telemetry Summary")[1].split("Settings Snapshot")[0].split("  Core 1: ")
+        assert "Boost ceiling: 5200 MHz" in core_0
+        assert "Boost ceiling" not in core_1
+        assert "Freq: 4900-5000 MHz" in core_1
+        assert "stretch" not in text.lower()
         assert "Temp: 70.0-72.0 C" in text
         assert "Vcore: 1.1000-1.1200V" in text
         assert "Settings Snapshot" in text

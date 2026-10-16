@@ -4994,3 +4994,8 @@ proof = "built"
 id = "EC.real"
 statement = "A real clean run of stress-ng 0.22.01 (the tuner's cpu fft verify shape and the memory test's vm verify shape) and of stressapptest 1.0.11, captured 2026-10-14 on the M1 from the repository's pinned nixpkgs, raises no finding in its backend, and the GUI memory test calls each a pass (scratch/design/error-capture.md gaps 4 and 12, the clean half)."
 proof = "built"
+
+[[requirement]]
+id = "T34.telemetry"
+statement = "A stress run's telemetry sample records the tested core's boost ceiling as its per-core bar shows it, and History's run detail prints the ceiling per core where it was recorded and calls nothing stretch (scratch/design/telemetry-stretch.md)."
+proof = "built"

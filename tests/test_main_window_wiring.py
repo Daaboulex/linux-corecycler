@@ -593,13 +593,15 @@ class TestElapsedWatchdog:
         window._feed_core_grid_telemetry(window._ticker.read([]))
         assert window._core_telemetry == {}
 
-    def test_a_telemetry_sample_is_recorded(self, window):
+    @pytest.mark.req("T34.telemetry")
+    def test_a_telemetry_sample_records_the_boost_ceiling_the_core_s_bar_shows(self, window):
         window._sensors.give(tctl=65.0, tccd=((0, 72.0),), vcore=1.2)
         logger = MagicMock()
         window._logger = logger
         window._active_test_core = 0
-        window._feed_core_grid_telemetry(window._ticker.read([]))
-        logger.record_telemetry_sample.assert_called_once_with(0, 4500.0, 72.0, 1.2, effective_max_mhz=None)
+        tick = a_tick(window._sensors, clocks={0: 4500.0, 8: 4400.0}, ceilings={0: 5100.0, 8: 5200.0})
+        window._feed_core_grid_telemetry(tick)
+        logger.record_telemetry_sample.assert_called_once_with(0, 4500.0, 72.0, 1.2, effective_max_mhz=5200.0)
         assert window._core_telemetry[0]["max_freq"] == 4500.0
 
     def test_a_failing_telemetry_write_is_logged_once_and_its_recovery_is_logged(self, window, caplog):

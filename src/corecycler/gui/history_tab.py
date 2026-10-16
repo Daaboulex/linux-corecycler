@@ -757,17 +757,7 @@ class HistoryTab(QWidget):
                 if freqs:
                     parts.append(f"    Freq: {min(freqs):.0f}-{max(freqs):.0f} MHz")
                 if eff_maxes:
-                    eff_max = max(eff_maxes)
-                    parts.append(f"    Boost ceiling: {eff_max:.0f} MHz")
-                    if freqs:
-                        min_freq = min(freqs)
-                        stretch_pct = (1.0 - min_freq / eff_max) * 100.0
-                        if stretch_pct > 5.0:
-                            parts.append(
-                                f"    Clock stretch: {stretch_pct:.1f}% (min {min_freq:.0f} vs max {eff_max:.0f})"
-                            )
-                        else:
-                            parts.append(f"    Clock stretch: none ({stretch_pct:.1f}%)")
+                    parts.append(f"    Boost ceiling: {max(eff_maxes):.0f} MHz")
                 if temps:
                     parts.append(f"    Temp: {min(temps):.1f}-{max(temps):.1f} C")
                 if vcores:
