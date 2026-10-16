@@ -50,7 +50,7 @@ def populated_db(db):
                 core_id=cid,
                 ccd=0,
                 cycle=0,
-                passed=cid == 0,  # core 0 passes, core 1 fails
+                passed=cid == 0,
                 elapsed_seconds=600.0 if cid == 0 else 120.0,
                 error_message=None if cid == 0 else "MCE detected",
                 error_type=None if cid == 0 else "mce",

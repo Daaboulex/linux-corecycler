@@ -12,7 +12,6 @@ from corecycler.gui.monitor_tab import CoreFreqBar
 
 class TestPerCoreFreqText:
     def test_idle_core_shows_no_false_ceiling(self):
-        # "--/<max>" reads as a live boost maximum on a parked core — wrong.
         assert CoreFreqBar._freq_text(0.0, 5750.0) == "  -- MHz"
 
     def test_negative_freq_treated_as_idle(self):

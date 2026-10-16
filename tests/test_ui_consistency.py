@@ -76,7 +76,7 @@ class TestOnTestCompletedFailsClosed:
         ns._results_tab = MagicMock()
         ns._on_test_completed = types.MethodType(MainWindow._on_test_completed, ns)
         for bad in ("", "not json", "[1,2,3]", "null", "42", '{"0": "x"}', '{"0": [42]}', '{"0": [{"no_passed": 1}]}'):
-            ns._on_test_completed(bad)  # must not raise
+            ns._on_test_completed(bad)
 
 
 class TestCoreGridTelemetryFed:
@@ -142,10 +142,6 @@ class TestFeedTelemetryNoopWhenNoActiveCore:
         core_grid_mock.update_core_telemetry.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Plan 06-02: MonitorTab poll_interval, staleness indicator, narrowed exceptions
-# ---------------------------------------------------------------------------
-
 _MONITOR_TAB_SRC = Path(__file__).resolve().parent.parent / "src" / "corecycler" / "gui" / "monitor_tab.py"
 
 
@@ -188,13 +184,11 @@ class TestStalenessIndicator:
         tab._per_core_visible = False
         tab._last_read = {}
 
-        # Mock labels
         tab._tctl_label = _MockStyleLabel("Tctl: 65.0\u00b0C")
         tab._vcore_label = _MockStyleLabel("Vcore: 1.2500V")
         tab._power_label = _MockStyleLabel("Package: 120.0W")
         tab._ccd_temp_labels = {}
 
-        # Mock charts
         tab._freq_chart = MagicMock()
         tab._temp_chart = MagicMock()
         tab._voltage_chart = MagicMock()
@@ -204,7 +198,6 @@ class TestStalenessIndicator:
 
         tab.on_tick = MethodType(MonitorTab.on_tick, tab)
 
-        # Access class constants
         tab._NORMAL_STYLE = MonitorTab._NORMAL_STYLE
         tab._show_read = MethodType(MonitorTab._show_read, tab)
         tab._stale_style = MonitorTab._stale_style
@@ -257,7 +250,6 @@ class TestStalenessRecovery:
 
         assert tab._tctl_label.styleSheet() == MonitorTab._stale_style()
 
-        # Now a successful read
         tab._sensors.give(tctl=72.0, vcore=1.30)
         tab.on_tick(a_tick(tab._sensors))
 

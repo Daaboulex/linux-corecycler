@@ -92,14 +92,13 @@ class TestRuns:
         assert fetched.cores_failed == 1
         assert fetched.total_seconds == 9600.0
 
-    def test_list_runs_ordering(self, db):
+    def test_list_runs_is_newest_first(self, db):
         db.create_run(RunRecord(cpu_model="first"))
         db.create_run(RunRecord(cpu_model="second"))
         db.create_run(RunRecord(cpu_model="third"))
 
         runs = db.list_runs()
         assert len(runs) == 3
-        # newest first
         assert runs[0].cpu_model == "third"
         assert runs[2].cpu_model == "first"
 
@@ -142,7 +141,7 @@ class TestCoreResults:
         results = db.get_core_results(run_id)
         assert len(results) == 1
         assert results[0].core_id == 3
-        assert results[0].passed is None  # not yet finished
+        assert results[0].passed is None
 
     def test_update_core_result(self, db):
         run_id = db.create_run(RunRecord(cpu_model="test"))
@@ -167,11 +166,12 @@ class TestCoreResults:
         assert r.min_vcore_v == 1.05
         assert r.max_vcore_v == 1.35
 
-    def test_update_noop(self, db):
-        """Updating with no kwargs should not error."""
+    def test_an_update_with_no_fields_changes_nothing(self, db):
         run_id = db.create_run(RunRecord(cpu_model="test"))
         result_id = db.insert_core_result(CoreResultRecord(run_id=run_id, core_id=0))
-        db.update_core_result(result_id)  # no-op
+        before = db.get_core_results(run_id)
+        db.update_core_result(result_id)
+        assert db.get_core_results(run_id) == before
 
     def test_multiple_cores_ordered(self, db):
         run_id = db.create_run(RunRecord(cpu_model="test"))
@@ -180,7 +180,7 @@ class TestCoreResults:
 
         results = db.get_core_results(run_id)
         core_ids = [r.core_id for r in results]
-        assert core_ids == [0, 3, 5, 7]  # sorted by core_id
+        assert core_ids == [0, 3, 5, 7]
 
 
 class TestEvents:
@@ -256,7 +256,6 @@ class TestMaintenance:
         recovered_ids = {r[0] for r in recovered}
         assert r1 in recovered_ids
         assert r2 in recovered_ids
-        # Each tuple has (id, started_at)
         for _rid, started_at in recovered:
             assert isinstance(started_at, str)
             assert len(started_at) > 0
@@ -267,7 +266,6 @@ class TestMaintenance:
         assert statuses["running2"] == "crashed"
         assert statuses["completed"] == "completed"
 
-        # second call recovers nothing
         assert db.recover_incomplete_runs() == []
 
     def test_purge_before(self, db):
@@ -635,14 +633,14 @@ class TestTuningContexts:
         assert db.get_context_by_hash("hash1", "2201") is None
         assert db.get_context_by_hash("missing", "2101") is None
 
-    def test_list_contexts_ordering(self, db):
+    def test_list_contexts_is_newest_first(self, db):
         db.create_context(TuningContextRecord(bios_version="first"))
         db.create_context(TuningContextRecord(bios_version="second"))
         db.create_context(TuningContextRecord(bios_version="third"))
 
         contexts = db.list_contexts()
         assert len(contexts) == 3
-        assert contexts[0].bios_version == "third"  # newest first
+        assert contexts[0].bios_version == "third"
         assert contexts[2].bios_version == "first"
 
     @pytest.mark.req("T23.history.uncapped")
@@ -769,60 +767,42 @@ CREATE TABLE telemetry_samples (
 
 
 class TestMigrationV1ToV2:
-    def test_migration(self):
-        """Create a v1 database, then open with v2 code — migration should run."""
+    def test_a_v1_database_migrates_to_the_current_schema_with_its_runs_kept(self, tmp_path):
         import sqlite3
 
-        db_path = ":memory:"
-        # We can't use :memory: across connections, so use a temp file
-        import os
-        import tempfile
+        db_path = tmp_path / "v1.db"
+        conn = sqlite3.connect(db_path, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.executescript(_V1_SCHEMA)
+        conn.execute(
+            "INSERT INTO runs (started_at, cpu_model, backend) VALUES (?, ?, ?)",
+            ("2025-01-01T00:00:00+00:00", "old-cpu", "mprime"),
+        )
+        conn.close()
 
-        fd, db_path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
+        db = HistoryDB(db_path)
 
-        try:
-            # Create v1 schema manually
-            conn = sqlite3.connect(db_path, isolation_level=None)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.executescript(_V1_SCHEMA)
-            # Insert a v1 run
-            conn.execute(
-                "INSERT INTO runs (started_at, cpu_model, backend) VALUES (?, ?, ?)",
-                ("2025-01-01T00:00:00+00:00", "old-cpu", "mprime"),
-            )
-            conn.close()
+        version = db._execute_raw("SELECT version FROM schema_version").fetchone()[0]
+        assert version == HistoryDB.SCHEMA_VERSION
 
-            # Open with HistoryDB (should migrate to v2)
-            db = HistoryDB(db_path)
+        tables = db._execute_raw("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        assert "tuning_contexts" in {r["name"] for r in tables}
 
-            # Verify migration
-            version = db._execute_raw("SELECT version FROM schema_version").fetchone()[0]
-            assert version == HistoryDB.SCHEMA_VERSION
+        runs = db.list_runs()
+        assert len(runs) == 1
+        assert runs[0].cpu_model == "old-cpu"
+        assert runs[0].context_id is None
+        assert runs[0].bios_version == ""
 
-            # tuning_contexts table exists
-            tables = db._execute_raw("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            assert "tuning_contexts" in {r["name"] for r in tables}
+        ctx_id = db.create_context(TuningContextRecord(bios_version="2101"))
+        run_id = db.create_run(RunRecord(cpu_model="new-cpu", context_id=ctx_id, bios_version="2101"))
+        fetched = db.get_run(run_id)
+        assert fetched.context_id == ctx_id
 
-            # Old run is still accessible with new fields defaulted
-            runs = db.list_runs()
-            assert len(runs) == 1
-            assert runs[0].cpu_model == "old-cpu"
-            assert runs[0].context_id is None
-            assert runs[0].bios_version == ""
-
-            # Can create new runs with context
-            ctx_id = db.create_context(TuningContextRecord(bios_version="2101"))
-            run_id = db.create_run(RunRecord(cpu_model="new-cpu", context_id=ctx_id, bios_version="2101"))
-            fetched = db.get_run(run_id)
-            assert fetched.context_id == ctx_id
-
-            db.close()
-        finally:
-            os.unlink(db_path)
+        db.close()
 
 
 class TestFreshEqualsMigrated:
@@ -868,10 +848,8 @@ class TestMergeFrom:
         src = HistoryDB(tmp_path / "src.db")
         dst = HistoryDB(tmp_path / "dst.db")
 
-        # identical context on both sides -> must deduplicate on merge
         src_ctx = src.create_context(TuningContextRecord(bios_version="2401", co_hash="h1"))
         dst_ctx = dst.create_context(TuningContextRecord(bios_version="2401", co_hash="h1"))
-        # a run with children in the source
         rid = src.create_run(
             RunRecord(
                 started_at="2026-07-07T09:00:00+00:00",
@@ -885,7 +863,6 @@ class TestMergeFrom:
         src.insert_core_result(CoreResultRecord(run_id=rid, core_id=3, passed=True))
         src.insert_event(EventRecord(run_id=rid, event_type="core_start", core_id=3))
         src.insert_telemetry_block([TelemetrySample(run_id=rid, core_id=3, timestamp=AT, freq_mhz=5300.0)])
-        # a tuner session with state, log, and journal
         sid = seed_old_session(src)
         src._execute_raw("UPDATE tuner_sessions SET context_id=? WHERE id=?", (src_ctx, sid))
         src._execute_raw("UPDATE tuner_test_log SET run_id=? WHERE session_id=?", (rid, sid))
@@ -898,9 +875,9 @@ class TestMergeFrom:
         assert len(runs) == 1
         merged_run = runs[0]
         assert merged_run.cpu_model == "9950X3D"
-        assert merged_run.context_id == dst_ctx  # deduped to existing
+        assert merged_run.context_id == dst_ctx
         results = dst.get_core_results(merged_run.id)
-        assert [r.core_id for r in results] == [3]  # child followed the remap
+        assert [r.core_id for r in results] == [3]
         assert [e.event_type for e in dst.get_events(merged_run.id)] == ["core_start"]
         assert len(dst.get_telemetry(merged_run.id)) == 1
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -30,7 +31,7 @@ class TestComputeCoHash:
         h1 = compute_co_hash({0: -30, 1: -20, 2: -25})
         h2 = compute_co_hash({0: -30, 1: -20, 2: -25})
         assert h1 == h2
-        assert len(h1) == 64  # SHA-256 hex
+        assert len(h1) == len(hashlib.sha256().hexdigest())
 
     def test_order_independent(self):
         h1 = compute_co_hash({0: -30, 1: -20})
@@ -218,7 +219,6 @@ class TestPowerLimitsInContext:
         assert ctx.ppt_limit_w == 225.0
         assert ctx.tdc_limit_a == 190.0
         assert ctx.edc_limit_a == 230.0
-        # And the identity reflects them.
         from corecycler.history.context import compute_co_hash
 
         assert ctx.co_hash == compute_co_hash({0: -30}, (225.0, 190.0, 230.0))

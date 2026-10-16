@@ -152,7 +152,6 @@ class TestStatusAndCycle:
 
 class TestTestCompletion:
     def test_on_test_completed(self, db, logger):
-        # Signal(str) contract: results arrive as JSON string
         results = {
             "0": [{"passed": True, "duration_seconds": 600}],
             "1": [{"passed": False, "duration_seconds": 300, "error_message": "fail"}],
@@ -168,9 +167,8 @@ class TestTestCompletion:
         assert run.finished_at is not None
 
     def test_on_test_completed_malformed_payload_is_safe(self, db, logger):
-        # Fail closed: a malformed or wrongly-shaped payload must not crash the slot.
         for bad in ("", "not json", "[1,2,3]", "null", "42", '{"0": "x"}', '{"0": [42]}', '{"0": [{"no_passed": 1}]}'):
-            logger.on_test_completed(bad)  # must not raise
+            logger.on_test_completed(bad)
 
     def test_on_test_stopped(self, db, logger):
         logger.on_test_stopped()
@@ -272,7 +270,6 @@ class TestTuningContext:
 
         ctx = db.get_context(run.context_id)
         assert ctx is not None
-        # Without SMU, CO offsets should be empty
         assert ctx.co_offsets_json == "{}"
         assert ctx.co_hash == ""
 

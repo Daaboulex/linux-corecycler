@@ -76,9 +76,6 @@ class TestSchemaV11:
         path = tmp_path / "mig.db"
         db = HistoryDB(path)
         sid = seed_old_session(db)
-        # Emulate a v10 database: roll the version back, drop the v11 table,
-        # and drop every column later migrations add (a fresh DB already has
-        # them; leaving them would collide with the v13 ALTERs on re-open).
         db._execute_raw("UPDATE schema_version SET version=10")
         db._execute_raw("DROP TABLE tuner_co_journal")
         for table, column in (
@@ -99,7 +96,7 @@ class TestSchemaV11:
             db._execute_raw(f"ALTER TABLE {table} DROP COLUMN {column}")
         db.close()
 
-        db2 = HistoryDB(path)  # re-open triggers the v11 migration
+        db2 = HistoryDB(path)
         try:
             assert db2._execute_raw("SELECT version FROM schema_version").fetchone()[0] == HistoryDB.SCHEMA_VERSION
             journaled(db2, sid, 0, -25)

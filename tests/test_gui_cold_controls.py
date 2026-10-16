@@ -84,10 +84,7 @@ class TestSMUColdTab:
 
 
 class TestHistorySortMapping:
-    def test_selection_maps_to_logical_record_after_sort(self):
-        # Guards the wrong-record data-loss bug: with column sorting enabled the
-        # visual row no longer equals the insertion index, so delete/export/compare
-        # must resolve the record by the stored id, never by the visual row.
+    def test_a_sorted_row_resolves_to_the_record_it_shows(self):
         _qapp()
         from PySide6.QtCore import Qt
 
@@ -111,4 +108,6 @@ class TestHistorySortMapping:
             assert len(selected) == 1
             logical = selected[0]
             shown_date = tab._runs_table.item(vis_row, 0).text()
-            assert format_local(runs[logical].started_at) == shown_date
+            assert format_local(runs[logical].started_at) == shown_date, (
+                "a sorted row resolved to another record's list index: a delete or export would act on the wrong run"
+            )
