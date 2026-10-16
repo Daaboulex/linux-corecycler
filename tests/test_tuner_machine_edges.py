@@ -1224,6 +1224,24 @@ def test_a_quarantined_session_reengages_each_core_from_its_newest_proven_value_
     assert isinstance(result.effects[-1], ReadCrashEvidence)
 
 
+@pytest.mark.req("K12.reclaim.reengage")
+def test_a_reengage_drops_a_reclaim_in_progress_with_the_rest_of_the_search_position():
+    fake = running_fake()
+    reclaiming = {"phase": Phase.PROVE, "value": -10, "fb": -12, "skipped": -12, "reclaim_floor": -9, "count": 1}
+    cores = tuple(replace(rec, **reclaiming) for rec in fake.state.cores)
+    row = replace(stored(replace(fake.state, cores=cores, resume_streak=3)), status="quarantined", flow=None)
+    world = replace(LAYOUT, stored=row, proven=((0, (-8, -9)), (1, ())))
+    first, second = transition(SessionState(), Resume(1, reengage=True), world).state.cores
+    assert (first.phase, first.value) == (Phase.PROVEN, -8)
+    failed = search.on_fail(first, CFG, Klass.T1, 60.0).record
+    assert (failed.phase, failed.value, failed.fb) == (Phase.PROVE, -7, -8)
+    hung = search.on_crash(search.resolve_start(second, CFG), CFG).record
+    assert (hung.phase, hung.value, hung.fb) == (Phase.PROVE, -2, -5)
+    plain = replace(row, cores=tuple(replace(rec, skipped=None, reclaim_floor=None) for rec in row.cores))
+    none_in_progress = transition(SessionState(), Resume(1, reengage=True), replace(world, stored=plain))
+    assert none_in_progress.state.cores == (first, second)
+
+
 @pytest.mark.req("L18.b.quarantine", "L18.d.8.reengage")
 def test_a_session_quarantined_by_three_crashes_runs_again_only_when_reengaged():
     fake = fresh(2, [-40, -6], 1, max_offset=-40, k_1t=2, wait_between_cores_s=0.0, starts=((0, -30),))

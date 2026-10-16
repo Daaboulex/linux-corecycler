@@ -179,6 +179,8 @@ class CoreRecord:
     walk_tests: int = 0
     crash_count: int = 0
     in_test: bool = False
+    skipped: int | None = None
+    reclaim_floor: int | None = None
 
     def inside(self, value: int, max_offset: int) -> bool:
         return max_offset <= value <= 0 and (self.fb is None or value > self.fb)

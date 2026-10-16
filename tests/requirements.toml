@@ -224,6 +224,36 @@ statement = "Crash penalty 3 steps toward 0"
 proof = "built"
 
 [[requirement]]
+id = "K12.reclaim"
+statement = "Once a crash landing is proven, the core proves the values it skipped one step deeper at a time, k passes each, and ends proven at the deepest that holds"
+proof = "built"
+
+[[requirement]]
+id = "K12.reclaim.fail"
+statement = "A fail in a reclaim proof leaves the core proven at the value it reclaimed from, FB at the failed value, and tries nothing deeper"
+proof = "built"
+
+[[requirement]]
+id = "K12.reclaim.crash"
+statement = "A crash in a reclaim proof leaves the core proven at the value it reclaimed from, FB at the hung value, crash_count + 1; a crash outside one still lands 3 steps toward 0"
+proof = "built"
+
+[[requirement]]
+id = "K12.reclaim.bound"
+statement = "A reclaim never tries a value at or past FB: a crash landing that fails reclaims nothing"
+proof = "built"
+
+[[requirement]]
+id = "K12.reclaim.stored"
+statement = "A reclaim in progress survives the session file; a file written before reclaims existed reads as none in progress"
+proof = "built"
+
+[[requirement]]
+id = "K12.reclaim.reengage"
+statement = "A re-engage drops each core's reclaim in progress with the rest of its search position"
+proof = "built"
+
+[[requirement]]
 id = "K14"
 statement = "Walk time budget 7200 s per core, walk tests only"
 proof = "built"
@@ -1524,7 +1554,7 @@ task = "T28"
 
 [[requirement]]
 id = "L04.G4"
-statement = "A conviction at v: FB = v, v + 3 toward 0, crash_count + 1, PROVE_1T with count 0, tested again at once; at 0 P(STOCK_UNSTABLE)"
+statement = "A conviction at v outside a reclaim proof (K12.reclaim.crash): FB = v, v + 3 toward 0, crash_count + 1, PROVE_1T with count 0, tested again at once; at 0 P(STOCK_UNSTABLE)"
 proof = "built"
 
 [[requirement]]

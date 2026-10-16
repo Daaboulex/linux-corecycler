@@ -42,6 +42,10 @@ def _settle_walk(rec: CoreRecord) -> CoreRecord:
     return _prove_at(rec, rec.best if rec.best is not None else 0)
 
 
+def _reclaimed(rec: CoreRecord) -> CoreRecord:
+    return replace(rec, phase=Phase.PROVEN, value=rec.reclaim_floor, count=0, skipped=None, reclaim_floor=None)
+
+
 def on_pass(rec: CoreRecord, cfg: MachineConfig, klass: Klass, seconds: float) -> CoreStep:
     v = rec.value
     if rec.phase in (Phase.COARSE, Phase.FINE):
@@ -58,7 +62,10 @@ def on_pass(rec: CoreRecord, cfg: MachineConfig, klass: Klass, seconds: float) -
     if rec.phase is Phase.PROVE:
         count = rec.count + 1
         if count >= cfg.k(klass):
-            return CoreStep(replace(rec, phase=Phase.PROVEN, count=count))
+            deeper = v - cfg.fine_step
+            if rec.skipped is not None and rec.inside(deeper, cfg.max_offset):
+                return CoreStep(replace(rec, value=deeper, count=0, reclaim_floor=v))
+            return CoreStep(replace(rec, phase=Phase.PROVEN, count=count, skipped=None, reclaim_floor=None))
         return CoreStep(replace(rec, count=count))
     if rec.phase is Phase.PROVEN:
         return CoreStep(replace(rec, count=rec.count + 1))
@@ -86,6 +93,8 @@ def on_fail(rec: CoreRecord, cfg: MachineConfig, klass: Klass, seconds: float) -
         if rec.phase is Phase.COARSE and not _over_budget(rec, cfg) and rec.inside(-cfg.fine_step, cfg.max_offset):
             return CoreStep(replace(rec, phase=Phase.FINE, value=-cfg.fine_step), first_value=first_value)
         return CoreStep(_prove_at(rec, 0), first_value=first_value)
+    if rec.reclaim_floor is not None:
+        return CoreStep(_reclaimed(replace(rec, fb=v)))
     return CoreStep(_prove_at(replace(rec, fb=v), min(0, v + cfg.fine_step)))
 
 
@@ -93,7 +102,9 @@ def on_crash(rec: CoreRecord, cfg: MachineConfig) -> CoreStep:
     v = rec.value
     if v == 0:
         return CoreStep(rec, stock_unstable=True)
-    backed = replace(rec, fb=v, crash_count=rec.crash_count + 1)
+    backed = replace(rec, fb=v, crash_count=rec.crash_count + 1, skipped=v)
+    if rec.reclaim_floor is not None:
+        return CoreStep(_reclaimed(backed))
     return CoreStep(_prove_at(backed, min(0, v + CRASH_STEPS * cfg.fine_step)))
 
 

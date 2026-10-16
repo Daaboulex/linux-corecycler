@@ -395,11 +395,12 @@ def _reengage(s: SessionState, e: Resume, w: World) -> Transition:
     cores, said = [], []
     for rec in resumed.cores:
         ground = next((v for v in proven.get(rec.core, ()) if v != 0 and rec.inside(v, st.config.max_offset)), None)
+        idle = replace(rec, count=0, in_test=False, skipped=None, reclaim_floor=None)
         if ground is None:
-            cores.append(replace(rec, phase=Phase.NOT_STARTED, value=0, start=0, count=0, in_test=False))
+            cores.append(replace(idle, phase=Phase.NOT_STARTED, value=0, start=0))
             said.append(f"core {rec.core} from stock")
         else:
-            cores.append(replace(rec, phase=Phase.PROVEN, value=ground, count=0, in_test=False))
+            cores.append(replace(idle, phase=Phase.PROVEN, value=ground))
             said.append(f"core {rec.core} at {ground} (proven)")
     reengaged = replace(resumed, cores=tuple(cores))
     notice = Announce("reengaged", f"session {st.session_id} re-engaged on proven ground: " + ", ".join(said))

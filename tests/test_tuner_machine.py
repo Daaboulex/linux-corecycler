@@ -76,6 +76,55 @@ def test_a_crash_backs_off_three_steps_and_sets_the_fail_bound_at_the_crashed_va
     assert (rec.phase, rec.value, rec.fb, rec.crash_count) == (Phase.PROVE, -17, -20, 1)
 
 
+K = CFG.k(Klass.T1)
+
+
+def hung_at(value: int) -> CoreRecord:
+    return search.on_crash(CoreRecord(0, phase=Phase.FINE, value=value, best=value + 1), CFG).record
+
+
+def passed(rec: CoreRecord, times: int) -> CoreRecord:
+    for _ in range(times):
+        rec = search.on_pass(rec, CFG, Klass.T1, 60.0).record
+    return rec
+
+
+@pytest.mark.req("K12.reclaim")
+def test_a_proven_crash_landing_proves_each_value_it_skipped_and_stays_at_the_deepest_that_holds():
+    landing = hung_at(-20)
+    rec = passed(landing, K)
+    assert (landing.phase, landing.value, rec.phase, rec.value, rec.count) == (Phase.PROVE, -17, Phase.PROVE, -18, 0)
+    assert landing.skipped == -20
+    assert passed(rec, K - 1).value == -18
+    rec = passed(rec, K)
+    assert (rec.phase, rec.value, rec.count) == (Phase.PROVE, -19, 0)
+    rec = passed(rec, K)
+    assert (rec.phase, rec.value, rec.fb) == (Phase.PROVEN, -19, -20)
+    assert (rec.skipped, rec.reclaim_floor) == (None, None)
+
+
+@pytest.mark.req("K12.reclaim.fail")
+def test_a_fail_in_a_reclaim_leaves_the_core_proven_at_the_value_it_reclaimed_from():
+    rec = search.on_fail(passed(hung_at(-20), K), CFG, Klass.T1, 60.0).record
+    assert (rec.phase, rec.value, rec.fb) == (Phase.PROVEN, -17, -18)
+    assert (rec.count, rec.skipped, rec.reclaim_floor) == (0, None, None)
+
+
+@pytest.mark.req("K12.reclaim.crash")
+def test_a_crash_in_a_reclaim_leaves_the_core_proven_at_the_value_it_reclaimed_from():
+    rec = search.on_crash(passed(hung_at(-20), 2 * K), CFG).record
+    assert (rec.phase, rec.value, rec.fb, rec.crash_count) == (Phase.PROVEN, -18, -19, 2)
+    assert (rec.count, rec.skipped, rec.reclaim_floor) == (0, None, None)
+    again = search.on_crash(hung_at(-20), CFG).record
+    assert (again.phase, again.value, again.fb, again.skipped) == (Phase.PROVE, -14, -17, -17)
+
+
+@pytest.mark.req("K12.reclaim.bound")
+def test_a_crash_landing_that_fails_tries_nothing_at_or_past_its_new_fail_bound():
+    rec = passed(search.on_fail(hung_at(-20), CFG, Klass.T1, 60.0).record, K)
+    assert (rec.phase, rec.value, rec.fb) == (Phase.PROVEN, -16, -17)
+
+
 @pytest.mark.req("D20")
 def test_a_failed_hint_restarts_the_walk_from_stock():
     rec = search.resolve_start(CoreRecord(0, start=-30), CFG)

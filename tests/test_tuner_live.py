@@ -308,6 +308,26 @@ def test_every_stored_state_of_a_run_survives_the_session_file_round_trip():
         stored_from_json(older)
 
 
+@pytest.mark.req("K12.reclaim.stored")
+def test_a_reclaim_in_progress_survives_the_session_file_and_an_older_file_reads_as_none_in_progress():
+    fake = fresh(1, [-6], 1, max_offset=-6, k_1t=1, wait_between_cores_s=0.0)
+    start(fake)
+    fake.fire()
+    hung = fake.worker.spec.value
+    fake.crash()
+    fake.post(Resume(1))
+    while fake.db.cores[0].reclaim_floor is None:
+        assert fake.progress()
+    st = fake.db
+    assert st.cores[0].skipped == hung
+    assert stored_from_json(json.loads(json.dumps(stored_to_json(st)))) == st
+    older = stored_to_json(st)
+    for core in older["cores"]:
+        del core["skipped"], core["reclaim_floor"]
+    none_in_progress = tuple(replace(r, skipped=None, reclaim_floor=None) for r in st.cores)
+    assert stored_from_json(older) == replace(st, cores=none_in_progress)
+
+
 def rows(r: LiveRig, sql: str, params: tuple = ()) -> list:
     return [dict(row) for row in r.store.db._execute_raw(sql, params).fetchall()]
 
