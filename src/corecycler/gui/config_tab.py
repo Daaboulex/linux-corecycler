@@ -134,6 +134,7 @@ class ConfigTab(QWidget):
         preset_group = QGroupBox("Preset")
         preset_column = QVBoxLayout(preset_group)
         self._preset = QComboBox()
+        self._preset.setAccessibleName("Preset")
         for key, preset in PRESETS.items():
             self._preset.addItem(preset.name, key)
         self._preset.addItem(CUSTOM_NAME, CUSTOM)

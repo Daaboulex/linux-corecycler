@@ -42,6 +42,7 @@ def setting_grid() -> QGridLayout:
 
 
 def add_setting(grid: QGridLayout, row: int, label: str, widget: QWidget, unit: str, about: str) -> None:
+    widget.setAccessibleName(label)
     name = QLabel(label)
     name.setWordWrap(True)
     name.setMinimumHeight(widget.sizeHint().height())

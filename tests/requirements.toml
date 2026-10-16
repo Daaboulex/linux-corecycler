@@ -4925,6 +4925,11 @@ statement = "Every toolbar control of the main window is listed with its reactio
 proof = "built"
 
 [[requirement]]
+id = "T23.contract.doc"
+statement = "docs/controls.md lists every control of the window and each tab with its reaction, rendered from the registries the tab tests check and kept equal to them by a test; each Configuration control is named as the form shows it, its label also its accessible name (PLAN.md T23: the list rendered as a readable bullet list kept equal to the registry by the gate)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"
