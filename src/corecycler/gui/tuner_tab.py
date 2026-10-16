@@ -13,9 +13,8 @@ from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -216,8 +215,6 @@ GRID_STATE = {
 }
 SCHEDULING_SERVICES = ("ananicy-cpp", "scx_loader", "scx")
 ENDED = frozenset({"completed", "aborted", "quarantined"})
-AUTO_RESUME_TRIES = 3
-AUTO_RESUME_GAP_MS = 60_000
 TOOLS = ("y-cruncher", "stressapptest")
 
 
@@ -333,8 +330,6 @@ class TunerTab(QWidget):
         self._co_range = co_range
         self._read_co = read_co
         self._child: subprocess.Popen | None = None
-        self._child_auto = False
-        self._auto_tries_left = 0
         self._running = False
         self._test_running = False
         self._view: SessionView | None = None
@@ -747,7 +742,7 @@ class TunerTab(QWidget):
             return
         self._note(f"asked driver {pid} to {meaning}")
 
-    def _launch(self, args: list[str], auto: bool = False) -> None:
+    def _launch(self, args: list[str]) -> None:
         state = data_dir() / "tuner"
         state.mkdir(parents=True, exist_ok=True)
         output = state / "driver.log"
@@ -765,7 +760,6 @@ class TunerTab(QWidget):
                 start_new_session=True,
             )
         hand_back(output)
-        self._child_auto = auto
         self._note(f"started the driver: {' '.join(args)}")
         self._enable_controls()
 
@@ -785,36 +779,9 @@ class TunerTab(QWidget):
         failure = next((line.partition(DATABASE_FAILED)[2] for line in reversed(lines) if DATABASE_FAILED in line), "")
         if failure:
             QMessageBox.critical(self, "The history database failed", failure)
-        if self._child_auto and code in (EXIT_REFUSED, EXIT_LOCKED) and self._auto_tries_left > 0:
-            self._note(f"auto-resume: trying again in {AUTO_RESUME_GAP_MS // 1000} s ({meaning})")
-            QTimer.singleShot(AUTO_RESUME_GAP_MS, lambda: self.attempt_auto_resume(self._auto_tries_left))
 
     def _driver_output(self) -> list[str]:
         try:
             return (data_dir() / "tuner" / "driver.log").read_text().splitlines()
         except OSError as e:
             return [f"its output cannot be read: {e}"]
-
-    def attempt_auto_resume(self, tries: int = AUTO_RESUME_TRIES) -> None:
-        if self._db is None:
-            self._note("auto-resume: no history database")
-            return
-        if QApplication.closingDown():
-            self._note("auto-resume: the app is closing")
-            return
-        if QApplication.activeModalWidget() is not None:
-            self._note(f"auto-resume: a dialog is open; trying again in {AUTO_RESUME_GAP_MS // 1000} s")
-            QTimer.singleShot(AUTO_RESUME_GAP_MS, lambda: self.attempt_auto_resume(tries))
-            return
-        if self.is_running or self._child is not None:
-            self._note("auto-resume: a tuner driver already runs")
-            return
-        interrupted = [s.id for s in self._db.list_machine_sessions() if s.status == "running"]
-        if len(interrupted) != 1:
-            self._note(f"auto-resume: {len(interrupted)} interrupted sessions; resume one by hand")
-            return
-        if self._test_running:
-            self._note("auto-resume: another test is running")
-            return
-        self._auto_tries_left = tries - 1
-        self._launch(["--resume", "--session", str(interrupted[0])], auto=True)

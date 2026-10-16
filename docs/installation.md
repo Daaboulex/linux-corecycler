@@ -16,6 +16,10 @@ while a run lasts. `hangReset.enable` (off by default) makes a hung machine rese
 unattended run resumes after the reboot: it panics on an oops, a soft or hard lockup and an RCU
 stall, reboots 10 s after a panic, and has systemd feed the board's hardware watchdog; it acts on
 every stall on the machine, and it refuses when the watchdog driver is blacklisted.
+`autoResume.enable` (off by default) is what resumes that run: at boot, with no login, a user
+unit of `deviceAccessUser` runs `corecycler resume --interrupted`, as
+[Crash safety](usage.md#crash-safety) describes. It needs `deviceAccessUser`, who then lingers,
+so that user's other user services start at boot too.
 
 Fuller example (AMD Zen 5 desktop, Nuvoton Super I/O, DDR5 temps):
 

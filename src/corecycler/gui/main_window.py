@@ -839,9 +839,6 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"Failed to load profile: {e}")
 
-    def attempt_auto_resume(self) -> None:
-        self._tuner_tab.attempt_auto_resume()
-
     def closeEvent(self, event) -> None:
         self._closing = True
         manual_running = self._worker and self._worker.isRunning()

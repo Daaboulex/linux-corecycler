@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import signal
 import sys
 from pathlib import Path
@@ -266,18 +265,6 @@ def _install_exception_hooks(window) -> None:
     threading.excepthook = _thread_handle
 
 
-def _parse_auto_resume(argv: list[str]) -> int | None:
-    """--auto-resume [seconds]: resume the active mid-run session after a
-    settle delay (the login-autostart path). Returns None when absent."""
-    if "--auto-resume" not in argv:
-        return None
-    i = argv.index("--auto-resume")
-    if i + 1 < len(argv):
-        with contextlib.suppress(ValueError):
-            return max(0, int(argv[i + 1]))
-    return 120
-
-
 def setup_logging() -> None:
     import logging
 
@@ -384,12 +371,6 @@ def main() -> int:
 
     window = MainWindow()
     window.show_style_fallback(style_problem)
-
-    auto_resume_delay = _parse_auto_resume(sys.argv[1:])
-    if auto_resume_delay is not None:
-        from PySide6.QtCore import QTimer
-
-        QTimer.singleShot(auto_resume_delay * 1000, window.attempt_auto_resume)
 
     import atexit
 

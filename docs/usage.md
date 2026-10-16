@@ -198,10 +198,13 @@ Hard crashes are expected during CO tuning; that is how each core's limit is fou
   (ananicy-cpp, scx_loader, scx) that is enabled but stopped is named with the command
   that starts it again. Manual stress runs judge a renice the same way.
 
-`corecycler --auto-resume [seconds]` (the NixOS autostart entry passes it) waits, then
-resumes the one session a crash interrupted, trying three times a minute apart while the
-driver refuses (the SMU driver not loaded yet, for example). A paused session is your
-decision and is never resumed by itself, and with two interrupted sessions neither is.
+`corecycler resume --interrupted` resumes the one session a crash left running; with none
+it does nothing and exits 0, and with two or more it resumes neither and names them. On
+NixOS, `services.corecycler.autoResume.enable` runs it at boot with no login: the
+`deviceAccessUser` lingers, and a user unit of theirs runs it once `autoResume.delaySeconds`
+have passed. After a refusal (the SMU driver not loaded yet, or the GUI already driving a
+session) the unit tries again, three times a minute apart. A paused session is your
+decision and is never resumed by itself.
 
 ## Test programs: instruction set and FFT size
 

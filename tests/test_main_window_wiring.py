@@ -758,15 +758,6 @@ class TestProfileIo:
         assert "Failed to load profile" in no_modal.warning.call_args.args[2]
 
 
-class TestAutoResume:
-    def test_the_window_hands_auto_resume_to_the_tuner_tab(self, window, monkeypatch, tmp_path):
-        saved = save_machine_session(window._history_db, tmp_path, "running")
-        launched = []
-        monkeypatch.setattr(window._tuner_tab, "_launch", lambda args, auto=False: launched.append((args, auto)))
-        window.attempt_auto_resume()
-        assert launched == [(["--resume", "--session", str(saved.session_id)], True)]
-
-
 class TestCloseEvent:
     def test_an_idle_window_closes_cleanly(self, window):
         event = MagicMock()

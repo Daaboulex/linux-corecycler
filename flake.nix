@@ -486,6 +486,48 @@
                   b.pkgs.runCommand "module-hang-reset" { } "touch $out"
                 else
                   throw (lib.concatStringsSep "; " problems);
+
+              module-boot-resume =
+                let
+                  byDefault = tunerEval { } { };
+                  on = tunerEval {
+                    autoResume = {
+                      enable = true;
+                      delaySeconds = 45;
+                    };
+                  } { };
+                  noUser = tunerEval {
+                    autoResume.enable = true;
+                    deviceAccessUser = "";
+                  } { };
+                  unit = on.systemd.user.services.corecycler-resume or null;
+                  timer = on.systemd.user.timers.corecycler-resume or null;
+                  lingers = config: config.users.users.corecycler-test.linger == true;
+                  problems =
+                    lib.optional (
+                      byDefault.systemd.user.services ? corecycler-resume || lingers byDefault
+                    ) "the tuner by default resumes at boot"
+                    ++ lib.optional (
+                      unit == null
+                      ||
+                        unit.serviceConfig.ExecStart
+                        != "${lib.getExe inputs.self.packages.${system}.default} resume --interrupted"
+                      || unit.unitConfig.ConditionUser != "corecycler-test"
+                    ) "autoResume does not run corecycler resume --interrupted as the deviceAccessUser"
+                    ++ lib.optional (
+                      timer == null || !lib.elem "timers.target" timer.wantedBy || timer.timerConfig.OnStartupSec != 45
+                    ) "autoResume does not start the resume once delaySeconds have passed"
+                    ++ lib.optional (!lingers on) "autoResume does not let the deviceAccessUser linger"
+                    ++ lib.optional (
+                      !lib.any (lib.hasInfix "autoResume needs services.corecycler.deviceAccessUser") (
+                        failedAssertions noUser
+                      )
+                    ) "autoResume without a deviceAccessUser is not refused";
+                in
+                if problems == [ ] then
+                  b.pkgs.runCommand "module-boot-resume" { } "touch $out"
+                else
+                  throw (lib.concatStringsSep "; " problems);
             }
             // inputs.nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
               # The out-of-tree modules compile against the user's own kernel, so an

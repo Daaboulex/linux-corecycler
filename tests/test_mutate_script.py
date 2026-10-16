@@ -16,7 +16,7 @@ _spec.loader.exec_module(mutate)
 
 
 def test_a_passing_selection_is_not_reported_as_failed_in_this_project_s_own_environment():
-    assert mutate._failure(["tests/test_main_args.py"], 120) is None
+    assert mutate._failure(["tests/test_packaging.py"], 120) is None
 
 
 def test_a_failing_selection_is_reported_with_pytest_s_own_reason(tmp_path):

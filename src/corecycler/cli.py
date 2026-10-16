@@ -54,6 +54,9 @@ corecycler headless commands:
   corecycler resume SESSION_ID     resume a paused, interrupted or aborted session; a
                                    quarantined one only with --reengage, each core from
                                    its last proven value or from stock
+  corecycler resume --interrupted  resume the one session a crash left running, from the
+                                   default database; none is no failure, two or more
+                                   are refused; takes no other argument
   corecycler validate SESSION_ID   prove a completed session's values again
   corecycler continue SESSION_ID   carry a session paused on a changed setup into a new one
   corecycler restart SESSION_ID    start a session paused on a changed setup over
@@ -62,7 +65,8 @@ corecycler headless commands:
                                    goes back to its baseline; no test runs
 
 tune and restart take --acknowledge to start over a CO the BIOS already sets.
-Every tuning command takes --db FILE and --state-dir DIR; one runs at a time.
+Every tuning command but resume --interrupted takes --db FILE and
+--state-dir DIR; one runs at a time.
 
 {textwrap.fill("Exit codes: " + ", ".join(f"{code} {meaning}" for code, meaning in EXIT_MEANINGS.items()) + ".", 72)}
 
@@ -196,10 +200,37 @@ def margin_lines(found: dict[int, dict], results: dict[int, CoreRecord]) -> list
 
 
 def cmd_session(command: str, rest: list[str]) -> int:
+    if command == "resume" and rest[:1] == ["--interrupted"]:
+        return cmd_resume_interrupted(rest[1:])
     if not rest or not rest[0].isdigit():
         print(f"corecycler {command}: needs a SESSION_ID first; corecycler status lists them", file=sys.stderr)
         return EXIT_REFUSED
     return drive([f"--{command}", "--session", rest[0], "--write", *rest[1:]])
+
+
+def cmd_resume_interrupted(rest: list[str], db: HistoryDB | None = None) -> int:
+    from corecycler.history.db import HistoryDB
+
+    if rest:
+        print(f"corecycler resume: --interrupted takes no other argument: {' '.join(rest)}", file=sys.stderr)
+        return EXIT_REFUSED
+    own = HistoryDB() if db is None else db
+    try:
+        sessions = own.list_machine_sessions()
+    finally:
+        if db is None:
+            own.close()
+    interrupted = [str(s.id) for s in sessions if s.status == "running"]
+    if not interrupted:
+        print("corecycler resume: no interrupted session")
+        return EXIT_COMPLETED
+    if len(interrupted) > 1:
+        print(
+            f"corecycler resume: sessions {', '.join(interrupted)} were all interrupted; resume one by hand",
+            file=sys.stderr,
+        )
+        return EXIT_REFUSED
+    return drive(["--resume", "--session", interrupted[0], "--write"])
 
 
 def cmd_status(db: HistoryDB | None = None) -> int:

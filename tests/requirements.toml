@@ -516,11 +516,6 @@ statement = "Background load above 5 % per CPU over 5 s warns"
 proof = "built"
 
 [[requirement]]
-id = "K51"
-statement = "AutoResume: 3 tries 60 s apart, off by default"
-proof = "built"
-
-[[requirement]]
 id = "TERMS.owned_co"
 statement = "CO only owns exactly the selected cores' per-core CO and holds every other knob"
 proof = "built"
@@ -1102,7 +1097,7 @@ proof = "built"
 
 [[requirement]]
 id = "INV.L28"
-statement = "Inventory claim: AutoResume built in the tab, exactly one interrupted session, three tries a minute apart"
+statement = "Inventory claim: the boot resume built in corecycler resume --interrupted, exactly one interrupted session, and in the NixOS module's user unit, three retries a minute apart (flake check module-boot-resume)"
 proof = "built"
 
 [[requirement]]
@@ -2828,17 +2823,12 @@ proof = "built"
 
 [[requirement]]
 id = "L28.a"
-statement = "AutoResume resumes at app start without a click when safe; off by default"
+statement = "With services.corecycler.autoResume enabled, off by default, a user unit of the deviceAccessUser, who lingers, runs corecycler resume --interrupted at boot without a login, and it resumes the interrupted session with writes on; the unit and the linger are proven by the flake check module-boot-resume"
 proof = "built"
 
 [[requirement]]
 id = "L28.d"
-statement = "It resumes exactly one interrupted session with no driver or test running, else waits 60 s and tries again, up to 3 tries"
-proof = "built"
-
-[[requirement]]
-id = "L28.d.modal"
-statement = "AutoResume waits 60 s and tries again while a modal dialog is open, and does not resume while the app is closing"
+statement = "corecycler resume --interrupted resumes exactly one interrupted session, else nothing: none exits 0, two or more are refused naming them, any other argument is refused; the retries on a refusal are the unit's, three a minute apart after the settle time (flake check module-boot-resume)"
 proof = "built"
 
 [[requirement]]
@@ -4695,7 +4685,7 @@ proof = "built"
 
 [[requirement]]
 id = "T23.history.uncapped"
-statement = "Every list History, the auto-resume and corecycler status read holds every row, so no count shown as a total is a capped read: 501 runs show 501 and a setup's delete names all 501, 102 sessions show 102 rows, 101 setups 101, and an interrupted session older than the newest 50 still resumes (scratch/design/t23-curve-history.md defect 2)."
+statement = "Every list History, corecycler resume --interrupted and corecycler status read holds every row, so no count shown as a total is a capped read: 501 runs show 501 and a setup's delete names all 501, 102 sessions show 102 rows, 101 setups 101, and an interrupted session older than the newest 50 still resumes (scratch/design/t23-curve-history.md defect 2)."
 proof = "built"
 
 [[requirement]]

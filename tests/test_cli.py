@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -87,6 +88,74 @@ class TestForwarding:
         monkeypatch.setattr(live_hw, "main", lambda argv: seen.append(argv) or 7)
         assert cli.drive(["--resume", "--session", "1"]) == 7
         assert seen == [["--resume", "--session", "1"]]
+
+
+def sessions(db, statuses):
+    for number, status in enumerate(statuses, start=1):
+        machine_session(db, number, status)
+
+
+class TestResumeInterrupted:
+    @pytest.mark.req("INV.L28", "L28.a", "L28.d")
+    def test_the_one_interrupted_session_resumes_with_writes_on_and_the_database_is_closed(self, monkeypatch, driven):
+        closed = []
+
+        class Own(HistoryDB):
+            def close(self):
+                closed.append(True)
+                super().close()
+
+        own = Own(":memory:")
+        sessions(own, ["completed", "running", "paused", "quarantined", "aborted"])
+        monkeypatch.setattr("corecycler.history.db.HistoryDB", lambda: own)
+        assert cli.cli_main(["resume", "--interrupted"]) == 42
+        assert driven == [["--resume", "--session", "2", "--write"]]
+        assert closed == [True]
+
+    @pytest.mark.req("INV.L28", "L28.d")
+    @pytest.mark.parametrize("statuses", [[], ["paused"], ["completed", "quarantined", "aborted"]])
+    def test_without_an_interrupted_session_nothing_resumes_and_the_boot_is_no_failure(
+        self, db, driven, capsys, statuses
+    ):
+        sessions(db, statuses)
+        assert cli.cmd_resume_interrupted([], db) == cli.EXIT_COMPLETED
+        assert driven == []
+        assert capsys.readouterr().out == "corecycler resume: no interrupted session\n"
+
+    @pytest.mark.req("INV.L28", "L28.d")
+    def test_two_interrupted_sessions_are_refused_by_name_and_neither_resumes(self, db, driven, capsys):
+        sessions(db, ["running", "paused", "running"])
+        assert cli.cmd_resume_interrupted([], db) == cli.EXIT_REFUSED
+        assert driven == []
+        err = capsys.readouterr().err
+        assert {int(number) for number in re.findall(r"\b\d+\b", err)} == {1, 3}
+        assert "resume one by hand" in err
+
+    @pytest.mark.req("L28.d")
+    @pytest.mark.parametrize("extra", [["3"], ["--db", "x.db"]])
+    def test_anything_after_interrupted_is_refused_before_the_database_is_opened(
+        self, monkeypatch, driven, capsys, extra
+    ):
+        monkeypatch.setattr("corecycler.history.db.HistoryDB", lambda: pytest.fail("the database was opened"))
+        assert cli.cli_main(["resume", "--interrupted", *extra]) == cli.EXIT_REFUSED
+        assert driven == []
+        err = capsys.readouterr().err
+        assert "--interrupted" in err
+        assert " ".join(extra) in err
+
+    @pytest.mark.req("L28.d")
+    def test_the_boot_unit_retries_exactly_on_the_refused_and_locked_exits(self):
+        module = (Path(__file__).parents[1] / "nix" / "module.nix").read_text()
+        retried = re.findall(r'RestartForceExitStatus = "([0-9 ]+)";', module)
+        assert [sorted(int(code) for code in codes.split()) for codes in retried] == [
+            sorted([cli.EXIT_REFUSED, cli.EXIT_LOCKED])
+        ]
+
+    @pytest.mark.req("T23.history.uncapped")
+    def test_an_interrupted_session_older_than_the_newest_fifty_resumes(self, db, driven):
+        sessions(db, ["running"] + ["completed"] * 50)
+        assert cli.cmd_resume_interrupted([], db) == 42
+        assert driven == [["--resume", "--session", "1", "--write"]]
 
 
 ZERO_SHAPER = "Min 0/0/0, Low 0/0/0, Medium 0/0/0, High 0/0/0, Max 0/0/0"

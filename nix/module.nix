@@ -105,11 +105,11 @@ in
     hangReset.enable = lib.mkEnableOption "resetting the machine by itself when a test hangs it, so an unattended run resumes after the reboot: the kernel panics on an oops, a soft or hard lockup and an RCU stall (a core that stops dead while the others run on) and reboots 10 s later, and systemd feeds the board's hardware watchdog every 30 s for a hang that stops everything. Each value is a default the host can override. It acts on every stall on the machine, not only during a run";
 
     autoResume = {
-      enable = lib.mkEnableOption "resuming the active tuner session automatically after login (freeze-and-continue without clicks). Runs sudo-less via the corecycler device-access group.";
+      enable = lib.mkEnableOption "resuming the one interrupted tuner session at boot, without a login, through `corecycler resume --interrupted`: a user unit of deviceAccessUser runs it once delaySeconds have passed since that user's systemd manager started, which lingering starts at boot, and again a minute after a refusal (the SMU driver not loaded yet, a GUI already driving), three times at most. A paused session is never resumed by itself, and with two interrupted sessions neither is. The user lingers, so their other user services start at boot too";
       delaySeconds = lib.mkOption {
         type = lib.types.ints.positive;
         default = 120;
-        description = "Settle time after login before the session resumes.";
+        description = "The settle time after boot before the interrupted session resumes.";
       };
     };
   };
@@ -128,6 +128,10 @@ in
         assertion = cfg.machineCheckPoll.enable -> cfg.deviceAccess;
         message = "services.corecycler.machineCheckPoll grants the corecycler group, which only deviceAccess creates: enable deviceAccess or turn machineCheckPoll off.";
       }
+      {
+        assertion = cfg.autoResume.enable -> cfg.deviceAccessUser != "";
+        message = "services.corecycler.autoResume needs services.corecycler.deviceAccessUser, the user whose tuning session it resumes at boot.";
+      }
     ];
 
     warnings =
@@ -136,23 +140,36 @@ in
 
     environment.systemPackages = [ package ];
 
-    # Login autostart: the app itself enforces the guards (mid-run sessions
-    # only, single-instance lock, settle delay).
-    environment.etc."xdg/autostart/corecycler-autoresume.desktop" = lib.mkIf cfg.autoResume.enable {
-      text = ''
-        [Desktop Entry]
-        Type=Application
-        Name=CoreCycler auto-resume
-        Exec=${lib.getExe package} --auto-resume ${toString cfg.autoResume.delaySeconds}
-        X-GNOME-Autostart-enabled=true
-      '';
+    systemd.user.timers.corecycler-resume = lib.mkIf cfg.autoResume.enable {
+      description = "Resume the interrupted CoreCycler tuning session once the boot settles";
+      unitConfig.ConditionUser = cfg.deviceAccessUser;
+      wantedBy = [ "timers.target" ];
+      timerConfig.OnStartupSec = cfg.autoResume.delaySeconds;
     };
 
-    # --- Device access via dedicated group (no sudo) ---
-    users.groups.corecycler = lib.mkIf cfg.deviceAccess { };
-    users.users = lib.optionalAttrs (cfg.deviceAccess && cfg.deviceAccessUser != "") {
-      ${cfg.deviceAccessUser}.extraGroups = [ "corecycler" ];
+    systemd.user.services.corecycler-resume = lib.mkIf cfg.autoResume.enable {
+      description = "Resume the one interrupted CoreCycler tuning session";
+      unitConfig.ConditionUser = cfg.deviceAccessUser;
+      startLimitBurst = 4;
+      startLimitIntervalSec = 600;
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${lib.getExe package} resume --interrupted";
+        Restart = "no";
+        RestartForceExitStatus = "5 7";
+        RestartSec = 60;
+      };
     };
+
+    users.groups.corecycler = lib.mkIf cfg.deviceAccess { };
+    users.users = lib.mkMerge [
+      (lib.optionalAttrs (cfg.deviceAccess && cfg.deviceAccessUser != "") {
+        ${cfg.deviceAccessUser}.extraGroups = [ "corecycler" ];
+      })
+      (lib.optionalAttrs (cfg.autoResume.enable && cfg.deviceAccessUser != "") {
+        ${cfg.deviceAccessUser}.linger = true;
+      })
+    ];
 
     services.udev.extraRules = lib.mkIf cfg.deviceAccess ''
       SUBSYSTEM=="msr", KERNEL=="msr[0-9]*", GROUP="corecycler", MODE="0640"
