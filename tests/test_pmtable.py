@@ -739,3 +739,25 @@ class TestReadPowerLimits:
         from corecycler.smu.pmtable import read_power_limits
 
         assert read_power_limits(tmp_path / "nope") == (None, None, None)
+
+
+@pytest.mark.req("O19.stretch")
+@pytest.mark.parametrize(
+    ("clock", "effective", "c0", "stretch"),
+    [
+        (5000.0, 4900.0, 100.0, 2.0),
+        (5000.0, 4655.0, 95.0, 2.0),
+        (5000.0, 4655.0, 94.9, None),
+        (5000.0, 5100.0, 100.0, 0.0),
+        (None, 4900.0, 100.0, None),
+        (5000.0, None, 100.0, None),
+        (5000.0, 4900.0, None, None),
+        (0.0, 4900.0, 100.0, None),
+    ],
+)
+def test_stretch_is_the_effective_clock_below_the_clock_for_a_core_at_least_95_percent_in_c0(
+    clock, effective, c0, stretch
+):
+    from corecycler.smu.pmtable import stretch_pct
+
+    assert stretch_pct(clock, effective, c0) == (None if stretch is None else pytest.approx(stretch))

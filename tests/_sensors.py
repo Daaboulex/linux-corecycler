@@ -48,6 +48,7 @@ def a_tick(sensors=None, **fields) -> Tick:
         "stretch": {},
         "core_watts": {},
         "pm": None,
+        "cores": (),
     }
     return Tick(**(quiet | fields))
 

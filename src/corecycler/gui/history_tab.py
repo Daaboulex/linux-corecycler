@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import statistics
 from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -48,6 +49,7 @@ from corecycler.gui.style import (
 from corecycler.gui.tuner_tab import ORDER_LABELS, THREADS, settings_lines
 from corecycler.gui.widgets import table_item as _item
 from corecycler.history.timefmt import format_local
+from corecycler.smu.pmtable import stretch_pct
 from corecycler.smu.writer_lock import running_driver
 from corecycler.tuner.live import MHZ_BIN, TEMP_BIN, read_stored
 from corecycler.tuner.machine.types import Phase
@@ -751,6 +753,11 @@ class HistoryTab(QWidget):
                 core_samples = per_core[cid]
                 freqs = [s.freq_mhz for s in core_samples if s.freq_mhz]
                 eff_maxes = [s.effective_max_mhz for s in core_samples if s.effective_max_mhz]
+                stretches = [
+                    pct
+                    for s in core_samples
+                    if (pct := stretch_pct(s.pm_clock_mhz, s.pm_effective_mhz, s.pm_c0_pct)) is not None
+                ]
                 temps = [s.temp_c for s in core_samples if s.temp_c]
                 vcores = [s.vcore_v for s in core_samples if s.vcore_v]
                 parts = [f"  Core {cid}: {len(core_samples)} samples"]
@@ -758,6 +765,11 @@ class HistoryTab(QWidget):
                     parts.append(f"    Freq: {min(freqs):.0f}-{max(freqs):.0f} MHz")
                 if eff_maxes:
                     parts.append(f"    Boost ceiling: {max(eff_maxes):.0f} MHz")
+                if stretches:
+                    peak, middle, loaded = max(stretches), statistics.median(stretches), len(stretches)
+                    parts.append(
+                        f"    Clock stretch: peak {peak:.1f}% (median {middle:.1f}%) over {loaded} loaded samples"
+                    )
                 if temps:
                     parts.append(f"    Temp: {min(temps):.1f}-{max(temps):.1f} C")
                 if vcores:

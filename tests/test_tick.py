@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.monitor import tick
+from corecycler.smu import pmtable
 from tests._sensors import FakeClocks, FakeSensors
 
 
@@ -31,10 +34,6 @@ class FakeMsr:
     def read_package_power(self):
         return self.package
 
-    def read_clock_stretch(self, cpus):
-        self.asked.append(list(cpus))
-        return {cpu: SimpleNamespace(stretch_pct=1.5) for cpu in cpus} if self.available else {}
-
     def read_core_power(self, cpus):
         return {cpu: SimpleNamespace(watts=9.0) for cpu in cpus} if self.available else {}
 
@@ -42,12 +41,20 @@ class FakeMsr:
         self.closed = True
 
 
-def ticker(watts=None, msr=None):
+def pm_table(**cores):
+    floats = [0.0] * (max(first for _, first, *_ in pmtable.CORE_ARRAYS) + pmtable.CORE_COUNT)
+    for name, values in cores.items():
+        for (_, first, *_), value in zip(pmtable.CORE_ARRAYS, values, strict=True):
+            floats[first + int(name.removeprefix("core"))] = value
+    return pmtable.PMTableData(raw_floats=floats, pm_table_version=pmtable.CORE_TABLE_VERSION)
+
+
+def ticker(watts=None, msr=None, pm=None):
     t = tick.Ticker(FakeSensors(), FakeClocks({0: 5000.0}, {0: 5700.0}))
     t.power = FakePower(watts)
     t.msr = msr or FakeMsr(False)
     t.usage = SimpleNamespace(read=lambda: {0: 40.0})
-    t.pm = SimpleNamespace(read=lambda: "pm", is_available=lambda: True)
+    t.pm = SimpleNamespace(read=lambda: pm, is_available=lambda: True)
     return t
 
 
@@ -58,9 +65,17 @@ def test_a_tick_holds_one_read_of_every_source():
     assert reading.sensed == FakeSensors().read()
     assert reading.package_watts == 95.0
     assert reading.usage == {0: 40.0}
-    assert reading.stretch == {0: 1.5, 2: 1.5}
     assert reading.core_watts == {0: 9.0, 2: 9.0}
-    assert reading.pm == "pm"
+    assert (reading.pm, reading.cores, reading.stretch) == (None, (), {})
+
+
+@pytest.mark.req("O19.stretch")
+def test_the_stretch_is_each_loaded_core_s_effective_clock_below_its_clock_from_the_pm_table():
+    table = pm_table(core0=(5.0, 4.9, 100.0, 1.1), core3=(5.2, 5.2, 94.9, 1.0), core5=(5.0, 5.1, 95.0, 1.2))
+    reading = ticker(pm=table).read([0, 16])
+    assert reading.pm is table
+    assert reading.cores[0] == (0, 5000.0, 4900.0, 100.0, 1.1)
+    assert reading.stretch == {0: pytest.approx(2.0), 5: 0.0}
 
 
 def test_package_power_falls_back_to_the_msr_only_when_the_power_reader_has_none():

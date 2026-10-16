@@ -593,16 +593,27 @@ class TestElapsedWatchdog:
         window._feed_core_grid_telemetry(window._ticker.read([]))
         assert window._core_telemetry == {}
 
-    @pytest.mark.req("T34.telemetry")
+    @pytest.mark.req("T34.telemetry", "O19.stretch")
     def test_a_telemetry_sample_records_the_boost_ceiling_the_core_s_bar_shows(self, window):
         window._sensors.give(tctl=65.0, tccd=((0, 72.0),), vcore=1.2)
         logger = MagicMock()
         window._logger = logger
         window._active_test_core = 0
-        tick = a_tick(window._sensors, clocks={0: 4500.0, 8: 4400.0}, ceilings={0: 5100.0, 8: 5200.0})
+        read = (0, 4510.0, 4420.0, 100.0, 1.19)
+        window._topology.cores[0] = replace(window._topology.cores[0], logical_cpus=(8, 0))
+        tick = a_tick(
+            window._sensors,
+            clocks={0: 4500.0, 8: 4400.0},
+            ceilings={0: 5100.0, 8: 5200.0},
+            cores=((1, 4000.0, 3900.0, 50.0, 1.0), read),
+            stretch={0: 2.0, 8: 9.0},
+        )
         window._feed_core_grid_telemetry(tick)
-        logger.record_telemetry_sample.assert_called_once_with(0, 4500.0, 72.0, 1.2, effective_max_mhz=5200.0)
+        logger.record_telemetry_sample.assert_called_once_with(
+            0, 4500.0, 72.0, 1.2, effective_max_mhz=5200.0, core_read=read
+        )
         assert window._core_telemetry[0]["max_freq"] == 4500.0
+        assert window._core_telemetry[0]["max_stretch_pct"] == 2.0
 
     def test_a_failing_telemetry_write_is_logged_once_and_its_recovery_is_logged(self, window, caplog):
         window._logger = MagicMock()

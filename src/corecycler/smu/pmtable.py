@@ -153,6 +153,17 @@ CORE_ARRAYS = (
 )
 
 
+LOADED_C0_PCT = 95.0
+
+
+def stretch_pct(clock_mhz: float | None, effective_mhz: float | None, c0_pct: float | None) -> float | None:
+    """How far a loaded core's effective clock falls below the clock it runs at, in percent, or None unless the
+    core sat in C0 at LOADED_C0_PCT or more, where the hour probe of design/clock-stretch.md measured it."""
+    if clock_mhz is None or effective_mhz is None or c0_pct is None or c0_pct < LOADED_C0_PCT or not clock_mhz:
+        return None
+    return max(0.0, 1.0 - effective_mhz / (clock_mhz * c0_pct / 100.0)) * 100.0
+
+
 def core_reads(data: PMTableData) -> tuple[CoreRead, ...]:
     """Each core's clock, effective clock, C0 and voltage on table 0x620205 only, each array at its first float."""
     floats = data.raw_floats

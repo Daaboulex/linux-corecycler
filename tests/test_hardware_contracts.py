@@ -12,7 +12,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -74,12 +73,7 @@ def test_msr_reads_are_plausible():
     )
     unit = reader._get_energy_unit()
     assert unit is not None and 1e-6 < unit < 1e-2, f"implausible RAPL energy unit {unit}"
-    reader.read_clock_stretch([0])
-    time.sleep(0.1)
-    stretch = reader.read_clock_stretch([0])
     reader.close()
-    if 0 in stretch:
-        assert 0.0 < stretch[0].ratio <= 1.6, f"implausible APERF/MPERF ratio {stretch[0].ratio}"
 
 
 def test_dmidecode_parses_real_dimms():

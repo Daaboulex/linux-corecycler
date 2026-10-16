@@ -23,7 +23,6 @@ from corecycler.engine import containment, topology
 from corecycler.engine.backends import BACKEND_REGISTRY, load_all
 from corecycler.monitor.memory import parse_dmidecode_output
 from corecycler.monitor.msr import (
-    MSR_APERF,
     MSR_CORE_ENERGY,
     MSR_MPERF,
     MSR_PKG_ENERGY,
@@ -103,7 +102,6 @@ def _pin_detect_generation_map() -> None:
 
 
 def _pin_msr_addresses() -> None:
-    assert MSR_APERF == 0xE8
     assert MSR_MPERF == 0xE7
     assert MSR_PWR_UNIT == 0xC0010299
     assert MSR_CORE_ENERGY == 0xC001029A
@@ -354,7 +352,7 @@ CONTRACTS: list[Contract] = [
     Contract(
         name="msr-register-addresses",
         kind="arch",
-        source="AMD PPR Fam19h/1Ah APERF 0xE8 MPERF 0xE7 RAPL 0xC0010299/029A/029B",
+        source="AMD PPR Fam19h/1Ah MPERF 0xE7 RAPL 0xC0010299/029A/029B",
         ring_a=_pin_msr_addresses,
         live_verifiable=True,
         ring_b_test="test_hardware_contracts.py::test_msr_reads_are_plausible",

@@ -473,7 +473,7 @@ def _seed_detailed_run(db, ctx_id=None, settings_json='{"backend": "mprime"}'):
 
 def _seed_telemetry(db, rid):
     samples = []
-    for i in range(3):
+    for i, effective in enumerate((4900.0, 5000.0, 4975.0)):
         samples.append(
             TelemetrySample(
                 run_id=rid,
@@ -483,6 +483,10 @@ def _seed_telemetry(db, rid):
                 effective_max_mhz=5000.0 + i * 100.0,
                 temp_c=70.0 + i,
                 vcore_v=1.1 + i * 0.01,
+                pm_clock_mhz=5000.0,
+                pm_effective_mhz=effective,
+                pm_c0_pct=100.0,
+                pm_volts=1.1,
             )
         )
         samples.append(
@@ -493,6 +497,9 @@ def _seed_telemetry(db, rid):
                 freq_mhz=4900.0 + i * 50.0,
                 temp_c=72.0 + i,
                 vcore_v=1.2 + i * 0.01,
+                pm_clock_mhz=5000.0,
+                pm_effective_mhz=2400.0,
+                pm_c0_pct=50.0,
             )
         )
     db.insert_telemetry_block(samples)
@@ -503,7 +510,7 @@ def _run_by_id(db, rid):
 
 
 class TestRunDetail:
-    @pytest.mark.req("T34.telemetry")
+    @pytest.mark.req("T34.telemetry", "O19.stretch")
     def test_detail_renders_context_events_and_telemetry(self, db):
         cid = _seed_context(db, "2402", {"0": -20, "1": -25}, notes="tuned", scalar=3.0, boost=5200)
         rid = _seed_detailed_run(db, cid)
@@ -547,9 +554,10 @@ class TestRunDetail:
         assert "Total samples: 6" in text
         core_0, core_1 = text.split("Telemetry Summary")[1].split("Settings Snapshot")[0].split("  Core 1: ")
         assert "Boost ceiling: 5200 MHz" in core_0
+        assert "Clock stretch: peak 2.0% (median 0.5%) over 3 loaded samples" in core_0
         assert "Boost ceiling" not in core_1
+        assert "stretch" not in core_1.lower()
         assert "Freq: 4900-5000 MHz" in core_1
-        assert "stretch" not in text.lower()
         assert "Temp: 70.0-72.0 C" in text
         assert "Vcore: 1.1000-1.1200V" in text
         assert "Settings Snapshot" in text

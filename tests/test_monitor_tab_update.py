@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys as _sys
+from dataclasses import replace
 
 import pytest
 
@@ -101,6 +102,16 @@ class TestMonitorUpdateMatrix:
         bar.update_data = lambda *args, **kwargs: seen.append(kwargs)
         tab.on_tick(_tick(watts=50.0))
         assert (seen[0]["stretch_pct"], seen[0]["core_watts"]) == (2.5, 12.0)
+
+    @pytest.mark.req("O19.stretch")
+    def test_a_bar_takes_its_core_s_stretch_not_its_first_cpu_s(self):
+        tab = _tab()
+        core = tab._topology.cores[1]
+        tab._topology.cores[1] = type(core)(core_id=1, ccd=core.ccd, ccx=None, logical_cpus=(5,))
+        seen = []
+        tab._per_core_bars[1].update_data = lambda *args, **kwargs: seen.append(kwargs)
+        tab.on_tick(replace(_tick(watts=50.0), stretch={1: 3.0, 5: 9.0}))
+        assert seen[0]["stretch_pct"] == 3.0
 
     def test_bars_update_without_topology(self):
         tab = _tab()

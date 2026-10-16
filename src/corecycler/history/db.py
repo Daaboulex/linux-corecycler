@@ -14,7 +14,7 @@ import logging
 import os
 import sqlite3
 from compression import zstd
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -198,6 +198,10 @@ class TelemetrySample:
     effective_max_mhz: float | None = None
     temp_c: float | None = None
     vcore_v: float | None = None
+    pm_clock_mhz: float | None = None
+    pm_effective_mhz: float | None = None
+    pm_c0_pct: float | None = None
+    pm_volts: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -907,11 +911,11 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         conn.executescript(HistoryDB._DDL_TELEMETRY_BLOCKS)
         if not HistoryDB._column_exists(conn, "telemetry_samples", "core_id"):
             return
-        names = [field.name for field in fields(TelemetrySample) if field.name != "run_id"]
+        v24_columns = ("core_id", "timestamp", "freq_mhz", "effective_max_mhz", "temp_c", "vcore_v")
         runs = [row[0] for row in conn.execute("SELECT DISTINCT run_id FROM telemetry_samples ORDER BY run_id")]
         for run_id in runs:
             taken = conn.execute("SELECT * FROM telemetry_samples WHERE run_id=? ORDER BY id", (run_id,))
-            block = _pack_samples([{name: row[name] for name in names} for row in taken.fetchall()])
+            block = _pack_samples([{name: row[name] for name in v24_columns} for row in taken.fetchall()])
             conn.execute("INSERT INTO telemetry_blocks (run_id, data) VALUES (?,?)", (run_id, block))
         conn.execute("DROP TABLE telemetry_samples")
 

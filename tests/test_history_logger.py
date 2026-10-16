@@ -198,6 +198,19 @@ class TestTelemetry:
         logger.on_test_stopped()
         [sample] = db.get_telemetry(logger.run_id)
         assert (sample.freq_mhz, sample.effective_max_mhz) == (5500.0, 5700.0)
+        assert (sample.pm_clock_mhz, sample.pm_effective_mhz, sample.pm_c0_pct, sample.pm_volts) == (None,) * 4
+
+    @pytest.mark.req("O19.stretch")
+    def test_a_sample_keeps_the_tested_core_s_pm_table_reading(self, db, logger):
+        logger.record_telemetry_sample(0, 5500.0, 75.0, 1.2, core_read=(0, 5510.0, 5400.0, 99.0, 1.18))
+        logger.on_test_stopped()
+        [sample] = db.get_telemetry(logger.run_id)
+        assert (sample.pm_clock_mhz, sample.pm_effective_mhz, sample.pm_c0_pct, sample.pm_volts) == (
+            5510.0,
+            5400.0,
+            99.0,
+            1.18,
+        )
 
     @pytest.mark.req("D78")
     def test_a_block_is_written_once_its_first_sample_is_a_block_period_old(self, db, logger, monkeypatch):

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from corecycler.engine.backends.base import StressResult
     from corecycler.engine.scheduler import CoreTestStatus
     from corecycler.engine.topology import CPUTopology
+    from corecycler.monitor.hwmon import CoreRead
     from corecycler.smu.driver import RyzenSMU
 
 log = logging.getLogger(__name__)
@@ -210,7 +211,9 @@ class TestRunLogger:
         temp_c: float | None,
         vcore_v: float | None,
         effective_max_mhz: float | None = None,
+        core_read: CoreRead | None = None,
     ) -> None:
+        _, clock, effective, c0, volts = core_read if core_read is not None else (None, None, None, None, None)
         now = time.monotonic()
         if not self._unwritten:
             self._unwritten_since = now
@@ -223,6 +226,10 @@ class TestRunLogger:
                 effective_max_mhz=effective_max_mhz,
                 temp_c=temp_c,
                 vcore_v=vcore_v,
+                pm_clock_mhz=clock,
+                pm_effective_mhz=effective,
+                pm_c0_pct=c0,
+                pm_volts=volts,
             )
         )
         if now - self._unwritten_since >= SAMPLE_BLOCK_S:

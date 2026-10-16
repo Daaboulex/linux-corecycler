@@ -446,7 +446,7 @@ class MonitorTab(QWidget):
                             cpu_freq,
                             core_temp,
                             usage_pct=min(sum(loads), 100.0) if loads else None,
-                            stretch_pct=stretch_data.get(logical_cpu),
+                            stretch_pct=stretch_data.get(core_id),
                             core_watts=power_data.get(logical_cpu),
                             eff_max_mhz=eff_max,
                         )

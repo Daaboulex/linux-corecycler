@@ -4999,3 +4999,8 @@ proof = "built"
 id = "T34.telemetry"
 statement = "A stress run's telemetry sample records the tested core's boost ceiling as its per-core bar shows it, and History's run detail prints the ceiling per core where it was recorded and calls nothing stretch (scratch/design/telemetry-stretch.md)."
 proof = "built"
+
+[[requirement]]
+id = "O19.stretch"
+statement = "A core's clock stretch is its effective clock below the clock it runs at, read from the PM table's per-core arrays on table 0x620205 only and only with the core at 95 % C0 or more; the Monitor, the core grid and the Results peak show it per core, each stress-run sample records the tested core's PM clock, effective clock, C0 and voltage, and History prints the peak and median stretch from them (scratch/design/clock-stretch.md, step 4)."
+proof = "built"
