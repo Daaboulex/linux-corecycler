@@ -55,6 +55,7 @@ class Mutant:
     description: str
     source: str
     span: tuple[int, int] = (0, 0)
+    at_import: bool = False
 
 
 def _inert(tree: ast.Module) -> set[int]:
@@ -83,6 +84,7 @@ class _Mutator(ast.NodeTransformer):
         self.seen = 0
         self.applied: str | None = None
         self.lineno = 0
+        self.col_offset = 0
         self.end_lineno = 0
 
     def _take(self, node: ast.AST, description: str) -> bool:
@@ -94,6 +96,7 @@ class _Mutator(ast.NodeTransformer):
         if hit:
             self.applied = description
             self.lineno = getattr(node, "lineno", 0)
+            self.col_offset = getattr(node, "col_offset", 0)
             self.end_lineno = getattr(node, "end_lineno", self.lineno)
         return hit
 
@@ -164,8 +167,27 @@ def _build(path: Path, original: str, index: int, lines: set[int] | None = None)
     if mutator.applied is None:
         return None
     ast.fix_missing_locations(mutated)
-    span = _statement_span(ast.parse(original), mutator.lineno, mutator.end_lineno)
-    return Mutant(path, mutator.lineno, mutator.applied, ast.unparse(mutated), span)
+    plain = ast.parse(original)
+    span = _statement_span(plain, mutator.lineno, mutator.end_lineno)
+    at_import = _at_import(plain, (mutator.lineno, mutator.col_offset))
+    return Mutant(path, mutator.lineno, mutator.applied, ast.unparse(mutated), span, at_import)
+
+
+def _at_import(tree: ast.Module, position: tuple[int, int]) -> bool:
+    """Whether the code at position runs when its module is imported: outside every function and lambda
+    body. Coverage credits such a line only to the test that first imported the module, so its mutant
+    must run the whole selection."""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bodies = node.body
+        elif isinstance(node, ast.Lambda):
+            bodies = [node.body]
+        else:
+            continue
+        for body in bodies:
+            if (body.lineno, body.col_offset) <= position < (body.end_lineno, body.end_col_offset):
+                return False
+    return True
 
 
 def _statement_span(tree: ast.Module, first: int, last: int) -> tuple[int, int]:
@@ -243,7 +265,7 @@ def _tiers(mutant: Mutant, cover: Cover, durations: Durations, tests: list[str],
     lines = cover.get(str(mutant.path.relative_to(root)), {})
     first, last = mutant.span
     contexts = frozenset().union(*(lines.get(number, frozenset()) for number in range(first, last + 1)))
-    if not contexts or "" in contexts:
+    if mutant.at_import or not contexts or "" in contexts:
         return [tests]
     short = sorted(test for test in contexts if durations.get(test, 0.0) <= SHORT_S)
     long = sorted(contexts.difference(short))

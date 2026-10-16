@@ -142,12 +142,32 @@ def test_a_mutant_runs_only_the_tests_that_executed_its_statement_short_ones_fir
     assert mutate._tiers(mutant, {}, durations, everything, tmp_path) == [everything]
 
 
+def test_a_mutant_in_code_that_runs_at_import_runs_the_whole_selection(tmp_path):
+    source = (
+        "LIMIT = 5\n\n\nclass C:\n    STEP = 2\n\n    def f(self, x=3):\n        return x > LIMIT\n\n\n"
+        "next_one = lambda y: y + 7\n"
+    )
+    built = [mutate._build(tmp_path / "src" / "m.py", source, index) for index in range(mutate._count(source))]
+    assert {(mutant.description, mutant.at_import) for mutant in built} == {
+        ("5 -> 6", True),
+        ("2 -> 3", True),
+        ("3 -> 4", True),
+        ("Gt -> GtE", False),
+        ("7 -> 8", False),
+        ("Add -> Sub", False),
+    }
+    limit = next(mutant for mutant in built if mutant.description == "5 -> 6")
+    first_importer = {"src/m.py": {1: frozenset({"tests/test_a.py::test_one"})}}
+    everything = ["tests/test_a.py", "tests/test_b.py"]
+    assert mutate._tiers(limit, first_importer, {}, everything, tmp_path) == [everything]
+
+
 def test_a_mutant_killed_by_a_short_test_never_starts_the_long_ones_and_a_survivor_runs_both(monkeypatch, tmp_path):
     source = tmp_path / "src" / "m.py"
     source.parent.mkdir()
-    source.write_text("flag = 1 < 2\n")
+    source.write_text("def flag():\n    return 1 < 2\n")
     short, long = "tests/test_m.py::test_short", "tests/test_m.py::test_long"
-    baseline = ({"src/m.py": {1: frozenset({short, long})}}, {long: mutate.SHORT_S * 10})
+    baseline = ({"src/m.py": {2: frozenset({short, long})}}, {long: mutate.SHORT_S * 10})
     for killing, verdict, runs in ((short, 0, [[short]]), (None, 1, [[short], [long]])):
         ran = []
 
@@ -157,8 +177,8 @@ def test_a_mutant_killed_by_a_short_test_never_starts_the_long_ones_and_a_surviv
 
         monkeypatch.setattr(mutate, "_failure", failure)
         assert mutate._mutate([(source, None)], [], 10, tmp_path, 0, baseline) == verdict
-        assert ran == runs * mutate._count("flag = 1 < 2\n")
-    assert source.read_text() == "flag = 1 < 2\n"
+        assert ran == runs * mutate._count("def flag():\n    return 1 < 2\n")
+    assert source.read_text() == "def flag():\n    return 1 < 2\n"
 
 
 def test_a_handful_of_named_tests_runs_on_one_worker_and_anything_larger_as_the_machine_allows(monkeypatch):
