@@ -105,7 +105,10 @@ def on_crash(rec: CoreRecord, cfg: MachineConfig) -> CoreStep:
     backed = replace(rec, fb=v, crash_count=rec.crash_count + 1, skipped=v)
     if rec.reclaim_floor is not None:
         return CoreStep(_reclaimed(backed))
-    return CoreStep(_prove_at(backed, min(0, v + CRASH_STEPS * cfg.fine_step)))
+    landing = min(0, v + CRASH_STEPS * cfg.fine_step)
+    if landing == 0 and backed.inside(-cfg.fine_step, cfg.max_offset):
+        return CoreStep(replace(_prove_at(backed, -cfg.fine_step), reclaim_floor=0))
+    return CoreStep(_prove_at(backed, landing))
 
 
 def back_off_in_place(rec: CoreRecord, cfg: MachineConfig, steps: int) -> CoreRecord:

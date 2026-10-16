@@ -129,6 +129,7 @@ class Fake:
     proven: dict[int, frozenset[int]] = field(default_factory=dict)
     superseded: set[int] = field(default_factory=set)
     outside: set[int] = field(default_factory=set)
+    completed: tuple[Stored, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.co:
@@ -154,6 +155,7 @@ class Fake:
             if self.db is not None and self.db.status in HELD_STATUSES
             else None,
             proven=self.proven_newest_first() if self.db is not None and self.db.status == "quarantined" else (),
+            completed=self.completed,
         )
 
     def proven_newest_first(self) -> tuple[tuple[int, tuple[int, ...]], ...]:

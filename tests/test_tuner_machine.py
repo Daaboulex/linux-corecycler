@@ -125,6 +125,32 @@ def test_a_crash_landing_that_fails_tries_nothing_at_or_past_its_new_fail_bound(
     assert (rec.phase, rec.value, rec.fb) == (Phase.PROVEN, -16, -17)
 
 
+@pytest.mark.req("K12.reclaim.stock")
+def test_a_hang_within_three_steps_of_stock_proves_each_value_between_and_stays_at_the_deepest_that_holds():
+    landing = hung_at(-3)
+    assert (landing.phase, landing.value, landing.fb, landing.count, landing.crash_count) == (Phase.PROVE, -1, -3, 0, 1)
+    assert passed(landing, K - 1).value == -1
+    rec = passed(landing, K)
+    assert (rec.phase, rec.value, rec.count) == (Phase.PROVE, -2, 0)
+    assert passed(rec, K - 1).value == -2
+    rec = passed(rec, K)
+    assert (rec.phase, rec.value, rec.fb) == (Phase.PROVEN, -2, -3)
+    assert (rec.skipped, rec.reclaim_floor) == (None, None)
+
+
+@pytest.mark.req("K12.reclaim.stock")
+def test_a_fail_one_step_below_stock_after_a_near_stock_hang_returns_the_core_to_stock_proven():
+    step = search.on_fail(hung_at(-3), CFG, Klass.T1, 60.0)
+    assert (step.record.phase, step.record.value, step.record.fb, step.stock_unstable) == (Phase.PROVEN, 0, -1, False)
+    assert (step.record.count, step.record.skipped, step.record.reclaim_floor) == (0, None, None)
+
+
+@pytest.mark.req("K12.reclaim.stock")
+def test_a_hang_one_step_below_stock_has_nothing_between_and_is_proven_at_stock_at_once():
+    rec = hung_at(-1)
+    assert (rec.phase, rec.value, rec.fb, rec.count, rec.crash_count) == (Phase.PROVEN, 0, -1, 0, 1)
+
+
 @pytest.mark.req("D20")
 def test_a_failed_hint_restarts_the_walk_from_stock():
     rec = search.resolve_start(CoreRecord(0, start=-30), CFG)

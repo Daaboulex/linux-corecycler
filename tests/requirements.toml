@@ -235,7 +235,7 @@ proof = "built"
 
 [[requirement]]
 id = "K12.reclaim.crash"
-statement = "A crash in a reclaim proof leaves the core proven at the value it reclaimed from, FB at the hung value, crash_count + 1; a crash outside one still lands 3 steps toward 0"
+statement = "A crash in a reclaim proof leaves the core proven at the value it reclaimed from, FB at the hung value, crash_count + 1; a crash outside one still lands 3 steps toward 0, short of stock (K12.reclaim.stock)"
 proof = "built"
 
 [[requirement]]
@@ -251,6 +251,11 @@ proof = "built"
 [[requirement]]
 id = "K12.reclaim.reengage"
 statement = "A re-engage drops each core's reclaim in progress with the rest of its search position"
+proof = "built"
+
+[[requirement]]
+id = "K12.reclaim.stock"
+statement = "A crash whose landing 3 steps toward 0 reaches stock reclaims with stock as the proven value: it proves one step below stock, then deeper one step at a time, k passes each, and a fail or crash in that returns the core to stock proven; a crash one step below stock has nothing between and is proven at stock at once"
 proof = "built"
 
 [[requirement]]
@@ -1553,7 +1558,7 @@ task = "T28"
 
 [[requirement]]
 id = "L04.G4"
-statement = "A conviction at v outside a reclaim proof (K12.reclaim.crash): FB = v, v + 3 toward 0, crash_count + 1, PROVE_1T with count 0, tested again at once; at 0 P(STOCK_UNSTABLE)"
+statement = "A conviction at v outside a reclaim proof (K12.reclaim.crash): FB = v, v + 3 toward 0 short of stock (K12.reclaim.stock), crash_count + 1, PROVE_1T with count 0, tested again at once; at 0 P(STOCK_UNSTABLE)"
 proof = "built"
 
 [[requirement]]

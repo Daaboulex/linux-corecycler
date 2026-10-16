@@ -31,7 +31,9 @@ from tests._tuner_world import (
     Report,
     Resume,
     SessionState,
+    Stored,
     fresh,
+    run_to_rest,
     start,
 )
 
@@ -306,7 +308,7 @@ def settled(fake: Fake) -> bool:
     return fake.db.status == "quarantined"
 
 
-def tiny(cores: int, edges: list[int], domains: int = 1, **cfg) -> Fake:
+def tiny(cores: int, edges: list[int], domains: int = 1, completed: tuple[Stored, ...] = (), **cfg) -> Fake:
     fake = fresh(
         cores,
         edges,
@@ -322,7 +324,8 @@ def tiny(cores: int, edges: list[int], domains: int = 1, **cfg) -> Fake:
         memory_seconds=1.0,
         **cfg,
     )
-    start(fake)
+    fake.completed = completed
+    start(fake, session_id=1 + len(completed))
     return fake
 
 
@@ -435,6 +438,21 @@ def test_every_future_of_a_quarantined_session_re_engaged_on_proven_ground_reach
     survey = explore(fake, {"crash": 3, "reengage": 1, "total": 4}, cap=2_000_000)
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert survey.taken["reengage"] > 0
+    assert "completed" in survey.leaves
+
+
+@pytest.mark.req("D20", "L04.a.hint")
+def test_every_future_of_a_session_started_from_a_completed_sessions_values_reaches_a_rest():
+    earlier = tiny(2, [-2, -3], 2)
+    run_to_rest(earlier, 10_000)
+    fake = tiny(2, [-3, -1], 2, completed=(earlier.db,))
+    assert [(r.core, r.start) for r in fake.state.cores] == [(0, -2), (1, -3)]
+    unfaulted = clone(fake)
+    run_to_rest(unfaulted, 10_000)
+    assert (1, -3) in unfaulted.failed_at
+    assert [(r.core, r.value, r.start) for r in unfaulted.db.cores] == [(0, -3, -2), (1, -1, 0)]
+    survey = explore(fake, {**ONE_OF_EACH, "total": 1}, cap=2_000_000)
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
 
 
