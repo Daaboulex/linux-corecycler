@@ -168,6 +168,14 @@ class TestConstruction:
         assert window._start_btn.isEnabled()
         assert not window._stop_btn.isEnabled()
 
+    @pytest.mark.req("D80")
+    def test_the_auto_tuner_tab_is_the_machine_s_tuner_tab(self, window):
+        from corecycler.gui.tuner_tab import TunerTab
+
+        titles = [window._tabs.tabText(i) for i in range(window._tabs.count())]
+        assert titles.count("Auto-Tuner") == 1
+        assert isinstance(window._tabs.widget(titles.index("Auto-Tuner")), TunerTab)
+
     def test_a_bios_change_reaches_the_history_tab(self, monkeypatch, tmp_path, db):
         db.create_run(RunRecord(started_at="2026-07-20T10:00:00+00:00", status="running"))
         win = _build(

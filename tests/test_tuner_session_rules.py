@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 
-from corecycler.tuner.machine import allcore
+from corecycler.tuner.machine import allcore, bisect
 from corecycler.tuner.machine.session import ALLCORE_LOADS, transition
 from corecycler.tuner.machine.types import (
     Announce,
     AwaitWorker,
     CancelSchedule,
     Commit,
+    ContinuationDue,
     CrashEvidenceRead,
     Evidence,
     FailContext,
@@ -399,7 +400,7 @@ def test_a_steady_failure_with_a_transient_context_loosens_every_core_one_step_a
     assert _next_worker(fake).stage is Stage.STEADY
 
 
-@pytest.mark.req("L08.G2.mce")
+@pytest.mark.req("L08.G2.mce", "G2.allcore")
 @pytest.mark.parametrize(("corrected", "steps"), [(True, 1), (False, 3)])
 def test_a_machine_check_naming_an_owned_core_in_steady_backs_it_off_in_place_and_runs_steady_again(corrected, steps):
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
@@ -986,3 +987,75 @@ def test_a_pause_during_a_thermal_cooldown_cancels_the_schedule_and_keeps_the_co
     fake.post(PauseRequest())
     assert (fake.state.pause.reason, fake.state.flow.owed) == (PauseReason.USER, spec.core)
     assert any(isinstance(effect, CancelSchedule) for effect in effects) and fake.timer is None
+
+
+@pytest.mark.req("L00.c.memory")
+def test_a_pause_stores_the_paused_status_without_its_reason_or_streaks_and_announces_the_reason():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _until(fake, _live1)
+    fake.deliver(Report(Group.THERMAL, 5.0))
+    effects = transition(fake.state, PauseRequest(), fake.world()).effects
+    stored = next(effect.stored for effect in effects if isinstance(effect, Commit))
+    assert stored.status == "paused"
+    assert {"pause", "streaks"}.isdisjoint(field.name for field in fields(stored))
+    said = [effect for effect in effects if isinstance(effect, Announce) and effect.kind == "paused"]
+    assert [effect.text.split(":")[0] for effect in said] == [PauseReason.USER.value]
+
+
+@pytest.mark.req("L20.c", "L22.c", "L21.c", "L00.c.memory")
+@pytest.mark.parametrize("streak", ["thermal", "apparatus", "start_failures"])
+def test_every_streak_starts_fresh_at_resume(streak):
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _until(fake, _live1)
+    fake.deliver()
+    fake.post(PauseRequest())
+    fake.state = replace(fake.state, streaks=replace(fake.state.streaks, **{streak: 2}))
+    fake.post(Resume(1))
+    assert fake.state.lifecycle is Lifecycle.RUNNING and getattr(fake.state.streaks, streak) == 0
+
+
+@pytest.mark.req("L11.c")
+def test_a_pause_in_transient_stores_its_clean_time_and_index_and_resume_keeps_them():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _until(fake, lambda spec, state: _transient(spec, state) and state.flow.allcore.t_idx > 0)
+    cursor = fake.state.flow.allcore
+    fake.post(PauseRequest())
+    assert fake.db.flow.allcore == cursor
+    fake.post(Resume(1))
+    assert (fake.state.flow.allcore.t_clean, fake.state.flow.allcore.t_idx) == (cursor.t_clean, cursor.t_idx)
+
+
+@pytest.mark.req("L09.b.universe")
+def test_a_bisect_leaves_cores_at_stock_out_of_its_universe_and_holds_the_values_it_began_with():
+    run = bisect.begin(Stage.STEADY, 0, Klass.T1, {0: -5, 1: 0, 2: -3, 3: -4}, {0: 0, 1: 0, 2: 0, 3: 0})
+    assert run.universe == (0, 2, 3)
+    assert all(1 not in group for group in run.queue)
+    assert bisect.slot_values(run, (0, 2)) == {0: -5, 2: -3}
+
+
+@pytest.mark.req("L09.b.universe")
+def test_a_bisect_slot_runs_at_the_values_the_bisect_began_with_after_a_record_moves():
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    _bisecting(fake)
+    fake.deliver()
+    while fake.timer is None:
+        assert fake.progress()
+    began = dict(fake.state.flow.bisect.values)
+    group = fake.state.flow.bisect.queue[0]
+    moved = fake.state.with_core(replace(fake.state.core(group[0]), value=began[group[0]] + 2))
+    token = fake.state.slot.token
+    effects = transition(moved, ContinuationDue(token), fake.world()).effects
+    spec = next(effect.spec for effect in effects if isinstance(effect, StartWorker))
+    assert dict(spec.vector)[group[0]] == began[group[0]]
+
+
+@pytest.mark.req("U16")
+def test_a_bisect_tests_the_lower_half_first_and_breaks_a_size_tie_to_the_lowest_core():
+    run = bisect.begin(Stage.STEADY, 0, Klass.T1, {0: -5, 1: -4, 2: -3, 3: -2}, {0: 0, 1: 0, 2: 0, 3: 0})
+    assert run.queue == ((), (0, 1), (2, 3))
+    domains = {0: 0, 1: 0, 2: 0, 3: 0}
+    for passed in (True, False, False):
+        run = bisect.record(run, passed, domains)
+    for passed in (False, True, True, False):
+        run = bisect.record(run, passed, domains)
+    assert bisect.resolve(run) == (0,)

@@ -32,6 +32,7 @@ from corecycler.tuner.live import (
     stored_to_json,
 )
 from corecycler.tuner.machine.types import (
+    Abort,
     Close,
     CrashEvidenceRead,
     Evidence,
@@ -2826,3 +2827,41 @@ def test_every_sensor_reading_carries_the_core_rail_and_the_package_power_beside
     )
     assert read.watts == (("pm_table:package", pytest.approx(142.5)),)
     assert live_hw.with_pm_table(lambda: board, lambda: None)() == board
+
+
+@pytest.mark.req("L00.d", "INTERRUPT.fifo")
+def test_events_are_transitioned_one_at_a_time_in_arrival_order_and_a_follow_up_after_its_cause(tmp_path, monkeypatch):
+    calls, depth = [], [0]
+    transitioned = live.transition
+
+    def counted(state, event, world):
+        depth[0] += 1
+        calls.append((type(event).__name__, depth[0]))
+        try:
+            return transitioned(state, event, world)
+        finally:
+            depth[0] -= 1
+
+    monkeypatch.setattr(live, "transition", counted)
+    r = rig(tmp_path)
+    r.start(config(), 1, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    r.signals.extend([PauseRequest(), Abort()])
+    r.step(0.01)
+    r.step(0.01)
+    names = [name for name, _ in calls]
+    assert names.index("PauseRequest") < names.index("Abort")
+    assert r.state.lifecycle is Lifecycle.ABORTED
+    r2 = rig(tmp_path / "again")
+    r2.start(config(), 2, 7, True)
+    while r2.worker is None:
+        r2.step(0.01)
+    r2.signals.append(Close())
+    r2.step(0.01)
+    calls.clear()
+    again = rig(tmp_path / "again", r2.hardware, db=r2.store.db)
+    again.resume(2)
+    names = [name for name, _ in calls]
+    assert names[:2] == ["Resume", "CrashEvidenceRead"]
+    assert all(level == 1 for _, level in calls)

@@ -100,8 +100,7 @@ proof = "built"
 [[requirement]]
 id = "C15"
 statement = "CLOCK_STRETCH is not produced"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "C16"
@@ -647,8 +646,7 @@ proof = "built"
 [[requirement]]
 id = "VERDICT.5"
 statement = "CLOCK_STRETCH is not produced"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "VERDICT.6"
@@ -879,8 +877,7 @@ proof = "built"
 [[requirement]]
 id = "G2.allcore"
 statement = "On a one-process all-CPU lane an own-core machine check names its core and is handled as G3"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "G3.backoff"
@@ -1141,14 +1138,12 @@ proof = "built"
 [[requirement]]
 id = "L00.c.memory"
 statement = "Streaks live in memory and are reset to 0 at resume; the pause reason lives in events, the status column holds paused"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L00.d"
 statement = "One event is drained FIFO with its transition; effects run in prefix-safe order"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L00.e"
@@ -1805,8 +1800,7 @@ proof = "built"
 [[requirement]]
 id = "L09.b.universe"
 statement = "The universe is the owned cores not at 0, with their values frozen"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L09.c"
@@ -1935,8 +1929,7 @@ proof = "built"
 [[requirement]]
 id = "L11.c"
 statement = "tClean, tIdx and the fix state are stored; tClean is kept across a pause"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L11.d"
@@ -2500,8 +2493,7 @@ proof = "built"
 [[requirement]]
 id = "L20.c"
 statement = "The thermal streak lives in memory, is reset by any verdict and is fresh at resume"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L20.d.percore"
@@ -2566,8 +2558,7 @@ proof = "built"
 [[requirement]]
 id = "L22.c"
 statement = "The apparatus streak lives in memory, is reset by any verdict and is fresh at resume"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L22.d.percore"
@@ -2713,8 +2704,7 @@ proof = "built"
 [[requirement]]
 id = "L25.a"
 statement = "The stage engine shapes the load inside one run and never writes a knob"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L25.d.sample"
@@ -3059,8 +3049,7 @@ proof = "built"
 [[requirement]]
 id = "U16"
 statement = "When Bisect's two halves are the same size, the half with the lowest core number is tested first, so the same failure always takes the same path (D91)"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "U18"
@@ -3420,8 +3409,7 @@ proof = "built"
 [[requirement]]
 id = "INTERRUPT.fifo"
 statement = "Events are drained FIFO one at a time; no transition runs inside another"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "NESTING"
@@ -3436,8 +3424,7 @@ proof = "built"
 [[requirement]]
 id = "WRITER.set_all"
 statement = "The tuner never issues set_all_co"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "WRITER.held"
@@ -3907,8 +3894,7 @@ proof = "built"
 [[requirement]]
 id = "D80"
 statement = "The new tuner tab replaces the old Auto-Tuner tab and the old engine is deleted"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "D81"
@@ -4130,8 +4116,7 @@ task = "S3"
 [[requirement]]
 id = "TM.I1.11"
 statement = "No mprime stage runs before R10-7 is fixed"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "CR.1"
@@ -4444,14 +4429,12 @@ task = "O7"
 [[requirement]]
 id = "E7.B"
 statement = "The old engine and everything only it used are deleted"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "E7.B.import"
 statement = "The driver imports without the engine loading PySide6"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "SR.R1"
