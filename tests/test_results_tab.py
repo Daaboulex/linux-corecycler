@@ -9,6 +9,8 @@ import pytest
 if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
+from PySide6.QtWidgets import QLabel
+
 from corecycler.engine.scheduler import CoreTestStatus
 
 
@@ -68,11 +70,14 @@ class TestResultsTab:
         text = tab._log.toPlainText()
         assert "boom" in text and "note" in text
 
-    def test_summary_and_clear(self):
+    @pytest.mark.req("T23.results.fresh")
+    def test_a_new_run_starts_with_no_summary_rows_or_log_from_the_last(self):
         tab = _tab()
+        fresh = [label.text() for label in tab.findChildren(QLabel)]
         tab.init_cores(_statuses(3))
         tab.update_summary(total=3, passed=2, failed=1, elapsed=61.0, cycle=1, total_cycles=2)
-        assert "2" in tab._passed_label.text()
-        tab.clear()
-        assert tab._table.rowCount() == 0
-        assert tab._log.toPlainText() == ""
+        tab.add_error(1, "boom")
+        assert tab._passed_label.text() == "Passed: 2"
+        tab.init_cores(_statuses(2))
+        assert [label.text() for label in tab.findChildren(QLabel)] == fresh
+        assert (tab._table.rowCount(), tab._log.toPlainText()) == (2, "")

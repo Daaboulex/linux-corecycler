@@ -4777,6 +4777,11 @@ statement = "The Results summary counts the run, not the form or the status cach
 proof = "built"
 
 [[requirement]]
+id = "T23.results.fresh"
+statement = "A new run starts the Results tab with no summary, rows or log from the last run (scratch/design/t23-config-results.md R8: the last run's summary stayed up until the first update a second later)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"
