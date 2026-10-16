@@ -4840,6 +4840,11 @@ statement = "Each DIMM temperature stays under its own sensor's label: the reade
 proof = "built"
 
 [[requirement]]
+id = "T23.memory.tools"
+statement = "Refresh in the Memory tab offers the stress tools found now, keeping the chosen one when it is still there, so the Tool box and the tools line never disagree (scratch/design/t23-monitor-memory-window.md D6)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

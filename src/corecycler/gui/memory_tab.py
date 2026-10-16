@@ -312,7 +312,7 @@ class MemoryTab(QWidget):
 
         stress_layout.addWidget(QLabel("Tool:"))
         self._stress_tool = QComboBox()
-        self._stress_tool.addItems(self._detect_available_tools())
+        self._refill_tools()
         stress_layout.addWidget(self._stress_tool)
 
         self._stress_btn = QPushButton("Run")
@@ -388,6 +388,13 @@ class MemoryTab(QWidget):
         deps.append("spd5118: " + ("available" if self._spd_reader.is_available() else "not loaded"))
         deps.append("ryzen_smu: " + ("available" if self._pm_available else "not loaded"))
         self._deps_label.setText("  |  ".join(deps))
+        self._refill_tools()
+
+    def _refill_tools(self) -> None:
+        chosen = self._stress_tool.currentText()
+        self._stress_tool.clear()
+        self._stress_tool.addItems(self._detect_available_tools())
+        self._stress_tool.setCurrentIndex(max(self._stress_tool.findText(chosen), 0))
 
     def _update_spd_labels(self) -> None:
         """Populate SPD timing labels from cached EEPROM data."""

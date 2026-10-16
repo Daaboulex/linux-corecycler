@@ -33,6 +33,30 @@ class TestToolDetection:
         assert "stressapptest" in tools
         assert "stress-ng --vm" in tools
 
+    @pytest.mark.req("T23.memory.tools")
+    def test_refresh_offers_a_tool_found_since_the_tab_opened(self):
+        with patch("corecycler.config.tools.shutil.which", return_value=None):
+            tab = _tab()
+        assert [tab._stress_tool.itemText(i) for i in range(tab._stress_tool.count())] == ["(none installed)"]
+        with patch("corecycler.config.tools.shutil.which", lambda name: "/usr/bin/" + name):
+            tab._load_dimm_info()
+        offered = [tab._stress_tool.itemText(i) for i in range(tab._stress_tool.count())]
+        assert offered == ["stressapptest", "stress-ng --vm"]
+
+    @pytest.mark.req("T23.memory.tools")
+    @pytest.mark.parametrize("chosen", ["stressapptest", "stress-ng --vm"])
+    def test_refresh_keeps_the_chosen_tool_and_falls_back_to_the_first_when_it_is_gone(self, chosen):
+        with patch("corecycler.config.tools.shutil.which", lambda name: "/usr/bin/" + name):
+            tab = _tab()
+            tab._stress_tool.setCurrentText(chosen)
+            tab._load_dimm_info()
+        assert tab._stress_tool.currentText() == chosen
+        with patch(
+            "corecycler.config.tools.shutil.which", lambda name: None if name == "stress-ng" else "/usr/bin/" + name
+        ):
+            tab._load_dimm_info()
+        assert tab._stress_tool.currentText() == "stressapptest"
+
 
 class TestStressGuards:
     def test_external_test_running_disables_run(self):
