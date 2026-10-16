@@ -212,6 +212,22 @@ class TestSetChanged:
         assert tab._reset_btn.isEnabled()
 
 
+class TestProfileBanner:
+    @pytest.mark.req("T22.curve.banner")
+    def test_the_loaded_values_banner_goes_once_the_cpu_values_replace_them(self, tab):
+        tab._smu = _smu(get=-5)
+        tab.set_co_profile({0: -20}, "session 7")
+        assert not tab._profile_banner.isHidden()
+        tab._fill_from_cpu()
+        assert (tab._spinboxes[0].value(), tab._profile_banner.isHidden()) == (-5, True)
+
+    def test_a_fill_that_reads_nothing_keeps_the_loaded_values_and_their_banner(self, tab):
+        tab._smu = _smu(get=None)
+        tab.set_co_profile({0: -20}, "session 7")
+        tab._fill_from_cpu()
+        assert (tab._spinboxes[0].value(), tab._profile_banner.isHidden()) == (-20, False)
+
+
 class TestReset:
     def test_reset_without_driver(self, tab):
         tab._smu = None

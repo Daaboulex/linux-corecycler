@@ -4850,6 +4850,11 @@ statement = "Refresh in the Memory tab offers the stress tools found now, keepin
 proof = "built"
 
 [[requirement]]
+id = "T22.curve.banner"
+statement = "The Curve-Tuner banner naming loaded values goes once Fill from CPU replaces them with the CPU's, and stays when the fill read nothing (scratch/design/t23-curve-history.md defect 8)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

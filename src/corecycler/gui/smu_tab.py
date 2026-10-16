@@ -318,6 +318,8 @@ class SMUTab(QWidget):
         for core_id, val in offsets.items():
             if core_id in self._spinboxes:
                 self._spinboxes[core_id].setValue(val)
+        if offsets:
+            self._profile_banner.setVisible(False)
         self._fill_shaper(bands)
 
     def _read_shaper(self) -> tuple[tuple[int, int, int], ...] | None:
