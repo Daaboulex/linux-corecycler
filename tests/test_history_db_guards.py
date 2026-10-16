@@ -21,6 +21,7 @@ from corecycler.history.db import (
     HistoryDB,
     RunRecord,
     SchemaTooNewError,
+    TelemetrySample,
     TuningContextRecord,
 )
 from tests._machine import journaled, this_boot
@@ -95,6 +96,20 @@ class TestOpenGuards:
             HistoryDB(path)
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):
             opened[0].execute("SELECT 1")
+
+    def test_a_schema_31_database_with_telemetry_opens_at_32_and_reads_its_samples(self, tmp_path):
+        path = tmp_path / "history.db"
+        db = HistoryDB(path)
+        run_id = db.create_run(RunRecord(cpu_model="old"))
+        db.insert_telemetry_block([TelemetrySample(run_id=run_id, core_id=0, timestamp="2026-10-16T09:00:00+00:00")])
+        db.close()
+        _set_schema_version(path, 31)
+        reopened = HistoryDB(path)
+        try:
+            assert _schema_version(path) == 32
+            assert [sample.core_id for sample in reopened.get_telemetry(run_id)] == [0]
+        finally:
+            reopened.close()
 
     def test_a_second_writer_waits_for_the_lock_instead_of_failing(self, tmp_path):
         path = tmp_path / "history.db"

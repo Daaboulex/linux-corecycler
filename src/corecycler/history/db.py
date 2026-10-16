@@ -221,7 +221,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 31
+    SCHEMA_VERSION = 32
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -943,6 +943,11 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     def _migrate_v31(conn: sqlite3.Connection) -> None:
         HistoryDB._add_columns(conn, "tuner_samples", [("cores", "TEXT NOT NULL DEFAULT '[]'")])
 
+    @staticmethod
+    def _migrate_v32(conn: sqlite3.Connection) -> None:
+        """Nothing moves: telemetry samples gained the tested core's PM readings, which a schema-31 reader cannot
+        load, so the version rises and an older build refuses the database rather than failing on a sample."""
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
@@ -974,6 +979,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         29: _migrate_v29,
         30: _migrate_v30,
         31: _migrate_v31,
+        32: _migrate_v32,
     }
 
     @staticmethod
