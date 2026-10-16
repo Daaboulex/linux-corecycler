@@ -241,3 +241,4 @@ class TestCompare:
         tab._compare_selected_rows = [0, 1]
         tab._runs_table.selectAll()
         tab._compare_selected()
+        assert "Run Comparison" in tab._events_log.toPlainText()

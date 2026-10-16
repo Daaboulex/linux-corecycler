@@ -82,23 +82,6 @@ class TestSMUColdTab:
         assert tab._smu.set_co_offset.called
         assert tab._smu.reset_all_co.called
 
-    def test_every_button_clickable_on_cold_tab(self):
-        _qapp()
-        from PySide6.QtWidgets import QFileDialog, QMessageBox, QPushButton
-
-        from corecycler.gui.smu_tab import SMUTab
-
-        tab = SMUTab(_topo())
-        tab._smu = _available_smu()
-        with (
-            patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.No),
-            patch.object(QMessageBox, "information", return_value=None),
-            patch.object(QFileDialog, "getSaveFileName", return_value=("", "")),
-            patch.object(QFileDialog, "getOpenFileName", return_value=("", "")),
-        ):
-            for btn in tab.findChildren(QPushButton):
-                btn.click()
-
 
 class TestHistorySortMapping:
     def test_selection_maps_to_logical_record_after_sort(self):

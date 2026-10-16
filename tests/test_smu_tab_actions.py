@@ -57,6 +57,7 @@ class TestReadAllCo:
     def test_no_smu_is_a_noop(self, tab):
         tab._smu = None
         tab._fill_from_cpu()
+        assert {tab._table.item(row, 2).text() for row in range(tab._table.rowCount())} == {"--"}
 
     @pytest.mark.req("S1.read")
     def test_fill_from_cpu_puts_the_cpu_values_into_the_values_to_set(self, tab):
@@ -229,9 +230,12 @@ class TestProfileBanner:
 
 
 class TestReset:
-    def test_reset_without_driver(self, tab):
+    def test_reset_without_driver(self, tab, monkeypatch):
+        asked = []
+        monkeypatch.setattr(tab, "_confirm_write", lambda what, detail: asked.append(what))
         tab._smu = None
         tab._reset_all_co()
+        assert asked == []
 
     def test_reset_blocked_while_tuner_active(self, tab):
         tab._smu = _smu()
@@ -275,8 +279,12 @@ class TestReset:
 
 class TestBackupRestore:
     def test_backup_without_driver(self, tab):
+        import corecycler.gui.smu_tab as st
+
         tab._smu = None
         tab._backup_co()
+        assert not st.QMessageBox.information.called
+        assert not tab._restore_btn.isEnabled()
 
     def test_backup_enables_restore(self, tab):
         tab._smu = _smu()
