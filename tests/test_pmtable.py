@@ -356,9 +356,6 @@ class TestPMTableOffsets:
             uclk=0x12C,
             mclk=0x13C,
             vddcr_soc=0x14C,
-            cldo_vddp=0x434,
-            cldo_vddg_iod=0x40C,
-            cldo_vddg_ccd=0x414,
             vddq=0xE8,
             vdd_mem=0x0A8,
         )
@@ -396,11 +393,8 @@ class TestPMTableOffsets:
         assert offsets.uclk == 0x128
         assert offsets.mclk == 0x138
         assert offsets.vddcr_soc == 0xD0
-        assert offsets.cldo_vddp == 0x430
         assert offsets.vddq == 0xE0
         assert offsets.vdd_mem is None
-        assert offsets.cldo_vddg_iod == -1
-        assert offsets.cldo_vddg_ccd == -1
         assert offsets.verified is False
 
     def test_verified_defaults_false(self):
@@ -411,9 +405,6 @@ class TestPMTableOffsets:
             uclk=0x128,
             mclk=0x138,
             vddcr_soc=0xD0,
-            cldo_vddp=0x430,
-            cldo_vddg_iod=-1,
-            cldo_vddg_ccd=-1,
             vddq=0xE0,
             vdd_mem=None,
         )

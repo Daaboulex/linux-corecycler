@@ -33,9 +33,6 @@ class PMTableOffsets:
     uclk: int
     mclk: int
     vddcr_soc: int
-    cldo_vddp: int
-    cldo_vddg_iod: int
-    cldo_vddg_ccd: int
     vddq: int
     vdd_mem: int | None
     verified: bool = False
@@ -49,9 +46,6 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         uclk=0x12C,
         mclk=0x13C,
         vddcr_soc=0x14C,
-        cldo_vddp=0x434,
-        cldo_vddg_iod=0x40C,
-        cldo_vddg_ccd=0x414,
         vddq=0xE8,
         vdd_mem=0x0A8,
         verified=True,
@@ -62,9 +56,6 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         uclk=0x12C,
         mclk=0x13C,
         vddcr_soc=0x14C,
-        cldo_vddp=0x434,
-        cldo_vddg_iod=0x40C,
-        cldo_vddg_ccd=0x414,
         vddq=0xE8,
         vdd_mem=None,
         verified=True,
@@ -75,9 +66,6 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         uclk=0x12C,
         mclk=0x13C,
         vddcr_soc=0x14C,
-        cldo_vddp=0x434,
-        cldo_vddg_iod=0x40C,
-        cldo_vddg_ccd=0x414,
         vddq=0xE8,
         vdd_mem=0x0A8,
         verified=True,
@@ -88,9 +76,6 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         uclk=0x12C,
         mclk=0x13C,
         vddcr_soc=0x14C,
-        cldo_vddp=0x434,
-        cldo_vddg_iod=0x40C,
-        cldo_vddg_ccd=0x414,
         vddq=0xE8,
         vdd_mem=None,
         verified=True,
@@ -102,9 +87,6 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         uclk=0x128,
         mclk=0x138,
         vddcr_soc=0xD0,
-        cldo_vddp=0x430,
-        cldo_vddg_iod=-1,
-        cldo_vddg_ccd=-1,
         vddq=0xE0,
         vdd_mem=None,
         verified=False,
@@ -124,9 +106,6 @@ _ZEN5_GENERIC = PMTableOffsets(
     uclk=0x12C,
     mclk=0x13C,
     vddcr_soc=0x14C,
-    cldo_vddp=0x434,
-    cldo_vddg_iod=0x40C,
-    cldo_vddg_ccd=0x414,
     vddq=0xE8,
     vdd_mem=None,
     verified=False,
