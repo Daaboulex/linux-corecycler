@@ -4792,6 +4792,11 @@ statement = "Threads per core offers up to the CPU's own threads per core: 2 wit
 proof = "built"
 
 [[requirement]]
+id = "T23.config.cores"
+statement = "When the CPU's cores cannot be read, the Configuration tab says so where the cores are chosen instead of asking for a ticked core (scratch/design/t23-config-results.md C3)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

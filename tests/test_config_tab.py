@@ -284,6 +284,26 @@ class TestThreads:
         assert ConfigTab(None)._threads_spin.maximum() == 1
 
 
+class TestUnreadCores:
+    @pytest.mark.req("T23.config.cores")
+    @pytest.mark.parametrize(
+        ("topology", "said"),
+        [
+            (None, "The CPU's cores could not be read, so no core can be ticked and no test can start."),
+            (_topo(), "Every ticked core is tested; at least one must be ticked."),
+        ],
+    )
+    def test_the_cores_note_says_when_no_core_could_be_read(self, topology, said):
+        from PySide6.QtWidgets import QLabel
+
+        from corecycler.gui.config_tab import ConfigTab
+
+        _qapp()
+        tab = ConfigTab(topology)
+        texts = [label.text() for label in tab.findChildren(QLabel)]
+        assert said in texts
+
+
 class TestRetestFailed:
     def test_failed_cores_enable_button_and_tick_only_them(self):
         tab = _tab()

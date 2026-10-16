@@ -266,7 +266,11 @@ class ConfigTab(QWidget):
             self._core_boxes[core] = box
             boxes.addWidget(box, index // 8, index % 8)
         cores_column.addLayout(boxes)
-        cores_column.addWidget(note("Every ticked core is tested; at least one must be ticked."))
+        if self._core_boxes:
+            cores_column.addWidget(note("Every ticked core is tested; at least one must be ticked."))
+        else:
+            unread = "The CPU's cores could not be read, so no core can be ticked and no test can start."
+            cores_column.addWidget(note(unread))
         self._retest_failed_btn = QPushButton("Retest only the failed cores")
         self._retest_failed_btn.setEnabled(False)
         self._retest_failed_btn.clicked.connect(self._on_retest_failed)
