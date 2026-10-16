@@ -178,8 +178,7 @@ proof = "built"
 [[requirement]]
 id = "K8.cpu"
 statement = "1T runs on the core's first CPU, core 0 on its second, a one-CPU core on its only CPU"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "K8.memory"
@@ -199,8 +198,7 @@ proof = "built"
 [[requirement]]
 id = "K9.cpus"
 statement = "2T runs 2 threads on both CPUs of the core"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "K9.memory"
@@ -550,8 +548,7 @@ task = "S3"
 [[requirement]]
 id = "TERMS.cpus"
 statement = "Every all, random or spread CPU set means the selected CPUs"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "TERMS.base_shaper"
@@ -566,8 +563,7 @@ proof = "built"
 [[requirement]]
 id = "TERMS.order"
 statement = "Where a worker may be alive: StopWorker, RevertAll, AwaitWorker(K20), then the commit"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "TERMS.allcore_run"
@@ -592,8 +588,7 @@ proof = "built"
 [[requirement]]
 id = "TERMS.kvw_cache"
 statement = "Only knobs whose resident cache differs from the target are written"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "TERMS.kvw_order"
@@ -845,8 +840,7 @@ proof = "built"
 [[requirement]]
 id = "PRELUDE.4"
 statement = "At the test end in_test is cleared for the whole stressed set"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "PRELUDE.4b"
@@ -939,8 +933,7 @@ proof = "built"
 [[requirement]]
 id = "G7.slept"
 statement = "SLEPT also forgets the resident cache"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "G8"
@@ -1338,8 +1331,7 @@ proof = "built"
 [[requirement]]
 id = "L01.G10"
 statement = "A refused baseline write at Start pauses P(SMU_WRITE)"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "L01.G11"
@@ -3585,8 +3577,7 @@ proof = "built"
 [[requirement]]
 id = "D6"
 statement = "Where a worker may be alive the order is StopWorker, RevertAll, AwaitWorker(K20), then the commit"
-proof = "untested"
-task = "T29"
+proof = "built"
 
 [[requirement]]
 id = "D7"
