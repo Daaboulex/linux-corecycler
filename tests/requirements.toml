@@ -4855,6 +4855,11 @@ statement = "The Curve-Tuner banner naming loaded values goes once Fill from CPU
 proof = "built"
 
 [[requirement]]
+id = "T23.history.freed"
+statement = "History's right-click menus and its export dialog are freed after use, so its controls stay the listed ones however often they are used (scratch/design/t23-curve-history.md defect 9)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

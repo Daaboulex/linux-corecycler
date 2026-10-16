@@ -304,6 +304,34 @@ class TestContextTable:
         assert tab._context_table.maximumHeight() >= 100
 
 
+class TestNothingLeftBehind:
+    @pytest.mark.req("T23.history.freed")
+    def test_menus_and_the_export_dialog_are_freed_after_use(self, db, monkeypatch, tmp_path):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QApplication, QMenu
+
+        cid = _seed_context(db, "2402", {"0": -20})
+        _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
+        tab = _grouped_tab(db)
+        tab._context_table.selectRow(0)
+        tab._runs_table.selectRow(0)
+
+        class ClosedAtOnce(QMenu):
+            def exec(self, *args):
+                return None
+
+        monkeypatch.setattr(ht, "QMenu", ClosedAtOnce)
+        monkeypatch.setattr(ht._ExportOptionsDialog, "exec", lambda self: ht.QDialog.DialogCode.Rejected)
+        monkeypatch.setattr(ht.QFileDialog, "getSaveFileName", lambda *a, **k: (str(tmp_path / "r.json"), ""))
+        for _ in range(3):
+            tab._show_context_table_menu(_point())
+            tab._show_context_menu(_point())
+            tab._export_json(0)
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert tab.findChildren(QMenu) == []
+        assert tab.findChildren(ht._ExportOptionsDialog) == []
+
+
 class TestContextMenus:
     def test_context_table_menu_offers_a_note_action(self, db, monkeypatch):
         cid = _seed_context(db, "2402", {"0": -20})

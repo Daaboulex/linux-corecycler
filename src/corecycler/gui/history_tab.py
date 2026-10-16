@@ -541,6 +541,7 @@ class HistoryTab(QWidget):
         menu = QMenu(self)
         menu.addAction("Add Note...", lambda: self._add_context_note(ctx))
         menu.exec(self._context_table.viewport().mapToGlobal(pos))
+        menu.deleteLater()
 
     def _add_context_note(self, ctx: TuningContextRecord) -> None:
         if not self._db or ctx.id is None:
@@ -996,6 +997,7 @@ class HistoryTab(QWidget):
 
         menu.addAction("Delete", lambda: self._delete_runs(rows))
         menu.exec(self._runs_table.viewport().mapToGlobal(pos))
+        menu.deleteLater()
 
     def _export_json(self, row: int) -> None:
         from corecycler.history.export import export_run_json_file
@@ -1010,13 +1012,16 @@ class HistoryTab(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "Export JSON", f"run_{run.id}.json", "JSON (*.json)")
         if path:
             dlg = _ExportOptionsDialog(self)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
+            accepted = dlg.exec() == QDialog.DialogCode.Accepted
+            events, telemetry = dlg.include_events, dlg.include_telemetry
+            dlg.deleteLater()
+            if accepted:
                 export_run_json_file(
                     self._db,
                     run.id,
                     Path(path),
-                    include_events=dlg.include_events,
-                    include_telemetry=dlg.include_telemetry,
+                    include_events=events,
+                    include_telemetry=telemetry,
                 )
 
     def _export_csv(self, row: int) -> None:
