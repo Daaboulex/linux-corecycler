@@ -31,19 +31,24 @@ class LiveChart(QWidget):
         getattr(theme, series)
         self.series = series
         self._data: deque[float] = deque(maxlen=MAX_POINTS)
-        self._current: float = 0
+        self._current: float | None = None
 
         self.setMinimumSize(200, 100)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-    def add_value(self, value: float) -> None:
-        self._data.append(value)
+    def add_value(self, value: float | None) -> None:
+        if value is not None:
+            self._data.append(value)
         self._current = value
         self.update()
 
+    def heading(self) -> str:
+        current = "--" if self._current is None else f"{self._current:.1f}"
+        return f"{self.title}: {current} {self.unit}"
+
     def clear(self) -> None:
         self._data.clear()
-        self._current = 0
+        self._current = None
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -70,8 +75,7 @@ class LiveChart(QWidget):
         # title + current value
         painter.setPen(QColor(theme.COLOR_TEXT_BRIGHT))
         painter.setFont(QFont("monospace", 8))
-        val_text = f"{self.title}: {self._current:.1f} {self.unit}"
-        painter.drawText(margin_left + 2, 14, val_text)
+        painter.drawText(margin_left + 2, 14, self.heading())  # equivalent-mutant: a pixel off is unseen
 
         if not self._data or chart_h <= 0 or chart_w <= 0:
             painter.end()

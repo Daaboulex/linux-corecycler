@@ -73,12 +73,14 @@ class TestMonitorUpdateMatrix:
         assert tab._power_label.styleSheet() == tab._stale_style()
         assert tab._power_label.text() == "Package: 95.0W (stale)"
 
-    def test_boost_above_ceiling_raises_max(self):
+    @pytest.mark.req("T22.monitor.charts")
+    def test_a_clock_above_the_read_maximum_widens_the_chart_and_leaves_max_boost_as_read(self):
         tab = _tab()
         tab._max_core_freq = 5000
+        before = tab._max_freq_label.text()
         tab.on_tick(_tick(actual=6200.0, ceiling=6300.0, watts=50.0))
-        assert tab._max_core_freq == 6200.0
-        assert "6200" in tab._max_freq_label.text()
+        assert tab._freq_chart.max_val == pytest.approx(6200.0 * 1.1)
+        assert tab._max_freq_label.text() == before
 
     @pytest.mark.req("T22.monitor.stale")
     def test_missed_sensor_reads_mark_each_last_reading_stale_on_its_own(self):

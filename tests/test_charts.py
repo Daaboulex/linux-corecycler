@@ -20,6 +20,15 @@ def _chart(**kw):
 
 
 class TestLiveChart:
+    @pytest.mark.req("T22.monitor.charts")
+    def test_the_heading_shows_no_value_until_one_is_read_and_again_after_a_missed_read(self):
+        c = _chart(title="Tctl", unit="C", min_val=0, max_val=100)
+        assert c.heading() == "Tctl: -- C"
+        c.add_value(61.0)
+        assert c.heading() == "Tctl: 61.0 C"
+        c.add_value(None)
+        assert (c.heading(), list(c._data)) == ("Tctl: -- C", [61.0])
+
     def test_add_value_tracks_current(self):
         c = _chart(title="Freq", unit="MHz", min_val=0, max_val=6000)
         c.add_value(5200)
@@ -39,7 +48,7 @@ class TestLiveChart:
         c.add_value(10)
         c.clear()
         assert not c._data
-        assert c._current == 0
+        assert c.heading().endswith(": -- ")
 
     def test_paint_empty_does_not_crash(self):
         c = _chart()

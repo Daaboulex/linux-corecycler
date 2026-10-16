@@ -4870,6 +4870,11 @@ statement = "From the first missed read, the Monitor shows the last reading of T
 proof = "built"
 
 [[requirement]]
+id = "T22.monitor.charts"
+statement = "A Monitor chart's heading shows no value until one is read and again after a missed read, never 0.0; Max Boost keeps the maximum the CPU reports (unread when it reports none), a higher observed clock only widening the chart (scratch/design/t23-monitor-memory-window.md, the facts list)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

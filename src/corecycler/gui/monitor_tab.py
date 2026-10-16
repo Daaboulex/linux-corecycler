@@ -349,6 +349,7 @@ class MonitorTab(QWidget):
             self._freq_chart.max_val = max_freq * 1.1
             self._max_core_freq = max_freq
         else:
+            self._max_freq_label.setText("Max Boost: unread")
             self._max_core_freq = 6000
 
     def _build_per_core_bars(self, cpus: list[int]) -> None:
@@ -413,15 +414,13 @@ class MonitorTab(QWidget):
             current_max = getattr(self, "_max_core_freq", 6000)
             if max_freq > current_max:
                 self._max_core_freq = max_freq
-                self._max_freq_label.setText(f"Max Boost: {max_freq:.0f}MHz")
                 self._freq_chart.max_val = max_freq * 1.1
-            self._freq_chart.add_value(max_freq)
+        self._freq_chart.add_value(max(freqs.values()) if freqs else None)
 
         sensed = tick.sensed
         tctl = sensed.tctl
         self._show_read(self._tctl_label, None if tctl is None else f"Tctl: {tctl:.1f}°C")
-        if tctl is not None:
-            self._temp_chart.add_value(tctl)
+        self._temp_chart.add_value(tctl)
         for ccd_idx, temp in sensed.tccd:
             if temp is None:
                 if ccd_idx in self._ccd_temp_labels:
@@ -445,13 +444,11 @@ class MonitorTab(QWidget):
             self._show_read(self._ccd_temp_labels[ccd_idx], f"CCD{ccd_idx}{vcache_tag}: {temp:.1f}°C")
         core_vcore = self._sensors.vcore(sensed)
         self._show_read(self._vcore_label, None if core_vcore is None else f"Vcore: {core_vcore:.4f}V")
-        if core_vcore is not None:
-            self._voltage_chart.add_value(core_vcore)
+        self._voltage_chart.add_value(core_vcore)
 
         watts = tick.package_watts
         self._show_read(self._power_label, None if watts is None else f"Package: {watts:.1f}W")
-        if watts is not None:
-            self._power_chart.add_value(watts)
+        self._power_chart.add_value(watts)
 
         usage_data = tick.usage
         stretch_data = tick.stretch
