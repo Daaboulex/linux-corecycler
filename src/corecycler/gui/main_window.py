@@ -263,6 +263,7 @@ class MainWindow(QMainWindow):
     def _setup_toolbar(self) -> None:
         toolbar = QToolBar("Test Control")
         toolbar.setMovable(False)
+        toolbar.toggleViewAction().setVisible(False)
         self.addToolBar(toolbar)
 
         self._start_btn = QPushButton("Start test")

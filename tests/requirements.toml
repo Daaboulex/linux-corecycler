@@ -4815,6 +4815,11 @@ statement = "Without a history database the History tab says history is off, nev
 proof = "built"
 
 [[requirement]]
+id = "T23.window.toolbar"
+statement = "No menu of the window can hide the toolbar holding Start test and Stop test (scratch/design/t23-monitor-memory-window.md D3: its right-click offered Test Control, which hid Stop during a run with no way back)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

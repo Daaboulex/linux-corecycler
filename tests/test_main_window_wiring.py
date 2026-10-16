@@ -630,6 +630,14 @@ class TestElapsedWatchdog:
         assert window._core_telemetry[0]["max_temp"] is None
 
 
+class TestToolbar:
+    @pytest.mark.req("T23.window.toolbar")
+    def test_no_menu_offers_to_hide_start_and_stop(self, window):
+        menu = window.createPopupMenu()
+        shown = [action.text() for action in menu.actions() if action.isVisible()] if menu else []
+        assert shown == []
+
+
 class TestProfileIo:
     def test_a_cancelled_save_writes_nothing(self, window, tmp_path):
         with patch("corecycler.gui.main_window.QFileDialog.getSaveFileName", return_value=("", "")):
