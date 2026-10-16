@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -30,9 +31,10 @@ def available_backends() -> list[str]:
     return list(BACKEND_REGISTRY.keys())
 
 
+BACKEND_MODULES = ("mprime", "stress_ng", "stressapptest", "ycruncher")
+
+
 def load_all() -> None:
     """Import all backend modules to trigger registration."""
-    import corecycler.engine.backends.mprime  # noqa: F401
-    import corecycler.engine.backends.stress_ng  # noqa: F401
-    import corecycler.engine.backends.stressapptest  # noqa: F401
-    import corecycler.engine.backends.ycruncher  # noqa: F401
+    for name in BACKEND_MODULES:
+        importlib.import_module(f"{__name__}.{name}")

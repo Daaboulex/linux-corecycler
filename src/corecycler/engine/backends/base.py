@@ -180,12 +180,14 @@ class StressBackend(ABC):
         """Return list of FFT presets this backend supports. Override if applicable."""
         return []
 
-    def prepare(self, work_dir: Path, config: StressConfig) -> None:  # noqa: B027
+    def prepare(self, work_dir: Path, config: StressConfig) -> None:
         """Prepare working directory and config files before running. Override if needed."""
+        return None
 
-    def assert_prepared(self, work_dir: Path) -> None:  # noqa: B027
+    def assert_prepared(self, work_dir: Path) -> None:
         """Raise OSError when the prepared state a launch depends on is not readable.
 
         A backend that launches against absent config silently falls back to its
         own defaults (mprime: one self-pinned worker per detected core), so the
         launch must be refused instead. Override where config files exist."""
+        return None

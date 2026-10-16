@@ -40,7 +40,6 @@ class CPUTopology:
     ccds: int = 0
     is_x3d: bool = False
     vcache_ccd: int | None = None
-    # False when a present CPU is offline: an offlined core leaves a hole in the core ids.
     cpus_all_online: bool = True
     cores: dict[int, PhysicalCore] = field(default_factory=dict)
     logical_map: dict[int, LogicalCPU] = field(default_factory=dict)
