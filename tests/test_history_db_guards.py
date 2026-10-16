@@ -13,6 +13,7 @@ import time
 
 import pytest
 
+from corecycler.history import db as db_module
 from corecycler.history.db import (
     CoreResultRecord,
     CorruptSessionError,
@@ -88,7 +89,7 @@ class TestOpenGuards:
             opened.append(real_connect(*args, **kwargs))
             return opened[-1]
 
-        monkeypatch.setattr(sqlite3, "connect", recording_connect)
+        monkeypatch.setattr(db_module, "sqlite3", _Sqlite3With(recording_connect))
         with pytest.raises(SchemaTooNewError):
             HistoryDB(path)
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):
@@ -102,7 +103,7 @@ class TestOpenGuards:
             opened.append(_WithoutWal(real_connect(*args, **kwargs)))
             return opened[-1]
 
-        monkeypatch.setattr(sqlite3, "connect", without_wal)
+        monkeypatch.setattr(db_module, "sqlite3", _Sqlite3With(without_wal))
         with pytest.raises(RuntimeError, match=r"cannot use write-ahead logging \(journal mode delete\)"):
             HistoryDB(tmp_path / "history.db")
         assert opened[0].closed is True
@@ -157,6 +158,16 @@ class _CheckpointFails:
     def close(self) -> None:
         self.closed = True
         self.real.close()
+
+
+class _Sqlite3With:
+    """sqlite3 as db.py sees it, with one connect replaced: the global stays real for coverage's own database."""
+
+    def __init__(self, connect) -> None:
+        self.connect = connect
+
+    def __getattr__(self, name: str):
+        return getattr(sqlite3, name)
 
 
 class _WithoutWal:
