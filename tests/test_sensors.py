@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import errno
+import os
 from pathlib import Path
 
 import pytest
@@ -265,9 +267,50 @@ def test_the_power_state_is_read_from_every_cpu_and_names_the_cpus_that_differ(t
     assert (state.governor, state.epp, state.max_mhz, state.top_mhz) == (None, None, None, 5756.452)
     assert state.named() == (
         ("governor", "powersave on cpus 0-1,3; performance on cpus 2"),
-        ("EPP", "balance_performance on cpus 0-2; unreadable on cpus 3"),
+        ("EPP", "balance_performance on cpus 0-2; absent on cpus 3"),
         ("scaling maximum MHz", "4300 on cpus 0-1; 5100 on cpus 2-3"),
     )
+
+
+@pytest.mark.req("T22.F19")
+def test_a_power_setting_that_cannot_be_read_says_unreadable_with_its_reason_never_absent(tmp_path):
+    for cpu in (0, 1, 2):
+        cpufreq(tmp_path, cpu, "624000", "4300000")
+        governor = tmp_path / f"cpu{cpu}" / "cpufreq" / "scaling_governor"
+        if cpu == 2:
+            governor.mkdir()
+        else:
+            governor.write_text("powersave\n")
+            (governor.parent / "energy_performance_preference").write_text("power\n")
+    (tmp_path / "cpufreq" / "boost").mkdir(parents=True)
+    profile = tmp_path / "platform_profile"
+    profile.mkdir()
+    unreadable = f"unreadable: {os.strerror(errno.EISDIR)}"
+    assert read_power_state(tmp_path, profile).named() == (
+        ("platform profile", unreadable),
+        ("governor", f"powersave on cpus 0-1; {unreadable} on cpus 2"),
+        ("EPP", "power on cpus 0-1; absent on cpus 2"),
+        ("boost", unreadable),
+        ("scaling maximum MHz", "4300"),
+    )
+
+
+@pytest.mark.req("T22.F19")
+@pytest.mark.parametrize(
+    ("unread", "shown"),
+    [((0, 1, 2), "{unreadable}"), ((2,), "4300 on cpus 0-1; {unreadable} on cpus 2")],
+)
+def test_a_scaling_maximum_that_cannot_be_read_says_unreadable_with_its_reason_never_absent(tmp_path, unread, shown):
+    for cpu in (0, 1, 2):
+        cpufreq(tmp_path, cpu, "624000", "4300000")
+        if cpu in unread:
+            ceiling = tmp_path / f"cpu{cpu}" / "cpufreq" / "scaling_max_freq"
+            ceiling.unlink()
+            ceiling.mkdir()
+    state = read_power_state(tmp_path, tmp_path / "no_profile")
+    unreadable = f"unreadable: {os.strerror(errno.EISDIR)}"
+    assert dict(state.named()).get("scaling maximum MHz") == shown.format(unreadable=unreadable)
+    assert state.ceilings == tuple((cpu, None if cpu in unread else 4300.0) for cpu in (0, 1, 2))
 
 
 @pytest.mark.req("T22.F10")

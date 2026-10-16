@@ -59,8 +59,8 @@ class TestRunLogger:
         ctx = capture_system_context(smu=smu, num_cores=topology.physical_cores)
         context_id = find_or_create_context(db, ctx)
         log.info(
-            "Tuning context %d: BIOS=%s, CO hash=%s",
-            context_id,
+            "Tuning context %s: BIOS=%s, CO hash=%s",
+            "none" if context_id is None else context_id,
             ctx.bios_version,
             ctx.co_hash[:12] if ctx.co_hash else "none",
         )

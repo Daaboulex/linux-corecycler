@@ -4,6 +4,7 @@ import random
 import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -163,6 +164,27 @@ def spec(load: Load, seconds: float = 480.0) -> Spec:
     return Spec(Klass.T1, 0, -5, CPUS, seconds, tuple((c, -5) for c in range(4)), Stage.TRANSIENT, load, 95.0)
 
 
+@pytest.mark.req("T22.F20")
+def test_hot_gets_half_the_usable_memory_up_to_its_cap_and_never_0_mb():
+    cap = stages.HOT_MEMORY_CAP_MB
+    usable = (1, 3, 4000, 4 * cap)
+    assert [stages.hot_memory_mb(mb) for mb in usable] == [1, 3 // 2, 4000 // 2, cap]
+
+
+@pytest.mark.req("T22.F20")
+def test_each_hot_run_logs_the_memory_its_own_plan_gave_y_cruncher():
+    usable = iter([4000, 3000])
+    said = []
+    script = Script([Outcome.PASS] * 2)
+    hot = runner(script)
+    hot.budget = lambda n, floor: Budget(usable_mb=next(usable))
+    hot.say = said.append
+    for _ in range(2):
+        hot.run(spec(Load.HOT), threading.Event())
+    assert script.memory == [4000 // 2, 3000 // 2]
+    assert said == [f"hot runs y-cruncher with {mb} MB" for mb in script.memory]
+
+
 def test_every_sample_of_an_all_core_stage_reaches_the_sink():
     got = []
     script = Script([Outcome.PASS] * 8)
@@ -317,6 +339,37 @@ def test_a_stopped_soak_is_no_verdict():
     stop.set()
     report = runner(Script([]), detector=soak_detector([])).run(spec(Load.SOAK, 5.0), stop)
     assert report.group is Group.APPARATUS and "stopped" in report.detail
+
+
+@pytest.mark.req("T22.F16")
+@pytest.mark.parametrize(
+    ("stop_after", "problem", "group"),
+    [(None, None, Group.PASS), (2, None, Group.APPARATUS), (None, "kmsg unreadable", Group.APPARATUS)],
+)
+def test_a_soak_reports_the_seconds_it_watched_never_its_configured_length_or_0(
+    monkeypatch, stop_after, problem, group
+):
+    settle = 6.0
+    clock = [100.0]
+    monkeypatch.setattr(live_hw, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(kernel, "mce_settle_s", lambda: settle)
+    woke = []
+
+    class LateWakeups(threading.Event):
+        def wait(self, timeout=None):
+            if timeout == settle:
+                clock[0] += 0.0 if self.is_set() else settle
+                return self.is_set()
+            clock[0] += timeout + 0.5
+            woke.append(clock[0])
+            if len(woke) == stop_after:
+                self.set()
+            return self.is_set()
+
+    reads = [kernel.KernelRead((), problem)]
+    report = runner(Script([]), detector=soak_detector(reads)).run(spec(Load.SOAK, 5.0), LateWakeups())
+    assert report.group is group
+    assert report.seconds == woke[-1] - 100.0
 
 
 def test_y_cruncher_names_each_failing_cpu_once_through_its_color_codes():

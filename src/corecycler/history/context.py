@@ -23,16 +23,17 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 BIOS_VERSION_PATH = Path("/sys/class/dmi/id/bios_version")
+UNREADABLE = "unreadable: "
 
 
 def read_bios_version(path: Path = BIOS_VERSION_PATH) -> str:
-    """Read BIOS version from DMI sysfs. Returns '' if unavailable."""
+    """The BIOS version from DMI sysfs: '' on a machine without one, "unreadable: <reason>" when the read fails."""
     try:
-        if path.exists():
-            return path.read_text().strip()
-    except OSError:
-        log.debug("Could not read BIOS version from %s", path)
-    return ""
+        return path.read_text().strip()
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        return f"{UNREADABLE}{exc.strerror}"
 
 
 def compute_co_hash(
@@ -107,29 +108,23 @@ def capture_system_context(
     )
 
 
-def find_or_create_context(db: HistoryDB, ctx: TuningContextRecord) -> int:
-    """Find an existing context matching (co_hash, bios_version), or create one.
-
-    Returns the context id.
-    """
+def find_or_create_context(db: HistoryDB, ctx: TuningContextRecord) -> int | None:
+    """The id of the context matching (co_hash, bios_version), created when new; None when the BIOS version could
+    not be read, which is no context of its own."""
+    if ctx.bios_version.startswith(UNREADABLE):
+        return None
     existing = db.get_context_by_hash(ctx.co_hash, ctx.bios_version)
     if existing is not None:
         return existing.id
     return db.create_context(ctx)
 
 
-def detect_bios_change(
-    db: HistoryDB,
-    bios_path: Path = BIOS_VERSION_PATH,
-) -> tuple[bool, str, str]:
-    """Check if BIOS version changed since the most recent tuning context.
-
-    Returns (changed, old_version, current_version).
-    If no previous contexts exist, returns (False, '', current).
-    """
+def detect_bios_change(db: HistoryDB, bios_path: Path = BIOS_VERSION_PATH) -> str | None:
+    """The History warning about the BIOS version against the newest tuning context, or None when there is none."""
     current = read_bios_version(bios_path)
+    if current.startswith(UNREADABLE):
+        return f"BIOS version {current}, so a change cannot be judged"
     contexts = db.list_contexts(limit=1)
-    if not contexts:
-        return False, "", current
-    old = contexts[0].bios_version
-    return old != current, old, current
+    if not contexts or contexts[0].bios_version == current:
+        return None
+    return f"BIOS changed: {contexts[0].bios_version} -> {current}"

@@ -1342,17 +1342,19 @@ def test_a_start_that_is_refused_writes_no_session(tmp_path):
     assert rows(r, "SELECT count(*) AS n FROM tuner_sessions") == [{"n": 0}]
 
 
-def test_a_runner_that_raises_pauses_as_internal(tmp_path):
+@pytest.mark.req("T22.F16")
+def test_a_runner_that_raises_pauses_as_internal_with_its_run_time_unread(tmp_path):
     hardware = FakeHardware()
     r = rig(tmp_path, hardware, FakeRunner(hardware, raise_once=True))
     r.start(config(), 1, 7, True)
     assert r.run_until_rest(0.01).pause.reason is PauseReason.INTERNAL
-    tests = rows(r, "SELECT verdict, detail, peaks_json FROM tuner_tests")
+    tests = rows(r, "SELECT verdict, detail, peaks_json, seconds_run FROM tuner_tests")
     assert tests == [
         {
             "verdict": "internal_error",
             "detail": "the test runner raised RuntimeError('runner broke')",
             "peaks_json": None,
+            "seconds_run": None,
         }
     ]
 
@@ -1543,6 +1545,26 @@ def test_the_adapter_gathers_the_boot_s_facts(monkeypatch, calibrated):
     clocks = (2033.0, 3000.0, 3000.0) if calibrated else (None, None, None)
     assert facts == BootFacts("2401", *clocks, ("a line",), None, {"present": False})
     assert asked == ["b1"]
+
+
+@pytest.mark.req("T22.F17")
+def test_a_boot_clock_that_reads_0_or_lies_past_the_table_is_recorded_unread(monkeypatch, tmp_path):
+    from corecycler.smu import pmtable
+
+    version, uclk = 0x00620205, 3000.0
+    offsets = pmtable.PM_TABLE_OFFSETS[version]
+    raw = bytearray(offsets.mclk)
+    struct.pack_into("<f", raw, offsets.uclk, uclk)
+    smu = tmp_path / "ryzen_smu_drv"
+    smu.mkdir()
+    (smu / "pm_table").write_bytes(bytes(raw))
+    (smu / "pm_table_version").write_bytes(struct.pack("<I", version))
+    monkeypatch.setattr(live_hw, "PMTableReader", lambda: pmtable.PMTableReader(smu))
+    monkeypatch.setattr(live_hw, "read_bios_version", lambda: "2401")
+    monkeypatch.setattr(live_hw.kernel, "reset_reasons", lambda boot: ((), None))
+    monkeypatch.setattr(live_hw, "igpu", lambda: {"present": False})
+    facts = live_hw.SmuHardware(FakeSmu(), False, print, warm, vcache="none").boot_facts("b1")
+    assert (facts.fclk_mhz, facts.uclk_mhz, facts.mclk_mhz) == (None, uclk, None)
 
 
 def note(kind: int, name: bytes, desc: bytes) -> bytes:
@@ -2685,11 +2707,14 @@ def sched_ext(root: Path, state: str | None, ops: str | None = None) -> Path:
     return root
 
 
-@pytest.mark.req("K49", "L01.13")
+@pytest.mark.req("K49", "L01.13", "T22.F20")
 def test_a_running_ananicy_alone_is_not_a_warning_and_a_short_hot_budget_is(tmp_path, monkeypatch):
-    refusal, warnings = preflight(tmp_path, monkeypatch, usable=8000, procs={9: ("ananicy-cpp", ())})
+    usable = 8000
+    refusal, warnings = preflight(tmp_path, monkeypatch, usable=usable, procs={9: ("ananicy-cpp", ())})
     assert refusal is None
-    assert warnings == (f"HOT runs y-cruncher with 4000 MB, under its {stages.HOT_MEMORY_CAP_MB} MB cap",)
+    assert warnings == (
+        f"HOT would run y-cruncher with {usable // 2} MB now, under its {stages.HOT_MEMORY_CAP_MB} MB cap",
+    )
 
 
 @pytest.mark.req("K49", "L01.13")

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 
 import pytest
 
@@ -272,6 +274,23 @@ class TestTuningContext:
         assert ctx is not None
         assert ctx.co_offsets_json == "{}"
         assert ctx.co_hash == ""
+
+    @pytest.mark.req("T22.F19")
+    def test_a_run_whose_bios_version_cannot_be_read_joins_no_context(
+        self, db, topology, profile, tmp_path, monkeypatch, caplog
+    ):
+        from corecycler.history import context
+
+        bios = tmp_path / "bios_version"
+        bios.mkdir()
+        read = context.read_bios_version
+        monkeypatch.setattr(context, "read_bios_version", lambda _path: read(bios))
+        with caplog.at_level("INFO", logger=logger_module.__name__):
+            run = db.get_run(TestRunLogger(db, topology, profile, smu=None).run_id)
+        unreadable = f"unreadable: {os.strerror(errno.EISDIR)}"
+        assert (run.context_id, run.bios_version) == (None, unreadable)
+        assert db.list_contexts() == []
+        assert f"Tuning context none: BIOS={unreadable}," in caplog.text
 
     def test_two_runs_same_context(self, db, topology, profile):
         """Two runs without SMU share the same tuning context."""

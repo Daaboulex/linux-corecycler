@@ -1517,7 +1517,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         self,
         row_id: int,
         verdict: str,
-        seconds_run: float,
+        seconds_run: float | None,
         named_json: str,
         context_json: str | None,
         evidence_json: str,

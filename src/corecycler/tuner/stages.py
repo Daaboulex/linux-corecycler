@@ -78,6 +78,10 @@ def _draws(n_cpus: int) -> list[int]:
     return [*draws, n_cpus]
 
 
+def hot_memory_mb(usable_mb: int) -> int:
+    return max(1, min(HOT_MEMORY_CAP_MB, usable_mb // 2))
+
+
 def plan(
     load: Load,
     seconds: float,
@@ -89,7 +93,7 @@ def plan(
     *,
     quick: bool,
 ) -> tuple[Segment, ...]:
-    hot_memory = max(1, min(HOT_MEMORY_CAP_MB, usable_mb // 2))
+    hot_memory = hot_memory_mb(usable_mb)
     hot_hold = (limit_c, limit_c - HOT_HOLD_SPAN_C)
     if load is Load.HOT:
         return (

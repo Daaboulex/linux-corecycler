@@ -194,9 +194,9 @@ class SmuHardware:
         reasons, problem = kernel.reset_reasons(boot_id)
         return BootFacts(
             bios_version=read_bios_version(),
-            fclk_mhz=None if clocks is None else clocks.fclk_mhz,
-            uclk_mhz=None if clocks is None else clocks.uclk_mhz,
-            mclk_mhz=None if clocks is None else clocks.mclk_mhz,
+            fclk_mhz=None if clocks is None else clocks.fclk_mhz or None,
+            uclk_mhz=None if clocks is None else clocks.uclk_mhz or None,
+            mclk_mhz=None if clocks is None else clocks.mclk_mhz or None,
             reset_reasons=reasons,
             reset_problem=problem,
             igpu=igpu(),
@@ -469,9 +469,11 @@ def preflight(
         if refusal is None:
             refusal = f"the memory budget is unavailable: {exc}"
     else:
-        hot_mb = usable_mb // 2
+        hot_mb = stages.hot_memory_mb(usable_mb)
         if hot_mb < stages.HOT_MEMORY_CAP_MB:
-            warnings.append(f"HOT runs y-cruncher with {hot_mb} MB, under its {stages.HOT_MEMORY_CAP_MB} MB cap")
+            warnings.append(
+                f"HOT would run y-cruncher with {hot_mb} MB now, under its {stages.HOT_MEMORY_CAP_MB} MB cap"
+            )
     epp = dict(power.named()).get("EPP")
     if epp is not None and EPP_SAVING.search(epp):
         warnings.append(f"EPP is {epp}, which holds the clocks under performance")
@@ -582,6 +584,7 @@ class StressRunner:
         detector=None,
         memory_backend=None,
         budget=None,
+        say: Callable[[str], None] = print,
     ) -> None:
         self.backend_factory = backend_factory
         self.work_dir = work_dir
@@ -592,6 +595,7 @@ class StressRunner:
         self.clocks = clocks
         self.memory_backend = memory_backend or (lambda: get_backend("stressapptest"))
         self.budget = budget or lane_budget
+        self.say = say
         self.runs = 0
         self.read_ns: int | None = None
         self.sink: Callable[[telemetry.Sample], None] | None = None
@@ -688,6 +692,8 @@ class StressRunner:
             spec.thermal_limit_c,
             quick=spec.stage is Stage.BISECT,
         )
+        memory = ", ".join(str(mb) for mb in sorted({segment.memory_mb for segment in segments}))
+        self.say(f"{spec.load.value} runs y-cruncher with {memory} MB")
         done = 0.0
         speeds: list[tuple[str, float, bool]] = []
         for segment in segments:
@@ -759,11 +765,13 @@ class StressRunner:
         observed: list = []
         problem = None
         try:
-            end = time.monotonic() + spec.seconds
+            started = time.monotonic()
+            end = started + spec.seconds
             while time.monotonic() < end and not stop.wait(min(1.0, max(0.0, end - time.monotonic()))):
                 read = watch.read_new()
                 observed.extend(read.events)
                 problem = problem or read.problem
+            watched = time.monotonic() - started
             stop.wait(kernel.mce_settle_s())
             read = watch.read_new(final=True)
             observed.extend(read.events)
@@ -777,12 +785,12 @@ class StressRunner:
             if isinstance(e, kernel.CoreMachineCheck) and e.cpu in self.core_of_cpu
         )
         if stop.is_set():
-            return Report(Group.APPARATUS, 0.0, evidence, "the soak was stopped before its end")
+            return Report(Group.APPARATUS, watched, evidence, "the soak was stopped before its end")
         if problem is not None:
-            return Report(Group.APPARATUS, spec.seconds, evidence, f"the kernel log could not be read: {problem}")
+            return Report(Group.APPARATUS, watched, evidence, f"the kernel log could not be read: {problem}")
         unblamed = any(isinstance(e, (kernel.UnblamedMachineCheck, kernel.KernelTrouble)) for e in observed)
         group = Group.ENVIRONMENT if unblamed else Group.PASS
-        return Report(group, spec.seconds, evidence, "soak watch")
+        return Report(group, watched, evidence, "soak watch")
 
 
 def parse(argv: list[str]) -> argparse.Namespace:
@@ -856,7 +864,7 @@ def build_rig(
             tools=(backend_factory(), get_backend("stressapptest")),
             vcache=vcache_fact(topology),
         ),
-        runner=StressRunner(backend_factory, args.state_dir / "runs", core_of_cpu, sensors, Clocks().read),
+        runner=StressRunner(backend_factory, args.state_dir / "runs", core_of_cpu, sensors, Clocks().read, say=say),
         store=Store(db, args.state_dir, identity),
         cpus_of=cpus_of,
         domain_of=domain_of,

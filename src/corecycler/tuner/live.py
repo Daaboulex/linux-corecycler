@@ -550,7 +550,7 @@ class Store:
     def test_broken(self, row: int, detail: str) -> None:
         evidence = {"records": [], "unblamed_corrected": False}
         self.write_block()
-        self.db.end_tuner_test(row, "internal_error", 0.0, "[]", None, json.dumps(evidence), detail, "[]", "")
+        self.db.end_tuner_test(row, "internal_error", None, "[]", None, json.dumps(evidence), detail, "[]", "")
         self.db.checkpoint()
 
     def event(self, session_id: int, kind: str, text: str, boot: str) -> None:

@@ -1122,15 +1122,20 @@ class TestStallWatchdog:
             verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 2.0)
         assert verdict.outcome is Outcome.PASS
 
-    def test_an_unreadable_payload_cpu_time_stalls_the_lane(self, tmp_path):
+    @pytest.mark.req("T22.F15")
+    def test_an_unreadable_payload_cpu_time_is_named_and_never_a_stall(self, tmp_path):
         backend = FakeBackend(_child(BUSY))
         supervisor, _, _ = make_supervisor(backend, stall_timeout=0.05)
+        stalls: list[int] = []
+        supervisor.hooks = SuperviseHooks(on_stall=stalls.append)
         with (
             patch.object(execution, "STALL_GRACE_SECONDS", 0.0),
             patch.object(containment, "process_group_cpu_seconds", return_value=None),
         ):
-            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 5.0)
-        assert verdict.outcome is Outcome.STALL
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(3,)), 5.0)
+        assert verdict.outcome is Outcome.UNVERIFIED
+        assert verdict.detail.startswith("payload CPU time on CPUs 3 unreadable for ")
+        assert stalls == []
 
 
 class TestContainmentWatchdog:

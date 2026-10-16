@@ -350,6 +350,56 @@ class TestSupervisorInternalsEdges:
             supervisor._sample_cpu(run, now + 120.0)
         assert run.last_active == now + 60.0
 
+    @staticmethod
+    def _watched_run(tmp_path, started: float) -> _LaneRun:
+        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
+        run.proc = SimpleNamespace(pid=4321, returncode=None, poll=lambda: None)
+        run.started_at = run.last_active = run.cpu_sampled_at = started
+        run.cpu_seconds = 0.0
+        run.last_watchdog = float("inf")
+        return run
+
+    @pytest.mark.req("T22.F15")
+    def test_a_stall_needs_its_whole_window_of_cpu_time_measured_near_zero(self, tmp_path):
+        supervisor = _idle_supervisor(stall_timeout=30.0)
+        started = 1000.0
+        run = self._watched_run(tmp_path, started)
+        seen = []
+        with patch.object(containment, "process_group_cpu_seconds", side_effect=[0.0, None, 0.0]):
+            for at in (30.0, 40.0, 41.0):
+                supervisor._check(run, started + at, started)
+                seen.append([found.outcome for found in run.signals])
+        assert seen == [[], [], [Outcome.STALL]]
+
+    @pytest.mark.req("T22.F15")
+    def test_cpu_time_unread_for_the_stall_window_is_named_unverified(self, tmp_path):
+        supervisor = _idle_supervisor(stall_timeout=30.0)
+        started = 1000.0
+        run = self._watched_run(tmp_path, started)
+        last_read = 20.0
+        seen = []
+        with patch.object(containment, "process_group_cpu_seconds", side_effect=[0.0, None, None, None]):
+            for at in (last_read, 35.0, 50.0, 51.0):
+                supervisor._check(run, started + at, started)
+                seen.append(list(run.signals))
+        unread = LaneSignal(
+            Outcome.UNVERIFIED,
+            f"payload CPU time on CPUs 0 unreadable for {51.0 - last_read:.0f}s: verdict unavailable",
+        )
+        assert seen == [[], [], [], [unread]]
+
+    @pytest.mark.req("T22.F15")
+    def test_unread_cpu_time_is_judged_from_the_end_of_the_stall_grace(self, tmp_path):
+        supervisor = _idle_supervisor(stall_timeout=1.0)
+        started = 1000.0
+        run = self._watched_run(tmp_path, started)
+        seen = []
+        with patch.object(containment, "process_group_cpu_seconds", return_value=None):
+            for at in (execution.STALL_GRACE_SECONDS - 2.0, execution.STALL_GRACE_SECONDS):
+                supervisor._check(run, started + at, started)
+                seen.append([found.outcome for found in run.signals])
+        assert seen == [[], [Outcome.UNVERIFIED]]
+
     def test_a_late_unattributed_event_reaches_every_lane(self, tmp_path):
         from test_execution import FakeBackend, FakeDetector, unblamed
 

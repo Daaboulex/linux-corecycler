@@ -4625,20 +4625,17 @@ proof = "built"
 [[requirement]]
 id = "T22.F15"
 statement = "A stall is declared only from a measured near-zero CPU time; an unreadable CPU time is named, never treated as a stall."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F16"
-statement = "A verdict's run time is the measured run time, never the configured seconds or 0.0."
-proof = "not built"
-task = "T22"
+statement = "A verdict's run time is the measured run time, never the configured seconds; 0.0 only for a test that never started, and a run time not measured is recorded as unread."
+proof = "built"
 
 [[requirement]]
 id = "T22.F17"
 statement = "Fabric and memory clocks are recorded only when read in range; 0.0 or out of range is recorded as unread."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F18"
@@ -4648,15 +4645,13 @@ task = "T22"
 
 [[requirement]]
 id = "T22.F19"
-statement = "A setting that could not be read says unreadable with the reason, never that it is absent."
-proof = "not built"
-task = "T22"
+statement = "A setting that could not be read says unreadable with the reason, never that it is absent; an unreadable BIOS version is never judged a BIOS change or made a tuning context."
+proof = "built"
 
 [[requirement]]
 id = "T22.F20"
 statement = "The memory a HOT run uses is logged per run from that run's own computation, not a Start-time figure."
-proof = "not built"
-task = "T22"
+proof = "built"
 
 [[requirement]]
 id = "T22.F22"

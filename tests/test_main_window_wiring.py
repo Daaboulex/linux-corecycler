@@ -81,7 +81,7 @@ def _build(
     db_factory=None,
     settings=None,
     topology=None,
-    bios=(False, "", ""),
+    bios=None,
     adopt=None,
 ):
     _qapp()
@@ -176,17 +176,25 @@ class TestConstruction:
         assert titles.count("Auto-Tuner") == 1
         assert isinstance(window._tabs.widget(titles.index("Auto-Tuner")), TunerTab)
 
-    def test_a_bios_change_reaches_the_history_tab(self, monkeypatch, tmp_path, db):
+    def test_a_bios_change_reaches_the_history_tab_and_the_log(self, monkeypatch, tmp_path, db, caplog):
+        from corecycler.history.context import TuningContextRecord, detect_bios_change
+
         db.create_run(RunRecord(started_at="2026-07-20T10:00:00+00:00", status="running"))
-        win = _build(
-            monkeypatch,
-            tmp_path,
-            db=db,
-            bios=(True, "2401", "2402"),
-            adopt=lambda _d: {"runs": 2},
-        )
-        assert win._bios_changed
-        assert win._history_tab._bios_warning == "BIOS changed: 2401 -> 2402"
+        db.create_context(TuningContextRecord(bios_version="2401"))
+        bios = tmp_path / "bios_version"
+        bios.write_text("2402\n")
+        with caplog.at_level("INFO", logger=mw.__name__):
+            win = _build(
+                monkeypatch,
+                tmp_path,
+                db=db,
+                bios=lambda d: detect_bios_change(d, bios_path=bios),
+                adopt=lambda _d: {"runs": 2},
+            )
+        warning = "BIOS changed: 2401 -> 2402"
+        assert win._history_tab._bios_warning == warning
+        assert not win._history_tab._bios_label.isHidden()
+        assert warning in caplog.text
         win._history_db = None
 
     def test_adoption_and_bios_failures_do_not_stop_startup_and_are_logged(self, monkeypatch, tmp_path, db, caplog):
@@ -196,7 +204,7 @@ class TestConstruction:
         with caplog.at_level("ERROR", logger="corecycler.gui.main_window"):
             win = _build(monkeypatch, tmp_path, db=db, bios=_boom, adopt=_boom)
         assert win._history_db is db
-        assert not win._bios_changed
+        assert win._history_tab._bios_label.isHidden()
         assert "Failed to detect a BIOS change" in caplog.text
         win._history_db = None
 
@@ -872,6 +880,32 @@ def test_a_running_all_core_test_on_sixteen_cores_shows_its_whole_line_without_w
         win.resize(win.minimumSizeHint().width(), 1000)
         QApplication.processEvents()
         assert _whole_text_shown(line)
+    win._history_db = None
+
+
+@pytest.mark.req("T22.F19", "T23.halfscreen")
+def test_an_unreadable_bios_version_is_said_whole_in_history_without_widening_the_window(monkeypatch, tmp_path, db):
+    import errno
+    import os
+
+    from PySide6.QtWidgets import QApplication
+
+    from corecycler.history import context
+
+    db.create_context(context.TuningContextRecord(bios_version="F12"))
+    reason = os.strerror(errno.EIO)
+    monkeypatch.setattr(context, "read_bios_version", lambda _path: f"unreadable: {reason}")
+    win = _build(monkeypatch, tmp_path, db=db, topology=_topo(16), bios=context.detect_bios_change)
+    win.show()
+    win._tabs.setCurrentWidget(win._history_tab)
+    QApplication.processEvents()
+    label = win._history_tab._bios_label
+    assert label.text() == f"BIOS version unreadable: {reason}, so a change cannot be judged"
+    narrowest = win.minimumSizeHint().width()
+    assert narrowest <= HALF_SCREEN - 20
+    win.resize(narrowest, 1000)
+    QApplication.processEvents()
+    assert _whole_text_shown(label)
     win._history_db = None
 
 

@@ -71,15 +71,27 @@ PLATFORM_PROFILE = Path("/sys/firmware/acpi/platform_profile")
 def _text(path: Path) -> str | None:
     try:
         return path.read_text().strip()
-    except OSError:
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        return f"unreadable: {exc.strerror}"
+
+
+def _ceiling(path: Path) -> float | str:
+    try:
+        text = path.read_text().strip()
+    except OSError as exc:
+        return f"unreadable: {exc.strerror}"
+    return int(text) / 1000 if text.isdecimal() else f"unreadable: {text!r} is not a number"
 
 
 @dataclass(frozen=True, slots=True)
 class PowerState:
     """The settings that can change a verdict without touching a core: read from every CPU before every test.
 
-    A setting this machine does not have is None; one its CPUs read differently is None and named in split.
+    A setting this machine has no file for is None. A read that fails is "unreadable: <reason>", in the value or,
+    per CPU, in split. A setting its CPUs read differently is None and named in split. The scaling maximum is read
+    from every CPU that has cpufreq, so it is never absent: one that no CPU could read is None and named in split.
     ceilings keeps each CPU's own scaling maximum, None where it could not be read.
     """
 
@@ -124,9 +136,12 @@ def _agreed[T](read: list[tuple[int, T | None]], shown: Callable[[T], str]) -> t
     if len(groups) == 1:
         return next(iter(groups)), None
     return None, "; ".join(
-        f"{'unreadable' if value is None else shown(value)} on cpus {cpu_ranges(cpus)}"
-        for value, cpus in groups.items()
+        f"{'absent' if value is None else shown(value)} on cpus {cpu_ranges(cpus)}" for value, cpus in groups.items()
     )
+
+
+def _shown_mhz(ceiling: float | str) -> str:
+    return ceiling if isinstance(ceiling, str) else f"{ceiling:.0f}"
 
 
 def _top(folder: Path) -> float | None:
@@ -138,8 +153,10 @@ def read_power_state(root: Path = CPUFREQ_BASE, profile: Path = PLATFORM_PROFILE
     cpus = _cpufreq(root)
     governor, governors = _agreed([(cpu, _text(folder / "scaling_governor")) for cpu, folder in cpus], str)
     epp, epps = _agreed([(cpu, _text(folder / "energy_performance_preference")) for cpu, folder in cpus], str)
-    ceilings = [(cpu, _mhz(folder / "scaling_max_freq")) for cpu, folder in cpus]
-    ceiling, differing = _agreed(ceilings, "{:.0f}".format)
+    ceilings = [(cpu, _ceiling(folder / "scaling_max_freq")) for cpu, folder in cpus]
+    ceiling, differing = _agreed(ceilings, _shown_mhz)
+    if isinstance(ceiling, str):
+        ceiling, differing = None, ceiling
     split = (("governor", governors), ("EPP", epps), ("scaling maximum MHz", differing))
     return PowerState(
         profile=_text(profile),
@@ -149,5 +166,5 @@ def read_power_state(root: Path = CPUFREQ_BASE, profile: Path = PLATFORM_PROFILE
         max_mhz=ceiling,
         top_mhz=max((mhz for _, folder in cpus if (mhz := _top(folder)) is not None), default=None),
         split=tuple((name, text) for name, text in split if text is not None),
-        ceilings=tuple(ceilings),
+        ceilings=tuple((cpu, None if isinstance(mhz, str) else mhz) for cpu, mhz in ceilings),
     )

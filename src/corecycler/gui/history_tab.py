@@ -142,9 +142,9 @@ class HistoryTab(QWidget):
         if db:
             self.refresh()
 
-    def set_bios_warning(self, old_version: str, new_version: str) -> None:
-        """Show BIOS change warning in the summary bar."""
-        self._bios_warning = f"BIOS changed: {old_version} -> {new_version}"
+    def set_bios_warning(self, warning: str) -> None:
+        """Show the BIOS version warning in the summary bar."""
+        self._bios_warning = warning
         self._bios_label.setText(self._bios_warning)
         self._bios_label.setVisible(True)
 
@@ -155,7 +155,9 @@ class HistoryTab(QWidget):
         summary_rows = QVBoxLayout(summary_group)
         counts_row = QHBoxLayout()
         controls_row = QHBoxLayout()
+        self._bios_label = QLabel("")
         summary_rows.addLayout(counts_row)
+        summary_rows.addWidget(self._bios_label)
         summary_rows.addLayout(controls_row)
 
         self._total_label = QLabel(
@@ -169,11 +171,9 @@ class HistoryTab(QWidget):
             w.setFont(QFont("monospace", 10))
             counts_row.addWidget(w)
 
-        self._bios_label = QLabel("")
         self._bios_label.setFont(font_mono(9))
-        self._bios_label.setStyleSheet(f"color: {theme.COLOR_WARN}; font-weight: bold; padding-left: 8px;")
+        self._bios_label.setStyleSheet(f"color: {theme.COLOR_WARN}; font-weight: bold;")
         self._bios_label.setVisible(False)
-        counts_row.addWidget(self._bios_label)
         counts_row.addStretch()
 
         controls_row.addWidget(QLabel("Show"))

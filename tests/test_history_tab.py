@@ -115,8 +115,9 @@ class TestDeleteGuards:
 class TestBiosWarning:
     def test_set_bios_warning_is_recorded(self, db):
         tab = _tab(db)
-        tab.set_bios_warning("2401", "2402")
-        assert tab._bios_warning
+        warning = "BIOS changed: 2401 -> 2402"
+        tab.set_bios_warning(warning)
+        assert (tab._bios_warning, tab._bios_label.text()) == (warning, warning)
 
 
 def _seed_run_with_results(db, cores=2, failed=0):

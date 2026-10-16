@@ -156,16 +156,11 @@ class MainWindow(QMainWindow):
                 if self._settings.history_retention_days > 0:
                     cutoff = datetime.now(UTC) - timedelta(days=self._settings.history_retention_days)
                     self._history_db.purge_before(cutoff.isoformat())
-                self._bios_changed = False
-                self._bios_old = ""
-                self._bios_current = ""
+                self._bios_warning: str | None = None
                 try:
-                    changed, old, current = detect_bios_change(self._history_db)
-                    if changed:
-                        self._bios_changed = True
-                        self._bios_old = old
-                        self._bios_current = current
-                        log.info("BIOS version changed: %s -> %s", old, current)
+                    self._bios_warning = detect_bios_change(self._history_db)
+                    if self._bios_warning is not None:
+                        log.info(self._bios_warning)
                 except Exception:
                     log.exception("Failed to detect a BIOS change")
             except Exception as e:
@@ -250,8 +245,8 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._tuner_tab, "Auto-Tuner")
 
         self._history_tab = HistoryTab(self._history_db)
-        if getattr(self, "_bios_changed", False):
-            self._history_tab.set_bios_warning(self._bios_old, self._bios_current)
+        if getattr(self, "_bios_warning", None) is not None:
+            self._history_tab.set_bios_warning(self._bios_warning)
         self._history_tab.load_profile_requested.connect(self._on_load_co_profile)
         self._tabs.addTab(self._history_tab, "History")
 

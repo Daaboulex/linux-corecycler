@@ -16,11 +16,6 @@ from corecycler.history.logger import TestRunLogger
 
 
 class TestHistoryContextEdges:
-    def test_read_bios_version_unreadable(self, tmp_path):
-        directory_in_place_of_file = tmp_path / "bios_version"
-        directory_in_place_of_file.mkdir()
-        assert context.read_bios_version(directory_in_place_of_file) == ""
-
     def test_capture_context_when_every_smu_read_comes_back_unread(self, tmp_path, caplog):
         smu = MagicMock()
         smu.get_all_co_offsets.return_value = dict.fromkeys(range(4))

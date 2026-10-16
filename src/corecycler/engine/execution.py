@@ -370,7 +370,7 @@ class Supervisor:
             run.signals.append(LaneSignal(Outcome.NOT_STARTED, f"Failed to start stress test: {exc}"))
             return False
         run.started_at = time.monotonic()
-        run.last_active = run.started_at
+        run.last_active = run.cpu_sampled_at = run.started_at
         run.last_progress = run.started_at
         run.progress_window = self.backend.progress_window(cfg)
         return True
@@ -448,7 +448,17 @@ class Supervisor:
             if fault:
                 run.signals.append(LaneSignal(Outcome.CONTAINMENT_BROKE, fault))
                 return
-        if not run.frozen and now - start >= STALL_GRACE_SECONDS and now - run.last_active > self.stall_timeout:
+        if run.frozen or now - start < STALL_GRACE_SECONDS:
+            return
+        if now - run.cpu_sampled_at > self.stall_timeout:
+            run.signals.append(
+                LaneSignal(
+                    Outcome.UNVERIFIED,
+                    f"payload CPU time on CPUs {run.lane.cpu_list} unreadable for "
+                    f"{now - run.cpu_sampled_at:.0f}s: verdict unavailable",
+                )
+            )
+        elif run.cpu_sampled_at - run.last_active > self.stall_timeout:
             if self.hooks.on_stall:
                 self.hooks.on_stall(run.lane.core_id)
             run.signals.append(
