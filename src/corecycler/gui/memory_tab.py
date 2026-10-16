@@ -204,11 +204,9 @@ class MemoryTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # Memory Controller group box (PM Table data)
         self._mc_group = QGroupBox("Memory Controller (PM Table)")
         mc_layout = QVBoxLayout(self._mc_group)
 
-        # Clock row: FCLK, UCLK, MCLK, ratio
         clk_row = QHBoxLayout()
         self._fclk_label = QLabel("FCLK: --")
         self._fclk_label.setFont(QFont("monospace", 10))
@@ -225,7 +223,6 @@ class MemoryTab(QWidget):
         clk_row.addStretch()
         mc_layout.addLayout(clk_row)
 
-        # Voltage row: VDD, VDDQ
         volt_row = QHBoxLayout()
         self._vdd_label = QLabel("VDD: --")
         self._vdd_label.setFont(QFont("monospace", 10))
@@ -236,19 +233,16 @@ class MemoryTab(QWidget):
         volt_row.addStretch()
         mc_layout.addLayout(volt_row)
 
-        # Calibration status
         self._cal_label = QLabel("")
         self._cal_label.setStyleSheet(f"color: {theme.COLOR_MUTED}; font: 9px monospace;")
         mc_layout.addWidget(self._cal_label)
 
-        # Driver-missing message (hidden by default)
         self._mc_missing_label = QLabel("Requires ryzen_smu driver")
         self._mc_missing_label.setStyleSheet(f"color: {theme.COLOR_MUTED}; font: 10px monospace; padding: 8px;")
         self._mc_missing_label.setVisible(False)
         mc_layout.addWidget(self._mc_missing_label)
 
         if not self._pm_available:
-            # Hide clock/voltage rows, show driver-missing message
             self._fclk_label.setVisible(False)
             self._uclk_label.setVisible(False)
             self._mclk_label.setVisible(False)
@@ -260,7 +254,6 @@ class MemoryTab(QWidget):
 
         layout.addWidget(self._mc_group)
 
-        # SPD Timings group box (DDR5 EEPROM data, cached at startup)
         self._spd_group = QGroupBox("SPD Timings — JEDEC Base Profile (DDR5)")
         self._spd_group.setToolTip(
             "JEDEC base profile timings from SPD EEPROM. XMP/EXPO overclocking profiles are not stored in SPD."
@@ -283,7 +276,6 @@ class MemoryTab(QWidget):
         self._summary_label.setWordWrap(True)
         layout.addWidget(self._summary_label)
 
-        # Dependency status
         self._deps_label = QLabel("")
         self._deps_label.setStyleSheet(f"color: {theme.COLOR_MUTED}; font: 9px monospace;")
         self._deps_label.setWordWrap(True)
@@ -323,7 +315,6 @@ class MemoryTab(QWidget):
         refresh_btn.clicked.connect(self._load_dimm_info)
         layout.addWidget(refresh_btn)
 
-        # Stress test controls
         stress_group = QGroupBox("Memory Stress Test")
         stress_layout = QHBoxLayout(stress_group)
 
@@ -389,7 +380,6 @@ class MemoryTab(QWidget):
                 temp_layout.addWidget(lbl)
                 self._temp_labels.append(lbl)
 
-        # Update dependency status
         deps = []
         for key in ("dmidecode", "stressapptest", "stress-ng"):
             deps.append(f"{key}: " + ("found" if tools.resolve(key).path else "missing"))
@@ -460,7 +450,7 @@ class MemoryTab(QWidget):
             if pm_data is not None and pm_data.is_calibrated:
                 self._update_clock_labels(pm_data)
                 self._update_voltage_labels(pm_data)
-                if pm_data.is_verified:
+                if pm_data.offsets_verified:
                     self._cal_label.setText(f"PM Table v{pm_data.pm_table_version:#010x} \u2014 Verified")
                 else:
                     self._cal_label.setText(
@@ -471,7 +461,6 @@ class MemoryTab(QWidget):
             else:
                 self._set_clocks_unavailable()
 
-        # DIMM temperatures (SPD5118 hwmon)
         if self._spd_reader.is_available():
             self._update_temperatures()
 

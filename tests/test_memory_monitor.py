@@ -328,7 +328,7 @@ class TestMemoryTabBehavior:
             vdd_mem_v=1.395,
             pm_table_version=0x620205,
             is_calibrated=True,
-            is_verified=True,
+            offsets_verified=True,
         )
         tab.on_tick(a_tick(pm=pm_data))
         assert "2000" in tab._fclk_label.text()
@@ -344,7 +344,7 @@ class TestMemoryTabBehavior:
             vddcr_soc_v=1.10,
             pm_table_version=0x540104,
             is_calibrated=True,
-            is_verified=False,
+            offsets_verified=False,
         )
         tab.on_tick(a_tick(pm=pm_data))
         assert "2000" in tab._fclk_label.text()
@@ -385,7 +385,7 @@ class TestMemoryTabBehavior:
             vdd_mem_v=1.395,
             pm_table_version=0x620205,
             is_calibrated=True,
-            is_verified=True,
+            offsets_verified=True,
         )
         tab.on_tick(a_tick(pm=pm_data))
         assert "2000" in tab._fclk_label.text()
@@ -474,6 +474,14 @@ class TestSPDTimingDecode:
         result = decode_spd_timings(bytes(data))
         assert result is not None
         assert result.tCL == 32  # odd 31 rounded up to even 32
+
+    def test_a_timing_under_30_ps_past_a_clock_rounds_down_and_one_30_ps_past_rounds_up(self):
+        data = bytearray(48)
+        data[2] = 0x12
+        struct.pack_into("<H", data, 20, 416)
+        for raw, clocks in ((16 * 416, 16), (16 * 416 + 29, 16), (16 * 416 + 30, 17)):
+            struct.pack_into("<H", data, 32, raw)
+            assert decode_spd_timings(bytes(data)).tRCD == clocks
 
     def test_the_source_address_is_passed_through(self):
         result = decode_spd_timings(_make_ddr5_4800_eeprom(), source="0x52")

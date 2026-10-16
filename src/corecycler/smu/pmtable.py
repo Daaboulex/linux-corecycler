@@ -215,7 +215,7 @@ class PMTableData:
     vdd_v: float = 0.0
     pm_table_version: int = 0
     is_calibrated: bool = False
-    is_verified: bool = False
+    offsets_verified: bool = False
 
     raw_floats: list[float] = field(default_factory=list)
 
@@ -316,7 +316,7 @@ class PMTableReader:
                 self._parse_versioned(data, raw, offsets)
                 if self._memory_values_plausible(data):
                     data.is_calibrated = True
-                    data.is_verified = offsets.verified
+                    data.offsets_verified = offsets.verified
                 else:
                     log.warning(
                         "PM table v%#010x decoded implausible memory values "
@@ -386,7 +386,7 @@ class PMTableReader:
         data.vdd_mem_v = 0.0
         data.vddq_v = 0.0
         data.is_calibrated = False
-        data.is_verified = False
+        data.offsets_verified = False
 
     def _parse_granite_ridge(self, data: PMTableData, floats: list[float]) -> None:
         """Parse PM table core arrays plus the Zen 5 power/thermal header.

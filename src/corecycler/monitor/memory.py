@@ -38,7 +38,8 @@ class DIMMInfo:
     total_width: int = 0
 
 
-DDR5_ROUNDING_FACTOR = 30  # picoseconds tolerance per JEDEC
+DDR5_ROUNDING_TOLERANCE_PS = 30
+SPD_DRAM_TYPE_DDR5 = 0x12
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +66,7 @@ def decode_spd_timings(data: bytes, source: str = "") -> SPDTimingData | None:
     """
     if len(data) < 48:
         return None
-    if data[2] != 0x12:  # DDR5 type identifier
+    if data[2] != SPD_DRAM_TYPE_DDR5:
         return None
 
     tCK_ps = struct.unpack_from("<H", data, 20)[0]
@@ -75,10 +76,10 @@ def decode_spd_timings(data: bytes, source: str = "") -> SPDTimingData | None:
     freq_mt = int((1.0 / tCK_ps * 2e6 + 50) / 100) * 100
 
     def _ps_to_ck(ps_val: int) -> int:
-        return (ps_val + tCK_ps - DDR5_ROUNDING_FACTOR) // tCK_ps
+        return (ps_val + tCK_ps - DDR5_ROUNDING_TOLERANCE_PS) // tCK_ps
 
     tCL = _ps_to_ck(struct.unpack_from("<H", data, 30)[0])
-    tCL += tCL % 2  # round to next even per JEDEC
+    tCL += tCL % 2
     tRCD = _ps_to_ck(struct.unpack_from("<H", data, 32)[0])
     tRP = _ps_to_ck(struct.unpack_from("<H", data, 34)[0])
     tRAS = _ps_to_ck(struct.unpack_from("<H", data, 36)[0])
@@ -121,7 +122,6 @@ def parse_dmidecode_output(text: str) -> list[DIMMInfo]:
         size_str = fields.get("Size", "")
         size_gb = 0
         size_mb = 0
-        # dmidecode 3.6 uses "GB"/"MB", dmidecode 3.7+ uses "GiB"/"MiB"
         size_num = re.match(r"(\d+)\s*(GiB|GB|MiB|MB)", size_str)
         if size_num:
             val = int(size_num.group(1))
@@ -133,7 +133,7 @@ def parse_dmidecode_output(text: str) -> list[DIMMInfo]:
                 size_gb = (val + 1023) // 1024
 
         if size_gb == 0 and size_mb == 0:
-            continue  # truly empty slot
+            continue
 
         speed = 0
         speed_str = fields.get("Speed", "")

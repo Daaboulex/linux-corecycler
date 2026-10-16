@@ -433,8 +433,8 @@ class TestPMTableDataNewFields:
         assert data.is_calibrated is False
 
     def test_is_verified_defaults_false(self):
-        """PMTableData.is_verified is False until a verified version sets it."""
-        assert PMTableData().is_verified is False
+        """PMTableData.offsets_verified is False until a verified version sets it."""
+        assert PMTableData().offsets_verified is False
 
 
 # ===========================================================================
@@ -465,7 +465,7 @@ class TestVersionDispatch:
         assert result.mclk_mhz == pytest.approx(3000.0)
         assert result.vddcr_soc_v == pytest.approx(1.25)
         assert result.vdd_mem_v == pytest.approx(1.395)
-        assert result.is_verified is True
+        assert result.offsets_verified is True
 
     def test_zen4_7700x_dispatch_unverified(self, tmp_path):
         """0x540104 with plausible values calibrates but is not verified."""
@@ -481,7 +481,7 @@ class TestVersionDispatch:
 
         assert result is not None
         assert result.is_calibrated is True
-        assert result.is_verified is False
+        assert result.offsets_verified is False
         assert result.fclk_mhz == pytest.approx(2000.0)
         assert result.uclk_mhz == pytest.approx(2400.0)
         assert result.mclk_mhz == pytest.approx(2400.0)
@@ -496,7 +496,7 @@ class TestVersionDispatch:
 
         assert result is not None
         assert result.is_calibrated is False
-        assert result.is_verified is False
+        assert result.offsets_verified is False
         assert result.fclk_mhz == 0.0  # blanked, not shown as nonsense
 
     def test_implausible_voltage_fails_closed(self, tmp_path):
