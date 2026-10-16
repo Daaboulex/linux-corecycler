@@ -4890,6 +4890,11 @@ statement = "The status bar's MSR and SMU line says it was read at start, which 
 proof = "built"
 
 [[requirement]]
+id = "T23.contract.config"
+statement = "Every control of the Configuration tab is listed with its reaction (tests/test_config_tab.py CONFIG_CONTROLS) and the tests fail on an unlisted or missing control; each connected control's reaction is observed through its connection and absent with it cut; each control read at Start changes the profile Start sends."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

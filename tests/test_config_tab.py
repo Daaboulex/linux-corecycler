@@ -9,7 +9,7 @@ import pytest
 if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
-from corecycler.engine.backends import load_all
+from corecycler.engine.backends import available_backends, get_backend, load_all
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 
 
@@ -322,3 +322,141 @@ class TestRetestFailed:
         assert tab._retest_failed_btn.text() == "Retest only the failed cores"
         tab._on_retest_failed()
         assert tab.get_profile().cores_to_test is None
+
+
+CONFIG_CONTROLS = {
+    "_preset": "sets Time per core, Rounds, Changing load, Idle watch and Pause between cores to the preset's values",
+    "_backend_combo": "offers only the program's instruction sets and shows FFT size only where the program has one",
+    "_stress_mode_combo": "read by Start as the instruction set",
+    "_threads_spin": "read by Start as the threads per core",
+    "_fft_combo": "shows Smallest and Largest FFT only for Your own range",
+    "_fft_min_spin": "raises Largest FFT to match when it goes above it",
+    "_fft_max_spin": "a Largest FFT below Smallest is set back to Smallest",
+    "_time_spin": "the preset follows the values: Your own settings when they match none",
+    "_cycles_spin": "the preset follows the values",
+    "_idle_between_spin": "the preset follows the values",
+    "_idle_stability_spin": "the preset follows the values",
+    "_max_temp_spin": "read by Start as the temperature limit",
+    "_variable_load": "the preset follows the values",
+    "_stop_on_error": "read by Start as stop at the first error",
+    "_retest_failed_btn": "ticks only the cores the last run failed",
+}
+CORE_BOX = "read by Start as a core to test"
+
+
+def _value_to(name, value):
+    return lambda t: getattr(t, name).setValue(value)
+
+
+CONNECTED = {
+    "_preset": (
+        "currentIndexChanged",
+        lambda t: t._preset.setCurrentIndex(t._preset.findData("QUICK")),
+        lambda t: t._time_spin.value() == 120,
+    ),
+    "_backend_combo": (
+        "currentTextChanged",
+        lambda t: _fft_box_through_two_programs(t),
+        lambda t: t.fft_hidden == [True, False],
+    ),
+    "_fft_combo": (
+        "currentIndexChanged",
+        lambda t: t._fft_combo.setCurrentIndex(t._fft_combo.findData("CUSTOM")),
+        lambda t: not t._fft_range_widget.isHidden(),
+    ),
+    "_fft_min_spin": (
+        "valueChanged",
+        lambda t: (t._fft_max_spin.setValue(64), t._fft_min_spin.setValue(128)),
+        lambda t: t._fft_max_spin.value() == 128,
+    ),
+    "_fft_max_spin": (
+        "valueChanged",
+        lambda t: (t._fft_min_spin.setValue(128), t._fft_max_spin.setValue(64)),
+        lambda t: t._fft_max_spin.value() == 128,
+    ),
+    "_time_spin": ("valueChanged", _value_to("_time_spin", 777), lambda t: t._preset.currentData() == "CUSTOM"),
+    "_cycles_spin": ("valueChanged", _value_to("_cycles_spin", 7), lambda t: t._preset.currentData() == "CUSTOM"),
+    "_idle_between_spin": (
+        "valueChanged",
+        _value_to("_idle_between_spin", 7),
+        lambda t: t._preset.currentData() == "CUSTOM",
+    ),
+    "_idle_stability_spin": (
+        "valueChanged",
+        _value_to("_idle_stability_spin", 7),
+        lambda t: t._preset.currentData() == "CUSTOM",
+    ),
+    "_variable_load": (
+        "toggled",
+        lambda t: t._variable_load.setChecked(True),
+        lambda t: t._preset.currentData() == "CUSTOM",
+    ),
+    "_retest_failed_btn": (
+        "clicked",
+        lambda t: (t.set_failed_cores([2]), t._retest_failed_btn.click()),
+        lambda t: [core for core, box in t._core_boxes.items() if box.isChecked()] == [2],
+    ),
+}
+
+
+def _fft_box_through_two_programs(tab):
+    without_fft = next(name for name in available_backends() if not get_backend(name).get_supported_fft_presets())
+    tab.fft_hidden = []
+    for name in (without_fft, "mprime"):
+        tab._backend_combo.setCurrentText(name)
+        tab.fft_hidden.append(tab._fft_box.isHidden())
+
+
+READ_AT_START = {
+    "_stress_mode_combo": (lambda t: t._stress_mode_combo.setCurrentIndex(1), lambda p: p.stress_mode != "SSE"),
+    "_threads_spin": (_value_to("_threads_spin", 2), lambda p: p.threads == 2),
+    "_max_temp_spin": (_value_to("_max_temp_spin", 80.0), lambda p: p.max_temperature == 80.0),
+    "_stop_on_error": (lambda t: t._stop_on_error.setChecked(True), lambda p: p.stop_on_error is True),
+}
+
+
+@pytest.mark.req("T23.contract.config")
+def test_every_control_of_the_configuration_tab_is_listed_with_its_reaction():
+    from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QComboBox
+
+    tab = _tab()
+    found = {*tab.findChildren(QAbstractSpinBox), *tab.findChildren(QComboBox), *tab.findChildren(QAbstractButton)}
+    listed = {getattr(tab, name) for name in CONFIG_CONTROLS} | set(tab._core_boxes.values())
+    assert found == listed
+    assert set(CONNECTED) | set(READ_AT_START) == set(CONFIG_CONTROLS)
+
+
+@pytest.mark.req("T23.contract.config")
+@pytest.mark.parametrize("connected", [True, False])
+@pytest.mark.parametrize("name", sorted(CONNECTED))
+def test_a_connected_control_reacts_only_through_its_connection(name, connected):
+    signal, act, reacted = CONNECTED[name]
+    tab = _tab()
+    if not connected:
+        getattr(getattr(tab, name), signal).disconnect()
+    act(tab)
+    assert reacted(tab) is connected
+
+
+@pytest.mark.req("T23.contract.config")
+@pytest.mark.parametrize("name", sorted(READ_AT_START))
+def test_a_control_read_at_start_reaches_the_profile_start_sends(name):
+    act, sent = READ_AT_START[name]
+    tab = _tab()
+    assert not sent(tab.get_profile())
+    act(tab)
+    assert sent(tab.get_profile())
+
+
+@pytest.mark.req("T23.contract.config")
+def test_a_core_box_reaches_the_profile_start_sends():
+    tab = _tab()
+    tab._core_boxes[3].setChecked(False)
+    assert tab.get_profile().cores_to_test == [0, 1, 2, 4, 5, 6, 7]
+
+
+@pytest.mark.req("T23.contract.config")
+def test_the_chosen_program_reaches_the_profile_start_sends():
+    tab = _tab()
+    tab._backend_combo.setCurrentText("stress-ng")
+    assert tab.get_profile().backend == "stress-ng"
