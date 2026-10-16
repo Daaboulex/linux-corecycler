@@ -64,8 +64,30 @@ def memory_verdict(tool: str, output: str, returncode: int) -> tuple[str, str]:
     return NO_VERDICT, f"{output}\n{tool} ended with {ended} and reported no result"
 
 
-def _dimm_temperature(index: int, temp: float | None) -> str:
-    return f"DIMM {index + 1}: unread" if temp is None else f"DIMM {index + 1}: {temp:.1f}C"
+def _dimm_temperature(address: str, temp: float | None) -> str:
+    return f"DIMM at {address}: unread" if temp is None else f"DIMM at {address}: {temp:.1f}C"
+
+
+def _dimm_summary(dimms: list[DIMMInfo]) -> str:
+    total_gb = sum(d.size_gb for d in dimms)
+    types = "/".join(sorted({d.mem_type for d in dimms if d.mem_type})) or "type unread"
+    speeds = "/".join(f"{s} MT/s" for s in sorted({d.configured_speed_mt for d in dimms if d.configured_speed_mt}))
+    widths = [(d.data_width, d.total_width) for d in dimms if d.data_width and d.total_width]
+    ecc = "ECC unread" if not widths else "ECC" if any(total > data for data, total in widths) else "Non-ECC"
+    ranks = "/".join(f"{r}R" for r in sorted({d.rank for d in dimms if d.rank}))
+    return " ".join(part for part in (f"{len(dimms)} DIMMs | {total_gb} GB", types, speeds, ecc, ranks) if part)
+
+
+def _spd_unread(reader: SPD5118Reader) -> str:
+    if not reader.is_available():
+        return "no spd5118 sensor is loaded"
+    if not reader.eeprom_count:
+        return "the spd5118 sensors expose no EEPROM"
+    return "no SPD EEPROM could be read as DDR5"
+
+
+def _clock(name: str, mhz: float) -> tuple[str, str]:
+    return (f"{name}: {mhz:.0f} MHz", "") if mhz > 0 else (f"{name}: --", f"color: {theme.COLOR_MUTED};")
 
 
 class _StressWorker(QThread):
@@ -258,11 +280,13 @@ class MemoryTab(QWidget):
 
         self._summary_label = QLabel("Loading DIMM information...")
         self._summary_label.setFont(QFont("monospace", 11, QFont.Weight.Bold))
+        self._summary_label.setWordWrap(True)
         layout.addWidget(self._summary_label)
 
         # Dependency status
         self._deps_label = QLabel("")
         self._deps_label.setStyleSheet(f"color: {theme.COLOR_MUTED}; font: 9px monospace;")
+        self._deps_label.setWordWrap(True)
         layout.addWidget(self._deps_label)
 
         self._temp_group = QGroupBox("DIMM Temperatures (SPD5118)")
@@ -347,25 +371,9 @@ class MemoryTab(QWidget):
         return available
 
     def _load_dimm_info(self) -> None:
-        self._dimms = read_dimm_info()
+        self._dimms, why = read_dimm_info()
         self._populate_table()
-
-        if self._dimms:
-            total_gb = sum(d.size_gb for d in self._dimms)
-            types = set(d.mem_type for d in self._dimms)
-            speeds = set(d.configured_speed_mt for d in self._dimms if d.configured_speed_mt)
-            type_str = "/".join(sorted(types)) if types else "Unknown"
-            speed_str = "/".join(f"{s} MT/s" for s in sorted(speeds)) if speeds else ""
-            # Detect ECC: total_width > data_width means ECC bits present
-            has_ecc = any(d.total_width > d.data_width for d in self._dimms if d.total_width and d.data_width)
-            ecc_str = "ECC" if has_ecc else "Non-ECC"
-            rank_set = set(d.rank for d in self._dimms if d.rank)
-            rank_str = f"{max(rank_set)}R" if rank_set else ""
-            self._summary_label.setText(
-                f"{len(self._dimms)} DIMMs | {total_gb} GB {type_str} {speed_str} {ecc_str} {rank_str}".rstrip()
-            )
-        else:
-            self._summary_label.setText("No DIMM info available (dmidecode requires root)")
+        self._summary_label.setText(_dimm_summary(self._dimms) if self._dimms else f"No DIMM info: {why}")
 
         if self._spd_reader.is_available():
             temps = self._spd_reader.read_temperatures()
@@ -374,8 +382,8 @@ class MemoryTab(QWidget):
             for lbl in self._temp_labels:
                 lbl.deleteLater()
             self._temp_labels.clear()
-            for i, temp in enumerate(temps):
-                lbl = QLabel(_dimm_temperature(i, temp))
+            for address, temp in zip(self._spd_reader.addresses, temps, strict=True):
+                lbl = QLabel(_dimm_temperature(address, temp))
                 lbl.setFont(QFont("monospace", 10))
                 lbl.setStyleSheet("padding: 4px;")
                 temp_layout.addWidget(lbl)
@@ -386,7 +394,7 @@ class MemoryTab(QWidget):
         for key in ("dmidecode", "stressapptest", "stress-ng"):
             deps.append(f"{key}: " + ("found" if tools.resolve(key).path else "missing"))
         deps.append("spd5118: " + ("available" if self._spd_reader.is_available() else "not loaded"))
-        deps.append("ryzen_smu: " + ("available" if self._pm_available else "not loaded"))
+        deps.append("ryzen_smu: " + ("available" if self._pm_available else "no PM table when the app started"))
         self._deps_label.setText("  |  ".join(deps))
         self._refill_tools()
 
@@ -402,7 +410,7 @@ class MemoryTab(QWidget):
         if spd is None:
             self._primary_label.setVisible(False)
             self._secondary_label.setVisible(False)
-            self._spd_unavailable_label.setText("SPD Timings unavailable \u2014 spd5118 eeprom not exposed")
+            self._spd_unavailable_label.setText(f"SPD Timings unavailable \u2014 {_spd_unread(self._spd_reader)}")
             self._spd_unavailable_label.setVisible(True)
             self._spd_group.setTitle("SPD Timings — JEDEC Base Profile (DDR5)")
             return
@@ -411,8 +419,7 @@ class MemoryTab(QWidget):
         self._secondary_label.setVisible(True)
         self._spd_unavailable_label.setVisible(False)
 
-        dimm_num = spd.dimm_index + 1
-        self._spd_group.setTitle(f"SPD Timings — JEDEC Base Profile (DDR5) (DIMM {dimm_num})")
+        self._spd_group.setTitle(f"SPD Timings — JEDEC Base Profile (DDR5) (DIMM at {spd.source})")
 
         self._primary_label.setText(f"Primary: {spd.tCL}-{spd.tRCD}-{spd.tRP}-{spd.tRAS}-{spd.tRC}")
 
@@ -428,11 +435,11 @@ class MemoryTab(QWidget):
             items = [
                 f"{d.locator} ({d.bank_locator})" if d.bank_locator else d.locator,
                 f"{d.size_gb} GB",
-                d.mem_type,
+                d.mem_type or "-",
                 f"{d.speed_mt} MT/s" if d.speed_mt else "-",
                 f"{d.configured_speed_mt} MT/s" if d.configured_speed_mt else "-",
-                d.manufacturer,
-                d.part_number,
+                d.manufacturer or "-",
+                d.part_number or "-",
                 d.serial_number or "-",
                 str(d.rank) if d.rank else "-",
                 d.form_factor or "-",
@@ -444,9 +451,8 @@ class MemoryTab(QWidget):
 
     def _update_temperatures(self) -> None:
         temps = self._spd_reader.read_temperatures()
-        for i, temp in enumerate(temps):
-            if i < len(self._temp_labels):
-                self._temp_labels[i].setText(_dimm_temperature(i, temp))
+        for label, address, temp in zip(self._temp_labels, self._spd_reader.addresses, temps, strict=True):
+            label.setText(_dimm_temperature(address, temp))
 
     def on_tick(self, tick: Tick) -> None:
         if self._pm_available:
@@ -470,12 +476,14 @@ class MemoryTab(QWidget):
             self._update_temperatures()
 
     def _update_clock_labels(self, pm_data) -> None:
-        self._fclk_label.setText(f"FCLK: {pm_data.fclk_mhz:.0f} MHz")
-        self._uclk_label.setText(f"UCLK: {pm_data.uclk_mhz:.0f} MHz")
-        self._mclk_label.setText(f"MCLK: {pm_data.mclk_mhz:.0f} MHz")
-        self._fclk_label.setStyleSheet("")
-        self._uclk_label.setStyleSheet("")
-        self._mclk_label.setStyleSheet("")
+        for label, name, mhz in (
+            (self._fclk_label, "FCLK", pm_data.fclk_mhz),
+            (self._uclk_label, "UCLK", pm_data.uclk_mhz),
+            (self._mclk_label, "MCLK", pm_data.mclk_mhz),
+        ):
+            text, style = _clock(name, mhz)
+            label.setText(text)
+            label.setStyleSheet(style)
         ratio = compute_fclk_uclk_ratio(pm_data.fclk_mhz, pm_data.uclk_mhz)
         if ratio is not None:
             self._ratio_label.setText(f"FCLK:UCLK {ratio[0]}:{ratio[1]}")

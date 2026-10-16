@@ -4760,6 +4760,11 @@ statement = "Deleting a setup in History deletes its stress runs only; a setup t
 proof = "built"
 
 [[requirement]]
+id = "T23.memory.facts"
+statement = "The Memory tab shows only what it read: no DIMM listed says what dmidecode said (on the ryzen, smbios_entry_point: Permission denied), each SPD sensor is named and ordered by its i2c address (0x50), ECC, type and an unread clock say unread instead of Non-ECC, a blank or 0 MHz, mixed ranks are all named, the SPD timings say which part could not be read, and ryzen_smu says it was read at start (scratch/design/t23-monitor-memory-window.md, Memory)."
+proof = "built"
+
+[[requirement]]
 id = "T23.curve.zero"
 statement = "Set all to 0 names every core its per-core fallback could not set to 0 in a Write failed warning; a fallback that set every core warns nothing (scratch/design/t23-curve-history.md defect 7)."
 proof = "built"

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import struct
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -473,25 +475,21 @@ class TestSPDTimingDecode:
         assert result is not None
         assert result.tCL == 32  # odd 31 rounded up to even 32
 
-    def test_dimm_index_passed_through(self):
-        """dimm_index parameter is preserved in result."""
-        eeprom = _make_ddr5_4800_eeprom()
-        result = decode_spd_timings(eeprom, dimm_index=3)
+    def test_the_source_address_is_passed_through(self):
+        result = decode_spd_timings(_make_ddr5_4800_eeprom(), source="0x52")
         assert result is not None
-        assert result.dimm_index == 3
+        assert result.source == "0x52"
 
 
 class TestSPDEepromDiscovery:
     def _make_hwmon_with_eeprom(self, tmp_path, eeprom_data: bytes | None = None):
         """Create hwmon dir with device symlink to i2c dir containing eeprom."""
-        import os
-
         hwmon0 = tmp_path / "hwmon0"
         hwmon0.mkdir()
         (hwmon0 / "name").write_text("spd5118\n")
         (hwmon0 / "temp1_input").write_text("42500\n")
 
-        i2c_dir = tmp_path / "i2c-device"
+        i2c_dir = tmp_path / "15-0050"
         i2c_dir.mkdir()
 
         if eeprom_data is not None:
@@ -504,7 +502,7 @@ class TestSPDEepromDiscovery:
         """SPD5118Reader discovers eeprom path via hwmon device symlink."""
         self._make_hwmon_with_eeprom(tmp_path, _make_ddr5_4800_eeprom())
         reader = SPD5118Reader(hwmon_base=tmp_path)
-        assert len(reader._eeprom_paths) == 1
+        assert (reader.eeprom_count, reader.addresses, reader.spd_timings.source) == (1, ["0x50"], "0x50")
 
     def test_spd_timings_returns_data(self, tmp_path):
         """spd_timings property returns SPDTimingData from first available eeprom."""
@@ -582,7 +580,7 @@ class TestSPDTimingDisplay:
             tWR_ns=30.0,
             tRFC1_ns=295,
             tRFCsb_ns=130,
-            dimm_index=0,
+            source="0x50",
         )
         tab = self._make_spd_tab(spd)
         tab._update_spd_labels()
@@ -601,7 +599,7 @@ class TestSPDTimingDisplay:
             tWR_ns=30.0,
             tRFC1_ns=295,
             tRFCsb_ns=130,
-            dimm_index=0,
+            source="0x50",
         )
         tab = self._make_spd_tab(spd)
         tab._update_spd_labels()
@@ -617,7 +615,6 @@ class TestSPDTimingDisplay:
         assert not tab._secondary_label.isVisible()
 
     def test_group_title_shows_dimm_number(self):
-        """Group box title contains 'DIMM 1' when dimm_index=0."""
         spd = SPDTimingData(
             tCK_ps=416,
             freq_mt=4800,
@@ -629,11 +626,11 @@ class TestSPDTimingDisplay:
             tWR_ns=30.0,
             tRFC1_ns=295,
             tRFCsb_ns=130,
-            dimm_index=0,
+            source="0x50",
         )
         tab = self._make_spd_tab(spd)
         tab._update_spd_labels()
-        assert "DIMM 1" in tab._spd_group.title()
+        assert tab._spd_group.title().endswith("(DIMM at 0x50)")
 
     def test_labels_visible_when_data_available(self):
         """Primary and secondary labels are visible when SPD data exists."""
@@ -648,7 +645,7 @@ class TestSPDTimingDisplay:
             tWR_ns=30.0,
             tRFC1_ns=295,
             tRFCsb_ns=130,
-            dimm_index=0,
+            source="0x50",
         )
         tab = self._make_spd_tab(spd)
         tab._update_spd_labels()
@@ -677,7 +674,7 @@ class TestMemoryDriftEdges:
         from corecycler.monitor.memory import read_dimm_info
 
         with patch("corecycler.monitor.memory.subprocess.run", side_effect=FileNotFoundError):
-            assert read_dimm_info() == []
+            assert read_dimm_info() == ([], "dmidecode is not installed")
 
     def test_spd_scan_missing_hwmon_base(self, tmp_path):
         reader = SPD5118Reader(hwmon_base=tmp_path / "nonexistent")
@@ -698,8 +695,7 @@ class TestMemoryDriftEdges:
         (dev / "device").mkdir()
         with patch("pathlib.Path.resolve", side_effect=OSError):
             reader = SPD5118Reader(hwmon_base=tmp_path / "hwmon")
-        assert reader.is_available() is True
-        assert reader._eeprom_paths == []
+        assert (reader.is_available(), reader.eeprom_count, reader.addresses) == (True, 0, ["hwmon0"])
 
     def test_spd_timings_eeprom_read_failure_returns_none(self, tmp_path):
         dev = tmp_path / "hwmon" / "hwmon0"
@@ -708,9 +704,21 @@ class TestMemoryDriftEdges:
         reader = SPD5118Reader(hwmon_base=tmp_path / "hwmon")
         bad = MagicMock()
         bad.read_bytes.side_effect = OSError
-        reader._eeprom_paths = [bad]
+        reader._eeproms = [("0x50", bad)]
         reader._spd_loaded = False
         assert reader.spd_timings is None
+
+    @pytest.mark.req("T23.memory.facts")
+    def test_each_sensor_is_named_and_ordered_by_its_spd_address_not_its_hwmon_name(self, tmp_path):
+        for name, device, raw in (("hwmon10", "15-0052", "28750\n"), ("hwmon8", "15-0050", "28500\n")):
+            dev = tmp_path / "hwmon" / name
+            dev.mkdir(parents=True)
+            (dev / "name").write_text("spd5118\n")
+            (dev / "temp1_input").write_text(raw)
+            (tmp_path / device).mkdir()
+            os.symlink(str(tmp_path / device), str(dev / "device"))
+        reader = SPD5118Reader(hwmon_base=tmp_path / "hwmon")
+        assert (reader.addresses, reader.read_temperatures()) == (["0x50", "0x52"], [28.5, 28.75])
 
     @pytest.mark.req("T22.memory.dimms")
     def test_an_unreadable_dimm_sensor_keeps_its_place_as_none(self, tmp_path):
@@ -732,8 +740,8 @@ class TestMemoryDriftEdges:
 
 class TestDimmInfoReader:
     """dmidecode is optional and privileged: absent, slow, or refusing to run,
-    it must degrade to an empty inventory -- and a non-zero exit still gets
-    parsed, because some systems return 1 while printing usable output."""
+    it must degrade to an empty inventory that says why -- and a non-zero exit
+    still gets parsed, because some systems return 1 while printing usable output."""
 
     def _run(self, monkeypatch, **result):
         import subprocess as sp
@@ -743,16 +751,44 @@ class TestDimmInfoReader:
         monkeypatch.setattr(sp, "run", lambda *_a, **_kw: SimpleNamespace(**result))
         return mem.read_dimm_info()
 
-    def test_a_refusing_dmidecode_is_reported_and_still_parsed(self, monkeypatch, caplog):
+    def test_a_dmidecode_exiting_non_zero_is_still_parsed(self, monkeypatch):
         sample = "Handle 0x0001, DMI type 17, 92 bytes\nMemory Device\n\tSize: 32 GB\n\tLocator: DIMM 0\n\tType: DDR5\n"
-        with caplog.at_level("WARNING", logger="corecycler.monitor.memory"):
-            dimms = self._run(monkeypatch, returncode=1, stdout=sample, stderr="Permission denied")
-        assert "dmidecode exited with code 1" in caplog.text
-        assert len(dimms) == 1
-        assert dimms[0].size_gb == 32
+        dimms, why = self._run(monkeypatch, returncode=1, stdout=sample, stderr="Permission denied")
+        assert (len(dimms), dimms[0].size_gb, why) == (1, 32, "")
 
-    def test_output_that_parses_to_nothing_is_an_empty_inventory(self, monkeypatch):
-        assert self._run(monkeypatch, returncode=0, stdout="no devices here", stderr="") == []
+    @pytest.mark.req("T23.memory.facts")
+    @pytest.mark.parametrize(
+        ("returncode", "stderr", "why"),
+        [
+            (
+                1,
+                "/sys/firmware/dmi/tables/smbios_entry_point: Permission denied\n/dev/mem: Permission denied\n",
+                "dmidecode exited 1: /sys/firmware/dmi/tables/smbios_entry_point: Permission denied",
+            ),
+            (2, "\n", "dmidecode exited 2"),
+            (0, "", "dmidecode listed no DIMMs"),
+        ],
+    )
+    def test_no_dimm_listed_says_what_dmidecode_said(self, monkeypatch, returncode, stderr, why):
+        stdout = "# dmidecode 3.7\nScanning /dev/mem for entry point.\n"
+        assert self._run(monkeypatch, returncode=returncode, stdout=stdout, stderr=stderr) == ([], why)
+
+    @pytest.mark.req("T23.memory.facts")
+    @pytest.mark.parametrize(
+        ("raised", "why"),
+        [
+            (subprocess.TimeoutExpired("dmidecode", 5), "dmidecode did not answer in 5 s"),
+            (PermissionError("denied"), "dmidecode could not run: denied"),
+        ],
+    )
+    def test_a_dmidecode_that_cannot_answer_says_why(self, monkeypatch, raised, why):
+        from corecycler.monitor import memory as mem
+
+        def _fails(*_a, **_kw):
+            raise raised
+
+        monkeypatch.setattr(subprocess, "run", _fails)
+        assert mem.read_dimm_info() == ([], why)
 
     def test_an_absent_dmidecode_is_an_empty_inventory(self, monkeypatch):
         import subprocess as sp
@@ -763,4 +799,4 @@ class TestDimmInfoReader:
             raise FileNotFoundError("dmidecode")
 
         monkeypatch.setattr(sp, "run", _missing)
-        assert mem.read_dimm_info() == []
+        assert mem.read_dimm_info() == ([], "dmidecode is not installed")

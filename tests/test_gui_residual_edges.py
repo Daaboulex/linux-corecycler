@@ -19,6 +19,7 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
 from corecycler.gui import memory_tab as mem
 from corecycler.gui import monitor_tab as mon
 from corecycler.gui import smu_tab as st
+from corecycler.gui.style import theme
 from corecycler.monitor.memory import DIMMInfo
 from tests._sensors import FakeSensors, a_tick
 
@@ -40,7 +41,12 @@ def _reader(available=True, **attrs):
 def _spd(available=True, temps=(45.0, 46.5)):
     reader = _reader(available, read_temperatures=list(temps))
     reader.spd_timings = None
+    reader.addresses = [f"0x{0x50 + n:02x}" for n in range(len(temps))]
+    reader.eeprom_count = 0
     return reader
+
+
+DENIED = "dmidecode exited 1: /sys/firmware/dmi/tables/smbios_entry_point: Permission denied"
 
 
 def _dimms():
@@ -76,7 +82,7 @@ class TestMemoryTabInventory:
         _qapp()
         spd = _spd(spd_available)
         monkeypatch.setattr(mem, "SPD5118Reader", lambda: spd)
-        monkeypatch.setattr(mem, "read_dimm_info", lambda: dimms if dimms is not None else [])
+        monkeypatch.setattr(mem, "read_dimm_info", lambda: (dimms, "") if dimms else ([], DENIED))
         return mem.MemoryTab(pm_available)
 
     def test_a_populated_inventory_is_summarised(self, monkeypatch):
@@ -92,20 +98,20 @@ class TestMemoryTabInventory:
 
     def test_an_empty_inventory_says_so(self, monkeypatch):
         tab = self._tab(monkeypatch)
-        assert "No DIMM info available" in tab._summary_label.text()
+        assert tab._summary_label.text() == f"No DIMM info: {DENIED}"
         assert tab._dimm_table.rowCount() == 0
 
     def test_dimm_temperature_labels_are_created_and_refreshed(self, monkeypatch):
         tab = self._tab(monkeypatch, dimms=_dimms(), spd_available=True)
         assert tab._temp_group.isVisibleTo(tab)
         assert len(tab._temp_labels) == 2
-        assert tab._temp_labels[0].text() == "DIMM 1: 45.0C"
+        assert tab._temp_labels[0].text() == "DIMM at 0x50: 45.0C"
         tab._spd_reader.read_temperatures.return_value = [51.0, 52.0]
         tab._update_temperatures()
-        assert tab._temp_labels[1].text() == "DIMM 2: 52.0C"
+        assert tab._temp_labels[1].text() == "DIMM at 0x51: 52.0C"
         tab._load_dimm_info()
         assert len(tab._temp_labels) == 2
-        assert tab._temp_labels[0].text() == "DIMM 1: 51.0C"
+        assert tab._temp_labels[0].text() == "DIMM at 0x50: 51.0C"
 
     def test_without_the_smu_driver_the_controller_rows_are_hidden(self, monkeypatch):
         tab = self._tab(monkeypatch)
@@ -123,27 +129,81 @@ class TestMemoryTabInventory:
         tab = self._tab(monkeypatch, dimms=_dimms(), spd_available=True)
         tab._spd_reader.read_temperatures.return_value = [None, 39.0]
         tab._update_temperatures()
-        assert [label.text() for label in tab._temp_labels] == ["DIMM 1: unread", "DIMM 2: 39.0C"]
+        assert [label.text() for label in tab._temp_labels] == ["DIMM at 0x50: unread", "DIMM at 0x51: 39.0C"]
 
     def test_a_live_tick_refreshes_dimm_temperatures(self, monkeypatch):
         tab = self._tab(monkeypatch, dimms=_dimms(), spd_available=True)
         tab._spd_reader.read_temperatures.return_value = [60.0, 61.0]
         tab.on_tick(a_tick())
-        assert tab._temp_labels[0].text() == "DIMM 1: 60.0C"
+        assert tab._temp_labels[0].text() == "DIMM at 0x50: 60.0C"
+
+    @pytest.mark.req("T23.memory.facts")
+    def test_the_summary_and_table_show_only_what_dmidecode_read(self, monkeypatch):
+        dimms = [
+            DIMMInfo(locator="A1", size_gb=32, mem_type="DDR5", rank=1),
+            DIMMInfo(locator="B1", size_gb=32, rank=2),
+        ]
+        tab = self._tab(monkeypatch, dimms=dimms)
+        assert tab._summary_label.text() == "2 DIMMs | 64 GB DDR5 ECC unread 1R/2R"
+        assert [tab._dimm_table.item(1, column).text() for column in (2, 5, 6)] == ["-", "-", "-"]
+        tab = self._tab(monkeypatch, dimms=[DIMMInfo(locator="A1", size_gb=32, data_width=64, total_width=64)])
+        assert tab._summary_label.text() == "1 DIMMs | 32 GB type unread Non-ECC"
+        tab = self._tab(monkeypatch, dimms=[DIMMInfo(locator="A1", size_gb=32, data_width=64)])
+        assert tab._summary_label.text() == "1 DIMMs | 32 GB type unread ECC unread"
+
+    @pytest.mark.req("T23.memory.facts")
+    def test_a_long_reason_wraps_instead_of_widening_the_tab(self, monkeypatch):
+        _qapp()
+        tabs = []
+        for why in (DENIED, "dmidecode could not run: " + "no such device " * 20):
+            monkeypatch.setattr(mem, "read_dimm_info", lambda why=why: ([], why))
+            monkeypatch.setattr(mem, "SPD5118Reader", lambda: _spd(False))
+            tabs.append(mem.MemoryTab(False))
+        assert tabs[1].minimumSizeHint().width() == tabs[0].minimumSizeHint().width()
+
+    @pytest.mark.req("T23.memory.facts")
+    def test_readings_that_do_not_match_the_sensors_are_refused(self, monkeypatch):
+        tab = self._tab(monkeypatch, dimms=_dimms(), spd_available=True)
+        tab._spd_reader.read_temperatures.return_value = [40.0]
+        with pytest.raises(ValueError):
+            tab._update_temperatures()
+        with pytest.raises(ValueError):
+            tab._load_dimm_info()
+
+    @pytest.mark.req("T23.memory.facts")
+    def test_the_spd_timings_say_which_part_could_not_be_read(self, monkeypatch):
+        tab = self._tab(monkeypatch)
+        assert tab._spd_unavailable_label.text().endswith("no spd5118 sensor is loaded")
+        tab = self._tab(monkeypatch, spd_available=True)
+        assert tab._spd_unavailable_label.text().endswith("the spd5118 sensors expose no EEPROM")
+        tab._spd_reader.eeprom_count = 1
+        tab._update_spd_labels()
+        assert tab._spd_unavailable_label.text().endswith("no SPD EEPROM could be read as DDR5")
+
+    @pytest.mark.req("T23.memory.facts")
+    def test_the_smu_line_says_the_pm_table_was_read_at_start(self, monkeypatch):
+        tab = self._tab(monkeypatch)
+        assert "ryzen_smu: no PM table when the app started" in tab._deps_label.text()
 
 
 class TestMemoryTabLabels:
     def _tab(self, monkeypatch):
         _qapp()
         monkeypatch.setattr(mem, "SPD5118Reader", lambda: _spd(False))
-        monkeypatch.setattr(mem, "read_dimm_info", list)
+        monkeypatch.setattr(mem, "read_dimm_info", lambda: ([], DENIED))
         return mem.MemoryTab(False)
 
-    def test_an_unknown_clock_ratio_reads_as_blank(self, monkeypatch):
+    @pytest.mark.req("T23.memory.facts")
+    def test_an_unread_clock_reads_as_blank_not_zero(self, monkeypatch):
         tab = self._tab(monkeypatch)
-        pm = MagicMock(fclk_mhz=0.0, uclk_mhz=0.0, mclk_mhz=0.0)
+        pm = MagicMock(fclk_mhz=0.0, uclk_mhz=2000.0, mclk_mhz=0.0)
         tab._update_clock_labels(pm)
-        assert tab._ratio_label.text() == "FCLK:UCLK --"
+        labels = (tab._fclk_label, tab._uclk_label, tab._mclk_label, tab._ratio_label)
+        assert [label.text() for label in labels] == ["FCLK: --", "UCLK: 2000 MHz", "MCLK: --", "FCLK:UCLK --"]
+        assert theme.COLOR_MUTED in tab._fclk_label.styleSheet()
+        assert tab._uclk_label.styleSheet() == ""
+        tab._update_clock_labels(MagicMock(fclk_mhz=1.0, uclk_mhz=2000.0, mclk_mhz=4000.0))
+        assert tab._fclk_label.text() == "FCLK: 1 MHz"
 
     def test_a_matched_clock_ratio_reads_as_one_to_one(self, monkeypatch):
         tab = self._tab(monkeypatch)
@@ -169,7 +229,7 @@ class TestMemoryStressLifecycle:
     def tab(self, monkeypatch):
         _qapp()
         monkeypatch.setattr(mem, "SPD5118Reader", lambda: _spd(False))
-        monkeypatch.setattr(mem, "read_dimm_info", list)
+        monkeypatch.setattr(mem, "read_dimm_info", lambda: ([], DENIED))
         monkeypatch.setattr(mem.tools.shutil, "which", lambda name: "/usr/bin/" + name)
         widget = mem.MemoryTab(False)
         widget._stress_tool.clear()

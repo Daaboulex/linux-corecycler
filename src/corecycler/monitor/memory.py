@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import re
 import struct
@@ -56,10 +55,10 @@ class SPDTimingData:
     tWR_ns: float = 0.0
     tRFC1_ns: int = 0
     tRFCsb_ns: int = 0
-    dimm_index: int = 0
+    source: str = ""
 
 
-def decode_spd_timings(data: bytes, dimm_index: int = 0) -> SPDTimingData | None:
+def decode_spd_timings(data: bytes, source: str = "") -> SPDTimingData | None:
     """Decode DDR5 SPD primary and secondary timings from raw EEPROM bytes.
 
     Returns None if data is too short, not DDR5, or has zero clock period.
@@ -102,7 +101,7 @@ def decode_spd_timings(data: bytes, dimm_index: int = 0) -> SPDTimingData | None
         tWR_ns=tWR_ns,
         tRFC1_ns=tRFC1_ns,
         tRFCsb_ns=tRFCsb_ns,
-        dimm_index=dimm_index,
+        source=source,
     )
 
 
@@ -181,28 +180,42 @@ def parse_dmidecode_output(text: str) -> list[DIMMInfo]:
     return dimms
 
 
-def read_dimm_info() -> list[DIMMInfo]:
-    """Read DIMM info via dmidecode. Requires root."""
+DMIDECODE_TIMEOUT_S = 5
+
+
+def read_dimm_info() -> tuple[list[DIMMInfo], str]:
+    """The DIMMs dmidecode lists, parsed even when it exits non-zero, and when it lists none, why."""
     try:
         result = subprocess.run(
             [tools.command_name("dmidecode"), "-t", "memory"],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=DMIDECODE_TIMEOUT_S,
         )
-        if result.returncode != 0:
-            log.warning("dmidecode exited with code %d: %s", result.returncode, result.stderr.strip())
-        # Parse even on non-zero exit — some systems return 1 but still output data
-        dimms = parse_dmidecode_output(result.stdout)
-        if not dimms and result.stdout:
-            log.debug("dmidecode produced output but no DIMMs parsed (stdout length: %d)", len(result.stdout))
-        return dimms
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
-        log.debug("dmidecode not available: %s", e)
-    return []
+    except FileNotFoundError:
+        return [], "dmidecode is not installed"
+    except subprocess.TimeoutExpired:
+        return [], f"dmidecode did not answer in {DMIDECODE_TIMEOUT_S} s"
+    except OSError as e:
+        return [], f"dmidecode could not run: {e}"
+    dimms = parse_dmidecode_output(result.stdout)
+    if dimms:
+        return dimms, ""
+    said = next((line.strip() for line in result.stderr.splitlines() if line.strip()), "")
+    if result.returncode != 0:
+        return [], f"dmidecode exited {result.returncode}" + (f": {said}" if said else "")
+    return [], "dmidecode listed no DIMMs"
 
 
 SPD5118_RANGE_C = (-40.0, 125.0)
+
+
+def _spd_address(hwmon_dir: Path) -> str:
+    """The SPD hub's i2c address, 0x50 for the device 15-0050, or the hwmon name when the device cannot be read."""
+    try:
+        return f"0x{int((hwmon_dir / 'device').resolve().name.partition('-')[2], 16):02x}"
+    except OSError, ValueError:
+        return hwmon_dir.name
 
 
 def _spd_temperature(path: Path) -> float | None:
@@ -219,7 +232,8 @@ class SPD5118Reader:
 
     def __init__(self, hwmon_base: Path = HWMON_BASE) -> None:
         self._devices: list[Path] = []
-        self._eeprom_paths: list[Path] = []
+        self.addresses: list[str] = []
+        self._eeproms: list[tuple[str, Path]] = []
         self._spd_timings: SPDTimingData | None = None
         self._spd_loaded: bool = False
         self._scan(hwmon_base)
@@ -227,23 +241,23 @@ class SPD5118Reader:
     def _scan(self, hwmon_base: Path) -> None:
         if not hwmon_base.exists():
             return
-        for hwmon_dir in sorted(hwmon_base.iterdir()):
-            name_file = hwmon_dir / "name"
-            if name_file.exists():
-                try:
-                    name = name_file.read_text().strip()
-                except OSError:
-                    continue
-                if name == "spd5118":
-                    self._devices.append(hwmon_dir)
-                    # Discover eeprom via device symlink to i2c parent
-                    device_link = hwmon_dir / "device"
-                    if device_link.exists():
-                        with contextlib.suppress(OSError):
-                            i2c_device = device_link.resolve()
-                            eeprom_path = i2c_device / "eeprom"
-                            if eeprom_path.exists():
-                                self._eeprom_paths.append(eeprom_path)
+        found = []
+        for hwmon_dir in hwmon_base.iterdir():
+            try:
+                name = (hwmon_dir / "name").read_text().strip()
+            except OSError:
+                continue
+            if name == "spd5118":
+                found.append((_spd_address(hwmon_dir), hwmon_dir))
+        for address, hwmon_dir in sorted(found):
+            self._devices.append(hwmon_dir)
+            self.addresses.append(address)
+            try:
+                eeprom_path = (hwmon_dir / "device").resolve() / "eeprom"
+            except OSError:
+                continue
+            if eeprom_path.exists():
+                self._eeproms.append((address, eeprom_path))
 
     @property
     def spd_timings(self) -> SPDTimingData | None:
@@ -251,10 +265,10 @@ class SPD5118Reader:
         if self._spd_loaded:
             return self._spd_timings
         self._spd_loaded = True
-        for i, eeprom_path in enumerate(self._eeprom_paths):
+        for address, eeprom_path in self._eeproms:
             try:
                 data = eeprom_path.read_bytes()
-                result = decode_spd_timings(data, dimm_index=i)
+                result = decode_spd_timings(data, source=address)
                 if result is not None:
                     self._spd_timings = result
                     return self._spd_timings
@@ -264,6 +278,10 @@ class SPD5118Reader:
 
     def is_available(self) -> bool:
         return len(self._devices) > 0
+
+    @property
+    def eeprom_count(self) -> int:
+        return len(self._eeproms)
 
     def read_temperatures(self) -> list[float | None]:
         """One reading per SPD5118 device, in device order (Celsius); None where it could not be read."""
