@@ -4895,6 +4895,11 @@ statement = "Every control of the Configuration tab is listed with its reaction 
 proof = "built"
 
 [[requirement]]
+id = "T23.contract.results"
+statement = "Every control of the Results tab is listed with its reaction (tests/test_results_tab.py RESULTS_CONTROLS: Qt's corner button, which selects every cell) and the test fails on an unlisted or missing control; the tab has no spin box, combo box or text input."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

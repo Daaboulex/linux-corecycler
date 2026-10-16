@@ -81,3 +81,19 @@ class TestResultsTab:
         tab.init_cores(_statuses(2))
         assert [label.text() for label in tab.findChildren(QLabel)] == fresh
         assert (tab._table.rowCount(), tab._log.toPlainText()) == (2, "")
+
+
+RESULTS_CONTROLS = {"QTableCornerButton": "selects every cell of the core table"}
+
+
+@pytest.mark.req("T23.contract.results")
+def test_every_control_of_the_results_tab_is_listed_with_its_reaction():
+    from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QComboBox, QLineEdit
+
+    tab = _tab()
+    tab.init_cores(_statuses(2))
+    buttons = {button.text() or button.metaObject().className() for button in tab.findChildren(QAbstractButton)}
+    assert buttons == set(RESULTS_CONTROLS)
+    assert [*tab.findChildren(QAbstractSpinBox), *tab.findChildren(QComboBox), *tab.findChildren(QLineEdit)] == []
+    tab.findChild(QAbstractButton).click()
+    assert len(tab._table.selectedItems()) == 2 * tab._table.columnCount()
