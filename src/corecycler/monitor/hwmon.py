@@ -19,6 +19,9 @@ CPU_DRIVERS = ("zenpower", "zenpower3", "zenpower5", "k10temp")
 FALLBACK_CPU_DRIVER = "coretemp"
 
 
+type CoreRead = tuple[int, float | None, float | None, float | None, float | None]
+
+
 @dataclass(frozen=True, slots=True)
 class SensorRead:
     hottest: float | None = None
@@ -26,6 +29,7 @@ class SensorRead:
     tccd: tuple[tuple[int, float | None], ...] = ()
     volts: tuple[tuple[str, float | None], ...] = ()
     watts: tuple[tuple[str, float | None], ...] = ()
+    cores: tuple[CoreRead, ...] = ()
 
 
 def _milli(path: Path) -> float | None:

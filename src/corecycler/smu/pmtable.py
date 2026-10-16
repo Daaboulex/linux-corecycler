@@ -7,6 +7,10 @@ import math
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from corecycler.monitor.hwmon import CoreRead
 
 log = logging.getLogger(__name__)
 
@@ -172,6 +176,32 @@ def rail_volts(data: PMTableData) -> tuple[tuple[str, float | None], ...]:
     return tuple(
         (source, value if value != 0.0 and _plausible(value, _VOLT_MIN_V, _VOLT_MAX_V) else None)
         for source, value in readings
+    )
+
+
+CORE_TABLE_VERSION = 0x620205
+CORE_COUNT = 16
+CORE_ARRAYS = (
+    ("clock MHz", 349, 0.0, 6.5, 1000.0),
+    ("effective MHz", 365, 0.0, 6.5, 1000.0),
+    ("C0 %", 381, 0.0, 100.0, 1.0),
+    ("volts", 317, _VOLT_MIN_V, _VOLT_MAX_V, 1.0),
+)
+
+
+def core_reads(data: PMTableData) -> tuple[CoreRead, ...]:
+    """Each core's clock, effective clock, C0 and voltage on table 0x620205 only, each array at its first float."""
+    floats = data.raw_floats
+    if data.pm_table_version != CORE_TABLE_VERSION or len(floats) < max(i for _, i, *_ in CORE_ARRAYS) + CORE_COUNT:
+        return ()
+
+    def read(first: int, lo: float, hi: float, scale: float, core: int) -> float | None:
+        value = floats[first + core]
+        return value * scale if math.isfinite(value) and lo <= value <= hi else None
+
+    return tuple(
+        (core, *(read(first, lo, hi, scale, core) for _, first, lo, hi, scale in CORE_ARRAYS))
+        for core in range(CORE_COUNT)
     )
 
 

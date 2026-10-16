@@ -43,7 +43,14 @@ from corecycler.monitor.frequency import Clocks, PowerState, fastest, read_power
 from corecycler.monitor.hwmon import SensorRead, Sensors
 from corecycler.smu.commands import detect_generation, get_commands, tjmax_c
 from corecycler.smu.driver import SHAPER_BAND_NAMES, RyzenSMU, core_map_blocked
-from corecycler.smu.pmtable import PMTableData, PMTableReader, package_watts, rail_volts, read_power_limits
+from corecycler.smu.pmtable import (
+    PMTableData,
+    PMTableReader,
+    core_reads,
+    package_watts,
+    rail_volts,
+    read_power_limits,
+)
 from corecycler.smu.writer_lock import WriterBusy, co_writer
 from corecycler.tuner import stages, telemetry
 from corecycler.tuner.live import BootFacts, Identity, LiveRig, Store, config_from_json
@@ -218,7 +225,9 @@ def with_pm_table(
         data = pm_table()
         if data is None:
             return reading
-        return replace(reading, volts=(*reading.volts, *rail_volts(data)), watts=package_watts(data))
+        return replace(
+            reading, volts=(*reading.volts, *rail_volts(data)), watts=package_watts(data), cores=core_reads(data)
+        )
 
     return read
 
@@ -543,6 +552,7 @@ class Hold:
                 reading.tccd,
                 reading.volts,
                 reading.watts,
+                reading.cores,
             )
             self.ring.append(sample)
             if self.sink is not None:

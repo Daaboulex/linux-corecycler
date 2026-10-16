@@ -4805,6 +4805,11 @@ statement = "History shows a setup's stored CO as none only when none was record
 proof = "built"
 
 [[requirement]]
+id = "O19.record"
+statement = "Every tuner sample records each core's clock, effective clock, C0 and voltage from the PM table arrays measured on table 0x620205 (scratch/design/o19-record.md), a value outside its physical bounds as none and nothing on any other table version; a sample stored before reads back with no cores."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

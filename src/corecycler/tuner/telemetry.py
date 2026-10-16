@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from corecycler.history.db import SAMPLE_BLOCK_S
 from corecycler.tuner.machine.types import FailContext
+
+if TYPE_CHECKING:
+    from corecycler.monitor.hwmon import CoreRead
 
 SAMPLE_S = 0.1
 WINDOW_S = 2.0
@@ -22,6 +26,7 @@ class Sample:
     tccd: tuple[tuple[int, float | None], ...] = ()
     volts: tuple[tuple[str, float | None], ...] = ()
     watts: tuple[tuple[str, float | None], ...] = ()
+    cores: tuple[CoreRead, ...] = ()
 
 
 def band_clock(sample: Sample, cores: tuple[int, ...]) -> float | None:

@@ -16,6 +16,7 @@ from corecycler.smu.pmtable import (
     PMTableOffsets,
     PMTableReader,
     compute_fclk_uclk_ratio,
+    core_reads,
     package_watts,
     rail_volts,
 )
@@ -165,6 +166,34 @@ class TestPMTableReader:
         data = PMTableData(package_power_w=watts, pm_table_version=0x00620205)
         assert package_watts(data) == (("pm_table:package", read),)
         assert package_watts(PMTableData(package_power_w=watts, pm_table_version=0x00540208)) == ()
+
+    @pytest.mark.req("O19.record")
+    def test_each_core_reads_its_clock_effective_clock_c0_and_voltage_from_the_measured_table(self):
+        floats = [0.0] * 613
+        for offset, value in ((0x574, 5.438), (0x5B4, 5.459), (0x5F4, 99.87), (0x4F4, 1.149)):
+            floats[offset // 4 + 12] = value
+        floats[0x4F4 // 4 + 3], floats[0x574 // 4 + 4], floats[0x5F4 // 4 + 5] = 2.5, float("nan"), 100.5
+        reads = core_reads(PMTableData(pm_table_version=0x00620205, raw_floats=floats))
+        assert [read[0] for read in reads] == list(range(16))
+        assert reads[12] == (
+            12,
+            pytest.approx(5438.0),
+            pytest.approx(5459.0),
+            pytest.approx(99.87),
+            pytest.approx(1.149),
+        )
+        assert reads[0] == (0, 0.0, 0.0, 0.0, None)
+        assert (reads[3][4], reads[4][1], reads[5][3]) == (None, None, None)
+
+    @pytest.mark.req("O19.record")
+    @pytest.mark.parametrize(("version", "count"), [(0x00620105, 613), (0x00540208, 613), (0x00620205, 396)])
+    def test_a_table_whose_core_layout_was_not_measured_records_no_core(self, version, count):
+        assert core_reads(PMTableData(pm_table_version=version, raw_floats=[1.0] * count)) == ()
+
+    @pytest.mark.req("O19.record")
+    def test_a_table_just_long_enough_for_the_last_core_reads_every_core(self):
+        reads = core_reads(PMTableData(pm_table_version=0x00620205, raw_floats=[1.0] * 397))
+        assert [read[0] for read in reads] == list(range(16))
 
     def test_fewer_than_200_floats_skips_parsing(self, tmp_path):
         """PM table with < 200 floats should skip Granite Ridge parsing."""

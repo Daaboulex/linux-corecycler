@@ -196,6 +196,7 @@ def taken(core: int, n: int) -> telemetry.Sample:
         tccd=((0, 55.0 + n),),
         volts=(("sio_in0_vcore", 1.1),),
         watts=(("pm_table:package", 120.0 + n),),
+        cores=((core, 5000.0 + n, 4990.0 + n, 100.0, 1.1),),
     )
 
 
@@ -748,6 +749,7 @@ def test_every_sample_a_test_takes_is_kept_under_its_row(tmp_path):
             "tccd": [[0, 55.0 + n]],
             "volts": [["sio_in0_vcore", 1.1]],
             "watts": [["pm_table:package", 120.0 + n]],
+            "cores": [[first["core"], 5000.0 + n, 4990.0 + n, 100.0, 1.1]],
         }
         for n in range(telemetry.TAIL_GROUP)
     ]
@@ -2793,14 +2795,30 @@ def test_a_stored_all_core_cursor_from_before_the_rounds_loads_without_its_retir
         _allcore_from_json({**old, "unknown": 1})
 
 
-@pytest.mark.req("L25.d.power")
+@pytest.mark.req("L25.d.power", "O19.record")
 def test_every_sensor_reading_carries_the_core_rail_and_the_package_power_beside_the_board_voltages():
     from corecycler.monitor.hwmon import SensorRead
     from corecycler.smu.pmtable import PMTableData
 
     board = SensorRead(tctl=60.0, volts=(("nct6799:in0", 1.25),))
-    table = PMTableData(vdd_vid_v=1.3, vdd_v=1.29, package_power_w=142.5, pm_table_version=0x00620205)
+    floats = [0.0] * 613
+    floats[0x574 // 4 + 12], floats[0x5B4 // 4 + 12], floats[0x5F4 // 4 + 12], floats[0x4F4 // 4 + 12] = (
+        5.438,
+        5.459,
+        99.87,
+        1.149,
+    )
+    table = PMTableData(
+        vdd_vid_v=1.3, vdd_v=1.29, package_power_w=142.5, pm_table_version=0x00620205, raw_floats=floats
+    )
     read = live_hw.with_pm_table(lambda: board, lambda: table)()
+    assert read.cores[12] == (
+        12,
+        pytest.approx(5438.0),
+        pytest.approx(5459.0),
+        pytest.approx(99.87),
+        pytest.approx(1.149),
+    )
     assert read.volts == (
         ("nct6799:in0", 1.25),
         ("pm_table:vdd", pytest.approx(1.29)),

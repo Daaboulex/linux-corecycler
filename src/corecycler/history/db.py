@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 SAMPLE_BLOCK_S = 10.0
 INCREMENTAL_VACUUM = 2
 SAMPLE_BLOCK_OPTIONS = {zstd.CompressionParameter.compression_level: 19, zstd.CompressionParameter.checksum_flag: 1}
-SAMPLE_LISTS = ("clocks", "tccd", "volts", "watts")
+SAMPLE_LISTS = ("clocks", "tccd", "volts", "watts", "cores")
 SAMPLE_COLUMNS = tuple((name, name) for name in SAMPLE_LISTS)
 OLD_TUNER_TABLES = ("tuner_core_states", "tuner_test_log", "tuner_events", "tuner_co_journal")
 
@@ -224,7 +224,7 @@ class JournalRow:
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 30
+    SCHEMA_VERSION = 31
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -357,7 +357,8 @@ CREATE TABLE IF NOT EXISTS tuner_samples (
     clocks          TEXT    NOT NULL,
     tccd            TEXT    NOT NULL,
     volts           TEXT    NOT NULL,
-    watts           TEXT    NOT NULL DEFAULT '[]'
+    watts           TEXT    NOT NULL DEFAULT '[]',
+    cores           TEXT    NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS tuner_sample_blocks (
     id              INTEGER PRIMARY KEY,
@@ -974,6 +975,10 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     def _migrate_v30(conn: sqlite3.Connection) -> None:
         HistoryDB._add_columns(conn, "tuner_samples", [("watts", "TEXT NOT NULL DEFAULT '[]'")])
 
+    @staticmethod
+    def _migrate_v31(conn: sqlite3.Connection) -> None:
+        HistoryDB._add_columns(conn, "tuner_samples", [("cores", "TEXT NOT NULL DEFAULT '[]'")])
+
     _MIGRATIONS: dict[int, str | callable] = {
         2: _migrate_v2,
         3: _DDL_MIGRATE_V3,
@@ -1004,6 +1009,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         28: _migrate_v28,
         29: _migrate_v29,
         30: _migrate_v30,
+        31: _migrate_v31,
     }
 
     # ------------------------------------------------------------------
@@ -1624,8 +1630,8 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
     def insert_tuner_samples(self, test_id: int, samples: list[dict]) -> None:
         with self.transaction() as conn:
             conn.executemany(
-                "INSERT INTO tuner_samples (test_id, mono_ns, running, tctl, clocks, tccd, volts, watts)"
-                " VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO tuner_samples (test_id, mono_ns, running, tctl, clocks, tccd, volts, watts, cores)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
                 [
                     (
                         test_id,
