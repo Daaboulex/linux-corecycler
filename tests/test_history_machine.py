@@ -122,7 +122,8 @@ def test_the_detail_shows_the_setup_the_session_recorded_its_curve_shaper_includ
     shaper = "Min 0/0/0, Low 0/0/0, Medium 0/0/0, High 0/0/0, Max 0/0/0"
     recorded = replace(saved, setup=(("bios", "A"), ("curve_shaper", shaper), ("future_key", "kept")))
     Store(db, tmp_path / "state", Identity("bios-1", "cpu-1", None)).save(recorded, this_boot())
-    text = tuner_view(db)._events_log.toPlainText()
+    tab = tuner_view(db)
+    text = tab._events_log.toPlainText()
     assert f"-- Setup --\n  BIOS: A\n  Curve Shaper: {shaper}\n  future_key: kept\n" in text
 
 
