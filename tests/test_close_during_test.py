@@ -154,6 +154,12 @@ class TestWorkerFinishAlive:
         window._on_worker_crashed("boom")
         assert "boom" in window._status_msg.text()
 
+    @pytest.mark.req("T23.window.crash")
+    def test_a_crash_still_reads_crashed_after_the_worker_finishes(self, window):
+        window._on_worker_crashed("boom")
+        window._on_worker_finished()
+        assert window._status_msg.text() == "Test worker crashed: boom"
+
     def test_a_crash_after_close_stays_silent(self, window):
         window._closing = True
         before = window._status_msg.text()

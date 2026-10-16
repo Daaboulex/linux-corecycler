@@ -4825,6 +4825,11 @@ statement = "The Monitor tab says what was read when a value has no source: Pack
 proof = "built"
 
 [[requirement]]
+id = "T23.window.crash"
+statement = "A test worker that crashed still reads crashed, with its message, after the worker's finished signal, never Test complete (scratch/design/t23-monitor-memory-window.md D2)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

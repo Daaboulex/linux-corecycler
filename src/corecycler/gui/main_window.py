@@ -128,6 +128,7 @@ class MainWindow(QMainWindow):
         self._core_telemetry: dict[int, dict] = {}  # core_id -> {max_freq, max_temp, last_vcore}
         self._core_status_cache: dict[int, CoreTestStatus] = {}
         self._active_test_core: int | None = None
+        self._crash: str | None = None
         self._logger: TestRunLogger | None = None
 
         self._history_db: HistoryDB | None = None
@@ -439,6 +440,7 @@ class MainWindow(QMainWindow):
         self._run_round = 0
         self._rounds_done = 0
         self._active_test_core = None
+        self._crash = None
         self._worker = TestWorker(scheduler)
         self._worker.core_started.connect(self._on_core_started)
         self._worker.core_finished.connect(self._on_core_finished)
@@ -642,6 +644,7 @@ class MainWindow(QMainWindow):
     def _on_worker_crashed(self, message: str) -> None:
         if self._closing:
             return
+        self._crash = message
         self._status_msg.setText(f"Test worker crashed: {message}")
 
     def _on_worker_finished(self) -> None:
@@ -656,7 +659,9 @@ class MainWindow(QMainWindow):
                 log.exception("Failed to write the run's last telemetry to history")
         self._logger = None
         self._history_tab.refresh()
-        if was_stopping:
+        if self._crash is not None:
+            self._status_msg.setText(f"Test worker crashed: {self._crash}")
+        elif was_stopping:
             self._status_msg.setText("Test stopped")
         else:
             self._status_msg.setText("Test complete")
