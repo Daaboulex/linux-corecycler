@@ -4885,6 +4885,11 @@ statement = "A Monitor per-core bar shows its own CCD's temperature or none, nev
 proof = "built"
 
 [[requirement]]
+id = "T23.window.probes"
+statement = "The status bar's MSR and SMU line says it was read at start, which is when the readers took their access (scratch/design/t23-monitor-memory-window.md, Window)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"

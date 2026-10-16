@@ -241,6 +241,7 @@ class TestConstruction:
         win = _build(monkeypatch, tmp_path, db=db, settings=_settings(tmp_path, record_history=False))
         assert win._history_db is None
 
+    @pytest.mark.req("T23.window.probes")
     def test_the_device_line_says_what_each_probe_read(self, monkeypatch, tmp_path, db):
         from PySide6.QtWidgets import QLabel
 
@@ -248,7 +249,7 @@ class TestConstruction:
         monkeypatch.setattr(mw, "smu_problem", lambda: None)
         win = _build(monkeypatch, tmp_path, db=db)
         shown = [label.text() for label in win._status_bar.findChildren(QLabel)]
-        assert "  MSR /dev/cpu/0/msr: Permission denied" in shown
+        assert "  At start: MSR /dev/cpu/0/msr: Permission denied" in shown
         assert not any("SMU" in text for text in shown)
         win._history_db = None
 

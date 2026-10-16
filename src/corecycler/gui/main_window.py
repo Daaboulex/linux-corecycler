@@ -317,7 +317,7 @@ class MainWindow(QMainWindow):
             if problem is not None
         ]
         if problems:
-            priv_label = QLabel("  " + "; ".join(problems))
+            priv_label = QLabel("  At start: " + "; ".join(problems))
             priv_label.setStyleSheet(f"color: {theme.COLOR_WARN_SOFT}; font: 10px monospace;")
             self._status_bar.addPermanentWidget(narrowable(priv_label))
         if self._history_problem is not None:
