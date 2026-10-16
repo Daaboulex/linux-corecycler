@@ -7,7 +7,7 @@ import signal
 import sys
 from pathlib import Path
 
-# direct-file execution (docs' from-source flow): make the corecycler package importable
+# docs/installation.md runs this file directly, so the package is put on the path.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -255,8 +255,7 @@ def _install_exception_hooks(window) -> None:
             hook_log.critical("Could not display the error dialog", exc_info=True)
 
     def _thread_handle(args) -> None:
-        # Non-GUI thread: no dialog (Qt forbids it off the main thread) — the
-        # traceback still lands in the log instead of dying silently.
+        # Qt forbids a dialog off the main thread, so a thread's exception is only logged.
         hook_log.critical(
             "UNCAUGHT EXCEPTION in thread %s",
             getattr(args.thread, "name", "?"),
@@ -282,9 +281,6 @@ def _parse_auto_resume(argv: list[str]) -> int | None:
 def setup_logging() -> None:
     import logging
 
-    # Two log surfaces from one root: the human narrative at INFO on stderr,
-    # and a rotating DEBUG file capturing what verdicts drop (detector polls,
-    # CO writes, cursor saves, lane lifecycle) for after-the-fact forensics.
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     stderr_handler = logging.StreamHandler(sys.stderr)
     stderr_handler.setLevel(logging.INFO)
@@ -323,7 +319,7 @@ def main() -> int:
 
         return cli_main(argv)
 
-    # Silence the warning categories that fire for session services root cannot use
+    # These categories warn about session services a root process cannot use.
     os.environ.setdefault(
         "QT_LOGGING_RULES",
         "qt.qpa.services.warning=false;kf.windowsystem.warning=false",
@@ -331,10 +327,7 @@ def main() -> int:
 
     _bootstrap_sudo_session()
 
-    # Preflight: with no display reachable Qt aborts the whole process
-    # (SIGABRT) — fail closed with an actionable message instead. Skipped when
-    # the user explicitly chose a Qt platform (offscreen/vnc/linuxfb/eglfs
-    # need no display server at all).
+    # Qt aborts the process with SIGABRT when no display is reachable.
     if (
         not os.environ.get("QT_QPA_PLATFORM")
         and not os.environ.get("DISPLAY")
@@ -356,14 +349,12 @@ def main() -> int:
 
     style_problem = style.fall_back_to_fusion()
 
-    # high DPI support
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     app = QApplication(sys.argv)
     app.setApplicationName("CoreCycler")
     app.setOrganizationName("corecycler")
 
-    # One instance only — two engines would fight over the SMU.
     from PySide6.QtCore import QLockFile
 
     from corecycler.config.paths import data_dir
@@ -376,10 +367,8 @@ def main() -> int:
         return 1
     app._corecycler_instance_lock = instance_lock
 
-    # Locate assets — dev mode (src/../assets) or installed ($out/share/...)
     assets_dir = _find_assets_dir()
 
-    # app icon
     from PySide6.QtGui import QIcon
 
     icon_path = assets_dir / "icon.svg"
@@ -406,7 +395,6 @@ def main() -> int:
 
     def _cleanup_on_exit():
         """Kill any running stress processes on forced exit."""
-        # Each subsystem wrapped independently — one failure must not block others
         try:
             if window._worker and window._worker.isRunning():
                 window._worker.scheduler.force_stop()
@@ -432,16 +420,14 @@ def main() -> int:
 
 def _find_assets_dir() -> Path:
     """Find assets directory — works in dev mode and Nix-installed."""
-    # Dev mode: src/corecycler/../../assets
     dev_assets = Path(__file__).resolve().parents[2] / "assets"
     if dev_assets.is_dir():
         return dev_assets
-    # Nix installed: __file__ is $out/lib/python3.x/site-packages/corecycler/main.py
-    # so go up 5 levels to $out, then into share/corecycler/assets
+    # flake.nix installs this file in $out/lib/python3.x/site-packages, the assets in $out/share/corecycler.
     nix_assets = Path(__file__).resolve().parents[4] / "share" / "corecycler" / "assets"
     if nix_assets.is_dir():
         return nix_assets
-    return dev_assets  # fallback
+    return dev_assets
 
 
 if __name__ == "__main__":
