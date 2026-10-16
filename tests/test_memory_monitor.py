@@ -11,7 +11,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from corecycler.gui.style import theme
-from corecycler.monitor.memory import SPD5118Reader, SPDTimingData, decode_spd_timings, parse_dmidecode_output
+from corecycler.monitor.memory import (
+    SPD_DRAM_TYPE_DDR5,
+    SPD5118Reader,
+    SPDTimingData,
+    decode_spd_timings,
+    parse_dmidecode_output,
+)
 from corecycler.smu.pmtable import PMTableData, compute_fclk_uclk_ratio
 from tests._sensors import a_tick
 
@@ -86,7 +92,7 @@ class TestParseDmidecode:
         text = SAMPLE_DMIDECODE.replace("32 GB", "512 MB")
         dimms = parse_dmidecode_output(text)
         assert len(dimms) == 2
-        assert dimms[0].size_gb == 1  # 512MB rounds up to 1GB
+        assert dimms[0].size_gb == 1
 
     def test_dimm_with_gib_format(self):
         """dmidecode 3.7+ uses GiB instead of GB."""
@@ -241,12 +247,10 @@ def _make_headless_tab():
     tab._pm_available = True
     tab._spd_reader = MagicMock()
     tab._spd_reader.is_available.return_value = False
-    # SPD timing labels (added in Plan 04-02)
     tab._primary_label = _MockLabel("Primary: --")
     tab._secondary_label = _MockLabel("Secondary: --")
     tab._spd_unavailable_label = _MockLabel("")
     tab._spd_group = _MockGroupBox("SPD Timings (DDR5)")
-    # Bind MemoryTab methods to our namespace object
     tab._update_clock_labels = types.MethodType(MemoryTab._update_clock_labels, tab)
     tab._update_voltage_labels = types.MethodType(MemoryTab._update_voltage_labels, tab)
     tab._show_uncalibrated = types.MethodType(MemoryTab._show_uncalibrated, tab)
@@ -374,10 +378,8 @@ class TestMemoryTabBehavior:
     def test_a_tick_recovery_after_failure(self):
         """Labels recover after a failed read followed by a successful read."""
         tab = _make_headless_tab()
-        # First: fail
         tab.on_tick(a_tick(pm=None))
         assert "--" in tab._fclk_label.text()
-        # Then: recover
         pm_data = PMTableData(
             fclk_mhz=2000.0,
             uclk_mhz=2000.0,
@@ -392,21 +394,43 @@ class TestMemoryTabBehavior:
         assert "Verified" in tab._cal_label.text()
 
 
-def _make_ddr5_4800_eeprom() -> bytes:
-    """Build a synthetic 48-byte DDR5-4800 EEPROM for testing."""
+SPD_DRAM_TYPE_DDR4 = 0x0C
+SPD_TIMING_OFFSETS = {
+    "tck_ps": 20,
+    "tcl_ps": 30,
+    "trcd_ps": 32,
+    "trp_ps": 34,
+    "tras_ps": 36,
+    "trc_ps": 38,
+    "twr_ps": 40,
+    "trfc1_ns": 42,
+    "trfc2_ns": 44,
+    "trfcsb_ns": 46,
+}
+
+
+def _spd(dram_type: int = SPD_DRAM_TYPE_DDR5, **timings: int) -> bytes:
+    """A 48-byte SPD with each named timing packed at its JEDEC DDR5 byte offset."""
     data = bytearray(48)
-    data[2] = 0x12  # DDR5
-    struct.pack_into("<H", data, 20, 416)  # tCK = 416ps (DDR5-4800)
-    struct.pack_into("<H", data, 30, 16666)  # tCL
-    struct.pack_into("<H", data, 32, 16666)  # tRCD
-    struct.pack_into("<H", data, 34, 16666)  # tRP
-    struct.pack_into("<H", data, 36, 32000)  # tRAS
-    struct.pack_into("<H", data, 38, 48666)  # tRC
-    struct.pack_into("<H", data, 40, 30000)  # tWR
-    struct.pack_into("<H", data, 42, 295)  # tRFC1 (ns)
-    struct.pack_into("<H", data, 44, 160)  # tRFC2 (ns) - in data but not decoded
-    struct.pack_into("<H", data, 46, 130)  # tRFCsb (ns)
+    data[2] = dram_type
+    for name, value in timings.items():
+        struct.pack_into("<H", data, SPD_TIMING_OFFSETS[name], value)
     return bytes(data)
+
+
+def _make_ddr5_4800_eeprom() -> bytes:
+    return _spd(
+        tck_ps=416,
+        tcl_ps=16666,
+        trcd_ps=16666,
+        trp_ps=16666,
+        tras_ps=32000,
+        trc_ps=48666,
+        twr_ps=30000,
+        trfc1_ns=295,
+        trfc2_ns=160,
+        trfcsb_ns=130,
+    )
 
 
 class TestSPDTimingDecode:
@@ -439,9 +463,7 @@ class TestSPDTimingDecode:
 
     def test_non_ddr5_returns_none(self):
         """Non-DDR5 EEPROM (byte 2 != 0x12) returns None."""
-        data = bytearray(48)
-        data[2] = 0x0C  # DDR4 type
-        assert decode_spd_timings(bytes(data)) is None
+        assert decode_spd_timings(_spd(SPD_DRAM_TYPE_DDR4, tck_ps=416)) is None
 
     def test_short_data_returns_none(self):
         """Data shorter than 48 bytes returns None."""
@@ -449,39 +471,15 @@ class TestSPDTimingDecode:
 
     def test_zero_tck_returns_none(self):
         """Zero tCK_ps (bytes 20-21 = 0) returns None."""
-        data = bytearray(48)
-        data[2] = 0x12  # DDR5
-        # bytes 20-21 default to 0 — zero tCK
-        assert decode_spd_timings(bytes(data)) is None
+        assert decode_spd_timings(_spd(tcl_ps=16666)) is None
 
-    def test_tcl_rounds_to_even(self):
-        """tCL rounds to next even number per JEDEC convention."""
-        data = bytearray(48)
-        data[2] = 0x12
-        # Use tCK=500ps so we can control rounding
-        struct.pack_into("<H", data, 20, 500)  # tCK = 500ps
-        # Set tCL to a value that gives an odd number of cycles
-        # (14750 + 500 - 30) // 500 = 15220 // 500 = 30 (even, stays 30)
-        # (15250 + 500 - 30) // 500 = 15720 // 500 = 31 (odd, rounds to 32)
-        struct.pack_into("<H", data, 30, 15250)  # tCL -> 31 -> rounds to 32
-        struct.pack_into("<H", data, 32, 15250)  # tRCD
-        struct.pack_into("<H", data, 34, 15250)  # tRP
-        struct.pack_into("<H", data, 36, 15250)  # tRAS
-        struct.pack_into("<H", data, 38, 15250)  # tRC
-        struct.pack_into("<H", data, 40, 15000)  # tWR
-        struct.pack_into("<H", data, 42, 200)  # tRFC1
-        struct.pack_into("<H", data, 46, 100)  # tRFCsb
-        result = decode_spd_timings(bytes(data))
-        assert result is not None
-        assert result.tCL == 32  # odd 31 rounded up to even 32
+    @pytest.mark.parametrize(("tcl_ps", "clocks"), [(15250, 32), (14750, 30)])
+    def test_tcl_rounds_up_to_an_even_clock_count(self, tcl_ps, clocks):
+        assert decode_spd_timings(_spd(tck_ps=500, tcl_ps=tcl_ps)).tCL == clocks
 
     def test_a_timing_under_30_ps_past_a_clock_rounds_down_and_one_30_ps_past_rounds_up(self):
-        data = bytearray(48)
-        data[2] = 0x12
-        struct.pack_into("<H", data, 20, 416)
         for raw, clocks in ((16 * 416, 16), (16 * 416 + 29, 16), (16 * 416 + 30, 17)):
-            struct.pack_into("<H", data, 32, raw)
-            assert decode_spd_timings(bytes(data)).tRCD == clocks
+            assert decode_spd_timings(_spd(tck_ps=416, trcd_ps=raw)).tRCD == clocks
 
     def test_the_source_address_is_passed_through(self):
         result = decode_spd_timings(_make_ddr5_4800_eeprom(), source="0x52")
@@ -528,15 +526,12 @@ class TestSPDEepromDiscovery:
         hwmon0.mkdir()
         (hwmon0 / "name").write_text("spd5118\n")
         (hwmon0 / "temp1_input").write_text("42500\n")
-        # No device symlink -> no eeprom
         reader = SPD5118Reader(hwmon_base=tmp_path)
         assert reader.spd_timings is None
 
     def test_spd_timings_none_when_non_ddr5(self, tmp_path):
         """spd_timings returns None when eeprom contains non-DDR5 data."""
-        non_ddr5 = bytearray(48)
-        non_ddr5[2] = 0x0C  # DDR4
-        self._make_hwmon_with_eeprom(tmp_path, bytes(non_ddr5))
+        self._make_hwmon_with_eeprom(tmp_path, _spd(SPD_DRAM_TYPE_DDR4, tck_ps=416))
         reader = SPD5118Reader(hwmon_base=tmp_path)
         assert reader.spd_timings is None
 
@@ -545,14 +540,12 @@ class TestSPDEepromDiscovery:
         _, i2c_dir = self._make_hwmon_with_eeprom(tmp_path, _make_ddr5_4800_eeprom())
         reader = SPD5118Reader(hwmon_base=tmp_path)
 
-        # First access reads eeprom
         result1 = reader.spd_timings
         assert result1 is not None
 
-        # Remove eeprom file -- second access should still return cached result
         (i2c_dir / "eeprom").unlink()
         result2 = reader.spd_timings
-        assert result2 is result1  # exact same object (cached)
+        assert result2 is result1
 
 
 @_needs_pyside6

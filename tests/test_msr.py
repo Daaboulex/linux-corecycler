@@ -74,7 +74,6 @@ class TestMSRReaderAvailability:
         reader = MSRReader()
         with patch("os.open", side_effect=OSError):
             reader.is_available()
-        # Second call should not try os.open again
         with patch("os.open") as mock_open:
             result = reader.is_available()
             assert result is False
@@ -85,7 +84,7 @@ class TestCorePower:
     def _make_reader(self):
         reader = MSRReader()
         reader._available = True
-        reader._joules_per_tick = 1.0 / (1 << 14)  # ~61 µJ per tick
+        reader._joules_per_tick = 1.0 / (1 << 14)
         return reader
 
     def test_first_read_returns_empty(self):
@@ -96,17 +95,15 @@ class TestCorePower:
 
     def test_second_read_returns_watts(self):
         reader = self._make_reader()
-        # Seed with initial reading
         reader._core_energy_prev[0] = _EnergySnapshot(energy_raw=1000000, timestamp=100.0)
 
         with (
-            patch.object(reader, "_read_msr", return_value=1000000 + 163840),
+            patch.object(reader, "_read_msr", return_value=1000000 + 10 * (1 << 14)),
             patch("time.monotonic", return_value=101.0),
         ):
             result = reader.read_core_power([0])
 
         assert 0 in result
-        # 163840 ticks * (1/16384) J/tick / 1.0 s = 10.0 W
         assert abs(result[0].watts - 10.0) < 0.1
 
     def test_energy_unit_not_available(self):
@@ -164,7 +161,6 @@ class TestReadMSR:
             reader._read_msr(0, MSR_MPERF)
             reader._read_msr(0, MSR_MPERF)
 
-        # os.open should only be called once (fd cached)
         mock_open.assert_called_once()
 
 

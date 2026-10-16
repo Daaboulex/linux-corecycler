@@ -7,7 +7,6 @@ be malformed (other arch, truncated read, garbage EEPROM). A parser must fail cl
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,11 +14,9 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from corecycler.monitor import frequency as freq_mod  # noqa: E402
-from corecycler.monitor.cpu_usage import CPUUsageReader  # noqa: E402
-from corecycler.monitor.memory import decode_spd_timings, parse_dmidecode_output  # noqa: E402
+from corecycler.monitor import frequency as freq_mod
+from corecycler.monitor.cpu_usage import CPUUsageReader
+from corecycler.monitor.memory import decode_spd_timings, parse_dmidecode_output
 
 
 class TestMemoryParsersRobust:

@@ -14,10 +14,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from corecycler.monitor.frequency import read_max_frequency
 from corecycler.monitor.power import PowerMonitor
 
-# ===========================================================================
-# Frequency reader tests
-# ===========================================================================
-
 
 class TestFrequencyReader:
     def test_read_max_frequency(self, tmp_path):
@@ -34,11 +30,6 @@ class TestFrequencyReader:
         with patch("corecycler.monitor.frequency.CPUFREQ_BASE", tmp_path / "nonexistent"):
             result = read_max_frequency(0)
         assert result is None
-
-
-# ===========================================================================
-# Power monitor tests
-# ===========================================================================
 
 
 class TestPowerMonitor:
@@ -75,16 +66,15 @@ class TestPowerMonitor:
         rapl_dir = tmp_path / "powercap" / "intel-rapl" / "intel-rapl:0"
         rapl_dir.mkdir(parents=True)
         energy_file = rapl_dir / "energy_uj"
-        energy_file.write_text("1000000")  # 1 joule
+        energy_file.write_text("1000000")
 
         rapl_base = tmp_path / "powercap" / "intel-rapl"
         with patch("corecycler.monitor.power.RAPL_BASE", rapl_base):
             mon = PowerMonitor()
-            mon.read_power_watts()  # first read (baseline)
+            mon.read_power_watts()
 
-            # simulate 1 second passing with 100J more energy
-            energy_file.write_text("101000000")  # 101 joules
-            mon._last_time = time.monotonic() - 1.0  # pretend 1 second ago
+            energy_file.write_text("101000000")
+            mon._last_time = time.monotonic() - 1.0
 
             watts = mon.read_power_watts()
 
@@ -95,7 +85,6 @@ class TestPowerMonitor:
         rapl_dir = tmp_path / "powercap" / "intel-rapl" / "intel-rapl:0"
         rapl_dir.mkdir(parents=True)
         energy_file = rapl_dir / "energy_uj"
-        # File must exist before PowerMonitor.__init__ runs _find_package
         energy_file.write_text("0")
 
         rapl_base = tmp_path / "powercap" / "intel-rapl"
@@ -103,11 +92,9 @@ class TestPowerMonitor:
             mon = PowerMonitor()
             assert mon.is_available()
 
-            # Manually set baseline
             mon._last_energy_uj = 0
             mon._last_time = time.monotonic() - 1.0
 
-            # Write 100W * 1s = 100,000,000 uJ
             energy_file.write_text("100000000")
             watts = mon.read_power_watts()
 
@@ -159,7 +146,7 @@ class TestPowerMonitor:
         hwmon_dir = hwmon_base / "hwmon0"
         hwmon_dir.mkdir(parents=True)
         (hwmon_dir / "name").write_text("zenpower")
-        (hwmon_dir / "power1_input").write_text("51000000")  # 51W in microwatts
+        (hwmon_dir / "power1_input").write_text("51000000")
         (hwmon_dir / "power1_label").write_text("RAPL_P_Package")
 
         with (
@@ -174,11 +161,9 @@ class TestPowerMonitor:
 
     def test_hwmon_power_not_used_when_rapl_available(self, tmp_path):
         """RAPL is preferred over hwmon power."""
-        # Create RAPL
         rapl_dir = tmp_path / "powercap" / "intel-rapl" / "intel-rapl:0"
         rapl_dir.mkdir(parents=True)
         (rapl_dir / "energy_uj").write_text("1000000")
-        # Create hwmon
         hwmon_base = tmp_path / "hwmon"
         hwmon_dir = hwmon_base / "hwmon0"
         hwmon_dir.mkdir(parents=True)
@@ -192,24 +177,19 @@ class TestPowerMonitor:
         ):
             mon = PowerMonitor()
             assert mon.is_available() is True
-            # First RAPL read returns None (needs baseline)
-            assert mon.read_power_watts() is None
-            # This confirms it's using RAPL (delta-based), not hwmon (instant)
+            assert mon.read_power_watts() is None, "hwmon would read 51.0 W at once; RAPL needs a second sample"
 
-    def test_zero_time_delta(self, tmp_path):
-        """dt=0 should not cause division by zero."""
+    def test_a_read_in_the_same_instant_as_the_last_gives_no_watts_rather_than_dividing_by_zero(self, tmp_path):
         rapl_dir = tmp_path / "powercap" / "intel-rapl" / "intel-rapl:0"
         rapl_dir.mkdir(parents=True)
-        energy_file = rapl_dir / "energy_uj"
-        energy_file.write_text("5000000")
+        (rapl_dir / "energy_uj").write_text("5000000")
 
         rapl_base = tmp_path / "powercap" / "intel-rapl"
-        with patch("corecycler.monitor.power.RAPL_BASE", rapl_base):
+        with (
+            patch("corecycler.monitor.power.RAPL_BASE", rapl_base),
+            patch("corecycler.monitor.power.time.monotonic", return_value=100.0),
+        ):
             mon = PowerMonitor()
             mon._last_energy_uj = 1000000
-            mon._last_time = time.monotonic()  # now = nearly 0 delta
-
-            watts = mon.read_power_watts()
-        # Should still work (tiny but non-zero dt from monotonic)
-        # or return a very large value — just shouldn't crash
-        assert watts is None or isinstance(watts, float)
+            mon._last_time = 100.0
+            assert mon.read_power_watts() is None

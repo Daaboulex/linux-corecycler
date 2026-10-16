@@ -43,7 +43,8 @@ class TestPowerMonitorEdges:
         base = self._powercap(tmp_path)
         dom = base.parent / "intel-rapl:1"
         dom.mkdir()
-        (dom / "name").mkdir()  # a directory: exists() True, read_text() raises OSError
+        directory_in_place_of_file = dom / "name"
+        directory_in_place_of_file.mkdir()
         with (
             patch("corecycler.monitor.power.RAPL_BASE", base),
             patch("corecycler.monitor.power.HWMON_BASE", tmp_path / "nohwmon"),
