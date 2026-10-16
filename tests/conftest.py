@@ -611,6 +611,28 @@ def no_system_bus(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_widget_outlives_its_test():
+    """Delete every top-level widget a test leaves, here on the main thread.
+
+    A test double that records a widget (a MagicMock's call history, a bound slot) keeps its tree alive
+    only through a reference cycle; garbage collection then frees it at an arbitrary moment, and a
+    later test's PySide call that lists widgets crashes on the freed pointers (the theme segfault).
+    """
+    yield
+    if not hasattr(sys.modules.get("PySide6"), "__path__"):
+        return
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        return
+    for widget in app.topLevelWidgets():
+        widget.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+@pytest.fixture(autouse=True)
 def no_blocking_dialogs(monkeypatch):
     """A modal dialog in a test hangs the suite forever -- fail loudly instead.
 
