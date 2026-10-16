@@ -759,10 +759,10 @@ class TestCompare:
 
 class TestHelpers:
     def test_co_summary_rejects_unparsable_json(self):
-        assert ht._co_summary("not json") == "none"
+        assert ht._co_summary("not json") == "unreadable"
 
     def test_co_summary_rejects_a_missing_value(self):
-        assert ht._co_summary(None) == "none"
+        assert ht._co_summary(None) == "unreadable"
 
     def test_co_summary_reads_an_empty_map_as_none(self):
         assert ht._co_summary("{}") == "none"
@@ -792,10 +792,11 @@ class TestMalformedContextData:
     """A stored CO profile is DB content: a hand-edited row or a database merged
     from elsewhere can hold anything, and a display slot must never raise."""
 
-    def test_a_non_object_profile_reads_as_none(self):
-        assert ht._co_summary("[1, 2, 3]") == "none"
-        assert ht._co_summary('"abc"') == "none"
-        assert ht._co_summary("5") == "none"
+    @pytest.mark.req("T22.history.co")
+    def test_a_non_object_profile_reads_as_unreadable_never_as_none(self):
+        assert ht._co_summary("[1, 2, 3]") == "unreadable"
+        assert ht._co_summary('"abc"') == "unreadable"
+        assert ht._co_summary("5") == "unreadable"
 
     def test_mixed_value_types_still_summarise(self):
         assert ht._co_summary('{"0": -20, "1": "x"}') == "mixed"
@@ -805,7 +806,7 @@ class TestMalformedContextData:
         _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
         tab = _grouped_tab(db)
         assert tab._context_table.rowCount() == 1
-        assert tab._context_table.item(0, 1).text() == "none"
+        assert tab._context_table.item(0, 1).text() == "unreadable"
 
     def test_non_numeric_core_ids_still_render_in_the_detail(self, db):
         cid = db.create_context(

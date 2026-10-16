@@ -708,7 +708,7 @@ class HistoryTab(QWidget):
                 if ctx.bios_version:
                     lines.append(f"  BIOS: {ctx.bios_version}")
                 co_summary = _co_summary(ctx.co_offsets_json)
-                if co_summary and co_summary != "none":
+                if co_summary != "none":
                     lines.append(f"  CO:   {co_summary}")
                     offsets = _co_offsets(ctx.co_offsets_json)
                     if offsets:
@@ -1294,7 +1294,7 @@ class _ExportOptionsDialog(QDialog):
 
 
 def _co_offsets(co_json: str) -> dict | None:
-    """Parse a context's stored CO offsets, or None if the value is unusable.
+    """Parse a context's stored CO offsets: {} when none were recorded, None when the value is unreadable.
 
     The single parse for both the context table and the run detail: a stored
     value that is not a non-empty JSON object (a hand-edited row, a database
@@ -1304,15 +1304,15 @@ def _co_offsets(co_json: str) -> dict | None:
         offsets = json.loads(co_json)
     except json.JSONDecodeError, TypeError:
         return None
-    if not isinstance(offsets, dict) or not offsets:
-        return None
-    return offsets
+    return offsets if isinstance(offsets, dict) else None
 
 
 def _co_summary(co_json: str) -> str:
     """Summarize CO offsets JSON for display in context table."""
     offsets = _co_offsets(co_json)
     if offsets is None:
+        return "unreadable"
+    if not offsets:
         return "none"
 
     values = list(offsets.values())

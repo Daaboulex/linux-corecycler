@@ -4800,6 +4800,11 @@ statement = "In History, a core with no verdict reads as still running only whil
 proof = "built"
 
 [[requirement]]
+id = "T22.history.co"
+statement = "History shows a setup's stored CO as none only when none was recorded ({}); a stored value that does not parse as an object reads unreadable, in the setup table and the run detail (scratch/design/t23-curve-history.md defect 5)."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"
