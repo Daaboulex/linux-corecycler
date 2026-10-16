@@ -191,3 +191,25 @@ class TestMonitorTab:
             )
         )
         assert tab._edc_label.text() == "EDC: unread/230A"
+
+
+MONITOR_CONTROLS = {"Per-Core View": "hides the package charts, shows the per-core bars and reads Package View"}
+
+
+@pytest.mark.req("T23.contract.monitor")
+def test_every_control_of_the_monitor_tab_is_listed_with_its_reaction():
+    from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QComboBox, QLineEdit
+
+    tab = _tab()
+    assert {button.text() for button in tab.findChildren(QAbstractButton)} == set(MONITOR_CONTROLS)
+    assert [*tab.findChildren(QAbstractSpinBox), *tab.findChildren(QComboBox), *tab.findChildren(QLineEdit)] == []
+
+
+@pytest.mark.req("T23.contract.monitor")
+@pytest.mark.parametrize("connected", [True, False])
+def test_the_view_toggle_switches_the_view_only_through_its_connection(connected):
+    tab = _tab()
+    if not connected:
+        tab._toggle_btn.toggled.disconnect()
+    tab._toggle_btn.click()
+    assert (tab._charts_widget.isHidden(), tab._toggle_btn.text() == "Package View") == (connected, connected)

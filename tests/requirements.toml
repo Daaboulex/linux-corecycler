@@ -4900,6 +4900,11 @@ statement = "Every control of the Results tab is listed with its reaction (tests
 proof = "built"
 
 [[requirement]]
+id = "T23.contract.monitor"
+statement = "Every control of the Monitor tab is listed with its reaction (tests/test_monitor_tab.py MONITOR_CONTROLS: the Per-Core View toggle) and the test fails on an unlisted or missing control; the toggle switches the view only through its connection."
+proof = "built"
+
+[[requirement]]
 id = "T23.style"
 statement = "The GUI follows the system Qt style; a probe in a child process falls back to Fusion when the system style would crash, saying why in the log and the status bar."
 proof = "built"
