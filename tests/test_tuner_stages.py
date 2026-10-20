@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import random
 import threading
 from dataclasses import dataclass, field, replace
@@ -332,6 +333,40 @@ def test_the_soak_reads_the_kernel_log_once_more_after_one_machine_check_poll(mo
 
     report = runner(Script([]), detector=Detector).run(spec(Load.SOAK, 0.05), LoggedDuringTheSettle())
     assert [e.core for e in report.evidence] == [1]
+
+
+@pytest.mark.req("HANG.heartbeat")
+@pytest.mark.parametrize("breaks", [False, True], ids=["ends", "raises"])
+def test_the_soak_watch_beats_running_while_it_watches_and_idle_once_it_ends(tmp_path, monkeypatch, breaks):
+    monkeypatch.setattr(kernel, "mce_settle_s", lambda: 0.0)
+    heartbeat = tmp_path / "corecycler" / "heartbeat.json"
+    seen = []
+
+    class Detector:
+        read_started_ns = 7_000
+
+        def reset(self):
+            pass
+
+        def close(self):
+            pass
+
+        def read_new(self, final=False):
+            if not final:
+                seen.append(json.loads(heartbeat.read_text()) if heartbeat.exists() else None)
+                if breaks:
+                    raise RuntimeError("the kernel log reader broke")
+            return kernel.KernelRead((), None)
+
+    soak = runner(Script([]), detector=Detector)
+    soak.heartbeat = heartbeat
+    if breaks:
+        with pytest.raises(RuntimeError, match="the kernel log reader broke"):
+            soak.run(spec(Load.SOAK, 1.2), threading.Event())
+    else:
+        assert soak.run(spec(Load.SOAK, 1.2), threading.Event()).group is Group.PASS
+    assert seen[0] is not None and (seen[0]["state"], seen[0]["test"]) == ("running", "soak watch"), seen[:1]
+    assert json.loads(heartbeat.read_text())["state"] == "idle"
 
 
 def test_a_stopped_soak_is_no_verdict():

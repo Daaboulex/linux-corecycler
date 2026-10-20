@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import json
+import math
 import os
 import sys
 import textwrap
+import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from corecycler.config import tools
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from corecycler.config.tools import Resolution
     from corecycler.history.db import HistoryDB
     from corecycler.tuner.machine.types import CoreRecord
@@ -35,7 +41,12 @@ EXIT_MEANINGS = {
 }
 
 SESSION_COMMANDS = ("resume", "validate", "continue", "restart", "abort")
-COMMANDS = ("doctor", "status", "shaper", "margins", "tune", *SESSION_COMMANDS)
+COMMANDS = ("doctor", "status", "shaper", "margins", "tune", "hang-watch", *SESSION_COMMANDS)
+
+SYSRQ_TRIGGER = Path("/proc/sysrq-trigger")
+HANG_STALE_S = 120.0
+HANG_EVERY_S = 15.0
+RESET_AFTER_SYNC_S = 2.0
 
 USAGE = f"""\
 corecycler headless commands:
@@ -65,6 +76,10 @@ corecycler headless commands:
   corecycler abort SESSION_ID      stop a held session without a driver as aborted: its
                                    last boot is attributed first, then every owned core
                                    goes back to its baseline; no test runs
+  corecycler hang-watch            every 15 s (--every S), reset the machine through
+                                   sysrq when this user's running test has written no
+                                   heartbeat for more than 120 s (--stale-after S) while
+                                   its process lives and is not stopped
 
 tune and restart take --acknowledge to start over a CO the BIOS already sets.
 Every tuning command but resume --interrupted takes --db FILE and
@@ -88,6 +103,8 @@ def cli_main(argv: list[str]) -> int:
         return cmd_margins(rest)
     if command == "tune":
         return drive(["--start", "--write", *rest])
+    if command == "hang-watch":
+        return cmd_hang_watch(rest)
     if command in SESSION_COMMANDS:
         return cmd_session(command, rest)
     print(USAGE, file=sys.stderr)
@@ -98,6 +115,143 @@ def drive(argv: list[str]) -> int:
     from corecycler.tuner.live_hw import main
 
     return main(argv)
+
+
+def seconds(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(text)
+    return value
+
+
+def cmd_hang_watch(rest: list[str]) -> int:
+    import argparse
+    import time
+
+    from corecycler.config.paths import heartbeat_path, invoking_uid
+    from corecycler.smu.writer_lock import process_state
+
+    parser = argparse.ArgumentParser(prog="corecycler hang-watch")
+    parser.add_argument("--stale-after", type=seconds, default=HANG_STALE_S)
+    parser.add_argument("--every", type=seconds, default=HANG_EVERY_S)
+    try:
+        args = parser.parse_args(rest)
+    except SystemExit as refused:
+        return EXIT_REFUSED if refused.code else EXIT_COMPLETED
+    hang_watch(
+        heartbeat_path(invoking_uid()),
+        args.stale_after,
+        args.every,
+        clock=lambda: time.clock_gettime(time.CLOCK_MONOTONIC),
+        state_of=process_state,
+        sysrq=lambda key: SYSRQ_TRIGGER.write_text(key),
+        sysrq_ready=lambda: os.access(SYSRQ_TRIGGER, os.W_OK),
+        say=lambda line: print(line, file=sys.stderr),
+        pause=time.sleep,
+        stop=threading.Event(),
+    )
+    return EXIT_COMPLETED
+
+
+def hang_watch(
+    heartbeat: Path,
+    stale_after: float,
+    every: float,
+    *,
+    clock: Callable[[], float],
+    state_of: Callable[[int], tuple[str, str] | None],
+    sysrq: Callable[[str], None],
+    sysrq_ready: Callable[[], bool],
+    say: Callable[[str], None],
+    pause: Callable[[float], None],
+    stop: threading.Event,
+) -> None:
+    """Read the heartbeat every ``every`` seconds until ``stop``. Only two checks at least ``every`` apart that find
+    the same beat stale, its process live and not stopped on both, prove a hang: one check can land in the seconds
+    a stopped driver needs, once it runs again, to beat."""
+    said = None
+    was_ready = True
+    suspect: tuple[float, float] | None = None
+    while True:
+        ready = sysrq_ready()
+        if was_ready and not ready:
+            say(
+                f"{SYSRQ_TRIGGER} is not writable for this user, so a hung test would not be reset: "
+                "hangReset grants it to the corecycler group"
+            )
+        was_ready = ready
+        now = clock()
+        reason, stale_at = hang_reason(heartbeat, stale_after, now, state_of)
+        if stale_at is None:
+            suspect = None
+        elif suspect is None or suspect[0] != stale_at:
+            suspect = (stale_at, now)
+        proven = suspect is not None and now - suspect[1] >= every
+        if proven and ready:
+            line = f"resetting the machine: {reason}, its last beat {now - stale_at:.0f} s ago"
+            reset(line, sysrq=sysrq, say=say, clock=clock, pause=pause)
+        else:
+            if proven:
+                reason = f"{reason}: not reset, {SYSRQ_TRIGGER} is not writable"
+            if reason != said:
+                say(reason)
+        said = reason
+        if stop.wait(every):
+            return
+
+
+def hang_reason(
+    heartbeat: Path, stale_after: float, now: float, state_of: Callable[[int], tuple[str, str] | None]
+) -> tuple[str, float | None]:
+    """Why the heartbeat shows a hang or does not, and the time of the stale beat when it does: only a running test
+    whose last beat is more than ``stale_after`` seconds behind ``now`` while the very process that wrote it lives,
+    not stopped, shows one."""
+    try:
+        beat = json.loads(heartbeat.read_bytes())
+    except FileNotFoundError:
+        return f"no heartbeat at {heartbeat}: no test is watched", None
+    except OSError as exc:
+        return f"the heartbeat {heartbeat} cannot be read ({exc.strerror}): no test is watched", None
+    except ValueError:
+        return f"the heartbeat {heartbeat} is not JSON: no test is watched", None
+    match beat:
+        case {"state": "idle"}:
+            return "no test is running", None
+        case {
+            "state": "running",
+            "test": str(test),
+            "pid": int(pid),
+            "started": str(started),
+            "at": float(at),
+        } if type(pid) is int and math.isfinite(at):
+            if now - at <= stale_after:
+                return f"{test} runs in pid {pid}", None
+            found = state_of(pid)
+            if found is None or found[1] != started or found[0] in ("Z", "X"):
+                return f"pid {pid} of {test} is gone or reused, so its old heartbeat proves no hang", None
+            if found[0] in ("T", "t"):
+                return f"pid {pid} of {test} is stopped, so its old heartbeat proves no hang", None
+            return f"{test} in pid {pid} stopped beating while its process lives", at
+    return f"the heartbeat {heartbeat} is malformed: no test is watched", None
+
+
+def reset(
+    line: str,
+    *,
+    sysrq: Callable[[str], None],
+    say: Callable[[str], None],
+    clock: Callable[[], float],
+    pause: Callable[[float], None],
+) -> None:
+    """Sync, say why at critical priority so journald syncs the line, and reset RESET_AFTER_SYNC_S after the sync,
+    never later: a log write stuck on a disk, one shape of a hang, is abandoned at that bound."""
+    sysrq("s")
+    due = clock() + RESET_AFTER_SYNC_S
+    saying = threading.Thread(target=say, args=(f"<2>{line}",), daemon=True)
+    saying.start()
+    saying.join(RESET_AFTER_SYNC_S)
+    pause(max(0.0, due - clock()))
+    sysrq("b")
 
 
 def cmd_shaper(rest: list[str]) -> int:

@@ -35,6 +35,11 @@ def data_dir() -> Path:
     return user_home() / ".local" / "share" / "corecycler"
 
 
+def heartbeat_path(uid: int) -> Path:
+    """The heartbeat the hang watch reads, in the user's runtime tmpfs: no boot outlives it, HOME never moves it."""
+    return Path("/run/user") / str(uid) / "corecycler" / "heartbeat.json"
+
+
 def atomic_write(path: Path, content: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.unlink(missing_ok=True)

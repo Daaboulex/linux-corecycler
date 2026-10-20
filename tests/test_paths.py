@@ -175,3 +175,11 @@ class TestHandedBackLog:
         handler.close()
         assert handed == [target]
         assert (tmp_path / "corecycler.log.1").exists()
+
+
+@pytest.mark.req("HANG.path")
+@pytest.mark.parametrize("uid", [0, 1000, 60001])
+def test_the_heartbeat_lives_in_the_user_s_runtime_tmpfs_whatever_home_and_xdg_say(tmp_path, monkeypatch, uid):
+    monkeypatch.setenv("HOME", str(tmp_path / "moved-home"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    assert paths.heartbeat_path(uid) == Path(f"/run/user/{uid}/corecycler/heartbeat.json")

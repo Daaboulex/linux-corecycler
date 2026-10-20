@@ -49,7 +49,8 @@ class TestArgHandling:
         assert "headless commands" in capsys.readouterr().err
 
     @pytest.mark.parametrize(
-        "command", ["doctor", "status", "margins", "tune", "resume", "validate", "continue", "restart", "abort"]
+        "command",
+        ["doctor", "status", "margins", "tune", "resume", "validate", "continue", "restart", "abort", "hang-watch"],
     )
     def test_the_binary_hands_every_command_to_the_cli(self, monkeypatch, command):
         from corecycler import main as entry

@@ -68,6 +68,11 @@ already holds by typing `sudo corecycler`.
   `0664 root:corecycler` when `machineCheckPoll.enable` is on (the default with
   `deviceAccess`). A group member can change how often the kernel polls every CPU's
   machine-check banks; the tuner sets 5 s for its run and puts the old value back.
+- **Sysrq trigger:** `/proc/sysrq-trigger` is `0220 root:corecycler` from each boot when
+  `hangReset.enable` and `deviceAccess` are both on, so the hang watch can reset a hung
+  machine without root. A group member can then run every sysrq function, not only the sync
+  and reboot the watch uses: an immediate reboot or power-off, a kernel crash, killing every
+  process.
 - Any user in the `corecycler` group can send arbitrary SMU commands, not limited to CO.
 - **SMN (`smn`):** also `0660 root:corecycler`. Reading an SMN register is a *write* of its
   address, so read access is unobtainable without write access, and write access to that file

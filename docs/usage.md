@@ -206,6 +206,12 @@ Hard crashes are expected during CO tuning; that is how each core's limit is fou
   Cancel. When a session ends, a scheduling service
   (ananicy-cpp, scx_loader, scx) that is enabled but stopped is named with the command
   that starts it again. Manual stress runs judge a renice the same way.
+- **Hang watch**: `corecycler hang-watch`, run as the user who tunes (on NixOS a user unit
+  of `deviceAccessUser` when `hangReset.enable` and `deviceAccess` are on), resets the
+  machine through the kernel's sysrq when two checks 15 s apart find a running test's
+  heartbeat, the idle watch's included, stopped for more than 120 s while its process lives
+  and is not stopped; between tests (the cool-down, the CO write, the settle) the heartbeat
+  says idle, so a hang there is left to the kernel's panics and the board's watchdog.
 
 `corecycler resume --interrupted` resumes the one session a crash left running; with none
 it does nothing and exits 0, and with two or more it resumes neither and names them. On

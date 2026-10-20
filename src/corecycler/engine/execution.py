@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import functools
+import json
 import logging
 import math
 import os
@@ -18,10 +19,11 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from corecycler.config.paths import hand_back
+from corecycler.config.paths import atomic_write, hand_back
 from corecycler.engine import containment
 from corecycler.engine.backends.base import LaneSignal, Outcome, StressResult, read_text
 from corecycler.engine.detector import KernelTrouble, UnblamedMachineCheck
+from corecycler.smu.writer_lock import start_time
 
 if TYPE_CHECKING:
     import threading
@@ -37,6 +39,7 @@ log = logging.getLogger(__name__)
 STALL_GRACE_SECONDS = 5.0
 OUTPUT_SCAN_INTERVAL = 5.0
 WATCHDOG_INTERVAL = 2.0
+HEARTBEAT_EVERY_S = 5.0
 POLICY_NAMES = {
     os.SCHED_OTHER: "normal",
     os.SCHED_BATCH: "batch",
@@ -294,6 +297,46 @@ def kept_output(text: str) -> str:
     return f"({len(text) - OUTPUT_KEPT_CHARS} earlier characters not kept)\n{text[-OUTPUT_KEPT_CHARS:]}"
 
 
+class Heartbeat:
+    """The beat the hang watch reads: running at most every HEARTBEAT_EVERY_S while a test makes progress, idle once
+    it ends. A beat that cannot be written leaves no older one behind, so a stale beat never looks like a hang."""
+
+    def __init__(self, path: Path | None) -> None:
+        self.path = path
+        self.due = -math.inf
+        self.failed = False
+
+    def running(self, test: str, now: float) -> None:
+        if now < self.due:
+            return
+        self.due = now + HEARTBEAT_EVERY_S
+        self._write("running", test=test)
+
+    def idle(self) -> None:
+        self._write("idle")
+
+    def _write(self, state: str, **fields: str) -> None:
+        if self.path is None:
+            return
+        beat = {
+            "state": state,
+            **fields,
+            "pid": os.getpid(),
+            "started": start_time(os.getpid()),
+            "at": time.clock_gettime(time.CLOCK_MONOTONIC),
+        }
+        try:
+            self.path.parent.mkdir(exist_ok=True)
+            hand_back(self.path.parent)
+            atomic_write(self.path, json.dumps(beat))
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                self.path.unlink()
+            if not self.failed:
+                log.error("the heartbeat %s could not be written, so no hang watch sees this test: %s", self.path, exc)
+            self.failed = True
+
+
 class Supervisor:
     def __init__(
         self,
@@ -312,6 +355,7 @@ class Supervisor:
         containment_for: Callable[[tuple[int, ...]], containment.Containment | None] | None = None,
         freeze: Callable[[float, SensorRead], bool] | None = None,
         hold_cap_s: float | None = None,
+        heartbeat: Path | None = None,
     ) -> None:
         self.backend = backend
         self.detector = detector
@@ -327,16 +371,18 @@ class Supervisor:
         self._containment_for = containment_for or containment.contain
         self.freeze = freeze
         self.hold_cap_s = hold_cap_s
+        self.heartbeat = heartbeat
 
     def run(self, lanes: list[Lane], config: StressConfig, duration: float) -> dict[int, StressResult]:
         start = time.monotonic()
         runs = [_LaneRun(lane=lane, deadline=start + duration) for lane in lanes]
+        beats = Heartbeat(self.heartbeat)
         try:
             try:
                 for run in runs:
                     if not self._launch(run, replace(config, threads=len(run.lane.cpus), cpus=run.lane.cpus)):
                         break
-                self._watch(runs, start, start + duration)
+                self._watch(runs, start, start + duration, beats)
             finally:
                 self._stop_all(runs)
             for run in runs:
@@ -346,6 +392,7 @@ class Supervisor:
             self._take_kernel_events(runs, final=True)
             return {run.lane.core_id: self._grade(run) for run in runs}
         finally:
+            beats.idle()
             for run in runs:
                 self._remove_run_dir(run)
 
@@ -386,13 +433,15 @@ class Supervisor:
         run.progress_window = self.backend.progress_window(cfg)
         return True
 
-    def _watch(self, runs: list[_LaneRun], start: float, deadline: float) -> None:
+    def _watch(self, runs: list[_LaneRun], start: float, deadline: float, beats: Heartbeat) -> None:
         last_scan = start
+        test = f"{self.phase} on CPUs {containment.cpu_list([cpu for run in runs for cpu in run.lane.cpus])}"
         duration = deadline - start
         while not self.stop_event.is_set():
             now = time.monotonic()
             if now >= deadline:
                 return
+            beats.running(test, now)
             reading = self.sensors()
             if self.freeze is not None:
                 self._set_frozen(runs, self.freeze(now - start, reading), now)

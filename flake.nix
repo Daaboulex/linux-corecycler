@@ -459,7 +459,16 @@
                   blacklisted = tunerEval { hangReset.enable = true; } {
                     boot.blacklistedKernelModules = [ "sp5100_tco" ];
                   };
+                  noAccess = tunerEval {
+                    hangReset.enable = true;
+                    deviceAccess = false;
+                  } { };
                   sysctl = config: name: config.boot.kernel.sysctl.${name} or null;
+                  grants = config: config.systemd.services ? corecycler-sysrq-trigger;
+                  watches = config: config.systemd.user.services ? corecycler-hang-watch;
+                  lingers = config: config.users.users.corecycler-test.linger == true;
+                  grant = on.systemd.services.corecycler-sysrq-trigger;
+                  watch = on.systemd.user.services.corecycler-hang-watch;
                   problems =
                     lib.optional (
                       sysctl byDefault "kernel.panic_on_rcu_stall" != null
@@ -480,7 +489,33 @@
                     ) "a host's own kernel.panic does not win over hangReset"
                     ++ lib.optional (
                       !lib.any (lib.hasInfix "lists sp5100_tco") (failedAssertions blacklisted)
-                    ) "hangReset with a blacklisted watchdog driver is not refused";
+                    ) "hangReset with a blacklisted watchdog driver is not refused"
+                    ++ lib.optional (
+                      !grants on
+                      ||
+                        map (command: lib.last (lib.splitString "/bin/" command)) grant.serviceConfig.ExecStart != [
+                          "chgrp corecycler /proc/sysrq-trigger"
+                          "chmod 0220 /proc/sysrq-trigger"
+                        ]
+                      || grant.serviceConfig.Type != "oneshot"
+                      || !lib.elem "systemd-user-sessions.service" grant.before
+                    ) "hangReset with deviceAccess does not grant the corecycler group the sysrq trigger"
+                    ++ lib.optional (
+                      !watches on
+                      ||
+                        watch.serviceConfig.ExecStart != "${lib.getExe inputs.self.packages.${system}.default} hang-watch"
+                      || watch.serviceConfig.Restart != "always"
+                      || watch.serviceConfig.RestartSec or null != 15
+                      || watch.unitConfig.ConditionUser != "corecycler-test"
+                      || !lib.elem "default.target" watch.wantedBy
+                      || !lingers on
+                    ) "hangReset with deviceAccess does not run corecycler hang-watch as the lingering deviceAccessUser"
+                    ++ lib.optional (
+                      grants byDefault || watches byDefault || lingers byDefault
+                    ) "the tuner by default grants the sysrq trigger or runs the hang watch"
+                    ++ lib.optional (
+                      grants noAccess || watches noAccess || lingers noAccess
+                    ) "hangReset without deviceAccess grants the sysrq trigger or runs the hang watch";
                 in
                 if problems == [ ] then
                   b.pkgs.runCommand "module-hang-reset" { } "touch $out"

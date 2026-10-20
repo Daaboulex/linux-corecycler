@@ -28,14 +28,14 @@ from corecycler.cli import (
     EXIT_VALIDATION_ABORTED,
 )
 from corecycler.config import tools
-from corecycler.config.paths import data_dir
+from corecycler.config.paths import data_dir, heartbeat_path, invoking_uid
 from corecycler.config.settings import load_settings
 from corecycler.engine import detector as kernel
 from corecycler.engine.backends import get_backend, ycruncher
 from corecycler.engine.backends.base import OutcomeKind, StressConfig, StressMode
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.containment import lane_cgroup_parent, lane_problem
-from corecycler.engine.execution import Lane, Supervisor, ThermalWatch
+from corecycler.engine.execution import Heartbeat, Lane, Supervisor, ThermalWatch
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.history.context import read_bios_version
 from corecycler.history.db import HistoryDB
@@ -585,6 +585,7 @@ class StressRunner:
         memory_backend=None,
         budget=None,
         say: Callable[[str], None] = print,
+        heartbeat: Path | None = None,
     ) -> None:
         self.backend_factory = backend_factory
         self.work_dir = work_dir
@@ -596,6 +597,7 @@ class StressRunner:
         self.memory_backend = memory_backend or (lambda: get_backend("stressapptest"))
         self.budget = budget or lane_budget
         self.say = say
+        self.heartbeat = heartbeat
         self.runs = 0
         self.read_ns: int | None = None
         self.sink: Callable[[telemetry.Sample], None] | None = None
@@ -630,6 +632,7 @@ class StressRunner:
                 phase=f"{spec.stage.value} {(spec.load or spec.klass).value}",
                 freeze=freeze,
                 hold_cap_s=hold_cap_s,
+                heartbeat=self.heartbeat,
             )
             results = supervisor.run(lanes, config, seconds)
             self.read_ns = watch.read_started_ns
@@ -764,10 +767,12 @@ class StressRunner:
         watch.reset()
         observed: list = []
         problem = None
+        beats = Heartbeat(self.heartbeat)
         try:
             started = time.monotonic()
             end = started + spec.seconds
             while time.monotonic() < end and not stop.wait(min(1.0, max(0.0, end - time.monotonic()))):
+                beats.running("soak watch", time.monotonic())
                 read = watch.read_new()
                 observed.extend(read.events)
                 problem = problem or read.problem
@@ -778,6 +783,7 @@ class StressRunner:
             problem = problem or read.problem
             self.read_ns = watch.read_started_ns
         finally:
+            beats.idle()
             watch.close()
         evidence = tuple(
             Evidence(self.core_of_cpu[e.cpu], e.corrected)
@@ -864,7 +870,15 @@ def build_rig(
             tools=(backend_factory(), get_backend("stressapptest")),
             vcache=vcache_fact(topology),
         ),
-        runner=StressRunner(backend_factory, args.state_dir / "runs", core_of_cpu, sensors, Clocks().read, say=say),
+        runner=StressRunner(
+            backend_factory,
+            args.state_dir / "runs",
+            core_of_cpu,
+            sensors,
+            Clocks().read,
+            say=say,
+            heartbeat=heartbeat_path(invoking_uid()),
+        ),
         store=Store(db, args.state_dir, identity),
         cpus_of=cpus_of,
         domain_of=domain_of,

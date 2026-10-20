@@ -1880,6 +1880,46 @@ def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, 
     assert seen.count(6.0) == 2
 
 
+@pytest.mark.req("HANG.heartbeat", "HANG.path")
+@pytest.mark.parametrize("sudo_uid", [None, 1234], ids=["as the user", "as root under sudo"])
+def test_the_driver_hands_its_invoking_user_s_heartbeat_to_the_supervisor_of_each_test(tmp_path, monkeypatch, sudo_uid):
+    from corecycler.config.paths import heartbeat_path
+
+    handed = []
+
+    class FakeDetector:
+        read_started_ns = 0
+
+        def reset(self):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeSupervisor:
+        def __init__(self, **kwargs):
+            handed.append(kwargs.get("heartbeat"))
+
+        def run(self, lanes, cfg, duration):
+            core = lanes[0].core_id
+            return {core: StressResult(core_id=core, outcome=Outcome.PASS, detail="", duration_seconds=duration)}
+
+    monkeypatch.setattr(live_hw.kernel, "ErrorDetector", FakeDetector)
+    monkeypatch.setattr(live_hw.kernel, "mce_settle_s", lambda: 0.0)
+    args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--start", "--cores", "0", "--max-offset", "-8"])
+    kagari = SimpleNamespace(binary_problem=lambda name: None)
+    db = database(tmp_path / "hb.db")
+    with monkeypatch.context() as sudo:
+        if sudo_uid is not None:
+            sudo.setattr(os, "geteuid", lambda: 0)
+            sudo.setenv("SUDO_UID", str(sudo_uid))
+        built = live_hw.build_rig(args, topology(), FakeSmu(), lambda: kagari, lambda line: None, db, IDENTITY)
+    built.runner.supervisor = FakeSupervisor
+    spec = Spec(Klass.T1, 0, -5, (16,), 60.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0)
+    assert built.runner.run(spec, threading.Event()).group is Group.PASS
+    assert handed == [heartbeat_path(os.getuid() if sudo_uid is None else sudo_uid)]
+
+
 def topology():
     cores = {core: SimpleNamespace(logical_cpus=cpus, ccd=dict(DOMAINS)[core]) for core, cpus in CPUS}
     return SimpleNamespace(cores=cores, model_name="cpu-1", is_x3d=False, vcache_ccd=None)

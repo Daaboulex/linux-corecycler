@@ -49,12 +49,19 @@ def running_driver() -> int | None:
     return pid if start_time(pid) == started else None
 
 
-def start_time(pid: int) -> str | None:
+def process_state(pid: int) -> tuple[str, str] | None:
+    """The state letter and start time /proc gives the process, read after the last parenthesis since its name may
+    hold any byte, or None when it is gone or cannot be read."""
     try:
-        stat = read_text(Path(f"/proc/{pid}/stat"))
+        fields = read_text(Path(f"/proc/{pid}/stat")).rpartition(")")[2].split()
     except OSError:
         return None
-    return stat.rsplit(")", 1)[1].split()[19]
+    return fields[0], fields[19]
+
+
+def start_time(pid: int) -> str | None:
+    state = process_state(pid)
+    return None if state is None else state[1]
 
 
 def _note(lock: TextIO, text: str) -> None:

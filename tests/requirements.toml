@@ -4944,3 +4944,28 @@ proof = "built"
 id = "O19.stretch"
 statement = "A core's clock stretch is its effective clock below the clock it runs at, read from the PM table's per-core arrays on table 0x620205 only and only with the core at 95 % C0 or more; the Monitor, the core grid and the Results peak show it per core, each stress-run sample records the tested core's PM clock, effective clock, C0 and voltage, and History prints the peak and median stretch from them (scratch/design/clock-stretch.md, step 4)."
 proof = "built"
+
+[[requirement]]
+id = "HANG.path"
+statement = "The heartbeat the driver writes and the watch reads is /run/user/<uid>/corecycler/heartbeat.json for the invoking user, the sudo user under sudo, in a tmpfs no boot outlives, whatever HOME and XDG_RUNTIME_DIR say; the directory a root run makes for it is handed back to that user (scratch/design/hang-reset.md change 2)."
+proof = "built"
+
+[[requirement]]
+id = "HANG.heartbeat"
+statement = "While a supervised test runs, its heartbeat says running with the stage, load and CPUs, the driver's pid and process start time and CLOCK_MONOTONIC, renewed every 5 s and never sooner, written atomically into a directory made when missing; whatever ends the run, a pass, a failure or an exception, it then says idle; the idle watch (SOAK) beats the same way as soak watch; the driver hands its invoking user's heartbeat to every supervised test and idle watch, so only between tests it says idle (scratch/design/hang-reset.md change 2)."
+proof = "built"
+
+[[requirement]]
+id = "HANG.write"
+statement = "A heartbeat that cannot be written never ends the test, is logged once per run, and leaves no earlier running heartbeat behind (scratch/design/hang-reset.md change 2)."
+proof = "built"
+
+[[requirement]]
+id = "HANG.watch"
+statement = "corecycler hang-watch, run as the driver's user, reads that user's heartbeat every --every seconds (15) and resets only when two checks at least --every apart both find the same beat running, its time more than --stale-after seconds (120) behind CLOCK_MONOTONIC and its pid live with the start time it names, read as bytes after the last parenthesis of /proc/<pid>/stat, and not stopped; a beat stale on one check and idle, fresh, of another time or stopped on the next never resets; a fresh, idle, missing, unreadable or malformed heartbeat, one without a start time, a gone, reused, zombie or stopped pid and exactly the limit never reset, each reason is said once per change, a trigger the user may not write is said each time it becomes so, nothing resets while it stays so and a proven hang is said to be left unreset, and a limit or period that is not a positive number of seconds is refused; with hangReset and deviceAccess on, the corecycler group gets the trigger and a user unit of the deviceAccessUser, who lingers, runs it from boot, restarted 15 s after a crash, with the trigger granted before any user manager starts, and with either off neither exists (flake check module-hang-reset) (scratch/design/hang-reset.md change 2)."
+proof = "built"
+
+[[requirement]]
+id = "HANG.reset"
+statement = "A proven hang writes s to /proc/sysrq-trigger, then says the test, the pid and the age at critical priority, which journald syncs at once, abandoning a log that blocks, then writes b exactly 2 s after s, never sooner and never later however long the line took (scratch/design/hang-reset.md change 2)."
+proof = "built"
