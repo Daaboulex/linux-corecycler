@@ -60,6 +60,27 @@ def test_a_dead_or_reused_pid_names_no_driver(writer_dir):
     assert running_driver() is None
 
 
+RENAMES_ITSELF = """
+import sys, time
+with open("/proc/self/comm", "wb") as comm:
+    comm.write(bytes.fromhex(sys.argv[1]))
+print(flush=True)
+time.sleep(30)
+"""
+
+
+def test_the_start_time_of_a_process_whose_name_is_not_utf8_is_read():
+    child = subprocess.Popen([sys.executable, "-c", RENAMES_ITSELF, b"\xe2\x82x) R 1 2".hex()], stdout=subprocess.PIPE)
+    try:
+        child.stdout.readline()
+        assert Path(f"/proc/{child.pid}/comm").read_bytes() == b"\xe2\x82x) R 1 2\n"
+        started = start_time(child.pid)
+    finally:
+        child.kill()
+        child.wait()
+    assert started is not None and started.isdigit(), started
+
+
 def test_the_start_time_is_when_the_process_started_since_boot():
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:

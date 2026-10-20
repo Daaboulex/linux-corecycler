@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 
 from corecycler.config.paths import data_dir, hand_back
+from corecycler.engine.backends.base import read_text
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -50,7 +51,7 @@ def running_driver() -> int | None:
 
 def start_time(pid: int) -> str | None:
     try:
-        stat = Path(f"/proc/{pid}/stat").read_text()
+        stat = read_text(Path(f"/proc/{pid}/stat"))
     except OSError:
         return None
     return stat.rsplit(")", 1)[1].split()[19]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 import threading
@@ -586,3 +587,34 @@ class TestRemainingLoopEdges:
         assert verdict.outcome is Outcome.COMPUTATION
         assert "SUMOUT" in verdict.detail
         assert verdict.duration_seconds < 5.0
+
+
+CUT_NAME = b"\xe2\x82x) R 1 2"
+
+
+def proc_stat(pid: int, ppid: int, *, pgrp: int = 0, ticks: tuple[int, ...] = (0, 0, 0, 0)) -> bytes:
+    rest = ["S", str(ppid), str(pgrp), *["0"] * 8, *map(str, ticks), *["0"] * 40]
+    return f"{pid} (".encode() + CUT_NAME + b") " + " ".join(rest).encode() + b"\n"
+
+
+class TestNamesCutInsideACharacter:
+    def test_the_tree_walk_and_its_reads_keep_a_process_whose_name_is_not_utf8(self, tmp_path):
+        for pid, ppid in ((700, 1), (701, 700)):
+            task = tmp_path / str(pid) / "task" / str(pid)
+            task.mkdir(parents=True)
+            (tmp_path / str(pid) / "stat").write_bytes(proc_stat(pid, ppid))
+            (task / "stat").write_bytes(proc_stat(pid, ppid))
+            (task / "status").write_bytes(b"Name:\t" + CUT_NAME + b"\nCpus_allowed_list:\t" + str(pid - 697).encode())
+        assert containment.observed_tree_cpus(700, proc_base=tmp_path) == {3, 4}
+        assert sorted(
+            tid for _name, tid, _priority, _policy in containment.tree_scheduling(700, proc_base=tmp_path)
+        ) == [
+            700,
+            701,
+        ]
+
+    @pytest.mark.real_cpu_time
+    def test_a_group_member_whose_name_is_not_utf8_is_counted(self, tmp_path):
+        (tmp_path / "800").mkdir()
+        (tmp_path / "800" / "stat").write_bytes(proc_stat(800, 1, pgrp=800, ticks=(100, 50, 7, 3)))
+        assert containment.process_group_cpu_seconds(800, proc_base=tmp_path) == 160 / os.sysconf("SC_CLK_TCK")

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from corecycler.config import tools
+from corecycler.engine.backends.base import read_text
 from corecycler.engine.memory_budget import unified_cgroup_path
 
 log = logging.getLogger(__name__)
@@ -128,7 +129,7 @@ def process_group_cpu_seconds(pgid: int, *, proc_base: Path | None = None) -> fl
     ticks: int | None = None
     for stat_path in base.glob("[0-9]*/stat"):
         try:
-            fields = stat_path.read_text().rpartition(")")[2].split()
+            fields = read_text(stat_path).rpartition(")")[2].split()
             if int(fields[2]) != pgid:
                 continue
             utime, stime, cutime, cstime = (int(value) for value in fields[11:15])
@@ -314,7 +315,7 @@ def observed_tree_cpus(pid: int, *, proc_base: Path | None = None) -> set[int]:
         for tid_dir in tids:
             status_path = tid_dir / "status"
             try:
-                for line in status_path.read_text().splitlines():
+                for line in read_text(status_path).splitlines():
                     if line.startswith("Cpus_allowed_list:"):
                         allowed |= _parse_cpu_ranges(line.split(":", 1)[1].strip())
                         break
@@ -337,7 +338,7 @@ def tree_scheduling(pid: int, *, proc_base: Path | None = None) -> list[tuple[st
             continue
         for task in tasks:
             try:
-                stat = (task / "stat").read_text()
+                stat = read_text(task / "stat")
             except OSError:
                 continue
             fields = stat[stat.rfind(")") + 1 :].split()
@@ -356,7 +357,7 @@ def _process_tree(root_pid: int, base: Path) -> list[int]:
             if not entry.name.isdigit():
                 continue
             try:
-                stat = (entry / "stat").read_text()
+                stat = read_text(entry / "stat")
             except OSError:
                 continue
             rparen = stat.rfind(")")
