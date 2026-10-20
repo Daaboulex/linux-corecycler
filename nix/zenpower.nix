@@ -32,7 +32,7 @@ toolchain.stdenv.mkDerivation {
 
   hardeningDisable = [ "pic" ];
 
-  inherit (toolchain) nativeBuildInputs;
+  inherit (toolchain) nativeBuildInputs installFlags installTargets;
 
   makeFlags =
     toolchain.makeFlags
@@ -42,12 +42,6 @@ toolchain.stdenv.mkDerivation {
     ++ lib.optionals toolchain.isClang [
       "KCFLAGS=-Wno-unused-command-line-argument -Wno-unknown-warning-option"
     ];
-
-  installPhase = ''
-    runHook preInstall
-    install -D zenpower.ko -t "$out/lib/modules/${kernel.modDirVersion}/kernel/drivers/hwmon/zenpower/"
-    runHook postInstall
-  '';
 
   meta = {
     homepage = "https://github.com/mattkeenan/zenpower5";

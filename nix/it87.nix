@@ -26,7 +26,7 @@ toolchain.stdenv.mkDerivation {
 
   hardeningDisable = [ "pic" ];
 
-  inherit (toolchain) nativeBuildInputs;
+  inherit (toolchain) nativeBuildInputs installFlags installTargets;
 
   makeFlags =
     toolchain.makeFlags
@@ -36,12 +36,6 @@ toolchain.stdenv.mkDerivation {
     ++ lib.optionals toolchain.isClang [
       "KCFLAGS=-Wno-unused-command-line-argument"
     ];
-
-  installPhase = ''
-    runHook preInstall
-    install -D it87.ko -t "$out/lib/modules/${kernel.modDirVersion}/updates/drivers/hwmon/"
-    runHook postInstall
-  '';
 
   meta = {
     homepage = "https://github.com/frankcrawford/it87";

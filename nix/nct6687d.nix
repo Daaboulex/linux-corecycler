@@ -19,7 +19,7 @@ toolchain.stdenv.mkDerivation {
 
   hardeningDisable = [ "pic" ];
 
-  inherit (toolchain) nativeBuildInputs;
+  inherit (toolchain) nativeBuildInputs installFlags installTargets;
 
   makeFlags = toolchain.makeFlags ++ [
     "KVER=${kernel.modDirVersion}"
@@ -27,12 +27,6 @@ toolchain.stdenv.mkDerivation {
   ];
 
   buildFlags = [ "modules" ];
-
-  installPhase = ''
-    runHook preInstall
-    install -D nct6687.ko -t "$out/lib/modules/${kernel.modDirVersion}/updates/drivers/hwmon/"
-    runHook postInstall
-  '';
 
   meta = {
     homepage = "https://github.com/Fred78290/nct6687d";

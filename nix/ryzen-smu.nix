@@ -25,7 +25,7 @@ toolchain.stdenv.mkDerivation {
 
   hardeningDisable = [ "pic" ];
 
-  inherit (toolchain) nativeBuildInputs;
+  inherit (toolchain) nativeBuildInputs installFlags installTargets;
 
   makeFlags =
     toolchain.makeFlags
@@ -36,12 +36,6 @@ toolchain.stdenv.mkDerivation {
     ++ lib.optionals toolchain.isClang [
       "KCFLAGS=-Wno-unused-command-line-argument"
     ];
-
-  installPhase = ''
-    runHook preInstall
-    install ryzen_smu.ko -Dm444 -t $out/lib/modules/${kernel.modDirVersion}/kernel/drivers/ryzen_smu
-    runHook postInstall
-  '';
 
   meta = {
     description = "Linux kernel driver that exposes access to the SMU for AMD Ryzen Processors";

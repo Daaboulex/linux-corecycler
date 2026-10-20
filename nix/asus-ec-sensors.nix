@@ -19,7 +19,7 @@ toolchain.stdenv.mkDerivation {
 
   hardeningDisable = [ "pic" ];
 
-  inherit (toolchain) nativeBuildInputs;
+  inherit (toolchain) nativeBuildInputs installFlags installTargets;
 
   makeFlags =
     toolchain.makeFlags
@@ -32,12 +32,6 @@ toolchain.stdenv.mkDerivation {
     ];
 
   buildFlags = [ "modules" ];
-
-  installPhase = ''
-    runHook preInstall
-    install -D asus-ec-sensors.ko -t "$out/lib/modules/${kernel.modDirVersion}/updates/drivers/hwmon/"
-    runHook postInstall
-  '';
 
   meta = {
     homepage = "https://github.com/zeule/asus-ec-sensors";

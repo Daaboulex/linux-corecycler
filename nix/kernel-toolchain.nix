@@ -13,10 +13,20 @@ in
 if missing != [ ] then
   throw "the kernel ${kernel.name or "given"} does not expose ${lib.concatStringsSep ", " missing}, so a driver cannot be built with the toolchain that built it"
 else
+  let
+    build = "${kernel.dev}/lib/modules/${kernel.modDirVersion}/build";
+  in
   {
+    inherit build;
     inherit (kernel) stdenv;
     nativeBuildInputs = kernel.moduleBuildDependencies;
     makeFlags = kernel.commonMakeFlags;
+    installFlags = [
+      "-C"
+      build
+      "M=$(PWD)"
+      "INSTALL_MOD_PATH=${placeholder "out"}"
+    ];
+    installTargets = [ "modules_install" ];
     isClang = kernel.stdenv.cc.isClang or false;
-    build = "${kernel.dev}/lib/modules/${kernel.modDirVersion}/build";
   }
