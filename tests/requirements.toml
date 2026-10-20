@@ -1944,12 +1944,12 @@ proof = "built"
 
 [[requirement]]
 id = "L09.seed.distinct"
-statement = "Every planned stage test of a run carries its own plan seed: the stage, load, pass, round and step each tell two tests apart (owner 2026-10-20)"
+statement = "Every planned stage test of a run carries its own plan seed: the stage, pass, round and step each tell two tests apart, and the load follows from the step (owner 2026-10-20)"
 proof = "built"
 
 [[requirement]]
 id = "L09.retest.named"
-statement = "A full-set replay that fails naming owned cores follows the entry stage's own named rule: only those cores back off and the Bisect returns to the entry stage, the memory lanes through their LIVE1 slots; only a failure naming no core takes the full-set rule (owner 2026-10-16 and 2026-10-20)"
+statement = "A full-set replay that fails naming owned cores follows the entry stage's own named rule: only those cores back off and the Bisect returns to the entry stage, the memory lanes through their LIVE1 slots; only a failure naming no core that can still move takes the full-set rule (owner 2026-10-16 and 2026-10-20)"
 proof = "built"
 
 [[requirement]]
