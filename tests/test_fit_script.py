@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -18,6 +19,29 @@ ROOMY = {"MemTotal": 32000, "MemAvailable": 30000}
 def test_the_meminfo_text_reads_in_mib():
     text = "MemTotal:       32548096 kB\nMemAvailable:   14486592 kB\nHugePages_Total:       0\n"
     assert fit.meminfo(text) == {"MemTotal": 31785, "MemAvailable": 14147, "HugePages_Total": 0}
+
+
+HOLDS_MEMORY_UNDER_A_CUT_NAME = """
+import sys, time
+with open("/proc/self/comm", "wb") as comm:
+    comm.write(b"\\xe2\\x82x) R 1 2")
+held = bytearray(64 * 1024 * 1024)
+held[::4096] = b"x" * len(held[::4096])
+print(flush=True)
+time.sleep(30)
+"""
+
+
+def test_the_memory_of_a_process_whose_name_is_not_utf8_is_read():
+    child = subprocess.Popen([sys.executable, "-c", HOLDS_MEMORY_UNDER_A_CUT_NAME], stdout=subprocess.PIPE)
+    try:
+        child.stdout.readline()
+        assert Path(f"/proc/{child.pid}/comm").read_bytes() == b"\xe2\x82x) R 1 2\n"
+        held = fit._rss_mb(child.pid)
+    finally:
+        child.kill()
+        child.wait()
+    assert held >= 64, held
 
 
 @pytest.mark.parametrize(

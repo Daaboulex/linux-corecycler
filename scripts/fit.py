@@ -71,10 +71,10 @@ def _tree(pid: int) -> list[int]:
 
 def _rss_mb(pid: int) -> int:
     try:
-        status = Path(f"/proc/{pid}/status").read_text()
+        status = Path(f"/proc/{pid}/status").read_bytes()
     except OSError:
         return 0
-    return next((int(line.split()[1]) // 1024 for line in status.splitlines() if line.startswith("VmRSS:")), 0)
+    return next((int(line.split()[1]) // 1024 for line in status.splitlines() if line.startswith(b"VmRSS:")), 0)
 
 
 def _yield() -> None:
