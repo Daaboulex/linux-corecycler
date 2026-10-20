@@ -106,6 +106,7 @@ def key(fake: Fake) -> tuple:
         fake.now,
         fake.temperature,
         fake.crash_note,
+        fake.died_in,
         fake.power,
         fake.setup,
         fake.boot - fake.stored_boot,
@@ -381,6 +382,7 @@ def test_every_future_of_a_tiny_cpu_ends_completed_or_quarantined_and_breaks_no_
         ([-3, -2], None, None, True, False),
         ([-3, -2], {0: -2, 1: -2}, None, False, True),
         ([-3, -2], None, {0: -2, 1: -1}, True, True),
+        ([-5, -6], None, {0: -5, 1: -2}, False, False),
     ],
 )
 @pytest.mark.req("D24", "L00.g")

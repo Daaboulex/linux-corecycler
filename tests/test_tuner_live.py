@@ -38,6 +38,7 @@ from corecycler.tuner.machine.types import (
     Close,
     CrashEvidenceRead,
     Evidence,
+    FailContext,
     Group,
     Incident,
     InFlight,
@@ -343,6 +344,28 @@ def test_a_reclaim_in_progress_survives_the_session_file_and_an_older_file_reads
         del core["skipped"], core["reclaim_floor"]
     none_in_progress = tuple(replace(r, skipped=None, reclaim_floor=None) for r in st.cores)
     assert stored_from_json(older) == replace(st, cores=none_in_progress)
+
+
+@pytest.mark.req("C1.one_off")
+def test_a_one_off_mark_survives_the_session_file_and_an_older_file_reads_as_no_mark_and_resumes():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, k_1t=1, k_2t=1, wait_between_cores_s=0.0)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.STEADY:
+        assert fake.progress()
+    fake.deliver(Report(Group.SILICON, 1.0, context=FailContext(steady=True, working=(0, 1), paused=False)))
+    while fake.db.flow.one_off is None:
+        assert fake.progress()
+    st = fake.db
+    assert st.flow.one_off == (Stage.STEADY, ((0, -3), (1, -3)))
+    assert stored_from_json(json.loads(json.dumps(stored_to_json(st)))) == st
+    older = json.loads(json.dumps(stored_to_json(st)))
+    del older["flow"]["one_off"]
+    assert stored_from_json(older) == replace(st, flow=replace(st.flow, one_off=None))
+    fake.crash()
+    fake.db = stored_from_json(older)
+    fake.post(Resume(1))
+    run_to_rest(fake, 5000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
 
 
 def rows(r: LiveRig, sql: str, params: tuple = ()) -> list:

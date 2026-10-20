@@ -25,6 +25,7 @@ from corecycler.tuner.machine.types import (
     Group,
     InFlight,
     Lifecycle,
+    Load,
     MachineConfig,
     MarkSurvived,
     PauseReason,
@@ -43,6 +44,7 @@ from corecycler.tuner.machine.types import (
     StopWorker,
     Stored,
     Supersede,
+    TestSpec,
     Transition,
     Waiting,
     WorkerReported,
@@ -123,6 +125,7 @@ class Fake:
     edges_memory: dict[int, int] | None = None
     memory_skip: str = ""
     crash_note: tuple[tuple[Evidence, ...], bool] = ((), False)
+    died_in: TestSpec | None = None
     journal: tuple[JournalRow, ...] = ()
     journal_seq: int = 0
     dead_suspects: tuple[int, ...] = ()
@@ -296,6 +299,7 @@ class Fake:
                 self.crash_note = ((), False)
                 suspects = self.dead_suspects if dirty else ()
                 self.dead_suspects = ()
+                died, self.died_in = (self.died_in if dirty else None), None
                 return CrashEvidenceRead(
                     dirty_end=dirty,
                     same_boot=not dirty,
@@ -309,6 +313,7 @@ class Fake:
                     if dirty
                     else tuple(sorted({row.core_id: row.value for row in self.journal if row.confirmed}.items())),
                     marked_now=self.marker_boot == self.boot,
+                    context=self.crash_context(died),
                 )
             case WriteStockMarker():
                 self.marker_boot = self.boot
@@ -490,8 +495,15 @@ class Fake:
         self.now = max(self.now, due)
         self.post(ContinuationDue(token))
 
+    def crash_context(self, died: TestSpec | None) -> FailContext | None:
+        if died is None:
+            return None
+        working = tuple(core for core, cpus in self.layout.cpus_of if set(cpus) & set(died.cpus))
+        return FailContext(steady=died.load is Load.HOT, working=working, paused=False, mhz=5000.0, tctl=70.0)
+
     def crash(self, evidence: tuple[Evidence, ...] = (), shared: bool = False) -> None:
         self.crash_note = (evidence, shared)
+        self.died_in = None if self.worker is None else self.worker.spec
         self.dead_suspects = tuple(sorted(crash_suspects(resident_at_death(self.journal), -1)))
         self.journal = ()
         self.state = SessionState(next_token=self.state.next_token)

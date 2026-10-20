@@ -69,7 +69,6 @@ from corecycler.tuner.machine.types import (
     PauseReason,
     PauseRequest,
     Report,
-    Stage,
 )
 from corecycler.tuner.orders import default_method
 
@@ -598,7 +597,6 @@ class StressRunner:
         self.budget = budget or lane_budget
         self.say = say
         self.heartbeat = heartbeat
-        self.runs = 0
         self.read_ns: int | None = None
         self.sink: Callable[[telemetry.Sample], None] | None = None
 
@@ -651,7 +649,6 @@ class StressRunner:
         return replace(report, kernel_read_ns=self.read_ns)
 
     def _run(self, spec: TestSpec, stop: threading.Event) -> Report:
-        self.runs += 1
         if spec.load is Load.SOAK:
             return self._soak(spec, stop)
         if spec.load in (None, Load.ONE_T, Load.TWO_T):
@@ -684,7 +681,9 @@ class StressRunner:
                 }
             )
         )
-        rng = random.Random(f"{spec.stage.value}:{spec.load.value}:{spec.vector}:{self.runs}")
+        if spec.plan_seed is None:
+            raise ValueError(f"the {spec.load.value} test carries no plan seed, so its pattern could not be replayed")
+        rng = random.Random(spec.plan_seed)
         segments = stages.plan(
             spec.load,
             spec.seconds,
@@ -693,7 +692,7 @@ class StressRunner:
             self.budget(1, 0).usable_mb,  # equivalent-mutant: usable memory ignores both arguments
             rng,
             spec.thermal_limit_c,
-            quick=spec.stage is Stage.BISECT,
+            quick=spec.quick,
         )
         memory = ", ".join(str(mb) for mb in sorted({segment.memory_mb for segment in segments}))
         self.say(f"{spec.load.value} runs y-cruncher with {memory} MB")

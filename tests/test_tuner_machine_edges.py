@@ -374,8 +374,10 @@ def test_starts_named_in_the_configuration_win_over_a_hint():
 
 
 @pytest.mark.req("L18.d.4.3a")
-@pytest.mark.parametrize("stage", [Stage.STEADY, Stage.TRANSIENT])
-def test_the_lost_verdict_of_an_all_core_test_is_one_fail_of_that_test(stage):
+@pytest.mark.parametrize(
+    ("stage", "after", "steps"), [(Stage.STEADY, Stage.STEADY, 1), (Stage.TRANSIENT, Stage.BISECT, 0)]
+)
+def test_the_lost_verdict_of_an_all_core_test_is_one_fail_of_that_test(stage, after, steps):
     fake = fresh(2, [-6, -6], 2, max_offset=-8, k_1t=1, k_2t=1, wait_between_cores_s=0.0, transient_window_s=2.0)
     start(fake)
     while fake.worker is None or fake.worker.spec.stage is not stage:
@@ -386,8 +388,8 @@ def test_the_lost_verdict_of_an_all_core_test_is_one_fail_of_that_test(stage):
     assert fake.state.pause.reason is PauseReason.DATABASE
     fake.crash()
     fake.post(Resume(1))
-    assert fake.state.lifecycle is Lifecycle.RUNNING
-    assert {r.core: r.value for r in fake.state.cores} == {core: value + 1 for core, value in before.items()}
+    assert (fake.state.lifecycle, fake.state.flow.stage) == (Lifecycle.RUNNING, after)
+    assert {r.core: r.value for r in fake.state.cores} == {core: value + steps for core, value in before.items()}
 
 
 @pytest.mark.req("C10", "D34", "TERMS.allcore_baseline", "L08.d.after", "L20.d.allcore", "L22.d.allcore")

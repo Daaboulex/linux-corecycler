@@ -30,6 +30,11 @@ statement = "The session stores mode, base_co, the allcore cursor and the Bisect
 proof = "built"
 
 [[requirement]]
+id = "C1.one_off"
+statement = "The session stores the one-off mark; a session stored before the mark existed loads with none and resumes"
+proof = "built"
+
+[[requirement]]
 id = "C1.base_shaper"
 statement = "The session stores base_shaper"
 proof = "built"
@@ -427,7 +432,47 @@ proof = "built"
 
 [[requirement]]
 id = "ALLCORE.unnamed"
-statement = "An all-core failure that names no core loosens every owned core with room by one step (owner 2026-10-15, allcore-entry.md option A)"
+statement = "A STEADY or ENDURANCE failure of the transient class that names no core loosens every owned core with room by one step (owner 2026-10-15, allcore-entry.md option A)"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.bisect.entry"
+statement = "A TRANSIENT failure that names no core starts a Bisect with entry TRANSIENT, halves by CCD first; each slot runs the failed transient load for its stage seconds on every owned CPU, the group at V and every other owned core at 0 (owner 2026-10-17, allcore-bisect.md)"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.bisect.seed"
+statement = "Every slot of a TRANSIENT Bisect runs the failed test's load, length and plan seed, so each slot replays the pattern that failed (owner 2026-10-20)"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.bisect.single"
+statement = "The one core a TRANSIENT Bisect finds backs off one step alone, the other cores keep their values, and TRANSIENT runs the failed load again with tClean 0 (owner 2026-10-17, allcore-bisect.md)"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.bisect.group"
+statement = "Cores that fail the transient load only together get Q6 and leave the reclaim; every other core keeps its value and its reclaim (owner 2026-10-17, allcore-bisect.md)"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.bisect.universe"
+statement = "An unnamed TRANSIENT failure loosens every owned core one step only when no smaller group fails and the full set fails again on its re-test (owner 2026-10-17, allcore-bisect.md; owner 2026-10-20)"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.bisect.named"
+statement = "A TRANSIENT failure that names an owned core with room backs off that core alone and starts no Bisect (owner 2026-10-16, shaper-split.md)"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.bisect.hang"
+statement = "A hang in a TRANSIENT Bisect slot of two or more cores is that group's FAIL on resume, its values unchanged (owner 2026-10-17, allcore-bisect.md)"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.bisect.zero"
+statement = "An unnamed TRANSIENT failure with every owned core at 0 gives P(STOCK_UNSTABLE) and starts no Bisect"
 proof = "built"
 
 [[requirement]]
@@ -490,7 +535,7 @@ proof = "built"
 
 [[requirement]]
 id = "K40.slot"
-statement = "A Bisect slot runs the failing stage's tests at 20 s per test"
+statement = "A hot Bisect slot of a group smaller than the full set runs the failing stage's tests at 20 s per test; the full set's slot replays the failed test's own plan"
 proof = "built"
 
 [[requirement]]
@@ -1047,12 +1092,12 @@ proof = "built"
 
 [[requirement]]
 id = "INV.L09"
-statement = "Inventory claim: Bisect built with halves by CCD then index, Q6 re-run, HOT and MEMORY slots"
+statement = "Inventory claim: Bisect built with halves by CCD then index, Q6 re-run, HOT, transient and MEMORY slots"
 proof = "built"
 
 [[requirement]]
 id = "INV.L10"
-statement = "Inventory claim: fix loop built for CO: named cores back off alone, a failure naming none loosens every core (owner 2026-10-15); shaper cells not built"
+statement = "Inventory claim: fix loop built for CO: named cores back off alone, a failure naming none loosens every core in STEADY and ENDURANCE (owner 2026-10-15) and is bisected to the core in TRANSIENT (owner 2026-10-17); shaper cells not built"
 proof = "built"
 
 [[requirement]]
@@ -1823,7 +1868,7 @@ proof = "built"
 
 [[requirement]]
 id = "L09.b"
-statement = "Bisect is entered on a steady FAIL in STEADY or ENDURANCE, and on a LIVE1 or MEMORY crash with nobody convicted; never from TIGHTEN"
+statement = "Bisect is entered on a steady FAIL in STEADY or ENDURANCE, on a FAIL naming no core in TRANSIENT, and on a LIVE1 or MEMORY crash with nobody convicted; never from TIGHTEN"
 proof = "built"
 
 [[requirement]]
@@ -1869,7 +1914,62 @@ proof = "built"
 
 [[requirement]]
 id = "L09.resolve"
-statement = "Resolve: the smallest FAIL group whose children all passed (tie lowest id) gets Q6; its slot re-runs at the new values; a FAIL there gives another +1; a PASS exits; nothing to loosen pauses"
+statement = "Resolve: the smallest FAIL group whose children all passed (tie lowest id) gets Q6, after the re-test of L09.retest when that group is the full set; its slot re-runs at the new values; a FAIL there gives another +1; a PASS exits; nothing to loosen pauses"
+proof = "built"
+
+[[requirement]]
+id = "L09.retest.pass"
+statement = "When no slot repeated the failure and only the full set failed, Bisect re-tests the full set at V by replaying the failed test (L09.retest.replay) before any Q6; a PASS exits to the entry stage with nothing loosened, frozen or sent to a second pass (owner 2026-10-20)"
+proof = "built"
+
+[[requirement]]
+id = "L09.retest.replay"
+statement = "The full set's re-test replays the failed test itself: its load, its length, its plan (the full hot plan for STEADY, the ENDURANCE step's own load) and its plan seed (owner 2026-10-20)"
+proof = "built"
+
+[[requirement]]
+id = "L09.retest.seed"
+statement = "A planned all-core test draws its pattern from the plan seed the session derives from its stage, load and cursor, never from a run counter (owner 2026-10-20)"
+proof = "built"
+
+[[requirement]]
+id = "L09.one_off"
+statement = "A re-test that passes marks its stage and the values held; the mark applies only at exactly those values: when that stage fails again naming no core there, the Bisect runs again and at the full set takes the full-set rule without a re-test, and at any other values the re-test runs (owner 2026-10-20)"
+proof = "built"
+
+[[requirement]]
+id = "L09.one_off.clear"
+statement = "A continue under a new setup clears the one-off mark, and a new LIVE1 pass starts without one (owner 2026-10-20)"
+proof = "built"
+
+[[requirement]]
+id = "L09.seed.distinct"
+statement = "Every planned stage test of a run carries its own plan seed: the stage, load, pass, round and step each tell two tests apart (owner 2026-10-20)"
+proof = "built"
+
+[[requirement]]
+id = "L09.retest.named"
+statement = "A full-set replay that fails naming owned cores follows the entry stage's own named rule: only those cores back off and the Bisect returns to the entry stage, the memory lanes through their LIVE1 slots; only a failure naming no core takes the full-set rule (owner 2026-10-16 and 2026-10-20)"
+proof = "built"
+
+[[requirement]]
+id = "L09.rest"
+statement = "A failure or a hang that only the stage's own test shows, a full hot test or a transient pattern, comes to rest instead of looping through one-off Bisects (owner 2026-10-20)"
+proof = "built"
+
+[[requirement]]
+id = "L09.retest.fail"
+statement = "A FAIL naming no core of the re-test of a full set of two or more cores is a limit the cores share: Q6 on the full set (owner 2026-10-20)"
+proof = "built"
+
+[[requirement]]
+id = "L09.retest.single"
+statement = "A full set of one core that fails its re-test is a found core: FB = V, one step back in place, not frozen, exit to the entry stage; a hang there keeps the single-slot conviction (owner 2026-10-20)"
+proof = "built"
+
+[[requirement]]
+id = "L09.retest.hang"
+statement = "A hang or a lost verdict during the full set's re-test is its FAIL on resume (owner 2026-10-20)"
 proof = "built"
 
 [[requirement]]
@@ -1899,12 +1999,12 @@ proof = "built"
 
 [[requirement]]
 id = "L09.g"
-statement = "At most 1 + (2 abs(U) - 2) slots per run plus re-runs that each lower R"
+statement = "At most 1 + (2 abs(U) - 2) slots per run, one re-test of the full set, plus re-runs that each lower R"
 proof = "built"
 
 [[requirement]]
 id = "L10.a"
-statement = "The fix loop loosens the named cores, or every owned core with room when none is named (owner 2026-10-15, allcore-entry.md A), and enforces ownership"
+statement = "The fix loop loosens the named cores; when none is named, every owned core with room in STEADY and ENDURANCE (owner 2026-10-15, allcore-entry.md A) and the core a Bisect finds in TRANSIENT (owner 2026-10-17, allcore-bisect.md); and it enforces ownership"
 proof = "built"
 
 [[requirement]]
@@ -1947,7 +2047,7 @@ proof = "built"
 
 [[requirement]]
 id = "L11.a"
-statement = "TRANSIENT runs load steps until 3600 s failure-free; a named failure loosens that core, one naming none every core (owner 2026-10-15); it always runs in CO only"
+statement = "TRANSIENT runs load steps until 3600 s failure-free; a named failure loosens that core, one naming none is bisected to the core (owner 2026-10-17, allcore-bisect.md); it always runs in CO only"
 proof = "built"
 
 [[requirement]]
@@ -3728,7 +3828,7 @@ proof = "built"
 
 [[requirement]]
 id = "D40.slot"
-statement = "The Bisect slot is 20 s per test"
+statement = "The hot Bisect slot of a group smaller than the full set is 20 s per test"
 proof = "built"
 
 [[requirement]]

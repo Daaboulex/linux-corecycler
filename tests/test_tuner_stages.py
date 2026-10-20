@@ -162,7 +162,8 @@ def runner(script: Script, readings=None, detector=None, clocks=None, usable_mb=
 
 
 def spec(load: Load, seconds: float = 480.0) -> Spec:
-    return Spec(Klass.T1, 0, -5, CPUS, seconds, tuple((c, -5) for c in range(4)), Stage.TRANSIENT, load, 95.0)
+    vector = tuple((c, -5) for c in range(4))
+    return Spec(Klass.T1, 0, -5, CPUS, seconds, vector, Stage.TRANSIENT, load, 95.0, plan_seed="1")
 
 
 @pytest.mark.req("T22.F20")
@@ -205,15 +206,35 @@ def test_a_single_core_test_is_sampled_only_when_a_sink_is_given():
     assert unsampled.seen[0][3] is not None
 
 
-@pytest.mark.req("K40.slot", "D40.slot")
-def test_a_bisect_slot_runs_every_hot_test_at_twenty_seconds_and_steady_keeps_sixty():
+@pytest.mark.req("K40.slot", "D40.slot", "L09.retest.replay")
+def test_a_quick_hot_slot_runs_every_test_at_twenty_seconds_and_steady_and_its_replay_keep_sixty():
     (quick,) = stages.plan(Load.HOT, 160.0, CPUS, FIRSTS, 60_000, random.Random(1), 95.0, quick=True)
     assert quick.tests == ALL_TESTS and quick.seconds_per_test * len(quick.tests) == quick.duration
-    slot, steady = Script([Outcome.PASS]), Script([Outcome.PASS])
-    bisect = Spec(Klass.T1, 0, -5, CPUS, 160.0, tuple((c, -5) for c in range(4)), Stage.BISECT, Load.HOT, 95.0)
+    slot, steady, replay = Script([Outcome.PASS]), Script([Outcome.PASS]), Script([Outcome.PASS])
+    bisect = replace(spec(Load.HOT, 160.0), stage=Stage.BISECT, quick=True)
     runner(slot).run(bisect, threading.Event())
-    runner(steady).run(replace(bisect, stage=Stage.STEADY, seconds=510.0), threading.Event())
-    assert (slot.paces, steady.paces) == ([20], [60])
+    runner(steady).run(replace(bisect, stage=Stage.STEADY, seconds=510.0, quick=False), threading.Event())
+    runner(replay).run(replace(bisect, seconds=510.0, quick=False), threading.Event())
+    assert (slot.paces, steady.paces, replay.paces) == ([20], [60], [60])
+
+
+@pytest.mark.req("L09.retest.seed")
+def test_a_planned_test_draws_its_pattern_from_its_plan_seed_alone():
+    script = Script([Outcome.PASS] * 60)
+    burst = runner(script)
+    drawn = []
+    for seed in ("a", "a", "b"):
+        before = len(script.seen)
+        burst.run(replace(spec(Load.BURST), plan_seed=seed), threading.Event())
+        drawn.append([(cpus, tests, duration) for cpus, tests, duration, _ in script.seen[before:]])
+    assert drawn[0] == drawn[1] != drawn[2]
+
+
+def test_a_planned_test_without_a_plan_seed_is_refused_before_anything_runs():
+    script = Script([Outcome.PASS])
+    with pytest.raises(ValueError, match="plan seed"):
+        runner(script).run(replace(spec(Load.BURST), plan_seed=None), threading.Event())
+    assert script.seen == []
 
 
 @pytest.mark.req("L25.d.warm")
@@ -616,12 +637,9 @@ def test_every_segment_that_holds_carries_a_hold_cap_and_the_runner_hands_it_on(
 
 
 def test_the_working_cores_of_a_failing_burst_segment_are_the_cores_it_drew():
-    for value in range(-1, -30, -1):
+    for seed in range(30):
         script = Script([Outcome.COMPUTATION])
-        burst = Spec(
-            Klass.T1, 0, value, CPUS, 480.0, tuple((c, value) for c in range(4)), Stage.TRANSIENT, Load.BURST, 95.0
-        )
-        report = runner(script).run(burst, threading.Event())
+        report = runner(script).run(replace(spec(Load.BURST), plan_seed=str(seed)), threading.Event())
         drawn = tuple(sorted({CORE_OF_CPU[c] for c in script.seen[0][0]}))
         if len(drawn) < 4:
             assert report.context.working == drawn

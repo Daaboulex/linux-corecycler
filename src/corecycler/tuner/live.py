@@ -306,6 +306,13 @@ def _live1_from_json(raw: dict) -> Live1:
     return Live1(raw["index"], tuple(raw["requeue"]), raw["solo"], None if back is None else Stage(back))
 
 
+def _one_off_from_json(raw: list | None) -> tuple[Stage, tuple[tuple[int, int], ...]] | None:
+    if raw is None:
+        return None
+    stage, held = raw
+    return Stage(stage), _pairs(held)
+
+
 def _flow_from_json(raw: dict | None) -> Flow | None:
     if raw is None:
         return None
@@ -324,6 +331,7 @@ def _flow_from_json(raw: dict | None) -> Flow | None:
         q5_others=tuple(raw["q5_others"]),
         allcore=_allcore_from_json(raw["allcore"]),
         validating=None if raw["validating"] is None else _pairs(raw["validating"]),
+        one_off=_one_off_from_json(raw.get("one_off")),
     )
 
 

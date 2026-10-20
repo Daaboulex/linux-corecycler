@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from itertools import pairwise, takewhile
+from itertools import takewhile
 
 import pytest
 
 from corecycler.tuner.machine import allcore
 from corecycler.tuner.machine.types import (
     AllCore,
+    ContinueOnSetup,
     CoreRecord,
+    FailContext,
     Lifecycle,
     Load,
     PauseReason,
@@ -86,19 +88,407 @@ def test_a_clean_co_only_run_walks_every_stage_once_in_the_planned_order():
     assert {r.core: r.value for r in fake.state.cores} == {0: -4, 1: -2}
 
 
-@pytest.mark.req("ALLCORE.unnamed", "INV.L10", "L10.a", "L11.a")
-def test_a_failure_that_names_no_core_loosens_every_core_by_one_step():
-    fake, stages = run([-6, -5], transient={0: -2, 1: -1})
-    allcore_runs = [vector for stage, _, vector in stages if stage in (Stage.TRANSIENT, Stage.TIGHTEN)]
-    changes = [
-        {core: after[core] - before[core] for core in before}
-        for before, after in pairwise(allcore_runs)
-        if after != before
-    ]
-    assert {0: 1, 1: 1} in changes
+DISTINCT_LENGTHS = {"stage_seconds": (("burst", 3.0), ("warm", 4.0), ("idle", 5.0))}
+
+
+@pytest.mark.req("ALLCORE.bisect.entry", "INV.L09", "INV.L10", "L09.b", "L10.a", "L11.a")
+def test_an_unnamed_transient_failure_bisects_by_ccd_first_under_the_failed_load_with_the_rest_at_zero():
+    slots = []
+
+    def spy(fake, spec):
+        if spec.stage is Stage.BISECT:
+            slots.append((fake.state.flow.bisect.entry, spec.load, spec.cpus, spec.seconds, dict(spec.vector)))
+
+    fake, _ = run([-6, -6, -6], transient={0: -6, 1: -2, 2: -6}, cores=3, on_start=spy, **DISTINCT_LENGTHS)
     assert fake.state.lifecycle is Lifecycle.COMPLETED
-    order = [stage for stage, _, _ in stages]
-    assert max(i for i, stage in enumerate(order) if stage is Stage.LIVE1) > order.index(Stage.STEADY)
+    burst = (Stage.TRANSIENT, Load.BURST, (0, 1, 2, 3, 4, 5), 3.0)
+    assert slots == [
+        (*burst, {0: 0, 1: 0, 2: 0}),
+        (*burst, {0: -3, 1: -3, 2: 0}),
+        (*burst, {0: 0, 1: 0, 2: -3}),
+        (*burst, {0: -3, 1: 0, 2: 0}),
+        (*burst, {0: 0, 1: -3, 2: 0}),
+    ]
+
+
+@pytest.mark.req("ALLCORE.bisect.single", "L09.f")
+def test_a_core_a_transient_bisect_finds_backs_off_alone_and_the_failed_load_runs_again_from_zero_clean_time():
+    fake = fresh(3, [-6, -6, -6], 2, max_offset=-8, **{**FAST, **DISTINCT_LENGTHS, "transient_window_s": 10.0})
+    start(fake)
+    while fake.worker is None or fake.worker.spec.load is not Load.WARM:
+        assert fake.progress()
+    assert (fake.worker.spec.stage, fake.state.flow.allcore.t_clean) == (Stage.TRANSIENT, 3.0)
+    fake.edges_transient = {0: -6, 1: -2, 2: -6}
+    fake.deliver()
+    assert fake.state.flow.stage is Stage.BISECT
+    while fake.state.flow.stage is Stage.BISECT:
+        assert fake.progress()
+    assert (fake.state.flow.stage, fake.state.flow.allcore.t_clean) == (Stage.TRANSIENT, 0.0)
+    assert {r.core: r.value for r in fake.state.cores} == {0: -3, 1: -2, 2: -3}
+    assert fake.state.core(1).fb == -3
+    while fake.worker is None:
+        assert fake.progress()
+    again = fake.worker.spec
+    assert (again.stage, again.load, again.seconds, dict(again.vector)) == (
+        Stage.TRANSIENT,
+        Load.WARM,
+        4.0,
+        {0: -3, 1: -2, 2: -3},
+    )
+
+
+def stack_from(stage, stacks):
+    def on_start(fake, spec):
+        if spec.stage is stage and not fake.stacks:
+            fake.stacks = stacks
+
+    return on_start
+
+
+@pytest.mark.req("ALLCORE.bisect.group")
+def test_cores_that_fail_the_transient_load_only_together_get_the_group_rule_and_the_rest_keep_their_reclaim():
+    fake, stages = run([-6, -6, -6], cores=3, on_start=stack_from(Stage.TRANSIENT, (((), (0, 1), 5),)))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert [vector for stage, _, vector in stages if stage is Stage.BISECT] == [
+        {0: 0, 1: 0, 2: 0},
+        {0: -3, 1: -3, 2: 0},
+        {0: 0, 1: 0, 2: -3},
+        {0: -3, 1: 0, 2: 0},
+        {0: 0, 1: -3, 2: 0},
+        {0: -2, 1: -2, 2: 0},
+    ]
+    assert {r.core: (r.value, r.fb) for r in fake.state.cores} == {0: (-2, -7), 1: (-2, -7), 2: (-6, -7)}
+
+
+@pytest.mark.req("ALLCORE.bisect.universe", "L09.resolve", "L09.retest.fail")
+def test_only_the_full_set_failing_the_transient_load_again_on_its_re_test_loosens_every_core_one_step():
+    fake, stages = run([-6, -6, -6], cores=3, on_start=stack_from(Stage.TRANSIENT, (((), (0, 1, 2), 8),)))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert [vector for stage, _, vector in stages if stage is Stage.BISECT] == [
+        {0: 0, 1: 0, 2: 0},
+        {0: -3, 1: -3, 2: 0},
+        {0: 0, 1: 0, 2: -3},
+        {0: -3, 1: -3, 2: -3},
+        {0: -2, 1: -2, 2: -2},
+    ]
+    assert {r.core: r.value for r in fake.state.cores} == {0: -2, 1: -2, 2: -2}
+
+
+STEADY_CLASS = FailContext(steady=True, working=(0, 1), paused=False)
+
+
+@pytest.mark.req("L09.retest.pass")
+@pytest.mark.parametrize(
+    ("entry", "load", "context", "cfg"),
+    [
+        (Stage.STEADY, Load.HOT, STEADY_CLASS, {}),
+        (Stage.ENDURANCE, Load.HOT, STEADY_CLASS, {"endurance": True}),
+        (Stage.TRANSIENT, Load.BURST, None, {}),
+        (Stage.MEMORY, Load.MEMORY, None, {}),
+    ],
+)
+def test_a_failure_only_the_full_set_had_passes_its_re_test_and_the_bisect_exits_with_nothing_moved(
+    entry, load, context, cfg
+):
+    clean, clean_stages = run([-6, -6], **cfg)
+    one_off = Report(Group.SILICON, 1.0, context=context)
+    fake, stages = run([-6, -6], on_start=report_once(entry, one_off), **cfg)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    failed = next(vector for stage, _, vector in stages if stage is entry)
+    last = max(i for i, (stage, _, _) in enumerate(stages) if stage is Stage.BISECT)
+    assert stages[last][1:] == (load, failed)
+    assert stages[last + 1][0] is entry
+    assert {r.core: r.value for r in fake.state.cores} == {r.core: r.value for r in clean.state.cores}
+    live1 = [stage for stage, _, _ in stages].count(Stage.LIVE1)
+    assert live1 == [stage for stage, _, _ in clean_stages].count(Stage.LIVE1)
+
+
+@pytest.mark.req("L09.retest.hang")
+@pytest.mark.parametrize("cut", ["hang", "lost verdict"])
+def test_a_re_test_of_the_full_set_cut_by_a_hang_or_a_lost_verdict_is_its_fail_on_resume(cut):
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.TRANSIENT:
+        assert fake.progress()
+    held = dict(fake.worker.spec.vector)
+    fake.deliver(Report(Group.SILICON, 1.0))
+    while fake.worker is None or 0 in dict(fake.worker.spec.vector).values():
+        assert fake.progress()
+    assert (fake.worker.spec.stage, dict(fake.worker.spec.vector)) == (Stage.BISECT, held)
+    if cut == "lost verdict":
+        fake.faults.fail_commits = 1
+        fake.deliver()
+        assert fake.state.pause.reason is PauseReason.DATABASE
+    fake.crash()
+    fake.post(Resume(1))
+    flow = fake.state.flow
+    assert (fake.state.lifecycle, flow.stage, flow.bisect.rerun) == (Lifecycle.RUNNING, Stage.BISECT, (0, 1))
+    assert {r.core: r.value for r in fake.state.cores} == {core: value + 1 for core, value in held.items()}
+    assert set(flow.allcore.frozen) == {0, 1}
+
+
+@pytest.mark.req("L09.retest.single")
+def test_a_one_core_full_set_that_fails_its_re_test_backs_off_in_place_as_a_found_core():
+    fake = fresh(2, [-6, 0], 2, max_offset=-8, **FAST)
+    fake.edges_transient = {0: -2, 1: 0}
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.TRANSIENT:
+        assert fake.progress()
+    assert dict(fake.worker.spec.vector) == {0: -3, 1: 0}
+    fake.deliver()
+    assert fake.state.flow.bisect.universe == (0,)
+    while fake.state.flow.stage is Stage.BISECT:
+        assert fake.progress()
+    cursor = fake.state.flow.allcore
+    assert (fake.state.flow.stage, cursor.t_clean, 0 in cursor.frozen) == (Stage.TRANSIENT, 0.0, False)
+    assert (fake.state.core(0).value, fake.state.core(0).fb, fake.state.core(1).value) == (-2, -3, 0)
+
+
+LONG_HOT = {**FAST, "hot_seconds": 3.0}
+
+
+def failing_only_in(entry):
+    def on_start(fake, spec):
+        if spec.stage is entry and spec.load is Load.HOT and any(value < -2 for _, value in spec.vector):
+            once(fake, Report(Group.SILICON, spec.seconds, context=STEADY_CLASS))
+
+    return on_start
+
+
+@pytest.mark.req("L09.rest")
+@pytest.mark.parametrize("entry", [Stage.STEADY, Stage.ENDURANCE])
+def test_a_hot_failure_that_only_the_stage_s_own_test_shows_comes_to_rest(entry):
+    fake, _ = run([-6, -6], on_start=failing_only_in(entry), endurance=entry is Stage.ENDURANCE, **LONG_HOT)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert {r.core: r.value for r in fake.state.cores} == {0: -2, 1: -2}
+
+
+def crashing_until_rest(fake, crashes, limit=3000):
+    start(fake)
+    for _ in range(limit):
+        if fake.worker is not None and crashes(fake.worker.spec):
+            fake.crash()
+            fake.post(Resume(1))
+        elif not fake.progress():
+            return
+    raise AssertionError(f"no rest within {limit} moves, {fake.state.lifecycle} in {fake.state.flow.stage}")
+
+
+@pytest.mark.req("L09.rest")
+@pytest.mark.parametrize("stage", [Stage.STEADY, Stage.TRANSIENT])
+def test_a_hang_that_only_the_stage_s_own_test_shows_comes_to_rest(stage):
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, **LONG_HOT)
+    crashing_until_rest(fake, lambda spec: spec.stage is stage and any(value < -2 for _, value in spec.vector))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert {r.core: r.value for r in fake.state.cores} == {0: -2, 1: -2}
+
+
+@pytest.mark.req("L09.retest.replay")
+@pytest.mark.parametrize(
+    ("entry", "context", "cfg"),
+    [
+        (Stage.STEADY, STEADY_CLASS, {}),
+        (Stage.ENDURANCE, STEADY_CLASS, {"endurance": True}),
+        (Stage.TRANSIENT, None, DISTINCT_LENGTHS),
+        (Stage.MEMORY, None, {}),
+    ],
+)
+def test_the_full_set_re_test_replays_the_failed_test_itself(entry, context, cfg):
+    specs = []
+    one_off = report_once(entry, Report(Group.SILICON, 1.0, context=context))
+
+    def spy(fake, spec):
+        specs.append(spec)
+        one_off(fake, spec)
+
+    run([-6, -6], on_start=spy, **{**LONG_HOT, **cfg})
+    failed = next(spec for spec in specs if spec.stage is entry)
+    retest = next(spec for spec in specs if spec.stage is Stage.BISECT and spec.vector == failed.vector)
+    assert (retest.load, retest.seconds, retest.cpus) == (failed.load, failed.seconds, failed.cpus)
+    assert (retest.quick, retest.plan_seed) == (failed.quick, failed.plan_seed)
+
+
+@pytest.mark.req("ALLCORE.bisect.seed", "K40.slot", "D40.slot")
+@pytest.mark.parametrize(("entry", "context", "cfg"), [(Stage.TRANSIENT, None, {}), (Stage.STEADY, STEADY_CLASS, {})])
+def test_transient_slots_replay_the_failed_pattern_and_hot_halves_run_the_quick_hot_test(entry, context, cfg):
+    specs = []
+    one_off = report_once(entry, Report(Group.SILICON, 1.0, context=context))
+
+    def spy(fake, spec):
+        specs.append(spec)
+        one_off(fake, spec)
+
+    run([-6, -6, -6], cores=3, on_start=spy, **{**LONG_HOT, **DISTINCT_LENGTHS, **cfg})
+    failed = next(spec for spec in specs if spec.stage is entry)
+    halves = [spec for spec in specs if spec.stage is Stage.BISECT and spec.vector != failed.vector]
+    shapes = {(spec.load, spec.seconds, spec.quick, spec.plan_seed) for spec in halves}
+    if entry is Stage.TRANSIENT:
+        assert shapes == {(failed.load, failed.seconds, False, failed.plan_seed)}
+    else:
+        assert {shape[:3] for shape in shapes} == {(Load.HOT, 1.0, True)}
+
+
+UNNAMED_STEADY = Report(Group.SILICON, 1.0, context=STEADY_CLASS)
+
+
+def scripted(entry, reports):
+    seen = []
+
+    def on_start(fake, spec):
+        if spec.stage is entry:
+            seen.append(spec)
+            if len(seen) in reports:
+                once(fake, reports[len(seen)])
+
+    return on_start
+
+
+def full_set_slots(stages):
+    return [vector for stage, _, vector in stages if stage is Stage.BISECT and 0 not in vector.values()]
+
+
+@pytest.mark.req("L09.one_off")
+def test_a_stage_failing_again_at_the_values_its_one_off_held_skips_the_re_test():
+    fake, stages = run([-6, -6], on_start=scripted(Stage.STEADY, {1: UNNAMED_STEADY, 2: UNNAMED_STEADY}))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert full_set_slots(stages) == [{0: -3, 1: -3}, {0: -2, 1: -2}]
+    assert {r.core: r.value for r in fake.state.cores} == {0: -2, 1: -2}
+
+
+@pytest.mark.req("L09.one_off")
+def test_the_one_off_mark_applies_only_at_its_values_so_a_failure_at_moved_values_gets_its_re_test():
+    moved = Report(Group.PASS, 1.0, evidence=(Evidence(1, True),))
+    script = {1: UNNAMED_STEADY, 2: moved, 3: UNNAMED_STEADY, 4: UNNAMED_STEADY}
+    fake, stages = run([-6, -6], on_start=scripted(Stage.STEADY, script))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert full_set_slots(stages) == [{0: -3, 1: -3}, {0: -3, 1: -2}, {0: -2, 1: -1}]
+
+
+def until_stage(fake, stage):
+    while fake.worker is None or fake.worker.spec.stage is not stage:
+        assert fake.progress()
+    return dict(fake.worker.spec.vector)
+
+
+@pytest.mark.req("L09.one_off.clear")
+def test_a_continue_under_a_new_setup_clears_the_one_off_mark():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
+    start(fake)
+    held = until_stage(fake, Stage.STEADY)
+    fake.deliver(UNNAMED_STEADY)
+    until_stage(fake, Stage.TRANSIENT)
+    fake.setup = (("bios", "B"),)
+    fake.crash()
+    fake.post(Resume(1))
+    fake.post(ContinueOnSetup(2))
+    assert until_stage(fake, Stage.STEADY) == held
+    fake.deliver(UNNAMED_STEADY)
+    replays = 0
+    while fake.state.flow.stage is Stage.BISECT:
+        replays += fake.worker is not None and dict(fake.worker.spec.vector) == held
+        assert fake.progress()
+    assert (replays, {r.core: r.value for r in fake.state.cores}) == (1, held)
+
+
+@pytest.mark.req("L09.one_off.clear")
+def test_a_new_live1_pass_starts_without_the_one_off_mark():
+    steady = scripted(Stage.STEADY, {1: UNNAMED_STEADY, 3: UNNAMED_STEADY})
+    tighten = scripted(Stage.TIGHTEN, {1: Report(Group.SILICON, 1.0)})
+
+    def both(fake, spec):
+        steady(fake, spec)
+        tighten(fake, spec)
+
+    fake, stages = run([-6, -6], on_start=both)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert [stage for stage, _, _ in stages].count(Stage.LIVE1) == 4
+    assert full_set_slots(stages) == [{0: -3, 1: -3}, {0: -3, 1: -3}]
+
+
+@pytest.mark.req("L09.seed.distinct")
+def test_every_planned_stage_test_of_a_run_carries_its_own_plan_seed():
+    specs = []
+    fake, _ = run([-6, -3], memory_edges={0: -4, 1: -3}, endurance=True, on_start=lambda fake, spec: specs.append(spec))
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    planned = [spec for spec in specs if spec.plan_seed is not None and spec.stage is not Stage.BISECT]
+    assert [spec.stage for spec in planned].count(Stage.ENDURANCE) > 5
+    assert len({spec.plan_seed for spec in planned}) == len(planned)
+
+
+@pytest.mark.req("L09.retest.named")
+@pytest.mark.parametrize(("entry", "context"), [(Stage.STEADY, STEADY_CLASS), (Stage.TRANSIENT, None)])
+def test_a_re_test_that_fails_naming_a_core_backs_off_only_that_core_and_returns_to_the_stage(entry, context):
+    fake = fresh(4, [-6] * 4, 2, max_offset=-8, **FAST)
+    start(fake)
+    held = until_stage(fake, entry)
+    fake.deliver(Report(Group.SILICON, 1.0, context=context))
+    while fake.worker is None or dict(fake.worker.spec.vector) != held:
+        assert fake.progress()
+    assert fake.worker.spec.stage is Stage.BISECT
+    frozen = fake.state.flow.allcore.frozen
+    fake.deliver(Report(Group.SILICON, 1.0, context=context, named=(2,)))
+    flow = fake.state.flow
+    assert (flow.stage, flow.bisect, flow.allcore.t_clean, flow.allcore.frozen) == (entry, None, 0.0, frozen)
+    assert {r.core: (r.value, r.fb) for r in fake.state.cores} == {0: (-3, -7), 1: (-3, -7), 2: (-2, -3), 3: (-3, -7)}
+
+
+@pytest.mark.req("L09.retest.named")
+def test_a_re_test_that_names_a_core_the_session_does_not_own_pauses_naming_it_as_the_stage_does():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
+    start(fake)
+    held = until_stage(fake, Stage.STEADY)
+    fake.deliver(UNNAMED_STEADY)
+    while fake.worker is None or dict(fake.worker.spec.vector) != held:
+        assert fake.progress()
+    fake.deliver(Report(Group.SILICON, 1.0, context=STEADY_CLASS, named=(7,)))
+    assert (fake.state.pause.reason, fake.state.pause.cores) == (PauseReason.HELD_KNOB, (7,))
+    assert {r.core: r.value for r in fake.state.cores} == held
+
+
+@pytest.mark.req("L09.retest.named")
+def test_a_memory_re_test_that_fails_naming_a_lane_backs_it_off_and_requeues_it_as_the_memory_stage_does():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
+    start(fake)
+    held = until_stage(fake, Stage.MEMORY)
+    fake.deliver(Report(Group.SILICON, 1.0))
+    while fake.worker is None or dict(fake.worker.spec.vector) != held:
+        assert fake.progress()
+    assert fake.worker.spec.stage is Stage.BISECT
+    fake.deliver(Report(Group.SILICON, 1.0, named=(1,)))
+    flow = fake.state.flow
+    assert (flow.stage, flow.bisect, flow.live1.requeue, flow.live1.back) == (Stage.LIVE1, None, (1,), Stage.MEMORY)
+    assert {r.core: (r.value, r.fb) for r in fake.state.cores} == {0: (-6, -7), 1: (-5, -6)}
+
+
+@pytest.mark.req("ALLCORE.bisect.hang", "L09.G4")
+def test_a_hang_in_a_transient_bisect_slot_is_that_group_s_fail_on_resume():
+    fake = fresh(3, [-6, -6, -6], 2, max_offset=-8, **FAST)
+    fake.edges_transient = {0: -6, 1: -2, 2: -6}
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.TRANSIENT:
+        assert fake.progress()
+    fake.deliver()
+    assert fake.state.flow.stage is Stage.BISECT
+    while fake.worker is None or dict(fake.worker.spec.vector) != {0: -3, 1: -3, 2: 0}:
+        assert fake.progress()
+    fake.crash()
+    fake.post(Resume(1))
+    bisecting = fake.state.flow.bisect
+    assert (fake.state.lifecycle, fake.state.flow.stage, bisecting.entry) == (
+        Lifecycle.RUNNING,
+        Stage.BISECT,
+        Stage.TRANSIENT,
+    )
+    assert (bisecting.results[-1], bisecting.queue) == (((0, 1), False), ((2,), (0,), (1,)))
+    assert {r.core: r.value for r in fake.state.cores} == {0: -3, 1: -3, 2: -3}
+
+
+@pytest.mark.req("ALLCORE.bisect.zero")
+def test_an_unnamed_transient_failure_with_every_core_at_zero_pauses_as_stock_unstable_without_a_bisect():
+    fake, stages = run([0, 0], transient={0: 1, 1: 1})
+    assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.STOCK_UNSTABLE)
+    assert fake.state.pause.detail == "the all-core load fails with every owned core at 0"
+    assert Stage.BISECT not in {stage for stage, _, _ in stages}
 
 
 @pytest.mark.req("ALLCORE.margin", "ALLCORE.rounds", "ALLCORE.second_pass", "L12.a", "L12.floor")
@@ -153,7 +543,7 @@ def test_soak_can_be_switched_off():
 
 @pytest.mark.req("L10.d.bound", "L10.e")
 def test_a_failure_naming_no_core_with_every_core_at_zero_pauses_as_nothing_left_to_loosen():
-    fake, _ = run([0, 0], transient={0: 1, 1: 1})
+    fake, _ = run([0, 0], on_start=report_once(Stage.STEADY, Report(Group.SILICON, 1.0)))
     assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.STOCK_UNSTABLE)
     assert "nothing left to loosen" in fake.state.pause.detail
     assert {r.core: r.value for r in fake.state.cores} == {0: 0, 1: 0}
@@ -212,7 +602,7 @@ def test_a_steady_failure_in_endurance_bisects_and_comes_back_to_endurance_at_ho
     assert after == [Load.HOT, Load.BURST, Load.WARM, Load.BURST, Load.IDLE]
 
 
-@pytest.mark.req("L10.d.apply")
+@pytest.mark.req("ALLCORE.unnamed", "L10.d.apply")
 def test_a_transient_failure_in_endurance_loosens_every_core_and_runs_the_same_load_again():
     fake, stages = run([-6, -3], endurance=True, on_start=degrade(transient={0: -5, 1: -3}))
     assert fake.state.lifecycle is Lifecycle.COMPLETED
@@ -236,10 +626,11 @@ def test_a_steady_failure_that_names_a_core_backs_that_core_off_in_place_without
     assert len(order) - order[::-1].index(Stage.LIVE1) > order.index(Stage.STEADY)
 
 
-@pytest.mark.req("L12.b", "D30")
+@pytest.mark.req("ALLCORE.bisect.named", "L12.b", "D30")
 def test_a_transient_failure_that_names_a_core_backs_it_off_and_the_reclaim_leaves_it_there():
     fake, stages = run([-6, -3], transient={0: -2, 1: -3}, names=True)
     assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert Stage.BISECT not in {stage for stage, _, _ in stages}
     assert (fake.state.core(0).value, fake.state.core(0).fb) == (-2, -3)
     assert fake.state.core(1).value == -3
     assert all(vector[0] == -2 for stage, _, vector in stages if stage is Stage.TIGHTEN)
@@ -435,7 +826,7 @@ def test_a_crash_convicted_in_transient_restarts_its_clean_time_and_freezes_the_
 @pytest.mark.req("ALLCORE.rounds")
 def test_the_reclaim_stops_after_three_rounds_even_with_more_steps_to_take_back():
     unnamed = Report(Group.SILICON, 1.0)
-    fake, stages = run([-6, -5], on_start=report_once(Stage.TRANSIENT, unnamed))
+    fake, stages = run([-6, -5], on_start=report_once(Stage.STEADY, unnamed))
     assert fake.state.lifecycle is Lifecycle.COMPLETED
     assert sum(1 for stage, _, _ in stages if stage is Stage.TIGHTEN) == 3 * 5
     assert {r.core: r.value for r in fake.state.cores} == {0: -5, 1: -4}

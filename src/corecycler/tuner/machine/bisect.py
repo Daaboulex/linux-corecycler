@@ -79,6 +79,14 @@ def resolve(run: BisectRun) -> Group:
     return min(failed, key=lambda group: (len(group), group[0]), default=())
 
 
+def retest(run: BisectRun) -> BisectRun:
+    return replace(run, queue=(run.universe,))
+
+
+def retesting(run: BisectRun) -> bool:
+    return run.queue == (run.universe,)
+
+
 def slot_values(run: BisectRun, group: Group) -> dict[int, int]:
     values = dict(run.values)
     return {core: values[core] for core in group}

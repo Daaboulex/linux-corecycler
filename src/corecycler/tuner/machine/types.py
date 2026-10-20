@@ -204,6 +204,8 @@ class TestSpec:
     stage: Stage = Stage.SEARCH
     load: Load | None = None
     thermal_limit_c: float | None = None
+    quick: bool = False
+    plan_seed: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,6 +296,7 @@ class Flow:
     q5_others: tuple[int, ...] = ()
     allcore: AllCore | None = None
     validating: tuple[tuple[int, int], ...] | None = None
+    one_off: tuple[Stage, tuple[tuple[int, int], ...]] | None = None
 
 
 @dataclass(frozen=True, slots=True)

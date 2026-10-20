@@ -813,6 +813,8 @@ def _flow_crash(s: SessionState, w: World, context=None) -> tuple[SessionState, 
         run = flow.bisect
         if run.rerun is not None:
             return _q6(s, run.rerun)
+        if bisect.retesting(run):
+            return _q6(s, run.universe)
         group = bisect.current_group(run)
         if not group:
             return s, "the held values with every owned core at 0 crashed the machine"
@@ -1084,7 +1086,8 @@ def _reentered(s: SessionState) -> SessionState:
     if entry not in ALLCORE:
         return s
     cursor = replace(flow.allcore, t_idx=0, t_clean=0.0, rounds=0, tightened=False)
-    return _entry_margin(replace(s, flow=replace(flow, stage=Stage.STEADY, bisect=None, allcore=cursor)), cursor)
+    entered = replace(flow, stage=Stage.STEADY, bisect=None, allcore=cursor, one_off=None)
+    return _entry_margin(replace(s, flow=entered), cursor)
 
 
 def _frozen(cursor: AllCore, cores: tuple[int, ...]) -> AllCore:
@@ -1111,6 +1114,25 @@ def _load_seconds(cfg, load: Load) -> float:
     if load is Load.SOAK:
         return cfg.soak_seconds
     return dict(cfg.stage_seconds)[load.value]
+
+
+STAGE_CYCLES = {
+    Stage.STEADY: (Load.HOT,),
+    Stage.TRANSIENT: TRANSIENT_CYCLE,
+    Stage.TIGHTEN: ROUND_CYCLE,
+    Stage.ENDURANCE: ENDURANCE_CYCLE,
+    Stage.SOAK: (Load.SOAK,),
+}
+
+
+def _stage_load(stage: Stage, cursor: AllCore) -> Load:
+    cycle = STAGE_CYCLES[stage]
+    return cycle[cursor.t_idx % len(cycle)]
+
+
+def _plan_seed(s: SessionState, stage: Stage, load: Load) -> str:
+    cursor = s.flow.allcore
+    return f"{s.seed}:{stage.value}:{load.value}:{cursor.pass_no}:{cursor.rounds}:{cursor.t_idx}"
 
 
 def _all_cpus(s: SessionState, w: World) -> tuple[int, ...]:
@@ -1152,19 +1174,13 @@ def _allcore_next(s: SessionState, w: World) -> Transition:
             return _after_tighten(s, w)
         for core in members:
             values[core] -= cfg.fine_step
-        load = ROUND_CYCLE[cursor.t_idx % len(ROUND_CYCLE)]
-    elif flow.stage is Stage.STEADY:
-        load = Load.HOT
-    elif flow.stage is Stage.TRANSIENT:
-        load = TRANSIENT_CYCLE[cursor.t_idx % len(TRANSIENT_CYCLE)]
-    elif flow.stage is Stage.ENDURANCE:
-        load = ENDURANCE_CYCLE[cursor.t_idx % len(ENDURANCE_CYCLE)]
-    else:
-        load = Load.SOAK
+    load = _stage_load(flow.stage, cursor)
     first = s.cores[0].core
     vector = tuple((core, values[core]) for core, _ in s.baseline)
     cpus = () if load is Load.SOAK else _all_cpus(s, w)
-    spec = TestSpec(Klass.T1, first, values[first], cpus, _load_seconds(cfg, load), vector, flow.stage, load)
+    seconds = _load_seconds(cfg, load)
+    plan_seed = _plan_seed(s, flow.stage, load)
+    spec = TestSpec(Klass.T1, first, values[first], cpus, seconds, vector, flow.stage, load, plan_seed=plan_seed)
     return _start_test(s, flow, spec, w)
 
 
@@ -1176,7 +1192,7 @@ def _allcore_fail(s: SessionState, ctx, w: World) -> tuple[SessionState, str | N
         return replace(s, incidents=(*s.incidents, Incident.SOAK_FAILURE), flow=replace(flow, dirty=True)), None
     if stage is Stage.TIGHTEN:
         return _reclaim_ended(s), None
-    if stage in (Stage.STEADY, Stage.ENDURANCE) and allcore.steady_class(ctx):
+    if stage is Stage.TRANSIENT or (stage in (Stage.STEADY, Stage.ENDURANCE) and allcore.steady_class(ctx)):
         values = {r.core: r.value for r in s.cores}
         if not any(values.values()):
             return s, "the all-core load fails with every owned core at 0"
@@ -1321,13 +1337,20 @@ def _bisect_next(s: SessionState, w: World) -> Transition:
     values = {r.core: r.value for r in s.cores} if run.rerun is not None else bisect.slot_values(run, group)
     vector = tuple((c, values[c] if c in group else base) for c, base in s.baseline)
     lane = run.lane
-    if run.entry in (Stage.STEADY, Stage.ENDURANCE):
+    quick = run.entry in (Stage.STEADY, Stage.ENDURANCE) and group != run.universe
+    if quick:
         cpus, seconds, load = _all_cpus(s, w), s.config.bisect_seconds, Load.HOT
+    elif run.entry in ALLCORE:
+        load = _stage_load(run.entry, flow.allcore)
+        cpus, seconds = _all_cpus(s, w), _load_seconds(s.config, load)
     elif run.entry is Stage.MEMORY:
         cpus, seconds, load = _all_cpus(s, w), s.config.memory_seconds, Load.MEMORY
     else:
         cpus, seconds, load = _cpus_for(lane, run.klass, w), s.config.test_seconds_1t, Load.ONE_T
-    spec = TestSpec(run.klass, lane, dict(vector)[lane], cpus, seconds, vector, Stage.BISECT, load)
+    plan_seed = _plan_seed(s, run.entry, load) if run.entry in ALLCORE else None
+    spec = TestSpec(
+        run.klass, lane, dict(vector)[lane], cpus, seconds, vector, Stage.BISECT, load, quick=quick, plan_seed=plan_seed
+    )
     return _start_test(s, flow, spec, w)
 
 
@@ -1514,7 +1537,7 @@ def _verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing
     if spec.stage is Stage.LIVE1:
         return _live1_verdict(s, spec, group, pausing, w)
     if spec.stage is Stage.BISECT:
-        return _bisect_verdict(s, spec, group, pausing, w)
+        return _bisect_verdict(s, spec, rep, group, pausing, w)
     cfg = s.config
     rec = s.core(spec.core)
     if group is Group.PASS:
@@ -1581,6 +1604,23 @@ def _q6(s: SessionState, group: tuple[int, ...]) -> tuple[SessionState, str | No
     return replace(s, cores=cores, flow=replace(flow, bisect=replace(flow.bisect, rerun=group), allcore=cursor)), None
 
 
+def _held(s: SessionState) -> tuple[tuple[int, int], ...]:
+    return tuple((r.core, r.value) for r in s.cores)
+
+
+def _found(s: SessionState, core: int) -> tuple[SessionState, str | None]:
+    run = s.flow.bisect
+    backed = search.back_off_in_place(replace(s.core(core), value=dict(run.values)[core]), s.config, 1)
+    return replace(s.with_core(backed), flow=_bisect_exit(s.flow)), None
+
+
+def _full_set(s: SessionState) -> tuple[SessionState, str | None]:
+    universe = s.flow.bisect.universe
+    if len(universe) == 1:
+        return _found(s, universe[0])
+    return _q6(s, universe)
+
+
 def _bisect_outcome(s: SessionState, passed: bool, w: World) -> tuple[SessionState, str | None]:
     flow = s.flow
     run = flow.bisect
@@ -1589,21 +1629,43 @@ def _bisect_outcome(s: SessionState, passed: bool, w: World) -> tuple[SessionSta
         if passed:
             return replace(s, flow=_bisect_exit(flow)), None
         return _q6(s, run.rerun)
+    if passed and bisect.retesting(run):
+        return replace(s, flow=replace(flow, stage=run.entry, bisect=None, one_off=(run.entry, _held(s)))), None
     if not passed and not current:
         return s, "the held values with every owned core at 0 fail the slot"
+    if bisect.retesting(run):
+        return _full_set(s)
     if not passed and len(current) == 1:
-        core = current[0]
-        backed = search.back_off_in_place(replace(s.core(core), value=dict(run.values)[core]), s.config, 1)
-        return replace(s.with_core(backed), flow=_bisect_exit(flow)), None
+        return _found(s, current[0])
     run = bisect.record(run, passed, dict(w.domain_of))
     s = replace(s, flow=replace(flow, bisect=run))
     if run.queue:
         return s, None
-    return _q6(s, bisect.resolve(run))
+    group = bisect.resolve(run)
+    if group != run.universe:
+        return _q6(s, group)
+    if flow.one_off == (run.entry, _held(s)):
+        return _full_set(s)
+    return replace(s, flow=replace(s.flow, bisect=bisect.retest(run))), None
 
 
-def _bisect_verdict(s: SessionState, spec: TestSpec, group: Group, pausing: bool, w: World) -> Transition:
+def _replay_named(s: SessionState, named: tuple[int, ...], w: World) -> SessionState | Transition | None:
+    run = s.flow.bisect
+    at_entry = replace(s, flow=replace(s.flow, stage=run.entry, bisect=None))
+    if run.entry is Stage.MEMORY:
+        return _memory_lanes(at_entry, named, w)
+    return _allcore_named(at_entry, named) if run.entry in ALLCORE else None
+
+
+def _bisect_verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing: bool, w: World) -> Transition:
     s = replace(s, streaks=Streaks())
+    run = s.flow.bisect
+    if group is Group.SILICON and rep.named and bisect.current_group(run) == run.universe:
+        replayed = _replay_named(s, rep.named, w)
+        if isinstance(replayed, Transition):
+            return replayed
+        if replayed is not None:
+            return _next_wait(replayed, spec, pausing)
     s, stock = _bisect_outcome(s, group is Group.PASS, w)
     if stock is not None:
         return _enter_pause(s, PauseReason.STOCK_UNSTABLE, stock)

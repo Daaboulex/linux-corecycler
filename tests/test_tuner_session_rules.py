@@ -535,14 +535,23 @@ def test_a_record_that_moves_a_core_in_transient_restarts_its_clean_time_and_one
 
 
 @pytest.mark.req("L11.G4", "L18.d.4.4.allcore")
-def test_a_crash_in_transient_with_nobody_convicted_loosens_every_core_one_step():
+def test_a_crash_in_transient_with_nobody_convicted_bisects_under_the_load_that_was_running():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
-    _until(fake, _transient)
+    running = _until(fake, _transient).spec
     values = {record.core: record.value for record in fake.state.cores}
     fake.crash()
     fake.post(Resume(1))
-    assert (fake.state.lifecycle, fake.state.flow.stage) == (Lifecycle.RUNNING, Stage.TRANSIENT)
-    assert {record.core: record.value for record in fake.state.cores} == {c: v + 1 for c, v in values.items()}
+    flow = fake.state.flow
+    assert (fake.state.lifecycle, flow.stage) == (Lifecycle.RUNNING, Stage.BISECT)
+    assert flow.bisect.entry is Stage.TRANSIENT
+    assert {record.core: record.value for record in fake.state.cores} == values
+    slot = _next_worker(fake)
+    assert (slot.stage, slot.load, slot.seconds, slot.cpus) == (
+        Stage.BISECT,
+        running.load,
+        running.seconds,
+        running.cpus,
+    )
 
 
 @pytest.mark.req("L11.G5_G8")

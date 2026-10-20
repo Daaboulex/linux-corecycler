@@ -130,7 +130,7 @@ KNOB_TEXT: dict[str, dict[str, tuple[str, str, str]]] = {
         "bisect_seconds": (
             "Narrowing test length",
             "s",
-            "When an all-core test fails without naming a core, groups of cores are tested this long to find it.",
+            "When the hot test fails without naming a core, groups of cores are tested this long to find it.",
         ),
         "burst": (
             "Burst segment",
