@@ -1,8 +1,3 @@
-# Zenpower5 kernel module — fork with Zen 5 (Granite Ridge) support.
-# Provides Tctl/Tdie/Tccd temps + RAPL package power on Zen 5.
-# SVI3 voltage/current is NOT available on Zen 5 (undocumented register format).
-#
-# Source: https://github.com/mattkeenan/zenpower5
 {
   lib,
   fetchFromGitHub,
@@ -24,8 +19,6 @@ toolchain.stdenv.mkDerivation {
 
   patches = [ ./zenpower5-cpuid-include.patch ];
 
-  # Clang rejects GCC-specific -Wimplicit-fallthrough=3 (with -Werror).
-  # Replace with the clang-compatible form (no level suffix).
   postPatch = lib.optionalString toolchain.isClang ''
     substituteInPlace Makefile --replace-fail "-Wimplicit-fallthrough=3" "-Wimplicit-fallthrough"
   '';
@@ -40,12 +33,12 @@ toolchain.stdenv.mkDerivation {
       "KERNEL_BUILD=${toolchain.build}"
     ]
     ++ lib.optionals toolchain.isClang [
-      "KCFLAGS=-Wno-unused-command-line-argument -Wno-unknown-warning-option"
+      "KCFLAGS=-Wno-unused-command-line-argument"
     ];
 
   meta = {
     homepage = "https://github.com/mattkeenan/zenpower5";
-    description = "AMD Zen family CPU sensors driver with Zen 5 support — temperature, SVI2 voltage/current (Zen 1-4), RAPL power";
+    description = "AMD Zen family CPU sensors driver with Zen 5 support: temperature, SVI2 voltage/current (Zen 1-4), RAPL power";
     license = lib.licenses.gpl2Plus;
     platforms = [ "x86_64-linux" ];
     broken = lib.versionOlder kernel.version "4.14";

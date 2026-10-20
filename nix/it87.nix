@@ -1,10 +1,3 @@
-# it87 kernel module — out-of-tree fork with support for newer ITE Super I/O chips.
-# Provides temperature, fan speed, and voltage monitoring (in0 = Vcore on most boards).
-#
-# The in-tree it87 driver lags behind on newer chip IDs (IT8686E, IT8689E, etc.).
-# This fork by Frank Crawford adds 12+ additional chips common on Gigabyte AM5/AM4 boards.
-#
-# Source: https://github.com/frankcrawford/it87
 {
   lib,
   fetchFromGitHub,
@@ -39,7 +32,7 @@ toolchain.stdenv.mkDerivation {
 
   meta = {
     homepage = "https://github.com/frankcrawford/it87";
-    description = "ITE IT87xx Super I/O hwmon driver — extended fork with 38+ chip support";
+    description = "ITE IT87xx Super I/O hwmon driver: extended fork with 38+ chip support";
     license = lib.licenses.gpl2Plus;
     platforms = [ "x86_64-linux" ];
   };

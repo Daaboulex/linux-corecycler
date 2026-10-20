@@ -1,7 +1,3 @@
-# ryzen_smu kernel module — exposes AMD SMU interface for Curve Optimizer,
-# PBO limits, boost override, and PM table access.
-#
-# Source: https://github.com/amkillam/ryzen_smu (amkillam fork with Zen 5 support)
 {
   lib,
   fetchFromGitHub,
