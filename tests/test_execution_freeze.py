@@ -126,7 +126,7 @@ def test_under_a_hold_cap_the_time_a_lane_is_held_does_not_count_toward_its_run(
 def test_a_hold_longer_than_its_cap_ends_the_run_as_thermal(tmp_path: Path):
     verdict, wall = run_held(tmp_path, lambda elapsed, _reading: elapsed >= 0.2, 1.0, 0.5)
     assert verdict.outcome is Outcome.THERMAL
-    assert "the load stayed held more than 0.5 s waiting for the CPU to cool" in verdict.detail
+    assert "the load stayed held more than 0.5 s in all waiting for the CPU to cool" in verdict.detail
     assert wall < 1.5
 
 
@@ -137,3 +137,22 @@ def test_frozen_time_stops_counting_at_the_deadline(tmp_path: Path):
     run.frozen, run.frozen_since = True, 8.0
     supervisor._set_frozen([run], False, 12.0)
     assert run.frozen_total == 2.0 and run.frozen is False
+
+
+@pytest.mark.req("D58")
+@pytest.mark.real_cpu_time
+def test_holds_each_shorter_than_the_cap_end_the_run_as_thermal_once_their_total_passes_it(tmp_path: Path):
+    def held(elapsed, _reading):
+        return any(start <= elapsed < start + 0.3 for start in (0.1, 0.5, 0.9, 1.3))
+
+    verdict, wall = run_held(tmp_path, held, 1.0, 0.5)
+    assert verdict.outcome is Outcome.THERMAL
+    assert "the load stayed held more than 0.5 s in all waiting for the CPU to cool" in verdict.detail
+    assert wall < 1.5
+
+
+@pytest.mark.req("D58")
+@pytest.mark.real_cpu_time
+def test_a_run_never_held_is_never_thermal_whatever_its_cap(tmp_path: Path):
+    verdict, _ = run_held(tmp_path, lambda _elapsed, _reading: False, 0.4, 0.0)
+    assert verdict.outcome is Outcome.PASS, verdict.detail

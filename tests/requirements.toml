@@ -3849,7 +3849,7 @@ proof = "built"
 
 [[requirement]]
 id = "D58"
-statement = "A WARM slice counts run time; a hold not thawed within 300 s ends the run as THERMAL; frozen time past the deadline does not count"
+statement = "Every segment that holds counts run time; held more than 300 s in all, across every hold, ends the run as THERMAL; frozen time past the deadline does not count"
 proof = "built"
 
 [[requirement]]

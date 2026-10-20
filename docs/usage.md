@@ -194,8 +194,10 @@ Hard crashes are expected during CO tuning; that is how each core's limit is fou
   takes it for each write, so the two never write at once.
 - **Temperature**: above the thermal limit, or the CPU's Tjmax when that is lower, the
   test stops and the tuner cools down and retries the same value; after three such
-  retries in a row the next thermal stop pauses. No readable temperature sensor refuses
-  the run.
+  retries in a row the next thermal stop pauses. Under the all-core loads the load is held
+  when the CPU runs hot and goes on once it has cooled; a test held more than 300 s in all
+  ends as such a thermal stop. A cool-down that does not bring the CPU below the limit
+  within 300 s pauses the session. No readable temperature sensor refuses the run.
 - **Other schedulers**: a stress tool whose nice value or scheduling policy differs from
   what it was started with (ananicy-cpp renices programs by name) is not a verdict: the
   test is repeated, and if it keeps happening the session pauses naming the program and

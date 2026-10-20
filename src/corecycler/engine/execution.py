@@ -397,11 +397,11 @@ class Supervisor:
             if self.freeze is not None:
                 self._set_frozen(runs, self.freeze(now - start, reading), now)
             if self.hold_cap_s is not None:
-                held = [run.frozen_since for run in runs if run.frozen]
-                if held and now - min(held) > self.hold_cap_s:
+                held = max(_frozen_for(run, now) for run in runs)
+                if held > self.hold_cap_s:
                     self._hold_expired(runs)
                     return
-                deadline = start + duration + max(_frozen_for(run, now) for run in runs)
+                deadline = start + duration + held
                 for run in runs:
                     run.deadline = deadline
             for run in runs:
@@ -484,7 +484,7 @@ class Supervisor:
     def _hold_expired(self, runs: list[_LaneRun]) -> None:
         reading = self.thermal.last_temperature
         last = "" if reading is None else f", last reading {reading:.1f} C"
-        text = f"the load stayed held more than {self.hold_cap_s:g} s waiting for the CPU to cool{last}"
+        text = f"the load stayed held more than {self.hold_cap_s:g} s in all waiting for the CPU to cool{last}"
         for run in runs:
             run.signals.append(LaneSignal(Outcome.THERMAL, text))
 

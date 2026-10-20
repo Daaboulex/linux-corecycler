@@ -21,7 +21,7 @@ BURST_MEMORY_MB = 2048
 IDLE_MEMORY_MB = 1024
 HOT_HOLD_SPAN_C = 10.0
 WARM_HOLD = (65.0, 55.0)
-WARM_HOLD_CAP_S = 300.0
+HOLD_CAP_S = 300.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +104,7 @@ def plan(
                 hot_memory,
                 seconds,
                 hold=hot_hold,
+                hold_cap_s=HOLD_CAP_S,
             ),
         )
     if load is Load.WARM:
@@ -120,7 +121,7 @@ def plan(
                     hot_memory,
                     min(WARM_SLICE_S, remaining),
                     hold=WARM_HOLD,
-                    hold_cap_s=WARM_HOLD_CAP_S,
+                    hold_cap_s=HOLD_CAP_S,
                 )
             )
         return tuple(slices)
@@ -135,7 +136,16 @@ def plan(
             first = 3.0 if not segments else rng.choice((1.0, 2.0))
             frozen = _alternate(rng, length, first, (0.2, 3.0), (0.3, 4.0))
             segments.append(
-                Segment(chosen, ALL_TESTS[start:], BURST_PER_TEST_S, BURST_MEMORY_MB, length, frozen, hold=hot_hold)
+                Segment(
+                    chosen,
+                    ALL_TESTS[start:],
+                    BURST_PER_TEST_S,
+                    BURST_MEMORY_MB,
+                    length,
+                    frozen,
+                    hold=hot_hold,
+                    hold_cap_s=HOLD_CAP_S,
+                )
             )
             t += length
         return tuple(segments)
@@ -144,5 +154,16 @@ def plan(
         chosen = tuple(sorted(rng.sample(firsts, count)))
         start = rng.randrange(len(ALL_TESTS))
         frozen = _alternate(rng, seconds, rng.uniform(0.1, 0.4), (0.1, 0.4), (15.0, 40.0))
-        return (Segment(chosen, ALL_TESTS[start:], IDLE_PER_TEST_S, IDLE_MEMORY_MB, seconds, frozen, hold=hot_hold),)
+        return (
+            Segment(
+                chosen,
+                ALL_TESTS[start:],
+                IDLE_PER_TEST_S,
+                IDLE_MEMORY_MB,
+                seconds,
+                frozen,
+                hold=hot_hold,
+                hold_cap_s=HOLD_CAP_S,
+            ),
+        )
     raise ValueError(f"{load} has no stage plan")

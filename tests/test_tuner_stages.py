@@ -570,12 +570,14 @@ def test_memory_that_cannot_run_is_skipped_with_its_reason(budget, available, re
     assert reason in report.skipped and seen == []
 
 
-def test_only_warm_slices_wait_out_their_hold_and_the_runner_hands_the_cap_to_the_supervisor():
-    assert {s.hold_cap_s for s in plan(Load.WARM)} == {stages.WARM_HOLD_CAP_S}
-    assert {s.hold_cap_s for load in (Load.HOT, Load.BURST, Load.IDLE) for s in plan(load)} == {None}
+@pytest.mark.req("D58")
+def test_every_segment_that_holds_carries_a_hold_cap_and_the_runner_hands_it_on():
+    for load in (Load.HOT, Load.BURST, Load.WARM, Load.IDLE):
+        holding = [s for s in plan(load) if s.hold is not None]
+        assert holding and all(s.hold_cap_s is not None for s in holding), load
     script = Script([Outcome.PASS] * 8)
     runner(script).run(spec(Load.WARM), threading.Event())
-    assert script.caps == [stages.WARM_HOLD_CAP_S] * 8
+    assert script.caps == [stages.HOLD_CAP_S] * 8
 
 
 def test_the_working_cores_of_a_failing_burst_segment_are_the_cores_it_drew():
