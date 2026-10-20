@@ -746,6 +746,32 @@ def test_a_new_start_asks_about_a_core_whose_co_differs_from_the_newest_session_
     assert third.refused is None
 
 
+@pytest.mark.req("C14")
+def test_a_start_over_a_newest_session_that_cannot_be_read_refuses_naming_it_and_writes_nothing(tmp_path):
+    db = database(tmp_path / "unread.db")
+    first = rig(tmp_path, FakeHardware(), db=db)
+    first.start(config(), 1, 7, True)
+    first.post(live.Abort())
+    db._execute_raw("UPDATE tuner_sessions SET machine_json = json_remove(machine_json, '$.base_co') WHERE id = 1")
+    hardware = FakeHardware(co={0: 0, 1: 0, 8: -3})
+    second = rig(tmp_path, hardware, db=db)
+    second.start(config(), 2, 7, False)
+    named = (
+        "cores [8] read a CO other than 0 at Start, set by the BIOS or written since boot; session 1 could not be "
+        "read: KeyError('base_co'), so whether the CO moved since it started cannot be judged"
+    )
+    assert second.refused == f"{named}: acknowledge to start"
+    assert second.state.lifecycle is Lifecycle.IDLE
+    assert rows(second, "SELECT id FROM tuner_sessions") == [{"id": 1}]
+    assert rows(second, "SELECT count(*) AS n FROM tuner_events WHERE session_id = 2") == [{"n": 0}]
+    assert hardware.co == {0: 0, 1: 0, 8: -3}
+    third = rig(tmp_path, hardware, db=db)
+    third.start(config(), 2, 7, True)
+    assert third.refused is None
+    acknowledged = "SELECT message FROM tuner_events WHERE session_id = 2 AND severity = 'acknowledged'"
+    assert rows(third, acknowledged) == [{"message": named}]
+
+
 def completed_session(tmp_path, db: HistoryDB) -> Stored:
     first = rig(tmp_path, FakeHardware(), db=db)
     first.start(config(), 1, 7, True)

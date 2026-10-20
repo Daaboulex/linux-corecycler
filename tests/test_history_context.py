@@ -179,6 +179,33 @@ class TestDetectBiosChange:
         assert detect_bios_change(db, bios_path=bios_file) == f"BIOS changed: {old} -> {new}"
 
     @pytest.mark.req("T22.F19")
+    @pytest.mark.parametrize(
+        ("stored", "read", "said"),
+        [
+            ("", "F12", "BIOS version F12, none recorded before, so a change cannot be judged"),
+            ("F12", "", "BIOS version absent, F12 recorded before, so a change cannot be judged"),
+        ],
+        ids=["not-recorded-before", "absent-now"],
+    )
+    def test_a_version_missing_on_either_side_says_so_and_judges_no_change(self, db, tmp_path, stored, read, said):
+        db.create_context(TuningContextRecord(bios_version=stored))
+        bios = tmp_path / "bios_version"
+        if read:
+            bios.write_text(f"{read}\n")
+        assert detect_bios_change(db, bios_path=bios) == said
+
+    @pytest.mark.req("T22.F19")
+    @pytest.mark.parametrize(
+        ("read", "said"), [("F11", None), ("F12", "BIOS changed: F11 -> F12")], ids=["same", "moved"]
+    )
+    def test_a_newest_context_without_a_version_is_judged_against_the_last_recorded(self, db, tmp_path, read, said):
+        db.create_context(TuningContextRecord(bios_version="F11"))
+        db.create_context(TuningContextRecord(bios_version=""))
+        bios = tmp_path / "bios_version"
+        bios.write_text(f"{read}\n")
+        assert detect_bios_change(db, bios_path=bios) == said
+
+    @pytest.mark.req("T22.F19")
     @pytest.mark.parametrize("stored", ["F12", ""])
     def test_a_version_that_cannot_be_read_says_so_and_judges_no_change(self, db, tmp_path, stored):
         db.create_context(TuningContextRecord(bios_version=stored))

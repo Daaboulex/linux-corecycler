@@ -329,6 +329,8 @@ def _to_acknowledge(cfg: MachineConfig, w: World) -> str:
         named.append(f"cores {already} read a CO other than 0 at Start, set by the BIOS or written since boot")
     if changed:
         named.append(f"the CO differs from when session {w.newest_base[0]} started: {', '.join(changed)}")
+    if w.newest_unread is not None:
+        named.append(f"{w.newest_unread}, so whether the CO moved since it started cannot be judged")
     return "; ".join(named)
 
 
@@ -443,6 +445,10 @@ def _reengage(s: SessionState, e: Resume, w: World) -> Transition:
 def _setup_choice_problem(s: SessionState, w: World) -> str | None:
     if s.lifecycle is not Lifecycle.PAUSED or s.pause is None or s.pause.reason is not PauseReason.SETUP_CHANGED:
         return "only a session paused as setup_changed can continue or restart under a new setup"
+    reads = dict(w.bios_co)
+    unread = sorted(core for core, _ in w.cpus_of if reads.get(core) is None)
+    if unread:
+        return f"the CO of core {', '.join(map(str, unread))} could not be read"
     if _setup_changes(s.setup, w.setup) or _held_base_changes(s, w.bios_co):
         return None
     moved = _changes(s.power, w.power)
@@ -704,7 +710,8 @@ def _held_moved(s: SessionState | Stored, reads: tuple[tuple[int, int | None], .
 def _held_base_changes(s: SessionState | Stored, reads: tuple[tuple[int, int | None], ...]) -> str:
     base, values = dict(s.base_co), dict(reads)
     return "; ".join(
-        f"core {core} is {values[core]}, the BIOS gave {base.get(core)} when the session started"
+        f"core {core} reads {values[core]}, "
+        + ("with no CO read at Start" if base.get(core) is None else f"the CO read at Start was {base[core]}")
         for core in _held_moved(s, reads)
     )
 

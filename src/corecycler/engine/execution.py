@@ -85,6 +85,7 @@ class _LaneRun:
     last_watchdog: float = 0.0
     cpu_seconds: float | None = None
     cpu_sampled_at: float = 0.0
+    cpu_last_read_failed: bool = False
     contained: containment.Containment | None = None
     cgroup: str | None = None
     output: str = ""
@@ -266,10 +267,20 @@ def _no_work_done(run: _LaneRun) -> str | None:
     floor = LOAD_FLOOR_FRACTION * len(run.lane.cpus) * (run.deadline - run.started_at - run.frozen_total)
     if run.cpu_seconds is not None and 0 < floor <= run.cpu_seconds:
         return None
-    used = "unreadable" if run.cpu_seconds is None else f"{run.cpu_seconds:.2f}s"
+    if run.cpu_seconds is not None and not run.cpu_last_read_failed:
+        return (
+            f"payload CPU time {run.cpu_seconds:.2f}s on CPUs {run.lane.cpu_list} did not reach the load floor of "
+            f"{floor:.2f}s: no work done, verdict unavailable"
+        )
+    unread = (
+        "every read"
+        if run.cpu_seconds is None
+        else f"the final read; the last read that succeeded gave {run.cpu_seconds:.2f}s at "
+        f"{run.cpu_sampled_at - run.started_at:.1f}s into the run"
+    )
     return (
-        f"payload CPU time {used} on CPUs {run.lane.cpu_list} did not reach the load floor of "
-        f"{floor:.2f}s: no work done, verdict unavailable"
+        f"payload CPU time on CPUs {run.lane.cpu_list} unreadable at {unread}: the load floor of {floor:.2f}s is "
+        "unproven, verdict unavailable"
     )
 
 
@@ -571,6 +582,7 @@ class Supervisor:
             seconds = containment.scope_cpu_seconds(run.cgroup)
         else:
             seconds = containment.process_group_cpu_seconds(run.proc.pid)
+        run.cpu_last_read_failed = seconds is None
         if seconds is None:
             return
         busy_floor = STALL_BUSY_FRACTION * len(run.lane.cpus) * (now - run.cpu_sampled_at)

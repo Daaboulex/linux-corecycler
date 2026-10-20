@@ -94,7 +94,7 @@ proof = "built"
 
 [[requirement]]
 id = "C14"
-statement = "At Start a change against the newest session's base_co is named in the acknowledgement; at Resume it pauses (L24)"
+statement = "At Start a change against the newest session's base_co is named in the acknowledgement, and so is a newest session that cannot be read, never a crash; at Resume a change pauses (L24)"
 proof = "built"
 
 [[requirement]]
@@ -725,7 +725,7 @@ proof = "built"
 
 [[requirement]]
 id = "VERDICT.15"
-statement = "NO_WORK_DONE (load floor not met) is apparatus"
+statement = "NO_WORK_DONE (load floor not met, or unproven when the final CPU-time read failed, naming the last read that succeeded) is apparatus"
 proof = "built"
 
 [[requirement]]
@@ -4539,7 +4539,7 @@ proof = "built"
 
 [[requirement]]
 id = "TRUTH.BOOT_END_UNREAD"
-statement = "A boot whose end cannot be read is treated as a crash and recorded as that assumption with its reason, before anything the attribution announces."
+statement = "A boot ends cleanly only on systemd-journald's Journal stopped; a last entry from any other program is a crash, its message unread; a boot whose end cannot be read is treated as a crash and recorded as that assumption with its reason, before anything the attribution announces."
 proof = "built"
 
 [[requirement]]
@@ -4650,7 +4650,7 @@ task = "T22"
 
 [[requirement]]
 id = "T22.F19"
-statement = "A setting that could not be read says unreadable with the reason, never that it is absent; an unreadable BIOS version is never judged a BIOS change or made a tuning context."
+statement = "A setting that could not be read says unreadable with the reason, never that it is absent; an unreadable BIOS version is never judged a BIOS change or made a tuning context, and a BIOS version not recorded before or absent now is never judged a change."
 proof = "built"
 
 [[requirement]]

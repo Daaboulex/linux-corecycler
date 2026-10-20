@@ -158,8 +158,9 @@ boot, Start lists those values and asks before it starts over them; the tuner se
 each core from 0 or from the newest completed session's value, never from the BIOS
 value, and a reboot brings the BIOS values back. Start also asks, naming the
 values then and now, when a selected core reads another CO than when the newest session
-started, even when every core reads 0. From the command line,
-`tune` and `restart` take `--acknowledge` for the same answer.
+started, even when every core reads 0, and asks, naming it, when the newest session
+cannot be read, as whether the CO moved since then cannot be judged. From the command
+line, `tune` and `restart` take `--acknowledge` for the same answer.
 
 ### Power state and clocks
 

@@ -884,23 +884,34 @@ def test_a_running_all_core_test_on_sixteen_cores_shows_its_whole_line_without_w
 
 
 @pytest.mark.req("T22.F19", "T23.halfscreen")
-def test_an_unreadable_bios_version_is_said_whole_in_history_without_widening_the_window(monkeypatch, tmp_path, db):
-    import errno
-    import os
-
+@pytest.mark.parametrize(
+    ("stored", "read", "said"),
+    [
+        (
+            "F12",
+            "unreadable: Input/output error",
+            "BIOS version unreadable: Input/output error, so a change cannot be judged",
+        ),
+        ("", "F12", "BIOS version F12, none recorded before, so a change cannot be judged"),
+        ("F12", "", "BIOS version absent, F12 recorded before, so a change cannot be judged"),
+    ],
+    ids=["unreadable", "not-recorded-before", "absent-now"],
+)
+def test_an_unjudged_bios_version_is_said_whole_in_history_without_widening_the_window(
+    monkeypatch, tmp_path, db, stored, read, said
+):
     from PySide6.QtWidgets import QApplication
 
     from corecycler.history import context
 
-    db.create_context(context.TuningContextRecord(bios_version="F12"))
-    reason = os.strerror(errno.EIO)
-    monkeypatch.setattr(context, "read_bios_version", lambda _path: f"unreadable: {reason}")
+    db.create_context(context.TuningContextRecord(bios_version=stored))
+    monkeypatch.setattr(context, "read_bios_version", lambda _path: read)
     win = _build(monkeypatch, tmp_path, db=db, topology=_topo(16), bios=context.detect_bios_change)
     win.show()
     win._tabs.setCurrentWidget(win._history_tab)
     QApplication.processEvents()
     label = win._history_tab._bios_label
-    assert label.text() == f"BIOS version unreadable: {reason}, so a change cannot be judged"
+    assert label.text() == said
     narrowest = win.minimumSizeHint().width()
     assert narrowest <= HALF_SCREEN - 20
     win.resize(narrowest, 1000)

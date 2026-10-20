@@ -536,6 +536,27 @@ def test_start_names_a_core_whose_co_differs_from_the_newest_session_s_base_even
     assert "--acknowledge" in launched[0][0]
 
 
+@pytest.mark.req("C14")
+def test_start_over_a_newest_session_that_cannot_be_read_asks_first_and_names_it(db, home, launched, tmp_path):
+    saved = save_machine_session(db, tmp_path, "aborted")
+    db._execute_raw(
+        "UPDATE tuner_sessions SET machine_json = json_remove(machine_json, '$.base_co') WHERE id = ?",
+        (saved.session_id,),
+    )
+    t = tab(db)
+    tt.QMessageBox.question.return_value = tt.QMessageBox.StandardButton.Cancel
+    t._buttons["Start"].click()
+    assert launched == []
+    assert tt.QMessageBox.question.call_args.args[1:3] == (
+        "Curve Optimizer values at Start",
+        f"The newest session {saved.session_id} cannot be read: KeyError('base_co'), so whether the CO moved since "
+        "it started cannot be judged.\n\nStart anyway?",
+    )
+    tt.QMessageBox.question.return_value = tt.QMessageBox.StandardButton.Yes
+    t._buttons["Start"].click()
+    assert "--acknowledge" in launched[0][0]
+
+
 def test_restart_asks_about_the_session_s_own_cores(db, home, launched, tmp_path):
     saved = save_machine_session(db, tmp_path, "paused")
     db.insert_tuner_event(saved.session_id, "setup_changed: bios was A, is now B", this_boot(), "paused")

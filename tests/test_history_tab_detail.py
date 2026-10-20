@@ -236,6 +236,30 @@ class TestContextTable:
         assert tab._context_table.item(1, 0).text() == "2402"
         assert not tab._context_table.item(1, 0).toolTip()
 
+    @pytest.mark.req("T22.F19")
+    @pytest.mark.parametrize(
+        ("older", "newer"),
+        [("", "F12"), ("F12", ""), ("F12", "F12")],
+        ids=["not-recorded-before", "absent-now", "same"],
+    )
+    def test_no_bios_change_is_marked_beside_a_missing_or_equal_version(self, db, older, newer):
+        old = _seed_context(db, older, {"0": -20})
+        new = _seed_context(db, newer, {"0": -25})
+        _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=old)
+        _seed_run(db, "2026-07-21T10:00:00+00:00", context_id=new)
+        tab = _grouped_tab(db)
+        shown = [(tab._context_table.item(row, 0).text(), tab._context_table.item(row, 0).toolTip()) for row in (0, 1)]
+        assert shown == [(newer or "-", ""), (older or "-", "")]
+
+    @pytest.mark.req("T22.F19")
+    def test_a_change_across_a_context_without_a_version_is_marked_on_the_newer_one(self, db):
+        for day, version in ((20, "F12"), (21, ""), (22, "F13")):
+            cid = _seed_context(db, version, {"0": -20 - day})
+            _seed_run(db, f"2026-07-{day}T10:00:00+00:00", context_id=cid)
+        tab = _grouped_tab(db)
+        shown = [tab._context_table.item(row, 0).text() for row in (0, 1, 2)]
+        assert shown == ["F13 *", "-", "F12"]
+
     def test_context_row_summarises_runs_and_scalar(self, db):
         cid = _seed_context(db, "2402", {"0": -20, "1": -20}, notes="tuned", scalar=3.0)
         _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)

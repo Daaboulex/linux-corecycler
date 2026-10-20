@@ -685,7 +685,8 @@ class TunerTab(QWidget):
         changed = (
             [] if newest is None or newest.stored is None else co_changed_since(newest.stored.base_co, values, cores)
         )
-        if not already and not changed:
+        unread = None if newest is None else newest.problem
+        if not already and not changed and unread is None:
             return []
         said = []
         if already:
@@ -696,6 +697,8 @@ class TunerTab(QWidget):
             )
         if changed:
             said.append(f"The CO differs from when session {newest.session_id} started: {', '.join(changed)}.")
+        if unread is not None:
+            said.append(f"The newest {unread}, so whether the CO moved since it started cannot be judged.")
         answer = QMessageBox.question(
             self,
             "Curve Optimizer values at Start",

@@ -17,6 +17,8 @@ from corecycler.history.db import TuningContextRecord
 from corecycler.smu import pmtable
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from corecycler.history.db import HistoryDB
     from corecycler.smu.driver import RyzenSMU
 
@@ -124,7 +126,24 @@ def detect_bios_change(db: HistoryDB, bios_path: Path = BIOS_VERSION_PATH) -> st
     current = read_bios_version(bios_path)
     if current.startswith(UNREADABLE):
         return f"BIOS version {current}, so a change cannot be judged"
-    contexts = db.list_contexts(limit=1)
+    contexts = db.list_contexts()
     if not contexts or contexts[0].bios_version == current:
         return None
-    return f"BIOS changed: {contexts[0].bios_version} -> {current}"
+    earlier = last_recorded_bios(contexts)
+    if earlier == current:
+        return None
+    if bios_change_judged(earlier, current):
+        return f"BIOS changed: {earlier} -> {current}"
+    if earlier:
+        return f"BIOS version absent, {earlier} recorded before, so a change cannot be judged"
+    return f"BIOS version {current}, none recorded before, so a change cannot be judged"
+
+
+def last_recorded_bios(contexts: Sequence[TuningContextRecord]) -> str:
+    """The newest BIOS version among contexts given newest first, skipping any that recorded none; "" if none did."""
+    return next((ctx.bios_version for ctx in contexts if ctx.bios_version), "")
+
+
+def bios_change_judged(earlier: str, now: str) -> bool:
+    """Whether two recorded BIOS versions show a change: never when either one is missing."""
+    return bool(earlier and now) and earlier != now

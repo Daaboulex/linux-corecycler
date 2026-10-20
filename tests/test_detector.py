@@ -540,6 +540,14 @@ class TestBootEnd:
         machine.reboot(clean=False)
         assert boot_end(dead) == BootEnd(clean=False, problem=None)
 
+    @pytest.mark.req("TRUTH.BOOT_END_UNREAD")
+    @pytest.mark.parametrize("identifier", ["systemd-coredump", "systemd-journald"])
+    def test_a_last_entry_over_4096_bytes_is_read_whole_and_ends_the_boot_uncleanly(self, machine, identifier):
+        dead = machine.boot_id
+        machine.daemon_now("x" * 5000, identifier)
+        machine.reboot(clean=False)
+        assert boot_end(dead) == BootEnd(clean=False, problem=None)
+
     def test_an_unrecorded_boot_is_a_problem(self):
         assert boot_end("") == BootEnd(clean=False, problem="the session's boot is not recorded")
 
@@ -571,6 +579,12 @@ class TestResetReasons:
             "x86/amd: Previous system reset reason [0x00200800]: ACPI power state transition occurred",
         )
         assert problem is None
+
+    def test_a_reset_reason_over_4096_bytes_is_read_whole(self, machine):
+        machine.reboot(clean=False)
+        long = f"{self.FLOOD} {'x' * 5000}"
+        machine.kernel(long, mono_s=1)
+        assert reset_reasons(machine.boot_id) == ((long,), None)
 
     def test_a_boot_the_journal_does_not_hold_is_a_problem_not_an_empty_answer(self, machine):
         machine.reboot(clean=False)
@@ -625,6 +639,13 @@ class TestHarvestAfter:
             machine.kernel(line, mono_s=1)
         read = harvest_after(dead, WHOLE_BOOT, next_boot=True)
         assert (read.dead_boot, _cpus(read.next_boot), read.problem) == ((), [1], None)
+
+    def test_a_kernel_line_over_4096_bytes_is_read_whole_beside_the_records(self, machine):
+        dead = machine.boot_id
+        machine.kernel_now(["x" * 5000], core_bank_record(2))
+        machine.reboot(clean=False)
+        read = harvest_after(dead, WHOLE_BOOT, next_boot=False)
+        assert (_cpus(read.dead_boot), read.problem) == ([2], None)
 
     def test_a_clean_end_reads_the_dead_boot_alone(self, machine):
         dead = machine.boot_id
@@ -692,11 +713,54 @@ def _entry(message, *, mono_us=5, identifier="kernel") -> str:
     )
 
 
+COREDUMP_OF_WIREPLUMBER = json.dumps(
+    {
+        "__CURSOR": "s=5d1c0c3b;i=2f7a1;b=0123456789abcdef0123456789abcdef;m=2914a51f;t=6403f2d8a6c3d;x=91c2",
+        "__REALTIME_TIMESTAMP": "1792163517412093",
+        "__MONOTONIC_TIMESTAMP": "689204511",
+        "_BOOT_ID": "0123456789abcdef0123456789abcdef",
+        "_TRANSPORT": "journal",
+        "PRIORITY": "2",
+        "SYSLOG_IDENTIFIER": "systemd-coredump",
+        "MESSAGE_ID": "fc2e22bc6ee647b6b90729ab34a250b1",
+        "CODE_FUNC": "submit_coredump",
+        "COREDUMP_PID": "2884",
+        "COREDUMP_COMM": "wireplumber",
+        "COREDUMP_SIGNAL": "11",
+        "COREDUMP_SIGNAL_NAME": "SIGSEGV",
+        "COREDUMP_EXE": "/run/current-system/sw/bin/wireplumber",
+        "COREDUMP_PROC_AUXV": [33, 0, 0, 0, 0, 0, 0, 0],
+        "COREDUMP_PROC_MAPS": None,
+        "COREDUMP_ENVIRON": None,
+        "COREDUMP_PROC_MOUNTINFO": None,
+        "MESSAGE": None,
+    }
+)
+
+
 @pytest.mark.usefixtures("real_journal")
 class TestJournalReadFailures:
     DEAD = "0123456789abcdef0123456789abcdef"
     NEXT = "fedcba9876543210fedcba9876543210"
     LISTING = json.dumps([{"index": 0, "boot_id": NEXT}, {"index": -1, "boot_id": DEAD}])
+
+    @pytest.mark.req("TRUTH.BOOT_END_UNREAD")
+    @pytest.mark.parametrize(
+        "last", [_entry(None, identifier="systemd-coredump"), COREDUMP_OF_WIREPLUMBER], ids=["null", "coredump-17-11"]
+    )
+    def test_a_last_entry_from_another_program_ends_the_boot_uncleanly_unread(self, last):
+        with patch("subprocess.run", return_value=_completed(last + "\n")):
+            assert boot_end(self.DEAD) == BootEnd(clean=False, problem=None)
+
+    @pytest.mark.req("TRUTH.BOOT_END_UNREAD")
+    def test_journald_s_own_last_entry_with_a_null_message_is_a_problem(self):
+        with patch("subprocess.run", return_value=_completed(_entry(None, identifier="systemd-journald") + "\n")):
+            end = boot_end(self.DEAD)
+        assert end == BootEnd(
+            clean=False,
+            problem=f"journalctl -b {self.DEAD} -n 1 -o json --all printed an unreadable entry: "
+            "TypeError('MESSAGE is a NoneType')",
+        )
 
     @pytest.mark.parametrize(
         "failure",
@@ -707,9 +771,27 @@ class TestJournalReadFailures:
         with patch("subprocess.run", side_effect=failure):
             end = boot_end(self.DEAD)
             read = harvest_after(self.DEAD, WHOLE_BOOT, next_boot=True)
-        assert end.problem.startswith(f"journalctl -b {self.DEAD} -n 1 -o json failed: ")
+        assert end.problem.startswith(f"journalctl -b {self.DEAD} -n 1 -o json --all failed: ")
         assert (read.dead_boot, read.next_boot) == ((), ())
         assert "journalctl --list-boots -o json failed: " in read.problem
+
+    @pytest.mark.parametrize(
+        "stdout",
+        [
+            "",
+            "{not json\n",
+            '["an array"]\n',
+            '{"SYSLOG_IDENTIFIER": "systemd-journald"}\n',
+            _entry({"not": "a message"}, identifier="systemd-journald") + "\n",
+            _entry([300], identifier="systemd-journald") + "\n",
+        ],
+        ids=["no-entry", "not-json", "not-an-object", "no-message", "message-object", "message-out-of-range"],
+    )
+    def test_an_unreadable_last_entry_is_a_problem(self, stdout):
+        with patch("subprocess.run", return_value=_completed(stdout)):
+            end = boot_end(self.DEAD)
+        assert end.clean is False
+        assert "printed an unreadable entry" in end.problem
 
     @pytest.mark.parametrize(
         "stdout",
@@ -718,16 +800,16 @@ class TestJournalReadFailures:
             '["an array"]\n',
             '{"__MONOTONIC_TIMESTAMP": "1", "__REALTIME_TIMESTAMP": "2"}\n',
             _entry("x", mono_us="soon") + "\n",
-            _entry({"not": "a message"}) + "\n",
+            _entry(None) + "\n",
             _entry([300]) + "\n",
         ],
-        ids=["not-json", "not-an-object", "no-message", "bad-stamp", "message-object", "message-out-of-range"],
+        ids=["not-json", "not-an-object", "no-message", "bad-stamp", "null-message", "message-out-of-range"],
     )
-    def test_an_unreadable_entry_is_a_problem(self, stdout):
+    def test_an_unreadable_kernel_record_is_a_problem(self, stdout):
         with patch("subprocess.run", return_value=_completed(stdout)):
-            end = boot_end(self.DEAD)
-        assert end.clean is False
-        assert "printed an unreadable entry" in end.problem
+            read = harvest_after(self.DEAD, WHOLE_BOOT, next_boot=False)
+        assert read.dead_boot == ()
+        assert "printed an unreadable entry" in read.problem
 
     def test_a_message_held_as_bytes_is_decoded(self):
         stopped = _entry(list(b"Journal stopped"), identifier="systemd-journald")

@@ -747,13 +747,49 @@ class TestLoadProof:
             verdict = run_one(supervisor, lane(tmp_path), 2.0)
         assert verdict.outcome is Outcome.PASS
 
+    @pytest.mark.req("VERDICT.15")
     def test_an_unreadable_payload_cpu_time_never_proves_load(self, tmp_path):
         backend = FakeBackend(_child(BUSY))
         supervisor, _, _ = make_supervisor(backend)
         with patch.object(containment, "process_group_cpu_seconds", return_value=None):
             verdict = run_one(supervisor, lane(tmp_path), 1.0)
         assert verdict.outcome is Outcome.NO_WORK_DONE
-        assert "unreadable" in verdict.detail
+        assert verdict.detail.startswith("payload CPU time on CPUs 0 unreadable at every read: the load floor of ")
+        assert verdict.detail.endswith("s is unproven, verdict unavailable")
+
+    @staticmethod
+    def _last_read_then_none(tmp_path, last_read: float):
+        duration = 1.0
+        past_the_deadline = threading.Event()
+
+        def wait_out_the_deadline(_core: int, elapsed: float) -> None:
+            time.sleep(max(0.0, duration - elapsed))
+            past_the_deadline.set()
+
+        def read_until_the_deadline(_pid: int) -> float | None:
+            return None if past_the_deadline.is_set() else last_read
+
+        backend = FakeBackend(_child("import time; time.sleep(30)"))
+        supervisor, _, _ = make_supervisor(backend, hooks=SuperviseHooks(on_status=wait_out_the_deadline))
+        with patch.object(containment, "process_group_cpu_seconds", side_effect=read_until_the_deadline):
+            verdict = run_one(supervisor, lane(tmp_path), duration)
+        assert past_the_deadline.is_set()
+        return verdict, duration
+
+    @pytest.mark.req("VERDICT.15")
+    def test_a_failed_final_read_is_named_and_the_floor_judged_from_the_last_read_that_succeeded(self, tmp_path):
+        verdict, duration = self._last_read_then_none(tmp_path, 0.1)
+        assert verdict.outcome is Outcome.NO_WORK_DONE
+        said = "payload CPU time on CPUs 0 unreadable at the final read; the last read that succeeded gave 0.10s at "
+        assert verdict.detail.startswith(said)
+        seconds, into, rest = verdict.detail.removeprefix(said).partition("s into the run: the load floor of ")
+        assert into
+        assert 0.0 <= float(seconds) < duration
+        assert rest.endswith("s is unproven, verdict unavailable")
+
+    def test_an_earlier_read_over_the_floor_proves_the_load_when_the_final_read_fails(self, tmp_path):
+        verdict, _ = self._last_read_then_none(tmp_path, 1.0)
+        assert verdict.outcome is Outcome.PASS
 
     def test_the_cpu_time_the_payload_used_up_to_our_stop_counts(self, tmp_path):
         duration = 2.0

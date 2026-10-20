@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import itertools
 import json
 import statistics
 from collections import Counter
@@ -48,6 +47,7 @@ from corecycler.gui.style import (
 )
 from corecycler.gui.tuner_tab import ORDER_LABELS, THREADS, scope_text, settings_lines
 from corecycler.gui.widgets import table_item as _item
+from corecycler.history.context import bios_change_judged, last_recorded_bios
 from corecycler.history.timefmt import format_local
 from corecycler.smu.pmtable import stretch_pct
 from corecycler.smu.writer_lock import running_driver
@@ -434,8 +434,8 @@ class HistoryTab(QWidget):
 
         bios_changed_set = {
             i
-            for i, (newer, older) in enumerate(itertools.pairwise(self._contexts))
-            if newer.bios_version != older.bios_version
+            for i, newer in enumerate(self._contexts)
+            if bios_change_judged(last_recorded_bios(self._contexts[i + 1 :]), newer.bios_version)
         }
 
         row = 0

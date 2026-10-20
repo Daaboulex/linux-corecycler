@@ -65,7 +65,8 @@ _TROUBLE = re.compile(
 _KMSG_RECORD = re.compile(r"(\d+),\d+,(\d+),[^;]*;(.*)")
 _BOOT_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 _STORED_BOOT_ID = re.compile(r"[0-9a-f]{32}")
-_KERNEL_RECORDS = ("-o", "json", "--output-fields=MESSAGE", "_TRANSPORT=kernel", f"SYSLOG_FACILITY={KERNEL_FACILITY}")
+_JSON_WHOLE = ("-o", "json", "--all")
+_KERNEL_RECORDS = (*_JSON_WHOLE, "--output-fields=MESSAGE", "_TRANSPORT=kernel", f"SYSLOG_FACILITY={KERNEL_FACILITY}")
 _USERSPACE = ("_TRANSPORT=driver", "_TRANSPORT=journal", "_TRANSPORT=stdout", "_TRANSPORT=syslog")
 _NOT_OPEN = "kernel log not open: read before reset"
 RESET_REASON = "x86/amd: Previous system reset reason"
@@ -116,7 +117,6 @@ class _JournalEntry:
     mono_us: int
     realtime_us: int
     message: str
-    identifier: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,22 +332,36 @@ def _message(value: object) -> str:
     raise TypeError(f"MESSAGE is a {type(value).__name__}")
 
 
-def _journal_entries(args: list[str], timeout: float) -> tuple[list[_JournalEntry], str | None]:
+def _journal_read[T](args: list[str], timeout: float, read: Callable[[list], T], unread: T) -> tuple[T, str | None]:
     text, problem = _journal_text(args, timeout)
     if problem is not None:
-        return [], problem
+        return unread, problem
     try:
-        return [
-            _JournalEntry(
-                mono_us=int(entry["__MONOTONIC_TIMESTAMP"]),
-                realtime_us=int(entry["__REALTIME_TIMESTAMP"]),
-                message=_message(entry["MESSAGE"]),
-                identifier=entry.get("SYSLOG_IDENTIFIER"),
-            )
-            for entry in map(json.loads, filter(None, text.splitlines()))
-        ], None
+        return read([json.loads(line) for line in filter(None, text.splitlines())]), None
     except (KeyError, TypeError, ValueError) as exc:
-        return [], f"journalctl {' '.join(args)} printed an unreadable entry: {exc!r}"
+        return unread, f"journalctl {' '.join(args)} printed an unreadable entry: {exc!r}"
+
+
+def _entries(rows: list) -> list[_JournalEntry]:
+    return [
+        _JournalEntry(
+            mono_us=int(entry["__MONOTONIC_TIMESTAMP"]),
+            realtime_us=int(entry["__REALTIME_TIMESTAMP"]),
+            message=_message(entry["MESSAGE"]),
+        )
+        for entry in rows
+    ]
+
+
+def _journal_entries(args: list[str], timeout: float) -> tuple[list[_JournalEntry], str | None]:
+    return _journal_read(args, timeout, _entries, [])
+
+
+def _stopped_by_journald(rows: list) -> bool:
+    (last,) = rows
+    if not isinstance(last, dict):
+        raise TypeError(f"an entry is a {type(last).__name__}")
+    return last.get("SYSLOG_IDENTIFIER") == JOURNALD and _message(last["MESSAGE"]) == JOURNAL_STOPPED
 
 
 def _boot_problem(boot_id: str) -> str | None:
@@ -361,8 +375,7 @@ def _boot_problem(boot_id: str) -> str | None:
 def boot_end(boot_id: str, timeout: float = 15.0) -> BootEnd:
     if (problem := _boot_problem(boot_id)) is not None:
         return BootEnd(clean=False, problem=problem)
-    last, problem = _journal_entries(["-b", boot_id, "-n", "1", "-o", "json"], timeout)
-    clean = len(last) == 1 and (last[0].identifier, last[0].message) == (JOURNALD, JOURNAL_STOPPED)
+    clean, problem = _journal_read(["-b", boot_id, "-n", "1", *_JSON_WHOLE], timeout, _stopped_by_journald, False)
     return BootEnd(clean=clean, problem=problem)
 
 
@@ -382,7 +395,7 @@ def _next_boot(boot_id: str, timeout: float) -> tuple[str | None, str | None]:
 
 def _before_userspace(boot_id: str, timeout: float) -> tuple[list[_JournalEntry], str | None]:
     first, problem = _journal_entries(
-        ["-b", boot_id, "-n", "+1", "-o", "json", "--output-fields=MESSAGE", *_USERSPACE], timeout
+        ["-b", boot_id, "-n", "+1", *_JSON_WHOLE, "--output-fields=MESSAGE", *_USERSPACE], timeout
     )
     if problem is not None:
         return [], problem

@@ -863,6 +863,18 @@ def test_a_choice_after_only_the_power_state_moved_names_that_move_and_asks_for_
     assert result.state == fake.state
 
 
+@pytest.mark.req("T22.F6")
+@pytest.mark.parametrize("choice", [ContinueOnSetup(2), RestartOnSetup(2, acknowledged=True)])
+def test_a_choice_while_a_core_s_co_cannot_be_read_is_refused_naming_it(choice):
+    fake = paused_on_a_new_setup()
+    reads = dict(fake.world().bios_co)
+    world = replace(fake.world(), bios_co=tuple((core, None if core == 1 else value) for core, value in reads.items()))
+    result = transition(fake.state, choice, world)
+    assert result.refused == "the CO of core 1 could not be read"
+    assert result.state == fake.state
+    assert result.effects == ()
+
+
 def test_a_restart_the_start_gates_refuse_leaves_the_parent_paused_and_untouched():
     fake = paused_on_a_new_setup()
     world = replace(fake.world(), preflight_refusal="the SMU is held by ryzenadj")
@@ -1000,13 +1012,23 @@ def test_validate_refuses_a_moved_held_core_an_unread_co_or_a_moved_power_state(
     assert says in refusal(SessionState(), ValidateProfile(1), replace(world, stored=done))
 
 
-@pytest.mark.req("D86")
+@pytest.mark.req("D86", "T22.F6")
 def test_validate_on_a_moved_held_core_pauses_as_setup_changed_naming_it():
     done = completed_with_a_held_core()
     moved = replace(HELD, bios_co=((0, 0), (1, 0), (2, -9)), stored=done)
     result = transition(SessionState(), ValidateProfile(1), moved)
     assert (result.state.pause.reason, result.state.pause.cores) == (PauseReason.SETUP_CHANGED, (2,))
-    assert "core 2 is -9, the BIOS gave -5 when the session started" in result.state.pause.detail
+    assert "core 2 reads -9, the CO read at Start was -5" in result.state.pause.detail
+    assert "BIOS" not in result.state.pause.detail
+
+
+@pytest.mark.req("D86", "T22.F6")
+def test_a_held_core_unread_at_start_that_reads_now_is_named_as_unread_at_start():
+    started = transition(SessionState(), Start(CFG, 1, 0, True), replace(HELD, bios_co=((0, 0), (1, 0), (2, None))))
+    done = replace(stored(started.state), status="completed")
+    result = transition(SessionState(), ValidateProfile(1), replace(HELD, stored=done))
+    assert (result.state.pause.reason, result.state.pause.cores) == (PauseReason.SETUP_CHANGED, (2,))
+    assert "core 2 reads -5, with no CO read at Start" in result.state.pause.detail
 
 
 def test_validate_starts_when_the_held_cores_and_the_power_state_are_as_recorded():
@@ -1025,13 +1047,16 @@ def test_a_core_whose_co_cannot_be_read_pauses_as_smu_read_naming_it():
     assert missing.state.pause.cores == (2,)
 
 
-@pytest.mark.req("L18.d.8.reboot", "TM.I_M5", "VERDICT.36")
+@pytest.mark.req("L18.d.8.reboot", "T22.F6", "TM.I_M5", "VERDICT.36")
 def test_after_a_reboot_only_a_held_core_s_bios_change_pauses_as_setup_changed():
     owned_moved = transition(resuming_with_a_held_core(), evidence(False, {0: -7, 1: 0, 2: -5}), HELD)
     assert owned_moved.state.lifecycle is Lifecycle.RUNNING
     held_moved = transition(resuming_with_a_held_core(), evidence(False, {0: 0, 1: 0, 2: -9}), HELD)
     assert held_moved.state.pause.reason is PauseReason.SETUP_CHANGED
-    assert "core 2 is -9, the BIOS gave -5 when the session started" in held_moved.state.pause.detail
+    assert held_moved.state.pause.detail == (
+        "the CO of a core the session does not own differs from its read at Start: "
+        "core 2 reads -9, the CO read at Start was -5"
+    )
     assert held_moved.state.pause.cores == (2,)
 
 

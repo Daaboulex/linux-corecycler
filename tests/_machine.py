@@ -29,6 +29,7 @@ JOURNAL_STARTED = "Journal started"
 JOURNAL_STOPPED = "Journal stopped"
 JOURNALD = "systemd-journald"
 DAEMON_FACILITY = 3
+JSON_FIELD_MAX = 4096
 _BOOT_ID = re.compile(r"[0-9a-f]{32}")
 _BOOT_OFFSET = re.compile(r"[+-]?\d+")
 _MATCHED_FIELDS = frozenset({"_TRANSPORT", "SYSLOG_FACILITY"})
@@ -110,12 +111,12 @@ def _matching(entries: list[Entry], matches: list[str]) -> list[Entry]:
     return [entry for entry in entries if all(entry.field(name) in values for name, values in wanted.items())]
 
 
-def _message_row(boot: Boot, entry: Entry) -> dict:
+def _message_row(boot: Boot, entry: Entry, whole: bool) -> dict:
     return {
         "__REALTIME_TIMESTAMP": str(entry.realtime_us),
         "__MONOTONIC_TIMESTAMP": str(entry.mono_us),
         "_BOOT_ID": boot.id,
-        "MESSAGE": entry.message,
+        "MESSAGE": entry.message if whole or len(b"MESSAGE=") + len(entry.message.encode()) < JSON_FIELD_MAX else None,
     }
 
 
@@ -158,6 +159,9 @@ class FakeMachine:
         for offset_s, line in enumerate((line for record in records for line in record), start=1):
             self.kernel(line, mono_s=start_s + offset_s, facility=facility)
 
+    def daemon_now(self, message: str, identifier: str) -> None:
+        self._log(message, self.now_ns(), None, identifier, DAEMON_FACILITY)
+
     def crash_after(self, *records: list[str]) -> None:
         self.kernel_now(*records)
         self.reboot(clean=False)
@@ -195,12 +199,13 @@ class FakeMachine:
     def _serve(self, args: list[str]) -> str:
         if not self.journal_readable:
             raise _Refused(f"Failed to open {JOURNAL_DIR}: Permission denied")
-        match args:
+        whole = "--all" in args
+        match [arg for arg in args if arg != "--all"]:
             case ["-b", boot_id, "-n", "1", "-o", "json"]:
                 boot = self._held(boot_id)
                 return _json_lines(
                     {
-                        **_message_row(boot, entry),
+                        **_message_row(boot, entry, whole),
                         "_TRANSPORT": entry.transport,
                         "SYSLOG_IDENTIFIER": entry.identifier,
                         "SYSLOG_FACILITY": str(entry.facility),
@@ -209,10 +214,10 @@ class FakeMachine:
                 )
             case ["-b", boot_id, "-o", "json", "--output-fields=MESSAGE", *matches]:
                 boot = self._held(boot_id)
-                return _json_lines(_message_row(boot, entry) for entry in _matching(boot.entries, matches))
+                return _json_lines(_message_row(boot, entry, whole) for entry in _matching(boot.entries, matches))
             case ["-b", boot_id, "-n", "+1", "-o", "json", "--output-fields=MESSAGE", *matches]:
                 boot = self._held(boot_id)
-                return _json_lines(_message_row(boot, entry) for entry in _matching(boot.entries, matches)[:1])
+                return _json_lines(_message_row(boot, entry, whole) for entry in _matching(boot.entries, matches)[:1])
             case ["--list-boots", "-o", "json"]:
                 last = len(self.boots) - 1
                 listed = [
