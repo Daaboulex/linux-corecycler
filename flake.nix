@@ -24,24 +24,14 @@
           "aarch64-linux"
         ];
 
-        # Shared builder for a system: the FOSS `default` and the `full` (mprime,
-        # unfree) variants from one mkCoreCycler. Used by both perSystem (default
-        # -> a built check) and flake.packages (full -> an off-CI eval gate).
-        # Keyed on a package set, so the overlay can build against the consumer's
-        # nixpkgs instead of handing back a build against the one pinned here.
         buildWith =
           pkgs:
           let
 
-            # Default python3 (not a pinned minor): Hydra only builds/caches
-            # pyside6 for the default interpreter, so pinning python312 forced a
-            # ~50-min from-source pyside6 build on every CI run. python3 keeps
-            # the heavy Qt bindings a cache.nixos.org hit. requires-python in
-            # pyproject.toml is >=3.14, the first with compression.zstd.
+            # python3, not a pinned minor: cache.nixos.org builds pyside6 for the default interpreter only
             python = pkgs.python3;
             pythonPkgs = python.pkgs;
 
-            # Shared build function - backends list is the only difference
             mkCoreCycler =
               {
                 backends ? [
@@ -66,11 +56,7 @@
                   pythonPkgs.pyside6
                 ];
 
-                # The full unit/property suite gates the BUILD (offscreen Qt,
-                # HOME in the sandbox tmpdir). The e2e subprocess replays
-                # ("slow") stay outside the sandbox: they exercise systemd-run
-                # scopes + wall-clock polling and belong to the dev loop, not
-                # the gate.
+                # the slow end-to-end tests drive systemd-run scopes, which the build sandbox lacks
                 nativeCheckInputs = [
                   pythonPkgs.pytest
                   pythonPkgs.hypothesis
@@ -89,7 +75,6 @@
                   runHook postCheck
                 '';
 
-                # Qt6 runtime needs
                 nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];
                 buildInputs = [ pkgs.qt6.qtbase ];
 
@@ -98,7 +83,6 @@
                   makeWrapperArgs+=("''${qtWrapperArgs[@]}")
                 '';
 
-                # Install icon, desktop file, and asset SVGs
                 postInstall = ''
                   install -Dm644 assets/icon.svg $out/share/icons/hicolor/scalable/apps/corecycler.svg
                   install -Dm644 assets/corecycler.desktop $out/share/applications/corecycler.desktop
@@ -106,7 +90,6 @@
                   install -Dm644 assets/*.svg $out/share/corecycler/assets/
                 '';
 
-                # Make stress test backends available on PATH at runtime
                 postFixup = ''
                   wrapProgram $out/bin/corecycler \
                     --prefix PATH : ${
@@ -131,12 +114,7 @@
           in
           {
             inherit pkgs;
-            # FOSS-only: stress-ng + stressapptest (no unfree software).
             default = mkCoreCycler { };
-            # Full: includes mprime (unfree, fetched from a flaky external mirror,
-            # x86_64-only) and y-cruncher (unfree, x86_64-only). meta.platforms
-            # reflects that so the standard's drvEvalCheck skips `full` on aarch64,
-            # while the FOSS `default` still builds on both arches.
             full =
               (mkCoreCycler {
                 backends = [
@@ -188,7 +166,6 @@
         imports = [ inputs.std.flakeModules.base ];
 
         flake = {
-          # NixOS module - kernel modules, device access, udev rules, package
           nixosModules.default = import ./nix/module.nix { inherit (inputs) self; };
           nixosModules.drivers = ./nix/drivers.nix;
 
@@ -197,12 +174,7 @@
             probe = glueOverlay;
           };
 
-          # OFF-CI exception (standard README "declared == built"): `full` pulls
-          # mprime -- unfree, and fetched from an external mirror that does not
-          # build reliably on a free runner. Expose it as a real `nix build .#full`
-          # target via flake.packages (NOT perSystem.packages, which base aliases
-          # into BUILT checks); CI eval-gates it with drvEvalCheck below instead of
-          # realizing the unfree mprime closure.
+          # full stays out of the built checks: mprime is unfree and its mirror fails on free runners; full-eval gates it
           packages = builtins.listToAttrs (
             map (
               system:
@@ -254,15 +226,12 @@
             failedAssertions = config: map (a: a.message) (lib.filter (a: !a.assertion) config.assertions);
           in
           {
-            # The FOSS default builds on CI (stress-ng/stressapptest are cached).
             packages.default = b.default;
 
-            # Python lint gate — same config as pyproject [tool.ruff].
             pre-commit.settings.hooks.ruff.enable = true;
             pre-commit.settings.hooks.taplo.excludes = [ "^pyproject\\.toml$" ];
 
-            # A unified diff's blank context lines are a single space; trimming
-            # them makes the patch stop applying.
+            # a patch's blank context lines are a single space that trimming would break
             pre-commit.settings.hooks.trim-trailing-whitespace.excludes = [ "\\.patch$" ];
 
             pre-commit.settings.hooks.commit-task = {
@@ -284,38 +253,29 @@
             };
 
             checks = {
-              # Eval-only gate for the off-CI `full`: force its full build graph to
-              # EVALUATE (catching dep/version/unfree breakage) without realizing the
-              # uncached, unfree mprime closure. The real build happens off-CI.
               full-eval = inputs.std.lib.drvEvalCheck {
                 pkgs = inputs.nixpkgs.legacyPackages.${system};
                 name = "corecycler-full-eval";
                 drv = b.full;
               };
 
-              # Built-output ground truth: the wheel ships exactly one top-level
-              # package -- a flat module (cli.py) collides with any other app in a
-              # merged site-packages. tests/test_packaging.py is the fast pytest
-              # mirror of the same invariant.
+              # one top-level package: a flat cli.py would collide in a merged site-packages
               python-site-packages = inputs.std.lib.pythonSitePackagesCheck {
                 inherit (b) pkgs;
                 drv = b.default;
                 package = "corecycler";
               };
 
-              # Force full evaluation of the NixOS module (options + assertions +
-              # every mkIf path) without building the closure.
               module-eval-nixos = inputs.std.lib.nixosModuleCheck {
                 inherit (inputs) nixpkgs;
                 inherit system;
                 module = import ./nix/module.nix { inherit (inputs) self; };
                 config = {
-                  nixpkgs.config.allowUnfree = true; # mprime backend is unfree
+                  nixpkgs.config.allowUnfree = true;
                   services.corecycler = {
                     enable = true;
                     deviceAccessUser = "corecycler-test";
                   };
-                  # the eval fixture must declare the user the module grants access to
                   users.users.corecycler-test = {
                     isSystemUser = true;
                     group = "corecycler-test";
@@ -565,9 +525,7 @@
                   throw (lib.concatStringsSep "; " problems);
             }
             // inputs.nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
-              # The out-of-tree modules compile against the user's own kernel, so an
-              # upstream header move is a user-visible FTBFS nothing here would catch.
-              # Both ends of the range nixpkgs offers are built on purpose.
+              # both ends of nixpkgs' kernel range: a kernel header move breaks users' builds first
               kernel-modules =
                 let
                   sources = {

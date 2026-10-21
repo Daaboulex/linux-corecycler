@@ -1,12 +1,3 @@
-# NixOS module for CoreCycler — per-core CPU stability tester and
-# PBO Curve Optimizer tuner for AMD Ryzen.
-#
-# Usage in a consumer flake:
-#   imports = [ inputs.linux-corecycler.nixosModules.default ];
-#   services.corecycler = {
-#     enable = true;
-#     deviceAccessUser = "myuser";
-#   };
 { self }:
 {
   config,
@@ -76,20 +67,16 @@ in
       description = "Whether to include the unfree backends (mprime, y-cruncher). When false, only the FOSS backends (stress-ng, stressapptest) are bundled.";
     };
 
-    # --- Utility modules ---
-
     cpuid = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = "Whether to load the in-tree cpuid module. Exposes /dev/cpu/*/cpuid for CPUID leaf access. Useful for CPU topology and feature detection.";
     };
 
-    # --- Device access ---
-
     deviceAccess = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Whether to grant the deviceAccessUser access to the SMU sysfs files via a dedicated group and a systemd oneshot for the ryzen_smu files, so CO access needs no sudo. A udev rule also gives the group read mode on the MSR devices, but the kernel refuses an MSR open without CAP_SYS_RAWIO, so per-core power and MSR package power still need root; clock stretch reads the PM table the group already has. The oneshot includes `smn`, which is arbitrary SMN register access. See SECURITY.md before enabling this for a user you would not trust with the SMU mailbox. With hangReset on, the group can also write /proc/sysrq-trigger, which runs every sysrq function, an immediate reboot among them.";
+      description = "Whether to grant the deviceAccessUser access to the SMU sysfs files via a dedicated group and a systemd oneshot for the ryzen_smu files, so CO access needs no sudo. A udev rule also gives the group read mode on the MSR devices, but the kernel refuses an MSR open without CAP_SYS_RAWIO, so per-core power and MSR package power still need root; clock stretch reads the PM table the group already has. The oneshot includes `smn`, which is arbitrary SMN register access; an SMN read writes the address first, and it is the only way to read the core-disable fuse that maps a harvested part's physical cores. The group may also read the kernel log (kernel.dmesg_restrict 0, a default the host can override) for machine-check events. See SECURITY.md before enabling this for a user you would not trust with the SMU mailbox. With hangReset on, the group can also write /proc/sysrq-trigger, which runs every sysrq function, an immediate reboot among them.";
     };
 
     deviceAccessUser = lib.mkOption {
@@ -208,19 +195,13 @@ in
       SUBSYSTEM=="msr", KERNEL=="msr[0-9]*", GROUP="corecycler", MODE="0640"
     '';
 
-    # --- Kernel modules ---
-    # In-tree modules loaded via boot.kernelModules, out-of-tree via extraModulePackages
     boot.kernelModules = [
       "msr"
     ]
     ++ lib.optional cfg.cpuid "cpuid";
 
-    # SMU sysfs: grant group read/write for Curve Optimizer access.
-    # A systemd oneshot is used because tmpfiles z-rules and udev module events
-    # both race with sysfs creation in module_init(). ConditionPathExists +
-    # After=systemd-modules-load.service guarantees paths exist.
     systemd.services.corecycler-smu-permissions = lib.mkIf cfg.deviceAccess {
-      description = "Set ryzen_smu sysfs permissions for corecycler group";
+      description = "Set ryzen_smu sysfs permissions for the corecycler group once the module has made them; tmpfiles z-rules and udev module events race module_init";
       after = [ "systemd-modules-load.service" ];
       wantedBy = [ "multi-user.target" ];
       unitConfig.ConditionPathExists = "/sys/kernel/ryzen_smu_drv/smu_args";
@@ -233,10 +214,6 @@ in
               "/sys/kernel/ryzen_smu_drv/smu_args"
               "/sys/kernel/ryzen_smu_drv/mp1_smu_cmd"
               "/sys/kernel/ryzen_smu_drv/rsmu_cmd"
-              # An SMN read is a write of the address, so per-core Curve
-              # Optimizer on a harvested part with renumbered core ids needs
-              # this too: it is the only way to read the core-disable fuse
-              # that says which physical slots are fused off.
               "/sys/kernel/ryzen_smu_drv/smn"
             ];
           in
@@ -266,7 +243,6 @@ in
 
     systemd.settings.Manager.RuntimeWatchdogSec = lib.mkIf cfg.hangReset.enable (lib.mkDefault "30s");
 
-    # Allow unprivileged dmesg access for MCE error detection
     boot.kernel.sysctl = lib.mkMerge [
       (lib.mkIf cfg.deviceAccess {
         "kernel.dmesg_restrict" = lib.mkDefault 0;
