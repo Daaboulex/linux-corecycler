@@ -941,11 +941,11 @@ class LiveRig:
             if isinstance(e, kernel.CoreMachineCheck) and e.cpu in core_of_cpu
         )
         shared = any(
-            not e.corrected
-            and (
+            (
                 isinstance(e, kernel.UnblamedMachineCheck)
                 or (isinstance(e, kernel.CoreMachineCheck) and e.cpu not in core_of_cpu)
             )
+            and not e.corrected
             for e in events
         )
         return evidence, shared

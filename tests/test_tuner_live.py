@@ -1236,6 +1236,19 @@ def test_machine_check_records_of_the_dead_boot_become_evidence(tmp_path, monkey
     assert read.kernel_problem is None
 
 
+def test_kernel_trouble_alone_in_the_dead_boot_is_read_without_raising_and_blames_nothing_shared(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    in_flight(r)
+    lockup = kernel.KernelTrouble("watchdog: BUG: soft lockup - CPU#3 stuck for 22s! [y-cruncher:4321]", 1.0)
+    hardware.records = kernel.JournalHarvest((lockup,), (), None)
+    hardware.boot = "boot-b"
+    read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert read.dirty_end is True
+    assert read.shared_uncorrected is False
+    assert read.evidence == ()
+
+
 @pytest.mark.req("D70")
 def test_a_dead_boot_whose_kernel_log_cannot_be_read_is_resumed_and_named(tmp_path, monkeypatch):
     hardware = FakeHardware()
