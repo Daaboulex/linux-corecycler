@@ -32,6 +32,7 @@ from corecycler.engine.detector import (
     ErrorDetector,
     KernelRead,
     KernelTrouble,
+    ProgramFault,
     UnblamedMachineCheck,
 )
 from corecycler.engine.execution import (
@@ -378,6 +379,24 @@ def unblamed(message: str = "boom") -> UnblamedMachineCheck:
 
 def trouble(message: str = "watchdog: BUG: soft lockup - CPU#0 stuck for 22s! [mprime:1]") -> KernelTrouble:
     return KernelTrouble(message=message, raw_ts=0.0)
+
+
+def program_fault(cpu: int | None) -> ProgramFault:
+    where = "" if cpu is None else f" likely on CPU {cpu} (core {cpu % 16}, socket 0)"
+    message = f"wireplumber[1]: segfault at 0 ip 00007f6d4a3c2e17 sp 00007ffd2b8e6f40 error 4{where}"
+    return ProgramFault(
+        process="wireplumber", pid=1, cpu=cpu, core=None if cpu is None else cpu % 16, message=message, raw_ts=0.0
+    )
+
+
+WRITES_ITS_FAULT_THEN_DIES_OF_IT = """
+import os, signal, sys
+fault = "segfault at 0 ip 0000000000401136 sp 00007ffd2b8e6f40 error 6"
+line = f"stress[{os.getpid()}]: {fault} likely on CPU 0 (core 0, socket 0)"
+with open(sys.argv[1], "a") as log:
+    log.write(f"6,500,1000,-;{line}\\n")
+os.kill(os.getpid(), signal.SIGSEGV)
+"""
 
 
 def cool_thermal() -> ThermalWatch:
@@ -1131,6 +1150,33 @@ class TestMceAttribution:
         assert [verdicts[core].outcome for core in (0, 1)] == [Outcome.KERNEL_TROUBLE] * 2
 
 
+class TestProgramFaults:
+    @pytest.mark.req("PROGRAM_FAULT.verdict")
+    @pytest.mark.parametrize("cpu", [16, 9, None], ids=["a-lane-cpu", "another-cpu", "no-cpu-named"])
+    def test_a_program_fault_naming_any_cpu_or_none_is_seen_and_no_verdict(self, tmp_path, cpu):
+        found = program_fault(cpu)
+        supervisor, _, seen = make_supervisor(
+            FakeBackend(_child("import time; time.sleep(30)")), detector=FakeDetector([[found]])
+        )
+        verdict = run_one(supervisor, lane(tmp_path, cpus=(0, 16)), 2.0)
+        assert verdict.outcome is Outcome.PASS
+        assert seen == [found]
+
+    @pytest.mark.req("PROGRAM_FAULT.verdict")
+    def test_the_payload_s_own_segfault_is_its_one_crash_and_its_kernel_line_is_only_seen(self, tmp_path):
+        kmsg = tmp_path / "kmsg"
+        kmsg.write_text("")
+        reader = ErrorDetector(kmsg)
+        reader.reset()
+        payload = [*_child(WRITES_ITS_FAULT_THEN_DIES_OF_IT), str(kmsg)]
+        supervisor, _, seen = make_supervisor(FakeBackend(payload), detector=reader)
+        verdict = run_one(supervisor, lane(tmp_path), 10.0)
+        reader.close()
+        assert verdict.outcome is Outcome.CPU_SIGNAL
+        assert verdict.detail == "stress process died of SIGSEGV"
+        assert [(type(event), event.cpu) for event in seen] == [(ProgramFault, 0)]
+
+
 @pytest.mark.real_cpu_time
 class TestStallWatchdog:
     @pytest.mark.req("K21", "VERDICT.12")
@@ -1645,6 +1691,13 @@ class TestWatchIdle:
         found = watch_idle(**self._args(detector=FakeDetector([[own(9)]]), observed=seen))
         assert found is None
         assert [e.cpu for e in seen] == [9]
+
+    @pytest.mark.req("PROGRAM_FAULT.verdict")
+    def test_a_program_fault_on_a_watched_cpu_is_seen_and_ends_nothing(self):
+        seen: list = []
+        detector = FakeDetector([[program_fault(0)], [program_fault(9)]])
+        assert watch_idle(**self._args(detector=detector, observed=seen, duration=0.3)) is None
+        assert [event.cpu for event in seen] == [0, 9]
 
     def test_an_idle_watch_reports_kernel_trouble_as_its_own_type(self):
         found = watch_idle(**self._args(detector=FakeDetector([[trouble()]]), duration=5.0))

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import copy
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from corecycler.engine.detector import ProgramFault, ProgramFaults
 from corecycler.tuner.live import resident_at_death
 from corecycler.tuner.machine.session import HELD
 from corecycler.tuner.machine.types import (
@@ -62,6 +63,22 @@ FAULTS = (
     "restart",
     "outside",
     "reengage",
+    "program_fault",
+)
+FOREIGN_FAULTS = ProgramFaults(
+    100_000_000_000,
+    (
+        ProgramFault(
+            "wireplumber",
+            2884,
+            23,
+            7,
+            "wireplumber[2884]: segfault at 0 ip 00007f6d4a3c2e17 sp 00007ffd2b8e6f40 error 4 in "
+            "libasound.so.2.0.0[5ae17,7f6d4a368000+b6000] likely on CPU 23 (core 7, socket 0)",
+            115.5,
+        ),
+    ),
+    0,
 )
 
 
@@ -143,9 +160,16 @@ def moves(fake: Fake, budget: dict[str, int]) -> list[tuple[str, dict[str, int]]
         if budget.get(fault, 0) <= 0 or budget["total"] <= 0:
             continue
         spent = {**budget, fault: budget[fault] - 1, "total": budget["total"] - 1}
-        if fault in ("thermal", "apparatus", "slept", "false_fail", "evidence", "unblamed", "mce_other") and (
-            fake.worker is None
-        ):
+        if fault in (
+            "thermal",
+            "apparatus",
+            "slept",
+            "false_fail",
+            "evidence",
+            "unblamed",
+            "mce_other",
+            "program_fault",
+        ) and (fake.worker is None):
             continue
         if fault in ("pause", "abort") and s.lifecycle not in (Lifecycle.RUNNING, Lifecycle.PAUSING):
             continue
@@ -253,6 +277,8 @@ def act(fake: Fake, move: str) -> None:
             fake.crash(evidence=(Evidence(worker_spec.core, False),))
         case "crash_shared":
             fake.crash(shared=True)
+        case "program_fault":
+            fake.deliver(replace(fake.verdict_for(worker_spec), program_faults=FOREIGN_FAULTS))
         case _:
             raise AssertionError(move)
 
@@ -348,7 +374,9 @@ def tiny(cores: int, edges: list[int], domains: int = 1, completed: tuple[Stored
 
 BALANCED = (("platform profile", "balanced"),)
 
-ONE_OF_EACH = {fault: 1 for fault in FAULTS if fault not in ("profile", "setup", "kernel", "outside", "reengage")}
+ONE_OF_EACH = {
+    fault: 1 for fault in FAULTS if fault not in ("profile", "setup", "kernel", "outside", "reengage", "program_fault")
+}
 
 
 @pytest.mark.parametrize(
@@ -482,6 +510,14 @@ def test_every_future_of_a_session_started_from_a_completed_sessions_values_reac
     survey = explore(fake, {**ONE_OF_EACH, "total": 1}, cap=2_000_000)
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
+
+
+@pytest.mark.req("PROGRAM_FAULT.explorer")
+def test_no_transition_of_any_future_reads_the_program_faults_a_report_carries():
+    survey = explore(tiny(2, [-3, -2], 2), {"program_fault": 2, "crash": 1, "pause": 1, "total": 3}, cap=2_000_000)
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+    assert survey.taken["program_fault"] > 0
 
 
 @pytest.mark.req("ENTRY_READS.3")

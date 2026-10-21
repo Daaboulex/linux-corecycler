@@ -495,7 +495,19 @@ class Store:
     def test_returned(
         self, session_id: int, boot: str, row: int, report: Report, ccd_of: dict[int, int | None]
     ) -> None:
-        evidence = {"records": [asdict(e) for e in report.evidence], "unblamed_corrected": report.unblamed_corrected}
+        faults = report.program_faults
+        evidence = {
+            "records": [asdict(e) for e in report.evidence],
+            "unblamed_corrected": report.unblamed_corrected,
+            "program_faults": None
+            if faults is None
+            else {
+                "started_ns": faults.started_ns,
+                "started_clock": "CLOCK_MONOTONIC",
+                "faults": [asdict(fault) for fault in faults.kept],
+                "dropped": faults.dropped,
+            },
+        }
         self.write_block()
         samples = self.db.tuner_test_samples(row)
         self.db.end_tuner_test(
@@ -583,6 +595,9 @@ class Store:
 
     def event(self, session_id: int, kind: str, text: str, boot: str) -> None:
         self.db.insert_tuner_event(session_id, text, boot, kind)
+
+    def told(self, session_id: int, kind: str) -> set[str]:
+        return self.db.tuner_event_messages(session_id, kind)
 
     def journal_intent(self, session_id: int, core: int, value: int, boot: str, mono_ns: int) -> int:
         envelope = self.db.journal_envelope(session_id, core)
@@ -904,12 +919,14 @@ class LiveRig:
             context = None if same else self.store.crash_context(session, last, self._core_of_cpu())
             if not same:
                 self.store.pack_dead_tail(session, last)
+            told = self.store.told(session, "program_fault")
         except sqlite3.Error as exc:
             return DatabaseFailed(f"the session could not be read back: {exc}")
         stamps = [row.mono_ns for row in rows if row.mono_ns is not None]
         since = self.stored_read_ns if self.stored_read_ns is not None else min(stamps, default=None)
         harvest = self.hardware.harvest(last, since, not same)
-        evidence, shared = self._kernel_evidence((*harvest.dead_boot, *harvest.next_boot))
+        harvested = (*harvest.dead_boot, *harvest.next_boot)
+        evidence, shared = self._kernel_evidence(harvested)
         return CrashEvidenceRead(
             dirty_end=dirty,
             end_unread=end.problem if dirty else None,
@@ -928,7 +945,20 @@ class LiveRig:
             else (),
             marked_now=marker == now,
             child_id=child_id,
+            program_faults=self._untold_faults(harvested, told),
         )
+
+    @staticmethod
+    def _untold_faults(harvested, told: set[str]) -> tuple[str, ...]:
+        lines = [
+            f"{fault.named}, {fault.raw_ts:.1f} s into its boot: {fault.message}"
+            for fault in harvested
+            if isinstance(fault, kernel.ProgramFault)
+        ]
+        last = max((index for index, line in enumerate(lines) if line in told), default=-1)
+        kept, dropped = kernel.kept_faults(lines[last + 1 :])
+        earlier = (f"{dropped} earlier program faults in that kernel log were not recorded",) if dropped else ()
+        return (*earlier, *kept)
 
     def _core_of_cpu(self) -> dict[int, int]:
         return {cpu: core for core, cpus in self.cpus_of for cpu in cpus}
@@ -1002,6 +1032,7 @@ class LiveRig:
                 report = event.report
                 detail = f" {report.detail}" if report.detail else ""
                 self.say(f"verdict {event.token}: {report.group.value} after {report.seconds:.0f} s{detail}")
+                self._show_program_faults(event.token, report.program_faults)
             session, boot = self.state.session_id, self.boot
             failed = self._end_test(
                 event.token,
@@ -1011,6 +1042,15 @@ class LiveRig:
             failed = self._end_test(self.test_row[0], lambda row: self.store.test_broken(row, event.error))
         self.post(event if failed is None else failed)
         return True
+
+    def _show_program_faults(self, token: int, faults: kernel.ProgramFaults | None) -> None:
+        if faults is None:
+            return
+        if faults.dropped:
+            self.say(f"program_fault: {faults.dropped} earlier program faults in test {token} were not kept")
+        for fault in faults.kept:
+            into = fault.raw_ts - faults.started_ns / 1e9
+            self.say(f"program_fault: {fault.named}, about {into:.1f} s into test {token}: {fault.message}")
 
     def slept_through(self, event: WorkerReported) -> WorkerReported:
         slept = self.hardware.asleep_seconds() - self.asleep_at_worker_start

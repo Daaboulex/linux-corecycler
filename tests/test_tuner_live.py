@@ -152,6 +152,7 @@ class FakeRunner:
     read_ns: int | None = None
     speeds: tuple = ()
     group: Group | None = None
+    program_faults: kernel.ProgramFaults | None = None
 
     def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
         self.seen.append(spec)
@@ -168,6 +169,7 @@ class FakeRunner:
             kernel_read_ns=self.read_ns,
             speeds=self.speeds,
             output="Error(s) encountered on logical core 0." if failed else "",
+            program_faults=self.program_faults,
         )
 
 
@@ -1260,6 +1262,173 @@ def test_a_dead_boot_whose_kernel_log_cannot_be_read_is_resumed_and_named(tmp_pa
     assert read.kernel_problem == "no journal for boot-a"
     assert any(line.startswith("kernel_log_unread: ") and "no journal for boot-a" in line for line in said)
     assert rows(again, "SELECT count(*) AS n FROM tuner_events WHERE severity='kernel_log_unread'") == [{"n": 1}]
+
+
+WIREPLUMBER = "wireplumber[2884]: segfault at 0 ip 00007f6d4a3c2e17 sp 00007ffd2b8e6f40 error 4 in libasound.so.2.0.0"
+FAULT_ON_CPU_23 = f"{WIREPLUMBER}[5ae17,7f6d4a368000+b6000] likely on CPU 23 (core 7, socket 0)"
+TRAP_NAMING_NO_CPU = "traps: foo[12] general protection fault ip:401136 sp:7ffd2b8e6f40 error:0 in foo[401000+1000]"
+HARVESTED_FAULTS = kernel.JournalHarvest(
+    (kernel.ProgramFault("wireplumber", 2884, 23, 7, FAULT_ON_CPU_23, 689.5),),
+    (kernel.ProgramFault("foo", 12, None, None, TRAP_NAMING_NO_CPU, 2.0),),
+    None,
+)
+
+
+def program_fault_events(r: LiveRig, session: int) -> list[str]:
+    return [e["message"] for e in r.store.db.get_tuner_events(session) if e["severity"] == "program_fault"]
+
+
+@pytest.mark.req("PROGRAM_FAULT.evidence")
+def test_a_test_s_program_faults_are_stored_as_read_with_its_start_and_shown_with_their_approximate_time(tmp_path):
+    hardware = FakeHardware()
+    fault = kernel.ProgramFault("wireplumber", 2884, 23, 7, FAULT_ON_CPU_23, 115.5)
+    r = rig(tmp_path, hardware, FakeRunner(hardware, program_faults=kernel.ProgramFaults(100_000_000_000, (fault,), 3)))
+    said: list[str] = []
+    r.say = said.append
+    r.start(config(), 1, 7, True)
+    while not rows(r, "SELECT id FROM tuner_tests WHERE ended_at IS NOT NULL"):
+        r.step(0.01)
+    (ended,) = rows(r, "SELECT token, evidence_json FROM tuner_tests WHERE ended_at IS NOT NULL")
+    assert json.loads(ended["evidence_json"])["program_faults"] == {
+        "started_ns": 100_000_000_000,
+        "started_clock": "CLOCK_MONOTONIC",
+        "faults": [asdict(fault)],
+        "dropped": 3,
+    }
+    shown = [line for line in said if line.startswith("program_fault: ")]
+    assert shown[0] == f"program_fault: 3 earlier program faults in test {ended['token']} were not kept"
+    assert shown[1].startswith(
+        f"program_fault: wireplumber (pid 2884), CPU 23, core 7, about 15.5 s into test {ended['token']}: "
+    )
+    assert shown[1].endswith(FAULT_ON_CPU_23)
+
+
+def test_a_test_without_a_program_fault_read_stores_none_and_shows_none(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    said: list[str] = []
+    r.say = said.append
+    r.start(config(), 1, 7, True)
+    while not rows(r, "SELECT id FROM tuner_tests WHERE ended_at IS NOT NULL"):
+        r.step(0.01)
+    (ended,) = rows(r, "SELECT evidence_json FROM tuner_tests WHERE ended_at IS NOT NULL")
+    assert json.loads(ended["evidence_json"])["program_faults"] is None
+    assert any(line.startswith("verdict ") for line in said)
+    assert not [line for line in said if line.startswith("program_fault: ")]
+
+
+@pytest.mark.req("PROGRAM_FAULT.outside")
+def test_the_program_faults_a_resume_reads_from_the_kernel_log_go_into_the_session_s_events(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    in_flight(r)
+    hardware.records = HARVESTED_FAULTS
+    hardware.boot = "boot-b"
+    read, again, said = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert read.evidence == ()
+    assert read.shared_uncorrected is False
+    on_cpu_23, naming_none = program_fault_events(again, 1)
+    assert on_cpu_23.startswith("wireplumber (pid 2884), CPU 23, core 7, 689.5 s into its boot: ")
+    assert on_cpu_23.endswith(FAULT_ON_CPU_23)
+    assert naming_none.startswith("foo (pid 12), no CPU named, 2.0 s into its boot: ")
+    assert naming_none.endswith(TRAP_NAMING_NO_CPU)
+    assert [line.removeprefix("program_fault: ") for line in said if line.startswith("program_fault: ")] == [
+        on_cpu_23,
+        naming_none,
+    ]
+
+
+@pytest.mark.req("PROGRAM_FAULT.outside")
+def test_a_second_resume_in_the_same_boot_announces_no_fault_the_first_announced(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    in_flight(r)
+    hardware.records = HARVESTED_FAULTS
+    r.signals.append(Close())
+    r.step(0.01)
+    _, first, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    first.signals.append(Close())
+    first.step(0.01)
+    _, second, said = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert len(program_fault_events(second, 1)) == 2
+    assert not [line for line in said if line.startswith("program_fault: ")]
+
+
+def looping(pids: range) -> tuple[kernel.ProgramFault, ...]:
+    return tuple(
+        kernel.ProgramFault("loop", pid, None, None, f"traps: loop[{pid}] trap int3 ip:0 sp:0 error:0", float(pid))
+        for pid in pids
+    )
+
+
+def told_by_two_resumes_in_one_boot(tmp_path, monkeypatch, first, second) -> tuple[list[str], list[str]]:
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    in_flight(r)
+    r.signals.append(Close())
+    r.step(0.01)
+    hardware.records = kernel.JournalHarvest(first, (), None)
+    _, once, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    before = program_fault_events(once, 1)
+    once.signals.append(Close())
+    once.step(0.01)
+    hardware.records = kernel.JournalHarvest(second, (), None)
+    _, twice, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    return before, program_fault_events(twice, 1)[len(before) :]
+
+
+@pytest.mark.req("PROGRAM_FAULT.outside")
+def test_a_second_resume_announces_only_the_faults_after_the_last_one_told_and_no_stale_count(tmp_path, monkeypatch):
+    kept = kernel.PROGRAM_FAULTS_KEPT
+    first, again = looping(range(1000, 1000 + kept + 20)), looping(range(1000, 1000 + kept + 30))
+    before, after = told_by_two_resumes_in_one_boot(tmp_path, monkeypatch, first, again)
+    assert before[0] == "20 earlier program faults in that kernel log were not recorded"
+    assert [line.partition(", no CPU")[0] for line in before[1:]] == [
+        f"loop (pid {pid})" for pid in range(1020, 1000 + kept + 20)
+    ]
+    assert [line.partition(", no CPU")[0] for line in after] == [
+        f"loop (pid {pid})" for pid in range(1000 + kept + 20, 1000 + kept + 30)
+    ]
+
+
+@pytest.mark.req("PROGRAM_FAULT.outside")
+def test_a_later_resume_that_drops_as_many_faults_as_an_earlier_one_still_announces_its_count(tmp_path, monkeypatch):
+    kept = kernel.PROGRAM_FAULTS_KEPT
+    first, later = looping(range(1000, 1000 + kept + 20)), looping(range(2000, 2000 + kept + 20))
+    before, after = told_by_two_resumes_in_one_boot(tmp_path, monkeypatch, first, later)
+    assert before[0] == after[0] == "20 earlier program faults in that kernel log were not recorded"
+    assert len(after) == kept + 1
+    assert after[1].startswith("loop (pid 2020), no CPU named, ")
+
+
+@pytest.mark.req("PROGRAM_FAULT.outside")
+def test_a_resume_announces_the_latest_program_faults_and_counts_the_earlier_ones(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    in_flight(r)
+    flood = tuple(
+        kernel.ProgramFault("loop", n, None, None, f"traps: loop[{n}] trap int3 ip:0 sp:0 error:0", float(n))
+        for n in range(kernel.PROGRAM_FAULTS_KEPT + 2)
+    )
+    hardware.records = kernel.JournalHarvest(flood, (), None)
+    hardware.boot = "boot-b"
+    _, again, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    told = program_fault_events(again, 1)
+    assert told[0] == "2 earlier program faults in that kernel log were not recorded"
+    assert len(told) == kernel.PROGRAM_FAULTS_KEPT + 1
+    assert told[1].startswith("loop (pid 2), no CPU named, 2.0 s into its boot: ")
+    assert told[-1].startswith(f"loop (pid {kernel.PROGRAM_FAULTS_KEPT + 1}), no CPU named, ")
+
+
+@pytest.mark.req("PROGRAM_FAULT.outside")
+def test_the_program_faults_read_by_a_resume_that_carries_the_session_onto_a_new_kernel_go_to_the_child(tmp_path):
+    hardware, r = paused_by_the_owner_on_the_old_kernel(tmp_path)
+    hardware.setup_now = KERNEL_NOW
+    hardware.records = HARVESTED_FAULTS
+    again = rig(tmp_path, hardware, db=r.store.db)
+    assert driven(tmp_path, "--resume", again) == live_hw.EXIT_COMPLETED
+    assert program_fault_events(again, 1) == []
+    assert len(program_fault_events(again, 2)) == 2
 
 
 def test_a_resume_in_the_same_boot_reads_only_this_boot_s_records(tmp_path, monkeypatch):

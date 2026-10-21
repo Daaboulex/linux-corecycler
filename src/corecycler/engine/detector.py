@@ -1,4 +1,4 @@
-"""Kernel hardware-error records, read whole from /dev/kmsg and from the systemd journal."""
+"""Kernel hardware-error records and user programs' fault lines, read whole from /dev/kmsg and the systemd journal."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from corecycler.config import tools
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator
+    from collections.abc import Callable, Iterable, Iterator, Sequence
 
 KMSG = Path("/dev/kmsg")
 MCE_POLL = Path("/sys/devices/system/machinecheck/machinecheck0/check_interval")
@@ -25,6 +25,7 @@ MCE_TIMER_ROUNDING_S = 1
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 KMSG_READ_SIZE = 8192
 KMSG_MAX_READS = 4096
+PROGRAM_FAULTS_KEPT = 50  # equivalent-mutant: every test reads this constant rather than restating its value
 KERNEL_FACILITY = 0
 JOURNALD = "systemd-journald"
 JOURNAL_STOPPED = "Journal stopped"
@@ -62,6 +63,9 @@ _TROUBLE = re.compile(
     r"|Oops: "
     r"|kernel BUG at "
 )
+_SEGFAULT = re.compile(r"(.+)\[(\d+)\]: segfault at ")
+_TRAP = re.compile(r"traps: (.+)\[(\d+)\] (?:trap |general protection fault)")
+_LIKELY_CPU = re.compile(r" likely on CPU (\d+) \(core (\d+), socket \d+\)$")
 _KMSG_RECORD = re.compile(r"(\d+),\d+,(\d+),[^;]*;(.*)")
 _BOOT_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 _STORED_BOOT_ID = re.compile(r"[0-9a-f]{32}")
@@ -97,7 +101,29 @@ class KernelTrouble:
     raw_ts: float
 
 
-KernelEvent = CoreMachineCheck | UnblamedMachineCheck | KernelTrouble
+@dataclass(frozen=True, slots=True)
+class ProgramFault:
+    process: str
+    pid: int
+    cpu: int | None
+    core: int | None
+    message: str
+    raw_ts: float
+
+    @property
+    def named(self) -> str:
+        where = "no CPU named" if self.cpu is None else f"CPU {self.cpu}, core {self.core}"
+        return f"{self.process} (pid {self.pid}), {where}"
+
+
+@dataclass(frozen=True, slots=True)
+class ProgramFaults:
+    started_ns: int
+    kept: tuple[ProgramFault, ...]
+    dropped: int
+
+
+KernelEvent = CoreMachineCheck | UnblamedMachineCheck | KernelTrouble | ProgramFault
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +216,27 @@ def _open_record(raw_ts: float, text: str, body: str) -> _OpenRecord | None:
     return None
 
 
+def _program_fault(raw_ts: float, text: str) -> ProgramFault | None:
+    found = _SEGFAULT.match(text) or _TRAP.match(text)
+    if found is None:
+        return None
+    process, pid = found.groups()
+    likely = _LIKELY_CPU.search(text)
+    return ProgramFault(
+        process=process,
+        pid=int(pid),
+        cpu=None if likely is None else int(likely.group(1)),
+        core=None if likely is None else int(likely.group(2)),
+        message=text.strip(),
+        raw_ts=raw_ts,
+    )
+
+
+def kept_faults[T](faults: Sequence[T]) -> tuple[tuple[T, ...], int]:
+    kept = tuple(faults[-PROGRAM_FAULTS_KEPT:])
+    return kept, len(faults) - len(kept)
+
+
 def parse_kernel_records(
     lines: Iterable[tuple[float, str]], *, final: bool
 ) -> tuple[list[KernelEvent], list[tuple[float, str]]]:
@@ -212,6 +259,8 @@ def parse_kernel_records(
             if body.startswith(record.last_line_starts):
                 events.append(record.event())
                 record = None
+        elif (fault := _program_fault(raw_ts, text)) is not None:
+            events.append(fault)
     if record is not None and final:
         events.append(record.event())
     return events, ([] if record is None or final else record.lines)

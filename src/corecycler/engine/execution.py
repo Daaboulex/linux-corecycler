@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from corecycler.config.paths import atomic_write, hand_back
 from corecycler.engine import containment
 from corecycler.engine.backends.base import LaneSignal, Outcome, StressResult, read_text
-from corecycler.engine.detector import KernelTrouble, UnblamedMachineCheck
+from corecycler.engine.detector import CoreMachineCheck, KernelTrouble, UnblamedMachineCheck
 from corecycler.smu.writer_lock import start_time
 
 if TYPE_CHECKING:
@@ -238,7 +238,7 @@ def kernel_signal(event: KernelEvent, own_cpus: tuple[int, ...], phase: str) -> 
         return LaneSignal(
             Outcome.UNATTRIBUTED_MCE, f"Machine check without core attribution during {phase}: {event.message}"
         )
-    if event.cpu in own_cpus:
+    if isinstance(event, CoreMachineCheck) and event.cpu in own_cpus:
         return LaneSignal(Outcome.OWN_CORE_MCE, f"MCE during {phase}: {event.message}")
     return None
 

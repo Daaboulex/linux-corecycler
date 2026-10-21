@@ -599,6 +599,8 @@ class StressRunner:
         self.heartbeat = heartbeat
         self.read_ns: int | None = None
         self.sink: Callable[[telemetry.Sample], None] | None = None
+        self.started_ns = kernel.monotonic_ns()
+        self.kernel_events: list[kernel.KernelEvent] = []
 
     def _supervise(
         self,
@@ -636,6 +638,7 @@ class StressRunner:
             self.read_ns = watch.read_started_ns
         finally:
             watch.close()
+        self.kernel_events.extend(observed)
         return results, observed
 
     def run(
@@ -645,8 +648,12 @@ class StressRunner:
             raise ValueError("a test spec carries no thermal limit, so its run would have no thermal stop")
         self.read_ns = None
         self.sink = sink
+        self.started_ns = kernel.monotonic_ns()
+        self.kernel_events = []
         report = self._run(spec, stop)
-        return replace(report, kernel_read_ns=self.read_ns)
+        faults = [event for event in self.kernel_events if isinstance(event, kernel.ProgramFault)]
+        seen = kernel.ProgramFaults(self.started_ns, *kernel.kept_faults(faults))
+        return replace(report, kernel_read_ns=self.read_ns, program_faults=seen)
 
     def _run(self, spec: TestSpec, stop: threading.Event) -> Report:
         if spec.load is Load.SOAK:
@@ -784,6 +791,7 @@ class StressRunner:
         finally:
             beats.idle()
             watch.close()
+        self.kernel_events.extend(observed)
         evidence = tuple(
             Evidence(self.core_of_cpu[e.cpu], e.corrected)
             for e in observed

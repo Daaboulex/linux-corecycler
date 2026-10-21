@@ -5134,3 +5134,28 @@ proof = "built"
 id = "HANG.reset"
 statement = "A proven hang writes s to /proc/sysrq-trigger, then says the test, the pid and the age at critical priority, which journald syncs at once, abandoning a log that blocks, then writes b exactly 2 s after s, never sooner and never later however long the line took (scratch/design/hang-reset.md change 2)."
 proof = "built"
+
+[[requirement]]
+id = "PROGRAM_FAULT.parse"
+statement = "The kernel reader reads a user program's fault line, comm[pid]: segfault at, or traps: comm[pid] trap or general protection fault, into its process, pid and the CPU and core the kernel names in likely on CPU N (core C, socket S), or no CPU named when the line names none; the 17:11:57 wireplumber line reads as CPU 23, core 7; a fault line inside a machine-check record leaves the record open (scratch/design/segfault-evidence.md)."
+proof = "built"
+
+[[requirement]]
+id = "PROGRAM_FAULT.verdict"
+statement = "A program fault is never a verdict, whatever CPU it names or none, in a 1T, all-core or MEMORY test, in its settle read and in an idle watch: it is seen and kept as evidence, the payload's own crash staying the backend's one failure, until recorded data shows such lines predict a failure (scratch/design/segfault-evidence.md)."
+proof = "built"
+
+[[requirement]]
+id = "PROGRAM_FAULT.evidence"
+statement = "Every program fault a test saw, in any segment or the soak, is stored in the test's evidence as read (process, pid, CPU and core or none, the kernel's line and its kernel-log time) with the test's start in CLOCK_MONOTONIC ns, the latest kept and the earlier ones counted as dropped; the driver's log shows each as about N s into the test, the kernel log's clock against that start (scratch/design/segfault-evidence.md)."
+proof = "built"
+
+[[requirement]]
+id = "PROGRAM_FAULT.outside"
+statement = "Program faults are recorded into the session's events from the journal a resume reads after the last test's read, the dead boot's after a crash or this boot's on a resume in the same boot, each naming its process, CPU and core or no CPU named and its time into its boot, on the session that carries on after a supersede, each once per session, the latest of a resume kept and the earlier ones counted; between tests in a live session they are not read (scratch/design/segfault-evidence.md)."
+proof = "built"
+
+[[requirement]]
+id = "PROGRAM_FAULT.explorer"
+statement = "In the fake world the machine's transition never reads the program faults a test's report carries, and every future with such reports reaches a rest (scratch/design/segfault-evidence.md)."
+proof = "built"

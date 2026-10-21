@@ -626,6 +626,8 @@ def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transiti
         )
         stored_first = 1 if isinstance(result.effects[0], Supersede) else 0
         result = replace(result, effects=(*result.effects[:stored_first], unread, *result.effects[stored_first:]))
+    faults = tuple(Announce("program_fault", line) for line in e.program_faults)
+    result = replace(result, effects=(*result.effects, *faults))
     if e.kernel_problem is None:
         return result
     note = Announce(

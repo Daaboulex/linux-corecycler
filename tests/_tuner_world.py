@@ -459,6 +459,11 @@ class Fake:
         self.worker = None
         self.now += report.seconds
         self.last_report = report
+        if report.program_faults is not None:
+            bare = replace(report, program_faults=None)
+            seen = transition(self.state, WorkerReported(token, report), self.world())
+            if seen != transition(self.state, WorkerReported(token, bare), self.world()):
+                raise Broken(f"the machine's transition read the report's program faults: {report.program_faults}")
         self.post(WorkerReported(token, report))
 
     def journaled(self, core: int, value: int, confirmed: bool) -> None:

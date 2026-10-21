@@ -22,6 +22,7 @@ from corecycler.engine.detector import (
     HarvestFrom,
     JournalHarvest,
     KernelTrouble,
+    ProgramFault,
     UnblamedMachineCheck,
     _clock_ns,
     _journalctl,
@@ -85,6 +86,13 @@ SOFT_LOCKUP = [
     "RIP: 0010:native_queued_spin_lock_slowpath+0x6e/0x2e0",
     "Call Trace:",
 ]
+WIREPLUMBER_17_11_57 = (
+    "wireplumber[2884]: segfault at 0 ip 00007f6d4a3c2e17 sp 00007ffd2b8e6f40 error 4 in "
+    "libasound.so.2.0.0[5ae17,7f6d4a368000+b6000] likely on CPU 23 (core 7, socket 0)"
+)
+WIREPLUMBER_CODE = (
+    "Code: 89 c7 e8 9a 4f ff ff 48 85 c0 74 1e 48 8b 50 10 <48> 8b 02 48 85 c0 74 12 48 8b 40 08 48 85 c0 74 09"
+)
 
 
 def _shape(event) -> tuple:
@@ -95,6 +103,8 @@ def _shape(event) -> tuple:
             return ("unblamed", event.logged_by_cpu, event.bank, event.corrected)
         case KernelTrouble():
             return ("trouble", event.message)
+        case ProgramFault():
+            return ("program", event.process, event.pid, event.cpu, event.core)
 
 
 def _parse(lines: list[str], *, final: bool = True) -> list[tuple]:
@@ -193,8 +203,13 @@ class TestRecordParser:
 
     def test_lookalikes_are_not_events(self):
         lines = [
-            "traps: prime95[4321] trap invalid opcode ip:7f0000001000 sp:7ffd00000000 error:0 in prime95[1000+2000]",
-            "traps: mprime[4321] general protection fault ip:7f0000001000 sp:7ffd00000000 error:0 in libc.so.6",
+            "systemd-coredump[3001]: Process 2884 (wireplumber) of user 1000 dumped core.",
+            "potentially unexpected fatal signal 11.",
+            "wireplumber: segfault at 0 ip 00007f6d4a3c2e17 sp 00007ffd2b8e6f40 error 4",
+            "vkd3d[123] segfault at 0 ip 00007f6d4a3c2e17 sp 00007ffd2b8e6f40 error 4",
+            "traps: Missing ENDBR: foo+0x0/0x10",
+            "traps: mprime[4321] took a while",
+            WIREPLUMBER_CODE,
             "WARNING: CPU: 3 PID: 1234 at kernel/sched/core.c:1234 update_rq_clock+0x10/0x20",
             "RIP: 0010:update_rq_clock+0x10/0x20",
             "Call Trace:",
@@ -272,6 +287,83 @@ class TestRecordParser:
         assert events[0].raw_ts == 2.5
         assert events[0].message == ZEN_BLOCK_STATUS
         assert carry == []
+
+
+class TestProgramFaults:
+    @pytest.mark.req("PROGRAM_FAULT.parse")
+    def test_the_17_11_57_line_reads_as_wireplumber_on_cpu_23_core_7(self):
+        """The line the 17:11 freeze logged as the design records it, its elided addresses in the kernel's format."""
+        events, carry = parse_kernel_records([(61917.5, WIREPLUMBER_17_11_57), (61917.5, WIREPLUMBER_CODE)], final=True)
+        assert events == [
+            ProgramFault(process="wireplumber", pid=2884, cpu=23, core=7, message=WIREPLUMBER_17_11_57, raw_ts=61917.5)
+        ]
+        assert events[0].named == "wireplumber (pid 2884), CPU 23, core 7"
+        assert carry == []
+
+    @pytest.mark.req("PROGRAM_FAULT.parse")
+    @pytest.mark.parametrize(
+        ("line", "fault"),
+        [
+            (
+                "traps: prime95[4321] trap invalid opcode ip:7f0000001000 sp:7ffd00000000 error:0 in "
+                "prime95[1000+2000]",
+                ("program", "prime95", 4321, None, None),
+            ),
+            (
+                "traps: mprime[4321] general protection fault ip:7f0000001000 sp:7ffd00000000 error:0 in libc.so.6",
+                ("program", "mprime", 4321, None, None),
+            ),
+            (
+                "Isolated Web Co[5021]: segfault at 10 ip 00007f3c1a2b4d5e sp 00007ffc9e8a7b10 error 6 in "
+                "libxul.so[2b4d5e,7f3c18000000+5a00000] likely on CPU 3 (core 3, socket 0)",
+                ("program", "Isolated Web Co", 5021, 3, 3),
+            ),
+            (
+                "a[1] b[3001]: segfault at 0 ip 0000000000401136 sp 00007ffd2b8e6f40 error 4 "
+                "likely on CPU 16 (core 0, socket 1)",
+                ("program", "a[1] b", 3001, 16, 0),
+            ),
+            (
+                "python3[77]: segfault at 0 ip 0000000000401136 sp 00007ffd2b8e6f40 error 4 in python3.14[401000+1000]",
+                ("program", "python3", 77, None, None),
+            ),
+        ],
+        ids=["trap", "general-protection", "name-with-spaces", "name-with-brackets", "no-cpu-named"],
+    )
+    def test_each_program_fault_line_names_its_process_and_the_cpu_and_core_the_kernel_named(self, line, fault):
+        assert _parse([line]) == [fault]
+
+    @pytest.mark.req("PROGRAM_FAULT.parse")
+    def test_a_fault_naming_no_cpu_says_so(self):
+        (fault,) = parse_kernel_records(
+            [(1.0, "traps: foo[12] trap divide error ip:401136 sp:7ffd2b8e6f40 error:0 in foo[401000+1000]")],
+            final=True,
+        )[0]
+        assert fault.named == "foo (pid 12), no CPU named"
+
+    @pytest.mark.req("PROGRAM_FAULT.parse")
+    def test_a_program_fault_inside_a_machine_check_record_is_its_own_event_and_leaves_the_record_open(self):
+        assert _parse([ZEN_SEVERITY, ZEN_BLOCK_STATUS, WIREPLUMBER_17_11_57, *ZEN_BLOCK_DETAILS[1:]]) == [
+            ("program", "wireplumber", 2884, 23, 7),
+            ("core", 9, 0, True),
+        ]
+
+    @pytest.mark.req("PROGRAM_FAULT.evidence")
+    def test_a_flood_of_program_faults_keeps_the_latest_and_counts_the_earlier_ones_dropped(self):
+        kept = detector_mod.PROGRAM_FAULTS_KEPT
+        faults = [ProgramFault("loop", n, None, None, f"traps: loop[{n}] trap int3", float(n)) for n in range(kept + 3)]
+        assert detector_mod.kept_faults(faults) == (tuple(faults[3:]), 3)
+        assert detector_mod.kept_faults(faults[:2]) == (tuple(faults[:2]), 0)
+
+    @pytest.mark.req("PROGRAM_FAULT.outside")
+    def test_a_program_fault_of_the_dead_boot_is_harvested_stamped_by_that_boot_s_clock(self, machine):
+        dead = machine.boot_id
+        machine.kernel(WIREPLUMBER_17_11_57, mono_s=689.5)
+        machine.reboot(clean=False)
+        read = harvest_after(dead, HarvestFrom(mono_ns=None, realtime_us=None), next_boot=False)
+        assert read == JournalHarvest(
+            (ProgramFault("wireplumber", 2884, 23, 7, WIREPLUMBER_17_11_57, 689.5),), (), None
+        )
 
 
 class TestBankClassification:

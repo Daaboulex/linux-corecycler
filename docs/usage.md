@@ -181,7 +181,10 @@ Hard crashes are expected during CO tuning; that is how each core's limit is fou
   survived once a test completes with it. After a crash, Resume reads the journal, the
   kernel log of the boot that died and the stored test rows, and blames what was live at
   the time: the core gets a fail bound there and backs off. A core that crashes at 0 is
-  unstable at stock, and the session pauses.
+  unstable at stock, and the session pauses. A program's fault is recorded into the
+  session's log from the journal a resume reads, the dead boot's after a crash or this
+  boot's on a resume in the same boot, once each, naming the process, the CPU and core, and
+  its time into that boot; one logged between tests in a live session is not read.
 - **Quarantine**: three crash-resumes in a row with no test surviving between them put
   every selected core back to 0 and stop the session for good.
 - **Setup changes**: the session records the BIOS, kernel, microcode and app build at
@@ -292,3 +295,8 @@ stress (all cores at once).
 reduce that core's CO (make it less negative). **Computation errors** are the most common
 CO-tuning failure. An MCE in the idle phase is a failure mode sustained-load tests miss
 entirely.
+
+A segfault or trap of another program that the kernel logs during a test is never a
+verdict, whatever CPU it names. The Auto-Tuner keeps each one with the test as evidence,
+with the test's start, and its log shows the fault as about N s into the test, which
+compares the kernel log's clock with that start. A test run with **Start Test** keeps none.

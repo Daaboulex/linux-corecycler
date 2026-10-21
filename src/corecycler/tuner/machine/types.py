@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from corecycler.tuner.orders import Method, RoundCursor
+
+if TYPE_CHECKING:
+    from corecycler.engine.detector import ProgramFaults
 
 
 class Mode(StrEnum):
@@ -374,6 +378,7 @@ class Report:
     kernel_read_ns: int | None = None
     speeds: tuple[tuple[str, float, bool], ...] = ()
     output: str = ""
+    program_faults: ProgramFaults | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -450,6 +455,7 @@ class CrashEvidenceRead:
     last_written: tuple[tuple[int, int], ...] = ()
     marked_now: bool = False
     child_id: int | None = None
+    program_faults: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

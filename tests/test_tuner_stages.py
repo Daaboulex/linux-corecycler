@@ -4,6 +4,7 @@ import json
 import random
 import threading
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,11 +15,13 @@ from corecycler.engine import detector as kernel
 from corecycler.engine.backends import ycruncher
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.backends.ycruncher import ALL_TESTS
+from corecycler.engine.execution import Supervisor
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable
 from corecycler.monitor.hwmon import SensorRead
 from corecycler.tuner import live_hw, stages, telemetry
 from corecycler.tuner.machine.types import Group, Klass, Load, Stage
 from corecycler.tuner.machine.types import TestSpec as Spec
+from tests.test_execution import FakeBackend, _child
 
 CPUS = tuple(range(8))
 
@@ -324,6 +327,114 @@ def test_the_soak_watch_reports_what_the_kernel_logged(events, problem, group):
     assert report.kernel_read_ns == 7_000
     if events and isinstance(events[0], kernel.CoreMachineCheck):
         assert [e.core for e in report.evidence] == [1]
+
+
+FAULT_ON_CPU_23 = "wireplumber[2884]: segfault at 0 ip 00007f6d4a3c2e17 sp 00007ffd2b8e6f40 error 4 likely on CPU 23"
+TRAP_NAMING_NO_CPU = "traps: foo[12] general protection fault ip:401136 sp:7ffd2b8e6f40 error:0 in foo[401000+1000]"
+
+
+def started_at_100_s(monkeypatch) -> None:
+    monkeypatch.setattr(kernel, "monotonic_ns", lambda: 100_000_000_000)
+
+
+@pytest.mark.req("PROGRAM_FAULT.evidence")
+def test_every_program_fault_an_all_core_test_saw_is_kept_with_it_and_the_test_s_start(monkeypatch):
+    started_at_100_s(monkeypatch)
+    first = kernel.ProgramFault("wireplumber", 2884, 23, 7, FAULT_ON_CPU_23, 115.5)
+    later = kernel.ProgramFault("foo", 12, None, None, TRAP_NAMING_NO_CPU, 403.0)
+    machine_check = kernel.UnblamedMachineCheck(logged_by_cpu=1, bank=5, corrected=True, message="u", raw_ts=110.0)
+    script = Script([Outcome.PASS] * 8, events=[[first, machine_check], [], [later]])
+    report = runner(script).run(spec(Load.WARM), threading.Event())
+    assert report.group is Group.PASS
+    assert report.program_faults == kernel.ProgramFaults(100_000_000_000, (first, later), 0)
+
+
+@pytest.mark.req("PROGRAM_FAULT.evidence")
+def test_a_program_fault_during_the_soak_is_kept_with_it_and_changes_no_verdict(monkeypatch):
+    started_at_100_s(monkeypatch)
+    fault = kernel.ProgramFault("wireplumber", 2884, 23, 7, FAULT_ON_CPU_23, 101.0)
+    reads = [kernel.KernelRead((fault,), None)]
+    report = runner(Script([]), detector=soak_detector(reads)).run(spec(Load.SOAK, 0.05), threading.Event())
+    assert report.group is Group.PASS
+    assert report.program_faults == kernel.ProgramFaults(100_000_000_000, (fault,), 0)
+
+
+@pytest.mark.req("PROGRAM_FAULT.evidence")
+def test_a_test_keeps_its_latest_program_faults_and_counts_the_rest_and_the_next_test_starts_its_own(monkeypatch):
+    started_at_100_s(monkeypatch)
+    flood = [
+        kernel.ProgramFault("loop", n, None, None, TRAP_NAMING_NO_CPU, 101.0)
+        for n in range(kernel.PROGRAM_FAULTS_KEPT + 5)
+    ]
+    shared = runner(Script([Outcome.PASS] * 16, events=[flood]))
+    kept = shared.run(spec(Load.WARM), threading.Event()).program_faults
+    assert (kept.kept, kept.dropped) == kernel.kept_faults(flood)
+    assert kept.dropped > 0
+    assert shared.run(spec(Load.WARM), threading.Event()).program_faults == kernel.ProgramFaults(100_000_000_000, (), 0)
+
+
+class SleepsThroughItsTest(FakeBackend):
+    def is_available(self) -> bool:
+        return True
+
+
+def fault_on(cpu: int) -> kernel.ProgramFault:
+    core = CORE_OF_CPU[cpu]
+    line = f"wireplumber[1]: segfault at 0 ip 00007f6d4a3c2e17 sp 00007ffd2b8e6f40 error 4 likely on CPU {cpu}"
+    return kernel.ProgramFault("wireplumber", 1, cpu, core, f"{line} (core {core}, socket 0)", 101.0)
+
+
+def real_runner(tmp_path, fault: kernel.ProgramFault, *, in_the_settle: bool) -> live_hw.StressRunner:
+    class Detector:
+        read_started_ns = 7_000
+
+        def __init__(self) -> None:
+            self.given = False
+
+        def reset(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def read_new(self, final=False):
+            if final is in_the_settle and not self.given:
+                self.given = True
+                return kernel.KernelRead((fault,), None)
+            return kernel.KernelRead((), None)
+
+    return live_hw.StressRunner(
+        lambda: SleepsThroughItsTest(_child("import time; time.sleep(30)")),
+        tmp_path,
+        CORE_OF_CPU,
+        lambda: at(50.0),
+        lambda: dict.fromkeys(CPUS, 5000.0),
+        supervisor=partial(Supervisor, containment_for=lambda cpus: None),
+        detector=Detector,
+        memory_backend=lambda: SleepsThroughItsTest(_child("import time; time.sleep(30)")),
+        budget=lambda n, floor: Budget(),
+    )
+
+
+@pytest.mark.req("PROGRAM_FAULT.verdict")
+@pytest.mark.parametrize(
+    ("test", "cpu", "in_the_settle"),
+    [
+        (Spec(Klass.T1, 0, -5, (0, 4), 1.0, ((0, -5), (1, 0), (2, 0), (3, 0)), Stage.SEARCH, None, 95.0), 4, False),
+        (spec(Load.HOT, 1.0), 6, False),
+        (Spec(Klass.T1, 0, -5, CPUS, 1.0, tuple((c, -5) for c in range(4)), Stage.MEMORY, Load.MEMORY, 95.0), 5, False),
+        (Spec(Klass.T1, 0, -5, (0, 4), 1.0, ((0, -5), (1, 0), (2, 0), (3, 0)), Stage.SEARCH, None, 95.0), 0, True),
+    ],
+    ids=["1t", "all-core", "memory", "in-the-settle"],
+)
+def test_a_program_fault_on_one_of_the_test_s_cpus_is_kept_and_no_verdict(
+    tmp_path, monkeypatch, test, cpu, in_the_settle
+):
+    monkeypatch.setattr(kernel, "mce_settle_s", lambda: 0.0)
+    fault = fault_on(cpu)
+    report = real_runner(tmp_path, fault, in_the_settle=in_the_settle).run(test, threading.Event())
+    assert report.group is Group.PASS
+    assert report.program_faults.kept == (fault,)
 
 
 @pytest.mark.req("EC.G1")

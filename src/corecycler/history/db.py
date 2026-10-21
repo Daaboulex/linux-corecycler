@@ -1797,6 +1797,12 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             (session_id, self._now_iso(), boot_id, severity, message),
         )
 
+    def tuner_event_messages(self, session_id: int, severity: str) -> set[str]:
+        rows = self.__conn.execute(
+            "SELECT message FROM tuner_events WHERE session_id=? AND severity=?", (session_id, severity)
+        ).fetchall()
+        return {row["message"] for row in rows}
+
     def get_tuner_events(self, session_id: int, limit: int = 200) -> list[dict]:
         """Newest-last narrative lines for a session (the replayable story)."""
         rows = self.__conn.execute(

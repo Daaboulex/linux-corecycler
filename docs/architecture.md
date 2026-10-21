@@ -29,7 +29,7 @@ src/corecycler/
     scheduler.py       Per-core cycling, variable load, idle tests
     execution.py       The one supervised loop: launch, poll, stall/thermal/MCE, verdicts
     containment.py     systemd cgroup scopes (AllowedCPUs) and the kernel cpuset record
-    detector.py        MCE and kernel-error records from /dev/kmsg + the systemd journal
+    detector.py        MCE, kernel-error and program-fault records from /dev/kmsg + the systemd journal
     memory_budget.py   One live memory budget shared by every stressapptest instance
     backends/          Stress backends (mprime, stress_ng, ycruncher, stressapptest), registered by load_all()
   smu/               AMD SMU access (ryzen_smu)
@@ -56,7 +56,9 @@ src/corecycler/
     telemetry.py       Failure context for machine/ from a ring of clock samples
     live.py            LiveRig: drives machine/ with a worker thread, keeping the session, the CO
                        journal, one row per test, its telemetry samples and the events in the
-                       history database
+                       history database; a program's fault reaches the events from the journal a
+                       resume reads (the dead boot's after a crash, this boot's on a resume in the
+                       same boot), never between tests in a live session
     live_hw.py         The tuner driver, live.py on the real hardware: the Auto-Tuner tab and
                        the CLI's tuning commands start it; one per machine (it holds the CO writer lock,
                        smu/writer_lock.py); CO writes only with --write
