@@ -403,7 +403,7 @@ def _stored_gates(st: Stored, w: World) -> str | None:
 def _resume_stored(s: SessionState, e: Resume, w: World) -> Transition:
     st = w.stored
     if st is None or st.session_id != e.session_id:
-        return Transition(s, refused=f"session {e.session_id} is not stored")
+        return Transition(s, refused=w.stored_unread or f"session {e.session_id} is not stored")
     if st.status == "completed":
         return Transition(s, refused="the session is completed: use Validate Profile")
     if st.status == "quarantined":
@@ -537,7 +537,7 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
         return Transition(s, refused="a session is held: pause or abort it first")
     st = w.stored
     if st is None or st.session_id != e.session_id:
-        return Transition(s, refused=f"session {e.session_id} is not stored")
+        return Transition(s, refused=w.stored_unread or f"session {e.session_id} is not stored")
     if st.status != "completed":
         return Transition(
             s, refused=f"session {st.session_id} is {st.status}: only a completed session can be validated"

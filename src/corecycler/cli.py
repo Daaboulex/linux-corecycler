@@ -286,7 +286,7 @@ def cmd_shaper(rest: list[str]) -> int:
 
 def cmd_margins(rest: list[str], db: HistoryDB | None = None) -> int:
     from corecycler.history.db import HistoryDB
-    from corecycler.tuner.live import margins, read_stored
+    from corecycler.tuner.live import load_stored, margins
     from corecycler.tuner.live_hw import shaper_at_zero
 
     if len(rest) != 1 or not rest[0].isdigit():
@@ -295,11 +295,11 @@ def cmd_margins(rest: list[str], db: HistoryDB | None = None) -> int:
     session_id = int(rest[0])
     own = HistoryDB() if db is None else db
     try:
-        try:
-            stored = read_stored(own, session_id)
-        except ValueError as e:
-            print(f"corecycler margins: {e}", file=sys.stderr)
+        loaded, unread = load_stored(own, session_id)
+        if loaded is None:
+            print(f"corecycler margins: {unread or f'session {session_id} is not stored'}", file=sys.stderr)
             return EXIT_REFUSED
+        stored = loaded[0]
         shaper = dict(stored.setup).get("curve_shaper")
         if not shaper_at_zero(shaper):
             print(

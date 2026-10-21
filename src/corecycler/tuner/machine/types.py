@@ -517,6 +517,7 @@ class World:
     now: float = 0.0
     temperature_c: float | None = None
     stored: Stored | None = None
+    stored_unread: str | None = None
     held_session: tuple[int, str] | None = None
     newest_base: tuple[int, tuple[tuple[int, int | None], ...]] | None = None
     newest_unread: str | None = None

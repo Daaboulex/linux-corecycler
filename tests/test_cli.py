@@ -238,6 +238,18 @@ class TestMargins:
         assert cli.cmd_margins(["99"], db) == cli.EXIT_REFUSED
         assert "session 99 is not stored" in capsys.readouterr().err
 
+    @pytest.mark.req("UNREAD.margins")
+    def test_a_session_stored_without_its_base_co_is_refused_by_name(self, db, tmp_path, capsys):
+        session_id, _ = session_with_shaper(db, tmp_path, ZERO_SHAPER)
+        db._execute_raw(
+            "UPDATE tuner_sessions SET machine_json = json_remove(machine_json, '$.base_co') WHERE id = ?",
+            (session_id,),
+        )
+        assert cli.cmd_margins([str(session_id)], db) == cli.EXIT_REFUSED
+        out = capsys.readouterr()
+        assert out.err == f"corecycler margins: session {session_id} could not be read: KeyError('base_co')\n"
+        assert out.out == ""
+
     def test_the_command_reads_the_default_database_and_closes_it(self, monkeypatch, capsys):
         closed = []
 

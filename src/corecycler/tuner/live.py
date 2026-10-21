@@ -264,7 +264,24 @@ def read_stored(db: HistoryDB, session_id: int) -> Stored:
     row = db.load_machine_session(session_id)
     if row is None:
         raise ValueError(f"session {session_id} is not stored")
+    return _stored_from_row(row, session_id)
+
+
+def _stored_from_row(row: tuple[str, str, int | None, str | None], session_id: int) -> Stored:
     return replace(stored_from_json(json.loads(row[0]), continued=row[3] == "continue"), session_id=session_id)
+
+
+UNREADABLE_STORED = (AttributeError, LookupError, TypeError, ValueError)
+
+
+def load_stored(db: HistoryDB, session_id: int) -> tuple[tuple[Stored, str, int | None] | None, str | None]:
+    row = db.load_machine_session(session_id)
+    if row is None:
+        return None, None
+    try:
+        return (_stored_from_row(row, session_id), row[1], row[2]), None
+    except UNREADABLE_STORED as exc:
+        return None, f"session {session_id} could not be read: {exc!r}"
 
 
 def _pairs(raw) -> tuple:
@@ -453,11 +470,8 @@ class Store:
         for (session, core), fb in tightened.items():
             self.db.journal_retract(session, core, fb, -1)
 
-    def load(self, session_id: int) -> tuple[Stored, str, int | None] | None:
-        row = self.db.load_machine_session(session_id)
-        if row is None:
-            return None
-        return read_stored(self.db, session_id), row[1], row[2]
+    def load(self, session_id: int) -> tuple[tuple[Stored, str, int | None] | None, str | None]:
+        return load_stored(self.db, session_id)
 
     def test_started(self, session_id: int, token: int, spec: TestSpec, boot: str, power: PowerState) -> int:
         return self.db.insert_tuner_test(
@@ -709,10 +723,10 @@ class LiveRig:
         )
 
     def world_for_resume(self, session_id: int) -> World:
-        loaded = self.store.load(session_id)
+        loaded, unread = self.store.load(session_id)
         world = self.world_checked()
         if loaded is None:
-            return world
+            return replace(world, stored_unread=unread)
         stored, self.stored_boot, self.stored_read_ns = loaded
         proven = self.store.db.journal_proven(session_id) if stored.status == "quarantined" else ()
         return replace(world, stored=stored, proven=proven)
@@ -882,7 +896,9 @@ class LiveRig:
         marker = self.store.marker_boot()
         session = acting.session_id
         try:
-            loaded = self.store.load(session)
+            loaded, unread = self.store.load(session)
+            if unread is not None:
+                return DatabaseFailed(unread)
             rows = self.store.journal_rows(session, last)
             other = not same and self.store.taken_over(session, last)
             context = None if same else self.store.crash_context(session, last, self._core_of_cpu())

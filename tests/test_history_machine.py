@@ -13,7 +13,7 @@ from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from corecycler.gui.history_tab import HistoryTab, coverage_text
-from corecycler.gui.style import tuner_phase_label
+from corecycler.gui.style import theme, tuner_phase_label
 from corecycler.history.db import HistoryDB
 from corecycler.smu.writer_lock import co_writer
 from corecycler.tuner.live import Identity, Store
@@ -206,6 +206,24 @@ def test_a_completed_session_loads_its_values_into_the_curve_tuner(db, tmp_path)
     tab.load_profile_requested.connect(loaded.append)
     tab._on_load_co_profile()
     assert loaded == [{record.core: record.value for record in saved.cores}]
+
+
+@pytest.mark.req("UNREAD.load_co")
+def test_a_session_that_turns_unreadable_after_it_is_shown_loads_nothing_and_says_why(db, tmp_path):
+    saved = save_machine_session(db, tmp_path, "completed")
+    tab = tuner_view(db)
+    db._execute_raw(
+        "UPDATE tuner_sessions SET machine_json = json_remove(machine_json, '$.base_co') WHERE id = ?",
+        (saved.session_id,),
+    )
+    changes = db._execute_raw("SELECT total_changes()").fetchone()[0]
+    loaded = []
+    tab.load_profile_requested.connect(loaded.append)
+    tab._on_load_co_profile()
+    assert tab._detail_info.text() == f"session {saved.session_id} could not be read: KeyError('base_co')"
+    assert theme.COLOR_FAIL in tab._detail_info.styleSheet()
+    assert not tab._load_co_btn.isEnabled()
+    assert (loaded, db._execute_raw("SELECT total_changes()").fetchone()[0]) == ([], changes)
 
 
 def test_a_continued_session_names_its_parent(db, tmp_path):

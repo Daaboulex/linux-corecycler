@@ -426,11 +426,11 @@ def test_the_store_hands_its_state_directory_back_to_the_invoking_user(tmp_path,
 def test_the_store_keeps_the_session_in_the_database_and_the_stock_marker_apart(tmp_path):
     store = Store(database(tmp_path / "history.db"), tmp_path / "s", IDENTITY)
     st = snapshots()[-1]
-    assert store.load(st.session_id) is None
+    assert store.load(st.session_id) == (None, None)
     store.save(st, "boot-a")
-    assert store.load(st.session_id) == (st, "boot-a", None)
+    assert store.load(st.session_id) == ((st, "boot-a", None), None)
     reopened = Store(database(tmp_path / "history.db"), tmp_path / "s", IDENTITY)
-    assert reopened.load(st.session_id) == (st, "boot-a", None)
+    assert reopened.load(st.session_id) == ((st, "boot-a", None), None)
     assert reopened.new_session_id() == st.session_id + 1
     assert store.marker_boot() is None
     store.write_marker("boot-a")
@@ -659,7 +659,7 @@ def test_a_merged_session_resumes_under_its_new_id(tmp_path):
     own = seed_old_session(target)
     target.merge_from(tmp_path / "a" / "history.db")
     store = Store(target, tmp_path / "b", IDENTITY)
-    loaded, _boot, _read = store.load(own + 1)
+    (loaded, _boot, _read), _unread = store.load(own + 1)
     assert loaded.session_id == own + 1
     assert loaded.cores == first.state.cores
 
@@ -2393,6 +2393,118 @@ def test_a_session_the_owner_paused_waits_through_a_boot_and_his_resume_carries_
     assert lineage(again)[1] == {"id": 2, "status": "completed", "parent_session_id": 1, "origin": "continue"}
 
 
+UNREAD_BASE_CO = "session 1 could not be read: KeyError('base_co')"
+
+
+NO_BASE_CO = "json_remove(machine_json, '$.base_co')"
+
+
+def store_as(r: LiveRig, machine_json: str) -> None:
+    r.store.db._execute_raw(f"UPDATE tuner_sessions SET machine_json = {machine_json} WHERE id = 1")
+
+
+def drop_base_co(r: LiveRig) -> None:
+    store_as(r, NO_BASE_CO)
+
+
+def as_written(r: LiveRig) -> tuple:
+    return rows(r, "SELECT * FROM tuner_sessions"), rows(r, "SELECT total_changes() AS rows"), dict(r.hardware.co)
+
+
+@pytest.mark.req("UNREAD.command")
+@pytest.mark.parametrize(
+    ("machine_json", "error"),
+    [
+        (NO_BASE_CO, "KeyError('base_co')"),
+        ("'{'", "JSONDecodeError("),
+        ("json_set(machine_json, '$.flow.allcore', json('[1]'))", "AttributeError("),
+    ],
+    ids=["no-base-co", "malformed-json", "allcore-a-list"],
+)
+@pytest.mark.parametrize("flag", ["--resume", "--continue", "--restart", "--abort", "--validate"])
+def test_a_command_on_a_session_whose_stored_state_cannot_be_read_is_refused_by_name_and_writes_nothing(
+    tmp_path, flag, machine_json, error
+):
+    hardware, r = paused_by_the_owner_on_the_old_kernel(tmp_path)
+    again = rig(tmp_path, hardware, db=r.store.db)
+    said = []
+    again.say = said.append
+    store_as(again, machine_json)
+    before = as_written(again)
+    assert driven(tmp_path, flag, again) == live_hw.EXIT_REFUSED
+    assert len(said) == 1 and said[0].startswith(f"refused: session 1 could not be read: {error}")
+    assert as_written(again) == before
+
+
+@pytest.mark.req("UNREAD.boot")
+def test_the_boot_resume_of_a_session_stored_without_its_base_co_is_refused_by_name_and_writes_nothing(
+    tmp_path, monkeypatch
+):
+    from corecycler import cli
+
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    hardware.boot, hardware.co = "boot-b", {0: 0, 1: 0, 8: 0}
+    again = rig(tmp_path, hardware, db=r.store.db)
+    said = []
+    again.say = said.append
+    drop_base_co(again)
+    before = as_written(again)
+    asked = []
+
+    def boot_unit_drive(argv):
+        asked.append(argv)
+        return live_hw.run(live_hw.parse(["--state-dir", str(tmp_path / "state"), *argv]), again, lambda line: None)
+
+    monkeypatch.setattr(cli, "drive", boot_unit_drive)
+    assert cli.cmd_resume_interrupted([], again.store.db) == cli.EXIT_REFUSED
+    assert asked == [["--resume", "--session", "1", "--write"]]
+    assert said == [f"refused: {UNREAD_BASE_CO}"]
+    assert as_written(again) == before
+
+
+@pytest.mark.req("UNREAD.readback")
+def test_a_session_that_turns_unreadable_before_the_resume_reads_it_back_pauses_as_database_naming_it(
+    tmp_path, monkeypatch
+):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    open_test = r.test_row[1]
+    for n in range(telemetry.TAIL_GROUP):
+        r.store.sample(open_test, taken(0, n), durable=True)
+    hardware.boot, hardware.co = "boot-b", {0: -4, 1: -4, 8: -4}
+    again = rig(tmp_path, hardware, db=r.store.db)
+    load = again.store.load
+    reads = []
+
+    def unreadable_at_the_second_read(session_id):
+        reads.append(session_id)
+        if len(reads) > 1:
+            drop_base_co(again)
+        return load(session_id)
+
+    monkeypatch.setattr(again.store, "load", unreadable_at_the_second_read)
+    again.resume(1)
+    assert reads == [1, 1]
+    assert (again.state.pause.reason, again.state.pause.detail) == (PauseReason.DATABASE, UNREAD_BASE_CO)
+    tail = (
+        "SELECT (SELECT count(*) FROM tuner_samples WHERE test_id = ?) AS tail,"
+        " (SELECT count(*) FROM tuner_sample_blocks WHERE test_id = ?) AS blocks"
+    )
+    assert rows(again, tail, (open_test, open_test)) == [{"tail": telemetry.TAIL_GROUP, "blocks": 0}]
+    assert hardware.co == {0: 0, 1: 0, 8: 0}
+    assert again.store.marker_boot() == "boot-b"
+    assert rows(again, "SELECT severity, message FROM tuner_events WHERE boot_id = 'boot-b'") == [
+        {"severity": "database_failed", "message": f"{UNREAD_BASE_CO}; every owned core is sent back to stock"}
+    ]
+
+
 def test_the_command_line_validates_a_completed_session(tmp_path):
     r, said = completed_then_rebooted(tmp_path, clean=True)
     args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--session", "1", "--validate"])
@@ -2763,7 +2875,7 @@ def test_a_start_the_machine_s_preflight_refuses_writes_nothing_and_says_why(tmp
     r.say = said.append
     r.start(config(), 1, 7, True)
     assert said == ["refused: the kernel log /dev/kmsg cannot be read"]
-    assert r.store.load(1) is None and r.hardware.co == {0: 0, 1: 0, 8: 0}
+    assert r.store.load(1) == (None, None) and r.hardware.co == {0: 0, 1: 0, 8: 0}
 
 
 def test_preflight_warnings_become_session_events_when_it_starts(tmp_path):

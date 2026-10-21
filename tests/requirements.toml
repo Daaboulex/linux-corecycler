@@ -103,6 +103,31 @@ statement = "At Start a change against the newest session's base_co is named in 
 proof = "built"
 
 [[requirement]]
+id = "UNREAD.command"
+statement = "resume N, validate N, continue N, restart N and abort N of a session whose stored state cannot be read (a missing key, a wrong type, malformed JSON) are refused as session N could not be read with the error, exit refused, never a crash, and write nothing to the database or the CO"
+proof = "built"
+
+[[requirement]]
+id = "UNREAD.boot"
+statement = "The boot resume (resume --interrupted) of an interrupted session whose stored state cannot be read is refused the same way, exit refused, and writes nothing"
+proof = "built"
+
+[[requirement]]
+id = "UNREAD.readback"
+statement = "A session that turns unreadable between the resume's read and the crash attribution's read back pauses as DATABASE naming it, as a failed read back does, never a crash: before the dead boot's tail is packed, every owned core sent to stock, the stock marker written and a database_failed event recorded"
+proof = "built"
+
+[[requirement]]
+id = "UNREAD.margins"
+statement = "margins N of a session whose stored state cannot be read is refused as session N could not be read with the error, exit refused, never a crash, through the same read that refuses a resume"
+proof = "built"
+
+[[requirement]]
+id = "UNREAD.load_co"
+statement = "History's Load CO profile of a session that turned unreadable after it was shown loads nothing, writes nothing, turns itself off and names it in the detail line in the failure colour as session N could not be read with the error, never a crash, through the same read that refuses a resume"
+proof = "built"
+
+[[requirement]]
 id = "C15"
 statement = "CLOCK_STRETCH is not produced"
 proof = "built"
