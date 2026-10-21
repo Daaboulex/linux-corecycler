@@ -36,6 +36,7 @@ from corecycler.tuner.live import (
 from corecycler.tuner.machine.types import (
     Abort,
     Close,
+    ContinueOnSetup,
     CrashEvidenceRead,
     Evidence,
     FailContext,
@@ -299,31 +300,31 @@ def test_every_stored_state_of_a_run_survives_the_session_file_round_trip():
     assert any(s.flow.validating for s in stored if s.flow is not None)
     assert any(s.flow.live1.back is Stage.MEMORY for s in stored if s.flow is not None and s.flow.live1 is not None)
     for st in stored:
-        assert stored_from_json(json.loads(json.dumps(stored_to_json(st)))) == st
+        assert stored_from_json(json.loads(json.dumps(stored_to_json(st))), continued=False) == st
     assert all(st.setup == (("bios", "A"),) for st in stored)
     older = stored_to_json(stored[0])
     del older["setup"]
     with pytest.raises(KeyError, match="setup"):
-        stored_from_json(older)
+        stored_from_json(older, continued=False)
     assert all(st.base_co == stored[0].base_co != () for st in stored)
     older = stored_to_json(stored[0])
     del older["base_co"]
     with pytest.raises(KeyError, match="base_co"):
-        stored_from_json(older)
+        stored_from_json(older, continued=False)
 
 
 @pytest.mark.req("T22.F11")
 def test_incident_kinds_survive_the_session_file_and_an_older_count_reads_as_kinds_not_recorded():
     st = replace(snapshots()[0], incidents=(Incident.STOCK_MACHINE_CHECK, Incident.CRASH))
-    assert stored_from_json(json.loads(json.dumps(stored_to_json(st)))) == st
+    assert stored_from_json(json.loads(json.dumps(stored_to_json(st))), continued=False) == st
     older = stored_to_json(st)
     older["incidents"] = 2
-    assert stored_from_json(older) == replace(st, incidents=(Incident.UNRECORDED, Incident.UNRECORDED))
+    assert stored_from_json(older, continued=False) == replace(st, incidents=(Incident.UNRECORDED, Incident.UNRECORDED))
     older["incidents"] = 0
-    assert stored_from_json(older) == replace(st, incidents=())
+    assert stored_from_json(older, continued=False) == replace(st, incidents=())
     older["incidents"] = -1
     with pytest.raises(ValueError, match="incidents"):
-        stored_from_json(older)
+        stored_from_json(older, continued=False)
 
 
 @pytest.mark.req("K12.reclaim.stored")
@@ -338,12 +339,12 @@ def test_a_reclaim_in_progress_survives_the_session_file_and_an_older_file_reads
         assert fake.progress()
     st = fake.db
     assert st.cores[0].skipped == hung
-    assert stored_from_json(json.loads(json.dumps(stored_to_json(st)))) == st
+    assert stored_from_json(json.loads(json.dumps(stored_to_json(st))), continued=False) == st
     older = stored_to_json(st)
     for core in older["cores"]:
         del core["skipped"], core["reclaim_floor"]
     none_in_progress = tuple(replace(r, skipped=None, reclaim_floor=None) for r in st.cores)
-    assert stored_from_json(older) == replace(st, cores=none_in_progress)
+    assert stored_from_json(older, continued=False) == replace(st, cores=none_in_progress)
 
 
 @pytest.mark.req("C1.one_off")
@@ -357,13 +358,43 @@ def test_a_one_off_mark_survives_the_session_file_and_an_older_file_reads_as_no_
         assert fake.progress()
     st = fake.db
     assert st.flow.one_off == (Stage.STEADY, ((0, -3), (1, -3)))
-    assert stored_from_json(json.loads(json.dumps(stored_to_json(st)))) == st
+    assert stored_from_json(json.loads(json.dumps(stored_to_json(st))), continued=False) == st
     older = json.loads(json.dumps(stored_to_json(st)))
     del older["flow"]["one_off"]
-    assert stored_from_json(older) == replace(st, flow=replace(st.flow, one_off=None))
+    assert stored_from_json(older, continued=False) == replace(st, flow=replace(st.flow, one_off=None))
     fake.crash()
-    fake.db = stored_from_json(older)
+    fake.db = stored_from_json(older, continued=False)
     fake.post(Resume(1))
+    run_to_rest(fake, 5000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+
+
+@pytest.mark.req("KERNEL.old")
+def test_a_carried_mark_survives_the_session_file_and_an_older_file_takes_it_from_its_origin_and_resumes():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, k_1t=1, k_2t=1, wait_between_cores_s=0.0)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.STEADY:
+        assert fake.progress()
+    fake.post(PauseRequest())
+    fake.setup = (("bios", "B"),)
+    fake.post(Resume(1))
+    fake.post(ContinueOnSetup(2))
+    st = fake.db
+    assert (st.session_id, st.flow.carried) == (2, True)
+    assert stored_from_json(json.loads(json.dumps(stored_to_json(st))), continued=False) == st
+    older = json.loads(json.dumps(stored_to_json(st)))
+    del older["flow"]["carried"]
+    with pytest.raises(TypeError):
+        stored_from_json(older)
+    assert stored_from_json(older, continued=True) == st
+    assert stored_from_json(older, continued=False) == replace(st, flow=replace(st.flow, carried=False))
+    while fake.db.flow.live1 is None or fake.db.flow.live1.back is not Stage.FINALIZE:
+        assert fake.progress()
+    final_pass = fake.db
+    assert stored_from_json(json.loads(json.dumps(stored_to_json(final_pass))), continued=False) == final_pass
+    fake.crash()
+    fake.db = stored_from_json(older, continued=True)
+    fake.post(Resume(2))
     run_to_rest(fake, 5000)
     assert fake.state.lifecycle is Lifecycle.COMPLETED
 
@@ -2132,8 +2163,8 @@ def test_a_restart_refused_at_start_s_gates_is_a_refusal(tmp_path):
     again.say = said.append
     resume = again.resume
 
-    def resume_then_lose_the_kernel_log(session_id, reengage):
-        resume(session_id, reengage)
+    def resume_then_lose_the_kernel_log(session_id, reengage, carry):
+        resume(session_id, reengage, carry)
         hardware.refusal = "the kernel log /dev/kmsg cannot be read"
 
     again.resume = resume_then_lose_the_kernel_log
@@ -2182,6 +2213,184 @@ def test_a_supersede_that_cannot_be_written_pauses_as_database_and_leaves_the_pa
     assert "session 1 could not be superseded" in final.pause.detail
     assert rows(again, "SELECT status FROM tuner_sessions WHERE id=1") == [{"status": "paused"}]
     assert rows(again, "SELECT id FROM tuner_sessions WHERE id=2") == []
+
+
+KERNEL_WAS = (("bios", "A"), ("kernel", "7.2.8 build a1"))
+KERNEL_NOW = (("bios", "A"), ("kernel", "7.2.11 build b2"))
+
+
+def paused_by_the_owner_on_the_old_kernel(tmp_path) -> tuple[FakeHardware, LiveRig]:
+    hardware = FakeHardware(setup_now=KERNEL_WAS)
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while not rows(r, "SELECT id FROM tuner_tests WHERE ended_at IS NOT NULL"):
+        r.step(0.01)
+    r.post(PauseRequest())
+    r.run_until_rest(0.01)
+    return hardware, r
+
+
+def driven(tmp_path, flag: str, again: LiveRig) -> int:
+    args = live_hw.parse(["--state-dir", str(tmp_path / "state"), "--session", "1", flag, "--write", "--acknowledge"])
+    return live_hw.run(args, again, lambda line: None)
+
+
+def lineage(r: LiveRig) -> list:
+    return rows(r, "SELECT id, status, parent_session_id, origin FROM tuner_sessions ORDER BY id")
+
+
+@pytest.mark.req("KERNEL.continue")
+@pytest.mark.parametrize("flag", ["--resume", "--continue"])
+def test_a_resume_that_finds_only_the_kernel_changed_carries_the_session_into_a_new_one_by_itself(tmp_path, flag):
+    hardware, r = paused_by_the_owner_on_the_old_kernel(tmp_path)
+    hardware.setup_now = KERNEL_NOW
+    again = rig(tmp_path, hardware, db=r.store.db)
+    assert driven(tmp_path, flag, again) == live_hw.EXIT_COMPLETED
+    assert lineage(again) == [
+        {"id": 1, "status": "superseded", "parent_session_id": None, "origin": None},
+        {"id": 2, "status": "completed", "parent_session_id": 1, "origin": "continue"},
+    ]
+    said = [e["message"] for e in again.store.db.get_tuner_events(2) if e["severity"] == "continued"]
+    assert len(said) == 1
+    assert said[0].startswith(
+        "the kernel changed (7.2.8 build a1 to 7.2.11 build b2): session 2 continues session 1 under it by itself; "
+    )
+    assert "every core is tested alone on the new setup before the session completes" in said[0]
+    assert dict(live.read_stored(again.store.db, 2).setup) == dict(KERNEL_NOW)
+
+
+@pytest.mark.req("KERNEL.boot")
+def test_the_boot_resume_attributes_the_crash_first_then_carries_the_session_onto_the_new_kernel(tmp_path, monkeypatch):
+    from corecycler import cli
+
+    hardware = FakeHardware(setup_now=KERNEL_WAS)
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    in_test = next(c for c in r.state.cores if c.in_test)
+    hardware.boot, hardware.co, hardware.end_problem = "boot-b", {0: 0, 1: 0, 8: 0}, "journalctl -b exited 1"
+    hardware.setup_now = KERNEL_NOW
+    again = rig(tmp_path, hardware, db=r.store.db)
+    asked = []
+
+    def boot_unit_drive(argv):
+        asked.append(argv)
+        return live_hw.run(live_hw.parse(["--state-dir", str(tmp_path / "state"), *argv]), again, lambda line: None)
+
+    monkeypatch.setattr(cli, "drive", boot_unit_drive)
+    assert cli.cmd_resume_interrupted([], r.store.db) == live_hw.EXIT_COMPLETED
+    assert asked == [["--resume", "--session", "1", "--write"]]
+    parent = live.read_stored(again.store.db, 1)
+    assert parent.status == "superseded"
+    assert next(c for c in parent.cores if c.core == in_test.core).crash_count == 1
+    kinds = [e["severity"] for e in again.store.db.get_tuner_events(2)]
+    assert kinds.index("boot_end_unread") < kinds.index("continued")
+    assert lineage(again)[1] == {"id": 2, "status": "completed", "parent_session_id": 1, "origin": "continue"}
+
+
+@pytest.mark.req("KERNEL.choice")
+@pytest.mark.parametrize(
+    ("flag", "code", "sessions"),
+    [
+        (
+            "--restart",
+            live_hw.EXIT_COMPLETED,
+            [
+                {"id": 1, "status": "superseded", "parent_session_id": None, "origin": None},
+                {"id": 2, "status": "completed", "parent_session_id": 1, "origin": "restart"},
+            ],
+        ),
+        ("--abort", live_hw.EXIT_ABORTED, [{"id": 1, "status": "aborted", "parent_session_id": None, "origin": None}]),
+    ],
+)
+def test_a_restart_or_an_abort_after_only_the_kernel_changed_does_what_it_names_and_never_continues(
+    tmp_path, flag, code, sessions
+):
+    hardware, r = paused_by_the_owner_on_the_old_kernel(tmp_path)
+    hardware.setup_now = KERNEL_NOW
+    again = rig(tmp_path, hardware, db=r.store.db)
+    assert driven(tmp_path, flag, again) == code
+    assert lineage(again) == sessions
+    continued = rows(again, "SELECT id FROM tuner_events WHERE severity='continued'")
+    assert continued == []
+
+
+@pytest.mark.req("KERNEL.choice")
+def test_a_rig_resume_that_asks_for_no_carry_pauses_on_a_kernel_only_change(tmp_path):
+    hardware, r = paused_by_the_owner_on_the_old_kernel(tmp_path)
+    hardware.setup_now = KERNEL_NOW
+    again = rig(tmp_path, hardware, db=r.store.db)
+    again.resume(1)
+    final = again.run_until_rest(0.01)
+    assert (final.session_id, final.pause.reason) == (1, PauseReason.SETUP_CHANGED)
+    assert "kernel was 7.2.8 build a1, is now 7.2.11 build b2" in final.pause.detail
+    assert lineage(again) == [{"id": 1, "status": "paused", "parent_session_id": None, "origin": None}]
+
+
+def stored_by_f453db4(r: LiveRig, session_id: int) -> None:
+    r.store.db._execute_raw(
+        "UPDATE tuner_sessions SET machine_json = json_remove(machine_json, '$.flow.carried') WHERE id = ?",
+        (session_id,),
+    )
+    assert "carried" not in json.loads(r.store.db.load_machine_session(session_id)[0])["flow"]
+
+
+def begun_by(tmp_path, began: str) -> tuple[FakeHardware, LiveRig, int]:
+    hardware, again = paused_then_moved_to_a_new_setup(tmp_path)
+    if began == "start":
+        return hardware, again, 1
+    again.resume(1)
+    again.run_until_rest(0.01)
+    if began == "continue":
+        again.continue_on_setup()
+    else:
+        again.restart_on_setup(True)
+    again.post(Close())
+    return hardware, again, 2
+
+
+@pytest.mark.req("KERNEL.old")
+@pytest.mark.parametrize(("began", "carried"), [("start", False), ("restart", False), ("continue", True)])
+def test_a_session_stored_without_the_mark_is_carried_exactly_when_a_continue_created_it(tmp_path, began, carried):
+    _, again, session = begun_by(tmp_path, began)
+    stored_by_f453db4(again, session)
+    assert live.read_stored(again.store.db, session).flow.carried is carried
+
+
+@pytest.mark.req("KERNEL.old")
+def test_a_session_a_continue_created_and_f453db4_stored_runs_the_final_pass_before_it_completes(tmp_path):
+    hardware, again, session = begun_by(tmp_path, "continue")
+    stored_by_f453db4(again, session)
+    later = rig(tmp_path, hardware, db=again.store.db)
+    later.resume(session)
+    assert later.run_until_rest(0.01).lifecycle is Lifecycle.COMPLETED
+    ran = rows(later, "SELECT stage, core FROM tuner_tests WHERE session_id=? ORDER BY id DESC", (session,))
+    final_pass = []
+    for row in ran:
+        if row["stage"] != "live1":
+            break
+        final_pass.append(row["core"])
+    assert sorted(set(final_pass)) == [0, 1, 8]
+
+
+@pytest.mark.req("KERNEL.owner")
+def test_a_session_the_owner_paused_waits_through_a_boot_and_his_resume_carries_it_onto_the_new_kernel(
+    tmp_path, monkeypatch, capsys
+):
+    from corecycler import cli
+
+    hardware, r = paused_by_the_owner_on_the_old_kernel(tmp_path)
+    hardware.boot, hardware.clean, hardware.setup_now = "boot-b", True, KERNEL_NOW
+    asked = []
+    monkeypatch.setattr(cli, "drive", asked.append)
+    assert cli.cmd_resume_interrupted([], r.store.db) == cli.EXIT_COMPLETED
+    assert asked == []
+    assert capsys.readouterr().out == "corecycler resume: no interrupted session\n"
+    assert lineage(r) == [{"id": 1, "status": "paused", "parent_session_id": None, "origin": None}]
+    again = rig(tmp_path, hardware, db=r.store.db)
+    assert driven(tmp_path, "--resume", again) == live_hw.EXIT_COMPLETED
+    assert lineage(again)[1] == {"id": 2, "status": "completed", "parent_session_id": 1, "origin": "continue"}
 
 
 def test_the_command_line_validates_a_completed_session(tmp_path):

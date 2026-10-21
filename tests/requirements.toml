@@ -2771,7 +2771,7 @@ proof = "built"
 
 [[requirement]]
 id = "L24.a"
-statement = "At resume anything that can change a verdict and differs from the start pauses the session, offering Continue or Restart"
+statement = "At resume anything that can change a verdict and differs from the start pauses the session, offering Continue or Restart; the kernel alone changed continues by itself instead at a resume or continue (KERNEL.continue)"
 proof = "built"
 
 [[requirement]]
@@ -4343,7 +4343,7 @@ proof = "built"
 
 [[requirement]]
 id = "L24.l24a.compare"
-statement = "At Resume, after the attribution and before any write, a differing key (readable against unreadable included) pauses SETUP_CHANGED naming each key with its old and new value, every core at baseline"
+statement = "At Resume, after the attribution and before any write, a differing key (readable against unreadable included) pauses SETUP_CHANGED naming each key with its old and new value, every core at baseline; the kernel alone differing continues by itself instead at a resume or continue (KERNEL.continue)"
 proof = "built"
 
 [[requirement]]
@@ -4389,6 +4389,46 @@ proof = "built"
 [[requirement]]
 id = "L24.l24b.laws"
 statement = "A superseded session never runs a test; the child's first test runs on the setup now"
+proof = "built"
+
+[[requirement]]
+id = "KERNEL.continue"
+statement = "A resume by the boot unit, resume N, the GUI's Resume or continue N that finds the kernel the only verdict fact changed, once the attribution, the power state and the knob check pass, does what Continue does by itself: a child under a new id from next_tuner_session_id and the setup now, the parent superseded, announced as the kernel changed (was to now) with what the child re-tests (scratch/design/brief-kernel-continue.md)"
+proof = "built"
+
+[[requirement]]
+id = "KERNEL.boot"
+statement = "After a crash the boot resume attributes the dead boot first, then continues under the new kernel; the dead boot's notes are written on the child after the supersede that stores it"
+proof = "built"
+
+[[requirement]]
+id = "KERNEL.pause"
+statement = "A kernel change with any other verdict change, any other verdict change alone, a moved power state, a kernel value that names no build then or now (unreadable, no build id, not recorded), or a resume that carries no child id pauses SETUP_CHANGED as before"
+proof = "built"
+
+[[requirement]]
+id = "KERNEL.choice"
+statement = "restart N and abort N resume with no child id, so after a kernel-only change they restart or abort and never continue"
+proof = "built"
+
+[[requirement]]
+id = "KERNEL.owner"
+statement = "A session the owner paused is never resumed at boot; his own resume of it continues under a new kernel"
+proof = "built"
+
+[[requirement]]
+id = "KERNEL.final"
+statement = "A continued session, by hand or by itself, is marked carried until its final pass ends: reaching FINALIZE clean while marked, it runs one full LIVE1 pass, every owned core tested alone at its value on the new setup, whatever stage it was continued in and whatever LIVE1 ran before, a continue during the final pass starting it again from its first core with any crash bisection in it kept; nothing moves and it completes, a value moves and it enters the dirty loop; an abort while marked leaves a continued validation aborted, never completed"
+proof = "built"
+
+[[requirement]]
+id = "KERNEL.old"
+statement = "A session stored before the carried mark existed (f453db4 and older) loads as carried exactly when its row's origin records a continue, never for a Start or a restart, the caller always naming the origin, and resumes; a continued one runs the final pass before it completes"
+proof = "built"
+
+[[requirement]]
+id = "KERNEL.explorer"
+statement = "The explorer's default setup rows take a kernel-only change naming a fresh kernel each time, one row two of them, after which the deepest core is one step less stable alone and every all-core edge stays, and reach the continue by itself"
 proof = "built"
 
 [[requirement]]

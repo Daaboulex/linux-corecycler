@@ -80,6 +80,8 @@ SETUP_REMEDY = "put it back and resume, or continue or restart under it"
 
 
 RECORDED_ONLY = frozenset({"pm_table", "python", "qt", "zenpower"})
+KERNEL = "kernel"
+KERNEL_UNREAD = ("unreadable", "absent")
 
 INCIDENT_NAMES = {
     Incident.CRASH: ("crash nobody could be blamed for", "crashes nobody could be blamed for"),
@@ -354,7 +356,7 @@ def _resume(s: SessionState, e: Resume, w: World) -> Transition:
         if s.pause is not None and s.pause.reason is PauseReason.RESUMING:
             return Transition(s, refused="the resume is already reading the last boot")
         resuming = replace(s, pause=Pause(PauseReason.RESUMING, "reading what the last boot left"))
-        return Transition(resuming, (ReadCrashEvidence(e.session_id),))
+        return Transition(resuming, (ReadCrashEvidence(e.session_id, e.child_id),))
     return _resume_stored(s, e, w)
 
 
@@ -412,7 +414,7 @@ def _resume_stored(s: SessionState, e: Resume, w: World) -> Transition:
     if refusal is not None:
         return Transition(s, refused=refusal)
     resumed = replace(reconstruct(st), next_token=s.next_token)
-    return Transition(resumed, (ReadCrashEvidence(e.session_id),))
+    return Transition(resumed, (ReadCrashEvidence(e.session_id, e.child_id),))
 
 
 def _reengage(s: SessionState, e: Resume, w: World) -> Transition:
@@ -439,7 +441,7 @@ def _reengage(s: SessionState, e: Resume, w: World) -> Transition:
             said.append(f"core {rec.core} at {ground} (proven)")
     reengaged = replace(resumed, cores=tuple(cores))
     notice = Announce("reengaged", f"session {st.session_id} re-engaged on proven ground: " + ", ".join(said))
-    return Transition(reengaged, (notice, ReadCrashEvidence(e.session_id)))
+    return Transition(reengaged, (notice, ReadCrashEvidence(e.session_id, e.child_id)))
 
 
 def _setup_choice_problem(s: SessionState, w: World) -> str | None:
@@ -464,7 +466,8 @@ def _superseded(s: SessionState) -> Stored:
     return replace(stored(s), status="superseded")
 
 
-REENTRY = "; it re-enters the all-core stages from steady with the margin"
+REENTRY = "it re-enters the all-core stages from steady with the margin"
+FINAL_PASS = "every core is tested alone on the new setup before the session completes"
 
 
 def _continue_on_setup(s: SessionState, e: ContinueOnSetup, w: World) -> Transition:
@@ -472,30 +475,40 @@ def _continue_on_setup(s: SessionState, e: ContinueOnSetup, w: World) -> Transit
     if problem is not None:
         return Transition(s, refused=problem)
     changed = "; ".join(filter(None, (_setup_changes(s.setup, w.setup), _held_base_changes(s, w.bios_co))))
+    said = f"session {e.child_id} continues session {s.session_id} under a new setup: {changed}"
+    return _carry_on(s, e.child_id, w.setup, w.bios_co, said)
+
+
+def _carry_on(
+    s: SessionState,
+    child_id: int,
+    setup: tuple[tuple[str, str], ...],
+    base_co: tuple[tuple[int, int | None], ...],
+    said: str,
+    noted: tuple[Announce, ...] = (),
+) -> Transition:
     token = s.next_token
-    child = _reentered(
+    entered = _reentered(
         replace(
             s,
             lifecycle=Lifecycle.RUNNING,
-            session_id=e.child_id,
-            setup=w.setup,
-            base_co=w.bios_co,
+            session_id=child_id,
+            setup=setup,
+            base_co=base_co,
             pause=None,
             slot=Waiting(token, 0.0),
             streaks=Streaks(),
             next_token=token + 1,  # equivalent-mutant: tokens only need to rise, nothing reads their step
         )
     )
+    flow = entered.flow
+    if flow.live1 is not None and flow.live1.back is Stage.FINALIZE:
+        flow = replace(flow, live1=Live1(back=Stage.FINALIZE))
+    child = replace(entered, flow=replace(flow, carried=True))
+    retest = REENTRY if entered.flow is not s.flow else f"it goes on in {flow.stage.value}"
     effects: list = [Supersede(_superseded(s), stored(child), "continue"), ClearStockMarker()]
     effects += [WriteCO(core, value) for core, value in s.baseline]
-    effects += [
-        Announce(
-            "continued",
-            f"session {e.child_id} continues session {s.session_id} under a new setup: {changed}"
-            + (REENTRY if child.flow is not s.flow else ""),
-        ),
-        Schedule(token, 0.0),
-    ]
+    effects += [Announce("continued", f"{said}; {retest}, and {FINAL_PASS}"), *noted, Schedule(token, 0.0)]
     return Transition(child, tuple(effects))
 
 
@@ -611,7 +624,8 @@ def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transiti
         unread = Announce(
             "boot_end_unread", f"the last boot's end could not be read, so it is treated as a crash: {e.end_unread}"
         )
-        result = replace(result, effects=(unread, *result.effects))
+        stored_first = 1 if isinstance(result.effects[0], Supersede) else 0
+        result = replace(result, effects=(*result.effects[:stored_first], unread, *result.effects[stored_first:]))
     if e.kernel_problem is None:
         return result
     note = Announce(
@@ -673,7 +687,13 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
     if len(after.incidents) > len(s.incidents) and len(after.incidents) >= INCIDENT_LIMIT:
         return _enter_pause(after, PauseReason.INCIDENTS, _incidents_text(after.incidents))
     changed = _setup_changes(after.setup, w.setup)
-    if changed:
+    was, now = dict(after.setup).get(KERNEL, "absent"), dict(w.setup).get(KERNEL, "absent")
+    kernel_only = (
+        e.child_id is not None
+        and _differing(_verdict_part(after.setup), _verdict_part(w.setup)) == [KERNEL]
+        and not any(word in kernel for kernel in (was, now) for word in KERNEL_UNREAD)
+    )
+    if changed and not kernel_only:
         return _enter_pause(
             after,
             PauseReason.SETUP_CHANGED,
@@ -685,6 +705,12 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
     knobs = _knob_problem(after, e, w)
     if knobs is not None:
         return _enter_pause(after, *knobs)
+    if kernel_only:
+        said = (
+            f"the kernel changed ({was} to {now}): "
+            f"session {e.child_id} continues session {s.session_id} under it by itself"
+        )
+        return _carry_on(after, e.child_id, w.setup, e.co_now, said, _noted(after.setup, w.setup))
     token = after.next_token
     noted = tuple(item for item in w.setup if item[0] in RECORDED_ONLY)
     running = replace(
@@ -878,7 +904,7 @@ def _abort(s: SessionState) -> Transition:
         return Transition(s, refused="nothing to abort")
     s = _clear_in_test(_keep_pick(s))
     profile = s.flow.validating if s.flow is not None else None
-    if profile is not None and tuple((r.core, r.value) for r in s.cores) == profile:
+    if profile is not None and not s.flow.carried and tuple((r.core, r.value) for r in s.cores) == profile:
         effects = _stop_effects(s, profile, journal=True)
         done = replace(s, lifecycle=Lifecycle.COMPLETED, flow=None, slot=None, pause=None, streaks=Streaks())
         effects += [
@@ -975,7 +1001,7 @@ def _end_class(s: SessionState, w: World) -> Transition:
         two = replace(
             s,
             cores=tuple(search.begin_2t(r) for r in s.cores),
-            flow=Flow(Stage.SEARCH, Klass.T2, last_core=flow.last_core),
+            flow=Flow(Stage.SEARCH, Klass.T2, last_core=flow.last_core, carried=flow.carried),
         )
         return _search_next(two, w, None)
     entered = _enter_live1(s, w)
@@ -988,7 +1014,12 @@ def _end_class(s: SessionState, w: World) -> Transition:
 
 def _enter_live1(s: SessionState, w: World) -> Transition:
     flow = Flow(
-        Stage.LIVE1, last_core=s.flow.last_core, live1=Live1(), allcore=s.flow.allcore, validating=s.flow.validating
+        Stage.LIVE1,
+        last_core=s.flow.last_core,
+        live1=Live1(),
+        allcore=s.flow.allcore,
+        validating=s.flow.validating,
+        carried=s.flow.carried,
     )
     return _live1_next(replace(s, flow=flow), w, None)
 
@@ -1044,7 +1075,8 @@ def _live1_next(s: SessionState, w: World, picked: int | None) -> Transition:
         core = live.requeue[0]
         vector = tuple((r.core, r.value) for r in s.cores)
     elif live.back is not None:
-        return _next(replace(s, flow=replace(flow, stage=live.back, live1=None)), w, None)
+        carried = flow.carried and live.back is not Stage.FINALIZE
+        return _next(replace(s, flow=replace(flow, stage=live.back, live1=None, carried=carried)), w, None)
     else:
         return _end_live1(s, w)
     if picked is None:
@@ -1371,12 +1403,16 @@ def _noted(recorded: tuple[tuple[str, str], ...], now: tuple[tuple[str, str], ..
     )
 
 
+def _differing(recorded: tuple[tuple[str, str], ...], now: tuple[tuple[str, str], ...]) -> list[str]:
+    was, found = dict(recorded), dict(now)
+    return [name for name in sorted(was.keys() | found.keys()) if was.get(name) != found.get(name)]
+
+
 def _changes(recorded: tuple[tuple[str, str], ...], now: tuple[tuple[str, str], ...]) -> str:
     was, found = dict(recorded), dict(now)
     return "; ".join(
         f"{name} was {was.get(name, 'absent')}, is now {found.get(name, 'absent')}"
-        for name in sorted(was.keys() | found.keys())
-        if was.get(name) != found.get(name)
+        for name in _differing(recorded, now)
     )
 
 
@@ -1433,6 +1469,9 @@ def _finalize(s: SessionState, w: World) -> Transition:
     flow = s.flow
     if flow.dirty:
         return _enter_live1(replace(s, flow=replace(flow, dirty=False)), w)
+    if flow.carried:
+        final = replace(flow, stage=Stage.LIVE1, live1=Live1(back=Stage.FINALIZE))
+        return _live1_next(replace(s, flow=final), w, None)
     if not flow.applied:
         token = s.next_token
         applied = replace(s, flow=replace(flow, applied=True), slot=Waiting(token, 0.0), next_token=token + 1)

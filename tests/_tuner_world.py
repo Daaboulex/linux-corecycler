@@ -293,7 +293,7 @@ class Fake:
                 if not proves or rep.skipped or rep.unblamed_corrected:
                     raise Broken(f"values marked survived after a report that proves nothing: {rep}")
                 self.mark_survived(set(exclude))
-            case ReadCrashEvidence():
+            case ReadCrashEvidence(child_id=child_id):
                 dirty = self.stored_boot != self.boot
                 evidence, shared = self.crash_note if dirty else ((), False)
                 self.crash_note = ((), False)
@@ -314,6 +314,7 @@ class Fake:
                     else tuple(sorted({row.core_id: row.value for row in self.journal if row.confirmed}.items())),
                     marked_now=self.marker_boot == self.boot,
                     context=self.crash_context(died),
+                    child_id=child_id,
                 )
             case WriteStockMarker():
                 self.marker_boot = self.boot

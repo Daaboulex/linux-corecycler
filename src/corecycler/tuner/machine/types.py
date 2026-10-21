@@ -297,6 +297,7 @@ class Flow:
     allcore: AllCore | None = None
     validating: tuple[tuple[int, int], ...] | None = None
     one_off: tuple[Stage, tuple[tuple[int, int], ...]] | None = None
+    carried: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,6 +403,7 @@ class Close:
 class Resume:
     session_id: int
     reengage: bool = False
+    child_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,6 +449,7 @@ class CrashEvidenceRead:
     co_now: tuple[tuple[int, int | None], ...] = ()
     last_written: tuple[tuple[int, int], ...] = ()
     marked_now: bool = False
+    child_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -598,6 +601,7 @@ class MarkSurvived:
 @dataclass(frozen=True, slots=True)
 class ReadCrashEvidence:
     session_id: int
+    child_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

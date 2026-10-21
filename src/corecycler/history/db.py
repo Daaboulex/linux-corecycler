@@ -1466,12 +1466,13 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
             [(session_id, core, value, self._now_iso()) for core, value in sorted(proven.items())],
         )
 
-    def load_machine_session(self, session_id: int) -> tuple[str, str, int | None] | None:
+    def load_machine_session(self, session_id: int) -> tuple[str, str, int | None, str | None] | None:
         row = self.__conn.execute(
-            "SELECT machine_json, boot_id, kernel_read_ns FROM tuner_sessions WHERE id=? AND machine_json IS NOT NULL",
+            "SELECT machine_json, boot_id, kernel_read_ns, origin FROM tuner_sessions"
+            " WHERE id=? AND machine_json IS NOT NULL",
             (session_id,),
         ).fetchone()
-        return None if row is None else (row["machine_json"], row["boot_id"], row["kernel_read_ns"])
+        return None if row is None else (row["machine_json"], row["boot_id"], row["kernel_read_ns"], row["origin"])
 
     def insert_tuner_test(
         self,

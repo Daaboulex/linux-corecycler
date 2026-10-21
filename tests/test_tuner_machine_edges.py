@@ -4,7 +4,7 @@ from dataclasses import fields, replace
 
 import pytest
 
-from corecycler.tuner.machine import search
+from corecycler.tuner.machine import bisect, search
 from corecycler.tuner.machine.session import ALLCORE_LOADS, config_problem, stored, transition
 from corecycler.tuner.machine.types import (
     KNOB_FLOOR,
@@ -47,6 +47,7 @@ from corecycler.tuner.machine.types import (
 from corecycler.tuner.orders import Method
 from tests._tuner_world import (
     Abort,
+    Close,
     Group,
     PauseRequest,
     Resume,
@@ -778,7 +779,10 @@ def test_a_child_continued_from_the_all_core_stages_re_enters_steady_with_the_ma
         for effect in transition(parent, ContinueOnSetup(2), fake.world()).effects
         if type(effect).__name__ == "Announce"
     ]
-    assert said[0].endswith("it re-enters the all-core stages from steady with the margin")
+    assert said[0].endswith(
+        "it re-enters the all-core stages from steady with the margin, "
+        "and every core is tested alone on the new setup before the session completes"
+    )
 
 
 @pytest.mark.req("ALLCORE.continue")
@@ -1437,3 +1441,383 @@ def test_a_session_quarantined_by_three_crashes_runs_again_only_when_reengaged()
         assert fake.progress()
     assert fake.state.lifecycle is Lifecycle.RUNNING
     assert fake.state.resume_streak == 0
+
+
+KERNEL_K1 = (("bios", "A"), ("kernel", "K1"), ("microcode", "M1"))
+KERNEL_K2 = (("bios", "A"), ("kernel", "K2"), ("microcode", "M1"))
+BALANCED = (("platform profile", "balanced"),)
+
+
+def on_kernel_k1(setup=KERNEL_K1):
+    fake = fresh(
+        2,
+        [-3, -2],
+        2,
+        max_offset=-6,
+        k_1t=2,
+        wait_between_cores_s=0.0,
+        hot_seconds=1.0,
+        bisect_seconds=1.0,
+        stage_seconds=(("burst", 1.0), ("warm", 1.0), ("idle", 1.0)),
+        transient_window_s=1.0,
+        soak_seconds=1.0,
+        memory_seconds=1.0,
+    )
+    fake.setup, fake.power = setup, BALANCED
+    start(fake)
+    return fake
+
+
+REACHED = {
+    "steady": lambda f: f.worker is not None and f.worker.spec.stage is Stage.STEADY,
+    "live1 past its first core": lambda f: (
+        f.worker is not None and f.worker.spec.stage is Stage.LIVE1 and f.state.flow.live1.index >= 1
+    ),
+    "memory": lambda f: f.worker is not None and f.worker.spec.stage is Stage.MEMORY,
+    "finalize": lambda f: f.state.lifecycle is Lifecycle.RUNNING and f.state.flow.stage is Stage.FINALIZE,
+}
+
+
+def progress_until(fake, until) -> None:
+    for _ in range(10_000):
+        if until(fake):
+            return
+        assert fake.progress()
+    raise AssertionError(f"not reached within 10000 moves: {fake.state.lifecycle} {fake.state.flow}")
+
+
+def reach(fake, where: str):
+    progress_until(fake, REACHED[where])
+
+
+def continued_by_hand_on_k2(fake):
+    fake.post(Close())
+    fake.setup = KERNEL_K2
+    fake.post(Resume(1))
+    assert (fake.state.session_id, fake.state.pause.reason) == (1, PauseReason.SETUP_CHANGED)
+    fake.post(ContinueOnSetup(2))
+
+
+def ran_until_rest(fake) -> list[tuple[int, Stage, int, int]]:
+    ran, tokens = [], set()
+    for _ in range(10_000):
+        if fake.worker is not None and fake.worker.token not in tokens:
+            tokens.add(fake.worker.token)
+            spec = fake.worker.spec
+            ran.append((fake.state.session_id, spec.stage, spec.core, spec.value))
+        if not fake.progress():
+            return ran
+    raise AssertionError(f"no rest within 10000 moves: {fake.state.lifecycle} {fake.state.flow}")
+
+
+@pytest.mark.req("KERNEL.final")
+@pytest.mark.parametrize("where", sorted(REACHED))
+def test_a_continued_session_tests_every_core_alone_on_the_new_setup_before_it_completes(where):
+    fake = on_kernel_k1()
+    reach(fake, where)
+    continued_by_hand_on_k2(fake)
+    ran = ran_until_rest(fake)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    final = {r.core: r.value for r in fake.state.cores}
+    alone = {
+        core for session, stage, core, value in ran if (session, stage) == (2, Stage.LIVE1) and value == final[core]
+    }
+    assert alone == set(final)
+
+
+@pytest.mark.req("KERNEL.final")
+def test_a_carried_value_that_fails_alone_on_the_new_setup_is_moved_and_proven_again_before_it_completes():
+    fake = on_kernel_k1()
+    reach(fake, "steady")
+    continued_by_hand_on_k2(fake)
+    all_core = dict(fake.edges)
+    fake.edges_hot = fake.edges_transient = fake.edges_memory = all_core
+    fake.edges = {**all_core, 0: -2}
+    ran = ran_until_rest(fake)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert fake.state.core(0).value == -2
+    caught = ran.index((2, Stage.LIVE1, 0, -3))
+    assert any(stage is Stage.STEADY for _, stage, _, _ in ran[caught:])
+
+
+def paused_by_the_owner_on_k1():
+    fake = on_kernel_k1()
+    reach(fake, "steady")
+    fake.post(PauseRequest())
+    assert fake.state.pause.reason is PauseReason.USER
+    return fake
+
+
+@pytest.mark.req("KERNEL.continue")
+def test_a_resume_that_finds_only_the_kernel_changed_continues_under_it_and_supersedes_the_parent():
+    fake = paused_by_the_owner_on_k1()
+    parent = fake.state
+    fake.setup = KERNEL_K2
+    fake.post(Resume(1, child_id=2))
+    child = fake.state
+    assert (child.session_id, child.lifecycle, child.setup) == (2, Lifecycle.RUNNING, KERNEL_K2)
+    assert (child.cores, child.flow.allcore.floors) == (parent.cores, parent.flow.allcore.floors)
+    assert (fake.superseded, fake.db.session_id) == ({1}, 2)
+    [said] = [line for line in fake.log if line.startswith("continued: ")]
+    assert said.startswith(
+        "continued: the kernel changed (K1 to K2): session 2 continues session 1 under it by itself; "
+    )
+    assert "it re-enters the all-core stages from steady with the margin" in said
+    run_to_rest(fake, 10_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+
+
+@pytest.mark.req("KERNEL.pause")
+@pytest.mark.parametrize(
+    ("setup", "power", "child_id"),
+    [
+        ((("bios", "B"), ("kernel", "K2"), ("microcode", "M1")), BALANCED, 2),
+        ((("bios", "A"), ("kernel", "K1"), ("microcode", "M2")), BALANCED, 2),
+        (KERNEL_K2, (("platform profile", "power-saver"),), 2),
+        (KERNEL_K2, BALANCED, None),
+    ],
+    ids=["kernel and bios", "microcode only", "kernel and power", "kernel without a child id"],
+)
+def test_any_other_change_with_or_without_the_kernel_still_pauses_as_setup_changed(setup, power, child_id):
+    fake = paused_by_the_owner_on_k1()
+    fake.setup, fake.power = setup, power
+    fake.post(Resume(1, child_id=child_id))
+    assert (fake.state.session_id, fake.state.lifecycle, fake.state.pause.reason) == (
+        1,
+        Lifecycle.PAUSED,
+        PauseReason.SETUP_CHANGED,
+    )
+    assert (fake.superseded, fake.db.session_id) == (set(), 1)
+
+
+@pytest.mark.req("KERNEL.boot")
+def test_after_a_crash_the_dead_boot_is_attributed_before_the_session_continues_on_the_new_kernel():
+    fake = on_kernel_k1()
+    while fake.worker is None:
+        assert fake.progress()
+    tested = fake.worker.spec.core
+    fake.crash()
+    fake.setup = KERNEL_K2
+    resuming = transition(SessionState(), Resume(1, child_id=2), fake.world()).state
+    read = CrashEvidenceRead(
+        dirty_end=True,
+        same_boot=False,
+        was_running=True,
+        end_unread="journalctl -b exited 1",
+        co_now=((0, 0), (1, 0)),
+        child_id=2,
+    )
+    result = transition(resuming, read, fake.world())
+    supersede, unread = result.effects[:2]
+    assert isinstance(supersede, Supersede)
+    assert (supersede.parent.session_id, supersede.child.session_id, supersede.origin) == (1, 2, "continue")
+    convicted = [next(r for r in st.cores if r.core == tested) for st in (supersede.parent, supersede.child)]
+    assert [r.crash_count for r in convicted] == [1, 1]
+    assert unread.kind == "boot_end_unread"
+    assert result.state.session_id == 2
+    paused = transition(resuming, replace(read, child_id=None), fake.world())
+    assert (paused.state.pause.reason, paused.effects[0]) == (PauseReason.SETUP_CHANGED, unread)
+
+
+ABORTED_WHERE = {
+    "at once": lambda f: True,
+    "in its final pass": lambda f: (
+        f.worker is not None and f.state.flow.live1 is not None and f.state.flow.live1.back is Stage.FINALIZE
+    ),
+    "after its final pass": lambda f: f.state.flow.stage is Stage.FINALIZE and f.state.flow.applied,
+}
+
+
+@pytest.mark.req("KERNEL.final")
+@pytest.mark.parametrize("how", ["by hand", "by itself"])
+@pytest.mark.parametrize(
+    ("where", "status"),
+    [("at once", "aborted"), ("in its final pass", "aborted"), ("after its final pass", "completed")],
+)
+def test_a_validation_continued_onto_a_new_setup_stays_completed_on_abort_only_once_its_final_pass_ended(
+    how, where, status
+):
+    fake = on_kernel_k1()
+    run_to_rest(fake, 10_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    fake.setup = KERNEL_K2
+    fake.post(ValidateProfile(1))
+    assert fake.state.pause.reason is PauseReason.SETUP_CHANGED
+    fake.post(Resume(1, child_id=2) if how == "by itself" else ContinueOnSetup(2))
+    assert (fake.state.session_id, fake.state.lifecycle) == (2, Lifecycle.RUNNING)
+    progress_until(fake, ABORTED_WHERE[where])
+    fake.post(Abort())
+    assert (fake.db.session_id, fake.db.status) == (2, status)
+
+
+@pytest.mark.req("KERNEL.final")
+@pytest.mark.parametrize("memory_fails", [False, True])
+def test_a_session_never_continued_runs_no_final_pass(memory_fails):
+    fake = on_kernel_k1()
+    if memory_fails:
+        fake.edges_memory = {0: -2, 1: -1}
+    backs = set()
+    for _ in range(10_000):
+        if fake.worker is not None and fake.state.flow.live1 is not None:
+            backs.add(fake.state.flow.live1.back)
+        if not fake.progress():
+            break
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert Stage.FINALIZE not in backs
+    assert (Stage.MEMORY in backs) is memory_fails
+
+
+KERNEL_K3 = (("bios", "A"), ("kernel", "K3"), ("microcode", "M1"))
+BIOS_B_ON_K2 = (("bios", "B"), ("kernel", "K2"), ("microcode", "M1"))
+
+
+def in_the_final_pass_past_its_first_core(f) -> bool:
+    flow = f.state.flow
+    return (
+        f.worker is not None
+        and flow is not None
+        and flow.live1 is not None
+        and flow.live1.back is Stage.FINALIZE
+        and flow.live1.index >= 1
+    )
+
+
+@pytest.mark.req("KERNEL.final")
+@pytest.mark.parametrize("how", ["by hand", "by itself"])
+def test_a_session_continued_again_in_its_final_pass_tests_every_core_alone_on_the_newest_setup(how):
+    fake = on_kernel_k1()
+    reach(fake, "steady")
+    fake.post(Close())
+    fake.setup = KERNEL_K2
+    fake.post(Resume(1, child_id=2))
+    progress_until(fake, in_the_final_pass_past_its_first_core)
+    fake.post(Close())
+    if how == "by itself":
+        fake.setup = KERNEL_K3
+        fake.post(Resume(2, child_id=3))
+    else:
+        fake.setup = BIOS_B_ON_K2
+        fake.post(Resume(2))
+        fake.post(ContinueOnSetup(3))
+    assert (fake.state.session_id, fake.state.lifecycle) == (3, Lifecycle.RUNNING)
+    ran = ran_until_rest(fake)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    final = {r.core: r.value for r in fake.state.cores}
+    alone = {
+        core for session, stage, core, value in ran if (session, stage) == (3, Stage.LIVE1) and value == final[core]
+    }
+    assert alone == set(final)
+
+
+@pytest.mark.req("KERNEL.pause")
+@pytest.mark.parametrize(
+    ("was", "now"),
+    [
+        ("7.2.11 build abc", "7.2.11 build unreadable: Permission denied"),
+        ("7.2.11 build unreadable: Permission denied", "7.2.11 build abc"),
+        ("7.2.11 build abc", "7.2.11 build id absent"),
+        (None, "7.2.11 build abc"),
+    ],
+    ids=["unreadable now", "unreadable then", "no build id now", "no kernel recorded"],
+)
+def test_a_kernel_change_that_cannot_be_read_in_full_pauses_instead_of_continuing(was, now):
+    recorded = (("bios", "A"), ("microcode", "M1"), *((("kernel", was),) if was is not None else ()))
+    fake = on_kernel_k1(tuple(sorted(recorded)))
+    reach(fake, "steady")
+    fake.post(PauseRequest())
+    fake.setup = (("bios", "A"), ("kernel", now), ("microcode", "M1"))
+    fake.post(Resume(1, child_id=2))
+    assert (fake.state.session_id, fake.state.lifecycle, fake.state.pause.reason) == (
+        1,
+        Lifecycle.PAUSED,
+        PauseReason.SETUP_CHANGED,
+    )
+    assert fake.superseded == set()
+
+
+def four_cores_in_their_final_pass_on_k2():
+    fake = fresh(
+        4,
+        [-3, -3, -2, -2],
+        2,
+        max_offset=-6,
+        k_1t=2,
+        wait_between_cores_s=0.0,
+        hot_seconds=1.0,
+        bisect_seconds=1.0,
+        stage_seconds=(("burst", 1.0), ("warm", 1.0), ("idle", 1.0)),
+        transient_window_s=1.0,
+        soak_seconds=1.0,
+        memory_seconds=1.0,
+    )
+    fake.setup, fake.power = KERNEL_K1, BALANCED
+    start(fake)
+    reach(fake, "steady")
+    fake.post(Close())
+    fake.setup = KERNEL_K2
+    fake.post(Resume(1, child_id=2))
+    return fake
+
+
+def bisecting_a_pair(f) -> bool:
+    return (
+        f.worker is not None
+        and f.worker.spec.stage is Stage.BISECT
+        and len(bisect.current_group(f.state.flow.bisect)) == 2
+    )
+
+
+@pytest.mark.req("KERNEL.final")
+@pytest.mark.parametrize("next_boot", ["the same kernel", "a new kernel"])
+def test_a_crash_bisection_begun_in_the_final_pass_is_kept_across_a_continue_and_moves_the_group(next_boot):
+    fake = four_cores_in_their_final_pass_on_k2()
+    progress_until(
+        fake,
+        lambda f: f.worker is not None and f.state.flow.live1 is not None and f.state.flow.live1.back is Stage.FINALIZE,
+    )
+    at_the_crash = {r.core: r.value for r in fake.state.cores}
+    fake.crash()
+    fake.post(Resume(2))
+    progress_until(fake, bisecting_a_pair)
+    group = bisect.current_group(fake.state.flow.bisect)
+    fake.crash()
+    if next_boot == "a new kernel":
+        fake.setup = KERNEL_K3
+        fake.post(Resume(2, child_id=3))
+    else:
+        fake.post(Resume(2))
+    run_to_rest(fake, 20_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert [fake.state.core(core).value > at_the_crash[core] for core in group] == [True] * len(group)
+
+
+@pytest.mark.req("KERNEL.final")
+@pytest.mark.parametrize("left", ["by a crash in a pair", "closed"])
+def test_a_child_continued_in_a_crash_bisection_of_the_final_pass_tests_every_core_alone(left):
+    fake = four_cores_in_their_final_pass_on_k2()
+    progress_until(
+        fake,
+        lambda f: (
+            f.worker is not None
+            and f.state.flow.live1 is not None
+            and f.state.flow.live1.back is Stage.FINALIZE
+            and f.state.flow.live1.index >= 2
+        ),
+    )
+    fake.crash()
+    fake.post(Resume(2))
+    progress_until(fake, bisecting_a_pair)
+    if left == "closed":
+        fake.post(Close())
+    else:
+        fake.crash()
+    fake.setup = KERNEL_K3
+    fake.post(Resume(2, child_id=3))
+    assert fake.state.session_id == 3
+    ran = ran_until_rest(fake)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    final = {r.core: r.value for r in fake.state.cores}
+    alone = {
+        core for session, stage, core, value in ran if (session, stage) == (3, Stage.LIVE1) and value == final[core]
+    }
+    assert alone == set(final)

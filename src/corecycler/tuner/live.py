@@ -264,7 +264,7 @@ def read_stored(db: HistoryDB, session_id: int) -> Stored:
     row = db.load_machine_session(session_id)
     if row is None:
         raise ValueError(f"session {session_id} is not stored")
-    return replace(stored_from_json(json.loads(row[0])), session_id=session_id)
+    return replace(stored_from_json(json.loads(row[0]), continued=row[3] == "continue"), session_id=session_id)
 
 
 def _pairs(raw) -> tuple:
@@ -313,7 +313,7 @@ def _one_off_from_json(raw: list | None) -> tuple[Stage, tuple[tuple[int, int], 
     return Stage(stage), _pairs(held)
 
 
-def _flow_from_json(raw: dict | None) -> Flow | None:
+def _flow_from_json(raw: dict | None, continued: bool) -> Flow | None:
     if raw is None:
         return None
     live = raw["live1"]
@@ -332,6 +332,7 @@ def _flow_from_json(raw: dict | None) -> Flow | None:
         allcore=_allcore_from_json(raw["allcore"]),
         validating=None if raw["validating"] is None else _pairs(raw["validating"]),
         one_off=_one_off_from_json(raw.get("one_off")),
+        carried=raw.get("carried", continued),
     )
 
 
@@ -341,7 +342,7 @@ def stored_to_json(st: Stored) -> dict:
     return out
 
 
-def stored_from_json(raw: dict) -> Stored:
+def stored_from_json(raw: dict, *, continued: bool) -> Stored:
     return Stored(
         session_id=raw["session_id"],
         status=raw["status"],
@@ -349,7 +350,7 @@ def stored_from_json(raw: dict) -> Stored:
         seed=raw["seed"],
         baseline=_pairs(raw["baseline"]),
         cores=tuple(CoreRecord(**{**core, "phase": Phase(core["phase"])}) for core in raw["cores"]),
-        flow=_flow_from_json(raw["flow"]),
+        flow=_flow_from_json(raw["flow"], continued),
         resume_streak=raw["resume_streak"],
         incidents=_incidents(raw["incidents"]),
         power=tuple((name, value) for name, value in raw["power"]),
@@ -833,8 +834,8 @@ class LiveRig:
                     self.store.mark_survived(acting.session_id, self.boot, exclude)
                 except sqlite3.Error as exc:
                     return DatabaseFailed(f"the survival mark could not be written: {exc}")
-            case ReadCrashEvidence():
-                return self._crash_evidence(acting)
+            case ReadCrashEvidence(child_id=child_id):
+                return self._crash_evidence(acting, child_id)
             case WriteStockMarker():
                 try:
                     self.store.write_marker(self.boot)
@@ -872,7 +873,7 @@ class LiveRig:
             return DatabaseFailed(f"the test result could not be written: {exc}")
         return None
 
-    def _crash_evidence(self, acting: SessionState) -> CrashEvidenceRead | DatabaseFailed:
+    def _crash_evidence(self, acting: SessionState, child_id: int | None) -> CrashEvidenceRead | DatabaseFailed:
         now = self.boot
         last = self.stored_boot or now
         same = last == now
@@ -910,6 +911,7 @@ class LiveRig:
             if same
             else (),
             marked_now=marker == now,
+            child_id=child_id,
         )
 
     def _core_of_cpu(self) -> dict[int, int]:
@@ -1011,8 +1013,9 @@ class LiveRig:
     def start(self, config: MachineConfig, session_id: int, seed: int, acknowledged: bool) -> None:
         self.post(Start(config, session_id, seed, acknowledged), self.world_for_start())
 
-    def resume(self, session_id: int, reengage: bool = False) -> None:
-        self.post(Resume(session_id, reengage), self.world_for_resume(session_id))
+    def resume(self, session_id: int, reengage: bool = False, carry: bool = False) -> None:
+        child_id = self.store.new_session_id() if carry else None
+        self.post(Resume(session_id, reengage, child_id), self.world_for_resume(session_id))
 
     def continue_on_setup(self) -> None:
         self.post(ContinueOnSetup(self.store.new_session_id()), self.world_for_start())

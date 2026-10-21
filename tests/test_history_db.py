@@ -399,7 +399,7 @@ class TestMachineSessionMethods:
             context_id=None,
         )
         assert machine == old + 1
-        assert db.load_machine_session(machine) == ('{"m": 1}', this_boot(), None)
+        assert db.load_machine_session(machine) == ('{"m": 1}', this_boot(), None, None)
         assert db.load_machine_session(old) is None
         assert [s.id for s in db.list_machine_sessions()] == [machine]
 
@@ -536,9 +536,9 @@ class TestMachineSessionMethods:
         db.save_machine_session(sid, status="running", machine_json="1", boot_id="a", **fields)
         db.set_kernel_read(sid, 5_000)
         db.save_machine_session(sid, status="running", machine_json="2", boot_id="a", **fields)
-        assert db.load_machine_session(sid) == ("2", "a", 5_000)
+        assert db.load_machine_session(sid) == ("2", "a", 5_000, None)
         db.save_machine_session(sid, status="running", machine_json="3", boot_id="b", **fields)
-        assert db.load_machine_session(sid) == ("3", "b", None)
+        assert db.load_machine_session(sid) == ("3", "b", None, None)
 
     def test_delete_context_cascade(self, db):
         ctx_id = db.create_context(TuningContextRecord(bios_version="v1"))
@@ -967,7 +967,7 @@ class TestMergeFrom:
         loaded = dst.load_machine_session(merged)
         samples = dst.tuner_test_samples(tests[0]["id"])
         dst.close()
-        assert loaded == ('{"m": 1}', boot, None)
+        assert loaded == ('{"m": 1}', boot, None, None)
         assert [(t["token"], t["core"], t["value"], t["verdict"], t["seconds_run"]) for t in tests] == [
             (3, 8, -5, "silicon", 12.5)
         ]

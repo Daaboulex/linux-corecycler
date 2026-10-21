@@ -185,9 +185,16 @@ Hard crashes are expected during CO tuning; that is how each core's limit is fou
 - **Quarantine**: three crash-resumes in a row with no test surviving between them put
   every selected core back to 0 and stop the session for good.
 - **Setup changes**: the session records the BIOS, kernel, microcode and app build at
-  Start. A resume or a Validate on a different setup pauses: put the setup back and
-  resume, or **Continue** (carry the proven values into a new session under the new
-  setup) or **Restart** (start over with the same settings).
+  Start. A resume that finds only the kernel changed after a kernel update, at boot, by
+  hand or from the tab, continues by itself as **Continue** does and says so in the
+  session's log; `restart` and `abort` never continue by themselves. A kernel whose build
+  could not be read, then or now, pauses instead. Any other change, alone or with the
+  kernel, and a Validate on a different setup pause: put
+  the setup back and resume, or **Continue** (carry the proven values into a new session
+  under the new setup) or **Restart** (start over with the same settings). A continued
+  session tests again what it carried: from the all-core stages it re-enters them from
+  steady with the margin, and before it completes every core is tested alone at its value
+  on the new setup, where a value that fails moves and is proven again.
 - **Outside writes**: at resume and at the start of each stage every core's CO is read
   back. A value the session did not write pauses it, and so does a CO that cannot be read.
 - **One writer**: the driver holds a lock for its whole run and the Curve-Tuner tab

@@ -967,7 +967,7 @@ def _run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> 
     elif args.validate:
         rig.validate(args.session)
     else:
-        rig.resume(args.session, args.reengage)
+        rig.resume(args.session, args.reengage, carry=args.resume or args.continue_on)
     if rig.refused is not None:
         return EXIT_REFUSED
     if args.abort:

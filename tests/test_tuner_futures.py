@@ -57,6 +57,7 @@ FAULTS = (
     "validate",
     "profile",
     "setup",
+    "kernel",
     "continue",
     "restart",
     "outside",
@@ -109,6 +110,7 @@ def key(fake: Fake) -> tuple:
         fake.died_in,
         fake.power,
         fake.setup,
+        tuple(sorted(fake.edges.items())),
         fake.boot - fake.stored_boot,
         fake.faults.refuse_writes,
         fake.faults.fail_commits,
@@ -155,7 +157,7 @@ def moves(fake: Fake, budget: dict[str, int]) -> list[tuple[str, dict[str, int]]
             continue
         if fault in ("refuse", "dbfail", "hot") and s.lifecycle is not Lifecycle.RUNNING:
             continue
-        if fault == "setup" and s.lifecycle in (Lifecycle.RUNNING, Lifecycle.PAUSING):
+        if fault in ("setup", "kernel") and s.lifecycle in (Lifecycle.RUNNING, Lifecycle.PAUSING):
             continue
         if fault == "outside" and not (
             s.lifecycle is Lifecycle.RUNNING
@@ -184,7 +186,8 @@ def act(fake: Fake, move: str) -> None:
             if fake.temperature is not None and fake.temperature > 90 and fake.timer is not None:
                 fake.temperature = 60.0
         case "resume":
-            fake.post(Resume(fake.db.session_id if fake.db is not None else fake.state.session_id))
+            session = fake.db.session_id if fake.db is not None else fake.state.session_id
+            fake.post(Resume(session, child_id=session + 1))
         case "thermal":
             fake.temperature = 99.0
             fake.deliver(Report(Group.THERMAL, 5.0))
@@ -205,7 +208,16 @@ def act(fake: Fake, move: str) -> None:
         case "profile":
             fake.power = (("platform profile", "power-saver" if fake.power == BALANCED else "balanced"),)
         case "setup":
-            fake.setup = (("bios", "B" if fake.setup == BIOS_A else "A"),)
+            now = dict(fake.setup)
+            fake.setup = tuple(sorted({**now, "bios": "B" if now["bios"] == "A" else "A"}.items()))
+        case "kernel":
+            now = dict(fake.setup)
+            fake.setup = tuple(sorted({**now, "kernel": f"K{int(now.get('kernel', 'K0')[1:]) + 1}"}.items()))
+            fake.edges_hot = fake.edges_hot or fake.edges
+            fake.edges_transient = fake.edges_transient or fake.edges
+            fake.edges_memory = fake.edges_memory or fake.edges
+            deepest = min(fake.edges, key=fake.edges.__getitem__)
+            fake.edges = {**fake.edges, deepest: min(0, fake.edges[deepest] + 1)}
         case "outside":
             core = fake.state.baseline[0][0]
             fake.co[core] = fake.state.config.max_offset - 1
@@ -254,6 +266,7 @@ class Survey:
     leaves: dict[str, int] = field(default_factory=dict)
     deepest: int = 0
     taken: dict[str, int] = field(default_factory=dict)
+    by_itself: int = 0
 
 
 def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
@@ -291,6 +304,8 @@ def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
                 act(child, move)
             except Broken as broken:
                 raise Broken(f"{broken} after {(*path, move)}") from broken
+            if any(line.startswith("continued: the kernel changed") for line in child.log):
+                survey.by_itself += 1
             stack.append((child, after, (*path, move)))
     return survey
 
@@ -326,14 +341,14 @@ def tiny(cores: int, edges: list[int], domains: int = 1, completed: tuple[Stored
         **cfg,
     )
     fake.completed = completed
+    fake.setup = (("bios", "A"), ("kernel", "K1"))
     start(fake, session_id=1 + len(completed))
     return fake
 
 
 BALANCED = (("platform profile", "balanced"),)
-BIOS_A = (("bios", "A"),)
 
-ONE_OF_EACH = {fault: 1 for fault in FAULTS if fault not in ("profile", "setup", "outside", "reengage")}
+ONE_OF_EACH = {fault: 1 for fault in FAULTS if fault not in ("profile", "setup", "kernel", "outside", "reengage")}
 
 
 @pytest.mark.parametrize(
@@ -404,19 +419,30 @@ def test_every_future_of_a_cpu_whose_memory_lanes_fail_reaches_a_rest():
     assert "completed" in survey.leaves
 
 
+@pytest.mark.req("KERNEL.explorer")
 def test_no_future_runs_a_test_on_a_setup_changed_while_the_session_was_away():
-    budget = {"setup": 2, "pause": 2, "crash": 1, "close": 1, "abort": 1, "validate": 1, "total": 3}
+    budget = {"setup": 2, "kernel": 1, "pause": 2, "crash": 1, "close": 1, "abort": 1, "validate": 1, "total": 3}
     survey = explore(tiny(2, [-3, -2], 2), budget, cap=2_000_000)
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
+    assert survey.by_itself > 0
 
 
-@pytest.mark.req("L00.f", "L24.g", "L24.l24b.laws")
+@pytest.mark.req("KERNEL.explorer", "L00.f", "L24.g", "L24.l24b.laws")
 def test_a_session_continued_or_restarted_on_a_new_setup_never_runs_its_parent_again():
-    budget = {"setup": 1, "pause": 1, "crash": 1, "continue": 1, "restart": 1, "total": 3}
+    budget = {"setup": 1, "kernel": 1, "pause": 1, "crash": 1, "continue": 1, "restart": 1, "total": 3}
     survey = explore(tiny(2, [-3, -2], 2), budget, cap=2_000_000)
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
+    assert survey.by_itself > 0
+
+
+@pytest.mark.req("KERNEL.explorer")
+def test_every_future_of_a_session_carried_onto_two_fresh_kernels_reaches_a_rest():
+    survey = explore(tiny(2, [-3, -2], 2), {"kernel": 2, "pause": 2, "total": 4}, cap=2_000_000)
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+    assert survey.by_itself > 0
 
 
 def test_no_future_resumes_round_a_power_state_changed_while_the_session_was_away():
