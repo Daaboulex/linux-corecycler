@@ -2423,6 +2423,61 @@ statement = "Step 3, same boot: in_test cleared with no penalty; with this boot'
 proof = "built"
 
 [[requirement]]
+id = "L18.d.3.once"
+statement = "Same boot: a resume reads this boot's kernel log up to the moment it starts reading and stores that bound with the commit of its attribution, so a later resume in that boot, or the read of that boot after a crash, starts there and one machine check is applied once; within a boot the stored point only moves forward, so a late report of a cut test cannot move it back"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.3.gap"
+statement = "Same boot: before the first test after a resume, the rig reads this boot's kernel log from the resume's point to that moment and the machine judges those records as their own event, committing the new point in the same write; no test carries them"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.3.unread"
+statement = "Same boot: a resume whose read of this boot's kernel log reports a problem leaves the stored point where it was; a failed read before the first test after a resume pauses as kernel_log_unread before any test runs, so the next resume reads those records"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.3.charged"
+statement = "Same boot: a record is charged to the latest value off stock its core held, by the CO journal and the CO reads of every session in that boot with the first read in a boot standing from the boot's start and the moment a database failure sent the session's cores to stock, carried by its stock marker and stored with the next resume's commit, standing as a stock read of each of them, from its log time less the machine's own check interval and the kernel timer's 1 s rounding (300 s when unread) to its log time, and to stock only when the core held stock that whole window; no charge moves the core deeper; when the read has a record to charge, a journal row or CO read of any session in the boot that cannot be read pauses as database naming that session, and a read with none reads neither"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.3.unplaced"
+statement = "Same boot: a record whose window the CO journal and reads cannot place is charged to its core's current value, or, when the session holds that core at stock, named in the event log as not judged because the value it ran at is unknown; the other records read with it are judged as normal, the session runs on and the event log names the record"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.3.outside"
+statement = "Same boot: a record on a core another program wrote while the session was away, or whose CO cannot be read, is charged to its current value and the event log names that cause, except that a record on such a core the session held at stock is named in the event log as not judged, with that cause, unless the CO journal places it at a value other than stock, where it is judged; every other record is judged as normal; then the session pauses as outside_write or smu_read"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.3.batch"
+statement = "Every core with a record in one read is judged before the read pauses; when more than one record pauses, the one pause takes the first one's reason and names every pausing core and each one's cause, and an incidents pause counts every incident the read raised"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.3.core"
+statement = "One read judges each core once, by the one record whose verdict is strongest: one that pauses, then one that counts more incidents, then the one that leaves the core loosest, then the one that leaves the tighter fail bound; the core a same-boot resume fails for the test its database lost is judged by that verdict alone, and a dead boot's core convicted by an uncorrected record by that conviction alone"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.3.repeat"
+statement = "A record charged at or behind its core's fail bound repeats a failure already judged: whatever value the core sits at, the event log names it as not judged, and the core, the flow and the incidents stay as they were"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.3.split"
+statement = "A bounded read of the live boot leaves a record it finds unfinished, and every record stamped at or after that record's first line, to the next read, which starts just before that line and reads each of them once"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.3.session"
+statement = "A kernel log point a resume leaves belongs to its session: a session that continues or restarts it reads nothing from it and stores none of it"
+proof = "built"
+
+[[requirement]]
 id = "L18.d.4.0"
 statement = "A dead boot whose kernel log cannot be read is attributed without its records and named in a session event and the announcement"
 proof = "built"

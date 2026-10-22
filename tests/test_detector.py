@@ -699,6 +699,77 @@ class TestHarvestAfter:
         read = harvest_after(dead, HarvestFrom(mono_ns=bound, realtime_us=None), next_boot=False)
         assert (_cpus(read.dead_boot), read.problem) == ([2], None)
 
+    def test_a_boot_is_read_up_to_and_including_its_upper_bound(self, machine):
+        for line in core_bank_record(1):
+            machine.kernel(line, mono_s=10)
+        for line in core_bank_record(2):
+            machine.kernel(line, mono_s=11)
+        read = harvest_after(
+            machine.boot_id,
+            HarvestFrom(mono_ns=0, realtime_us=None),
+            next_boot=False,
+            through_mono_ns=10_000_000_000,
+        )
+        assert (_cpus(read.dead_boot), read.problem) == ([1], None)
+
+    def test_a_record_the_upper_bound_splits_is_read_whole_by_the_read_its_first_line_falls_in(self, machine):
+        lines = core_bank_record(1)
+        machine.kernel(lines[0], mono_s=10.000)
+        machine.kernel(lines[1], mono_s=10.001)
+        for line in lines[2:]:
+            machine.kernel(line, mono_s=10.003)
+        bound = 10_002_000_000
+        first = harvest_after(
+            machine.boot_id, HarvestFrom(mono_ns=0, realtime_us=None), next_boot=False, through_mono_ns=bound
+        )
+        second = harvest_after(machine.boot_id, HarvestFrom(mono_ns=bound, realtime_us=None), next_boot=False)
+        events = (*first.dead_boot, *second.dead_boot)
+        assert [type(event) for event in events] == [CoreMachineCheck]
+        assert (_cpus(first.dead_boot), first.problem, second.problem) == ([1], None, None)
+
+    @pytest.mark.req("L18.d.3.split")
+    @pytest.mark.parametrize("bound", [10_000_000_000, 10_000_500_000])
+    def test_a_record_a_bounded_read_finds_unfinished_is_left_whole_to_the_read_from_just_before_its_opener(
+        self, machine, bound
+    ):
+        lines = core_bank_record(1)
+        for line in lines[:2]:
+            machine.kernel(line, mono_s=10.000)
+        machine.kernel(lines[2], mono_s=10.0004)
+        first = harvest_after(
+            machine.boot_id, HarvestFrom(mono_ns=0, realtime_us=None), next_boot=False, through_mono_ns=bound
+        )
+        for line in lines[3:]:
+            machine.kernel(line, mono_s=10.001)
+        held = HarvestFrom(mono_ns=first.unfinished_from_ns - 1, realtime_us=None)
+        second = harvest_after(machine.boot_id, held, next_boot=False)
+        assert (first.dead_boot, first.unfinished_from_ns) == ((), 10_000_000_000)
+        assert ([type(event) for event in second.dead_boot], second.unfinished_from_ns) == ([CoreMachineCheck], None)
+
+    @pytest.mark.req("L18.d.3.split")
+    def test_a_whole_record_sharing_its_stamp_with_an_unfinished_one_is_read_once(self, machine):
+        whole, unfinished = core_bank_record(1), core_bank_record(2)
+        for line in (*whole, *unfinished[:2]):
+            machine.kernel(line, mono_s=10.000)
+        first = harvest_after(
+            machine.boot_id, HarvestFrom(mono_ns=0, realtime_us=None), next_boot=False, through_mono_ns=10_000_300_000
+        )
+        for line in unfinished[2:]:
+            machine.kernel(line, mono_s=10.001)
+        held = HarvestFrom(mono_ns=first.unfinished_from_ns - 1, realtime_us=None)
+        second = harvest_after(machine.boot_id, held, next_boot=False)
+        assert (_cpus(first.dead_boot), _cpus(second.dead_boot)) == ([], [1, 2])
+
+    def test_a_record_one_nanosecond_past_the_upper_bound_after_120_days_up_is_left_to_the_next_read(self, machine):
+        for line in core_bank_record(1):
+            machine.kernel(line, mono_s=10368000.000015)
+        bound = 10_368_000_000_014_999
+        first = harvest_after(
+            machine.boot_id, HarvestFrom(mono_ns=0, realtime_us=None), next_boot=False, through_mono_ns=bound
+        )
+        second = harvest_after(machine.boot_id, HarvestFrom(mono_ns=bound, realtime_us=None), next_boot=False)
+        assert (_cpus(first.dead_boot), _cpus(second.dead_boot)) == ([], [1])
+
     def test_without_a_monotonic_bound_the_dead_boot_is_read_after_its_wall_clock_bound(self, machine):
         dead = machine.boot_id
         machine.kernel_now(core_bank_record(1))
@@ -1008,8 +1079,8 @@ def test_a_run_raises_a_slow_machine_check_poll_to_5_s_and_puts_it_back_even_whe
     path = tmp_path / "check_interval"
     path.write_text("300\n")
     said = []
-    with pytest.raises(RuntimeError), detector_mod.fast_mce_poll(said.append, path):
-        assert path.read_text() == "5\n"
+    with pytest.raises(RuntimeError), detector_mod.fast_mce_poll(said.append, path) as own:
+        assert (path.read_text(), own) == ("5\n", 300)
         assert detector_mod.mce_poll_problem(path) is None
         raise RuntimeError("the run failed")
     assert path.read_text() == "300\n"
@@ -1020,8 +1091,8 @@ def test_a_machine_check_poll_already_at_5_s_is_left_alone(tmp_path):
     path = tmp_path / "check_interval"
     path.write_text("5\n")
     said = []
-    with detector_mod.fast_mce_poll(said.append, path):
-        assert path.read_text() == "5\n"
+    with detector_mod.fast_mce_poll(said.append, path) as own:
+        assert (path.read_text(), own) == ("5\n", 5)
     assert (path.read_text(), said) == ("5\n", [])
 
 
@@ -1053,8 +1124,8 @@ def test_an_unreadable_machine_check_poll_is_said_and_not_written(tmp_path, text
     if text is not None:
         path.write_text(text)
     said = []
-    with detector_mod.fast_mce_poll(said.append, path):
-        pass
+    with detector_mod.fast_mce_poll(said.append, path) as own:
+        assert own == 300
     assert len(said) == 1
     assert said[0].startswith(f"machine-check poll not raised: {path} unreadable: ")
     assert path.exists() is (text is not None)

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from corecycler.config.paths import atomic_write, hand_back
 from corecycler.engine import detector as kernel
+from corecycler.history.db import CoRead, CorruptSessionError
 from corecycler.monitor.frequency import PowerState, cpu_ranges
 from corecycler.tuner import telemetry
 from corecycler.tuner.machine.session import transition
@@ -39,6 +40,7 @@ from corecycler.tuner.machine.types import (
     Group,
     Incident,
     InternalError,
+    KernelLogRead,
     Klass,
     Lifecycle,
     Live1,
@@ -103,7 +105,9 @@ class Hardware(Protocol):
         self, cpus_of: tuple[tuple[int, tuple[int, ...]], ...], domain_of: tuple[tuple[int, int | None], ...]
     ) -> tuple[tuple[str, str], ...]: ...
     def asleep_seconds(self) -> float: ...
-    def harvest(self, boot_id: str, since_ns: int | None, next_boot: bool) -> kernel.JournalHarvest: ...
+    def harvest(
+        self, boot_id: str, since_ns: int | None, next_boot: bool, through_ns: int | None
+    ) -> kernel.JournalHarvest: ...
 
 
 class Runner(Protocol):
@@ -435,7 +439,13 @@ class Store:
                 return tuple(found), f"session {session.id} could not be read: {exc!r}"
         return tuple(found), None
 
-    def save(self, st: Stored, boot: str) -> None:
+    def save(
+        self,
+        st: Stored,
+        boot: str,
+        kernel_read_ns: int | None = None,
+        co_reads: tuple[tuple[int, tuple[tuple[int, int | None], ...]], ...] = (),
+    ) -> None:
         tightened = {
             (st.session_id, r.core): r.fb
             for r in st.cores
@@ -443,6 +453,10 @@ class Store:
         }
         with self.db.transaction():
             self._write(st, boot, tightened)
+            if kernel_read_ns is not None:
+                self.db.set_kernel_read(st.session_id, kernel_read_ns)
+            for mono_ns, reads in co_reads:
+                self.db.insert_co_reads(st.session_id, boot, mono_ns, reads)
         self.retracted.update(tightened)
 
     def supersede(self, parent: Stored, child: Stored, origin: str, boot: str) -> None:
@@ -541,6 +555,13 @@ class Store:
     def journal_rows(self, session_id: int, boot: str) -> list[JournalRow]:
         return self.db.journal_rows(session_id, boot)
 
+    def observed(self, boot: str) -> list[JournalRow | CoRead]:
+        reads = sorted(self.db.co_reads(boot), key=lambda read: read.mono_ns)
+        since_boot = {read.core_id: replace(read, mono_ns=0) for read in reversed(reads)}
+        stock = self.stock_marked(boot)
+        marked = () if stock is None else tuple(CoRead(core, value, stock[0]) for core, value in stock[1])
+        return [*self.db.boot_co_journal(boot), *reads, *since_boot.values(), *marked]
+
     def taken_over(self, session_id: int, boot: str) -> bool:
         return self.db.journal_taken_over(session_id, boot) is not None
 
@@ -607,12 +628,24 @@ class Store:
     def journal_confirm(self, row: int) -> None:
         self.db.journal_confirm(row)
 
-    def write_marker(self, boot: str) -> None:
-        atomic_write(self.root / "stock-marker.json", json.dumps({"boot": boot}))
+    def write_marker(self, boot: str, mono_ns: int, cores: tuple[int, ...]) -> None:
+        atomic_write(
+            self.root / "stock-marker.json", json.dumps({"boot": boot, "mono_ns": mono_ns, "cores": list(cores)})
+        )
+
+    def _marker(self) -> dict | None:
+        path = self.root / "stock-marker.json"
+        return json.loads(path.read_text()) if path.exists() else None
 
     def marker_boot(self) -> str | None:
-        path = self.root / "stock-marker.json"
-        return json.loads(path.read_text())["boot"] if path.exists() else None
+        marker = self._marker()
+        return None if marker is None else marker["boot"]
+
+    def stock_marked(self, boot: str) -> tuple[int, tuple[tuple[int, int], ...]] | None:
+        marker = self._marker()
+        if marker is None or marker["boot"] != boot or "mono_ns" not in marker:
+            return None
+        return marker["mono_ns"], tuple((core, 0) for core in marker["cores"])
 
     def clear_marker(self) -> None:
         (self.root / "stock-marker.json").unlink(missing_ok=True)
@@ -651,6 +684,19 @@ def _unproven(rows: list[JournalRow]) -> tuple[int, ...]:
     return tuple(sorted(crash_suspects(resident_at_death(rows), -1)))
 
 
+def charged_value(rows: list[JournalRow | CoRead], core: int, logged_ns: int, window_s: int) -> int | None:
+    start = logged_ns - window_s * 1_000_000_000
+    written = sorted(
+        (row for row in rows if row.core_id == core and row.mono_ns is not None and row.mono_ns <= logged_ns),
+        key=lambda row: row.mono_ns,
+    )
+    covered = sum(row.mono_ns <= start for row in written)
+    held = written[covered - 1 :]
+    if not covered or not all(row.confirmed for row in held):
+        return None
+    return next((row.value for row in reversed(held) if row.value != 0), 0)
+
+
 @dataclass(frozen=True, slots=True)
 class Sampled:
     token: int
@@ -676,6 +722,7 @@ class LiveRig:
     tjmax_c: float | None = None
     say: Callable[[str], None] = print
     clock: Callable[[], float] = time.monotonic
+    check_interval_s: int = kernel.MCE_POLL_KERNEL_DEFAULT_S
     state: SessionState = field(init=False, default_factory=SessionState)
     resident: dict[int, int | None] = field(init=False, default_factory=dict)
     timer: tuple[int, float] | None = field(init=False, default=None)
@@ -685,6 +732,18 @@ class LiveRig:
     asleep_at_worker_start: float = field(init=False, default=0.0)
     stored_boot: str | None = field(init=False, default=None)
     stored_read_ns: int | None = field(init=False, default=None)
+    read_to: dict[int, int | None] = field(
+        init=False,  # equivalent-mutant: init only lets a caller pass the points, and no caller does
+        default_factory=dict,
+    )
+    unread_from: dict[int, int | None] = field(
+        init=False,  # equivalent-mutant: init only lets a caller pass the points, and no caller does
+        default_factory=dict,
+    )
+    reads_to: dict[int, tuple[tuple[int, tuple[tuple[int, int | None], ...]], ...]] = field(
+        init=False,  # equivalent-mutant: init only lets a caller pass the reads, and no caller does
+        default_factory=dict,
+    )
     test_row: tuple[int, int, bool] | None = field(init=False, default=None)
     boot_recorded: bool = field(init=False, default=False)
     refused: str | None = field(init=False, default=None)
@@ -828,10 +887,14 @@ class LiveRig:
                         self.worker = None
             case Commit(stored=st, first=first):
                 try:
-                    self.store.save(st, self.boot)
+                    self.store.save(
+                        st, self.boot, self.read_to.get(st.session_id), self.reads_to.get(st.session_id, ())
+                    )
                 except sqlite3.Error as exc:
                     return DatabaseFailed(f"the session could not be written: {exc}", first)
                 self.stored_boot = self.boot
+                self.read_to.pop(st.session_id, None)
+                self.reads_to.pop(st.session_id, None)
             case Supersede(parent=parent, child=child, origin=origin):
                 try:
                     self.store.supersede(parent, child, origin, self.boot)
@@ -867,7 +930,7 @@ class LiveRig:
                 return self._crash_evidence(acting, child_id)
             case WriteStockMarker():
                 try:
-                    self.store.write_marker(self.boot)
+                    self.store.write_marker(self.boot, time.monotonic_ns(), tuple(core for core, _ in acting.baseline))
                 except OSError as exc:
                     self.say(
                         "the stock marker could not be written, so the cores go to stock without it and a resume "
@@ -903,6 +966,7 @@ class LiveRig:
         return None
 
     def _crash_evidence(self, acting: SessionState, child_id: int | None) -> CrashEvidenceRead | DatabaseFailed:
+        self.read_to.clear()
         now = self.boot
         last = self.stored_boot or now
         same = last == now
@@ -920,13 +984,25 @@ class LiveRig:
             if not same:
                 self.store.pack_dead_tail(session, last)
             told = self.store.told(session, "program_fault")
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, CorruptSessionError) as exc:
             return DatabaseFailed(f"the session could not be read back: {exc}")
         stamps = [row.mono_ns for row in rows if row.mono_ns is not None]
         since = self.stored_read_ns if self.stored_read_ns is not None else min(stamps, default=None)
-        harvest = self.hardware.harvest(last, since, not same)
+        through = time.monotonic_ns() if same else None
+        harvest = self.hardware.harvest(last, since, not same, through)
         harvested = (*harvest.dead_boot, *harvest.next_boot)
-        evidence, shared = self._kernel_evidence(harvested)
+        try:
+            observed = self.store.observed(last) if same and self._records(harvested) else None
+        except (sqlite3.Error, CorruptSessionError) as exc:
+            return DatabaseFailed(f"the session could not be read back: {exc}")
+        if same:
+            self.read_to[session] = self.unread_from[session] = (
+                self._read_up_to(harvest, through) if harvest.problem is None else since
+            )
+        evidence, shared = self._kernel_evidence(harvested, observed)
+        co_now = self.co_reads()
+        stock = self.store.stock_marked(now)
+        self.reads_to[session] = (*(() if stock is None else (stock,)), (time.monotonic_ns(), co_now))
         return CrashEvidenceRead(
             dirty_end=dirty,
             end_unread=end.problem if dirty else None,
@@ -939,7 +1015,7 @@ class LiveRig:
             context=context,
             evidence=evidence,
             kernel_problem=harvest.problem,
-            co_now=tuple((core, self.hardware.read_co(core)) for core, _ in self.cpus_of),
+            co_now=co_now,
             last_written=tuple(sorted({row.core_id: row.value for row in rows if row.confirmed}.items()))
             if same
             else (),
@@ -963,12 +1039,22 @@ class LiveRig:
     def _core_of_cpu(self) -> dict[int, int]:
         return {cpu: core for core, cpus in self.cpus_of for cpu in cpus}
 
-    def _kernel_evidence(self, events) -> tuple[tuple[Evidence, ...], bool]:
+    def _kernel_evidence(self, events, rows: list[JournalRow | CoRead] | None) -> tuple[tuple[Evidence, ...], bool]:
         core_of_cpu = self._core_of_cpu()
         evidence = tuple(
-            Evidence(core_of_cpu[e.cpu], e.corrected)
-            for e in events
-            if isinstance(e, kernel.CoreMachineCheck) and e.cpu in core_of_cpu
+            Evidence(
+                core_of_cpu[e.cpu],
+                e.corrected,
+                None
+                if rows is None
+                else charged_value(
+                    rows,
+                    core_of_cpu[e.cpu],
+                    kernel.stamp_ns(e.raw_ts),
+                    self.check_interval_s + kernel.MCE_TIMER_ROUNDING_S,
+                ),
+            )
+            for e in self._records(events)
         )
         shared = any(
             (
@@ -979,6 +1065,30 @@ class LiveRig:
             for e in events
         )
         return evidence, shared
+
+    def _records(self, events) -> list[kernel.CoreMachineCheck]:
+        core_of_cpu = self._core_of_cpu()
+        return [e for e in events if isinstance(e, kernel.CoreMachineCheck) and e.cpu in core_of_cpu]
+
+    @staticmethod
+    def _read_up_to(read: kernel.JournalHarvest, through: int) -> int:
+        return through if read.unfinished_from_ns is None else read.unfinished_from_ns - 1
+
+    def _read_since_resume(self, token: int) -> KernelLogRead | DatabaseFailed:
+        session = self.state.session_id
+        since = self.unread_from.pop(session)
+        through = time.monotonic_ns()
+        read = self.hardware.harvest(self.boot, since, False, through)
+        if read.problem is not None:
+            return KernelLogRead(token, problem=read.problem)
+        try:
+            rows = self.store.observed(self.boot) if self._records(read.dead_boot) else None
+            told = self.store.told(session, "program_fault")
+        except (sqlite3.Error, CorruptSessionError) as exc:
+            return DatabaseFailed(f"the CO journal could not be read back: {exc}")
+        self.read_to[session] = self._read_up_to(read, through)
+        evidence = self._kernel_evidence(read.dead_boot, rows)[0]
+        return KernelLogRead(token, evidence, program_faults=self._untold_faults(read.dead_boot, told))
 
     def _start(self, token: int, spec: TestSpec) -> None:
         load = "" if spec.load is None else f" {spec.load.value}"
@@ -1014,7 +1124,10 @@ class LiveRig:
             if self.timer is not None and self.clock() >= self.timer[1]:
                 token = self.timer[0]
                 self.timer = None
-                self.post(ContinuationDue(token), replace(self.world(), co_now=self.co_reads()))
+                if self.state.session_id in self.unread_from:
+                    self.post(self._read_since_resume(token))
+                else:
+                    self.post(ContinuationDue(token), replace(self.world(), co_now=self.co_reads()))
                 return True
             return False
         if isinstance(event, Sampled):
@@ -1067,7 +1180,9 @@ class LiveRig:
         return s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is not PauseReason.RESUMING
 
     def start(self, config: MachineConfig, session_id: int, seed: int, acknowledged: bool) -> None:
-        self.post(Start(config, session_id, seed, acknowledged), self.world_for_start())
+        world = self.world_for_start()
+        self.reads_to = {session_id: ((time.monotonic_ns(), world.bios_co),)}
+        self.post(Start(config, session_id, seed, acknowledged), world)
 
     def resume(self, session_id: int, reengage: bool = False, carry: bool = False) -> None:
         child_id = self.store.new_session_id() if carry else None

@@ -18,7 +18,7 @@ import pytest
 from corecycler.engine import detector as kernel
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable
-from corecycler.history.db import HistoryDB
+from corecycler.history.db import CoRead, HistoryDB, JournalRow
 from corecycler.monitor.frequency import PowerState
 from corecycler.monitor.hwmon import SensorRead
 from corecycler.tuner import live, live_hw, stages, telemetry
@@ -27,14 +27,18 @@ from corecycler.tuner.live import (
     Identity,
     LiveRig,
     Store,
+    charged_value,
     coverage,
     margins,
     own_peaks,
     stored_from_json,
     stored_to_json,
 )
+from corecycler.tuner.machine.session import _evidence_applied, transition
 from corecycler.tuner.machine.types import (
     Abort,
+    AllCore,
+    Announce,
     Close,
     ContinueOnSetup,
     CrashEvidenceRead,
@@ -44,14 +48,17 @@ from corecycler.tuner.machine.types import (
     Incident,
     InFlight,
     InternalError,
+    KernelLogRead,
     Klass,
     Lifecycle,
     MachineConfig,
     Mode,
+    Pause,
     PauseReason,
     PauseRequest,
     Phase,
     Report,
+    SessionState,
     Stage,
     Stored,
     ValidateProfile,
@@ -109,7 +116,7 @@ class FakeHardware:
         self.facts_asked.append(boot_id)
         return BOOT_FACTS
 
-    def harvest(self, boot_id, since_ns, next_boot):
+    def harvest(self, boot_id, since_ns, next_boot, through_ns):
         self.harvests.append((boot_id, since_ns, next_boot))
         return self.records
 
@@ -236,7 +243,13 @@ def close_databases():
         OPENED.pop().close()
 
 
-def rig(tmp_path: Path, hardware: FakeHardware | None = None, runner=None, db: HistoryDB | None = None) -> LiveRig:
+def rig(
+    tmp_path: Path,
+    hardware: FakeHardware | None = None,
+    runner=None,
+    db: HistoryDB | None = None,
+    check_interval_s: int = kernel.MCE_POLL_KERNEL_DEFAULT_S,
+) -> LiveRig:
     hardware = hardware or FakeHardware()
     return LiveRig(
         hardware=hardware,
@@ -246,7 +259,27 @@ def rig(tmp_path: Path, hardware: FakeHardware | None = None, runner=None, db: H
         domain_of=DOMAINS,
         co_range=(-50, 10),
         say=lambda line: None,
+        check_interval_s=check_interval_s,
     )
+
+
+@dataclass
+class TickingClock:
+    ns: int = 1_000_000_000_000
+
+    def __call__(self) -> int:
+        self.ns += 1_000
+        return self.ns
+
+    def advance(self, seconds: int) -> None:
+        self.ns += seconds * 1_000_000_000
+
+
+@pytest.fixture
+def clock(monkeypatch) -> TickingClock:
+    ticking = TickingClock()
+    monkeypatch.setattr(time, "monotonic_ns", ticking)
+    return ticking
 
 
 def snapshots() -> list:
@@ -435,11 +468,17 @@ def test_the_store_keeps_the_session_in_the_database_and_the_stock_marker_apart(
     assert reopened.load(st.session_id) == ((st, "boot-a", None), None)
     assert reopened.new_session_id() == st.session_id + 1
     assert store.marker_boot() is None
-    store.write_marker("boot-a")
-    assert store.marker_boot() == "boot-a"
+    store.write_marker("boot-a", 5_000, (0, 8))
+    assert (store.marker_boot(), store.stock_marked("boot-a"), store.stock_marked("boot-b")) == (
+        "boot-a",
+        (5_000, ((0, 0), (8, 0))),
+        None,
+    )
     store.clear_marker()
     store.clear_marker()
-    assert store.marker_boot() is None
+    assert (store.marker_boot(), store.stock_marked("boot-a")) == (None, None)
+    (tmp_path / "s" / "stock-marker.json").write_text(json.dumps({"boot": "boot-a"}))
+    assert (store.marker_boot(), store.stock_marked("boot-a")) == ("boot-a", None)
 
 
 @pytest.mark.req("L17.d.clean")
@@ -645,7 +684,7 @@ def test_a_stock_marker_that_cannot_be_written_still_puts_the_cores_at_stock(tmp
     while not any(value for value in r.hardware.co.values()):
         r.step(0.01)
     monkeypatch.setattr(r.store, "save", broken)
-    monkeypatch.setattr(r.store, "write_marker", lambda boot: (_ for _ in ()).throw(OSError(28, "No space left")))
+    monkeypatch.setattr(r.store, "write_marker", lambda *marked: (_ for _ in ()).throw(OSError(28, "No space left")))
     final = r.run_until_rest(0.01)
     assert final.pause.reason is PauseReason.DATABASE
     assert r.hardware.co == {0: 0, 1: 0, 8: 0}
@@ -890,7 +929,9 @@ def in_flight(r: LiveRig):
     return next(c for c in r.state.cores if c.in_test)
 
 
-def resume_read(tmp_path, hardware, db, monkeypatch) -> tuple[CrashEvidenceRead, LiveRig, list[str]]:
+def resume_read(
+    tmp_path, hardware, db, monkeypatch, check_interval_s: int = 0
+) -> tuple[CrashEvidenceRead, LiveRig, list[str]]:
     reads = []
     real = live.transition
 
@@ -901,7 +942,7 @@ def resume_read(tmp_path, hardware, db, monkeypatch) -> tuple[CrashEvidenceRead,
 
     monkeypatch.setattr(live, "transition", spy)
     said = []
-    again = rig(tmp_path, hardware, db=db)
+    again = rig(tmp_path, hardware, db=db, check_interval_s=check_interval_s)
     again.say = said.append
     again.resume(1)
     assert len(reads) == 1
@@ -1440,6 +1481,1248 @@ def test_a_resume_in_the_same_boot_reads_only_this_boot_s_records(tmp_path, monk
     read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
     assert read.same_boot is True
     assert [(boot, next_boot) for boot, _, next_boot in hardware.harvests] == [("boot-a", False)]
+
+
+@dataclass
+class KernelLog(FakeHardware):
+    logged: list = field(default_factory=list)
+    problem: str | None = None
+    arriving: list = field(default_factory=list)
+    unfinished_from_ns: int | None = None
+
+    def harvest(self, boot_id, since_ns, next_boot, through_ns):
+        self.harvests.append((boot_id, since_ns, next_boot, through_ns))
+        for core, corrected in self.arriving:
+            self.machine_check(core, corrected)
+        self.arriving = []
+        if self.problem is not None:
+            return kernel.JournalHarvest((), (), self.problem)
+        found = tuple(
+            event
+            for boot, ns, event in self.logged
+            if boot == boot_id and ns > since_ns and (through_ns is None or ns <= through_ns)
+        )
+        return kernel.JournalHarvest(found, (), None, self.unfinished_from_ns)
+
+    def machine_check(self, core: int, corrected: bool) -> None:
+        cpu = dict(CPUS)[core][0]
+        self.log(lambda raw_ts: kernel.CoreMachineCheck(cpu, 5, corrected, f"cpu {cpu} bank 5", raw_ts))
+
+    def program_fault(self, pid: int) -> None:
+        message = f"traps: loop[{pid}] trap int3 ip:0 sp:0 error:0"
+        self.log(lambda raw_ts: kernel.ProgramFault("loop", pid, None, None, message, raw_ts))
+
+    def log(self, event_at) -> None:
+        ns = time.monotonic_ns() // 1000 * 1000
+        self.logged.append((self.boot, ns, event_at(ns / 1_000_000_000)))
+
+
+def live1_in_flight(r: LiveRig) -> None:
+    r.start(config(), 1, 7, True)
+    while r.worker is None or r.state.flow.stage is not Stage.LIVE1:
+        r.step(0.01)
+
+
+def away(tmp_path, r: LiveRig, how: str) -> LiveRig:
+    r.signals.append(PauseRequest() if how == "pause" else Close())
+    r.step(0.01)
+    return r if how == "pause" else rig(tmp_path, r.hardware, r.runner, r.store.db, r.check_interval_s)
+
+
+@dataclass
+class ArmedRunner(FakeRunner):
+    armed: bool = False
+    logged: int | None = None
+
+    def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
+        report = super().run(spec, stop, sink)
+        if self.armed:
+            self.armed = False
+            self.logged = spec.core
+            self.hardware.machine_check(spec.core, True)
+            report = replace(report, evidence=(Evidence(spec.core, True),))
+        self.read_ns = time.monotonic_ns()
+        return replace(report, kernel_read_ns=self.read_ns)
+
+
+def stepped_until(r: LiveRig, reached) -> None:
+    for _ in range(1000):
+        if reached():
+            return
+        r.step(0.01)
+    raise AssertionError(f"not reached within 1000 steps: {r.state.lifecycle} {r.state.pause}")
+
+
+def one_test(r: LiveRig) -> None:
+    seen = len(r.runner.seen)
+    stepped_until(r, lambda: len(r.runner.seen) > seen and r.worker is None)
+
+
+def rested(r: LiveRig) -> SessionState:
+    stepped_until(r, r.at_rest)
+    return r.state
+
+
+@pytest.mark.req("L18.d.3.once")
+@pytest.mark.parametrize("how", ["pause", "close"])
+@pytest.mark.parametrize("corrected", [True, False])
+def test_one_machine_check_backs_its_core_off_once_however_often_the_session_resumes_in_its_boot(
+    tmp_path, how, corrected
+):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware)
+    live1_in_flight(r)
+    before = r.state.core(0).value
+    hardware.machine_check(0, corrected)
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    once = r.state.core(0)
+    assert (once.value > before, once.fb) == (True, before)
+    for _ in range(2):
+        r = away(tmp_path, r, how)
+        r.resume(1)
+        assert r.state.lifecycle is Lifecycle.RUNNING
+        assert (r.state.core(0).value, r.state.core(0).fb) == (once.value, once.fb)
+    reads = hardware.harvests
+    assert [since for _, since, _, _ in reads[1:]] == [through for _, _, _, through in reads[:-1]]
+
+
+@pytest.mark.req("L18.d.3.once")
+def test_a_crash_after_a_resume_in_the_same_boot_reads_only_the_records_that_resume_left(tmp_path, monkeypatch):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware)
+    live1_in_flight(r)
+    hardware.machine_check(0, False)
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    stepped_until(r, lambda: r.worker is not None)
+    hardware.machine_check(1, True)
+    hardware.boot, hardware.co = "boot-b", {0: 0, 1: 0, 8: 0}
+    read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert read.evidence == (Evidence(1, True),)
+    dead, _, _, through = hardware.harvests[-1]
+    assert (dead, through) == ("boot-a", None)
+
+
+def stock_checks(r: LiveRig) -> int:
+    return r.state.incidents.count(Incident.STOCK_MACHINE_CHECK)
+
+
+@pytest.mark.req("L18.d.3.once")
+def test_a_record_the_journal_takes_while_a_resume_reads_it_is_judged_once_by_the_next_resume(tmp_path, clock):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware)
+    live1_in_flight(r)
+    before = (r.state.core(0).value, r.state.core(0).fb)
+    hardware.arriving = [(0, True)]
+    r = away(tmp_path, r, "close")
+    clock.advance(400)
+    r.resume(1)
+    assert stock_checks(r) == 0
+    for _ in range(2):
+        r = away(tmp_path, r, "close")
+        r.resume(1)
+        assert (stock_checks(r), (r.state.core(0).value, r.state.core(0).fb)) == (1, before)
+
+
+@pytest.mark.req("L18.d.3.unread")
+def test_a_resume_whose_read_of_its_boot_s_kernel_log_failed_leaves_its_records_to_the_next_resume(tmp_path):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware)
+    live1_in_flight(r)
+    before = r.state.core(0).value
+    hardware.machine_check(0, True)
+    hardware.problem = "journalctl -b exited 1"
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    assert r.state.core(0).value == before
+    assert rows(r, "SELECT message FROM tuner_events WHERE session_id=1 AND severity='kernel_log_unread'") == [
+        {
+            "message": "this boot's kernel log could not be read, so this resume judged none of its records: "
+            "journalctl -b exited 1"
+        }
+    ]
+    hardware.problem = None
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    assert r.state.core(0).value > before
+
+
+@pytest.mark.req("L18.d.3.once")
+def test_a_test_after_a_resume_keeps_its_own_read_point(tmp_path):
+    hardware = KernelLog()
+    runner = ArmedRunner(hardware)
+    r = rig(tmp_path, hardware, runner)
+    live1_in_flight(r)
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    runner.armed = True
+    one_test(r)
+    core = runner.logged
+    after_test = (r.state.core(core).value, r.state.core(core).fb)
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    assert (r.state.core(core).value, r.state.core(core).fb) == after_test
+    _, since, _, _ = hardware.harvests[-1]
+    assert since == runner.read_ns
+
+
+@pytest.mark.req("L18.d.3.gap")
+def test_a_record_logged_while_the_resume_reads_is_judged_once_before_a_first_test_without_a_read_point(
+    tmp_path, clock
+):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware, FakeRunner(hardware))
+    live1_in_flight(r)
+    before = (r.state.core(0).value, r.state.core(0).fb)
+    hardware.arriving = [(0, True)]
+    r = away(tmp_path, r, "close")
+    clock.advance(400)
+    r.resume(1)
+    assert stock_checks(r) == 0
+    one_test(r)
+    assert (stock_checks(r), (r.state.core(0).value, r.state.core(0).fb)) == (1, before)
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    assert (stock_checks(r), (r.state.core(0).value, r.state.core(0).fb)) == (1, before)
+    resumed, before_the_test, _ = hardware.harvests
+    boot, since, next_boot, through = before_the_test
+    assert (boot, since, next_boot, through > since) == ("boot-a", resumed[3], False, True)
+
+
+@pytest.mark.req("L18.d.3.unread")
+def test_a_failed_read_before_the_first_test_after_a_resume_pauses_before_any_test_and_loses_nothing(tmp_path, clock):
+    hardware = KernelLog()
+    runner = ArmedRunner(hardware)
+    r = rig(tmp_path, hardware, runner)
+    live1_in_flight(r)
+    hardware.arriving = [(0, True)]
+    r = away(tmp_path, r, "close")
+    clock.advance(400)
+    r.resume(1)
+    hardware.problem = "journalctl -b exited 1"
+    seen = len(runner.seen)
+    rested(r)
+    assert (r.state.pause.reason, r.state.pause.detail, len(runner.seen)) == (
+        PauseReason.KERNEL_LOG_UNREAD,
+        "the kernel log since the resume could not be read: journalctl -b exited 1",
+        seen,
+    )
+    hardware.problem = None
+    r.resume(1)
+    assert stock_checks(r) == 1
+    runner.armed = True
+    one_test(r)
+    core = runner.logged
+    after_test = (stock_checks(r), r.state.core(core).value, r.state.core(core).fb)
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    assert (stock_checks(r), r.state.core(core).value, r.state.core(core).fb) == after_test
+
+
+@pytest.mark.req("L18.d.3.once")
+def test_a_resume_that_cannot_read_its_session_back_saves_no_read_point_an_earlier_unsaved_resume_left(
+    tmp_path, monkeypatch
+):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware)
+    live1_in_flight(r)
+    before = r.state.core(0).value
+    hardware.machine_check(0, True)
+    r = away(tmp_path, r, "close")
+    save, load, loads = r.store.save, r.store.load, []
+
+    def save_fails_once(*args, **kwargs):
+        monkeypatch.setattr(r.store, "save", save)
+        raise sqlite3.OperationalError("disk I/O error")
+
+    def second_load_fails(session_id):
+        loads.append(session_id)
+        if len(loads) == 2:
+            raise sqlite3.OperationalError("disk I/O error")
+        return load(session_id)
+
+    monkeypatch.setattr(r.store, "save", save_fails_once)
+    r.resume(1)
+    assert r.state.pause.reason is PauseReason.DATABASE
+    monkeypatch.setattr(r.store, "load", second_load_fails)
+    r.resume(1)
+    assert (len(loads), r.state.pause.reason) == (2, PauseReason.DATABASE)
+    r.post(Abort())
+    again = rig(tmp_path, hardware, db=r.store.db)
+    again.resume(1)
+    assert again.state.core(0).value > before
+
+
+@pytest.mark.req("L18.d.3.session")
+@pytest.mark.parametrize("carry", ["restart", "continue"])
+def test_a_session_carried_on_from_a_resume_in_its_boot_reads_nothing_from_its_parent_s_point(tmp_path, carry):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware, ArmedRunner(hardware))
+    live1_in_flight(r)
+    r.signals.append(Close())
+    r.step(0.01)
+    hardware.setup_now = (("bios", "B"),)
+    r = rig(tmp_path, hardware, r.runner, db=r.store.db)
+    r.resume(1)
+    assert r.state.pause.reason is PauseReason.SETUP_CHANGED
+    reads = len(hardware.harvests)
+    if carry == "restart":
+        r.restart_on_setup(True)
+    else:
+        r.continue_on_setup()
+    one_test(r)
+    assert (r.state.session_id, hardware.harvests[reads:]) == (2, [])
+
+
+def search_cut(tmp_path, hardware: KernelLog) -> tuple[LiveRig, int, int]:
+    r = rig(tmp_path, hardware, ArmedRunner(hardware))
+    tested = in_flight(r)
+    value = r.state.slot.spec.value
+    return r, tested.core, value
+
+
+@pytest.mark.req("L18.d.3.charged")
+def test_a_record_a_cut_search_test_logged_is_charged_to_the_value_it_ran_at(tmp_path):
+    hardware = KernelLog()
+    r, core, value = search_cut(tmp_path, hardware)
+    hardware.machine_check(core, True)
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    record = r.state.core(core)
+    assert (r.state.lifecycle, record.fb, record.value > value) == (Lifecycle.RUNNING, value, True)
+
+
+def started_long_ago(tmp_path, hardware: KernelLog, clock: TickingClock, check_interval_s: int = 5) -> LiveRig:
+    r = rig(tmp_path, hardware, check_interval_s=check_interval_s)
+    r.start(config(), 1, 7, True)
+    clock.advance(10)
+    return r
+
+
+@pytest.mark.req("L18.d.3.charged")
+@pytest.mark.parametrize("landing", ["before the resume reads", "while the resume reads"])
+def test_a_cut_search_test_s_record_logged_2_s_after_the_stock_write_backs_its_core_off(tmp_path, clock, landing):
+    hardware = KernelLog()
+    r = started_long_ago(tmp_path, hardware, clock)
+    stepped_until(r, lambda: r.worker is not None)
+    core, value = r.state.slot.spec.core, r.state.slot.spec.value
+    r = away(tmp_path, r, "close")
+    clock.advance(2)
+    if landing == "before the resume reads":
+        hardware.machine_check(core, True)
+    else:
+        hardware.arriving = [(core, True)]
+    r.resume(1)
+    if landing == "while the resume reads":
+        one_test(r)
+    record = r.state.core(core)
+    assert (r.state.lifecycle, record.fb, record.value > value) == (Lifecycle.RUNNING, value, True)
+
+
+@pytest.mark.req("L18.d.3.charged")
+def test_a_record_3_s_after_the_first_write_whose_window_reaches_past_the_start_read_is_charged_and_runs_on(
+    tmp_path, clock
+):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware, check_interval_s=5)
+    r.start(config(), 1, 7, True)
+    stepped_until(r, lambda: r.worker is not None)
+    core, value = r.state.slot.spec.core, r.state.slot.spec.value
+    r = away(tmp_path, r, "close")
+    clock.advance(3)
+    hardware.machine_check(core, True)
+    r.resume(1)
+    record = r.state.core(core)
+    assert (r.state.lifecycle, record.fb, record.value > value) == (Lifecycle.RUNNING, value, True)
+
+
+@pytest.mark.req("L18.d.3.charged")
+def test_a_session_s_first_co_read_in_a_boot_stands_for_its_core_from_that_boot_s_start(tmp_path, clock):
+    hardware = KernelLog(co={0: -3, 1: 0, 8: 0})
+    r = rig(tmp_path, hardware)
+    clock.advance(100)
+    before_the_read = clock.ns - 50 * 1_000_000_000
+    r.start(config(), 1, 7, True)
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    observed = r.store.observed("boot-a")
+    assert [read.value for read in observed if isinstance(read, CoRead) and read.core_id == 0][:2] == [-3, 0]
+    assert charged_value(observed, 0, before_the_read, 5) == -3
+    assert [charged_value(observed, 0, seconds * 1_000_000_000, 5) for seconds in (5, 3)] == [-3, None]
+
+
+def unplaced_notes(r: LiveRig) -> list[str]:
+    return [row["message"] for row in rows(r, "SELECT message FROM tuner_events WHERE severity='record_unplaced'")]
+
+
+@pytest.mark.req("L18.d.3.unplaced")
+def test_a_record_whose_window_cannot_be_placed_is_charged_to_its_core_s_current_value_and_named(tmp_path, clock):
+    clock.ns = 1_000_000_000
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware, check_interval_s=5)
+    r.start(config(), 1, 7, True)
+    stepped_until(r, lambda: r.worker is not None)
+    core, value = r.state.slot.spec.core, r.state.slot.spec.value
+    r = away(tmp_path, r, "close")
+    clock.advance(1)
+    hardware.machine_check(core, True)
+    r.resume(1)
+    record = r.state.core(core)
+    assert (r.state.lifecycle, record.fb, record.value > value) == (Lifecycle.RUNNING, value, True)
+    assert unplaced_notes(r) == [
+        f"core {core}'s machine check is charged to its current value {value}: the CO journal cannot place its moment"
+    ]
+
+
+@pytest.mark.req("L18.d.3.unplaced")
+def test_a_placed_record_read_with_an_unplaced_one_is_applied_and_the_session_runs_on():
+    fake = fresh(2, [-3, -2], 1, max_offset=-8, k_1t=1)
+    start(fake)
+    s = fake.state
+    s = s.with_core(replace(s.core(0), phase=Phase.PROVE, value=-2))
+    s = s.with_core(replace(s.core(1), phase=Phase.PROVE, value=-4))
+    judged = transition(s, KernelLogRead(s.slot.token, (Evidence(1, True, -4), Evidence(0, True))), fake.world())
+    after = judged.state
+    assert (after.lifecycle, after.core(0).value, after.core(0).fb, after.core(1).value, after.core(1).fb) == (
+        Lifecycle.RUNNING,
+        -1,
+        -2,
+        -3,
+        -4,
+    )
+    assert [effect.kind for effect in judged.effects if isinstance(effect, Announce)] == ["record_unplaced"]
+
+
+@pytest.mark.req("L18.d.3.repeat")
+def test_a_record_charged_at_its_core_s_fail_bound_leaves_the_core_where_it_sits():
+    fake = fresh(2, [-3, -2], 1, max_offset=-8, k_1t=1)
+    start(fake)
+    s = fake.state
+    s = s.with_core(replace(s.core(0), phase=Phase.PROVEN, value=-3, fb=-5, count=1))
+    repeat = transition(s, KernelLogRead(s.slot.token, (Evidence(0, True, -5),)), fake.world())
+    assert (repeat.state.core(0), notes(repeat, "record_unjudged")) == (s.core(0), [repeat_note(0, -5, -5)])
+
+
+@pytest.mark.req("L18.d.3.charged")
+@pytest.mark.parametrize("carry", ["restart", "continue"])
+def test_a_carried_on_session_s_record_is_placed_by_the_co_its_parent_read_and_wrote_in_the_boot(
+    tmp_path, clock, carry
+):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware, ArmedRunner(hardware), check_interval_s=5)
+    r.start(config(), 1, 7, True)
+    clock.advance(60)
+    stepped_until(r, lambda: r.worker is not None)
+    r.signals.append(Close())
+    r.step(0.01)
+    hardware.setup_now = (("bios", "B"),)
+    r = rig(tmp_path, hardware, r.runner, r.store.db, 5)
+    r.resume(1)
+    clock.advance(60)
+    if carry == "restart":
+        r.restart_on_setup(True)
+    else:
+        r.continue_on_setup()
+    child = r.state.session_id
+    stepped_until(r, lambda: r.worker is not None)
+    core, value = r.state.slot.spec.core, r.state.slot.spec.value
+    r = away(tmp_path, r, "close")
+    clock.advance(2)
+    hardware.machine_check(core, True)
+    r.resume(child)
+    record = r.state.core(core)
+    assert (r.state.lifecycle, record.fb, record.value > value, unplaced_notes(r)) == (
+        Lifecycle.RUNNING,
+        value,
+        True,
+        [],
+    )
+
+
+@pytest.mark.req("L18.d.3.charged")
+def test_a_record_logged_within_the_check_interval_and_the_timer_s_rounding_is_charged_to_the_cut_test(tmp_path, clock):
+    hardware = KernelLog()
+    r = started_long_ago(tmp_path, hardware, clock)
+    stepped_until(r, lambda: r.worker is not None)
+    core, value = r.state.slot.spec.core, r.state.slot.spec.value
+    r = away(tmp_path, r, "close")
+    clock.ns += 5_500_000_000
+    hardware.machine_check(core, True)
+    r.resume(1)
+    record = r.state.core(core)
+    assert (r.state.lifecycle, record.fb, record.value > value) == (Lifecycle.RUNNING, value, True)
+
+
+@pytest.mark.req("L18.d.3.outside")
+def test_a_record_on_a_core_another_program_wrote_while_paused_is_charged_to_its_current_value_then_pauses(
+    tmp_path, clock
+):
+    hardware = KernelLog()
+    r = started_long_ago(tmp_path, hardware, clock)
+    stepped_until(r, lambda: r.worker is not None)
+    core, value = r.state.slot.spec.core, r.state.slot.spec.value
+    r = away(tmp_path, r, "close")
+    clock.advance(2)
+    hardware.machine_check(core, True)
+    hardware.co[core] = -30
+    r.resume(1)
+    record = r.state.core(core)
+    assert (r.state.pause.reason, record.fb, record.value > value) == (PauseReason.OUTSIDE_WRITE, value, True)
+    assert unplaced_notes(r) == [
+        f"core {core}'s machine check is charged to its current value {value}: another program wrote its CO"
+    ]
+
+
+@pytest.mark.req("L18.d.3.outside")
+@pytest.mark.parametrize(
+    ("moved", "reason", "why"),
+    [
+        ("written", PauseReason.OUTSIDE_WRITE, "another program wrote its CO"),
+        ("unreadable", PauseReason.SMU_READ, "its CO could not be read"),
+    ],
+)
+def test_a_record_on_a_stock_core_that_moved_or_cannot_be_read_is_noted_unjudged_before_that_pause(
+    tmp_path, clock, moved, reason, why
+):
+    hardware = KernelLog()
+    r = started_long_ago(tmp_path, hardware, clock)
+    stepped_until(r, lambda: r.worker is not None)
+    tested = r.state.slot.spec.core
+    stock = next(c.core for c in r.state.cores if c.core != tested and c.value == 0)
+    r = away(tmp_path, r, "close")
+    clock.advance(2)
+    hardware.machine_check(stock, True)
+    if moved == "written":
+        hardware.co[stock] = -30
+    else:
+        del hardware.co[stock]
+    r.resume(1)
+    unjudged = [row["message"] for row in rows(r, "SELECT message FROM tuner_events WHERE severity='record_unjudged'")]
+    assert (r.state.pause.reason, stock_checks(r), unplaced_notes(r)) == (reason, 0, [])
+    assert unjudged == [
+        f"core {stock}'s machine check is not judged: {why} while the session held it at stock, "
+        "so the value it ran at is unknown"
+    ]
+
+
+@pytest.mark.req("L18.d.3.outside")
+def test_a_record_beside_a_core_another_program_wrote_is_judged_as_normal_before_the_outside_write_pause(
+    tmp_path, clock
+):
+    hardware = KernelLog()
+    r = started_long_ago(tmp_path, hardware, clock)
+    stepped_until(r, lambda: r.worker is not None)
+    core, value = r.state.slot.spec.core, r.state.slot.spec.value
+    r = away(tmp_path, r, "close")
+    clock.advance(2)
+    hardware.machine_check(core, True)
+    hardware.co[8 if core != 8 else 0] = -30
+    r.resume(1)
+    record = r.state.core(core)
+    assert (r.state.pause.reason, record.fb, record.value > value, unplaced_notes(r)) == (
+        PauseReason.OUTSIDE_WRITE,
+        value,
+        True,
+        [],
+    )
+
+
+@pytest.mark.req("L18.d.3.outside")
+def test_a_record_on_a_core_whose_co_cannot_be_read_is_charged_to_its_current_value_named_as_unread(tmp_path, clock):
+    hardware = KernelLog()
+    r = started_long_ago(tmp_path, hardware, clock)
+    stepped_until(r, lambda: r.worker is not None and r.state.flow.stage is Stage.LIVE1)
+    sits = r.state.core(8)
+    r = away(tmp_path, r, "close")
+    clock.advance(2)
+    hardware.machine_check(8, True)
+    del hardware.co[8]
+    r.resume(1)
+    record = r.state.core(8)
+    assert (r.state.pause.reason, record.value, record.fb) == (PauseReason.SMU_READ, sits.value + 1, sits.value)
+    assert unplaced_notes(r) == [
+        f"core 8's machine check is charged to its current value {sits.value}: its CO could not be read"
+    ]
+
+
+@pytest.mark.req("L18.d.3.batch")
+def test_a_record_that_pauses_lets_every_other_record_of_its_read_be_applied_first(tmp_path, clock):
+    hardware = KernelLog()
+    r = started_long_ago(tmp_path, hardware, clock)
+    stepped_until(r, lambda: r.worker is not None)
+    core, value = r.state.slot.spec.core, r.state.slot.spec.value
+    other = next(c.core for c in r.state.cores if c.core != core)
+    r = away(tmp_path, r, "close")
+    clock.advance(2)
+    hardware.machine_check(other, True)
+    hardware.machine_check(core, True)
+    r.resume(1)
+    record = r.state.core(core)
+    assert (r.state.pause.reason, r.state.pause.cores, record.fb, record.value > value) == (
+        PauseReason.STOCK_UNSTABLE,
+        (other,),
+        value,
+        True,
+    )
+
+
+@pytest.mark.req("L18.d.3.charged")
+def test_a_cut_tighten_trial_s_record_charged_at_resume_ends_as_its_own_test_would():
+    fake = fresh(2, [-3, -2], 1, max_offset=-8, k_1t=1)
+    start(fake)
+    s = fake.state
+    s = s.with_core(replace(s.core(0), phase=Phase.PROVEN, value=-3, fb=None))
+    s = replace(s, flow=replace(s.flow, stage=Stage.TIGHTEN, allcore=AllCore(floors=((0, -8), (1, -8)))))
+    after = transition(s, KernelLogRead(s.slot.token, (Evidence(0, True, -4),)), fake.world()).state
+    assert (after.core(0).value, after.core(0).fb) == (-3, -4)
+
+
+@pytest.mark.req("L18.d.3.charged")
+def test_a_charge_in_front_of_the_fail_bound_but_deeper_than_its_core_sits_never_moves_the_core_deeper():
+    fake = fresh(2, [-3, -2], 1, max_offset=-9, k_1t=1)
+    start(fake)
+    s = fake.state
+    s = s.with_core(replace(s.core(0), phase=Phase.PROVEN, value=-3, fb=-8))
+    after = transition(s, KernelLogRead(s.slot.token, (Evidence(0, True, -6),)), fake.world()).state
+    assert (after.core(0).value, after.core(0).fb) == (-3, -6)
+
+
+def another_session_wrote(r: LiveRig, value) -> None:
+    db = r.store.db
+    db.save_machine_session(
+        2,
+        status="aborted",
+        config_json="{}",
+        machine_json="{}",
+        boot_id="boot-a",
+        bios_version="",
+        cpu_model="",
+        context_id=None,
+    )
+    row = db.journal_co_intent(2, 0, -9, False, boot_id="boot-a", mono_ns=time.monotonic_ns())
+    db._execute_raw("UPDATE tuner_co_journal SET value=? WHERE id=?", (value, row))
+
+
+@pytest.mark.req("L18.d.3.charged")
+@pytest.mark.parametrize("whose", ["another session's", "its own"])
+def test_a_resume_that_meets_a_corrupted_co_journal_row_in_its_boot_pauses_as_database_naming_the_session(
+    tmp_path, whose
+):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    stepped_until(r, lambda: r.worker is not None)
+    r = away(tmp_path, r, "close")
+    if whose == "its own":
+        r.store.db._execute_raw("UPDATE tuner_co_journal SET value='x' WHERE id=(SELECT min(id) FROM tuner_co_journal)")
+    else:
+        another_session_wrote(r, "x")
+    hardware.machine_check(0, True)
+    r.resume(1)
+    named = 1 if whose == "its own" else 2
+    assert r.state.pause.reason is PauseReason.DATABASE
+    assert f"session {named} is unreadable: core 0 has CO journal value 'x'" in r.state.pause.detail
+
+
+@pytest.mark.req("L18.d.3.charged")
+def test_a_resume_that_meets_a_corrupted_co_read_in_its_boot_pauses_as_database_naming_the_session(tmp_path):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    stepped_until(r, lambda: r.worker is not None)
+    r = away(tmp_path, r, "close")
+    r.store.db._execute_raw("UPDATE tuner_co_reads SET value='x' WHERE id=(SELECT min(id) FROM tuner_co_reads)")
+    hardware.machine_check(0, True)
+    r.resume(1)
+    assert r.state.pause.reason is PauseReason.DATABASE
+    assert "session 1 is unreadable: core 0 has CO read 'x'" in r.state.pause.detail
+
+
+@pytest.mark.req("L18.d.3.split")
+def test_a_resume_read_that_leaves_an_unfinished_record_starts_the_next_read_just_before_its_opener(tmp_path):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware)
+    live1_in_flight(r)
+    r = away(tmp_path, r, "close")
+    opener = time.monotonic_ns() // 1000 * 1000
+    hardware.unfinished_from_ns = opener
+    r.resume(1)
+    hardware.unfinished_from_ns = None
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    _, since, _, _ = hardware.harvests[-1]
+    assert since == opener - 1
+
+
+@pytest.mark.req("L18.d.3.charged", "L18.d.3.gap")
+def test_a_record_charged_to_stock_before_the_first_test_after_a_resume_pauses_before_any_test(tmp_path, clock):
+    hardware = KernelLog()
+    r = started_long_ago(tmp_path, hardware, clock)
+    stepped_until(r, lambda: r.worker is not None)
+    core = r.state.slot.spec.core
+    r = away(tmp_path, r, "close")
+    clock.advance(6)
+    hardware.arriving = [(core, True)]
+    r.resume(1)
+    seen = len(r.runner.seen)
+    rest = rested(r)
+    assert (rest.pause.reason, rest.pause.cores, len(r.runner.seen)) == (PauseReason.STOCK_UNSTABLE, (core,), seen)
+
+
+@pytest.mark.req("L18.d.3.charged")
+def test_a_record_logged_after_its_core_held_stock_longer_than_the_check_interval_is_charged_to_stock(tmp_path, clock):
+    hardware = KernelLog()
+    r = started_long_ago(tmp_path, hardware, clock)
+    stepped_until(r, lambda: r.worker is not None and r.state.flow.stage is Stage.LIVE1)
+    before = (r.state.core(0).value, r.state.core(0).fb)
+    r = away(tmp_path, r, "close")
+    clock.advance(6)
+    hardware.machine_check(0, True)
+    r.resume(1)
+    assert (stock_checks(r), (r.state.core(0).value, r.state.core(0).fb)) == (1, before)
+
+
+@pytest.mark.req("L18.d.3.charged")
+def test_a_record_whose_window_holds_a_deeper_earlier_value_is_charged_to_where_its_core_last_sat_off_stock(
+    tmp_path, clock, monkeypatch
+):
+    hardware = KernelLog()
+    r = started_long_ago(tmp_path, hardware, clock)
+    stepped_until(r, lambda: r.worker is not None and r.state.flow.stage is Stage.LIVE1)
+    sits = r.state.core(1)
+    deepest = min(row.value for row in r.store.db.journal_rows(1, "boot-a") if row.core_id == 1)
+    r.signals.append(Close())
+    r.step(0.01)
+    clock.advance(1)
+    hardware.machine_check(1, True)
+    read, again, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch, check_interval_s=5)
+    start = hardware.logged[-1][1] - 6_000_000_000
+    stamps = sorted((row.mono_ns, row.value) for row in r.store.db.journal_rows(1, "boot-a") if row.core_id == 1)
+    held = [value for at, value in stamps if at <= start][-1:] + [value for at, value in stamps if at > start]
+    assert (read.evidence, deepest in held, deepest < sits.value) == ((Evidence(1, True, sits.value),), True, True)
+    assert (again.state.core(1).value, again.state.core(1).fb) == (sits.value + 1, sits.value)
+
+
+@pytest.mark.req("L18.d.3.gap")
+def test_a_record_judged_before_a_first_test_that_ends_thermal_stays_judged_once(tmp_path, clock):
+    hardware = KernelLog()
+    runner = ArmedRunner(hardware)
+    r = rig(tmp_path, hardware, runner)
+    live1_in_flight(r)
+    before = (r.state.core(0).value, r.state.core(0).fb)
+    hardware.arriving = [(0, True)]
+    r = away(tmp_path, r, "close")
+    clock.advance(400)
+    r.resume(1)
+    runner.group = Group.THERMAL
+    one_test(r)
+    runner.group = None
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    assert (stock_checks(r), (r.state.core(0).value, r.state.core(0).fb)) == (1, before)
+
+
+@pytest.mark.req("L18.d.3.charged")
+def test_a_co_journal_that_cannot_be_read_before_the_first_test_after_a_resume_pauses_naming_it(tmp_path, monkeypatch):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware)
+    live1_in_flight(r)
+    r = away(tmp_path, r, "close")
+    hardware.arriving = [(0, True)]
+    r.resume(1)
+
+    def unreadable(boot):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(r.store, "observed", unreadable)
+    rest = rested(r)
+    assert (rest.pause.reason, rest.pause.detail) == (
+        PauseReason.DATABASE,
+        "the CO journal could not be read back: disk I/O error",
+    )
+
+
+@pytest.mark.req("PROGRAM_FAULT.outside")
+def test_a_program_fault_logged_after_a_resume_read_is_told_once_before_the_first_test(tmp_path):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware, ArmedRunner(hardware))
+    live1_in_flight(r)
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    hardware.program_fault(4321)
+    one_test(r)
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    told = program_fault_events(r, 1)
+    assert len(told) == 1
+    assert told[0].startswith("loop (pid 4321), no CPU named, ")
+
+
+@pytest.mark.req("L18.d.3.gap")
+def test_the_read_before_the_first_test_is_judged_only_while_that_test_waits():
+    fake = fresh(2, [-3, -2], 1, max_offset=-5, k_1t=1)
+    start(fake)
+    waiting = fake.state
+    token = waiting.slot.token
+    fake.post(KernelLogRead(token + 1, (Evidence(0, True, -2),)))
+    assert fake.state == waiting
+    fake.post(KernelLogRead(token, (Evidence(1, False, 0),)))
+    paused = fake.state
+    assert (paused.pause.reason, paused.pause.cores) == (PauseReason.STOCK_UNSTABLE, (1,))
+    fake.post(KernelLogRead(token, (Evidence(0, True, -2),)))
+    assert fake.state == paused
+
+
+@pytest.mark.req("L18.d.4.3a")
+def test_a_record_from_a_dead_boot_whose_database_fell_behind_counts_at_stock_and_moves_no_core():
+    fake = fresh(3, [-3, -1, -2], 1, max_offset=-5, k_1t=2, k_2t=1)
+    start(fake)
+    while fake.worker is None or fake.state.flow.stage is not Stage.LIVE1:
+        assert fake.progress()
+    tested = fake.worker.spec.core
+    other = next(r for r in fake.state.cores if r.core != tested and r.value != 0)
+    fake.marker_boot = fake.boot
+    fake.crash((Evidence(other.core, True), Evidence(tested, True)))
+    fake.post(Resume(1))
+    record = fake.state.core(other.core)
+    assert (record.value, record.fb, fake.state.incidents) == (other.value, other.fb, (Incident.CRASH,))
+    assert unjudged_lines(fake) == []
+
+
+@pytest.mark.req("L18.d.3.charged")
+def test_a_record_is_charged_to_the_latest_value_off_stock_its_core_held_over_the_check_interval_before_it():
+    s = 1_000_000_000
+    rows = [
+        JournalRow(1, 1, 0, -5, "boot-a", 1 * s, True, False, False, ""),
+        JournalRow(2, 1, 1, -9, "boot-a", 2 * s, True, False, False, ""),
+        JournalRow(3, 1, 0, -2, "boot-a", 3 * s, True, False, False, ""),
+        JournalRow(4, 1, 0, 0, "boot-a", 4 * s, True, False, False, ""),
+        JournalRow(5, 1, 2, -3, "boot-a", 1 * s, True, False, False, ""),
+        JournalRow(6, 1, 2, -4, "boot-a", 2 * s, False, False, False, ""),
+        JournalRow(7, 1, 2, -6, "boot-a", None, True, False, False, ""),
+    ]
+    assert [charged_value(rows, 0, 5 * s, window) for window in (2, 1, 4, 5)] == [-2, 0, -2, None]
+    assert [charged_value(rows, 0, logged, 0) for logged in (4 * s, 4 * s - 1)] == [0, -2]
+    assert [charged_value(rows, 2, 3 * s, 1), charged_value(rows, 2, 1 * s, 0)] == [None, -3]
+    reads_last = [
+        JournalRow(1, 1, 5, -5, "boot-a", 3 * s, True, False, False, ""),
+        CoRead(5, -2, 1 * s),
+        CoRead(5, -9, s // 2),
+    ]
+    assert charged_value(reads_last, 5, 4 * s, 3) == -5
+
+
+def fine_at(value: int, fb: int | None, stage: Stage = Stage.SEARCH) -> tuple[SessionState, object]:
+    fake = fresh(2, [-3, -2], 1, max_offset=-8, k_1t=1)
+    start(fake)
+    s = fake.state
+    s = s.with_core(replace(s.core(0), phase=Phase.FINE, value=value, fb=fb))
+    if stage is Stage.TIGHTEN:
+        s = replace(s, flow=replace(s.flow, stage=Stage.TIGHTEN, allcore=AllCore(floors=((0, -8), (1, -8)))))
+    return s, fake.world()
+
+
+def read_before_the_first_test(s: SessionState, world, *records: Evidence):
+    return transition(s, KernelLogRead(s.slot.token, records), world)
+
+
+def notes(result, kind: str) -> list[str]:
+    return [effect.text for effect in result.effects if isinstance(effect, Announce) and effect.kind == kind]
+
+
+def unjudged(core: int, record: str, why: str) -> str:
+    return f"core {core}'s {record} is not judged: {why}"
+
+
+def set_aside(core: int, record: str) -> str:
+    return unjudged(core, record, f"a stronger record of core {core} in the same read decided its verdict")
+
+
+@pytest.mark.req("L18.d.3.core")
+@pytest.mark.parametrize(
+    ("stage", "value", "fb", "weaker", "stronger", "named"),
+    [
+        (Stage.SEARCH, -3, -6, (True, -3), (True, -2), "corrected machine check charged to -3"),
+        (Stage.SEARCH, -4, None, (True, -6), (False, -4), "corrected machine check charged to -6"),
+        (Stage.SEARCH, -4, None, (False, -6), (True, -4), "uncorrected machine check charged to -6"),
+        (Stage.SEARCH, -3, -6, (True, -3), (True, 0), "corrected machine check charged to -3"),
+        (Stage.TIGHTEN, -3, None, (True, -3), (True, 0), "corrected machine check charged to -3"),
+    ],
+)
+def test_the_records_of_one_read_judge_their_core_once_by_the_record_whose_verdict_is_strongest(
+    stage, value, fb, weaker, stronger, named
+):
+    s, world = fine_at(value, fb, stage)
+    both = read_before_the_first_test(s, world, Evidence(0, *weaker), Evidence(0, *stronger))
+    alone = read_before_the_first_test(s, world, Evidence(0, *stronger))
+    assert both.state == alone.state != read_before_the_first_test(s, world, Evidence(0, *weaker)).state
+    assert notes(both, "record_unjudged") == [set_aside(0, named)]
+
+
+@pytest.mark.req("L18.d.3.core")
+def test_a_record_that_sets_a_fail_bound_outranks_a_counted_stock_record_that_changes_nothing():
+    s, _ = fine_at(-3, None, Stage.TIGHTEN)
+    stock, bound = Evidence(0, True, 0), Evidence(0, True, -5)
+    for records in ((stock, bound), (bound, stock)):
+        judged, aside = _evidence_applied(s, records, counted=True)
+        assert (judged.core(0).value, judged.core(0).fb, judged.incidents) == (-3, -5, ())
+        assert [note.text for note in aside] == [set_aside(0, "corrected machine check charged to 0")]
+
+
+@pytest.mark.req("L18.d.3.core")
+def test_a_stock_record_after_a_cut_test_s_record_pauses_and_names_the_record_it_set_aside(tmp_path, clock):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware, check_interval_s=5)
+    r.start(config(), 1, 7, True)
+    clock.advance(60)
+    stepped_until(r, lambda: r.worker is not None)
+    spec = r.state.slot.spec
+    r = away(tmp_path, r, "close")
+    clock.advance(2)
+    hardware.machine_check(spec.core, True)
+    clock.advance(10)
+    hardware.machine_check(spec.core, True)
+    r.resume(1)
+    assert (r.state.pause.reason, r.state.pause.cores) == (PauseReason.STOCK_UNSTABLE, (spec.core,))
+    assert unjudged_notes(r) == [set_aside(spec.core, f"corrected machine check charged to {spec.value}")]
+
+
+@pytest.mark.req("L18.d.3.core")
+def unjudged_lines(fake) -> list[str]:
+    return [line.removeprefix("record_unjudged: ") for line in fake.log if line.startswith("record_unjudged: ")]
+
+
+@pytest.mark.req("L18.d.3.core")
+def test_the_records_of_one_dead_boot_judge_their_core_once():
+    def resumed(*records: bool) -> tuple[int, SessionState, list[str]]:
+        fake = fresh(3, [-3, -1, -2], 1, max_offset=-5, k_1t=2, k_2t=1)
+        start(fake)
+        while fake.worker is None or fake.state.flow.stage is not Stage.LIVE1:
+            assert fake.progress()
+        other = next(r.core for r in fake.state.cores if r.core != fake.worker.spec.core and r.value != 0)
+        fake.crash(tuple(Evidence(other, corrected) for corrected in records))
+        fake.post(Resume(1))
+        return other, fake.state, unjudged_lines(fake)
+
+    core, one, none = resumed(True)
+    assert (one.lifecycle, one.incidents, none) == (Lifecycle.RUNNING, (Incident.STOCK_MACHINE_CHECK,), [])
+    assert resumed(True, True) == (core, one, [set_aside(core, "corrected machine check with no charge")])
+    convicted = resumed(False)
+    assert resumed(False, False)[:2] == resumed(True, False)[:2] == convicted[:2]
+    assert resumed(True, False)[2] == [
+        unjudged(
+            core, "corrected machine check with no charge", f"the crash conviction of core {core} decided its verdict"
+        )
+    ]
+
+
+@pytest.mark.req("L18.d.3.core")
+def test_the_core_a_dead_boot_s_crash_convicts_is_judged_by_that_conviction_alone():
+    def resumed(*records: bool) -> tuple[int, int, SessionState, list[str]]:
+        fake = fresh(2, [-3, -2], 1, max_offset=-8, k_1t=1)
+        start(fake)
+        while fake.worker is None:
+            assert fake.progress()
+        core, value = fake.worker.spec.core, fake.worker.spec.value
+        fake.crash(tuple(Evidence(core, corrected) for corrected in records))
+        fake.post(Resume(1))
+        return core, value, fake.state, unjudged_lines(fake)
+
+    core, value, convicted, none = resumed()
+    assert (convicted.lifecycle, convicted.core(core).fb, none) == (Lifecycle.RUNNING, value, [])
+    assert resumed(True)[:3] == resumed(False)[:3] == resumed(True, False)[:3] == (core, value, convicted)
+    assert resumed(True)[3] == [
+        unjudged(
+            core, "corrected machine check with no charge", f"the crash conviction of core {core} decided its verdict"
+        )
+    ]
+
+
+def cut_at(tmp_path, clock, value: int, logged: int, arriving: int) -> tuple[Spec, LiveRig]:
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware, check_interval_s=5)
+    r.start(config(), 1, 7, True)
+    clock.advance(60)
+    r.state = r.state.with_core(replace(r.state.core(0), phase=Phase.FINE, value=value, fb=-6))
+    stepped_until(r, lambda: r.worker is not None)
+    spec = r.state.slot.spec
+    r = away(tmp_path, r, "close")
+    clock.advance(2)
+    for _ in range(logged):
+        hardware.machine_check(spec.core, True)
+    hardware.arriving = [(spec.core, True)] * arriving
+    r.resume(1)
+    stepped_until(r, lambda: r.worker is not None or r.at_rest())
+    return spec, r
+
+
+def unjudged_notes(r: LiveRig) -> list[str]:
+    return [row["message"] for row in rows(r, "SELECT message FROM tuner_events WHERE severity='record_unjudged'")]
+
+
+def repeat_note(core: int, charged: int, fb: int) -> str:
+    return (
+        f"core {core}'s machine check is not judged: it is charged to {charged}, "
+        f"at or behind its fail bound {fb}, so it repeats a failure already judged"
+    )
+
+
+@pytest.mark.req("L18.d.3.core", "L18.d.3.repeat")
+@pytest.mark.parametrize("value", [-1, -3])
+def test_two_records_of_a_cut_test_judge_its_core_once_in_one_read_or_across_the_resume_and_the_first_test_s_read(
+    tmp_path, clock, value
+):
+    ends = {}
+    for how, logged, arriving in (("one record", 1, 0), ("one read", 2, 0), ("across", 1, 1)):
+        spec, r = cut_at(tmp_path / how.replace(" ", "-"), clock, value, logged, arriving)
+        record = r.state.core(spec.core)
+        ends[how] = (r.state.lifecycle, record.value, record.fb)
+        assert (spec.core, spec.value) == (0, value)
+    assert (ends["one record"][0], ends["one record"][2]) == (Lifecycle.RUNNING, value)
+    assert ends["one read"] == ends["across"] == ends["one record"]
+    assert unjudged_notes(r) == [repeat_note(0, value, value)]
+
+
+@pytest.mark.req("L18.d.3.repeat")
+def test_a_late_repeat_read_by_a_second_resume_after_one_that_paused_moves_its_core_no_further(tmp_path, clock):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware, check_interval_s=5)
+    r.start(config(), 1, 7, True)
+    clock.advance(60)
+    r.state = r.state.with_core(replace(r.state.core(0), phase=Phase.FINE, value=-3, fb=-5))
+    stepped_until(r, lambda: r.worker is not None)
+    spec = r.state.slot.spec
+    r = away(tmp_path, r, "close")
+    clock.advance(2)
+    hardware.machine_check(spec.core, True)
+    hardware.arriving = [(spec.core, True)]
+    hardware.co[8] = -30
+    r.resume(1)
+    once = (r.state.pause.reason, r.state.core(spec.core).value, r.state.core(spec.core).fb)
+    hardware.co[8] = 0
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    record = r.state.core(spec.core)
+    assert ((spec.core, spec.value), once) == ((0, -3), (PauseReason.OUTSIDE_WRITE, -2, -3))
+    assert (r.state.lifecycle, record.value, record.fb) == (Lifecycle.RUNNING, -2, -3)
+    assert unjudged_notes(r) == [repeat_note(0, -3, -3)]
+
+
+@pytest.mark.req("L18.d.3.core")
+def test_the_core_a_same_boot_resume_fails_for_the_test_its_database_lost_is_judged_once():
+    fake = fresh(2, [-3, -2], 1, max_offset=-8, k_1t=1)
+    start(fake)
+    while fake.worker is None:
+        assert fake.progress()
+    core, value = fake.worker.spec.core, fake.worker.spec.value
+    cut = replace(fake.state, lifecycle=Lifecycle.PAUSED, slot=None, pause=Pause(PauseReason.RESUMING, "reading"))
+    stock = tuple((c, 0) for c, _ in fake.layout.cpus_of)
+
+    def resumed(*records: Evidence):
+        read = CrashEvidenceRead(
+            dirty_end=False,
+            was_running=True,
+            same_boot=True,
+            stale_db=True,
+            marked_now=True,
+            evidence=records,
+            co_now=stock,
+        )
+        return transition(cut, read, fake.world())
+
+    alone = resumed()
+    judged = resumed(Evidence(core, True, value))
+    assert (alone.state.lifecycle, alone.state.core(core).fb) == (Lifecycle.RUNNING, value)
+    assert judged.state == alone.state
+    assert (notes(alone, "record_unjudged"), notes(judged, "record_unjudged")) == (
+        [],
+        [
+            unjudged(
+                core,
+                f"corrected machine check charged to {value}",
+                f"the fail verdict on core {core}'s test, whose result the database lost, decided its verdict",
+            )
+        ],
+    )
+    again = read_before_the_first_test(judged.state, fake.world(), Evidence(core, True, value))
+    assert (again.state.lifecycle, again.state.cores) == (Lifecycle.RUNNING, judged.state.cores)
+    assert notes(again, "record_unjudged") == [repeat_note(core, value, value)]
+
+
+@pytest.mark.req("L18.d.3.repeat")
+@pytest.mark.parametrize(("stage", "value"), [(Stage.SEARCH, 0), (Stage.TIGHTEN, 0), (Stage.SEARCH, -1)])
+def test_a_record_charged_at_or_behind_its_core_s_fail_bound_repeats_a_judged_failure_and_is_not_judged(stage, value):
+    s, world = fine_at(value, -2, stage)
+    repeat = read_before_the_first_test(s, world, Evidence(0, True, -2))
+    stock = read_before_the_first_test(s, world, Evidence(0, True, 0))
+    assert (repeat.state.lifecycle, repeat.state.cores, repeat.state.incidents) == (
+        Lifecycle.RUNNING,
+        s.cores,
+        s.incidents,
+    )
+    assert notes(repeat, "record_unjudged") == [repeat_note(0, -2, -2)]
+    if stage is Stage.SEARCH:
+        assert stock.state.pause.reason is PauseReason.STOCK_UNSTABLE
+    else:
+        assert stock.state.incidents == (*s.incidents, Incident.STOCK_MACHINE_CHECK)
+
+
+@pytest.mark.req("L18.d.3.unplaced")
+def test_a_record_the_journal_cannot_place_on_a_core_the_session_holds_at_stock_is_noted_not_judged():
+    s, world = fine_at(0, None)
+    unplaced = read_before_the_first_test(s, world, Evidence(0, True))
+    assert (unplaced.state.lifecycle, unplaced.state.cores, notes(unplaced, "record_unplaced")) == (
+        Lifecycle.RUNNING,
+        s.cores,
+        [],
+    )
+    assert notes(unplaced, "record_unjudged") == [
+        "core 0's machine check is not judged: the CO journal cannot place its moment while the session held it "
+        "at stock, so the value it ran at is unknown"
+    ]
+
+
+@pytest.mark.req("L18.d.3.charged")
+def test_a_record_from_a_steady_test_cut_in_its_first_seconds_is_charged_to_the_steady_value(tmp_path, clock):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware, check_interval_s=5)
+    live1_in_flight(r)
+    clock.advance(60)
+    stepped_until(r, lambda: r.worker is not None and r.state.flow.stage is Stage.STEADY)
+    passed = dict(r.state.flow.allcore.floors)[0]
+    steady = dict(r.state.slot.spec.vector)[0]
+    r = away(tmp_path, r, "close")
+    clock.advance(2)
+    hardware.machine_check(0, True)
+    r.resume(1)
+    record = r.state.core(0)
+    assert (passed, steady) == (-6, -3)
+    assert (r.state.lifecycle, record.value, record.fb) == (Lifecycle.RUNNING, -2, -3)
+
+
+@pytest.mark.req("L18.d.3.charged")
+@pytest.mark.parametrize("read", ["resume", "before the first test"])
+def test_a_record_after_a_database_failure_sent_the_cores_to_stock_is_charged_to_stock(
+    tmp_path, clock, monkeypatch, read
+):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware, check_interval_s=5)
+    live1_in_flight(r)
+    save = r.store.save
+    monkeypatch.setattr(r.store, "save", broken)
+    stepped_until(r, lambda: r.state.pause is not None and r.state.pause.reason is PauseReason.DATABASE)
+    monkeypatch.setattr(r.store, "save", save)
+    lost = {c.core for c in r.store.load(1)[0][0].cores if c.in_test}
+    other = next(c for c in r.state.cores if c.core not in lost and c.value != 0)
+    clock.advance(20)
+    if read == "resume":
+        hardware.machine_check(other.core, True)
+    else:
+        hardware.arriving = [(other.core, True)]
+    r.resume(1)
+    stepped_until(r, lambda: r.worker is not None or r.at_rest())
+    record = r.state.core(other.core)
+    assert (stock_checks(r), record.value, record.fb) == (1, other.value, other.fb)
+
+
+@pytest.mark.req("L18.d.3.once")
+def test_a_cut_all_core_test_s_late_report_never_moves_the_stored_read_point_back(tmp_path, clock):
+    hardware = KernelLog()
+    runner = ArmedRunner(hardware)
+    r = rig(tmp_path, hardware, runner, check_interval_s=5)
+    live1_in_flight(r)
+    clock.advance(60)
+    stepped_until(r, lambda: r.worker is not None and r.state.flow.stage is Stage.STEADY)
+    r.signals.append(PauseRequest())
+    r.step(0.01)
+    clock.advance(2)
+    hardware.machine_check(0, True)
+    r.resume(1)
+    once = (r.state.core(0).value, r.state.core(0).fb)
+    committed = r.store.db.load_machine_session(1)[2]
+    r.step(0.01)
+    hardware.problem = "journalctl -b exited 1"
+    stepped_until(r, r.at_rest)
+    hardware.problem = None
+    kept = r.store.db.load_machine_session(1)[2]
+    r.resume(1)
+    assert (r.state.pause, kept, hardware.harvests[-1][1]) == (None, committed, committed)
+    assert (r.state.core(0).value, r.state.core(0).fb) == once
+
+
+@pytest.mark.req("L18.d.3.batch")
+def test_one_pause_names_every_core_whose_record_pauses_and_each_cause():
+    s, world = fine_at(-3, -5)
+    stock = read_before_the_first_test(s, world, Evidence(0, True, 0), Evidence(1, True, 0))
+    held = read_before_the_first_test(s, world, Evidence(7, True, -2), Evidence(0, True, 0))
+    assert (stock.state.pause.reason, stock.state.pause.cores, stock.state.pause.detail) == (
+        PauseReason.STOCK_UNSTABLE,
+        (0, 1),
+        "core 0 logged a machine check at its stock value; core 1 logged a machine check at its stock value",
+    )
+    assert (held.state.pause.reason, held.state.pause.cores, held.state.pause.detail) == (
+        PauseReason.HELD_KNOB,
+        (7, 0),
+        "core 7 logged a machine check at a value this session does not own; "
+        "core 0 logged a machine check at its stock value",
+    )
+
+
+@pytest.mark.req("L18.d.3.batch")
+def test_two_records_that_each_reach_the_incident_limit_count_both_in_one_incidents_pause():
+    s, world = fine_at(-3, -5)
+    s = replace(
+        s,
+        flow=replace(s.flow, stage=Stage.TIGHTEN, allcore=AllCore(floors=((0, -8), (1, -8)))),
+        incidents=(Incident.CRASH,),
+    )
+    paused = read_before_the_first_test(s, world, Evidence(0, True, 0), Evidence(1, True, 0)).state
+    assert (paused.pause.reason, paused.incidents, paused.pause.detail) == (
+        PauseReason.INCIDENTS,
+        (Incident.CRASH, Incident.STOCK_MACHINE_CHECK, Incident.STOCK_MACHINE_CHECK),
+        "1 crash nobody could be blamed for, 2 machine checks at stock values",
+    )
+
+
+@pytest.mark.req("L18.d.3.outside")
+@pytest.mark.parametrize(("moved", "reason"), [(-30, PauseReason.OUTSIDE_WRITE), (None, PauseReason.SMU_READ)])
+def test_a_record_the_journal_places_off_stock_on_a_moved_core_the_session_held_at_stock_is_judged_there(moved, reason):
+    fake = fresh(2, [-3, -2], 1, max_offset=-8, k_1t=1)
+    start(fake)
+    s = fake.state
+    s = s.with_core(replace(s.core(0), phase=Phase.PROVEN, value=0, fb=None))
+    s = replace(
+        s,
+        lifecycle=Lifecycle.PAUSED,
+        slot=None,
+        pause=Pause(PauseReason.RESUMING, "reading"),
+        flow=replace(s.flow, stage=Stage.TIGHTEN, allcore=AllCore(floors=((0, -3), (1, -8)))),
+    )
+    read = CrashEvidenceRead(
+        dirty_end=False,
+        was_running=True,
+        same_boot=True,
+        evidence=(Evidence(0, True, -1),),
+        co_now=((0, moved), (1, 0)),
+    )
+    resumed = transition(s, read, fake.world())
+    assert (resumed.state.pause.reason, resumed.state.core(0).value, resumed.state.core(0).fb) == (reason, 0, -1)
+    assert notes(resumed, "record_unjudged") == []
+
+
+@pytest.mark.req("L18.d.3.charged")
+def test_a_corrupted_co_journal_row_in_the_boot_stops_no_read_that_has_no_record_to_charge(tmp_path):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    stepped_until(r, lambda: r.worker is not None)
+    r = away(tmp_path, r, "close")
+    another_session_wrote(r, -300)
+    r.resume(1)
+    assert r.state.lifecycle is Lifecycle.RUNNING
+    one_test(r)
+    assert (r.state.lifecycle, len(hardware.harvests)) == (Lifecycle.RUNNING, 2)
 
 
 @pytest.mark.req("L01.baselines", "TERMS.kvw", "TM.I_M2")
@@ -2033,11 +3316,18 @@ def test_the_adapter_reads_the_kernel_facts_it_needs(monkeypatch):
     asked = []
     found = kernel.JournalHarvest((), (), None)
     monkeypatch.setattr(
-        live_hw.kernel, "harvest_after", lambda boot, after, next_boot: asked.append((boot, after, next_boot)) or found
+        live_hw.kernel,
+        "harvest_after",
+        lambda boot, after, next_boot, through_mono_ns: (
+            asked.append((boot, after, next_boot, through_mono_ns)) or found
+        ),
     )
-    assert hw.harvest("b0", 5_000, True) is found
-    assert hw.harvest("b1", None, False) is found
-    assert asked == [("b0", kernel.HarvestFrom(mono_ns=5_000, realtime_us=None), True), ("b1", None, False)]
+    assert hw.harvest("b0", 5_000, True, None) is found
+    assert hw.harvest("b1", None, False, 9_000) is found
+    assert asked == [
+        ("b0", kernel.HarvestFrom(mono_ns=5_000, realtime_us=None), True, None),
+        ("b1", None, False, 9_000),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -2149,7 +3439,7 @@ def test_the_driver_hands_its_invoking_user_s_heartbeat_to_the_supervisor_of_eac
         if sudo_uid is not None:
             sudo.setattr(os, "geteuid", lambda: 0)
             sudo.setenv("SUDO_UID", str(sudo_uid))
-        built = live_hw.build_rig(args, topology(), FakeSmu(), lambda: kagari, lambda line: None, db, IDENTITY)
+        built = live_hw.build_rig(args, topology(), FakeSmu(), lambda: kagari, lambda line: None, db, IDENTITY, 300)
     built.runner.supervisor = FakeSupervisor
     spec = Spec(Klass.T1, 0, -5, (16,), 60.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0)
     assert built.runner.run(spec, threading.Event()).group is Group.PASS
@@ -2211,7 +3501,7 @@ def test_the_rig_reads_the_pm_core_arrays_only_for_the_measured_core_layout(tmp_
     args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--start", "--cores", "0,1", "--max-offset", "-8"])
     kagari = SimpleNamespace(binary_problem=lambda name: None)
     built = live_hw.build_rig(
-        args, topo, FakeSmu(), lambda: kagari, lambda line: None, database(tmp_path / "pm.db"), IDENTITY
+        args, topo, FakeSmu(), lambda: kagari, lambda line: None, database(tmp_path / "pm.db"), IDENTITY, 300
     )
     assert bool(built.hardware.sensors().cores) is read
 
@@ -2240,8 +3530,9 @@ def test_the_command_line_starts_or_resumes_and_reports_where_it_came_to_rest(tm
     )
     db = database(tmp_path / "built.db")
     kagari = SimpleNamespace(binary_problem=lambda name: f"the y-cruncher binary {name!r} is not in /nowhere")
-    built = live_hw.build_rig(args, topology(), FakeSmu(), lambda: kagari, lines.append, db, IDENTITY)
+    built = live_hw.build_rig(args, topology(), FakeSmu(), lambda: kagari, lines.append, db, IDENTITY, 7)
     assert built.hardware.write is True and built.cpus_of == CPUS and built.domain_of == DOMAINS
+    assert built.check_interval_s == 7
     assert built.hardware.vcache == "none"
     assert built.two_t_problem == "the y-cruncher binary '19-ZN2 ~ Kagari' is not in /nowhere"
     assert built.co_range == (-50, 10)
@@ -2817,14 +4108,16 @@ def test_the_driver_runs_its_session_inside_a_raised_machine_check_poll(tmp_path
     @contextlib.contextmanager
     def poll(say):
         events.append("raised")
-        yield
+        yield 120
         events.append("restored")
 
     monkeypatch.setattr(live_hw.kernel, "fast_mce_poll", poll)
-    monkeypatch.setattr(live_hw, "run", lambda args, rig, say: events.append("ran") or live_hw.EXIT_REFUSED)
+    monkeypatch.setattr(
+        live_hw, "run", lambda args, rig, say: events.append(("ran", rig.check_interval_s)) or live_hw.EXIT_REFUSED
+    )
     argv = ["--state-dir", str(tmp_path / "s"), "--db", str(tmp_path / "h.db"), "--session", "1", "--resume"]
     assert live_hw.main(argv) == live_hw.EXIT_REFUSED
-    assert events == ["raised", "ran", "restored"]
+    assert events == ["raised", ("ran", 120), "restored"]
 
 
 def test_a_usage_error_is_a_refusal_and_help_is_not(driver_home, capsys):

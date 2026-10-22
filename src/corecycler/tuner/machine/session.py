@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from corecycler.tuner.machine import allcore, bisect, search
-from corecycler.tuner.machine.resume import attribute, resident
+from corecycler.tuner.machine.resume import Attribution, attribute, resident
 from corecycler.tuner.machine.types import (
     ALLCORE,
     ENDURANCE_CYCLE,
@@ -26,12 +26,14 @@ from corecycler.tuner.machine.types import (
     CrashEvidenceRead,
     DatabaseFailed,
     Event,
+    Evidence,
     Flow,
     ForgetResident,
     Group,
     Incident,
     InFlight,
     InternalError,
+    KernelLogRead,
     Klass,
     Lifecycle,
     Live1,
@@ -120,6 +122,8 @@ def transition(s: SessionState, e: Event, w: World) -> Transition:
             return _reported(s, e, w)
         case CrashEvidenceRead():
             return _crash_evidence(s, e, w)
+        case KernelLogRead():
+            return _kernel_log_read(s, e)
         case SmuRefused():
             return _smu_refused(s, e)
         case DatabaseFailed():
@@ -619,7 +623,19 @@ def _convict(s: SessionState, core: int) -> tuple[SessionState, bool]:
 def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
     if s.lifecycle is not Lifecycle.PAUSED or s.pause is None or s.pause.reason is not PauseReason.RESUMING:
         return Transition(s)
-    result = _attributed(s, e, w)
+    verdict = attribute(s, e)
+    decided = {core: f"the crash conviction of core {core} decided its verdict" for core in verdict.convict}
+    if e.same_boot and verdict.lost is not None:
+        decided[verdict.lost] = (
+            f"the fail verdict on core {verdict.lost}'s test, whose result the database lost, decided its verdict"
+        )
+    notes = tuple(_unjudged(ev, decided[ev.core]) for ev in verdict.evidence if ev.core in decided)
+    verdict = replace(verdict, evidence=tuple(ev for ev in verdict.evidence if ev.core not in decided))
+    if e.same_boot:
+        evidence, placed = _placed(s, verdict.evidence, _knob_problem(s, e, w))
+        verdict = replace(verdict, evidence=evidence)
+        notes = (*notes, *placed)
+    result = _attributed(s, e, w, verdict)
     if e.end_unread is not None:
         unread = Announce(
             "boot_end_unread", f"the last boot's end could not be read, so it is treated as a crash: {e.end_unread}"
@@ -627,14 +643,15 @@ def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transiti
         stored_first = 1 if isinstance(result.effects[0], Supersede) else 0
         result = replace(result, effects=(*result.effects[:stored_first], unread, *result.effects[stored_first:]))
     faults = tuple(Announce("program_fault", line) for line in e.program_faults)
-    result = replace(result, effects=(*result.effects, *faults))
+    result = replace(result, effects=(*result.effects, *notes, *faults))
     if e.kernel_problem is None:
         return result
-    note = Announce(
-        "kernel_log_unread",
-        f"the crashed boot's kernel log could not be read, so the crash was attributed without it: {e.kernel_problem}",
+    unread = (
+        "this boot's kernel log could not be read, so this resume judged none of its records"
+        if e.same_boot
+        else "the crashed boot's kernel log could not be read, so the crash was attributed without it"
     )
-    return replace(result, effects=(*result.effects, note))
+    return replace(result, effects=(*result.effects, Announce("kernel_log_unread", f"{unread}: {e.kernel_problem}")))
 
 
 def _ending(w: World) -> str:
@@ -643,8 +660,7 @@ def _ending(w: World) -> str:
     return f"an end that could not be read ({w.stored_end_unread}), treated as a crash"
 
 
-def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
-    verdict = attribute(s, e)
+def _attributed(s: SessionState, e: CrashEvidenceRead, w: World, verdict: Attribution) -> Transition:
     after = s
     if verdict.lost is not None:
         after, stock = _stale_fail(after, verdict.lost, w)
@@ -671,11 +687,12 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World) -> Transition:
             f"core {verdict.held} crashed the machine at a value this session does not own",
             (verdict.held,),
         )
-    for ev in verdict.evidence:
-        applied = _apply_evidence(after, ev, at_stock=verdict.at_stock, counted=counted)
-        if isinstance(applied, Transition):
-            return applied
-        after = applied
+    applied, aside = _evidence_applied(after, verdict.evidence, at_stock=verdict.at_stock, counted=counted)
+    result = applied if isinstance(applied, Transition) else _resumed(s, applied, e, w, streak)
+    return replace(result, effects=(*result.effects, *aside))
+
+
+def _resumed(s: SessionState, after: SessionState, e: CrashEvidenceRead, w: World, streak: int) -> Transition:
     if streak >= QUARANTINE_STREAK:
         quarantined = replace(after, lifecycle=Lifecycle.QUARANTINED, flow=None, slot=None, pause=None)
         return Transition(
@@ -850,32 +867,40 @@ def _flow_crash(s: SessionState, w: World, context=None) -> tuple[SessionState, 
     raise ValueError(f"a crash with a core in test has no flow rule in {flow.stage}")
 
 
-def _apply_evidence(s: SessionState, ev, at_stock: bool = False, counted: bool = False) -> SessionState | Transition:
+def _apply_evidence(s: SessionState, ev: Evidence) -> SessionState | Transition:
+    out, pause = _judge_record(s, ev)
+    return out if pause is None else _enter_pause(out, pause.reason, pause.detail, pause.cores)
+
+
+def _judge_record(
+    s: SessionState, ev: Evidence, at_stock: bool = False, counted: bool = False
+) -> tuple[SessionState, Pause | None]:
     owned = {r.core for r in s.cores}
     if ev.core not in owned:
-        return _enter_pause(
-            s,
+        return s, Pause(
             PauseReason.HELD_KNOB,
             f"core {ev.core} logged a machine check at a value this session does not own",
             (ev.core,),
         )
-    value = 0 if at_stock else resident(s, ev.core)
+    rec = s.core(ev.core)
+    value = 0 if at_stock else resident(s, ev.core) if ev.charged is None else ev.charged
     stage = s.flow.stage
     if value == 0:
         if stage is Stage.SEARCH:
-            return _enter_pause(
-                s, PauseReason.STOCK_UNSTABLE, f"core {ev.core} logged a machine check at its stock value", (ev.core,)
+            return s, Pause(
+                PauseReason.STOCK_UNSTABLE, f"core {ev.core} logged a machine check at its stock value", (ev.core,)
             )
         if counted:
-            return s
+            return s, None
         incidents = (*s.incidents, Incident.STOCK_MACHINE_CHECK)
         out = replace(s, incidents=incidents)
         if len(incidents) >= INCIDENT_LIMIT:
-            return _enter_pause(out, PauseReason.INCIDENTS, _incidents_text(incidents))
-        return out
+            return out, Pause(PauseReason.INCIDENTS, _incidents_text(incidents))
+        return out, None
     steps = 1 if ev.corrected else UNCORRECTED_STEPS
-    rec = s.core(ev.core)
     backed = search.back_off_in_place(replace(rec, value=value), s.config, steps)
+    if ev.charged is not None:
+        backed = replace(backed, value=max(backed.value, rec.value))
     out = s.with_core(backed)
     flow = replace(out.flow, dirty=True)
     if stage is Stage.LIVE1 and flow.live1 is not None and ev.core not in flow.live1.requeue:
@@ -884,7 +909,114 @@ def _apply_evidence(s: SessionState, ev, at_stock: bool = False, counted: bool =
         flow = _bisect_exit(flow)
     if stage in ALLCORE and flow.allcore is not None:
         flow = replace(flow, allcore=replace(flow.allcore, t_clean=0.0))
-    return replace(out, flow=flow)
+    return replace(out, flow=flow), None
+
+
+def _strength(s: SessionState, ev: Evidence, at_stock: bool, counted: bool) -> tuple[bool | int | tuple[int, ...], ...]:
+    out, pause = _judge_record(s, ev, at_stock, counted)
+    if pause is not None:
+        return (True,)
+    after = out.core(ev.core)
+    return False, len(out.incidents), after.value, () if after.fb is None else (after.fb,)
+
+
+def _strongest(
+    s: SessionState, evidence: tuple[Evidence, ...], at_stock: bool, counted: bool
+) -> tuple[tuple[Evidence, ...], tuple[Evidence, ...]]:
+    strength = [_strength(s, ev, at_stock, counted) for ev in evidence]
+    cores = dict.fromkeys(ev.core for ev in evidence)
+    kept = [max((i for i, ev in enumerate(evidence) if ev.core == core), key=strength.__getitem__) for core in cores]
+    return tuple(evidence[i] for i in kept), tuple(ev for i, ev in enumerate(evidence) if i not in kept)
+
+
+def _unjudged(ev: Evidence, why: str) -> Announce:
+    record = "corrected" if ev.corrected else "uncorrected"
+    charge = "with no charge" if ev.charged is None else f"charged to {ev.charged}"
+    return Announce("record_unjudged", f"core {ev.core}'s {record} machine check {charge} is not judged: {why}")
+
+
+def _placed(
+    s: SessionState, evidence: tuple[Evidence, ...], knobs: tuple[PauseReason, str, tuple[int, ...]] | None
+) -> tuple[tuple[Evidence, ...], tuple[Announce, ...]]:
+    records = {r.core: r for r in s.cores}
+    reason, _, moved = knobs if knobs is not None else (None, "", ())
+    unread = reason is PauseReason.SMU_READ
+    placed: list[Evidence] = []
+    notes: list[Announce] = []
+    for ev in evidence:
+        rec = records.get(ev.core)
+        if rec is None:
+            placed.append(ev)
+            continue
+        if ev.core in moved:
+            why = "its CO could not be read" if unread else "another program wrote its CO"
+        elif ev.charged is None:
+            why = "the CO journal cannot place its moment"
+        else:
+            why = None
+        if why is not None and rec.value != 0:
+            placed.append(replace(ev, charged=rec.value))
+            notes.append(
+                Announce(
+                    "record_unplaced",
+                    f"core {ev.core}'s machine check is charged to its current value {rec.value}: {why}",
+                )
+            )
+        elif why is not None and not ev.charged:
+            notes.append(
+                Announce(
+                    "record_unjudged",
+                    f"core {ev.core}'s machine check is not judged: {why} while the session held it at stock, "
+                    "so the value it ran at is unknown",
+                )
+            )
+        elif rec.fb is not None and ev.charged <= rec.fb:
+            notes.append(
+                Announce(
+                    "record_unjudged",
+                    f"core {ev.core}'s machine check is not judged: it is charged to {ev.charged}, "
+                    f"at or behind its fail bound {rec.fb}, so it repeats a failure already judged",
+                )
+            )
+        else:
+            placed.append(ev)
+    return tuple(placed), tuple(notes)
+
+
+def _kernel_log_read(s: SessionState, e: KernelLogRead) -> Transition:
+    if s.lifecycle is not Lifecycle.RUNNING or not isinstance(s.slot, Waiting) or s.slot.token != e.token:
+        return Transition(s)
+    if e.problem is not None:
+        return _enter_pause(
+            s, PauseReason.KERNEL_LOG_UNREAD, f"the kernel log since the resume could not be read: {e.problem}"
+        )
+    faults = tuple(Announce("program_fault", line) for line in e.program_faults)
+    evidence, notes = _placed(s, e.evidence, None)
+    judged, aside = _evidence_applied(s, evidence)
+    if isinstance(judged, Transition):
+        return replace(judged, effects=(*judged.effects, *notes, *aside, *faults))
+    return Transition(judged, (_commit(judged), *notes, *aside, *faults, Schedule(e.token, 0.0)))
+
+
+def _evidence_applied(
+    s: SessionState, evidence: tuple[Evidence, ...], at_stock: bool = False, counted: bool = False
+) -> tuple[SessionState | Transition, tuple[Announce, ...]]:
+    kept, aside = _strongest(s, evidence, at_stock, counted)
+    notes = tuple(
+        _unjudged(ev, f"a stronger record of core {ev.core} in the same read decided its verdict") for ev in aside
+    )
+    pauses: list[Pause] = []
+    for ev in kept:
+        s, pause = _judge_record(s, ev, at_stock, counted)
+        if pause is not None:
+            pauses.append(pause)
+    if not pauses:
+        return s, notes
+    causes = dict.fromkeys(
+        _incidents_text(s.incidents) if pause.reason is PauseReason.INCIDENTS else pause.detail for pause in pauses
+    )
+    cores = tuple(core for pause in pauses for core in pause.cores)
+    return _enter_pause(s, pauses[0].reason, "; ".join(causes), cores), notes
 
 
 def _pause_request(s: SessionState) -> Transition:

@@ -48,6 +48,7 @@ class PauseReason(StrEnum):
     OUTSIDE_WRITE = "outside_write"
     HELD_KNOB = "held_knob"
     SETUP_CHANGED = "setup_changed"
+    KERNEL_LOG_UNREAD = "kernel_log_unread"
 
 
 class Incident(StrEnum):
@@ -363,6 +364,7 @@ def _state_problems(s: SessionState):
 class Evidence:
     core: int
     corrected: bool
+    charged: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -459,6 +461,14 @@ class CrashEvidenceRead:
 
 
 @dataclass(frozen=True, slots=True)
+class KernelLogRead:
+    token: int
+    evidence: tuple[Evidence, ...] = ()
+    problem: str | None = None
+    program_faults: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class SmuRefused:
     core: int
     value: int
@@ -488,6 +498,7 @@ Event = (
     | ContinuationDue
     | WorkerReported
     | CrashEvidenceRead
+    | KernelLogRead
     | SmuRefused
     | DatabaseFailed
     | InternalError

@@ -59,7 +59,7 @@ def attribute(s: SessionState, e: CrashEvidenceRead) -> Attribution:
     for ev in uncorrected:
         if ev.core not in owned:
             return Attribution(held=ev.core, evidence=corrected)
-    convicted = tuple(ev.core for ev in uncorrected if resident(s, ev.core) != 0)
+    convicted = tuple(dict.fromkeys(ev.core for ev in uncorrected if resident(s, ev.core) != 0))
     stock_records = tuple(ev for ev in uncorrected if resident(s, ev.core) == 0)
     if convicted:
         return Attribution(convict=convicted, evidence=corrected + stock_records)

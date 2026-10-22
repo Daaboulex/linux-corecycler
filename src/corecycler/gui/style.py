@@ -104,6 +104,7 @@ PAUSE_LABELS: dict[PauseReason, str] = {
     PauseReason.OUTSIDE_WRITE: "Another program changed a Curve Optimizer value",
     PauseReason.HELD_KNOB: "A core outside the session failed",
     PauseReason.SETUP_CHANGED: "The setup changed",
+    PauseReason.KERNEL_LOG_UNREAD: "The kernel log could not be read",
 }
 
 STAGE_LABELS: dict[Stage, str] = {

@@ -201,9 +201,11 @@ class SmuHardware:
             igpu=igpu(),
         )
 
-    def harvest(self, boot_id: str, since_ns: int | None, next_boot: bool) -> kernel.JournalHarvest:
+    def harvest(
+        self, boot_id: str, since_ns: int | None, next_boot: bool, through_ns: int | None
+    ) -> kernel.JournalHarvest:
         after = None if since_ns is None else kernel.HarvestFrom(mono_ns=since_ns, realtime_us=None)
-        return kernel.harvest_after(boot_id, after, next_boot=next_boot)
+        return kernel.harvest_after(boot_id, after, next_boot=next_boot, through_mono_ns=through_ns)
 
     def asleep_seconds(self) -> float:
         return time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
@@ -863,6 +865,7 @@ def build_rig(
     say: Callable[[str], None],
     db: HistoryDB,
     identity: Identity,
+    check_interval_s: int,
 ) -> LiveRig:
     cpus_of = tuple(sorted((core, tuple(info.logical_cpus)) for core, info in topology.cores.items()))
     domain_of = tuple(sorted((core, info.ccd) for core, info in topology.cores.items()))
@@ -894,6 +897,7 @@ def build_rig(
         say=say,
         two_t_problem=backend_factory().binary_problem(TWO_T["binary"]),
         clock=time.monotonic,
+        check_interval_s=check_interval_s,
     )
 
 
@@ -1062,9 +1066,9 @@ def _drive(args: argparse.Namespace) -> int:
 
     try:
         identity = read_identity(db, smu, topology)
-        rig = build_rig(args, topology, smu, lambda: get_backend("y-cruncher"), say, db, identity)
-        install_signals(rig)
-        with kernel.fast_mce_poll(say):
+        with kernel.fast_mce_poll(say) as check_interval_s:
+            rig = build_rig(args, topology, smu, lambda: get_backend("y-cruncher"), say, db, identity, check_interval_s)
+            install_signals(rig)
             return run(args, rig, say)
     finally:
         db.close()

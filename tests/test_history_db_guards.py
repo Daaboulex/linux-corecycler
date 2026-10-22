@@ -97,7 +97,7 @@ class TestOpenGuards:
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):
             opened[0].execute("SELECT 1")
 
-    def test_a_schema_31_database_with_telemetry_opens_at_32_and_reads_its_samples(self, tmp_path):
+    def test_a_schema_31_database_with_telemetry_opens_at_the_current_schema_and_reads_its_samples(self, tmp_path):
         path = tmp_path / "history.db"
         db = HistoryDB(path)
         run_id = db.create_run(RunRecord(cpu_model="old"))
@@ -106,7 +106,7 @@ class TestOpenGuards:
         _set_schema_version(path, 31)
         reopened = HistoryDB(path)
         try:
-            assert _schema_version(path) == 32
+            assert _schema_version(path) == HistoryDB.SCHEMA_VERSION
             assert [sample.core_id for sample in reopened.get_telemetry(run_id)] == [0]
         finally:
             reopened.close()

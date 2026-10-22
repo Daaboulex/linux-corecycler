@@ -540,6 +540,20 @@ class TestMachineSessionMethods:
         db.save_machine_session(sid, status="running", machine_json="3", boot_id="b", **fields)
         assert db.load_machine_session(sid) == ("3", "b", None, None)
 
+    @pytest.mark.req("L18.d.3.once")
+    def test_a_kernel_read_point_only_moves_forward_within_its_boot(self, db):
+        sid = db.next_tuner_session_id()
+        fields = {"config_json": "{}", "bios_version": "B", "cpu_model": "C", "context_id": None}
+        db.save_machine_session(sid, status="running", machine_json="1", boot_id="a", **fields)
+        db.set_kernel_read(sid, 5_000)
+        db.set_kernel_read(sid, 4_000)
+        assert db.load_machine_session(sid)[2] == 5_000
+        db.set_kernel_read(sid, 6_000)
+        assert db.load_machine_session(sid)[2] == 6_000
+        db.save_machine_session(sid, status="running", machine_json="2", boot_id="b", **fields)
+        db.set_kernel_read(sid, 1_000)
+        assert db.load_machine_session(sid)[2] == 1_000
+
     def test_delete_context_cascade(self, db):
         ctx_id = db.create_context(TuningContextRecord(bios_version="v1"))
         db.create_run(RunRecord(cpu_model="test", context_id=ctx_id))
@@ -1006,7 +1020,11 @@ class TestMergeFrom:
         HistoryDB(src_path).close()
         raw = sqlite3.connect(src_path)
         raw.row_factory = sqlite3.Row
-        tables = ["tuning_contexts", *(table for table, _ in HistoryDB._MERGE_TABLES)]
+        tables = [
+            row["name"]
+            for row in raw.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            if row["name"] not in {"schema_version", "sqlite_sequence"}
+        ]
         links = {"run_id", "context_id", "session_id", "test_id", "parent_session_id"}
         written = {}
         for table in tables:
@@ -1020,7 +1038,7 @@ class TestMergeFrom:
         raw.close()
         dst = HistoryDB(tmp_path / "dst.db")
         dst.merge_from(src_path)
-        copied = {t: dict(dst._execute_raw(f"SELECT * FROM {t} ORDER BY id DESC").fetchone()) for t in tables}
+        copied = {t: dict(dst._execute_raw(f"SELECT * FROM {t} ORDER BY rowid DESC").fetchone()) for t in tables}
         dst.close()
         for table, row in written.items():
             assert {c: v for c, v in copied[table].items() if c not in links | {"id"}} == {
@@ -1068,6 +1086,34 @@ class TestMergeFrom:
         assert counts["runs"] == 1
         assert dst.list_runs()[0].cpu_model == "old-cpu"
         dst.close()
+
+
+def test_a_schema_32_database_gains_the_co_reads_table_and_keeps_each_read_with_its_moment(tmp_path):
+    path = tmp_path / "history.db"
+    HistoryDB(path).close()
+    conn = sqlite3.connect(path)
+    conn.execute("DROP TABLE tuner_co_reads")
+    conn.execute("UPDATE schema_version SET version=32")
+    conn.commit()
+    conn.close()
+    db = HistoryDB(path)
+    try:
+        db.save_machine_session(
+            7,
+            status="paused",
+            config_json="{}",
+            machine_json="{}",
+            boot_id="b",
+            bios_version="",
+            cpu_model="",
+            context_id=None,
+        )
+        db.insert_co_reads(7, "b", 1_000, ((0, -3), (1, None)))
+        assert [(row.core_id, row.value, row.mono_ns, row.confirmed) for row in db.co_reads("b")] == [
+            (0, -3, 1_000, True)
+        ]
+    finally:
+        db.close()
 
 
 class TestMigrationCrashSafety:

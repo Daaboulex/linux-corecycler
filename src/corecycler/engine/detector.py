@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 KMSG = Path("/dev/kmsg")
 MCE_POLL = Path("/sys/devices/system/machinecheck/machinecheck0/check_interval")
 MCE_POLL_MAX_S = 5
+MCE_POLL_KERNEL_DEFAULT_S = 300
 MCE_TIMER_ROUNDING_S = 1
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 KMSG_READ_SIZE = 8192
@@ -161,6 +162,7 @@ class JournalHarvest:
     dead_boot: tuple[KernelEvent, ...]
     next_boot: tuple[KernelEvent, ...]
     problem: str | None
+    unfinished_from_ns: int | None = None
 
 
 def bank_is_core(ipid: int | None, bank_name: str | None) -> bool:
@@ -462,27 +464,39 @@ def _events(entries: Iterable[_JournalEntry]) -> tuple[KernelEvent, ...]:
     return tuple(events)
 
 
+def stamp_ns(raw_ts: float) -> int:
+    return round(raw_ts * 1_000_000) * 1000
+
+
 def harvest_after(
     boot_id: str,
     after: HarvestFrom | None,
     *,
     next_boot: bool,
-    before_mono_ns: int | None = None,
+    through_mono_ns: int | None = None,
     timeout: float = 15.0,
 ) -> JournalHarvest:
     if (problem := _boot_problem(boot_id)) is not None:
         return JournalHarvest((), (), problem)
     dead_boot: tuple[KernelEvent, ...] = ()
     later: tuple[KernelEvent, ...] = ()
+    unfinished: int | None = None
     problems: list[str | None] = []
     if after is None:
         problems.append("the session's last write time is unreadable")
     else:
         dead, problem = _journal_entries(["-b", boot_id, *_KERNEL_RECORDS], timeout)
-        dead_boot = _events(
-            entry
-            for entry in dead
-            if after.precedes(entry) and (before_mono_ns is None or entry.mono_us * 1000 < before_mono_ns)
+        events, open_lines = parse_kernel_records(
+            ((entry.mono_us / 1e6, entry.message) for entry in dead if after.precedes(entry)),
+            final=through_mono_ns is None,
+        )
+        opener = stamp_ns(open_lines[0][0]) if open_lines else None
+        unfinished = opener if opener is not None and opener <= through_mono_ns else None
+        dead_boot = tuple(
+            event
+            for event in events
+            if (through_mono_ns is None or stamp_ns(event.raw_ts) <= through_mono_ns)
+            and (unfinished is None or stamp_ns(event.raw_ts) < unfinished)
         )
         problems.append(problem)
     if next_boot:
@@ -492,7 +506,7 @@ def harvest_after(
             early, problem = _before_userspace(following, timeout)
             later = _events(early)
             problems.append(problem)
-    return JournalHarvest(dead_boot, later, "; ".join(filter(None, problems)) or None)
+    return JournalHarvest(dead_boot, later, "; ".join(filter(None, problems)) or None, unfinished)
 
 
 def mce_poll_problem(path: Path = MCE_POLL) -> str | None:
@@ -519,7 +533,7 @@ def mce_settle_s(path: Path = MCE_POLL) -> float:
 
 
 @contextmanager
-def fast_mce_poll(say: Callable[[str], None], path: Path = MCE_POLL) -> Iterator[None]:
+def fast_mce_poll(say: Callable[[str], None], path: Path = MCE_POLL) -> Iterator[int]:
     try:
         before = int(path.read_text().strip())
     except (OSError, ValueError) as exc:
@@ -535,7 +549,7 @@ def fast_mce_poll(say: Callable[[str], None], path: Path = MCE_POLL) -> Iterator
             raised = True
             say(f"machine-check poll raised from {before} s to {MCE_POLL_MAX_S} s for this run")
     try:
-        yield
+        yield MCE_POLL_KERNEL_DEFAULT_S if before is None else before
     finally:
         if raised:
             try:

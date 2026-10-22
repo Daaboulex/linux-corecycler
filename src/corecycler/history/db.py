@@ -218,10 +218,18 @@ class JournalRow:
     written_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class CoRead:
+    core_id: int
+    value: int
+    mono_ns: int
+    confirmed: bool = True
+
+
 class HistoryDB:
     """Crash-safe SQLite database for test run history."""
 
-    SCHEMA_VERSION = 32
+    SCHEMA_VERSION = 33
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self._db_path = Path(db_path)
@@ -368,6 +376,18 @@ CREATE TABLE IF NOT EXISTS tuner_boots (
     reset_reasons_json TEXT    NOT NULL,
     igpu_json          TEXT    NOT NULL
 );
+"""
+
+    _DDL_TUNER_CO_READS = """\
+CREATE TABLE IF NOT EXISTS tuner_co_reads (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL REFERENCES tuner_sessions(id) ON DELETE CASCADE,
+    core_id     INTEGER NOT NULL,
+    value       INTEGER NOT NULL,
+    boot_id     TEXT    NOT NULL,
+    mono_ns     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_co_reads_boot ON tuner_co_reads(boot_id);
 """
 
     _DDL_TELEMETRY_BLOCKS = """\
@@ -561,6 +581,7 @@ CREATE INDEX IF NOT EXISTS idx_co_journal_proven ON tuner_co_journal(session_id,
         + _DDL_TUNER_SAMPLES
         + _DDL_TELEMETRY_BLOCKS
         + _DDL_TUNER_BOOTS
+        + _DDL_TUNER_CO_READS
     ).replace("__SCHEMA_VERSION__", str(SCHEMA_VERSION))
 
     _DDL_MIGRATE_V2_TABLES = """\
@@ -980,6 +1001,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         30: _migrate_v30,
         31: _migrate_v31,
         32: _migrate_v32,
+        33: _DDL_TUNER_CO_READS,
     }
 
     @staticmethod
@@ -1632,8 +1654,8 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
 
     def set_kernel_read(self, session_id: int, kernel_read_ns: int) -> None:
         self.__conn.execute(
-            "UPDATE tuner_sessions SET kernel_read_ns=?, updated_at=? WHERE id=?",
-            (kernel_read_ns, self._now_iso(), session_id),
+            "UPDATE tuner_sessions SET kernel_read_ns=MAX(COALESCE(kernel_read_ns, ?), ?), updated_at=? WHERE id=?",
+            (kernel_read_ns, kernel_read_ns, self._now_iso(), session_id),
         )
 
     def journal_co_intent(
@@ -1734,6 +1756,40 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         self.check_journal(session_id)
         rows = self.__conn.execute(
             "SELECT * FROM tuner_co_journal WHERE session_id=? AND boot_id=? ORDER BY id", (session_id, boot_id)
+        ).fetchall()
+        return [self._row_to_journal_row(r) for r in rows]
+
+    def insert_co_reads(
+        self, session_id: int, boot_id: str, mono_ns: int, reads: tuple[tuple[int, int | None], ...]
+    ) -> None:
+        self.__conn.executemany(
+            "INSERT INTO tuner_co_reads (session_id, core_id, value, boot_id, mono_ns) VALUES (?,?,?,?,?)",
+            [(session_id, core, value, boot_id, mono_ns) for core, value in reads if value is not None],
+        )
+
+    def co_reads(self, boot_id: str) -> list[CoRead]:
+        bad = self.__conn.execute(
+            "SELECT session_id, core_id, value, mono_ns FROM tuner_co_reads WHERE boot_id=? "
+            "AND (typeof(value) <> 'integer' OR typeof(mono_ns) <> 'integer') ORDER BY id LIMIT 1",
+            (boot_id,),
+        ).fetchone()
+        if bad is not None:
+            raise CorruptSessionError(
+                bad["session_id"], f"core {bad['core_id']} has CO read {bad['value']!r} at {bad['mono_ns']!r}"
+            )
+        rows = self.__conn.execute(
+            "SELECT core_id, value, mono_ns FROM tuner_co_reads WHERE boot_id=? ORDER BY id", (boot_id,)
+        ).fetchall()
+        return [CoRead(row["core_id"], row["value"], row["mono_ns"]) for row in rows]
+
+    def boot_co_journal(self, boot_id: str) -> list[JournalRow]:
+        sessions = self.__conn.execute(
+            "SELECT DISTINCT session_id FROM tuner_co_journal WHERE boot_id=? ORDER BY session_id", (boot_id,)
+        ).fetchall()
+        for row in sessions:
+            self.check_journal(row["session_id"])
+        rows = self.__conn.execute(
+            "SELECT * FROM tuner_co_journal WHERE boot_id=? AND mono_ns IS NOT NULL ORDER BY id", (boot_id,)
         ).fetchall()
         return [self._row_to_journal_row(r) for r in rows]
 
@@ -1845,6 +1901,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         ("tuner_events", {"session_id": "tuner_sessions"}),
         ("tuner_test_log", {"session_id": "tuner_sessions", "run_id": "runs"}),
         ("tuner_co_journal", {"session_id": "tuner_sessions"}),
+        ("tuner_co_reads", {"session_id": "tuner_sessions"}),
         ("tuner_tests", {"session_id": "tuner_sessions"}),
         ("tuner_samples", {"test_id": "tuner_tests"}),
         ("tuner_sample_blocks", {"test_id": "tuner_tests"}),

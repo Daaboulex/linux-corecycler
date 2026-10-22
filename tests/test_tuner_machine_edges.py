@@ -605,11 +605,12 @@ def test_a_machine_check_on_a_core_the_session_does_not_own_pauses_naming_it():
     assert fake.state.pause.cores == (1,)
 
 
-def test_a_machine_check_found_at_resume_pauses_as_stock_unstable():
+def test_a_machine_check_found_at_resume_and_charged_to_stock_pauses_as_stock_unstable():
     fake = running_fake()
     fake.post(PauseRequest())
     resuming = replace(fake.state, pause=Pause(PauseReason.RESUMING, "reading"))
-    result = transition(resuming, CrashEvidenceRead(False, True, False, evidence=(Evidence(1, True),)), LAYOUT)
+    read = CrashEvidenceRead(False, True, False, evidence=(Evidence(1, True, 0),), co_now=((0, 0), (1, 0)))
+    result = transition(resuming, read, LAYOUT)
     assert result.state.pause.reason is PauseReason.STOCK_UNSTABLE
 
 
