@@ -12,6 +12,7 @@ import struct
 import sys
 import time
 from collections import deque
+from contextlib import nullcontext
 from dataclasses import replace
 from importlib import metadata
 from pathlib import Path
@@ -36,6 +37,7 @@ from corecycler.engine.backends.base import OutcomeKind, StressConfig, StressMod
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.containment import lane_cgroup_parent, lane_problem
 from corecycler.engine.execution import Heartbeat, Lane, Supervisor, ThermalWatch
+from corecycler.engine.heavy_test_lock import HeavyTestRefused, take_heavy_test_lock
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.history.context import read_bios_version
 from corecycler.history.db import HistoryDB
@@ -1011,11 +1013,14 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit as stop:
         return EXIT_REFUSED if stop.code else EXIT_COMPLETED
     try:
-        with co_writer(record=True):
+        with co_writer(record=True), nullcontext() if args.abort else take_heavy_test_lock("corecycler-tuner"):
             code = _drive(args)
     except WriterBusy as busy:
         print(f"live: {busy}", file=sys.stderr)
         return EXIT_LOCKED
+    except HeavyTestRefused as refused:
+        print(f"live: {refused}", file=sys.stderr)
+        return EXIT_REFUSED
     notify_outcome(code)
     return code
 

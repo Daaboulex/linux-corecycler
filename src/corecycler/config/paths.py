@@ -40,6 +40,12 @@ def heartbeat_path(uid: int) -> Path:
     return Path("/run/user") / str(uid) / "corecycler" / "heartbeat.json"
 
 
+def heavy_test_lock_path(uid: int) -> Path:
+    """The lock every heavy test tool this user runs takes, in the user's runtime tmpfs: no boot outlives it, HOME
+    never moves it, and tools outside this repository take the same file."""
+    return Path("/run/user") / str(uid) / "heavy-test.lock"
+
+
 def atomic_write(path: Path, content: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.unlink(missing_ok=True)

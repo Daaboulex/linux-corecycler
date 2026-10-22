@@ -8,6 +8,8 @@ worker so no stress binary is ever launched).
 
 from __future__ import annotations
 
+import io
+import os
 import sys as _sys
 from unittest.mock import MagicMock
 
@@ -21,6 +23,7 @@ from corecycler.gui import monitor_tab as mon
 from corecycler.gui import smu_tab as st
 from corecycler.gui.style import theme
 from corecycler.monitor.memory import DIMMInfo
+from tests._heavy_lock import GPU_LINE, held_by_another_tool, holder_seen_by_another_tool, said_by
 from tests._sensors import FakeSensors, a_tick
 
 
@@ -249,6 +252,48 @@ class TestMemoryStressLifecycle:
         assert not tab._stress_duration.isEnabled()
         assert "Running stressapptest" in tab._stress_status.text()
 
+    @pytest.mark.req("HEAVY.gui")
+    def test_a_run_refuses_while_another_tool_holds_the_shared_lock_naming_it(self, tab, monkeypatch, heavy_lock):
+        shown = MagicMock()
+        monkeypatch.setattr(mem, "QMessageBox", shown)
+        monkeypatch.setattr(mem._StressWorker, "start", lambda self: None)
+        started = []
+        tab.memory_stress_started.connect(lambda: started.append(True))
+        with held_by_another_tool(heavy_lock, f"{GPU_LINE}\n".encode()):
+            tab._run_memory_stress()
+        assert (tab._stress_worker, started) == (None, [])
+        assert shown.warning.call_args.args[1:] == (
+            "Cannot Start",
+            f"Cannot start: another heavy test holds the shared lock: {GPU_LINE}",
+        )
+        assert tab._stress_btn.isEnabled() and not tab._stop_btn.isEnabled()
+
+    @pytest.mark.req("HEAVY.gui")
+    @pytest.mark.parametrize("ends", ["finishes", "is stopped", "crashes"])
+    def test_a_run_holds_the_shared_lock_and_its_worker_lets_go_however_the_run_ends(
+        self, tab, monkeypatch, heavy_lock, ends
+    ):
+        seen = []
+
+        def command_name(key):
+            seen.append(holder_seen_by_another_tool(heavy_lock))
+            if ends == "crashes":
+                raise RuntimeError("boom")
+            if ends == "is stopped":
+                tab._stress_worker.stop()
+            return _sys.executable
+
+        monkeypatch.setattr(mem, "QMessageBox", MagicMock())
+        monkeypatch.setattr(mem.tools, "command_name", command_name)
+        monkeypatch.setattr(mem._StressWorker, "start", lambda self: None)
+        tab._stress_tool.clear()
+        tab._stress_tool.addItem("stress-ng --vm")
+        tab._run_memory_stress()
+        tab._stress_worker.run()
+        [line] = seen
+        assert line is not None and said_by(line)[:2] == ("corecycler-gui", os.getpid())
+        assert holder_seen_by_another_tool(heavy_lock) is None
+
     def test_stopping_a_run_asks_the_worker_to_stop(self, tab):
         worker = MagicMock()
         worker.isRunning.return_value = True
@@ -287,7 +332,7 @@ class TestMemoryStressLifecycle:
         proc.returncode = 0
         popen = MagicMock(return_value=proc)
         monkeypatch.setattr(subprocess, "Popen", popen)
-        worker = mem._StressWorker("stressapptest", 1)
+        worker = mem._StressWorker("stressapptest", 1, io.BytesIO())
         worker.run()
 
         preexec = popen.call_args.kwargs["preexec_fn"]
@@ -306,7 +351,7 @@ class TestMemoryStressLifecycle:
 
         popen = MagicMock()
         monkeypatch.setattr(subprocess, "Popen", popen)
-        worker = mem._StressWorker("stress-ng --vm", 1)
+        worker = mem._StressWorker("stress-ng --vm", 1, io.BytesIO())
         seen = []
         worker.done.connect(lambda verdict, output: seen.append(verdict))
         worker.stop()
@@ -322,7 +367,7 @@ class TestMemoryStressLifecycle:
         from corecycler.engine import execution
 
         monkeypatch.setattr(execution, "make_preexec", lambda: None)
-        worker = mem._StressWorker("stress-ng --vm", 1)
+        worker = mem._StressWorker("stress-ng --vm", 1, io.BytesIO())
         proc = MagicMock(pid=4242, returncode=-9)
         proc.communicate.return_value = ("", "")
 

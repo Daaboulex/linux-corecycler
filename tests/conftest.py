@@ -459,6 +459,15 @@ def writer_dir(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def heavy_lock(monkeypatch, tmp_path_factory):
+    from corecycler.engine import heavy_test_lock
+
+    path = tmp_path_factory.mktemp("runtime") / "heavy-test.lock"
+    monkeypatch.setattr(heavy_test_lock, "heavy_test_lock_path", lambda uid: path)
+    return path
+
+
+@pytest.fixture(autouse=True)
 def no_machine_check_settle(monkeypatch):
     from corecycler.engine import detector
 

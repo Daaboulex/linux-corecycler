@@ -5219,3 +5219,33 @@ proof = "built"
 id = "PROGRAM_FAULT.explorer"
 statement = "In the fake world the machine's transition never reads the program faults a test's report carries, and every future with such reports reaches a rest (scratch/design/segfault-evidence.md)."
 proof = "built"
+
+[[requirement]]
+id = "HEAVY.path"
+statement = "The shared heavy-test lock is /run/user/<uid>/heavy-test.lock for the invoking user, the sudo user under sudo, whatever HOME and XDG_RUNTIME_DIR say (scratch/design/brief-shared-lock.md)."
+proof = "built"
+
+[[requirement]]
+id = "HEAVY.sudo"
+statement = "Under sudo the lock file a root run created is handed to SUDO_UID and SUDO_GID without following a link, so the user's own later runs can still open it (scratch/design/brief-shared-lock.md)."
+proof = "built"
+
+[[requirement]]
+id = "HEAVY.take"
+statement = "Taking the shared lock opens it, made mode 0600 when missing, takes flock LOCK_EX with LOCK_NB, replaces what the file held with one line, the tool, its pid and the local time in ISO 8601 with its offset, and holds it until its file closes or the process ends however it ends, no program it started keeping it; another tool holding it refuses naming the holder's first line, an empty line or one that is not text named as such (scratch/design/brief-shared-lock.md)."
+proof = "built"
+
+[[requirement]]
+id = "HEAVY.fail_closed"
+statement = "A runtime directory that is missing or the user cannot write, a link at the lock's path, a failed flock or a line that cannot be written refuses naming the path and the error, creates nothing outside the runtime directory, leaves a link's target alone and leaves the lock free (scratch/design/brief-shared-lock.md)."
+proof = "built"
+
+[[requirement]]
+id = "HEAVY.driver"
+statement = "The tuner driver takes the shared lock as corecycler-tuner for start, resume, validate, continue and restart, the boot resume included, before it builds the SMU or opens the database, and lets it go when it comes to rest, paused, closed or stopped by an error; while another tool holds it the driver exits refused naming the holder's line, the code the boot resume unit retries, and writes nothing; abort runs no test and goes ahead (scratch/design/brief-shared-lock.md)."
+proof = "built"
+
+[[requirement]]
+id = "HEAVY.gui"
+statement = "Start Test and the Memory tab's stress test each take the shared lock as corecycler-gui before their run begins and their worker lets it go when the run ends, however it ends: finished, stopped or crashed; while another tool holds it either refuses naming the holder's line and starts nothing (scratch/design/brief-shared-lock.md)."
+proof = "built"

@@ -6,7 +6,7 @@ import logging
 import re
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 
 from PySide6.QtCore import QThread, Signal, Slot
 from PySide6.QtGui import QFont
@@ -30,6 +30,7 @@ from corecycler.engine import execution
 from corecycler.engine.backends.base import OutcomeKind
 from corecycler.engine.backends.stress_ng import StressNgBackend
 from corecycler.engine.backends.stressapptest import StressapptestBackend
+from corecycler.engine.heavy_test_lock import HeavyTestRefused, take_heavy_test_lock
 from corecycler.engine.memory_budget import memory_budget
 from corecycler.gui.style import theme
 from corecycler.monitor.memory import DIMMInfo, SPD5118Reader, read_dimm_info
@@ -91,14 +92,15 @@ def _clock(name: str, mhz: float) -> tuple[str, str]:
 
 
 class _StressWorker(QThread):
-    """Runs memory stress test in background."""
+    """Runs the memory stress test in the background and lets the shared heavy-test lock go when the run ends."""
 
     done = Signal(str, str)
 
-    def __init__(self, tool: str, duration_minutes: int, parent=None) -> None:
+    def __init__(self, tool: str, duration_minutes: int, lock: BinaryIO, parent=None) -> None:
         super().__init__(parent)
         self._tool = tool
         self._duration = duration_minutes
+        self._lock = lock
         self._process: subprocess.Popen | None = None
         self._stopped = False
 
@@ -169,6 +171,8 @@ class _StressWorker(QThread):
                 self.done.emit(*memory_verdict(self._tool, output, self._process.returncode))
         except Exception as e:
             self.done.emit(NO_VERDICT, str(e))
+        finally:
+            self._lock.close()
 
     def stop(self) -> None:
         self._stopped = True
@@ -536,13 +540,18 @@ class MemoryTab(QWidget):
                 "No memory stress tools installed.\nInstall stressapptest or stress-ng.",
             )
             return
+        try:
+            lock = take_heavy_test_lock("corecycler-gui")
+        except HeavyTestRefused as refused:
+            QMessageBox.warning(self, "Cannot Start", f"Cannot start: {refused}")
+            return
         duration = self._stress_duration.value()
         self._stress_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
         self._stress_duration.setEnabled(False)
         self._stress_tool.setEnabled(False)
         self._stress_status.setText(f"Running {tool} for {duration}min...")
-        self._stress_worker = _StressWorker(tool, duration, parent=self)
+        self._stress_worker = _StressWorker(tool, duration, lock, parent=self)
         self._stress_worker.done.connect(self._on_stress_done)
         self.memory_stress_started.emit()
         self._stress_worker.start()

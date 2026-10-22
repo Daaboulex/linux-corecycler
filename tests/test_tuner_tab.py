@@ -730,7 +730,7 @@ def test_the_real_driver_starts_from_the_tab_and_its_refusal_comes_back(db, tmp_
     monkeypatch.setattr(tt, "data_dir", lambda: data)
     on_disk = HistoryDB(tmp_path / "h.db")
     t = tt.TunerTab(on_disk, topology(), CO_RANGE, None)
-    t._launch(["--resume", "--session", "1"])
+    t._launch(["--abort", "--session", "1"])
     deadline = time.monotonic() + 60
     while t._child is not None and time.monotonic() < deadline:
         time.sleep(0.1)

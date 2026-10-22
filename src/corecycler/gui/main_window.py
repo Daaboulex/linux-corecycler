@@ -10,6 +10,7 @@ import time
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import BinaryIO
 
 from PySide6.QtCore import QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QFont
@@ -32,6 +33,7 @@ from corecycler.config.settings import load_settings, save_settings
 from corecycler.engine.backends import get_backend, load_all
 from corecycler.engine.backends.base import StressConfig, StressResult
 from corecycler.engine.containment import lane_problem
+from corecycler.engine.heavy_test_lock import HeavyTestRefused, take_heavy_test_lock
 from corecycler.engine.scheduler import CoreScheduler, CoreTestStatus, SchedulerConfig
 from corecycler.engine.topology import CPUTopology, detect_topology
 from corecycler.gui.config_tab import ConfigTab
@@ -67,7 +69,7 @@ def narrowable(label: QLabel) -> QLabel:
 
 
 class TestWorker(QThread):
-    """Worker thread that runs the core scheduler."""
+    """Worker thread that runs the core scheduler and lets the shared heavy-test lock go when the run ends."""
 
     core_started = Signal(int, int, arguments=["core_id", "cycle"])
     core_finished = Signal(int, object, arguments=["core_id", "result"])
@@ -80,9 +82,10 @@ class TestWorker(QThread):
     phase_changed = Signal(int, str)
     crashed = Signal(str)
 
-    def __init__(self, scheduler: CoreScheduler) -> None:
+    def __init__(self, scheduler: CoreScheduler, lock: BinaryIO) -> None:
         super().__init__()
         self.scheduler = scheduler
+        self._lock = lock
 
         self.scheduler.on_core_start = [lambda cid, cyc: self.core_started.emit(cid, cyc)]
         self.scheduler.on_core_finish = [lambda cid, res: self.core_finished.emit(cid, res)]
@@ -105,6 +108,8 @@ class TestWorker(QThread):
         except Exception as exc:
             log.exception("Test worker crashed")
             self.crashed.emit(str(exc))
+        finally:
+            self._lock.close()
 
 
 def _read(value: float | None, spec: str, unit: str) -> str:
@@ -427,6 +432,11 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to initialize scheduler: {e}")
             return
+        try:
+            lock = take_heavy_test_lock("corecycler-gui")
+        except HeavyTestRefused as refused:
+            QMessageBox.warning(self, "Cannot Start", f"Cannot start: {refused}")
+            return
 
         self._results_tab.init_cores(scheduler.core_status)
 
@@ -437,7 +447,7 @@ class MainWindow(QMainWindow):
         self._rounds_done = 0
         self._active_test_core = None
         self._crash = None
-        self._worker = TestWorker(scheduler)
+        self._worker = TestWorker(scheduler, lock)
         self._worker.core_started.connect(self._on_core_started)
         self._worker.core_finished.connect(self._on_core_finished)
         self._worker.status_updated.connect(self._on_status_updated)

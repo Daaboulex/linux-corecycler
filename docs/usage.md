@@ -227,9 +227,38 @@ Hard crashes are expected during CO tuning; that is how each core's limit is fou
 it does nothing and exits 0, and with two or more it resumes neither and names them. On
 NixOS, `services.corecycler.autoResume.enable` runs it at boot with no login: the
 `deviceAccessUser` lingers, and a user unit of theirs runs it once `autoResume.delaySeconds`
-have passed. After a refusal (the SMU driver not loaded yet, or the GUI already driving a
-session) the unit tries again, three times a minute apart. A paused session is your
-decision and is never resumed by itself.
+have passed. After a refusal (the SMU driver not loaded yet, the GUI already driving a
+session, or another heavy test holding the shared lock) the unit tries again, three times a
+minute apart. A paused session is your decision and is never resumed by itself.
+
+## One heavy test at a time
+
+Heavy tests never overlap for one user: each heavy test tool holds one shared lock, a file
+in that user's runtime directory, for its whole heavy run and refuses to start while another
+tool holds it. Tools run by different users take different files. The tuner driver
+holds it from tune, resume, validate, continue or restart (the boot resume included) until
+the session comes to rest, and **Start Test** and the Memory tab's stress test hold it for
+their run. Abort runs no test and goes ahead; status, margins, doctor, shaper and hang-watch
+never take it. A refusal names the holder,
+`another heavy test holds the shared lock: <its line>`, and the driver then exits 5, so the
+boot resume tries again.
+
+Another tool takes the same lock in three steps:
+
+1. Open `/run/user/<uid>/heavy-test.lock`, the uid of the user who runs the tool (under
+   sudo, `SUDO_UID`), with `O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC` and mode 0600, never
+   `O_TRUNC`. In a shell, `umask 077; exec 9<>"$path"`, never `exec 9>"$path"`, which
+   empties the holder's line before the lock is tried; a shell open follows a link. Under
+   sudo, a file this open created belongs to root: chown it to `SUDO_UID:SUDO_GID`, or the
+   user's own runs cannot open it until reboot.
+2. `flock(fd, LOCK_EX | LOCK_NB)`. On `EWOULDBLOCK`, read the file's first line and refuse
+   naming it.
+3. `ftruncate(fd, 0)`, then write one line at offset 0, `<tool> <pid> <time>` (a name
+   without spaces, the process id, the local time in ISO 8601 to the second with its offset,
+   like `vkbasalt-faults 4242 2026-10-22T14:25:03+02:00`), and keep the fd open for the whole
+   heavy run: the kernel releases the lock when the process exits, however it exits.
+
+Any error in any step refuses, naming it, and never runs unlocked.
 
 ## Test programs: instruction set and FFT size
 

@@ -67,8 +67,9 @@ from corecycler.tuner.machine.types import (
     TestSpec as Spec,
 )
 from corecycler.tuner.orders import Method
+from tests._heavy_lock import GPU_LINE, held_by_another_tool, holder_seen_by_another_tool, said_by
 from tests._old_rows import seed_old_session
-from tests._tuner_world import Resume, fresh, run_to_rest, start
+from tests._tuner_world import Resume, fresh, run_to_rest, save_machine_session, start
 
 CPUS = ((0, (0, 16)), (1, (1, 17)), (8, (8, 24)))
 DOMAINS = ((0, 0), (1, 0), (8, 1))
@@ -4166,6 +4167,89 @@ def test_one_co_writer_at_a_time_on_a_machine(tmp_path, driver_home, writer_dir,
         live_hw._drive = drive
     assert seen == [os.getpid()]
     assert running_driver() is None
+
+
+DRIVEN = {
+    "start": ["--start", "--cores", "0,1,8"],
+    "resume": ["--session", "1", "--resume"],
+    "validate": ["--session", "1", "--validate"],
+    "continue": ["--session", "1", "--continue"],
+    "restart": ["--session", "1", "--restart"],
+}
+
+
+def driver_argv(tmp_path: Path, command: list[str]) -> list[str]:
+    return ["--state-dir", str(tmp_path / "s"), "--db", str(tmp_path / "h.db"), "--write", *command]
+
+
+@pytest.mark.req("HEAVY.driver")
+@pytest.mark.parametrize("command", DRIVEN.values(), ids=DRIVEN.keys())
+def test_the_driver_refuses_to_drive_while_another_tool_holds_the_shared_lock_and_writes_nothing(
+    tmp_path, driver_home, heavy_lock, monkeypatch, capsys, command
+):
+    _, notified = driver_home
+    built, ran = [], []
+    monkeypatch.setattr(live_hw, "build_smu", lambda topo: built.append(topo) or FakeSmu())
+    monkeypatch.setattr(live_hw, "run", lambda args, rig, say: ran.append(args) or live_hw.EXIT_COMPLETED)
+    with held_by_another_tool(heavy_lock, f"{GPU_LINE}\n".encode()):
+        assert live_hw.main(driver_argv(tmp_path, command)) == live_hw.EXIT_REFUSED
+    assert capsys.readouterr().err == f"live: another heavy test holds the shared lock: {GPU_LINE}\n"
+    assert (built, ran, notified) == ([], [], [])
+    assert not (tmp_path / "h.db").exists() and not (tmp_path / "s").exists()
+
+
+@pytest.mark.req("HEAVY.driver")
+def test_the_boot_resume_is_refused_while_another_tool_holds_the_shared_lock_with_the_code_its_unit_retries(
+    tmp_path, driver_home, heavy_lock, monkeypatch, capsys
+):
+    from corecycler import cli
+
+    listed = database(tmp_path / "listed.db")
+    save_machine_session(listed, tmp_path, "running")
+    ran = []
+    monkeypatch.setattr(live_hw, "run", lambda args, rig, say: ran.append(args) or live_hw.EXIT_COMPLETED)
+    monkeypatch.setattr(cli, "drive", lambda argv: live_hw.main(driver_argv(tmp_path, argv)))
+    with held_by_another_tool(heavy_lock, f"{GPU_LINE}\n".encode()):
+        assert cli.cmd_resume_interrupted([], listed) == cli.EXIT_REFUSED
+    assert capsys.readouterr().err == f"live: another heavy test holds the shared lock: {GPU_LINE}\n"
+    assert ran == [] and not (tmp_path / "h.db").exists()
+
+
+@pytest.mark.req("HEAVY.driver")
+@pytest.mark.parametrize("rest", ["paused", "closed", "an error"])
+def test_the_driver_holds_the_shared_lock_while_it_drives_and_lets_go_when_it_comes_to_rest(
+    tmp_path, driver_home, heavy_lock, monkeypatch, rest
+):
+    ends = {"paused": live_hw.EXIT_PAUSED, "closed": live_hw.EXIT_SIGNAL}
+    seen = []
+
+    def session(args, rig, say):
+        seen.append(holder_seen_by_another_tool(heavy_lock))
+        if rest == "an error":
+            raise RuntimeError("the driver broke")
+        return ends[rest]
+
+    monkeypatch.setattr(live_hw, "run", session)
+    argv = driver_argv(tmp_path, DRIVEN["resume"])
+    if rest == "an error":
+        with pytest.raises(RuntimeError, match="the driver broke"):
+            live_hw.main(argv)
+    else:
+        assert live_hw.main(argv) == ends[rest]
+    [line] = seen
+    assert line is not None and said_by(line)[:2] == ("corecycler-tuner", os.getpid())
+    assert holder_seen_by_another_tool(heavy_lock) is None
+
+
+@pytest.mark.req("HEAVY.driver")
+def test_an_abort_runs_no_test_and_goes_ahead_while_another_tool_holds_the_shared_lock(
+    tmp_path, driver_home, heavy_lock, monkeypatch
+):
+    ran = []
+    monkeypatch.setattr(live_hw, "run", lambda args, rig, say: ran.append(args.abort) or live_hw.EXIT_ABORTED)
+    with held_by_another_tool(heavy_lock, f"{GPU_LINE}\n".encode()):
+        assert live_hw.main(driver_argv(tmp_path, ["--session", "1", "--abort"])) == live_hw.EXIT_ABORTED
+    assert ran == [True]
 
 
 def test_the_driver_runs_its_session_inside_a_raised_machine_check_poll(tmp_path, driver_home, monkeypatch):

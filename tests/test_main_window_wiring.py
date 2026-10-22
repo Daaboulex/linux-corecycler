@@ -8,7 +8,9 @@ hwmon are stand-ins, and the worker thread is never started.
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import sqlite3
 import sys as _sys
 from dataclasses import replace
@@ -25,6 +27,7 @@ from corecycler.engine.scheduler import CoreTestStatus
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.gui import main_window as mw
 from corecycler.history.db import HistoryDB, RunRecord
+from tests._heavy_lock import GPU_LINE, held_by_another_tool, holder_seen_by_another_tool, said_by
 from tests._old_rows import seed_old_session
 from tests._sensors import FakeClocks, FakeSensors, FakeTicker, a_tick
 from tests._tuner_world import save_machine_session
@@ -117,7 +120,7 @@ class TestWorkerBridge:
     def test_every_scheduler_callback_reaches_a_signal(self):
         _qapp()
         scheduler = MagicMock()
-        worker = mw.TestWorker(scheduler)
+        worker = mw.TestWorker(scheduler, io.BytesIO())
         seen = {}
         worker.core_started.connect(lambda c, cyc: seen.setdefault("start", (c, cyc)))
         worker.core_finished.connect(lambda c, r: seen.setdefault("finish", c))
@@ -141,7 +144,7 @@ class TestWorkerBridge:
     def test_a_failed_result_keeps_its_outcome_and_output_in_the_payload(self):
         _qapp()
         scheduler = MagicMock()
-        worker = mw.TestWorker(scheduler)
+        worker = mw.TestWorker(scheduler, io.BytesIO())
         seen = []
         worker.test_completed.connect(seen.append)
         failed = StressResult(
@@ -155,7 +158,7 @@ class TestWorkerBridge:
     def test_run_delegates_to_the_scheduler(self):
         _qapp()
         scheduler = MagicMock()
-        worker = mw.TestWorker(scheduler)
+        worker = mw.TestWorker(scheduler, io.BytesIO())
         worker.run()
         assert scheduler.run.called
 
@@ -409,6 +412,45 @@ class TestStartTest:
         assert window._worker is not None
         assert window._logger is None
         window._elapsed_timer.stop()
+
+    @pytest.mark.req("HEAVY.gui")
+    def test_start_refuses_while_another_tool_holds_the_shared_lock_naming_it(
+        self, window, monkeypatch, no_modal, heavy_lock
+    ):
+        self._ready(window, monkeypatch)
+        with held_by_another_tool(heavy_lock, f"{GPU_LINE}\n".encode()):
+            window._start_test()
+        assert window._worker is None
+        assert no_modal.warning.call_args.args[1:] == (
+            "Cannot Start",
+            f"Cannot start: another heavy test holds the shared lock: {GPU_LINE}",
+        )
+        assert window._start_btn.isEnabled() and not window._stop_btn.isEnabled()
+
+    @pytest.mark.req("HEAVY.gui")
+    @pytest.mark.parametrize("ends", ["finishes", "crashes"])
+    def test_a_started_test_holds_the_shared_lock_for_its_run_and_lets_go_when_the_run_ends(
+        self, window, monkeypatch, heavy_lock, ends
+    ):
+        seen = []
+        scheduler = MagicMock(core_status={})
+
+        def run():
+            seen.append(holder_seen_by_another_tool(heavy_lock))
+            if ends == "crashes":
+                raise RuntimeError("boom")
+
+        scheduler.run.side_effect = run
+        monkeypatch.setattr(mw, "get_backend", lambda _n: MagicMock())
+        monkeypatch.setattr(mw, "CoreScheduler", lambda **_kwargs: scheduler)
+        monkeypatch.setattr(mw.TestWorker, "start", lambda self: None)
+        window._start_test()
+        window._elapsed_timer.stop()
+        window._worker.run()
+        [line] = seen
+        assert line is not None and said_by(line)[:2] == ("corecycler-gui", os.getpid())
+        assert holder_seen_by_another_tool(heavy_lock) is None
+        window._worker = None
 
 
 class TestStopTest:

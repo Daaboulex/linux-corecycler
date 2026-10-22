@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import signal
 import subprocess
 import sys as _sys
@@ -58,7 +59,7 @@ def _run_worker(monkeypatch, tool, proc=None, budget=None, popen_error=None):
 
     _qapp()
     results: list = []
-    worker = mt._StressWorker(tool, 1)
+    worker = mt._StressWorker(tool, 1, io.BytesIO())
     worker.done.connect(lambda verdict, out: results.append((verdict, out)))
     monkeypatch.setattr(mt, "memory_budget", lambda *_a, **_kw: budget or _budget(2048))
     if popen_error is not None:
@@ -103,7 +104,7 @@ class TestStressWorkerRun:
         import corecycler.gui.memory_tab as mt
 
         _qapp()
-        worker = mt._StressWorker("stressapptest", 2)
+        worker = mt._StressWorker("stressapptest", 2, io.BytesIO())
         asked = []
 
         def fake_budget(instances, minimum_per_instance_mb, **_kw):
@@ -136,7 +137,7 @@ class TestStressWorkerRun:
         monkeypatch.setattr("subprocess.Popen", popen)
         _qapp()
         results: list = []
-        worker = mt._StressWorker("stressapptest", 1)
+        worker = mt._StressWorker("stressapptest", 1, io.BytesIO())
         worker.done.connect(lambda verdict, out: results.append((verdict, out)))
 
         def refuse(*_a, **_kw):
@@ -202,7 +203,7 @@ class TestStressWorkerStop:
 
         _qapp()
         proc = _proc(stdout="", returncode=-9)
-        worker = mt._StressWorker("stress-ng --vm", 1)
+        worker = mt._StressWorker("stress-ng --vm", 1, io.BytesIO())
         results: list = []
         worker.done.connect(lambda verdict, _out: results.append(verdict))
         monkeypatch.setattr("os.getpgid", lambda _pid: 999)
@@ -221,7 +222,7 @@ class TestStressWorkerStop:
         import corecycler.gui.memory_tab as mt
 
         _qapp()
-        worker = mt._StressWorker("stressapptest", 1)
+        worker = mt._StressWorker("stressapptest", 1, io.BytesIO())
         worker._process = proc
         return worker
 

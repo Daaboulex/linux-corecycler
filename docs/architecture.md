@@ -31,6 +31,10 @@ src/corecycler/
     containment.py     systemd cgroup scopes (AllowedCPUs) and the kernel cpuset record
     detector.py        MCE, kernel-error and program-fault records from /dev/kmsg + the systemd journal
     memory_budget.py   One live memory budget shared by every stressapptest instance
+    heavy_test_lock.py The shared heavy-test lock (/run/user/<uid>/heavy-test.lock) every heavy
+                       test tool one user runs holds for its heavy run: the tuner driver while
+                       it drives a session, Start Test and the Memory tab's stress test for their
+                       run; the protocol is in docs/usage.md for tools outside this repository
     backends/          Stress backends (mprime, stress_ng, ycruncher, stressapptest), registered by load_all()
   smu/               AMD SMU access (ryzen_smu)
     commands.py        Per-generation command IDs, encoding-scheme dispatch, harvested-core slots
@@ -61,7 +65,8 @@ src/corecycler/
                        same boot), never between tests in a live session
     live_hw.py         The tuner driver, live.py on the real hardware: the Auto-Tuner tab and
                        the CLI's tuning commands start it; one per machine (it holds the CO writer lock,
-                       smu/writer_lock.py); CO writes only with --write
+                       smu/writer_lock.py, and while it drives a session the shared heavy-test lock,
+                       engine/heavy_test_lock.py); CO writes only with --write
   gui/               Qt tabs (config, results, monitor, smu, tuner, memory, history), core grid,
                      and the missing-tool prompt that records a backend's path
     tuner_tab.py       Auto-Tuner tab: starts the tuner driver as its own process and follows

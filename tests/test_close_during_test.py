@@ -3,6 +3,7 @@ in every combination the window can meet them, against the real widgets."""
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys as _sys
@@ -144,7 +145,7 @@ class TestWorkerFinishAlive:
         _qapp()
         scheduler = MagicMock()
         scheduler.run.side_effect = RuntimeError("boom")
-        worker = mw.TestWorker(scheduler)
+        worker = mw.TestWorker(scheduler, io.BytesIO())
         seen: list[str] = []
         worker.crashed.connect(seen.append)
         worker.run()
