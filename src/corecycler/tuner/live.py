@@ -506,9 +506,7 @@ class Store:
     def mark_survived(self, session_id: int, boot: str, exclude: tuple[int, ...]) -> None:
         self.db.journal_mark_survived(session_id, boot_id=boot, exclude_cores=exclude)
 
-    def test_returned(
-        self, session_id: int, boot: str, row: int, report: Report, ccd_of: dict[int, int | None]
-    ) -> None:
+    def test_returned(self, boot: str, row: int, report: Report, ccd_of: dict[int, int | None]) -> None:
         faults = report.program_faults
         evidence = {
             "records": [asdict(e) for e in report.evidence],
@@ -537,8 +535,6 @@ class Store:
             peaks_json=json.dumps(peaks(samples)),
             coverage_json=json.dumps(coverage(samples, ccd_of)),
         )
-        if report.kernel_read_ns is not None:
-            self.db.set_kernel_read(session_id, report.kernel_read_ns)
         self.db.checkpoint()
 
     def boot_seen(self, boot: str, facts: BootFacts) -> None:
@@ -1147,13 +1143,17 @@ class LiveRig:
                 self.say(f"verdict {event.token}: {report.group.value} after {report.seconds:.0f} s{detail}")
                 self._show_program_faults(event.token, report.program_faults)
             session, boot = self.state.session_id, self.boot
-            failed = self._end_test(
-                event.token,
-                lambda row: self.store.test_returned(session, boot, row, event.report, dict(self.domain_of)),
-            )
+
+            def returned(row: int) -> None:
+                self.store.test_returned(boot, row, event.report, dict(self.domain_of))
+                self.read_to[session] = event.report.kernel_read_ns
+
+            failed = self._end_test(event.token, returned)
         elif isinstance(event, InternalError) and self.test_row is not None:
             failed = self._end_test(self.test_row[0], lambda row: self.store.test_broken(row, event.error))
         self.post(event if failed is None else failed)
+        if isinstance(event, WorkerReported):
+            self.read_to.pop(session, None)
         return True
 
     def _show_program_faults(self, token: int, faults: kernel.ProgramFaults | None) -> None:

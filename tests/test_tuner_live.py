@@ -1002,7 +1002,7 @@ def test_the_store_writes_a_block_every_block_of_samples_and_at_the_test_s_end(t
     assert counts() == (0, 1)
     store.sample(row, taken(0, telemetry.BLOCK), durable=False)
     assert counts() == (0, 1)
-    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0), ONE_CCD)
+    store.test_returned("boot-a", row, Report(Group.PASS, 60.0), ONE_CCD)
     assert counts() == (0, 2)
     assert [s["mono_ns"] for s in store.db.tuner_test_samples(row)] == [1_000 + n for n in range(telemetry.BLOCK + 1)]
 
@@ -1040,7 +1040,7 @@ def test_a_test_row_keeps_each_core_s_highest_clock_from_every_sample_it_took(tm
     row = store.db.insert_tuner_test(1, "boot-a", 1, "steady", "hot", "1t", 0, -3, "[]", "[0, 1]", 60.0, "{}")
     for n, clocks in enumerate((((0, 4100.0), (1, 4200.0)), ((0, 4290.0), (1, None)), ((0, 4150.0), (1, 4310.0)))):
         store.sample(row, telemetry.Sample(True, clocks, 60.0, mono_ns=n), durable=n == 2)
-    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0), ONE_CCD)
+    store.test_returned("boot-a", row, Report(Group.PASS, 60.0), ONE_CCD)
     (saved,) = rows(SimpleNamespace(store=store), "SELECT peaks_json FROM tuner_tests WHERE id=?", (row,))
     assert json.loads(saved["peaks_json"]) == {"0": 4290.0, "1": 4310.0}
     assert own_peaks(store.db.list_tuner_tests(1)) == []
@@ -1050,7 +1050,7 @@ def test_a_test_without_samples_keeps_an_empty_peak_record(tmp_path):
     store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
     store.save(stored_with_fb(None), "boot-a")
     row = store.db.insert_tuner_test(1, "boot-a", 1, "search", None, "1t", 0, -3, "[]", "[0]", 60.0, "{}")
-    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0), ONE_CCD)
+    store.test_returned("boot-a", row, Report(Group.PASS, 60.0), ONE_CCD)
     assert rows(SimpleNamespace(store=store), "SELECT peaks_json FROM tuner_tests") == [{"peaks_json": "{}"}]
     assert own_peaks(store.db.list_tuner_tests(1)) == []
 
@@ -1063,7 +1063,7 @@ def test_every_test_end_checkpoints_the_database(tmp_path, monkeypatch):
     )
     checkpoints = []
     monkeypatch.setattr(store.db, "checkpoint", lambda: checkpoints.append(1))
-    store.test_returned(1, "boot-a", returned, Report(Group.PASS, 60.0), ONE_CCD)
+    store.test_returned("boot-a", returned, Report(Group.PASS, 60.0), ONE_CCD)
     store.test_broken(broken, "the test runner raised")
     assert len(checkpoints) == 2
 
@@ -1665,6 +1665,72 @@ def test_a_test_after_a_resume_keeps_its_own_read_point(tmp_path):
     assert (r.state.core(core).value, r.state.core(core).fb) == after_test
     _, since, _, _ = hardware.harvests[-1]
     assert since == runner.read_ns
+
+
+class Died(BaseException):
+    pass
+
+
+@pytest.mark.req("L18.d.3.verdict")
+def test_a_death_between_a_test_s_return_and_its_verdict_s_commit_leaves_its_record_to_the_next_resume_once(
+    tmp_path, monkeypatch
+):
+    hardware = KernelLog()
+    runner = ArmedRunner(hardware)
+    r = rig(tmp_path, hardware, runner)
+    live1_in_flight(r)
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    returned = r.store.test_returned
+
+    def dies_before_the_verdict_commits(*args):
+        returned(*args)
+
+        def died(*_):
+            raise Died
+
+        monkeypatch.setattr(r.store, "save", died)
+
+    monkeypatch.setattr(r.store, "test_returned", dies_before_the_verdict_commits)
+    runner.armed = True
+    with pytest.raises(Died):
+        one_test(r)
+    tested = runner.seen[-1]
+    assert runner.logged == tested.core
+    r = rig(tmp_path, hardware, runner, db=r.store.db)
+    r.resume(1)
+    once = r.state.core(tested.core)
+    assert (once.value > tested.value, once.fb) == (True, tested.value)
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    assert (r.state.core(tested.core).value, r.state.core(tested.core).fb) == (once.value, once.fb)
+
+
+@dataclass
+class SteadyArmedRunner(ArmedRunner):
+    def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
+        self.armed = spec.stage is Stage.STEADY
+        return super().run(spec, stop, sink)
+
+
+@pytest.mark.req("L18.d.3.verdict")
+def test_a_cut_all_core_test_s_ignored_report_leaves_its_record_to_the_resume_after_the_session_closes(tmp_path, clock):
+    hardware = KernelLog()
+    runner = SteadyArmedRunner(hardware)
+    r = rig(tmp_path, hardware, runner, check_interval_s=5)
+    live1_in_flight(r)
+    clock.advance(60)
+    stepped_until(r, lambda: r.worker is not None and r.state.flow.stage is Stage.STEADY)
+    r.signals.append(PauseRequest())
+    stepped_until(r, lambda: r.test_row is None)
+    held = dict(runner.seen[-1].vector)[runner.logged]
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    once = r.state.core(runner.logged)
+    assert (once.value > held, once.fb) == (True, held)
+    r = away(tmp_path, r, "close")
+    r.resume(1)
+    assert (r.state.core(runner.logged).value, r.state.core(runner.logged).fb) == (once.value, once.fb)
 
 
 @pytest.mark.req("L18.d.3.gap")
@@ -4713,7 +4779,7 @@ def test_a_returned_test_stores_each_core_s_coverage_from_its_own_samples(tmp_pa
     for n, temp in enumerate((61.0, 62.0, 63.0)):
         sample = telemetry.Sample(True, ((0, 5040.0),), 60.0, mono_ns=n * 100_000_000, tccd=((0, temp),))
         store.sample(row, sample, durable=n == 2)
-    store.test_returned(1, "boot-a", row, Report(Group.PASS, 60.0), {0: 0})
+    store.test_returned("boot-a", row, Report(Group.PASS, 60.0), {0: 0})
     (saved,) = rows(SimpleNamespace(store=store), "SELECT coverage_json FROM tuner_tests WHERE id=?", (row,))
     assert json.loads(saved["coverage_json"]) == {"0": {"cells": [[5000, 60, 0.2]], "unreadable_s": 0.0}}
 

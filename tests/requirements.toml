@@ -2428,6 +2428,11 @@ statement = "Same boot: a resume reads this boot's kernel log up to the moment i
 proof = "built"
 
 [[requirement]]
+id = "L18.d.3.verdict"
+statement = "A test's kernel read point is stored only in the commit of the verdict that judges that test's records: never before it, and never by a later commit when the session judged no verdict for it, as for a cut test's report after a pause; so a death before that commit, or a close after the cut, leaves the stored point before those records and the next resume applies each of them once"
+proof = "built"
+
+[[requirement]]
 id = "L18.d.3.gap"
 statement = "Same boot: before the first test after a resume, the rig reads this boot's kernel log from the resume's point to that moment and the machine judges those records as their own event, committing the new point in the same write; no test carries them"
 proof = "built"
