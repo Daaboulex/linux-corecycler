@@ -15,3 +15,5 @@ concurrency:
 jobs:
   update:
     uses: Daaboulex/nix-packaging-standard/.github/workflows/package-update.yml@release
+    with:
+      cadence: ${{ vars.UPDATE_CADENCE || 'daily' }}
