@@ -59,11 +59,15 @@ def attribute(s: SessionState, e: CrashEvidenceRead) -> Attribution:
     others = tuple(ev for ev in records if ev.corrected or ev.core not in owned)
     uncorrected = [ev for ev in records if not ev.corrected and ev.core in owned]
     bounds = {r.core: r.fb for r in s.cores}
+    stage = s.flow.stage
+    slot = current_group(s.flow.bisect) if stage is Stage.BISECT and in_test else ()
+    full_set = stage is Stage.BISECT and slot == s.flow.bisect.universe
     convicted = tuple(
         dict.fromkeys(
             ev.core
             for ev in uncorrected
-            if resident(s, ev.core) != 0
+            if not full_set
+            and resident(s, ev.core) != 0
             and ev.charged != 0
             and (ev.charged is None or bounds[ev.core] is None or ev.charged > bounds[ev.core])
         )
@@ -75,8 +79,6 @@ def attribute(s: SessionState, e: CrashEvidenceRead) -> Attribution:
         return Attribution(convict=convicted, evidence=evidence)
     if e.shared_uncorrected and not uncorrected:
         return Attribution(incident=True, evidence=evidence)
-    stage = s.flow.stage
-    slot = current_group(s.flow.bisect) if stage is Stage.BISECT and in_test else ()
     if len(slot) == 1:
         return Attribution(convict=slot, evidence=evidence)
     if stage is Stage.SEARCH and len(in_test) == 1:

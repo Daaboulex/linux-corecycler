@@ -700,6 +700,7 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World, verdict: Attrib
     after = replace(after, resume_streak=streak, incidents=incidents)
     if counted or at_zero or verdict.held is not None:
         after = _owe_replay(after, _held(after))
+    after = _set_failed(after, verdict.evidence)
     judged, recorded, aside = _records_judged(after, verdict.evidence, verdict.at_stock, counted, e.dirty_end)
     reached = len(judged.incidents) > len(s.incidents) and len(judged.incidents) >= INCIDENT_LIMIT
     limit = [Pause(PauseReason.INCIDENTS, _incidents_text(judged.incidents))] if reached else []
@@ -944,7 +945,7 @@ def _judge_record(
         backed = replace(backed, value=max(backed.value, rec.value))
     out = s.with_core(backed)
     flow = replace(out.flow, dirty=True)
-    if stage is Stage.BISECT:
+    if stage is Stage.BISECT and flow.bisect.rerun != flow.bisect.universe:
         flow = _bisect_exit(flow)
     if flow.stage is Stage.LIVE1 and flow.live1 is not None and ev.core not in flow.live1.requeue:
         flow = replace(flow, live1=replace(flow.live1, requeue=(*flow.live1.requeue, ev.core)))
@@ -1035,7 +1036,7 @@ def _kernel_log_read(s: SessionState, e: KernelLogRead) -> Transition:
         )
     faults = tuple(Announce("program_fault", line) for line in e.program_faults)
     evidence, notes = _placed(s, e.evidence, None)
-    judged, aside = _evidence_applied(s, evidence)
+    judged, aside = _evidence_applied(_set_failed(s, evidence), evidence)
     if isinstance(judged, Transition):
         return replace(judged, effects=(*judged.effects, *notes, *aside, *faults))
     return Transition(judged, (_commit(judged), *notes, *aside, *faults, Schedule(e.token, 0.0)))
@@ -1755,7 +1756,7 @@ def _judged(s: SessionState, rep: Report, w: World) -> Transition:
         for ev in rep.evidence
         if whole or ev.core != spec.core
     )
-    after, aside = _evidence_applied(s if whole else _after_test(s, spec.core), records)
+    after, aside = _evidence_applied(_set_failed(s if whole else _after_test(s, spec.core), records), records)
     result = after if isinstance(after, Transition) else _graded(s, after, rep, w)
     return replace(result, effects=(*result.effects, *aside))
 
@@ -1921,23 +1922,27 @@ def _bisect_outcome(s: SessionState, passed: bool, w: World) -> tuple[SessionSta
     return replace(s, flow=replace(s.flow, bisect=bisect.retest(run))), None
 
 
-def _replay_named(s: SessionState, named: tuple[int, ...], w: World) -> SessionState | Transition | None:
+def _at_full_set(flow: Flow) -> bool:
+    return flow.stage is Stage.BISECT and bisect.current_group(flow.bisect) == flow.bisect.universe
+
+
+def _set_failed(s: SessionState, records: tuple[Evidence, ...]) -> SessionState:
+    if not _at_full_set(s.flow):
+        return s
     run = s.flow.bisect
-    at_entry = replace(s, flow=replace(s.flow, stage=run.entry, bisect=None))
-    if run.entry is Stage.MEMORY:
-        return _memory_lanes(at_entry, named, w)
-    return _allcore_named(at_entry, named) if run.entry in ALLCORE else None
+    ran = {r.core: r.value for r in s.cores} if run.rerun is not None else dict(run.values)
+    if any(ev.charged and ev.charged == ran.get(ev.core) for ev in records):
+        return _full_set(s)[0]
+    return s
 
 
 def _bisect_verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing: bool, w: World) -> Transition:
     s = replace(s, streaks=Streaks())
-    run = s.flow.bisect
-    if group is Group.SILICON and rep.named and bisect.current_group(run) == run.universe:
-        replayed = _replay_named(s, rep.named, w)
-        if isinstance(replayed, Transition):
-            return replayed
-        if replayed is not None:
-            return _next_wait(replayed, spec, pausing)
+    owned = {r.core for r in s.cores}
+    held = tuple(core for core in rep.named if core not in owned)
+    if held and _at_full_set(s.flow):
+        detail = f"the full set's replay named core {held[0]}, whose value this session does not own"
+        return _enter_pause(s, PauseReason.HELD_KNOB, detail, held)
     s, stock = _bisect_outcome(s, group is Group.PASS, w)
     if stock is not None:
         return _enter_pause(s, PauseReason.STOCK_UNSTABLE, stock)

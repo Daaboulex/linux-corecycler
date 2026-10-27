@@ -10,14 +10,20 @@ from corecycler.tuner.machine.types import (
     AllCore,
     ContinueOnSetup,
     CoreRecord,
+    CrashEvidenceRead,
     FailContext,
+    Incident,
+    KernelLogRead,
     Lifecycle,
     Load,
     PauseReason,
     Phase,
     Stage,
+    ValidateProfile,
+    Waiting,
 )
-from tests._tuner_world import Close, Evidence, Group, Report, Resume, fresh, run_to_rest, start
+from tests._tuner_world import Abort, Close, Evidence, Group, PauseRequest, Report, Resume, fresh, run_to_rest, start
+from tests.test_tuner_validate import completed, values
 
 FAST = {
     "hot_seconds": 1.0,
@@ -481,49 +487,244 @@ def test_every_planned_stage_test_of_a_run_carries_its_own_plan_seed():
     assert len({spec.plan_seed for spec in planned}) == len(planned)
 
 
-@pytest.mark.req("L09.retest.named")
-@pytest.mark.parametrize(("entry", "context"), [(Stage.STEADY, STEADY_CLASS), (Stage.TRANSIENT, None)])
-def test_a_re_test_that_fails_naming_a_core_backs_off_only_that_core_and_returns_to_the_stage(entry, context):
-    fake = fresh(4, [-6] * 4, 2, max_offset=-8, **FAST)
+def at_the_re_test(entry, context, edges=(-12, -12, -12, -12)):
+    fake = fresh(len(edges), list(edges), 2, max_offset=-20, **FAST)
     start(fake)
     held = until_stage(fake, entry)
     fake.deliver(Report(Group.SILICON, 1.0, context=context))
     while fake.worker is None or dict(fake.worker.spec.vector) != held:
         assert fake.progress()
     assert fake.worker.spec.stage is Stage.BISECT
-    frozen = fake.state.flow.allcore.frozen
-    fake.deliver(Report(Group.SILICON, 1.0, context=context, named=(2,)))
+    return fake, held, {r.core: r.fb for r in fake.state.cores}
+
+
+def replaying(fake, held, moved):
     flow = fake.state.flow
-    assert (flow.stage, flow.bisect, flow.allcore.t_clean, flow.allcore.frozen) == (entry, None, 0.0, frozen)
-    assert {r.core: (r.value, r.fb) for r in fake.state.cores} == {0: (-3, -7), 1: (-3, -7), 2: (-2, -3), 3: (-3, -7)}
+    universe = tuple(sorted(held))
+    assert (fake.state.lifecycle, flow.stage, flow.bisect.universe, flow.bisect.rerun) == (
+        Lifecycle.RUNNING,
+        Stage.BISECT,
+        universe,
+        universe,
+    )
+    assert set(flow.allcore.frozen) >= set(universe)
+    while fake.worker is None:
+        assert fake.progress()
+    assert (fake.worker.spec.stage, dict(fake.worker.spec.vector)) == (Stage.BISECT, moved)
 
 
-@pytest.mark.req("L09.retest.named")
-def test_a_re_test_that_names_a_core_the_session_does_not_own_pauses_naming_it_as_the_stage_does():
-    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
+ENTRIES = [(Stage.STEADY, STEADY_CLASS), (Stage.TRANSIENT, None), (Stage.MEMORY, None)]
+
+
+def records_at_resume(fake, *records):
+    read = fake.apply
+
+    def once(state, effect):
+        result = read(state, effect)
+        if isinstance(result, CrashEvidenceRead):
+            fake.apply = read
+            return replace(result, evidence=records)
+        return result
+
+    fake.apply = once
+
+
+def moved_once(held, steps):
+    return {core: value + (steps if core == 2 else 1) for core, value in held.items()}
+
+
+def judged_once(fake, held, bounds, steps):
+    moved = moved_once(held, steps)
+    assert {r.core: (r.value, r.fb) for r in fake.state.cores} == {
+        core: (value, held[2] if core == 2 else bounds[core]) for core, value in moved.items()
+    }
+    return moved
+
+
+@pytest.mark.req("D102", "L09.retest.named", "L09.retest.fail")
+@pytest.mark.parametrize(("entry", "context"), ENTRIES)
+def test_a_re_test_that_fails_naming_a_core_loosens_every_core_of_the_set_one_step_and_replays_it(entry, context):
+    fake, held, bounds = at_the_re_test(entry, context)
+    fake.deliver(Report(Group.SILICON, 1.0, context=context, named=(2,)))
+    assert {r.core: (r.value, r.fb) for r in fake.state.cores} == {
+        core: (value + 1, bounds[core]) for core, value in held.items()
+    }
+    replaying(fake, held, {core: value + 1 for core, value in held.items()})
+
+
+@pytest.mark.req("D102", "D32", "L09.retest.named")
+def test_the_set_replays_after_each_named_failure_until_it_passes_and_only_then_returns_to_the_stage():
+    fake, held, _ = at_the_re_test(Stage.TRANSIENT, None)
+    replays = []
+    for named in ((2,), (1,)):
+        replays.append(dict(fake.worker.spec.vector))
+        fake.deliver(Report(Group.SILICON, 1.0, named=named))
+        while fake.worker is None:
+            assert fake.progress()
+    replays.append(dict(fake.worker.spec.vector))
+    fake.deliver(Report(Group.PASS, 1.0))
+    assert replays == [{core: value + step for core, value in held.items()} for step in range(3)]
+    assert (fake.state.flow.stage, fake.state.flow.bisect) == (Stage.TRANSIENT, None)
+    assert {r.core: r.value for r in fake.state.cores} == {core: value + 2 for core, value in held.items()}
+
+
+@pytest.mark.req("D102", "L09.G3", "G3.charged")
+@pytest.mark.parametrize(("corrected", "steps"), [(True, 1), (False, 3)])
+def test_a_record_at_a_tuned_value_in_the_re_test_loosens_the_set_and_moves_its_core_once_to_the_looser(
+    corrected, steps
+):
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(2, corrected),)))
+    replaying(fake, held, judged_once(fake, held, bounds, steps))
+
+
+@pytest.mark.req("D102", "L09.G3")
+def test_a_record_at_stock_in_the_re_test_counts_an_incident_and_runs_the_re_test_again_with_nothing_moved():
+    fake, held, _ = at_the_re_test(Stage.TRANSIENT, None, edges=(-12, -12, -12, 0))
+    cores = fake.state.cores
+    assert held[3] == 0
+    fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(3, True),)))
+    while fake.worker is None:
+        assert fake.progress()
+    assert (fake.state.incidents, fake.state.cores, fake.state.flow.bisect.rerun) == (
+        (Incident.STOCK_MACHINE_CHECK,),
+        cores,
+        None,
+    )
+    assert (fake.worker.spec.stage, dict(fake.worker.spec.vector)) == (Stage.BISECT, held)
+
+
+@pytest.mark.req("D102", "L18.d.4.charged", "L18.d.4.3b", "L09.retest.hang")
+@pytest.mark.parametrize(("corrected", "steps"), [(True, 1), (False, 3)])
+def test_a_crash_in_the_re_test_with_a_record_loosens_the_set_and_moves_the_record_s_core_once_to_the_looser(
+    corrected, steps
+):
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    fake.crash((Evidence(2, corrected),))
+    fake.post(Resume(1))
+    moved = judged_once(fake, held, bounds, steps)
+    assert [r.crash_count for r in fake.state.cores] == [0] * len(held)
+    replaying(fake, held, moved)
+
+
+@pytest.mark.req("D102", "ALLCORE.bisect.single")
+def test_a_named_failure_in_a_smaller_group_still_finds_that_core_alone():
+    fake = fresh(4, [-12] * 4, 2, max_offset=-20, **FAST)
     start(fake)
-    held = until_stage(fake, Stage.STEADY)
-    fake.deliver(UNNAMED_STEADY)
+    held = until_stage(fake, Stage.TRANSIENT)
+    fake.deliver(Report(Group.SILICON, 1.0))
+    bounds = {r.core: r.fb for r in fake.state.cores}
+    fake.names_cores = True
+    fake.edges_transient = {core: value + 1 if core == 2 else -20 for core, value in held.items()}
+    slots = []
+    while fake.state.flow.stage is Stage.BISECT:
+        if fake.worker is not None:
+            slots.append(dict(fake.worker.spec.vector))
+        assert fake.progress()
+    assert held not in slots
+    assert fake.state.flow.stage is Stage.TRANSIENT
+    assert {r.core: (r.value, r.fb) for r in fake.state.cores} == {
+        core: (value + 1, value) if core == 2 else (value, bounds[core]) for core, value in held.items()
+    }
+
+
+@pytest.mark.req("D102", "L18.d.3.charged", "L09.G3")
+@pytest.mark.parametrize("away", [PauseRequest, Close])
+@pytest.mark.parametrize(("corrected", "steps"), [(True, 1), (False, 3)])
+def test_a_record_of_the_re_test_read_on_a_same_boot_resume_loosens_the_set_and_moves_its_core_once(
+    away, corrected, steps
+):
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    fake.post(away())
+    records_at_resume(fake, Evidence(2, corrected, held[2]))
+    fake.post(Resume(1))
+    replaying(fake, held, judged_once(fake, held, bounds, steps))
+
+
+@pytest.mark.req("D102", "L09.G3")
+def test_a_record_of_the_tested_core_in_a_live1_bisect_s_full_set_is_its_test_s_fail_one_step_for_every_core():
+    fake = fresh(4, [-12] * 4, 2, max_offset=-20, **FAST)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.LIVE1:
+        assert fake.progress()
+    fake.crash()
+    fake.post(Resume(1))
+    assert (fake.state.flow.stage, fake.state.flow.bisect.entry) == (Stage.BISECT, Stage.LIVE1)
+    held = {r.core: r.value for r in fake.state.cores}
+    bounds = {r.core: r.fb for r in fake.state.cores}
     while fake.worker is None or dict(fake.worker.spec.vector) != held:
         assert fake.progress()
-    fake.deliver(Report(Group.SILICON, 1.0, context=STEADY_CLASS, named=(7,)))
+    lane = fake.worker.spec.core
+    fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(lane, False),)))
+    assert {r.core: (r.value, r.fb) for r in fake.state.cores} == {
+        core: (value + 1, bounds[core]) for core, value in held.items()
+    }
+    assert fake.state.flow.bisect.rerun == fake.state.flow.bisect.universe == tuple(sorted(held))
+    while fake.worker is None:
+        assert fake.progress()
+    assert (fake.worker.spec.stage, dict(fake.worker.spec.vector)) == (
+        Stage.BISECT,
+        {core: value + 1 for core, value in held.items()},
+    )
+
+
+@pytest.mark.req("D102", "L18.d.4.3b.held")
+def test_a_dead_boot_in_the_re_test_with_a_record_of_a_core_not_owned_pauses_with_the_set_loosened():
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    fake.crash((Evidence(2, False), Evidence(7, False)))
+    fake.post(Resume(1))
     assert (fake.state.pause.reason, fake.state.pause.cores) == (PauseReason.HELD_KNOB, (7,))
-    assert {r.core: r.value for r in fake.state.cores} == held
+    moved = judged_once(fake, held, bounds, 3)
+    fake.post(Resume(1))
+    replaying(fake, held, moved)
 
 
-@pytest.mark.req("L09.retest.named")
-def test_a_memory_re_test_that_fails_naming_a_lane_backs_it_off_and_requeues_it_as_the_memory_stage_does():
-    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
-    start(fake)
-    held = until_stage(fake, Stage.MEMORY)
+@pytest.mark.req("D102", "L18.d.3.charged")
+def test_a_late_record_the_kernel_log_charges_to_the_set_s_values_while_its_re_test_waits_loosens_the_set():
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    fake.post(PauseRequest())
+    fake.post(Resume(1))
+    slot = fake.state.slot
+    assert (isinstance(slot, Waiting), fake.state.flow.bisect.rerun) == (True, None)
+    fake.post(KernelLogRead(slot.token, (Evidence(2, True, held[2]),)))
+    replaying(fake, held, judged_once(fake, held, bounds, 1))
+
+
+@pytest.mark.req("D102", "L18.d.3.charged")
+@pytest.mark.parametrize(("corrected", "steps"), [(True, 1), (False, 3)])
+def test_a_late_record_of_a_re_test_that_already_failed_moves_no_core_twice(corrected, steps):
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    fake.deliver(Report(Group.SILICON, 1.0, named=(2,)))
+    fake.post(PauseRequest())
+    records_at_resume(fake, Evidence(2, corrected, held[2]))
+    fake.post(Resume(1))
+    replaying(fake, held, judged_once(fake, held, bounds, steps))
+
+
+@pytest.mark.req("D102", "L09.retest.named", "L30.e.failed")
+def test_a_re_test_naming_a_core_not_owned_pauses_inside_the_bisection_its_resume_replays_and_abort_ends_aborted():
+    fake = completed((-3, 0, -2), (0, 2))
+    validated = values(fake)
+    fake.post(ValidateProfile(1))
+    until_stage(fake, Stage.ENDURANCE)
     fake.deliver(Report(Group.SILICON, 1.0))
-    while fake.worker is None or dict(fake.worker.spec.vector) != held:
+    while fake.worker is None or dict(fake.worker.spec.vector) != validated:
         assert fake.progress()
     assert fake.worker.spec.stage is Stage.BISECT
     fake.deliver(Report(Group.SILICON, 1.0, named=(1,)))
-    flow = fake.state.flow
-    assert (flow.stage, flow.bisect, flow.live1.requeue, flow.live1.back) == (Stage.LIVE1, None, (1,), Stage.MEMORY)
-    assert {r.core: (r.value, r.fb) for r in fake.state.cores} == {0: (-6, -7), 1: (-5, -6)}
+    s = fake.state
+    assert (s.pause.reason, s.pause.cores, s.flow.stage, values(fake)) == (
+        PauseReason.HELD_KNOB,
+        (1,),
+        Stage.BISECT,
+        validated,
+    )
+    fake.post(Resume(1))
+    while fake.worker is None:
+        assert fake.progress()
+    assert (fake.worker.spec.stage, dict(fake.worker.spec.vector)) == (Stage.BISECT, validated)
+    fake.post(Abort())
+    assert (fake.state.lifecycle, fake.db.status) == (Lifecycle.ABORTED, "aborted")
 
 
 @pytest.mark.req("ALLCORE.bisect.hang", "L09.G4")

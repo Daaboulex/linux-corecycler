@@ -1996,7 +1996,7 @@ proof = "built"
 
 [[requirement]]
 id = "L09.retest.named"
-statement = "A full-set replay that fails naming owned cores follows the entry stage's own named rule: only those cores back off and the Bisect returns to the entry stage, the memory lanes through their LIVE1 slots; only a failure naming no core that can still move takes the full-set rule (owner 2026-10-16 and 2026-10-20)"
+statement = "A full-set re-test or Q6 replay that fails naming owned cores takes the full set's rule as any FAIL there does, in every entry stage, the memory lanes included (Q6 on a set of two or more, a found core for one, L09.retest.single): no named core gets an extra step and the naming stays in the test's record; a named core the session does not own gives P(HELD_KNOB) naming it (D102 in tuning-loops-round2.md, replacing the entry stage's named rule of the owner's 2026-10-16 and 2026-10-20 answers)"
 proof = "built"
 
 [[requirement]]
@@ -2006,7 +2006,7 @@ proof = "built"
 
 [[requirement]]
 id = "L09.retest.fail"
-statement = "A FAIL naming no core of the re-test of a full set of two or more cores is a limit the cores share: Q6 on the full set (owner 2026-10-20)"
+statement = "Any FAIL of the re-test of a full set of two or more cores, named or not, is a limit the cores share: Q6 on the full set (owner 2026-10-20; D102)"
 proof = "built"
 
 [[requirement]]
@@ -2021,7 +2021,7 @@ proof = "built"
 
 [[requirement]]
 id = "L09.G3"
-statement = "A record about an owned non-zero core ends Bisect after backing it off in place; at 0 incident + 1 and the slot retries"
+statement = "A record about an owned non-zero core ends Bisect after backing it off in place, except one charged to the values the full set's slot runs at, which fails the set first (D102), and any record during the set's Q6 replay, which never ends the replay; at 0 incident + 1 and the slot retries"
 proof = "built"
 
 [[requirement]]
@@ -2556,7 +2556,7 @@ proof = "built"
 
 [[requirement]]
 id = "L18.d.4.3b"
-statement = "An uncorrected core-bank record on a non-zero resident value convicts that core unless its charge is stock (L18.d.4.charged), where it is a stock verdict, or at or behind its fail bound, where it repeats a judged failure (L18.d.3.repeat); a record charged to stock is judged as that stock verdict even when the crash convicts its core by another rule, the core moved once, by the conviction, and every other record of a convicted core, its uncorrected ones included, is named in the event log as decided by the conviction; one naming a held core is evidence plus P(HELD_KNOB)"
+statement = "An uncorrected core-bank record on a non-zero resident value convicts that core unless its charge is stock (L18.d.4.charged), where it is a stock verdict, or at or behind its fail bound, where it repeats a judged failure (L18.d.3.repeat); a record charged to stock is judged as that stock verdict even when the crash convicts its core by another rule, the core moved once, by the conviction, and every other record of a convicted core, its uncorrected ones included, is named in the event log as decided by the conviction; one naming a held core is evidence plus P(HELD_KNOB); in a crash during the full-set slot of a Bisect over two or more cores none convicts: Q6 decides and each backs its core off as a record (D102), unless the crash is blamed on a core the session does not own, which pauses P(HELD_KNOB) and by itself moves nothing, a record of an owned core charged to the set's values still failing the set; a one-core full set still convicts its core (L09.retest.single)"
 proof = "built"
 
 [[requirement]]
@@ -2642,7 +2642,7 @@ proof = "built"
 
 [[requirement]]
 id = "L18.d.4.charged"
-statement = "A dead boot's records are charged before its crash is attributed, and its convictions set a record aside by the charge it gets: each record that boot's kernel log holds by that boot's CO journal and reads, as L18.d.3.charged charges a same-boot record; a record that journal cannot place, and one the next boot logs from the banks the reset kept, to the value its core held when the boot died, as the crash conviction reads it, and the event log names it record_unplaced when it is judged, a record set aside being named once, as set aside; a charge at or behind its core's fail bound repeats a judged failure (L18.d.3.repeat); a stock marker naming the dead boot counts every record at stock instead (L18.d.4.3a). One charged off stock backs its core off from that value as G3.backoff and never counts a stock incident, and no charge leaves a core deeper than the crash's rule left it, so a core both name moves once, to the looser of the two; one charged to stock stays a stock verdict (L18.d.4.once). One that backs its core off ends a bisection the crash's rule began, wherever that rule begins one (LIVE1, STEADY, TRANSIENT, ENDURANCE, MEMORY), the record taken over the search (the main session's decision of 2026-10-27 on the existing G3 rule, the owner's to correct); when that exit returns to LIVE1, the record's backed-off core is requeued as a record's back-off in LIVE1 is (L07.G3), so its new value is proven"
+statement = "A dead boot's records are charged before its crash is attributed, and its convictions set a record aside by the charge it gets: each record that boot's kernel log holds by that boot's CO journal and reads, as L18.d.3.charged charges a same-boot record; a record that journal cannot place, and one the next boot logs from the banks the reset kept, to the value its core held when the boot died, as the crash conviction reads it, and the event log names it record_unplaced when it is judged, a record set aside being named once, as set aside; a charge at or behind its core's fail bound repeats a judged failure (L18.d.3.repeat); a stock marker naming the dead boot counts every record at stock instead (L18.d.4.3a). One charged off stock backs its core off from that value as G3.backoff and never counts a stock incident, and no charge leaves a core deeper than the crash's rule left it, so a core both name moves once, to the looser of the two; one charged to stock stays a stock verdict (L18.d.4.once). One that backs its core off ends a bisection the crash's rule began, wherever that rule begins one (LIVE1, STEADY, TRANSIENT, ENDURANCE, MEMORY), never the Q6 replay of a full set (D102), the record taken over the search (the main session's decision of 2026-10-27 on the existing G3 rule, the owner's to correct); when that exit returns to LIVE1, the record's backed-off core is requeued as a record's back-off in LIVE1 is (L07.G3), so its new value is proven"
 proof = "built"
 
 [[requirement]]
@@ -4260,6 +4260,11 @@ proof = "built"
 [[requirement]]
 id = "D89"
 statement = "A payload thread reniced or rescheduled is a fault, retried then paused naming it; an enabled sched_ext is shown before Start; a stopped scheduling service is named at session end; the driver under idle or batch refuses"
+proof = "built"
+
+[[requirement]]
+id = "D102"
+statement = "In a Bisect whose every smaller group passed, any FAIL of the full set's re-test or of its Q6 replay takes Q6 on the whole set (D32), and the set replays until it passes: a FAIL naming owned cores, a lost verdict, a crash unless it is blamed on a core the session does not own, which pauses P(HELD_KNOB) and by itself moves nothing, and a record charged to the values the full set's slot runs at, however it is read (the test's verdict, a same-boot resume after a Pause or Close, a dead boot, the kernel log while the slot waits), a late record of a passing smaller group included, since it bears the same charge; a named core gets no extra step, its naming kept in the test's record; a record judged with the set's step moves its core once, to the looser of that step and its own back-off, with its fail bound, save the tested core of a Bisect begun in LIVE1, whose record in its own test's verdict is that 1T test's FAIL and gets the one step with no fail bound; a record charged to the values of a replay that already failed moves no core again, but one the CO journal cannot place is charged to the slot's current values instead, so read while the replay waits it may give the set a further step; no record ends the replay; a full set of one core stays a found core (L09.retest.single)"
 proof = "built"
 
 [[requirement]]
