@@ -39,7 +39,7 @@ from corecycler.tuner.machine.session import config_problem
 from corecycler.tuner.machine.types import MachineConfig, Mode
 from corecycler.tuner.orders import Method
 from tests._machine import this_boot
-from tests._tuner_world import save_machine_session
+from tests._tuner_world import UNREADABLE_ROWS, save_machine_session
 
 CO_RANGE = (-50, 10)
 
@@ -329,11 +329,13 @@ def test_a_completed_session_offers_validate(db, home, tmp_path):
     assert t.waiting_session() is None
 
 
-def test_an_unreadable_session_is_named(db, home, tmp_path):
+@pytest.mark.req("UNREAD.shown")
+@pytest.mark.parametrize(("machine_json", "error"), UNREADABLE_ROWS)
+def test_an_unreadable_session_is_named(db, home, tmp_path, machine_json, error):
     saved = save_machine_session(db, tmp_path, "paused")
-    db._execute_raw("UPDATE tuner_sessions SET machine_json='{}' WHERE id=?", (saved.session_id,))
+    db._execute_raw(f"UPDATE tuner_sessions SET machine_json = {machine_json} WHERE id = ?", (saved.session_id,))
     t = tab(db)
-    assert t._status.text().startswith(f"session {saved.session_id} cannot be read: ")
+    assert t._status.text() == f"session {saved.session_id} could not be read: {error}"
     assert t._cores.rowCount() == 0
 
 
@@ -549,7 +551,7 @@ def test_start_over_a_newest_session_that_cannot_be_read_asks_first_and_names_it
     assert launched == []
     assert tt.QMessageBox.question.call_args.args[1:3] == (
         "Curve Optimizer values at Start",
-        f"The newest session {saved.session_id} cannot be read: KeyError('base_co'), so whether the CO moved since "
+        f"The newest session {saved.session_id} could not be read: KeyError('base_co'), so whether the CO moved since "
         "it started cannot be judged.\n\nStart anyway?",
     )
     tt.QMessageBox.question.return_value = tt.QMessageBox.StandardButton.Yes

@@ -72,7 +72,7 @@ from corecycler.tuner.machine.types import (
 from corecycler.tuner.orders import Method
 from tests._heavy_lock import GPU_LINE, held_by_another_tool, holder_seen_by_another_tool, said_by
 from tests._old_rows import seed_old_session
-from tests._tuner_world import Resume, fresh, run_to_rest, save_machine_session, start
+from tests._tuner_world import UNREADABLE_ROWS, Resume, fresh, run_to_rest, save_machine_session, start
 from tests.test_execution import FakeBackend, lane, make_supervisor, run_one, within
 from tests.test_smu_core_map import pr23_5600x
 
@@ -872,18 +872,21 @@ def test_a_new_start_asks_about_a_core_whose_co_differs_from_the_newest_session_
 
 
 @pytest.mark.req("C14")
-def test_a_start_over_a_newest_session_that_cannot_be_read_refuses_naming_it_and_writes_nothing(tmp_path):
+@pytest.mark.parametrize(("machine_json", "error"), UNREADABLE_ROWS)
+def test_a_start_over_a_newest_session_that_cannot_be_read_refuses_naming_it_and_writes_nothing(
+    tmp_path, machine_json, error
+):
     db = database(tmp_path / "unread.db")
     first = rig(tmp_path, FakeHardware(), db=db)
     first.start(config(), 1, 7, True)
     first.post(live.Abort())
-    db._execute_raw("UPDATE tuner_sessions SET machine_json = json_remove(machine_json, '$.base_co') WHERE id = 1")
+    db._execute_raw(f"UPDATE tuner_sessions SET machine_json = {machine_json} WHERE id = 1")
     hardware = FakeHardware(co={0: 0, 1: 0, 8: -3})
     second = rig(tmp_path, hardware, db=db)
     second.start(config(), 2, 7, False)
     named = (
         "cores [8] read a CO other than 0 at Start, set by the BIOS or written since boot; session 1 could not be "
-        "read: KeyError('base_co'), so whether the CO moved since it started cannot be judged"
+        f"read: {error}, so whether the CO moved since it started cannot be judged"
     )
     assert second.refused == f"{named}: acknowledge to start"
     assert second.state.lifecycle is Lifecycle.IDLE
@@ -901,7 +904,7 @@ def completed_session(tmp_path, db: HistoryDB) -> Stored:
     first = rig(tmp_path, FakeHardware(), db=db)
     first.start(config(), 1, 7, True)
     assert first.run_until_rest(0.01).lifecycle is Lifecycle.COMPLETED
-    return live.read_stored(db, 1)
+    return live.read_stored(db, 1)[0]
 
 
 def starts_said(r: LiveRig, session_id: int) -> list:
@@ -914,7 +917,7 @@ def test_a_new_session_starts_each_core_at_the_last_completed_value_and_its_stor
     completed_session(tmp_path, db)
     r = rig(tmp_path, FakeHardware(), db=db)
     r.start(config(), 2, 7, True)
-    assert {record.core: record.start for record in live.read_stored(db, 2).cores} == EDGES
+    assert {record.core: record.start for record in live.read_stored(db, 2)[0].cores} == EDGES
     assert starts_said(r, 2) == [
         {"message": "from session 1's values, core 0 at -6, core 1 at -2, core 8 at -4; any other core from 0"}
     ]
@@ -940,16 +943,17 @@ def test_the_hint_comes_from_the_newest_completed_session_and_never_one_that_end
 
 
 @pytest.mark.req("U18")
-def test_a_completed_session_that_cannot_be_read_ends_the_search_and_the_start_names_it(tmp_path):
+@pytest.mark.parametrize(("machine_json", "error"), UNREADABLE_ROWS)
+def test_a_completed_session_that_cannot_be_read_ends_the_search_and_the_start_names_it(tmp_path, machine_json, error):
     db = database(tmp_path / "hints.db")
     first = completed_session(tmp_path, db)
     r = rig(tmp_path, FakeHardware(), db=db)
-    r.store.save(replace(first, session_id=2), "boot-a")
+    save_machine_session(db, tmp_path, "completed", session_id=2)
     r.store.save(replace(first, session_id=3, status="aborted"), "boot-a")
-    db._execute_raw("UPDATE tuner_sessions SET machine_json = json_remove(machine_json, '$.setup') WHERE id = 2")
+    db._execute_raw(f"UPDATE tuner_sessions SET machine_json = {machine_json} WHERE id = 2")
     r.start(config(), 4, 7, True)
     assert {record.core: record.start for record in r.state.cores} == {0: 0, 1: 0, 8: 0}
-    assert starts_said(r, 4) == [{"message": "every core from 0; session 2 could not be read: KeyError('setup')"}]
+    assert starts_said(r, 4) == [{"message": f"every core from 0; session 2 could not be read: {error}"}]
 
 
 def in_flight(r: LiveRig):
@@ -4200,7 +4204,7 @@ def test_a_resume_that_finds_only_the_kernel_changed_carries_the_session_into_a_
         "the kernel changed (7.2.8 build a1 to 7.2.11 build b2): session 2 continues session 1 under it by itself; "
     )
     assert "every core is tested alone on the new setup before the session completes" in said[0]
-    assert dict(live.read_stored(again.store.db, 2).setup) == dict(KERNEL_NOW)
+    assert dict(live.read_stored(again.store.db, 2)[0].setup) == dict(KERNEL_NOW)
 
 
 @pytest.mark.req("KERNEL.boot")
@@ -4225,7 +4229,7 @@ def test_the_boot_resume_attributes_the_crash_first_then_carries_the_session_ont
     monkeypatch.setattr(cli, "drive", boot_unit_drive)
     assert cli.cmd_resume_interrupted([], r.store.db) == live_hw.EXIT_COMPLETED
     assert asked == [["--resume", "--session", "1", "--write"]]
-    parent = live.read_stored(again.store.db, 1)
+    parent = live.read_stored(again.store.db, 1)[0]
     assert parent.status == "superseded"
     assert next(c for c in parent.cores if c.core == in_test.core).crash_count == 1
     kinds = [e["severity"] for e in again.store.db.get_tuner_events(2)]
@@ -4299,7 +4303,7 @@ def begun_by(tmp_path, began: str) -> tuple[FakeHardware, LiveRig, int]:
 def test_a_session_stored_without_the_mark_is_carried_exactly_when_a_continue_created_it(tmp_path, began, carried):
     _, again, session = begun_by(tmp_path, began)
     stored_by_f453db4(again, session)
-    assert live.read_stored(again.store.db, session).flow.carried is carried
+    assert live.read_stored(again.store.db, session)[0].flow.carried is carried
 
 
 @pytest.mark.req("KERNEL.old")
@@ -5212,9 +5216,8 @@ def test_the_lane_budget_reads_the_budget_under_the_lane_cgroup(monkeypatch):
     assert live_hw.lane_budget(2, 256) == (2, 256, "/lanes")
 
 
-def test_a_session_that_is_not_stored_cannot_be_read(tmp_path):
-    with pytest.raises(ValueError, match="session 9 is not stored"):
-        live.read_stored(database(tmp_path / "h.db"), 9)
+def test_a_session_that_is_not_stored_reads_as_not_stored_by_name(tmp_path):
+    assert live.read_stored(database(tmp_path / "h.db"), 9) == (None, "session 9 is not stored")
 
 
 def test_the_hardware_adapter_reads_the_power_state_under_its_cpu_root(tmp_path):

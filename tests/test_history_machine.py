@@ -20,7 +20,7 @@ from corecycler.tuner.live import Identity, Store
 from corecycler.tuner.machine.types import Phase
 from tests._machine import this_boot
 from tests._old_rows import seed_old_session
-from tests._tuner_world import save_machine_session
+from tests._tuner_world import UNREADABLE_ROWS, save_machine_session
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -234,12 +234,16 @@ def test_a_continued_session_names_its_parent(db, tmp_path):
     assert "continued from session 1" in tab._detail_info.text()
 
 
-def test_an_unreadable_session_is_named_in_the_list_and_the_detail(db, tmp_path):
+@pytest.mark.req("UNREAD.shown")
+@pytest.mark.parametrize(("machine_json", "error"), UNREADABLE_ROWS)
+def test_an_unreadable_session_is_named_in_the_list_and_the_detail(db, tmp_path, machine_json, error):
     saved = save_machine_session(db, tmp_path, "paused")
-    db._execute_raw("UPDATE tuner_sessions SET machine_json='{}' WHERE id=?", (saved.session_id,))
+    db._execute_raw(f"UPDATE tuner_sessions SET machine_json = {machine_json} WHERE id = ?", (saved.session_id,))
     tab = tuner_view(db)
-    assert cell(tab, 0, 4) == "unreadable"
-    assert tab._detail_info.text().startswith(f"Session #{saved.session_id} unreadable: ")
+    named = f"session {saved.session_id} could not be read: {error}"
+    assert (cell(tab, 0, 4), tab._runs_table.item(0, 4).toolTip()) == ("unreadable", named)
+    assert (tab._detail_info.text(), tab._events_log.toPlainText()) == (named, named)
+    assert theme.COLOR_FAIL in tab._detail_info.styleSheet()
     assert tab._core_results_table.rowCount() == 0
     assert not tab._load_co_btn.isEnabled()
 

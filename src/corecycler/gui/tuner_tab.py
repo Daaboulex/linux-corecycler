@@ -300,11 +300,7 @@ def read_view(db: HistoryDB, boot: str) -> SessionView | None:
     if not newest:
         return None
     session_id, status = newest[0].id, newest[0].status
-    stored, problem = None, None
-    try:
-        stored = read_stored(db, session_id)
-    except (TypeError, KeyError, ValueError) as e:
-        problem = f"session {session_id} cannot be read: {e!r}"
+    stored, problem = read_stored(db, session_id)
     test = db.open_tuner_test(session_id, boot)
     enduring = test is not None and test["stage"] == Stage.ENDURANCE
     return SessionView(

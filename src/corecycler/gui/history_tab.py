@@ -51,7 +51,7 @@ from corecycler.history.context import bios_change_judged, last_recorded_bios
 from corecycler.history.timefmt import format_local
 from corecycler.smu.pmtable import stretch_pct
 from corecycler.smu.writer_lock import running_driver
-from corecycler.tuner.live import MHZ_BIN, ONE_CORE_STAGES, TEMP_BIN, load_stored, own_peaks, read_stored
+from corecycler.tuner.live import MHZ_BIN, ONE_CORE_STAGES, TEMP_BIN, own_peaks, read_stored
 from corecycler.tuner.machine.types import Phase
 
 if TYPE_CHECKING:
@@ -802,10 +802,10 @@ class HistoryTab(QWidget):
         return self._db.list_machine_sessions()
 
     def _progress(self, sess: MachineSessionRecord) -> tuple[str, str, str | None, bool]:
-        try:
-            cores = read_stored(self._db, sess.id).cores
-        except (TypeError, KeyError, ValueError) as e:
-            return "?", "unreadable", f"unreadable: {e!r}", False
+        stored, unread = read_stored(self._db, sess.id)
+        if stored is None:
+            return "?", "unreadable", unread, False  # equivalent-mutant: never read for an unreadable row
+        cores = stored.cores
         proven = sum(1 for record in cores if record.phase is Phase.PROVEN)
         return str(len(cores)), f"{proven}/{len(cores)}", None, bool(cores) and proven == len(cores)
 
@@ -874,14 +874,13 @@ class HistoryTab(QWidget):
         self._selected_tuner_session = sess
         self._tuner_actions_row.setVisible(True)
         self._expand_detail()
-        try:
-            saved = read_stored(self._db, sess.id)
-        except (TypeError, KeyError, ValueError) as e:
+        saved, unread = read_stored(self._db, sess.id)
+        if saved is None:
             self._load_co_btn.setEnabled(False)
-            self._detail_info.setText(f"Session #{sess.id} unreadable: {e!r}")
+            self._detail_info.setText(unread)
             self._detail_info.setStyleSheet(f"color: {theme.COLOR_FAIL}; padding: 2px;")
             self._core_results_table.setRowCount(0)
-            self._events_log.setPlainText(repr(e))
+            self._events_log.setPlainText(unread)
             return
         self._load_co_btn.setEnabled(sess.status == "completed")
         cfg = saved.config
@@ -964,13 +963,13 @@ class HistoryTab(QWidget):
         if not self._db or self._selected_tuner_session is None:
             return
         session_id = self._selected_tuner_session.id
-        loaded, unread = load_stored(self._db, session_id)
-        if loaded is None:
+        saved, unread = read_stored(self._db, session_id)
+        if saved is None:
             self._load_co_btn.setEnabled(False)
-            self._detail_info.setText(unread or f"session {session_id} is not stored")
+            self._detail_info.setText(unread)
             self._detail_info.setStyleSheet(f"color: {theme.COLOR_FAIL}; padding: 2px;")
             return
-        self.load_profile_requested.emit({record.core: record.value for record in loaded[0].cores})
+        self.load_profile_requested.emit({record.core: record.value for record in saved.cores})
 
     def _expand_detail(self) -> None:
         """Show the detail section and split space evenly with the top.

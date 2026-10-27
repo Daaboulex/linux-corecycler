@@ -128,6 +128,11 @@ statement = "History's Load CO profile of a session that turned unreadable after
 proof = "built"
 
 [[requirement]]
+id = "UNREAD.shown"
+statement = "The Tuner tab's session view and History's session list and detail name a session whose stored state cannot be read (a missing key, a wrong shape) as session N could not be read with the error, never a crash, through the same read that refuses a resume"
+proof = "built"
+
+[[requirement]]
 id = "C15"
 statement = "CLOCK_STRETCH is not produced"
 proof = "built"

@@ -265,13 +265,6 @@ def _own_ceiling(power: dict, cpus: list[int]) -> float | None:
     return max(own) if own and None not in own else None
 
 
-def read_stored(db: HistoryDB, session_id: int) -> Stored:
-    row = db.load_machine_session(session_id)
-    if row is None:
-        raise ValueError(f"session {session_id} is not stored")
-    return _stored_from_row(row, session_id)
-
-
 def _stored_from_row(row: tuple[str, str, int | None, str | None], session_id: int) -> Stored:
     return replace(stored_from_json(json.loads(row[0]), continued=row[3] == "continue"), session_id=session_id)
 
@@ -287,6 +280,13 @@ def load_stored(db: HistoryDB, session_id: int) -> tuple[tuple[Stored, str, int 
         return (_stored_from_row(row, session_id), row[1], row[2]), None
     except UNREADABLE_STORED as exc:
         return None, f"session {session_id} could not be read: {exc!r}"
+
+
+def read_stored(db: HistoryDB, session_id: int) -> tuple[Stored, None] | tuple[None, str]:
+    loaded, unread = load_stored(db, session_id)
+    if loaded is None:
+        return None, unread or f"session {session_id} is not stored"
+    return loaded[0], None
 
 
 def _pairs(raw) -> tuple:
@@ -436,20 +436,18 @@ class Store:
         newest = self.db.list_machine_sessions(limit=1)  # equivalent-mutant: only the first row is read
         if not newest:
             return None, None
-        try:
-            return (newest[0].id, read_stored(self.db, newest[0].id).base_co), None
-        except (TypeError, KeyError, ValueError) as exc:
-            return None, f"session {newest[0].id} could not be read: {exc!r}"
+        stored, unread = read_stored(self.db, newest[0].id)
+        return (None, unread) if stored is None else ((newest[0].id, stored.base_co), None)
 
     def completed(self) -> tuple[tuple[Stored, ...], str | None]:
         found: list[Stored] = []
         for session in self.db.list_machine_sessions():
             if session.status != "completed":
                 continue
-            try:
-                found.append(read_stored(self.db, session.id))
-            except (TypeError, KeyError, ValueError) as exc:
-                return tuple(found), f"session {session.id} could not be read: {exc!r}"
+            stored, unread = read_stored(self.db, session.id)
+            if stored is None:
+                return tuple(found), unread
+            found.append(stored)
         return tuple(found), None
 
     def save(

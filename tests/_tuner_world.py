@@ -608,3 +608,12 @@ def save_machine_session(db, root, status: str, session_id: int | None = None) -
         saved = replace(saved, session_id=session_id)
     Store(db, root / "state", Identity("bios-1", "cpu-1", None)).save(saved, this_boot())
     return saved
+
+
+UNREADABLE_ROWS = (
+    ("json_remove(machine_json, '$.base_co')", "KeyError('base_co')"),
+    (
+        "json_set(machine_json, '$.flow.allcore', json('[1]'))",
+        "AttributeError(\"'list' object has no attribute 'items'\")",
+    ),
+)
