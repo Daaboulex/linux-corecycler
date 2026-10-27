@@ -22,6 +22,21 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
   register values come from iam4x's PR #23, ported by hand into the rewritten
   driver; its Warhol entry waits for a 5800X3D's register values.
 
+### Fixed (2026-10-27 a Strix Point CO read out of range, PR #21 by chevydan6)
+
+- An HX 370 on BIOS FA608WV.309 acknowledges the Strix Point CO read and
+  returns 600 for every core, so a CO write was sent whose read-back could
+  never match, and the backup of 600 could never be restored. Strix Point now
+  reads the CO of its lowest core when the topology is set; a read the driver
+  reports as failed (a transport error or a timeout) or an answer outside the
+  CO range refuses every CO write with that reason. On the pinned ryzen_smu a
+  read the firmware rejects comes back as 0 and passes this check. The
+  finding and its
+  readback evidence come from chevydan6's PR #21, ported by hand into the
+  rewritten driver; the PR's exact-identity profile for that laptop is not
+  ported, since our pinned ryzen_smu reports a fast firmware rejection as
+  success and its probe would always refuse.
+
 ### Fixed (2026-09-23 Cezanne CO read-back sends the bare slot, issue #18)
 
 - With its cores mapped, the 5600GE then failed every CO write on read-back

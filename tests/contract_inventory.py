@@ -298,6 +298,7 @@ def _pin_core_slot_mapping() -> None:
     }
     assert all(cmds.core_fuse_shift == 0 for cmds in COMMAND_SETS.values() if not cmds.core_fuse_addr)
     assert {gen for gen, cmds in COMMAND_SETS.items() if cmds.core_fuse_die_wide} == {CPUGeneration.ZEN3_CEZANNE}
+    assert {gen for gen, cmds in COMMAND_SETS.items() if cmds.probe_co_baseline} == {CPUGeneration.ZEN5_STRIX_POINT}
     mapped = {gen for gen, cmds in COMMAND_SETS.items() if cmds.uniform_8core_ccds}
     assert mapped == {
         CPUGeneration.ZEN3_VERMEER,

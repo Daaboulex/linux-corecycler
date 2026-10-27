@@ -27,8 +27,8 @@ AMD-specific.
 | Zen 4 (Storm Peak) | 7980X, 7970X TR | -50 to +30 | RSMU | PPT/TDC/EDC | Read/Write | Threadripper PRO |
 | Zen 5 (Granite Ridge) | 9600X, 9700X, 9900X, 9950X | -50 to +10 | RSMU | PPT/TDC/EDC | Read/Write | Widest negative CO range |
 | Zen 5 X3D (Granite Ridge) | 9800X3D, 9900X3D, 9950X3D | -50 to +10 | RSMU | PPT/TDC/EDC | Read/Write | V-Cache; same commands as Granite Ridge |
-| Zen 5 (Strix Point) | Ryzen AI 9 HX 370 | -50 to +10 | MP1 set, RSMU get | PPT/TDC/EDC | Read/Write | Heterogeneous 4+8c, two CCX (set 0x4B/0x4C, get 0xAF); per-core index space publicly unresolved, all-core validated |
-| Zen 5 (Krackan Point) | Ryzen AI 7 350, AI 5 330 | -50 to +10 | MP1 set, RSMU get | PPT/TDC/EDC | Read/Write | Heterogeneous 4+4c / 1+3c (models 0x60/0x68); Strix commands |
+| Zen 5 (Strix Point) | Ryzen AI 9 HX 370 | -50 to +10 | MP1 set, RSMU get | PPT/TDC/EDC | Read/Write | Heterogeneous 4+8c, two CCX (set 0x4B/0x4C, get 0xAF); per-core index space publicly unresolved, all-core validated; the CO read of the lowest core at startup must answer in range or every CO write is refused (an HX 370 on BIOS FA608WV.309 answers 600, PR #21) |
+| Zen 5 (Krackan Point) | Ryzen AI 7 350, AI 5 330 | -50 to +10 | MP1 set, RSMU get | PPT/TDC/EDC | Read/Write | Heterogeneous 4+4c / 1+3c (models 0x60/0x68); Strix commands and the same startup CO read check |
 | Zen 5 (Strix Halo) | Ryzen AI Max | -50 to +10 | MP1 set, RSMU get | PPT/TDC/EDC | Read/Write | Classic 8-core CCDs, Strix commands; CO tuning unverified on this die |
 | Zen 5 (Shimada Peak) | TR 9980X, PRO 9995WX | -50 to +10 | RSMU | PPT/TDC/EDC | Read/Write | Model 0x08 (dump B00F81); different SMU addresses (`get_co=0xA3`) |
 
@@ -69,7 +69,11 @@ for other distros. If a fuse cannot be read, has no verified address for the die
 disabled with an explicit reason (GUI banner, CLI stderr, tuner refuses to start)
 instead of ever writing to the wrong core. Discovery is gated per generation on the
 verified classic 8-slot-per-CCD layout; heterogeneous Zen 4c/5c dies (Phoenix2,
-Strix Point, Strix Halo) keep the legacy core-id addressing untouched.
+Strix Point, Strix Halo) keep the legacy core-id addressing; Strix Point first reads
+the CO of its lowest core, and a read the driver reports as failed (a transport error
+or a timeout) or an answer outside the CO range refuses every CO write (PR #21 by
+chevydan6: an HX 370 on BIOS FA608WV.309 answers 600). On the pinned `ryzen_smu` a
+read the firmware rejects comes back as 0 and passes.
 
 All CO-capable generations support PBO scalar read/write (1.0x to 10.0x) and OC
 mode enable/disable through their own command dialect; on APUs the PPT/TDC/EDC

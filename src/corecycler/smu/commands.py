@@ -48,6 +48,7 @@ class SMUCommandSet:
     core_fuse_shift: int = 0
     core_fuse_die_wide: bool = False
     ccd_fuse_addr: int | None = None
+    probe_co_baseline: bool = False
 
     set_co_cmd: int | None = None
     set_all_co_cmd: int | None = None
@@ -332,6 +333,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         co_range=(-50, 10),
         mailbox="mp1",
         encoding_scheme="zen4_5",
+        probe_co_baseline=True,
         set_co_cmd=0x4B,
         set_all_co_cmd=0x4C,
         get_co_cmd=0xAF,
@@ -418,7 +420,7 @@ COMMAND_SETS[CPUGeneration.ZEN4_PHOENIX2] = _alias_commands(
     uniform_8core_ccds=False,
 )
 COMMAND_SETS[CPUGeneration.ZEN5_STRIX_HALO] = _alias_commands(
-    CPUGeneration.ZEN5_STRIX_POINT, CPUGeneration.ZEN5_STRIX_HALO
+    CPUGeneration.ZEN5_STRIX_POINT, CPUGeneration.ZEN5_STRIX_HALO, probe_co_baseline=False
 )
 
 

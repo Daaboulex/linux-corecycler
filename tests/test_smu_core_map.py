@@ -457,12 +457,71 @@ class TestGenerationGating:
         assert strix is not None and not strix.uniform_8core_ccds
         smu = RyzenSMU(strix, MagicMock())
         silicon = _FakeSilicon(smu, strix, {0: set(range(8)), 1: set(range(8))})
-        smu.set_topology(_topo({c: (0 if c < 4 else 1) for c in range(12)}))
+        smu.set_topology(_topo({**dict.fromkeys(range(4), 0), **dict.fromkeys(range(8, 16), 1)}))
         assert silicon.fuse_reads == []
         assert smu.core_map is None
         assert smu.core_map_error is None
         assert smu.set_co_offset(9, -5) is True
         assert silicon.writes == [(1, 1, -5)]
+
+    def test_a_strix_point_co_read_out_of_range_refuses_per_core_co_without_a_write(self):
+        """PR #21 (chevydan6): an HX 370 on BIOS FA608WV.309 acknowledges the CO read and returns 600."""
+        strix = get_commands(CPUGeneration.ZEN5_STRIX_POINT)
+        smu = RyzenSMU(strix, MagicMock())
+        silicon = _FakeSilicon(smu, strix, {0: set(range(8)), 1: set(range(8))})
+        silicon.store[(0, 0)] = 600
+        smu.set_topology(_topo({**dict.fromkeys(range(4), 0), **dict.fromkeys(range(8, 16), 1)}))
+        assert "returned 600, outside -50..10" in smu.core_map_error
+        assert smu.get_co_offset(1) is None
+        assert smu.set_co_offset(1, -1) is False
+        assert smu.set_all_co(-1) is False
+        assert silicon.writes == []
+        assert silicon.get_calls == [(0, 0)]
+
+    def test_a_failed_strix_point_co_read_refuses_per_core_co(self):
+        strix = get_commands(CPUGeneration.ZEN5_STRIX_POINT)
+        smu = RyzenSMU(strix, MagicMock())
+        silicon = _FakeSilicon(smu, strix, {0: set(range(8))})
+        sent = []
+
+        def refused(cmd, args=(0,) * 6):
+            sent.append((cmd, args))
+            return SMUResponse(success=False, args=(0,) * 6, raw=b"")
+
+        smu._send_rsmu_command = refused
+        smu.set_topology(_topo({c: 0 for c in range(4)}))
+        assert sent == [(strix.get_co_cmd, (0,))]
+        assert "CO read failed" in smu.core_map_error
+        assert smu.set_co_offset(1, -1) is False
+        assert silicon.writes == []
+
+    def test_a_strix_point_without_mailbox_access_says_so(self):
+        strix = get_commands(CPUGeneration.ZEN5_STRIX_POINT)
+        smu = RyzenSMU(strix, MagicMock())
+        silicon = _FakeSilicon(smu, strix, {0: set(range(8))})
+        smu.check_writable = lambda: (False, "no write permission on mp1_smu_cmd")
+        smu.set_topology(_topo({c: 0 for c in range(4)}))
+        assert "no write permission on mp1_smu_cmd" in smu.core_map_error
+        assert silicon.get_calls == []
+
+    def test_the_strix_point_probe_reads_the_lowest_known_core_where_get_co_offset_would(self):
+        strix = get_commands(CPUGeneration.ZEN5_STRIX_POINT)
+        smu = RyzenSMU(strix, MagicMock())
+        silicon = _FakeSilicon(smu, strix, {1: set(range(8))})
+        silicon.store[(1, 0)] = 600
+        smu.set_topology(_topo({8: 1, 9: 1, 10: 1}))
+        assert silicon.get_calls == [(1, 0)]
+        assert "returned 600" in smu.core_map_error
+
+    @pytest.mark.parametrize("generation", [CPUGeneration.ZEN5_STRIX_HALO, CPUGeneration.ZEN5_GRANITE_RIDGE])
+    def test_only_strix_point_reads_a_co_at_topology_time(self, generation):
+        commands = get_commands(generation)
+        smu = RyzenSMU(commands, MagicMock())
+        silicon = _FakeSilicon(smu, commands, {0: set(range(8)), 1: set(range(8))})
+        silicon.store[(0, 0)] = 600
+        smu.set_topology(_topo({c: c // 8 for c in range(16)}))
+        assert silicon.get_calls == []
+        assert smu.core_map_error is None
 
     def test_zen2_has_no_co_and_no_map(self):
         matisse = get_commands(CPUGeneration.ZEN2_MATISSE)

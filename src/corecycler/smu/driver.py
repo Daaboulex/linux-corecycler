@@ -178,6 +178,11 @@ class RyzenSMU:
         self._ccd_slot_error = "core map discovery in progress"
         ids = sorted(topology.cores)
         self._known_core_ids = ids or None
+        baseline = self._co_baseline_problem() if ids and self.commands.probe_co_baseline else None
+        if baseline is not None:
+            self._ccd_slot_error = baseline
+            log.error("SMU core mapping unavailable: %s", baseline)
+            return
         if not ids or not self.commands.has_co or not self.commands.uniform_8core_ccds:
             self._ccd_slot_error = None
             return
@@ -203,6 +208,35 @@ class RyzenSMU:
             return
         self._ccd_slot_by_core = core_map
         self._ccd_slot_error = None
+
+    def _co_baseline_problem(self) -> str | None:
+        """Why this generation's CO read cannot be trusted as a baseline, or None when one read is in range.
+
+        An HX 370 on BIOS FA608WV.309 acknowledges the Strix Point CO read and returns 600 for every core (PR #21),
+        so a CO write is sent whose read-back can never match and the backup can never be restored; one read of the
+        lowest known core, addressed as get_co_offset would address it, decides. A read the pinned ryzen_smu reports
+        as failed or an answer outside the CO range refuses; a read the firmware rejects comes back from that driver
+        as 0 and passes.
+        """
+        ok, msg = self.check_writable()
+        if not ok:
+            return f"the {self.commands.generation.name} CO read has to be checked first: {msg}"
+        core = self._known_core_ids[0]
+        ccd = self._legacy_ccd_by_core.get(core)
+        response = self._send_get_co(encode_co_arg(core, 0, self.commands.generation, ccd=ccd, slot=None))
+        if not response.success:
+            return (
+                f"the {self.commands.generation.name} CO read failed -- per-core CO stays disabled until its "
+                f"readback is verified"
+            )
+        value = decode_co_arg(core, response.args[0], self.commands.generation)
+        low, high = self.commands.co_range
+        if not low <= value <= high:
+            return (
+                f"the {self.commands.generation.name} CO read returned {value}, outside {low}..{high} -- per-core "
+                f"CO stays disabled until its readback is verified; please report this output"
+            )
+        return None
 
     @staticmethod
     def _derive_group_slots(group_ids: list[int], holes_trusted: bool) -> list[int] | None:
