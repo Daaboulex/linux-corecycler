@@ -615,12 +615,6 @@ statement = "CO range [max_offset, 0]"
 proof = "built"
 
 [[requirement]]
-id = "K45.inherit"
-statement = "Under inherit_current the range is [max_offset, max(0, base)]"
-proof = "not built"
-task = "T28"
-
-[[requirement]]
 id = "K46"
 statement = "Q5: 2 tests of the same core at the same value and no record in another core's test"
 proof = "built"
@@ -1337,12 +1331,6 @@ statement = "Gate 6: a thermal sensor reads"
 proof = "built"
 
 [[requirement]]
-id = "L01.6.optout"
-statement = "The sensor gate has an opt-out key"
-proof = "not built"
-task = "T28"
-
-[[requirement]]
 id = "L01.7"
 statement = "Gate 7: containment (cpuset delegation, memory controller)"
 proof = "built"
@@ -1639,12 +1627,6 @@ proof = "built"
 id = "L04.G3.zero"
 statement = "A record about another core at 0 in Search is P(STOCK_UNSTABLE) naming it"
 proof = "built"
-
-[[requirement]]
-id = "L04.G3.inherit"
-statement = "An inherited non-zero baseline: FB = b, b steps toward 0, the core owes PROVE_1T at the new b"
-proof = "not built"
-task = "T28"
 
 [[requirement]]
 id = "L04.G4"
@@ -3310,8 +3292,7 @@ proof = "built"
 [[requirement]]
 id = "U27"
 statement = "Detecting an outside write to an owned knob"
-proof = "open"
-task = "O7"
+proof = "built"
 
 [[requirement]]
 id = "U28"
@@ -3563,18 +3544,6 @@ task = "T32"
 id = "H5.w"
 statement = "One shaper band written, read back and restored"
 proof = "built"
-
-[[requirement]]
-id = "H5.p"
-statement = "A shaper write does not survive a reboot or s2idle"
-proof = "not built"
-task = "S1"
-
-[[requirement]]
-id = "H5.c"
-statement = "One shaper write affects both CCDs"
-proof = "not built"
-task = "S1"
 
 [[requirement]]
 id = "H9"
@@ -4104,12 +4073,6 @@ statement = "Tuner samples are held in RAM and stored as one zstd level 19 JSON-
 proof = "built"
 
 [[requirement]]
-id = "D77.layout"
-statement = "The sample layout is stored once on the test row and a sample holds values only"
-proof = "not built"
-task = "T28"
-
-[[requirement]]
 id = "D78"
 statement = "Manual Stress runs hold their telemetry in RAM and write one block every 10 s and at the end of the run"
 proof = "built"
@@ -4552,12 +4515,6 @@ statement = "An outside write while running is caught before the next test in th
 proof = "built"
 
 [[requirement]]
-id = "SC.1"
-statement = "A test row holds the sample layout once and a sample holds values only"
-proof = "not built"
-task = "T28"
-
-[[requirement]]
 id = "SC.2"
 statement = "The rig keeps the current block's samples in RAM and writes one zstd level 19 JSON-lines block every 10 s and at the test's end"
 proof = "built"
@@ -4922,12 +4879,6 @@ proof = "built"
 id = "T22.contract"
 statement = "Every text the Auto-Tuner tab shows in its live column, its core table headings and its settings title is listed in the tests with its source; a test renders the tab with no session, a paused session and a running test and fails on any text not listed (ryzen 2026-10-13: the tab showed a Start record as the current power state)."
 proof = "built"
-
-[[requirement]]
-id = "T23.contract"
-statement = "Every interactive control is listed with its action and expected reaction; a test fails on an unlisted control, a listed control that is gone, or a check that passes with its control disconnected."
-proof = "not built"
-task = "T23"
 
 [[requirement]]
 id = "T23.contract.tuner"

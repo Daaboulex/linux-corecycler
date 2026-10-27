@@ -529,7 +529,7 @@ def test_no_transition_of_any_future_reads_the_program_faults_a_report_carries()
     assert survey.taken["program_fault"] > 0
 
 
-@pytest.mark.req("ENTRY_READS.3")
+@pytest.mark.req("ENTRY_READS.3", "U27")
 def test_an_outside_write_while_running_is_caught_before_the_next_test():
     survey = explore(tiny(2, [-3, -2], 2), {"outside": 2, "pause": 1, "total": 2}, cap=2_000_000)
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
