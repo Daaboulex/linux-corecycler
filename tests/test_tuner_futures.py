@@ -126,7 +126,6 @@ def key(fake: Fake) -> tuple:
         fake.now,
         fake.temperature,
         fake.crash_note,
-        fake.died_in,
         fake.power,
         fake.setup,
         tuple(sorted(fake.edges.items())),

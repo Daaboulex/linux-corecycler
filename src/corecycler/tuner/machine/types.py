@@ -451,7 +451,6 @@ class CrashEvidenceRead:
     other_session_wrote: bool = False
     shared_uncorrected: bool = False
     suspects: tuple[int, ...] = ()
-    context: FailContext | None = None
     evidence: tuple[Evidence, ...] = ()
     kernel_problem: str | None = None
     end_unread: str | None = None

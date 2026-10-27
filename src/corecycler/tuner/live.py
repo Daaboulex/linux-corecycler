@@ -35,7 +35,6 @@ from corecycler.tuner.machine.types import (
     CrashEvidenceRead,
     DatabaseFailed,
     Evidence,
-    FailContext,
     Flow,
     ForgetResident,
     Group,
@@ -45,7 +44,6 @@ from corecycler.tuner.machine.types import (
     Klass,
     Lifecycle,
     Live1,
-    Load,
     MachineConfig,
     MarkSurvived,
     Mode,
@@ -597,19 +595,6 @@ class Store:
             self.db.insert_tuner_block(self.unwritten_row, self.unwritten)
             self.unwritten = []
 
-    def crash_context(self, session_id: int, boot: str, core_of_cpu: dict[int, int]) -> FailContext | None:
-        test = self.db.open_tuner_test(session_id, boot)
-        if test is None:
-            return None
-        last = self.db.tuner_test_samples(test["id"])[-telemetry.RING :]
-        if not last:
-            return None
-        ring = [
-            telemetry.Sample(s["running"], tuple((core, mhz) for core, mhz in s["clocks"]), s["tctl"]) for s in last
-        ]
-        assigned = tuple(sorted({core_of_cpu[cpu] for cpu in json.loads(test["cpus_json"]) if cpu in core_of_cpu}))
-        return telemetry.context(ring, test["load"] == Load.HOT.value, assigned, ())
-
     def pack_dead_tail(self, session_id: int, boot: str) -> None:
         test = self.db.open_tuner_test(session_id, boot)
         if test is not None:
@@ -990,7 +975,6 @@ class LiveRig:
                 return DatabaseFailed(unread)
             rows = self.store.journal_rows(session, last)
             other = not same and self.store.taken_over(session, last)
-            context = None if same else self.store.crash_context(session, last, self._core_of_cpu())
             if not same:
                 self.store.pack_dead_tail(session, last)
             told = self.store.told(session, "program_fault")
@@ -1024,7 +1008,6 @@ class LiveRig:
             other_session_wrote=other,
             shared_uncorrected=shared,
             suspects=_unproven(rows),
-            context=context,
             evidence=evidence,
             kernel_problem=harvest.problem,
             co_now=co_now,

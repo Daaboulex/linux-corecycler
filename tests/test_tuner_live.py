@@ -1153,9 +1153,8 @@ def test_a_sample_that_cannot_be_written_pauses_as_database(tmp_path, monkeypatc
     assert hardware.co == {0: 0, 1: 0, 8: 0}
 
 
-@pytest.mark.req("L25.h", "SR.R2")
-@pytest.mark.req("SC.4b")
-def test_a_crash_s_context_is_rebuilt_from_the_samples_its_test_left_and_its_tail_packed(tmp_path, monkeypatch):
+@pytest.mark.req("L25.h", "SC.4b")
+def test_a_crash_s_durable_tail_is_packed_into_the_samples_its_test_left(tmp_path, monkeypatch):
     monkeypatch.setattr(live, "ALLCORE", frozenset(Stage))
     hardware = FakeHardware()
     hold = threading.Event()
@@ -1166,18 +1165,14 @@ def test_a_crash_s_context_is_rebuilt_from_the_samples_its_test_left_and_its_tai
         assert time.monotonic() < deadline, "the durable tail never reached one group"
         r.step(0.01)
     tested = next(c for c in r.state.cores if c.in_test)
-    dead = rows(r, "SELECT id, cpus_json FROM tuner_tests WHERE ended_at IS NULL")[0]
-    cpus = tuple(json.loads(dead["cpus_json"]))
+    dead = rows(r, "SELECT id FROM tuner_tests WHERE ended_at IS NULL")[0]
     left = r.store.db.tuner_test_samples(dead["id"])
     hardware.boot = "boot-b"
-    read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    resume_read(tmp_path, hardware, r.store.db, monkeypatch)
     hold.set()
     assert rows(r, "SELECT count(*) AS n FROM tuner_samples WHERE test_id=?", (dead["id"],))[0]["n"] == 0
     assert r.store.db.tuner_test_samples(dead["id"]) == left
-    working = tuple(sorted({core for core, owned in CPUS for cpu in owned if cpu in cpus}))
-    expected = telemetry.context([taken(tested.core, n) for n in range(telemetry.TAIL_GROUP)], False, working, ())
-    assert read.context == expected
-    assert read.context.mhz == 5000.0 + telemetry.TAIL_GROUP - 1
+    assert [s["mono_ns"] for s in left] == [taken(tested.core, n).mono_ns for n in range(telemetry.TAIL_GROUP)]
 
 
 def test_a_crash_read_names_the_unproven_values_resident_at_death(tmp_path, monkeypatch):
@@ -1243,31 +1238,6 @@ def test_samples_a_test_left_unwritten_go_into_its_block_when_the_next_test_samp
     store.sample(second, taken(0, 2), durable=False)
     assert [s["mono_ns"] for s in store.db.tuner_test_samples(first)] == [1_001]
     assert store.db.tuner_test_samples(second) == []
-
-
-@pytest.mark.parametrize(
-    "count", [telemetry.RING + telemetry.TAIL_GROUP - 1, telemetry.BLOCK + telemetry.TAIL_GROUP - 1]
-)
-@pytest.mark.parametrize(
-    ("load", "frozen_last", "steady"), [("hot", False, True), ("hot", True, False), ("burst", False, False)]
-)
-@pytest.mark.req("SC.4")
-def test_a_crash_context_reads_the_last_ring_of_the_open_test_only(tmp_path, load, frozen_last, steady, count):
-    store = Store(database(":memory:"), tmp_path / "s", IDENTITY)
-    store.save(stored_with_fb(None), "boot-a")
-    done = store.db.insert_tuner_test(1, "boot-a", 1, "steady", load, "1t", 0, -3, "[]", "[0, 16]", 60.0, "{}")
-    store.sample(done, taken(0, 9), durable=True)
-    store.db.end_tuner_test(done, "pass", 60.0, "[]", None, "{}", "", "[]", "")
-    crashed = store.db.insert_tuner_test(1, "boot-a", 2, "steady", load, "1t", 0, -3, "[]", "[0, 16, 1]", 60.0, "{}")
-    taken_samples = [taken(0, n) for n in range(count)] + [replace(taken(0, 0), running=not frozen_last)]
-    for sample in taken_samples:
-        store.sample(crashed, sample, durable=True)
-    context = store.crash_context(1, "boot-a", {0: 0, 16: 0, 1: 1})
-    ring = [replace(s, mono_ns=0, tccd=(), volts=()) for s in taken_samples[-telemetry.RING :]]
-    assert context == telemetry.context(ring, load == "hot", (0, 1), ())
-    assert (context.paused, context.steady) == (frozen_last, steady)
-    assert context.tctl == 60.0 + count - 1
-    assert store.crash_context(1, "boot-b", {0: 0}) is None
 
 
 def test_a_commit_retracts_survived_values_at_or_past_a_new_fail_bound(tmp_path):
@@ -3538,8 +3508,7 @@ def test_a_core_the_crash_rule_moved_moves_once_for_its_record_and_a_record_at_s
 ):
     s, world = resuming_from(Stage.STEADY, {1: 0})
     held = s.core(0).value
-    loose = FailContext(steady=False, working=(0, 1), paused=False)
-    after = read_at_resume(s, world, Evidence(0, True), Evidence(1, corrected), context=loose).state
+    after = read_at_resume(s, world, Evidence(0, True), Evidence(1, corrected)).state
     moved = [(r.core, r.value, r.fb) for r in after.cores]
     assert (after.lifecycle, after.incidents) == (Lifecycle.RUNNING, (Incident.STOCK_MACHINE_CHECK,))
     assert moved == [(0, held + 1, held), (1, 0, None)]

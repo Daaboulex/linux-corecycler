@@ -467,7 +467,7 @@ proof = "built"
 
 [[requirement]]
 id = "ALLCORE.bisect.replay"
-statement = "A STEADY or ENDURANCE Bisect tests its smaller groups quick, HOT for bisect_seconds, only after a steady-class failure, a hang included when its tail telemetry was steady (L18.d.4.4.allcore); after any other failure naming no core (a paused load, a burst, warm or idle load, a lost verdict, a hang whose tail telemetry is not steady) each group replays the failed load at the cursor for its full length with its plan seed, as TRANSIENT does (main session default 2026-10-27, brief-steady-bisect.md, the owner's to correct)"
+statement = "A STEADY or ENDURANCE Bisect tests its smaller groups quick, HOT for bisect_seconds, only after a test's own steady-class failure; after a crash (a dead boot during the test, a hang or a sudden reset alike, whatever its tail telemetry says) and after any other failure naming no core (a paused load, a burst, warm or idle load, a lost verdict) each group replays the failed load at the cursor for its full length with its plan seed, as TRANSIENT does (owner 2026-10-27, D96 in tuning-loops-round2.md: a freeze that takes minutes can pass every short group; it replaces the main session's default of brief-steady-bisect.md)"
 proof = "built"
 
 [[requirement]]
@@ -1895,7 +1895,7 @@ proof = "built"
 
 [[requirement]]
 id = "L08.G4"
-statement = "A crash with nobody convicted: the telemetry tail is a FAIL of kind crash classed by its context"
+statement = "A crash with nobody convicted is a FAIL of kind crash whose Bisect replays the HOT test at its full length, whatever its tail telemetry says (D96)"
 proof = "built"
 
 [[requirement]]
@@ -2576,7 +2576,7 @@ proof = "built"
 
 [[requirement]]
 id = "L18.d.4.4.allcore"
-statement = "Flow rule in STEADY, TRANSIENT, a TIGHTEN item, ENDURANCE: a FAIL of kind crash classed by its tail"
+statement = "Flow rule in STEADY, TRANSIENT, a TIGHTEN item, ENDURANCE: a FAIL of kind crash, never classed by its tail; in STEADY and ENDURANCE its Bisect replays the failed load at the cursor at its full length (D96)"
 proof = "built"
 
 [[requirement]]
@@ -2617,7 +2617,7 @@ proof = "built"
 
 [[requirement]]
 id = "L18.d.4.charged"
-statement = "A dead boot's records are charged before its crash is attributed, and its convictions set a record aside by the charge it gets: each record that boot's kernel log holds by that boot's CO journal and reads, as L18.d.3.charged charges a same-boot record; a record that journal cannot place, and one the next boot logs from the banks the reset kept, to the value its core held when the boot died, as the crash conviction reads it, and the event log names it record_unplaced when it is judged, a record set aside being named once, as set aside; a charge at or behind its core's fail bound repeats a judged failure (L18.d.3.repeat); a stock marker naming the dead boot counts every record at stock instead (L18.d.4.3a). One charged off stock backs its core off from that value as G3.backoff and never counts a stock incident, and no charge leaves a core deeper than the crash's rule left it, so a core both name moves once, to the looser of the two; one charged to stock stays a stock verdict (L18.d.4.once). One that backs its core off ends a bisection the crash's rule began, wherever that rule begins one (LIVE1, TRANSIENT, a steady-class STEADY or ENDURANCE, MEMORY), the record taken over the search (the main session's decision of 2026-10-27 on the existing G3 rule, the owner's to correct); when that exit returns to LIVE1, the record's backed-off core is requeued as a record's back-off in LIVE1 is (L07.G3), so its new value is proven"
+statement = "A dead boot's records are charged before its crash is attributed, and its convictions set a record aside by the charge it gets: each record that boot's kernel log holds by that boot's CO journal and reads, as L18.d.3.charged charges a same-boot record; a record that journal cannot place, and one the next boot logs from the banks the reset kept, to the value its core held when the boot died, as the crash conviction reads it, and the event log names it record_unplaced when it is judged, a record set aside being named once, as set aside; a charge at or behind its core's fail bound repeats a judged failure (L18.d.3.repeat); a stock marker naming the dead boot counts every record at stock instead (L18.d.4.3a). One charged off stock backs its core off from that value as G3.backoff and never counts a stock incident, and no charge leaves a core deeper than the crash's rule left it, so a core both name moves once, to the looser of the two; one charged to stock stays a stock verdict (L18.d.4.once). One that backs its core off ends a bisection the crash's rule began, wherever that rule begins one (LIVE1, STEADY, TRANSIENT, ENDURANCE, MEMORY), the record taken over the search (the main session's decision of 2026-10-27 on the existing G3 rule, the owner's to correct); when that exit returns to LIVE1, the record's backed-off core is requeued as a record's back-off in LIVE1 is (L07.G3), so its new value is proven"
 proof = "built"
 
 [[requirement]]
@@ -3029,7 +3029,7 @@ proof = "built"
 
 [[requirement]]
 id = "L25.h"
-statement = "The durable telemetry tail survives a crash and is the failure context for L18's flow rule"
+statement = "The durable telemetry tail survives a crash and is packed into the dead test's samples; L18's flow rule no longer reads it (D96)"
 proof = "built"
 
 [[requirement]]
@@ -4581,8 +4581,9 @@ proof = "built"
 
 [[requirement]]
 id = "SC.4"
-statement = "crash_context reads the open test's last block plus its tail rows"
-proof = "built"
+statement = "A crash's context reads the open test's last block plus its tail rows"
+proof = "not built"
+task = "S3"
 
 [[requirement]]
 id = "SC.4b"
@@ -4735,7 +4736,8 @@ task = "S3"
 [[requirement]]
 id = "SR.R2"
 statement = "A crash's context is read from the durable telemetry tail"
-proof = "built"
+proof = "not built"
+task = "S3"
 
 [[requirement]]
 id = "SR.R3"

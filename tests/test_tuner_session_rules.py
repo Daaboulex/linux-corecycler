@@ -12,7 +12,6 @@ from corecycler.tuner.machine.types import (
     CancelSchedule,
     Commit,
     ContinuationDue,
-    CrashEvidenceRead,
     Evidence,
     FailContext,
     ForgetResident,
@@ -423,16 +422,31 @@ def test_a_machine_check_naming_a_core_the_session_does_not_own_in_steady_pauses
     assert (fake.state.pause.reason, fake.state.pause.cores) == (PauseReason.HELD_KNOB, (2,))
 
 
-@pytest.mark.req("L08.G4", "L18.d.4.4.allcore")
-@pytest.mark.parametrize("steady", [True, False])
-def test_a_crash_in_steady_with_nobody_convicted_is_a_failure_bisected_as_its_telemetry_classes_it(steady):
-    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
-    _until(fake, _steady)
+@pytest.mark.req("L08.G4", "L14.G3_G7", "L18.d.4.4.allcore", "ALLCORE.bisect.replay")
+@pytest.mark.parametrize("stage", [Stage.STEADY, Stage.ENDURANCE])
+@pytest.mark.parametrize("crashed", [True, False])
+def test_a_crash_under_steady_heat_replays_the_hot_test_in_full_where_a_steady_class_verdict_runs_quick(stage, crashed):
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2, endurance=True)
+    running = _until(fake, lambda spec, state: spec.stage is stage and spec.load is Load.HOT).spec
     values = {record.core: record.value for record in fake.state.cores}
-    _crashed_with(fake, FailContext(steady=steady, working=(0, 1), paused=False))
-    assert fake.state.lifecycle is Lifecycle.RUNNING
-    assert (fake.state.flow.stage, fake.state.flow.bisect.quick) == (Stage.BISECT, steady)
+    if crashed:
+        fake.crash()
+        fake.post(Resume(1))
+    else:
+        fake.deliver(Report(Group.SILICON, 30.0, context=FailContext(steady=True, working=(0, 1), paused=False)))
+    flow = fake.state.flow
+    assert (fake.state.lifecycle, flow.stage, flow.bisect.entry) == (Lifecycle.RUNNING, Stage.BISECT, stage)
     assert {record.core: record.value for record in fake.state.cores} == values
+    baseline = _next_worker(fake)
+    fake.deliver()
+    half = _next_worker(fake)
+    assert (dict(baseline.vector), dict(half.vector)) == ({0: 0, 1: 0}, {0: values[0], 1: 0})
+    seconds = running.seconds if crashed else fake.config.bisect_seconds
+    shape = (Stage.BISECT, Load.HOT, seconds, not crashed, running.plan_seed)
+    assert {(group.stage, group.load, group.seconds, group.quick, group.plan_seed) for group in (baseline, half)} == {
+        shape
+    }
+    assert running.seconds != fake.config.bisect_seconds
 
 
 def _bisecting(fake: Fake):
@@ -622,18 +636,6 @@ def test_an_endurance_test_with_no_verdict_leaves_its_clean_time(report):
     assert (again.stage, again.load, fake.state.flow.allcore.t_clean) == (Stage.ENDURANCE, spec.load, clean)
 
 
-@pytest.mark.req("L14.G3_G7", "L18.d.4.4.allcore")
-@pytest.mark.parametrize("steady", [True, False])
-def test_a_crash_in_endurance_is_bisected_as_its_telemetry_classes_it(steady):
-    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2, endurance=True)
-    _until(fake, _enduring)
-    values = {record.core: record.value for record in fake.state.cores}
-    _crashed_with(fake, FailContext(steady=steady, working=(0, 1), paused=False))
-    flow = fake.state.flow
-    assert (flow.stage, flow.bisect.entry, flow.bisect.quick) == (Stage.BISECT, Stage.ENDURANCE, steady)
-    assert {record.core: record.value for record in fake.state.cores} == values
-
-
 @pytest.mark.req("L15.G3")
 def test_a_record_in_memory_backs_its_core_off_marks_dirty_and_memory_runs_again():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
@@ -665,23 +667,12 @@ def test_a_refused_final_write_pauses_at_baseline_and_resume_only_applies_the_pr
     assert {effect.core: effect.value for effect in effects if isinstance(effect, WriteCO)} == final
 
 
-def _crashed_with(fake: Fake, context: FailContext | None) -> None:
-    apply = fake.apply
-
-    def with_context(state, effect):
-        read = apply(state, effect)
-        return replace(read, context=context) if isinstance(read, CrashEvidenceRead) else read
-
-    fake.apply = with_context
-    fake.crash()
-    fake.post(Resume(1))
-
-
 @pytest.mark.req("L18.d.4.4.allcore")
 def test_a_crash_in_a_tighten_round_ends_the_reclaim():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     _until(fake, _tightening)
-    _crashed_with(fake, FailContext(steady=True, working=(0, 1), paused=False))
+    fake.crash()
+    fake.post(Resume(1))
     assert fake.state.lifecycle is Lifecycle.RUNNING
     assert fake.state.flow.stage is Stage.MEMORY and fake.state.flow.allcore.tightened
 
@@ -690,7 +681,8 @@ def test_a_crash_in_a_tighten_round_ends_the_reclaim():
 def test_a_crash_in_memory_with_nobody_convicted_bisects_with_memory_slots():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     _until(fake, lambda spec, state: spec.stage is Stage.MEMORY)
-    _crashed_with(fake, None)
+    fake.crash()
+    fake.post(Resume(1))
     assert fake.state.flow.stage is Stage.BISECT and fake.state.flow.bisect.entry is Stage.MEMORY
     slot = _next_worker(fake)
     assert (slot.stage, slot.load) == (Stage.BISECT, Load.MEMORY)
@@ -955,7 +947,8 @@ def test_a_crash_in_a_bisect_slot_records_that_group_as_failing_and_raises_the_r
     group = fake.state.flow.bisect.queue[0]
     assert len(group) == 2
     streak = fake.state.resume_streak
-    _crashed_with(fake, None)
+    fake.crash()
+    fake.post(Resume(1))
     assert fake.state.flow.bisect.results[-1] == (group, False)
     assert fake.state.resume_streak == streak + 1
 
@@ -965,7 +958,8 @@ def test_a_crash_in_soak_is_an_incident_that_leaves_the_resume_streak():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     _until(fake, lambda spec, state: spec.stage is Stage.SOAK)
     streak, incidents = fake.state.resume_streak, fake.state.incidents
-    _crashed_with(fake, None)
+    fake.crash()
+    fake.post(Resume(1))
     assert (fake.state.resume_streak, fake.state.incidents) == (streak, (*incidents, Incident.CRASH))
 
 

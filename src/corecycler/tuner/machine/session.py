@@ -687,7 +687,7 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World, verdict: Attrib
         early.append(Pause(PauseReason.STOCK_UNSTABLE, crashed, tuple(at_zero)))
     flow_crash = at_stock_crash = False
     if verdict.flow_crash:
-        after, stock = _flow_crash(after, w, e.context)
+        after, stock = _flow_crash(after, w)
         at_stock_crash = stock is not None
         flow_crash = not at_stock_crash and s.flow.stage is not Stage.SOAK
         if at_stock_crash:
@@ -885,12 +885,12 @@ def _stale_fail(s: SessionState, core: int, w: World) -> tuple[SessionState, str
     raise ValueError(f"a lost verdict has no stage rule in {stage}")
 
 
-def _flow_crash(s: SessionState, w: World, context=None) -> tuple[SessionState, str | None]:
+def _flow_crash(s: SessionState, w: World) -> tuple[SessionState, str | None]:
     flow = s.flow
     if flow.stage is Stage.MEMORY:
         return _memory_flow_rule(s, w)
     if flow.stage in ALLCORE:
-        return _allcore_fail(s, context, w)
+        return _allcore_fail(s, None, w)
     lane = next(r.core for r in s.cores if r.in_test)
     if flow.stage is Stage.LIVE1:
         values = {r.core: r.value for r in s.cores}
