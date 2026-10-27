@@ -305,6 +305,7 @@ class Flow:
     validating: tuple[tuple[int, int], ...] | None = None
     one_off: tuple[Stage, tuple[tuple[int, int], ...]] | None = None
     carried: bool = False
+    unreplayed: tuple[Stage, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

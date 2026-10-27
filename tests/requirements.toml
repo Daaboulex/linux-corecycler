@@ -3155,7 +3155,27 @@ task = "S3"
 
 [[requirement]]
 id = "L30.e"
-statement = "Abort with no value changed returns to completed; abort after a back-off ends aborted"
+statement = "Abort with no value changed returns to completed, save the unresolved failure of L30.e.failed; abort after a back-off ends aborted"
+proof = "built"
+
+[[requirement]]
+id = "L30.e.failed"
+statement = "An Abort while a validation owes a failure that moved no value a passing replay ends the session aborted, every owned core at its baseline, saying the validation failed and its values are not restored. The flow records the stage of every failed test at the validated values, a silicon report named or not and with any machine check, and a SOAK failure, unblamed included; a resume records a dead boot's counted incident, its conviction at stock and its crash at a core the session does not own. Only a clean pass of that stage's test at the same values clears it, the Bisect's exact replay included; a Bisect or a solo test still to run also holds the failure; a passing test whose machine check names a core the session does not own is no failure (D95 and D101, owner 2026-10-27, tuning-loops-round2.md; PLAN Next 60 and 62)"
+proof = "built"
+
+[[requirement]]
+id = "L30.e.incident"
+statement = "An Abort of a validation ends aborted, sending no CO back, after a crash nobody could be blamed for in it, until a test of the stage it died in passes clean at the validated values (D101, owner 2026-10-27)"
+proof = "built"
+
+[[requirement]]
+id = "L30.e.stock"
+statement = "An Abort of a validation ends aborted, sending no CO back, after a dead boot that convicts a core at stock in it, until a test of the stage it died in passes clean at the validated values (D101, owner 2026-10-27)"
+proof = "built"
+
+[[requirement]]
+id = "L30.e.stored"
+statement = "The stored flow keeps the stages that still owe a passing replay; a flow stored before the record existed reads as owing none, its Bisect or solo test still holding an Abort aborted, and a stored value that is not a list of stages refuses the session naming unreplayed"
 proof = "built"
 
 [[requirement]]

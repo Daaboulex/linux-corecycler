@@ -698,6 +698,8 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World, verdict: Attrib
     counted = verdict.incident or at_stock_crash or len(after.incidents) > len(s.incidents)
     incidents = (*s.incidents, Incident.CRASH) if counted else s.incidents
     after = replace(after, resume_streak=streak, incidents=incidents)
+    if counted or at_zero or verdict.held is not None:
+        after = _owe_replay(after, _held(after))
     judged, recorded, aside = _records_judged(after, verdict.evidence, verdict.at_stock, counted, e.dirty_end)
     reached = len(judged.incidents) > len(s.incidents) and len(judged.incidents) >= INCIDENT_LIMIT
     limit = [Pause(PauseReason.INCIDENTS, _incidents_text(judged.incidents))] if reached else []
@@ -1098,12 +1100,18 @@ def _pause_request(s: SessionState) -> Transition:
     return Transition(s, refused="nothing is running")
 
 
+def _failure_unresolved(flow: Flow) -> bool:
+    solo = flow.live1 is not None and flow.live1.solo is not None
+    return bool(flow.unreplayed) or flow.bisect is not None or solo
+
+
 def _abort(s: SessionState) -> Transition:
     if s.lifecycle not in HELD:
         return Transition(s, refused="nothing to abort")
     s = _clear_in_test(_keep_pick(s))
     profile = s.flow.validating if s.flow is not None else None
-    if profile is not None and not s.flow.carried and tuple((r.core, r.value) for r in s.cores) == profile:
+    unmoved = profile is not None and not s.flow.carried and tuple((r.core, r.value) for r in s.cores) == profile
+    if unmoved and not _failure_unresolved(s.flow):
         effects = _stop_effects(s, profile, journal=True)
         done = replace(s, lifecycle=Lifecycle.COMPLETED, flow=None, slot=None, pause=None, streaks=Streaks())
         effects += [
@@ -1111,10 +1119,15 @@ def _abort(s: SessionState) -> Transition:
             Announce("completed", "validation aborted; the session stays completed and its values are sent back"),
         ]
         return Transition(done, tuple(effects))
+    said = (
+        "validation aborted with a failure it had not resolved, so its values are not restored"
+        if unmoved
+        else "aborted on request"
+    )
     effects = _stop_effects(s, s.baseline, journal=True)
     effects += [
         Commit(replace(stored(s), status="aborted")),
-        Announce("aborted", "aborted on request; every owned core is sent back to its baseline"),
+        Announce("aborted", f"{said}; every owned core is sent back to its baseline"),
     ]
     aborted = replace(s, lifecycle=Lifecycle.ABORTED, flow=None, slot=None, pause=None, streaks=Streaks())
     return Transition(aborted, tuple(effects))
@@ -1219,6 +1232,7 @@ def _enter_live1(s: SessionState, w: World) -> Transition:
         allcore=s.flow.allcore,
         validating=s.flow.validating,
         carried=s.flow.carried,
+        unreplayed=s.flow.unreplayed,
     )
     return _live1_next(replace(s, flow=flow), w, None)
 
@@ -1709,8 +1723,29 @@ def _cut_reported(s: SessionState, cut: InFlight, rep: Report, w: World) -> Tran
     return replace(judged, effects=(*judged.effects, said))
 
 
+def _replay_stage(flow: Flow) -> Stage:
+    return flow.bisect.entry if flow.bisect is not None else flow.stage
+
+
+def _owe_replay(s: SessionState, vector: tuple[tuple[int, int], ...]) -> SessionState:
+    flow = s.flow
+    unreplayed = (*flow.unreplayed, _replay_stage(flow)) if vector == flow.validating else flow.unreplayed
+    return replace(s, flow=replace(flow, unreplayed=unreplayed))
+
+
+def _replayed(s: SessionState, spec: TestSpec, rep: Report) -> SessionState:
+    if rep.group is Group.SILICON or (rep.group is Group.ENVIRONMENT and spec.stage is Stage.SOAK):
+        return _owe_replay(s, spec.vector)
+    flow = s.flow
+    if rep.group is not Group.PASS or rep.evidence or rep.skipped or spec.vector != flow.validating:
+        return s
+    stage = _replay_stage(flow)
+    return replace(s, flow=replace(flow, unreplayed=tuple(owed for owed in flow.unreplayed if owed is not stage)))
+
+
 def _judged(s: SessionState, rep: Report, w: World) -> Transition:
     spec = s.slot.spec
+    s = _replayed(s, spec, rep)
     whole = spec.load in ALLCORE_LOADS
     ran = dict(spec.vector)
     records = tuple(

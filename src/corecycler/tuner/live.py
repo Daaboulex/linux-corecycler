@@ -345,6 +345,15 @@ def _one_off_from_json(raw: list | None) -> tuple[Stage, tuple[tuple[int, int], 
     return Stage(stage), _pairs(held)
 
 
+def _unreplayed_from_json(raw: dict) -> tuple[Stage, ...]:
+    """A flow stored before the record existed owes no replay."""
+    stored = raw.get("unreplayed", [])
+    try:
+        return tuple(Stage(stage) for stage in stored)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"the stored flow's unreplayed is {stored!r}, not a list of stages") from exc
+
+
 def _flow_from_json(raw: dict | None, continued: bool) -> Flow | None:
     if raw is None:
         return None
@@ -365,6 +374,7 @@ def _flow_from_json(raw: dict | None, continued: bool) -> Flow | None:
         validating=None if raw["validating"] is None else _pairs(raw["validating"]),
         one_off=_one_off_from_json(raw.get("one_off")),
         carried=raw.get("carried", continued),
+        unreplayed=_unreplayed_from_json(raw),
     )
 
 
