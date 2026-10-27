@@ -1305,6 +1305,11 @@ statement = "The L01 gate subset also runs before Resume and ValidateProfile"
 proof = "built"
 
 [[requirement]]
+id = "L01.a.abort"
+statement = "An abort, which runs no test, checks only what reverting the CO needs, the core map and no other SMU tool or holder of the ryzen_smu files, and refuses on either; the kernel log, the machine-check poll, the lanes, a temperature sensor, the scheduling policy, the Shaper read, the stress tools, the memory budget and the stored configuration's own checks (a knob below its floor, an order the cores' CCDs no longer allow) only a test needs never refuse it and still refuse resume, validate, continue and restart (ryzen 2026-10-27, D112: an abort refused from an SSH shell on the idle policy and under a user unit on y-cruncher missing; the stored checks from review round 1, whose refusal told the user to abort; PLAN Next 71 and 78)"
+proof = "built"
+
+[[requirement]]
 id = "L01.c.ack"
 statement = "The acknowledgement is logged as a session event"
 proof = "built"

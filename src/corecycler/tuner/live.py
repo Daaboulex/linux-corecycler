@@ -97,6 +97,7 @@ class Hardware(Protocol):
     def temperature(self) -> float | None: ...
     def power(self) -> PowerState: ...
     def preflight(self) -> tuple[str | None, tuple[str, ...]]: ...
+    def revert_problem(self) -> str | None: ...
     def boot_id(self) -> str: ...
     def boot_end(self, boot_id: str) -> kernel.BootEnd: ...
     def boot_facts(self, boot_id: str) -> BootFacts: ...
@@ -800,9 +801,8 @@ class LiveRig:
             completed_unread=unread,
         )
 
-    def world_for_resume(self, session_id: int) -> World:
+    def world_for_resume(self, session_id: int, world: World) -> World:
         loaded, unread = self.store.load(session_id)
-        world = self.world_checked()
         if loaded is None:
             return replace(world, stored_unread=unread)
         stored, self.stored_boot, self.stored_read_ns = loaded
@@ -1204,7 +1204,12 @@ class LiveRig:
 
     def resume(self, session_id: int, reengage: bool = False, carry: bool = False) -> None:
         child_id = self.store.new_session_id() if carry else None
-        self.post(Resume(session_id, reengage, child_id), self.world_for_resume(session_id))
+        self.post(Resume(session_id, reengage, child_id), self.world_for_resume(session_id, self.world_checked()))
+
+    def resume_for_abort(self, session_id: int, reengage: bool) -> None:
+        """Resume a stored session for an abort, which runs no test: only what reverting the CO needs is checked."""
+        reverting = replace(self.world(), preflight_refusal=self.hardware.revert_problem())
+        self.post(Resume(session_id, reengage, None, abort=True), self.world_for_resume(session_id, reverting))
 
     def continue_on_setup(self) -> None:
         self.post(ContinueOnSetup(self.store.new_session_id()), self.world_for_start())
@@ -1213,7 +1218,7 @@ class LiveRig:
         self.post(RestartOnSetup(self.store.new_session_id(), acknowledged), self.world_for_start())
 
     def validate(self, session_id: int) -> None:
-        world = replace(self.world_for_resume(session_id), bios_co=self.co_reads())
+        world = replace(self.world_for_resume(session_id, self.world_checked()), bios_co=self.co_reads())
         last = self.stored_boot
         end = None if world.stored is None or last == self.boot else self.hardware.boot_end(last)
         if end is None or end.clean:

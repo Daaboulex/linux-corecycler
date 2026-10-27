@@ -39,6 +39,7 @@ from corecycler.tuner.live import (
 )
 from corecycler.tuner.machine.session import _evidence_applied, transition
 from corecycler.tuner.machine.types import (
+    KNOB_FLOOR,
     Abort,
     AllCore,
     Announce,
@@ -112,6 +113,7 @@ class FakeHardware:
     harvests: list = field(default_factory=list)
     boot_reads: int = 0
     refusal: str | None = None
+    revert_refusal: str | None = None
     warnings: tuple = ()
     facts_asked: list = field(default_factory=list)
     setup_now: tuple = (("bios", "A"),)
@@ -145,6 +147,9 @@ class FakeHardware:
 
     def preflight(self):
         return self.refusal, self.warnings
+
+    def revert_problem(self):
+        return self.revert_refusal
 
     def boot_id(self):
         self.boot_reads += 1
@@ -559,8 +564,7 @@ def test_a_reboot_during_a_test_convicts_the_tested_core_on_resume(tmp_path):
     assert again.run_until_rest(0.01).lifecycle is Lifecycle.COMPLETED
 
 
-@pytest.mark.req("L18.b.quarantine", "L18.d.8.reengage")
-def test_a_quarantined_session_resumes_only_when_reengaged_from_its_journal_s_survived_values(tmp_path):
+def quarantined_by_three_crashes(tmp_path) -> tuple[FakeHardware, LiveRig]:
     hardware = FakeHardware()
     r = rig(tmp_path, hardware)
     r.start(config(max_offset=-40, starts=((0, -30), (1, -30), (8, -30))), 1, 7, True)
@@ -571,6 +575,12 @@ def test_a_quarantined_session_resumes_only_when_reengaged_from_its_journal_s_su
         r = rig(tmp_path, hardware, db=r.store.db)
         r.resume(1)
     assert r.state.lifecycle is Lifecycle.QUARANTINED
+    return hardware, r
+
+
+@pytest.mark.req("L18.b.quarantine", "L18.d.8.reengage")
+def test_a_quarantined_session_resumes_only_when_reengaged_from_its_journal_s_survived_values(tmp_path):
+    hardware, r = quarantined_by_three_crashes(tmp_path)
     r.store.db.journal_co_intent(1, 8, -1, True, boot_id="boot-d", mono_ns=1)
     again = rig(tmp_path, hardware, db=r.store.db)
     again.resume(1)
@@ -4802,8 +4812,10 @@ def paused_by_the_owner_on_the_old_kernel(tmp_path) -> tuple[FakeHardware, LiveR
     return hardware, r
 
 
-def driven(tmp_path, flag: str, again: LiveRig) -> int:
-    args = live_hw.parse(["--state-dir", str(tmp_path / "state"), "--session", "1", flag, "--write", "--acknowledge"])
+def driven(tmp_path, flag: str, again: LiveRig, *extra: str) -> int:
+    args = live_hw.parse(
+        ["--state-dir", str(tmp_path / "state"), "--session", "1", flag, "--write", "--acknowledge", *extra]
+    )
     return live_hw.run(args, again, lambda line: None)
 
 
@@ -5732,6 +5744,124 @@ def test_a_scheduling_policy_that_could_starve_the_watch_refuses(monkeypatch):
     assert live_hw.scheduling_problem() is None
 
 
+def paused_with_its_cores_moved(tmp_path) -> tuple[FakeHardware, LiveRig]:
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    r.post(PauseRequest())
+    r.run_until_rest(0.01)
+    hardware.co = {0: -7, 1: -7, 8: -7}
+    return hardware, r
+
+
+@pytest.mark.req("L01.a.abort")
+@pytest.mark.parametrize(
+    ("policy", "tools", "says"),
+    [
+        (os.SCHED_OTHER, (Tool("y-cruncher", "not found on PATH"),), "y-cruncher is not installed: not found on PATH"),
+        (os.SCHED_IDLE, (), "the tool runs under an idle or batch scheduling policy"),
+    ],
+    ids=["the stress tool missing", "an idle policy"],
+)
+def test_an_abort_goes_ahead_where_only_a_test_s_precondition_refuses_and_every_command_that_tests_is_refused(
+    tmp_path, monkeypatch, policy, tools, says
+):
+    monkeypatch.setattr(live_hw.os, "sched_getscheduler", lambda pid: policy)
+    refusal, _ = preflight(tmp_path, monkeypatch, tools=tools, scheduling=live_hw.scheduling_problem)
+    assert says in refusal
+    hardware, r = paused_with_its_cores_moved(tmp_path)
+    hardware.refusal = refusal
+    for command in ("--resume", "--continue", "--restart"):
+        again = rig(tmp_path, hardware, db=r.store.db)
+        assert driven(tmp_path, command, again) == live_hw.EXIT_REFUSED
+        assert again.refused == refusal
+    assert hardware.co == {0: -7, 1: -7, 8: -7}
+    runner = FakeRunner(hardware)
+    aborted = rig(tmp_path, hardware, runner=runner, db=r.store.db)
+    assert driven(tmp_path, "--abort", aborted) == live_hw.EXIT_ABORTED
+    assert hardware.co == {0: 0, 1: 0, 8: 0}
+    assert runner.seen == []
+    assert lineage(aborted) == [{"id": 1, "status": "aborted", "parent_session_id": None, "origin": None}]
+
+
+BROKEN_STORED_CONFIGURATION = pytest.mark.parametrize(
+    ("domain_of", "k_1t_floor"),
+    [(((0, 0), (1, 0), (8, None)), KNOB_FLOOR["k_1t"]), (DOMAINS, 3)],
+    ids=["a core whose CCD reads none under the alternate order", "a k_1t floor raised since it started"],
+)
+
+
+@pytest.mark.req("L01.a.abort")
+@BROKEN_STORED_CONFIGURATION
+def test_an_abort_goes_ahead_where_the_stored_configuration_s_own_checks_tell_a_resume_to_abort(
+    tmp_path, monkeypatch, domain_of, k_1t_floor
+):
+    hardware, r = paused_with_its_cores_moved(tmp_path)
+    monkeypatch.setitem(KNOB_FLOOR, "k_1t", k_1t_floor)
+    resumed = rig(tmp_path, hardware, db=r.store.db)
+    resumed.domain_of = domain_of
+    assert driven(tmp_path, "--resume", resumed) == live_hw.EXIT_REFUSED
+    assert resumed.refused.endswith("; abort session 1 and start a new one")
+    assert hardware.co == {0: -7, 1: -7, 8: -7}
+    runner = FakeRunner(hardware)
+    aborted = rig(tmp_path, hardware, runner=runner, db=r.store.db)
+    aborted.domain_of = domain_of
+    assert driven(tmp_path, "--abort", aborted) == live_hw.EXIT_ABORTED
+    assert hardware.co == {0: 0, 1: 0, 8: 0}
+    assert runner.seen == []
+    assert lineage(aborted) == [{"id": 1, "status": "aborted", "parent_session_id": None, "origin": None}]
+
+
+@pytest.mark.req("L01.a.abort")
+@BROKEN_STORED_CONFIGURATION
+def test_a_quarantined_session_s_broken_configuration_refuses_a_reengaged_resume_and_never_its_reengaged_abort(
+    tmp_path, monkeypatch, domain_of, k_1t_floor
+):
+    hardware, r = quarantined_by_three_crashes(tmp_path)
+    monkeypatch.setitem(KNOB_FLOOR, "k_1t", k_1t_floor)
+    resumed = rig(tmp_path, hardware, db=r.store.db)
+    resumed.domain_of = domain_of
+    assert driven(tmp_path, "--resume", resumed, "--reengage") == live_hw.EXIT_REFUSED
+    assert resumed.refused.endswith("; abort session 1 and start a new one")
+    hardware.co = {0: -7, 1: -7, 8: -7}
+    runner = FakeRunner(hardware)
+    aborted = rig(tmp_path, hardware, runner=runner, db=r.store.db)
+    aborted.domain_of = domain_of
+    assert driven(tmp_path, "--abort", aborted, "--reengage") == live_hw.EXIT_ABORTED
+    assert hardware.co == {0: 0, 1: 0, 8: 0}
+    assert runner.seen == []
+    assert lineage(aborted) == [{"id": 1, "status": "aborted", "parent_session_id": None, "origin": None}]
+
+
+@pytest.mark.req("L01.a.abort")
+def test_an_abort_is_refused_on_what_reverting_the_co_needs_and_writes_nothing(tmp_path):
+    hardware, r = paused_with_its_cores_moved(tmp_path)
+    held = "ryzenadj (pid 5) is a known SMU tool, so its writes and this session's could collide"
+    hardware.revert_refusal = held
+    again = rig(tmp_path, hardware, db=r.store.db)
+    assert driven(tmp_path, "--abort", again) == live_hw.EXIT_REFUSED
+    assert again.refused == held
+    assert hardware.co == {0: -7, 1: -7, 8: -7}
+    assert lineage(again) == [{"id": 1, "status": "paused", "parent_session_id": None, "origin": None}]
+
+
+@pytest.mark.req("L01.a.abort")
+def test_reverting_the_co_needs_the_core_map_and_no_other_smu_writer_whatever_the_scheduling_policy(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(live_hw.os, "sched_getscheduler", lambda pid: live_hw.os.SCHED_IDLE)
+    quiet = proc_tree(tmp_path / "quiet", {})
+    held = proc_tree(tmp_path / "held", {5: ("ryzenadj", ())})
+    blocked = SimpleNamespace(core_map_error="CCD 1's core fuse cannot be read")
+    assert live_hw.revert_problem(FakeSmu(), quiet) is None
+    assert live_hw.revert_problem(blocked, held) == "CCD 1's core fuse cannot be read"
+    assert live_hw.revert_problem(FakeSmu(), held) == (
+        "ryzenadj (pid 5) is a known SMU tool, so its writes and this session's could collide"
+    )
+
+
 def unreadable(monkeypatch, proc, *pids):
     real = Path.iterdir
 
@@ -5841,6 +5971,9 @@ def test_the_hardware_adapter_checks_its_own_smu_sensors_tools_budget_and_power_
     hw = live_hw.SmuHardware(FakeSmu(), False, print, warm, cpu, tools=tools, budget=len, vcache="none")
     assert hw.preflight() == ("refused", ())
     assert seen == [(hw.smu, warm, tools, len, live_hw.read_power_state(cpu))]
+    monkeypatch.setattr(live_hw, "revert_problem", lambda *parts: seen.append(parts) or "held")
+    assert hw.revert_problem() == "held"
+    assert seen[1:] == [(hw.smu,)]
 
 
 def test_the_lane_budget_reads_the_budget_under_the_lane_cgroup(monkeypatch):

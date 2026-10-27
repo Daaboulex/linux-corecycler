@@ -393,8 +393,10 @@ def config_problem(cfg: MachineConfig, co_range: tuple[int, int] | None) -> str 
     return None
 
 
-def _stored_gates(st: Stored, w: World) -> str | None:
-    if w.preflight_refusal is not None:
+def _stored_gates(st: Stored, w: World, abort: bool) -> str | None:
+    """The world's preflight refusal, then the stored configuration's own checks, which only a command that runs a
+    test needs: an abort reverts the CO and runs none, so a configuration it could not run never holds it back."""
+    if abort or w.preflight_refusal is not None:
         return w.preflight_refusal
     problem = config_problem(st.config, w.co_range) or order_problem(
         st.config.method, st.config.selected, dict(w.domain_of)
@@ -415,7 +417,7 @@ def _resume_stored(s: SessionState, e: Resume, w: World) -> Transition:
         return _reengage(s, e, w)
     if st.status not in RESUMABLE:
         return Transition(s, refused=f"a session stored as {st.status} cannot be resumed")
-    refusal = _stored_gates(st, w)
+    refusal = _stored_gates(st, w, abort=e.abort)
     if refusal is not None:
         return Transition(s, refused=refusal)
     resumed = replace(reconstruct(st), next_token=s.next_token)
@@ -429,7 +431,7 @@ def _reengage(s: SessionState, e: Resume, w: World) -> Transition:
             s,
             refused=f"session {st.session_id} is quarantined: resume it with --reengage to go on from proven ground",
         )
-    refusal = _stored_gates(st, w)
+    refusal = _stored_gates(st, w, abort=e.abort)
     if refusal is not None:
         return Transition(s, refused=refusal)
     resumed = replace(reconstruct(st), next_token=s.next_token, resume_streak=0)
@@ -547,7 +549,7 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
         return Transition(
             s, refused=f"session {st.session_id} is {st.status}: only a completed session can be validated"
         )
-    refusal = _stored_gates(st, w)
+    refusal = _stored_gates(st, w, abort=False)
     if refusal is not None:
         return Transition(s, refused=refusal)
     if w.stored_crash_suspects:

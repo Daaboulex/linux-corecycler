@@ -414,6 +414,7 @@ class Resume:
     session_id: int
     reengage: bool = False
     child_id: int | None = None
+    abort: bool = False
 
 
 @dataclass(frozen=True, slots=True)

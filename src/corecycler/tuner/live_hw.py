@@ -129,6 +129,9 @@ class SmuHardware:
     def preflight(self) -> tuple[str | None, tuple[str, ...]]:
         return preflight(self.smu, self.sensors, self.tools, self.budget, self.power())
 
+    def revert_problem(self) -> str | None:
+        return revert_problem(self.smu)
+
     def read_co(self, core: int) -> int | None:
         return self.smu.get_co_offset(core)
 
@@ -426,6 +429,13 @@ def scheduling_problem() -> str | None:
     if policy in (os.SCHED_IDLE, os.SCHED_BATCH):
         return "the tool runs under an idle or batch scheduling policy, so its own watch could be starved by the load"
     return None
+
+
+def revert_problem(smu, proc: Path = PROC) -> str | None:
+    """The first precondition reverting the CO needs that refuses: the core map, then no other SMU writer, whose
+    mailbox writes could interleave with the revert's. An abort runs no test, so it checks these alone and never a
+    gate of preflight only a test needs: the reverted CO is the safe state."""
+    return core_map_blocked(smu) or smu_holder(proc)[0]
 
 
 def preflight(
@@ -1002,6 +1012,8 @@ def _run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> 
             say(f"order seed {seed}, {origin}")
     elif args.validate:
         rig.validate(args.session)
+    elif args.abort:
+        rig.resume_for_abort(args.session, args.reengage)
     else:
         rig.resume(args.session, args.reengage, carry=args.resume or args.continue_on)
     if rig.refused is not None:
