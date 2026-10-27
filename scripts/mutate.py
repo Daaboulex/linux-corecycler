@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import math
 import os
 import re
 import subprocess
@@ -215,6 +216,7 @@ def _failure(tests: list[str], timeout: int, root: Path = REPO) -> str | None:
     return None if passed else output
 
 
+LATE = "the test selection did not finish within"
 Cover = dict[str, dict[int, frozenset[str]]]
 Durations = dict[str, float]
 DURATION = re.compile(r"^\s*([\d.]+)s (?:setup|call|teardown) +(.+?)\s*$", re.MULTILINE)
@@ -271,6 +273,19 @@ def _tiers(mutant: Mutant, cover: Cover, durations: Durations, tests: list[str],
     short = sorted(test for test in contexts if durations.get(test, 0.0) <= SHORT_S)
     long = sorted(contexts.difference(short))
     return [tier for tier in (short, long) if tier]
+
+
+LIMIT_FLOOR_S = 30  # equivalent-mutant: a start-up allowance chosen from measured runs that every test reads by name
+LIMIT_FACTOR = 5  # equivalent-mutant: a margin chosen from measured runs that every test reads by name
+
+
+def _limit(tier: list[str], durations: Durations, timeout: int) -> int:
+    """Seconds a tier may run before its mutant counts as hung, and so killed: a multiple of its tests'
+    baseline seconds summed as one worker would run them, at least a floor for pytest's own start, never
+    over --timeout. A tier holding a test the baseline did not time keeps --timeout."""
+    if not tier or any(test not in durations for test in tier):
+        return timeout
+    return min(timeout, max(LIMIT_FLOOR_S, math.ceil(LIMIT_FACTOR * sum(durations[test] for test in tier))))
 
 
 HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
@@ -359,7 +374,7 @@ def _mutate(
     cap: int,
     baseline: tuple[Cover, Durations],
 ) -> int:
-    killed, survived = 0, []
+    killed, survived, timed_out = 0, [], []
     for path, lines in targets:
         original = path.read_text()
         total = _count(original, lines)
@@ -373,9 +388,20 @@ def _mutate(
                     continue
                 path.write_text(mutant.source)
                 tiers = _tiers(mutant, *baseline, tests, root)
-                if any(_failure(tier, timeout, root) is not None for tier in tiers):
+                failed = next(
+                    (
+                        (output, limit)
+                        for tier in tiers
+                        if (output := _failure(tier, limit := _limit(tier, baseline[1], timeout), root)) is not None
+                    ),
+                    None,
+                )
+                if failed is not None:
                     killed += 1
-                    print(".", end="", flush=True)
+                    late = LATE in failed[0]
+                    if late:
+                        timed_out.append((mutant, failed[1]))
+                    print("T" if late else ".", end="", flush=True)
                 else:
                     survived.append(mutant)
                     print("S", end="", flush=True)
@@ -388,6 +414,8 @@ def _mutate(
     print(f"\nmutants {total}  killed {killed}  survived {len(survived)}  score {score:.1f}%")
     for mutant in survived:
         print(f"  SURVIVED {mutant.path.relative_to(root)}:{mutant.lineno}  {mutant.description}")
+    for mutant, limit in timed_out:
+        print(f"  TIMED OUT {mutant.path.relative_to(root)}:{mutant.lineno}  {mutant.description} (limit {limit} s)")
     return 1 if survived else 0
 
 

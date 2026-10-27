@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -186,6 +187,43 @@ def test_a_mutant_killed_by_a_short_test_never_starts_the_long_ones_and_a_surviv
         assert mutate._mutate([(source, None)], [], 10, tmp_path, 0, baseline) == verdict
         assert ran == runs * mutate._count("def flag():\n    return 1 < 2\n")
     assert source.read_text() == "def flag():\n    return 1 < 2\n"
+
+
+def test_a_tier_waits_a_multiple_of_its_tests_serial_baseline_seconds_at_least_the_floor_at_most_the_timeout():
+    quick, first, second = "tests/test_a.py::test_quick", "tests/test_a.py::test_first", "tests/test_b.py::test_second"
+    durations = {quick: 0.1, first: 20.0, second: 30.0}
+    assert mutate._limit([quick], durations, 600) == mutate.LIMIT_FLOOR_S < 600
+    assert mutate.LIMIT_FACTOR * 50.0 <= mutate._limit([first, second], durations, 600) < 600
+    assert mutate._limit([first, second], durations, 100) == 100
+
+
+def test_a_tier_holding_a_test_the_baseline_did_not_time_waits_the_whole_timeout():
+    known = "tests/test_a.py::test_known"
+    for tier in ([known, "tests/test_a.py::test_new"], ["tests/test_a.py"], []):
+        assert mutate._limit(tier, {known: 0.1}, 600) == 600
+
+
+def test_a_mutant_that_hangs_its_tests_is_killed_at_its_tier_s_limit_not_at_the_whole_timeout(
+    monkeypatch, tmp_path, capsys
+):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    source = tmp_path / "src" / "m.py"
+    source.write_text("def wait(ready):\n    while not ready():\n        pass\n    return True\n")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        'import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).parent.parent / "src"))\n'
+        "from m import wait\n\n\ndef test_wait():\n    assert wait(lambda: True)\n"
+    )
+    test = "tests/test_m.py::test_wait"
+    baseline = ({"src/m.py": {1: frozenset({""}), 2: frozenset({test})}}, {test: 0.01})
+    monkeypatch.setattr(mutate, "LIMIT_FLOOR_S", 2)
+    timeout = 60
+    started = time.monotonic()
+    assert mutate._mutate([(source, {2})], [test], timeout, tmp_path, 0, baseline) == 0
+    assert time.monotonic() - started < timeout / 2
+    out = capsys.readouterr().out
+    assert "mutants 1  killed 1  survived 0" in out
+    assert "\nT\n" in out and "  TIMED OUT src/m.py:2" in out and "(limit 2 s)" in out
 
 
 def test_a_handful_of_named_tests_runs_on_one_worker_and_anything_larger_as_the_machine_allows(monkeypatch):
