@@ -108,14 +108,21 @@ found.
 2. **Search, two threads per core**: when every selected core has two online CPUs, the
    same proof with both threads of the core and 6 passes, from the one-thread value.
 3. **Each core alone** (LIVE1): every value live at once, each core tested alone again.
-4. **Hot all-core** (STEADY): a hot all-core load on every selected CPU. A failure that
-   names no core is narrowed by CCD and by half until one core is convicted; it backs
-   off one step.
-5. **Changing loads** (TRANSIENT): burst, warm and idle segments until an hour passes
-   without a failure.
-6. **Tighten** (TIGHTEN): each core tries one step tighter again while the others hold.
-7. **Endurance** (ENDURANCE, off by default): hot, burst, warm and idle in a cycle until
-   three hours pass clean.
+4. **Hot all-core** (STEADY): every core enters 3 steps looser than its proven value,
+   under a hot load on every selected CPU. A failure that names a core backs that core
+   off one step. One that names no core is narrowed by CCD and by half until its core is
+   found, which alone backs off; a group that fails only together loosens and leaves the
+   tighten rounds, and every core loosens only when the full set fails and no smaller
+   group does. The groups are tested by a short hot load after a failure under steady
+   heat, and otherwise by the failed load replayed at its full length. A failure whose
+   exact replay passes is a one-off, once per stage, and moves nothing.
+5. **Changing loads** (TRANSIENT): burst, warm, burst and idle segments until an hour
+   passes without a failure, a failure handled as in STEADY.
+6. **Tighten** (TIGHTEN): in rounds, every core still in them tries one step tighter at
+   once, for at most 3 rounds; a failure that names a core puts it back and takes it out
+   of the rounds, and one that names no core ends them.
+7. **Endurance** (ENDURANCE, off by default): hot, burst, warm, burst and idle in a cycle
+   until three hours pass clean, a failure handled as in STEADY.
 8. **Memory** (MEMORY, on by default): stressapptest on each selected core, skipped with
    the reason when memory is short.
 9. **Idle watch** (SOAK, on by default): 30 minutes without load, watching the kernel
