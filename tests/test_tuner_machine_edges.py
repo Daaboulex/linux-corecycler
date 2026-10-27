@@ -8,6 +8,8 @@ from corecycler.tuner.machine import bisect, search
 from corecycler.tuner.machine.session import ALLCORE_LOADS, config_problem, stored, transition
 from corecycler.tuner.machine.types import (
     KNOB_FLOOR,
+    Announce,
+    Commit,
     ContinuationDue,
     ContinueOnSetup,
     CoreRecord,
@@ -146,6 +148,58 @@ def test_a_pause_during_an_all_core_test_stops_it_at_once_and_resume_runs_the_sa
     while fake.worker is None:
         assert fake.progress()
     assert (fake.worker.spec.stage, fake.worker.spec.load, fake.worker.spec.vector) == (cut.stage, cut.load, cut.vector)
+
+
+def cut_by_a_pause():
+    fake = running_fake()
+    while fake.worker is None or fake.worker.spec.load is not Load.HOT:
+        assert fake.progress()
+    cut = fake.worker
+    paused = transition(fake.state, PauseRequest(), fake.world()).state
+    core = min(cut.spec.vector, key=lambda pair: pair[1])[0]
+    return fake, cut, paused, core
+
+
+@pytest.mark.req("U22.named")
+def test_a_cut_all_core_test_s_report_naming_a_core_is_judged_as_its_stage_s_named_failure():
+    fake, cut, paused, core = cut_by_a_pause()
+    held = dict(cut.spec.vector)[core]
+    assert held < 0
+    report = Report(Group.SILICON, 3.0, named=(core,), detail=f"computation: core {core} in the final output scan")
+    result = transition(paused, WorkerReported(cut.token, report), fake.world())
+    rec = result.state.core(core)
+    assert (rec.value, rec.fb) == (held + CFG.fine_step, held)
+    assert (result.state.lifecycle, result.state.pause.reason, result.state.pause.cut) == (
+        Lifecycle.PAUSED,
+        PauseReason.USER,
+        None,
+    )
+    assert [effect.stored.cores for effect in result.effects if isinstance(effect, Commit)] == [result.state.cores]
+    [said] = [effect.text for effect in result.effects if isinstance(effect, Announce) and effect.kind == "cut_judged"]
+    assert f"core {core}" in said and report.detail in said
+    again = transition(result.state, WorkerReported(cut.token, report), fake.world())
+    assert (again.state, again.effects) == (result.state, ())
+
+
+@pytest.mark.req("U22.named")
+@pytest.mark.parametrize(
+    ("report", "earlier"),
+    [
+        (Report(Group.PASS, 3.0), 0),
+        (Report(Group.APPARATUS, 3.0, detail="cut_short: stopped before the end of its stress"), 0),
+        (Report(Group.SILICON, 3.0, detail="the stress process crashed"), 0),
+        (Report(Group.THERMAL, 3.0, named=(0,)), 0),
+        (Report(Group.SILICON, 3.0, named=(0,), evidence=(Evidence(1, True),)), 0),
+        (Report(Group.SILICON, 3.0, named=(0,)), 1),
+    ],
+)
+def test_a_cut_all_core_test_s_report_naming_no_failing_core_or_carrying_a_record_or_another_test_s_is_dropped(
+    report, earlier
+):
+    fake, cut, paused, _ = cut_by_a_pause()
+    assert paused.pause.cut == cut
+    result = transition(paused, WorkerReported(cut.token - earlier, report), fake.world())
+    assert (result.state, result.effects) == (paused, ())
 
 
 @pytest.mark.req("L16.G4", "L18.d.4.4.soak", "K19")

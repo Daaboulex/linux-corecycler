@@ -139,8 +139,10 @@ shortest and longest time.
 ### Controls
 
 **Start** begins a session with the settings shown. **Pause** lets a one-core test
-finish and stops an all-core test at once, which runs again from its start on resume;
-**Stop** stops now; both put every selected core back to its baseline and keep the
+finish and stops an all-core test at once, which runs again from its start on resume,
+unless the stopped test had already caught a failure naming a core: that failure is
+judged and the session goes on from its verdict; **Stop** stops now and drops such a
+failure; both put every selected core back to its baseline and keep the
 session resumable. **Abort** (with a confirmation) puts every selected core back to its
 baseline and stops the session as aborted, which Resume can still take up. **Resume**
 goes on with the newest session, **Validate** proves a completed session's values again,

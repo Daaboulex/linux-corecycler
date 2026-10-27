@@ -100,6 +100,7 @@ class Fake:
     resident: dict[int, int | None] = field(default_factory=dict)
     db: Stored | None = None
     worker: InFlight | None = None
+    stopped: InFlight | None = None
     last_report: Report | None = None
     timer: tuple[int, float] | None = None
     now: float = 0.0
@@ -208,6 +209,9 @@ class Fake:
                     raise Broken("a crash raised neither the incidents nor the resume streak, so it can repeat forever")
             if follow is not None:
                 queue.append(follow)
+            elif self.stopped is not None:
+                stopped, self.stopped = self.stopped, None
+                queue.append(self.returned(stopped))
 
     def run(self, before: SessionState, result: Transition):
         acting = result.state if result.state.session_id is not None else before
@@ -256,6 +260,8 @@ class Fake:
                         self.journaled(core, value, confirmed=True)
             case StopWorker(token=token):
                 if self.worker is not None and self.worker.token == token:
+                    cut = None if state.pause is None else state.pause.cut
+                    self.stopped = self.worker if cut == self.worker else None
                     self.worker = None
             case AwaitWorker():
                 pass
@@ -457,7 +463,11 @@ class Fake:
     def deliver(self, report: Report | None = None) -> None:
         if self.worker is None:
             raise Broken("no worker to report")
-        token, spec = self.worker.token, self.worker.spec
+        worker, self.worker = self.worker, None
+        self.post(self.returned(worker, report))
+
+    def returned(self, worker: InFlight, report: Report | None = None) -> WorkerReported:
+        token, spec = worker.token, worker.spec
         report = report if report is not None else self.verdict_for(spec)
         isolated = all(value == 0 for core, value in spec.vector if core != spec.core)
         if report.group is Group.SILICON and spec.stage.value in ("search", "live1"):
@@ -471,7 +481,6 @@ class Fake:
                 self.failed_allcore.add(replay)
             elif report.group is Group.PASS and not report.evidence and not report.skipped:
                 self.failed_allcore.discard(replay)
-        self.worker = None
         self.now += report.seconds
         self.last_report = report
         if report.program_faults is not None:
@@ -479,7 +488,7 @@ class Fake:
             seen = transition(self.state, WorkerReported(token, report), self.world())
             if seen != transition(self.state, WorkerReported(token, bare), self.world()):
                 raise Broken(f"the machine's transition read the report's program faults: {report.program_faults}")
-        self.post(WorkerReported(token, report))
+        return WorkerReported(token, report)
 
     def journaled(self, core: int, value: int, confirmed: bool) -> None:
         envelope = self.proven.get(core, frozenset())

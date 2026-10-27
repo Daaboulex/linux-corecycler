@@ -1763,6 +1763,111 @@ def test_a_cut_all_core_test_s_ignored_report_leaves_its_record_to_the_resume_af
     assert (r.state.core(runner.logged).value, r.state.core(runner.logged).fb) == (once.value, once.fb)
 
 
+@dataclass
+class CutRunner(FakeRunner):
+    cut: Group | None = None
+
+    def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
+        if spec.stage is not Stage.STEADY or self.cut is None:
+            return super().run(spec, stop, sink)
+        assert stop.wait(10), "the pause never stopped the steady test"
+        group, self.cut = self.cut, None
+        if group is Group.SILICON:
+            core = min(spec.vector, key=lambda pair: pair[1])[0]
+            return Report(group, 3.0, named=(core,), detail=f"computation: core {core}")
+        return Report(group, 3.0, detail="cut_short: stopped before the end of its stress")
+
+
+def paused_in_steady(tmp_path, group: Group) -> tuple[LiveRig, InFlight]:
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware, CutRunner(hardware, cut=group))
+    r.start(config(), 1, 7, True)
+    stepped_until(r, lambda: r.worker is not None and r.state.flow.stage is Stage.STEADY)
+    cut = r.state.slot
+    r.signals.append(PauseRequest())
+    r.run_until_rest(0.01)
+    return r, cut
+
+
+def next_test_after_a_resume(tmp_path, r: LiveRig) -> Spec:
+    again = rig(tmp_path, r.hardware, r.runner, db=r.store.db)
+    again.resume(1)
+    stepped_until(again, lambda: again.worker is not None)
+    return again.state.slot.spec
+
+
+@pytest.mark.req("U22.named")
+def test_a_pause_reads_the_cut_all_core_test_s_report_before_it_rests_and_judges_a_core_it_names(tmp_path):
+    r, cut = paused_in_steady(tmp_path, Group.SILICON)
+    core = min(cut.spec.vector, key=lambda pair: pair[1])[0]
+    held = dict(cut.spec.vector)[core]
+    [row] = rows(r, "SELECT verdict, named_json FROM tuner_tests WHERE token=?", (cut.token,))
+    assert (row["verdict"], json.loads(row["named_json"])) == ("silicon", [core])
+    rec = r.state.core(core)
+    assert (rec.value > held, rec.fb, r.state.lifecycle) == (True, held, Lifecycle.PAUSED)
+    said = rows(r, "SELECT message FROM tuner_events WHERE severity='cut_judged'")
+    assert len(said) == 1 and f"core {core}" in said[0]["message"]
+    assert dict(next_test_after_a_resume(tmp_path, r).vector)[core] == rec.value
+
+
+@dataclass
+class SampleThenStop(FakeRunner):
+    def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
+        if spec.stage is not Stage.STEADY:
+            return super().run(spec, stop, sink)
+        sink(taken(min(spec.vector, key=lambda pair: pair[1])[0], 0))
+        assert stop.wait(10)
+        return Report(Group.APPARATUS, 3.0, detail="cut_short: stopped")
+
+
+@pytest.mark.req("U22.named")
+def test_a_database_pause_writes_nothing_more_of_the_test_it_stopped_into_the_failing_database(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware, SampleThenStop(hardware))
+    r.start(config(), 1, 7, True)
+    stepped_until(r, lambda: r.worker is not None and r.state.flow.stage is Stage.STEADY)
+    written = []
+    returned = r.store.test_returned
+
+    def spy(*args):
+        written.append(r.state.lifecycle)
+        return returned(*args)
+
+    def full(*args):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    r.store.test_returned = spy
+    r.store.sample = full
+    r.run_until_rest(0.01)
+    assert (r.state.lifecycle, r.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.DATABASE)
+    assert written == []
+
+
+@pytest.mark.req("U22", "U22.named")
+@pytest.mark.parametrize(
+    ("group", "asleep", "verdict"), [(Group.APPARATUS, 0.0, "apparatus"), (Group.SILICON, 600.0, "slept")]
+)
+def test_a_pause_records_a_cut_test_s_report_and_runs_a_cut_short_or_slept_one_again_unjudged(
+    tmp_path, group, asleep, verdict
+):
+    slept = [0.0]
+    hardware = FakeHardware()
+    hardware.asleep_seconds = lambda: slept[0]
+    r = rig(tmp_path, hardware, CutRunner(hardware, cut=group))
+    r.start(config(), 1, 7, True)
+    stepped_until(r, lambda: r.worker is not None and r.state.flow.stage is Stage.STEADY)
+    cut = r.state.slot
+    held = tuple((c.core, c.value, c.fb) for c in r.state.cores)
+    slept[0] = asleep
+    r.signals.append(PauseRequest())
+    r.run_until_rest(0.01)
+    [row] = rows(r, "SELECT verdict FROM tuner_tests WHERE token=?", (cut.token,))
+    after = tuple((c.core, c.value, c.fb) for c in r.state.cores)
+    assert (row["verdict"], after, r.state.lifecycle) == (verdict, held, Lifecycle.PAUSED)
+    rerun = next_test_after_a_resume(tmp_path, r)
+    assert (rerun.stage, rerun.vector) == (cut.spec.stage, cut.spec.vector)
+
+
 @pytest.mark.req("L18.d.3.gap")
 def test_a_record_logged_while_the_resume_reads_is_judged_once_before_a_first_test_without_a_read_point(
     tmp_path, clock

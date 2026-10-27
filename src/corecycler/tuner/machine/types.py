@@ -236,6 +236,7 @@ class Pause:
     reason: PauseReason
     detail: str
     cores: tuple[int, ...] = ()
+    cut: InFlight | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -3275,7 +3275,12 @@ task = "O7"
 
 [[requirement]]
 id = "U22"
-statement = "A Pause during any all-core stage stops the running test at once; the cut test gives no verdict and runs again from its start on resume (D92)"
+statement = "A Pause during any all-core stage stops the running test at once; the cut test gives no verdict, save the named failure of U22.named, and runs again from its start on resume (D92, with its exception of 2026-10-27 in tuning-loops-round2.md)"
+proof = "built"
+
+[[requirement]]
+id = "U22.named"
+statement = "When the stopped test returns within stop_bound_s, the rig reads the cut all-core test's report before it rests and records it; the machine judges it, as its stage judges a whole test's, only when it is a failure naming a core with no machine-check record and the machine did not sleep through it, and says so; any other report of the cut test is dropped, its records left to the resume"
 proof = "built"
 
 [[requirement]]

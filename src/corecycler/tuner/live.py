@@ -1153,7 +1153,7 @@ class LiveRig:
             return True
         failed = None
         if isinstance(event, WorkerReported):
-            if self.worker is not None and self.worker.token == event.token:
+            if self.test_row is not None and self.test_row[0] == event.token:
                 self.worker = None
                 self.heartbeat.between(self.clock())
                 event = self.slept_through(event)
@@ -1196,7 +1196,13 @@ class LiveRig:
         s = self.state
         if s.lifecycle in (Lifecycle.COMPLETED, Lifecycle.ABORTED, Lifecycle.QUARANTINED, Lifecycle.IDLE):
             return self.worker is None and self.timer is None
-        return s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is not PauseReason.RESUMING
+        unread = s.pause is not None and s.pause.cut is not None and self.worker is None and not self.inbox.empty()
+        return (
+            s.lifecycle is Lifecycle.PAUSED
+            and s.pause is not None
+            and s.pause.reason is not PauseReason.RESUMING
+            and not unread
+        )
 
     def start(self, config: MachineConfig, session_id: int, seed: int, acknowledged: bool) -> None:
         world = self.world_for_start()

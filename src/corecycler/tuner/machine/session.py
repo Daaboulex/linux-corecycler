@@ -1023,7 +1023,8 @@ def _evidence_applied(
 def _pause_request(s: SessionState) -> Transition:
     if s.lifecycle is Lifecycle.RUNNING and isinstance(s.slot, InFlight) and s.slot.spec.load in ALLCORE_LOADS:
         stage = s.slot.spec.stage
-        return _enter_pause(s, PauseReason.USER, f"paused by the user; the cut {stage} test runs again on resume")
+        paused = _enter_pause(s, PauseReason.USER, f"paused by the user; the cut {stage} test runs again on resume")
+        return replace(paused, state=replace(paused.state, pause=replace(paused.state.pause, cut=s.slot)))
     if s.lifecycle is Lifecycle.RUNNING and isinstance(s.slot, InFlight):
         pausing = replace(s, lifecycle=Lifecycle.PAUSING, pause=Pause(PauseReason.USER, "paused by the user"))
         return Transition(pausing, (_commit(pausing), Announce("pausing", "finishing the current test")))
@@ -1623,6 +1624,9 @@ def _survival_mark(rep: Report) -> MarkSurvived | None:
 
 
 def _reported(s: SessionState, e: WorkerReported, w: World) -> Transition:
+    cut = None if s.pause is None else s.pause.cut
+    if cut is not None and cut.token == e.token:
+        return _cut_reported(s, cut, e.report, w)
     if s.lifecycle not in (Lifecycle.RUNNING, Lifecycle.PAUSING) or not isinstance(s.slot, InFlight):
         return Transition(s)
     if s.slot.token != e.token:
@@ -1630,6 +1634,15 @@ def _reported(s: SessionState, e: WorkerReported, w: World) -> Transition:
     mark = _survival_mark(e.report)
     result = _judged(s if mark is None else replace(s, resume_streak=0), e.report, w)
     return result if mark is None else replace(result, effects=(mark, *result.effects))
+
+
+def _cut_reported(s: SessionState, cut: InFlight, rep: Report, w: World) -> Transition:
+    if rep.group is not Group.SILICON or not rep.named or rep.evidence:
+        return Transition(s)
+    judged = _judged(replace(s, lifecycle=Lifecycle.PAUSING, slot=cut), rep, w)
+    named = ", ".join(str(core) for core in rep.named)
+    said = Announce("cut_judged", f"the cut {cut.spec.stage} test named core {named}: {rep.detail}")
+    return replace(judged, effects=(*judged.effects, said))
 
 
 def _judged(s: SessionState, rep: Report, w: World) -> Transition:
