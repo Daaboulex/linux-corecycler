@@ -40,7 +40,7 @@ the slot directly (`core id % 8`, CCD from L3 topology). Some BIOS/AGESA builds
 instead renumber core ids contiguously on harvested parts (reported on a 5600X,
 issue #11), which hides the fused-off slots. The driver detects this: a numbering
 that proves itself physical (holes, or only full 8-core CCDs) is used as-is with no
-SMU traffic, while an ambiguous CCD has its **core-disable fuse** read over SMN --
+core-disable fuse read, while an ambiguous CCD has its **core-disable fuse** read over SMN --
 the SMU's own record of which of the 8 slots exist -- and its cores map onto the
 live slots in ascending order, the same order-preserving mapping the Windows tools
 build from that fuse. The CO read cannot stand in for the fuse: it answers on every
@@ -50,12 +50,22 @@ bits 18:11 of SMN `0x5D448`; the desktop fuse address reads `0xFFFFFFFF` there. 
 5600GE (issue #18) confirmed it: the register fused off slots 0 and 1, the same two
 slots whose PM table rows read all zero, so its cores 0-5 are slots 2-7.
 
+The topology numbers CCDs by the rank of their L3 id, so on a Vermeer whose physical
+CCD 0 is fused off the surviving CCD 1 shows as group 0 (a 5600X, PR #23 by iam4x). On
+Vermeer the driver therefore first reads the **CCD-disable fuses** at SMN `0x5D218`
+and `0x5D21C`, decoded as
+[ryzen_smu's `get_fuse_topology`](https://github.com/amkillam/ryzen_smu/blob/d2983668300dd2a598e5a7dc40e71ce0678cc270/userspace/monitor_cpu.c#L342)
+does, and maps each group onto its physical CCD before any core-disable fuse read or
+CO command; on that 5600X the core fuse at `0x32081D98` (mask `0x0C`) leaves slots
+0, 1, 4, 5, 6 and 7. So every Vermeer, full CCDs included, needs the SMN access
+below for per-core CO; the other generations read no CCD fuse.
+
 Reading an SMN register is a *write* of the address, so this needs write access to
 `/sys/kernel/ryzen_smu_drv/smn`, which `ryzen_smu` ships root-only -- the NixOS
 module grants it to the `corecycler` group alongside the mailbox files, and
 [installation.md](installation.md#ryzen_smu-kernel-module) has the equivalent unit
-for other distros. If the fuse cannot be read, has no verified address for the die
-(the APUs other than Cezanne, and Shimada Peak), or disagrees with the OS core count, per-core CO is
+for other distros. If a fuse cannot be read, has no verified address for the die
+(the APUs other than Cezanne, and Shimada Peak), or disagrees with the OS core or CCD count, per-core CO is
 disabled with an explicit reason (GUI banner, CLI stderr, tuner refuses to start)
 instead of ever writing to the wrong core. Discovery is gated per generation on the
 verified classic 8-slot-per-CCD layout; heterogeneous Zen 4c/5c dies (Phoenix2,

@@ -79,9 +79,10 @@ already holds by typing `sudo corecycler`.
   is arbitrary read/write of the SMN address space — a wider surface than the SMU mailbox
   beside it, reaching data-fabric registers unrelated to CO. It is granted because the
   per-CCD core-disable fuse is the only thing that identifies the fused-off physical core
-  slots on a harvested CPU whose firmware renumbers core ids; without it the tool refuses
-  per-core CO on those parts rather than applying it to the wrong core. Grant the group only
-  to a user already trusted with the SMU mailbox.
+  slots on a harvested CPU whose firmware renumbers core ids, and on Vermeer the CCD-disable
+  fuses are the only thing that names each CCD's physical number; without it the tool refuses
+  per-core CO on those parts (every Vermeer among them) rather than applying it to the wrong
+  core. Grant the group only to a user already trusted with the SMU mailbox.
 
 ### System-Wide Side Effects
 

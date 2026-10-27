@@ -52,13 +52,24 @@ class _FakeSilicon:
     a ccd absent from ``live`` has no readable fuse.
     """
 
-    def __init__(self, smu: RyzenSMU, commands, live: dict[int, set[int]], *, smn: bool = True) -> None:
+    def __init__(
+        self,
+        smu: RyzenSMU,
+        commands,
+        live: dict[int, set[int]],
+        *,
+        smn: bool = True,
+        ccd_words: tuple[int | None, int | None] | None = None,
+    ) -> None:
         self.commands = commands
         self.live = live
         self.store: dict[tuple[int, int], int] = {}
         self.writes: list[tuple[int, int, int]] = []
         self.get_calls: list[tuple[int, int]] = []
         self.fuse_reads: list[int] = []
+        self.ccd_reads: list[int] = []
+        present = sum(1 << ccd for ccd in live) or 1
+        self.ccd_words = (present << 22, 0) if ccd_words is None else ccd_words
         smu._send_command = self._send
         smu._send_rsmu_command = self._send
         smu.check_writable = lambda: (True, "OK")
@@ -66,6 +77,10 @@ class _FakeSilicon:
         smu.read_smn = self._read_smn
 
     def _read_smn(self, address: int) -> int | None:
+        ccd_fuses = self.commands.ccd_fuse_addr
+        if ccd_fuses is not None and address in (ccd_fuses, ccd_fuses + 4):
+            self.ccd_reads.append(address)
+            return self.ccd_words[address - ccd_fuses >> 2]
         self.fuse_reads.append(address)
         base = self.commands.core_fuse_addr
         ccd = (address - base) >> 25
@@ -97,9 +112,17 @@ class _FakeSilicon:
         return SMUResponse(success=True, args=(0,) * 6, raw=b"")
 
 
-def _mapped_smu(commands, cores: dict[int, int], live: dict[int, set[int]], *, smn: bool = True, **kw):
+def _mapped_smu(
+    commands,
+    cores: dict[int, int],
+    live: dict[int, set[int]],
+    *,
+    smn: bool = True,
+    ccd_words: tuple[int | None, int | None] | None = None,
+    **kw,
+):
     smu = RyzenSMU(commands, MagicMock(), **kw)
-    silicon = _FakeSilicon(smu, commands, live, smn=smn)
+    silicon = _FakeSilicon(smu, commands, live, smn=smn, ccd_words=ccd_words)
     smu.set_topology(_topo(cores))
     return smu, silicon
 
@@ -110,6 +133,102 @@ def _fuse_addr(commands, ccd: int) -> int:
 
 REPORTED_5600X_LIVE_SLOTS = {0, 1, 4, 5, 6, 7}
 REPORTED_5600GE_FUSE_WORD = 0x281C70
+PR23_5600X_CCD_WORDS = (0x40C00000, 0x3F)
+PR23_5950X_CCD_WORDS = (0x00C00000, 0x3F)
+
+
+class TestPhysicalCcd:
+    """PR #23 (iam4x): the topology numbers CCDs by the rank of their L3 id, so on a Vermeer whose physical CCD 0
+    is fused off the surviving CCD 1 is group 0; the CCD-disable fuses name the physical CCD. Words read on the
+    PR's 5600X."""
+
+    def test_the_reported_5600x_maps_its_group_onto_physical_ccd_1(self):
+        smu, silicon = _mapped_smu(
+            VERMEER, dict.fromkeys(range(6), 0), {1: REPORTED_5600X_LIVE_SLOTS}, ccd_words=PR23_5600X_CCD_WORDS
+        )
+        assert smu.core_map_error is None
+        assert smu.core_map == {0: (1, 0), 1: (1, 1), 2: (1, 4), 3: (1, 5), 4: (1, 6), 5: (1, 7)}
+        assert silicon.fuse_reads == [_fuse_addr(VERMEER, 1)]
+
+    def test_a_write_lands_on_the_surviving_physical_ccd(self):
+        smu, silicon = _mapped_smu(
+            VERMEER, dict.fromkeys(range(6), 0), {1: REPORTED_5600X_LIVE_SLOTS}, ccd_words=PR23_5600X_CCD_WORDS
+        )
+        assert smu.set_co_offset(2, -1) is True
+        assert silicon.writes == [(1, 4, -1)]
+        assert smu.get_co_offset(2) == -1
+
+    def test_a_full_surviving_ccd_is_written_on_its_physical_number(self):
+        smu, silicon = _mapped_smu(
+            VERMEER, dict.fromkeys(range(8), 0), {1: set(range(8))}, ccd_words=PR23_5600X_CCD_WORDS
+        )
+        assert smu.core_map == {core: (1, core) for core in range(8)}
+        assert smu.set_co_offset(3, -2) is True
+        assert silicon.writes == [(1, 3, -2)]
+
+    def test_ccds_2_to_7_count_only_when_the_second_word_leaves_them_enabled(self):
+        every_ccd_enabled_ccd_0_off = (0xFF << 22) | (1 << 30)
+        smu, _silicon = _mapped_smu(
+            VERMEER,
+            dict.fromkeys(range(6), 0),
+            {1: REPORTED_5600X_LIVE_SLOTS},
+            ccd_words=(every_ccd_enabled_ccd_0_off, 0x3F),
+        )
+        assert smu.core_map == {0: (1, 0), 1: (1, 1), 2: (1, 4), 3: (1, 5), 4: (1, 6), 5: (1, 7)}
+        smu, _silicon = _mapped_smu(
+            VERMEER,
+            dict.fromkeys(range(6), 0),
+            {1: REPORTED_5600X_LIVE_SLOTS},
+            ccd_words=(every_ccd_enabled_ccd_0_off, 0x3E),
+        )
+        assert smu.core_map is None
+        assert "active CCDs [1, 2]" in smu.core_map_error
+
+    def test_ccd_1_fused_off_by_bit_31_leaves_the_group_on_ccd_0(self):
+        """The PR's words mirrored, not measured: CCD 0 alive, CCD 1 disabled, as a single-CCD 5600X or 5800X."""
+        smu, silicon = _mapped_smu(
+            VERMEER, dict.fromkeys(range(6), 0), {0: REPORTED_5600X_LIVE_SLOTS}, ccd_words=(0x80C00000, 0x3F)
+        )
+        assert smu.core_map == {0: (0, 0), 1: (0, 1), 2: (0, 4), 3: (0, 5), 4: (0, 6), 5: (0, 7)}
+        assert silicon.fuse_reads == [_fuse_addr(VERMEER, 0)]
+
+    def test_a_5950x_keeps_both_ccds_in_place(self):
+        smu, silicon = _mapped_smu(
+            VERMEER,
+            {core: core // 8 for core in range(16)},
+            {0: set(range(8)), 1: set(range(8))},
+            ccd_words=PR23_5950X_CCD_WORDS,
+        )
+        assert smu.core_map == {core: (core // 8, core % 8) for core in range(16)}
+        assert silicon.fuse_reads == []
+
+    def test_fuses_naming_more_ccds_than_the_os_shows_refuse(self):
+        smu, silicon = _mapped_smu(
+            VERMEER, dict.fromkeys(range(6), 0), {0: REPORTED_5600X_LIVE_SLOTS}, ccd_words=PR23_5950X_CCD_WORDS
+        )
+        assert smu.core_map is None
+        assert "active CCDs [0, 1]" in smu.core_map_error
+        assert smu.set_co_offset(0, -1) is False
+        assert silicon.writes == []
+
+    @pytest.mark.parametrize("words", [(None, 0x3F), (0x40C00000, None)], ids=["present", "down"])
+    def test_an_unreadable_ccd_fuse_refuses(self, words):
+        smu, _silicon = _mapped_smu(VERMEER, dict.fromkeys(range(8), 0), {0: set(range(8))}, ccd_words=words)
+        assert smu.core_map is None
+        assert "CCD-disable fuse read failed" in smu.core_map_error
+
+    def test_a_vermeer_without_smn_access_refuses_even_with_full_ccds(self):
+        smu, silicon = _mapped_smu(VERMEER, dict.fromkeys(range(8), 0), {0: set(range(8))}, smn=False)
+        assert smu.core_map is None
+        assert _SMN_DENIED in smu.core_map_error
+        assert silicon.ccd_reads == []
+
+    def test_granite_ridge_reads_no_fuse_at_all(self):
+        smu, silicon = _mapped_smu(
+            ZEN5, {core: core // 8 for core in range(16)}, {0: set(range(8)), 1: set(range(8))}, smn=False
+        )
+        assert smu.core_map == {core: (core // 8, core % 8) for core in range(16)}
+        assert silicon.fuse_reads == []
 
 
 class TestRenumberedHarvested:
@@ -208,7 +327,7 @@ class TestFuseFailClosed:
 
     def test_unreadable_smn_names_the_permission_fix(self):
         smu, silicon = _mapped_smu(
-            VERMEER,
+            ZEN5,
             {c: 0 for c in range(6)},
             {0: REPORTED_5600X_LIVE_SLOTS},
             smn=False,

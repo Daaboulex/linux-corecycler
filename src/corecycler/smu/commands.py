@@ -47,6 +47,7 @@ class SMUCommandSet:
     core_fuse_addr: int | None = None
     core_fuse_shift: int = 0
     core_fuse_die_wide: bool = False
+    ccd_fuse_addr: int | None = None
 
     set_co_cmd: int | None = None
     set_all_co_cmd: int | None = None
@@ -98,9 +99,11 @@ CO_MARGIN_MASK = 0xFFFF
 CO_CCD_SHIFT = 28
 CO_SLOT_SHIFT = 20
 
-# Fuse addresses from ZenStates-Core Cpu.cs GetCpuTopology, Cezanne's from ryzen_monitor_ng.
+# Fuse addresses from ZenStates-Core Cpu.cs GetCpuTopology, Cezanne's from ryzen_monitor_ng, the Zen 3 CCD-disable
+# fuses from ryzen_smu userspace/monitor_cpu.c get_fuse_topology.
 _FUSE_FAMILY_BASE = 0x30081800
 _FUSE_ZEN3_CLASS = _FUSE_FAMILY_BASE + 0x598
+_CCD_FUSE_ZEN3 = 0x5D218
 _FUSE_CEZANNE = 0x5D448
 _FUSE_RAPHAEL = _FUSE_FAMILY_BASE + 0x4D0
 _FUSE_GRANITE_RIDGE = 0x304A03DC
@@ -138,6 +141,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         encoding_scheme="zen3",
         uniform_8core_ccds=True,
         core_fuse_addr=_FUSE_ZEN3_CLASS,
+        ccd_fuse_addr=_CCD_FUSE_ZEN3,
         set_co_cmd=0x35,
         set_all_co_cmd=0x36,
         get_co_cmd=0x48,
@@ -396,7 +400,9 @@ def _alias_commands(source: CPUGeneration, target: CPUGeneration, **overrides) -
 COMMAND_SETS[CPUGeneration.ZEN2_CASTLE_PEAK] = _alias_commands(
     CPUGeneration.ZEN2_MATISSE, CPUGeneration.ZEN2_CASTLE_PEAK
 )
-COMMAND_SETS[CPUGeneration.ZEN3_CHAGALL] = _alias_commands(CPUGeneration.ZEN3_VERMEER, CPUGeneration.ZEN3_CHAGALL)
+COMMAND_SETS[CPUGeneration.ZEN3_CHAGALL] = _alias_commands(
+    CPUGeneration.ZEN3_VERMEER, CPUGeneration.ZEN3_CHAGALL, ccd_fuse_addr=None
+)
 COMMAND_SETS[CPUGeneration.ZEN3_REMBRANDT] = _alias_commands(
     CPUGeneration.ZEN4_PHOENIX,
     CPUGeneration.ZEN3_REMBRANDT,

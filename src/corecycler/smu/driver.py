@@ -49,6 +49,7 @@ _PBO_LIMIT_MIN: int = 1
 _PBO_LIMIT_MAX: int = 2000
 
 _SLOTS_PER_CCD: int = 8
+_CCD_POSITIONS: int = 8
 
 # Per-CCD fuse stride, from ZenStates-Core Cpu.cs and ryzen_monitor.
 _CCD_FUSE_SHIFT: int = 25
@@ -136,8 +137,13 @@ class RyzenSMU:
 
         Mapping rules, per L3 group (falling back to ``core_id // 8`` grouping
         when L3 info is absent):
+          - The topology numbers CCDs by the rank of their L3 id, so a generation that names its
+            CCD-disable fuses (Vermeer) has them read first and each group
+            mapped onto its physical CCD, which every core-fuse read and CO
+            command then uses: a 5600X with physical CCD 0 fused off shows its
+            CCD 1 as group 0 (PR #23).
           - A full 8-core group maps to identity slots under any numbering
-            scheme -- no SMU traffic.
+            scheme -- no core-fuse read.
           - A group with a hole INTERNAL to its own 8-slot window proves the
             physical numbering: slot = ``core_id % 8``, CCD from L3. Only
             internal holes count -- a hole BETWEEN windows proves nothing,
@@ -183,8 +189,10 @@ class RyzenSMU:
         self._offline_hint = "" if fully_online else " (some present CPUs are offline — online all cores for CO tuning)"
         core_map: dict[int, tuple[int, int]] = {}
         try:
-            for encode_ccd in sorted(groups):
-                group_ids = groups[encode_ccd]
+            physical = self._physical_ccds(groups)
+            for group in sorted(groups):
+                encode_ccd = physical[group]
+                group_ids = groups[group]
                 slots = self._derive_group_slots(group_ids, fully_online)
                 if slots is None:
                     slots = self._fuse_group_slots(encode_ccd, len(group_ids))
@@ -272,6 +280,39 @@ class RyzenSMU:
         with self._smu_lock, anchor.open("rb") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
             yield
+
+    def _physical_ccds(self, groups: dict[int, list[int]]) -> dict[int, int]:
+        """Each OS L3 group's physical CCD: identity unless the generation names its CCD-disable fuses.
+
+        The fuses are decoded as ryzen_smu's get_fuse_topology does: the enabled CCDs in bits 29:22 of the first
+        word, CCDs 0 and 1 disabled by its bits 31:30 and CCDs 2 to 7 by bits 5:0 of the next. Groups map onto the
+        active CCDs in ascending order; an unreadable fuse or a count that differs from the groups raises
+        CoreMapError.
+        """
+        addr = self.commands.ccd_fuse_addr
+        if addr is None:
+            return {group: group for group in groups}
+        ok, msg = self.check_smn_readable()
+        if not ok:
+            raise CoreMapError(
+                f"Linux may number this CPU's CCDs apart from the SMU, so the CCD-disable fuses have to be read: "
+                f"{msg} -- per-core CO stays disabled until then"
+            )
+        present, down = self.read_smn(addr), self.read_smn(addr + 4)
+        if present is None or down is None:
+            raise CoreMapError(
+                "the CCD-disable fuse read failed on an otherwise writable smn file -- per-core CO stays disabled "
+                "instead of writing to the wrong CCD; please report this output"
+            )
+        disabled = ((down & 0x3F) << 2) | ((present >> 30) & 3)
+        active = [ccd for ccd in range(_CCD_POSITIONS) if ((present >> 22) & ~disabled) >> ccd & 1]
+        if len(active) != len(groups):
+            raise CoreMapError(
+                f"the CCD-disable fuses show active CCDs {active} but the OS shows {len(groups)} CCD groups -- "
+                f"per-core CO stays disabled instead of writing to the wrong CCD; please report this "
+                f"output{self._offline_hint}"
+            )
+        return dict(zip(sorted(groups), active, strict=True))  # equivalent-mutant: the count check equals the lengths
 
     def _fuse_group_slots(self, encode_ccd: int, want: int) -> list[int]:
         """This CCD's live physical slots, from its SMN core-disable fuse.

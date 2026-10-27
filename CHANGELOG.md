@@ -9,6 +9,19 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-10-27 Vermeer CCDs numbered apart from the SMU, PR #23 by iam4x)
+
+- The topology numbers CCDs by the rank of their L3 id, so a 5600X whose
+  physical CCD 0 is fused off showed its surviving CCD 1 as CCD 0; the driver
+  then read the dead CCD's core fuse and refused per-core CO, and a full
+  surviving CCD would have sent every CO command to the dead CCD. On Vermeer the CCD-disable fuses at SMN
+  `0x5D218` and `0x5D21C` are now read first, decoded as ryzen_smu's
+  `get_fuse_topology` does, and each L3 group maps onto its physical CCD; a
+  fuse that cannot be read or names a different CCD count refuses per-core CO.
+  Every Vermeer now needs SMN access for per-core CO. The fix and the 5600X's
+  register values come from iam4x's PR #23, ported by hand into the rewritten
+  driver; its Warhol entry waits for a 5800X3D's register values.
+
 ### Fixed (2026-09-23 Cezanne CO read-back sends the bare slot, issue #18)
 
 - With its cores mapped, the 5600GE then failed every CO write on read-back
