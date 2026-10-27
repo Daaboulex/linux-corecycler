@@ -58,6 +58,9 @@ class Broken(AssertionError):
     pass
 
 
+BINDING_LOADS = ALLCORE_LOADS - {Load.SOAK}
+
+
 @dataclass(frozen=True, slots=True)
 class Layout:
     cpus_of: tuple[tuple[int, tuple[int, ...]], ...]
@@ -114,6 +117,7 @@ class Fake:
     stock_fail_owed: set[int] = field(default_factory=set)
     handling: str = ""
     failed_at: set[tuple[int, int]] = field(default_factory=set)
+    failed_allcore: set[tuple] = field(default_factory=set)
     log: list[str] = field(default_factory=list)
     steps: int = 0
     edges_2t: dict[int, int] | None = None
@@ -276,6 +280,7 @@ class Fake:
                 if origin == "restart":
                     self.proven = {}
                     self.failed_at = set()
+                    self.failed_allcore = set()
                     self.stock_fail_owed = set()
                 self.stored_boot = self.boot
             case StartWorker(token=token, spec=spec):
@@ -397,6 +402,10 @@ class Fake:
             for edges in (self.edges_hot, self.edges_transient, self.edges_memory):
                 if edges is not None and any(finals[core] < edges[core] for core in finals):
                     raise Broken(f"completed with values {finals} that fail an all-core load")
+            for vector, *_ in self.failed_allcore:
+                failed = {core: value for core, value in vector if value != 0}
+                if failed and all(finals[core] <= value for core, value in failed.items()):
+                    raise Broken(f"completed with values {finals} at or past {dict(vector)}, a failed all-core vector")
             two_cpus = all(len(cpus) >= 2 for _, cpus in self.layout.cpus_of)
             for r in s.cores:
                 edge = self.edges[r.core]
@@ -456,6 +465,12 @@ class Fake:
                 self.failed_at.add((spec.core, spec.value))
             elif isolated:
                 self.stock_fail_owed.add(spec.core)
+        if spec.load in BINDING_LOADS:
+            replay = (spec.vector, spec.load, spec.seconds, spec.plan_seed)
+            if report.group is Group.SILICON or self.faults.fail_commits > 0:
+                self.failed_allcore.add(replay)
+            elif report.group is Group.PASS and not report.evidence and not report.skipped:
+                self.failed_allcore.discard(replay)
         self.worker = None
         self.now += report.seconds
         self.last_report = report

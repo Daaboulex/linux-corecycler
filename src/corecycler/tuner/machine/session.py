@@ -1359,21 +1359,13 @@ def _allcore_fail(s: SessionState, ctx, w: World) -> tuple[SessionState, str | N
         return replace(s, incidents=(*s.incidents, Incident.SOAK_FAILURE), flow=replace(flow, dirty=True)), None
     if stage is Stage.TIGHTEN:
         return _reclaim_ended(s), None
-    if stage is Stage.TRANSIENT or (stage in (Stage.STEADY, Stage.ENDURANCE) and allcore.steady_class(ctx)):
-        values = {r.core: r.value for r in s.cores}
-        if not any(values.values()):
-            return s, "the all-core load fails with every owned core at 0"
-        run = bisect.begin(stage, s.cores[0].core, Klass.T1, values, dict(w.domain_of))
-        cursor = replace(cursor, t_clean=0.0)
-        return replace(s, flow=replace(flow, stage=Stage.BISECT, bisect=run, allcore=cursor)), None
-    looser = s
-    for r in s.cores:
-        moved = search.loosen(r, s.config)
-        if moved.value != r.value:
-            looser = looser.with_core(moved)
-    if looser is s:
-        return s, "a transient failure found nothing left to loosen"
-    return replace(looser, flow=replace(flow, allcore=replace(cursor, t_clean=0.0), dirty=True)), None
+    values = {r.core: r.value for r in s.cores}
+    if not any(values.values()):
+        return s, "the all-core load fails with every owned core at 0"
+    run = bisect.begin(stage, s.cores[0].core, Klass.T1, values, dict(w.domain_of))
+    run = replace(run, quick=stage is not Stage.TRANSIENT and allcore.steady_class(ctx))
+    cursor = replace(cursor, t_clean=0.0)
+    return replace(s, flow=replace(flow, stage=Stage.BISECT, bisect=run, allcore=cursor)), None
 
 
 def _memory_next(s: SessionState, w: World) -> Transition:
@@ -1504,7 +1496,7 @@ def _bisect_next(s: SessionState, w: World) -> Transition:
     values = {r.core: r.value for r in s.cores} if run.rerun is not None else bisect.slot_values(run, group)
     vector = tuple((c, values[c] if c in group else base) for c, base in s.baseline)
     lane = run.lane
-    quick = run.entry in (Stage.STEADY, Stage.ENDURANCE) and group != run.universe
+    quick = run.quick and group != run.universe
     if quick:
         cpus, seconds, load = _all_cpus(s, w), s.config.bisect_seconds, Load.HOT
     elif run.entry in ALLCORE:

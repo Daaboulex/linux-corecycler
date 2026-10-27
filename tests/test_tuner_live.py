@@ -409,6 +409,28 @@ def test_a_one_off_mark_survives_the_session_file_and_an_older_file_reads_as_no_
     assert fake.state.lifecycle is Lifecycle.COMPLETED
 
 
+@pytest.mark.req("ALLCORE.bisect.stored")
+@pytest.mark.parametrize("steady", [True, False])
+def test_how_a_bisect_tests_its_groups_survives_the_session_file_and_an_older_file_reads_it_from_its_entry(steady):
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, k_1t=1, k_2t=1, wait_between_cores_s=0.0)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.STEADY:
+        assert fake.progress()
+    fake.deliver(Report(Group.SILICON, 1.0, context=FailContext(steady=steady, working=(0, 1), paused=not steady)))
+    st = fake.db
+    assert (st.flow.bisect.entry, st.flow.bisect.quick) == (Stage.STEADY, steady)
+    assert stored_from_json(json.loads(json.dumps(stored_to_json(st))), continued=False) == st
+    older = json.loads(json.dumps(stored_to_json(st)))
+    del older["flow"]["bisect"]["quick"]
+    quick = replace(st.flow.bisect, quick=True)
+    assert stored_from_json(older, continued=False) == replace(st, flow=replace(st.flow, bisect=quick))
+    older["flow"]["bisect"]["entry"] = Stage.TRANSIENT.value
+    assert stored_from_json(older, continued=False).flow.bisect.quick is False
+    older["flow"]["bisect"]["quick"] = "yes"
+    with pytest.raises(ValueError, match="quick"):
+        stored_from_json(older, continued=False)
+
+
 @pytest.mark.req("KERNEL.old")
 def test_a_carried_mark_survives_the_session_file_and_an_older_file_takes_it_from_its_origin_and_resumes():
     fake = fresh(2, [-6, -6], 2, max_offset=-8, k_1t=1, k_2t=1, wait_between_cores_s=0.0)

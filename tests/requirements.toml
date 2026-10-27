@@ -457,7 +457,27 @@ proof = "built"
 
 [[requirement]]
 id = "ALLCORE.unnamed"
-statement = "A STEADY or ENDURANCE failure of the transient class that names no core loosens every owned core with room by one step (owner 2026-10-15, allcore-entry.md option A)"
+statement = "A STEADY or ENDURANCE failure that names no core starts a Bisect with that stage as entry, as TRANSIENT does: the core it finds backs off alone and the session returns to the entry stage, where the failed load runs again; every owned core loosens only when the full set fails alone (owner 2026-10-16 and 2026-10-17; applied to STEADY and ENDURANCE 2026-10-27, brief-steady-bisect.md)"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.bisect.replay"
+statement = "A STEADY or ENDURANCE Bisect tests its smaller groups quick, HOT for bisect_seconds, only after a steady-class failure, a hang included when its tail telemetry was steady (L18.d.4.4.allcore); after any other failure naming no core (a paused load, a burst, warm or idle load, a lost verdict, a hang whose tail telemetry is not steady) each group replays the failed load at the cursor for its full length with its plan seed, as TRANSIENT does (main session default 2026-10-27, brief-steady-bisect.md, the owner's to correct)"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.bisect.stored"
+statement = "The stored Bisect keeps how it tests its smaller groups; one stored before that was kept reads as quick exactly when its entry is STEADY or ENDURANCE, and a stored value other than true or false refuses the session naming quick"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.failed_vector"
+statement = "After an unnamed all-core failure that its exact replay repeats, no later test runs at or past the failed vector on every core and the session completes short of it: the full set loosens one step and leaves the reclaim (GitHub issue 20, malinges, 2026-10-09; reproduced 2026-10-27, scratch/gate/tmp/issue20)"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.failed_vector.explorer"
+statement = "The fake world records every all-core test that delivered a failure, a lost verdict included (a hang is not recorded, since a crash the machine counts as an incident would trip it falsely), and clears one only when an exact replay of it passes; no future completes at or past a recorded vector on every core; SOAK is left out, its unnamed failure an incident by design; the explorer injects an unnamed HOT failure after a paused load"
 proof = "built"
 
 [[requirement]]
@@ -560,7 +580,7 @@ proof = "built"
 
 [[requirement]]
 id = "K40.slot"
-statement = "A hot Bisect slot of a group smaller than the full set runs the failing stage's tests at 20 s per test; the full set's slot replays the failed test's own plan"
+statement = "A quick hot Bisect slot, a group smaller than the full set after a steady-class failure, runs the failing stage's tests at 20 s per test; the full set's slot replays the failed test's own plan"
 proof = "built"
 
 [[requirement]]
@@ -1122,7 +1142,7 @@ proof = "built"
 
 [[requirement]]
 id = "INV.L10"
-statement = "Inventory claim: fix loop built for CO: named cores back off alone, a failure naming none loosens every core in STEADY and ENDURANCE (owner 2026-10-15) and is bisected to the core in TRANSIENT (owner 2026-10-17); shaper cells not built"
+statement = "Inventory claim: fix loop built for CO: named cores back off alone, a failure naming none is bisected to the core in STEADY, TRANSIENT and ENDURANCE (owner 2026-10-17; STEADY and ENDURANCE 2026-10-27); shaper cells not built"
 proof = "built"
 
 [[requirement]]
@@ -1853,7 +1873,7 @@ proof = "built"
 
 [[requirement]]
 id = "L08.G2.transient"
-statement = "A transient-class FAIL in STEADY runs the transient rule and re-runs"
+statement = "A FAIL in STEADY that names no core and is not of the steady class enters Bisect, whose groups replay the full HOT test; no core moves until the Bisect finds one"
 proof = "built"
 
 [[requirement]]
@@ -1893,7 +1913,7 @@ proof = "built"
 
 [[requirement]]
 id = "L09.b"
-statement = "Bisect is entered on a steady FAIL in STEADY or ENDURANCE, on a FAIL naming no core in TRANSIENT, and on a LIVE1 or MEMORY crash with nobody convicted; never from TIGHTEN"
+statement = "Bisect is entered on a FAIL naming no core in STEADY, TRANSIENT or ENDURANCE, and on a LIVE1 or MEMORY crash with nobody convicted; never from TIGHTEN"
 proof = "built"
 
 [[requirement]]
@@ -2029,7 +2049,7 @@ proof = "built"
 
 [[requirement]]
 id = "L10.a"
-statement = "The fix loop loosens the named cores; when none is named, every owned core with room in STEADY and ENDURANCE (owner 2026-10-15, allcore-entry.md A) and the core a Bisect finds in TRANSIENT (owner 2026-10-17, allcore-bisect.md); and it enforces ownership"
+statement = "The fix loop loosens the named cores; when none is named, the core a Bisect finds in STEADY, TRANSIENT and ENDURANCE (owner 2026-10-17, allcore-bisect.md; STEADY and ENDURANCE 2026-10-27, brief-steady-bisect.md); and it enforces ownership"
 proof = "built"
 
 [[requirement]]
@@ -2062,7 +2082,7 @@ proof = "built"
 
 [[requirement]]
 id = "L10.e"
-statement = "Nothing left to loosen gives P(STOCK_UNSTABLE, nothing left to loosen)"
+statement = "Nothing left to loosen gives P(STOCK_UNSTABLE): an all-core load failing with no core named and every owned core at 0 starts no Bisect"
 proof = "built"
 
 [[requirement]]
@@ -2117,7 +2137,7 @@ proof = "built"
 
 [[requirement]]
 id = "L11.h"
-statement = "After a crash tClean goes to 0, whether the flow rule loosens the vector or a conviction backs a core off"
+statement = "After a crash tClean goes to 0, whether the flow rule starts a Bisect or a conviction backs a core off"
 proof = "built"
 
 [[requirement]]
@@ -2258,7 +2278,7 @@ proof = "built"
 
 [[requirement]]
 id = "L14.G2"
-statement = "A FAIL backs named owned cores off first, else L09 (steady) or L10; endClean = 0; the failed stage runs again"
+statement = "A FAIL backs named owned cores off first, else starts a Bisect (L09) whose groups run quick only after a steady-class failure; endClean = 0; the failed stage runs again"
 proof = "built"
 
 [[requirement]]
@@ -3913,7 +3933,7 @@ proof = "built"
 
 [[requirement]]
 id = "D40.slot"
-statement = "The hot Bisect slot of a group smaller than the full set is 20 s per test"
+statement = "The quick hot Bisect slot of a group smaller than the full set, after a steady-class failure, is 20 s per test"
 proof = "built"
 
 [[requirement]]

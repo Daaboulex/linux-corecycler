@@ -64,6 +64,7 @@ FAULTS = (
     "outside",
     "reengage",
     "program_fault",
+    "paused_hot",
 )
 FOREIGN_FAULTS = ProgramFaults(
     100_000_000_000,
@@ -87,6 +88,7 @@ def clone(fake: Fake) -> Fake:
     twin.co = dict(fake.co)
     twin.resident = dict(fake.resident)
     twin.failed_at = set(fake.failed_at)
+    twin.failed_allcore = set(fake.failed_allcore)
     twin.stock_fail_owed = set(fake.stock_fail_owed)
     twin.superseded = set(fake.superseded)
     twin.outside = set(fake.outside)
@@ -132,6 +134,7 @@ def key(fake: Fake) -> tuple:
         fake.faults.refuse_writes,
         fake.faults.fail_commits,
         frozenset(fake.failed_at),
+        frozenset(fake.failed_allcore),
         frozenset(fake.stock_fail_owed),
         frozenset(fake.superseded),
         frozenset(fake.outside),
@@ -174,6 +177,8 @@ def moves(fake: Fake, budget: dict[str, int]) -> list[tuple[str, dict[str, int]]
         if fault in ("pause", "abort") and s.lifecycle not in (Lifecycle.RUNNING, Lifecycle.PAUSING):
             continue
         if fault in ("crash_mce", "crash_shared") and fake.worker is None:
+            continue
+        if fault == "paused_hot" and (fake.worker is None or fake.worker.spec.load is not Load.HOT):
             continue
         if fault == "validate" and (fake.db is None or fake.db.status != "completed" or s.lifecycle in HELD):
             continue
@@ -279,6 +284,9 @@ def act(fake: Fake, move: str) -> None:
             fake.crash(shared=True)
         case "program_fault":
             fake.deliver(replace(fake.verdict_for(worker_spec), program_faults=FOREIGN_FAULTS))
+        case "paused_hot":
+            context = FailContext(False, tuple(dict(worker_spec.vector)), True)
+            fake.deliver(Report(Group.SILICON, worker_spec.seconds, context=context))
         case _:
             raise AssertionError(move)
 
@@ -392,6 +400,7 @@ ONE_OF_EACH = {
     ],
 )
 @pytest.mark.req(
+    "ALLCORE.failed_vector.explorer",
     "C17",
     "D5",
     "K47",

@@ -104,6 +104,19 @@ def test_a_live1_fail_at_stock_with_another_core_live_retests_it_alone_then_back
     assert {r.core: r.value for r in fake.state.cores} == {0: 0, 1: -4}
 
 
+@pytest.mark.req("L07.G2.zero")
+def test_a_solo_retest_that_passes_backs_off_only_the_other_cores_not_at_zero():
+    fake = fresh(3, [0, 0, -5], 2, max_offset=-8, k_1t=1, k_2t=1, wait_between_cores_s=0.0)
+    fake.stacks = (((0,), (0, 2), 4),)
+    start(fake)
+    while not (fake.state.flow.live1 is not None and fake.state.flow.live1.solo is not None):
+        assert fake.progress()
+    before = {r.core: (r.value, r.fb) for r in fake.state.cores}
+    while fake.state.flow.live1.solo is not None:
+        assert fake.progress()
+    assert {r.core: (r.value, r.fb) for r in fake.state.cores} == {**before, 2: (before[2][0] + 1, before[2][0])}
+
+
 @pytest.mark.req("TERMS.stock_unstable")
 def test_a_solo_retest_that_fails_at_stock_pauses_as_stock_unstable():
     fake = solo_world()

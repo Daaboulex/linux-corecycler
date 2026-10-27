@@ -264,6 +264,7 @@ class BisectRun:
     results: tuple[tuple[tuple[int, ...], bool], ...] = ()
     parents: tuple[tuple[tuple[int, ...], tuple[int, ...]], ...] = ()
     rerun: tuple[int, ...] | None = None
+    quick: bool = False
 
 
 @dataclass(frozen=True, slots=True)

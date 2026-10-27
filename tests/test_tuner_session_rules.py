@@ -391,14 +391,14 @@ def test_an_all_core_test_marks_every_owned_core_in_test():
 
 
 @pytest.mark.req("L08.G2.transient")
-def test_a_steady_failure_with_a_transient_context_loosens_every_core_one_step_and_runs_steady_again():
+def test_a_steady_failure_with_a_transient_context_bisects_with_the_full_hot_test_and_moves_no_core():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     _until(fake, _steady)
     values = {record.core: record.value for record in fake.state.cores}
-    context = FailContext(steady=False, working=(0, 1), paused=False)
+    context = FailContext(steady=False, working=(0, 1), paused=True)
     fake.deliver(Report(Group.SILICON, 30.0, context=context))
-    assert {record.core: record.value for record in fake.state.cores} == {c: v + 1 for c, v in values.items()}
-    assert _next_worker(fake).stage is Stage.STEADY
+    assert (fake.state.flow.stage, fake.state.flow.bisect.quick) == (Stage.BISECT, False)
+    assert {record.core: record.value for record in fake.state.cores} == values
 
 
 @pytest.mark.req("L08.G2.mce", "G2.allcore")
@@ -424,25 +424,15 @@ def test_a_machine_check_naming_a_core_the_session_does_not_own_in_steady_pauses
 
 
 @pytest.mark.req("L08.G4", "L18.d.4.4.allcore")
-@pytest.mark.parametrize(("steady", "stage"), [(True, Stage.BISECT), (False, Stage.STEADY)])
-def test_a_crash_in_steady_with_nobody_convicted_is_a_failure_classed_by_its_telemetry(steady, stage):
+@pytest.mark.parametrize("steady", [True, False])
+def test_a_crash_in_steady_with_nobody_convicted_is_a_failure_bisected_as_its_telemetry_classes_it(steady):
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     _until(fake, _steady)
     values = {record.core: record.value for record in fake.state.cores}
-    context = FailContext(steady=steady, working=(0, 1), paused=False)
-    apply = fake.apply
-
-    def with_context(state, effect):
-        read = apply(state, effect)
-        return replace(read, context=context) if isinstance(read, CrashEvidenceRead) else read
-
-    fake.apply = with_context
-    fake.crash()
-    fake.post(Resume(1))
+    _crashed_with(fake, FailContext(steady=steady, working=(0, 1), paused=False))
     assert fake.state.lifecycle is Lifecycle.RUNNING
-    assert fake.state.flow.stage is stage
-    loosened = {record.core: record.value for record in fake.state.cores}
-    assert loosened == (values if steady else {c: v + 1 for c, v in values.items()})
+    assert (fake.state.flow.stage, fake.state.flow.bisect.quick) == (Stage.BISECT, steady)
+    assert {record.core: record.value for record in fake.state.cores} == values
 
 
 def _bisecting(fake: Fake):
@@ -633,24 +623,15 @@ def test_an_endurance_test_with_no_verdict_leaves_its_clean_time(report):
 
 
 @pytest.mark.req("L14.G3_G7", "L18.d.4.4.allcore")
-@pytest.mark.parametrize(("steady", "stage"), [(True, Stage.BISECT), (False, Stage.ENDURANCE)])
-def test_a_crash_in_endurance_takes_the_flow_rule_its_telemetry_classes(steady, stage):
+@pytest.mark.parametrize("steady", [True, False])
+def test_a_crash_in_endurance_is_bisected_as_its_telemetry_classes_it(steady):
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2, endurance=True)
     _until(fake, _enduring)
     values = {record.core: record.value for record in fake.state.cores}
-    context = FailContext(steady=steady, working=(0, 1), paused=False)
-    apply = fake.apply
-
-    def with_context(state, effect):
-        read = apply(state, effect)
-        return replace(read, context=context) if isinstance(read, CrashEvidenceRead) else read
-
-    fake.apply = with_context
-    fake.crash()
-    fake.post(Resume(1))
-    assert fake.state.flow.stage is stage
-    loosened = {record.core: record.value for record in fake.state.cores}
-    assert loosened == (values if steady else {c: v + 1 for c, v in values.items()})
+    _crashed_with(fake, FailContext(steady=steady, working=(0, 1), paused=False))
+    flow = fake.state.flow
+    assert (flow.stage, flow.bisect.entry, flow.bisect.quick) == (Stage.BISECT, Stage.ENDURANCE, steady)
+    assert {record.core: record.value for record in fake.state.cores} == values
 
 
 @pytest.mark.req("L15.G3")

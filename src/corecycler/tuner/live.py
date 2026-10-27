@@ -300,8 +300,9 @@ def _groups(raw) -> tuple[tuple[int, ...], ...]:
 def _bisect_from_json(raw: dict | None) -> BisectRun | None:
     if raw is None:
         return None
+    entry = Stage(raw["entry"])
     return BisectRun(
-        entry=Stage(raw["entry"]),
+        entry=entry,
         lane=raw["lane"],
         klass=Klass(raw["klass"]),
         universe=tuple(raw["universe"]),
@@ -310,7 +311,18 @@ def _bisect_from_json(raw: dict | None) -> BisectRun | None:
         results=tuple((tuple(group), passed) for group, passed in raw["results"]),
         parents=tuple((tuple(child), tuple(parent)) for child, parent in raw["parents"]),
         rerun=None if raw["rerun"] is None else tuple(raw["rerun"]),
+        quick=_quick_from_json(raw, entry),
     )
+
+
+def _quick_from_json(raw: dict, entry: Stage) -> bool:
+    """A run stored without quick ran its smaller groups quick exactly when its entry was STEADY or ENDURANCE."""
+    if "quick" not in raw:
+        return entry in (Stage.STEADY, Stage.ENDURANCE)
+    quick = raw["quick"]
+    if not isinstance(quick, bool):
+        raise ValueError(f"the stored bisect's quick is {quick!r}, not true or false")
+    return quick
 
 
 RETIRED_ALLCORE = frozenset({"t_types", "t_busy", "co_delta", "rung", "item"})
