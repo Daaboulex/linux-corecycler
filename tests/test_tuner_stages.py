@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
 import random
 import threading
@@ -16,12 +17,15 @@ from corecycler.engine import detector as kernel
 from corecycler.engine.backends import ycruncher
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.backends.ycruncher import ALL_TESTS
-from corecycler.engine.execution import Heartbeat, Supervisor
+from corecycler.engine.execution import Frozen, Heartbeat, Supervisor
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable
 from corecycler.monitor.hwmon import SensorRead
 from corecycler.tuner import live_hw, stages, telemetry
-from corecycler.tuner.machine.types import Group, Klass, Load, Stage
+from corecycler.tuner.machine.types import Group, Klass, Lifecycle, Load, MachineConfig, Mode, PauseReason, Stage
 from corecycler.tuner.machine.types import TestSpec as Spec
+from corecycler.tuner.orders import Method
+from tests._tuner_world import fresh
+from tests._tuner_world import start as start_session
 from tests.test_execution import FakeBackend, _child
 
 CPUS = tuple(range(8))
@@ -35,8 +39,8 @@ FIRSTS = (0, 1, 2, 3)
 CORE_OF_CPU = {cpu: cpu % 4 for cpu in CPUS}
 
 
-def plan(load: Load, seconds: float = 480.0, seed: int = 1):
-    return stages.plan(load, seconds, CPUS, FIRSTS, 60_000, random.Random(seed), 95.0, quick=False)
+def plan(load: Load, seconds: float = 480.0, seed: int = 1, rest_c: float = 48.0):
+    return stages.plan(load, seconds, CPUS, FIRSTS, 60_000, random.Random(seed), 95.0, quick=False, rest_c=rest_c)
 
 
 @pytest.mark.req("K24")
@@ -54,6 +58,78 @@ def test_warm_is_one_sixty_second_slice_per_test_in_the_record_order_with_the_wa
     assert [s.tests for s in slices] == [(test,) for test in ALL_TESTS]
     assert all(s.duration == 60.0 and s.hold == (65.0, 55.0) and s.cpus == CPUS for s in slices)
     assert len(plan(Load.WARM, 150.0)) == 3 and plan(Load.WARM, 150.0)[-1].duration == 30.0
+
+
+@pytest.mark.req("K26", "WARM.rest")
+@pytest.mark.parametrize(
+    ("rest_c", "band"),
+    [(40.0, (65.0, 55.0)), (53.0, (65.0, 55.0)), (56.0, (68.0, 58.0)), (60.0, (72.0, 62.0))],
+    ids=["cool", "at the margin", "the ryzen's Tctl at rest", "warmer"],
+)
+def test_the_warm_release_point_is_never_below_two_degrees_over_the_rest_and_the_band_keeps_its_span(rest_c, band):
+    assert {s.hold for s in plan(Load.WARM, rest_c=rest_c)} == {band}
+
+
+def test_a_warm_plan_without_a_rest_temperature_is_refused():
+    with pytest.raises(ValueError, match="no rest temperature"):
+        stages.plan(Load.WARM, 480.0, CPUS, FIRSTS, 60_000, random.Random(1), 95.0, quick=False)
+
+
+@pytest.mark.req("WARM.tctl")
+def test_the_warm_hold_judges_tctl_and_every_hot_hold_the_hottest_input():
+    hold = live_hw.Hold(plan(Load.WARM, rest_c=56.0)[0], dict, CORE_OF_CPU, 0.25)
+    readings = [
+        SensorRead(hottest=75.0, tctl=67.0),
+        SensorRead(hottest=60.0, tctl=68.0),
+        SensorRead(hottest=75.0, tctl=58.0),
+        SensorRead(hottest=60.0, tctl=57.9),
+    ]
+    assert [hold(0.0, reading) for reading in readings] == [Frozen.NO, Frozen.HEAT, Frozen.HEAT, Frozen.NO]
+    assert {s.hold_on_tctl for load in (Load.HOT, Load.BURST, Load.IDLE) for s in plan(load)} == {False}
+
+
+@pytest.mark.req("HOLD.words")
+def test_a_hold_names_its_release_point_the_reading_it_judges_and_its_last_value():
+    warm = live_hw.Hold(plan(Load.WARM, rest_c=56.0)[0], dict, CORE_OF_CPU, 0.25)
+    assert warm.describe() == "the hold releases below 58.0 C on Tctl, last read unread"
+    warm(0.0, SensorRead(hottest=60.0, tctl=57.0))
+    assert warm.describe() == "the hold releases below 58.0 C on Tctl, last read 57.0 C"
+    warm(0.1, SensorRead(hottest=60.0))
+    assert warm.describe() == "the hold releases below 58.0 C on Tctl, last read unread"
+    hot = live_hw.Hold(plan(Load.HOT)[0], dict, CORE_OF_CPU, 0.25)
+    hot(0.0, at(88.4))
+    assert hot.describe() == "the hold releases below 85.0 C on the hottest input, last read 88.4 C"
+
+
+@pytest.mark.req("WARM.rest.unread")
+def test_a_warm_test_whose_tctl_is_unread_before_its_load_runs_nothing_and_gives_no_verdict():
+    script = Script([Outcome.PASS] * 8)
+    warm = runner(script)
+    warm.sensors = lambda: SensorRead(hottest=60.0)
+    report = warm.run(spec(Load.WARM), threading.Event())
+    assert (report.group, report.seconds) == (Group.APPARATUS, 0.0)
+    assert "Tctl could not be read" in report.detail
+    assert script.seen == []
+
+
+@pytest.mark.req("D58")
+def test_a_warm_slice_times_out_with_no_verdict_and_every_hot_hold_as_a_thermal_stop():
+    assert {s.hold_timeout for s in plan(Load.WARM)} == {Outcome.HELD_TOO_LONG}
+    hot_holds = {s.hold_timeout for load in (Load.HOT, Load.BURST, Load.IDLE) for s in plan(load)}
+    assert hot_holds == {Outcome.THERMAL}
+
+
+@pytest.mark.req("WARM.rest")
+@pytest.mark.parametrize(
+    ("limit_c", "rest_c", "band"),
+    [(95.0, 84.0, (85.0, 75.0)), (89.0, 70.0, (79.0, 69.0))],
+    ids=["after a burst at 95 C", "at an 89 C limit"],
+)
+def test_the_warm_band_never_reaches_into_the_hot_band_whatever_the_tctl_read_before_its_load(limit_c, rest_c, band):
+    slices = stages.plan(Load.WARM, 480.0, CPUS, FIRSTS, 60_000, random.Random(1), limit_c, quick=False, rest_c=rest_c)
+    (hot,) = stages.plan(Load.HOT, 510.0, CPUS, FIRSTS, 60_000, random.Random(1), limit_c, quick=False)
+    assert {s.hold for s in slices} == {band}
+    assert band[0] <= hot.hold[1]
 
 
 @pytest.mark.req("K27", "L25.d.burst")
@@ -100,7 +176,7 @@ def test_a_plan_is_reproducible_from_its_seed_and_refuses_a_per_core_load():
 def test_the_hold_freezes_at_the_hot_mark_and_releases_below_the_cool_one():
     readings = iter([90.0, 96.0, 88.0, None, 84.0])
     hold = live_hw.Hold(plan(Load.HOT)[0], dict, CORE_OF_CPU, 0.25)
-    assert [hold(0.0, at(next(readings))) for _ in range(5)] == [False, True, True, True, False]
+    assert [hold(0.0, at(next(readings))) for _ in range(5)] == [Frozen.NO, *[Frozen.HEAT] * 3, Frozen.NO]
 
 
 @dataclass
@@ -121,7 +197,7 @@ def runner(script: Script, readings=None, detector=None, clocks=None, usable_mb=
         def __init__(self, **kwargs):
             self.freeze = kwargs["freeze"]
             self.sensors = kwargs["sensors"]
-            script.caps.append(kwargs["hold_cap_s"])
+            script.caps.append(kwargs["hold_cap"])
             script.limits.append(kwargs["thermal"].max_temperature)
             self.observed = kwargs["observed"]
 
@@ -438,6 +514,128 @@ def test_a_program_fault_on_one_of_the_test_s_cpus_is_kept_and_no_verdict(
     assert report.program_faults.kept == (fault,)
 
 
+RYZEN_AT_REST = SensorRead(hottest=60.0, tctl=56.0, tccd=((0, 42.0), (1, 60.0)))
+RYZEN_AT_THE_CAP = SensorRead(hottest=55.1, tctl=55.1, tccd=((0, 42.0), (1, 55.1)))
+UNDER_LOAD = SensorRead(hottest=72.0, tctl=70.0, tccd=((0, 66.0), (1, 72.0)))
+SOAKED = SensorRead(hottest=61.0, tctl=59.0, tccd=((0, 45.0), (1, 61.0)))
+
+
+def held_runner(tmp_path, monkeypatch, readings, cap: float = 0.5) -> live_hw.StressRunner:
+    monkeypatch.setattr(kernel, "mce_settle_s", lambda: 0.0)
+    monkeypatch.setattr(stages, "HOLD_CAP_S", cap)
+    return live_hw.StressRunner(
+        lambda: SleepsThroughItsTest(_child("import time; time.sleep(30)")),
+        tmp_path,
+        CORE_OF_CPU,
+        lambda: next(readings),
+        lambda: dict.fromkeys(CPUS, 5000.0),
+        supervisor=partial(Supervisor, containment_for=lambda cpus: None),
+        detector=soak_detector([]),
+        budget=lambda n, floor: Budget(),
+    )
+
+
+def warm_runner(tmp_path, monkeypatch, after_the_load: list[SensorRead]) -> live_hw.StressRunner:
+    readings = itertools.chain([RYZEN_AT_REST], [UNDER_LOAD] * 3, itertools.cycle(after_the_load))
+    return held_runner(tmp_path, monkeypatch, readings)
+
+
+@pytest.mark.req("D58", "HOLD.planned")
+def test_an_idle_test_whose_planned_rests_pass_the_cap_runs_its_asked_seconds(tmp_path, monkeypatch):
+    default_seconds = dict(MachineConfig(Mode.CO, Method.SEQUENTIAL, (0,)).stage_seconds)["idle"]
+    (default,) = plan(Load.IDLE, default_seconds)
+    assert sum(stop - start for start, stop in default.frozen) > stages.HOLD_CAP_S
+    report = held_runner(tmp_path, monkeypatch, itertools.repeat(at(50.0))).run(spec(Load.IDLE, 1.2), threading.Event())
+    assert report.group is Group.PASS, report.detail
+    assert report.seconds == pytest.approx(1.2, abs=0.25)
+
+
+@pytest.mark.req("D58", "HOLD.planned")
+def test_a_burst_segment_whose_planned_gaps_pass_the_cap_runs_its_asked_seconds(tmp_path, monkeypatch):
+    burst = spec(Load.BURST, 3.5)
+    rng = random.Random(burst.plan_seed)
+    (segment,) = stages.plan(Load.BURST, burst.seconds, CPUS, FIRSTS, 60_000, rng, 95.0, quick=False)
+    assert sum(stop - start for start, stop in segment.frozen) > 0.2
+    report = held_runner(tmp_path, monkeypatch, itertools.repeat(at(50.0)), 0.2).run(burst, threading.Event())
+    assert report.group is Group.PASS, report.detail
+    assert report.seconds == pytest.approx(3.5, abs=0.25)
+
+
+@pytest.mark.req("WARM.rest", "WARM.tctl")
+def test_a_warm_test_on_a_cpu_resting_above_55_c_releases_its_hold_and_runs_its_asked_seconds(tmp_path, monkeypatch):
+    got = []
+    runner = warm_runner(tmp_path, monkeypatch, [RYZEN_AT_REST, RYZEN_AT_THE_CAP])
+    report = runner.run(spec(Load.WARM, 1.0), threading.Event(), got.append)
+    assert report.group is Group.PASS, report.detail
+    assert report.seconds >= 1.0
+    assert not got[0].running and got[-1].running
+
+
+@pytest.mark.req("WARM.rest")
+def test_a_warm_test_that_starts_hot_after_a_burst_holds_under_the_hot_band_and_runs_its_asked_seconds(
+    tmp_path, monkeypatch
+):
+    after_burst = SensorRead(hottest=86.0, tctl=84.0)
+    loaded = SensorRead(hottest=95.5, tctl=93.0)
+    cooled = SensorRead(hottest=76.0, tctl=74.0)
+    readings = itertools.chain([after_burst], [loaded] * 3, itertools.repeat(cooled))
+    got = []
+    report = held_runner(tmp_path, monkeypatch, readings).run(spec(Load.WARM, 1.0), threading.Event(), got.append)
+    assert report.group is Group.PASS, report.detail
+    assert report.seconds >= 1.0
+    assert not got[0].running and got[-1].running
+
+
+@pytest.mark.req("WARM.tctl.unread")
+def test_a_tctl_unread_during_a_warm_test_holds_the_load_and_ends_it_at_the_cap_with_no_verdict(tmp_path, monkeypatch):
+    readings = itertools.chain([RYZEN_AT_REST], itertools.repeat(SensorRead(hottest=60.0)))
+    report = held_runner(tmp_path, monkeypatch, readings).run(spec(Load.WARM, 1.0), threading.Event())
+    said = (
+        "held_too_long: the load stayed held more than 0.5 s in all;"
+        " the hold releases below 58.0 C on Tctl, last read unread"
+    )
+    assert (report.group, report.detail) == (Group.APPARATUS, said)
+
+
+@pytest.mark.req("D58", "HOLD.words")
+def test_a_hot_hold_past_its_cap_is_a_thermal_stop_naming_its_release_point_and_cools_before_the_retry(
+    tmp_path, monkeypatch
+):
+    report = held_runner(tmp_path, monkeypatch, itertools.repeat(at(95.0))).run(spec(Load.HOT, 1.0), threading.Event())
+    said = (
+        "thermal: the load stayed held more than 0.5 s in all;"
+        " the hold releases below 85.0 C on the hottest input, last read 95.0 C"
+    )
+    assert (report.group, report.detail) == (Group.THERMAL, said)
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    start_session(fake)
+    fake.fire()
+    fake.deliver(report)
+    assert fake.state.slot.cool_below_c == fake.config.thermal_limit_c - fake.config.cool_margin_c
+
+
+@pytest.mark.req("D58", "HOLD.words")
+def test_a_hold_past_its_cap_is_no_verdict_naming_its_release_point_and_last_reading_and_pauses_as_such(
+    tmp_path, monkeypatch
+):
+    report = warm_runner(tmp_path, monkeypatch, [SOAKED]).run(spec(Load.WARM, 1.0), threading.Event())
+    said = (
+        "held_too_long: the load stayed held more than 0.5 s in all;"
+        " the hold releases below 58.0 C on Tctl, last read 59.0 C"
+    )
+    assert (report.group, report.detail) == (Group.APPARATUS, said)
+    fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
+    start_session(fake)
+    fake.fire()
+    for _ in range(4):
+        fake.deliver(report)
+        if fake.state.lifecycle is not Lifecycle.RUNNING:
+            break
+        fake.fire()
+    paused = (fake.state.pause.reason, fake.state.pause.detail)
+    assert paused == (PauseReason.APPARATUS, f"no verdict 4 times in a row: {said}")
+
+
 @pytest.mark.req("EC.G1")
 def test_the_soak_reads_the_kernel_log_once_more_after_one_machine_check_poll(monkeypatch):
     monkeypatch.setattr(kernel, "mce_settle_s", lambda: 6.0)
@@ -752,7 +950,9 @@ def test_every_segment_that_holds_carries_a_hold_cap_and_the_runner_hands_it_on(
         assert holding and all(s.hold_cap_s is not None for s in holding), load
     script = Script([Outcome.PASS] * 8)
     runner(script).run(spec(Load.WARM), threading.Event())
-    assert script.caps == [stages.HOLD_CAP_S] * 8
+    assert [cap.seconds for cap in script.caps] == [stages.HOLD_CAP_S] * 8
+    assert {cap.outcome for cap in script.caps} == {Outcome.HELD_TOO_LONG}
+    assert [cap.describe for cap in script.caps] == [freeze.describe for *_, freeze in script.seen]
 
 
 def test_the_working_cores_of_a_failing_burst_segment_are_the_cores_it_drew():
@@ -771,7 +971,7 @@ def test_a_sample_stores_the_labelled_tctl_and_each_ccd_while_the_hold_judges_th
     got = []
     reading = SensorRead(hottest=97.0, tctl=71.0, tccd=((0, 97.0), (1, None)), volts=(("nct6799:in0", 1.1),))
     hold = live_hw.Hold(plan(Load.HOT)[0], dict, CORE_OF_CPU, 0.25, got.append)
-    assert hold(0.0, reading) is True
+    assert hold(0.0, reading) is Frozen.HEAT
     assert (got[0].tctl, got[0].tccd, got[0].volts) == (71.0, reading.tccd, reading.volts)
 
 
@@ -829,7 +1029,7 @@ def test_an_all_core_load_sizes_its_memory_from_the_one_budget():
 def test_the_hot_hold_band_sits_at_the_thermal_limit_and_ten_degrees_under_it():
     (hot,) = stages.plan(Load.HOT, 510.0, CPUS, FIRSTS, 60_000, random.Random(1), 89.0, quick=False)
     assert hot.hold == (89.0, 79.0)
-    (warm, *_) = stages.plan(Load.WARM, 480.0, CPUS, FIRSTS, 60_000, random.Random(1), 89.0, quick=False)
+    (warm, *_) = stages.plan(Load.WARM, 480.0, CPUS, FIRSTS, 60_000, random.Random(1), 89.0, quick=False, rest_c=48.0)
     assert warm.hold == stages.WARM_HOLD
 
 
@@ -871,7 +1071,8 @@ def test_a_one_core_test_freezes_its_lane_as_the_record_did_and_a_two_thread_tes
     runner(script).run(one, threading.Event())
     runner(script).run(two, threading.Event())
     one_freeze, two_freeze = script.seen[0][3], script.seen[1][3]
-    assert [one_freeze(t, reading) for t in (8.9, 9.5, 10.1, 18.5, 19.5)] == [False, True, False, True, False]
+    planned = [one_freeze(t, reading) for t in (8.9, 9.5, 10.1, 18.5, 19.5)]
+    assert planned == [Frozen.NO, Frozen.PLANNED, Frozen.NO, Frozen.PLANNED, Frozen.NO]
     assert two_freeze is None
 
 

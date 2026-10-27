@@ -69,7 +69,7 @@ from corecycler.tuner.machine.types import (
     Stored,
 )
 from corecycler.tuner.orders import Method, default_method, order_problem
-from corecycler.tuner.stages import WARM_HOLD
+from corecycler.tuner.stages import REST_MARGIN_C, WARM_HOLD
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -141,8 +141,9 @@ KNOB_TEXT: dict[str, dict[str, tuple[str, str, str]]] = {
         "warm": (
             "Warm segment",
             "s",
-            f"Every core runs each test in turn while the CPU is held between {WARM_HOLD[1]:.0f} and"
-            f" {WARM_HOLD[0]:.0f} {DEGREES}.",
+            f"Every core runs each test in turn while Tctl is held between {WARM_HOLD[1]:.0f} and"
+            f" {WARM_HOLD[0]:.0f} {DEGREES}, or from {REST_MARGIN_C:.0f} {DEGREES} above the Tctl read before its"
+            " load when that is warmer, over the same span and below the hot loads' hold.",
         ),
         "idle": ("Idle segment", "s", "A few cores wake briefly between long rests, where the clocks boost highest."),
         "transient_window_s": (

@@ -39,6 +39,7 @@ class Outcome(StrEnum):
     UNEXPLAINED = "unexplained", OutcomeKind.APPARATUS
     NO_WORK_DONE = "no_work_done", OutcomeKind.APPARATUS
     UNVERIFIED = "unverified", OutcomeKind.APPARATUS
+    HELD_TOO_LONG = "held_too_long", OutcomeKind.APPARATUS
     CUT_SHORT = "cut_short", OutcomeKind.APPARATUS
     PASS = "pass", OutcomeKind.PASS
 

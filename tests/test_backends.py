@@ -79,6 +79,7 @@ class TestOutcome:
             Outcome.THERMAL: "thermal",
             Outcome.OUTSIDE_KILL: "killed",
             Outcome.STALL: "stall",
+            Outcome.HELD_TOO_LONG: "held_too_long",
             Outcome.NOT_STARTED: "startup",
             Outcome.COMPUTATION: "computation",
             Outcome.CLOCK_STRETCH: "clock_stretch",

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from corecycler.engine.backends.base import Outcome
 from corecycler.engine.backends.ycruncher import ALL_TESTS
 from corecycler.tuner.machine.types import Load
 
@@ -21,6 +22,7 @@ BURST_MEMORY_MB = 2048
 IDLE_MEMORY_MB = 1024
 HOT_HOLD_SPAN_C = 10.0
 WARM_HOLD = (65.0, 55.0)
+REST_MARGIN_C = 2.0
 HOLD_CAP_S = 300.0
 
 
@@ -34,6 +36,15 @@ class Segment:
     frozen: tuple[tuple[float, float], ...] = ()
     hold: tuple[float, float] | None = None
     hold_cap_s: float | None = None
+    hold_on_tctl: bool = False
+    hold_timeout: Outcome | None = None
+
+
+def warm_hold(rest_c: float, limit_c: float) -> tuple[float, float]:
+    hot, cool = WARM_HOLD
+    span = hot - cool
+    release = min(max(cool, rest_c + REST_MARGIN_C), limit_c - HOT_HOLD_SPAN_C - span)
+    return release + span, release
 
 
 def frozen_at(segment: Segment, elapsed: float) -> bool:
@@ -92,6 +103,7 @@ def plan(
     limit_c: float,
     *,
     quick: bool,
+    rest_c: float | None = None,
 ) -> tuple[Segment, ...]:
     hot_memory = hot_memory_mb(usable_mb)
     hot_hold = (limit_c, limit_c - HOT_HOLD_SPAN_C)
@@ -105,9 +117,13 @@ def plan(
                 seconds,
                 hold=hot_hold,
                 hold_cap_s=HOLD_CAP_S,
+                hold_timeout=Outcome.THERMAL,
             ),
         )
     if load is Load.WARM:
+        if rest_c is None:
+            raise ValueError("a warm plan has no rest temperature to set its release point from")
+        warm = warm_hold(rest_c, limit_c)
         slices = []
         for index, test in enumerate(ALL_TESTS):
             remaining = seconds - index * WARM_SLICE_S
@@ -120,8 +136,10 @@ def plan(
                     WARM_PER_TEST_S,
                     hot_memory,
                     min(WARM_SLICE_S, remaining),
-                    hold=WARM_HOLD,
+                    hold=warm,
                     hold_cap_s=HOLD_CAP_S,
+                    hold_on_tctl=True,
+                    hold_timeout=Outcome.HELD_TOO_LONG,
                 )
             )
         return tuple(slices)
@@ -145,6 +163,7 @@ def plan(
                     frozen,
                     hold=hot_hold,
                     hold_cap_s=HOLD_CAP_S,
+                    hold_timeout=Outcome.THERMAL,
                 )
             )
             t += length
@@ -164,6 +183,7 @@ def plan(
                 frozen,
                 hold=hot_hold,
                 hold_cap_s=HOLD_CAP_S,
+                hold_timeout=Outcome.THERMAL,
             ),
         )
     raise ValueError(f"{load} has no stage plan")

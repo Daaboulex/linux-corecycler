@@ -49,6 +49,18 @@ class StoppableCpu:
         return min(self.busy_for, now - self.first - held)
 
 
+def frozen_while(kind: execution.Frozen, window):
+    return lambda elapsed, _reading: kind if window(elapsed) else execution.Frozen.NO
+
+
+def planned_while(window):
+    return frozen_while(execution.Frozen.PLANNED, window)
+
+
+def held_while(window):
+    return frozen_while(execution.Frozen.HEAT, window)
+
+
 def run_frozen(tmp_path: Path, frozen, duration: float, busy_for: float = math.inf):
     supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), stall_timeout=0.3)
     supervisor.freeze = frozen
@@ -63,20 +75,20 @@ def run_frozen(tmp_path: Path, frozen, duration: float, busy_for: float = math.i
 @pytest.mark.req("K22", "U12")
 @pytest.mark.real_cpu_time
 def test_a_lane_frozen_for_most_of_its_run_is_neither_stalled_nor_short_of_work(tmp_path: Path):
-    verdict = run_frozen(tmp_path, lambda elapsed, _reading: 0.3 <= elapsed < 1.6, 2.0)
+    verdict = run_frozen(tmp_path, planned_while(lambda elapsed: 0.3 <= elapsed < 1.6), 2.0)
     assert verdict.outcome is Outcome.PASS, verdict.detail
 
 
 @pytest.mark.req("L25.d.watchdog")
 @pytest.mark.real_cpu_time
 def test_a_lane_that_stops_working_after_a_thaw_is_still_a_stall(tmp_path: Path):
-    verdict = run_frozen(tmp_path, lambda elapsed, _reading: 0.2 <= elapsed < 0.6, 3.0, busy_for=0.4)
+    verdict = run_frozen(tmp_path, planned_while(lambda elapsed: 0.2 <= elapsed < 0.6), 3.0, busy_for=0.4)
     assert verdict.outcome is Outcome.STALL, verdict.detail
 
 
 @pytest.mark.real_cpu_time
 def test_a_lane_still_frozen_at_its_deadline_stops_cleanly_and_its_frozen_time_is_excused(tmp_path: Path):
-    verdict = run_frozen(tmp_path, lambda elapsed, _reading: elapsed >= 0.6, 1.8)
+    verdict = run_frozen(tmp_path, planned_while(lambda elapsed: elapsed >= 0.6), 1.8)
     assert verdict.outcome is Outcome.PASS, verdict.detail
 
 
@@ -84,7 +96,7 @@ def test_a_lane_still_frozen_at_its_deadline_stops_cleanly_and_its_frozen_time_i
 def test_a_frozen_lane_is_really_stopped_and_runs_again_when_thawed(tmp_path: Path):
     backend = FakeBackend(_child(BUSY))
     supervisor, _, _ = make_supervisor(backend, stall_timeout=5.0)
-    supervisor.freeze = lambda elapsed, _reading: 0.3 <= elapsed < 1.0
+    supervisor.freeze = planned_while(lambda elapsed: 0.3 <= elapsed < 1.0)
     states: list[tuple[str, str]] = []
     send = supervisor._signal_group
 
@@ -100,10 +112,20 @@ def test_a_frozen_lane_is_really_stopped_and_runs_again_when_thawed(tmp_path: Pa
     assert states[:2] == [("SIGSTOP", "T"), ("SIGCONT", "R")]
 
 
-def run_held(tmp_path: Path, frozen, duration: float, cap: float | None, busy_for: float = math.inf):
+HOLD_SAYS = "the hold releases below 58.0 C on Tctl, last read 59.0 C"
+
+
+def run_held(
+    tmp_path: Path,
+    frozen,
+    duration: float,
+    cap: float,
+    busy_for: float = math.inf,
+    timeout: Outcome = Outcome.HELD_TOO_LONG,
+):
     supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)), stall_timeout=0.3)
     supervisor.freeze = frozen
-    supervisor.hold_cap_s = cap
+    supervisor.hold_cap = execution.HoldCap(cap, lambda: HOLD_SAYS, timeout)
     cpu = StoppableCpu(supervisor, busy_for)
     began = time.monotonic()
     with (
@@ -116,17 +138,28 @@ def run_held(tmp_path: Path, frozen, duration: float, cap: float | None, busy_fo
 
 @pytest.mark.real_cpu_time
 def test_under_a_hold_cap_the_time_a_lane_is_held_does_not_count_toward_its_run(tmp_path: Path):
-    verdict, wall = run_held(tmp_path, lambda elapsed, _reading: 0.2 <= elapsed < 0.9, 1.0, 5.0)
+    verdict, wall = run_held(tmp_path, held_while(lambda elapsed: 0.2 <= elapsed < 0.9), 1.0, 5.0)
     assert verdict.outcome is Outcome.PASS, verdict.detail
     assert wall >= 1.6
 
 
-@pytest.mark.req("D58")
+@pytest.mark.req("HOLD.planned")
 @pytest.mark.real_cpu_time
-def test_a_hold_longer_than_its_cap_ends_the_run_as_thermal(tmp_path: Path):
-    verdict, wall = run_held(tmp_path, lambda elapsed, _reading: elapsed >= 0.2, 1.0, 0.5)
-    assert verdict.outcome is Outcome.THERMAL
-    assert "the load stayed held more than 0.5 s in all waiting for the CPU to cool" in verdict.detail
+def test_planned_freezes_past_the_cap_neither_end_a_run_nor_lengthen_it(tmp_path: Path):
+    verdict, wall = run_held(tmp_path, planned_while(lambda elapsed: 0.1 <= elapsed < 0.9), 1.0, 0.3)
+    assert verdict.outcome is Outcome.PASS, verdict.detail
+    assert wall < 1.4
+
+
+@pytest.mark.req("D58", "HOLD.words")
+@pytest.mark.real_cpu_time
+@pytest.mark.parametrize("timeout", [Outcome.HELD_TOO_LONG, Outcome.THERMAL])
+def test_a_hold_longer_than_its_cap_ends_the_run_as_the_cap_declares_in_the_hold_s_own_words(
+    tmp_path: Path, timeout: Outcome
+):
+    verdict, wall = run_held(tmp_path, held_while(lambda elapsed: elapsed >= 0.2), 1.0, 0.5, timeout=timeout)
+    assert verdict.outcome is timeout
+    assert verdict.detail == f"the load stayed held more than 0.5 s in all; {HOLD_SAYS}"
     assert wall < 1.5
 
 
@@ -141,18 +174,16 @@ def test_frozen_time_stops_counting_at_the_deadline(tmp_path: Path):
 
 @pytest.mark.req("D58")
 @pytest.mark.real_cpu_time
-def test_holds_each_shorter_than_the_cap_end_the_run_as_thermal_once_their_total_passes_it(tmp_path: Path):
-    def held(elapsed, _reading):
-        return any(start <= elapsed < start + 0.3 for start in (0.1, 0.5, 0.9, 1.3))
-
+def test_holds_each_shorter_than_the_cap_end_the_run_with_no_verdict_once_their_total_passes_it(tmp_path: Path):
+    held = held_while(lambda elapsed: any(start <= elapsed < start + 0.3 for start in (0.1, 0.5, 0.9, 1.3)))
     verdict, wall = run_held(tmp_path, held, 1.0, 0.5)
-    assert verdict.outcome is Outcome.THERMAL
-    assert "the load stayed held more than 0.5 s in all waiting for the CPU to cool" in verdict.detail
+    assert verdict.outcome is Outcome.HELD_TOO_LONG
+    assert verdict.detail == f"the load stayed held more than 0.5 s in all; {HOLD_SAYS}"
     assert wall < 1.5
 
 
 @pytest.mark.req("D58")
 @pytest.mark.real_cpu_time
-def test_a_run_never_held_is_never_thermal_whatever_its_cap(tmp_path: Path):
-    verdict, _ = run_held(tmp_path, lambda _elapsed, _reading: False, 0.4, 0.0)
+def test_a_run_never_held_is_never_held_too_long_whatever_its_cap(tmp_path: Path):
+    verdict, _ = run_held(tmp_path, held_while(lambda _elapsed: False), 0.4, 0.0)
     assert verdict.outcome is Outcome.PASS, verdict.detail

@@ -36,7 +36,7 @@ from corecycler.engine.backends import get_backend, ycruncher
 from corecycler.engine.backends.base import OutcomeKind, StressConfig, StressMode
 from corecycler.engine.backends.stressapptest import StressapptestBackend
 from corecycler.engine.containment import lane_cgroup_parent, lane_problem
-from corecycler.engine.execution import Heartbeat, Lane, Supervisor, ThermalWatch
+from corecycler.engine.execution import Frozen, Heartbeat, HoldCap, Lane, Supervisor, ThermalWatch
 from corecycler.engine.heavy_test_lock import HeavyTestRefused, take_heavy_test_lock
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable, memory_budget
 from corecycler.history.context import read_bios_version
@@ -542,25 +542,36 @@ class Hold:
         self.every = every
         self.sink = sink
         self.held = False
+        self.last: float | None = None
         self.ring: deque[telemetry.Sample] = deque(maxlen=telemetry.RING)
         self.next_sample = 0.0
 
-    def __call__(self, elapsed: float, reading: SensorRead) -> bool:
+    def describe(self) -> str:
+        _, cool = self.segment.hold
+        name = "Tctl" if self.segment.hold_on_tctl else "the hottest input"
+        last = "unread" if self.last is None else f"{self.last:.1f} C"
+        return f"the hold releases below {cool:.1f} C on {name}, last read {last}"
+
+    def __call__(self, elapsed: float, reading: SensorRead) -> Frozen:
         sampling = elapsed >= self.next_sample
-        temperature = reading.hottest
+        temperature = reading.tctl if self.segment.hold_on_tctl else reading.hottest
+        self.last = temperature
         if self.segment.hold is not None and temperature is not None:
             hot, cool = self.segment.hold
             if temperature >= hot:
                 self.held = True
             elif temperature < cool:
                 self.held = False
-        frozen = self.held or stages.frozen_at(self.segment, elapsed)
+        elif self.segment.hold_on_tctl:
+            self.held = True
+        planned = Frozen.PLANNED if stages.frozen_at(self.segment, elapsed) else Frozen.NO
+        frozen = Frozen.HEAT if self.held else planned
         if sampling:
             self.next_sample = elapsed + self.every
             clocks = self.clocks()
             per_core = ((core, fastest(clocks, cpus)) for core, cpus in sorted(self.cpus_of.items()))
             sample = telemetry.Sample(
-                not frozen,
+                frozen is Frozen.NO,
                 tuple((core, mhz) for core, mhz in per_core if mhz is not None),
                 reading.tctl,
                 time.monotonic_ns(),
@@ -616,7 +627,7 @@ class StressRunner:
         freeze,
         poll: float,
         backend=None,
-        hold_cap_s: float | None = None,
+        hold_cap: HoldCap | None = None,
     ):
         observed: list = []
         watch = self.detector()
@@ -635,7 +646,7 @@ class StressRunner:
                 poll_interval=poll,
                 phase=f"{spec.stage.value} {(spec.load or spec.klass).value}",
                 freeze=freeze,
-                hold_cap_s=hold_cap_s,
+                hold_cap=hold_cap,
                 heartbeat=self.heartbeat,
             )
             results = supervisor.run(lanes, config, seconds)
@@ -694,6 +705,10 @@ class StressRunner:
         )
         if spec.plan_seed is None:
             raise ValueError(f"the {spec.load.value} test carries no plan seed, so its pattern could not be replayed")
+        rest_c = self.sensors().tctl if spec.load is Load.WARM else None
+        if spec.load is Load.WARM and rest_c is None:
+            unread = "Tctl could not be read before the warm load, so its hold has no release point"
+            return Report(Group.APPARATUS, 0.0, detail=unread)
         rng = random.Random(spec.plan_seed)
         segments = stages.plan(
             spec.load,
@@ -704,6 +719,7 @@ class StressRunner:
             rng,
             spec.thermal_limit_c,
             quick=spec.quick,
+            rest_c=rest_c,
         )
         memory = ", ".join(str(mb) for mb in sorted({segment.memory_mb for segment in segments}))
         self.say(f"{spec.load.value} runs y-cruncher with {memory} MB")
@@ -718,8 +734,9 @@ class StressRunner:
             )
             lane = Lane(core_id=spec.core, cpus=segment.cpus, work_dir=self.work_dir / f"all_{spec.load.value}")
             hold = Hold(segment, self.clocks, self.core_of_cpu, telemetry.SAMPLE_S, self.sink)
+            cap = HoldCap(segment.hold_cap_s, hold.describe, segment.hold_timeout)
             results, observed = self._supervise(
-                spec, stop, [lane], config, segment.duration, hold, poll=FREEZE_TICK_S, hold_cap_s=segment.hold_cap_s
+                spec, stop, [lane], config, segment.duration, hold, poll=FREEZE_TICK_S, hold_cap=cap
             )
             result = results[lane.core_id]
             done += result.duration_seconds

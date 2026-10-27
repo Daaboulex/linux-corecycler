@@ -223,9 +223,16 @@ Hard crashes are expected during CO tuning; that is how each core's limit is fou
 - **Temperature**: above the thermal limit, or the CPU's Tjmax when that is lower, the
   test stops and the tuner cools down and retries the same value; after three such
   retries in a row the next thermal stop pauses. Under the all-core loads the load is held
-  when the CPU runs hot and goes on once it has cooled; a test held more than 300 s in all
-  ends as such a thermal stop. A cool-down that does not bring the CPU below the limit
-  within 300 s pauses the session. No readable temperature sensor refuses the run.
+  when the CPU runs hot and goes on once it has cooled: the hot, burst and idle loads hold at
+  the limit on the hottest sensor and go on 10 C under it; the warm load holds Tctl between
+  55 and 65 C, or from 2 C above the Tctl read before its load when that is warmer, over the
+  same span and never above the hot loads' release, and it holds while Tctl cannot be read.
+  Held on heat more than 300 s in all, a hot, burst or idle test ends as a thermal stop and a
+  warm test ends with no verdict and runs again, each naming where the hold releases and the
+  last reading; after three such warm retries in a row the next pauses the session. The burst
+  and idle loads' own planned rests are not heat holds: they neither count toward the 300 s
+  nor lengthen the test. A cool-down that does not bring the CPU below the limit within 300 s
+  pauses the session. No readable temperature sensor refuses the run.
 - **Other schedulers**: a stress tool whose nice value or scheduling policy differs from
   what it was started with (ananicy-cpp renices programs by name) is not a verdict: the
   test is repeated, and if it keeps happening the session pauses naming the program and

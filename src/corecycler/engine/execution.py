@@ -18,6 +18,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from corecycler.config.paths import atomic_write, hand_back
@@ -97,6 +98,8 @@ class _LaneRun:
     frozen: bool = False
     frozen_since: float | None = None
     frozen_total: float = 0.0
+    heat_since: float | None = None
+    heat_total: float = 0.0
     scheduled_as: tuple[int, int] | None = None
     progress_window: float | None = None
     last_progress: float = 0.0
@@ -113,6 +116,19 @@ class _LaneRun:
         if self.proc is None:
             return 0.0
         return (time.monotonic() if self.stopped_at is None else self.stopped_at) - self.started_at
+
+
+class Frozen(Enum):
+    NO = auto()
+    PLANNED = auto()
+    HEAT = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class HoldCap:
+    seconds: float
+    describe: Callable[[], str]
+    outcome: Outcome
 
 
 @dataclass(slots=True)
@@ -262,8 +278,8 @@ def _scheduling_fault(run: _LaneRun) -> str | None:
     return None
 
 
-def _frozen_for(run: _LaneRun, now: float) -> float:
-    return run.frozen_total + (now - run.frozen_since if run.frozen else 0.0)
+def _heat_held(run: _LaneRun, now: float) -> float:
+    return run.heat_total + (0.0 if run.heat_since is None else now - run.heat_since)
 
 
 def _no_work_done(run: _LaneRun) -> str | None:
@@ -394,8 +410,8 @@ class Supervisor:
         phase: str = "stress",
         hooks: SuperviseHooks | None = None,
         containment_for: Callable[[tuple[int, ...]], containment.Containment | None] | None = None,
-        freeze: Callable[[float, SensorRead], bool] | None = None,
-        hold_cap_s: float | None = None,
+        freeze: Callable[[float, SensorRead], Frozen] | None = None,
+        hold_cap: HoldCap | None = None,
         heartbeat: Heartbeat | None = None,
     ) -> None:
         self.backend = backend
@@ -411,7 +427,7 @@ class Supervisor:
         self.hooks = hooks or SuperviseHooks()
         self._containment_for = containment_for or containment.contain
         self.freeze = freeze
-        self.hold_cap_s = hold_cap_s
+        self.hold_cap = hold_cap
         self.heartbeat = heartbeat or Heartbeat()
 
     def run(self, lanes: list[Lane], config: StressConfig, duration: float) -> dict[int, StressResult]:
@@ -485,10 +501,12 @@ class Supervisor:
             beats.running(test, now)
             reading = self.sensors()
             if self.freeze is not None:
-                self._set_frozen(runs, self.freeze(now - start, reading), now)
-            if self.hold_cap_s is not None:
-                held = max(_frozen_for(run, now) for run in runs)
-                if held > self.hold_cap_s:
+                frozen = self.freeze(now - start, reading)
+                self._set_frozen(runs, frozen is not Frozen.NO, now)
+                self._set_heat(runs, frozen is Frozen.HEAT, now)
+            if self.hold_cap is not None:
+                held = max(_heat_held(run, now) for run in runs)
+                if held > self.hold_cap.seconds:
                     self._hold_expired(runs)
                     return
                 deadline = start + duration + held
@@ -572,11 +590,9 @@ class Supervisor:
             )
 
     def _hold_expired(self, runs: list[_LaneRun]) -> None:
-        reading = self.thermal.last_temperature
-        last = "" if reading is None else f", last reading {reading:.1f} C"
-        text = f"the load stayed held more than {self.hold_cap_s:g} s in all waiting for the CPU to cool{last}"
+        text = f"the load stayed held more than {self.hold_cap.seconds:g} s in all; {self.hold_cap.describe()}"
         for run in runs:
-            run.signals.append(LaneSignal(Outcome.THERMAL, text))
+            run.signals.append(LaneSignal(self.hold_cap.outcome, text))
 
     def _set_frozen(self, runs: list[_LaneRun], frozen: bool, now: float) -> None:
         for run in runs:
@@ -593,6 +609,17 @@ class Supervisor:
                 run.frozen_since = None
                 run.last_active = now
             run.frozen = frozen
+
+    @staticmethod
+    def _set_heat(runs: list[_LaneRun], heat: bool, now: float) -> None:
+        for run in runs:
+            if not run.alive or (run.heat_since is not None) == heat:
+                continue
+            if heat:
+                run.heat_since = now
+            else:
+                run.heat_total += now - run.heat_since
+                run.heat_since = None
 
     def _take_kernel_events(self, runs: list[_LaneRun], *, final: bool = False) -> None:
         read = self.detector.read_new(final=final)

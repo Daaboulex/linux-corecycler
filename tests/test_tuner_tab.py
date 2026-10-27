@@ -134,6 +134,13 @@ def test_a_setting_without_a_name_fails_the_tab(monkeypatch):
         tt._assert_every_knob_named()
 
 
+@pytest.mark.req("WARM.rest")
+def test_the_warm_setting_says_where_tctl_is_held_and_that_a_warmer_reading_before_the_load_moves_the_band():
+    about = tt.KNOB_TEXT["All-core stages"]["warm"][2]
+    assert f"Tctl is held between 55 and 65 {tt.DEGREES}" in about
+    assert f"from 2 {tt.DEGREES} above the Tctl read before its load when that is warmer" in about
+
+
 def test_every_setting_shows_its_name_unit_and_what_it_does(db, home):
     t = tab(db)
     t._advanced_toggle.setChecked(True)

@@ -36,6 +36,7 @@ from corecycler.engine.detector import (
     UnblamedMachineCheck,
 )
 from corecycler.engine.execution import (
+    Frozen,
     Lane,
     SuperviseHooks,
     Supervisor,
@@ -2005,9 +2006,9 @@ def test_each_tick_reads_the_sensors_once_and_the_hold_and_the_stop_judge_that_r
         produced.append(SensorRead(hottest=40.0 + len(produced)))
         return produced[-1]
 
-    def freeze(elapsed: float, reading: SensorRead) -> bool:
+    def freeze(elapsed: float, reading: SensorRead) -> Frozen:
         held.append(reading)
-        return False
+        return Frozen.NO
 
     thermal = cool_thermal()
     supervisor = Supervisor(

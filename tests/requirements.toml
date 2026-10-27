@@ -386,7 +386,7 @@ task = "S3"
 
 [[requirement]]
 id = "K26"
-statement = "WARM: 480 s of run time, 30 s per test, one 60 s slice per test, hold above 65 C to below 55 C, held time not counted, an unthawed hold past 300 s is THERMAL"
+statement = "WARM: 480 s of run time, 30 s per test, one 60 s slice per test, holds Tctl above 65 C to below 55 C when the Tctl read before its load is at or below 53 C (WARM.rest), held time not counted, held past 300 s in all is no verdict (D58)"
 proof = "built"
 
 [[requirement]]
@@ -3014,7 +3014,7 @@ proof = "built"
 
 [[requirement]]
 id = "L25.d.warm"
-statement = "WARM restarts y-cruncher with only the next test at each 60 s slice and holds above 65 C to below 55 C"
+statement = "WARM restarts y-cruncher with only the next test at each 60 s slice and holds Tctl in its band (WARM.rest)"
 proof = "built"
 
 [[requirement]]
@@ -3034,12 +3034,12 @@ proof = "built"
 
 [[requirement]]
 id = "L25.d.watchdog"
-statement = "The stall watchdog counts thawed time only; the deadline extends by held time under a hold cap"
+statement = "The stall watchdog counts thawed time only; the deadline extends by the time held on heat under a hold cap (HOLD.planned)"
 proof = "built"
 
 [[requirement]]
 id = "L25.e"
-statement = "The engine reports PASS, COMPUTATION, CPU_SIGNAL, UNEXPLAINED (no error text), NOT_STARTED, STALL, OUTSIDE_KILL, THERMAL, the MCE classes, UNVERIFIED, CUT_SHORT and DID_NOT_STOP"
+statement = "The engine reports PASS, COMPUTATION, CPU_SIGNAL, UNEXPLAINED (no error text), NOT_STARTED, STALL, OUTSIDE_KILL, THERMAL, the MCE classes, UNVERIFIED, HELD_TOO_LONG, CUT_SHORT and DID_NOT_STOP"
 proof = "built"
 
 [[requirement]]
@@ -4123,7 +4123,37 @@ proof = "built"
 
 [[requirement]]
 id = "D58"
-statement = "Every segment that holds counts run time; held more than 300 s in all, across every hold, ends the run as THERMAL; frozen time past the deadline does not count"
+statement = "Every segment that holds counts run time while held on heat; held on heat more than 300 s in all, across every hold, ends the run as its segment declares: a WARM slice with no verdict (APPARATUS, held_too_long), retried at once and pausing after the apparatus retries, and a HOT, BURST or IDLE segment, whose hold froze at the limit, as THERMAL with its cool-down; frozen time past the deadline does not count toward the work floor (PLAN Next 79, review round 1)"
+proof = "built"
+
+[[requirement]]
+id = "HOLD.planned"
+statement = "A planned freeze, BURST's gaps and IDLE's rests, neither counts toward the hold cap nor extends the deadline, so a default 360 s IDLE test, which rests about 355 s, runs its asked seconds; it still excuses the stall watch and the work floor (PLAN Next 79, the main session's decision of 2026-10-27, after h14 test 528 passed IDLE at 120 s stage seconds)"
+proof = "built"
+
+[[requirement]]
+id = "HOLD.words"
+statement = "A hold past its cap says so in the hold's own words, the cap, the release point, the reading the hold judges and its last value; the warm hold's pause after the apparatus retries repeats them and names no limit, which the warm hold never reaches (PLAN Next 79)"
+proof = "built"
+
+[[requirement]]
+id = "WARM.rest"
+statement = "A WARM test reads Tctl once before its load and releases its hold at the higher of 55 C and the Tctl read before its load plus 2 C, never above the thermal limit less 20 C, holding at 10 C above the release, so its hold edge never passes the hot hold's release; a reading at or below 53 C keeps 55 to 65 C; the reading follows the last run's machine-check settle, not a cool-down, so the heat BURST leaves raises the band no further than that ceiling, and a reading of 84 C at a 95 C limit holds at 85 C and releases below 75 C (PLAN Next 79, the ryzen at Tctl 56 C, Tccd2 60 C under balanced; the ceiling from review round 1)"
+proof = "built"
+
+[[requirement]]
+id = "WARM.tctl.unread"
+statement = "A Tctl that cannot be read during a WARM test holds the load, so a Tctl that stays unread ends the test at the cap with no verdict, its words saying last read unread (PLAN Next 79, review round 1)"
+proof = "built"
+
+[[requirement]]
+id = "WARM.tctl"
+statement = "The warm hold judges Tctl, the package's own reading: at rest on the ryzen its CCDs read 42 and 60 C beside Tctl 56 C, and the hottest input, one CCD's own sensor there, read 60, 56.0 and 55.1 C within minutes; the hot hold of HOT, BURST and IDLE and the thermal stop judge the hottest input (PLAN Next 79)"
+proof = "built"
+
+[[requirement]]
+id = "WARM.rest.unread"
+statement = "A WARM test whose Tctl cannot be read before its load runs nothing and gives no verdict (PLAN Next 79)"
 proof = "built"
 
 [[requirement]]
