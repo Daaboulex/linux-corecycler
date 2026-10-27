@@ -221,10 +221,20 @@ Hard crashes are expected during CO tuning; that is how each core's limit is fou
   that starts it again. Manual stress runs judge a renice the same way.
 - **Hang watch**: `corecycler hang-watch`, run as the user who tunes (on NixOS a user unit
   of `deviceAccessUser` when `hangReset.enable` and `deviceAccess` are on), resets the
-  machine through the kernel's sysrq when two checks 15 s apart find a running test's
-  heartbeat, the idle watch's included, stopped for more than 120 s while its process lives
-  and is not stopped; between tests (the cool-down, the CO write, the settle) the heartbeat
-  says idle, so a hang there is left to the kernel's panics and the board's watchdog.
+  machine through the kernel's sysrq when two checks 15 s apart find the session's
+  heartbeat stopped for more than 120 s while its process lives and is not stopped: in a
+  test, the idle watch's included, and between tests (the cool-down, the CO writes, the
+  kernel-log read before a test, a verdict's commit). While a session drives, each check
+  also writes and syncs a small file next to its history database on a thread of its own,
+  and resets the same way when no such write has finished for more than 120 s: a freeze
+  that stops the disk while the board's watchdog is still fed, which stops the journal and
+  the database together. A write that fails with an error is logged and is no reset. Its
+  own log never holds it: a line the journal does not take in time is dropped and counted,
+  and once it refuses a line with an error the watch keeps checking and resetting with
+  its lines held, and exits for systemd to start it again only at a check that suspects
+  no hang and probes no disk. A paused or finished session is never reset. A freeze that
+  stops the watch itself while the board's watchdog is still fed is not caught; that is
+  left to the kernel's panics and to a reset by hand.
 
 `corecycler resume --interrupted` resumes the one session a crash left running; with none
 it does nothing and exits 0, and with two or more it resumes neither and names them. On

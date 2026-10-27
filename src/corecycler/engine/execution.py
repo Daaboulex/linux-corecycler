@@ -13,6 +13,7 @@ import resource
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -26,8 +27,7 @@ from corecycler.engine.detector import CoreMachineCheck, KernelTrouble, Unblamed
 from corecycler.smu.writer_lock import start_time
 
 if TYPE_CHECKING:
-    import threading
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from corecycler.engine.backends.base import StressBackend, StressConfig
@@ -298,29 +298,66 @@ def kept_output(text: str) -> str:
 
 
 class Heartbeat:
-    """The beat the hang watch reads: running at most every HEARTBEAT_EVERY_S while a test makes progress, idle once
-    it ends. A beat that cannot be written leaves no older one behind, so a stale beat never looks like a hang."""
+    """The beat the hang watch reads: running while a test makes progress, between while the driver works between
+    tests, idle once nothing drives; what it says is written at once when it changes and otherwise at most every
+    HEARTBEAT_EVERY_S. It names ``probe_dir``, where the watch writes to prove the disk answers. A beat that cannot be
+    written leaves no older one behind, so a stale beat never looks like a hang. One lock orders every write, so a
+    test's end on its own thread and the driver's rest never cross."""
 
-    def __init__(self, path: Path | None) -> None:
+    def __init__(self, path: Path | None = None, probe_dir: Path | None = None) -> None:
         self.path = path
+        self.probe_dir = probe_dir
+        self.said: dict[str, str] = {}
         self.due = -math.inf
         self.failed = False
+        self.driving = False
+        self.lock = threading.RLock()
 
     def running(self, test: str, now: float) -> None:
-        if now < self.due:
-            return
-        self.due = now + HEARTBEAT_EVERY_S
-        self._write("running", test=test)
+        self._renew({"state": "running", "test": test}, now)
 
-    def idle(self) -> None:
-        self._write("idle")
+    def between(self, now: float) -> None:
+        self._renew({"state": "between"}, now)
 
-    def _write(self, state: str, **fields: str) -> None:
+    def ended(self, now: float) -> None:
+        """A test's last beat, once it has cleaned up after itself: between while its driver drives, idle otherwise."""
+        with self.lock:
+            if self.driving:
+                self.between(now)
+            else:
+                self._write({"state": "idle"})
+
+    @contextlib.contextmanager
+    def driven(self) -> Iterator[None]:
+        """The driver drives for the length of the block: the beat says between from its start unless a test says
+        running; however the block ends, the beat then says idle, unless a test still says running, whose end then
+        does."""
+        with self.lock:
+            self.driving = True
+            if self.said.get("state") != "running":
+                self._write({"state": "between"})
+        try:
+            yield
+        finally:
+            with self.lock:
+                self.driving = False
+                if self.said.get("state") != "running":
+                    self._write({"state": "idle"})
+
+    def _renew(self, said: dict[str, str], now: float) -> None:
+        with self.lock:
+            if said == self.said and now < self.due:
+                return
+            self.due = now + HEARTBEAT_EVERY_S
+            self._write(said)
+
+    def _write(self, said: dict[str, str]) -> None:
+        self.said = said
         if self.path is None:
             return
         beat = {
-            "state": state,
-            **fields,
+            **said,
+            "probe_dir": None if self.probe_dir is None else str(self.probe_dir),
             "pid": os.getpid(),
             "started": start_time(os.getpid()),
             "at": time.clock_gettime(time.CLOCK_MONOTONIC),
@@ -333,8 +370,12 @@ class Heartbeat:
             with contextlib.suppress(OSError):
                 self.path.unlink()
             if not self.failed:
-                log.error("the heartbeat %s could not be written, so no hang watch sees this test: %s", self.path, exc)
+                log.error(
+                    "the heartbeat %s could not be written, so no hang watch sees this session: %s", self.path, exc
+                )
             self.failed = True
+        else:
+            self.failed = False
 
 
 class Supervisor:
@@ -355,7 +396,7 @@ class Supervisor:
         containment_for: Callable[[tuple[int, ...]], containment.Containment | None] | None = None,
         freeze: Callable[[float, SensorRead], bool] | None = None,
         hold_cap_s: float | None = None,
-        heartbeat: Path | None = None,
+        heartbeat: Heartbeat | None = None,
     ) -> None:
         self.backend = backend
         self.detector = detector
@@ -371,12 +412,12 @@ class Supervisor:
         self._containment_for = containment_for or containment.contain
         self.freeze = freeze
         self.hold_cap_s = hold_cap_s
-        self.heartbeat = heartbeat
+        self.heartbeat = heartbeat or Heartbeat()
 
     def run(self, lanes: list[Lane], config: StressConfig, duration: float) -> dict[int, StressResult]:
         start = time.monotonic()
         runs = [_LaneRun(lane=lane, deadline=start + duration) for lane in lanes]
-        beats = Heartbeat(self.heartbeat)
+        beats = self.heartbeat
         try:
             try:
                 for run in runs:
@@ -392,9 +433,9 @@ class Supervisor:
             self._take_kernel_events(runs, final=True)
             return {run.lane.core_id: self._grade(run) for run in runs}
         finally:
-            beats.idle()
             for run in runs:
                 self._remove_run_dir(run)
+            beats.ended(time.monotonic())
 
     def _launch(self, run: _LaneRun, cfg: StressConfig) -> bool:
         lane = run.lane

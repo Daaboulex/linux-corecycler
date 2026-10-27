@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from corecycler.config.paths import atomic_write, hand_back
 from corecycler.engine import detector as kernel
+from corecycler.engine.execution import Heartbeat
 from corecycler.history.db import CoRead, CorruptSessionError
 from corecycler.monitor.frequency import PowerState, cpu_ranges
 from corecycler.tuner import telemetry
@@ -719,6 +720,7 @@ class LiveRig:
     say: Callable[[str], None] = print
     clock: Callable[[], float] = time.monotonic
     check_interval_s: int = kernel.MCE_POLL_KERNEL_DEFAULT_S
+    heartbeat: Heartbeat = field(default_factory=Heartbeat)
     state: SessionState = field(init=False, default_factory=SessionState)
     resident: dict[int, int | None] = field(init=False, default_factory=dict)
     timer: tuple[int, float] | None = field(init=False, default=None)
@@ -881,6 +883,7 @@ class LiveRig:
                         self.say(f"test {token} did not stop within {bound:g} s; its worker is kept until it ends")
                     else:
                         self.worker = None
+                        self.heartbeat.between(self.clock())
             case Commit(stored=st, first=first):
                 try:
                     self.store.save(
@@ -1109,6 +1112,8 @@ class LiveRig:
         thread.start()
 
     def step(self, wait: float) -> bool:
+        if self.worker is None or not self.worker.thread.is_alive():
+            self.heartbeat.between(self.clock())
         if self.signals:
             self.post(self.signals.pop(0))
             return True
@@ -1137,6 +1142,7 @@ class LiveRig:
         if isinstance(event, WorkerReported):
             if self.worker is not None and self.worker.token == event.token:
                 self.worker = None
+                self.heartbeat.between(self.clock())
                 event = self.slept_through(event)
                 report = event.report
                 detail = f" {report.detail}" if report.detail else ""
@@ -1208,8 +1214,9 @@ class LiveRig:
         )
 
     def run_until_rest(self, wait: float = 1.0) -> SessionState:
-        while not self.at_rest():
-            self.step(wait)
+        with self.heartbeat.driven():
+            while not self.at_rest():
+                self.step(wait)
         return self.state
 
 

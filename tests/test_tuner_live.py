@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
 import os
+import queue
 import signal
 import sqlite3
 import struct
@@ -17,6 +19,7 @@ import pytest
 
 from corecycler.engine import detector as kernel
 from corecycler.engine.backends.base import Outcome, StressResult
+from corecycler.engine.execution import Heartbeat
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable
 from corecycler.history.db import CoRead, HistoryDB, JournalRow
 from corecycler.monitor.frequency import PowerState
@@ -70,6 +73,7 @@ from corecycler.tuner.orders import Method
 from tests._heavy_lock import GPU_LINE, held_by_another_tool, holder_seen_by_another_tool, said_by
 from tests._old_rows import seed_old_session
 from tests._tuner_world import Resume, fresh, run_to_rest, save_machine_session, start
+from tests.test_execution import FakeBackend, lane, make_supervisor, run_one, within
 
 CPUS = ((0, (0, 16)), (1, (1, 17)), (8, (8, 24)))
 DOMAINS = ((0, 0), (1, 0), (8, 1))
@@ -3473,7 +3477,7 @@ def test_the_runner_hands_each_class_its_own_tests_seconds_and_binary(tmp_path, 
     assert seen.count(6.0) == 2
 
 
-@pytest.mark.req("HANG.heartbeat", "HANG.path")
+@pytest.mark.req("HANG.heartbeat", "HANG.path", "HANG.between")
 @pytest.mark.parametrize("sudo_uid", [None, 1234], ids=["as the user", "as root under sudo"])
 def test_the_driver_hands_its_invoking_user_s_heartbeat_to_the_supervisor_of_each_test(tmp_path, monkeypatch, sudo_uid):
     from corecycler.config.paths import heartbeat_path
@@ -3501,7 +3505,9 @@ def test_the_driver_hands_its_invoking_user_s_heartbeat_to_the_supervisor_of_eac
     monkeypatch.setattr(live_hw.kernel, "mce_settle_s", lambda: 0.0)
     args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--start", "--cores", "0", "--max-offset", "-8"])
     kagari = SimpleNamespace(binary_problem=lambda name: None)
-    db = database(tmp_path / "hb.db")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "moved-home"))
+    db = database(Path("history") / "hb.db")
     with monkeypatch.context() as sudo:
         if sudo_uid is not None:
             sudo.setattr(os, "geteuid", lambda: 0)
@@ -3510,7 +3516,240 @@ def test_the_driver_hands_its_invoking_user_s_heartbeat_to_the_supervisor_of_eac
     built.runner.supervisor = FakeSupervisor
     spec = Spec(Klass.T1, 0, -5, (16,), 60.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0)
     assert built.runner.run(spec, threading.Event()).group is Group.PASS
-    assert handed == [heartbeat_path(os.getuid() if sudo_uid is None else sudo_uid)]
+    [beats] = handed
+    assert beats is built.heartbeat
+    assert beats.path == heartbeat_path(os.getuid() if sudo_uid is None else sudo_uid)
+    assert beats.probe_dir == tmp_path.resolve() / "history"
+
+
+def beat_of(heartbeat: Path) -> dict:
+    return json.loads(heartbeat.read_text()) if heartbeat.exists() else {}
+
+
+def beating_rig(tmp_path, hardware: FakeHardware, runner) -> tuple[LiveRig, Path, list[float]]:
+    r = rig(tmp_path, hardware, runner)
+    heartbeat = tmp_path / "run" / "heartbeat.json"
+    r.heartbeat = Heartbeat(heartbeat, tmp_path / "history")
+    now = [0.0]
+    r.clock = lambda: now[0]
+    return r, heartbeat, now
+
+
+@pytest.mark.req("HANG.between")
+@pytest.mark.parametrize("rest", [PauseRequest, Close], ids=["pause", "close"])
+def test_the_driver_beats_between_with_its_probe_dir_through_a_long_cool_down_and_says_idle_once_it_rests(
+    tmp_path, rest
+):
+    hardware = FakeHardware()
+    heat = [99.0]
+    hardware.temperature = lambda: heat[0]
+    r, heartbeat, now = beating_rig(tmp_path, hardware, FakeRunner(hardware, group=Group.THERMAL))
+    r.start(config(), 1, 7, True)
+
+    def stepped() -> dict:
+        now[0] += 1.0
+        r.step(0.001)
+        return beat_of(heartbeat)
+
+    for _ in range(100):
+        if getattr(r.state.slot, "cool_below_c", None) is not None:
+            break
+        stepped()
+    r.runner.group = None
+    began = now[0]
+    seen = [(now[0], stepped()) for _ in range(150)]
+    assert now[0] - began == 150.0 and getattr(r.state.slot, "cool_below_c", None) is not None
+    assert {(beat.get("state"), beat.get("probe_dir")) for _, beat in seen} == {("between", str(tmp_path / "history"))}
+    assert {beat["pid"] for _, beat in seen} == {os.getpid()}
+    written = [at for (at, beat), (_, before) in zip(seen[1:], seen, strict=False) if beat["at"] != before["at"]]
+    assert len(written) >= 28 and {later - earlier for earlier, later in itertools.pairwise(written)} == {5.0}
+    r.signals.append(rest())
+    r.run_until_rest(0.001)
+    assert beat_of(heartbeat)["state"] == "idle"
+
+
+@pytest.mark.req("HANG.between", "HANG.watch")
+def test_a_test_that_ends_and_then_blocks_leaves_a_between_beat_that_goes_stale_and_resets(tmp_path):
+    from corecycler import cli
+    from corecycler.smu import writer_lock
+
+    hardware = FakeHardware()
+    ended, released = threading.Event(), threading.Event()
+
+    class EndsThenBlocks(FakeRunner):
+        def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
+            if not ended.is_set():
+                supervisor, _, _ = make_supervisor(FakeBackend(), heartbeat=r.heartbeat)
+                run_one(supervisor, lane(tmp_path), 0.1)
+                ended.set()
+                released.wait(30)
+            return super().run(spec, stop, sink)
+
+    r, heartbeat, _ = beating_rig(tmp_path, hardware, EndsThenBlocks(hardware))
+    jumps = itertools.count()
+    r.clock = lambda: time.monotonic() + 10.0 * next(jumps)
+    found: dict = {}
+
+    def watched() -> None:
+        try:
+            if ended.wait(10):
+                found["last"] = beat_of(heartbeat)
+                time.sleep(0.2)
+                found["later"] = beat_of(heartbeat)
+                stale = found["last"]["at"] + cli.HANG_STALE_S + 1.0
+                found["watch"] = cli.hang_reason(heartbeat, cli.HANG_STALE_S, stale, writer_lock.process_state)
+        finally:
+            released.set()
+            r.signals.append(PauseRequest())
+
+    watching = threading.Thread(target=watched, daemon=True)
+    r.start(config(), 1, 7, True)
+    watching.start()
+    r.run_until_rest(0.01)
+    watching.join(10)
+    assert "last" in found, (r.state.lifecycle, r.state.pause)
+    last = found["last"]
+    assert (last.get("state"), last.get("probe_dir")) == ("between", str(tmp_path / "history")), last
+    assert found["later"] == last
+    assert found["watch"][1:] == (last["at"], tmp_path / "history"), found["watch"]
+    assert beat_of(heartbeat)["state"] == "idle"
+
+
+@pytest.mark.req("HANG.between")
+def test_the_verdict_s_commit_the_co_writes_and_the_read_before_a_resumed_test_are_watched_as_between(tmp_path):
+    hardware = FakeHardware()
+    waiting, go = threading.Event(), threading.Event()
+
+    class EndsIdle(FakeRunner):
+        def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
+            if not go.is_set():
+                waiting.set()
+                go.wait(30)
+                r.heartbeat.ended(r.clock())
+            return super().run(spec, stop, sink)
+
+    class AfterTheTopCheck(queue.Queue):
+        def get(self, block=True, timeout=None):
+            if waiting.is_set() and not go.is_set():
+                go.set()
+                return super().get(timeout=10)
+            return super().get(block, timeout)
+
+    r, heartbeat, now = beating_rig(tmp_path, hardware, EndsIdle(hardware))
+    r.inbox = AfterTheTopCheck()
+    seen: list[tuple[str, str | None]] = []
+    stepping = [False]
+
+    def watched(name: str, call):
+        def recorded(*args, **kwargs):
+            if stepping[0]:
+                seen.append((name, beat_of(heartbeat).get("state")))
+            return call(*args, **kwargs)
+
+        return recorded
+
+    r.store.test_returned = watched("verdict", r.store.test_returned)
+    r.store.save = watched("commit", r.store.save)
+    hardware.write_co = watched("co write", hardware.write_co)
+    hardware.harvest = watched("kernel read", hardware.harvest)
+
+    def stepped(steps: int) -> None:
+        stepping[0] = True
+        for _ in range(steps):
+            now[0] += 1.0
+            r.step(0.001)
+        stepping[0] = False
+
+    r.start(config(), 1, 7, True)
+    stepped(8)
+    assert go.is_set()
+    r.signals.append(PauseRequest())
+    r.run_until_rest(0.001)
+    r.resume(1)
+    stepped(4)
+    assert {name for name, _ in seen} == {"verdict", "commit", "co write", "kernel read"}
+    assert {state for _, state in seen} == {"between"}, seen
+
+
+@pytest.mark.req("HANG.between")
+def test_a_step_that_raises_out_of_the_driver_s_loop_leaves_the_beat_idle(tmp_path):
+    hardware = FakeHardware()
+    r, heartbeat, now = beating_rig(tmp_path, hardware, FakeRunner(hardware))
+    r.start(config(), 1, 7, True)
+    states: list[str | None] = []
+
+    def broken(*args, **kwargs):
+        states.append(beat_of(heartbeat).get("state"))
+        raise RuntimeError("the store broke")
+
+    r.store.save = broken
+    with pytest.raises(RuntimeError, match="the store broke"):
+        r.run_until_rest(0.001)
+    assert states == ["between"]
+    assert beat_of(heartbeat)["state"] == "idle"
+
+
+@pytest.mark.req("HANG.between")
+def test_a_test_still_running_keeps_its_own_beat_through_the_driver_s_steps_and_its_rest_and_its_end_says_idle(
+    tmp_path,
+):
+    hardware = FakeHardware()
+    released = threading.Event()
+
+    class Beating(FakeRunner):
+        def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
+            r.heartbeat.running("a test that does not stop", 0.0)
+            released.wait(30)
+            r.heartbeat.ended(0.0)
+            return Report(Group.PASS, 1.0)
+
+    r, heartbeat, now = beating_rig(tmp_path, hardware, Beating(hardware))
+    r.start(config(stop_bound_s=1.0), 1, 7, True)
+    r.step(0.001)
+    try:
+        assert within(5.0, lambda: beat_of(heartbeat).get("state") == "running")
+        for _ in range(12):
+            now[0] += 1.0
+            r.step(0.001)
+        assert beat_of(heartbeat)["state"] == "running"
+        r.inbox.put(InternalError("the runner broke"))
+        assert r.run_until_rest(0.001).lifecycle is Lifecycle.PAUSED and r.worker is not None
+        assert beat_of(heartbeat)["state"] == "running"
+    finally:
+        released.set()
+    assert within(5.0, lambda: beat_of(heartbeat)["state"] == "idle")
+
+
+@pytest.mark.req("HANG.between")
+def test_the_commit_after_a_stopped_test_is_watched_as_between_whatever_the_test_last_said(tmp_path):
+    hardware = FakeHardware()
+    seen: list[str | None] = []
+
+    class Stopping(FakeRunner):
+        def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
+            r.heartbeat.running("a test", 0.0)
+            stop.wait(30)
+            r.heartbeat.ended(0.0)
+            return Report(Group.PASS, 1.0)
+
+    r, heartbeat, now = beating_rig(tmp_path, hardware, Stopping(hardware))
+    save = r.store.save
+
+    def recorded(*args, **kwargs):
+        seen.append(beat_of(heartbeat).get("state"))
+        return save(*args, **kwargs)
+
+    r.start(config(), 1, 7, True)
+    r.step(0.001)
+    assert within(5.0, lambda: beat_of(heartbeat).get("state") == "running")
+    r.store.save = recorded
+    r.signals.append(Close())
+    for _ in range(50):
+        if r.at_rest():
+            break
+        r.step(0.001)
+    assert r.at_rest() and r.worker is None
+    assert seen == ["between"]
 
 
 def topology():
@@ -3549,8 +3788,43 @@ def test_an_unexpected_error_in_the_driver_closes_the_session_with_every_core_at
         live_hw.run(args, r, lines.append)
     assert hardware.co == {0: 0, 1: 0, 8: 0}
     assert any(line.startswith("the driver stopped on an unexpected error") for line in lines)
+    assert r.heartbeat.said.get("state") == "idle"
     reopened = database(tmp_path / "broken.db")
     assert [session.status for session in reopened.list_machine_sessions(limit=1)] == ["paused"]
+
+
+@pytest.mark.req("HANG.between")
+def test_the_close_after_an_error_between_tests_runs_watched_and_ends_idle(tmp_path):
+    hardware = FakeHardware()
+    r, heartbeat, _now = beating_rig(tmp_path, hardware, FakeRunner(hardware))
+    args = live_hw.parse(
+        ["--state-dir", str(tmp_path / "s"), "--start", "--cores", "0,1,8", "--max-offset", "-8", "--write"]
+    )
+    closing = []
+    during_close = []
+    write_co = hardware.write_co
+
+    def recording(core, value):
+        if closing:
+            during_close.append(beat_of(heartbeat).get("state"))
+        return write_co(core, value)
+
+    hardware.write_co = recording
+
+    def broken(wait=1.0):
+        with r.heartbeat.driven():
+            seen = False
+            while not (seen and r.worker is None):
+                seen = seen or r.worker is not None
+                r.step(0.01)
+        closing.append(True)
+        raise RuntimeError("the run loop broke between tests")
+
+    r.run_until_rest = broken
+    with pytest.raises(RuntimeError, match="between tests"):
+        live_hw.run(args, r, lambda _line: None)
+    assert during_close and set(during_close) == {"between"}
+    assert beat_of(heartbeat)["state"] == "idle"
 
 
 @pytest.mark.req("O19.stretch")

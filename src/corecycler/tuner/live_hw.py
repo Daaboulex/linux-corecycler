@@ -588,7 +588,7 @@ class StressRunner:
         memory_backend=None,
         budget=None,
         say: Callable[[str], None] = print,
-        heartbeat: Path | None = None,
+        heartbeat: Heartbeat | None = None,
     ) -> None:
         self.backend_factory = backend_factory
         self.work_dir = work_dir
@@ -600,7 +600,7 @@ class StressRunner:
         self.memory_backend = memory_backend or (lambda: get_backend("stressapptest"))
         self.budget = budget or lane_budget
         self.say = say
-        self.heartbeat = heartbeat
+        self.heartbeat = heartbeat or Heartbeat()
         self.read_ns: int | None = None
         self.sink: Callable[[telemetry.Sample], None] | None = None
         self.started_ns = kernel.monotonic_ns()
@@ -777,7 +777,7 @@ class StressRunner:
         watch.reset()
         observed: list = []
         problem = None
-        beats = Heartbeat(self.heartbeat)
+        beats = self.heartbeat
         try:
             started = time.monotonic()
             end = started + spec.seconds
@@ -793,7 +793,7 @@ class StressRunner:
             problem = problem or read.problem
             self.read_ns = watch.read_started_ns
         finally:
-            beats.idle()
+            beats.ended(time.monotonic())
             watch.close()
         self.kernel_events.extend(observed)
         evidence = tuple(
@@ -873,6 +873,7 @@ def build_rig(
     domain_of = tuple(sorted((core, info.ccd) for core, info in topology.cores.items()))
     core_of_cpu = {cpu: core for core, cpus in cpus_of for cpu in cpus}
     sensors = with_pm_table(Sensors().read, PMTableReader().read, topology.cores)
+    beats = Heartbeat(heartbeat_path(invoking_uid()), db.path.absolute().parent)
     return LiveRig(
         hardware=SmuHardware(
             smu,
@@ -889,7 +890,7 @@ def build_rig(
             sensors,
             Clocks().read,
             say=say,
-            heartbeat=heartbeat_path(invoking_uid()),
+            heartbeat=beats,
         ),
         store=Store(db, args.state_dir, identity),
         cpus_of=cpus_of,
@@ -900,6 +901,7 @@ def build_rig(
         two_t_problem=backend_factory().binary_problem(TWO_T["binary"]),
         clock=time.monotonic,
         check_interval_s=check_interval_s,
+        heartbeat=beats,
     )
 
 
@@ -960,7 +962,8 @@ def run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> i
                 "the driver stopped on an unexpected error: closing the session, "
                 "every owned core goes back to its baseline"
             )
-            rig.post(Close())
+            with rig.heartbeat.driven():
+                rig.post(Close())
         raise
 
 

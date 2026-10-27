@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import random
 import threading
@@ -15,7 +16,7 @@ from corecycler.engine import detector as kernel
 from corecycler.engine.backends import ycruncher
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.backends.ycruncher import ALL_TESTS
-from corecycler.engine.execution import Supervisor
+from corecycler.engine.execution import Heartbeat, Supervisor
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable
 from corecycler.monitor.hwmon import SensorRead
 from corecycler.tuner import live_hw, stages, telemetry
@@ -467,9 +468,12 @@ def test_the_soak_reads_the_kernel_log_once_more_after_one_machine_check_poll(mo
     assert [e.core for e in report.evidence] == [1]
 
 
-@pytest.mark.req("HANG.heartbeat")
+@pytest.mark.req("HANG.heartbeat", "HANG.between")
+@pytest.mark.parametrize("driven", [False, True], ids=["alone", "driven"])
 @pytest.mark.parametrize("breaks", [False, True], ids=["ends", "raises"])
-def test_the_soak_watch_beats_running_while_it_watches_and_idle_once_it_ends(tmp_path, monkeypatch, breaks):
+def test_the_soak_watch_beats_running_while_it_watches_then_between_while_driven_and_else_idle(
+    tmp_path, monkeypatch, breaks, driven
+):
     monkeypatch.setattr(kernel, "mce_settle_s", lambda: 0.0)
     heartbeat = tmp_path / "corecycler" / "heartbeat.json"
     seen = []
@@ -491,13 +495,17 @@ def test_the_soak_watch_beats_running_while_it_watches_and_idle_once_it_ends(tmp
             return kernel.KernelRead((), None)
 
     soak = runner(Script([]), detector=Detector)
-    soak.heartbeat = heartbeat
-    if breaks:
-        with pytest.raises(RuntimeError, match="the kernel log reader broke"):
-            soak.run(spec(Load.SOAK, 1.2), threading.Event())
-    else:
-        assert soak.run(spec(Load.SOAK, 1.2), threading.Event()).group is Group.PASS
+    soak.heartbeat = Heartbeat(heartbeat, tmp_path / "history")
+    with soak.heartbeat.driven() if driven else contextlib.nullcontext():
+        if breaks:
+            with pytest.raises(RuntimeError, match="the kernel log reader broke"):
+                soak.run(spec(Load.SOAK, 1.2), threading.Event())
+        else:
+            assert soak.run(spec(Load.SOAK, 1.2), threading.Event()).group is Group.PASS
+        ended = json.loads(heartbeat.read_text())["state"]
     assert seen[0] is not None and (seen[0]["state"], seen[0]["test"]) == ("running", "soak watch"), seen[:1]
+    assert seen[0]["probe_dir"] == str(tmp_path / "history")
+    assert ended == ("between" if driven else "idle")
     assert json.loads(heartbeat.read_text())["state"] == "idle"
 
 

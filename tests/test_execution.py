@@ -49,6 +49,8 @@ from tests.test_detector import LONE_DECODER_RECORD, _append, _kmsg
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from corecycler.engine.execution import Heartbeat
+
 
 BUSY = "while True: pass"
 
@@ -435,6 +437,7 @@ def make_supervisor(
     phase: str = "stress",
     hooks: SuperviseHooks | None = None,
     containment_for=None,
+    heartbeat: Heartbeat | None = None,
 ) -> tuple[Supervisor, threading.Event, list]:
     stop = stop_event or threading.Event()
     seen = observed if observed is not None else []
@@ -451,6 +454,7 @@ def make_supervisor(
         phase=phase,
         hooks=hooks,
         containment_for=containment_for or (lambda cpus: None),
+        heartbeat=heartbeat,
     )
     return supervisor, stop, seen
 

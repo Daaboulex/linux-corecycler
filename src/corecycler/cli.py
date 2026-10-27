@@ -8,6 +8,7 @@ import os
 import sys
 import textwrap
 import threading
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -47,6 +48,8 @@ SYSRQ_TRIGGER = Path("/proc/sysrq-trigger")
 HANG_STALE_S = 120.0
 HANG_EVERY_S = 15.0
 RESET_AFTER_SYNC_S = 2.0
+PROBE_NAME = "hang-watch-probe"
+LOG_BACKLOG = 64  # equivalent-mutant: any backlog above the few lines a check says behaves the same
 
 USAGE = f"""\
 corecycler headless commands:
@@ -77,9 +80,11 @@ corecycler headless commands:
                                    last boot is attributed first, then every owned core
                                    goes back to its baseline; no test runs
   corecycler hang-watch            every 15 s (--every S), reset the machine through
-                                   sysrq when this user's running test has written no
-                                   heartbeat for more than 120 s (--stale-after S) while
-                                   its process lives and is not stopped
+                                   sysrq when this user's session, in a test or between
+                                   tests, has written no heartbeat for more than 120 s
+                                   (--stale-after S), or no write to the directory of
+                                   its database has ended for that long, while its
+                                   process lives and is not stopped
 
 tune and restart take --acknowledge to start over a CO the BIOS already sets.
 Every tuning command but resume --interrupted takes --db FILE and
@@ -146,6 +151,7 @@ def cmd_hang_watch(rest: list[str]) -> int:
         state_of=process_state,
         sysrq=lambda key: SYSRQ_TRIGGER.write_text(key),
         sysrq_ready=lambda: os.access(SYSRQ_TRIGGER, os.W_OK),
+        probe=write_probe,
         say=lambda line: print(line, file=sys.stderr),
         pause=time.sleep,
         stop=threading.Event(),
@@ -162,96 +168,231 @@ def hang_watch(
     state_of: Callable[[int], tuple[str, str] | None],
     sysrq: Callable[[str], None],
     sysrq_ready: Callable[[], bool],
+    probe: Callable[[Path], None],
     say: Callable[[str], None],
     pause: Callable[[float], None],
     stop: threading.Event,
 ) -> None:
-    """Read the heartbeat every ``every`` seconds until ``stop``. Only two checks at least ``every`` apart that find
-    the same beat stale, its process live and not stopped on both, prove a hang: one check can land in the seconds
-    a stopped driver needs, once it runs again, to beat."""
+    """Read the heartbeat every ``every`` seconds until ``stop`` and, while a session drives, ``probe`` the directory
+    it names through a DiskProbe. Only two checks at least ``every`` apart that find the same beat stale, or the same
+    last answer of the disk more than ``stale_after`` seconds old, its process live and not stopped on both, prove a
+    hang: one check can land in the seconds a stopped driver needs, once it runs again, to beat. Every line goes
+    through a Log, which gets the time between checks to write and no more, so a ``say`` that blocks holds neither a
+    check nor the reset. A log that failed ends the watch, for systemd to start it again, only at the end of a check
+    that suspects no hang and probes no disk, so a restart never loses a hang being proven or a silence being timed."""
+    log = Log(say)
+    disk = DiskProbe(probe, clock)
     said = None
     was_ready = True
-    suspect: tuple[float, float] | None = None
+    suspect: tuple[str, float, float] | None = None
     while True:
         ready = sysrq_ready()
         if was_ready and not ready:
-            say(
-                f"{SYSRQ_TRIGGER} is not writable for this user, so a hung test would not be reset: "
+            log(
+                f"{SYSRQ_TRIGGER} is not writable for this user, so a hung session would not be reset: "
                 "hangReset grants it to the corecycler group"
             )
         was_ready = ready
         now = clock()
-        reason, stale_at = hang_reason(heartbeat, stale_after, now, state_of)
-        if stale_at is None:
+        reason, stale_at, directory = hang_reason(heartbeat, stale_after, now, state_of)
+        evidence = None if stale_at is None else ("its last beat", stale_at)
+        answer = disk.check(directory, now)
+        if answer is not None:
+            what, answered, error = answer
+            if error is not None:
+                reason = f"{reason}; writing to {directory} failed: {error}"
+            if evidence is None and now - answered > stale_after:
+                evidence = (what, answered)
+                reason = f"the disk stopped answering: no write to {directory} ended while {reason}"
+        if evidence is None:
             suspect = None
-        elif suspect is None or suspect[0] != stale_at:
-            suspect = (stale_at, now)
-        proven = suspect is not None and now - suspect[1] >= every
+        elif suspect is None or suspect[:2] != evidence:
+            suspect = (*evidence, now)
+        proven = suspect is not None and now - suspect[2] >= every
         if proven and ready:
-            line = f"resetting the machine: {reason}, its last beat {now - stale_at:.0f} s ago"
-            reset(line, sysrq=sysrq, say=say, clock=clock, pause=pause)
+            what, since, _ = suspect
+            line = f"resetting the machine: {reason}, {what} {now - since:.0f} s ago"
+            reset(line, sysrq=sysrq, log=log, clock=clock, pause=pause)
         else:
             if proven:
                 reason = f"{reason}: not reset, {SYSRQ_TRIGGER} is not writable"
             if reason != said:
-                say(reason)
+                log(reason)
         said = reason
-        if stop.wait(every):
+        log.settle(every)
+        if log.failed is not None and suspect is None and directory is None:
+            raise log.failed
+        if stop.wait(max(0.0, every - (clock() - now))):
             return
 
 
 def hang_reason(
     heartbeat: Path, stale_after: float, now: float, state_of: Callable[[int], tuple[str, str] | None]
-) -> tuple[str, float | None]:
-    """Why the heartbeat shows a hang or does not, and the time of the stale beat when it does: only a running test
-    whose last beat is more than ``stale_after`` seconds behind ``now`` while the very process that wrote it lives,
-    not stopped, shows one."""
+) -> tuple[str, float | None, Path | None]:
+    """Why the heartbeat shows a hang or does not, the time of its beat when that shows one, and the directory to
+    probe while a session drives. A session drives while its heartbeat says running or between and the very process
+    that wrote it lives, not stopped; only such a beat more than ``stale_after`` seconds behind ``now`` shows a hang.
+    A beat that names no directory, written before the driver named one, is watched without a probe."""
     try:
         beat = json.loads(heartbeat.read_bytes())
     except FileNotFoundError:
-        return f"no heartbeat at {heartbeat}: no test is watched", None
+        return f"no heartbeat at {heartbeat}: no session is watched", None, None
     except OSError as exc:
-        return f"the heartbeat {heartbeat} cannot be read ({exc.strerror}): no test is watched", None
+        return f"the heartbeat {heartbeat} cannot be read ({exc.strerror}): no session is watched", None, None
     except ValueError:
-        return f"the heartbeat {heartbeat} is not JSON: no test is watched", None
+        return f"the heartbeat {heartbeat} is not JSON: no session is watched", None, None
+    malformed = f"the heartbeat {heartbeat} is malformed: no session is watched", None, None
     match beat:
         case {"state": "idle"}:
-            return "no test is running", None
-        case {
-            "state": "running",
-            "test": str(test),
-            "pid": int(pid),
-            "started": str(started),
-            "at": float(at),
-        } if type(pid) is int and math.isfinite(at):
-            if now - at <= stale_after:
-                return f"{test} runs in pid {pid}", None
-            found = state_of(pid)
-            if found is None or found[1] != started or found[0] in ("Z", "X"):
-                return f"pid {pid} of {test} is gone or reused, so its old heartbeat proves no hang", None
-            if found[0] in ("T", "t"):
-                return f"pid {pid} of {test} is stopped, so its old heartbeat proves no hang", None
-            return f"{test} in pid {pid} stopped beating while its process lives", at
-    return f"the heartbeat {heartbeat} is malformed: no test is watched", None
+            return "no session drives", None, None
+        case {"state": "running", "test": str(test)}:
+            who = test
+        case {"state": "between"}:
+            who = "the session between tests"
+        case _:
+            return malformed
+    pid, started, at, probe = (beat.get(field) for field in ("pid", "started", "at", "probe_dir"))
+    if not (
+        type(pid) is int
+        and isinstance(started, str)
+        and type(at) is float
+        and math.isfinite(at)
+        and (probe is None or isinstance(probe, str) and os.path.isabs(probe))
+    ):
+        return malformed
+    found = state_of(pid)
+    if found is None or found[1] != started or found[0] in ("Z", "X"):
+        return f"pid {pid} of {who} is gone or reused, so its heartbeat proves no hang", None, None
+    if found[0] in ("T", "t"):
+        return f"pid {pid} of {who} is stopped, so its heartbeat proves no hang", None, None
+    directory = None if probe is None else Path(probe)
+    if now - at <= stale_after:
+        return f"{who} runs in pid {pid}", None, directory
+    return f"{who} in pid {pid} stopped beating while its process lives", at, directory
 
 
 def reset(
     line: str,
     *,
     sysrq: Callable[[str], None],
-    say: Callable[[str], None],
+    log: Log,
     clock: Callable[[], float],
     pause: Callable[[float], None],
 ) -> None:
     """Sync, say why at critical priority so journald syncs the line, and reset RESET_AFTER_SYNC_S after the sync,
-    never later: a log write stuck on a disk, one shape of a hang, is abandoned at that bound."""
+    never later: the line waits in the log at most that long, so a log stuck on a disk, one shape of a hang, cannot
+    hold the reset, and a log that fails holds nothing."""
     sysrq("s")
     due = clock() + RESET_AFTER_SYNC_S
-    saying = threading.Thread(target=say, args=(f"<2>{line}",), daemon=True)
-    saying.start()
-    saying.join(RESET_AFTER_SYNC_S)
-    pause(max(0.0, due - clock()))
-    sysrq("b")
+    try:
+        log(f"<2>{line}")
+        log.settle(RESET_AFTER_SYNC_S)
+    finally:
+        pause(max(0.0, due - clock()))
+        sysrq("b")
+
+
+class DiskProbe:
+    """While a session drives, writes in the directory its heartbeat names on a daemon thread of its own, one write
+    at a time, and keeps when the last write ended: the watch only reads that and never waits on the thread, so a
+    write stuck in the kernel holds neither a check nor the reset. A write that fails with an error ends like one
+    that lands: an error is an answer."""
+
+    def __init__(self, write: Callable[[Path], None], clock: Callable[[], float]) -> None:
+        self.write = write
+        self.clock = clock
+        self.writing: threading.Thread | None = None
+        self.answer: tuple[float, str | None] = (-math.inf, None)
+        self.since: float | None = None
+
+    def check(self, directory: Path | None, now: float) -> tuple[str, float, str | None] | None:
+        """None while no session drives; else what the disk's silence counts from, its last answer before this check
+        or, when none ended since the session began driving, that beginning, with its time and the last answer's
+        error; a write starts unless one is still in flight."""
+        if directory is None:
+            self.since = None
+            return None
+        if self.since is None:
+            self.since = now
+        answered, error = self.answer
+        if self.writing is None or not self.writing.is_alive():
+            self.writing = threading.Thread(target=self._write, args=(directory,), daemon=True)
+            self.writing.start()
+        if answered < self.since:
+            return "driving began", self.since, error
+        return "its last answer", answered, error
+
+    def _write(self, directory: Path) -> None:
+        try:
+            self.write(directory)
+        except (OSError, ValueError) as exc:
+            self.answer = (self.clock(), str(exc))
+        else:
+            self.answer = (self.clock(), None)
+
+
+class Log:
+    """Says each line in order on a daemon thread of its own, so a ``say`` that blocks holds neither a check nor the
+    reset: a line that finds LOG_BACKLOG lines unwritten, the one being written included, is dropped and counted,
+    and the count is said ahead of the next line the log has room for. A line ``say`` fails to write ends the thread
+    and keeps its error in ``failed``; later lines raise nothing and wait in the backlog."""
+
+    def __init__(self, say: Callable[[str], None]) -> None:
+        self.say = say
+        self.lines: deque[str] = deque()
+        self.changed = threading.Condition()
+        self.dropped = 0
+        self.failed: Exception | None = None
+        threading.Thread(target=self._write, daemon=True).start()
+
+    def __call__(self, line: str) -> None:
+        with self.changed:
+            if self.dropped and len(self.lines) < LOG_BACKLOG:
+                self.lines.append(f"{self.dropped} lines of the hang watch were dropped while its log blocked")
+                self.dropped = 0
+            if not self.dropped and len(self.lines) < LOG_BACKLOG:
+                self.lines.append(line)
+            else:
+                self.dropped += 1
+            self.changed.notify_all()
+
+    def settle(self, seconds: float) -> None:
+        """Wait at most ``seconds`` for every line to be written or the writing to fail."""
+        with self.changed:
+            self.changed.wait_for(lambda: not self.lines or self.failed is not None, seconds)
+
+    def _write(self) -> None:
+        while True:
+            with self.changed:
+                self.changed.wait_for(lambda: self.lines)
+                line = self.lines[0]
+            try:
+                self.say(line)
+            except Exception as exc:
+                with self.changed:
+                    self.failed = exc
+                    self.changed.notify_all()
+                return
+            with self.changed:
+                self.lines.popleft()
+                self.changed.notify_all()
+
+
+def write_probe(directory: Path) -> None:
+    """Write PROBE_NAME in ``directory``, never through a link, sync it to the disk and remove it: a disk that takes
+    the write answers."""
+    path = directory / PROBE_NAME
+    handle = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+        0o600,  # equivalent-mutant: the file lives for one write
+    )
+    try:
+        os.write(handle, b"corecycler hang-watch\n")
+        os.fsync(handle)
+    finally:
+        os.close(handle)
+        path.unlink()
 
 
 def cmd_shaper(rest: list[str]) -> int:
