@@ -97,9 +97,11 @@ found.
 1. **Search, one thread per core**: one core at a time under y-cruncher on one of its
    CPUs, from 0 toward the deepest offset to try (default -50, never below the CPU's
    CO range) in coarse steps of 5, then steps of 1. A new session starts each core
-   instead at the value the newest completed session with the same setup and Curve
-   Shaper ended at, when that value is below 0 and not past the deepest offset, unless
-   its `--config` file names `starts`, which then decide alone; a start that fails walks
+   instead at the value the newest completed session with the same setup, the same
+   power state (platform profile, governor, EPP, boost and scaling maximum) and the
+   same Curve Shaper ended at, when that value is below 0 and not past the deepest
+   offset, unless its `--config` file names `starts`, which then decide alone; a start
+   that fails walks
    again from 0 above it. The session's events name where each core started. A value is
    proven after 10 passes taken in rounds with the other cores, 15 s apart; a failure
    sets the core's fail bound and backs it off.
@@ -155,8 +157,9 @@ Every setting has its unit to the right of its box and a line saying what it doe
 duration also reads in minutes or hours. Start refuses a setting outside its range and
 names it. When a selected core already runs a CO value, set by the BIOS or written since
 boot, Start lists those values and asks before it starts over them; the tuner searches
-each core from 0 or from the newest completed session's value, never from the BIOS
-value, and a reboot brings the BIOS values back. Start also asks, naming the
+each core from 0 or from the value of the newest completed session with the same setup
+and power state, never from the BIOS value, and a reboot brings the BIOS values back.
+Start also asks, naming the
 values then and now, when a selected core reads another CO than when the newest session
 started, even when every core reads 0, and asks, naming it, when the newest session
 cannot be read, as whether the CO moved since then cannot be judged. From the command

@@ -307,13 +307,17 @@ def test_a_core_given_a_start_tests_it_first_and_a_failed_start_walks_again_from
 SHAPED = (("bios", "A"), ("curve_shaper", "Min 0/0/0, Low -30/-27/-12"))
 
 
-def completed(session_id: int, values: tuple[tuple[int, int], ...], setup=SHAPED) -> Stored:
+def completed(session_id: int, values: tuple[tuple[int, int], ...], setup=SHAPED, power=()) -> Stored:
     cores = tuple(CoreRecord(core, Phase.PROVEN, value) for core, value in values)
-    return Stored(session_id, "completed", CFG, 0, tuple((core, 0) for core, _ in values), cores, None, setup=setup)
+    return Stored(
+        session_id, "completed", CFG, 0, tuple((core, 0) for core, _ in values), cores, None, power=power, setup=setup
+    )
 
 
-def started_from(sessions, cfg: MachineConfig = CFG, unread: str | None = None) -> tuple[dict[int, int], list[str]]:
-    world = replace(LAYOUT, setup=SHAPED, completed=sessions, completed_unread=unread)
+def started_from(
+    sessions, cfg: MachineConfig = CFG, unread: str | None = None, power=()
+) -> tuple[dict[int, int], list[str]]:
+    world = replace(LAYOUT, setup=SHAPED, completed=sessions, completed_unread=unread, power=power)
     result = transition(SessionState(), Start(cfg, 9, 0, True), world)
     said = [effect.text for effect in result.effects if type(effect).__name__ == "Announce" and effect.kind == "starts"]
     return {r.core: r.start for r in result.state.cores}, said
@@ -338,6 +342,27 @@ def test_a_start_takes_the_final_values_of_the_newest_completed_session_with_thi
     assert said == ["from session 7's values, core 0 at -12, core 1 at -6; any other core from 0"]
 
 
+SAVER = (("EPP", "power"), ("governor", "powersave"))
+FULL = (("EPP", "performance"), ("governor", "performance"))
+
+
+@pytest.mark.req("U18", "L04.a.hint")
+@pytest.mark.parametrize(("now", "taken"), [(FULL, 7), (SAVER, 8)], ids=["full-power", "power-saver"])
+def test_a_start_takes_its_hint_only_from_a_session_completed_under_the_same_power_state(now, taken):
+    sessions = (completed(8, ((0, -14), (1, -9)), power=SAVER), completed(7, ((0, -6), (1, -3)), power=FULL))
+    starts, said = started_from(sessions, power=now)
+    source = next(st for st in sessions if st.session_id == taken)
+    assert starts == {r.core: r.value for r in source.cores}
+    assert said[0].startswith(f"from session {taken}'s values")
+
+
+@pytest.mark.req("U18", "Q4.hint")
+def test_a_session_completed_under_another_power_state_leaves_every_core_at_0():
+    starts, said = started_from((completed(8, ((0, -14), (1, -9)), power=SAVER),), power=FULL)
+    assert starts == {0: 0, 1: 0}
+    assert said == ["every core from 0; no completed session has this setup, power state and Curve Shaper"]
+
+
 @pytest.mark.req("L04.a.hint", "Q4.hint")
 @pytest.mark.parametrize(("final", "start"), [(0, 0), (-21, 0), (-20, -20), (-1, -1)])
 def test_a_final_value_at_0_or_past_the_deepest_offset_gives_that_core_no_hint(final, start):
@@ -354,7 +379,7 @@ def test_a_final_value_at_0_or_past_the_deepest_offset_gives_that_core_no_hint(f
         (
             (completed(7, ((0, -12), (1, -6)), (("bios", "B"),)),),
             None,
-            "no completed session has this setup and Curve Shaper",
+            "no completed session has this setup, power state and Curve Shaper",
         ),
         ((completed(7, ((0, 0), (1, -30))),), None, "session 7's values are 0 or outside -20..-1"),
         ((), "session 4 could not be read: KeyError('setup')", "session 4 could not be read: KeyError('setup')"),
@@ -903,7 +928,7 @@ def test_a_restart_the_start_gates_refuse_leaves_the_parent_paused_and_untouched
 )
 def test_resume_continue_and_restart_never_take_a_hint(choice, kinds):
     fake = paused_on_a_new_setup()
-    world = replace(fake.world(), completed=(completed(7, ((0, -12), (1, -6)), fake.setup),))
+    world = replace(fake.world(), completed=(completed(7, ((0, -12), (1, -6)), fake.setup, fake.power),))
     result = transition(fake.state, choice, world)
     assert {r.core: r.start for r in result.state.cores} == {0: 0, 1: 0}
     assert [effect.kind for effect in result.effects if type(effect).__name__ == "Announce"] == kinds

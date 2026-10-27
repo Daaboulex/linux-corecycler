@@ -282,9 +282,10 @@ def _starts(cfg: MachineConfig, w: World, hinted: bool) -> tuple[tuple[tuple[int
         return cfg.starts, _starts_from("the configuration", cfg.starts)
     if not hinted:
         return (), None
-    source = next((st for st in w.completed if not _setup_changes(st.setup, w.setup)), None)
+    source = next((st for st in w.completed if st.power == w.power and not _setup_changes(st.setup, w.setup)), None)
     if source is None:
-        return (), f"every core from 0; {w.completed_unread or 'no completed session has this setup and Curve Shaper'}"
+        why = w.completed_unread or "no completed session has this setup, power state and Curve Shaper"
+        return (), f"every core from 0; {why}"
     hints = tuple((r.core, r.value) for r in source.cores if r.core in cfg.selected and cfg.max_offset <= r.value <= -1)
     if not hints:
         return (), f"every core from 0; session {source.session_id}'s values are 0 or outside {cfg.max_offset}..-1"

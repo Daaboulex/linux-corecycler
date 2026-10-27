@@ -1567,7 +1567,7 @@ proof = "built"
 
 [[requirement]]
 id = "L04.a.hint"
-statement = "Search starts a core from a same-setup, same-shaper hint"
+statement = "Search starts a core from a same-setup, same-power-state, same-shaper hint"
 proof = "built"
 
 [[requirement]]
@@ -3262,7 +3262,7 @@ proof = "built"
 
 [[requirement]]
 id = "U18"
-statement = "The Q4 hint source: the newest completed session with the same setup and the same Search-time shaper table"
+statement = "The Q4 hint source: the newest completed session with the same setup, the same recorded power state and the same Search-time shaper table"
 proof = "built"
 
 [[requirement]]
@@ -4173,7 +4173,7 @@ proof = "built"
 
 [[requirement]]
 id = "Q4.hint"
-statement = "Search may start at a hint from the same setup and shaper"
+statement = "Search may start at a hint from the same setup, power state and shaper"
 proof = "built"
 
 [[requirement]]
