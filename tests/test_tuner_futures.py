@@ -231,7 +231,7 @@ def act(fake: Fake, move: str) -> None:
         case "evidence":
             others = [c for c in fake.edges if c != worker_spec.core]
             target = others[0] if others else worker_spec.core
-            fake.deliver(Report(Group.PASS, worker_spec.seconds, evidence=(Evidence(target, True),)))
+            fake.deliver(Report(Group.PASS, worker_spec.seconds, evidence=(Evidence(target, True),) * 2))
         case "validate":
             fake.post(ValidateProfile(fake.db.session_id))
         case "profile":

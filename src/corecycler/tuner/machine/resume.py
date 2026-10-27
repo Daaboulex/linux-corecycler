@@ -54,16 +54,25 @@ def attribute(s: SessionState, e: CrashEvidenceRead) -> Attribution:
         return Attribution(evidence=e.evidence)
     if e.stale_db:
         return Attribution(lost=in_test[0] if in_test else None, incident=True, evidence=e.evidence, at_stock=True)
-    corrected = tuple(ev for ev in e.evidence if ev.corrected)
-    uncorrected = [ev for ev in e.evidence if not ev.corrected]
-    for ev in uncorrected:
-        if ev.core not in owned:
-            return Attribution(held=ev.core, evidence=corrected)
-    convicted = tuple(dict.fromkeys(ev.core for ev in uncorrected if resident(s, ev.core) != 0))
-    stock_records = tuple(ev for ev in uncorrected if resident(s, ev.core) == 0)
+    held = next((i for i, ev in enumerate(e.evidence) if not ev.corrected and ev.core not in owned), None)
+    records = e.evidence if held is None else (*e.evidence[:held], *e.evidence[held + 1 :])
+    others = tuple(ev for ev in records if ev.corrected or ev.core not in owned)
+    uncorrected = [ev for ev in records if not ev.corrected and ev.core in owned]
+    bounds = {r.core: r.fb for r in s.cores}
+    convicted = tuple(
+        dict.fromkeys(
+            ev.core
+            for ev in uncorrected
+            if resident(s, ev.core) != 0
+            and ev.charged != 0
+            and (ev.charged is None or bounds[ev.core] is None or ev.charged > bounds[ev.core])
+        )
+    )
+    evidence = others + tuple(uncorrected)
+    if held is not None:
+        return Attribution(convict=convicted, held=e.evidence[held].core, evidence=evidence)
     if convicted:
-        return Attribution(convict=convicted, evidence=corrected + stock_records)
-    evidence = corrected + stock_records
+        return Attribution(convict=convicted, evidence=evidence)
     if e.shared_uncorrected and not uncorrected:
         return Attribution(incident=True, evidence=evidence)
     stage = s.flow.stage

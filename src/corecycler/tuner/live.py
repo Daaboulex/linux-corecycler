@@ -1002,14 +1002,16 @@ class LiveRig:
         harvest = self.hardware.harvest(last, since, not same, through)
         harvested = (*harvest.dead_boot, *harvest.next_boot)
         try:
-            observed = self.store.observed(last) if same and self._records(harvested) else None
+            observed = self.store.observed(last) if self._records(harvest.dead_boot) else None
         except (sqlite3.Error, CorruptSessionError) as exc:
             return DatabaseFailed(f"the session could not be read back: {exc}")
         if same:
             self.read_to[session] = self.unread_from[session] = (
                 self._read_up_to(harvest, through) if harvest.problem is None else since
             )
-        evidence, shared = self._kernel_evidence(harvested, observed)
+        placed, shared = self._kernel_evidence(harvest.dead_boot, observed)
+        later, shared_later = self._kernel_evidence(harvest.next_boot, None)
+        evidence, shared = (*placed, *later), shared or shared_later
         co_now = self.co_reads()
         stock = self.store.stock_marked(now)
         self.reads_to[session] = (*(() if stock is None else (stock,)), (time.monotonic_ns(), co_now))

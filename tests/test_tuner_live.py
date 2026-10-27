@@ -61,6 +61,7 @@ from corecycler.tuner.machine.types import (
     PauseRequest,
     Phase,
     Report,
+    RevertAll,
     SessionState,
     Stage,
     Stored,
@@ -1303,12 +1304,12 @@ def test_machine_check_records_of_the_dead_boot_become_evidence(tmp_path, monkey
             kernel.UnblamedMachineCheck(3, 30, False, "data fabric", 2.0),
             kernel.KernelTrouble("oops", 3.0),
         ),
-        (kernel.CoreMachineCheck(1, 5, True, "core 1 corrected", 0.5),),
+        (kernel.CoreMachineCheck(1, 5, True, "core 1 corrected", 2.0),),
         None,
     )
     hardware.boot = "boot-b"
     read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
-    assert read.evidence == (Evidence(0, False), Evidence(1, True))
+    assert read.evidence == (Evidence(0, False, 0), Evidence(1, True))
     assert read.shared_uncorrected is True
     assert read.kernel_problem is None
 
@@ -1630,10 +1631,11 @@ def test_a_crash_after_a_resume_in_the_same_boot_reads_only_the_records_that_res
     r = away(tmp_path, r, "close")
     r.resume(1)
     stepped_until(r, lambda: r.worker is not None)
+    held = r.state.core(1).value
     hardware.machine_check(1, True)
     hardware.boot, hardware.co = "boot-b", {0: 0, 1: 0, 8: 0}
     read, _, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
-    assert read.evidence == (Evidence(1, True),)
+    assert read.evidence == (Evidence(1, True, held),)
     dead, _, _, through = hardware.harvests[-1]
     assert (dead, through) == ("boot-a", None)
 
@@ -2544,6 +2546,14 @@ def set_aside(core: int, record: str) -> str:
     return unjudged(core, record, f"a stronger record of core {core} in the same read decided its verdict")
 
 
+def counted_aside(core: int, record: str) -> str:
+    return unjudged(core, record, f"it is counted in its core's stock incident, and {set_aside_why(core)}")
+
+
+def set_aside_why(core: int) -> str:
+    return f"a stronger record of core {core} in the same read decided its verdict"
+
+
 @pytest.mark.req("L18.d.3.core")
 @pytest.mark.parametrize(
     ("stage", "value", "fb", "weaker", "stronger", "named"),
@@ -2552,7 +2562,6 @@ def set_aside(core: int, record: str) -> str:
         (Stage.SEARCH, -4, None, (True, -6), (False, -4), "corrected machine check charged to -6"),
         (Stage.SEARCH, -4, None, (False, -6), (True, -4), "uncorrected machine check charged to -6"),
         (Stage.SEARCH, -3, -6, (True, -3), (True, 0), "corrected machine check charged to -3"),
-        (Stage.TIGHTEN, -3, None, (True, -3), (True, 0), "corrected machine check charged to -3"),
     ],
 )
 def test_the_records_of_one_read_judge_their_core_once_by_the_record_whose_verdict_is_strongest(
@@ -2570,9 +2579,9 @@ def test_a_record_that_sets_a_fail_bound_outranks_a_counted_stock_record_that_ch
     s, _ = fine_at(-3, None, Stage.TIGHTEN)
     stock, bound = Evidence(0, True, 0), Evidence(0, True, -5)
     for records in ((stock, bound), (bound, stock)):
-        judged, aside = _evidence_applied(s, records, counted=True)
-        assert (judged.core(0).value, judged.core(0).fb, judged.incidents) == (-3, -5, ())
-        assert [note.text for note in aside] == [set_aside(0, "corrected machine check charged to 0")]
+        judged, aside = _evidence_applied(s, records)
+        assert (judged.core(0).value, judged.core(0).fb, judged.incidents) == (-3, -5, (Incident.STOCK_MACHINE_CHECK,))
+        assert [note.text for note in aside] == [counted_aside(0, "corrected machine check charged to 0")]
 
 
 @pytest.mark.req("L18.d.3.core")
@@ -2600,25 +2609,27 @@ def unjudged_lines(fake) -> list[str]:
 
 @pytest.mark.req("L18.d.3.core")
 def test_the_records_of_one_dead_boot_judge_their_core_once():
-    def resumed(*records: bool) -> tuple[int, SessionState, list[str]]:
+    def resumed(*records: bool) -> tuple[int, int, SessionState, list[str]]:
         fake = fresh(3, [-3, -1, -2], 1, max_offset=-5, k_1t=2, k_2t=1)
         start(fake)
         while fake.worker is None or fake.state.flow.stage is not Stage.LIVE1:
             assert fake.progress()
-        other = next(r.core for r in fake.state.cores if r.core != fake.worker.spec.core and r.value != 0)
-        fake.crash(tuple(Evidence(other, corrected) for corrected in records))
+        other = next(r for r in fake.state.cores if r.core != fake.worker.spec.core and r.value != 0)
+        fake.crash(tuple(Evidence(other.core, corrected) for corrected in records))
         fake.post(Resume(1))
-        return other, fake.state, unjudged_lines(fake)
+        return other.core, other.value, fake.state, unjudged_lines(fake)
 
-    core, one, none = resumed(True)
-    assert (one.lifecycle, one.incidents, none) == (Lifecycle.RUNNING, (Incident.STOCK_MACHINE_CHECK,), [])
-    assert resumed(True, True) == (core, one, [set_aside(core, "corrected machine check with no charge")])
+    core, value, one, none = resumed(True)
+    backed = (one.core(core).value, one.core(core).fb)
+    assert (one.lifecycle, one.incidents, backed, none) == (Lifecycle.RUNNING, (), (value + 1, value), [])
+    charged = f"corrected machine check charged to {value}"
+    assert resumed(True, True) == (core, value, one, [set_aside(core, charged)])
     convicted = resumed(False)
-    assert resumed(False, False)[:2] == resumed(True, False)[:2] == convicted[:2]
-    assert resumed(True, False)[2] == [
-        unjudged(
-            core, "corrected machine check with no charge", f"the crash conviction of core {core} decided its verdict"
-        )
+    assert resumed(False, False)[:3] == resumed(True, False)[:3] == convicted[:3]
+    decided = f"the crash conviction of core {core} decided its verdict"
+    assert resumed(True, False)[3] == [
+        unjudged(core, "corrected machine check with no charge", decided),
+        unjudged(core, "uncorrected machine check with no charge", decided),
     ]
 
 
@@ -2888,6 +2899,650 @@ def test_two_records_that_each_reach_the_incident_limit_count_both_in_one_incide
         (Incident.CRASH, Incident.STOCK_MACHINE_CHECK, Incident.STOCK_MACHINE_CHECK),
         "1 crash nobody could be blamed for, 2 machine checks at stock values",
     )
+
+
+def two_of_three_in(stage: Stage):
+    fake = fresh(3, [-12, -6, -3], 1, max_offset=-20, k_1t=2)
+    fake.config = replace(fake.config, selected=(0, 1))
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not stage or fake.worker.spec.core != 0:
+        assert fake.progress()
+    return fake
+
+
+def verdict_with(fake, s: SessionState, *records: Evidence):
+    report = Report(Group.PASS, fake.worker.spec.seconds, evidence=records)
+    return transition(s, live.WorkerReported(fake.worker.token, report), fake.world())
+
+
+@pytest.mark.req("G3.once")
+@pytest.mark.parametrize(
+    ("stage", "core", "sits", "weaker", "stronger"),
+    [
+        (Stage.STEADY, 1, None, True, False),
+        (Stage.STEADY, 1, -1, True, True),
+        (Stage.TIGHTEN, 0, None, True, False),
+        (Stage.LIVE1, 1, None, True, False),
+    ],
+)
+def test_a_test_verdict_judges_each_core_once_by_its_strongest_record_and_names_the_others(
+    stage, core, sits, weaker, stronger
+):
+    fake = two_of_three_in(stage)
+    ran = dict(fake.worker.spec.vector)[core]
+    s = fake.state if sits is None else fake.state.with_core(replace(fake.state.core(core), value=sits))
+    both = verdict_with(fake, s, Evidence(core, weaker), Evidence(core, stronger))
+    alone = verdict_with(fake, s, Evidence(core, stronger))
+    assert both.state == alone.state
+    assert (alone.state.core(core).fb, alone.state.core(core).value > ran) == (ran, True)
+    assert notes(both, "record_unjudged") == [set_aside(core, f"corrected machine check charged to {ran}")]
+
+
+@pytest.mark.req("G3.batch")
+@pytest.mark.parametrize("stage", [Stage.STEADY, Stage.LIVE1])
+def test_a_test_verdict_judges_the_records_after_one_that_pauses(stage):
+    fake = two_of_three_in(stage)
+    paused = verdict_with(fake, fake.state, Evidence(2, True), Evidence(1, True)).state
+    alone = verdict_with(fake, fake.state, Evidence(1, True)).state
+    assert (paused.pause.reason, paused.pause.cores, paused.core(1)) == (PauseReason.HELD_KNOB, (2,), alone.core(1))
+    assert alone.core(1).value > fake.state.core(1).value
+
+
+@pytest.mark.req("G3.batch")
+def test_one_pause_of_a_test_verdict_names_every_core_whose_record_pauses_and_each_cause():
+    fake = fresh(3, [-12, -6, -3], 1, max_offset=-20, k_1t=2)
+    start(fake)
+    while fake.worker is None:
+        assert fake.progress()
+    first, second = (core for core in (0, 1, 2) if core != fake.worker.spec.core)
+    pause = verdict_with(fake, fake.state, Evidence(first, True), Evidence(second, True)).state.pause
+    stock = "logged a machine check at its stock value"
+    assert (fake.worker.spec.stage, pause.reason, pause.cores, pause.detail) == (
+        Stage.SEARCH,
+        PauseReason.STOCK_UNSTABLE,
+        (first, second),
+        f"core {first} {stock}; core {second} {stock}",
+    )
+
+
+def resuming_from(stage: Stage, values: dict[int, int]) -> tuple[SessionState, object]:
+    fake = two_of_three_in(stage)
+    s = fake.state
+    for core, value in values.items():
+        s = s.with_core(replace(s.core(core), value=value, fb=None))
+    return replace(s, lifecycle=Lifecycle.PAUSED, slot=None, pause=Pause(PauseReason.RESUMING, "reading")), fake.world()
+
+
+def read_at_resume(s: SessionState, world, *records: Evidence, same_boot: bool = False, **facts):
+    read = CrashEvidenceRead(not same_boot, same_boot, True, evidence=records, co_now=((0, 0), (1, 0), (2, 0)), **facts)
+    return transition(s, read, world)
+
+
+HELD_CRASH = "core 2 crashed the machine at a value this session does not own"
+
+
+@pytest.mark.req("L18.d.7.records", "L18.d.4.3a", "L18.d.4.5")
+@pytest.mark.parametrize(
+    ("values", "facts", "records", "pause", "judged"),
+    [
+        (
+            {0: 0, 1: 0},
+            {"same_boot": True, "stale_db": True, "marked_now": True},
+            (Evidence(1, True, -2),),
+            (PauseReason.STOCK_UNSTABLE, (0,), "core 0 fails at stock with every core at 0"),
+            (0, -2, 0, 0, ()),
+        ),
+        (
+            {0: 0, 1: -6},
+            {"suspects": (0,)},
+            (Evidence(1, True),),
+            (PauseReason.STOCK_UNSTABLE, (0,), "core 0 crashed at 0"),
+            (-5, -6, 0, 1, ()),
+        ),
+        (
+            {0: 0, 1: 0},
+            {},
+            (Evidence(1, True),),
+            (PauseReason.STOCK_UNSTABLE, (), "the machine crashed with every owned core at 0"),
+            (0, None, 0, 0, (Incident.CRASH,)),
+        ),
+        (
+            {0: 0, 1: 0},
+            {},
+            (Evidence(0, True), Evidence(1, True)),
+            (PauseReason.STOCK_UNSTABLE, (), "the machine crashed with every owned core at 0"),
+            (0, None, 0, 0, (Incident.CRASH,)),
+        ),
+        (
+            {0: 0, 1: 0},
+            {"stale_db": True},
+            (Evidence(1, True),),
+            (PauseReason.STOCK_UNSTABLE, (0,), "core 0 fails at stock with every core at 0"),
+            (0, None, 0, 0, (Incident.CRASH,)),
+        ),
+        (
+            {1: -6},
+            {},
+            (Evidence(2, False), Evidence(1, True)),
+            (PauseReason.HELD_KNOB, (2,), HELD_CRASH),
+            (-5, -6, 0, 0, ()),
+        ),
+        (
+            {1: -6},
+            {},
+            (Evidence(1, False), Evidence(2, False)),
+            (PauseReason.HELD_KNOB, (2,), HELD_CRASH),
+            (-3, -6, 1, 1, ()),
+        ),
+    ],
+)
+def test_a_resume_that_pauses_early_judges_the_other_records_of_its_read_first(values, facts, records, pause, judged):
+    s, world = resuming_from(Stage.LIVE1, values)
+    paused = read_at_resume(s, world, *records, **facts).state
+    core = paused.core(1)
+    assert (paused.pause.reason, paused.pause.cores, paused.pause.detail) == pause
+    assert (core.value, core.fb, core.crash_count, paused.resume_streak, paused.incidents) == judged
+
+
+@pytest.mark.req("L18.d.7.records", "L18.d.7")
+@pytest.mark.parametrize(
+    ("stored", "facts", "detail"),
+    [
+        (
+            (Incident.CRASH,),
+            {"stale_db": True},
+            "core 0 fails at stock with every core at 0; 2 crashes nobody could be blamed for",
+        ),
+        ((Incident.CRASH, Incident.CRASH), {"suspects": (0,)}, "core 0 crashed at 0"),
+    ],
+)
+def test_a_resume_that_pauses_early_names_the_incident_limit_only_when_its_own_crash_reaches_it(stored, facts, detail):
+    s, world = resuming_from(Stage.LIVE1, {0: 0, 1: 0})
+    paused = read_at_resume(replace(s, incidents=stored), world, **facts).state
+    assert (paused.incidents, paused.pause.reason, paused.pause.cores, paused.pause.detail) == (
+        (Incident.CRASH, Incident.CRASH),
+        PauseReason.STOCK_UNSTABLE,
+        (0,),
+        detail,
+    )
+
+
+@pytest.mark.req("L18.d.7.records")
+def test_a_resume_that_pauses_early_names_its_own_cause_first_then_each_record_that_pauses():
+    s, world = resuming_from(Stage.SEARCH, {})
+    other = read_at_resume(s, world, Evidence(2, False), Evidence(1, True)).state.pause
+    assert (other.reason, other.cores, other.detail) == (
+        PauseReason.HELD_KNOB,
+        (2, 1),
+        f"{HELD_CRASH}; core 1 logged a machine check at its stock value",
+    )
+
+
+@pytest.mark.req("L18.d.4.3b.held")
+@pytest.mark.parametrize(
+    ("stage", "core"), [(Stage.SEARCH, 0), (Stage.STEADY, 0), (Stage.TIGHTEN, 1), (Stage.LIVE1, 1)]
+)
+def test_a_dead_boot_s_uncorrected_record_on_a_tuned_core_convicts_it_beside_a_held_core_s_crash(stage, core):
+    s, world = resuming_from(stage, {})
+    alone = read_at_resume(s, world, Evidence(core, False)).state
+    held = read_at_resume(s, world, Evidence(2, False), Evidence(core, False)).state
+    assert (alone.lifecycle, alone.core(core).crash_count, alone.resume_streak) == (Lifecycle.RUNNING, 1, 1)
+    convicted = (held.core(core), held.flow.allcore, held.resume_streak, held.incidents)
+    assert convicted == (alone.core(core), alone.flow.allcore, 1, ())
+    assert (held.pause.reason, held.pause.cores, held.pause.detail) == (PauseReason.HELD_KNOB, (2,), HELD_CRASH)
+
+
+@pytest.mark.req("L18.d.4.3b.held", "L18.d.6", "L18.d.4.5")
+@pytest.mark.parametrize(
+    ("stage", "values", "records", "facts"),
+    [
+        (Stage.SEARCH, {}, (Evidence(2, False), Evidence(0, False)), {}),
+        (Stage.STEADY, {}, (Evidence(2, False), Evidence(0, False)), {}),
+        (Stage.SEARCH, {}, (Evidence(2, False), Evidence(0, False), Evidence(1, True)), {}),
+        (Stage.LIVE1, {0: 0}, (Evidence(1, True),), {"suspects": (0,)}),
+    ],
+)
+def test_a_crash_that_brings_the_resume_streak_to_its_limit_quarantines_before_any_pause(stage, values, records, facts):
+    s, world = resuming_from(stage, values)
+    quarantined = read_at_resume(replace(s, resume_streak=2), world, *records, **facts).state
+    assert (quarantined.lifecycle, quarantined.resume_streak, quarantined.pause) == (Lifecycle.QUARANTINED, 3, None)
+
+
+@pytest.mark.req("L18.d.3.core", "L18.d.4.once")
+@pytest.mark.parametrize("stage", [Stage.LIVE1, Stage.STEADY])
+def test_a_dead_boot_judges_its_records_alike_whatever_order_its_kernel_log_holds_them_in(stage):
+    s, world = resuming_from(stage, {})
+    held = s.core(1).value
+    stock, tuned, other = Evidence(1, True, 0), Evidence(1, True, held), Evidence(0, True, 0)
+    alone = read_at_resume(s, world, stock, tuned)
+    orders = [(other, stock, tuned), (stock, tuned, other), (tuned, other, stock)]
+    results = [read_at_resume(s, world, *records) for records in orders]
+    first = results[0].state
+    assert [result.state for result in results] == [first, first, first]
+    assert (alone.state.incidents, alone.state.core(1).value, alone.state.core(1).fb) == (
+        (Incident.STOCK_MACHINE_CHECK,),
+        held + 1,
+        held,
+    )
+    assert (first.incidents, first.core(1).value, first.core(1).fb) == (
+        (Incident.STOCK_MACHINE_CHECK,),
+        held + 1,
+        held,
+    )
+    counted = unjudged(
+        1,
+        "corrected machine check charged to 0",
+        "it is counted in the dead boot's one incident, and a stronger record of core 1 in the same read "
+        "decided its verdict",
+    )
+    assert [notes(result, "record_unjudged") for result in (alone, *results)] == [[counted]] * 4
+
+
+@pytest.mark.req("L18.d.3.core", "L18.d.4.3b")
+def test_every_uncorrected_record_of_a_convicted_core_is_judged_at_stock_or_named():
+    s, world = resuming_from(Stage.SEARCH, {})
+    held = s.core(0).value
+    stock = read_at_resume(s, world, Evidence(0, False, held), Evidence(0, False, 0))
+    tuned = read_at_resume(s, world, Evidence(0, False, held), Evidence(0, False, held))
+    decided = unjudged(
+        0, f"uncorrected machine check charged to {held}", "the crash conviction of core 0 decided its verdict"
+    )
+    assert (stock.state.pause.reason, stock.state.pause.detail, notes(stock, "record_unjudged")) == (
+        PauseReason.STOCK_UNSTABLE,
+        "core 0 logged a machine check at its stock value",
+        [decided],
+    )
+    assert (tuned.state.lifecycle, tuned.state.core(0).crash_count, notes(tuned, "record_unjudged")) == (
+        Lifecycle.RUNNING,
+        1,
+        [decided, decided],
+    )
+
+
+@pytest.mark.req("L18.d.4.charged", "L18.d.4.3b")
+def test_a_record_of_a_core_convicted_at_0_is_charged_before_it_is_set_aside_so_both_twins_are_stock_verdicts():
+    s, world = resuming_from(Stage.LIVE1, {0: 0})
+    uncharged = read_at_resume(s, world, Evidence(0, True), suspects=(0,)).state
+    charged = read_at_resume(s, world, Evidence(0, True, 0), suspects=(0,)).state
+    assert (uncharged, uncharged.incidents) == (charged, (Incident.STOCK_MACHINE_CHECK,))
+
+
+@pytest.mark.req("L18.d.3.core", "L18.d.3.unplaced")
+def test_a_record_set_aside_is_named_once_and_never_as_unplaced():
+    s, world = resuming_from(Stage.SEARCH, {})
+    convicted = read_at_resume(s, world, Evidence(0, False), Evidence(0, True))
+    s, world = resuming_from(Stage.LIVE1, {})
+    lost = read_at_resume(s, world, Evidence(0, True), same_boot=True, stale_db=True)
+    named = [(notes(result, "record_unplaced"), len(notes(result, "record_unjudged"))) for result in (convicted, lost)]
+    assert named == [([], 2), ([], 1)]
+
+
+READ_ENDS = {"dead boot": (True, False), "same-boot resume": (False, True), "clean end": (False, False)}
+
+
+@pytest.mark.req("L18.d.3.core", "L18.d.4.2.charged", "L18.d.3.batch")
+@pytest.mark.parametrize("kind", ["dead boot", "same-boot resume", "clean end", "live read"])
+def test_a_core_with_a_stock_record_and_a_tuned_one_counts_the_stock_incident_and_backs_off_in_every_read(kind):
+    fake = two_of_three_in(Stage.LIVE1)
+    held = fake.state.core(1).value
+    records = (Evidence(1, True, 0), Evidence(1, True, held))
+    if kind == "live read":
+        fake.deliver()
+        result = transition(fake.state, KernelLogRead(fake.state.slot.token, records), fake.world())
+    else:
+        s, world = resuming_from(Stage.LIVE1, {})
+        dirty, same = READ_ENDS[kind]
+        read = CrashEvidenceRead(dirty, same, True, evidence=records, co_now=((0, 0), (1, 0), (2, 0)))
+        result = transition(s, read, world)
+    after = result.state
+    assert (after.incidents, after.core(1).value, after.core(1).fb) == (
+        (Incident.STOCK_MACHINE_CHECK,),
+        held + 1,
+        held,
+    )
+    counted = "the dead boot's one incident" if kind == "dead boot" else "its core's stock incident"
+    [aside] = notes(result, "record_unjudged")
+    assert f"charged to 0 is not judged: it is counted in {counted}, and " in aside
+
+
+@pytest.mark.req("L18.d.3.batch", "G3.zero_elsewhere")
+def test_a_live_read_whose_stock_records_bring_the_incidents_to_the_limit_pauses_as_incidents():
+    fake = two_of_three_in(Stage.LIVE1)
+    fake.deliver()
+    s = fake.state
+    result = transition(s, KernelLogRead(s.slot.token, (Evidence(0, True, 0), Evidence(1, True, 0))), fake.world())
+    stock = Incident.STOCK_MACHINE_CHECK
+    assert (s.incidents, result.state.incidents, result.state.pause.reason) == (
+        (),
+        (stock, stock),
+        PauseReason.INCIDENTS,
+    )
+
+
+@pytest.mark.req("G3.charged", "G3.once")
+def test_a_bisect_test_s_records_are_judged_at_the_values_the_test_ran_whatever_their_order():
+    fake = fresh(4, [-12, -6, -3, -9], 1, max_offset=-20, k_1t=2)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.LIVE1:
+        assert fake.progress()
+    fake.crash(())
+    fake.post(Resume(1))
+    while (
+        fake.worker is None
+        or fake.worker.spec.stage is not Stage.BISECT
+        or dict(fake.worker.spec.vector)[1] == 0
+        or dict(fake.worker.spec.vector)[2] != 0
+    ):
+        assert fake.progress()
+    s, ran = fake.state, dict(fake.worker.spec.vector)
+    orders = ((Evidence(2, True), Evidence(1, True)), (Evidence(1, True), Evidence(2, True)))
+    first, second = (verdict_with(fake, s, *records).state for records in orders)
+    assert first == second
+    assert (first.incidents, first.core(2), first.core(1).fb) == ((Incident.STOCK_MACHINE_CHECK,), s.core(2), ran[1])
+
+
+@pytest.mark.req("L07.d", "L07.G3")
+def test_a_live1_back_off_of_a_core_the_sequence_has_not_reached_tests_that_core_once_at_its_new_value():
+    fake = two_of_three_in(Stage.LIVE1)
+    held = fake.state.core(1).value
+    fake.deliver(Report(Group.PASS, fake.worker.spec.seconds, evidence=(Evidence(1, True),)))
+    tested = []
+    while fake.state.flow.stage is Stage.LIVE1 and fake.progress():
+        if fake.worker is not None and fake.worker.spec.stage is Stage.LIVE1:
+            tested.append((fake.worker.spec.core, fake.worker.spec.value))
+    assert tested == [(1, held + 1)]
+
+
+QUARANTINED = "3 crashes in a row with no test surviving"
+
+
+@pytest.mark.req("L18.d.6")
+def test_a_quarantine_names_every_cause_it_takes_over_from_the_pause():
+    s, world = resuming_from(Stage.SEARCH, {})
+    held = read_at_resume(replace(s, resume_streak=2), world, Evidence(2, False), Evidence(0, False))
+    reverts = [effect for effect in held.effects if isinstance(effect, RevertAll)]
+    s, world = resuming_from(Stage.LIVE1, {0: 0})
+    zero = read_at_resume(replace(s, resume_streak=2), world, suspects=(0,))
+    assert notes(held, "quarantined") == [f"{QUARANTINED}; {HELD_CRASH}"]
+    assert notes(zero, "quarantined") == [f"{QUARANTINED}; core 0 crashed at 0"]
+    assert reverts == [RevertAll(s.baseline, True)]
+
+
+@pytest.mark.req("L18.d.4.5", "L18.d.6")
+def test_a_crash_with_every_owned_core_at_0_counts_an_incident_and_leaves_the_streak():
+    s, world = resuming_from(Stage.LIVE1, {0: 0, 1: 0})
+    paused = read_at_resume(replace(s, resume_streak=2), world).state
+    assert (paused.lifecycle, paused.resume_streak, paused.incidents, paused.pause.reason) == (
+        Lifecycle.PAUSED,
+        2,
+        (Incident.CRASH,),
+        PauseReason.STOCK_UNSTABLE,
+    )
+
+
+@pytest.mark.req("L18.d.4.3b", "L18.d.3.core")
+def test_a_convicted_core_s_own_record_charged_to_stock_is_judged_as_the_stock_verdict_it_is():
+    s, world = resuming_from(Stage.SEARCH, {})
+    alone = read_at_resume(s, world).state.core(0)
+    result = read_at_resume(s, world, Evidence(0, False, 0))
+    after, convicted = result.state, result.state.core(0)
+    assert (after.pause.reason, after.pause.cores, after.pause.detail, after.resume_streak) == (
+        PauseReason.STOCK_UNSTABLE,
+        (0,),
+        "core 0 logged a machine check at its stock value",
+        1,
+    )
+    assert (convicted.value, convicted.fb, convicted.crash_count) == (alone.value, alone.fb, 1)
+    assert notes(result, "record_unjudged") == []
+
+
+@pytest.mark.req("L18.d.3.repeat", "L18.d.4.3b")
+def test_a_dead_boot_s_uncorrected_record_charged_at_its_fail_bound_repeats_and_convicts_nothing():
+    s, world = resuming_from(Stage.LIVE1, {})
+    rec = s.core(1)
+    repeat = read_at_resume(s, world, Evidence(1, False, rec.fb))
+    twin = read_at_resume(s, world, Evidence(1, True, rec.fb))
+    ahead = read_at_resume(s, world, Evidence(1, False, rec.value)).state
+    unbounded, world = resuming_from(Stage.LIVE1, {1: rec.value})
+    no_bound = read_at_resume(unbounded, world, Evidence(1, False, rec.value)).state
+    assert (repeat.state, notes(repeat, "record_unjudged")) == (twin.state, [repeat_note(1, rec.fb, rec.fb)])
+    assert (repeat.state.core(1).crash_count, ahead.core(1).crash_count, no_bound.core(1).crash_count) == (0, 1, 1)
+
+
+@pytest.mark.req("L18.d.4.charged")
+def test_a_record_that_ends_the_crash_s_bisection_back_in_live1_requeues_its_core_so_its_new_value_is_proven():
+    fake = fresh(3, [-12, -6, -3], 1, max_offset=-20, k_1t=2)
+    fake.config = replace(fake.config, selected=(0, 1))
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.LIVE1 or fake.worker.spec.core != 1:
+        assert fake.progress()
+    held, tested = fake.state.core(0).value, fake.worker.spec.value
+    fake.crash((Evidence(0, True),))
+    fake.post(Resume(1))
+    s = fake.state
+    proven = []
+    while fake.progress() and fake.state.flow.stage is Stage.LIVE1:
+        if fake.worker is not None:
+            proven.append((fake.worker.spec.core, fake.worker.spec.value))
+    assert (s.flow.stage, s.flow.live1.requeue, s.core(0).value, s.core(0).fb) == (Stage.LIVE1, (0,), held + 1, held)
+    assert proven == [(1, tested), (0, held + 1)]
+
+
+@pytest.mark.req("L18.d.7.records", "L18.d.7")
+@pytest.mark.parametrize(
+    ("records", "cores", "cause"),
+    [
+        ((Evidence(1, True),), (1,), "core 1 logged a machine check at its stock value"),
+        ((Evidence(2, True),), (2,), "core 2 logged a machine check at a value this session does not own"),
+    ],
+)
+def test_a_crash_that_reaches_the_incident_limit_is_named_in_the_one_pause_a_record_raises(records, cores, cause):
+    s, world = resuming_from(Stage.SEARCH, {})
+    idle = replace(s, cores=tuple(replace(r, in_test=False) for r in s.cores), incidents=(Incident.CRASH,))
+    pause = read_at_resume(idle, world, *records).state.pause
+    assert (pause.reason, pause.cores, pause.detail) == (
+        PauseReason.INCIDENTS,
+        cores,
+        f"2 crashes nobody could be blamed for; {cause}",
+    )
+
+
+@pytest.mark.req("L18.d.4.charged", "L18.d.4.3b")
+def test_a_dead_boot_s_uncorrected_record_is_judged_by_its_charge_and_convicts_only_a_core_off_stock_at_death():
+    s, world = resuming_from(Stage.STEADY, {})
+    placed_at_stock = read_at_resume(s, world, Evidence(0, False, 0)).state
+    corrected = read_at_resume(s, world, Evidence(0, True, 0)).state
+    assert (placed_at_stock.core(0).crash_count, placed_at_stock.incidents) == (0, (Incident.STOCK_MACHINE_CHECK,))
+    assert placed_at_stock == corrected
+    s, world = resuming_from(Stage.SEARCH, {1: -4})
+    earlier = read_at_resume(s, world, Evidence(1, False, -4)).state
+    record = earlier.core(1)
+    assert (earlier.lifecycle, earlier.core(0).crash_count, record.value, record.fb, record.crash_count) == (
+        Lifecycle.RUNNING,
+        1,
+        -1,
+        -4,
+        0,
+    )
+
+
+@pytest.mark.req("L18.d.3.repeat")
+def test_a_dead_boot_s_record_charged_at_its_core_s_fail_bound_leaves_the_core_where_it_sits():
+    s, world = resuming_from(Stage.LIVE1, {})
+    fb = s.core(1).fb
+    repeat = read_at_resume(s, world, Evidence(1, True, fb))
+    assert (repeat.state.core(1), notes(repeat, "record_unjudged")) == (s.core(1), [repeat_note(1, fb, fb)])
+
+
+def unplaced_at_death(core: int, value: int) -> str:
+    return (
+        f"core {core}'s machine check is charged to {value}, its value when the last boot ended: "
+        "its moment in that boot is not known"
+    )
+
+
+@pytest.mark.req("L18.d.4.charged")
+def test_a_dead_boot_s_record_the_journal_cannot_place_is_charged_to_its_core_s_value_at_death_and_named():
+    s, world = resuming_from(Stage.LIVE1, {})
+    held = s.core(1).value
+    result = read_at_resume(s, world, Evidence(1, True))
+    assert (result.state.core(1).value, result.state.core(1).fb) == (held + 1, held)
+    assert notes(result, "record_unplaced") == [unplaced_at_death(1, held)]
+
+
+@pytest.mark.req("L18.d.4.2.charged")
+def test_a_clean_end_s_record_is_charged_as_a_dead_boot_s_and_backs_its_tuned_core_off():
+    s, world = resuming_from(Stage.SEARCH, {})
+    held = s.core(0).value
+    clean = CrashEvidenceRead(False, False, True, evidence=(Evidence(0, True),), co_now=((0, 0), (1, 0), (2, 0)))
+    result = transition(s, clean, world)
+    after = result.state
+    assert (after.lifecycle, after.core(0).value, after.core(0).fb, after.resume_streak, after.incidents) == (
+        Lifecycle.RUNNING,
+        held + 1,
+        held,
+        0,
+        (),
+    )
+    assert notes(result, "record_unplaced") == [unplaced_at_death(0, held)]
+
+
+@pytest.mark.req("L18.d.4.3b.held")
+def test_every_other_record_of_the_held_core_whose_crash_pauses_a_dead_boot_is_named_and_not_judged():
+    s, world = resuming_from(Stage.LIVE1, {})
+    result = read_at_resume(s, world, Evidence(2, False), Evidence(2, False), Evidence(2, True))
+    pause = result.state.pause
+    decided = "core 2's crash at a value this session does not own decided its verdict"
+    assert (pause.reason, pause.cores, pause.detail) == (PauseReason.HELD_KNOB, (2,), HELD_CRASH)
+    assert notes(result, "record_unjudged") == [
+        unjudged(2, "uncorrected machine check with no charge", decided),
+        unjudged(2, "corrected machine check with no charge", decided),
+    ]
+
+
+@pytest.mark.req("L18.d.7.convict")
+def test_a_dead_boot_convicts_every_core_its_crash_convicts_before_it_pauses_once_for_those_at_stock():
+    s, world = resuming_from(Stage.LIVE1, {0: 0, 1: -6})
+    paused = read_at_resume(s, world, Evidence(1, True), suspects=(0, 1)).state
+    s, world = resuming_from(Stage.LIVE1, {0: 0, 1: 0})
+    both = read_at_resume(s, world, suspects=(0, 1)).state.pause
+    convicted = paused.core(1)
+    assert (paused.pause.reason, paused.pause.cores, paused.pause.detail) == (
+        PauseReason.STOCK_UNSTABLE,
+        (0,),
+        "core 0 crashed at 0",
+    )
+    assert (convicted.value, convicted.fb, convicted.crash_count) == (-3, -6, 1)
+    assert (both.reason, both.cores, both.detail) == (
+        PauseReason.STOCK_UNSTABLE,
+        (0, 1),
+        "core 0 crashed at 0; core 1 crashed at 0",
+    )
+
+
+@pytest.mark.req("L18.d.4.once")
+def test_a_resume_in_the_same_boot_counts_an_incident_for_each_core_with_a_record_at_stock():
+    s, world = resuming_from(Stage.LIVE1, {0: 0, 1: 0})
+    paused = read_at_resume(s, world, Evidence(0, True, 0), Evidence(1, True, 0), same_boot=True).state
+    stock = Incident.STOCK_MACHINE_CHECK
+    assert (paused.incidents, paused.pause.reason) == ((stock, stock), PauseReason.INCIDENTS)
+
+
+@pytest.mark.req("L18.d.4.once")
+@pytest.mark.parametrize(
+    ("edges", "in_test", "records", "incidents"),
+    [
+        ([-6, 0, 0], True, ((1, True), (2, True)), (Incident.STOCK_MACHINE_CHECK,)),
+        ([-6, -3, 0], True, ((0, False), (1, True), (2, True)), (Incident.STOCK_MACHINE_CHECK,)),
+        ([-6, 0, 0], False, ((1, True), (2, True)), (Incident.CRASH,)),
+    ],
+)
+def test_one_dead_boot_raises_the_incidents_once_however_many_of_its_records_are_at_stock(
+    edges, in_test, records, incidents
+):
+    fake = fresh(3, edges, 1, max_offset=-20, k_1t=2)
+    start(fake)
+    while fake.state.flow.stage is not Stage.LIVE1 or (fake.worker is not None) is not in_test:
+        assert fake.progress()
+    fake.crash(tuple(Evidence(core, corrected) for core, corrected in records))
+    fake.post(Resume(1))
+    assert fake.state.incidents == incidents
+
+
+@pytest.mark.req("L18.d.4.charged")
+@pytest.mark.parametrize("stage", [Stage.STEADY, Stage.LIVE1])
+@pytest.mark.parametrize(("corrected", "steps", "convicted"), [(True, 1, 0), (False, 3, 1)])
+def test_a_dead_boot_s_records_back_each_core_off_from_the_value_it_held_when_the_boot_died(
+    stage, corrected, steps, convicted
+):
+    fake = two_of_three_in(stage)
+    (tested, value), (other, held) = [(r.core, r.value) for r in fake.state.cores]
+    fake.crash((Evidence(tested, corrected), Evidence(other, True)))
+    fake.post(Resume(1))
+    s = fake.state
+    assert (s.lifecycle, s.flow.stage, s.incidents, s.resume_streak) == (Lifecycle.RUNNING, stage, (), 1)
+    assert [(r.core, r.value, r.fb, r.crash_count) for r in s.cores] == [
+        (tested, value + steps, value, convicted),
+        (other, held + 1, held, 0),
+    ]
+
+
+@pytest.mark.req("L18.d.4.charged")
+def test_a_dead_boot_s_record_logged_in_the_wait_before_an_all_core_test_is_charged_by_that_boot_s_journal(
+    tmp_path, clock
+):
+    hardware = KernelLog()
+    r = rig(tmp_path, hardware, check_interval_s=5)
+    r.start(config(), 1, 7, True)
+    clock.advance(10)
+    stepped_until(r, lambda: r.worker is None and r.state.flow.stage is Stage.TRANSIENT)
+    clock.advance(20)
+    hardware.machine_check(0, True)
+    clock.advance(20)
+    stepped_until(r, lambda: r.worker is not None)
+    dying = r.state.core(0)
+    hardware.boot, hardware.co = "boot-b", {0: 0, 1: 0, 8: 0}
+    again = rig(tmp_path, hardware, db=r.store.db, check_interval_s=5)
+    again.resume(1)
+    assert (all(rec.in_test for rec in r.state.cores), dying.value < 0) == (True, True)
+    assert (again.state.lifecycle, again.state.incidents, again.state.core(0).fb) == (
+        Lifecycle.RUNNING,
+        (Incident.STOCK_MACHINE_CHECK,),
+        dying.fb,
+    )
+
+
+@pytest.mark.req("L18.d.4.charged")
+def test_a_dead_boot_between_all_core_tests_charges_its_records_to_the_stock_its_cores_waited_at():
+    fake = fresh(3, [-12, -6, -3], 1, max_offset=-20, k_1t=2)
+    fake.config = replace(fake.config, selected=(0, 1))
+    start(fake)
+    while fake.state.flow.stage is not Stage.TRANSIENT or fake.worker is not None:
+        assert fake.progress()
+    waited = [(r.core, r.value, r.fb) for r in fake.state.cores]
+    fake.crash((Evidence(0, True), Evidence(1, True)))
+    fake.post(Resume(1))
+    s = fake.state
+    assert all(value != 0 for _, value, _ in waited)
+    assert (s.lifecycle, s.incidents, [(r.core, r.value, r.fb) for r in s.cores]) == (
+        Lifecycle.RUNNING,
+        (Incident.CRASH,),
+        waited,
+    )
+
+
+@pytest.mark.req("L18.d.4.charged")
+@pytest.mark.parametrize("corrected", [True, False])
+def test_a_core_the_crash_rule_moved_moves_once_for_its_record_and_a_record_at_stock_stays_a_stock_verdict(
+    corrected,
+):
+    s, world = resuming_from(Stage.STEADY, {1: 0})
+    held = s.core(0).value
+    loose = FailContext(steady=False, working=(0, 1), paused=False)
+    after = read_at_resume(s, world, Evidence(0, True), Evidence(1, corrected), context=loose).state
+    moved = [(r.core, r.value, r.fb) for r in after.cores]
+    assert (after.lifecycle, after.incidents) == (Lifecycle.RUNNING, (Incident.STOCK_MACHINE_CHECK,))
+    assert moved == [(0, held + 1, held), (1, 0, None)]
 
 
 @pytest.mark.req("L18.d.3.outside")
@@ -4790,6 +5445,15 @@ class TestNotifyOutcome:
         for code in (live_hw.EXIT_COMPLETED, live_hw.EXIT_PAUSED, live_hw.EXIT_QUARANTINED, live_hw.EXIT_ABORTED):
             live_hw.notify_outcome(code)
         assert sent == ["Tuning complete", "Tuning paused", "Tuning quarantined", "Tuning aborted"]
+
+    @pytest.mark.req("E6.exit", "L18.d.6")
+    def test_the_quarantine_note_says_the_machine_crashed_in_a_row_and_points_to_the_causes(self, monkeypatch):
+        monkeypatch.setattr(live_hw, "load_settings", lambda: SimpleNamespace(notify_on_completion=True))
+        sent = []
+        monkeypatch.setattr("corecycler.notify.desktop_notify", lambda title, body, urgency: sent.append(body))
+        live_hw.notify_outcome(live_hw.EXIT_QUARANTINED)
+        (body,) = sent
+        assert ("crashed" in body, "causes" in body, "unsafe" in body) == (True, True, False)
 
     def test_failure_surfaces_on_stderr(self, monkeypatch, capsys):
         def boom():

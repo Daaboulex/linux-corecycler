@@ -626,16 +626,25 @@ def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transiti
         return Transition(s)
     verdict = attribute(s, e)
     decided = {core: f"the crash conviction of core {core} decided its verdict" for core in verdict.convict}
+    if verdict.held is not None:
+        decided[verdict.held] = f"core {verdict.held}'s crash at a value this session does not own decided its verdict"
     if e.same_boot and verdict.lost is not None:
         decided[verdict.lost] = (
             f"the fail verdict on core {verdict.lost}'s test, whose result the database lost, decided its verdict"
         )
-    notes = tuple(_unjudged(ev, decided[ev.core]) for ev in verdict.evidence if ev.core in decided)
-    verdict = replace(verdict, evidence=tuple(ev for ev in verdict.evidence if ev.core not in decided))
+    aside = tuple(
+        ev
+        for ev in verdict.evidence
+        if ev.core in decided
+        and (ev.core not in verdict.convict or (resident(s, ev.core) if ev.charged is None else ev.charged) != 0)
+    )
+    kept = tuple(ev for ev in verdict.evidence if ev not in aside)
     if e.same_boot:
-        evidence, placed = _placed(s, verdict.evidence, _knob_problem(s, e, w))
-        verdict = replace(verdict, evidence=evidence)
-        notes = (*notes, *placed)
+        evidence, placed = _placed(s, kept, _knob_problem(s, e, w))
+    else:
+        evidence, placed = (kept, ()) if verdict.at_stock else _charged(s, kept)
+    notes = (*(_unjudged(ev, decided[ev.core]) for ev in aside), *placed)
+    verdict = replace(verdict, evidence=evidence)
     result = _attributed(s, e, w, verdict)
     if e.end_unread is not None:
         unread = Announce(
@@ -663,49 +672,83 @@ def _ending(w: World) -> str:
 
 def _attributed(s: SessionState, e: CrashEvidenceRead, w: World, verdict: Attribution) -> Transition:
     after = s
+    early: list[Pause] = []
     if verdict.lost is not None:
         after, stock = _stale_fail(after, verdict.lost, w)
         if stock is not None:
-            return _enter_pause(_clear_in_test(after), PauseReason.STOCK_UNSTABLE, stock, (verdict.lost,))
+            early.append(Pause(PauseReason.STOCK_UNSTABLE, stock, (verdict.lost,)))
+    at_zero: list[int] = []
     for core in verdict.convict:
         after, at_stock = _convict(after, core)
         if at_stock:
-            return _enter_pause(_clear_in_test(after), PauseReason.STOCK_UNSTABLE, f"core {core} crashed at 0", (core,))
-    flow_crash = verdict.flow_crash and s.flow.stage is not Stage.SOAK
+            at_zero.append(core)
+    if at_zero:
+        crashed = "; ".join(f"core {core} crashed at 0" for core in at_zero)
+        early.append(Pause(PauseReason.STOCK_UNSTABLE, crashed, tuple(at_zero)))
+    flow_crash = at_stock_crash = False
     if verdict.flow_crash:
         after, stock = _flow_crash(after, w, e.context)
-        if stock is not None:
-            return _enter_pause(_clear_in_test(after), PauseReason.STOCK_UNSTABLE, stock)
-    after = _owe_interrupted(_clear_in_test(after), tuple(r.core for r in s.cores if r.in_test))
+        at_stock_crash = stock is not None
+        flow_crash = not at_stock_crash and s.flow.stage is not Stage.SOAK
+        if at_stock_crash:
+            early.append(Pause(PauseReason.STOCK_UNSTABLE, stock))
+    cleared = _clear_in_test(after)
+    after = cleared if early else _owe_interrupted(cleared, tuple(r.core for r in s.cores if r.in_test))
     streak = s.resume_streak + 1 if verdict.convict or flow_crash else s.resume_streak
-    counted = verdict.incident or len(after.incidents) > len(s.incidents)
+    counted = verdict.incident or at_stock_crash or len(after.incidents) > len(s.incidents)
     incidents = (*s.incidents, Incident.CRASH) if counted else s.incidents
     after = replace(after, resume_streak=streak, incidents=incidents)
+    judged, recorded, aside = _records_judged(after, verdict.evidence, verdict.at_stock, counted, e.dirty_end)
+    reached = len(judged.incidents) > len(s.incidents) and len(judged.incidents) >= INCIDENT_LIMIT
+    limit = [Pause(PauseReason.INCIDENTS, _incidents_text(judged.incidents))] if reached else []
+    held: list[Pause] = []
     if verdict.held is not None:
-        return _enter_pause(
-            after,
-            PauseReason.HELD_KNOB,
-            f"core {verdict.held} crashed the machine at a value this session does not own",
-            (verdict.held,),
-        )
-    applied, aside = _evidence_applied(after, verdict.evidence, at_stock=verdict.at_stock, counted=counted)
-    result = applied if isinstance(applied, Transition) else _resumed(s, applied, e, w, streak)
+        crashed = f"core {verdict.held} crashed the machine at a value this session does not own"
+        held.append(Pause(PauseReason.HELD_KNOB, crashed, (verdict.held,)))
+    result = _resumed(s, judged, e, w, streak, (*early, *limit, *held, *recorded))
     return replace(result, effects=(*result.effects, *aside))
 
 
-def _resumed(s: SessionState, after: SessionState, e: CrashEvidenceRead, w: World, streak: int) -> Transition:
+def _charged(s: SessionState, evidence: tuple[Evidence, ...]) -> tuple[tuple[Evidence, ...], tuple[Announce, ...]]:
+    records = {r.core: r for r in s.cores}
+    charged: list[Evidence] = []
+    notes: list[Announce] = []
+    for ev in evidence:
+        rec = records.get(ev.core)
+        if rec is not None and ev.charged is None:
+            value = resident(s, ev.core)
+            charged.append(replace(ev, charged=value))
+            notes.append(
+                Announce(
+                    "record_unplaced",
+                    f"core {ev.core}'s machine check is charged to {value}, its value when the last boot ended: "
+                    "its moment in that boot is not known",
+                )
+            )
+        elif rec is not None and rec.fb is not None and ev.charged <= rec.fb:
+            notes.append(_repeated(ev, rec.fb))
+        else:
+            charged.append(ev)
+    return tuple(charged), tuple(notes)
+
+
+def _resumed(
+    s: SessionState, after: SessionState, e: CrashEvidenceRead, w: World, streak: int, pauses: tuple[Pause, ...]
+) -> Transition:
     if streak >= QUARANTINE_STREAK:
         quarantined = replace(after, lifecycle=Lifecycle.QUARANTINED, flow=None, slot=None, pause=None)
+        causes = _causes(after, pauses)
+        said = f"{streak} crashes in a row with no test surviving" + (f"; {causes}" if causes else "")
         return Transition(
             quarantined,
             (
                 RevertAll(s.baseline, True),
                 _commit(quarantined),
-                Announce("quarantined", f"{streak} crashes in a row with no test surviving"),
+                Announce("quarantined", said),
             ),
         )
-    if len(after.incidents) > len(s.incidents) and len(after.incidents) >= INCIDENT_LIMIT:
-        return _enter_pause(after, PauseReason.INCIDENTS, _incidents_text(after.incidents))
+    if pauses:
+        return _one_pause(after, pauses)
     changed = _setup_changes(after.setup, w.setup)
     was, now = dict(after.setup).get(KERNEL, "absent"), dict(w.setup).get(KERNEL, "absent")
     kernel_only = (
@@ -868,11 +911,6 @@ def _flow_crash(s: SessionState, w: World, context=None) -> tuple[SessionState, 
     raise ValueError(f"a crash with a core in test has no flow rule in {flow.stage}")
 
 
-def _apply_evidence(s: SessionState, ev: Evidence) -> SessionState | Transition:
-    out, pause = _judge_record(s, ev)
-    return out if pause is None else _enter_pause(out, pause.reason, pause.detail, pause.cores)
-
-
 def _judge_record(
     s: SessionState, ev: Evidence, at_stock: bool = False, counted: bool = False
 ) -> tuple[SessionState, Pause | None]:
@@ -904,10 +942,10 @@ def _judge_record(
         backed = replace(backed, value=max(backed.value, rec.value))
     out = s.with_core(backed)
     flow = replace(out.flow, dirty=True)
-    if stage is Stage.LIVE1 and flow.live1 is not None and ev.core not in flow.live1.requeue:
-        flow = replace(flow, live1=replace(flow.live1, requeue=(*flow.live1.requeue, ev.core)))
     if stage is Stage.BISECT:
         flow = _bisect_exit(flow)
+    if flow.stage is Stage.LIVE1 and flow.live1 is not None and ev.core not in flow.live1.requeue:
+        flow = replace(flow, live1=replace(flow.live1, requeue=(*flow.live1.requeue, ev.core)))
     if stage in ALLCORE and flow.allcore is not None:
         flow = replace(flow, allcore=replace(flow.allcore, t_clean=0.0))
     return replace(out, flow=flow), None
@@ -918,7 +956,7 @@ def _strength(s: SessionState, ev: Evidence, at_stock: bool, counted: bool) -> t
     if pause is not None:
         return (True,)
     after = out.core(ev.core)
-    return False, len(out.incidents), after.value, () if after.fb is None else (after.fb,)
+    return False, after.value, () if after.fb is None else (after.fb,)
 
 
 def _strongest(
@@ -972,16 +1010,18 @@ def _placed(
                 )
             )
         elif rec.fb is not None and ev.charged <= rec.fb:
-            notes.append(
-                Announce(
-                    "record_unjudged",
-                    f"core {ev.core}'s machine check is not judged: it is charged to {ev.charged}, "
-                    f"at or behind its fail bound {rec.fb}, so it repeats a failure already judged",
-                )
-            )
+            notes.append(_repeated(ev, rec.fb))
         else:
             placed.append(ev)
     return tuple(placed), tuple(notes)
+
+
+def _repeated(ev: Evidence, fb: int) -> Announce:
+    return Announce(
+        "record_unjudged",
+        f"core {ev.core}'s machine check is not judged: it is charged to {ev.charged}, "
+        f"at or behind its fail bound {fb}, so it repeats a failure already judged",
+    )
 
 
 def _kernel_log_read(s: SessionState, e: KernelLogRead) -> Transition:
@@ -1000,24 +1040,47 @@ def _kernel_log_read(s: SessionState, e: KernelLogRead) -> Transition:
 
 
 def _evidence_applied(
-    s: SessionState, evidence: tuple[Evidence, ...], at_stock: bool = False, counted: bool = False
+    s: SessionState, evidence: tuple[Evidence, ...]
 ) -> tuple[SessionState | Transition, tuple[Announce, ...]]:
-    kept, aside = _strongest(s, evidence, at_stock, counted)
-    notes = tuple(
-        _unjudged(ev, f"a stronger record of core {ev.core} in the same read decided its verdict") for ev in aside
-    )
+    judged, pauses, notes = _records_judged(s, evidence, False, False)
+    return (_one_pause(judged, pauses) if pauses else judged), notes
+
+
+def _records_judged(
+    s: SessionState, evidence: tuple[Evidence, ...], at_stock: bool, counted: bool, once: bool = False
+) -> tuple[SessionState, tuple[Pause, ...], tuple[Announce, ...]]:
+    stock = tuple(ev for ev in evidence if not counted and _judge_record(s, ev, at_stock)[0].incidents != s.incidents)
     pauses: list[Pause] = []
+    if stock:
+        counted = True
+        cores = len(dict.fromkeys(ev.core for ev in stock))
+        s = replace(s, incidents=(*s.incidents, *(Incident.STOCK_MACHINE_CHECK,) * (1 if once else cores)))
+        if len(s.incidents) >= INCIDENT_LIMIT:
+            pauses.append(Pause(PauseReason.INCIDENTS, _incidents_text(s.incidents)))
+    kept, aside = _strongest(s, evidence, at_stock, counted)
+    counted_in = "the dead boot's one incident" if once else "its core's stock incident"
+    notes: list[Announce] = []
+    for ev in aside:
+        stronger = f"a stronger record of core {ev.core} in the same read decided its verdict"
+        notes.append(_unjudged(ev, f"it is counted in {counted_in}, and {stronger}" if ev in stock else stronger))
     for ev in kept:
         s, pause = _judge_record(s, ev, at_stock, counted)
         if pause is not None:
             pauses.append(pause)
-    if not pauses:
-        return s, notes
-    causes = dict.fromkeys(
-        _incidents_text(s.incidents) if pause.reason is PauseReason.INCIDENTS else pause.detail for pause in pauses
-    )
+    return s, tuple(pauses), tuple(notes)
+
+
+def _one_pause(s: SessionState, pauses: tuple[Pause, ...]) -> Transition:
     cores = tuple(core for pause in pauses for core in pause.cores)
-    return _enter_pause(s, pauses[0].reason, "; ".join(causes), cores), notes
+    return _enter_pause(s, pauses[0].reason, _causes(s, pauses), cores)
+
+
+def _causes(s: SessionState, pauses: tuple[Pause, ...]) -> str:
+    return "; ".join(
+        dict.fromkeys(
+            _incidents_text(s.incidents) if pause.reason is PauseReason.INCIDENTS else pause.detail for pause in pauses
+        )
+    )
 
 
 def _pause_request(s: SessionState) -> Transition:
@@ -1207,6 +1270,7 @@ def _live1_next(s: SessionState, w: World, picked: int | None) -> Transition:
     elif live.index < len(sequence):
         core = sequence[live.index]
         vector = tuple((r.core, r.value) for r in s.cores)
+        flow = replace(flow, live1=replace(live, requeue=tuple(c for c in live.requeue if c != core)))
     elif live.requeue:
         core = live.requeue[0]
         vector = tuple((r.core, r.value) for r in s.cores)
@@ -1647,26 +1711,25 @@ def _cut_reported(s: SessionState, cut: InFlight, rep: Report, w: World) -> Tran
 
 def _judged(s: SessionState, rep: Report, w: World) -> Transition:
     spec = s.slot.spec
+    whole = spec.load in ALLCORE_LOADS
+    ran = dict(spec.vector)
+    records = tuple(
+        ev if ev.charged is not None or ev.core not in ran else replace(ev, charged=ran[ev.core])
+        for ev in rep.evidence
+        if whole or ev.core != spec.core
+    )
+    after, aside = _evidence_applied(s if whole else _after_test(s, spec.core), records)
+    result = after if isinstance(after, Transition) else _graded(s, after, rep, w)
+    return replace(result, effects=(*result.effects, *aside))
+
+
+def _graded(s: SessionState, after: SessionState, rep: Report, w: World) -> Transition:
+    spec = s.slot.spec
     pausing = s.lifecycle is Lifecycle.PAUSING
     if spec.load in ALLCORE_LOADS:
-        after = s
-        for ev in rep.evidence:
-            applied = _apply_evidence(after, ev)
-            if isinstance(applied, Transition):
-                return applied
-            after = applied
         after = _clear_in_test(after)
         if rep.evidence:
             return _next_wait(replace(after, streaks=Streaks()), spec, pausing)
-    else:
-        after = _after_test(s, spec.core)
-    for ev in () if spec.load in ALLCORE_LOADS else rep.evidence:
-        if ev.core == spec.core:
-            continue
-        applied = _apply_evidence(after, ev)
-        if isinstance(applied, Transition):
-            return applied
-        after = applied
     if s.flow.stage is Stage.BISECT and after.flow.stage is not Stage.BISECT:
         return _next_wait(after, spec, pausing)
     if spec.stage is Stage.BISECT and any(ev.core != spec.core for ev in rep.evidence):

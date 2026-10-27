@@ -1019,6 +1019,21 @@ statement = "Evidence on a held core is P(HELD_KNOB) naming it"
 proof = "built"
 
 [[requirement]]
+id = "G3.once"
+statement = "A test's verdict judges each core with a record once, by the one record whose verdict is strongest in the order of L18.d.3.core, and the event log names every record it sets aside"
+proof = "built"
+
+[[requirement]]
+id = "G3.batch"
+statement = "Every record of a test's verdict is judged before the verdict pauses; when more than one pauses, the one pause takes the incidents reason when the read's stock records reach the limit, else the first pausing record's reason, and names every pausing core and each one's cause"
+proof = "built"
+
+[[requirement]]
+id = "G3.charged"
+statement = "A test's verdict charges each record that carries no charge to the value the test ran its core at, so every record is judged at the value in force when it was logged, whatever an earlier record of the same verdict moved, in any order"
+proof = "built"
+
+[[requirement]]
 id = "G4"
 statement = "A crash is decided only in L18 at CrashEvidenceRead: conviction, flow rule, incident or nothing"
 proof = "built"
@@ -1765,7 +1780,7 @@ proof = "built"
 
 [[requirement]]
 id = "L07.d"
-statement = "The slot core is the round-0 sequence of class live1 at the index, then the requeue in back-off order; every owned knob at its value; 15 s wait when the core differs"
+statement = "The slot core is the round-0 sequence of class live1 at the index, then the requeue in back-off order; a core the sequence reaches leaves the requeue, so a back-off before its turn is tested once, at its turn; every owned knob at its value; 15 s wait when the core differs"
 proof = "built"
 
 [[requirement]]
@@ -2466,12 +2481,12 @@ proof = "built"
 
 [[requirement]]
 id = "L18.d.3.batch"
-statement = "Every core with a record in one read is judged before the read pauses; when more than one record pauses, the one pause takes the first one's reason and names every pausing core and each one's cause, and an incidents pause counts every incident the read raised"
+statement = "Every core with a record in one read is judged before the read pauses; when more than one record pauses, the one pause takes the incidents reason when the read's stock records reach the limit, else the first pausing record's reason, and names every pausing core and each one's cause, and an incidents pause counts every incident the read raised"
 proof = "built"
 
 [[requirement]]
 id = "L18.d.3.core"
-statement = "One read judges each core once, by the one record whose verdict is strongest: one that pauses, then one that counts more incidents, then the one that leaves the core loosest, then the one that leaves the tighter fail bound; the core a same-boot resume fails for the test its database lost is judged by that verdict alone, and a dead boot's core convicted by an uncorrected record by that conviction alone"
+statement = "One read judges each core once, by the one record whose verdict is strongest: one that pauses, then the one that leaves the core loosest, then the one that leaves the tighter fail bound; the read's stock verdicts are counted before any record is chosen, one incident for each core with one in a live or same-boot read, a clean end or a test's verdict (L18.d.3.batch), the one incident for a dead boot (L18.d.4.once), and every core's strongest is then chosen against that same state, so the order the kernel log holds the records in never changes a verdict and, outside SEARCH where a stock record pauses, every record charged to a tuned value backs its core off, in every kind of read, a counted stock record set aside being named as counted; the core a same-boot resume fails for the test its database lost is judged by that verdict alone, and a dead boot's convicted core by that conviction alone, save a record of it charged to stock, judged as the stock verdict it is (L18.d.4.3b); the event log names every record set aside"
 proof = "built"
 
 [[requirement]]
@@ -2505,13 +2520,23 @@ statement = "A clean end gives named records as evidence only"
 proof = "built"
 
 [[requirement]]
+id = "L18.d.4.2.charged"
+statement = "A clean end's records are charged as a dead boot's are (L18.d.4.charged): one on a core the session held off stock when that boot ended backs it off from that value, though no crash rule runs"
+proof = "built"
+
+[[requirement]]
 id = "L18.d.4.3a"
 statement = "A stock marker naming the dead boot: each in-test core takes its stage's FAIL rule, the crash is an incident, records count at stock, nothing below applies"
 proof = "built"
 
 [[requirement]]
 id = "L18.d.4.3b"
-statement = "An uncorrected core-bank record on a non-zero resident value convicts that core; one naming a held core is evidence plus P(HELD_KNOB)"
+statement = "An uncorrected core-bank record on a non-zero resident value convicts that core unless its charge is stock (L18.d.4.charged), where it is a stock verdict, or at or behind its fail bound, where it repeats a judged failure (L18.d.3.repeat); a record charged to stock is judged as that stock verdict even when the crash convicts its core by another rule, the core moved once, by the conviction, and every other record of a convicted core, its uncorrected ones included, is named in the event log as decided by the conviction; one naming a held core is evidence plus P(HELD_KNOB)"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.3b.held"
+statement = "A dead boot with a record naming a held core still convicts each owned core whose uncorrected record is on a non-zero resident value, and raises the resume streak for it, before it pauses as held_knob; a streak that reaches its limit quarantines instead, as L18.d.6, the held core's pause and any record's pause included; the held core's other records are not judged, and the event log names each as decided by that core's crash"
 proof = "built"
 
 [[requirement]]
@@ -2582,7 +2607,17 @@ task = "S3"
 
 [[requirement]]
 id = "L18.d.4.5"
-statement = "The resume streak rises on a conviction or a flow-rule FAIL, not on a void or an incident"
+statement = "The resume streak rises on a conviction or a flow-rule FAIL, not on a void or an incident, on every path, a resume that then pauses at stock included (D16); a crash the flow rule finds with every owned core at 0 is an incident, as L18.d.4.3a counts a crash at stock, not a FAIL, so it pauses as stock_unstable without raising the streak"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.once"
+statement = "One dead boot raises the incidents at most once, its crash and its records together: when the crash raised none and any of its records is a stock verdict, the one incident is counted before any record is chosen or judged, and no record adds another, so records at stock on two cores count one, where a read of the live boot counts each (L18.d.3.batch); a stock record then set aside is named in the event log as counted in the dead boot's one incident"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.charged"
+statement = "A dead boot's records are charged before its crash is attributed, and its convictions set a record aside by the charge it gets: each record that boot's kernel log holds by that boot's CO journal and reads, as L18.d.3.charged charges a same-boot record; a record that journal cannot place, and one the next boot logs from the banks the reset kept, to the value its core held when the boot died, as the crash conviction reads it, and the event log names it record_unplaced when it is judged, a record set aside being named once, as set aside; a charge at or behind its core's fail bound repeats a judged failure (L18.d.3.repeat); a stock marker naming the dead boot counts every record at stock instead (L18.d.4.3a). One charged off stock backs its core off from that value as G3.backoff and never counts a stock incident, and no charge leaves a core deeper than the crash's rule left it, so a core both name moves once, to the looser of the two; one charged to stock stays a stock verdict (L18.d.4.once). One that backs its core off ends a bisection the crash's rule began, wherever that rule begins one (LIVE1, TRANSIENT, a steady-class STEADY or ENDURANCE, MEMORY), the record taken over the search (the main session's decision of 2026-10-27 on the existing G3 rule, the owner's to correct); when that exit returns to LIVE1, the record's backed-off core is requeued as a record's back-off in LIVE1 is (L07.G3), so its new value is proven"
 proof = "built"
 
 [[requirement]]
@@ -2598,12 +2633,22 @@ task = "T28"
 
 [[requirement]]
 id = "L18.d.6"
-statement = "A streak of 3 or more reverts owned knobs to stock, journaled, and quarantines"
+statement = "A streak of 3 or more reverts owned knobs to stock, journaled, and quarantines, before any pause the resume would make (step 7, L18.d.7); its announcement names every cause that pause would have named, and its desktop note says the machine crashed again and again with no test surviving, the causes in the log"
 proof = "built"
 
 [[requirement]]
 id = "L18.d.7"
 statement = "Early pauses revert to baseline first: a conviction at 0 P(STOCK_UNSTABLE), this pass's incident at K19 P(INCIDENTS), a held core P(HELD_KNOB)"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.7.records"
+statement = "A resume that pauses early, for its lost test failing at stock, a conviction at 0, the flow rule failing at stock or a held core, first judges the other records of its read as a resume that goes on would: each charged as L18.d.4.charged charges it, after the crash's own incident when the stock marker names the dead boot (L18.d.4.3a) or the flow rule finds every owned core at 0 (L18.d.4.5), so a record at stock adds none (L18.d.4.once); the resume streak rises as L18.d.4.5 says, and a streak at its limit quarantines before any pause, naming its causes (L18.d.6); its one pause takes the first reason and names, in this order, its causes at stock, this pass's incidents when they reach K19, a held core's crash (L18.d.4.3b.held), then every core and cause its records paused for, as a resume that goes on pauses"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.7.convict"
+statement = "A dead boot runs every conviction of its crash before a conviction at 0 pauses it: each core convicted off stock backs off and counts the crash, and the one stock_unstable pause names every core convicted at 0"
 proof = "built"
 
 [[requirement]]

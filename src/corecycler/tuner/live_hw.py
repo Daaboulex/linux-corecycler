@@ -929,7 +929,8 @@ OUTCOME_NOTES = {
     EXIT_PAUSED: ("Tuning paused", "The tuner stopped for attention: check the log.", "critical"),
     EXIT_QUARANTINED: (
         "Tuning quarantined",
-        "The found values were judged unsafe; every owned core is sent back to stock. A failed write is in the log.",
+        "The machine crashed again and again with no test surviving; every owned core is sent back to stock. "
+        "The causes and any failed write are in the log.",
         "critical",
     ),
     EXIT_ABORTED: (
