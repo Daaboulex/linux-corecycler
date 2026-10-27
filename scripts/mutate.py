@@ -61,12 +61,19 @@ class Mutant:
 
 def _inert(tree: ast.Module) -> set[int]:
     """Nodes whose value cannot change behaviour: decorator arguments (a
-    dataclass(slots=...) flip is invisible to every real path) and dunder
-    configuration like __test__, which addresses the test runner, not the code."""
+    dataclass(slots=...) flip is invisible to every real path), dunder
+    configuration like __test__, which addresses the test runner, not the code,
+    and a return of None that ends a function, which falling off the end repeats."""
     inert: set[int] = set()
     for node in ast.walk(tree):
         for decorator in getattr(node, "decorator_list", []):
             inert.update(id(sub) for sub in ast.walk(decorator))
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and isinstance(last := node.body[-1], ast.Return)
+            and (last.value is None or (isinstance(last.value, ast.Constant) and last.value.value is None))
+        ):
+            inert.add(id(last))
         if isinstance(node, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id.startswith("__") and t.id.endswith("__") for t in node.targets
         ):
@@ -83,6 +90,7 @@ class _Mutator(ast.NodeTransformer):
         self.lines = lines
         self.skip = skip or set()
         self.seen = 0
+        self.depth = 0
         self.applied: str | None = None
         self.lineno = 0
         self.col_offset = 0
@@ -137,6 +145,28 @@ class _Mutator(ast.NodeTransformer):
         elif isinstance(node.value, int) and self._take(node, f"{node.value} -> {node.value + 1}"):
             return ast.copy_location(ast.Constant(value=node.value + 1), node)
         return node
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.AST:
+        self.depth += 1
+        self.generic_visit(node)
+        self.depth -= 1
+        return node
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def _delete(self, node: ast.stmt) -> ast.AST:
+        """A statement that does work inside a function becomes pass. Imports, declarations, bare
+        constants and code that runs at import are left: deleting them is a NameError at first use or
+        nothing at all, at the price of the whole selection."""
+        self.generic_visit(node)
+        declares = isinstance(node, ast.AnnAssign) and node.value is None
+        constant = isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+        if self.depth and not declares and not constant and self._take(node, "delete statement"):
+            return ast.copy_location(ast.Pass(), node)
+        return node
+
+    visit_Expr = visit_Assign = visit_AugAssign = visit_AnnAssign = _delete
+    visit_Return = visit_Raise = visit_Delete = visit_Break = visit_Continue = _delete
 
 
 EQUIVALENT = re.compile(r"#\s*equivalent-mutant:(.*)$")

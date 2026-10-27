@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 import sys
@@ -128,6 +129,74 @@ def test_a_mutant_knows_the_whole_statement_it_sits_in(tmp_path):
     assert (mutant.description, mutant.lineno, mutant.span) == ("Lt -> LtE", 3, (2, 5))
 
 
+DELETIONS = (
+    '"""Module docstring."""\n'
+    "import os\n"
+    "LIMIT = 5\n"
+    "print(LIMIT)\n"
+    "\n"
+    "\n"
+    "class C:\n"
+    "    STEP = 2\n"
+    "\n"
+    "    def f(self, beat, items):\n"
+    '        """Docstring."""\n'
+    "        import json\n"
+    "        global LIMIT\n"
+    "        seen: int\n"
+    "        beat.between(\n"
+    "            items,\n"
+    "        )\n"
+    "        total = 0\n"
+    "        total += len(items)\n"
+    "        self.seen: int = total\n"
+    "        if not items:\n"
+    "            raise ValueError(total)\n"
+    "        del items[0]\n"
+    "        for item in items:\n"
+    "            if item:\n"
+    "                continue\n"
+    "            break\n"
+    "        ...\n"
+    "        pass\n"
+    "        return json.dumps(total)\n"
+    "\n"
+    "\n"
+    "async def g(lock):\n"
+    "    await lock.acquire()\n"
+)
+
+
+def test_each_simple_statement_inside_a_function_is_deleted_alone_as_pass_and_nothing_else_is(tmp_path):
+    built = [mutate._build(tmp_path / "src" / "m.py", DELETIONS, index) for index in range(mutate._count(DELETIONS))]
+    deleted = [mutant for mutant in built if mutant.description == "delete statement"]
+    spans = [(15, 17), (18, 18), (19, 19), (20, 20), (22, 22), (23, 23), (26, 26), (27, 27), (30, 30), (34, 34)]
+    assert [mutant.span for mutant in deleted] == spans
+    assert {(mutant.lineno, mutant.at_import) for mutant in deleted} == {(first, False) for first, _ in spans}
+    lines = DELETIONS.splitlines()
+    for mutant, (first, last) in zip(deleted, spans, strict=True):
+        indent = lines[first - 1][: len(lines[first - 1]) - len(lines[first - 1].lstrip())]
+        expected = "\n".join([*lines[: first - 1], f"{indent}pass", *lines[last:]])
+        assert mutant.source == ast.unparse(ast.parse(expected))
+
+
+def test_a_deletion_obeys_the_changed_lines_and_a_reviewed_equivalent_mutant():
+    source = "def f(beat):\n    beat.between()\n    beat.idle()\n"
+    assert mutate._count(source) == 2
+    assert mutate._count(source, {3}) == 1
+    reviewed = source.replace("idle()", "idle()  # equivalent-mutant: nothing reads the idle beat here")
+    assert mutate._count(reviewed) == 1
+
+
+def test_a_return_of_none_that_ends_a_function_is_never_deleted_but_an_early_one_is(tmp_path):
+    source = (
+        "def f(x):\n    if x:\n        return None\n    x.go()\n    return None\n\n\n"
+        "def g(x):\n    x.stop()\n    return\n\n\ndef h(x):\n    return x\n"
+    )
+    built = [mutate._build(tmp_path / "m.py", source, index) for index in range(mutate._count(source))]
+    assert [mutant.lineno for mutant in built if mutant.description == "delete statement"] == [3, 4, 9, 14]
+
+
 def test_a_mutant_runs_only_the_tests_that_executed_its_statement_short_ones_first_else_the_whole_selection(
     tmp_path,
 ):
@@ -157,6 +226,7 @@ def test_a_mutant_in_code_that_runs_at_import_runs_the_whole_selection(tmp_path)
         ("7 -> 8", False),
         ("Add -> Sub", False),
         ("11 -> 12", True),
+        ("delete statement", False),
     }
     limit = next(mutant for mutant in built if mutant.description == "5 -> 6")
     first_importer = {"src/m.py": {1: frozenset({"tests/test_a.py::test_one"})}}
