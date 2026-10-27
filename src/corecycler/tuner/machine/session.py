@@ -689,13 +689,13 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World, verdict: Attrib
     if verdict.flow_crash:
         after, stock = _flow_crash(after, w)
         at_stock_crash = stock is not None
-        flow_crash = not at_stock_crash and s.flow.stage is not Stage.SOAK
+        flow_crash = not at_stock_crash
         if at_stock_crash:
             early.append(Pause(PauseReason.STOCK_UNSTABLE, stock))
     cleared = _clear_in_test(after)
     after = cleared if early else _owe_interrupted(cleared, tuple(r.core for r in s.cores if r.in_test))
     streak = s.resume_streak + 1 if verdict.convict or flow_crash else s.resume_streak
-    counted = verdict.incident or at_stock_crash or len(after.incidents) > len(s.incidents)
+    counted = verdict.incident or at_stock_crash
     incidents = (*s.incidents, Incident.CRASH) if counted else s.incidents
     after = replace(after, resume_streak=streak, incidents=incidents)
     if counted or at_zero or verdict.held is not None:
@@ -1386,6 +1386,10 @@ def _all_cpus(s: SessionState, w: World) -> tuple[int, ...]:
     return tuple(sorted(cpu for r in s.cores for cpu in cpus[r.core]))
 
 
+def _loaded_cpus(s: SessionState, w: World, load: Load) -> tuple[int, ...]:
+    return () if load is Load.SOAK else _all_cpus(s, w)
+
+
 def _past_tighten(flow: Flow, cfg) -> Flow:
     cursor = replace(flow.allcore, tightened=True, t_idx=0, t_clean=0.0)
     if cfg.endurance:
@@ -1423,7 +1427,7 @@ def _allcore_next(s: SessionState, w: World) -> Transition:
     load = _stage_load(flow.stage, cursor)
     first = s.cores[0].core
     vector = tuple((core, values[core]) for core, _ in s.baseline)
-    cpus = () if load is Load.SOAK else _all_cpus(s, w)
+    cpus = _loaded_cpus(s, w, load)
     seconds = _load_seconds(cfg, load)
     plan_seed = _plan_seed(s, flow.stage, load)
     spec = TestSpec(Klass.T1, first, values[first], cpus, seconds, vector, flow.stage, load, plan_seed=plan_seed)
@@ -1434,15 +1438,13 @@ def _allcore_fail(s: SessionState, ctx, w: World) -> tuple[SessionState, str | N
     flow = s.flow
     cursor = flow.allcore
     stage = flow.stage
-    if stage is Stage.SOAK:
-        return replace(s, incidents=(*s.incidents, Incident.SOAK_FAILURE), flow=replace(flow, dirty=True)), None
     if stage is Stage.TIGHTEN:
         return _reclaim_ended(s), None
     values = {r.core: r.value for r in s.cores}
     if not any(values.values()):
         return s, "the all-core load fails with every owned core at 0"
     run = bisect.begin(stage, s.cores[0].core, Klass.T1, values, dict(w.domain_of))
-    run = replace(run, quick=stage is not Stage.TRANSIENT and allcore.steady_class(ctx))
+    run = replace(run, quick=stage in (Stage.STEADY, Stage.ENDURANCE) and allcore.steady_class(ctx))
     cursor = replace(cursor, t_clean=0.0)
     return replace(s, flow=replace(flow, stage=Stage.BISECT, bisect=run, allcore=cursor)), None
 
@@ -1580,7 +1582,7 @@ def _bisect_next(s: SessionState, w: World) -> Transition:
         cpus, seconds, load = _all_cpus(s, w), s.config.bisect_seconds, Load.HOT
     elif run.entry in ALLCORE:
         load = _stage_load(run.entry, flow.allcore)
-        cpus, seconds = _all_cpus(s, w), _load_seconds(s.config, load)
+        cpus, seconds = _loaded_cpus(s, w, load), _load_seconds(s.config, load)
     elif run.entry is Stage.MEMORY:
         cpus, seconds, load = _all_cpus(s, w), s.config.memory_seconds, Load.MEMORY
     else:
@@ -1734,7 +1736,7 @@ def _owe_replay(s: SessionState, vector: tuple[tuple[int, int], ...]) -> Session
 
 
 def _replayed(s: SessionState, spec: TestSpec, rep: Report) -> SessionState:
-    if rep.group is Group.SILICON or (rep.group is Group.ENVIRONMENT and spec.stage is Stage.SOAK):
+    if rep.group is Group.SILICON or (rep.group is Group.ENVIRONMENT and spec.load is Load.SOAK):
         return _owe_replay(s, spec.vector)
     flow = s.flow
     if rep.group is not Group.PASS or rep.evidence or rep.skipped or spec.vector != flow.validating:
@@ -1776,20 +1778,13 @@ def _graded(s: SessionState, after: SessionState, rep: Report, w: World) -> Tran
         recurred, after = _q5(after, spec)
         if recurred:
             group = Group.SILICON
+    if group is Group.ENVIRONMENT and spec.load is Load.SOAK:
+        group = Group.SILICON
     if group in (Group.PASS, Group.SILICON):
         return _verdict(after, spec, rep, group, pausing, w)
     if group is Group.THERMAL:
         return _thermal(after, spec, rep, pausing, w)
-    if group is Group.ENVIRONMENT and spec.stage is Stage.SOAK:
-        return _soak_incident(after, spec, rep, pausing, w)
     return _apparatus(after, spec, rep, pausing)
-
-
-def _soak_incident(s: SessionState, spec: TestSpec, rep: Report, pausing: bool, w: World) -> Transition:
-    s, _ = _allcore_fail(s, rep.context, w)
-    if len(s.incidents) >= INCIDENT_LIMIT:
-        return _enter_pause(s, PauseReason.INCIDENTS, f"{_incidents_text(s.incidents)}; the newest: {rep.detail}")
-    return _next_wait(s, spec, pausing)
 
 
 def _q5(s: SessionState, spec: TestSpec) -> tuple[bool, SessionState]:

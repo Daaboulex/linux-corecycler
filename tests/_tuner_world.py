@@ -57,7 +57,8 @@ class Broken(AssertionError):
     pass
 
 
-BINDING_LOADS = ALLCORE_LOADS - {Load.SOAK}
+def replay_of(spec) -> tuple:
+    return (spec.vector, spec.load, spec.seconds, spec.plan_seed)
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,9 +472,10 @@ class Fake:
                 self.failed_at.add((spec.core, spec.value))
             elif isolated:
                 self.stock_fail_owed.add(spec.core)
-        if spec.load in BINDING_LOADS:
-            replay = (spec.vector, spec.load, spec.seconds, spec.plan_seed)
-            if report.group is Group.SILICON or self.faults.fail_commits > 0:
+        if spec.load in ALLCORE_LOADS:
+            replay = replay_of(spec)
+            soak_failed = report.group is Group.ENVIRONMENT and spec.load is Load.SOAK
+            if report.group is Group.SILICON or soak_failed or self.faults.fail_commits > 0:
                 self.failed_allcore.add(replay)
             elif report.group is Group.PASS and not report.evidence and not report.skipped:
                 self.failed_allcore.discard(replay)
@@ -522,6 +524,8 @@ class Fake:
         self.post(ContinuationDue(token))
 
     def crash(self, evidence: tuple[Evidence, ...] = (), shared: bool = False) -> None:
+        if self.worker is not None and self.worker.spec.load is Load.SOAK:
+            self.failed_allcore.add(replay_of(self.worker.spec))
         self.crash_note = (evidence, shared)
         self.dead_suspects = tuple(sorted(crash_suspects(resident_at_death(self.journal), -1)))
         self.journal = ()

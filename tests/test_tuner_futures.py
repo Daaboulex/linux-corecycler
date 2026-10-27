@@ -18,6 +18,7 @@ from corecycler.tuner.machine.types import (
     Load,
     PauseReason,
     RestartOnSetup,
+    Stage,
     ValidateProfile,
 )
 from corecycler.tuner.orders import Method, order_problem
@@ -300,6 +301,7 @@ class Survey:
     deepest: int = 0
     taken: dict[str, int] = field(default_factory=dict)
     by_itself: int = 0
+    bisected: set[Stage] = field(default_factory=set)
 
 
 def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
@@ -339,6 +341,8 @@ def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
                 raise Broken(f"{broken} after {(*path, move)}") from broken
             if any(line.startswith("continued: the kernel changed") for line in child.log):
                 survey.by_itself += 1
+            if child.state.flow is not None and child.state.flow.bisect is not None:
+                survey.bisected.add(child.state.flow.bisect.entry)
             stack.append((child, after, (*path, move)))
     return survey
 
@@ -443,6 +447,15 @@ def test_every_future_of_a_cpu_whose_all_core_loads_fail_reaches_a_rest(edges, h
     fake.edges_hot = hot
     fake.edges_transient = transient
     survey = explore(fake, {**ONE_OF_EACH, "total": 1}, cap=2_000_000)
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+@pytest.mark.parametrize("fault", ["false_fail", "unblamed", "dbfail", "crash"])
+@pytest.mark.req("SOAK.bisect.explorer")
+def test_every_future_of_an_unnamed_soak_failure_bisects_it_and_completes_short_of_the_failed_vector(fault):
+    survey = explore(tiny(2, [-3, -2], 2), {fault: 1, "total": 1}, cap=2_000_000)
+    assert Stage.SOAK in survey.bisected
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
 

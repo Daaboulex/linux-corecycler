@@ -164,6 +164,13 @@ def test_a_value_that_fails_validation_is_backed_off_and_the_session_completes_w
         ),
         pytest.param((-3, -2), None, Stage.SOAK, (deliver(), until(Stage.SOAK), Fake.deliver), id="SOAK passed again"),
         pytest.param(
+            (-3, -2),
+            None,
+            Stage.ENDURANCE,
+            (deliver(Group.ENVIRONMENT, unblamed_corrected=True),),
+            id="an unblamed record outside SOAK",
+        ),
+        pytest.param(
             (-3, 0, -2),
             (0, 2),
             Stage.LIVE1,
@@ -239,15 +246,20 @@ def test_an_abort_with_no_failure_left_unresolved_returns_the_session_to_complet
             id="its replay was skipped",
         ),
         pytest.param((-3, -2), None, Stage.SOAK, (deliver(),), id="a SOAK failure"),
-        pytest.param(
-            (-3, -2), None, Stage.SOAK, (deliver(), until(Stage.LIVE1)), id="a SOAK failure, in the LIVE1 after it"
-        ),
+        pytest.param((-3, -2), None, Stage.SOAK, (fail_until_the_exact_replay_is_due,), id="a SOAK failure's replay"),
         pytest.param(
             (-3, -2),
             None,
             Stage.SOAK,
             (deliver(Group.ENVIRONMENT, unblamed_corrected=True),),
             id="an unblamed SOAK failure",
+        ),
+        pytest.param(
+            (-3, -2, 0),
+            None,
+            Stage.SOAK,
+            (deliver(Group.ENVIRONMENT, evidence=(Evidence(2, True),)),),
+            id="an unblamed SOAK failure with a record at stock",
         ),
         pytest.param((-3, -2), None, Stage.SOAK, (lose_the_verdict,), id="a lost SOAK verdict"),
         pytest.param((-3, -2), None, Stage.SOAK, (Fake.crash, resume), id="a dead boot in SOAK"),

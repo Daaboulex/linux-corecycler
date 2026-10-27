@@ -127,7 +127,12 @@ found.
 8. **Memory** (MEMORY, on by default): stressapptest on each selected core, skipped with
    the reason when memory is short.
 9. **Idle watch** (SOAK, on by default): 30 minutes without load, watching the kernel
-   log.
+   log. A machine check naming a core backs that core off; any other failure, a machine
+   check no core is blamed for, kernel trouble or a crash, is narrowed as in STEADY with
+   every group watched for the full length, and the core found backs off. The exception is
+   a crash whose kernel log holds an uncorrected machine check no core is blamed for: it
+   counts an incident and the watch runs again. A back-off here sends the session to
+   FINALIZE.
 10. **Finishing** (FINALIZE): when a value had to back off after LIVE1, the pass runs
     again from LIVE1 without TIGHTEN; otherwise the session completes with its values.
 

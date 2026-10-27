@@ -16,6 +16,7 @@ from corecycler.tuner.machine.types import (
     CrashEvidenceRead,
     DatabaseFailed,
     Evidence,
+    FailContext,
     Flow,
     Incident,
     InFlight,
@@ -202,16 +203,116 @@ def test_a_cut_all_core_test_s_report_naming_no_failing_core_or_carrying_a_recor
     assert (result.state, result.effects) == (paused, ())
 
 
-@pytest.mark.req("L16.G4", "L18.d.4.4.soak", "K19")
-def test_a_crash_in_soak_with_nobody_to_blame_counts_one_incident_and_the_second_pauses():
+def _lose_the_verdict(fake) -> None:
+    fake.faults.fail_commits = 1
+    fake.deliver()
+    fake.post(Resume(1))
+
+
+def _dead_boot(fake) -> None:
+    fake.crash()
+    fake.post(Resume(1))
+
+
+UNNAMED_SOAK_FAILURES = {
+    "silicon naming no core": lambda fake: fake.deliver(Report(Group.SILICON, 1.0)),
+    "silicon with a steady tail": lambda fake: fake.deliver(
+        Report(Group.SILICON, 1.0, context=FailContext(steady=True, working=(0, 1), paused=False))
+    ),
+    "an unblamed record": lambda fake: fake.deliver(Report(Group.ENVIRONMENT, 1.0, detail="soft lockup on CPU 3")),
+    "a lost verdict": _lose_the_verdict,
+    "a dead boot": _dead_boot,
+}
+
+
+def _next_spec(fake) -> Spec:
+    while fake.worker is None:
+        assert fake.progress()
+    return fake.worker.spec
+
+
+@pytest.mark.req("SOAK.bisect", "SOAK.bisect.culprit", "L16.G4", "L16.G6", "G6.soak", "L18.d.4.4.soak", "RV6")
+@pytest.mark.parametrize("group_fails", [Group.SILICON, Group.ENVIRONMENT])
+@pytest.mark.parametrize("fails", list(UNNAMED_SOAK_FAILURES), ids=list(UNNAMED_SOAK_FAILURES))
+def test_an_unnamed_soak_failure_bisects_on_full_length_soak_watches_and_its_culprit_backs_off_into_live1(
+    fails, group_fails
+):
     fake = running_fake()
-    for crashes in (1, 2):
-        while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
-            assert fake.progress()
-        fake.crash()
-        fake.post(Resume(1))
-        assert fake.state.incidents == (Incident.CRASH,) * crashes
-    assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.INCIDENTS)
+    while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
+        assert fake.progress()
+    watch = fake.worker.spec
+    values = {r.core: r.value for r in fake.state.cores}
+    incidents, streak = fake.state.incidents, fake.state.resume_streak
+    assert all(values.values()) and watch.cpus == ()
+    UNNAMED_SOAK_FAILURES[fails](fake)
+    flow = fake.state.flow
+    assert (fake.state.lifecycle, flow.stage) == (Lifecycle.RUNNING, Stage.BISECT)
+    assert (flow.bisect.entry, flow.bisect.quick) == (Stage.SOAK, False)
+    assert {r.core: r.value for r in fake.state.cores} == values
+    assert fake.state.incidents == incidents
+    assert fake.state.resume_streak == streak + (fails == "a dead boot")
+    groups = [_next_spec(fake)]
+    fake.deliver(Report(Group.PASS, watch.seconds))
+    groups.append(_next_spec(fake))
+    fake.deliver(Report(group_fails, watch.seconds))
+    assert [dict(group.vector) for group in groups] == [{0: 0, 1: 0}, {0: values[0], 1: 0}]
+    shape = (Stage.BISECT, Load.SOAK, watch.seconds, False, (), watch.plan_seed)
+    assert {(g.stage, g.load, g.seconds, g.quick, g.cpus, g.plan_seed) for g in groups} == {shape}
+    culprit, other = fake.state.core(0), fake.state.core(1)
+    assert (culprit.value, culprit.fb, other.value) == (values[0] + 1, values[0], values[1])
+    assert fake.state.incidents == incidents
+    assert _next_spec(fake).stage is Stage.LIVE1
+
+
+@pytest.mark.req("SOAK.bisect", "L16.G4")
+def test_a_dead_boot_in_soak_with_an_uncorrected_record_no_core_is_blamed_for_counts_an_incident_and_watches_again():
+    fake = running_fake()
+    while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
+        assert fake.progress()
+    watch, incidents, streak = fake.worker.spec, fake.state.incidents, fake.state.resume_streak
+    fake.crash(shared=True)
+    fake.post(Resume(1))
+    flow = fake.state.flow
+    assert (fake.state.lifecycle, flow.stage, flow.bisect, flow.dirty) == (Lifecycle.RUNNING, Stage.SOAK, None, False)
+    assert (fake.state.incidents, fake.state.resume_streak) == ((*incidents, Incident.CRASH), streak)
+    again = _next_spec(fake)
+    assert (again.stage, again.load, again.plan_seed) == (Stage.SOAK, Load.SOAK, watch.plan_seed)
+    assert again.vector == watch.vector
+
+
+@pytest.mark.req("SOAK.bisect.zero")
+@pytest.mark.parametrize("fails", list(UNNAMED_SOAK_FAILURES), ids=list(UNNAMED_SOAK_FAILURES))
+def test_an_unnamed_soak_failure_with_every_owned_core_at_0_pauses_as_stock_unstable(fails):
+    fake = fresh(2, [0, 0], 1, max_offset=-20, k_1t=2)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
+        assert fake.progress()
+    assert {r.value for r in fake.state.cores} == {0}
+    UNNAMED_SOAK_FAILURES[fails](fake)
+    assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.STOCK_UNSTABLE)
+    assert fake.state.flow.bisect is None
+
+
+@pytest.mark.req("SOAK.bisect.one_off")
+def test_a_soak_failure_whose_groups_and_exact_replay_all_pass_watches_soak_again_at_the_same_values():
+    fake = running_fake()
+    while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
+        assert fake.progress()
+    watch = fake.worker.spec
+    fake.deliver(Report(Group.SILICON, 1.0))
+    while fake.state.flow.bisect is not None:
+        assert fake.progress()
+    assert (fake.state.flow.stage, fake.state.flow.dirty, fake.state.flow.one_off) == (
+        Stage.SOAK,
+        False,
+        (Stage.SOAK, watch.vector),
+    )
+    again = _next_spec(fake)
+    assert (again.stage, again.load, again.plan_seed) == (Stage.SOAK, Load.SOAK, watch.plan_seed)
+    assert again.vector == watch.vector
+    run_to_rest(fake, 1000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert tuple((r.core, r.value) for r in fake.db.cores) == watch.vector
 
 
 @pytest.mark.req("T22.F11")
@@ -231,29 +332,17 @@ def test_a_machine_check_at_stock_then_an_unblamed_crash_pause_naming_each_kind_
     assert fake.state.incidents == (Incident.STOCK_MACHINE_CHECK, Incident.CRASH)
 
 
-@pytest.mark.req("T22.F11")
-def test_a_soak_failure_then_a_crash_in_soak_pause_naming_each_kind_with_its_own_count():
-    fake = running_fake()
-    while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
-        assert fake.progress()
-    fake.deliver(Report(Group.ENVIRONMENT, 1.0, detail="soft lockup on CPU 3"))
-    while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
-        assert fake.progress()
-    fake.crash()
-    fake.post(Resume(1))
-    assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.INCIDENTS)
-    assert fake.state.pause.detail == "1 crash nobody could be blamed for, 1 soak failure"
-    assert fake.state.incidents == (Incident.SOAK_FAILURE, Incident.CRASH)
-
-
-@pytest.mark.req("T22.F11")
-def test_an_incident_stored_without_its_kind_is_named_so_beside_a_new_crash():
+@pytest.mark.req("T22.F11", "K19")
+@pytest.mark.parametrize(
+    ("stored", "named"), [(Incident.UNRECORDED, "1 stored without its kind"), (Incident.SOAK_FAILURE, "1 soak failure")]
+)
+def test_an_incident_an_earlier_build_stored_is_named_so_beside_a_new_crash(stored, named):
     fake = running_fake()
     fake.crash(shared=True)
-    fake.db = replace(fake.db, incidents=(Incident.UNRECORDED,))
+    fake.db = replace(fake.db, incidents=(stored,))
     fake.post(Resume(1))
     assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.INCIDENTS)
-    assert fake.state.pause.detail == "1 crash nobody could be blamed for, 1 stored without its kind"
+    assert fake.state.pause.detail == f"1 crash nobody could be blamed for, {named}"
 
 
 @pytest.mark.req("L18.d.4.5")
@@ -316,22 +405,6 @@ def test_evidence_in_soak_backs_the_core_off_and_sends_the_profile_through_live1
         assert fake.progress()
     assert fake.worker.spec.stage is Stage.LIVE1
     assert {r.core: r.value for r in fake.state.cores}[core] > value
-
-
-@pytest.mark.req("G6.soak", "L16.G6", "RV6")
-def test_an_unblamed_event_in_soak_counts_an_incident_and_reproves_the_profile_and_the_second_pauses():
-    fake = running_fake()
-    for incidents in (1, 2):
-        while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
-            assert fake.progress()
-        fake.deliver(Report(Group.ENVIRONMENT, 1.0, detail="soft lockup on CPU 3"))
-        assert fake.state.incidents == (Incident.SOAK_FAILURE,) * incidents
-        if incidents == 1:
-            while fake.worker is None:
-                assert fake.progress()
-            assert fake.worker.spec.stage is Stage.LIVE1
-    assert (fake.state.lifecycle, fake.state.pause.reason) == (Lifecycle.PAUSED, PauseReason.INCIDENTS)
-    assert fake.state.pause.detail == "2 soak failures; the newest: soft lockup on CPU 3"
 
 
 @pytest.mark.req("T25.start")

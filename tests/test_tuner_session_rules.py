@@ -954,13 +954,14 @@ def test_a_crash_in_a_bisect_slot_records_that_group_as_failing_and_raises_the_r
 
 
 @pytest.mark.req("D16")
-def test_a_crash_in_soak_is_an_incident_that_leaves_the_resume_streak():
+def test_a_crash_in_soak_with_nobody_convicted_is_a_flow_rule_fail_that_bisects_and_raises_the_resume_streak():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     _until(fake, lambda spec, state: spec.stage is Stage.SOAK)
     streak, incidents = fake.state.resume_streak, fake.state.incidents
     fake.crash()
     fake.post(Resume(1))
-    assert (fake.state.resume_streak, fake.state.incidents) == (streak, (*incidents, Incident.CRASH))
+    assert (fake.state.resume_streak, fake.state.incidents) == (streak + 1, incidents)
+    assert (fake.state.flow.stage, fake.state.flow.bisect.entry) == (Stage.BISECT, Stage.SOAK)
 
 
 @pytest.mark.req("D26")

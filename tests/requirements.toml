@@ -21,7 +21,7 @@ proof = "built"
 
 [[requirement]]
 id = "RV6"
-statement = "A SOAK incident redirects through FINALIZE and incidents bound it at K19"
+statement = "An unnamed SOAK failure counts no incident: it bisects, and its culprit's back-off redirects through FINALIZE (D98)"
 proof = "built"
 
 [[requirement]]
@@ -482,7 +482,7 @@ proof = "built"
 
 [[requirement]]
 id = "ALLCORE.failed_vector.explorer"
-statement = "The fake world records every all-core test that delivered a failure, a lost verdict included (a hang is not recorded, since a crash the machine counts as an incident would trip it falsely), and clears one only when an exact replay of it passes; no future completes at or past a recorded vector on every core; SOAK is left out, its unnamed failure an incident by design; the explorer injects an unnamed HOT failure after a paused load"
+statement = "The fake world records every all-core test that delivered a failure, a lost verdict included, and clears one only when an exact replay of it passes; no future completes at or past a recorded vector on every core. SOAK is judged too (D98): a SOAK watch's unblamed record is a failure there, and a SOAK watch a dead boot cut is recorded, since a crash counted as an incident there watches again at the same plan seed; a hang in any other test is not recorded, since a crash the machine counts as an incident would trip it falsely. The explorer injects an unnamed HOT failure after a paused load"
 proof = "built"
 
 [[requirement]]
@@ -1050,7 +1050,7 @@ proof = "built"
 
 [[requirement]]
 id = "G6.soak"
-statement = "Environment in SOAK is incident +1 and dirty, P(INCIDENTS) at K19"
+statement = "Environment in a SOAK watch, its own or a SOAK Bisect group's, is that watch's FAIL: the watch bisects and the group fails (D98)"
 proof = "built"
 
 [[requirement]]
@@ -2365,17 +2365,42 @@ proof = "built"
 
 [[requirement]]
 id = "L16.G4"
-statement = "A crash in SOAK with nobody convicted is incident + 1 and dirty"
+statement = "A crash in SOAK with nobody convicted bisects as a flow-rule FAIL, no incident counted, unless its kernel log holds an uncorrected record no core is blamed for, which counts an incident and watches again (D98)"
 proof = "built"
 
 [[requirement]]
 id = "L16.G6"
-statement = "An unblamed record or kernel trouble in SOAK is incident + 1 and dirty, P(INCIDENTS) at K19"
+statement = "An unblamed record or kernel trouble in SOAK bisects as an unnamed SOAK failure, no incident counted (D98)"
 proof = "built"
 
 [[requirement]]
 id = "L16.G8"
 statement = "A Pause in SOAK stops the worker, reverts, waits K20, pauses P(USER); Resume re-runs the full SOAK"
+proof = "built"
+
+[[requirement]]
+id = "SOAK.bisect"
+statement = "An unnamed SOAK failure (a silicon verdict naming no core, the watch's unblamed record or kernel trouble, a lost verdict, a dead boot nobody is convicted for) starts a Bisect with entry SOAK, as STEADY, TRANSIENT and ENDURANCE do; each group, the lowest core first, replays the SOAK watch for its full length with its plan seed and no CPU loaded, never quick, whatever the failure's tail; no incident is counted, and a dead boot raises the resume streak. The exception is a dead boot whose kernel log holds an uncorrected record no core is blamed for: it counts an incident and the same SOAK watch runs again (D98, owner 2026-10-27, tuning-loops-round2.md; D91, D96)"
+proof = "built"
+
+[[requirement]]
+id = "SOAK.bisect.culprit"
+statement = "The core a SOAK Bisect finds backs off one step alone, the profile is dirty and goes straight to FINALIZE, whose dirty pass starts with LIVE1 on every core (D98 with D93)"
+proof = "built"
+
+[[requirement]]
+id = "SOAK.bisect.one_off"
+statement = "A SOAK Bisect whose every group and full-set replay pass marks the one-off and watches SOAK again at the same values (D98)"
+proof = "built"
+
+[[requirement]]
+id = "SOAK.bisect.zero"
+statement = "An unnamed SOAK failure with every owned core at 0 gives P(STOCK_UNSTABLE) and starts no Bisect (D98)"
+proof = "built"
+
+[[requirement]]
+id = "SOAK.bisect.explorer"
+statement = "The explorer injects each unnamed SOAK failure alone (a silicon verdict naming no core, an unblamed record, a lost verdict, a dead boot): every future reaches a SOAK Bisect and none completes at or past the failed vector (D98; PLAN Next 77)"
 proof = "built"
 
 [[requirement]]
@@ -2596,7 +2621,7 @@ proof = "built"
 
 [[requirement]]
 id = "L18.d.4.4.soak"
-statement = "Flow rule in SOAK: incident"
+statement = "Flow rule in SOAK: a FAIL of kind crash, its Bisect replaying the SOAK watch at full length (D98)"
 proof = "built"
 
 [[requirement]]
@@ -3858,7 +3883,7 @@ proof = "built"
 
 [[requirement]]
 id = "D16"
-statement = "The flow rule per loop: all-core stages a FAIL of kind crash, a Bisect group its FAIL, LIVE1 Bisect over the live cores, MEMORY Bisect with its slot, SOAK an incident; a flow-rule FAIL raises the streak, a void or incident does not"
+statement = "The flow rule per loop: all-core stages, SOAK included (D98), a FAIL of kind crash, a Bisect group its FAIL, LIVE1 Bisect over the live cores, MEMORY Bisect with its slot; a flow-rule FAIL raises the streak, a void or incident does not"
 proof = "built"
 
 [[requirement]]
@@ -4888,7 +4913,7 @@ proof = "built"
 
 [[requirement]]
 id = "T22.F11"
-statement = "Unblamed crashes, machine checks at stock and soak failures are counted and named separately."
+statement = "Unblamed crashes and machine checks at stock are counted and named separately, as is a soak failure a session stored before D98 still carries."
 proof = "built"
 
 [[requirement]]
