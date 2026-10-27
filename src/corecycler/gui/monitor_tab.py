@@ -23,6 +23,7 @@ from corecycler.gui.style import theme
 from corecycler.gui.widgets.charts import LiveChart
 from corecycler.gui.widgets.core_grid import ccd_groups
 from corecycler.monitor.frequency import fastest, read_max_frequency
+from corecycler.smu.driver import physical_ccds
 
 MAX_FREQ_HISTORY = 60  # equivalent-mutant: a sparkline length chosen for the eye, a sample more is unseen
 _IDLE_USAGE_PCT = 5
@@ -227,9 +228,10 @@ class MonitorTab(QWidget):
     def _stale_style() -> str:
         return f"font: bold 11px monospace; padding: 2px; color: {theme.COLOR_MUTED_DARK};"
 
-    def __init__(self, sensors: Sensors, power_available: bool, topology=None) -> None:
+    def __init__(self, sensors: Sensors, power_available: bool, topology=None, smu=None) -> None:
         super().__init__()
         self._topology = topology
+        self._smu = smu
         self._sensors = sensors
         self._per_core_bars: dict[int, CoreFreqBar] = {}
         self._per_core_visible = False
@@ -397,6 +399,7 @@ class MonitorTab(QWidget):
         tctl = sensed.tctl
         self._show_read(self._tctl_label, None if tctl is None else f"Tctl: {tctl:.1f}°C")
         self._temp_chart.add_value(tctl)
+        ccd_of = physical_ccds(self._smu, self._topology) if self._topology else {}
         for ccd_idx, temp in sensed.tccd:
             if temp is None:
                 if ccd_idx in self._ccd_temp_labels:
@@ -413,8 +416,8 @@ class MonitorTab(QWidget):
                 self._ccd_temp_labels[ccd_idx] = label
             vcache_tag = ""
             if self._topology:
-                for core in self._topology.cores.values():
-                    if core.ccd == ccd_idx and core.has_vcache:
+                for core_id, core in self._topology.cores.items():
+                    if ccd_of[core_id] == ccd_idx and core.has_vcache:
                         vcache_tag = " VC"
                         break
             self._show_read(self._ccd_temp_labels[ccd_idx], f"CCD{ccd_idx}{vcache_tag}: {temp:.1f}°C")
@@ -440,7 +443,7 @@ class MonitorTab(QWidget):
                         logical_cpu = core_info.logical_cpus[0]
                         cpu_freq = fastest(clocks, core_info.logical_cpus)
                         eff_max = fastest(ceilings, core_info.logical_cpus) or 0
-                        core_temp = None if core_info.ccd is None else ccd_temps.get(core_info.ccd)
+                        core_temp = ccd_temps.get(ccd_of[core_id])
                         loads = [usage_data[lc] for lc in core_info.logical_cpus if lc in usage_data]
                         bar.update_data(
                             cpu_freq,

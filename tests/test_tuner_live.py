@@ -74,6 +74,7 @@ from tests._heavy_lock import GPU_LINE, held_by_another_tool, holder_seen_by_ano
 from tests._old_rows import seed_old_session
 from tests._tuner_world import Resume, fresh, run_to_rest, save_machine_session, start
 from tests.test_execution import FakeBackend, lane, make_supervisor, run_one, within
+from tests.test_smu_core_map import pr23_5600x
 
 CPUS = ((0, (0, 16)), (1, (1, 17)), (8, (8, 24)))
 DOMAINS = ((0, 0), (1, 0), (8, 1))
@@ -254,6 +255,7 @@ def rig(
     runner=None,
     db: HistoryDB | None = None,
     check_interval_s: int = kernel.MCE_POLL_KERNEL_DEFAULT_S,
+    physical_ccd_of: tuple[tuple[int, int | None], ...] = DOMAINS,
 ) -> LiveRig:
     hardware = hardware or FakeHardware()
     return LiveRig(
@@ -262,6 +264,7 @@ def rig(
         store=Store(db or database(":memory:"), tmp_path / "state", IDENTITY),
         cpus_of=CPUS,
         domain_of=DOMAINS,
+        physical_ccd_of=physical_ccd_of,
         co_range=(-50, 10),
         say=lambda line: None,
         check_interval_s=check_interval_s,
@@ -3061,7 +3064,7 @@ class FakeSmu:
     scalar: float | None = 10.0
     boost: int | None = None
     commands: SimpleNamespace = field(
-        default_factory=lambda: SimpleNamespace(co_range=(-50, 10), get_curve_shaper_cmd=None)
+        default_factory=lambda: SimpleNamespace(co_range=(-50, 10), get_curve_shaper_cmd=None, ccd_fuse_addr=None)
     )
     shaper: tuple | None = None
 
@@ -5162,6 +5165,42 @@ def test_a_returned_test_stores_each_core_s_coverage_from_its_own_samples(tmp_pa
     store.test_returned("boot-a", row, Report(Group.PASS, 60.0), {0: 0})
     (saved,) = rows(SimpleNamespace(store=store), "SELECT coverage_json FROM tuner_tests WHERE id=?", (row,))
     assert json.loads(saved["coverage_json"]) == {"0": {"cells": [[5000, 60, 0.2]], "unreadable_s": 0.0}}
+
+
+@dataclass
+class OnlyTccd2Runner(FakeRunner):
+    def run(self, spec: Spec, stop: threading.Event, sink=None) -> Report:
+        for n in range(3):
+            sink(telemetry.Sample(True, ((spec.core, 5040.0),), 70.0, mono_ns=n * 500_000_000, tccd=((1, 61.0),)))
+        return super().run(spec, stop, sink)
+
+
+@pytest.mark.req("A2.coverage")
+def test_a_tested_core_s_coverage_reads_the_tccd_of_its_physical_ccd_not_of_its_l3_rank(tmp_path):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware, OnlyTccd2Runner(hardware), physical_ccd_of=((0, 1), (1, 1), (8, 1)))
+    r.start(config(), 1, 7, True)
+    while not rows(r, "SELECT id FROM tuner_tests WHERE ended_at IS NOT NULL"):
+        r.step(0.01)
+    first = rows(r, "SELECT core, coverage_json FROM tuner_tests WHERE ended_at IS NOT NULL ORDER BY id LIMIT 1")[0]
+    record = json.loads(first["coverage_json"])[str(first["core"])]
+    assert record == {"cells": [[5000, 60, 1.0]], "unreadable_s": 0.0}
+
+
+@pytest.mark.req("A2.coverage")
+def test_the_rig_takes_each_core_s_physical_ccd_from_the_driver_s_core_map(tmp_path):
+    vermeer = SimpleNamespace(
+        cores={core: SimpleNamespace(logical_cpus=(core, core + 6), ccd=0) for core in range(6)},
+        model_name="AMD Ryzen 5 5600X 6-Core Processor",
+        is_x3d=False,
+        vcache_ccd=None,
+    )
+    args = live_hw.parse(["--state-dir", str(tmp_path / "s"), "--start", "--cores", "0", "--max-offset", "-8"])
+    kagari = SimpleNamespace(binary_problem=lambda name: None)
+    db = database(tmp_path / "vermeer.db")
+    built = live_hw.build_rig(args, vermeer, pr23_5600x(), lambda: kagari, lambda line: None, db, IDENTITY, 300)
+    assert built.domain_of == tuple((core, 0) for core in range(6))
+    assert built.physical_ccd_of == tuple((core, 1) for core in range(6))
 
 
 def single_core_row(stage, core, value, verdict, cells, ended=True, recorded_core=None):

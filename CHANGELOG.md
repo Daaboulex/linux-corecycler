@@ -9,6 +9,21 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-10-27 per-core temperatures on a Vermeer whose only CCD is CCD 1)
+
+- hwmon names each CCD's temperature by its physical CCD (k10temp and
+  zenpower5 label physical CCD 1 Tccd2), but the core grid, the Monitor tab's
+  per-core bars and V-Cache tag and each tuner test's coverage record looked
+  it up by the
+  topology's CCD, the rank of its L3 id. On a 5600X whose CCD 0
+  is fused off every core's temperature showed blank and the coverage record
+  counted every second unreadable. The thermal stop reads the hottest sensor
+  and was not affected. Each core now reads its physical CCD's temperature,
+  which the driver's core map holds on Vermeer and the topology holds on
+  every other generation. A Vermeer whose core map is refused keeps the
+  topology's CCD, which there is either right or names a sensor hwmon does
+  not expose.
+
 ### Fixed (2026-10-27 Vermeer CCDs numbered apart from the SMU, PR #23 by iam4x)
 
 - The topology numbers CCDs by the rank of their L3 id, so a 5600X whose

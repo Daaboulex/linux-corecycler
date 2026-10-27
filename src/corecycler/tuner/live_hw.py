@@ -45,7 +45,7 @@ from corecycler.monitor.cpu_usage import CPUUsageReader
 from corecycler.monitor.frequency import Clocks, PowerState, fastest, read_power_state
 from corecycler.monitor.hwmon import SensorRead, Sensors
 from corecycler.smu.commands import detect_generation, get_commands, tjmax_c
-from corecycler.smu.driver import SHAPER_BAND_NAMES, RyzenSMU, core_map_blocked
+from corecycler.smu.driver import SHAPER_BAND_NAMES, RyzenSMU, core_map_blocked, physical_ccds
 from corecycler.smu.pmtable import (
     PMTableData,
     PMTableReader,
@@ -895,6 +895,7 @@ def build_rig(
         store=Store(db, args.state_dir, identity),
         cpus_of=cpus_of,
         domain_of=domain_of,
+        physical_ccd_of=tuple(sorted(physical_ccds(smu, topology).items())),
         co_range=smu.commands.co_range,
         tjmax_c=tjmax_c(topology.model_name),
         say=say,

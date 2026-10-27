@@ -31,6 +31,7 @@ from tests._heavy_lock import GPU_LINE, held_by_another_tool, holder_seen_by_ano
 from tests._old_rows import seed_old_session
 from tests._sensors import FakeClocks, FakeSensors, FakeTicker, a_tick
 from tests._tuner_world import save_machine_session
+from tests.test_smu_core_map import pr23_5600x
 
 
 def _qapp():
@@ -705,6 +706,40 @@ class TestElapsedWatchdog:
         window._sensors.give(tctl=65.0, tccd=((0, 72.0),))
         window._feed_core_grid_telemetry(window._ticker.read([]))
         assert window._logger.record_telemetry_sample.call_args.args[2] is None
+
+    def test_a_vermeer_whose_only_ccd_is_physical_ccd_1_shows_every_core_its_tccd2_reading(
+        self, monkeypatch, tmp_path, db
+    ):
+        from corecycler.gui import smu_tab
+
+        class Pr23Driver:
+            is_available = staticmethod(lambda: True)
+
+            def __new__(cls, commands):
+                return pr23_5600x(commands)
+
+        monkeypatch.setattr(smu_tab, "RyzenSMU", Pr23Driver)
+        vermeer = CPUTopology(
+            model_name="AMD Ryzen 5 5600X 6-Core Processor",
+            family=25,
+            model=0x21,
+            physical_cores=6,
+            logical_cpus_count=12,
+            ccds=1,
+        )
+        for cid in range(6):
+            vermeer.cores[cid] = PhysicalCore(core_id=cid, ccd=0, ccx=None, logical_cpus=(cid, cid + 6))
+        win = _build(monkeypatch, tmp_path, db=db, topology=vermeer)
+        win._logger = MagicMock()
+        win._active_test_core = 2
+        win._sensors.give(tctl=70.0, tccd=((1, 66.0),))
+        tick = win._ticker.read([])
+        win._feed_core_grid_telemetry(tick)
+        win._monitor_tab.on_tick(tick)
+        assert win._logger.record_telemetry_sample.call_args.args[2] == 66.0
+        assert win._monitor_tab._per_core_bars[2]._temp == 66.0
+        assert win._monitor_tab._ccd_temp_labels[1].text() == "CCD1: 66.0°C"
+        win._history_db = None
 
     def test_a_core_with_no_temperature_read_records_none_not_zero(self, window):
         window._sensors.give()

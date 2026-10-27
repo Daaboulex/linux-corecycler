@@ -54,7 +54,7 @@ from corecycler.monitor.frequency import Clocks, fastest
 from corecycler.monitor.hwmon import Sensors
 from corecycler.monitor.msr import msr_problem
 from corecycler.monitor.tick import Tick, Ticker, first_cpus
-from corecycler.smu.driver import core_map_blocked, smu_problem
+from corecycler.smu.driver import core_map_blocked, physical_ccds, smu_problem
 
 log = logging.getLogger(__name__)
 
@@ -229,10 +229,11 @@ class MainWindow(QMainWindow):
         self._results_tab = ResultsTab()
         self._tabs.addTab(self._results_tab, "Results")
 
-        self._monitor_tab = MonitorTab(self._sensors, self._ticker.power_available(), topology=self._topology)
-        self._tabs.addTab(self._monitor_tab, "Monitor")
-
         self._smu_tab = SMUTab(self._topology)
+        self._monitor_tab = MonitorTab(
+            self._sensors, self._ticker.power_available(), topology=self._topology, smu=self._smu_tab.smu
+        )
+        self._tabs.addTab(self._monitor_tab, "Monitor")
         self._tabs.addTab(self._smu_tab, "Curve-Tuner")
 
         smu = self._smu_tab.smu
@@ -769,7 +770,7 @@ class MainWindow(QMainWindow):
         core_read = next((read for read in tick.cores if read[0] == current_core), None)
         core_watts = tick.core_watts.get(core_info.logical_cpus[0])
         reading = tick.sensed
-        temp = None if core_info.ccd is None else dict(reading.tccd).get(core_info.ccd)
+        temp = dict(reading.tccd).get(physical_ccds(self._smu_tab.smu, self._topology)[current_core])
         core_vcore = self._sensors.vcore(reading)
 
         self._core_grid.update_core_telemetry(

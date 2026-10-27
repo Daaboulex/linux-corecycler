@@ -146,9 +146,10 @@ def test_co_read_answers_on_every_slot_so_it_cannot_find_fused_off_cores():
     require(RyzenSMU.is_available(), "requires the ryzen_smu module")
     smu = RyzenSMU(commands)
     require(smu.check_writable()[0], "requires ryzen_smu mailbox access")
-    ccds = {c.ccd for c in detect_topology().cores.values() if c.ccd is not None}
-    require(bool(ccds), "requires L3-detected CCDs")
-    for ccd in sorted(ccds):
+    smu.set_topology(detect_topology())
+    core_map = smu.core_map
+    require_privileged(core_map is not None, f"requires the driver's core map: {smu.core_map_error}")
+    for ccd in sorted({ccd for ccd, _slot in core_map.values()}):
         answered = [
             slot for slot in range(8) if smu._send_get_co(encode_co_arg(0, 0, generation, ccd=ccd, slot=slot)).success
         ]

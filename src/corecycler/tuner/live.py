@@ -726,6 +726,7 @@ class LiveRig:
     store: Store
     cpus_of: tuple[tuple[int, tuple[int, ...]], ...]
     domain_of: tuple[tuple[int, int | None], ...]
+    physical_ccd_of: tuple[tuple[int, int | None], ...]
     co_range: tuple[int, int] | None
     two_t_problem: str | None = None
     tjmax_c: float | None = None
@@ -1163,7 +1164,7 @@ class LiveRig:
             session, boot = self.state.session_id, self.boot
 
             def returned(row: int) -> None:
-                self.store.test_returned(boot, row, event.report, dict(self.domain_of))
+                self.store.test_returned(boot, row, event.report, dict(self.physical_ccd_of))
                 self.read_to[session] = event.report.kernel_read_ns
 
             failed = self._end_test(event.token, returned)

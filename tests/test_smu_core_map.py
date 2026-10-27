@@ -26,7 +26,7 @@ from corecycler.smu.commands import (
     CPUGeneration,
     get_commands,
 )
-from corecycler.smu.driver import RyzenSMU, SMUResponse, core_map_blocked
+from corecycler.smu.driver import RyzenSMU, SMUResponse, core_map_blocked, physical_ccds
 
 VERMEER = get_commands(CPUGeneration.ZEN3_VERMEER)
 ZEN5 = get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE)
@@ -137,6 +137,14 @@ PR23_5600X_CCD_WORDS = (0x40C00000, 0x3F)
 PR23_5950X_CCD_WORDS = (0x00C00000, 0x3F)
 
 
+def pr23_5600x(_commands=None) -> RyzenSMU:
+    """The PR #23 5600X's driver: CCD 0 fused off, its six cores on topology CCD 0 and physical CCD 1."""
+    smu, _silicon = _mapped_smu(
+        VERMEER, dict.fromkeys(range(6), 0), {1: REPORTED_5600X_LIVE_SLOTS}, ccd_words=PR23_5600X_CCD_WORDS
+    )
+    return smu
+
+
 class TestPhysicalCcd:
     """PR #23 (iam4x): the topology numbers CCDs by the rank of their L3 id, so on a Vermeer whose physical CCD 0
     is fused off the surviving CCD 1 is group 0; the CCD-disable fuses name the physical CCD. Words read on the
@@ -229,6 +237,25 @@ class TestPhysicalCcd:
         )
         assert smu.core_map == {core: (core // 8, core % 8) for core in range(16)}
         assert silicon.fuse_reads == []
+
+    def test_the_5600x_s_cores_read_the_temperature_of_physical_ccd_1(self):
+        """hwmon labels physical CCD i as Tccd(i+1) (k10temp and zenpower5 alike), so these cores read Tccd2."""
+        assert physical_ccds(pr23_5600x(), _topo(dict.fromkeys(range(6), 0))) == dict.fromkeys(range(6), 1)
+
+    def test_a_refused_vermeer_map_keeps_the_topology_s_ccd_so_a_5950x_still_reads_both(self):
+        cores = {core: core // 8 for core in range(16)}
+        smu, _silicon = _mapped_smu(VERMEER, cores, {0: set(range(8)), 1: set(range(8))}, smn=False)
+        assert smu.core_map is None
+        assert physical_ccds(smu, _topo(cores)) == cores
+
+    def test_granite_ridge_keeps_the_topology_s_ccd_even_while_per_core_co_is_refused(self):
+        cores = dict.fromkeys(range(6), 1)
+        smu, _silicon = _mapped_smu(ZEN5, cores, {1: REPORTED_5600X_LIVE_SLOTS}, smn=False)
+        assert smu.core_map is None
+        assert physical_ccds(smu, _topo(cores)) == cores
+
+    def test_without_a_driver_the_topology_s_ccd_stands(self):
+        assert physical_ccds(None, _topo({0: 0, 8: 1, 9: None})) == {0: 0, 8: 1, 9: None}
 
 
 class TestRenumberedHarvested:

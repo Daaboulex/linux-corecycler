@@ -47,6 +47,7 @@ def _make_mock_mainwindow(**overrides):
     ns._logger = overrides.get("_logger")
     ns._status_msg = overrides.get("_status_msg", MagicMock())
     ns._monitor_tab = overrides.get("_monitor_tab", MagicMock())
+    ns._smu_tab = types.SimpleNamespace(smu=None)
     return ns
 
 

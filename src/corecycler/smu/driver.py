@@ -87,6 +87,21 @@ def core_map_blocked(smu) -> str | None:
     return None
 
 
+def physical_ccds(smu: RyzenSMU | None, topology) -> dict[int, int | None]:
+    """Each topology core's physical CCD, the CCD a TccdN temperature label numbers from 1.
+
+    The topology ranks CCDs by L3 id, which is the physical number unless the generation names its CCD-disable
+    fuses; there the driver's core map holds it, and a core a present map does not hold is None. Without a driver
+    or with its map refused the topology's CCD stands: on Vermeer's two CCD positions it is either right or names a
+    sensor hwmon does not expose, never another CCD's.
+    """
+    ranked = {core: info.ccd for core, info in topology.cores.items()}
+    mapped = None if smu is None or smu.commands.ccd_fuse_addr is None else smu.core_map
+    if mapped is None:
+        return ranked
+    return {core: mapped[core][0] if core in mapped else None for core in ranked}
+
+
 @dataclass(frozen=True, slots=True)
 class SMUResponse:
     success: bool

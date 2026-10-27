@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys as _sys
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +11,7 @@ if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
 
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.monitor.tick import Tick
+from corecycler.smu.commands import CPUGeneration, get_commands
 from tests._sensors import FakeSensors
 
 
@@ -58,6 +60,19 @@ class TestMonitorUpdateMatrix:
         assert 0 in tab._ccd_temp_labels
         assert "VC" in tab._ccd_temp_labels[0].text()
         assert "VC" not in tab._ccd_temp_labels[1].text()
+
+    def test_the_v_cache_tag_goes_on_the_ccd_its_cores_sit_on_physically(self):
+        _qapp()
+        from corecycler.gui.monitor_tab import MonitorTab
+
+        topo = CPUTopology(model_name="Test", family=25, model=0x21, physical_cores=2, ccds=1, is_x3d=True)
+        for cid in range(2):
+            topo.cores[cid] = PhysicalCore(core_id=cid, ccd=0, ccx=None, logical_cpus=(cid,), has_vcache=True)
+        driver = SimpleNamespace(commands=get_commands(CPUGeneration.ZEN3_VERMEER), core_map={0: (1, 0), 1: (1, 1)})
+        sensors = FakeSensors(tccd=((1, 59.0),))
+        tab = MonitorTab(sensors, True, topology=topo, smu=driver)
+        tab.on_tick(_tick(sensors=sensors))
+        assert tab._ccd_temp_labels[1].text() == "CCD1 VC: 59.0°C"
 
     def test_a_ccd_whose_read_failed_gets_no_label(self):
         sensors = FakeSensors(tccd=((0, None), (1, 59.0)))
