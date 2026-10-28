@@ -2620,6 +2620,16 @@ statement = "A dead boot with a record naming a held core still convicts each ow
 proof = "built"
 
 [[requirement]]
+id = "L18.d.4.3b.between"
+statement = "In a Bisect begun in an all-core stage or MEMORY, whose every slot loads every owned core and sends each back to its baseline after, a slot's values are resident only while that slot runs: a dead boot between two slots, the Q6 replay's included, convicts no core by its record, a record the CO journal cannot place is charged to its core's baseline, and the crash is an incident while the session was running (L18.d.4.3h); a dead boot during a slot convicts as before"
+proof = "built"
+
+[[requirement]]
+id = "L18.d.4.3b.between.explorer"
+statement = "The fake world marks a dead boot that finds every owned core at its baseline between two slots of a Bisect begun in an all-core stage or MEMORY, and refuses the resume that reads it if any core's value, fail bound or crash count moved; the explorer injects one dead boot while no test runs, an uncorrected record on every owned core, into a two-core CPU whose HOT load fails in STEADY, reaches that dead boot, and every future comes to rest"
+proof = "built"
+
+[[requirement]]
 id = "L18.d.4.poll"
 statement = "A machine-check record lands inside the test that caused it: Start and Resume refuse while the kernel polls the machine-check banks less often than every 5 s, naming the command that sets it (ryzen 2026-10-13: at the default 300 s, corrected records from failed tests on cores 8 and 9 were logged minutes later and paused the session as unstable at stock)."
 proof = "built"

@@ -70,6 +70,7 @@ FAULTS = (
     "start",
     "named_unowned",
     "skipped",
+    "crash_mce_between",
 )
 FOREIGN_FAULTS = ProgramFaults(
     100_000_000_000,
@@ -150,6 +151,7 @@ def key(fake: Fake) -> tuple:
         fake.marker,
         frozenset(fake.behind),
         frozenset(fake.owed),
+        fake.died_between_slots,
     )
 
 
@@ -195,6 +197,8 @@ def moves(fake: Fake, budget: dict[str, int]) -> list[tuple[str, dict[str, int]]
         if fault == "named_unowned" and (fake.worker is None or fake.worker.spec.load not in ALLCORE_LOADS):
             continue
         if fault == "skipped" and (fake.worker is None or fake.worker.spec.load is not Load.MEMORY):
+            continue
+        if fault == "crash_mce_between" and (fake.worker is not None or s.lifecycle is not Lifecycle.RUNNING):
             continue
         if fault == "validate" and (fake.db is None or fake.db.status != "completed" or s.lifecycle in HELD):
             continue
@@ -312,6 +316,8 @@ def act(fake: Fake, move: str) -> None:
             fake.deliver(Report(Group.SILICON, worker_spec.seconds, named=(unowned,)))
         case "skipped":
             fake.deliver(Report(Group.PASS, 0.0, skipped="injected"))
+        case "crash_mce_between":
+            fake.crash(evidence=tuple(Evidence(core, False) for core, _ in fake.state.baseline))
         case _:
             raise AssertionError(move)
 
@@ -348,6 +354,9 @@ def validation_reach(node: Fake, move: str) -> str | None:
         target = next((core for core in node.edges if core != spec.core), spec.core)
         return "a machine check at a stock core" if dict(spec.vector).get(target) == 0 else None
     return None
+
+
+BETWEEN_SLOTS = "a dead boot between two slots of an all-core bisection, every owned core at its baseline"
 
 
 def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
@@ -388,6 +397,8 @@ def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
                 act(child, move)
             except Broken as broken:
                 raise Broken(f"{broken} after {(*path, move)}") from broken
+            if move == "crash_mce_between" and child.died_between_slots:
+                survey.reached.add(BETWEEN_SLOTS)
             if any(line.startswith("continued: the kernel changed") for line in child.log):
                 survey.by_itself += 1
             flow = child.state.flow
@@ -445,7 +456,18 @@ ONE_OF_EACH = {
     fault: 1
     for fault in FAULTS
     if fault
-    not in ("profile", "setup", "kernel", "outside", "reengage", "program_fault", "start", "named_unowned", "skipped")
+    not in (
+        "profile",
+        "setup",
+        "kernel",
+        "outside",
+        "reengage",
+        "program_fault",
+        "start",
+        "named_unowned",
+        "skipped",
+        "crash_mce_between",
+    )
 }
 
 
@@ -525,6 +547,16 @@ def test_every_future_of_a_crash_inside_a_quick_group_runs_the_rest_of_its_bisec
     fake.edges_hot = {0: 0, 1: 0, 2: 0}
     survey = explore(fake, {"crash": 1, "crash_mce": 1, "crash_shared": 1, "total": 1}, cap=2_000_000)
     assert survey.quick_crashes > 0
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+@pytest.mark.req("L18.d.4.3b.between.explorer")
+def test_no_dead_boot_between_the_slots_of_an_all_core_bisection_moves_a_core_that_sat_at_its_baseline():
+    fake = tiny(2, [-4, -4], 2)
+    fake.edges_hot = {0: 0, 1: 0}
+    survey = explore(fake, {"crash_mce_between": 1, "total": 1}, cap=2_000_000)
+    assert BETWEEN_SLOTS in survey.reached
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
 

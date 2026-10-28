@@ -7,6 +7,7 @@ from corecycler.history.db import JournalRow
 from corecycler.tuner.live import crash_suspects, resident_at_death
 from corecycler.tuner.machine.session import ALLCORE_LOADS, transition
 from corecycler.tuner.machine.types import (
+    ALLCORE,
     HELD_STATUSES,
     Abort,
     Announce,
@@ -64,6 +65,17 @@ def replay_of(spec) -> tuple:
 
 def held(state: SessionState | Stored) -> tuple[tuple[int, int], ...]:
     return tuple((r.core, r.value) for r in state.cores)
+
+
+def at_baseline_between_whole_slots(st: Stored | None, co: dict[int, int]) -> bool:
+    flow = None if st is None else st.flow
+    return (
+        flow is not None
+        and flow.stage is Stage.BISECT
+        and flow.bisect.entry in ALLCORE | {Stage.MEMORY}
+        and not any(r.in_test for r in st.cores)
+        and all(co.get(core) == base for core, base in st.baseline)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +158,7 @@ class Fake:
     completed: tuple[Stored, ...] = ()
     crashed_bisect: bool = False
     owed: set[Stage | None] = field(default_factory=set)
+    died_between_slots: bool = False
 
     def __post_init__(self) -> None:
         if not self.co:
@@ -204,6 +217,9 @@ class Fake:
                 self.check_settled(before, ev, result)
             if isinstance(ev, CrashEvidenceRead) and ev.dirty_end and stored_before is not None:
                 after = result.state
+                if self.died_between_slots:
+                    self.died_between_slots = False
+                    self.check_unmoved(stored_before, after)
                 counts = (
                     ("incidents", len(after.incidents), len(stored_before.incidents)),
                     ("resume_streak", after.resume_streak, stored_before.resume_streak),
@@ -454,6 +470,18 @@ class Fake:
                 "every failure"
             )
 
+    def check_unmoved(self, stored: Stored, after: SessionState) -> None:
+        """A dead boot between two slots of a bisection whose every slot loads every core, every owned core at its
+        baseline when the boot died, is evidence about the baseline: it convicts no core and moves no value or fail
+        bound (L18.d.4.3b.between)."""
+        was = {r.core: (r.value, r.fb, r.crash_count) for r in stored.cores}
+        for r in after.cores:
+            if (r.value, r.fb, r.crash_count) != was[r.core]:
+                raise Broken(
+                    f"a dead boot between two all-core bisection slots, every owned core at its baseline, moved core "
+                    f"{r.core} from (value, fail bound, crashes) {was[r.core]} to {(r.value, r.fb, r.crash_count)}"
+                )
+
     def judge_validation(self, spec, report: Report, cut: bool) -> None:
         flow = self.state.flow
         if flow is None or flow.validating is None:
@@ -619,6 +647,7 @@ class Fake:
             self.failed_allcore.add(replay_of(self.worker.spec))
         if self.worker is not None and self.worker.spec.stage is Stage.BISECT:
             self.crashed_bisect = True
+        self.died_between_slots = at_baseline_between_whole_slots(st, self.co)
         self.crash_note = (evidence, shared)
         self.dead_suspects = tuple(sorted(crash_suspects(resident_at_death(self.journal), -1)))
         self.journal = ()

@@ -8,12 +8,15 @@ from corecycler.tuner.machine import bisect, search
 from corecycler.tuner.machine.resume import attribute, resident
 from corecycler.tuner.machine.session import QUARANTINE_STREAK, transition
 from corecycler.tuner.machine.types import (
+    ALLCORE,
+    AllCore,
     Announce,
     BisectRun,
     CoreRecord,
     CrashEvidenceRead,
     Evidence,
     Flow,
+    Incident,
     Klass,
     Lifecycle,
     Live1,
@@ -256,6 +259,63 @@ def test_a_bisect_single_core_head_in_test_is_convicted():
     run = BisectRun(Stage.LIVE1, 0, Klass.T1, (0, 1), ((0, -5), (1, -3)), ((1,),), (((0, 1), False),))
     state = replace(LIVE, flow=Flow(Stage.BISECT, live1=Live1(), bisect=run))
     assert attribute(state, evidence_read()).convict == (1,)
+
+
+SLOT_VALUES = {0: -5, 1: -3, 2: -4}
+
+
+def bisecting(entry: Stage, in_test: tuple[int, ...] = ()) -> SessionState:
+    domains = dict(WORLD.domain_of)
+    run = bisect.record(bisect.begin(entry, 0, Klass.T1, SLOT_VALUES, domains), True, domains)
+    cores = tuple(replace(proven(core, value), in_test=core in in_test) for core, value in SLOT_VALUES.items())
+    return held(Flow(Stage.BISECT, bisect=run, allcore=AllCore()), cores)
+
+
+def residents(s: SessionState) -> dict[int, int]:
+    return {r.core: resident(s, r.core) for r in s.cores}
+
+
+@pytest.mark.req("L18.d.4.3b.between")
+def test_a_bisect_core_reads_its_slot_value_while_a_slot_runs_and_its_baseline_between_all_core_slots():
+    for entry in (*sorted(ALLCORE), Stage.MEMORY):
+        assert residents(bisecting(entry)) == dict(bisecting(entry).baseline)
+        assert residents(bisecting(entry, in_test=(0, 1, 2))) == {0: -5, 1: -3, 2: 0}
+    assert residents(bisecting(Stage.LIVE1, in_test=(0,))) == {0: -5, 1: -3, 2: 0}
+
+
+@pytest.mark.req("L18.d.4.3b.between", "L18.d.4.charged", "L18.d.4.3h")
+def test_a_dead_boot_between_slots_of_an_all_core_bisection_charges_its_record_to_the_baseline_and_moves_no_core():
+    waiting = bisecting(Stage.STEADY)
+    record = evidence_read(evidence=(Evidence(1, False),))
+    result = transition(waiting, record, WORLD)
+    after = result.state
+    notes = [e.text for e in result.effects if isinstance(e, Announce) and e.kind == "record_unplaced"]
+    assert (after.cores, after.flow.bisect, after.incidents) == (waiting.cores, waiting.flow.bisect, (Incident.CRASH,))
+    assert notes == [
+        "core 1's machine check is charged to 0, its value when the last boot ended: "
+        "its moment in that boot is not known"
+    ]
+    during = transition(bisecting(Stage.STEADY, in_test=(0, 1, 2)), record, WORLD).state
+    assert (during.core(1).fb, during.core(1).crash_count, during.flow.stage) == (SLOT_VALUES[1], 1, Stage.STEADY)
+
+
+@pytest.mark.parametrize("corrected", [False, True])
+@pytest.mark.req("L18.d.4.3b.between", "D102")
+def test_a_dead_boot_while_the_full_set_s_q6_replay_waits_moves_no_core_and_one_during_it_loosens_the_set(
+    corrected,
+):
+    first = bisecting(Stage.STEADY)
+    run = first.flow.bisect
+    replay = replace(bisect.retest(run), rerun=run.universe)
+    loosened = tuple(search.loosen(r, CFG) for r in first.cores)
+    waiting = replace(first, cores=loosened, flow=replace(first.flow, bisect=replay))
+    record = evidence_read(evidence=(Evidence(1, corrected),))
+    after = transition(waiting, record, WORLD).state
+    assert (after.cores, after.flow.bisect, after.incidents) == (loosened, replay, (Incident.CRASH,))
+    running = replace(waiting, cores=tuple(replace(r, in_test=True) for r in loosened))
+    during = transition(running, record, WORLD).state
+    assert all(now.value > before.value for now, before in zip(during.cores, loosened, strict=True))
+    assert during.core(1).fb == waiting.core(1).value
 
 
 def test_resident_values_follow_the_stage_and_refuse_a_core_the_session_does_not_own():
