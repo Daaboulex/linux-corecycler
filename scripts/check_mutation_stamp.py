@@ -11,7 +11,7 @@ def _git(*args: str) -> str:
 
 
 def problem(changed: list[str], tree: str, stamp: str | None) -> str | None:
-    if not any(name.startswith("src/") and name.endswith(".py") for name in changed):
+    if not any(name.startswith(("src/", "scripts/")) and name.endswith(".py") for name in changed):
         return None
     if stamp is not None and stamp.strip() == tree:
         return None

@@ -571,6 +571,20 @@ def on_path(monkeypatch):
     return install
 
 
+@pytest.fixture
+def fake_git(exec_tmp_path, monkeypatch):
+    """Put first on PATH a git that runs the given Python program: the package build's sandbox has no git."""
+    import os
+
+    def install(program: str):
+        git = exec_tmp_path / "git"
+        git.write_text(f"#!{sys.executable}\n{program}")
+        git.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{exec_tmp_path}{os.pathsep}{os.environ['PATH']}")
+
+    return install
+
+
 @pytest.fixture(autouse=True)
 def machine(monkeypatch, tmp_path_factory):
     from tests._machine import installed

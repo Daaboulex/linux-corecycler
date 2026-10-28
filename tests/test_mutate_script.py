@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -97,7 +98,6 @@ def test_every_mutant_is_built_from_the_original_text_even_after_one_was_written
     total = mutate._count(original, {1, 2})
     path.write_text(mutate._build(path, original, 0, {1, 2}).source)
     built = [mutate._build(path, original, index, {1, 2}) for index in range(total)]
-    assert None not in built
     assert len({mutant.source for mutant in built}) == total
 
 
@@ -121,6 +121,190 @@ def test_only_a_clean_staged_run_stamps_the_tree_it_checked(monkeypatch, tmp_pat
         assert mutate._diff_mode(commit, ["tests/test_x.py"], 10) == verdict
         assert stamp.is_file() is stamped
     assert stamp.read_text() == "tree-1\n"
+
+
+def _staged_run(monkeypatch, tmp_path, changed):
+    diffs = {
+        name: f"diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n@@ -2 +3,2 @@\n-old\n+new\n+newer\n"
+        for name in changed
+    }
+
+    def git(*args):
+        if args[0] == "write-tree":
+            return "tree-1\n"
+        if args[0] == "rev-parse":
+            return f"{tmp_path}\n"
+        under = [name for name in diffs if name.startswith(args[args.index("--") + 1 :])]
+        return "\n".join(under) if "--name-only" in args else "".join(diffs[name] for name in under)
+
+    mutated = []
+
+    def clean(targets, tests, timeout, root, cap, baseline):
+        mutated.extend((str(path.relative_to(root)), lines, tests) for path, lines in targets)
+        return 0
+
+    monkeypatch.setattr(mutate, "_git", git)
+    monkeypatch.setattr(mutate, "_export", lambda commit, into: None)
+    monkeypatch.setattr(mutate, "_baseline", lambda tests, timeout, root: ({}, {}))
+    monkeypatch.setattr(mutate, "_mutate", clean)
+    return mutate._diff_mode(None, None, 10), mutated
+
+
+def test_a_staged_change_mutates_the_lines_it_adds_to_a_script_and_none_of_a_test_or_a_doc(monkeypatch, tmp_path):
+    verdict, mutated = _staged_run(monkeypatch, tmp_path, ["docs/x.md", "scripts/tool.py", "tests/test_tool.py"])
+    assert (verdict, mutated) == (0, [("scripts/tool.py", {3, 4}, ["tests/test_tool.py"])])
+
+
+def test_a_clean_run_of_a_change_to_scripts_alone_stamps_the_tree_it_checked(monkeypatch, tmp_path):
+    assert _staged_run(monkeypatch, tmp_path, ["scripts/tool.py", "tests/test_tool.py"])[0] == 0
+    assert (tmp_path / "mutation-stamp").read_text() == "tree-1\n"
+
+
+def test_a_staged_change_to_src_is_mutated_and_stamped_as_it_always_was(monkeypatch, tmp_path):
+    verdict, mutated = _staged_run(monkeypatch, tmp_path, ["docs/x.md", "src/corecycler/x.py", "tests/test_x.py"])
+    assert (verdict, mutated) == (0, [("src/corecycler/x.py", {3, 4}, ["tests/test_x.py"])])
+    assert (tmp_path / "mutation-stamp").read_text() == "tree-1\n"
+
+
+def test_a_change_with_no_python_line_under_src_or_scripts_mutates_nothing_and_stamps_nothing(
+    monkeypatch, tmp_path, capsys
+):
+    verdict, mutated = _staged_run(monkeypatch, tmp_path, ["docs/x.md", "scripts/run.sh", "tests/test_x.py"])
+    assert (verdict, mutated) == (0, [])
+    assert capsys.readouterr().out == "no source lines changed: nothing to mutate\n"
+    assert not (tmp_path / "mutation-stamp").exists()
+
+
+def test_a_change_no_test_touches_imports_or_is_named_for_is_refused_saying_how_to_name_them(
+    monkeypatch, tmp_path, capsys
+):
+    verdict, mutated = _staged_run(monkeypatch, tmp_path, ["scripts/tool.py"])
+    assert (verdict, mutated) == (2, [])
+    assert "name the tests that prove it with --tests" in capsys.readouterr().out
+    assert not (tmp_path / "mutation-stamp").exists()
+
+
+FAKE_GIT = """import shutil
+import sys
+import tarfile
+from pathlib import Path
+
+command, *rest = sys.argv[1:]
+if command == "rev-parse":
+    print(Path.cwd())
+elif command == "checkout-index" and rest[0] == "--all":
+    shutil.copytree("index", rest[1].removeprefix("--prefix="), dirs_exist_ok=True)
+elif command == "archive" and Path("commits", rest[0]).is_dir():
+    with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+        archive.add(Path("commits", rest[0]), arcname=".")
+else:
+    sys.exit(f"fatal: {command} {rest}")
+"""
+
+
+def test_git_runs_in_the_repository_the_copy_holds_the_index_or_the_commit_and_a_git_or_tar_failure_stops_it(
+    monkeypatch, tmp_path, fake_git
+):
+    repo = tmp_path / "repo"
+    for tree, text in (("index", "staged = 1\n"), ("commits/c0ffee", "committed = 1\n")):
+        (repo / tree / "src").mkdir(parents=True)
+        (repo / tree / "src" / "a.py").write_text(text)
+    fake_git(FAKE_GIT)
+    monkeypatch.setattr(mutate, "REPO", repo)
+    assert mutate._git("rev-parse", "--show-toplevel") == f"{repo}\n"
+    for commit, text in ((None, "staged = 1\n"), ("c0ffee", "committed = 1\n")):
+        into = tmp_path / f"copy-{commit}"
+        into.mkdir()
+        mutate._export(commit, into)
+        assert (into / "src" / "a.py").read_text() == text
+    with pytest.raises(subprocess.CalledProcessError) as unknown_commit:
+        mutate._export("deadbeef", tmp_path / "copy-None")
+    with pytest.raises(subprocess.CalledProcessError) as unwritable_copy:
+        mutate._export("c0ffee", tmp_path / "missing")
+    with pytest.raises(subprocess.CalledProcessError) as failed_git:
+        mutate._git("cat-file", "-e", "deadbeef")
+    failures = (unknown_commit, unwritable_copy, failed_git)
+    assert [failure.value.cmd[:2] for failure in failures] == [["git", "archive"], ["tar", "-x"], ["git", "cat-file"]]
+
+
+def test_staged_and_commit_run_the_diff_mode_with_the_named_tests_and_timeout(monkeypatch):
+    ran = []
+    monkeypatch.setattr(mutate, "_diff_mode", lambda *args: ran.append(args) or 7)
+    for argv in (
+        ["--staged", "--tests", "tests/test_a.py", "--timeout", "45"],
+        ["--commit", "HEAD~2", "--timeout", "30"],
+    ):
+        monkeypatch.setattr(sys, "argv", ["mutate.py", *argv])
+        assert mutate.main() == 7
+    assert ran == [(None, ["tests/test_a.py"], 45), ("HEAD~2", None, 30)]
+
+
+def test_src_mutates_each_python_file_under_a_named_directory_and_each_named_file_against_the_named_tests(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "pkg" / "sub").mkdir(parents=True)
+    for name in ("pkg/b.py", "pkg/a.py", "pkg/sub/c.py", "pkg/notes.txt", "one.py"):
+        (tmp_path / name).write_text("x = 1\n")
+    ran = []
+    baseline = ({}, {})
+    monkeypatch.setattr(mutate, "_baseline", lambda *args: ran.append(args) or baseline)
+    monkeypatch.setattr(mutate, "_mutate", lambda *args: ran.append(args) or 1)
+    argv = ["--src", str(tmp_path / "pkg"), "--src", str(tmp_path / "one.py"), "--tests", "tests/test_a.py"]
+    monkeypatch.setattr(sys, "argv", ["mutate.py", *argv, "--max", "4", "--timeout", "45"])
+    assert mutate.main() == 1
+    targets = [(tmp_path / name, None) for name in ("pkg/a.py", "pkg/b.py", "pkg/sub/c.py", "one.py")]
+    tests = ["tests/test_a.py"]
+    assert ran == [(tests, 45, mutate.REPO), (targets, tests, 45, mutate.REPO, 4, baseline)]
+
+
+def test_src_without_max_runs_every_mutant_of_the_named_file_and_restores_it(monkeypatch, tmp_path):
+    source = "def f(x):\n    return x < 2\n"
+    (tmp_path / "m.py").write_text(source)
+    ran = []
+    monkeypatch.setattr(mutate, "REPO", tmp_path)
+    monkeypatch.setattr(mutate, "_baseline", lambda *args: ({}, {}))
+    monkeypatch.setattr(mutate, "_failure", lambda tests, timeout, root: ran.append(tests) or "killed")
+    monkeypatch.setattr(sys, "argv", ["mutate.py", "--src", str(tmp_path / "m.py"), "--tests", "tests/test_m.py"])
+    assert mutate.main() == 0
+    assert len(ran) == mutate._count(source) > 1
+    assert (tmp_path / "m.py").read_text() == source
+
+
+def test_no_mode_or_src_without_tests_is_a_usage_error_and_a_red_baseline_mutates_nothing(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(mutate, "_diff_mode", lambda *args: pytest.fail("no mode must not run a diff"))
+    monkeypatch.setattr(mutate, "_baseline", lambda *args: None)
+    monkeypatch.setattr(mutate, "_mutate", lambda *args: pytest.fail("a red baseline must not start the mutants"))
+    monkeypatch.setattr(sys, "argv", ["mutate.py", "--src", str(tmp_path), "--tests", "tests/test_a.py"])
+    assert mutate.main() == 2
+    for argv, reason in (
+        (["--tests", "tests/test_a.py"], "one of the arguments --src --staged --commit is required"),
+        (["--src", str(tmp_path)], "--src needs --tests"),
+    ):
+        monkeypatch.setattr(sys, "argv", ["mutate.py", *argv])
+        with pytest.raises(SystemExit) as refused:
+            mutate.main()
+        assert refused.value.code == 2
+        assert reason in capsys.readouterr().err
+
+
+def test_each_and_each_or_and_each_boolean_constant_is_flipped_alone_and_their_operands_are_mutated_too(tmp_path):
+    source = "both = a < 1 and b\neither = a or b\nflag = True\n"
+    built = [mutate._build(tmp_path / "m.py", source, index) for index in range(mutate._count(source))]
+    assert [(mutant.lineno, mutant.description, mutant.source) for mutant in built] == [
+        (1, "1 -> 2", "both = a < 2 and b\neither = a or b\nflag = True"),
+        (1, "Lt -> LtE", "both = a <= 1 and b\neither = a or b\nflag = True"),
+        (1, "And -> Or", "both = a < 1 or b\neither = a or b\nflag = True"),
+        (2, "Or -> And", "both = a < 1 and b\neither = a and b\nflag = True"),
+        (3, "True -> False", "both = a < 1 and b\neither = a or b\nflag = False"),
+    ]
+
+
+def test_a_decorator_s_arguments_and_a_dunder_setting_make_no_mutant():
+    body = "def f(x):\n    return x < 2\n"
+    assert mutate._count("@cache(size=3, typed=True)\n" + body) == mutate._count(body) > 0
+    assert mutate._count("__test__ = False\n") == 0 < mutate._count("test = False\n")
 
 
 def test_a_mutant_knows_the_whole_statement_it_sits_in(tmp_path):
@@ -321,7 +505,17 @@ def test_the_baseline_maps_each_line_to_the_tests_that_executed_it(tmp_path):
         head
         + "import time\n\nfrom pkg.mod import one\n\n\ndef test_three():\n    time.sleep(0.3)\n    assert one() == 1\n"
     )
-    named = ["tests/test_one.py::test_one", "tests/test_three.py::test_three", "tests/test_two.py::test_two"]
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "tool.py").write_text("def four():\n    return 4\n")
+    (tmp_path / "tests" / "test_tool.py").write_text(
+        head.replace('"src"', '"scripts"') + "from tool import four\n\n\ndef test_tool():\n    assert four() == 4\n"
+    )
+    named = [
+        "tests/test_one.py::test_one",
+        "tests/test_three.py::test_three",
+        "tests/test_tool.py::test_tool",
+        "tests/test_two.py::test_two",
+    ]
     cover, durations = mutate._baseline(named, 120, tmp_path)
     assert set(durations) == set(named)
     assert durations["tests/test_three.py::test_three"] >= 0.3 > durations["tests/test_one.py::test_one"]
@@ -329,3 +523,4 @@ def test_the_baseline_maps_each_line_to_the_tests_that_executed_it(tmp_path):
     assert lines[2] == frozenset({"tests/test_one.py::test_one", "tests/test_three.py::test_three"})
     assert lines[6] == frozenset({"tests/test_two.py::test_two"})
     assert "" in lines[1]
+    assert cover["scripts/tool.py"][2] == frozenset({"tests/test_tool.py::test_tool"})

@@ -8,8 +8,8 @@ semantic change at a time and reports every mutant that no test caught. A
 survivor is a line the suite executes but does not check.
 
 With --src it rewrites the given files in place (restoring them afterwards).
-With --staged or --commit it mutates only the lines that diff adds, in a
-throwaway copy of exactly that content (the index, or the commit), and runs the
+With --staged or --commit it mutates only the lines that diff adds under src/
+and scripts/, in a throwaway copy of exactly that content (the index, or the commit), and runs the
 test files the same change touches unless --tests names others.
 
     python3 scripts/mutate.py --src src/corecycler/smu/commands.py \\
@@ -191,12 +191,10 @@ def _count(source: str, lines: set[int] | None = None) -> int:
     return counter.seen
 
 
-def _build(path: Path, original: str, index: int, lines: set[int] | None = None) -> Mutant | None:
+def _build(path: Path, original: str, index: int, lines: set[int] | None = None) -> Mutant:
     tree = ast.parse(original)
     mutator = _Mutator(target=index, inert=_inert(tree), lines=lines, skip=_reviewed(original))
     mutated = mutator.visit(tree)
-    if mutator.applied is None:
-        return None
     ast.fix_missing_locations(mutated)
     plain = ast.parse(original)
     span = _statement_span(plain, mutator.lineno, mutator.end_lineno)
@@ -263,7 +261,14 @@ def _baseline(tests: list[str], timeout: int, root: Path) -> tuple[Cover, Durati
     with tempfile.TemporaryDirectory(prefix="mutate-cover-") as scratch:
         data_file = Path(scratch) / "coverage"
         env = {**os.environ, "COVERAGE_FILE": str(data_file), "COVERAGE_CORE": "ctrace"}
-        extra = ["--cov=src", "--cov-context=test", "--cov-report=", "--durations=0", "--durations-min=0"]
+        extra = [
+            "--cov=src",
+            "--cov=scripts",
+            "--cov-context=test",
+            "--cov-report=",
+            "--durations=0",
+            "--durations-min=0",
+        ]
         passed, output = _outcome(tests, timeout, root, extra, env)
         if not passed:
             print(output)
@@ -280,8 +285,6 @@ def _contexts(data_file: Path, root: Path) -> Cover:
     cover: Cover = {}
     for measured in data.measured_files():
         path = Path(measured)
-        if not path.is_relative_to(root):
-            continue
         by_line = data.contexts_by_lineno(measured)
         cover[str(path.relative_to(root))] = {
             line: frozenset(context.rpartition("|")[0] if "|" in context else context for context in contexts)
@@ -362,7 +365,7 @@ def importers(changed: list[str], test_dir: Path) -> list[str]:
 
 def _diff_mode(commit: str | None, tests: list[str] | None, timeout: int) -> int:
     span = ("--cached",) if commit is None else (f"{commit}~1", commit)
-    changed = added_lines(_git("diff", "-U0", "--no-color", *span, "--", "src/"))
+    changed = added_lines(_git("diff", "-U0", "--no-color", *span, "--", "src/", "scripts/"))
     touched = _git("diff", "--name-only", "--diff-filter=AM", *span, "--", "tests/").split()
     if not changed:
         print("no source lines changed: nothing to mutate")
@@ -414,8 +417,6 @@ def _mutate(
         try:
             for index in indices:
                 mutant = _build(path, original, index, lines)
-                if mutant is None:
-                    continue
                 path.write_text(mutant.source)
                 tiers = _tiers(mutant, *baseline, tests, root)
                 failed = next(
