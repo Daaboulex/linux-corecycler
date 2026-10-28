@@ -558,7 +558,7 @@ class Supervisor:
                 last_scan = now
                 for run in runs:
                     if run.alive:
-                        finished = len(run.speeds)
+                        finished = self.backend.finished(run.output)
                         self._scan_output(run)
                         self._check_progress(run, now, finished)
             if any(run.faulted for run in runs) or not any(run.alive for run in runs):
@@ -569,11 +569,13 @@ class Supervisor:
             self.stop_event.wait(self.poll_interval)
 
     def _check_progress(self, run: _LaneRun, now: float, finished_before: int) -> None:
-        if run.progress_window is None or run.frozen:
+        if run.progress_window is None:
             return
-        if len(run.speeds) > finished_before:
-            run.last_progress = now
-        elif now - run.last_progress > run.progress_window:  # equivalent-mutant: two float clock reads are never equal
+        if self.backend.finished(run.output) > finished_before:
+            run.last_progress = run.frozen_since if run.frozen else now
+        if run.frozen:
+            return
+        if now - run.last_progress > run.progress_window:  # equivalent-mutant: two float clock reads are never equal
             run.signals.append(
                 LaneSignal(
                     Outcome.STALL,

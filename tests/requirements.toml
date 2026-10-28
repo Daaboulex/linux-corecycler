@@ -364,6 +364,11 @@ statement = "y-cruncher hang: no new Running line in its output for 2 x seconds-
 proof = "built"
 
 [[requirement]]
+id = "K21.hang.frozen"
+statement = "A finished test that a scan first sees while the load is frozen is progress from the moment the freeze began, never from the scan; a freeze suspends only the hang accusation, so a load that finishes no new test still ends STALL once 2 x seconds-per-test of thawed time passes (PLAN Next 91: on the ryzen, transient burst test 409 and its three replays each ended stall though y-cruncher finished a test every 15 s, each finish first seen by a frozen scan)"
+proof = "built"
+
+[[requirement]]
 id = "K22"
 statement = "Load floor 0.5 x CPUs x seconds, counted over thawed time only"
 proof = "built"

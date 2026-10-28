@@ -2111,6 +2111,60 @@ class ProgressBackend(FakeBackend):
 FINISHES_A_TEST_EVERY_200_MS = "import time\nwhile True:\n    print('done', flush=True)\n    time.sleep(0.2)"
 
 
+class YCruncherStandIn(YCruncherBackend):
+    def __init__(self, window: float, code: str = BUSY) -> None:
+        super().__init__()
+        self.window = window
+        self.code = code
+
+    def prepare(self, work_dir: Path, config: StressConfig) -> None:
+        pass
+
+    def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
+        return _child(self.code)
+
+    def progress_window(self, config: StressConfig) -> float | None:
+        return self.window
+
+
+FINISHES_A_SPEEDLESS_TEST_EVERY_200_MS = (
+    "import time\nwhile True:\n    print('Running N63: Passed', flush=True)\n    time.sleep(0.2)"
+)
+FINISHES_A_SPEEDLESS_TEST_THEN_HANGS = (
+    "import sys\nsys.stdout.write('Running N63: Passed\\nRunning VT3: ')\nsys.stdout.flush()\nwhile True: pass"
+)
+Y_CRUNCHER_PASSED = "Running BBP: Passed  Test Speed:  2.93 * 10^09  terms / sec\n"
+RUNS_S, FROZEN_S, WINDOW_S = 0.2, 0.3, 0.5
+
+
+class FinishesATestThenIsFrozen:
+    """Test 409's burst scaled down: the payload runs 0.2 s, a test's Passed line lands in its output and the
+    payload is frozen in that same tick for 0.3 s, so a frozen scan is the first to see each finished test. Past
+    its tests it hangs, finishing none, under the same freezes. thawed_since_finished is the thawed time from its
+    last finished test to the latest tick."""
+
+    def __init__(self, one: Lane, tests: int) -> None:
+        self.one = one
+        self.tests = tests
+        self.finished = 0
+        self.thawed_since_finished = 0.0
+        self.last_tick = (0.0, False)
+
+    def __call__(self, elapsed: float, _reading: SensorRead) -> Frozen:
+        cycle, into = divmod(elapsed, RUNS_S + FROZEN_S)
+        frozen = into >= RUNS_S
+        if frozen and self.finished <= cycle < self.tests:
+            (output,) = self.one.work_dir.glob(f"run-*/{execution.STDOUT_LOG}")
+            with output.open("a") as out:
+                out.write(Y_CRUNCHER_PASSED)
+            self.finished += 1
+            self.thawed_since_finished = 0.0
+        elif not self.last_tick[1]:
+            self.thawed_since_finished += elapsed - self.last_tick[0]
+        self.last_tick = (elapsed, frozen)
+        return Frozen.PLANNED if frozen else Frozen.NO
+
+
 class TestHungPayload:
     @pytest.mark.req("K21.hang", "U13")
     def test_a_busy_payload_that_finishes_no_test_within_its_window_is_hung(self, tmp_path):
@@ -2147,3 +2201,55 @@ class TestHungPayload:
         with patch.object(supervisor, "_signal_group"):
             supervisor._set_frozen([run], False, 20.0)
         assert run.last_progress == 18.0
+
+    @pytest.mark.req("K21.hang", "U13")
+    def test_a_y_cruncher_test_that_prints_no_speed_still_counts_as_finished(self, tmp_path):
+        supervisor, _, _ = make_supervisor(YCruncherStandIn(0.6, FINISHES_A_SPEEDLESS_TEST_EVERY_200_MS))
+        with patch.object(execution, "OUTPUT_SCAN_INTERVAL", 0.05):
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 1.5)
+        assert verdict.outcome is Outcome.PASS, verdict.detail
+        assert verdict.speeds == ()
+
+    @pytest.mark.req("K21.hang")
+    def test_a_y_cruncher_that_hangs_after_a_speedless_test_is_hung(self, tmp_path):
+        supervisor, _, _ = make_supervisor(YCruncherStandIn(0.5, FINISHES_A_SPEEDLESS_TEST_THEN_HANGS))
+        with patch.object(execution, "OUTPUT_SCAN_INTERVAL", 0.05):
+            verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 2.0)
+        assert verdict.outcome is Outcome.STALL, verdict.detail
+
+    @pytest.mark.req("K21.hang", "K21.hang.frozen")
+    def test_tests_finished_just_before_each_freeze_are_progress_as_in_the_ryzen_s_burst_test_409(self, tmp_path):
+        one = lane(tmp_path, cpus=(0,))
+        plan = FinishesATestThenIsFrozen(one, tests=4)
+        supervisor, _, _ = make_supervisor(YCruncherStandIn(WINDOW_S))
+        supervisor.freeze = plan
+        with patch.object(execution, "OUTPUT_SCAN_INTERVAL", 0.1):
+            verdict = run_one(supervisor, one, 2.0)
+        assert verdict.outcome is Outcome.PASS, verdict.detail
+        assert plan.finished == len(verdict.speeds) == 4
+
+    @pytest.mark.req("K21.hang", "K21.hang.frozen")
+    def test_a_payload_that_hangs_under_the_same_freezes_is_hung_once_its_window_of_thawed_time_passes(self, tmp_path):
+        one = lane(tmp_path, cpus=(0,))
+        plan = FinishesATestThenIsFrozen(one, tests=1)
+        supervisor, _, _ = make_supervisor(YCruncherStandIn(WINDOW_S))
+        supervisor.freeze = plan
+        with patch.object(execution, "OUTPUT_SCAN_INTERVAL", 0.1):
+            verdict = run_one(supervisor, one, 3.0)
+        assert verdict.outcome is Outcome.STALL, verdict.detail
+        assert plan.finished == 1
+        assert plan.thawed_since_finished > WINDOW_S
+
+    @pytest.mark.req("K21.hang.frozen")
+    def test_a_test_seen_finished_while_frozen_counts_from_the_freeze_and_a_frozen_run_is_never_accused(self, tmp_path):
+        supervisor, _, _ = make_supervisor(ProgressBackend(_child(BUSY), window=1.0))
+        run = execution._LaneRun(lane(tmp_path, cpus=(0,)), proc=MagicMock(returncode=None), progress_window=1.0)
+        run.last_progress, run.frozen, run.frozen_since = 10.0, True, 12.0
+        supervisor._check_progress(run, 14.0, 0)
+        assert (run.last_progress, run.signals) == (10.0, [])
+        run.output = "done\n"
+        supervisor._check_progress(run, 14.0, 0)
+        assert run.last_progress == 12.0
+        with patch.object(supervisor, "_signal_group"):
+            supervisor._set_frozen([run], False, 20.0)
+        assert run.last_progress == 20.0

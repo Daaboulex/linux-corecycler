@@ -170,6 +170,10 @@ class StressBackend(ABC):
         """Each finished test's own speed figure, as (test, value, passed); none for a backend that prints none."""
         return ()
 
+    def finished(self, output: str) -> int:
+        """How many tests the output shows finished, passed or failed; by default one per speed figure."""
+        return len(self.speeds(output))
+
     def progress_window(self, config: StressConfig) -> float | None:
         """Seconds with no newly finished test after which a run is hung; None when the backend cannot tell."""
         return None

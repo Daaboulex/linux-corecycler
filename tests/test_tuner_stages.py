@@ -1188,23 +1188,27 @@ def test_a_memory_stage_is_sampled_when_a_sink_is_given():
     assert len(got) == 1 and got[0].running
 
 
-def test_y_cruncher_speeds_are_read_per_test_with_their_verdict():
+@pytest.mark.req("K21.hang")
+def test_y_cruncher_reads_a_speed_from_each_test_that_prints_one_and_counts_every_finished_test():
     out = (
         "Running SFTv4: Passed  Test Speed:  6.56 * 10^09  bits / sec\n"
-        "\x1b[1;32mRunning FFTv4: Passed  Test Speed:  3.76 * 10^09  bits / sec\x1b[0m\n"
+        "Running FFTv4: \x1b[1;32mPassed\x1b[0m  Test Speed:  3.76 * 10^09  bits / sec\n"
         "Running VT3: Failed  Test Speed:  2.37 * 10^09  bits / sec\n"
         "Running BKT: Passed  Test Speed:  2 * 10^10  bits / sec\n"
         "Running BBP: Passed  Test Speed:  5.68 * 10^09  terms / sec\n"
         "Running N63: Passed\n"
+        "Running SVT: "
     )
-    assert ycruncher.YCruncherBackend().speeds(out) == (
+    backend = ycruncher.YCruncherBackend()
+    assert backend.speeds(out) == (
         ("SFTv4", 6.56e9, True),
         ("FFTv4", 3.76e9, True),
         ("VT3", 2.37e9, False),
         ("BKT", 2e10, True),
         ("BBP", 5.68e9, True),
     )
-    assert ycruncher.YCruncherBackend().speeds("") == ()
+    assert backend.finished(out) == 6
+    assert (backend.speeds(""), backend.finished("")) == ((), 0)
 
 
 @pytest.mark.req("D71", "K30")

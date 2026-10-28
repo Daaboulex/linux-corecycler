@@ -61,6 +61,7 @@ LAUNCHER_ORDER: dict[str, tuple[tuple[str, frozenset[str]], ...]] = {
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _NAMED_CPU_RE = re.compile(r"Error\(s\) encountered on logical core (\d+)\.")
 _SPEED_RE = re.compile(r"Running (\S+): (Passed|Failed)\s+Test Speed:\s+([0-9.]+) \* 10\^(\d+)\s+(?:bits|terms) / sec")
+_FINISHED_RE = re.compile(r"Running \S+: (?:Passed|Failed)")
 
 FINDINGS: FindingTable = (
     *(
@@ -190,6 +191,9 @@ class YCruncherBackend(StressBackend):
 
     def progress_window(self, config: StressConfig) -> float | None:
         return 2.0 * (config.seconds_per_test if config.seconds_per_test else _PER_TEST_SECONDS)
+
+    def finished(self, output: str) -> int:
+        return len(_FINISHED_RE.findall(_ANSI_RE.sub("", output)))
 
     def speeds(self, output: str) -> tuple[tuple[str, float, bool], ...]:
         return tuple(
