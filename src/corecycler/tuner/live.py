@@ -345,13 +345,27 @@ def _one_off_from_json(raw: list | None) -> tuple[Stage, tuple[tuple[int, int], 
     return Stage(stage), _pairs(held)
 
 
-def _unreplayed_from_json(raw: dict) -> tuple[Stage, ...]:
-    """A flow stored before the record existed owes no replay."""
+def _unreplayed_from_json(raw: dict, cfg: MachineConfig) -> tuple[Stage, ...]:
+    """A flow stored before the record existed owes no replay. An earlier build stored finalize for a validation that
+    died in FINALIZE, which runs no test; it reads as LIVE1, what a dead boot there owes now."""
     stored = raw.get("unreplayed", [])
+    malformed = f"the stored flow's unreplayed is {stored!r}, not a list of stages"
+    if not isinstance(stored, list | tuple):
+        raise ValueError(malformed)
     try:
-        return tuple(Stage(stage) for stage in stored)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"the stored flow's unreplayed is {stored!r}, not a list of stages") from exc
+        stages = tuple(Stage(stage) for stage in stored)
+    except ValueError as exc:
+        raise ValueError(malformed) from exc
+    owed = tuple(Stage.LIVE1 if stage is Stage.FINALIZE else stage for stage in stages)
+    if owed and raw["validating"] is None:
+        raise ValueError(f"the stored flow's unreplayed is {stored!r}, but the flow validates no values")
+    switches = ((Stage.ENDURANCE, cfg.endurance), (Stage.MEMORY, cfg.memory), (Stage.SOAK, cfg.soak))
+    replayed = (Stage.LIVE1, *(stage for stage, on in switches if on))
+    unrun = next((stage for stage in owed if stage not in replayed), None)
+    if unrun is not None:
+        names = ", ".join(stage.value for stage in replayed)
+        raise ValueError(f"the stored flow's unreplayed is {stored!r}: a validation replays only {names}, not {unrun}")
+    return owed
 
 
 def _failed_vectors_from_json(
@@ -379,7 +393,7 @@ def _failed_vectors_from_json(
     return vectors
 
 
-def _flow_from_json(raw: dict | None, continued: bool) -> Flow | None:
+def _flow_from_json(raw: dict | None, continued: bool, cfg: MachineConfig) -> Flow | None:
     if raw is None:
         return None
     live = raw["live1"]
@@ -399,7 +413,7 @@ def _flow_from_json(raw: dict | None, continued: bool) -> Flow | None:
         validating=None if raw["validating"] is None else _pairs(raw["validating"]),
         one_off=_one_off_from_json(raw.get("one_off")),
         carried=raw.get("carried", continued),
-        unreplayed=_unreplayed_from_json(raw),
+        unreplayed=_unreplayed_from_json(raw, cfg),
     )
 
 
@@ -411,14 +425,15 @@ def stored_to_json(st: Stored) -> dict:
 
 def stored_from_json(raw: dict, *, continued: bool) -> Stored:
     baseline = _pairs(raw["baseline"])
+    config = config_from_json(raw["config"])
     return Stored(
         session_id=raw["session_id"],
         status=raw["status"],
-        config=config_from_json(raw["config"]),
+        config=config,
         seed=raw["seed"],
         baseline=baseline,
         cores=tuple(CoreRecord(**{**core, "phase": Phase(core["phase"])}) for core in raw["cores"]),
-        flow=_flow_from_json(raw["flow"], continued),
+        flow=_flow_from_json(raw["flow"], continued, config),
         resume_streak=raw["resume_streak"],
         incidents=_incidents(raw["incidents"]),
         power=tuple((name, value) for name, value in raw["power"]),

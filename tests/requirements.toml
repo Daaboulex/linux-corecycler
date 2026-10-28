@@ -3239,12 +3239,22 @@ proof = "built"
 
 [[requirement]]
 id = "L30.e.failed"
-statement = "An Abort while a validation owes a failure that moved no value a passing replay ends the session aborted, every owned core at its baseline, saying the validation failed and its values are not restored. The flow records the stage of every failed test at the validated values, a silicon report named or not and with any machine check, and a SOAK failure, unblamed included; a resume records a dead boot's counted incident, its conviction at stock and its crash at a core the session does not own. Only a clean pass of that stage's test at the same values clears it, the Bisect's exact replay included; a Bisect or a solo test still to run also holds the failure; a passing test whose machine check names a core the session does not own is no failure (D95 and D101, owner 2026-10-27, tuning-loops-round2.md; PLAN Next 60 and 62)"
+statement = "An Abort while a validation owes a failure that moved no value a passing replay ends the session aborted, every owned core at its baseline, saying the validation failed and its values are not restored. The flow records the stage of every failed test at the validated values, a silicon report named or not and with any machine check, and a SOAK failure, unblamed included; a resume records a dead boot's counted incident, its conviction at stock and its crash at a core the session does not own; a machine check at an owned core at stock is recorded as a stock conviction is when an all-core test, another core's one-core test or the kernel log reports it. Each stage is recorded once in the stored flow. Only a clean pass of that stage's test at the same values clears it, the Bisect's exact replay included; a Bisect or a solo test still to run also holds the failure; a passing test whose machine check names a core the session does not own is no failure (D95 and D101, owner 2026-10-27, tuning-loops-round2.md; PLAN Next 60, 62 and 74)"
 proof = "built"
 
 [[requirement]]
 id = "L30.e.incident"
-statement = "An Abort of a validation ends aborted, sending no CO back, after a crash nobody could be blamed for in it, until a test of the stage it died in passes clean at the validated values (D101, owner 2026-10-27)"
+statement = "An Abort of a validation ends aborted, sending no CO back, after a crash nobody could be blamed for in it, until a test of the stage it died in passes clean at the validated values. What LIVE1 owes is an idle or stock-core event at those values, a dead boot in a wait or a stock core's machine check, so a clean pass of any test at them clears it, SOAK included, which loads no CPU and is the closest replay of idle: one after LIVE1's last test is cleared by the validation's next test, and a skipped MEMORY test holds nothing for it. FINALIZE runs no test, so a dead boot there is owed by LIVE1, which the pass FINALIZE re-enters runs again (D95 and D101, owner 2026-10-27; the main session's reading of D101, 2026-10-28; PLAN Next 76)"
+proof = "built"
+
+[[requirement]]
+id = "L30.e.complete"
+statement = "A validation whose cores hold its values never completes while it owes a stage: FINALIZE sends it back through its pass from LIVE1, as it does a dirty profile. Once a value has moved off the validated values the dirty pass proves the moved values and FINALIZE no longer reads the record. A skipped MEMORY test while the record holds MEMORY, a value moved or not, pauses it as apparatus naming the skip and the way out: fix the memory test and resume, which runs MEMORY again, or Abort, which ends it aborted (D95 and D101, owner 2026-10-27; PLAN Next 76 and Next 89 (1))"
+proof = "built"
+
+[[requirement]]
+id = "L30.e.explorer"
+statement = "The fake world keeps its own record of what a validation owes: a failed test at the validated values owes its stage's test, and a dead boot while the stored cores hold them or a stock core's machine check owes the next test at them, whatever its stage. While the cores hold those values no future completes owing, and an Abort ends aborted exactly when something is owed. The explorer validates a session that owns two of three cores, one at stock, with endurance on and two faults left: a dead boot after LIVE1's last test then an Abort, a memory failure naming the core it does not own then a skipped memory test, a stock core's machine check then an Abort, and every routine fault (D95 and D101; PLAN Next 74, 76 and 77, matrix blind spots 1 and 3)"
 proof = "built"
 
 [[requirement]]
@@ -3254,7 +3264,7 @@ proof = "built"
 
 [[requirement]]
 id = "L30.e.stored"
-statement = "The stored flow keeps the stages that still owe a passing replay; a flow stored before the record existed reads as owing none, its Bisect or solo test still holding an Abort aborted, and a stored value that is not a list of stages refuses the session naming unreplayed"
+statement = "The stored flow keeps the stages that still owe a passing replay; a flow stored before the record existed reads as owing none, its Bisect or solo test still holding an Abort aborted, and a stored value that is not a list, a JSON object included, or a list naming anything but stages refuses the session naming unreplayed. A stored finalize, which an earlier build wrote for a validation that died in FINALIZE, reads as LIVE1; a stage outside LIVE1 and the stages the session's configuration runs (ENDURANCE, MEMORY, SOAK where switched on), or any record on a flow that validates nothing, refuses the session naming unreplayed (D95 and D101, fail closed; PLAN Next 76)"
 proof = "built"
 
 [[requirement]]

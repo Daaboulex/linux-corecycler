@@ -23,6 +23,7 @@ from corecycler.tuner.machine.types import (
     ForgetResident,
     Group,
     InFlight,
+    KernelLogRead,
     Lifecycle,
     Load,
     MachineConfig,
@@ -44,6 +45,7 @@ from corecycler.tuner.machine.types import (
     Stored,
     Supersede,
     Transition,
+    ValidateProfile,
     Waiting,
     WorkerReported,
     World,
@@ -58,6 +60,10 @@ class Broken(AssertionError):
 
 def replay_of(spec) -> tuple:
     return (spec.vector, spec.load, spec.seconds, spec.plan_seed)
+
+
+def held(state: SessionState | Stored) -> tuple[tuple[int, int], ...]:
+    return tuple((r.core, r.value) for r in state.cores)
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +145,7 @@ class Fake:
     outside: set[int] = field(default_factory=set)
     completed: tuple[Stored, ...] = ()
     crashed_bisect: bool = False
+    owed: set[Stage | None] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         if not self.co:
@@ -192,6 +199,7 @@ class Fake:
             if result.state.flow is not None and result.state.flow.bisect is None:
                 self.crashed_bisect = False
             self.check(before, ev, result)
+            self.check_validation(before, ev, result.state)
             if follow is None:
                 self.check_settled(before, ev, result)
             if isinstance(ev, CrashEvidenceRead) and ev.dirty_end and stored_before is not None:
@@ -421,6 +429,52 @@ class Fake:
                         f"reported {event.report.group}, not at its baseline {base}"
                     )
 
+    def check_validation(self, before: SessionState, event, after: SessionState) -> None:
+        """A validation owes a clean test at its values after a failure there: a stage's failure owes that stage's
+        test, and a dead boot or a stock core's machine check owes the next test at those values, whatever stage it
+        belongs to. While its cores hold those values it completes owing nothing, and an Abort ends aborted exactly
+        while it owes something (D95, D101)."""
+        if isinstance(event, ValidateProfile) and after.flow is not None and after.flow.validating is not None:
+            self.owed = set()
+            return
+        flow = before.flow
+        if flow is None or flow.validating is None or flow.carried or held(before) != flow.validating:
+            return
+        read = (
+            isinstance(event, KernelLogRead) and isinstance(before.slot, Waiting) and before.slot.token == event.token
+        )
+        if read and any(ev.charged == 0 and ev.core in dict(flow.validating) for ev in event.evidence):
+            self.owed.add(None)
+        owing = sorted("the next test" if stage is None else stage.value for stage in self.owed)
+        if after.lifecycle is Lifecycle.COMPLETED and owing:
+            raise Broken(f"a validation completed at its values {dict(flow.validating)} owing a clean pass: {owing}")
+        if isinstance(event, Abort) and after.lifecycle is Lifecycle.ABORTED and not owing:
+            raise Broken(
+                f"a validation aborted at its values {dict(flow.validating)} though a clean test at them followed "
+                "every failure"
+            )
+
+    def judge_validation(self, spec, report: Report, cut: bool) -> None:
+        flow = self.state.flow
+        if flow is None or flow.validating is None:
+            return
+        stage = flow.bisect.entry if spec.stage is Stage.BISECT else spec.stage
+        at_profile = spec.vector == flow.validating
+        if cut:
+            if at_profile and report.group is Group.SILICON and report.named and not report.evidence:
+                self.owed.add(stage)
+            return
+        vector = dict(spec.vector)
+        if held(self.state) == flow.validating and any(vector.get(ev.core) == 0 for ev in report.evidence):
+            self.owed.add(None)
+        if not at_profile:
+            return
+        lost = self.faults.fail_commits > 0
+        if lost or report.group is Group.SILICON or (report.group is Group.ENVIRONMENT and spec.load is Load.SOAK):
+            self.owed.add(stage)
+        elif report.group is Group.PASS and not report.evidence and not report.skipped:
+            self.owed -= {stage, None}
+
     def check(self, before: SessionState, event, result: Transition) -> None:
         s = result.state
         if s.lifecycle is Lifecycle.PAUSED and s.pause is not None and s.pause.reason is PauseReason.STOCK_UNSTABLE:
@@ -497,6 +551,7 @@ class Fake:
     def returned(self, worker: InFlight, report: Report | None = None, cut: bool = False) -> WorkerReported:
         token, spec = worker.token, worker.spec
         report = report if report is not None else self.verdict_for(spec)
+        self.judge_validation(spec, report, cut)
         isolated = all(value == 0 for core, value in spec.vector if core != spec.core)
         if report.group is Group.SILICON and spec.stage.value in ("search", "live1"):
             if spec.value != 0:
@@ -557,6 +612,9 @@ class Fake:
         self.post(ContinuationDue(token))
 
     def crash(self, evidence: tuple[Evidence, ...] = (), shared: bool = False) -> None:
+        st = self.db
+        if st is not None and st.status == "running" and st.flow is not None and st.flow.validating == held(st):
+            self.owed.add(None)
         if self.worker is not None and self.worker.spec.load is Load.SOAK:
             self.failed_allcore.add(replay_of(self.worker.spec))
         if self.worker is not None and self.worker.spec.stage is Stage.BISECT:
@@ -596,7 +654,7 @@ def fresh(cores: int, edges: list[int], domains: int = 1, smt: bool = True, bios
     from corecycler.tuner.orders import default_method
 
     layout = Layout.make(cores, domains, smt)
-    selected = tuple(range(cores))
+    selected = cfg.pop("selected", tuple(range(cores)))
     method = cfg.pop("method", default_method(selected, dict(layout.domain_of)))
     config = MachineConfig(Mode.CO, method, selected, **cfg)
     return Fake(layout, dict(enumerate(edges)), {c: bios for c in range(cores)}, config=config)

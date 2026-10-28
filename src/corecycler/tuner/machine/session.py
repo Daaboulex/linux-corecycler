@@ -1066,6 +1066,7 @@ def _records_judged(
         counted = True
         cores = len(dict.fromkeys(ev.core for ev in stock))
         s = replace(s, incidents=(*s.incidents, *(Incident.STOCK_MACHINE_CHECK,) * (1 if once else cores)))
+        s = _owe_replay(s, _held(s))
         if len(s.incidents) >= INCIDENT_LIMIT:
             pauses.append(Pause(PauseReason.INCIDENTS, _incidents_text(s.incidents)))
     kept, aside = _strongest(s, evidence, at_stock, counted)
@@ -1511,6 +1512,13 @@ def _memory_lanes(s: SessionState, named: tuple[int, ...], w: World) -> SessionS
 
 def _memory_verdict(s: SessionState, spec: TestSpec, rep: Report, group: Group, pausing: bool, w: World) -> Transition:
     s = replace(s, streaks=Streaks())
+    if rep.skipped and Stage.MEMORY in s.flow.unreplayed:
+        return _enter_pause(
+            s,
+            PauseReason.APPARATUS,
+            f"MEMORY was skipped, and this validation owes a clean MEMORY pass: {rep.skipped}; "
+            "fix the memory test and resume, or Abort, which ends the session aborted",
+        )
     if rep.skipped:
         skipped = _next_wait(replace(s, flow=_past_memory(s.flow, s.config)), spec, pausing)
         notice = Announce("memory_skipped", f"MEMORY skipped, not a stability verdict: {rep.skipped}")
@@ -1686,7 +1694,7 @@ def _write_rank(w: World, core: int, value: int) -> int:
 
 def _finalize(s: SessionState, w: World) -> Transition:
     flow = s.flow
-    if flow.dirty:
+    if flow.dirty or (flow.unreplayed and _held(s) == flow.validating):
         return _enter_live1(replace(s, flow=replace(flow, dirty=False)), w)
     if flow.carried:
         final = replace(flow, stage=Stage.LIVE1, live1=Live1(back=Stage.FINALIZE))
@@ -1737,13 +1745,19 @@ def _cut_reported(s: SessionState, cut: InFlight, rep: Report, w: World) -> Tran
 
 
 def _replay_stage(flow: Flow) -> Stage:
-    return flow.bisect.entry if flow.bisect is not None else flow.stage
+    """FINALIZE runs no test of its own: what fails there is owed by LIVE1, the first stage of the pass FINALIZE
+    sends a validation that still owes a failure back through."""
+    if flow.bisect is not None:
+        return flow.bisect.entry
+    return Stage.LIVE1 if flow.stage is Stage.FINALIZE else flow.stage
 
 
 def _owe_replay(s: SessionState, vector: tuple[tuple[int, int], ...]) -> SessionState:
     flow = s.flow
-    unreplayed = (*flow.unreplayed, _replay_stage(flow)) if vector == flow.validating else flow.unreplayed
-    return replace(s, flow=replace(flow, unreplayed=unreplayed))
+    stage = _replay_stage(flow)
+    if vector != flow.validating or stage in flow.unreplayed:
+        return s
+    return replace(s, flow=replace(flow, unreplayed=(*flow.unreplayed, stage)))
 
 
 def _remember(s: SessionState, vector: tuple[tuple[int, int], ...]) -> SessionState:
@@ -1759,8 +1773,8 @@ def _replayed(s: SessionState, spec: TestSpec, rep: Report) -> SessionState:
     flow = s.flow
     if rep.group is not Group.PASS or rep.evidence or rep.skipped or spec.vector != flow.validating:
         return s
-    stage = _replay_stage(flow)
-    return replace(s, flow=replace(flow, unreplayed=tuple(owed for owed in flow.unreplayed if owed is not stage)))
+    cleared = (_replay_stage(flow), Stage.LIVE1)
+    return replace(s, flow=replace(flow, unreplayed=tuple(owed for owed in flow.unreplayed if owed not in cleared)))
 
 
 def _judged(s: SessionState, rep: Report, w: World) -> Transition:

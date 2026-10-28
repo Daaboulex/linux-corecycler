@@ -10,7 +10,7 @@ from hypothesis import strategies as st
 
 from corecycler.engine.detector import ProgramFault, ProgramFaults
 from corecycler.tuner.live import resident_at_death
-from corecycler.tuner.machine.session import HELD
+from corecycler.tuner.machine.session import ALLCORE_LOADS, HELD
 from corecycler.tuner.machine.types import (
     HELD_STATUSES,
     ContinueOnSetup,
@@ -68,6 +68,8 @@ FAULTS = (
     "program_fault",
     "paused_hot",
     "start",
+    "named_unowned",
+    "skipped",
 )
 FOREIGN_FAULTS = ProgramFaults(
     100_000_000_000,
@@ -98,6 +100,7 @@ def clone(fake: Fake) -> Fake:
     twin.outside = set(fake.outside)
     twin.behind = set(fake.behind)
     twin.faults = copy.copy(fake.faults)
+    twin.owed = set(fake.owed)
     twin.log = []
     return twin
 
@@ -146,6 +149,7 @@ def key(fake: Fake) -> tuple:
         fake.crashed_bisect,
         fake.marker,
         frozenset(fake.behind),
+        frozenset(fake.owed),
     )
 
 
@@ -187,6 +191,10 @@ def moves(fake: Fake, budget: dict[str, int]) -> list[tuple[str, dict[str, int]]
         if fault in ("crash_mce", "crash_shared") and fake.worker is None:
             continue
         if fault == "paused_hot" and (fake.worker is None or fake.worker.spec.load is not Load.HOT):
+            continue
+        if fault == "named_unowned" and (fake.worker is None or fake.worker.spec.load not in ALLCORE_LOADS):
+            continue
+        if fault == "skipped" and (fake.worker is None or fake.worker.spec.load is not Load.MEMORY):
             continue
         if fault == "validate" and (fake.db is None or fake.db.status != "completed" or s.lifecycle in HELD):
             continue
@@ -299,6 +307,11 @@ def act(fake: Fake, move: str) -> None:
         case "paused_hot":
             context = FailContext(False, tuple(dict(worker_spec.vector)), True)
             fake.deliver(Report(Group.SILICON, worker_spec.seconds, context=context))
+        case "named_unowned":
+            unowned = next(core for core, _ in fake.layout.cpus_of if core not in dict(worker_spec.vector))
+            fake.deliver(Report(Group.SILICON, worker_spec.seconds, named=(unowned,)))
+        case "skipped":
+            fake.deliver(Report(Group.PASS, 0.0, skipped="injected"))
         case _:
             raise AssertionError(move)
 
@@ -317,6 +330,24 @@ class Survey:
     quick_crashes: int = 0
     tightened_after_one_off: set[Stage] = field(default_factory=set)
     crashed: set[int] = field(default_factory=set)
+    reached: set[str] = field(default_factory=set)
+
+
+def validation_reach(node: Fake, move: str) -> str | None:
+    flow = node.state.flow
+    if flow is None or flow.validating is None:
+        return None
+    live = flow.live1
+    if move == "crash" and node.worker is None and live is not None and flow.stage is Stage.LIVE1:
+        done = live.index >= len(node.state.cores) and not live.requeue and live.solo is None
+        return "a dead boot after the last LIVE1 test" if done else None
+    if move == "skipped" and Stage.MEMORY in node.owed:
+        return "a skipped MEMORY test it owes"
+    if move == "mce_other":
+        spec = node.worker.spec
+        target = next((core for core in node.edges if core != spec.core), spec.core)
+        return "a machine check at a stock core" if dict(spec.vector).get(target) == 0 else None
+    return None
 
 
 def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
@@ -349,6 +380,9 @@ def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
             continue
         for move, after in options:
             survey.taken[move] = survey.taken.get(move, 0) + 1
+            reach = validation_reach(node, move)
+            if reach is not None:
+                survey.reached.add(reach)
             child = clone(node)
             try:
                 act(child, move)
@@ -410,7 +444,8 @@ BALANCED = (("platform profile", "balanced"),)
 ONE_OF_EACH = {
     fault: 1
     for fault in FAULTS
-    if fault not in ("profile", "setup", "kernel", "outside", "reengage", "program_fault", "start")
+    if fault
+    not in ("profile", "setup", "kernel", "outside", "reengage", "program_fault", "start", "named_unowned", "skipped")
 }
 
 
@@ -522,6 +557,32 @@ def test_every_future_of_a_cpu_whose_memory_lanes_fail_reaches_a_rest():
     fake = tiny(2, [-3, -2], 2)
     fake.edges_memory = {0: -2, 1: -1}
     survey = explore(fake, {**ONE_OF_EACH, "total": 1}, cap=2_000_000)
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+LIVE1_DONE = "a dead boot after the last LIVE1 test"
+OWED_SKIP = "a skipped MEMORY test it owes"
+STOCK_RECORD = "a machine check at a stock core"
+
+
+@pytest.mark.parametrize(
+    ("faults", "reach"),
+    [
+        pytest.param(("crash", "abort"), {LIVE1_DONE}, id="a dead boot after LIVE1 then an abort"),
+        pytest.param(("named_unowned", "skipped"), {OWED_SKIP}, id="a memory failure at a core not owned then a skip"),
+        pytest.param(("mce_other", "abort"), {STOCK_RECORD}, id="a stock core's machine check then an abort"),
+        pytest.param(
+            (*ONE_OF_EACH, "named_unowned", "skipped"), {LIVE1_DONE, OWED_SKIP, STOCK_RECORD}, id="every routine fault"
+        ),
+    ],
+)
+@pytest.mark.req("L30.e.explorer")
+def test_every_future_of_a_validation_with_two_faults_left_completes_owing_nothing_and_aborts_only_owing(faults, reach):
+    fake = tiny(3, [-3, 0, -2], 2, endurance=True, endurance_window_s=2.0, selected=(0, 1))
+    run_to_rest(fake, 10_000)
+    survey = explore(fake, {**dict.fromkeys(faults, 1), "validate": 1, "total": 3}, cap=2_000_000)
+    assert reach <= survey.reached
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
 
