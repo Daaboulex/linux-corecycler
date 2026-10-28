@@ -4406,6 +4406,11 @@ statement = "A Bisect stored during its first group's Q6 replay with a second gr
 proof = "built"
 
 [[requirement]]
+id = "D116.stored.read"
+statement = "A stored Bisect reads back exactly or its session is refused naming the field: an entry no Bisect begins in, a lane that is no owned core, a universe that is not one or more owned cores ascending, values that are not an integer below 0 for each universe core in order, a group of the queue, the results, the parents or the rerun that is not universe cores ascending, a verdict that is not true or false, a group recorded twice, a parents child not inside its parent or neither recorded nor queued, no rerun with an empty queue, or a rerun that is none of the failed leaves the Bisect resolves; a bool is no core and no verdict; every Bisect a build wrote reads, the empty group, the full set's re-test, every Q6 replay a run stores, the full set's own included, a lane outside the universe, a one-core universe at -1 and each of the six entries among them (D116; PLAN Next 99)"
+proof = "built"
+
+[[requirement]]
 id = "D116.explorer"
 statement = "The explorer starts a three-core CPU, halved into a pair and a single core, at its SOAK watch with three unnamed failures to spend, so a future fails the watch, then the pair, then the single core in one Bisect: every future comes to rest and none completes at or past a vector a failed group ran at (D116; PLAN Next 77)"
 proof = "built"

@@ -15,6 +15,7 @@ from corecycler.engine.execution import Heartbeat
 from corecycler.history.db import CoRead, CorruptSessionError
 from corecycler.monitor.frequency import PowerState, cpu_ranges
 from corecycler.tuner import telemetry
+from corecycler.tuner.machine.bisect import resolve
 from corecycler.tuner.machine.session import transition
 from corecycler.tuner.machine.types import (
     ALLCORE,
@@ -324,11 +325,25 @@ def _groups(raw) -> tuple[tuple[int, ...], ...]:
     return tuple(tuple(group) for group in raw)
 
 
-def _bisect_from_json(raw: dict | None) -> BisectRun | None:
+BISECT_ENTRIES = frozenset({Stage.LIVE1, Stage.MEMORY, Stage.STEADY, Stage.TRANSIENT, Stage.ENDURANCE, Stage.SOAK})
+BISECT_GROUPS = "groups of the universe's cores, each in ascending order"
+
+
+def _ascending(group: tuple, cores: tuple[int, ...]) -> bool:
+    """Each member an int among cores and above the one before it; True equals 1 but names no core."""
+    return all(type(core) is int and core in cores for core in group) and group == tuple(sorted(set(group)))
+
+
+def _bisect_from_json(raw: dict | None, owned: tuple[int, ...]) -> BisectRun | None:
+    """A stored bisection reads back exactly, or is refused naming the first field holding what begin and record never
+    write: a value of the wrong type, a core outside the owned cores or the universe, a group recorded twice, a child
+    not inside its parent or neither recorded nor queued, nothing left to test, or a replay of a group that is no failed
+    leaf; so no relation among its own fields makes the state machine raise later or skip a group it owes. The leaves
+    are read only once every field holds what it should."""
     if raw is None:
         return None
     entry = Stage(raw["entry"])
-    return BisectRun(
+    run = BisectRun(
         entry=entry,
         lane=raw["lane"],
         klass=Klass(raw["klass"]),
@@ -340,6 +355,56 @@ def _bisect_from_json(raw: dict | None) -> BisectRun | None:
         rerun=None if raw["rerun"] is None else tuple(raw["rerun"]),
         quick=_quick_from_json(raw, entry),
     )
+    universe = run.universe
+    cores = tuple(core for core, _ in run.values)
+    recorded = tuple(group for group, _ in run.results)
+    rules = (
+        ("entry", entry in BISECT_ENTRIES, "a stage a bisection begins in"),
+        ("lane", type(run.lane) is int and run.lane in owned, f"one of the owned cores {list(owned)}"),
+        (
+            "universe",
+            bool(universe) and _ascending(universe, owned),
+            f"one or more of the owned cores {list(owned)} in ascending order",
+        ),
+        (
+            "values",
+            _ascending(cores, universe)
+            and len(cores) == len(universe)
+            and all(type(value) is int and value < 0 for _, value in run.values),
+            "a value below 0 for each core of the universe in order",
+        ),
+        ("queue", all(_ascending(group, universe) for group in run.queue), BISECT_GROUPS),
+        (
+            "results",
+            all(_ascending(group, universe) and type(passed) is bool for group, passed in run.results)
+            and len(set(recorded)) == len(recorded),
+            f"{BISECT_GROUPS}, each recorded once and passed true or false",
+        ),
+        (
+            "parents",
+            all(
+                _ascending(child, universe)
+                and _ascending(parent, universe)
+                and set(child) < set(parent)
+                and (child in recorded or child in run.queue)
+                for child, parent in run.parents
+            ),
+            f"pairs of {BISECT_GROUPS}, each child inside its parent and recorded or queued",
+        ),
+        (
+            "rerun",
+            bool(run.queue) if run.rerun is None else _ascending(run.rerun, universe),
+            "a group of the universe's cores in ascending order, or null while a group is queued",
+        ),
+    )
+    for name, kept, rule in rules:
+        if not kept:
+            raise ValueError(f"the stored bisect's {name} is {raw[name]!r}, not {rule}")
+    leaves = resolve(run)
+    if run.rerun is not None and run.rerun not in leaves:
+        listed = [list(leaf) for leaf in leaves]
+        raise ValueError(f"the stored bisect's rerun is {raw['rerun']!r}, not one of its failed leaves {listed}")
+    return run
 
 
 def _quick_from_json(raw: dict, entry: Stage) -> bool:
@@ -435,7 +500,7 @@ def _flow_from_json(raw: dict | None, continued: bool, cfg: MachineConfig) -> Fl
         applied=raw["applied"],
         dirty=raw["dirty"],
         live1=None if live is None else _live1_from_json(live),
-        bisect=_bisect_from_json(raw["bisect"]),
+        bisect=_bisect_from_json(raw["bisect"], cfg.selected),
         q5=tuple(((key[0], key[1]), count) for key, count in raw["q5"]),
         q5_others=tuple(raw["q5_others"]),
         allcore=_allcore_from_json(raw["allcore"]),
