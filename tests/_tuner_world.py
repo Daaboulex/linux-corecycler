@@ -119,6 +119,7 @@ class Fake:
     handling: str = ""
     failed_at: set[tuple[int, int]] = field(default_factory=set)
     failed_allcore: set[tuple] = field(default_factory=set)
+    failed_vectors: set[tuple[tuple[int, int], ...]] = field(default_factory=set)
     log: list[str] = field(default_factory=list)
     steps: int = 0
     edges_2t: dict[int, int] | None = None
@@ -213,7 +214,7 @@ class Fake:
                 queue.append(follow)
             elif self.stopped is not None:
                 stopped, self.stopped = self.stopped, None
-                queue.append(self.returned(stopped))
+                queue.append(self.returned(stopped, cut=True))
 
     def run(self, before: SessionState, result: Transition):
         acting = result.state if result.state.session_id is not None else before
@@ -289,6 +290,7 @@ class Fake:
                     self.proven = {}
                     self.failed_at = set()
                     self.failed_allcore = set()
+                    self.failed_vectors = set()
                     self.stock_fail_owed = set()
                 self.stored_boot = self.boot
             case StartWorker(token=token, spec=spec):
@@ -370,6 +372,11 @@ class Fake:
         ):
             raise Broken(f"core {spec.core} tested at {spec.value} after a FAIL at or above it")
         vector = dict(spec.vector)
+        if spec.stage is Stage.TIGHTEN:
+            for failed in self.failed_vectors:
+                moved = {core: value for core, value in failed if value != 0}
+                if moved and all(vector[core] <= value for core, value in moved.items()):
+                    raise Broken(f"a TIGHTEN test at {vector} is at or past {moved}, where an all-core test failed")
         if vector.get(spec.core) != spec.value:
             raise Broken(f"core {spec.core}'s test value {spec.value} is not its value in the test vector")
         if set(vector) != {core for core, _ in state.baseline}:
@@ -468,7 +475,7 @@ class Fake:
         worker, self.worker = self.worker, None
         self.post(self.returned(worker, report))
 
-    def returned(self, worker: InFlight, report: Report | None = None) -> WorkerReported:
+    def returned(self, worker: InFlight, report: Report | None = None, cut: bool = False) -> WorkerReported:
         token, spec = worker.token, worker.spec
         report = report if report is not None else self.verdict_for(spec)
         isolated = all(value == 0 for core, value in spec.vector if core != spec.core)
@@ -479,8 +486,10 @@ class Fake:
                 self.stock_fail_owed.add(spec.core)
         if spec.load in ALLCORE_LOADS:
             replay = replay_of(spec)
-            soak_failed = report.group is Group.ENVIRONMENT and spec.load is Load.SOAK
-            if report.group is Group.SILICON or soak_failed or self.faults.fail_commits > 0:
+            failed = report.group is Group.SILICON or (report.group is Group.ENVIRONMENT and spec.load is Load.SOAK)
+            if failed and not cut:
+                self.failed_vectors.add(spec.vector)
+            if failed or self.faults.fail_commits > 0:
                 self.failed_allcore.add(replay)
             elif report.group is Group.PASS and not report.evidence and not report.skipped:
                 self.failed_allcore.discard(replay)

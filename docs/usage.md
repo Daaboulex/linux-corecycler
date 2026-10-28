@@ -122,7 +122,9 @@ found.
    passes without a failure, a failure handled as in STEADY.
 6. **Tighten** (TIGHTEN): in rounds, every core still in them tries one step tighter at
    once, for at most 3 rounds; a failure that names a core puts it back and takes it out
-   of the rounds, and one that names no core ends them.
+   of the rounds, and one that names no core ends them. The rounds also end before a step
+   that would put every core an earlier all-core failure moved at or past the value it
+   failed at, a one-off included.
 7. **Endurance** (ENDURANCE, off by default): hot, burst, warm, burst and idle in a cycle
    until three hours pass clean, a failure handled as in STEADY.
 8. **Memory** (MEMORY, on by default): stressapptest on each selected core, skipped with

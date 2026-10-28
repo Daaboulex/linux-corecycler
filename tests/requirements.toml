@@ -2222,6 +2222,21 @@ statement = "With every item frozen TIGHTEN goes to ENDURANCE, MEMORY or SOAK in
 proof = "built"
 
 [[requirement]]
+id = "L12.failed"
+statement = "TIGHTEN never starts a test at or past an all-core vector that failed in the session, on every core that vector moved: a round that would reach one ends the reclaim as a round failure naming no core does, every value kept. The session remembers each failed all-core test's vector once, for its whole life as it keeps its fail bounds, through a second LIVE1 pass, a continue under a new setup, a validation and a quarantine and its re-engage: a silicon report named or not and with any machine check, in any all-core stage, TIGHTEN, MEMORY and a Bisect group included, a SOAK failure, a one-off, and a lost verdict or a dead boot taken as the test's own failure, at the values that test ran; a vector that moved no core bars nothing, and a dead boot in a one-core test is no all-core vector (D97 and D117, tuning-loops-round2.md; GitHub issue 20)"
+proof = "built"
+
+[[requirement]]
+id = "L12.failed.stored"
+statement = "The stored session keeps every remembered failed all-core vector; a session stored before the record existed reads as remembering none, and a stored value the session could not have written refuses the session naming failed_vectors: not a list of vectors, a vector that does not give each owned core in order an integer value, or one with every value 0 (D97 and D117)"
+proof = "built"
+
+[[requirement]]
+id = "L12.failed.explorer"
+statement = "The fake world records the vector of every delivered all-core test that failed, a cut one aside, and never clears it; a TIGHTEN test at or past one on every core it moved breaks the run. The explorer injects an unnamed failure whose exact replay passes, a one-off, and reaches TIGHTEN after one in STEADY and one in TRANSIENT (D97; PLAN Next 77, matrix cell CD-12)"
+proof = "built"
+
+[[requirement]]
 id = "L13.a"
 statement = "CONFIRM runs HOT, WARM, BURST and IDLE once each at full length on the final values (Shaper only, Both)"
 proof = "not built"

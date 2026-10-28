@@ -418,6 +418,65 @@ def test_a_one_off_mark_survives_the_session_file_and_an_older_file_reads_as_no_
     assert fake.state.lifecycle is Lifecycle.COMPLETED
 
 
+@pytest.mark.req("L12.failed.stored")
+def test_failed_all_core_vectors_survive_the_session_file_and_a_resume_and_an_older_file_remembers_none():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, k_1t=1, k_2t=1, wait_between_cores_s=0.0)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.STEADY:
+        assert fake.progress()
+    failed = fake.worker.spec.vector
+    fake.deliver(Report(Group.SILICON, 1.0))
+    while fake.db.flow.one_off is None:
+        assert fake.progress()
+    st = fake.db
+    assert st.failed_vectors == (failed,)
+    assert stored_from_json(json.loads(json.dumps(stored_to_json(st))), continued=False) == st
+    older = json.loads(json.dumps(stored_to_json(st)))
+    del older["failed_vectors"]
+    assert stored_from_json(older, continued=False) == replace(st, failed_vectors=())
+    fake.crash()
+    fake.db = stored_from_json(json.loads(json.dumps(stored_to_json(st))), continued=False)
+    fake.post(Resume(1))
+    run_to_rest(fake, 5000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert {r.core: r.value for r in fake.state.cores} == dict(failed)
+
+
+@pytest.mark.req("L12.failed.stored")
+@pytest.mark.parametrize(
+    "written",
+    [
+        5,
+        [[]],
+        [[[0, 0], [1, 0]]],
+        [[[9, -3]]],
+        [[[0, -3]]],
+        [[[1, -3], [0, -3]]],
+        [[[0, "-3"], [1, -3]]],
+        [[[0, True], [1, -3]]],
+        [[[0, -3], [1]]],
+    ],
+    ids=[
+        "not a list",
+        "an empty vector",
+        "every value 0",
+        "a core the session does not own",
+        "an owned core missing",
+        "the cores out of order",
+        "a value in text",
+        "a value true",
+        "a core with no value",
+    ],
+)
+def test_a_failed_vector_the_session_could_not_have_written_refuses_the_stored_session_naming_it(written):
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, k_1t=1, k_2t=1, wait_between_cores_s=0.0)
+    start(fake)
+    raw = json.loads(json.dumps(stored_to_json(fake.db)))
+    raw["failed_vectors"] = written
+    with pytest.raises(ValueError, match="failed_vectors"):
+        stored_from_json(raw, continued=False)
+
+
 @pytest.mark.req("ALLCORE.bisect.stored")
 @pytest.mark.parametrize("steady", [True, False])
 def test_how_a_bisect_tests_its_groups_survives_the_session_file_and_an_older_file_reads_it_from_its_entry(steady):

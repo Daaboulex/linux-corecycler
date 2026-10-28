@@ -90,6 +90,7 @@ def clone(fake: Fake) -> Fake:
     twin.resident = dict(fake.resident)
     twin.failed_at = set(fake.failed_at)
     twin.failed_allcore = set(fake.failed_allcore)
+    twin.failed_vectors = set(fake.failed_vectors)
     twin.stock_fail_owed = set(fake.stock_fail_owed)
     twin.superseded = set(fake.superseded)
     twin.outside = set(fake.outside)
@@ -135,6 +136,7 @@ def key(fake: Fake) -> tuple:
         fake.faults.fail_commits,
         frozenset(fake.failed_at),
         frozenset(fake.failed_allcore),
+        frozenset(fake.failed_vectors),
         frozenset(fake.stock_fail_owed),
         frozenset(fake.superseded),
         frozenset(fake.outside),
@@ -304,6 +306,7 @@ class Survey:
     by_itself: int = 0
     bisected: set[Stage] = field(default_factory=set)
     quick_crashes: int = 0
+    tightened_after_one_off: set[Stage] = field(default_factory=set)
 
 
 def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
@@ -343,10 +346,13 @@ def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
                 raise Broken(f"{broken} after {(*path, move)}") from broken
             if any(line.startswith("continued: the kernel changed") for line in child.log):
                 survey.by_itself += 1
-            if child.state.flow is not None and child.state.flow.bisect is not None:
-                survey.bisected.add(child.state.flow.bisect.entry)
+            flow = child.state.flow
+            if flow is not None and flow.bisect is not None:
+                survey.bisected.add(flow.bisect.entry)
             if move in ("crash", "crash_mce", "crash_shared") and node.worker is not None and node.worker.spec.quick:
                 survey.quick_crashes += 1
+            if flow is not None and flow.stage is Stage.TIGHTEN and flow.one_off is not None:
+                survey.tightened_after_one_off.add(flow.one_off[0])
             stack.append((child, after, (*path, move)))
     return survey
 
@@ -470,6 +476,14 @@ def test_every_future_of_a_crash_inside_a_quick_group_runs_the_rest_of_its_bisec
     fake.edges_hot = {0: 0, 1: 0, 2: 0}
     survey = explore(fake, {"crash": 1, "crash_mce": 1, "crash_shared": 1, "total": 1}, cap=2_000_000)
     assert survey.quick_crashes > 0
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+@pytest.mark.req("L12.failed.explorer")
+def test_no_future_tightens_at_or_past_an_all_core_vector_whose_failure_was_a_one_off():
+    survey = explore(tiny(2, [-4, -3], 2), {"false_fail": 1, "total": 1}, cap=2_000_000)
+    assert {Stage.STEADY, Stage.TRANSIENT} <= survey.tightened_after_one_off
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
 

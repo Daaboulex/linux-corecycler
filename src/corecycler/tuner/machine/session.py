@@ -157,6 +157,7 @@ def stored(s: SessionState) -> Stored:
         power=s.power,
         setup=s.setup,
         base_co=s.base_co,
+        failed_vectors=s.failed_vectors,
     )
 
 
@@ -176,6 +177,7 @@ def reconstruct(st: Stored) -> SessionState:
         power=st.power,
         setup=st.setup,
         base_co=st.base_co,
+        failed_vectors=st.failed_vectors,
     )
 
 
@@ -585,6 +587,7 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
         power=st.power,
         setup=st.setup,
         base_co=st.base_co,
+        failed_vectors=st.failed_vectors,
     )
     changed = "; ".join(filter(None, (_setup_changes(st.setup, w.setup), _held_base_changes(st, w.bios_co))))
     if changed:
@@ -676,6 +679,8 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World, verdict: Attrib
     after = s
     if e.dirty_end and s.flow.stage is Stage.BISECT and any(r.in_test for r in s.cores):
         after = replace(s, flow=replace(s.flow, bisect=replace(s.flow.bisect, quick=False)))
+    if (verdict.lost is not None or verdict.flow_crash) and _replay_stage(s.flow) in ALLCORE | {Stage.MEMORY}:
+        after = _remember(after, tuple((core, resident(s, core)) for core, _ in s.baseline))
     early: list[Pause] = []
     if verdict.lost is not None:
         after, stock = _stale_fail(after, verdict.lost, w)
@@ -1429,6 +1434,8 @@ def _allcore_next(s: SessionState, w: World) -> Transition:
             return _after_tighten(s, w)
         for core in members:
             values[core] -= cfg.fine_step
+        if any(all(values[core] <= value for core, value in failed) for failed in s.failed_vectors):
+            return _after_tighten(s, w)
     load = _stage_load(flow.stage, cursor)
     first = s.cores[0].core
     vector = tuple((core, values[core]) for core, _ in s.baseline)
@@ -1740,9 +1747,16 @@ def _owe_replay(s: SessionState, vector: tuple[tuple[int, int], ...]) -> Session
     return replace(s, flow=replace(flow, unreplayed=unreplayed))
 
 
+def _remember(s: SessionState, vector: tuple[tuple[int, int], ...]) -> SessionState:
+    if vector in s.failed_vectors or not any(value for _, value in vector):
+        return s
+    return replace(s, failed_vectors=(*s.failed_vectors, vector))
+
+
 def _replayed(s: SessionState, spec: TestSpec, rep: Report) -> SessionState:
     if rep.group is Group.SILICON or (rep.group is Group.ENVIRONMENT and spec.load is Load.SOAK):
-        return _owe_replay(s, spec.vector)
+        failed = _remember(s, spec.vector) if spec.load in ALLCORE_LOADS else s
+        return _owe_replay(failed, spec.vector)
     flow = s.flow
     if rep.group is not Group.PASS or rep.evidence or rep.skipped or spec.vector != flow.validating:
         return s

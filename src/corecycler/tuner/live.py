@@ -355,6 +355,31 @@ def _unreplayed_from_json(raw: dict) -> tuple[Stage, ...]:
         raise ValueError(f"the stored flow's unreplayed is {stored!r}, not a list of stages") from exc
 
 
+def _failed_vectors_from_json(
+    raw: dict, baseline: tuple[tuple[int, int], ...]
+) -> tuple[tuple[tuple[int, int], ...], ...]:
+    """A session stored before the record existed remembers no failed all-core vector; a vector the session could
+    not have written, one that does not give each owned core in order an integer value with one not 0, is refused."""
+    stored = raw.get("failed_vectors", [])
+    owned = tuple(core for core, _ in baseline)
+    malformed = (
+        f"the stored session's failed_vectors is {stored!r}, not a list of vectors each giving cores {list(owned)} "
+        "an integer value, one of them not 0"
+    )
+    try:
+        vectors = tuple(tuple((core, value) for core, value in vector) for vector in stored)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(malformed) from exc
+    if any(
+        tuple(core for core, _ in vector) != owned
+        or any(type(value) is not int for _, value in vector)
+        or not any(value for _, value in vector)
+        for vector in vectors
+    ):
+        raise ValueError(malformed)
+    return vectors
+
+
 def _flow_from_json(raw: dict | None, continued: bool) -> Flow | None:
     if raw is None:
         return None
@@ -386,12 +411,13 @@ def stored_to_json(st: Stored) -> dict:
 
 
 def stored_from_json(raw: dict, *, continued: bool) -> Stored:
+    baseline = _pairs(raw["baseline"])
     return Stored(
         session_id=raw["session_id"],
         status=raw["status"],
         config=config_from_json(raw["config"]),
         seed=raw["seed"],
-        baseline=_pairs(raw["baseline"]),
+        baseline=baseline,
         cores=tuple(CoreRecord(**{**core, "phase": Phase(core["phase"])}) for core in raw["cores"]),
         flow=_flow_from_json(raw["flow"], continued),
         resume_streak=raw["resume_streak"],
@@ -399,6 +425,7 @@ def stored_from_json(raw: dict, *, continued: bool) -> Stored:
         power=tuple((name, value) for name, value in raw["power"]),
         setup=tuple((name, value) for name, value in raw["setup"]),
         base_co=tuple((core, value) for core, value in raw["base_co"]),
+        failed_vectors=_failed_vectors_from_json(raw, baseline),
     )
 
 
