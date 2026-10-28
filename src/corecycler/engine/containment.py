@@ -10,6 +10,7 @@ binds to the app.
 from __future__ import annotations
 
 import contextlib
+import errno
 import logging
 import os
 import subprocess
@@ -109,19 +110,21 @@ def scope_oom_kills(cgroup_path: str, *, cgroup_base: Path | None = None) -> int
     return None
 
 
-def scope_exists(cgroup_path: str, *, cgroup_base: Path | None = None) -> bool:
-    base = cgroup_base or Path("/sys/fs/cgroup")
-    try:
-        (base / cgroup_path.lstrip("/") / "cgroup.procs").read_text()
-    except OSError:
-        return False
-    return True
-
-
 def kill_scope(cgroup_path: str, *, cgroup_base: Path | None = None) -> None:
-    base = cgroup_base or Path("/sys/fs/cgroup")
-    with contextlib.suppress(FileNotFoundError):
-        (base / cgroup_path.lstrip("/") / "cgroup.kill").write_text("1")
+    """The cgroup.kill write fails ENODEV while systemd removes an emptied scope."""
+    scope = (cgroup_base or Path("/sys/fs/cgroup")) / cgroup_path.lstrip("/")
+    try:
+        with contextlib.suppress(FileNotFoundError):
+            (scope / "cgroup.kill").write_text("1")
+    except OSError as exc:
+        if exc.errno != errno.ENODEV:
+            raise
+        try:
+            listed = (scope / "cgroup.procs").read_text()
+        except OSError:
+            listed = ""
+        if listed:
+            raise
 
 
 def process_group_cpu_seconds(pgid: int, *, proc_base: Path | None = None) -> float | None:

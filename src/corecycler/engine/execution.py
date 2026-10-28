@@ -595,8 +595,9 @@ class Supervisor:
             run.last_watchdog = now
             fault = _scheduling_fault(run)
             if run.contained is not None:
-                self._read_oom_kills(run)
                 fault = fault or self._containment_fault(run, now)
+                if run.cgroup is not None:
+                    self._read_oom_kills(run)
             if fault:
                 run.signals.append(LaneSignal(Outcome.CONTAINMENT_BROKE, fault))
                 return
@@ -683,11 +684,15 @@ class Supervisor:
 
     @staticmethod
     def _read_oom_kills(run: _LaneRun) -> None:
-        kills = containment.scope_oom_kills(run.contained.scope)
+        kills = None if run.cgroup is None else containment.scope_oom_kills(run.cgroup)
         if kills is not None:
             run.oom_kills = max(run.oom_kills, kills)
-        elif run.read_problem is None and containment.scope_exists(run.contained.scope):
-            run.read_problem = f"the memory.events of live scope {run.contained.unit} cannot be read for its OOM kills"
+        elif run.read_problem is None:
+            run.read_problem = (
+                f"the memory.events of scope {run.contained.unit} cannot be read for its OOM kills"
+                if run.cgroup
+                else f"the payload was never seen in scope {run.contained.unit}, so its OOM kills cannot be read"
+            )
 
     def _containment_fault(self, run: _LaneRun, now: float) -> str | None:
         if run.proc is None or run.contained is None:
@@ -752,6 +757,13 @@ class Supervisor:
             containment.kill_scope(run.contained.scope)
         except OSError as exc:
             log.error("core %d: killing scope %s failed: %s", run.lane.core_id, run.contained.scope, exc)
+            run.signals.append(
+                LaneSignal(
+                    Outcome.CONTAINMENT_BROKE,
+                    f"killing scope {run.contained.unit} failed ({exc}), so a process left in it could load the "
+                    "next test: containment fault, not a core verdict",
+                )
+            )
 
     @staticmethod
     def _reap(run: _LaneRun, deadline: float) -> None:
@@ -764,14 +776,14 @@ class Supervisor:
         stopping: list[_LaneRun] = []
         live: list[_LaneRun] = []
         for run in launched:
+            if run.contained is not None and run.cgroup is None:
+                moved = self._learn_scope(run)
+                if moved is not None and not run.faulted:
+                    run.signals.append(LaneSignal(Outcome.CONTAINMENT_BROKE, moved))
             if run.contained is not None:
                 self._read_oom_kills(run)
             if run.proc.returncode is not None:
                 continue
-            if run.contained is not None and run.cgroup is None and not run.faulted:
-                moved = self._learn_scope(run)
-                if moved is not None:
-                    run.signals.append(LaneSignal(Outcome.CONTAINMENT_BROKE, moved))
             self._sample_cpu(run, stop)
             run.stopped_at = stop
             stopping.append(run)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes.util
+import errno
 import os
 import resource
 import shutil
@@ -1228,7 +1229,10 @@ class TestStallWatchdog:
 class TestContainmentWatchdog:
     @pytest.fixture(autouse=True)
     def scope_kills(self):
-        with patch.object(containment, "kill_scope") as kill_scope:
+        with (
+            patch.object(containment, "kill_scope") as kill_scope,
+            patch.object(containment, "scope_oom_kills", return_value=0),
+        ):
             yield kill_scope
 
     def _contained(self, cpus):
@@ -1257,11 +1261,15 @@ class TestContainmentWatchdog:
             run_one(supervisor, lane(tmp_path, cpus=(0,)), 0.3)
         scope_kills.assert_called_once_with("/user.slice/cc-test.scope")
 
-    def test_a_scope_that_cannot_be_killed_is_logged_as_an_error(self, tmp_path, scope_kills, caplog):
+    @pytest.mark.req("D122.kill")
+    def test_a_scope_that_cannot_be_killed_is_an_error_and_no_verdict(self, tmp_path, scope_kills, caplog):
         scope_kills.side_effect = PermissionError("cgroup.kill: permission denied")
-        self._run_adopted(tmp_path)
+        verdict = self._run_adopted(tmp_path)
         scope_kills.assert_called_once_with("/user.slice/cc-test.scope")
         assert {r.levelname for r in caplog.records if "permission denied" in r.getMessage()} == {"ERROR"}
+        assert verdict.outcome is Outcome.CONTAINMENT_BROKE
+        assert "scope cc-test" in verdict.detail
+        assert "cgroup.kill: permission denied" in verdict.detail
 
     @pytest.mark.req("VERDICT.11")
     def test_a_widened_kernel_record_is_a_containment_fault(self, tmp_path):
@@ -1399,7 +1407,7 @@ class TestTheScopeIsKnownFromLaunch:
         ):
             verdict = run_one(supervisor, lane(tmp_path, cpus=(0,)), 1.0)
         assert verdict.outcome is Outcome.CONTAINMENT_BROKE
-        assert "/elsewhere.slice/" in verdict.detail
+        assert verdict.detail.count("/elsewhere.slice/") == 1
         assert self.LANE_PARENT in verdict.detail
 
     def test_a_payload_first_found_elsewhere_at_the_stop_is_a_containment_fault(self, tmp_path, contained_by_the_probe):
@@ -1418,32 +1426,70 @@ class TestTheScopeIsKnownFromLaunch:
 OOM_EVENTS = "low 0\nhigh 0\nmax 0\noom {kills}\noom_kill {kills}\noom_group_kill 0\n"
 
 
-class TestOomKillsInTheScope:
+@contextlib.contextmanager
+def cgroup_kill_fails_with(number: int):
+    write_text = Path.write_text
+
+    def write(path, text, *args, **kwargs):
+        if path.name == "cgroup.kill":
+            raise OSError(number, os.strerror(number))
+        return write_text(path, text, *args, **kwargs)
+
+    with patch.object(Path, "write_text", autospec=True, side_effect=write):
+        yield
+
+
+ENDS_AS_SYSTEMD_COLLECTS_ITS_SCOPE = "import shutil, sys, time; time.sleep(1.2); shutil.rmtree(sys.argv[1])"
+
+COUNTS_A_KILL_THEN_ENDS = "import sys, time; time.sleep(0.5); open(sys.argv[1], 'w').write(sys.argv[2])"
+
+
+class TestTheLanesScope:
     SCOPE = "/user.slice/cc-test.scope"
 
     @pytest.fixture
-    def scope_dir(self, tmp_path):
-        cgroup_fs = tmp_path / "cgroup"
+    def cgroup_fs(self, tmp_path):
+        root = tmp_path / "cgroup"
+        with (
+            patch.object(containment, "Path", side_effect=lambda at: root if at == "/sys/fs/cgroup" else Path(at)),
+            patch.object(containment, "scope_effective_cpus", return_value={0}),
+        ):
+            yield root
+
+    @pytest.fixture
+    def scope_dir(self, cgroup_fs):
         scope = cgroup_fs / self.SCOPE.lstrip("/")
         scope.mkdir(parents=True)
         (scope / "cgroup.procs").write_text("")
-        kills, exists = containment.scope_oom_kills, containment.scope_exists
-        with (
-            patch.object(containment, "scope_oom_kills", side_effect=lambda path: kills(path, cgroup_base=cgroup_fs)),
-            patch.object(containment, "scope_exists", side_effect=lambda path: exists(path, cgroup_base=cgroup_fs)),
-            patch.object(containment, "payload_cgroup", return_value=self.SCOPE),
-            patch.object(containment, "scope_effective_cpus", return_value={0}),
-            patch.object(containment, "kill_scope"),
-        ):
+        with patch.object(containment, "payload_cgroup", return_value=self.SCOPE):
             yield scope
 
-    def _run(self, tmp_path, duration: float = 2.0):
-        backend = FakeBackend(_child("import time; time.sleep(60)"))
+    def _run(
+        self, tmp_path, duration: float = 2.0, command: list[str] | None = None, detector: FakeDetector | None = None
+    ):
+        backend = FakeBackend(command or _child("import time; time.sleep(60)"))
         supervisor, _, _ = make_supervisor(
             backend,
+            detector=detector,
             containment_for=lambda cpus: containment.Containment(prefix=[], unit="cc-test", scope=self.SCOPE),
         )
         return run_one(supervisor, lane(tmp_path / "lanes", cpus=(0,)), duration)
+
+    def _created_at_the_first_look(self, cgroup_fs, kills: int = 0):
+        scope = cgroup_fs / self.SCOPE.lstrip("/")
+
+        def look() -> bool:
+            there = scope.exists()
+            if not there:
+                scope.mkdir(parents=True)
+                (scope / "memory.events").write_text(OOM_EVENTS.format(kills=kills))
+                (scope / "cgroup.procs").write_text("")
+            return there
+
+        return look
+
+    def _seen_after(self, look):
+        return lambda _pid, _unit: self.SCOPE if look() else None
 
     def test_an_oom_kill_in_the_lanes_scope_is_an_outside_kill_that_stops_the_lane(self, tmp_path, scope_dir):
         (scope_dir / "memory.events").write_text(OOM_EVENTS.format(kills=1))
@@ -1496,9 +1542,115 @@ class TestOomKillsInTheScope:
         assert "memory.events" in verdict.detail
         assert "verdict unavailable" in verdict.detail
 
-    def test_a_scope_already_gone_is_no_read_problem(self, tmp_path, scope_dir):
+    @pytest.mark.req("D122")
+    def test_an_adopted_payload_whose_scope_never_appears_is_never_a_pass(self, tmp_path, scope_dir):
         shutil.rmtree(scope_dir)
-        assert self._run(tmp_path).outcome is Outcome.PASS
+        verdict = self._run(tmp_path)
+        assert verdict.outcome is Outcome.UNVERIFIED
+        assert "memory.events" in verdict.detail
+
+    @pytest.mark.req("D122")
+    def test_a_scope_systemd_creates_after_the_first_tick_is_read_once_it_holds_the_payload(self, tmp_path, cgroup_fs):
+        look = self._created_at_the_first_look(cgroup_fs)
+        read_kills = containment.scope_oom_kills
+        counts: list[int | None] = []
+
+        def kills(path):
+            counts.append(read_kills(path))
+            look()
+            return counts[-1]
+
+        with (
+            patch.object(containment, "scope_oom_kills", side_effect=kills),
+            patch.object(containment, "payload_cgroup", side_effect=self._seen_after(look)),
+        ):
+            verdict = self._run(tmp_path, duration=0.5)
+        assert verdict.outcome is Outcome.PASS
+        assert set(counts) == {0}
+
+    @pytest.mark.req("D122")
+    def test_an_oom_kill_before_a_scheduling_fault_ahead_of_adoption_is_named(self, tmp_path, cgroup_fs):
+        ticks: list[object] = []
+
+        def reniced_at_the_second_tick(run):
+            ticks.append(run)
+            return None if len(ticks) == 1 else "the test was reniced: scheduling fault, not a core verdict"
+
+        look = self._created_at_the_first_look(cgroup_fs, kills=1)
+        with (
+            patch.object(execution, "WATCHDOG_INTERVAL", 0.05),
+            patch.object(execution, "_scheduling_fault", side_effect=reniced_at_the_second_tick),
+            patch.object(containment, "payload_cgroup", side_effect=self._seen_after(look)),
+        ):
+            verdict = self._run(tmp_path)
+        assert verdict.outcome is Outcome.OUTSIDE_KILL
+        assert "OOM killer killed 1" in verdict.detail
+        assert "scheduling fault" in verdict.detail
+
+    @pytest.mark.req("D122")
+    def test_an_oom_kill_before_a_kernel_event_ahead_of_adoption_is_named(self, tmp_path, cgroup_fs):
+        look = self._created_at_the_first_look(cgroup_fs, kills=1)
+        with patch.object(containment, "payload_cgroup", side_effect=self._seen_after(look)):
+            verdict = self._run(tmp_path, detector=FakeDetector([[trouble()]]))
+        assert verdict.outcome is Outcome.KERNEL_TROUBLE
+        assert "OOM killer killed 1" in verdict.detail
+
+    @pytest.mark.req("D122")
+    def test_a_payload_never_seen_in_its_scope_is_never_a_pass_though_the_scope_reads_no_kill(
+        self, tmp_path, scope_dir
+    ):
+        (scope_dir / "memory.events").write_text(OOM_EVENTS.format(kills=0))
+        with patch.object(containment, "payload_cgroup", return_value=None):
+            verdict = self._run(tmp_path, duration=0.5)
+        assert verdict.outcome is Outcome.UNVERIFIED
+        assert "never seen in scope cc-test" in verdict.detail
+
+    @pytest.mark.req("D122")
+    def test_a_scope_removed_after_its_payload_ended_is_never_zero_oom_kills(self, tmp_path, scope_dir):
+        (scope_dir / "memory.events").write_text(OOM_EVENTS.format(kills=0))
+        command = [*_child(ENDS_AS_SYSTEMD_COLLECTS_ITS_SCOPE), str(scope_dir)]
+        verdict = self._run(tmp_path, command=command)
+        assert not scope_dir.exists()
+        assert verdict.outcome is Outcome.UNVERIFIED
+        assert "memory.events" in verdict.detail
+
+    @pytest.mark.req("D122")
+    def test_a_payload_that_ends_after_its_scope_was_learned_keeps_that_scope_for_the_stop_read(
+        self, tmp_path, scope_dir
+    ):
+        (scope_dir / "memory.events").write_text(OOM_EVENTS.format(kills=0))
+        command = [*_child(COUNTS_A_KILL_THEN_ENDS), str(scope_dir / "memory.events"), OOM_EVENTS.format(kills=1)]
+        with patch.object(
+            containment,
+            "payload_cgroup",
+            side_effect=lambda pid, _unit: self.SCOPE if Path(f"/proc/{pid}").exists() else None,
+        ):
+            verdict = self._run(tmp_path, duration=5.0, command=command)
+        assert verdict.outcome is Outcome.OUTSIDE_KILL
+        assert "OOM killer killed 1" in verdict.detail
+
+    @pytest.mark.parametrize("listed", [None, ""], ids=["cgroup.procs gone", "cgroup.procs empty"])
+    @pytest.mark.req("D122.kill")
+    def test_a_kill_that_meets_enodev_is_done_once_cgroup_procs_is_gone_or_empty(
+        self, tmp_path, scope_dir, caplog, listed
+    ):
+        (scope_dir / "memory.events").write_text(OOM_EVENTS.format(kills=0))
+        if listed is None:
+            (scope_dir / "cgroup.procs").unlink()
+        with cgroup_kill_fails_with(errno.ENODEV):
+            verdict = self._run(tmp_path, duration=0.5)
+        assert verdict.outcome is Outcome.PASS
+        assert [r.getMessage() for r in caplog.records if r.levelname == "ERROR"] == []
+
+    @pytest.mark.req("D122.kill")
+    def test_a_kill_that_meets_enodev_while_cgroup_procs_lists_a_process_is_no_verdict(self, tmp_path, scope_dir):
+        (scope_dir / "memory.events").write_text(OOM_EVENTS.format(kills=0))
+        (scope_dir / "cgroup.procs").write_text("4242\n")
+        with cgroup_kill_fails_with(errno.ENODEV):
+            verdict = self._run(tmp_path, duration=0.5)
+        assert verdict.outcome is Outcome.CONTAINMENT_BROKE
+        assert "scope cc-test" in verdict.detail
+        assert os.strerror(errno.ENODEV) in verdict.detail
 
 
 class TestThermalGuard:
@@ -1903,13 +2055,6 @@ class TestContainment:
         (scope / "memory.events").write_text("oom_kill many\n")
         assert containment.scope_oom_kills("/cc-test.scope", cgroup_base=tmp_path) is None
         assert containment.scope_oom_kills("/gone.scope", cgroup_base=tmp_path) is None
-
-    def test_a_scope_exists_while_its_cgroup_procs_reads(self, tmp_path):
-        scope = tmp_path / "cc-test.scope"
-        scope.mkdir()
-        (scope / "cgroup.procs").write_text("")
-        assert containment.scope_exists("/cc-test.scope", cgroup_base=tmp_path) is True
-        assert containment.scope_exists("/gone.scope", cgroup_base=tmp_path) is False
 
     @pytest.mark.parametrize(
         ("subtree_control", "refused"),

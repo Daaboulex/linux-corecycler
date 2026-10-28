@@ -4205,6 +4205,16 @@ statement = "A payload killed while frozen counts its open freeze, up to when it
 proof = "built"
 
 [[requirement]]
+id = "D122"
+statement = "A contained payload's memory.events is read only once its scope provably holds the adopted payload: on a watchdog tick after the scope adopted it, never on a tick before, and at the stop once the scope is learned and before SIGTERM; a run that faulted before its scope was learned still learns it at the stop, so its OOM kills are read; a read that fails then is no verdict (UNVERIFIED) with no second read, and so is a payload never seen in its scope and a scope removed after its payload ended, never zero OOM kills (D122, a fault-investigator's report: ryzen h17 test 56 and h18 test 251 went unverified because the first tick read the scope before systemd created it; the Next 90 review round 1: a scheduling fault or a kernel event before adoption dropped an OOM kill from the verdict)"
+proof = "built"
+
+[[requirement]]
+id = "D122.kill"
+statement = "A scope kill whose cgroup.kill write fails with ENODEV, as it does while systemd removes the emptied scope, is done only when cgroup.procs then fails or reads empty; with cgroup.procs listing a process, or on any failure but a scope already gone, the test is no verdict (CONTAINMENT_BROKE, apparatus) naming the scope and the error, since a leftover process could load the next test (D122, a fault-investigator's report: h18 test 391 logged ENODEV as an ERROR and passed)"
+proof = "built"
+
+[[requirement]]
 id = "HOLD.planned"
 statement = "A planned freeze, BURST's gaps and IDLE's rests, neither counts toward the hold cap nor extends the deadline, so a default 360 s IDLE test, which rests about 355 s, runs its asked seconds; it still excuses the stall watch and the work floor (PLAN Next 79, the main session's decision of 2026-10-27, after h14 test 528 passed IDLE at 120 s stage seconds)"
 proof = "built"
