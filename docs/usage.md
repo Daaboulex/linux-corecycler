@@ -115,8 +115,9 @@ found.
    tighten rounds, and every core loosens only when the full set fails and no smaller
    group does. The groups are tested by a short hot load after a test reports a failure
    under steady heat, and otherwise, a crash included, by the failed load replayed at its
-   full length. A failure whose exact replay passes is a one-off, once per stage, and
-   moves nothing.
+   full length; a crash during a short group makes every later group replay at full
+   length. A failure whose exact replay passes is a one-off, once per stage, and moves
+   nothing.
 5. **Changing loads** (TRANSIENT): burst, warm, burst and idle segments until an hour
    passes without a failure, a failure handled as in STEADY.
 6. **Tighten** (TIGHTEN): in rounds, every core still in them tries one step tighter at

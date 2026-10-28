@@ -137,6 +137,7 @@ class Fake:
     superseded: set[int] = field(default_factory=set)
     outside: set[int] = field(default_factory=set)
     completed: tuple[Stored, ...] = ()
+    crashed_bisect: bool = False
 
     def __post_init__(self) -> None:
         if not self.co:
@@ -187,6 +188,8 @@ class Fake:
             stored_before = self.db
             follow = self.run(before, result)
             self.state = result.state
+            if result.state.flow is not None and result.state.flow.bisect is None:
+                self.crashed_bisect = False
             self.check(before, ev, result)
             if follow is None:
                 self.check_settled(before, ev, result)
@@ -346,6 +349,8 @@ class Fake:
     def check_start(self, state: SessionState, spec) -> None:
         if state.session_id in self.superseded:
             raise Broken(f"superseded session {state.session_id} ran a test")
+        if spec.quick and self.crashed_bisect:
+            raise Broken("a quick group ran after a dead boot inside a group of its bisection")
         if spec.stage is Stage.SOAK and state.flow.dirty:
             raise Broken("a SOAK test started on a dirty profile, which must be proven again first")
         if state.setup != self.setup:
@@ -526,6 +531,8 @@ class Fake:
     def crash(self, evidence: tuple[Evidence, ...] = (), shared: bool = False) -> None:
         if self.worker is not None and self.worker.spec.load is Load.SOAK:
             self.failed_allcore.add(replay_of(self.worker.spec))
+        if self.worker is not None and self.worker.spec.stage is Stage.BISECT:
+            self.crashed_bisect = True
         self.crash_note = (evidence, shared)
         self.dead_suspects = tuple(sorted(crash_suspects(resident_at_death(self.journal), -1)))
         self.journal = ()

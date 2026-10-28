@@ -953,6 +953,115 @@ def test_a_crash_in_a_bisect_slot_records_that_group_as_failing_and_raises_the_r
     assert fake.state.resume_streak == streak + 1
 
 
+def _quick_bisect(fake: Fake, stage: Stage):
+    running = _until(fake, lambda spec, state: spec.stage is stage and spec.load is Load.HOT).spec
+    fake.deliver(Report(Group.SILICON, 30.0, context=FailContext(steady=True, working=(0, 1, 2, 3), paused=False)))
+    assert _next_worker(fake).quick
+    fake.deliver()
+    assert running.seconds != fake.config.bisect_seconds
+    return running
+
+
+def _full_length(running, spec) -> bool:
+    return (spec.stage, spec.load, spec.seconds, spec.quick, spec.plan_seed) == (
+        Stage.BISECT,
+        Load.HOT,
+        running.seconds,
+        False,
+        running.plan_seed,
+    )
+
+
+@pytest.mark.req("L18.d.4.4.bisect", "ALLCORE.bisect.replay")
+@pytest.mark.parametrize("stage", [Stage.STEADY, Stage.ENDURANCE])
+def test_a_crash_inside_a_quick_group_runs_every_later_group_of_its_bisection_at_full_length(stage):
+    fake = fresh(4, [-12, -6, -8, -4], 1, max_offset=-20, k_1t=2, endurance=True)
+    running = _quick_bisect(fake, stage)
+    assert _next_worker(fake).quick
+    fake.crash()
+    fake.post(Resume(1))
+    later = []
+    while fake.state.flow.stage is Stage.BISECT:
+        later.append(_next_worker(fake))
+        fake.deliver()
+    assert [tuple(core for core, value in spec.vector if value) for spec in later] == [(2, 3), (0,), (1,), (0, 1)]
+    assert all(_full_length(running, spec) for spec in later)
+
+
+@pytest.mark.req("L18.d.4.4.bisect", "ALLCORE.bisect.replay")
+def test_a_crash_inside_a_quick_group_s_q6_replay_runs_the_replay_again_at_full_length():
+    fake = fresh(4, [-12, -6, -8, -4], 1, max_offset=-20, k_1t=2)
+    running = _quick_bisect(fake, Stage.STEADY)
+    assert _next_worker(fake).quick
+    fake.deliver(Report(Group.SILICON, 30.0))
+    for _ in range(3):
+        _next_worker(fake)
+        fake.deliver()
+    replay = _next_worker(fake)
+    assert (replay.quick, fake.state.flow.bisect.rerun) == (True, (0, 1))
+    loosened = {record.core: record.value for record in fake.state.cores}
+    fake.crash()
+    fake.post(Resume(1))
+    again = _next_worker(fake)
+    assert fake.state.flow.bisect.rerun == (0, 1)
+    assert {record.core: record.value for record in fake.state.cores} == {
+        **loosened,
+        0: loosened[0] + 1,
+        1: loosened[1] + 1,
+    }
+    assert _full_length(running, again)
+
+
+@pytest.mark.req("ALLCORE.bisect.replay")
+def test_a_dead_boot_inside_a_quick_group_that_counts_an_incident_runs_that_group_again_at_full_length():
+    fake = fresh(4, [-12, -6, -8, -4], 1, max_offset=-20, k_1t=2)
+    running = _quick_bisect(fake, Stage.STEADY)
+    group = _next_worker(fake)
+    assert group.quick
+    incidents = fake.state.incidents
+    fake.crash(shared=True)
+    fake.post(Resume(1))
+    again = _next_worker(fake)
+    assert (fake.state.incidents, again.vector) == ((*incidents, Incident.CRASH), group.vector)
+    assert _full_length(running, again)
+
+
+def _dead_boot_between_groups(fake: Fake) -> None:
+    fake.crash()
+
+
+def _verdict_lost_in_the_same_boot(fake: Fake) -> None:
+    assert _next_worker(fake).quick
+    fake.faults.fail_commits = 1
+    fake.deliver()
+    assert fake.state.pause.reason is PauseReason.DATABASE
+
+
+def _verdict_lost_then_the_boot_died(fake: Fake) -> None:
+    _verdict_lost_in_the_same_boot(fake)
+    fake.crash()
+
+
+@pytest.mark.req("ALLCORE.bisect.replay")
+@pytest.mark.parametrize(
+    ("interrupt", "full"),
+    [
+        (_dead_boot_between_groups, False),
+        (_verdict_lost_in_the_same_boot, False),
+        (_verdict_lost_then_the_boot_died, True),
+    ],
+)
+def test_a_quick_bisection_runs_at_full_length_once_a_boot_died_after_one_of_its_groups_started(interrupt, full):
+    fake = fresh(4, [-12, -6, -8, -4], 1, max_offset=-20, k_1t=2)
+    running = _quick_bisect(fake, Stage.STEADY)
+    interrupt(fake)
+    fake.post(Resume(1))
+    assert fake.state.lifecycle is Lifecycle.RUNNING
+    after = _next_worker(fake)
+    assert (after.quick, after.seconds) == (not full, running.seconds if full else fake.config.bisect_seconds)
+    assert _full_length(running, after) is full
+
+
 @pytest.mark.req("D16")
 def test_a_crash_in_soak_with_nobody_convicted_is_a_flow_rule_fail_that_bisects_and_raises_the_resume_streak():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)

@@ -138,6 +138,7 @@ def key(fake: Fake) -> tuple:
         frozenset(fake.stock_fail_owed),
         frozenset(fake.superseded),
         frozenset(fake.outside),
+        fake.crashed_bisect,
     )
 
 
@@ -302,6 +303,7 @@ class Survey:
     taken: dict[str, int] = field(default_factory=dict)
     by_itself: int = 0
     bisected: set[Stage] = field(default_factory=set)
+    quick_crashes: int = 0
 
 
 def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
@@ -343,6 +345,8 @@ def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
                 survey.by_itself += 1
             if child.state.flow is not None and child.state.flow.bisect is not None:
                 survey.bisected.add(child.state.flow.bisect.entry)
+            if move in ("crash", "crash_mce", "crash_shared") and node.worker is not None and node.worker.spec.quick:
+                survey.quick_crashes += 1
             stack.append((child, after, (*path, move)))
     return survey
 
@@ -456,6 +460,16 @@ def test_every_future_of_a_cpu_whose_all_core_loads_fail_reaches_a_rest(edges, h
 def test_every_future_of_an_unnamed_soak_failure_bisects_it_and_completes_short_of_the_failed_vector(fault):
     survey = explore(tiny(2, [-3, -2], 2), {fault: 1, "total": 1}, cap=2_000_000)
     assert Stage.SOAK in survey.bisected
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+@pytest.mark.req("ALLCORE.bisect.crash.explorer")
+def test_every_future_of_a_crash_inside_a_quick_group_runs_the_rest_of_its_bisection_at_full_length():
+    fake = tiny(3, [-4, -4, -4], 2)
+    fake.edges_hot = {0: 0, 1: 0, 2: 0}
+    survey = explore(fake, {"crash": 1, "crash_mce": 1, "crash_shared": 1, "total": 1}, cap=2_000_000)
+    assert survey.quick_crashes > 0
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
 

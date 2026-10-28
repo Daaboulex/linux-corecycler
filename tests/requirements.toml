@@ -467,12 +467,17 @@ proof = "built"
 
 [[requirement]]
 id = "ALLCORE.bisect.replay"
-statement = "A STEADY or ENDURANCE Bisect tests its smaller groups quick, HOT for bisect_seconds, only after a test's own steady-class failure; after a crash (a dead boot during the test, a hang or a sudden reset alike, whatever its tail telemetry says) and after any other failure naming no core (a paused load, a burst, warm or idle load, a lost verdict) each group replays the failed load at the cursor for its full length with its plan seed, as TRANSIENT does (owner 2026-10-27, D96 in tuning-loops-round2.md: a freeze that takes minutes can pass every short group; it replaces the main session's default of brief-steady-bisect.md)"
+statement = "A STEADY or ENDURANCE Bisect tests its smaller groups quick, HOT for bisect_seconds, only after a test's own steady-class failure, and only until a boot dies after one of its groups started and before that group's result was stored, whatever the boot is attributed to, a verdict lost to a database failure whose boot then died included: from that resume on every group of that Bisect, the group that was running again and a Q6 replay included, replays the failed load at the cursor for its full length with its plan seed, a group that passed quick staying passed, while a boot that died between its groups and a verdict lost to a database failure in a boot that lived on leave it quick; after a crash (a dead boot during the test, a hang or a sudden reset alike, whatever its tail telemetry says) and after any other failure naming no core (a paused load, a burst, warm or idle load, a lost verdict) each group replays the failed load at the cursor for its full length with its plan seed, as TRANSIENT does (owner 2026-10-27, D96 in tuning-loops-round2.md: a freeze that takes minutes can pass every short group; the crash inside a quick group by the same reason, PLAN Next 65, kept in D106)"
 proof = "built"
 
 [[requirement]]
 id = "ALLCORE.bisect.stored"
 statement = "The stored Bisect keeps how it tests its smaller groups; one stored before that was kept reads as quick exactly when its entry is STEADY or ENDURANCE, and a stored value other than true or false refuses the session naming quick"
+proof = "built"
+
+[[requirement]]
+id = "ALLCORE.bisect.crash.explorer"
+statement = "The fake world marks a dead boot during a Bisect group until that Bisect ends and refuses a quick group while it is marked; the explorer injects one dead boot, plain, with an uncorrected record on the tested core, or with only a shared unit's record, into a three-core CPU whose HOT load fails under steady heat naming no core, reaches a dead boot inside a quick group, and every future comes to rest (D96's reason, PLAN Next 65)"
 proof = "built"
 
 [[requirement]]
@@ -3059,7 +3064,7 @@ proof = "built"
 
 [[requirement]]
 id = "L25.h"
-statement = "The durable telemetry tail survives a crash and is packed into the dead test's samples; L18's flow rule no longer reads it (D96)"
+statement = "The durable telemetry tail survives a crash and is packed into the dead test's samples; L18's flow rule does not read it (D96)"
 proof = "built"
 
 [[requirement]]

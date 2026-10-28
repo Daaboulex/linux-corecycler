@@ -674,6 +674,8 @@ def _ending(w: World) -> str:
 
 def _attributed(s: SessionState, e: CrashEvidenceRead, w: World, verdict: Attribution) -> Transition:
     after = s
+    if e.dirty_end and s.flow.stage is Stage.BISECT and any(r.in_test for r in s.cores):
+        after = replace(s, flow=replace(s.flow, bisect=replace(s.flow.bisect, quick=False)))
     early: list[Pause] = []
     if verdict.lost is not None:
         after, stock = _stale_fail(after, verdict.lost, w)
