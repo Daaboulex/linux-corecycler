@@ -214,6 +214,12 @@ def _dead_boot(fake) -> None:
     fake.post(Resume(1))
 
 
+def _lose_the_verdict_to_a_dead_boot(fake) -> None:
+    fake.faults.fail_commits = 1
+    fake.deliver()
+    _dead_boot(fake)
+
+
 UNNAMED_SOAK_FAILURES = {
     "silicon naming no core": lambda fake: fake.deliver(Report(Group.SILICON, 1.0)),
     "silicon with a steady tail": lambda fake: fake.deliver(
@@ -222,6 +228,7 @@ UNNAMED_SOAK_FAILURES = {
     "an unblamed record": lambda fake: fake.deliver(Report(Group.ENVIRONMENT, 1.0, detail="soft lockup on CPU 3")),
     "a lost verdict": _lose_the_verdict,
     "a dead boot": _dead_boot,
+    "a lost verdict at a dead boot": _lose_the_verdict_to_a_dead_boot,
 }
 
 
@@ -249,7 +256,8 @@ def test_an_unnamed_soak_failure_bisects_on_full_length_soak_watches_and_its_cul
     assert (fake.state.lifecycle, flow.stage) == (Lifecycle.RUNNING, Stage.BISECT)
     assert (flow.bisect.entry, flow.bisect.quick) == (Stage.SOAK, False)
     assert {r.core: r.value for r in fake.state.cores} == values
-    assert fake.state.incidents == incidents
+    counted = (*incidents, Incident.CRASH) if fails == "a lost verdict at a dead boot" else incidents
+    assert fake.state.incidents == counted
     assert fake.state.resume_streak == streak + (fails == "a dead boot")
     groups = [_next_spec(fake)]
     fake.deliver(Report(Group.PASS, watch.seconds))
@@ -260,7 +268,7 @@ def test_an_unnamed_soak_failure_bisects_on_full_length_soak_watches_and_its_cul
     assert {(g.stage, g.load, g.seconds, g.quick, g.cpus, g.plan_seed) for g in groups} == {shape}
     culprit, other = fake.state.core(0), fake.state.core(1)
     assert (culprit.value, culprit.fb, other.value) == (values[0] + 1, values[0], values[1])
-    assert fake.state.incidents == incidents
+    assert fake.state.incidents == counted
     assert _next_spec(fake).stage is Stage.LIVE1
 
 

@@ -507,12 +507,12 @@ proof = "built"
 
 [[requirement]]
 id = "ALLCORE.bisect.single"
-statement = "The one core a TRANSIENT Bisect finds backs off one step alone, the other cores keep their values, and TRANSIENT runs the failed load again with tClean 0 (owner 2026-10-17, allcore-bisect.md)"
+statement = "The one core a TRANSIENT Bisect finds backs off one step alone, the cores of no other failed leaf move (D116), and TRANSIENT runs the failed load again with tClean 0 (owner 2026-10-17, allcore-bisect.md)"
 proof = "built"
 
 [[requirement]]
 id = "ALLCORE.bisect.group"
-statement = "Cores that fail the transient load only together get Q6 and leave the reclaim; every other core keeps its value and its reclaim (owner 2026-10-17, allcore-bisect.md)"
+statement = "Cores that fail the transient load only together get Q6 and leave the reclaim; every core outside another failed leaf keeps its value and its reclaim (owner 2026-10-17, allcore-bisect.md; D116)"
 proof = "built"
 
 [[requirement]]
@@ -636,7 +636,7 @@ proof = "built"
 
 [[requirement]]
 id = "K47"
-statement = "Q6: +1 on every tuned core of the smallest failing group"
+statement = "Q6: +1 on every tuned core of each failing group a Bisect resolves, one group after another (D116)"
 proof = "built"
 
 [[requirement]]
@@ -1925,7 +1925,7 @@ proof = "built"
 
 [[requirement]]
 id = "L09.a"
-statement = "Bisect finds which values fail together under the failing all-core load and fixes the smallest failing group"
+statement = "Bisect finds which values fail together under the failing all-core load and fixes every failing group it finds (D116)"
 proof = "built"
 
 [[requirement]]
@@ -1950,7 +1950,7 @@ proof = "built"
 
 [[requirement]]
 id = "L09.G1"
-statement = "A slot PASS is recorded and popped; an empty queue resolves"
+statement = "A slot PASS is recorded and popped; the queue resolves once every failed group holds a failed leaf, so always once it is empty (D116)"
 proof = "built"
 
 [[requirement]]
@@ -1966,7 +1966,7 @@ task = "S3"
 
 [[requirement]]
 id = "L09.G2.single"
-statement = "A single-core group FAILs: FB_c = V_c, v_c = V_c + 1, exit to the entry loop"
+statement = "A single-core group FAILs: FB_c = V_c, v_c = V_c + 1 when its slot fails, and it is recorded as a failed leaf; the Bisect exits to the entry loop once every failed group holds a failed leaf and every group's Q6 has passed, else its queue goes on (D116)"
 proof = "built"
 
 [[requirement]]
@@ -1976,7 +1976,7 @@ proof = "built"
 
 [[requirement]]
 id = "L09.resolve"
-statement = "Resolve: the smallest FAIL group whose children all passed (tie lowest id) gets Q6, after the re-test of L09.retest when that group is the full set; its slot re-runs at the new values; a FAIL there gives another +1; a PASS exits; nothing to loosen pauses"
+statement = "Resolve: every FAIL leaf, a FAIL group whose children all passed or a single core, smaller first (tie lowest id), takes its rule: a single core has backed off in place when its slot failed, and a group gets Q6, after the re-test of L09.retest when that group is the full set; its slot re-runs at the new values; a FAIL there gives another +1; a PASS moves to the next group's Q6, and the last PASS exits; nothing to loosen pauses (D116)"
 proof = "built"
 
 [[requirement]]
@@ -2410,7 +2410,7 @@ proof = "built"
 
 [[requirement]]
 id = "SOAK.bisect"
-statement = "An unnamed SOAK failure (a silicon verdict naming no core, the watch's unblamed record or kernel trouble, a lost verdict, a dead boot nobody is convicted for) starts a Bisect with entry SOAK, as STEADY, TRANSIENT and ENDURANCE do; each group, the lowest core first, replays the SOAK watch for its full length with its plan seed and no CPU loaded, never quick, whatever the failure's tail; no incident is counted, and a dead boot raises the resume streak. The exception is a dead boot whose kernel log holds an uncorrected record no core is blamed for: it counts an incident and the same SOAK watch runs again (D98, owner 2026-10-27, tuning-loops-round2.md; D91, D96)"
+statement = "An unnamed SOAK failure (a silicon verdict naming no core, the watch's unblamed record or kernel trouble, a lost verdict, a dead boot nobody is convicted for) starts a Bisect with entry SOAK, as STEADY, TRANSIENT and ENDURANCE do; each group, the lowest core first, replays the SOAK watch for its full length with its plan seed and no CPU loaded, never quick, whatever the failure's tail; no incident is counted, save at the dead boot that finds a SOAK verdict the database lost, which counts that boot's incident and raises no streak, and a dead boot nobody is convicted for raises the resume streak. The exception is a dead boot whose kernel log holds an uncorrected record no core is blamed for: it counts an incident and the same SOAK watch runs again (D98, owner 2026-10-27, tuning-loops-round2.md; D91, D96)"
 proof = "built"
 
 [[requirement]]
@@ -4396,6 +4396,21 @@ statement = "In a Bisect whose every smaller group passed, any FAIL of the full 
 proof = "built"
 
 [[requirement]]
+id = "D116"
+statement = "A Bisect resolves every group that failed before it exits: a core found alone backs off one step in place with FB = V when its own slot fails, so it keeps that back-off whatever ends the Bisect later; the queue goes on until every failed group holds a failed leaf, a failed group whose children all passed or a single core, so a Bisect that finds a core while another failed group's halves are still owed goes on for them, and stops there, since what is left can only find more of a failure already found; then the groups of several take Q6 one after another, smaller first and then by the lowest core, each replaying until it passes; the entry stage runs again only after the last replay passes, and that run is no exact replay of any leaf, so it clears none; a Bisect with one failed leaf runs and ends as before (D116, the Next 51 round-2 review: a SOAK crash whose Bisect crashed in both halves completed with the second half at the values it crashed at)"
+proof = "built"
+
+[[requirement]]
+id = "D116.stored"
+statement = "A Bisect stored during its first group's Q6 replay with a second group still owed reads back from the session file unchanged; after a resume the replay runs again and the second group takes its Q6 before the Bisect exits (D116)"
+proof = "built"
+
+[[requirement]]
+id = "D116.explorer"
+statement = "The explorer starts a three-core CPU, halved into a pair and a single core, at its SOAK watch with three unnamed failures to spend, so a future fails the watch, then the pair, then the single core in one Bisect: every future comes to rest and none completes at or past a vector a failed group ran at (D116; PLAN Next 77)"
+proof = "built"
+
+[[requirement]]
 id = "Q1"
 statement = "Both runs BASECHECK with per-core 0, then per-core 1T and 2T on that shaper, then all-core with every value live (Bisect, then loosen), TIGHTEN, CONFIRM, ENDURANCE"
 proof = "not built"
@@ -4429,7 +4444,7 @@ proof = "built"
 
 [[requirement]]
 id = "Q6"
-statement = "CO-only stacking: +1 on every tuned core of the smallest failing group until it passes"
+statement = "CO-only stacking: +1 on every tuned core of each failing group a Bisect resolves until it passes, one group after another (D116)"
 proof = "built"
 
 [[requirement]]

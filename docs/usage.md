@@ -110,10 +110,11 @@ found.
 3. **Each core alone** (LIVE1): every value live at once, each core tested alone again.
 4. **Hot all-core** (STEADY): every core enters 3 steps looser than its proven value,
    under a hot load on every selected CPU. A failure that names a core backs that core
-   off one step. One that names no core is narrowed by CCD and by half until its core is
-   found, which alone backs off; a group that fails only together loosens and leaves the
-   tighten rounds, and every core loosens only when the full set fails and no smaller
-   group does. The groups are tested by a short hot load after a test reports a failure
+   off one step. One that names no core is narrowed by CCD and by half until every group
+   that failed holds a core or a smaller group found: each core found alone backs off,
+   each group that fails only together loosens and leaves the tighten rounds, and the
+   stage runs again only once all of them have; every core loosens only when the full set
+   fails and no smaller group does. The groups are tested by a short hot load after a test reports a failure
    under steady heat, and otherwise, a crash included, by the failed load replayed at its
    full length; a crash during a short group makes every later group replay at full
    length. A failure whose exact replay passes is a one-off, once per stage, and moves

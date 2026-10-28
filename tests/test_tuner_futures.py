@@ -541,6 +541,17 @@ def test_every_future_of_an_unnamed_soak_failure_bisects_it_and_completes_short_
     assert "completed" in survey.leaves
 
 
+@pytest.mark.req("D116.explorer")
+def test_every_future_of_a_soak_failure_whose_bisection_fails_in_two_groups_completes_short_of_both():
+    fake = tiny(3, [-3, -3, -3], 2)
+    while fake.worker is None or fake.worker.spec.load is not Load.SOAK:
+        assert fake.progress()
+    survey = explore(fake, {"false_fail": 3, "total": 3}, cap=2_000_000)
+    assert Stage.SOAK in survey.bisected
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
 @pytest.mark.req("ALLCORE.bisect.crash.explorer")
 def test_every_future_of_a_crash_inside_a_quick_group_runs_the_rest_of_its_bisection_at_full_length():
     fake = tiny(3, [-4, -4, -4], 2)

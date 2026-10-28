@@ -1912,16 +1912,25 @@ def _held(s: SessionState) -> tuple[tuple[int, int], ...]:
     return tuple((r.core, r.value) for r in s.cores)
 
 
-def _found(s: SessionState, core: int) -> tuple[SessionState, str | None]:
-    run = s.flow.bisect
-    backed = search.back_off_in_place(replace(s.core(core), value=dict(run.values)[core]), s.config, 1)
-    return replace(s.with_core(backed), flow=_bisect_exit(s.flow)), None
+def _found(s: SessionState, core: int) -> SessionState:
+    value = dict(s.flow.bisect.values)[core]
+    return s.with_core(search.back_off_in_place(replace(s.core(core), value=value), s.config, 1))
+
+
+def _leaf_rules(s: SessionState, leaves: tuple[tuple[int, ...], ...]) -> tuple[SessionState, str | None]:
+    """A core found alone has backed off already, when its own slot failed; the first group of several among the
+    leaves takes Q6, each later group takes its own once the replay before it passes, and the bisection exits only
+    after the last."""
+    group = next((leaf for leaf in leaves if len(leaf) > 1), None)
+    if group is None:
+        return replace(s, flow=_bisect_exit(s.flow)), None
+    return _q6(s, group)
 
 
 def _full_set(s: SessionState) -> tuple[SessionState, str | None]:
     universe = s.flow.bisect.universe
     if len(universe) == 1:
-        return _found(s, universe[0])
+        return _leaf_rules(_found(s, universe[0]), ())
     return _q6(s, universe)
 
 
@@ -1931,7 +1940,7 @@ def _bisect_outcome(s: SessionState, passed: bool, w: World) -> tuple[SessionSta
     current = bisect.current_group(run)
     if run.rerun is not None:
         if passed:
-            return replace(s, flow=_bisect_exit(flow)), None
+            return _leaf_rules(s, bisect.after(run))
         return _q6(s, run.rerun)
     if passed and bisect.retesting(run):
         return replace(s, flow=replace(flow, stage=run.entry, bisect=None, one_off=(run.entry, _held(s)))), None
@@ -1940,14 +1949,14 @@ def _bisect_outcome(s: SessionState, passed: bool, w: World) -> tuple[SessionSta
     if bisect.retesting(run):
         return _full_set(s)
     if not passed and len(current) == 1:
-        return _found(s, current[0])
+        s = _found(s, current[0])
     run = bisect.record(run, passed, dict(w.domain_of))
-    s = replace(s, flow=replace(flow, bisect=run))
-    if run.queue:
+    s = replace(s, flow=replace(s.flow, bisect=run))
+    if not bisect.accounted(run):
         return s, None
-    group = bisect.resolve(run)
-    if group != run.universe:
-        return _q6(s, group)
+    leaves = bisect.resolve(run)
+    if leaves != (run.universe,):
+        return _leaf_rules(s, leaves)
     if flow.one_off == (run.entry, _held(s)):
         return _full_set(s)
     return replace(s, flow=replace(s.flow, bisect=bisect.retest(run))), None

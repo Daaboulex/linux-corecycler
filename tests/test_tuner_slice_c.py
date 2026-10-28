@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from itertools import takewhile
 
 import pytest
 
+from corecycler.tuner.live import stored_from_json, stored_to_json
 from corecycler.tuner.machine import allcore
 from corecycler.tuner.machine.types import (
     AllCore,
@@ -590,7 +592,7 @@ PAUSE_IN = (Stage.STEADY, Stage.TRANSIENT, Stage.ENDURANCE, Stage.SOAK)
         (memory_report, 2, {0: -5, 1: -5}),
         (memory_dead_boot, 2, {0: -5, 1: -5}),
         (soak_environment, 2, {0: -5, 1: -5}),
-        (bisect_report, 4, {0: -2, 1: -2, 2: -3, 3: -3}),
+        (bisect_report, 4, {0: -2, 1: -2, 2: -2, 3: -2}),
     ],
     ids=lambda value: value.__name__ if callable(value) else None,
 )
@@ -688,6 +690,178 @@ def test_a_dead_boot_in_a_one_core_test_bars_no_later_round():
     assert fake.state.lifecycle is Lifecycle.COMPLETED
     tighten = [dict(spec.vector) for spec in specs if spec.stage is Stage.TIGHTEN]
     assert tighten[::5] == [{0: -4, 1: -4}, {0: -5, 1: -5}, {0: -6, 1: -6}]
+
+
+def failing_once(fake, *vectors):
+    owed = [dict(vector) for vector in vectors]
+    verdict = fake.verdict_for
+
+    def failing(spec):
+        vector = dict(spec.vector)
+        if vector in owed:
+            owed.remove(vector)
+            return Report(Group.SILICON, spec.seconds)
+        return verdict(spec)
+
+    fake.verdict_for = failing
+
+
+def slot(held, *groups):
+    return {core: value if any(core in group for group in groups) else 0 for core, value in held.items()}
+
+
+def stepped(held, cores):
+    return {core: value + (core in cores) for core, value in held.items()}
+
+
+def bisect_slots(specs):
+    return [dict(spec.vector) for spec in specs if spec.stage is Stage.BISECT]
+
+
+@pytest.mark.req("D116", "SOAK.bisect", "L09.resolve", "Q6")
+def test_a_soak_crash_whose_two_halves_each_crash_loosens_both_before_its_bisection_exits():
+    fake = fresh(4, [-6] * 4, 2, max_offset=-8, **FAST)
+    specs = started(fake)
+    start(fake)
+    held = until_test(fake, Stage.SOAK)
+    fake.crash()
+    fake.post(Resume(1))
+    assert fake.state.flow.bisect.entry is Stage.SOAK
+    until_test(fake, Stage.BISECT, slot(held))
+    fake.deliver()
+    for half in ((0, 1), (2, 3)):
+        until_test(fake, Stage.BISECT, slot(held, half))
+        fake.crash()
+        fake.post(Resume(1))
+    while fake.state.flow.stage is Stage.BISECT:
+        assert fake.progress()
+    loosened = stepped(held, (0, 1, 2, 3))
+    assert bisect_slots(specs) == [
+        slot(held),
+        slot(held, (0, 1)),
+        slot(held, (2, 3)),
+        *(slot(held, (core,)) for core in held),
+        slot(loosened, (0, 1)),
+        slot(loosened, (2, 3)),
+    ]
+    assert {r.core: r.value for r in fake.state.cores} == loosened
+    run_to_rest(fake, 20_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert {r.core: r.value for r in fake.state.cores} == loosened
+
+
+@pytest.mark.req("D116", "ALLCORE.bisect.single", "ALLCORE.bisect.group", "L09.G2.single", "L09.resolve")
+def test_a_bisection_that_finds_a_core_and_a_pair_backs_the_core_off_and_loosens_the_pair_before_it_exits():
+    fake = fresh(3, [-6] * 3, 2, max_offset=-8, **FAST)
+    specs = started(fake)
+    start(fake)
+    held = until_test(fake, Stage.TRANSIENT)
+    failing_once(fake, held, slot(held, (0, 1)), slot(held, (2,)))
+    while fake.state.flow.stage is not Stage.BISECT:
+        assert fake.progress()
+    while fake.state.flow.stage is Stage.BISECT:
+        assert fake.progress()
+    loosened = stepped(held, (0, 1, 2))
+    assert bisect_slots(specs) == [
+        slot(held),
+        slot(held, (0, 1)),
+        slot(held, (2,)),
+        slot(held, (0,)),
+        slot(held, (1,)),
+        slot(loosened, (0, 1)),
+    ]
+    assert {r.core: r.value for r in fake.state.cores} == loosened
+    assert (fake.state.core(2).fb, fake.state.flow.stage, fake.state.flow.allcore.frozen) == (
+        held[2],
+        Stage.TRANSIENT,
+        (0, 1),
+    )
+    run_to_rest(fake, 20_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert {r.core: r.value for r in fake.state.cores} == loosened
+
+
+@pytest.mark.req("D116", "L09.G2.single")
+def test_a_bisection_that_finds_a_core_in_each_half_backs_both_off_at_once_and_skips_the_rest_of_its_queue():
+    fake = fresh(4, [-6] * 4, 2, max_offset=-8, **FAST)
+    specs = started(fake)
+    start(fake)
+    held = until_test(fake, Stage.TRANSIENT)
+    failing_once(fake, held, slot(held, (0, 1)), slot(held, (2, 3)), slot(held, (0,)), slot(held, (2,)))
+    while fake.state.flow.stage is not Stage.BISECT:
+        assert fake.progress()
+    while fake.state.flow.stage is Stage.BISECT:
+        assert fake.progress()
+    assert bisect_slots(specs) == [
+        slot(held),
+        slot(held, (0, 1)),
+        slot(held, (2, 3)),
+        slot(held, (0,)),
+        slot(held, (1,)),
+        slot(held, (2,)),
+    ]
+    assert {r.core: r.value for r in fake.state.cores} == stepped(held, (0, 2))
+    assert (fake.state.core(0).fb, fake.state.core(2).fb) == (held[0], held[2])
+    assert (fake.state.flow.stage, fake.state.flow.allcore.frozen) == (Stage.TRANSIENT, ())
+
+
+def bisecting_from(fake, entry):
+    if entry is Stage.TRANSIENT:
+        held = until_test(fake, Stage.TRANSIENT)
+        failing_once(fake, held)
+        return held
+    until_test(fake, Stage.LIVE1)
+    fake.crash()
+    fake.post(Resume(1))
+    return dict(fake.state.flow.bisect.values)
+
+
+@pytest.mark.req("D116", "L09.G2.single", "L09.G3")
+@pytest.mark.parametrize("entry", [Stage.TRANSIENT, Stage.LIVE1])
+@pytest.mark.parametrize("ending", ["crash", "record"])
+def test_a_core_found_alone_keeps_its_back_off_when_a_later_slot_ends_the_bisection(entry, ending):
+    fake = fresh(4, [-6] * 4, 2, max_offset=-8, **FAST)
+    start(fake)
+    held = bisecting_from(fake, entry)
+    failing_once(fake, slot(held, (0, 1)), slot(held, (2, 3)), slot(held, (0,)))
+    until_test(fake, Stage.BISECT, slot(held, (2,)))
+    if ending == "crash":
+        fake.crash()
+        fake.post(Resume(1))
+    else:
+        fake.deliver(Report(Group.SILICON, 1.0, evidence=(Evidence(2, False),)))
+    assert (fake.state.flow.stage, fake.state.flow.bisect) == (entry, None)
+    assert (fake.state.core(0).value, fake.state.core(0).fb) == (held[0] + 1, held[0])
+
+
+@pytest.mark.req("D116.stored", "L09.c")
+def test_a_bisection_closed_in_its_first_group_s_q6_replay_reads_back_and_loosens_the_second_group_after_resume():
+    fake = fresh(4, [-6] * 4, 2, max_offset=-8, **FAST)
+    specs = started(fake)
+    start(fake)
+    held = until_test(fake, Stage.TRANSIENT)
+    failing_once(fake, held, slot(held, (0, 1)), slot(held, (2, 3)))
+    first = stepped(held, (0, 1))
+    until_test(fake, Stage.BISECT, slot(first, (0, 1)))
+    fake.post(Close())
+    stored = fake.db
+    assert (stored.status, stored.flow.bisect.rerun, {r.core: r.value for r in stored.cores}) == (
+        "paused",
+        (0, 1),
+        first,
+    )
+    read = stored_from_json(json.loads(json.dumps(stored_to_json(stored))), continued=False)
+    assert read == stored
+    fake.db = read
+    closed = len(specs)
+    fake.post(Resume(1))
+    while fake.state.flow is None or fake.state.flow.stage is Stage.BISECT:
+        assert fake.progress()
+    loosened = stepped(held, (0, 1, 2, 3))
+    assert bisect_slots(specs[closed:]) == [slot(first, (0, 1)), slot(loosened, (2, 3))]
+    assert {r.core: r.value for r in fake.state.cores} == loosened
+    run_to_rest(fake, 20_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
 
 
 @pytest.mark.req("L09.seed.distinct")

@@ -66,7 +66,13 @@ def record(run: BisectRun, passed: bool, domain_of: Mapping[int, int | None]) ->
     return replace(run, queue=queue, results=(*run.results, (group, passed)), parents=parents)
 
 
-def resolve(run: BisectRun) -> Group:
+def _order(group: Group) -> tuple[int, Group]:
+    return len(group), group
+
+
+def resolve(run: BisectRun) -> tuple[Group, ...]:
+    """Every failed leaf, a failed group whose children all passed or a single core, smallest first and then by its
+    lowest core."""
     results = dict(run.results)
     children_of: dict[Group, list[Group]] = {}
     for child, parent in run.parents:
@@ -74,9 +80,21 @@ def resolve(run: BisectRun) -> Group:
     failed = [
         group
         for group, passed in results.items()
-        if not passed and group and all(results.get(child) is True for child in children_of.get(group, []))
+        if not passed and all(results.get(child) is True for child in children_of.get(group, []))
     ]
-    return min(failed, key=lambda group: (len(group), group[0]), default=())
+    return tuple(sorted(failed, key=_order))
+
+
+def accounted(run: BisectRun) -> bool:
+    """Every failed group holds a failed leaf, so the queue left over can only find more of a failure already
+    found; true whenever the queue is empty."""
+    leaves = resolve(run)
+    return all(any(set(leaf) <= set(group) for leaf in leaves) for group, passed in run.results if not passed)
+
+
+def after(run: BisectRun) -> tuple[Group, ...]:
+    """The failed leaves still owed their Q6 once the group replaying now passes: those resolve orders after it."""
+    return tuple(group for group in resolve(run) if _order(group) > _order(run.rerun))
 
 
 def retest(run: BisectRun) -> BisectRun:

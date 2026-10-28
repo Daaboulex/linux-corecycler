@@ -1154,4 +1154,25 @@ def test_a_bisect_tests_the_lower_half_first_and_breaks_a_size_tie_to_the_lowest
         run = bisect.record(run, passed, domains)
     for passed in (False, True, True, False):
         run = bisect.record(run, passed, domains)
-    assert bisect.resolve(run) == (0,)
+    assert bisect.resolve(run) == ((0,), (3,))
+
+
+@pytest.mark.req("D116", "L09.resolve")
+def test_a_bisect_resolves_every_failed_leaf_smallest_first_then_by_its_lowest_core():
+    domains = dict.fromkeys(range(6), 0)
+    run = bisect.begin(Stage.STEADY, 0, Klass.T1, dict.fromkeys(range(6), -3), domains)
+    assert run.queue == ((), (0, 1, 2), (3, 4, 5))
+    for passed in (True, False, False, True, True, False, False, True, True):
+        run = bisect.record(run, passed, domains)
+    assert run.queue == ()
+    assert bisect.resolve(run) == ((3,), (4, 5), (0, 1, 2))
+
+
+@pytest.mark.req("D116", "L09.resolve")
+def test_a_group_s_replay_passing_owes_every_larger_group_whatever_its_lowest_core():
+    domains = dict.fromkeys(range(6), 0)
+    run = bisect.begin(Stage.STEADY, 0, Klass.T1, dict.fromkeys(range(6), -3), domains)
+    for passed in (True, False, False, True, True, False, False, True, True):
+        run = bisect.record(run, passed, domains)
+    assert bisect.after(replace(run, rerun=(4, 5))) == ((0, 1, 2),)
+    assert bisect.after(replace(run, rerun=(0, 1, 2))) == ()
