@@ -12,7 +12,6 @@ from corecycler.tuner.machine.types import (
     Announce,
     AwaitWorker,
     CancelSchedule,
-    ClearStockMarker,
     Close,
     CloseDb,
     Commit,
@@ -114,7 +113,8 @@ class Fake:
     stored_boot: int = 0
     faults: Faults = field(default_factory=Faults)
     config: MachineConfig | None = None
-    marker_boot: int | None = None
+    marker: tuple[int, int] | None = None
+    behind: set[tuple[int, int]] = field(default_factory=set)
     stock_fail_owed: set[int] = field(default_factory=set)
     handling: str = ""
     failed_at: set[tuple[int, int]] = field(default_factory=set)
@@ -271,9 +271,15 @@ class Fake:
             case Commit(stored=st, first=first):
                 if self.faults.fail_commits > 0:
                     self.faults.fail_commits -= 1
+                    if not first:
+                        self.behind.add((st.session_id, self.boot))
                     return DatabaseFailed("injected database failure", first)
                 if self.db is not None and st.session_id == self.db.session_id:
                     self.check_bounds_only_tighten(self.db, st)
+                self.landed(st.session_id)
+                if first:
+                    self.journal = ()
+                    self.forget_session()
                 self.db = st
                 self.retract(st)
                 self.stored_boot = self.boot
@@ -284,14 +290,11 @@ class Fake:
                 if self.db is None or parent.session_id != self.db.session_id or parent.status != "superseded":
                     raise Broken(f"superseded {parent.session_id} ({parent.status}), not the stored session")
                 self.superseded.add(parent.session_id)
+                self.landed(parent.session_id, child.session_id)
                 self.db = child
                 self.journal = ()
                 if origin == "restart":
-                    self.proven = {}
-                    self.failed_at = set()
-                    self.failed_allcore = set()
-                    self.failed_vectors = set()
-                    self.stock_fail_owed = set()
+                    self.forget_session()
                 self.stored_boot = self.boot
             case StartWorker(token=token, spec=spec):
                 self.check_start(state, spec)
@@ -308,8 +311,14 @@ class Fake:
                 if not proves or rep.skipped or rep.unblamed_corrected:
                     raise Broken(f"values marked survived after a report that proves nothing: {rep}")
                 self.mark_survived(set(exclude))
-            case ReadCrashEvidence(child_id=child_id):
+            case ReadCrashEvidence(session_id=session, child_id=child_id):
                 dirty = self.stored_boot != self.boot
+                read = self.stored_boot if dirty else self.boot
+                if self.marker == (read, session) and (session, read) not in self.behind:
+                    raise Broken(
+                        f"session {session}'s resume read a lost verdict in boot {read}, where its stored state did "
+                        "not fall behind or has been stored since"
+                    )
                 evidence, shared = self.crash_note if dirty else ((), False)
                 self.crash_note = ((), False)
                 suspects = self.dead_suspects if dirty else ()
@@ -318,7 +327,7 @@ class Fake:
                     dirty_end=dirty,
                     same_boot=not dirty,
                     was_running=self.db is not None and self.db.status == "running",
-                    stale_db=self.marker_boot == (self.stored_boot if dirty else self.boot),
+                    stale_db=self.marker == (read, session),
                     shared_uncorrected=shared,
                     suspects=suspects,
                     evidence=evidence,
@@ -326,13 +335,11 @@ class Fake:
                     last_written=()
                     if dirty
                     else tuple(sorted({row.core_id: row.value for row in self.journal if row.confirmed}.items())),
-                    marked_now=self.marker_boot == self.boot,
+                    marked_now=self.marker == (self.boot, session),
                     child_id=child_id,
                 )
             case WriteStockMarker():
-                self.marker_boot = self.boot
-            case ClearStockMarker():
-                self.marker_boot = None
+                self.marker = (self.boot, state.session_id)
             case Announce(kind=kind, text=text):
                 self.log.append(f"{kind}: {text}")
             case CloseDb():
@@ -340,6 +347,18 @@ class Fake:
             case _:
                 raise Broken(f"unknown effect {effect!r}")
         return None
+
+    def landed(self, *sessions: int) -> None:
+        self.behind = {entry for entry in self.behind if entry[0] not in sessions}
+        if self.marker is not None and self.marker[1] in sessions:
+            self.marker = None
+
+    def forget_session(self) -> None:
+        self.proven = {}
+        self.failed_at = set()
+        self.failed_allcore = set()
+        self.failed_vectors = set()
+        self.stock_fail_owed = set()
 
     def check_bounds_only_tighten(self, old: Stored, new: Stored) -> None:
         olds = {r.core: r.fb for r in old.cores}

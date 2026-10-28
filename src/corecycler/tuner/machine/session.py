@@ -16,7 +16,6 @@ from corecycler.tuner.machine.types import (
     Announce,
     AwaitWorker,
     CancelSchedule,
-    ClearStockMarker,
     Close,
     CloseDb,
     Commit,
@@ -515,7 +514,7 @@ def _carry_on(
         flow = replace(flow, live1=Live1(back=Stage.FINALIZE))
     child = replace(entered, flow=replace(flow, carried=True))
     retest = REENTRY if entered.flow is not s.flow else f"it goes on in {flow.stage.value}"
-    effects: list = [Supersede(_superseded(s), stored(child), "continue"), ClearStockMarker()]
+    effects: list = [Supersede(_superseded(s), stored(child), "continue")]
     effects += [WriteCO(core, value) for core, value in s.baseline]
     effects += [Announce("continued", f"{said}; {retest}, and {FINAL_PASS}"), *noted, Schedule(token, 0.0)]
     return Transition(child, tuple(effects))
@@ -797,7 +796,7 @@ def _resumed(
         next_token=token + 1,
         setup=tuple(sorted((*_verdict_part(after.setup), *noted))),
     )
-    effects: list = [_commit(running), ClearStockMarker()]
+    effects: list = [_commit(running)]
     effects += [WriteCO(core, value) for core, value in s.baseline]
     effects += [Announce("resumed", f"session {s.session_id}"), *_noted(after.setup, w.setup), Schedule(token, 0.0)]
     return Transition(running, tuple(effects))

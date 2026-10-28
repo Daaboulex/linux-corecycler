@@ -633,11 +633,6 @@ class WriteStockMarker:
 
 
 @dataclass(frozen=True, slots=True)
-class ClearStockMarker:
-    pass
-
-
-@dataclass(frozen=True, slots=True)
 class Announce:
     kind: str
     text: str
@@ -662,7 +657,6 @@ Effect = (
     | ForgetResident
     | ReadCrashEvidence
     | WriteStockMarker
-    | ClearStockMarker
     | Announce
     | CloseDb
 )

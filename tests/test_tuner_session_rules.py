@@ -507,7 +507,7 @@ def test_a_bisect_fix_is_committed_before_any_core_is_written_again():
     assert WriteCO in kinds and kinds.index(Commit) < kinds.index(WriteCO)
 
 
-@pytest.mark.req("L11.b")
+@pytest.mark.req("L11.b", "U54")
 def test_a_steady_pass_enters_transient_with_its_clean_time_and_index_at_zero():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     worker = _until(fake, _steady)
@@ -677,7 +677,7 @@ def test_a_crash_in_a_tighten_round_ends_the_reclaim():
     assert fake.state.flow.stage is Stage.MEMORY and fake.state.flow.allcore.tightened
 
 
-@pytest.mark.req("L18.d.4.4.memory", "D16")
+@pytest.mark.req("L18.d.4.4.memory", "D16", "U48")
 def test_a_crash_in_memory_with_nobody_convicted_bisects_with_memory_slots():
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     _until(fake, lambda spec, state: spec.stage is Stage.MEMORY)
@@ -685,7 +685,7 @@ def test_a_crash_in_memory_with_nobody_convicted_bisects_with_memory_slots():
     fake.post(Resume(1))
     assert fake.state.flow.stage is Stage.BISECT and fake.state.flow.bisect.entry is Stage.MEMORY
     slot = _next_worker(fake)
-    assert (slot.stage, slot.load) == (Stage.BISECT, Load.MEMORY)
+    assert (slot.stage, slot.load, slot.seconds) == (Stage.BISECT, Load.MEMORY, fake.config.memory_seconds)
 
 
 @pytest.mark.req("L18.e.G11")

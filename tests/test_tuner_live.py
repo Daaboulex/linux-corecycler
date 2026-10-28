@@ -562,18 +562,51 @@ def test_the_store_keeps_the_session_in_the_database_and_the_stock_marker_apart(
     reopened = Store(database(tmp_path / "history.db"), tmp_path / "s", IDENTITY)
     assert reopened.load(st.session_id) == ((st, "boot-a", None), None)
     assert reopened.new_session_id() == st.session_id + 1
-    assert store.marker_boot() is None
-    store.write_marker("boot-a", 5_000, (0, 8))
-    assert (store.marker_boot(), store.stock_marked("boot-a"), store.stock_marked("boot-b")) == (
-        "boot-a",
-        (5_000, ((0, 0), (8, 0))),
-        None,
-    )
-    store.clear_marker()
-    store.clear_marker()
-    assert (store.marker_boot(), store.stock_marked("boot-a")) == (None, None)
+    assert store.marker_boot(st.session_id) == (None, False)
+    store.write_marker("boot-a", st.session_id, 5_000, (0, 8))
+    assert (
+        store.marker_boot(st.session_id),
+        store.marker_boot(st.session_id + 1),
+        store.stock_marked("boot-a"),
+        store.stock_marked("boot-b"),
+    ) == (("boot-a", True), ("boot-a", False), (5_000, ((0, 0), (8, 0))), None)
+    store.clear_marker(st.session_id + 1)
+    assert store.marker_boot(st.session_id) == ("boot-a", True)
+    store.clear_marker(st.session_id + 1, st.session_id)
+    store.clear_marker(st.session_id)
+    assert (store.marker_boot(st.session_id), store.stock_marked("boot-a")) == ((None, False), None)
     (tmp_path / "s" / "stock-marker.json").write_text(json.dumps({"boot": "boot-a"}))
-    assert (store.marker_boot(), store.stock_marked("boot-a")) == ("boot-a", None)
+    assert (store.marker_boot(st.session_id), store.stock_marked("boot-a")) == (("boot-a", False), None)
+
+
+@pytest.mark.req("L18.c.marker.earlier")
+def test_a_stock_marker_an_earlier_build_left_is_the_held_session_s_only_when_it_wrote_the_co_last_before_it(
+    tmp_path,
+):
+    store = Store(database(tmp_path / "history.db"), tmp_path / "s", IDENTITY)
+    st = replace(snapshots()[-1], status="running")
+    first, second = st.session_id, st.session_id + 1
+    store.save(st, "boot-a")
+    marker = tmp_path / "s" / "stock-marker.json"
+
+    def left(**fields) -> tuple[tuple[str | None, bool], tuple[str | None, bool]]:
+        marker.write_text(json.dumps({"boot": "boot-a", **fields}))
+        return store.marker_boot(first), store.marker_boot(second)
+
+    store.journal_intent(first, 0, -4, "boot-a", 1_000)
+    assert left(mono_ns=2_000, cores=[0, 8]) == (("boot-a", True), ("boot-a", False))
+    assert left(mono_ns=1_000, cores=[0, 8]) == (("boot-a", True), ("boot-a", False))
+    assert left(mono_ns=999, cores=[0, 8]) == (("boot-a", False), ("boot-a", False))
+    assert left() == (("boot-a", False), ("boot-a", False))
+    store.clear_marker(first)
+    assert marker.exists()
+    left(mono_ns=2_000, cores=[0, 8])
+    store.clear_marker(second, first)
+    assert not marker.exists()
+    store.save(replace(st, session_id=second), "boot-a")
+    assert left(mono_ns=2_000, cores=[0, 8]) == (("boot-a", False), ("boot-a", False))
+    store.journal_intent(second, 8, -2, "boot-a", 1_500)
+    assert left(mono_ns=2_000, cores=[0, 8]) == (("boot-a", False), ("boot-a", True))
 
 
 @pytest.mark.req("L17.d.clean")
@@ -745,7 +778,7 @@ def test_a_database_that_cannot_be_written_puts_the_cores_at_stock(tmp_path, mon
     monkeypatch.setattr(r.store, "save", broken)
     final = r.run_until_rest(0.01)
     assert final.pause.reason is PauseReason.DATABASE
-    assert r.store.marker_boot() == "boot-a"
+    assert r.store.marker_boot(1) == ("boot-a", True)
     assert r.hardware.co == {0: 0, 1: 0, 8: 0}
 
 
@@ -773,7 +806,7 @@ def test_a_session_whose_first_write_to_the_database_fails_never_starts_and_touc
     r.start(config(), 1, 7, True)
     assert (r.state.lifecycle, r.state.session_id) == (Lifecycle.IDLE, None)
     assert r.hardware.co == {0: -10, 1: 0, 8: 0}
-    assert r.store.marker_boot() is None
+    assert r.store.marker_boot(1) == (None, False)
 
 
 def test_a_stock_marker_that_cannot_be_written_still_puts_the_cores_at_stock(tmp_path, monkeypatch):
@@ -789,6 +822,259 @@ def test_a_stock_marker_that_cannot_be_written_still_puts_the_cores_at_stock(tmp
     assert final.pause.reason is PauseReason.DATABASE
     assert r.hardware.co == {0: 0, 1: 0, 8: 0}
     assert any("stock marker could not be written" in line and "No space left" in line for line in said)
+
+
+def _database_failed(tmp_path, monkeypatch, hardware: FakeHardware) -> LiveRig:
+    r = rig(tmp_path, hardware)
+    r.start(config(), 1, 7, True)
+    while not any(hardware.co.values()):
+        r.step(0.01)
+    monkeypatch.setattr(r.store, "save", broken)
+    assert r.run_until_rest(0.01).pause.reason is PauseReason.DATABASE
+    monkeypatch.undo()
+    return r
+
+
+@pytest.mark.req("L18.c.marker.session")
+def test_a_crash_in_a_session_started_after_another_s_database_failure_reads_no_lost_verdict(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = _database_failed(tmp_path, monkeypatch, hardware)
+    r.post(live.Abort())
+    r.start(config(), 2, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    hardware.boot = "boot-b"
+    read, again, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch, session_id=2)
+    assert (read.dirty_end, read.stale_db, again.state.incidents) == (True, False, ())
+
+
+STOCK_READS = "SELECT core_id, value FROM tuner_co_reads WHERE session_id = 1 AND mono_ns = ? ORDER BY core_id"
+
+
+@pytest.mark.req("L18.c.marker.landed")
+def test_an_abort_after_a_database_failure_stores_its_stock_moment_deletes_the_marker_and_counts_no_later_crash(
+    tmp_path, monkeypatch
+):
+    hardware = FakeHardware()
+    r = _database_failed(tmp_path, monkeypatch, hardware)
+    moment, stock = r.store.stock_marked("boot-a")
+    r.post(live.Abort())
+    assert r.store.marker_boot(1) == (None, False)
+    assert rows(r, STOCK_READS, (moment,)) == [{"core_id": core, "value": value} for core, value in stock]
+    hardware.boot = "boot-b"
+    read, again, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert (read.dirty_end, read.stale_db, again.state.incidents) == (True, False, ())
+
+
+@pytest.mark.req("L18.c.marker.landed")
+def test_an_abort_whose_commit_fails_leaves_the_marker_to_the_next_resume(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = _database_failed(tmp_path, monkeypatch, hardware)
+    monkeypatch.setattr(r.store, "save", broken)
+    r.post(live.Abort())
+    monkeypatch.undo()
+    assert r.store.marker_boot(1) == ("boot-a", True)
+    hardware.boot = "boot-b"
+    read, again, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert (read.stale_db, again.state.incidents) == (True, (Incident.CRASH,))
+
+
+@pytest.mark.req("L18.c.marker.landed")
+def test_another_session_s_abort_in_a_later_boot_keeps_the_marker_of_the_session_whose_database_failed(
+    tmp_path, monkeypatch
+):
+    hardware = FakeHardware()
+    db = database(tmp_path / "history.db")
+    r = rig(tmp_path, hardware, db=db)
+    r.start(config(), 1, 7, True)
+    while not any(hardware.co.values()):
+        r.step(0.01)
+    r.post(live.Abort())
+    r.start(config(), 2, 7, True)
+    while r.worker is None:
+        r.step(0.01)
+    r.post(live.DatabaseFailed("injected"))
+    assert r.state.pause.reason is PauseReason.DATABASE
+    r.post(live.Close())
+    hardware.boot, hardware.setup_now = "boot-b", (("bios", "B"),)
+    other = rig(tmp_path, hardware, db=db)
+    other.resume_for_abort(1, False)
+    assert other.state.pause.reason is PauseReason.SETUP_CHANGED
+    other.post(live.Abort())
+    assert other.state.lifecycle is Lifecycle.ABORTED
+    hardware.setup_now = (("bios", "A"),)
+    read, again, _ = resume_read(tmp_path, hardware, db, monkeypatch, session_id=2)
+    assert (read.stale_db, again.state.incidents) == (True, (Incident.CRASH,))
+
+
+@pytest.mark.req("L18.c.marker.landed", "L18.d.5.marker", "U55")
+def test_a_resume_that_pauses_deletes_its_marker_so_a_later_dirty_boot_counts_no_crash(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = _database_failed(tmp_path, monkeypatch, hardware)
+    r.post(live.Close())
+    hardware.setup_now = (("bios", "B"),)
+    paused = rig(tmp_path, hardware, db=r.store.db)
+    paused.resume(1)
+    assert paused.run_until_rest(0.01).pause.reason is PauseReason.SETUP_CHANGED
+    assert paused.store.marker_boot(1) == (None, False)
+    hardware.setup_now, hardware.boot = (("bios", "A"),), "boot-b"
+    read, again, _ = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert (read.stale_db, again.state.incidents) == (False, ())
+
+
+@pytest.mark.req("L18.c.marker.landed", "L18.d.5.marker", "U55")
+def test_a_resume_carried_onto_a_new_kernel_stores_the_stock_moment_and_deletes_its_marker(tmp_path, monkeypatch):
+    hardware = FakeHardware(setup_now=KERNEL_WAS)
+    r = _database_failed(tmp_path, monkeypatch, hardware)
+    moment, stock = r.store.stock_marked("boot-a")
+    hardware.setup_now = KERNEL_NOW
+    again = rig(tmp_path, hardware, db=r.store.db)
+    again.resume(1, carry=True)
+    assert [(row["id"], row["status"]) for row in lineage(again)] == [(1, "superseded"), (2, "running")]
+    assert again.store.marker_boot(1) == (None, False)
+    assert rows(again, STOCK_READS, (moment,)) == [{"core_id": core, "value": value} for core, value in stock]
+
+
+@pytest.mark.req("L18.c.marker.session")
+@pytest.mark.parametrize(
+    ("owner", "marked", "now", "stale", "marked_now", "said"),
+    [
+        (1, "boot-a", "boot-b", True, False, False),
+        (2, "boot-a", "boot-b", False, False, True),
+        (1, "boot-a", "boot-a", True, True, False),
+        (2, "boot-a", "boot-a", False, False, True),
+        (1, "boot-b", "boot-b", False, True, False),
+        (2, "boot-b", "boot-b", False, False, True),
+        (2, "boot-z", "boot-b", False, False, False),
+    ],
+)
+def test_a_resume_reads_the_stock_marker_of_its_own_session_alone(
+    tmp_path, monkeypatch, owner, marked, now, stale, marked_now, said
+):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    in_flight(r)
+    r.store.write_marker(marked, owner, time.monotonic_ns(), (0, 1, 8))
+    hardware.boot = now
+    read, _, lines = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert (read.stale_db, read.marked_now) == (stale, marked_now)
+    assert any(f"the stock marker for boot {marked} is not taken as session 1's" in line for line in lines) is said
+
+
+@pytest.mark.req("L18.c.marker.earlier")
+@pytest.mark.parametrize("before", [True, False])
+def test_a_resume_takes_an_earlier_build_s_marker_only_when_its_session_wrote_the_co_last_before_it(
+    tmp_path, monkeypatch, before
+):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    in_flight(r)
+    written = max(row.mono_ns for row in r.store.journal_rows(1, "boot-a"))
+    moment = written + 1 if before else written - 1
+    marker = {"boot": "boot-a", "mono_ns": moment, "cores": [0, 1, 8]}
+    (tmp_path / "state" / "stock-marker.json").write_text(json.dumps(marker))
+    hardware.boot = "boot-b"
+    read, _, lines = resume_read(tmp_path, hardware, r.store.db, monkeypatch)
+    assert read.stale_db is before
+    assert any("the stock marker for boot boot-a is not taken as session 1's" in line for line in lines) is not before
+
+
+@pytest.mark.req("L18.c.marker.earlier")
+def test_an_earlier_build_s_marker_is_not_taken_by_a_session_that_is_not_held_though_it_wrote_last(
+    tmp_path, monkeypatch
+):
+    hardware = FakeHardware()
+    db = database(tmp_path / "history.db")
+    r = rig(tmp_path, hardware, db=db)
+    r.start(config(), 1, 7, True)
+    while not any(hardware.co.values()):
+        r.step(0.01)
+    r.post(live.Abort())
+    r.start(config(), 2, 7, True)
+    assert r.store.journal_rows(2, "boot-a") == []
+    marker = {"boot": "boot-a", "mono_ns": time.monotonic_ns(), "cores": [0, 1, 8]}
+    (tmp_path / "state" / "stock-marker.json").write_text(json.dumps(marker))
+    hardware.boot = "boot-b"
+    read, _, lines = resume_read(tmp_path, hardware, db, monkeypatch)
+    assert read.stale_db is False
+    assert any("the stock marker for boot boot-a is not taken as session 1's" in line for line in lines)
+
+
+UNREADABLE_MARKERS = [
+    b"{",
+    b"\xff",
+    b"[]",
+    b'{"session": 1, "mono_ns": 1, "cores": [0]}',
+    b'{"boot": 7}',
+    b'{"boot": "boot-a", "mono_ns": 1}',
+    b'{"boot": "boot-a", "mono_ns": "late", "cores": [0, 1, 8]}',
+    b'{"boot": "boot-a", "session": true, "mono_ns": 1, "cores": [0]}',
+    b'{"boot": "boot-b", "session": 1, "mono_ns": 1, "cores": 5}',
+    b'{"boot": "boot-a", "mono_ns": 1, "cores": ["0"]}',
+]
+
+
+@pytest.mark.req("L18.c.marker.unreadable")
+@pytest.mark.parametrize("raw", UNREADABLE_MARKERS)
+def test_a_stock_marker_in_no_shape_a_build_writes_pauses_the_resume_as_database_naming_it(tmp_path, raw):
+    hardware = FakeHardware()
+    r = rig(tmp_path, hardware)
+    in_flight(r)
+    path = tmp_path / "state" / "stock-marker.json"
+    path.write_bytes(raw)
+    hardware.boot = "boot-b"
+    again = rig(tmp_path, hardware, db=r.store.db)
+    again.resume(1)
+    assert again.state.pause.reason is PauseReason.DATABASE
+    assert f"the stock marker {path} holds {raw!r}, in no shape a build of this tool writes" in again.state.pause.detail
+    assert hardware.co == {0: 0, 1: 0, 8: 0}
+
+
+@pytest.mark.req("L18.c.marker.unreadable")
+def test_a_stock_marker_in_no_shape_a_build_writes_met_once_a_session_is_stored_pauses_it_naming_it(tmp_path):
+    r = rig(tmp_path)
+    path = tmp_path / "state" / "stock-marker.json"
+    path.write_bytes(b"{")
+    r.start(config(), 1, 7, True)
+    assert (r.state.session_id, r.state.pause.reason) == (1, PauseReason.DATABASE)
+    assert f"the stock marker {path} holds {b'{'!r}" in r.state.pause.detail
+
+
+def denied_on(monkeypatch, path: Path, method: str) -> str:
+    real = getattr(Path, method)
+    error = PermissionError(13, "Permission denied", str(path))
+
+    def denied(self, *args, **kwargs):
+        if self == path:
+            raise error
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, denied)
+    return str(error)
+
+
+@pytest.mark.req("L18.c.marker.unreadable")
+def test_a_stock_marker_that_cannot_be_read_once_a_session_is_stored_pauses_it_naming_it(tmp_path, monkeypatch):
+    r = rig(tmp_path)
+    path = tmp_path / "state" / "stock-marker.json"
+    r.store.write_marker("boot-a", 9, 1, (0,))
+    error = denied_on(monkeypatch, path, "read_bytes")
+    r.start(config(), 1, 7, True)
+    assert (r.state.session_id, r.state.pause.reason) == (1, PauseReason.DATABASE)
+    assert f"the stock marker {path} could not be read: {error}" in r.state.pause.detail
+    assert r.hardware.co == {0: 0, 1: 0, 8: 0}
+
+
+@pytest.mark.req("L18.c.marker.unreadable")
+def test_a_stock_marker_that_cannot_be_deleted_once_its_session_is_stored_pauses_it_naming_it(tmp_path, monkeypatch):
+    hardware = FakeHardware()
+    r = _database_failed(tmp_path, monkeypatch, hardware)
+    path = tmp_path / "state" / "stock-marker.json"
+    error = denied_on(monkeypatch, path, "unlink")
+    r.resume(1)
+    assert r.state.pause.reason is PauseReason.DATABASE
+    assert f"the stock marker {path} could not be deleted: {error}" in r.state.pause.detail
+    assert hardware.co == {0: 0, 1: 0, 8: 0}
 
 
 def test_a_merged_session_resumes_under_its_new_id(tmp_path):
@@ -1034,7 +1320,7 @@ def in_flight(r: LiveRig):
 
 
 def resume_read(
-    tmp_path, hardware, db, monkeypatch, check_interval_s: int = 0
+    tmp_path, hardware, db, monkeypatch, check_interval_s: int = 0, session_id: int = 1
 ) -> tuple[CrashEvidenceRead, LiveRig, list[str]]:
     reads = []
     real = live.transition
@@ -1048,7 +1334,7 @@ def resume_read(
     said = []
     again = rig(tmp_path, hardware, db=db, check_interval_s=check_interval_s)
     again.say = said.append
-    again.resume(1)
+    again.resume(session_id)
     assert len(reads) == 1
     return reads[0], again, said
 
@@ -2528,7 +2814,7 @@ def test_a_record_from_a_dead_boot_whose_database_fell_behind_counts_at_stock_an
         assert fake.progress()
     tested = fake.worker.spec.core
     other = next(r for r in fake.state.cores if r.core != tested and r.value != 0)
-    fake.marker_boot = fake.boot
+    fake.marker, fake.behind = (fake.boot, 1), {(1, fake.boot)}
     fake.crash((Evidence(other.core, True), Evidence(tested, True)))
     fake.post(Resume(1))
     record = fake.state.core(other.core)
@@ -3117,7 +3403,7 @@ def test_a_resume_that_pauses_early_names_its_own_cause_first_then_each_record_t
     )
 
 
-@pytest.mark.req("L18.d.4.3b.held")
+@pytest.mark.req("L18.d.4.3b.held", "U50")
 @pytest.mark.parametrize(
     ("stage", "core"), [(Stage.SEARCH, 0), (Stage.STEADY, 0), (Stage.TIGHTEN, 1), (Stage.LIVE1, 1)]
 )
@@ -5142,7 +5428,7 @@ def test_a_session_that_turns_unreadable_before_the_resume_reads_it_back_pauses_
     )
     assert rows(again, tail, (open_test, open_test)) == [{"tail": telemetry.TAIL_GROUP, "blocks": 0}]
     assert hardware.co == {0: 0, 1: 0, 8: 0}
-    assert again.store.marker_boot() == "boot-b"
+    assert again.store.marker_boot(1) == ("boot-b", True)
     assert rows(again, "SELECT severity, message FROM tuner_events WHERE boot_id = 'boot-b'") == [
         {"severity": "database_failed", "message": f"{UNREAD_BASE_CO}; every owned core is sent back to stock"}
     ]

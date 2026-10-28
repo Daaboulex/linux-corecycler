@@ -12,6 +12,7 @@ from corecycler.engine.detector import ProgramFault, ProgramFaults
 from corecycler.tuner.live import resident_at_death
 from corecycler.tuner.machine.session import HELD
 from corecycler.tuner.machine.types import (
+    HELD_STATUSES,
     ContinueOnSetup,
     FailContext,
     Lifecycle,
@@ -66,6 +67,7 @@ FAULTS = (
     "reengage",
     "program_fault",
     "paused_hot",
+    "start",
 )
 FOREIGN_FAULTS = ProgramFaults(
     100_000_000_000,
@@ -94,6 +96,7 @@ def clone(fake: Fake) -> Fake:
     twin.stock_fail_owed = set(fake.stock_fail_owed)
     twin.superseded = set(fake.superseded)
     twin.outside = set(fake.outside)
+    twin.behind = set(fake.behind)
     twin.faults = copy.copy(fake.faults)
     twin.log = []
     return twin
@@ -141,6 +144,8 @@ def key(fake: Fake) -> tuple:
         frozenset(fake.superseded),
         frozenset(fake.outside),
         fake.crashed_bisect,
+        fake.marker,
+        frozenset(fake.behind),
     )
 
 
@@ -184,6 +189,8 @@ def moves(fake: Fake, budget: dict[str, int]) -> list[tuple[str, dict[str, int]]
         if fault == "paused_hot" and (fake.worker is None or fake.worker.spec.load is not Load.HOT):
             continue
         if fault == "validate" and (fake.db is None or fake.db.status != "completed" or s.lifecycle in HELD):
+            continue
+        if fault == "start" and (s.lifecycle in HELD or fake.db is None or fake.db.status in HELD_STATUSES):
             continue
         if fault in ("close", "crash") and s.lifecycle is Lifecycle.IDLE:
             continue
@@ -237,6 +244,8 @@ def act(fake: Fake, move: str) -> None:
             fake.deliver(Report(Group.PASS, worker_spec.seconds, evidence=(Evidence(target, True),) * 2))
         case "validate":
             fake.post(ValidateProfile(fake.db.session_id))
+        case "start":
+            start(fake, session_id=fake.db.session_id + 1)
         case "profile":
             fake.power = (("platform profile", "power-saver" if fake.power == BALANCED else "balanced"),)
         case "setup":
@@ -307,6 +316,7 @@ class Survey:
     bisected: set[Stage] = field(default_factory=set)
     quick_crashes: int = 0
     tightened_after_one_off: set[Stage] = field(default_factory=set)
+    crashed: set[int] = field(default_factory=set)
 
 
 def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
@@ -353,6 +363,8 @@ def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
                 survey.quick_crashes += 1
             if flow is not None and flow.stage is Stage.TIGHTEN and flow.one_off is not None:
                 survey.tightened_after_one_off.add(flow.one_off[0])
+            if move in ("crash", "crash_mce", "crash_shared") and node.worker is not None:
+                survey.crashed.add(node.state.session_id)
             stack.append((child, after, (*path, move)))
     return survey
 
@@ -396,7 +408,9 @@ def tiny(cores: int, edges: list[int], domains: int = 1, completed: tuple[Stored
 BALANCED = (("platform profile", "balanced"),)
 
 ONE_OF_EACH = {
-    fault: 1 for fault in FAULTS if fault not in ("profile", "setup", "kernel", "outside", "reengage", "program_fault")
+    fault: 1
+    for fault in FAULTS
+    if fault not in ("profile", "setup", "kernel", "outside", "reengage", "program_fault", "start")
 }
 
 
@@ -484,6 +498,22 @@ def test_every_future_of_a_crash_inside_a_quick_group_runs_the_rest_of_its_bisec
 def test_no_future_tightens_at_or_past_an_all_core_vector_whose_failure_was_a_one_off():
     survey = explore(tiny(2, [-4, -3], 2), {"false_fail": 1, "total": 1}, cap=2_000_000)
     assert {Stage.STEADY, Stage.TRANSIENT} <= survey.tightened_after_one_off
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+@pytest.mark.parametrize("stage", [Stage.SEARCH, Stage.STEADY])
+@pytest.mark.req("L18.c.marker.explorer")
+def test_no_future_of_an_aborted_database_failure_reads_its_lost_verdict_into_a_later_crash(stage):
+    fake = tiny(2, [-3, -2], 2)
+    while fake.worker is None or fake.worker.spec.stage is not stage:
+        assert fake.progress()
+    fake.faults.fail_commits = 1
+    fake.deliver()
+    assert fake.state.pause.reason is PauseReason.DATABASE
+    fake.post(Abort())
+    survey = explore(fake, {"start": 1, "crash": 1, "total": 2}, cap=2_000_000)
+    assert survey.crashed == {1, 2}
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
 

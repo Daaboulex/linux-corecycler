@@ -25,7 +25,6 @@ from corecycler.tuner.machine.types import (
     AwaitWorker,
     BisectRun,
     CancelSchedule,
-    ClearStockMarker,
     Close,
     CloseDb,
     Commit,
@@ -446,6 +445,15 @@ class Identity:
 
 PASSED_SAMPLES_KEPT_DAYS = 30
 SLEEP_GAP_S = 1.0
+MARKER_SHAPES = (
+    frozenset({"boot"}),
+    frozenset({"boot", "mono_ns", "cores"}),
+    frozenset({"boot", "session", "mono_ns", "cores"}),
+)
+
+
+class StockMarkerError(Exception):
+    pass
 
 
 class Store:
@@ -506,11 +514,20 @@ class Store:
                 self.db.insert_co_reads(st.session_id, boot, mono_ns, reads)
         self.retracted.update(tightened)
 
-    def supersede(self, parent: Stored, child: Stored, origin: str, boot: str) -> None:
+    def supersede(
+        self,
+        parent: Stored,
+        child: Stored,
+        origin: str,
+        boot: str,
+        co_reads: tuple[tuple[int, tuple[tuple[int, int | None], ...]], ...],
+    ) -> None:
         proven = self.db.journal_proven_values(parent.session_id, -1) if origin == "continue" else {}
         with self.db.transaction():
             self._write(parent, boot, {})
             self._write(child, boot, {})
+            for mono_ns, reads in co_reads:
+                self.db.insert_co_reads(parent.session_id, boot, mono_ns, reads)
             self.db.link_session(child.session_id, parent.session_id, origin)
             self.db.journal_inherit(child.session_id, proven)
             self.db.insert_tuner_event(
@@ -658,18 +675,49 @@ class Store:
     def journal_confirm(self, row: int) -> None:
         self.db.journal_confirm(row)
 
-    def write_marker(self, boot: str, mono_ns: int, cores: tuple[int, ...]) -> None:
-        atomic_write(
-            self.root / "stock-marker.json", json.dumps({"boot": boot, "mono_ns": mono_ns, "cores": list(cores)})
-        )
+    def write_marker(self, boot: str, session_id: int, mono_ns: int, cores: tuple[int, ...]) -> None:
+        marker = {"boot": boot, "session": session_id, "mono_ns": mono_ns, "cores": list(cores)}
+        atomic_write(self.root / "stock-marker.json", json.dumps(marker))
 
     def _marker(self) -> dict | None:
+        """The stock marker, or None when there is none. A file that cannot be read, or in no shape a build of this
+        tool writes by its JSON or its fields, is refused naming it, so nothing reads it as a marker."""
         path = self.root / "stock-marker.json"
-        return json.loads(path.read_text()) if path.exists() else None
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise StockMarkerError(f"the stock marker {path} could not be read: {exc}") from exc
+        try:
+            marker = json.loads(raw)
+        except ValueError:
+            marker = None
+        if not (
+            isinstance(marker, dict)
+            and set(marker) in MARKER_SHAPES
+            and type(marker["boot"]) is str
+            and all(type(marker[name]) is int for name in ("session", "mono_ns") if name in marker)
+            and type(marker.get("cores", [])) is list
+            and all(type(core) is int for core in marker.get("cores", []))
+        ):
+            raise StockMarkerError(f"the stock marker {path} holds {raw!r}, in no shape a build of this tool writes")
+        return marker
 
-    def marker_boot(self) -> str | None:
+    def _names(self, marker: dict, session_id: int) -> bool:
+        if "session" in marker:
+            return marker["session"] == session_id
+        held = self.held_session()
+        rows = self.db.boot_co_journal(marker["boot"])
+        last = rows[-1] if rows else None
+        wrote_last = held is not None and held[0] == session_id and last is not None and last.session_id == session_id
+        return wrote_last and "mono_ns" in marker and last.mono_ns <= marker["mono_ns"]
+
+    def marker_boot(self, session_id: int) -> tuple[str | None, bool]:
+        """The boot the stock marker names, and whether it is this session's. A marker an earlier build wrote names no
+        session: it is the session's that is held and wrote the CO last in that boot, at or before the marker."""
         marker = self._marker()
-        return None if marker is None else marker["boot"]
+        return (None, False) if marker is None else (marker["boot"], self._names(marker, session_id))
 
     def stock_marked(self, boot: str) -> tuple[int, tuple[tuple[int, int], ...]] | None:
         marker = self._marker()
@@ -677,8 +725,15 @@ class Store:
             return None
         return marker["mono_ns"], tuple((core, 0) for core in marker["cores"])
 
-    def clear_marker(self) -> None:
-        (self.root / "stock-marker.json").unlink(missing_ok=True)
+    def clear_marker(self, *sessions: int) -> None:
+        """Delete the stock marker when it names one of these sessions, whose stored state has just landed."""
+        marker = self._marker()
+        if marker is not None and any(self._names(marker, session) for session in sessions):
+            path = self.root / "stock-marker.json"
+            try:
+                path.unlink()
+            except OSError as exc:
+                raise StockMarkerError(f"the stock marker {path} could not be deleted: {exc}") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -927,12 +982,15 @@ class LiveRig:
                 self.stored_boot = self.boot
                 self.read_to.pop(st.session_id, None)
                 self.reads_to.pop(st.session_id, None)
+                return self._landed(st.session_id)
             case Supersede(parent=parent, child=child, origin=origin):
                 try:
-                    self.store.supersede(parent, child, origin, self.boot)
+                    reads = self.reads_to.get(parent.session_id, ())
+                    self.store.supersede(parent, child, origin, self.boot, reads)
                 except sqlite3.Error as exc:
                     return DatabaseFailed(f"session {parent.session_id} could not be superseded: {exc}")
                 self.stored_boot = self.boot
+                return self._landed(parent.session_id, child.session_id)
             case StartWorker(token=token, spec=spec):
                 if not self.boot_recorded:
                     try:
@@ -961,15 +1019,19 @@ class LiveRig:
             case ReadCrashEvidence(child_id=child_id):
                 return self._crash_evidence(acting, child_id)
             case WriteStockMarker():
+                session, stocked = acting.session_id, time.monotonic_ns()
+                cores = tuple(core for core, _ in acting.baseline)
+                self.reads_to[session] = (
+                    *self.reads_to.get(session, ()),
+                    (stocked, tuple((core, 0) for core in cores)),
+                )
                 try:
-                    self.store.write_marker(self.boot, time.monotonic_ns(), tuple(core for core, _ in acting.baseline))
+                    self.store.write_marker(self.boot, session, stocked, cores)
                 except OSError as exc:
                     self.say(
                         "the stock marker could not be written, so the cores go to stock without it and a resume "
                         f"will not know the database fell behind: {exc}"
                     )
-            case ClearStockMarker():
-                self.store.clear_marker()
             case Announce(kind=kind, text=text):
                 self.say(f"{kind}: {text}")
                 try:
@@ -982,6 +1044,14 @@ class LiveRig:
             case CloseDb():
                 pass
         return None
+
+    def _landed(self, *sessions: int) -> DatabaseFailed | None:
+        """A session whose state has just been stored is no longer behind it, so a stock marker naming it goes; a store
+        in the marker's own boot carried the marker's moment as the session's CO reads in that same transaction."""
+        try:
+            self.store.clear_marker(*sessions)
+        except (sqlite3.Error, CorruptSessionError, StockMarkerError) as exc:
+            return DatabaseFailed(f"the stock marker could not be settled once the session was stored: {exc}")
 
     def _journal(self, acting: SessionState, core: int, value: int) -> int:
         return self.store.journal_intent(acting.session_id, core, value, self.boot, time.monotonic_ns())
@@ -1004,9 +1074,10 @@ class LiveRig:
         same = last == now
         end = None if same else self.hardware.boot_end(last)
         dirty = end is not None and not end.clean
-        marker = self.store.marker_boot()
         session = acting.session_id
         try:
+            named, owned = self.store.marker_boot(session)
+            stock = self.store.stock_marked(now)
             loaded, unread = self.store.load(session)
             if unread is not None:
                 return DatabaseFailed(unread)
@@ -1015,8 +1086,14 @@ class LiveRig:
             if not same:
                 self.store.pack_dead_tail(session, last)
             told = self.store.told(session, "program_fault")
-        except (sqlite3.Error, CorruptSessionError) as exc:
+        except (sqlite3.Error, CorruptSessionError, StockMarkerError) as exc:
             return DatabaseFailed(f"the session could not be read back: {exc}")
+        marker = named if owned else None
+        if named in (now, last) and not owned:
+            self.say(
+                f"the stock marker for boot {named} is not taken as session {session}'s, so this resume does not read "
+                "that boot as one whose database fell behind"
+            )
         stamps = [row.mono_ns for row in rows if row.mono_ns is not None]
         since = self.stored_read_ns if self.stored_read_ns is not None else min(stamps, default=None)
         through = time.monotonic_ns() if same else None
@@ -1024,7 +1101,7 @@ class LiveRig:
         harvested = (*harvest.dead_boot, *harvest.next_boot)
         try:
             observed = self.store.observed(last) if self._records(harvest.dead_boot) else None
-        except (sqlite3.Error, CorruptSessionError) as exc:
+        except (sqlite3.Error, CorruptSessionError, StockMarkerError) as exc:
             return DatabaseFailed(f"the session could not be read back: {exc}")
         if same:
             self.read_to[session] = self.unread_from[session] = (
@@ -1034,7 +1111,6 @@ class LiveRig:
         later, shared_later = self._kernel_evidence(harvest.next_boot, None)
         evidence, shared = (*placed, *later), shared or shared_later
         co_now = self.co_reads()
-        stock = self.store.stock_marked(now)
         self.reads_to[session] = (*(() if stock is None else (stock,)), (time.monotonic_ns(), co_now))
         return CrashEvidenceRead(
             dirty_end=dirty,
@@ -1116,7 +1192,7 @@ class LiveRig:
         try:
             rows = self.store.observed(self.boot) if self._records(read.dead_boot) else None
             told = self.store.told(session, "program_fault")
-        except (sqlite3.Error, CorruptSessionError) as exc:
+        except (sqlite3.Error, CorruptSessionError, StockMarkerError) as exc:
             return DatabaseFailed(f"the CO journal could not be read back: {exc}")
         self.read_to[session] = self._read_up_to(read, through)
         evidence = self._kernel_evidence(read.dead_boot, rows)[0]

@@ -835,7 +835,7 @@ def test_a_test_at_or_past_a_fail_bound_is_never_started():
     assert _start_test(bounded, waiting.flow, stock, fake.world()).state.pause is None
 
 
-@pytest.mark.req("L18.d.2")
+@pytest.mark.req("L18.d.2", "U53")
 def test_a_resume_over_a_changed_power_state_pauses_before_any_test_and_keeps_the_turn():
     fake = running_fake()
     fake.power = (("platform profile", "power-saver"),)
@@ -1312,11 +1312,12 @@ def test_the_fourth_thermal_stop_in_a_row_gives_up_naming_the_temperature(detail
     assert (fake.state.pause.reason, fake.state.pause.detail) == (PauseReason.THERMAL, said)
 
 
+@pytest.mark.req("U51")
 def test_a_failed_hint_at_minus_one_settles_at_stock():
     cfg = MachineConfig(Mode.CO, Method.SEQUENTIAL, (0,))
     rec = search.resolve_start(CoreRecord(0, start=-1), cfg)
     rec = search.on_fail(rec, cfg, Klass.T1, 60.0).record
-    assert (rec.phase, rec.value) == (Phase.PROVEN, 0)
+    assert (rec.phase, rec.value, rec.best) == (Phase.PROVEN, 0, None)
 
 
 @pytest.mark.req("K14", "L04.budget")

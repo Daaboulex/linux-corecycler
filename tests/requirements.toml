@@ -2476,7 +2476,32 @@ proof = "built"
 
 [[requirement]]
 id = "L18.c.marker"
-statement = "The stock marker is one fsynced file in the machine state directory naming the boot and the cores put at stock"
+statement = "The stock marker is one fsynced file in the machine state directory naming the boot, the session whose database failed and the cores put at stock"
+proof = "built"
+
+[[requirement]]
+id = "L18.c.marker.session"
+statement = "A resume reads the stock marker of its own session alone, for its lost verdict and for the stock reads it accepts; a crash of another session in the boot a marker names is judged by its own evidence and flow rule, the marker set aside and said (PLAN Next 84)"
+proof = "built"
+
+[[requirement]]
+id = "L18.c.marker.landed"
+statement = "The stock marker is deleted once a commit or supersede of the session it names has landed, whatever the transition stored (a resume going on or pausing or quarantined, an abort, a continue); a store in the marker's own boot stores, in that same transaction, the moment the marker carried as the session's CO reads, and a store in a later boot needs no moment, since the stored boot moves on; a store of another session, and a store that fails, leave it (PLAN Next 84, Next 86)"
+proof = "built"
+
+[[requirement]]
+id = "L18.c.marker.earlier"
+statement = "A stock marker an earlier build left names no session: it is taken as a session's only when that session is the held one and wrote the CO last in the marker's boot, at or before the marker's moment; a marker with no moment is no session's"
+proof = "built"
+
+[[requirement]]
+id = "L18.c.marker.explorer"
+statement = "The explorer starts a second session after the first one's database failure and abort, and the fake world refuses a resume that reads a lost verdict for a session whose stored state did not fall behind in that boot, or has been stored since"
+proof = "built"
+
+[[requirement]]
+id = "L18.c.marker.unreadable"
+statement = "A stock marker file that cannot be read or deleted, or in no shape a build writes by its JSON or its fields, is refused naming the file and the fault: a resume that reads it, or a store that meets it once a session is stored, pauses the session as DATABASE with every owned core at stock"
 proof = "built"
 
 [[requirement]]
@@ -2491,7 +2516,7 @@ proof = "built"
 
 [[requirement]]
 id = "L18.d.3"
-statement = "Step 3, same boot: in_test cleared with no penalty; with this boot's stock marker each in-test core takes its stage's FAIL rule; this boot's records go through the active loop's G3 rule"
+statement = "Step 3, same boot: in_test cleared with no penalty; with the session's stock marker of this boot each in-test core takes its stage's FAIL rule; this boot's records go through the active loop's G3 rule"
 proof = "built"
 
 [[requirement]]
@@ -2576,7 +2601,7 @@ proof = "built"
 
 [[requirement]]
 id = "L18.d.4.3a"
-statement = "A stock marker naming the dead boot: each in-test core takes its stage's FAIL rule, the crash is an incident, records count at stock, nothing below applies"
+statement = "The session's stock marker naming the dead boot: each in-test core takes its stage's FAIL rule, the crash is an incident, records count at stock, nothing below applies"
 proof = "built"
 
 [[requirement]]
@@ -2678,8 +2703,7 @@ proof = "built"
 [[requirement]]
 id = "L18.d.5.marker"
 statement = "The stock marker is deleted after C8 once step 8 used it, or on the way into a step 6 or 7 stop"
-proof = "not built"
-task = "T28"
+proof = "built"
 
 [[requirement]]
 id = "L18.d.6"
@@ -2953,7 +2977,7 @@ proof = "built"
 
 [[requirement]]
 id = "L23.h"
-statement = "In the same boot the stock marker makes L18 take the stock reads as the tool's own revert"
+statement = "In the same boot the session's stock marker makes L18 take the stock reads as the tool's own revert"
 proof = "built"
 
 [[requirement]]
@@ -3464,8 +3488,8 @@ task = "O7"
 [[requirement]]
 id = "U37"
 statement = "The known fail bound in the Q7 acknowledgement"
-proof = "open"
-task = "O7"
+proof = "not built"
+task = "T28"
 
 [[requirement]]
 id = "U38"
@@ -3512,62 +3536,56 @@ task = "O7"
 [[requirement]]
 id = "U46"
 statement = "Pause reason when a clock off the measured model has no band"
-proof = "open"
-task = "O7"
+proof = "not built"
+task = "S3"
 
 [[requirement]]
 id = "U47"
 statement = "After a voided probe load: re-run or move on"
-proof = "open"
-task = "O7"
+proof = "not built"
+task = "S3"
 
 [[requirement]]
 id = "U48"
 statement = "The MEMORY Bisect slot spec"
-proof = "open"
-task = "O7"
+proof = "built"
 
 [[requirement]]
 id = "U49"
 statement = "Probe partial-load core counts that are not whole"
-proof = "open"
-task = "O7"
+proof = "not built"
+task = "S3"
 
 [[requirement]]
 id = "U50"
 statement = "An uncorrected record at a dirty end naming an unselected, held core in CO only"
-proof = "open"
-task = "O7"
+proof = "built"
 
 [[requirement]]
 id = "U51"
 statement = "A failed hint at -1, where -1 is not inside FB, ends PROVEN at 0 with no best"
-proof = "open"
-task = "O7"
+proof = "built"
 
 [[requirement]]
 id = "U52"
 statement = "The solo requeue slot after MEMORY or SOAK back-offs in Both"
-proof = "open"
-task = "O7"
+proof = "not built"
+task = "S4"
 
 [[requirement]]
 id = "U53"
 statement = "P(RESUMING) is the resume pass, not a resting pause, ending in baselines or a pause at baseline"
-proof = "open"
-task = "O7"
+proof = "built"
 
 [[requirement]]
 id = "U54"
 statement = "tClean when a CO second pass re-runs TRANSIENT"
-proof = "open"
-task = "O7"
+proof = "built"
 
 [[requirement]]
 id = "U55"
 statement = "When L18 deletes the stock marker"
-proof = "open"
-task = "O7"
+proof = "built"
 
 [[requirement]]
 id = "OWNER.SM_E1"
@@ -4531,7 +4549,7 @@ proof = "built"
 
 [[requirement]]
 id = "KC.3"
-statement = "In the boot the stock marker names a stock read on an owned core is accepted"
+statement = "In the boot the session's stock marker names a stock read on an owned core is accepted"
 proof = "built"
 
 [[requirement]]
