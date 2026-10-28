@@ -38,6 +38,7 @@ class Segment:
     hold_cap_s: float | None = None
     hold_on_tctl: bool = False
     hold_timeout: Outcome | None = None
+    hold_in_wall_time: bool = False
 
 
 def warm_hold(rest_c: float, limit_c: float) -> tuple[float, float]:
@@ -140,6 +141,7 @@ def plan(
                     hold_cap_s=HOLD_CAP_S,
                     hold_on_tctl=True,
                     hold_timeout=Outcome.HELD_TOO_LONG,
+                    hold_in_wall_time=True,
                 )
             )
         return tuple(slices)

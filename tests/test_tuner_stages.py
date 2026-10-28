@@ -4,6 +4,7 @@ import contextlib
 import itertools
 import json
 import random
+import re
 import threading
 from dataclasses import dataclass, field, replace
 from functools import partial
@@ -17,7 +18,7 @@ from corecycler.engine import detector as kernel
 from corecycler.engine.backends import ycruncher
 from corecycler.engine.backends.base import Outcome, StressResult
 from corecycler.engine.backends.ycruncher import ALL_TESTS
-from corecycler.engine.execution import Frozen, Heartbeat, Supervisor
+from corecycler.engine.execution import Frozen, Heartbeat, Lane, Supervisor, _LaneRun
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable
 from corecycler.monitor.hwmon import SensorRead
 from corecycler.tuner import live_hw, stages, telemetry
@@ -88,6 +89,17 @@ def test_the_warm_hold_judges_tctl_and_every_hot_hold_the_hottest_input():
     assert {s.hold_on_tctl for load in (Load.HOT, Load.BURST, Load.IDLE) for s in plan(load)} == {False}
 
 
+@pytest.mark.req("D120.unread", "D121", "WARM.tctl.unread")
+def test_an_unread_tctl_is_missing_input_held_or_not_and_leaves_the_hold_where_it_was():
+    unread = SensorRead(hottest=60.0)
+    held = live_hw.Hold(plan(Load.WARM)[0], dict, CORE_OF_CPU, 0.25)
+    readings = [unread, at(60.0), at(70.0), unread, at(60.0), at(50.0)]
+    expected = [Frozen.UNREAD, Frozen.NO, Frozen.HEAT, Frozen.UNREAD, Frozen.HEAT, Frozen.NO]
+    assert [held(0.0, reading) for reading in readings] == expected
+    hot = live_hw.Hold(plan(Load.HOT)[0], dict, CORE_OF_CPU, 0.25)
+    assert hot(0.0, SensorRead(hottest=None, tctl=None)) is Frozen.NO
+
+
 @pytest.mark.req("HOLD.words")
 def test_a_hold_names_its_release_point_the_reading_it_judges_and_its_last_value():
     warm = live_hw.Hold(plan(Load.WARM, rest_c=56.0)[0], dict, CORE_OF_CPU, 0.25)
@@ -117,6 +129,13 @@ def test_a_warm_slice_times_out_with_no_verdict_and_every_hot_hold_as_a_thermal_
     assert {s.hold_timeout for s in plan(Load.WARM)} == {Outcome.HELD_TOO_LONG}
     hot_holds = {s.hold_timeout for load in (Load.HOT, Load.BURST, Load.IDLE) for s in plan(load)}
     assert hot_holds == {Outcome.THERMAL}
+
+
+@pytest.mark.req("D119", "D58")
+def test_a_warm_slice_holds_inside_its_wall_time_and_every_hot_hold_counts_run_time():
+    assert {s.hold_in_wall_time for s in plan(Load.WARM)} == {True}
+    hot_holds = {s.hold_in_wall_time for load in (Load.HOT, Load.BURST, Load.IDLE) for s in plan(load)}
+    assert hot_holds == {False}
 
 
 @pytest.mark.req("WARM.rest")
@@ -179,6 +198,21 @@ def test_the_hold_freezes_at_the_hot_mark_and_releases_below_the_cool_one():
     assert [hold(0.0, at(next(readings))) for _ in range(5)] == [Frozen.NO, *[Frozen.HEAT] * 3, Frozen.NO]
 
 
+@pytest.mark.req("HOLD.planned", "D120.unread")
+def test_a_hot_hold_released_inside_a_planned_rest_ends_its_heat_time_there(tmp_path):
+    burst = plan(Load.BURST)[0]
+    rest_starts, rest_ends = burst.frozen[0]
+    hold = live_hw.Hold(burst, dict, CORE_OF_CPU, 0.25)
+    run = _LaneRun(lane=Lane(core_id=0, cpus=CPUS, work_dir=tmp_path), deadline=60.0)
+    run.proc = SimpleNamespace(pid=2**22 - 1, returncode=None)
+    hot = hold(0.0, at(96.0))
+    Supervisor._set_held([run], hot, 1.0)
+    released = hold((rest_starts + rest_ends) / 2, at(80.0))
+    Supervisor._set_held([run], released, 2.0)
+    assert (hot, released) == (Frozen.HEAT, Frozen.PLANNED)
+    assert (run.heat.since, run.heat.total) == (None, 1.0)
+
+
 @dataclass
 class Script:
     outcomes: list
@@ -190,6 +224,7 @@ class Script:
     caps: list = field(default_factory=list)
     memory: list = field(default_factory=list)
     limits: list = field(default_factory=list)
+    frozen_share: float = 0.0
 
 
 def runner(script: Script, readings=None, detector=None, clocks=None, usable_mb=60_000):
@@ -217,6 +252,7 @@ def runner(script: Script, readings=None, detector=None, clocks=None, usable_mb=
                 elapsed,
                 output=script.output,
                 speeds=((f"seg{len(script.seen)}", 1e9, outcome is Outcome.PASS),),
+                frozen_seconds=script.frozen_share * elapsed,
             )
             return {lanes[0].core_id: result}
 
@@ -540,6 +576,155 @@ def warm_runner(tmp_path, monkeypatch, after_the_load: list[SensorRead]) -> live
     return held_runner(tmp_path, monkeypatch, readings)
 
 
+MEASURED_CYCLE = tuple(
+    SensorRead(hottest=tctl + 2.0, tctl=tctl)
+    for tctl in (54.8, 60.0, 66.0, 64.0, 63.0, 62.0, 61.0, 60.0, 59.0, 58.0, 57.0, 56.5, 56.0, 55.5, 55.2)
+)
+RAN = re.compile(r"the load ran (\d+\.\d) of (\d+\.\d) s \((\d+)%\)")
+
+
+def ran_said(detail: str) -> tuple[float, float, int]:
+    found = RAN.search(detail)
+    assert found is not None, detail
+    return float(found.group(1)), float(found.group(2)), int(found.group(3))
+
+
+@pytest.mark.req("D119", "D119.ran", "K26")
+def test_a_warm_test_whose_hold_cycles_as_measured_runs_its_asked_wall_seconds_and_says_how_much_it_ran(
+    tmp_path, monkeypatch
+):
+    readings = itertools.chain([at(48.0)], itertools.cycle(MEASURED_CYCLE))
+    report = held_runner(tmp_path, monkeypatch, readings, 1.5).run(spec(Load.WARM, 2.5), threading.Event())
+    assert report.group is Group.PASS, report.detail
+    assert 2.5 - 0.25 <= report.seconds < 2.5 + 1.5
+    ran, wall, percent = ran_said(report.detail)
+    assert wall == pytest.approx(report.seconds, abs=0.05)
+    assert 8 <= percent <= 20
+    assert ran == pytest.approx(wall * percent / 100, abs=0.1)
+
+
+@pytest.mark.req("D119", "HOLD.words")
+def test_a_warm_hold_that_stops_releasing_ends_held_too_long_once_that_one_hold_passes_the_cap(tmp_path, monkeypatch):
+    stuck = SensorRead(hottest=62.0, tctl=60.0)
+    readings = itertools.chain([at(48.0)], MEASURED_CYCLE * 2, itertools.repeat(stuck))
+    report = held_runner(tmp_path, monkeypatch, readings, 1.5).run(spec(Load.WARM, 2.0), threading.Event())
+    said = (
+        "held_too_long: the load stayed held more than 1.5 s in one hold;"
+        " the hold releases below 55.0 C on Tctl, last read 60.0 C; the load ran "
+    )
+    assert report.group is Group.APPARATUS
+    assert report.detail.startswith(said), report.detail
+    assert report.seconds > 2.2
+
+
+TCTL_UNREAD = SensorRead(hottest=60.0)
+FLOOR_SAYS = "under the 5% floor for a load held in wall time; the hold releases below 55.0 C on Tctl, last read"
+
+
+def warm_cycling(tmp_path, monkeypatch, cycle, cap: float, seconds: float):
+    readings = itertools.chain([at(48.0)], itertools.cycle(cycle))
+    return held_runner(tmp_path, monkeypatch, readings, cap).run(spec(Load.WARM, seconds), threading.Event())
+
+
+@pytest.mark.req("D120")
+def test_a_warm_test_stuck_hot_but_for_a_one_tick_dip_is_no_verdict_rather_than_a_pass(tmp_path, monkeypatch):
+    report = warm_cycling(tmp_path, monkeypatch, [at(70.0)] * 50 + [at(50.0)], 3.0, 1.5)
+    assert report.group is Group.APPARATUS
+    assert report.detail.startswith("held_too_long: the load ran only "), report.detail
+    assert f"{FLOOR_SAYS} 50.0 C; the load ran " in report.detail
+    assert ran_said(report.detail)[2] < 5
+
+
+UNREAD_SAYS = "held_too_long: the hold's reading went unread for "
+MORE_THAN_HALF = (
+    "s, more than the 50% limit for a load held in wall time; the hold releases below 55.0 C on Tctl, last read"
+)
+
+
+@pytest.mark.req("D121", "D120.unread")
+def test_a_warm_test_whose_tctl_is_mostly_unread_is_no_verdict_rather_than_a_pass(tmp_path, monkeypatch):
+    report = warm_cycling(tmp_path, monkeypatch, [TCTL_UNREAD] * 50 + [SensorRead(hottest=52.0, tctl=50.0)], 3.0, 1.5)
+    assert report.group is Group.APPARATUS
+    assert report.detail.startswith(UNREAD_SAYS), report.detail
+    assert f"{MORE_THAN_HALF} unread; the load ran " in report.detail
+    assert report.seconds < 1.5 + 0.25
+
+
+@pytest.mark.req("D121", "D120.unread")
+def test_short_spells_of_unread_tctl_that_add_up_to_most_of_the_slice_are_no_verdict_though_the_load_ran(
+    tmp_path, monkeypatch
+):
+    report = warm_cycling(
+        tmp_path, monkeypatch, [TCTL_UNREAD] * 8 + [SensorRead(hottest=52.0, tctl=50.0)] * 2, 1.0, 2.0
+    )
+    assert report.group is Group.APPARATUS
+    assert report.detail.startswith(UNREAD_SAYS), report.detail
+    assert MORE_THAN_HALF in report.detail
+    assert ran_said(report.detail)[2] >= 10
+    assert report.seconds >= 2.0 - 0.25
+
+
+@pytest.mark.req("D121")
+def test_tctl_unread_eleven_reads_in_twelve_ends_the_first_slice_with_no_verdict_though_the_load_ran_over_5_percent(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(stages, "WARM_SLICE_S", 1.5)
+    report = warm_cycling(tmp_path, monkeypatch, [TCTL_UNREAD] * 11 + [at(50.0)], 7.5, 3.0)
+    assert report.group is Group.APPARATUS
+    assert report.detail.startswith(UNREAD_SAYS), report.detail
+    assert MORE_THAN_HALF in report.detail
+    assert ran_said(report.detail)[2] >= 5
+    assert report.seconds < 1.5 + 0.25
+
+
+@pytest.mark.req("D121")
+def test_tctl_unread_three_reads_in_four_inside_holds_is_no_verdict_though_each_hold_releases(tmp_path, monkeypatch):
+    report = warm_cycling(tmp_path, monkeypatch, [at(70.0), *[TCTL_UNREAD] * 9, at(50.0), at(50.0)], 3.0, 1.5)
+    assert report.group is Group.APPARATUS
+    assert report.detail.startswith(UNREAD_SAYS), report.detail
+    assert f"{MORE_THAN_HALF} 50.0 C; the load ran " in report.detail
+    assert ran_said(report.detail)[2] >= 5
+
+
+@pytest.mark.req("D121", "D119", "HOLD.words")
+def test_one_unread_reading_inside_a_stuck_hold_keeps_the_hold_until_it_passes_the_cap(tmp_path, monkeypatch):
+    stuck = itertools.chain([at(50.0)] * 10, [at(70.0)] * 40, [TCTL_UNREAD], itertools.repeat(at(70.0)))
+    report = held_runner(tmp_path, monkeypatch, itertools.chain([at(48.0)], stuck), 3.0).run(
+        spec(Load.WARM, 1.5), threading.Event()
+    )
+    said = (
+        "held_too_long: the load stayed held more than 3 s in one hold;"
+        " the hold releases below 55.0 C on Tctl, last read 70.0 C; the load ran "
+    )
+    assert report.group is Group.APPARATUS
+    assert report.detail.startswith(said), report.detail
+    assert report.seconds > 3.0
+
+
+@pytest.mark.req("D119", "D120")
+def test_each_warm_slice_follows_its_own_hold_and_meets_its_own_floor(tmp_path, monkeypatch):
+    monkeypatch.setattr(stages, "WARM_SLICE_S", 1.0)
+    cycling = [at(54.8), at(58.0), at(62.0), at(66.0), *[at(60.0)] * 22, at(54.0)]
+    barely = [at(66.0), *[at(60.0)] * 28, at(54.0)]
+    readings = itertools.chain([at(48.0)], cycling, cycling, barely)
+    slices: list[tuple[float, float]] = []
+
+    class Recorded(Supervisor):
+        def run(self, lanes, config, duration):
+            results = super().run(lanes, config, duration)
+            slices.append((duration, results[lanes[0].core_id].duration_seconds))
+            return results
+
+    warm = held_runner(tmp_path, monkeypatch, readings, 5.0)
+    warm.supervisor = partial(Recorded, containment_for=lambda cpus: None)
+    report = warm.run(spec(Load.WARM, 3.0), threading.Event())
+    assert [asked for asked, _ in slices] == [1.0, 1.0, 1.0]
+    assert all(lasted > 1.1 for _, lasted in slices), slices
+    assert report.group is Group.APPARATUS
+    assert report.detail.startswith("held_too_long: the load ran only "), report.detail
+    assert f"{FLOOR_SAYS} 54.0 C; the load ran " in report.detail
+
+
 @pytest.mark.req("D58", "HOLD.planned")
 def test_an_idle_test_whose_planned_rests_pass_the_cap_runs_its_asked_seconds(tmp_path, monkeypatch):
     default_seconds = dict(MachineConfig(Mode.CO, Method.SEQUENTIAL, (0,)).stage_seconds)["idle"]
@@ -567,7 +752,7 @@ def test_a_warm_test_on_a_cpu_resting_above_55_c_releases_its_hold_and_runs_its_
     runner = warm_runner(tmp_path, monkeypatch, [RYZEN_AT_REST, RYZEN_AT_THE_CAP])
     report = runner.run(spec(Load.WARM, 1.0), threading.Event(), got.append)
     assert report.group is Group.PASS, report.detail
-    assert report.seconds >= 1.0
+    assert report.seconds == pytest.approx(1.0, abs=0.25)
     assert not got[0].running and got[-1].running
 
 
@@ -582,19 +767,22 @@ def test_a_warm_test_that_starts_hot_after_a_burst_holds_under_the_hot_band_and_
     got = []
     report = held_runner(tmp_path, monkeypatch, readings).run(spec(Load.WARM, 1.0), threading.Event(), got.append)
     assert report.group is Group.PASS, report.detail
-    assert report.seconds >= 1.0
+    assert report.seconds == pytest.approx(1.0, abs=0.25)
     assert not got[0].running and got[-1].running
 
 
-@pytest.mark.req("WARM.tctl.unread")
-def test_a_tctl_unread_during_a_warm_test_holds_the_load_and_ends_it_at_the_cap_with_no_verdict(tmp_path, monkeypatch):
+@pytest.mark.req("WARM.tctl.unread", "D121")
+def test_a_tctl_unread_through_a_warm_test_holds_the_load_and_ends_it_with_no_verdict(tmp_path, monkeypatch):
     readings = itertools.chain([RYZEN_AT_REST], itertools.repeat(SensorRead(hottest=60.0)))
     report = held_runner(tmp_path, monkeypatch, readings).run(spec(Load.WARM, 1.0), threading.Event())
     said = (
-        "held_too_long: the load stayed held more than 0.5 s in all;"
-        " the hold releases below 58.0 C on Tctl, last read unread"
+        "s, more than the 50% limit for a load held in wall time;"
+        " the hold releases below 58.0 C on Tctl, last read unread; the load ran 0.0 of "
     )
-    assert (report.group, report.detail) == (Group.APPARATUS, said)
+    assert report.group is Group.APPARATUS
+    assert report.detail.startswith(UNREAD_SAYS), report.detail
+    assert said in report.detail
+    assert report.seconds == pytest.approx(1.0, abs=0.25)
 
 
 @pytest.mark.req("D58", "HOLD.words")
@@ -604,9 +792,10 @@ def test_a_hot_hold_past_its_cap_is_a_thermal_stop_naming_its_release_point_and_
     report = held_runner(tmp_path, monkeypatch, itertools.repeat(at(95.0))).run(spec(Load.HOT, 1.0), threading.Event())
     said = (
         "thermal: the load stayed held more than 0.5 s in all;"
-        " the hold releases below 85.0 C on the hottest input, last read 95.0 C"
+        " the hold releases below 85.0 C on the hottest input, last read 95.0 C; the load ran 0.0 of "
     )
-    assert (report.group, report.detail) == (Group.THERMAL, said)
+    assert report.group is Group.THERMAL
+    assert report.detail.startswith(said), report.detail
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     start_session(fake)
     fake.fire()
@@ -620,10 +809,11 @@ def test_a_hold_past_its_cap_is_no_verdict_naming_its_release_point_and_last_rea
 ):
     report = warm_runner(tmp_path, monkeypatch, [SOAKED]).run(spec(Load.WARM, 1.0), threading.Event())
     said = (
-        "held_too_long: the load stayed held more than 0.5 s in all;"
-        " the hold releases below 58.0 C on Tctl, last read 59.0 C"
+        "held_too_long: the load stayed held more than 0.5 s in one hold;"
+        " the hold releases below 58.0 C on Tctl, last read 59.0 C; the load ran 0.0 of "
     )
-    assert (report.group, report.detail) == (Group.APPARATUS, said)
+    assert report.group is Group.APPARATUS
+    assert report.detail.startswith(said), report.detail
     fake = fresh(2, [-12, -6], 1, max_offset=-20, k_1t=2)
     start_session(fake)
     fake.fire()
@@ -633,7 +823,7 @@ def test_a_hold_past_its_cap_is_no_verdict_naming_its_release_point_and_last_rea
             break
         fake.fire()
     paused = (fake.state.pause.reason, fake.state.pause.detail)
-    assert paused == (PauseReason.APPARATUS, f"no verdict 4 times in a row: {said}")
+    assert paused == (PauseReason.APPARATUS, f"no verdict 4 times in a row: {report.detail}")
 
 
 @pytest.mark.req("EC.G1")
@@ -952,7 +1142,23 @@ def test_every_segment_that_holds_carries_a_hold_cap_and_the_runner_hands_it_on(
     runner(script).run(spec(Load.WARM), threading.Event())
     assert [cap.seconds for cap in script.caps] == [stages.HOLD_CAP_S] * 8
     assert {cap.outcome for cap in script.caps} == {Outcome.HELD_TOO_LONG}
+    assert {cap.in_wall_time for cap in script.caps} == {True}
     assert [cap.describe for cap in script.caps] == [freeze.describe for *_, freeze in script.seen]
+    hot = Script([Outcome.PASS])
+    runner(hot).run(spec(Load.HOT), threading.Event())
+    assert [(cap.outcome, cap.in_wall_time) for cap in hot.caps] == [(Outcome.THERMAL, False)]
+
+
+@pytest.mark.req("D119.ran")
+def test_every_all_core_verdict_says_how_much_of_its_wall_time_the_load_ran():
+    warm = runner(Script([Outcome.PASS] * 8, frozen_share=0.75)).run(spec(Load.WARM), threading.Event())
+    assert (warm.group, warm.detail) == (Group.PASS, "the load ran 120.0 of 480.0 s (25%)")
+    failed = runner(Script([Outcome.PASS, Outcome.COMPUTATION], frozen_share=0.75)).run(
+        spec(Load.WARM), threading.Event()
+    )
+    assert (failed.group, failed.detail) == (Group.SILICON, "computation: d; the load ran 22.5 of 90.0 s (25%)")
+    hot = runner(Script([Outcome.PASS], frozen_share=0.2)).run(spec(Load.HOT), threading.Event())
+    assert hot.detail == "the load ran 384.0 of 480.0 s (80%)"
 
 
 def test_the_working_cores_of_a_failing_burst_segment_are_the_cores_it_drew():

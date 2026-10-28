@@ -50,6 +50,8 @@ POLICY_NAMES = {
 }
 CONTAINMENT_GRACE_SECONDS = 5.0
 LOAD_FLOOR_FRACTION = 0.5
+WALL_TIME_RUN_FLOOR = 0.05
+WALL_TIME_UNREAD_LIMIT = 0.5
 STALL_BUSY_FRACTION = 0.05
 STOP_GRACE_SECONDS = 3.0
 KILL_WAIT_SECONDS = 2.0
@@ -71,6 +73,27 @@ class Lane:
     @property
     def cpu_list(self) -> str:
         return containment.cpu_list(self.cpus)
+
+
+@dataclass(slots=True)
+class _Held:
+    since: float | None = None
+    total: float = 0.0
+
+    def mark(self, held: bool, now: float) -> None:
+        if (self.since is not None) == held:
+            return
+        if held:
+            self.since = now
+        else:
+            self.total += now - self.since
+            self.since = None
+
+    def unbroken(self, now: float) -> float:
+        return 0.0 if self.since is None else now - self.since
+
+    def summed(self, now: float) -> float:
+        return self.total + self.unbroken(now)
 
 
 @dataclass(slots=True)
@@ -98,8 +121,9 @@ class _LaneRun:
     frozen: bool = False
     frozen_since: float | None = None
     frozen_total: float = 0.0
-    heat_since: float | None = None
-    heat_total: float = 0.0
+    frozen_in_all: float = 0.0
+    heat: _Held = field(default_factory=_Held)
+    unread: _Held = field(default_factory=_Held)
     scheduled_as: tuple[int, int] | None = None
     progress_window: float | None = None
     last_progress: float = 0.0
@@ -122,6 +146,7 @@ class Frozen(Enum):
     NO = auto()
     PLANNED = auto()
     HEAT = auto()
+    UNREAD = auto()
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +154,7 @@ class HoldCap:
     seconds: float
     describe: Callable[[], str]
     outcome: Outcome
+    in_wall_time: bool
 
 
 @dataclass(slots=True)
@@ -278,8 +304,9 @@ def _scheduling_fault(run: _LaneRun) -> str | None:
     return None
 
 
-def _heat_held(run: _LaneRun, now: float) -> float:
-    return run.heat_total + (0.0 if run.heat_since is None else now - run.heat_since)
+def _frozen_in_all(run: _LaneRun) -> float:
+    still = 0.0 if run.frozen_since is None else run.stopped_at - run.frozen_since
+    return run.frozen_in_all + still
 
 
 def _no_work_done(run: _LaneRun) -> str | None:
@@ -503,15 +530,19 @@ class Supervisor:
             if self.freeze is not None:
                 frozen = self.freeze(now - start, reading)
                 self._set_frozen(runs, frozen is not Frozen.NO, now)
-                self._set_heat(runs, frozen is Frozen.HEAT, now)
+                self._set_held(runs, frozen, now)
             if self.hold_cap is not None:
-                held = max(_heat_held(run, now) for run in runs)
+                in_wall_time = self.hold_cap.in_wall_time
+                held = max(run.heat.unbroken(now) if in_wall_time else run.heat.summed(now) for run in runs)
                 if held > self.hold_cap.seconds:
                     self._hold_expired(runs)
                     return
-                deadline = start + duration + held
-                for run in runs:
-                    run.deadline = deadline
+                if in_wall_time:
+                    deadline = math.inf if any(run.heat.since is not None for run in runs) else start + duration
+                else:
+                    deadline = start + duration + held
+                    for run in runs:
+                        run.deadline = deadline
             for run in runs:
                 if run.alive:
                     self._check(run, now, start)
@@ -590,7 +621,8 @@ class Supervisor:
             )
 
     def _hold_expired(self, runs: list[_LaneRun]) -> None:
-        text = f"the load stayed held more than {self.hold_cap.seconds:g} s in all; {self.hold_cap.describe()}"
+        counted = "in one hold" if self.hold_cap.in_wall_time else "in all"
+        text = f"the load stayed held more than {self.hold_cap.seconds:g} s {counted}; {self.hold_cap.describe()}"
         for run in runs:
             run.signals.append(LaneSignal(self.hold_cap.outcome, text))
 
@@ -605,21 +637,18 @@ class Supervisor:
             else:
                 self._signal_group(run, signal.SIGCONT)
                 run.frozen_total += max(0.0, min(now, run.deadline) - run.frozen_since)
+                run.frozen_in_all += now - run.frozen_since
                 run.last_progress += now - run.frozen_since
                 run.frozen_since = None
                 run.last_active = now
             run.frozen = frozen
 
     @staticmethod
-    def _set_heat(runs: list[_LaneRun], heat: bool, now: float) -> None:
+    def _set_held(runs: list[_LaneRun], frozen: Frozen, now: float) -> None:
         for run in runs:
-            if not run.alive or (run.heat_since is not None) == heat:
-                continue
-            if heat:
-                run.heat_since = now
-            else:
-                run.heat_total += now - run.heat_since
-                run.heat_since = None
+            if run.alive:
+                run.heat.mark(frozen is Frozen.HEAT or (frozen is Frozen.UNREAD and run.heat.since is not None), now)
+                run.unread.mark(frozen is Frozen.UNREAD, now)
 
     def _take_kernel_events(self, runs: list[_LaneRun], *, final: bool = False) -> None:
         read = self.detector.read_new(final=final)
@@ -782,6 +811,8 @@ class Supervisor:
             outcome, detail = signals[0].outcome, "; also: ".join(found.text for found in signals)
         elif run.proc is None or (run.sent is not None and run.stopped_at < run.deadline):
             outcome, detail = Outcome.CUT_SHORT, f"stopped before the end of its {self.phase}: no verdict of its own"
+        elif (short := self._held_too_long_in_wall_time(run)) is not None:
+            outcome, detail = Outcome.HELD_TOO_LONG, short
         elif (no_work := _no_work_done(run)) is not None:
             outcome, detail = Outcome.NO_WORK_DONE, no_work
         elif run.read_problem is not None:
@@ -798,6 +829,25 @@ class Supervisor:
             duration_seconds=run.duration(),
             output="" if outcome is Outcome.PASS else kept_output(run.output),
             speeds=run.speeds,
+            frozen_seconds=_frozen_in_all(run),
+        )
+
+    def _held_too_long_in_wall_time(self, run: _LaneRun) -> str | None:
+        if self.hold_cap is None or not self.hold_cap.in_wall_time:
+            return None
+        wall = run.duration()
+        unread = run.unread.summed(run.stopped_at)
+        if unread > WALL_TIME_UNREAD_LIMIT * wall:
+            return (
+                f"the hold's reading went unread for {unread:.1f} of {wall:.1f} s, more than the"
+                f" {WALL_TIME_UNREAD_LIMIT:.0%} limit for a load held in wall time; {self.hold_cap.describe()}"
+            )
+        ran = wall - _frozen_in_all(run)
+        if ran >= WALL_TIME_RUN_FLOOR * wall:
+            return None
+        return (
+            f"the load ran only {ran:.1f} of {wall:.1f} s, under the {WALL_TIME_RUN_FLOOR:.0%} floor for a load held"
+            f" in wall time; {self.hold_cap.describe()}"
         )
 
     @staticmethod

@@ -125,6 +125,7 @@ class StressResult:
     output: str = ""
     iterations_completed: int = 0
     speeds: tuple[tuple[str, float, bool], ...] = ()
+    frozen_seconds: float = 0.0
 
     @property
     def passed(self) -> bool:

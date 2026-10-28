@@ -386,7 +386,7 @@ task = "S3"
 
 [[requirement]]
 id = "K26"
-statement = "WARM: 480 s of run time, 30 s per test, one 60 s slice per test, holds Tctl above 65 C to below 55 C when the Tctl read before its load is at or below 53 C (WARM.rest), held time not counted, held past 300 s in all is no verdict (D58)"
+statement = "WARM: 480 s of wall time, 30 s per test, one 60 s slice per test, holds Tctl above 65 C to below 55 C when the Tctl read before its load is at or below 53 C (WARM.rest), the hold cycling inside the wall time, one hold past 300 s is no verdict (D119)"
 proof = "built"
 
 [[requirement]]
@@ -3083,7 +3083,7 @@ proof = "built"
 
 [[requirement]]
 id = "L25.d.watchdog"
-statement = "The stall watchdog counts thawed time only; the deadline extends by the time held on heat under a hold cap (HOLD.planned)"
+statement = "The stall watchdog counts thawed time only; under a summed hold cap the deadline extends by the time held on heat (HOLD.planned), and under a warm one it waits for a hold still on at its end (D119)"
 proof = "built"
 
 [[requirement]]
@@ -4166,7 +4166,37 @@ proof = "built"
 
 [[requirement]]
 id = "D58"
-statement = "Every segment that holds counts run time while held on heat; held on heat more than 300 s in all, across every hold, ends the run as its segment declares: a WARM slice with no verdict (APPARATUS, held_too_long), retried at once and pausing after the apparatus retries, and a HOT, BURST or IDLE segment, whose hold froze at the limit, as THERMAL with its cool-down; frozen time past the deadline does not count toward the work floor (PLAN Next 79, review round 1)"
+statement = "A HOT, BURST or IDLE segment, whose hold freezes at the thermal limit, counts run time while held on heat: the time held lengthens it, and held more than 300 s in all, across every hold, it ends as THERMAL with its cool-down; frozen time past the deadline does not count toward the work floor; the WARM slice's hold sits in its wall time instead (D119) (PLAN Next 79, review round 1; Next 87)"
+proof = "built"
+
+[[requirement]]
+id = "D119"
+statement = "A WARM slice lasts its asked wall seconds with its hold cycling inside them: its heat holds neither lengthen it nor count toward the cap as a sum, and a heat hold still on at its end is followed to its release, so one unbroken hold past 300 s, the CPU never cooling to the release point, ends it with no verdict (APPARATUS, held_too_long), retried at once and pausing after the apparatus retries, even in a slice shorter than the cap (PLAN Next 87, the ryzen under balanced: the all-core warm load heats 55 to 65 C in one to two seconds and cools in about ten, so the summed cap ended every warm test at stock)"
+proof = "built"
+
+[[requirement]]
+id = "D119.ran"
+statement = "Every all-core verdict, its detail line in the session log and in the stored test row, says how many of its wall seconds the load ran and their share, so a warm test whose hold let the load run little is visible; the coverage record keeps the running seconds per core and cell beside it (PLAN Next 87)"
+proof = "built"
+
+[[requirement]]
+id = "D120"
+statement = "A WARM slice passes only when its load ran at least 5 percent of its wall time, exactly 5 percent included; under it the slice is no verdict (APPARATUS, held_too_long), its words giving the seconds the load ran, the 5 percent floor, the release point and the last reading; a HOT, BURST or IDLE segment, which makes up its held time, has no such floor, so IDLE's long planned rests still pass (D120, the Next 87 review: a 3 s warm test passed with the load running 2 percent)"
+proof = "built"
+
+[[requirement]]
+id = "D120.unread"
+statement = "An unread Tctl freezes the WARM load as missing input, its time counted as unread whether the warm hold is on or released (D121); while released it never lengthens the slice, so an unread spell still on at the slice's end is not waited for and the time unread counts toward no cap; while the hold is on, the hold goes on as heat through the unread reading under its 300 s unbroken cap; either way the hold keeps its state for the next reading (D120 as amended, D121, the Next 87 reviews: Tctl unread for 50 ticks then one cool read passed, and one unread reading inside a stuck hold ended the wait)"
+proof = "built"
+
+[[requirement]]
+id = "D121"
+statement = "A WARM slice whose Tctl went unread, its hold on or released, for more than half its wall time is no verdict (APPARATUS, held_too_long) whatever share the load ran, its words giving the seconds unread, the 50 percent limit, the release point and the last reading; exactly half passes; a HOT, BURST or IDLE segment has no such limit (D121, the Next 87 review round 2: Tctl unread 11 of every 12 readings passed at 7 percent load; a healthy sensor read unread in none of 525,494 samples on the ryzen)"
+proof = "built"
+
+[[requirement]]
+id = "D120.killed"
+statement = "A payload killed while frozen counts its open freeze, up to when it was found dead, in the frozen seconds its result reports, so the seconds the load ran are never overstated (D120, the Next 87 review)"
 proof = "built"
 
 [[requirement]]
@@ -4176,7 +4206,7 @@ proof = "built"
 
 [[requirement]]
 id = "HOLD.words"
-statement = "A hold past its cap says so in the hold's own words, the cap, the release point, the reading the hold judges and its last value; the warm hold's pause after the apparatus retries repeats them and names no limit, which the warm hold never reaches (PLAN Next 79)"
+statement = "A hold past its cap says so in the hold's own words, the cap, how it counted (in all for a summed cap, in one hold for the warm heat hold), the release point, the reading the hold judges and its last value; the warm hold's pause after the apparatus retries repeats them and names no limit, which the warm hold never reaches (PLAN Next 79; Next 87)"
 proof = "built"
 
 [[requirement]]
@@ -4186,7 +4216,7 @@ proof = "built"
 
 [[requirement]]
 id = "WARM.tctl.unread"
-statement = "A Tctl that cannot be read during a WARM test holds the load, so a Tctl that stays unread ends the test at the cap with no verdict, its words saying last read unread (PLAN Next 79, review round 1)"
+statement = "A Tctl that cannot be read during a WARM test holds the load (D120.unread), so a Tctl that stays unread ends the slice at its asked seconds with no verdict, never a pass, being unread more than half of it (D121), its words saying last read unread (PLAN Next 79, review round 1; Next 87, D120, D121)"
 proof = "built"
 
 [[requirement]]

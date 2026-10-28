@@ -525,6 +525,12 @@ def report_from(
     )
 
 
+def ran_detail(detail: str, ran: float, wall: float) -> str:
+    share = ran / wall if wall else 0.0
+    said = f"the load ran {ran:.1f} of {wall:.1f} s ({share:.0%})"
+    return f"{detail}; {said}" if detail else said
+
+
 def named_cores(result, core_of_cpu: dict[int, int]) -> tuple[int, ...]:
     if result.outcome.kind is not OutcomeKind.SILICON:
         return ()
@@ -572,10 +578,9 @@ class Hold:
                 self.held = True
             elif temperature < cool:
                 self.held = False
-        elif self.segment.hold_on_tctl:
-            self.held = True
         planned = Frozen.PLANNED if stages.frozen_at(self.segment, elapsed) else Frozen.NO
-        frozen = Frozen.HEAT if self.held else planned
+        heat = Frozen.HEAT if self.held else planned
+        frozen = Frozen.UNREAD if self.segment.hold_on_tctl and temperature is None else heat
         if sampling:
             self.next_sample = elapsed + self.every
             clocks = self.clocks()
@@ -734,6 +739,7 @@ class StressRunner:
         memory = ", ".join(str(mb) for mb in sorted({segment.memory_mb for segment in segments}))
         self.say(f"{spec.load.value} runs y-cruncher with {memory} MB")
         done = 0.0
+        ran = 0.0
         speeds: list[tuple[str, float, bool]] = []
         for segment in segments:
             config = StressConfig(
@@ -744,12 +750,13 @@ class StressRunner:
             )
             lane = Lane(core_id=spec.core, cpus=segment.cpus, work_dir=self.work_dir / f"all_{spec.load.value}")
             hold = Hold(segment, self.clocks, self.core_of_cpu, telemetry.SAMPLE_S, self.sink)
-            cap = HoldCap(segment.hold_cap_s, hold.describe, segment.hold_timeout)
+            cap = HoldCap(segment.hold_cap_s, hold.describe, segment.hold_timeout, segment.hold_in_wall_time)
             results, observed = self._supervise(
                 spec, stop, [lane], config, segment.duration, hold, poll=FREEZE_TICK_S, hold_cap=cap
             )
             result = results[lane.core_id]
             done += result.duration_seconds
+            ran += result.duration_seconds - result.frozen_seconds
             speeds.extend(result.speeds)
             if result.outcome.kind is not OutcomeKind.PASS or observed:
                 assigned = tuple(sorted({self.core_of_cpu[c] for c in segment.cpus}))
@@ -758,8 +765,9 @@ class StressRunner:
                 context = telemetry.context(list(hold.ring), steady, assigned, named) if hold.ring else None
                 report = report_from(result, observed, segment.cpus, self.core_of_cpu, context, all_core=True)
                 if result.outcome.kind is not OutcomeKind.PASS or report.evidence:
-                    return replace(report, seconds=done, named=named, speeds=tuple(speeds))
-        return Report(Group.PASS, done, speeds=tuple(speeds))
+                    detail = ran_detail(report.detail, ran, done)
+                    return replace(report, seconds=done, named=named, speeds=tuple(speeds), detail=detail)
+        return Report(Group.PASS, done, detail=ran_detail("", ran, done), speeds=tuple(speeds))
 
     def _memory(self, spec: TestSpec, stop: threading.Event) -> Report:
         backend = self.memory_backend()

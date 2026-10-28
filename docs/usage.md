@@ -230,11 +230,15 @@ Hard crashes are expected during CO tuning; that is how each core's limit is fou
   the limit on the hottest sensor and go on 10 C under it; the warm load holds Tctl between
   55 and 65 C, or from 2 C above the Tctl read before its load when that is warmer, over the
   same span and never above the hot loads' release, and it holds while Tctl cannot be read.
-  Held on heat more than 300 s in all, a hot, burst or idle test ends as a thermal stop and a
-  warm test ends with no verdict and runs again, each naming where the hold releases and the
-  last reading; after three such warm retries in a row the next pauses the session. The burst
-  and idle loads' own planned rests are not heat holds: they neither count toward the 300 s
-  nor lengthen the test. A cool-down that does not bring the CPU below the limit within 300 s
+  A hot, burst or idle test makes up the time it is held, and held more than 300 s in all it
+  ends as a thermal stop. A warm test lasts its asked seconds with the hold cycling inside
+  them, plus at most the rest of a hold still on when one of its slices ends; one hold longer
+  than 300 s, a slice whose load ran under 5 percent of its time, or one whose Tctl went
+  unread for more than half of it ends it with no verdict and it runs again; after three
+  such warm retries in a row the next pauses the session. Both name where the hold releases and the last reading,
+  and every all-core result says how many of its seconds the load ran. The burst and idle
+  loads' own planned rests are not heat holds: they neither count toward the 300 s nor
+  lengthen the test. A cool-down that does not bring the CPU below the limit within 300 s
   pauses the session. No readable temperature sensor refuses the run.
 - **Other schedulers**: a stress tool whose nice value or scheduling policy differs from
   what it was started with (ananicy-cpp renices programs by name) is not a verdict: the
