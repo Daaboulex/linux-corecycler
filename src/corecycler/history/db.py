@@ -1450,7 +1450,7 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
 
     _TUNER_TEST_COLUMNS = (
         "id, boot_id, started_at, ended_at, stage, load, klass, core, value, vector_json, cpus_json, seconds_asked,"
-        " seconds_run, verdict, detail, coverage_json, power_json, peaks_json"
+        " seconds_run, verdict, detail, coverage_json, power_json, peaks_json, evidence_json"
     )
 
     def list_tuner_tests(self, session_id: int) -> list[dict]:

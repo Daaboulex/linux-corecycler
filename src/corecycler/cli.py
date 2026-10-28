@@ -427,7 +427,7 @@ def cmd_shaper(rest: list[str]) -> int:
 
 def cmd_margins(rest: list[str], db: HistoryDB | None = None) -> int:
     from corecycler.history.db import HistoryDB
-    from corecycler.tuner.live import load_stored, margins
+    from corecycler.tuner.live import UnreadableEvidenceError, load_stored, margins
     from corecycler.tuner.live_hw import shaper_at_zero
 
     if len(rest) != 1 or not rest[0].isdigit():
@@ -450,6 +450,9 @@ def cmd_margins(rest: list[str], db: HistoryDB | None = None) -> int:
             )
             return EXIT_REFUSED
         found = margins(own.list_tuner_tests(session_id))
+    except UnreadableEvidenceError as exc:
+        print(f"corecycler margins: session {session_id} could not be read: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
     finally:
         if db is None:
             own.close()

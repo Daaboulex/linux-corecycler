@@ -6422,8 +6422,9 @@ def test_the_rig_takes_each_core_s_physical_ccd_from_the_driver_s_core_map(tmp_p
     assert built.physical_ccd_of == tuple((core, 1) for core in range(6))
 
 
-def single_core_row(stage, core, value, verdict, cells, ended=True, recorded_core=None):
+def single_core_row(stage, core, value, verdict, cells, ended=True, recorded_core=None, records=(), unblamed=False):
     record = {str(core if recorded_core is None else recorded_core): {"cells": cells, "unreadable_s": 0.0}}
+    evidence = {"records": [asdict(found) for found in records], "unblamed_corrected": unblamed}
     return {
         "stage": stage,
         "core": core,
@@ -6431,6 +6432,7 @@ def single_core_row(stage, core, value, verdict, cells, ended=True, recorded_cor
         "verdict": verdict,
         "ended_at": "2026-10-15T15:00:00+00:00" if ended else None,
         "coverage_json": None if cells is None else json.dumps(record),
+        "evidence_json": json.dumps(evidence) if ended else None,
     }
 
 
@@ -6486,6 +6488,82 @@ def test_the_margin_map_keeps_per_clock_the_deepest_pass_above_the_shallowest_fa
         "unrecorded": 2,
     }
     assert found[4]["bins"][4800]["passed"] == -39
+
+
+@pytest.mark.req("A2.margins")
+def test_a_pass_with_a_record_on_its_own_core_is_the_failure_the_machine_graded_it_at_that_value():
+    fake = fresh(2, [-10, -10], 1, max_offset=-12, k_1t=1, k_2t=1, wait_between_cores_s=0.0)
+    returned, tests, injected = fake.returned, [], []
+
+    def stored(worker, report=None, cut=False):
+        spec = worker.spec
+        if not injected and spec.stage is Stage.SEARCH and (spec.core, spec.value) == (0, -5):
+            report = Report(Group.PASS, spec.seconds, evidence=(Evidence(0, corrected=True),))
+            injected.append(spec.value)
+        out = returned(worker, report, cut)
+        verdict, cells = out.report.group.value, [[5500, 55, 20.0]]
+        tests.append(
+            single_core_row(spec.stage.value, spec.core, spec.value, verdict, cells, records=out.report.evidence)
+        )
+        return out
+
+    fake.returned = stored
+    start(fake)
+    run_to_rest(fake, 20000)
+    assert (fake.state.lifecycle, injected) == (Lifecycle.COMPLETED, [-5])
+    assert [(record.core, record.value, record.fb) for record in fake.db.cores][0] == (0, -4, -5)
+    cell = margins(tests)[0]["bins"][5500]
+    assert (cell["passed"], cell["failed"]) == (-4, -5)
+
+
+@pytest.mark.req("A2.margins")
+def test_an_environment_verdict_with_an_unblamed_corrected_record_is_a_failure_and_the_flag_fails_nothing_else():
+    cells = [[5400, 55, 20.0]]
+    found = margins(
+        [
+            single_core_row("search", 9, -27, "pass", cells, unblamed=True),
+            single_core_row("search", 9, -28, "environment", cells),
+            single_core_row("search", 9, -30, "pass", cells),
+            single_core_row("live1", 9, -31, "environment", cells, unblamed=True),
+        ]
+    )
+    assert found[9]["bins"][5400] == {
+        "passed": -30,
+        "passed_s": 20.0,
+        "failed": -31,
+        "failed_s": 20.0,
+        "deeper": [],
+        "temp": [55, 60],
+        "seconds": 60.0,
+    }
+
+
+@pytest.mark.req("A2.margins")
+def test_a_record_on_another_core_leaves_the_tested_core_s_pass_a_pass_and_one_on_its_own_fails_any_verdict():
+    cells = [[5400, 55, 20.0]]
+    found = margins(
+        [
+            single_core_row("search", 9, -30, "pass", cells, records=(Evidence(3, corrected=True),)),
+            single_core_row("search", 9, -31, "thermal", cells, records=(Evidence(9, corrected=False),)),
+        ]
+    )
+    cell = found[9]["bins"][5400]
+    assert (cell["passed"], cell["failed"], cell["seconds"]) == (-30, -31, 40.0)
+
+
+@pytest.mark.req("A2.margins")
+def test_a_record_on_the_tested_core_fails_its_pass_wherever_it_stands_among_the_records():
+    cells = [[5400, 55, 20.0]]
+    found = margins(
+        [
+            single_core_row("search", 9, -30, "pass", cells),
+            single_core_row(
+                "search", 9, -31, "pass", cells, records=(Evidence(3, corrected=True), Evidence(9, corrected=True))
+            ),
+        ]
+    )
+    cell = found[9]["bins"][5400]
+    assert (cell["passed"], cell["failed"]) == (-30, -31)
 
 
 @pytest.mark.req("VERDICT.18", "PRELUDE.1")

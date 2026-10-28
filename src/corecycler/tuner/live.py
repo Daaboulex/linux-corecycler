@@ -189,6 +189,35 @@ ONE_CORE_STAGES = frozenset({Stage.SEARCH, Stage.LIVE1})
 MARGIN_SIDES = {Group.PASS: "passes", Group.SILICON: "fails"}
 
 
+class UnreadableEvidenceError(ValueError):
+    pass
+
+
+def _graded(test: dict) -> str:
+    """A one-core test's group read stricter than the machine grades it: a record on the tested core fails it whatever
+    the load said, where the machine fails only a pass; and an environment verdict with a corrected machine check no
+    core is blamed for fails at its first occurrence, where the machine fails it only once it recurs at that core and
+    value with no other core showing one. An evidence_json in no shape a build of this tool writes is refused naming
+    the test, never read as no evidence."""
+    raw = test["evidence_json"]
+    try:
+        evidence = json.loads(raw)
+    except TypeError, ValueError:
+        evidence = None
+    if not (
+        type(evidence) is dict
+        and type(evidence.get("records")) is list
+        and all(type(record) is dict and type(record.get("core")) is int for record in evidence["records"])
+        and type(evidence.get("unblamed_corrected")) is bool
+    ):
+        raise UnreadableEvidenceError(
+            f"test {test['id']} has evidence_json {raw!r}, in no shape a build of this tool writes"
+        )
+    own = any(record["core"] == test["core"] for record in evidence["records"])
+    unblamed = test["verdict"] == Group.ENVIRONMENT and evidence["unblamed_corrected"]
+    return Group.SILICON if own or unblamed else test["verdict"]
+
+
 def margins(tests: list[dict]) -> dict[int, dict]:
     found: dict[int, dict] = {}
     for test in tests:
@@ -198,7 +227,7 @@ def margins(tests: list[dict]) -> dict[int, dict]:
         if test["ended_at"] is None:
             core["open"].append(test["value"])
             continue
-        side = MARGIN_SIDES.get(test["verdict"])
+        side = MARGIN_SIDES.get(_graded(test))
         if side is None:
             continue
         record = None if test["coverage_json"] is None else json.loads(test["coverage_json"]).get(str(test["core"]))

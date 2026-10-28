@@ -173,11 +173,15 @@ def session_with_shaper(db, root, shaper):
     return saved.session_id, convicted.core
 
 
+NO_EVIDENCE = json.dumps({"records": [], "unblamed_corrected": False})
+
+
 def ran(db, session_id, value, verdict, cells, core=9):
     row = db.insert_tuner_test(session_id, "b", 1, "search", "1t", "1t", core, value, "[]", f"[{core}]", 20.0, "{}")
     if verdict is not None:
         coverage = None if cells is None else json.dumps({str(core): {"cells": cells, "unreadable_s": 0.0}})
-        db.end_tuner_test(row, verdict, 20.0, "[]", None, "{}", "", "[]", "", coverage_json=coverage)
+        db.end_tuner_test(row, verdict, 20.0, "[]", None, NO_EVIDENCE, "", "[]", "", coverage_json=coverage)
+    return row
 
 
 class TestMargins:
@@ -248,6 +252,37 @@ class TestMargins:
         assert cli.cmd_margins([str(session_id)], db) == cli.EXIT_REFUSED
         out = capsys.readouterr()
         assert out.err == f"corecycler margins: session {session_id} could not be read: KeyError('base_co')\n"
+        assert out.out == ""
+
+    @pytest.mark.req("A2.margins")
+    @pytest.mark.parametrize(
+        "evidence",
+        [
+            None,
+            "not json",
+            "[]",
+            '{"unblamed_corrected": false}',
+            '{"records": [9], "unblamed_corrected": false}',
+            '{"records": [{"corrected": true}], "unblamed_corrected": false}',
+            '{"records": [{"core": "9", "corrected": true}], "unblamed_corrected": false}',
+            '{"records": [{"core": true, "corrected": true}], "unblamed_corrected": false}',
+            '{"records": [{"core": 9, "corrected": true}, {"corrected": true}], "unblamed_corrected": false}',
+            '{"records": []}',
+            '{"records": [], "unblamed_corrected": 0}',
+        ],
+    )
+    def test_a_test_with_a_malformed_evidence_json_is_refused_naming_the_test_and_the_field(
+        self, db, tmp_path, capsys, evidence
+    ):
+        session_id, _ = session_with_shaper(db, tmp_path, ZERO_SHAPER)
+        row = ran(db, session_id, -30, "pass", [[5400, 55, 20.0]])
+        db._execute_raw("UPDATE tuner_tests SET evidence_json = ? WHERE id = ?", (evidence, row))
+        assert cli.cmd_margins([str(session_id)], db) == cli.EXIT_REFUSED
+        out = capsys.readouterr()
+        assert out.err == (
+            f"corecycler margins: session {session_id} could not be read: test {row} has evidence_json {evidence!r},"
+            " in no shape a build of this tool writes\n"
+        )
         assert out.out == ""
 
     def test_the_command_reads_the_default_database_and_closes_it(self, monkeypatch, capsys):
