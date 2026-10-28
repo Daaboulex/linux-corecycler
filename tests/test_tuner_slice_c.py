@@ -1240,6 +1240,21 @@ def test_two_records_the_kernel_log_cannot_place_while_the_q6_replay_waits_back_
     replaying(fake, held, moved)
 
 
+@pytest.mark.req("D102", "L18.d.4.3b.between")
+def test_a_dead_boot_after_the_database_fell_behind_while_the_re_test_waits_moves_no_core_for_a_record_charged_to_it():
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    fake.post(PauseRequest())
+    fake.post(Resume(1))
+    fake.faults.fail_commits = 1
+    fake.fire()
+    assert fake.state.pause.reason is PauseReason.DATABASE
+    fake.crash((Evidence(2, True, held[2]),))
+    fake.post(Resume(1))
+    s = fake.state
+    assert (s.lifecycle, s.flow.stage, s.flow.bisect.rerun) == (Lifecycle.RUNNING, Stage.BISECT, None)
+    assert {r.core: (r.value, r.fb) for r in s.cores} == {core: (value, bounds[core]) for core, value in held.items()}
+
+
 @pytest.mark.req("D102", "L09.retest.named", "L30.e.failed")
 def test_a_re_test_naming_a_core_not_owned_pauses_inside_the_bisection_its_resume_replays_and_abort_ends_aborted():
     fake = completed((-3, 0, -2), (0, 2))

@@ -647,7 +647,7 @@ def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transiti
     if e.same_boot:
         evidence, substituted, placed = _placed(s, kept, _knob_problem(s, e, w))
     else:
-        evidence, substituted, placed = (kept, (), ()) if verdict.at_stock else _charged(s, kept)
+        evidence, substituted, placed = (kept, kept, ()) if verdict.at_stock else _charged(s, kept)
     notes = (*(_unjudged(ev, decided[ev.core]) for ev in aside), *placed)
     verdict = replace(verdict, evidence=evidence)
     result = _attributed(s, e, w, verdict, substituted)
