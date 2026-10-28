@@ -356,7 +356,7 @@ def validation_reach(node: Fake, move: str) -> str | None:
     return None
 
 
-BETWEEN_SLOTS = "a dead boot between two slots of an all-core bisection, every owned core at its baseline"
+BETWEEN_SLOTS = "a dead boot between two slots of a bisection, every owned core at its baseline"
 
 
 def explore(fake: Fake, budget: dict[str, int], cap: int) -> Survey:
@@ -566,6 +566,23 @@ def test_every_future_of_a_crash_inside_a_quick_group_runs_the_rest_of_its_bisec
 def test_no_dead_boot_between_the_slots_of_an_all_core_bisection_moves_a_core_that_sat_at_its_baseline():
     fake = tiny(2, [-4, -4], 2)
     fake.edges_hot = {0: 0, 1: 0}
+    survey = explore(fake, {"crash_mce_between": 1, "total": 1}, cap=2_000_000)
+    assert BETWEEN_SLOTS in survey.reached
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+@pytest.mark.req("L18.d.4.3b.between.explorer")
+def test_no_dead_boot_after_the_stock_slot_of_a_live1_begun_bisection_moves_a_core_that_sat_at_its_baseline():
+    fake = tiny(2, [-4, -4], 2)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.LIVE1:
+        assert fake.progress()
+    fake.crash()
+    fake.post(Resume(1))
+    while fake.worker is None:
+        assert fake.progress()
+    assert (fake.state.flow.bisect.entry, dict(fake.worker.spec.vector)) == (Stage.LIVE1, {0: 0, 1: 0})
+    fake.deliver()
     survey = explore(fake, {"crash_mce_between": 1, "total": 1}, cap=2_000_000)
     assert BETWEEN_SLOTS in survey.reached
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}

@@ -2621,12 +2621,12 @@ proof = "built"
 
 [[requirement]]
 id = "L18.d.4.3b.between"
-statement = "In a Bisect begun in an all-core stage or MEMORY, whose every slot loads every owned core and sends each back to its baseline after, a slot's values are resident only while that slot runs: a dead boot between two slots, the Q6 replay's included, convicts no core by its record, a record the CO journal cannot place is charged to its core's baseline, and the crash is an incident while the session was running (L18.d.4.3h); a dead boot during a slot convicts as before"
+statement = "In a Bisect, whatever stage began it, a slot's values are resident only while that slot runs, that is while any owned core is in test (a one-core slot of a Bisect begun in LIVE1 marks only its lane), and every report of a slot, a verdict, a thermal stop or an apparatus retry, sends the cores the slot moved off their baseline back to it, a one-core slot writing only those: a dead boot between two slots, the Q6 replay's included, in a cool-down or in an apparatus wait, convicts no core by its record, a record the CO journal cannot place is charged to its core's baseline, and the crash is an incident while the session was running (L18.d.4.3h); a dead boot during a slot convicts as before, a core of the slot's group at its slot value whether or not it is the lane (PLAN Next 95, scratch/design/brief-live1-slot-to-baseline.md as amended before code)"
 proof = "built"
 
 [[requirement]]
 id = "L18.d.4.3b.between.explorer"
-statement = "The fake world marks a dead boot that finds every owned core at its baseline between two slots of a Bisect begun in an all-core stage or MEMORY, and refuses the resume that reads it if any core's value, fail bound or crash count moved; the explorer injects one dead boot while no test runs, an uncorrected record on every owned core, into a two-core CPU whose HOT load fails in STEADY, reaches that dead boot, and every future comes to rest"
+statement = "The fake world marks a dead boot that finds every owned core at its baseline between two slots of a Bisect, whatever stage began it, and refuses the resume that reads it if any core's value, fail bound or crash count moved; the explorer injects one dead boot while no test runs, an uncorrected record on every owned core, into a two-core CPU whose HOT load fails in STEADY, and into a two-core CPU from the wait after the stock slot of a Bisect that a crash in LIVE1 began, reaches that dead boot in each, and every future comes to rest"
 proof = "built"
 
 [[requirement]]
@@ -2861,6 +2861,11 @@ statement = "In all-core stage loops owned knobs go to baseline after a THERMAL 
 proof = "built"
 
 [[requirement]]
+id = "L20.d.bisect"
+statement = "A thermal stop in a one-core Bisect slot sends the cores the slot moved off their baseline back to it for the cool-down, the lane or not, and the retry writes the slot's vector again and runs the same test (PLAN Next 95, scratch/design/brief-live1-slot-to-baseline.md as amended before code)"
+proof = "built"
+
+[[requirement]]
 id = "L20.d.wait"
 statement = "Wait at least 5 s, then sample once a second; below limit - 5 C the same spec is retried; a missing reading counts as not cooled"
 proof = "built"
@@ -2923,6 +2928,11 @@ proof = "built"
 [[requirement]]
 id = "L22.d.allcore"
 statement = "In all-core stage loops owned knobs go to baseline after an apparatus run"
+proof = "built"
+
+[[requirement]]
+id = "L22.d.bisect"
+statement = "An apparatus retry in a one-core Bisect slot sends the cores the slot moved off their baseline back to it for the wait, the lane or not, and the retry writes the slot's vector again and runs the same test (PLAN Next 95, scratch/design/brief-live1-slot-to-baseline.md as amended before code)"
 proof = "built"
 
 [[requirement]]

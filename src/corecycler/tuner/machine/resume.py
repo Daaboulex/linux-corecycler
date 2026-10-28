@@ -30,8 +30,7 @@ def resident(s: SessionState, core: int) -> int:
         return s.baseline_of(core) if flow.live1 is not None and flow.live1.solo is not None else rec.value
     if flow.stage is Stage.BISECT:
         run = flow.bisect
-        whole = run.entry in ALLCORE | {Stage.MEMORY}
-        if core not in current_group(run) or (whole and not rec.in_test):
+        if core not in current_group(run) or not any(r.in_test for r in s.cores):
             return s.baseline_of(core)
         return rec.value if run.rerun is not None else dict(run.values)[core]
     if flow.stage in ALLCORE or flow.stage is Stage.MEMORY:

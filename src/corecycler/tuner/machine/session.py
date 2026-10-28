@@ -646,8 +646,11 @@ def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transiti
     kept = tuple(ev for ev in verdict.evidence if ev not in aside)
     if e.same_boot:
         evidence, substituted, placed = _placed(s, kept, _knob_problem(s, e, w))
+    elif verdict.at_stock:
+        evidence, substituted, placed = kept, kept, ()
     else:
-        evidence, substituted, placed = (kept, kept, ()) if verdict.at_stock else _charged(s, kept)
+        evidence, placed = _charged(s, kept)
+        substituted = ()
     notes = (*(_unjudged(ev, decided[ev.core]) for ev in aside), *placed)
     verdict = replace(verdict, evidence=evidence)
     result = _attributed(s, e, w, verdict, substituted)
@@ -723,19 +726,15 @@ def _attributed(
     return replace(result, effects=(*result.effects, *aside))
 
 
-def _charged(
-    s: SessionState, evidence: tuple[Evidence, ...]
-) -> tuple[tuple[Evidence, ...], tuple[Evidence, ...], tuple[Announce, ...]]:
+def _charged(s: SessionState, evidence: tuple[Evidence, ...]) -> tuple[tuple[Evidence, ...], tuple[Announce, ...]]:
     records = {r.core: r for r in s.cores}
     charged: list[Evidence] = []
-    substituted: list[Evidence] = []
     notes: list[Announce] = []
     for ev in evidence:
         rec = records.get(ev.core)
         if rec is not None and ev.charged is None:
             value = resident(s, ev.core)
             charged.append(replace(ev, charged=value))
-            substituted.append(charged[-1])
             notes.append(
                 Announce(
                     "record_unplaced",
@@ -747,7 +746,7 @@ def _charged(
             notes.append(_repeated(ev, rec.fb))
         else:
             charged.append(ev)
-    return tuple(charged), tuple(substituted), tuple(notes)
+    return tuple(charged), tuple(notes)
 
 
 def _resumed(
@@ -2014,6 +2013,9 @@ def _back_to_baseline(s: SessionState, spec: TestSpec) -> tuple[WriteCO, ...]:
         return tuple(WriteCO(core, base) for core, base in s.baseline)
     if spec.stage is Stage.SEARCH:
         return (WriteCO(spec.core, s.baseline_of(spec.core)),)
+    if spec.stage is Stage.BISECT:
+        ran = dict(spec.vector)
+        return tuple(WriteCO(core, base) for core, base in s.baseline if ran[core] != base)
     return ()
 
 

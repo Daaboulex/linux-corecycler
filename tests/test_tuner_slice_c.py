@@ -8,6 +8,7 @@ import pytest
 
 from corecycler.tuner.live import stored_from_json, stored_to_json
 from corecycler.tuner.machine import allcore
+from corecycler.tuner.machine.resume import resident
 from corecycler.tuner.machine.types import (
     AllCore,
     ContinueOnSetup,
@@ -24,6 +25,7 @@ from corecycler.tuner.machine.types import (
     Stage,
     ValidateProfile,
     Waiting,
+    WriteCO,
 )
 from tests._tuner_world import Abort, Close, Evidence, Group, PauseRequest, Report, Resume, fresh, run_to_rest, start
 from tests.test_tuner_validate import completed, values
@@ -833,6 +835,92 @@ def test_a_core_found_alone_keeps_its_back_off_when_a_later_slot_ends_the_bisect
         fake.deliver(Report(Group.SILICON, 1.0, evidence=(Evidence(2, False),)))
     assert (fake.state.flow.stage, fake.state.flow.bisect) == (entry, None)
     assert (fake.state.core(0).value, fake.state.core(0).fb) == (held[0] + 1, held[0])
+
+
+def co_writes(fake):
+    writes = []
+    apply = fake.apply
+
+    def recorded(state, effect):
+        if isinstance(effect, WriteCO):
+            writes.append((effect.core, effect.value))
+        return apply(state, effect)
+
+    fake.apply = recorded
+    return writes
+
+
+def residents(fake):
+    return {r.core: resident(fake.state, r.core) for r in fake.state.cores}
+
+
+@pytest.mark.req("L18.d.4.3b.between")
+def test_a_live1_begun_bisection_writes_back_what_each_slot_moved_and_every_wait_holds_what_resident_reads():
+    fake = fresh(4, [-6] * 4, 2, max_offset=-8, **FAST)
+    start(fake)
+    writes = co_writes(fake)
+    waits = []
+
+    def reported():
+        writes.clear()
+        fake.deliver()
+        waits.append((fake.state.flow.stage, tuple(writes), dict(fake.co), residents(fake)))
+
+    held = until_test(fake, Stage.LIVE1)
+    reported()
+    until_test(fake, Stage.LIVE1)
+    fake.crash()
+    fake.post(Resume(1))
+    for group in ((), (0, 1)):
+        until_test(fake, Stage.BISECT, slot(held, group))
+        reported()
+    baseline = slot(held)
+    assert waits == [
+        (Stage.LIVE1, (), held, held),
+        (Stage.BISECT, (), baseline, baseline),
+        (Stage.BISECT, ((0, 0), (1, 0)), baseline, baseline),
+    ]
+
+
+@pytest.mark.req("L18.d.4.3b.between", "L18.d.4.3h")
+def test_a_dead_boot_after_a_live1_begun_stock_slot_moves_no_core_and_one_in_a_later_slot_convicts_its_group_s_core():
+    fake = fresh(4, [-6] * 4, 2, max_offset=-8, **FAST)
+    start(fake)
+    held = bisecting_from(fake, Stage.LIVE1)
+    until_test(fake, Stage.BISECT, slot(held))
+    fake.deliver()
+    waiting = fake.state
+    fake.crash((Evidence(1, False),))
+    fake.post(Resume(1))
+    after = fake.state
+    assert (after.lifecycle, after.cores, after.flow.bisect, after.incidents) == (
+        Lifecycle.RUNNING,
+        waiting.cores,
+        waiting.flow.bisect,
+        (*waiting.incidents, Incident.CRASH),
+    )
+    until_test(fake, Stage.BISECT, slot(held, (2, 3)))
+    assert fake.worker.spec.core not in (2, 3)
+    fake.crash((Evidence(2, False),))
+    fake.post(Resume(1))
+    s = fake.state
+    assert (s.core(2).fb, s.core(2).crash_count, s.flow.stage) == (held[2], 1, Stage.LIVE1)
+
+
+@pytest.mark.parametrize("stop", [Group.THERMAL, Group.APPARATUS])
+@pytest.mark.req("L20.d.bisect", "L22.d.bisect")
+def test_a_stop_without_a_verdict_in_a_live1_begun_slot_waits_at_the_baseline_and_retries_the_same_test(stop):
+    fake = fresh(4, [-6] * 4, 2, max_offset=-8, **FAST)
+    start(fake)
+    held = bisecting_from(fake, Stage.LIVE1)
+    until_test(fake, Stage.BISECT, slot(held, (2, 3)))
+    spec = fake.worker.spec
+    assert spec.core not in (2, 3)
+    fake.deliver(Report(stop, 1.0, detail="injected"))
+    assert (dict(fake.co), residents(fake)) == (slot(held), slot(held))
+    while fake.worker is None:
+        assert fake.progress()
+    assert fake.worker.spec == spec
 
 
 @pytest.mark.req("D116.stored", "L09.c")
