@@ -17,6 +17,7 @@ WARM_PER_TEST_S = 30
 BURST_PER_TEST_S = 15
 BURST_FIRST_RESTART_S = 60.0
 IDLE_PER_TEST_S = 10
+IDLE_MUST_FINISH_FROM_S = 360.0
 HOT_MEMORY_CAP_MB = 16384
 BURST_MEMORY_MB = 2048
 IDLE_MEMORY_MB = 1024
@@ -39,6 +40,7 @@ class Segment:
     hold_on_tctl: bool = False
     hold_timeout: Outcome | None = None
     hold_in_wall_time: bool = False
+    must_finish_a_test: bool = False
 
 
 def warm_hold(rest_c: float, limit_c: float) -> tuple[float, float]:
@@ -50,6 +52,10 @@ def warm_hold(rest_c: float, limit_c: float) -> tuple[float, float]:
 
 def frozen_at(segment: Segment, elapsed: float) -> bool:
     return any(start <= elapsed < end for start, end in segment.frozen)
+
+
+def longest_rest(frozen: tuple[tuple[float, float], ...]) -> float:
+    return max((end - start for start, end in frozen), default=0.0)
 
 
 RECORD_TICK_S = 10.0
@@ -142,6 +148,7 @@ def plan(
                     hold_on_tctl=True,
                     hold_timeout=Outcome.HELD_TOO_LONG,
                     hold_in_wall_time=True,
+                    must_finish_a_test=remaining >= WARM_SLICE_S,
                 )
             )
         return tuple(slices)
@@ -186,6 +193,7 @@ def plan(
                 hold=hot_hold,
                 hold_cap_s=HOLD_CAP_S,
                 hold_timeout=Outcome.THERMAL,
+                must_finish_a_test=seconds >= IDLE_MUST_FINISH_FROM_S,
             ),
         )
     raise ValueError(f"{load} has no stage plan")

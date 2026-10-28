@@ -46,6 +46,7 @@ from corecycler.engine.execution import (
     watch_idle,
 )
 from corecycler.monitor.hwmon import SensorRead
+from corecycler.tuner import stages
 from tests.test_detector import LONE_DECODER_RECORD, _append, _kmsg
 
 if TYPE_CHECKING:
@@ -2310,6 +2311,73 @@ class FinishesATestThenIsFrozen:
         return Frozen.PLANNED if frozen else Frozen.NO
 
 
+def _tick(supervisor: Supervisor, run: execution._LaneRun, kind: Frozen, now: float) -> None:
+    with patch.object(supervisor, "_signal_group"), patch.object(supervisor, "_sample_cpu"):
+        supervisor._set_frozen([run], kind is not Frozen.NO, now)
+    supervisor._set_held([run], kind, now)
+
+
+BURST_409_SEGMENT_S = 80.0
+BURST_409_FREEZES = (
+    (1.02, 3.96),
+    (6.38, 8.73),
+    (10.67, 11.94),
+    (12.37, 15.84),
+    (18.73, 19.48),
+    (19.84, 22.35),
+    (24.1, 26.81),
+    (29.09, 32.01),
+    (34.53, 36.12),
+    (37.76, 39.9),
+    (41.86, 42.76),
+    (43.65, 45.3),
+    (45.93, 46.57),
+    (48.78, 51.22),
+    (51.58, 54.92),
+    (57.41, 58.73),
+    (60.16, 62.34),
+    (62.71, 66.26),
+    (67.59, 68.87),
+)
+REPLAY_SPEEDUP = 16.0
+RUNS_BY_ITS_WALL_CLOCK = """
+import sys, time
+per_test, hang_after = float(sys.argv[1]), int(sys.argv[2])
+for index, test in enumerate(("BBP", "SFTv4", "SNT", "SVT", "FFTv4", "N63", "VT3")):
+    sys.stdout.write(f"Running {test}: ")
+    sys.stdout.flush()
+    began = time.monotonic()
+    while index >= hang_after or time.monotonic() - began < per_test:
+        spun = time.process_time() + 0.003
+        while time.process_time() < spun:
+            pass
+    sys.stdout.write("Passed  Test Speed:  2.93 * 10^09  bits / sec\\n")
+    sys.stdout.flush()
+"""
+
+
+class YCruncherByItsWallClock(YCruncherBackend):
+    """y-cruncher as the ryzen ran it, sped up speedup times: each test ends at the first iteration after its seconds
+    of wall time, a clock that keeps running while the payload is frozen; from test hang_after on it computes without
+    ever finishing."""
+
+    def __init__(self, hang_after: int, speedup: float = REPLAY_SPEEDUP) -> None:
+        super().__init__()
+        self.hang_after = hang_after
+        self.speedup = speedup
+
+    def prepare(self, work_dir: Path, config: StressConfig) -> None:
+        pass
+
+    def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
+        per_test = config.seconds_per_test / self.speedup
+        return [*_child(RUNS_BY_ITS_WALL_CLOCK), str(per_test), str(self.hang_after)]
+
+    def progress_window(self, config: StressConfig) -> float | None:
+        window = super().progress_window(config)
+        return None if window is None else window / self.speedup
+
+
 class TestHungPayload:
     @pytest.mark.req("K21.hang", "U13")
     def test_a_busy_payload_that_finishes_no_test_within_its_window_is_hung(self, tmp_path):
@@ -2339,13 +2407,29 @@ class TestHungPayload:
 
         assert YCruncherBackend().progress_window(StressConfig(seconds_per_test=20)) == 40.0
 
-    def test_frozen_time_does_not_count_toward_the_window(self, tmp_path):
-        supervisor, _, _ = make_supervisor(FakeBackend())
-        run = execution._LaneRun(lane(tmp_path, cpus=(0,)), proc=MagicMock(returncode=None))
-        run.last_progress, run.frozen, run.frozen_since = 10.0, True, 12.0
-        with patch.object(supervisor, "_signal_group"):
-            supervisor._set_frozen([run], False, 20.0)
-        assert run.last_progress == 18.0
+    @pytest.mark.req("D123")
+    def test_a_planned_rest_counts_toward_the_window_and_a_heat_or_unread_hold_never(self, tmp_path):
+        supervisor, _, _ = make_supervisor(ProgressBackend(_child(BUSY), window=10.0))
+        run = execution._LaneRun(lane(tmp_path, cpus=(0,)), proc=MagicMock(returncode=None), progress_window=10.0)
+        spells = ((Frozen.PLANNED, 2.0), (Frozen.NO, 6.0), (Frozen.HEAT, 7.0), (Frozen.PLANNED, 9.0))
+        for kind, now in (*spells, (Frozen.UNREAD, 10.0), (Frozen.NO, 13.0)):
+            _tick(supervisor, run, kind, now)
+        supervisor._check_progress(run, 14.9, 0)
+        assert run.signals == []
+        supervisor._check_progress(run, 15.1, 0)
+        assert [found.outcome for found in run.signals] == [Outcome.STALL]
+        assert "no test finished for 10s, heat and unread holds not counted, past its 10s window" in run.signals[0].text
+
+    @pytest.mark.req("D123.window")
+    @pytest.mark.parametrize(
+        ("seconds", "rest", "window"),
+        [(15, 3.55, 33.55), (None, 0.0, 60.0), (10, 9.5, 29.5), (10, 10.0, None), (10, 40.0, None)],
+    )
+    def test_y_cruncher_waits_two_of_its_tests_and_the_longest_planned_rest_unless_a_rest_lasts_a_test(
+        self, seconds, rest, window
+    ):
+        config = StressConfig(seconds_per_test=seconds, longest_rest_s=rest)
+        assert YCruncherBackend().progress_window(config) == window
 
     @pytest.mark.req("K21.hang", "U13")
     def test_a_y_cruncher_test_that_prints_no_speed_still_counts_as_finished(self, tmp_path):
@@ -2373,8 +2457,10 @@ class TestHungPayload:
         assert verdict.outcome is Outcome.PASS, verdict.detail
         assert plan.finished == len(verdict.speeds) == 4
 
-    @pytest.mark.req("K21.hang", "K21.hang.frozen")
-    def test_a_payload_that_hangs_under_the_same_freezes_is_hung_once_its_window_of_thawed_time_passes(self, tmp_path):
+    @pytest.mark.req("K21.hang", "K21.hang.frozen", "D123")
+    def test_a_payload_that_hangs_under_the_same_freezes_is_hung_once_its_window_counting_the_rests_passes(
+        self, tmp_path
+    ):
         one = lane(tmp_path, cpus=(0,))
         plan = FinishesATestThenIsFrozen(one, tests=1)
         supervisor, _, _ = make_supervisor(YCruncherStandIn(WINDOW_S))
@@ -2383,18 +2469,65 @@ class TestHungPayload:
             verdict = run_one(supervisor, one, 3.0)
         assert verdict.outcome is Outcome.STALL, verdict.detail
         assert plan.finished == 1
-        assert plan.thawed_since_finished > WINDOW_S
+        assert plan.thawed_since_finished < WINDOW_S
 
-    @pytest.mark.req("K21.hang.frozen")
-    def test_a_test_seen_finished_while_frozen_counts_from_the_freeze_and_a_frozen_run_is_never_accused(self, tmp_path):
-        supervisor, _, _ = make_supervisor(ProgressBackend(_child(BUSY), window=1.0))
-        run = execution._LaneRun(lane(tmp_path, cpus=(0,)), proc=MagicMock(returncode=None), progress_window=1.0)
-        run.last_progress, run.frozen, run.frozen_since = 10.0, True, 12.0
-        supervisor._check_progress(run, 14.0, 0)
-        assert (run.last_progress, run.signals) == (10.0, [])
+    @pytest.mark.req("K21.hang.frozen", "D123")
+    def test_a_test_seen_finished_while_frozen_counts_from_the_freeze_and_a_planned_rest_is_accused_but_a_hold_not(
+        self, tmp_path
+    ):
+        supervisor, _, _ = make_supervisor(ProgressBackend(_child(BUSY), window=3.0))
+        run = execution._LaneRun(lane(tmp_path, cpus=(0,)), proc=MagicMock(returncode=None), progress_window=3.0)
+        for kind, now in ((Frozen.HEAT, 5.0), (Frozen.NO, 6.0), (Frozen.PLANNED, 12.0)):
+            _tick(supervisor, run, kind, now)
         run.output = "done\n"
         supervisor._check_progress(run, 14.0, 0)
-        assert run.last_progress == 12.0
-        with patch.object(supervisor, "_signal_group"):
-            supervisor._set_frozen([run], False, 20.0)
-        assert run.last_progress == 20.0
+        assert (run.last_progress, run.signals) == (11.0, [])
+        _tick(supervisor, run, Frozen.HEAT, 14.5)
+        supervisor._check_progress(run, 20.0, 1)
+        _tick(supervisor, run, Frozen.PLANNED, 21.0)
+        supervisor._check_progress(run, 21.4, 1)
+        assert run.signals == []
+        supervisor._check_progress(run, 21.6, 1)
+        assert run.frozen
+        assert [found.outcome for found in run.signals] == [Outcome.STALL]
+
+    @pytest.mark.req("D123", "K21.hang")
+    @pytest.mark.parametrize(("hang_after", "outcome"), [(7, Outcome.PASS), (1, Outcome.STALL), (2, Outcome.STALL)])
+    def test_a_hang_16_or_32_s_into_burst_test_409_s_segment_is_hung_and_the_same_run_healthy_passes(
+        self, tmp_path, hang_after, outcome
+    ):
+        one = lane(tmp_path, cpus=(0,))
+        segment = stages.Segment(
+            (0,),
+            (),
+            stages.BURST_PER_TEST_S,
+            0,
+            BURST_409_SEGMENT_S / REPLAY_SPEEDUP,
+            tuple((start / REPLAY_SPEEDUP, end / REPLAY_SPEEDUP) for start, end in BURST_409_FREEZES),
+        )
+        supervisor, _, _ = make_supervisor(YCruncherByItsWallClock(hang_after), poll_interval=0.003)
+        supervisor.freeze = lambda elapsed, _reading: (
+            Frozen.PLANNED if stages.frozen_at(segment, elapsed) else Frozen.NO
+        )
+        with patch.object(execution, "OUTPUT_SCAN_INTERVAL", execution.OUTPUT_SCAN_INTERVAL / REPLAY_SPEEDUP):
+            verdict = supervisor.run([one], StressConfig(seconds_per_test=stages.BURST_PER_TEST_S), segment.duration)[0]
+        assert verdict.outcome is outcome, verdict.detail
+        assert len(verdict.speeds) >= 3 if outcome is Outcome.PASS else len(verdict.speeds) == hang_after
+
+    @pytest.mark.req("D124")
+    def test_a_run_that_must_finish_a_test_but_did_no_work_is_no_work_done(self, tmp_path):
+        supervisor, _, _ = make_supervisor(FakeBackend(_child(BUSY)))
+        supervisor.must_finish_a_test = True
+        with patch.object(containment, "process_group_cpu_seconds", return_value=None):
+            verdict = run_one(supervisor, lane(tmp_path), 1.0)
+        assert verdict.outcome is Outcome.NO_WORK_DONE, verdict.detail
+
+    @pytest.mark.req("D124")
+    def test_a_run_that_must_finish_a_test_but_was_stopped_is_cut_short(self, tmp_path):
+        supervisor, stop, _ = make_supervisor(FakeBackend(_child(BUSY)))
+        supervisor.must_finish_a_test = True
+        timer = threading.Timer(0.3, stop.set)
+        timer.start()
+        verdict = run_one(supervisor, lane(tmp_path), 5.0)
+        timer.join()
+        assert verdict.outcome is Outcome.CUT_SHORT, verdict.detail

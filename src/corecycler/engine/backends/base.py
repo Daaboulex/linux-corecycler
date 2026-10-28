@@ -114,6 +114,7 @@ class StressConfig:
     tests: tuple[str, ...] = ()
     seconds_per_test: int | None = None
     binary: str | None = None
+    longest_rest_s: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,7 +176,8 @@ class StressBackend(ABC):
         return len(self.speeds(output))
 
     def progress_window(self, config: StressConfig) -> float | None:
-        """Seconds with no newly finished test after which a run is hung; None when the backend cannot tell."""
+        """Seconds with no newly finished test after which a run is hung, counting the run's planned rests and never
+        its heat or unread holds; None when the backend cannot tell."""
         return None
 
     @abstractmethod

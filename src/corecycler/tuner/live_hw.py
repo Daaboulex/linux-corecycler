@@ -643,6 +643,7 @@ class StressRunner:
         poll: float,
         backend=None,
         hold_cap: HoldCap | None = None,
+        must_finish_a_test: bool = False,
     ):
         observed: list = []
         watch = self.detector()
@@ -662,6 +663,7 @@ class StressRunner:
                 phase=f"{spec.stage.value} {(spec.load or spec.klass).value}",
                 freeze=freeze,
                 hold_cap=hold_cap,
+                must_finish_a_test=must_finish_a_test,
                 heartbeat=self.heartbeat,
             )
             results = supervisor.run(lanes, config, seconds)
@@ -690,9 +692,9 @@ class StressRunner:
             return self._soak(spec, stop)
         if spec.load in (None, Load.ONE_T, Load.TWO_T):
             settings = ONE_T if spec.klass is Klass.T1 else TWO_T
-            config = StressConfig(mode=StressMode.CUSTOM, **settings)
-            lane = Lane(core_id=spec.core, cpus=spec.cpus, work_dir=self.work_dir / f"core_{spec.core}")
             frozen = stages.record_freezes(spec.seconds) if spec.klass is Klass.T1 else ()
+            config = StressConfig(mode=StressMode.CUSTOM, longest_rest_s=stages.longest_rest(frozen), **settings)
+            lane = Lane(core_id=spec.core, cpus=spec.cpus, work_dir=self.work_dir / f"core_{spec.core}")
             sampler = None
             if self.sink is not None or frozen:
                 flat = stages.Segment(
@@ -747,12 +749,21 @@ class StressRunner:
                 tests=segment.tests,
                 seconds_per_test=segment.seconds_per_test,
                 memory_mb=segment.memory_mb,
+                longest_rest_s=stages.longest_rest(segment.frozen),
             )
             lane = Lane(core_id=spec.core, cpus=segment.cpus, work_dir=self.work_dir / f"all_{spec.load.value}")
             hold = Hold(segment, self.clocks, self.core_of_cpu, telemetry.SAMPLE_S, self.sink)
             cap = HoldCap(segment.hold_cap_s, hold.describe, segment.hold_timeout, segment.hold_in_wall_time)
             results, observed = self._supervise(
-                spec, stop, [lane], config, segment.duration, hold, poll=FREEZE_TICK_S, hold_cap=cap
+                spec,
+                stop,
+                [lane],
+                config,
+                segment.duration,
+                hold,
+                poll=FREEZE_TICK_S,
+                hold_cap=cap,
+                must_finish_a_test=segment.must_finish_a_test,
             )
             result = results[lane.core_id]
             done += result.duration_seconds

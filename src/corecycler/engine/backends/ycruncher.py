@@ -190,7 +190,13 @@ class YCruncherBackend(StressBackend):
         return scan(_ANSI_RE.sub("", output), FINDINGS)
 
     def progress_window(self, config: StressConfig) -> float | None:
-        return 2.0 * (config.seconds_per_test if config.seconds_per_test else _PER_TEST_SECONDS)
+        """One test by y-cruncher's own clock, which runs through a freeze, the longest planned rest that clock can run
+        out in, and one more test for the iteration it then finishes; none when a rest can last a whole test, since
+        that rest can fill the iteration's allowance with no run time."""
+        seconds = config.seconds_per_test if config.seconds_per_test else _PER_TEST_SECONDS
+        if config.longest_rest_s >= seconds:
+            return None
+        return 2.0 * seconds + config.longest_rest_s
 
     def finished(self, output: str) -> int:
         return len(_FINISHED_RE.findall(_ANSI_RE.sub("", output)))

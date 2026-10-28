@@ -16,7 +16,7 @@ import pytest
 from corecycler.config import tools
 from corecycler.engine import detector as kernel
 from corecycler.engine.backends import ycruncher
-from corecycler.engine.backends.base import Outcome, StressResult
+from corecycler.engine.backends.base import Outcome, StressConfig, StressResult
 from corecycler.engine.backends.ycruncher import ALL_TESTS
 from corecycler.engine.execution import Frozen, Heartbeat, Lane, Supervisor, _LaneRun
 from corecycler.engine.memory_budget import MemoryBudgetUnavailable
@@ -27,7 +27,7 @@ from corecycler.tuner.machine.types import TestSpec as Spec
 from corecycler.tuner.orders import Method
 from tests._tuner_world import fresh
 from tests._tuner_world import start as start_session
-from tests.test_execution import FakeBackend, _child
+from tests.test_execution import FakeBackend, YCruncherByItsWallClock, _child
 
 CPUS = tuple(range(8))
 
@@ -225,6 +225,8 @@ class Script:
     memory: list = field(default_factory=list)
     limits: list = field(default_factory=list)
     frozen_share: float = 0.0
+    configs: list = field(default_factory=list)
+    must_finish: list = field(default_factory=list)
 
 
 def runner(script: Script, readings=None, detector=None, clocks=None, usable_mb=60_000):
@@ -233,6 +235,7 @@ def runner(script: Script, readings=None, detector=None, clocks=None, usable_mb=
             self.freeze = kwargs["freeze"]
             self.sensors = kwargs["sensors"]
             script.caps.append(kwargs["hold_cap"])
+            script.must_finish.append(kwargs["must_finish_a_test"])
             script.limits.append(kwargs["thermal"].max_temperature)
             self.observed = kwargs["observed"]
 
@@ -241,6 +244,7 @@ def runner(script: Script, readings=None, detector=None, clocks=None, usable_mb=
             script.seen.append((lanes[0].cpus, cfg.tests, duration, self.freeze))
             script.paces.append(cfg.seconds_per_test)
             script.memory.append(cfg.memory_mb)
+            script.configs.append(cfg)
             if script.sampled:
                 self.freeze(duration / 2, self.sensors())
             self.observed.extend(script.events.pop(0) if script.events else [])
@@ -489,6 +493,9 @@ def test_a_test_keeps_its_latest_program_faults_and_counts_the_rest_and_the_next
 class SleepsThroughItsTest(FakeBackend):
     def is_available(self) -> bool:
         return True
+
+    def finished(self, output: str) -> int:
+        return 1
 
 
 def fault_on(cpu: int) -> kernel.ProgramFault:
@@ -1209,6 +1216,140 @@ def test_y_cruncher_reads_a_speed_from_each_test_that_prints_one_and_counts_ever
     )
     assert backend.finished(out) == 6
     assert (backend.speeds(""), backend.finished("")) == ((), 0)
+
+
+@pytest.mark.req("D123.window")
+def test_the_longest_rest_is_the_longest_frozen_interval_and_none_without_one():
+    assert stages.longest_rest(((0.0, 1.5), (3.0, 7.0), (9.0, 9.5))) == 4.0
+    assert stages.longest_rest(()) == 0.0
+
+
+@pytest.mark.req("D123.window")
+def test_every_burst_segment_waits_at_most_two_tests_and_four_seconds_and_no_idle_plan_has_a_window():
+    backend = ycruncher.YCruncherBackend()
+    burst, idle = [], []
+    for seed in range(500):
+        for load, windows in ((Load.BURST, burst), (Load.IDLE, idle)):
+            for segment in plan(load, 360.0 if load is Load.IDLE else 480.0, seed):
+                config = StressConfig(
+                    seconds_per_test=segment.seconds_per_test, longest_rest_s=stages.longest_rest(segment.frozen)
+                )
+                windows.append(backend.progress_window(config))
+    two_tests = 2 * stages.BURST_PER_TEST_S
+    assert min(burst) == two_tests and two_tests + 3.9 < max(burst) <= two_tests + 4.0
+    assert set(idle) == {None}
+
+
+@pytest.mark.req("D123.window")
+def test_each_test_hands_its_supervisor_the_longest_rest_of_its_own_plan():
+    rests = {}
+    for load in (Load.HOT, Load.WARM, Load.BURST, Load.IDLE):
+        script = Script([Outcome.PASS] * 500)
+        runner(script).run(spec(load), threading.Event())
+        planned = [
+            max((end - start for start, end in freeze.segment.frozen), default=0.0) for *_, freeze in script.seen
+        ]
+        assert [cfg.longest_rest_s for cfg in script.configs] == planned
+        rests[load] = planned
+    assert rests[Load.HOT] == [0.0] and set(rests[Load.WARM]) == {0.0}
+    assert all(rest > 0.0 for rest in rests[Load.BURST] + rests[Load.IDLE])
+    one = Spec(Klass.T1, 0, -5, (0,), 20.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0)
+    script = Script([Outcome.PASS, Outcome.PASS], sampled=False)
+    runner(script).run(one, threading.Event())
+    runner(script).run(replace(one, klass=Klass.T2, cpus=(0, 16)), threading.Event())
+    assert [cfg.longest_rest_s for cfg in script.configs] == [1.0, 0.0]
+
+
+@pytest.mark.req("D124", "D124.idle")
+def test_only_a_warm_slice_and_an_idle_test_must_finish_a_test():
+    must_finish = {}
+    for load in (Load.HOT, Load.WARM, Load.BURST, Load.IDLE):
+        script = Script([Outcome.PASS] * 500)
+        runner(script).run(spec(load), threading.Event())
+        must_finish[load] = set(script.must_finish)
+    assert must_finish == {Load.HOT: {False}, Load.WARM: {True}, Load.BURST: {False}, Load.IDLE: {True}}
+    one = Spec(Klass.T1, 0, -5, (0,), 20.0, ((0, -5),), Stage.SEARCH, thermal_limit_c=95.0)
+    script = Script([Outcome.PASS, Outcome.PASS], sampled=False)
+    runner(script).run(one, threading.Event())
+    runner(script).run(replace(one, klass=Klass.T2, cpus=(0, 16)), threading.Event())
+    assert script.must_finish == [False, False]
+
+
+class YCruncherWithAFastClock(YCruncherByItsWallClock):
+    """Only y-cruncher's own clock runs sped up; the plan is the real one, and so is the window it gives."""
+
+    def progress_window(self, config: StressConfig) -> float | None:
+        return ycruncher.YCruncherBackend.progress_window(self, config)
+
+
+def ycruncher_runner(tmp_path, readings, hang_after: int, speedup: float) -> live_hw.StressRunner:
+    return live_hw.StressRunner(
+        lambda: YCruncherWithAFastClock(hang_after, speedup),
+        tmp_path,
+        CORE_OF_CPU,
+        lambda: next(readings),
+        lambda: dict.fromkeys(CPUS, 5000.0),
+        supervisor=partial(Supervisor, containment_for=lambda cpus: None),
+        detector=soak_detector([]),
+        budget=lambda n, floor: Budget(),
+    )
+
+
+WARM_SLICE_TESTED_S = 3.0
+WARM_CLOCK_SPEEDUP = 16.0
+NEVER_HANGS = len(ALL_TESTS)
+
+
+@pytest.mark.req("D124", "K21.hang")
+@pytest.mark.parametrize(
+    ("hang_after", "group", "finished"),
+    [(0, Group.APPARATUS, 0), (NEVER_HANGS, Group.PASS, 1)],
+    ids=["hung", "healthy"],
+)
+def test_a_warm_slice_held_as_measured_that_finishes_no_test_is_hung_and_one_finishing_late_passes(
+    tmp_path, monkeypatch, hang_after, group, finished
+):
+    monkeypatch.setattr(stages, "WARM_SLICE_S", WARM_SLICE_TESTED_S)
+    readings = itertools.chain([at(48.0)], itertools.cycle(MEASURED_CYCLE))
+    clock_s = stages.WARM_PER_TEST_S / WARM_CLOCK_SPEEDUP
+    assert WARM_SLICE_TESTED_S / 2 < clock_s < WARM_SLICE_TESTED_S
+    test = spec(Load.WARM, WARM_SLICE_TESTED_S)
+    report = ycruncher_runner(tmp_path, readings, hang_after, WARM_CLOCK_SPEEDUP).run(test, threading.Event())
+    assert report.group is group, report.detail
+    assert len(report.speeds) == finished
+    assert ("no test finished in its" in report.detail) is (finished == 0)
+
+
+@pytest.mark.req("D124")
+def test_only_a_full_warm_slice_must_finish_a_test():
+    slices = stages.plan(Load.WARM, 450.0, CPUS, FIRSTS, 60_000, random.Random(1), 95.0, quick=False, rest_c=40.0)
+    assert [s.duration for s in slices] == [stages.WARM_SLICE_S] * 7 + [30.0]
+    assert [s.must_finish_a_test for s in slices] == [True] * 7 + [False]
+
+
+@pytest.mark.req("D124.idle")
+def test_only_an_idle_test_of_its_default_length_or_more_must_finish_a_test():
+    marked = [segment.must_finish_a_test for seconds in (360.0, 120.0) for segment in plan(Load.IDLE, seconds)]
+    assert marked == [True, False]
+
+
+IDLE_ONE_CORE_SEED = "111"
+
+
+@pytest.mark.req("D124.idle")
+@pytest.mark.parametrize(
+    ("hang_after", "group"), [(0, Group.APPARATUS), (NEVER_HANGS, Group.PASS)], ids=["hung", "healthy"]
+)
+def test_an_idle_test_on_a_one_core_draw_that_finishes_no_test_is_hung_and_one_that_finishes_a_test_passes(
+    tmp_path, monkeypatch, hang_after, group
+):
+    monkeypatch.setattr(stages, "IDLE_MUST_FINISH_FROM_S", 1.0)
+    test = replace(spec(Load.IDLE, 1.0), plan_seed=IDLE_ONE_CORE_SEED)
+    (drawn,) = stages.plan(Load.IDLE, 1.0, CPUS, FIRSTS, 60_000, random.Random(IDLE_ONE_CORE_SEED), 95.0, quick=False)
+    assert len(drawn.cpus) == 1 and drawn.frozen[-1][1] == test.seconds
+    report = ycruncher_runner(tmp_path, itertools.repeat(at(50.0)), hang_after, 100.0).run(test, threading.Event())
+    assert report.group is group, report.detail
+    assert (len(report.speeds) > 0) is (group is Group.PASS)
 
 
 @pytest.mark.req("D71", "K30")

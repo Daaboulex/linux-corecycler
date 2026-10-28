@@ -124,9 +124,15 @@ class _LaneRun:
     frozen_in_all: float = 0.0
     heat: _Held = field(default_factory=_Held)
     unread: _Held = field(default_factory=_Held)
+    holds: _Held = field(default_factory=_Held)
     scheduled_as: tuple[int, int] | None = None
     progress_window: float | None = None
     last_progress: float = 0.0
+    progress_clock_at_freeze: float = 0.0
+
+    def progress_clock(self, now: float) -> float:
+        """The clock the hang window reads: wall time, planned rests included, heat and unread holds left out."""
+        return now - self.holds.summed(now)
 
     @property
     def alive(self) -> bool:
@@ -439,6 +445,7 @@ class Supervisor:
         containment_for: Callable[[tuple[int, ...]], containment.Containment | None] | None = None,
         freeze: Callable[[float, SensorRead], Frozen] | None = None,
         hold_cap: HoldCap | None = None,
+        must_finish_a_test: bool = False,
         heartbeat: Heartbeat | None = None,
     ) -> None:
         self.backend = backend
@@ -455,6 +462,7 @@ class Supervisor:
         self._containment_for = containment_for or containment.contain
         self.freeze = freeze
         self.hold_cap = hold_cap
+        self.must_finish_a_test = must_finish_a_test
         self.heartbeat = heartbeat or Heartbeat()
 
     def run(self, lanes: list[Lane], config: StressConfig, duration: float) -> dict[int, StressResult]:
@@ -571,16 +579,16 @@ class Supervisor:
     def _check_progress(self, run: _LaneRun, now: float, finished_before: int) -> None:
         if run.progress_window is None:
             return
+        clock = run.progress_clock(now)
         if self.backend.finished(run.output) > finished_before:
-            run.last_progress = run.frozen_since if run.frozen else now
-        if run.frozen:
-            return
-        if now - run.last_progress > run.progress_window:  # equivalent-mutant: two float clock reads are never equal
+            run.last_progress = run.progress_clock_at_freeze if run.frozen else clock
+        waited = clock - run.last_progress
+        if waited > run.progress_window:  # equivalent-mutant: two float clock reads are never equal
             run.signals.append(
                 LaneSignal(
                     Outcome.STALL,
-                    f"Stress test hung on core {run.lane.core_id}: no test finished for "
-                    f"{now - run.last_progress:.0f}s, past its {run.progress_window:.0f}s window",
+                    f"Stress test hung on core {run.lane.core_id}: no test finished for {waited:.0f}s, "
+                    f"heat and unread holds not counted, past its {run.progress_window:.0f}s window",
                 )
             )
 
@@ -637,11 +645,11 @@ class Supervisor:
                 self._sample_cpu(run, now)
                 self._signal_group(run, signal.SIGSTOP)
                 run.frozen_since = now
+                run.progress_clock_at_freeze = run.progress_clock(now)
             else:
                 self._signal_group(run, signal.SIGCONT)
                 run.frozen_total += max(0.0, min(now, run.deadline) - run.frozen_since)
                 run.frozen_in_all += now - run.frozen_since
-                run.last_progress += now - run.frozen_since
                 run.frozen_since = None
                 run.last_active = now
             run.frozen = frozen
@@ -652,6 +660,7 @@ class Supervisor:
             if run.alive:
                 run.heat.mark(frozen is Frozen.HEAT or (frozen is Frozen.UNREAD and run.heat.since is not None), now)
                 run.unread.mark(frozen is Frozen.UNREAD, now)
+                run.holds.mark(frozen in (Frozen.HEAT, Frozen.UNREAD), now)
 
     def _take_kernel_events(self, runs: list[_LaneRun], *, final: bool = False) -> None:
         read = self.detector.read_new(final=final)
@@ -829,6 +838,11 @@ class Supervisor:
             outcome, detail = Outcome.HELD_TOO_LONG, short
         elif (no_work := _no_work_done(run)) is not None:
             outcome, detail = Outcome.NO_WORK_DONE, no_work
+        elif self.must_finish_a_test and self.backend.finished(run.output) == 0:
+            outcome, detail = (
+                Outcome.STALL,
+                f"Stress test hung on core {run.lane.core_id}: no test finished in its {run.duration():.0f}s",
+            )
         elif run.read_problem is not None:
             outcome, detail = Outcome.UNVERIFIED, f"{run.read_problem} during {self.phase}: verdict unavailable"
         else:

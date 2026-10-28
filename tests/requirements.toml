@@ -360,12 +360,12 @@ proof = "built"
 
 [[requirement]]
 id = "K21.hang"
-statement = "y-cruncher hang: no new Running line in its output for 2 x seconds-per-test is a STALL"
+statement = "y-cruncher hang: no newly finished test (a Running line ending Passed or Failed) within its window is a STALL; the window counts wall time with every planned rest and never a heat or unread hold (D123)"
 proof = "built"
 
 [[requirement]]
 id = "K21.hang.frozen"
-statement = "A finished test that a scan first sees while the load is frozen is progress from the moment the freeze began, never from the scan; a freeze suspends only the hang accusation, so a load that finishes no new test still ends STALL once 2 x seconds-per-test of thawed time passes (PLAN Next 91: on the ryzen, transient burst test 409 and its three replays each ended stall though y-cruncher finished a test every 15 s, each finish first seen by a frozen scan)"
+statement = "A finished test that a scan first sees while the load is frozen is progress from the moment the freeze began, never from the scan; a planned rest goes on counting while a heat or unread hold stops the count, so a load frozen in a planned rest is accused once its window passes (D123; PLAN Next 91: on the ryzen, transient burst test 409 and its three replays each ended stall though y-cruncher finished a test every 15 s, each finish first seen by a frozen scan)"
 proof = "built"
 
 [[requirement]]
@@ -4232,6 +4232,26 @@ proof = "built"
 [[requirement]]
 id = "D122.kill"
 statement = "A scope kill whose cgroup.kill write fails with ENODEV, as it does while systemd removes the emptied scope, is done only when cgroup.procs then fails or reads empty; with cgroup.procs listing a process, or on any failure but a scope already gone, the test is no verdict (CONTAINMENT_BROKE, apparatus) naming the scope and the error, since a leftover process could load the next test (D122, a fault-investigator's report: h18 test 391 logged ENODEV as an ERROR and passed)"
+proof = "built"
+
+[[requirement]]
+id = "D123"
+statement = "A y-cruncher hang is caught in BURST: its hang window counts planned rests, since y-cruncher's own per-test clock keeps running through them, and never heat or unread holds, so on test 409's freeze timeline a hang 16 s or 32 s into its burst segment ends STALL while the same run healthy passes (D123, the Next 91 review: both hangs ended PASS when only thawed time counted)"
+proof = "built"
+
+[[requirement]]
+id = "D123.window"
+statement = "The y-cruncher window is two of its tests plus the longest planned rest of its own plan: BURST 30 s plus at most 4 s, the one-core record 41 s, HOT and WARM two tests outside their holds; a plan whose longest rest lasts a whole test has no window: IDLE (rests 15 to 40 s against 10 s tests), which D124 judges instead from 360 stage seconds (D123; the 2026-10-09 field idles replayed with y-cruncher's clock in wall time put a healthy idle's gap between finished tests at 76 to 114 s, past the 60 s its plan would give)"
+proof = "built"
+
+[[requirement]]
+id = "D124"
+statement = "A full 60 s WARM slice whose y-cruncher finished no test by the slice's end, its hold followed to its release, is a STALL (APPARATUS), judged per slice; a last slice shorter than 60 s, which may end before its 30 s test can finish, is not judged; since its holds leave the D123 window short of run time: a spin-hang from the slice's start ends STALL while a healthy slice that finishes its one test late in the slice passes; a slice cut short, held too long or with no work done keeps that verdict (D124, the Next 93 builder's replay: a spin-hang reached 8.5 to 9.1 s of its 60 s window and passed; the ryzen's 4 healthy warm passes finished a test in every slice)"
+proof = "built"
+
+[[requirement]]
+id = "D124.idle"
+statement = "An IDLE test of 360 stage seconds or more, the default, whose y-cruncher finished no test in its whole run is a STALL (APPARATUS), judged once per test over its one segment and whatever cores it drew, one, two or four; one that finished a test passes, its rests as long as they come; a shorter IDLE is not judged, as before, since every plan seed gives a 360 s idle at least 2.08 s of run time and a shorter one less; the field has not yet measured a one-core draw (D124 as amended by the main session; the ryzen's 3 healthy idle passes on 32 CPUs finished 2, 3 and 13 tests, their draws unrecorded)"
 proof = "built"
 
 [[requirement]]
