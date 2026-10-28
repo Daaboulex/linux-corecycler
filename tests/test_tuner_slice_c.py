@@ -20,6 +20,7 @@ from corecycler.tuner.machine.types import (
     Load,
     PauseReason,
     Phase,
+    SessionState,
     Stage,
     ValidateProfile,
     Waiting,
@@ -1086,6 +1087,157 @@ def test_a_late_record_of_a_re_test_that_already_failed_moves_no_core_twice(corr
     records_at_resume(fake, Evidence(2, corrected, held[2]))
     fake.post(Resume(1))
     replaying(fake, held, judged_once(fake, held, bounds, steps))
+
+
+def q6_replay_waiting(fake, held):
+    fake.deliver(Report(Group.SILICON, 1.0, named=(2,)))
+    replay = {core: value + 1 for core, value in held.items()}
+    assert (isinstance(fake.state.slot, Waiting), fake.state.flow.bisect.rerun) == (True, tuple(sorted(held)))
+    assert {r.core: r.value for r in fake.state.cores} == replay
+    return replay
+
+
+def moved_alone(fake, before, bounds, core, steps):
+    moved = {other: value + steps if other == core else value for other, value in before.items()}
+    assert {r.core: (r.value, r.fb) for r in fake.state.cores} == {
+        other: (value, before[core] if other == core else bounds[other]) for other, value in moved.items()
+    }
+    return moved
+
+
+@pytest.mark.req("D102", "L09.G3", "L18.d.3.charged")
+@pytest.mark.parametrize(("corrected", "steps"), [(True, 1), (False, 3)])
+def test_a_record_the_kernel_log_cannot_place_while_the_q6_replay_waits_backs_off_its_own_core_alone(corrected, steps):
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    replay = q6_replay_waiting(fake, held)
+    fake.post(KernelLogRead(fake.state.slot.token, (Evidence(1, corrected),)))
+    replaying(fake, held, moved_alone(fake, replay, bounds, 1, steps))
+
+
+@pytest.mark.req("D102", "L09.G3", "L18.d.3.charged")
+@pytest.mark.parametrize(("corrected", "steps"), [(True, 1), (False, 3)])
+def test_a_record_a_same_boot_resume_cannot_place_while_the_q6_replay_waits_backs_off_its_own_core_alone(
+    corrected, steps
+):
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    replay = q6_replay_waiting(fake, held)
+    fake.post(PauseRequest())
+    records_at_resume(fake, Evidence(1, corrected))
+    fake.post(Resume(1))
+    replaying(fake, held, moved_alone(fake, replay, bounds, 1, steps))
+
+
+@pytest.mark.req("D102", "D87", "L18.d.3.outside")
+@pytest.mark.parametrize("journal", ["re-test", "replay"])
+def test_a_record_on_a_core_another_program_wrote_while_the_q6_replay_waits_loosens_no_set_and_pauses_outside_write(
+    journal,
+):
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    replay = q6_replay_waiting(fake, held)
+    fake.post(PauseRequest())
+    fake.co[1] = -30
+    fake.outside.add(1)
+    records_at_resume(fake, Evidence(1, True, {"re-test": held, "replay": replay}[journal][1]))
+    fake.post(Resume(1))
+    s = fake.state
+    assert (s.pause.reason, s.pause.cores, s.flow.stage, s.flow.bisect.rerun) == (
+        PauseReason.OUTSIDE_WRITE,
+        (1,),
+        Stage.BISECT,
+        tuple(sorted(held)),
+    )
+    moved_alone(fake, replay, bounds, 1, 1)
+
+
+@pytest.mark.req("D102", "L09.G3", "L18.d.3.charged")
+def test_a_record_the_kernel_log_cannot_place_while_the_re_test_waits_backs_off_its_core_and_ends_the_bisection():
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    fake.post(PauseRequest())
+    fake.post(Resume(1))
+    slot = fake.state.slot
+    assert (isinstance(slot, Waiting), fake.state.flow.bisect.rerun) == (True, None)
+    fake.post(KernelLogRead(slot.token, (Evidence(1, False),)))
+    moved_alone(fake, held, bounds, 1, 3)
+    assert (fake.state.flow.stage, fake.state.flow.bisect) == (Stage.TRANSIENT, None)
+
+
+@pytest.mark.req("D102", "L09.G3", "G3.charged")
+@pytest.mark.parametrize(("corrected", "steps"), [(True, 1), (False, 3)])
+def test_a_record_in_the_running_q6_replay_s_report_loosens_the_set_once_more_and_moves_its_core_once(corrected, steps):
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    replay = q6_replay_waiting(fake, held)
+    replaying(fake, held, replay)
+    fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(2, corrected),)))
+    replaying(fake, held, judged_once(fake, replay, bounds, steps))
+
+
+@pytest.mark.req("D102", "L09.G3", "L18.d.3.charged")
+@pytest.mark.parametrize(("corrected", "steps"), [(True, 1), (False, 3)])
+def test_a_record_the_journal_charged_to_the_waiting_replay_fails_it_beside_an_equal_record_it_could_not_place(
+    corrected, steps
+):
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    replay = q6_replay_waiting(fake, held)
+    fake.post(KernelLogRead(fake.state.slot.token, (Evidence(2, corrected), Evidence(2, corrected, replay[2]))))
+    replaying(fake, held, judged_once(fake, replay, bounds, steps))
+
+
+@pytest.mark.req("D102", "L09.G3")
+def test_a_record_of_a_core_not_owned_in_the_re_test_s_report_pauses_as_held_knob_and_moves_no_core():
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(7, True),)))
+    s = fake.state
+    assert (s.pause.reason, s.pause.cores, s.flow.bisect.rerun) == (PauseReason.HELD_KNOB, (7,), None)
+    assert {r.core: (r.value, r.fb) for r in s.cores} == {core: (value, bounds[core]) for core, value in held.items()}
+    fake.post(Resume(1))
+    while fake.worker is None:
+        assert fake.progress()
+    assert (fake.worker.spec.stage, dict(fake.worker.spec.vector)) == (Stage.BISECT, held)
+
+
+@pytest.mark.req("D102", "L18.d.4.3b.held")
+def test_a_dead_boot_in_a_live1_begun_re_test_with_a_record_of_a_core_not_owned_pauses_with_the_set_loosened():
+    fake = fresh(4, [-12] * 4, 2, max_offset=-20, **FAST)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.LIVE1:
+        assert fake.progress()
+    fake.crash()
+    fake.post(Resume(1))
+    held = {r.core: r.value for r in fake.state.cores}
+    bounds = {r.core: r.fb for r in fake.state.cores}
+    while fake.worker is None or dict(fake.worker.spec.vector) != held:
+        assert fake.progress()
+    lane = fake.worker.spec.core
+    assert [r.core for r in fake.state.cores if r.in_test] == [lane]
+    fake.crash((Evidence(2, False), Evidence(7, False)))
+    fake.post(Resume(1))
+    assert (fake.state.pause.reason, fake.state.pause.cores) == (PauseReason.HELD_KNOB, (7,))
+    judged_once(fake, held, bounds, 3)
+
+
+@pytest.mark.req("D102", "L09.G3", "L18.d.3.charged")
+@pytest.mark.parametrize(("corrected", "steps"), [(True, 1), (False, 3)])
+def test_a_record_a_resume_cannot_place_after_the_driver_ended_in_the_re_test_loosens_the_set_and_moves_its_core_once(
+    corrected, steps
+):
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    assert all(r.in_test for r in fake.db.cores)
+    fake.state, fake.worker, fake.timer = SessionState(next_token=fake.state.next_token), None, None
+    records_at_resume(fake, Evidence(2, corrected))
+    fake.post(Resume(1))
+    replaying(fake, held, judged_once(fake, held, bounds, steps))
+
+
+@pytest.mark.req("D102", "L09.G3", "L18.d.3.charged")
+def test_two_records_the_kernel_log_cannot_place_while_the_q6_replay_waits_back_off_their_own_cores_alone():
+    fake, held, bounds = at_the_re_test(Stage.TRANSIENT, None)
+    replay = q6_replay_waiting(fake, held)
+    fake.post(KernelLogRead(fake.state.slot.token, (Evidence(1, True), Evidence(2, True))))
+    moved = {core: value + 1 if core in (1, 2) else value for core, value in replay.items()}
+    assert {r.core: (r.value, r.fb) for r in fake.state.cores} == {
+        core: (value, replay[core] if core in (1, 2) else bounds[core]) for core, value in moved.items()
+    }
+    replaying(fake, held, moved)
 
 
 @pytest.mark.req("D102", "L09.retest.named", "L30.e.failed")

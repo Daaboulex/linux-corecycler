@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 
 from corecycler.tuner.machine import allcore, bisect, search
@@ -644,12 +645,12 @@ def _crash_evidence(s: SessionState, e: CrashEvidenceRead, w: World) -> Transiti
     )
     kept = tuple(ev for ev in verdict.evidence if ev not in aside)
     if e.same_boot:
-        evidence, placed = _placed(s, kept, _knob_problem(s, e, w))
+        evidence, substituted, placed = _placed(s, kept, _knob_problem(s, e, w))
     else:
-        evidence, placed = (kept, ()) if verdict.at_stock else _charged(s, kept)
+        evidence, substituted, placed = (kept, (), ()) if verdict.at_stock else _charged(s, kept)
     notes = (*(_unjudged(ev, decided[ev.core]) for ev in aside), *placed)
     verdict = replace(verdict, evidence=evidence)
-    result = _attributed(s, e, w, verdict)
+    result = _attributed(s, e, w, verdict, substituted)
     if e.end_unread is not None:
         unread = Announce(
             "boot_end_unread", f"the last boot's end could not be read, so it is treated as a crash: {e.end_unread}"
@@ -674,7 +675,9 @@ def _ending(w: World) -> str:
     return f"an end that could not be read ({w.stored_end_unread}), treated as a crash"
 
 
-def _attributed(s: SessionState, e: CrashEvidenceRead, w: World, verdict: Attribution) -> Transition:
+def _attributed(
+    s: SessionState, e: CrashEvidenceRead, w: World, verdict: Attribution, substituted: tuple[Evidence, ...]
+) -> Transition:
     after = s
     if e.dirty_end and s.flow.stage is Stage.BISECT and any(r.in_test for r in s.cores):
         after = replace(s, flow=replace(s.flow, bisect=replace(s.flow.bisect, quick=False)))
@@ -708,7 +711,7 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World, verdict: Attrib
     after = replace(after, resume_streak=streak, incidents=incidents)
     if counted or at_zero or verdict.held is not None:
         after = _owe_replay(after, _held(after))
-    after = _set_failed(after, verdict.evidence)
+    after = _set_failed(after, verdict.evidence, () if any(r.in_test for r in s.cores) else substituted)
     judged, recorded, aside = _records_judged(after, verdict.evidence, verdict.at_stock, counted, e.dirty_end)
     reached = len(judged.incidents) > len(s.incidents) and len(judged.incidents) >= INCIDENT_LIMIT
     limit = [Pause(PauseReason.INCIDENTS, _incidents_text(judged.incidents))] if reached else []
@@ -720,15 +723,19 @@ def _attributed(s: SessionState, e: CrashEvidenceRead, w: World, verdict: Attrib
     return replace(result, effects=(*result.effects, *aside))
 
 
-def _charged(s: SessionState, evidence: tuple[Evidence, ...]) -> tuple[tuple[Evidence, ...], tuple[Announce, ...]]:
+def _charged(
+    s: SessionState, evidence: tuple[Evidence, ...]
+) -> tuple[tuple[Evidence, ...], tuple[Evidence, ...], tuple[Announce, ...]]:
     records = {r.core: r for r in s.cores}
     charged: list[Evidence] = []
+    substituted: list[Evidence] = []
     notes: list[Announce] = []
     for ev in evidence:
         rec = records.get(ev.core)
         if rec is not None and ev.charged is None:
             value = resident(s, ev.core)
             charged.append(replace(ev, charged=value))
+            substituted.append(charged[-1])
             notes.append(
                 Announce(
                     "record_unplaced",
@@ -740,7 +747,7 @@ def _charged(s: SessionState, evidence: tuple[Evidence, ...]) -> tuple[tuple[Evi
             notes.append(_repeated(ev, rec.fb))
         else:
             charged.append(ev)
-    return tuple(charged), tuple(notes)
+    return tuple(charged), tuple(substituted), tuple(notes)
 
 
 def _resumed(
@@ -987,11 +994,12 @@ def _unjudged(ev: Evidence, why: str) -> Announce:
 
 def _placed(
     s: SessionState, evidence: tuple[Evidence, ...], knobs: tuple[PauseReason, str, tuple[int, ...]] | None
-) -> tuple[tuple[Evidence, ...], tuple[Announce, ...]]:
+) -> tuple[tuple[Evidence, ...], tuple[Evidence, ...], tuple[Announce, ...]]:
     records = {r.core: r for r in s.cores}
     reason, _, moved = knobs if knobs is not None else (None, "", ())
     unread = reason is PauseReason.SMU_READ
     placed: list[Evidence] = []
+    substituted: list[Evidence] = []
     notes: list[Announce] = []
     for ev in evidence:
         rec = records.get(ev.core)
@@ -1006,6 +1014,7 @@ def _placed(
             why = None
         if why is not None and rec.value != 0:
             placed.append(replace(ev, charged=rec.value))
+            substituted.append(placed[-1])
             notes.append(
                 Announce(
                     "record_unplaced",
@@ -1024,7 +1033,7 @@ def _placed(
             notes.append(_repeated(ev, rec.fb))
         else:
             placed.append(ev)
-    return tuple(placed), tuple(notes)
+    return tuple(placed), tuple(substituted), tuple(notes)
 
 
 def _repeated(ev: Evidence, fb: int) -> Announce:
@@ -1043,8 +1052,8 @@ def _kernel_log_read(s: SessionState, e: KernelLogRead) -> Transition:
             s, PauseReason.KERNEL_LOG_UNREAD, f"the kernel log since the resume could not be read: {e.problem}"
         )
     faults = tuple(Announce("program_fault", line) for line in e.program_faults)
-    evidence, notes = _placed(s, e.evidence, None)
-    judged, aside = _evidence_applied(_set_failed(s, evidence), evidence)
+    evidence, substituted, notes = _placed(s, e.evidence, None)
+    judged, aside = _evidence_applied(_set_failed(s, evidence, substituted), evidence)
     if isinstance(judged, Transition):
         return replace(judged, effects=(*judged.effects, *notes, *aside, *faults))
     return Transition(judged, (_commit(judged), *notes, *aside, *faults, Schedule(e.token, 0.0)))
@@ -1787,7 +1796,7 @@ def _judged(s: SessionState, rep: Report, w: World) -> Transition:
         for ev in rep.evidence
         if whole or ev.core != spec.core
     )
-    after, aside = _evidence_applied(_set_failed(s if whole else _after_test(s, spec.core), records), records)
+    after, aside = _evidence_applied(_set_failed(s if whole else _after_test(s, spec.core), records, ()), records)
     result = after if isinstance(after, Transition) else _graded(s, after, rep, w)
     return replace(result, effects=(*result.effects, *aside))
 
@@ -1966,12 +1975,15 @@ def _at_full_set(flow: Flow) -> bool:
     return flow.stage is Stage.BISECT and bisect.current_group(flow.bisect) == flow.bisect.universe
 
 
-def _set_failed(s: SessionState, records: tuple[Evidence, ...]) -> SessionState:
+def _set_failed(s: SessionState, records: tuple[Evidence, ...], substituted: tuple[Evidence, ...]) -> SessionState:
+    """A charge the tuner substituted for the CO journal's fails no set that has not run; a caller passes none as
+    substituted when the set's slot was running."""
     if not _at_full_set(s.flow):
         return s
     run = s.flow.bisect
     ran = {r.core: r.value for r in s.cores} if run.rerun is not None else dict(run.values)
-    if any(ev.charged and ev.charged == ran.get(ev.core) for ev in records):
+    kept = Counter(records) - Counter(substituted)
+    if any(ev.charged and ev.charged == ran.get(ev.core) for ev in kept):
         return _full_set(s)[0]
     return s
 

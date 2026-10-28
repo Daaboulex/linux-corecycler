@@ -318,6 +318,22 @@ def test_a_dead_boot_while_the_full_set_s_q6_replay_waits_moves_no_core_and_one_
     assert during.core(1).fb == waiting.core(1).value
 
 
+@pytest.mark.req("D102", "L18.d.4.charged")
+def test_a_dead_boot_while_a_live1_begun_q6_replay_waits_loosens_no_other_core_for_a_record_it_cannot_place():
+    first = bisecting(Stage.LIVE1)
+    run = first.flow.bisect
+    replay = replace(bisect.retest(run), rerun=run.universe)
+    loosened = tuple(search.loosen(r, CFG) for r in first.cores)
+    waiting = replace(first, cores=loosened, flow=replace(first.flow, bisect=replay, live1=Live1()))
+    after = transition(waiting, evidence_read(evidence=(Evidence(1, True),)), WORLD).state
+    others = [r for r in loosened if r.core != 1]
+    assert (after.lifecycle, after.flow.bisect, [r for r in after.cores if r.core != 1]) == (
+        Lifecycle.RUNNING,
+        replay,
+        others,
+    )
+
+
 def test_resident_values_follow_the_stage_and_refuse_a_core_the_session_does_not_own():
     finalize = replace(LIVE, flow=Flow(Stage.FINALIZE, applied=True))
     assert resident(finalize, 1) == -3
