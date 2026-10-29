@@ -43,3 +43,4 @@ venv/
 
 /scratch/
 tests/.e2e-bin-*/
+/.exec-scratch-*/
