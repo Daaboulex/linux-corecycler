@@ -58,8 +58,13 @@ class Broken(AssertionError):
     pass
 
 
-def replay_of(spec) -> tuple:
-    return (spec.vector, spec.load, spec.seconds, spec.plan_seed)
+def replay_of(spec, epoch: int) -> tuple:
+    return (spec.vector, spec.load, spec.seconds, spec.plan_seed, epoch)
+
+
+def remembered(spec) -> bool:
+    """An all-core load or a Bisect slot, whose failure the session keeps; a LIVE1-begun slot runs one core's load."""
+    return spec.load in ALLCORE_LOADS or spec.stage is Stage.BISECT
 
 
 def held(state: SessionState | Stored) -> tuple[tuple[int, int], ...]:
@@ -136,6 +141,8 @@ class Fake:
     failed_at: set[tuple[int, int]] = field(default_factory=set)
     failed_allcore: set[tuple] = field(default_factory=set)
     failed_vectors: set[tuple[tuple[int, int], ...]] = field(default_factory=set)
+    failed_twice: set[tuple[tuple[int, int], ...]] = field(default_factory=set)
+    failed_slots: set[tuple[tuple[int, int], ...]] = field(default_factory=set)
     log: list[str] = field(default_factory=list)
     steps: int = 0
     edges_2t: dict[int, int] | None = None
@@ -157,6 +164,7 @@ class Fake:
     crashed_bisect: bool = False
     owed: set[Stage | None] = field(default_factory=set)
     died_between_slots: bool = False
+    epoch: int = 0
 
     def __post_init__(self) -> None:
         if not self.co:
@@ -317,6 +325,8 @@ class Fake:
                 self.journal = ()
                 if origin == "restart":
                     self.forget_session()
+                else:
+                    self.epoch += 1
                 self.stored_boot = self.boot
             case StartWorker(token=token, spec=spec):
                 self.check_start(state, spec)
@@ -364,6 +374,8 @@ class Fake:
                 self.marker = (self.boot, state.session_id)
             case Announce(kind=kind, text=text):
                 self.log.append(f"{kind}: {text}")
+                if kind == "reengaged":
+                    self.epoch += 1
             case CloseDb():
                 pass
             case _:
@@ -380,6 +392,8 @@ class Fake:
         self.failed_at = set()
         self.failed_allcore = set()
         self.failed_vectors = set()
+        self.failed_twice = set()
+        self.failed_slots = set()
         self.stock_fail_owed = set()
 
     def check_bounds_only_tighten(self, old: Stored, new: Stored) -> None:
@@ -447,7 +461,7 @@ class Fake:
         """A validation owes a clean test at its values after a failure there: a stage's failure owes that stage's
         test, and a dead boot or a stock core's machine check owes the next test at those values, whatever stage it
         belongs to. While its cores hold those values it completes owing nothing, and an Abort ends aborted exactly
-        while it owes something (D95, D101)."""
+        while it owes something (D95, D101) or its values sit at or past a failure that still bars them (D118)."""
         if isinstance(event, ValidateProfile) and after.flow is not None and after.flow.validating is not None:
             self.owed = set()
             return
@@ -462,7 +476,8 @@ class Fake:
         owing = sorted("the next test" if stage is None else stage.value for stage in self.owed)
         if after.lifecycle is Lifecycle.COMPLETED and owing:
             raise Broken(f"a validation completed at its values {dict(flow.validating)} owing a clean pass: {owing}")
-        if isinstance(event, Abort) and after.lifecycle is Lifecycle.ABORTED and not owing:
+        barred = self.barring(dict(flow.validating))
+        if isinstance(event, Abort) and after.lifecycle is Lifecycle.ABORTED and not owing and barred is None:
             raise Broken(
                 f"a validation aborted at its values {dict(flow.validating)} though a clean test at them followed "
                 "every failure"
@@ -583,11 +598,11 @@ class Fake:
                 self.failed_at.add((spec.core, spec.value))
             elif isolated:
                 self.stock_fail_owed.add(spec.core)
-        if spec.load in ALLCORE_LOADS:
-            replay = replay_of(spec)
+        if remembered(spec):
+            replay = replay_of(spec, self.epoch)
             failed = report.group is Group.SILICON or (report.group is Group.ENVIRONMENT and spec.load is Load.SOAK)
-            if failed and not cut:
-                self.failed_vectors.add(spec.vector)
+            if (failed or self.faults.fail_commits > 0) and not cut:
+                self.failed_once_more(spec)
             if failed or self.faults.fail_commits > 0:
                 self.failed_allcore.add(replay)
             elif report.group is Group.PASS and not report.evidence and not report.skipped:
@@ -600,6 +615,26 @@ class Fake:
             if seen != transition(self.state, WorkerReported(token, bare), self.world()):
                 raise Broken(f"the machine's transition read the report's program faults: {report.program_faults}")
         return WorkerReported(token, report)
+
+    def failed_once_more(self, spec) -> None:
+        if spec.vector in self.failed_vectors:
+            self.failed_twice.add(spec.vector)
+        if spec.stage is Stage.BISECT:
+            self.failed_slots.add(spec.vector)
+        self.failed_vectors.add(spec.vector)
+
+    def barring(self, values: dict[int, int]) -> tuple[tuple[int, int], ...] | None:
+        """A failure bars values at or past it on every core it moved until an exact replay of it passes in its
+        epoch, unless it failed twice (D118.again) or in a Bisect slot (D116), which nothing clears."""
+        uncleared = {record[0] for record in self.failed_allcore}
+        return next(
+            (
+                vector
+                for vector in sorted(uncleared | self.failed_twice | self.failed_slots)
+                if any(value for _, value in vector) and all(values[core] <= value for core, value in vector)
+            ),
+            None,
+        )
 
     def journaled(self, core: int, value: int, confirmed: bool) -> None:
         envelope = self.proven.get(core, frozenset())
@@ -640,8 +675,9 @@ class Fake:
         st = self.db
         if st is not None and st.status == "running" and st.flow is not None and st.flow.validating == held(st):
             self.owed.add(None)
-        if self.worker is not None and self.worker.spec.load is Load.SOAK:
-            self.failed_allcore.add(replay_of(self.worker.spec))
+        if self.worker is not None and remembered(self.worker.spec) and not shared:
+            self.failed_allcore.add(replay_of(self.worker.spec, self.epoch))
+            self.failed_once_more(self.worker.spec)
         if self.worker is not None and self.worker.spec.stage is Stage.BISECT:
             self.crashed_bisect = True
         self.died_between_slots = at_baseline_between_slots(st, self.co)

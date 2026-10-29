@@ -462,29 +462,55 @@ def _unreplayed_from_json(raw: dict, cfg: MachineConfig) -> tuple[Stage, ...]:
     return owed
 
 
-def _failed_vectors_from_json(
-    raw: dict, baseline: tuple[tuple[int, int], ...]
-) -> tuple[tuple[tuple[int, int], ...], ...]:
-    """A session stored before the record existed remembers no failed all-core vector; a vector the session could
-    not have written, one that does not give each owned core in order an integer value with one not 0, is refused."""
-    stored = raw.get("failed_vectors", [])
-    owned = tuple(core for core, _ in baseline)
-    malformed = (
-        f"the stored session's failed_vectors is {stored!r}, not a list of vectors each giving cores {list(owned)} "
-        "an integer value, one of them not 0"
-    )
-    try:
-        vectors = tuple(tuple((core, value) for core, value in vector) for vector in stored)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(malformed) from exc
-    if any(
+WRITTEN_VECTOR = "giving cores {} an integer value at or below 0, one of them below 0"
+
+
+def _owned_vector(written, owned: tuple[int, ...]) -> tuple[tuple[int, int], ...]:
+    vector = tuple((core, value) for core, value in written)
+    if (
         tuple(core for core, _ in vector) != owned
-        or any(type(value) is not int for _, value in vector)
+        or any(type(core) is not int or type(value) is not int or value > 0 for core, value in vector)
         or not any(value for _, value in vector)
-        for vector in vectors
     ):
-        raise ValueError(malformed)
-    return vectors
+        raise ValueError(written)
+    return vector
+
+
+def _vectors_from_json(raw: dict, name: str, owned: tuple[int, ...]) -> tuple[tuple[tuple[int, int], ...], ...]:
+    stored = raw.get(name, [])
+    try:
+        return tuple(_owned_vector(vector, owned) for vector in stored)
+    except (TypeError, ValueError) as exc:
+        each = WRITTEN_VECTOR.format(list(owned))
+        raise ValueError(f"the stored session's {name} is {stored!r}, not a list of vectors each {each}") from exc
+
+
+def _remembered_from_json(raw: dict, baseline: tuple[tuple[int, int], ...]) -> tuple:
+    """A session stored before a record existed remembers no failed vector, has none cleared and none a re-test may
+    still clear; a value the session could not have written refuses it naming the record (D117, D118)."""
+    owned = tuple(core for core, _ in baseline)
+    failed = _vectors_from_json(raw, "failed_vectors", owned)
+    if len(set(failed)) < len(failed):
+        raise ValueError(f"the stored session's failed_vectors is {raw['failed_vectors']!r}: each vector is named once")
+    cleared = _vectors_from_json(raw, "cleared_vectors", owned)
+    if len(set(cleared)) < len(cleared) or not set(cleared) <= set(failed):
+        raise ValueError(
+            f"the stored session's cleared_vectors is {raw['cleared_vectors']!r}: each must be a remembered failed "
+            "vector, named once"
+        )
+    written = raw.get("clearable_vector")
+    if written is None:
+        return failed, cleared, None
+    try:
+        clearable = _owned_vector(written, owned)
+    except (TypeError, ValueError) as exc:
+        each = WRITTEN_VECTOR.format(list(owned))
+        raise ValueError(f"the stored session's clearable_vector is {written!r}, not null or a vector {each}") from exc
+    if clearable not in failed or clearable in cleared:
+        raise ValueError(
+            f"the stored session's clearable_vector is {written!r}, not a remembered failed vector still uncleared"
+        )
+    return failed, cleared, clearable
 
 
 def _flow_from_json(raw: dict | None, continued: bool, cfg: MachineConfig) -> Flow | None:
@@ -520,6 +546,7 @@ def stored_to_json(st: Stored) -> dict:
 def stored_from_json(raw: dict, *, continued: bool) -> Stored:
     baseline = _pairs(raw["baseline"])
     config = config_from_json(raw["config"])
+    failed, cleared, clearable = _remembered_from_json(raw, baseline)
     return Stored(
         session_id=raw["session_id"],
         status=raw["status"],
@@ -533,7 +560,9 @@ def stored_from_json(raw: dict, *, continued: bool) -> Stored:
         power=tuple((name, value) for name, value in raw["power"]),
         setup=tuple((name, value) for name, value in raw["setup"]),
         base_co=tuple((core, value) for core, value in raw["base_co"]),
-        failed_vectors=_failed_vectors_from_json(raw, baseline),
+        failed_vectors=failed,
+        cleared_vectors=cleared,
+        clearable_vector=clearable,
     )
 
 

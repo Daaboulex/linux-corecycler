@@ -592,8 +592,8 @@ def test_a_clean_test_at_the_validated_values_clears_an_owed_live1_and_no_other_
     assert fake.state.flow.unreplayed == (Stage.MEMORY,)
 
 
-@pytest.mark.req("L30.e.failed")
-def test_a_failure_repeated_at_the_validated_values_is_stored_once_and_one_clean_pass_clears_it():
+@pytest.mark.req("L30.e.failed", "D118.abort", "D118.again")
+def test_a_failure_repeated_at_the_validated_values_is_owed_once_and_a_clean_pass_clears_what_it_owes_not_the_bar():
     fake = completed((-3, 0, -2), (0, 2))
     before = values(fake)
     fake.post(ValidateProfile(1))
@@ -605,9 +605,10 @@ def test_a_failure_repeated_at_the_validated_values_is_stored_once_and_one_clean
     assert json.loads(json.dumps(stored_to_json(fake.db)))["flow"]["unreplayed"] == ["endurance"]
     until_stage(fake, Stage.ENDURANCE)
     fake.deliver()
+    assert (fake.state.flow.unreplayed, fake.state.failed_vectors) == ((), (tuple(before.items()),))
     fake.post(Abort())
-    assert fake.state.lifecycle is Lifecycle.COMPLETED
-    assert {core: fake.co[core] for core in before} == before
+    assert fake.state.lifecycle is Lifecycle.ABORTED
+    assert {core: fake.co[core] for core in before} == dict.fromkeys(before, 0)
 
 
 @pytest.mark.parametrize(

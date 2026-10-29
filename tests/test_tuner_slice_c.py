@@ -7,7 +7,7 @@ from itertools import takewhile
 import pytest
 
 from corecycler.tuner.live import stored_from_json, stored_to_json
-from corecycler.tuner.machine import allcore
+from corecycler.tuner.machine import allcore, bisect
 from corecycler.tuner.machine.resume import resident
 from corecycler.tuner.machine.types import (
     AllCore,
@@ -28,7 +28,7 @@ from corecycler.tuner.machine.types import (
     WriteCO,
 )
 from tests._tuner_world import Abort, Close, Evidence, Group, PauseRequest, Report, Resume, fresh, run_to_rest, start
-from tests.test_tuner_validate import completed, values
+from tests.test_tuner_validate import STOCK_RECORD, completed, values
 
 FAST = {
     "hot_seconds": 1.0,
@@ -472,12 +472,13 @@ def test_a_continue_under_a_new_setup_clears_the_one_off_mark():
     assert (replays, {r.core: r.value for r in fake.state.cores}) == (1, held)
 
 
-@pytest.mark.req("L09.one_off.clear")
+@pytest.mark.req("L09.one_off.clear", "D118.again")
 def test_a_new_live1_pass_starts_without_the_one_off_mark():
     fake, stages = run([-6, -6], on_start=scripted(Stage.STEADY, {1: UNNAMED_STEADY, 3: UNNAMED_STEADY}))
     assert fake.state.lifecycle is Lifecycle.COMPLETED
-    assert [stage for stage, _, _ in stages].count(Stage.LIVE1) == 4
     assert full_set_slots(stages) == [{0: -3, 1: -3}, {0: -3, 1: -3}]
+    assert [stage for stage, _, _ in stages].count(Stage.LIVE1) == 6
+    assert (values(fake), fake.state.cleared_vectors) == ({0: -2, 1: -2}, ())
 
 
 def started(fake):
@@ -619,7 +620,7 @@ def test_every_kind_of_all_core_failure_bars_the_reclaim_of_a_session_continued_
     assert reclaimed == end
 
 
-@pytest.mark.req("L12.failed")
+@pytest.mark.req("L12.failed", "D118")
 def test_a_quarantined_session_re_engaged_never_tightens_at_or_past_a_vector_it_remembers():
     fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
     specs = started(fake)
@@ -642,21 +643,25 @@ def test_a_quarantined_session_re_engaged_never_tightens_at_or_past_a_vector_it_
     assert [
         dict(spec.vector) for spec in specs[reengaged:] if spec.stage is Stage.TIGHTEN and at_or_past(spec, failed)
     ] == []
-    assert {r.core: r.value for r in fake.state.cores} == failed
+    remembered = [dict(vector) for vector in fake.state.failed_vectors]
+    assert remembered == [failed, stepped(failed, (0, 1)), stepped(stepped(failed, (0, 1)), (0, 1))]
+    assert (values(fake), fake.state.cleared_vectors) == ({0: 0, 1: 0}, ())
+    assert len([line for line in fake.log if line.startswith("loosened: ")]) == 1
 
 
-@pytest.mark.req("L12.failed")
-def test_a_validation_keeps_the_failed_vectors_its_session_remembers():
+@pytest.mark.req("L12.failed", "D118.cleared")
+def test_a_validation_keeps_the_failed_vectors_its_session_remembers_and_the_one_off_it_cleared():
     fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
     start(fake)
     failed = steady_one_off(fake)
     run_to_rest(fake, 20_000)
     remembered = fake.db.failed_vectors
-    assert (fake.db.status, remembered) == ("completed", (tuple(failed.items()),))
+    assert (fake.db.status, remembered, fake.db.cleared_vectors) == ("completed", (tuple(failed.items()),), remembered)
     fake.post(ValidateProfile(1))
-    assert fake.state.failed_vectors == remembered
+    assert (fake.state.failed_vectors, fake.state.cleared_vectors) == (remembered, remembered)
     run_to_rest(fake, 20_000)
-    assert (fake.db.status, fake.db.failed_vectors) == ("completed", remembered)
+    assert (fake.db.status, fake.db.failed_vectors, fake.db.cleared_vectors) == ("completed", remembered, remembered)
+    assert values(fake) == failed
 
 
 @pytest.mark.req("L12.failed")
@@ -951,6 +956,475 @@ def test_a_bisection_closed_in_its_first_group_s_q6_replay_reads_back_and_loosen
     assert {r.core: r.value for r in fake.state.cores} == loosened
     run_to_rest(fake, 20_000)
     assert fake.state.lifecycle is Lifecycle.COMPLETED
+
+
+def finalizing(edges):
+    fake = fresh(len(edges), edges, 2, max_offset=-8, **FAST)
+    start(fake)
+    while fake.worker is not None or fake.state.flow.stage is not Stage.FINALIZE:
+        assert fake.progress()
+    return fake
+
+
+def remembering(fake, *vectors):
+    fake.state = replace(fake.state, failed_vectors=tuple(tuple(vector.items()) for vector in vectors))
+
+
+@pytest.mark.req("D118")
+def test_held_values_strictly_past_a_remembered_vector_loosen_the_cores_it_moved_until_none_is_at_or_past_it():
+    fake = finalizing([-6, -6])
+    held = values(fake)
+    bounds = [r.fb for r in fake.state.cores]
+    specs = started(fake)
+    remembering(fake, {0: held[0] + 1, 1: 0})
+    run_to_rest(fake, 20_000)
+    loosened = {0: held[0] + 2, 1: held[1]}
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert (values(fake), [r.fb for r in fake.state.cores]) == (loosened, bounds)
+    assert [(spec.stage, dict(spec.vector)) for spec in specs[:1]] == [(Stage.LIVE1, loosened)]
+
+
+@pytest.mark.req("D118.cleared")
+def test_a_one_off_closed_before_its_re_test_and_again_after_it_completes_at_its_values():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
+    start(fake)
+    failed = steady_one_off(fake)
+    until_test(fake, Stage.BISECT, failed)
+    for _ in range(2):
+        fake.post(Close())
+        fake.post(Resume(1))
+        while fake.state.flow.stage is Stage.BISECT:
+            assert fake.progress()
+    run_to_rest(fake, 20_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert (values(fake), fake.state.cleared_vectors) == (failed, (tuple(failed.items()),))
+
+
+@pytest.mark.req("D118")
+def test_held_values_at_or_past_a_remembered_vector_on_only_some_cores_it_moved_complete_unmoved():
+    fake = finalizing([-6, -6])
+    held = values(fake)
+    remembering(fake, {0: held[0], 1: held[1] - 1})
+    run_to_rest(fake, 20_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert values(fake) == held
+
+
+def pair_failed(fake, held):
+    failing_once(fake, slot(held, (0, 1)))
+    until_test(fake, Stage.BISECT, slot(held, (0, 1)))
+    fake.deliver()
+
+
+def crashed_alone(fake, held):
+    pair_failed(fake, held)
+    until_test(fake, Stage.BISECT, slot(held, (2,)))
+    fake.crash()
+    fake.post(Resume(1))
+
+
+def recorded_alone(fake, held):
+    pair_failed(fake, held)
+    until_test(fake, Stage.BISECT, slot(held, (2,)))
+    assert fake.worker.spec.core != 2
+    fake.deliver(Report(Group.SILICON, 1.0, evidence=(Evidence(2, False),)))
+
+
+def recorded_between(fake, held):
+    pair_failed(fake, held)
+    fake.post(KernelLogRead(fake.state.slot.token, (Evidence(2, False, held[2]),)))
+
+
+def recorded_in_a_replay(fake, held):
+    failing_once(fake, slot(held, (0, 1)), slot(held, (2, 3)))
+    until_test(fake, Stage.BISECT, slot(stepped(held, (0, 1)), (0, 1)))
+    core = next(core for core in (0, 1) if core != fake.worker.spec.core)
+    fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(core, False),)))
+
+
+def recorded_at_the_re_test(fake, held):
+    while fake.worker is not None or fake.state.flow.bisect is None or not bisect.retesting(fake.state.flow.bisect):
+        assert fake.progress()
+    fake.post(KernelLogRead(fake.state.slot.token, (Evidence(2, False),)))
+
+
+EARLY_EXITS = {
+    "a crash in a one-core slot": (crashed_alone, 3, (0, 1), (0, 1)),
+    "a record of a core in its own slot": (recorded_alone, 3, (0, 1), (0, 1)),
+    "a record between slots": (recorded_between, 3, (0, 1), (0, 1)),
+    "a record in a Q6 replay": (recorded_in_a_replay, 4, (2, 3), (2, 3)),
+    "a record while the full-set re-test waits": (recorded_at_the_re_test, 3, (0, 1, 2), (0, 1)),
+}
+
+
+@pytest.mark.req("D118", "D116", "L09.G3", "L09.G4")
+@pytest.mark.parametrize("entry", [Stage.TRANSIENT, Stage.LIVE1])
+@pytest.mark.parametrize("ending", list(EARLY_EXITS))
+def test_a_bisection_an_early_exit_ends_never_completes_at_or_past_a_group_it_left_failed(entry, ending):
+    exits, cores, group, unmoved = EARLY_EXITS[ending]
+    fake = fresh(cores, [-6] * cores, 2, max_offset=-8, **FAST)
+    start(fake)
+    held = bisecting_from(fake, entry)
+    exits(fake, held)
+    assert (fake.state.flow.stage, fake.state.flow.bisect) == (entry, None)
+    assert {core: values(fake)[core] for core in unmoved} == {core: held[core] for core in unmoved}
+    run_to_rest(fake, 20_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert not all(values(fake)[core] <= held[core] for core in group)
+
+
+@pytest.mark.req("D118.live1", "L12.failed")
+@pytest.mark.parametrize("origin", ["a one-core load's failure", "a dead boot"])
+def test_a_live1_begun_bisection_remembers_the_vector_of_a_slot_of_several_cores_that_failed(origin):
+    fake = fresh(4, [-6] * 4, 2, max_offset=-8, **FAST)
+    start(fake)
+    held = bisecting_from(fake, Stage.LIVE1)
+    assert fake.state.failed_vectors == ()
+    until_test(fake, Stage.BISECT, slot(held, (2, 3)))
+    assert fake.worker.spec.load is Load.ONE_T
+    if origin == "a dead boot":
+        fake.crash()
+        fake.post(Resume(1))
+    else:
+        fake.deliver(Report(Group.SILICON, 1.0))
+    assert fake.state.failed_vectors == (tuple(slot(held, (2, 3)).items()),)
+    assert fake.state.flow.bisect.results[-1] == ((2, 3), False)
+
+
+@pytest.mark.req("D118.again")
+def test_a_cleared_one_off_that_fails_again_in_its_validation_is_never_completed_at_again():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
+    start(fake)
+    failed = steady_one_off(fake)
+    run_to_rest(fake, 20_000)
+    assert values(fake) == failed
+    fake.post(ValidateProfile(1))
+    assert until_test(fake, Stage.MEMORY) == failed
+    fake.deliver(Report(Group.SILICON, 1.0))
+    while fake.state.flow.stage is not Stage.MEMORY:
+        assert fake.progress()
+    assert fake.state.flow.one_off == (Stage.MEMORY, tuple(failed.items()))
+    run_to_rest(fake, 20_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert values(fake) == stepped(failed, (0, 1))
+    assert fake.state.cleared_vectors == ()
+
+
+@pytest.mark.req("D118.again")
+def test_a_re_test_that_names_a_core_not_owned_before_it_passes_clears_nothing():
+    fake = fresh(3, [-6, 0, -6], 2, max_offset=-8, selected=(0, 2), **FAST)
+    start(fake)
+    failed = steady_one_off(fake)
+    until_test(fake, Stage.BISECT, failed)
+    fake.deliver(Report(Group.SILICON, 1.0, named=(1,)))
+    assert fake.state.pause.reason is PauseReason.HELD_KNOB
+    fake.post(Resume(1))
+    while fake.state.flow.stage is Stage.BISECT:
+        assert fake.progress()
+    assert fake.state.flow.one_off == (Stage.STEADY, tuple(failed.items()))
+    run_to_rest(fake, 20_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert values(fake) == stepped(failed, (0, 2))
+    assert fake.state.cleared_vectors == ()
+
+
+@pytest.mark.req("D118.cleared")
+def test_a_failure_whose_bisection_a_continue_carried_is_cleared_by_no_re_test_after_it():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
+    start(fake)
+    failed = until_test(fake, Stage.MEMORY)
+    fake.deliver(Report(Group.SILICON, 1.0))
+    until_test(fake, Stage.BISECT)
+    fake.post(PauseRequest())
+    fake.setup = (("bios", "B"),)
+    fake.post(Resume(1))
+    fake.post(ContinueOnSetup(2))
+    while fake.state.flow.stage is Stage.BISECT:
+        assert fake.progress()
+    assert fake.state.flow.one_off == (Stage.MEMORY, tuple(failed.items()))
+    run_to_rest(fake, 20_000)
+    assert (fake.state.lifecycle, fake.state.session_id) == (Lifecycle.COMPLETED, 2)
+    assert values(fake) == stepped(failed, (0, 1))
+    assert fake.state.cleared_vectors == ()
+
+
+@pytest.mark.req("D118.cleared")
+def test_a_live1_begun_re_test_at_the_values_of_a_memory_failure_clears_nothing():
+    fake = fresh(2, [-6, 0], 2, max_offset=-8, **FAST)
+    start(fake)
+    failed = until_test(fake, Stage.MEMORY)
+    assert failed[1] == 0
+    fake.deliver(Report(Group.SILICON, 1.0, named=(1,)))
+    until_test(fake, Stage.LIVE1)
+    fake.crash()
+    fake.post(Resume(1))
+    assert (fake.state.flow.bisect.entry, values(fake)) == (Stage.LIVE1, failed)
+    while fake.state.flow.stage is Stage.BISECT:
+        assert fake.progress()
+    assert fake.state.flow.one_off == (Stage.LIVE1, tuple(failed.items()))
+    assert (fake.state.failed_vectors, fake.state.cleared_vectors) == ((tuple(failed.items()),), ())
+
+
+@pytest.mark.req("D118.abort", "L30.e.failed")
+def test_an_abort_of_a_validation_at_values_a_remembered_failure_bars_ends_aborted_and_restores_no_value():
+    fake = completed()
+    before = values(fake)
+    fake.db = replace(fake.db, failed_vectors=(*fake.db.failed_vectors, tuple(before.items())))
+    fake.failed_allcore.add((tuple(before.items()),))
+    fake.post(ValidateProfile(1))
+    until_stage(fake, Stage.LIVE1)
+    assert values(fake) == before
+    fake.post(Abort())
+    assert (fake.state.lifecycle, fake.db.status) == (Lifecycle.ABORTED, "aborted")
+    assert {core: fake.co[core] for core, _ in fake.state.baseline} == dict(fake.state.baseline)
+    assert "not restored" in fake.log[-1]
+
+
+def replay(spec) -> tuple:
+    return (spec.vector, spec.load, spec.seconds, spec.plan_seed)
+
+
+def endurance_session(edges, owned=None):
+    selected = {} if owned is None else {"selected": owned}
+    fake = fresh(
+        len(edges), list(edges), 2, max_offset=-5, k_1t=1, k_2t=1, wait_between_cores_s=0.0, endurance=True, **selected
+    )
+    start(fake)
+    until_stage(fake, Stage.ENDURANCE)
+    return fake
+
+
+def stock_record_then_its_replay(fake):
+    failed = fake.worker.spec
+    fake.deliver(Report(Group.SILICON, 1.0, evidence=(Evidence(2, True),)))
+    until_stage(fake, Stage.ENDURANCE)
+    assert replay(fake.worker.spec) == replay(failed)
+    fake.deliver()
+    return dict(failed.vector)
+
+
+def unowned_named_then_its_replay(fake):
+    failed = fake.worker.spec
+    fake.deliver(Report(Group.SILICON, 1.0, named=(1,)))
+    assert fake.state.pause.reason is PauseReason.HELD_KNOB
+    fake.post(Resume(1))
+    until_stage(fake, Stage.ENDURANCE)
+    assert replay(fake.worker.spec) == replay(failed)
+    fake.deliver()
+    return dict(failed.vector)
+
+
+@pytest.mark.req("D118.cleared")
+@pytest.mark.parametrize(
+    ("edges", "owned", "failing"),
+    [
+        pytest.param((-3, -2, 0), None, stock_record_then_its_replay, id="a record at stock"),
+        pytest.param((-3, 0, -2), (0, 2), unowned_named_then_its_replay, id="a core not owned named"),
+    ],
+)
+def test_a_single_failure_whose_exact_replay_passed_outside_a_bisection_completes_at_its_values(edges, owned, failing):
+    fake = endurance_session(edges, owned)
+    failed = failing(fake)
+    run_to_rest(fake, 20_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert values(fake) == failed
+    assert not [line for line in fake.log if line.startswith("loosened: ")]
+
+
+def validating_a_record_at_stock_replayed():
+    fake = completed((-3, -2, 0))
+    before = values(fake)
+    fake.post(ValidateProfile(1))
+    until_stage(fake, Stage.ENDURANCE)
+    STOCK_RECORD(fake)
+    until_stage(fake, Stage.ENDURANCE)
+    fake.deliver()
+    return fake, before
+
+
+def validating_a_memory_failure_at_a_core_not_owned_skipped_then_clean():
+    fake = completed((-3, 0, -2), (0, 2))
+    before = values(fake)
+    fake.post(ValidateProfile(1))
+    until_stage(fake, Stage.MEMORY)
+    fake.deliver(Report(Group.SILICON, 1.0, named=(1,)))
+    fake.memory_skip = "no binary"
+    fake.post(Resume(1))
+    until_stage(fake, Stage.MEMORY)
+    fake.deliver()
+    fake.memory_skip = ""
+    fake.post(Resume(1))
+    until_stage(fake, Stage.MEMORY)
+    fake.deliver()
+    return fake, before
+
+
+def validating_a_failure_at_a_core_not_owned_twice_then_clean():
+    fake = completed((-3, 0, -2), (0, 2))
+    before = values(fake)
+    fake.post(ValidateProfile(1))
+    for _ in range(2):
+        until_stage(fake, Stage.ENDURANCE)
+        fake.deliver(Report(Group.SILICON, 1.0, named=(1,)))
+        fake.post(Resume(1))
+    until_stage(fake, Stage.ENDURANCE)
+    fake.deliver()
+    return fake, before
+
+
+def ended(fake, end):
+    if end == "abort":
+        fake.post(Abort())
+    else:
+        run_to_rest(fake, 4000)
+    return fake.state.lifecycle, values(fake)
+
+
+@pytest.mark.req("D118.cleared", "D118.abort", "L30.e.failed")
+@pytest.mark.parametrize("end", ["abort", "run on"])
+@pytest.mark.parametrize(
+    "validating",
+    [validating_a_record_at_stock_replayed, validating_a_memory_failure_at_a_core_not_owned_skipped_then_clean],
+)
+def test_a_validation_whose_single_failure_an_exact_replay_cleared_keeps_its_values_whether_aborted_or_run_on(
+    validating, end
+):
+    fake, before = validating()
+    assert ended(fake, end) == (Lifecycle.COMPLETED, before)
+    assert (fake.db.status, {core: fake.co[core] for core in before}) == ("completed", before)
+
+
+@pytest.mark.req("D118.again", "D118.abort")
+@pytest.mark.parametrize("end", ["abort", "run on"])
+def test_a_validation_whose_failure_repeated_at_its_values_is_no_one_off_and_never_completes_at_them(end):
+    fake, before = validating_a_failure_at_a_core_not_owned_twice_then_clean()
+    looser = {core: value + 1 for core, value in before.items()}
+    expected = (Lifecycle.ABORTED, before) if end == "abort" else (Lifecycle.COMPLETED, looser)
+    assert ended(fake, end) == expected
+    assert fake.state.cleared_vectors == ()
+
+
+@pytest.mark.req("D118.cleared", "D116")
+def test_a_stage_test_at_the_vector_of_a_bisection_slot_that_failed_clears_nothing():
+    fake = fresh(3, [-6] * 3, 2, max_offset=-8, **FAST)
+    start(fake)
+    held = bisecting_from(fake, Stage.TRANSIENT)
+    crashed_alone(fake, held)
+    pair = slot(held, (0, 1))
+    assert values(fake) == pair
+    until_test(fake, Stage.TRANSIENT, pair)
+    fake.deliver()
+    assert fake.last_report.group is Group.PASS
+    assert (tuple(pair.items()) in fake.state.failed_vectors, fake.state.cleared_vectors) == (True, ())
+    run_to_rest(fake, 20_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert values(fake) == stepped(pair, (0, 1))
+
+
+@pytest.mark.req("D118")
+def test_the_first_barring_vector_in_stored_order_loosens_first():
+    fake = finalizing([-6, -6])
+    held = values(fake)
+    remembering(fake, {0: held[0], 1: 0}, {0: held[0] + 1, 1: held[1]})
+    run_to_rest(fake, 20_000)
+    assert fake.state.lifecycle is Lifecycle.COMPLETED
+    assert values(fake) == {0: held[0] + 2, 1: held[1] + 1}
+
+
+@pytest.mark.req("D118")
+def test_a_dirty_finalize_whose_values_a_remembered_vector_bars_loosens_them_before_its_one_pass():
+    fake = finalizing([-6, -6])
+    held = values(fake)
+    specs = started(fake)
+    remembering(fake, held)
+    fake.state = replace(fake.state, flow=replace(fake.state.flow, dirty=True))
+    run_to_rest(fake, 20_000)
+    loosened = {core: value + 1 for core, value in held.items()}
+    assert (fake.state.lifecycle, values(fake)) == (Lifecycle.COMPLETED, loosened)
+    assert [dict(spec.vector) for spec in specs if spec.stage is Stage.LIVE1] == [loosened] * len(held)
+
+
+@pytest.mark.req("D118.cleared")
+def test_a_validation_continued_on_a_new_setup_keeps_the_one_off_its_session_cleared():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
+    start(fake)
+    failed = steady_one_off(fake)
+    run_to_rest(fake, 20_000)
+    assert values(fake) == failed
+    fake.setup = (("bios", "B"),)
+    fake.post(ValidateProfile(1))
+    assert fake.state.pause.reason is PauseReason.SETUP_CHANGED
+    fake.post(ContinueOnSetup(2))
+    run_to_rest(fake, 20_000)
+    assert (fake.state.lifecycle, fake.state.session_id, values(fake)) == (Lifecycle.COMPLETED, 2, failed)
+    assert fake.state.cleared_vectors == (tuple(failed.items()),)
+
+
+@pytest.mark.req("D118.cleared")
+def test_the_latest_failure_s_exact_replay_clears_it_though_an_earlier_failure_was_never_cleared():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
+    start(fake)
+    tightened = tighten_report(fake)
+    held = until_test(fake, Stage.MEMORY)
+    fake.deliver(Report(Group.SILICON, 1.0))
+    run_to_rest(fake, 20_000)
+    assert (fake.state.lifecycle, values(fake)) == (Lifecycle.COMPLETED, held)
+    assert fake.state.failed_vectors == (tuple(tightened.items()), tuple(held.items()))
+    assert fake.state.cleared_vectors == (tuple(held.items()),)
+
+
+def convicted_in_turn(fake, *stages):
+    for core, stage in enumerate(stages):
+        until_test(fake, stage)
+        fake.crash((Evidence(core, False),))
+        fake.post(Resume(1))
+    stored = fake.db
+    fake.state = SessionState(next_token=fake.state.next_token)
+    fake.post(Resume(1, reengage=True))
+    return stored
+
+
+@pytest.mark.req("D118.cleared", "L12.failed")
+def test_a_re_engage_leaves_no_failure_from_before_its_quarantine_clearable():
+    fake = fresh(3, [-8] * 3, 2, max_offset=-10, **FAST)
+    start(fake)
+    failed = until_test(fake, Stage.STEADY)
+    fake.deliver(UNNAMED_STEADY)
+    until_test(fake, Stage.BISECT, slot(failed, (0, 1)))
+    stored = convicted_in_turn(fake, Stage.BISECT, Stage.STEADY, Stage.STEADY)
+    assert (stored.status, stored.failed_vectors, stored.clearable_vector) == (
+        "quarantined",
+        (tuple(failed.items()),),
+        tuple(failed.items()),
+    )
+    assert (fake.state.failed_vectors, fake.state.clearable_vector) == (stored.failed_vectors, None)
+
+
+@pytest.mark.req("D118.cleared", "L12.failed")
+def test_a_re_engage_keeps_the_one_off_its_session_cleared():
+    fake = fresh(3, [-8] * 3, 2, max_offset=-10, **FAST)
+    start(fake)
+    failed = steady_one_off(fake)
+    stored = convicted_in_turn(fake, Stage.STEADY, Stage.STEADY, Stage.STEADY)
+    assert (stored.status, stored.cleared_vectors) == ("quarantined", (tuple(failed.items()),))
+    assert fake.state.cleared_vectors == stored.cleared_vectors
+
+
+@pytest.mark.req("D118.abort", "L30.e")
+def test_an_abort_of_a_validation_whose_values_no_remembered_failure_bars_restores_it_completed():
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, **FAST)
+    start(fake)
+    failed = tighten_report(fake)
+    run_to_rest(fake, 20_000)
+    before = values(fake)
+    assert (fake.db.failed_vectors, fake.db.clearable_vector) == ((tuple(failed.items()),), tuple(failed.items()))
+    assert not all(before[core] <= value for core, value in failed.items())
+    fake.post(ValidateProfile(1))
+    assert fake.state.clearable_vector is None
+    until_stage(fake, Stage.LIVE1)
+    fake.post(Abort())
+    assert (fake.state.lifecycle, fake.db.status) == (Lifecycle.COMPLETED, "completed")
+    assert {core: fake.co[core] for core in before} == before
 
 
 @pytest.mark.req("L09.seed.distinct")

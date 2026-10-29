@@ -432,8 +432,10 @@ def test_failed_all_core_vectors_survive_the_session_file_and_a_resume_and_an_ol
     assert st.failed_vectors == (failed,)
     assert stored_from_json(json.loads(json.dumps(stored_to_json(st))), continued=False) == st
     older = json.loads(json.dumps(stored_to_json(st)))
-    del older["failed_vectors"]
-    assert stored_from_json(older, continued=False) == replace(st, failed_vectors=())
+    del older["failed_vectors"], older["cleared_vectors"], older["clearable_vector"]
+    assert stored_from_json(older, continued=False) == replace(
+        st, failed_vectors=(), cleared_vectors=(), clearable_vector=None
+    )
     fake.crash()
     fake.db = stored_from_json(json.loads(json.dumps(stored_to_json(st))), continued=False)
     fake.post(Resume(1))
@@ -455,6 +457,7 @@ def test_failed_all_core_vectors_survive_the_session_file_and_a_resume_and_an_ol
         [[[0, "-3"], [1, -3]]],
         [[[0, True], [1, -3]]],
         [[[0, -3], [1]]],
+        [[[0, 1], [1, -3]]],
     ],
     ids=[
         "not a list",
@@ -466,6 +469,7 @@ def test_failed_all_core_vectors_survive_the_session_file_and_a_resume_and_an_ol
         "a value in text",
         "a value true",
         "a core with no value",
+        "a value above 0",
     ],
 )
 def test_a_failed_vector_the_session_could_not_have_written_refuses_the_stored_session_naming_it(written):
@@ -474,6 +478,78 @@ def test_a_failed_vector_the_session_could_not_have_written_refuses_the_stored_s
     raw = json.loads(json.dumps(stored_to_json(fake.db)))
     raw["failed_vectors"] = written
     with pytest.raises(ValueError, match="failed_vectors"):
+        stored_from_json(raw, continued=False)
+
+
+def a_one_off_stored() -> tuple[Stored, Stored]:
+    fake = fresh(2, [-6, -6], 2, max_offset=-8, k_1t=1, k_2t=1, wait_between_cores_s=0.0)
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.STEADY:
+        assert fake.progress()
+    failed = fake.worker.spec.vector
+    fake.deliver(Report(Group.SILICON, 1.0))
+    owed = fake.db
+    while fake.db.flow.one_off is None:
+        assert fake.progress()
+    cleared = fake.db
+    assert (owed.clearable_vector, owed.cleared_vectors) == (failed, ())
+    assert (cleared.clearable_vector, cleared.cleared_vectors) == (None, (failed,))
+    return owed, cleared
+
+
+@pytest.mark.req("D118.stored")
+def test_a_cleared_one_off_and_a_failure_still_clearable_survive_the_session_file_and_an_older_file_has_neither():
+    for st in a_one_off_stored():
+        raw = json.loads(json.dumps(stored_to_json(st)))
+        assert stored_from_json(raw, continued=False) == st
+        del raw["cleared_vectors"], raw["clearable_vector"]
+        assert stored_from_json(raw, continued=False) == replace(st, cleared_vectors=(), clearable_vector=None)
+
+
+@pytest.mark.req("D118.stored")
+@pytest.mark.parametrize(
+    ("name", "written"),
+    [
+        pytest.param("cleared_vectors", 5, id="cleared: not a list"),
+        pytest.param("cleared_vectors", [[]], id="cleared: an empty vector"),
+        pytest.param("cleared_vectors", [[[0, -3]]], id="cleared: an owned core missing"),
+        pytest.param("cleared_vectors", [[[0, "-3"], [1, -3]]], id="cleared: a value in text"),
+        pytest.param("cleared_vectors", [[[0, -3], [1, -3]], [[0, -3], [1, -3]]], id="cleared: a duplicate"),
+        pytest.param("cleared_vectors", [[[0, -2], [1, -2]]], id="cleared: a vector not remembered"),
+        pytest.param("clearable_vector", 5, id="clearable: not a vector"),
+        pytest.param("clearable_vector", [], id="clearable: an empty vector"),
+        pytest.param("clearable_vector", [[0, -3]], id="clearable: an owned core missing"),
+        pytest.param("clearable_vector", [[0, -2], [1, -2]], id="clearable: a vector not remembered"),
+        pytest.param("clearable_vector", [[0, -3], [1, -3]], id="clearable: a vector already cleared"),
+    ],
+)
+def test_a_cleared_or_clearable_vector_the_session_could_not_have_written_refuses_the_session_naming_it(name, written):
+    _, cleared = a_one_off_stored()
+    assert cleared.failed_vectors == (((0, -3), (1, -3)),)
+    raw = json.loads(json.dumps(stored_to_json(cleared)))
+    raw[name] = written
+    with pytest.raises(ValueError, match=name):
+        stored_from_json(raw, continued=False)
+
+
+@pytest.mark.req("D118.stored", "L12.failed.stored")
+@pytest.mark.parametrize(
+    ("name", "written"),
+    [
+        pytest.param("failed_vectors", [[[0.0, -3], [1, -3]]], id="failed: a core in floating point"),
+        pytest.param("failed_vectors", [[[0, -3], [True, -3]]], id="failed: a core true"),
+        pytest.param("failed_vectors", [[[0, -3], [1, -3]], [[0, -3], [1, -3]]], id="failed: a duplicate"),
+        pytest.param("cleared_vectors", [[[0.0, -3], [1, -3]]], id="cleared: a core in floating point"),
+        pytest.param("clearable_vector", [[0, -3], [True, -3]], id="clearable: a core true"),
+    ],
+)
+def test_a_stored_vector_naming_a_core_the_session_could_not_have_written_refuses_it(name, written):
+    owed, _ = a_one_off_stored()
+    raw = json.loads(json.dumps(stored_to_json(owed)))
+    raw[name] = written
+    if name != "clearable_vector":
+        raw["clearable_vector"] = None
+    with pytest.raises(ValueError, match=name):
         stored_from_json(raw, continued=False)
 
 

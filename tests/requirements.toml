@@ -497,7 +497,7 @@ proof = "built"
 
 [[requirement]]
 id = "ALLCORE.failed_vector.explorer"
-statement = "The fake world records every all-core test that delivered a failure, a lost verdict included, and clears one only when an exact replay of it passes; no future completes at or past a recorded vector on every core. SOAK is judged too (D98): a SOAK watch's unblamed record is a failure there, and a SOAK watch a dead boot cut is recorded, since a crash counted as an incident there watches again at the same plan seed; a hang in any other test is not recorded, since a crash the machine counts as an incident would trip it falsely. The explorer injects an unnamed HOT failure after a paused load"
+statement = "The fake world records every all-core test and every Bisect slot that delivered a failure, a lost verdict included, and clears one only when an exact replay of it passes before a continue or a re-engage, each of which starts a new epoch whose passes clear nothing earlier; no future completes at or past a recorded vector on every core. SOAK is judged too (D98): a SOAK watch's unblamed record is a failure there. A dead boot while a worker runs an all-core load or a Bisect slot is recorded as that test's failure, since the session remembers it, convicts a core of it or runs it again at the same plan seed; a dead boot shared with another unit, or with no test running, is an incident and is not recorded (D118). The explorer injects an unnamed HOT failure after a paused load"
 proof = "built"
 
 [[requirement]]
@@ -2233,17 +2233,17 @@ proof = "built"
 
 [[requirement]]
 id = "L12.failed"
-statement = "TIGHTEN never starts a test at or past an all-core vector that failed in the session, on every core that vector moved: a round that would reach one ends the reclaim as a round failure naming no core does, every value kept. The session remembers each failed all-core test's vector once, for its whole life as it keeps its fail bounds, through a second LIVE1 pass, a continue under a new setup, a validation and a quarantine and its re-engage: a silicon report named or not and with any machine check, in any all-core stage, TIGHTEN, MEMORY and a Bisect group included, a SOAK failure, a one-off, and a lost verdict or a dead boot taken as the test's own failure, at the values that test ran; a vector that moved no core bars nothing, and a dead boot in a one-core test is no all-core vector (D97 and D117, tuning-loops-round2.md; GitHub issue 20)"
+statement = "TIGHTEN never starts a test at or past an all-core vector that failed in the session, on every core that vector moved: a round that would reach one ends the reclaim as a round failure naming no core does, every value kept. The session remembers each failed all-core test's vector once, for its whole life as it keeps its fail bounds, through a second LIVE1 pass, a continue under a new setup, a validation and a quarantine and its re-engage: a silicon report named or not and with any machine check, in any all-core stage, TIGHTEN, MEMORY and a Bisect group included, a LIVE1-begun Bisect's slot that failed (D118.live1), a SOAK failure, a one-off, and a lost verdict or a dead boot taken as the test's own failure, at the values that test ran; a vector that moved no core bars nothing, and a LIVE1 test outside a Bisect remembers nothing (D97, D117 and D118, tuning-loops-round2.md; GitHub issue 20)"
 proof = "built"
 
 [[requirement]]
 id = "L12.failed.stored"
-statement = "The stored session keeps every remembered failed all-core vector; a session stored before the record existed reads as remembering none, and a stored value the session could not have written refuses the session naming failed_vectors: not a list of vectors, a vector that does not give each owned core in order an integer value, or one with every value 0 (D97 and D117)"
+statement = "The stored session keeps every remembered failed all-core vector; a session stored before the record existed reads as remembering none, and a stored value the session could not have written refuses the session naming failed_vectors: not a list of vectors, a vector that does not give each owned core in order, each core an integer, an integer value, one with every value 0, one with a value above 0, or a vector named twice (D97, D117 and D118)"
 proof = "built"
 
 [[requirement]]
 id = "L12.failed.explorer"
-statement = "The fake world records the vector of every delivered all-core test that failed, a cut one aside, and never clears it; a TIGHTEN test at or past one on every core it moved breaks the run. The explorer injects an unnamed failure whose exact replay passes, a one-off, and reaches TIGHTEN after one in STEADY and one in TRANSIENT (D97; PLAN Next 77, matrix cell CD-12)"
+statement = "The fake world records the vector of every delivered all-core test and Bisect slot that failed or whose verdict was lost, a cut one aside, and of every dead boot it records (ALLCORE.failed_vector.explorer), and never clears it; a TIGHTEN test at or past one on every core it moved breaks the run; it also records which of them failed twice and which failed in a Bisect slot, for the Abort rule of L30.e.explorer. The explorer injects an unnamed failure whose exact replay passes, a one-off, and reaches TIGHTEN after one in STEADY and one in TRANSIENT (D97; PLAN Next 77, matrix cell CD-12)"
 proof = "built"
 
 [[requirement]]
@@ -3259,7 +3259,7 @@ task = "S3"
 
 [[requirement]]
 id = "L30.e"
-statement = "Abort with no value changed returns to completed, save the unresolved failure of L30.e.failed; abort after a back-off ends aborted"
+statement = "Abort with no value changed returns to completed, save the unresolved failure of L30.e.failed and a remembered failure that bars the values (D118.abort); abort after a back-off ends aborted"
 proof = "built"
 
 [[requirement]]
@@ -3279,7 +3279,7 @@ proof = "built"
 
 [[requirement]]
 id = "L30.e.explorer"
-statement = "The fake world keeps its own record of what a validation owes: a failed test at the validated values owes its stage's test, and a dead boot while the stored cores hold them or a stock core's machine check owes the next test at them, whatever its stage. While the cores hold those values no future completes owing, and an Abort ends aborted exactly when something is owed. The explorer validates a session that owns two of three cores, one at stock, with endurance on and two faults left: a dead boot after LIVE1's last test then an Abort, a memory failure naming the core it does not own then a skipped memory test, a stock core's machine check then an Abort, and every routine fault (D95 and D101; PLAN Next 74, 76 and 77, matrix blind spots 1 and 3)"
+statement = "The fake world keeps its own record of what a validation owes: a failed test at the validated values owes its stage's test, and a dead boot while the stored cores hold them or a stock core's machine check owes the next test at them, whatever its stage. While the cores hold those values no future completes owing, and an Abort ends aborted exactly when something is owed or the values sit at or past a failure the world still holds against them on every core it moved: one no exact replay passed in its epoch, one that failed twice (D118.again) or a failed Bisect slot's vector (D116); a session aborted otherwise breaks the run (D118.abort). The explorer validates a session that owns two of three cores, one at stock, with endurance on and two faults left: a dead boot after LIVE1's last test then an Abort, a memory failure naming the core it does not own then a skipped memory test, a stock core's machine check then an Abort, and every routine fault (D95 and D101; PLAN Next 74, 76 and 77, matrix blind spots 1 and 3)"
 proof = "built"
 
 [[requirement]]
@@ -4428,6 +4428,41 @@ proof = "built"
 [[requirement]]
 id = "D116.explorer"
 statement = "The explorer starts a three-core CPU, halved into a pair and a single core, at its SOAK watch with three unnamed failures to spend, so a future fails the watch, then the pair, then the single core in one Bisect: every future comes to rest and none completes at or past a vector a failed group ran at (D116; PLAN Next 77)"
+proof = "built"
+
+[[requirement]]
+id = "D118"
+statement = "A session never completes at or past a remembered failed vector on every core that vector moved unless its one-off was cleared: at FINALIZE, before the dirty check, the first uncleared remembered vector in stored order that the held values are at or past loosens each core it moved one fine step with no fail bound, the cores having failed together (D102), again until none bars; the session then names the vectors and the new values and runs its pass from LIVE1, so one pass proves them, and a validation completes at the loosened values. This holds after each early exit of a Bisect that leaves a failed group unresolved: a crash in a one-core slot, a record of a core in its own slot, between slots or in a Q6 replay, and a record while the full-set re-test waits (D118 and D116 amended 2026-10-28, tuning-loops-round2.md; GitHub issue 20; PLAN Next 85)"
+proof = "built"
+
+[[requirement]]
+id = "D118.cleared"
+statement = "A remembered vector is cleared by the first clean all-core pass (PASS, no machine check, not skipped) at that vector after its first failure, when that failure came from a test outside a Bisect and the session has remembered no failure since: a stage test re-run at it, the full-set re-test of the Bisect it began and a validation's replay at it all clear it. A Bisect slot's failure is never cleared, so a stage test at a failed slot's vector after a conviction clears nothing (D116); a LIVE1 test or a LIVE1-begun slot at the vector clears nothing, and a continue or a re-engage between the failure and the pass leaves it uncleared. A close and resume keep the mark and the failure still to be cleared, and a validation and a continue keep the marks (D118 and D95; PLAN Next 85, review round 1)"
+proof = "built"
+
+[[requirement]]
+id = "D118.again"
+statement = "A later failure at a remembered vector ends its one-off exemption for good: a cleared mark goes, and no later re-test clears the vector again, a re-test that first named a core the session does not own included (D118: the one-off of the 2026-10-20 card is a single unnamed failure; PLAN Next 85)"
+proof = "built"
+
+[[requirement]]
+id = "D118.live1"
+statement = "A LIVE1-begun Bisect remembers the vector of each slot that fails, from a one-core load's silicon report, a dead boot the flow judges and a lost verdict, so TIGHTEN and FINALIZE see it; a LIVE1 test outside a Bisect, a conviction and an incident remember nothing (D118 and D116 amended 2026-10-28; PLAN Next 85)"
+proof = "built"
+
+[[requirement]]
+id = "D118.abort"
+statement = "An Abort of a validation whose values an uncleared remembered failure bars, on every core it moved, ends aborted with every owned core at its baseline, sending no value back, as one owing a replay does: a failure that repeated at those values (D118.again), a failed Bisect slot's vector, or a failure stored by a build that kept no mark. A validation whose single failure at its values an exact replay passed clean is restored completed with its values, as is one at values no remembered failure bars (D118 and D95; PLAN Next 85, review round 1)"
+proof = "built"
+
+[[requirement]]
+id = "D118.stored"
+statement = "The stored session keeps the cleared vectors and the one failure a re-test may still clear; a session stored before the record existed reads as none cleared and none clearable. A core is an integer in every stored vector, never 0.0 or true. A failed list naming a vector twice refuses the session naming failed_vectors, a cleared list that is not a list of owned vectors, holds a vector twice or names one not remembered refuses it naming cleared_vectors, and a clearable vector that is malformed, not remembered or already cleared refuses it naming clearable_vector (D118; PLAN Next 85)"
+proof = "built"
+
+[[requirement]]
+id = "D118.explorer"
+statement = "The explorer starts the three-core D116 CPU at its SOAK watch and at its first LIVE1 test with three dead boots to spend: every future comes to rest and none completes at or past a vector a failed group ran at, LIVE1-begun slots included (D118; PLAN Next 85)"
 proof = "built"
 
 [[requirement]]

@@ -158,6 +158,8 @@ def stored(s: SessionState) -> Stored:
         setup=s.setup,
         base_co=s.base_co,
         failed_vectors=s.failed_vectors,
+        cleared_vectors=s.cleared_vectors,
+        clearable_vector=s.clearable_vector,
     )
 
 
@@ -178,6 +180,8 @@ def reconstruct(st: Stored) -> SessionState:
         setup=st.setup,
         base_co=st.base_co,
         failed_vectors=st.failed_vectors,
+        cleared_vectors=st.cleared_vectors,
+        clearable_vector=st.clearable_vector,
     )
 
 
@@ -448,7 +452,7 @@ def _reengage(s: SessionState, e: Resume, w: World) -> Transition:
         else:
             cores.append(replace(idle, phase=Phase.PROVEN, value=ground))
             said.append(f"core {rec.core} at {ground} (proven)")
-    reengaged = replace(resumed, cores=tuple(cores))
+    reengaged = replace(resumed, cores=tuple(cores), clearable_vector=None)
     notice = Announce("reengaged", f"session {st.session_id} re-engaged on proven ground: " + ", ".join(said))
     return Transition(reengaged, (notice, ReadCrashEvidence(e.session_id, e.child_id)))
 
@@ -508,6 +512,7 @@ def _carry_on(
             slot=Waiting(token, 0.0),
             streaks=Streaks(),
             next_token=token + 1,  # equivalent-mutant: tokens only need to rise, nothing reads their step
+            clearable_vector=None,
         )
     )
     flow = entered.flow
@@ -588,6 +593,7 @@ def _validate(s: SessionState, e: ValidateProfile, w: World) -> Transition:
         setup=st.setup,
         base_co=st.base_co,
         failed_vectors=st.failed_vectors,
+        cleared_vectors=st.cleared_vectors,
     )
     changed = "; ".join(filter(None, (_setup_changes(st.setup, w.setup), _held_base_changes(st, w.bios_co))))
     if changed:
@@ -684,7 +690,8 @@ def _attributed(
     after = s
     if e.dirty_end and s.flow.stage is Stage.BISECT and any(r.in_test for r in s.cores):
         after = replace(s, flow=replace(s.flow, bisect=replace(s.flow.bisect, quick=False)))
-    if (verdict.lost is not None or verdict.flow_crash) and _replay_stage(s.flow) in ALLCORE | {Stage.MEMORY}:
+    slot_or_whole = s.flow.bisect is not None or _replay_stage(s.flow) in ALLCORE | {Stage.MEMORY}
+    if (verdict.lost is not None or verdict.flow_crash) and slot_or_whole:
         after = _remember(after, tuple((core, resident(s, core)) for core, _ in s.baseline))
     early: list[Pause] = []
     if verdict.lost is not None:
@@ -1118,9 +1125,10 @@ def _pause_request(s: SessionState) -> Transition:
     return Transition(s, refused="nothing is running")
 
 
-def _failure_unresolved(flow: Flow) -> bool:
+def _failure_unresolved(s: SessionState) -> bool:
+    flow = s.flow
     solo = flow.live1 is not None and flow.live1.solo is not None
-    return bool(flow.unreplayed) or flow.bisect is not None or solo
+    return bool(flow.unreplayed) or flow.bisect is not None or solo or _barring(s) is not None
 
 
 def _abort(s: SessionState) -> Transition:
@@ -1129,7 +1137,7 @@ def _abort(s: SessionState) -> Transition:
     s = _clear_in_test(_keep_pick(s))
     profile = s.flow.validating if s.flow is not None else None
     unmoved = profile is not None and not s.flow.carried and tuple((r.core, r.value) for r in s.cores) == profile
-    if unmoved and not _failure_unresolved(s.flow):
+    if unmoved and not _failure_unresolved(s):
         effects = _stop_effects(s, profile, journal=True)
         done = replace(s, lifecycle=Lifecycle.COMPLETED, flow=None, slot=None, pause=None, streaks=Streaks())
         effects += [
@@ -1442,7 +1450,7 @@ def _allcore_next(s: SessionState, w: World) -> Transition:
             return _after_tighten(s, w)
         for core in members:
             values[core] -= cfg.fine_step
-        if any(all(values[core] <= value for core, value in failed) for failed in s.failed_vectors):
+        if any(_at_or_past(values, failed) for failed in s.failed_vectors):
             return _after_tighten(s, w)
     load = _stage_load(flow.stage, cursor)
     first = s.cores[0].core
@@ -1700,10 +1708,37 @@ def _write_rank(w: World, core: int, value: int) -> int:
     return 0 if value > held else 2  # equivalent-mutant: only the ranks' order counts, held never equals value
 
 
+def _at_or_past(values: dict[int, int], vector: tuple[tuple[int, int], ...]) -> bool:
+    return all(values[core] <= value for core, value in vector)
+
+
+def _barring(s: SessionState) -> tuple[tuple[int, int], ...] | None:
+    held = dict(_held(s))
+    return next((v for v in s.failed_vectors if v not in s.cleared_vectors and _at_or_past(held, v)), None)
+
+
+def _unbarred(s: SessionState) -> tuple[SessionState, tuple[Announce, ...]]:
+    """Each core a barring vector moved loosens one fine step with no fail bound, since the cores failed together
+    (D102), until no remembered failure its own replay never cleared bars the held values (D118)."""
+    barred = []
+    while (vector := _barring(s)) is not None:
+        barred.append(vector)
+        moved = {core for core, value in vector if value}
+        s = replace(s, cores=tuple(search.loosen(r, s.config) if r.core in moved else r for r in s.cores))
+    if not barred:
+        return s, ()
+    vectors = "; ".join(", ".join(f"{core}: {value}" for core, value in vector) for vector in barred)
+    values = ", ".join(f"{r.core}: {r.value}" for r in s.cores)
+    said = f"the held values were at or past failed vectors no replay cleared ({vectors}); loosened to {values}"
+    return s, (Announce("loosened", f"{said}, and LIVE1 proves them again"),)
+
+
 def _finalize(s: SessionState, w: World) -> Transition:
+    s, loosened = _unbarred(s)
     flow = s.flow
-    if flow.dirty or (flow.unreplayed and _held(s) == flow.validating):
-        return _enter_live1(replace(s, flow=replace(flow, dirty=False)), w)
+    if loosened or flow.dirty or (flow.unreplayed and _held(s) == flow.validating):
+        entered = _enter_live1(s, w)
+        return replace(entered, effects=(*loosened, *entered.effects))
     if flow.carried:
         final = replace(flow, stage=Stage.LIVE1, live1=Live1(back=Stage.FINALIZE))
         return _live1_next(replace(s, flow=final), w, None)
@@ -1769,17 +1804,28 @@ def _owe_replay(s: SessionState, vector: tuple[tuple[int, int], ...]) -> Session
 
 
 def _remember(s: SessionState, vector: tuple[tuple[int, int], ...]) -> SessionState:
-    if vector in s.failed_vectors or not any(value for _, value in vector):
+    """Only a vector's first failure outside a Bisect can be cleared, by the next clean all-core pass at it; a
+    Bisect slot's failure never is, and a later failure ends that for good, a cleared mark included, since the
+    owner's one-off is a single failure (D95, D116, D118)."""
+    if not any(value for _, value in vector):
         return s
-    return replace(s, failed_vectors=(*s.failed_vectors, vector))
+    if vector in s.failed_vectors:
+        cleared = tuple(v for v in s.cleared_vectors if v != vector)
+        return replace(s, cleared_vectors=cleared, clearable_vector=None)
+    clearable = vector if s.flow.bisect is None else None
+    return replace(s, failed_vectors=(*s.failed_vectors, vector), clearable_vector=clearable)
 
 
 def _replayed(s: SessionState, spec: TestSpec, rep: Report) -> SessionState:
     if rep.group is Group.SILICON or (rep.group is Group.ENVIRONMENT and spec.load is Load.SOAK):
-        failed = _remember(s, spec.vector) if spec.load in ALLCORE_LOADS else s
+        failed = _remember(s, spec.vector) if spec.load in ALLCORE_LOADS or s.flow.bisect is not None else s
         return _owe_replay(failed, spec.vector)
+    if rep.group is not Group.PASS or rep.evidence or rep.skipped:
+        return s
+    if spec.load in ALLCORE_LOADS and spec.vector == s.clearable_vector:
+        s = replace(s, cleared_vectors=(*s.cleared_vectors, spec.vector), clearable_vector=None)
     flow = s.flow
-    if rep.group is not Group.PASS or rep.evidence or rep.skipped or spec.vector != flow.validating:
+    if spec.vector != flow.validating:
         return s
     cleared = (_replay_stage(flow), Stage.LIVE1)
     return replace(s, flow=replace(flow, unreplayed=tuple(owed for owed in flow.unreplayed if owed not in cleared)))

@@ -327,6 +327,8 @@ class SessionState:
     setup: tuple[tuple[str, str], ...] = ()
     base_co: tuple[tuple[int, int | None], ...] = ()
     failed_vectors: tuple[tuple[tuple[int, int], ...], ...] = ()
+    cleared_vectors: tuple[tuple[tuple[int, int], ...], ...] = ()
+    clearable_vector: tuple[tuple[int, int], ...] | None = None
 
     def __post_init__(self) -> None:
         problems = list(_state_problems(self))
@@ -524,6 +526,8 @@ class Stored:
     setup: tuple[tuple[str, str], ...] = ()
     base_co: tuple[tuple[int, int | None], ...] = ()
     failed_vectors: tuple[tuple[tuple[int, int], ...], ...] = ()
+    cleared_vectors: tuple[tuple[tuple[int, int], ...], ...] = ()
+    clearable_vector: tuple[tuple[int, int], ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)

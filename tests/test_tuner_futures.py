@@ -96,6 +96,8 @@ def clone(fake: Fake) -> Fake:
     twin.failed_at = set(fake.failed_at)
     twin.failed_allcore = set(fake.failed_allcore)
     twin.failed_vectors = set(fake.failed_vectors)
+    twin.failed_twice = set(fake.failed_twice)
+    twin.failed_slots = set(fake.failed_slots)
     twin.stock_fail_owed = set(fake.stock_fail_owed)
     twin.superseded = set(fake.superseded)
     twin.outside = set(fake.outside)
@@ -144,6 +146,8 @@ def key(fake: Fake) -> tuple:
         frozenset(fake.failed_at),
         frozenset(fake.failed_allcore),
         frozenset(fake.failed_vectors),
+        frozenset(fake.failed_twice),
+        frozenset(fake.failed_slots),
         frozenset(fake.stock_fail_owed),
         frozenset(fake.superseded),
         frozenset(fake.outside),
@@ -152,6 +156,7 @@ def key(fake: Fake) -> tuple:
         frozenset(fake.behind),
         frozenset(fake.owed),
         fake.died_between_slots,
+        fake.epoch,
     )
 
 
@@ -548,6 +553,18 @@ def test_every_future_of_a_soak_failure_whose_bisection_fails_in_two_groups_comp
         assert fake.progress()
     survey = explore(fake, {"false_fail": 3, "total": 3}, cap=2_000_000)
     assert Stage.SOAK in survey.bisected
+    assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
+    assert "completed" in survey.leaves
+
+
+@pytest.mark.req("D118.explorer")
+@pytest.mark.parametrize("stage", [Stage.SOAK, Stage.LIVE1])
+def test_no_future_of_three_crashes_from_a_soak_watch_or_a_first_live1_test_completes_past_a_failed_group(stage):
+    fake = tiny(3, [-3, -3, -3], 2)
+    while fake.worker is None or fake.worker.spec.stage is not stage:
+        assert fake.progress()
+    survey = explore(fake, {"crash": 3, "total": 3}, cap=2_000_000)
+    assert stage in survey.bisected
     assert set(survey.leaves) <= {"completed", "quarantined", "idle"}
     assert "completed" in survey.leaves
 
