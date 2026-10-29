@@ -28,6 +28,7 @@ EXIT_REFUSED = 5
 EXIT_ABORTED = 6
 EXIT_LOCKED = 7
 EXIT_VALIDATION_ABORTED = 8  # equivalent-mutant: any free code below 128 reads the same through EXIT_MEANINGS
+EXIT_ABORTED_UNREAD = 9  # equivalent-mutant: any free code below 128 reads the same through EXIT_MEANINGS
 EXIT_SIGNAL = 130
 
 EXIT_MEANINGS = {
@@ -38,6 +39,7 @@ EXIT_MEANINGS = {
     EXIT_ABORTED: "aborted",
     EXIT_LOCKED: "another CO writer holds the lock",
     EXIT_VALIDATION_ABORTED: "validation aborted; the session stays completed",
+    EXIT_ABORTED_UNREAD: "aborted unread; the session could not be read, and the log says what became of the CO",
     EXIT_SIGNAL: "stopped by a signal; every owned core is sent back to its baseline",
 }
 
@@ -78,7 +80,12 @@ corecycler headless commands:
   corecycler restart SESSION_ID    start a session paused on a changed setup over
   corecycler abort SESSION_ID      stop a held session without a driver as aborted: its
                                    last boot is attributed first, then every owned core
-                                   goes back to its baseline; no test runs
+                                   goes back to its baseline; no test runs. One that
+                                   cannot be read ends aborted unread, kept as stored:
+                                   every core its CO journal shows it wrote in this
+                                   boot goes to stock, and when the journal cannot be
+                                   read or another session wrote after it, no CO is
+                                   written: reboot or check the CO before tuning again
   corecycler hang-watch            every 15 s (--every S), reset the machine through
                                    sysrq when this user's session, in a test or between
                                    tests, has written no heartbeat for more than 120 s

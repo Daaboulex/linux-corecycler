@@ -1478,6 +1478,15 @@ CREATE INDEX idx_co_journal_proven ON tuner_co_journal(session_id, core_id, surv
         if cur.rowcount != 1:
             raise sqlite3.IntegrityError(f"session {child_id} is missing, so it cannot be linked to {parent_id}")
 
+    def abort_held_session(self, session_id: int) -> None:
+        cur = self.__conn.execute(
+            "UPDATE tuner_sessions SET status='aborted', updated_at=?"
+            " WHERE id=? AND machine_json IS NOT NULL AND status IN ('running', 'paused')",
+            (self._now_iso(), session_id),
+        )
+        if cur.rowcount != 1:
+            raise sqlite3.IntegrityError(f"session {session_id} is no longer running or paused")
+
     def journal_inherit(self, session_id: int, proven: dict[int, int]) -> None:
         self.__conn.executemany(
             """\

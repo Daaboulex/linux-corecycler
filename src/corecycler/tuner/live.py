@@ -1418,10 +1418,72 @@ class LiveRig:
         child_id = self.store.new_session_id() if carry else None
         self.post(Resume(session_id, reengage, child_id), self.world_for_resume(session_id, self.world_checked()))
 
-    def resume_for_abort(self, session_id: int, reengage: bool) -> None:
-        """Resume a stored session for an abort, which runs no test: only what reverting the CO needs is checked."""
+    def resume_for_abort(self, session_id: int, reengage: bool) -> bool:
+        """Resume a stored session for an abort, which runs no test: only what reverting the CO needs is checked. A
+        running or paused session the reader refuses is ended aborted unread instead, and True says the abort went
+        that way, refused or not."""
         reverting = replace(self.world(), preflight_refusal=self.hardware.revert_problem())
-        self.post(Resume(session_id, reengage, None, abort=True), self.world_for_resume(session_id, reverting))
+        world = self.world_for_resume(session_id, reverting)
+        unread = world.stored_unread
+        if unread is None or not any(
+            s.id == session_id and s.status in HELD_STATUSES for s in self.store.db.list_machine_sessions()
+        ):
+            self.post(Resume(session_id, reengage, None, abort=True), world)
+            return False
+        self._abort_unread(session_id, unread, reverting.preflight_refusal)
+        return True
+
+    def _abort_unread(self, session_id: int, unread: str, revert_problem: str | None) -> None:
+        """End a held session the reader refuses as aborted without reading it: every core its CO journal shows it
+        wrote in this boot goes to 0, then one transaction stores the status and the event that says why and what
+        became of the CO, then the stock marker naming the session goes, as a stored abort's does."""
+        if revert_problem is not None:
+            self._refuse(revert_problem)
+            return
+        acting = SessionState(lifecycle=Lifecycle.ABORTED, session_id=session_id)
+        cores, co = self._unread_co(session_id)
+        failed = self._apply(acting, RevertAll(tuple((core, 0) for core in cores), True))
+        if failed is not None:
+            self._refuse(failed.error)
+            return
+        refused = ", ".join(str(core) for core in cores if self.resident[core] is None)
+        if refused:
+            co = (
+                f"{co}; the write to cores {refused} was refused, so their CO is unknown: reboot or check the CO"
+                " before tuning again"
+            )
+        text = f"aborted unread: {unread}; {co}"
+        try:
+            with self.store.db.transaction():
+                self.store.db.abort_held_session(session_id)
+                self.store.event(session_id, "aborted", text, self.boot)
+        except sqlite3.Error as exc:
+            self._refuse(f"session {session_id} could not be marked aborted: {exc}")
+            return
+        self.say(f"aborted: {text}")
+        failed = self._landed(session_id)
+        if failed is not None:
+            self._apply(acting, Announce("database_failed", failed.error))
+
+    def _unread_co(self, session_id: int) -> tuple[tuple[int, ...], str]:
+        """The cores an unread abort sends to stock, those its CO journal names in this boot unless another session
+        wrote after it, and what its event says of the CO."""
+        check = "so no CO was written: reboot or check the CO before tuning again"
+        try:
+            wrote = self.store.journal_rows(session_id, self.boot)
+            taken = self.store.taken_over(session_id, self.boot)
+        except (sqlite3.Error, CorruptSessionError) as exc:
+            return (), f"its CO journal could not be read ({exc}), {check}"
+        cores = tuple(sorted({row.core_id for row in wrote}))
+        if not cores:
+            return (), "nothing it wrote is resident in this boot"
+        if taken:
+            return (), f"another session wrote the CO after it in this boot, {check}"
+        return cores, f"cores {', '.join(str(core) for core in cores)} sent to stock"
+
+    def _refuse(self, refusal: str) -> None:
+        self.refused = refusal
+        self.say(f"refused: {refusal}")
 
     def continue_on_setup(self) -> None:
         self.post(ContinueOnSetup(self.store.new_session_id()), self.world_for_start())

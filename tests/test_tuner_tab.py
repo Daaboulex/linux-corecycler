@@ -342,8 +342,42 @@ def test_an_unreadable_session_is_named(db, home, tmp_path, machine_json, error)
     saved = save_machine_session(db, tmp_path, "paused")
     db._execute_raw(f"UPDATE tuner_sessions SET machine_json = {machine_json} WHERE id = ?", (saved.session_id,))
     t = tab(db)
-    assert t._status.text() == f"session {saved.session_id} could not be read: {error}"
+    assert (
+        t._status.text() == f"Session {saved.session_id}: Paused; session {saved.session_id} could not be read: {error}"
+    )
     assert t._cores.rowCount() == 0
+
+
+READABLE_ABORT = (
+    "Abort the session? Every owned core goes back to its baseline and the session stops as aborted;"
+    " Resume can take it up again."
+)
+
+
+@pytest.mark.req("UNREAD.abort")
+@pytest.mark.parametrize("unread", [False, True])
+def test_the_abort_dialog_of_an_unreadable_session_names_it_and_says_what_it_does_to_the_co(
+    db, home, launched, tmp_path, unread
+):
+    saved = save_machine_session(db, tmp_path, "running")
+    if unread:
+        db._execute_raw(
+            f"UPDATE tuner_sessions SET machine_json = {UNREADABLE_ROWS[0][0]} WHERE id = ?", (saved.session_id,)
+        )
+    t = tab(db)
+    tt.QMessageBox.question.return_value = tt.QMessageBox.StandardButton.Yes
+    t._buttons["Abort"].click()
+    said = tt.QMessageBox.question.call_args.args[2]
+    if unread:
+        assert said.startswith(
+            f"Abort the session? It stops as aborted unread, as session {saved.session_id} could not be read:"
+            f" {UNREADABLE_ROWS[0][1]}, and stays in History as stored."
+        )
+        assert "CO journal" in said and "reboot or check the CO" in said and "Resume" not in said
+        assert t._status.text().startswith(f"Session {saved.session_id}: Interrupted; session {saved.session_id}")
+    else:
+        assert said == READABLE_ABORT
+    assert [command[4:7] for command, _ in launched] == [["--abort", "--session", str(saved.session_id)]]
 
 
 def test_a_running_driver_locks_start_and_offers_its_controls(db, home, tmp_path, monkeypatch):

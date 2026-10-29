@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from corecycler.cli import (
     EXIT_ABORTED,
+    EXIT_ABORTED_UNREAD,
     EXIT_COMPLETED,
     EXIT_LOCKED,
     EXIT_PAUSED,
@@ -990,6 +991,12 @@ OUTCOME_NOTES = {
         "A failed write is in the log.",
         "normal",
     ),
+    EXIT_ABORTED_UNREAD: (
+        "Tuning aborted unread",
+        "The session could not be read, so it ended aborted by its status alone. The log says which cores its CO "
+        "journal named went to stock, or why no CO was written; then reboot or check the CO before tuning again.",
+        "critical",
+    ),
 }
 
 
@@ -1032,7 +1039,8 @@ def _run(args: argparse.Namespace, rig: LiveRig, say: Callable[[str], None]) -> 
     elif args.validate:
         rig.validate(args.session)
     elif args.abort:
-        rig.resume_for_abort(args.session, args.reengage)
+        if rig.resume_for_abort(args.session, args.reengage) and rig.refused is None:
+            return EXIT_ABORTED_UNREAD
     else:
         rig.resume(args.session, args.reengage, carry=args.resume or args.continue_on)
     if rig.refused is not None:

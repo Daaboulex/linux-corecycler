@@ -5350,7 +5350,7 @@ def as_written(r: LiveRig) -> tuple:
     ],
     ids=["no-base-co", "malformed-json", "allcore-a-list"],
 )
-@pytest.mark.parametrize("flag", ["--resume", "--continue", "--restart", "--abort", "--validate"])
+@pytest.mark.parametrize("flag", ["--resume", "--continue", "--restart", "--validate"])
 def test_a_command_on_a_session_whose_stored_state_cannot_be_read_is_refused_by_name_and_writes_nothing(
     tmp_path, flag, machine_json, error
 ):

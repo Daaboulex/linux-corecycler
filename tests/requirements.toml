@@ -104,7 +104,12 @@ proof = "built"
 
 [[requirement]]
 id = "UNREAD.command"
-statement = "resume N, validate N, continue N, restart N and abort N of a session whose stored state cannot be read (a missing key, a wrong type, malformed JSON) are refused as session N could not be read with the error, exit refused, never a crash, and write nothing to the database or the CO"
+statement = "resume N, validate N, continue N and restart N of a session whose stored state cannot be read (a missing key, a wrong type, malformed JSON), and abort N of one that is not running or paused, are refused as session N could not be read with the error, exit refused, never a crash, and write nothing to the database or the CO; abort N of a running or paused one ends it aborted unread (UNREAD.abort)"
+proof = "built"
+
+[[requirement]]
+id = "UNREAD.abort"
+statement = "abort N of a running or paused session whose stored state cannot be read ends it aborted unread inside the writer lock, judging nothing and running no test: every core its CO journal names in this boot goes to 0, journaled for the session and confirmed, a core whose write is refused named in the event as unknown, unless another session wrote after it; a journal that cannot be read, no rows in this boot or another session's later write writes nothing; one transaction stores the status aborted, only for that id stored, running or paused, and one aborted event naming the reader's refusal and what became of the CO; the stock marker naming it is cleared; its stored text stays byte for byte; it exits with its own code, whose notification never says every owned core went back; it is refused while reverting the CO is refused, and refused leaving the session as it is when the revert cannot be journaled or the session stopped being held; a not-held unreadable session, a session not stored and a readable session abort as before; Start then asks, naming the session; the Tuner tab's Abort dialog names the refusal and what the abort does to the CO, and its status line shows the status beside the refusal (PLAN Next 31, scratch/design/brief-abort-unreadable.md as amended before code)"
 proof = "built"
 
 [[requirement]]

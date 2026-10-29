@@ -154,13 +154,17 @@ unless the stopped test had already caught a failure naming a core: that failure
 judged and the session goes on from its verdict; **Stop** stops now and drops such a
 failure; both put every selected core back to its baseline and keep the
 session resumable. **Abort** (with a confirmation) puts every selected core back to its
-baseline and stops the session as aborted, which Resume can still take up. **Resume**
+baseline and stops the session as aborted, which Resume can still take up. A paused or
+interrupted session that cannot be read stops as aborted unread by its status alone and
+stays in History as stored: every core its CO journal shows it wrote in this boot goes
+back to stock, and when the journal cannot be read or another session wrote after it, no
+CO is written, so reboot or check the CO before tuning again. **Resume**
 goes on with the newest session, **Validate** proves a completed session's values again,
 and **Continue** and **Restart** answer a setup change (below). The tab follows the newest session through the history database,
 so a driver started from a terminal shows there too and its controls work on it.
 
 The same actions run headless: `corecycler tune` (with `--config FILE` or `--cores`),
-`resume`, `validate`, `continue` and `restart` take a session id, `corecycler status`
+`resume`, `validate`, `continue`, `restart` and `abort` take a session id, `corecycler status`
 lists the sessions, and `corecycler --help` lists the flags and exit codes.
 `corecycler margins SESSION_ID` prints, for each core and each 100 MHz of its clock, the
 deepest offset its one-core tests passed above the shallowest that failed there, beside

@@ -568,9 +568,8 @@ class TunerTab(QWidget):
         reason = f". {pause_text(pause[-1]['message'])}" if view.status == "paused" and pause else ""
         shown = shown_status(view.status, self._running)
         status = SESSION_STATUS_LABELS.get(shown, shown)
-        self._status.setText(f"Session {view.session_id}: {status}{reason}")
-        if view.problem is not None:
-            self._status.setText(view.problem)
+        unread = "" if view.problem is None else f"; {view.problem}"
+        self._status.setText(f"Session {view.session_id}: {status}{reason}{unread}")
         self._show_test(view)
         self._show_cores(view)
         self._show_events(view)
@@ -732,11 +731,22 @@ class TunerTab(QWidget):
         return ["--reengage"] if answer == QMessageBox.StandardButton.Yes else None
 
     def _on_abort(self) -> None:
+        view = self._view
+        said = (
+            "Abort the session? Every owned core goes back to its baseline and the session stops as aborted;"
+            " Resume can take it up again."
+        )
+        if view is not None and view.stored is None:
+            said = (
+                f"Abort the session? It stops as aborted unread, as {view.problem}, and stays in History as stored."
+                " Every core its CO journal shows it wrote in this boot goes back to stock; when the journal cannot"
+                " be read or another session wrote after it, no CO is written: reboot or check the CO before tuning"
+                " again."
+            )
         answer = QMessageBox.question(
             self,
             "Abort Tuning",
-            "Abort the session? Every owned core goes back to its baseline and the session stops as aborted;"
-            " Resume can take it up again.",
+            said,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
