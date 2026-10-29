@@ -954,3 +954,49 @@ def test_resume_re_engages_a_quarantined_session_only_after_a_yes(db, home, laun
     t._buttons["Resume"].click()
     sent = [flag for command, _ in launched for flag in command if flag in ("--resume", "--reengage")]
     assert sent == (flags or [])
+
+
+def make_unreadable(db, session_id: int) -> None:
+    db._execute_raw(f"UPDATE tuner_sessions SET machine_json = {UNREADABLE_ROWS[0][0]} WHERE id = ?", (session_id,))
+
+
+@pytest.mark.req("UNREAD.offered")
+@pytest.mark.parametrize("unread", [False, True], ids=["readable", "unread"])
+def test_after_an_abort_resume_is_offered_only_for_a_session_that_can_be_read(db, home, launched, tmp_path, unread):
+    saved = save_machine_session(db, tmp_path, "paused")
+    if unread:
+        make_unreadable(db, saved.session_id)
+    db.abort_held_session(saved.session_id)
+    t = tab(db)
+    refusal = f"; session {saved.session_id} could not be read: {UNREADABLE_ROWS[0][1]}" if unread else ""
+    assert t._status.text() == f"Session {saved.session_id}: Aborted{refusal}"
+    assert t._buttons["Resume"].isEnabled() is not unread
+    t._buttons["Resume"].click()
+    assert [command[4:7] for command, _ in launched] == (
+        [] if unread else [["--resume", "--session", str(saved.session_id)]]
+    )
+
+
+@pytest.mark.req("UNREAD.offered")
+@pytest.mark.parametrize("unread", [False, True], ids=["readable", "unread"])
+@pytest.mark.parametrize(
+    ("name", "status", "event"),
+    [
+        ("Resume", "paused", None),
+        ("Resume", "running", None),
+        ("Resume", "quarantined", None),
+        ("Validate", "completed", None),
+        ("Continue", "paused", SETUP_PAUSE),
+        ("Restart", "paused", SETUP_PAUSE),
+    ],
+)
+def test_a_session_action_the_driver_refuses_unread_is_offered_only_for_a_session_that_can_be_read(
+    db, home, tmp_path, name, status, event, unread
+):
+    saved = save_machine_session(db, tmp_path, status)
+    if event is not None:
+        db.insert_tuner_event(saved.session_id, event, this_boot(), "paused")
+    if unread:
+        make_unreadable(db, saved.session_id)
+    t = tab(db)
+    assert t._buttons[name].isEnabled() is not unread

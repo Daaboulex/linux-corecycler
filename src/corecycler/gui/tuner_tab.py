@@ -630,14 +630,17 @@ class TunerTab(QWidget):
         view = self._view
         idle = not self._running and not self._test_running and self._child is None
         status = view.status if view is not None else None
+        readable = view is not None and view.stored is not None
         self._buttons["Start"].setEnabled(idle and self._co_range is not None and bool(self._core_boxes))
         for name in ("Pause", "Stop"):
             self._buttons[name].setEnabled(self._running)
         self._buttons["Abort"].setEnabled(self._running or (idle and status in ("running", "paused")))
-        self._buttons["Resume"].setEnabled(idle and status in ("running", "paused", "aborted", "quarantined"))
-        self._buttons["Validate"].setEnabled(idle and status == "completed")
+        self._buttons["Resume"].setEnabled(
+            idle and readable and status in ("running", "paused", "aborted", "quarantined")
+        )
+        self._buttons["Validate"].setEnabled(idle and readable and status == "completed")
         for name in ("Continue", "Restart"):
-            self._buttons[name].setEnabled(idle and view is not None and view.setup_changed())
+            self._buttons[name].setEnabled(idle and readable and view.setup_changed())
 
     def _note(self, text: str) -> None:
         log.info("tuner tab: %s", text)
@@ -711,7 +714,7 @@ class TunerTab(QWidget):
             return
         extra: list[str] | None = []
         if action == "restart":
-            extra = self._over_set_values(view.stored.config.selected) if view.stored is not None else []
+            extra = self._over_set_values(view.stored.config.selected)
         if action == "resume" and view.status == "quarantined":
             extra = self._reengage(view.session_id)
         if extra is None:

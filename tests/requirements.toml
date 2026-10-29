@@ -138,6 +138,11 @@ statement = "The Tuner tab's session view and History's session list and detail 
 proof = "built"
 
 [[requirement]]
+id = "UNREAD.offered"
+statement = "The Tuner tab offers Resume, Validate, Continue and Restart only for a session whose stored state can be read, through the same read that refuses a resume, since the driver can only refuse each for one that cannot (UNREAD.command), a session aborted unread among them; a readable aborted, paused, interrupted or quarantined session is offered Resume, a readable completed one Validate and a readable setup pause Continue and Restart, as before (PLAN Next 107)"
+proof = "built"
+
+[[requirement]]
 id = "C15"
 statement = "CLOCK_STRETCH is not produced"
 proof = "built"
