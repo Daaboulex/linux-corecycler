@@ -1829,6 +1829,11 @@ statement = "A record about another core: back it off in place, dirty, requeue i
 proof = "built"
 
 [[requirement]]
+id = "L07.G3.convict"
+statement = "A crash conviction in LIVE1, or one that ends a LIVE1-begun bisection back in LIVE1, requeues its core as a record's back-off does (L07.G3), a core LIVE1 already passed included, so LIVE1 tests its new value before it ends; a conviction outside LIVE1 queues no LIVE1 test"
+proof = "built"
+
+[[requirement]]
 id = "L07.G4"
 statement = "A crash with nobody convicted in LIVE1 is Bisect over the live cores with this LIVE1 slot as the spec"
 proof = "built"

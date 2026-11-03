@@ -77,6 +77,7 @@ from tests._old_rows import seed_old_session
 from tests._tuner_world import UNREADABLE_ROWS, Resume, fresh, run_to_rest, save_machine_session, start
 from tests.test_execution import FakeBackend, lane, make_supervisor, run_one, within
 from tests.test_smu_core_map import pr23_5600x
+from tests.test_tuner_slice_c import FAST, until_test
 
 CPUS = ((0, (0, 16)), (1, (1, 17)), (8, (8, 24)))
 DOMAINS = ((0, 0), (1, 0), (8, 1))
@@ -3727,6 +3728,87 @@ def test_a_record_that_ends_the_crash_s_bisection_back_in_live1_requeues_its_cor
             proven.append((fake.worker.spec.core, fake.worker.spec.value))
     assert (s.flow.stage, s.flow.live1.requeue, s.core(0).value, s.core(0).fb) == (Stage.LIVE1, (0,), held + 1, held)
     assert proven == [(1, tested), (0, held + 1)]
+
+
+@pytest.mark.req("L07.G3.convict")
+def test_a_crash_conviction_in_live1_requeues_a_core_it_already_passed_so_its_new_value_is_proven():
+    fake = fresh(3, [-12, -6, -3], 1, max_offset=-20, k_1t=2)
+    fake.config = replace(fake.config, selected=(0, 1))
+    start(fake)
+    passed = []
+    while fake.worker is None or fake.worker.spec.stage is not Stage.LIVE1 or fake.worker.spec.core != 1:
+        if fake.worker is not None and fake.worker.spec.stage is Stage.LIVE1:
+            passed.append(fake.worker.spec.core)
+        assert fake.progress()
+    held, tested = fake.state.core(0).value, fake.worker.spec.value
+    fake.crash((Evidence(0, False),))
+    fake.post(Resume(1))
+    convicted = fake.state.core(0)
+    proven = []
+    while fake.progress() and fake.state.flow.stage is Stage.LIVE1:
+        if fake.worker is not None:
+            proven.append((fake.worker.spec.core, fake.worker.spec.value))
+    assert (passed, convicted.fb, convicted.crash_count, convicted.value > held) == ([0], held, 1, True)
+    assert proven == [(1, tested), (0, convicted.value)]
+
+
+@pytest.mark.req("L07.G3.convict")
+def test_a_crash_conviction_of_a_core_live1_has_queued_already_tests_it_once_at_its_new_value():
+    fake = fresh(3, [-12, -6, -3], 1, max_offset=-20, k_1t=2)
+    fake.config = replace(fake.config, selected=(0, 1))
+    start(fake)
+    while fake.worker is None or fake.worker.spec.stage is not Stage.LIVE1 or fake.worker.spec.core != 1:
+        assert fake.progress()
+    fake.deliver(Report(Group.PASS, 1.0, evidence=(Evidence(0, True),)))
+    while fake.worker is None:
+        assert fake.progress()
+    queued = fake.worker.spec
+    fake.crash((Evidence(0, False),))
+    fake.post(Resume(1))
+    after = fake.state.core(0)
+    proven = []
+    while fake.progress() and fake.state.flow.stage is Stage.LIVE1:
+        if fake.worker is not None:
+            proven.append((fake.worker.spec.core, fake.worker.spec.value))
+    assert (queued.stage, queued.core, after.crash_count, after.value > queued.value) == (Stage.LIVE1, 0, 1, True)
+    assert proven == [(0, after.value)]
+
+
+@pytest.mark.req("L07.G3.convict")
+def test_a_crash_conviction_outside_live1_queues_no_live1_test():
+    s, world = resuming_from(Stage.STEADY, {})
+    held = s.core(0).value
+    after = read_at_resume(s, world, Evidence(0, False)).state
+    convicted = after.core(0)
+    assert (after.flow.stage, after.flow.live1, convicted.fb, convicted.crash_count) == (Stage.STEADY, None, held, 1)
+
+
+@pytest.mark.req("L07.G3.convict")
+def test_a_crash_conviction_that_ends_a_live1_begun_bisection_requeues_a_core_live1_already_passed():
+    fake = fresh(4, [-6] * 4, 2, max_offset=-8, **FAST)
+    start(fake)
+    passed = []
+    for _ in range(2):
+        until_test(fake, Stage.LIVE1)
+        passed.append(fake.worker.spec.core)
+        fake.deliver()
+    until_test(fake, Stage.LIVE1)
+    fake.crash()
+    fake.post(Resume(1))
+    while fake.worker is None or not any(dict(fake.worker.spec.vector)[core] for core in passed):
+        assert fake.progress()
+    spec, entry = fake.worker.spec, fake.state.flow.bisect.entry
+    target = next(core for core in passed if dict(spec.vector)[core])
+    held = dict(spec.vector)[target]
+    fake.crash((Evidence(target, False),))
+    fake.post(Resume(1))
+    convicted = fake.state.core(target)
+    proven = []
+    while fake.progress() and fake.state.flow.stage is Stage.LIVE1:
+        if fake.worker is not None:
+            proven.append((fake.worker.spec.core, fake.worker.spec.value))
+    assert (spec.stage, entry, convicted.fb, convicted.crash_count) == (Stage.BISECT, Stage.LIVE1, held, 1)
+    assert (target, convicted.value) in proven
 
 
 @pytest.mark.req("L18.d.7.records", "L18.d.7")

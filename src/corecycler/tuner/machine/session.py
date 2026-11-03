@@ -625,6 +625,7 @@ def _convict(s: SessionState, core: int) -> tuple[SessionState, bool]:
     flow = out.flow
     if flow.stage is Stage.BISECT and core in bisect.current_group(flow.bisect):
         flow = _bisect_exit(flow)
+    flow = _requeued(flow, core)
     if flow.stage is Stage.TIGHTEN:
         flow = replace(flow, allcore=_frozen(flow.allcore, (core,)))
     elif flow.stage in ALLCORE:
@@ -968,8 +969,7 @@ def _judge_record(
     flow = replace(out.flow, dirty=True)
     if stage is Stage.BISECT and flow.bisect.rerun != flow.bisect.universe:
         flow = _bisect_exit(flow)
-    if flow.stage is Stage.LIVE1 and flow.live1 is not None and ev.core not in flow.live1.requeue:
-        flow = replace(flow, live1=replace(flow.live1, requeue=(*flow.live1.requeue, ev.core)))
+    flow = _requeued(flow, ev.core)  # equivalent-mutant: old lines differ only in LIVE1 with no cursor, never reached
     if stage in ALLCORE and flow.allcore is not None:
         flow = replace(flow, allcore=replace(flow.allcore, t_clean=0.0))
     return replace(out, flow=flow), None
@@ -1948,6 +1948,12 @@ def _live1_verdict(s: SessionState, spec: TestSpec, group: Group, pausing: bool,
 
 def _bisect_exit(flow: Flow) -> Flow:
     return replace(flow, stage=flow.bisect.entry, bisect=None, dirty=True)
+
+
+def _requeued(flow: Flow, core: int) -> Flow:
+    if flow.stage is Stage.LIVE1 and core not in flow.live1.requeue:
+        return replace(flow, live1=replace(flow.live1, requeue=(*flow.live1.requeue, core)))
+    return flow
 
 
 def _q6(s: SessionState, group: tuple[int, ...]) -> tuple[SessionState, str | None]:
