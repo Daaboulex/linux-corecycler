@@ -68,6 +68,11 @@ class SMUCommandSet:
     core_fuse_shift: int = 0
     core_fuse_die_wide: bool = False
 
+    # Zen 3 chiplets can retain physical CCD 1 while Linux numbers it 0.
+    # CCDs 0/1 are disabled by bits 31:30 here, CCDs 2-7 by bits 5:0
+    # of the next register, as in ryzen_smu's get_fuse_topology.
+    ccd_fuse_addr: int | None = None
+
     # CO (Curve Optimizer / DldoPsmMargin) commands — None if generation lacks CO.
     # get_co_mailbox overrides the mailbox for the GET command only: the APU
     # classes set CO via MP1 but read it back via RSMU (ZenStates-Core
@@ -200,6 +205,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         encoding_scheme="zen3",
         uniform_8core_ccds=True,
         core_fuse_addr=_FUSE_ZEN3_CLASS,
+        ccd_fuse_addr=0x5D218,
         set_co_cmd=0x35,
         set_all_co_cmd=0x36,
         get_co_cmd=0x48,
@@ -232,6 +238,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         encoding_scheme="zen3",
         uniform_8core_ccds=True,
         core_fuse_addr=_FUSE_ZEN3_CLASS,
+        ccd_fuse_addr=0x5D218,
         set_co_cmd=0x35,
         set_all_co_cmd=0x36,
         get_co_cmd=0x48,

@@ -172,6 +172,8 @@ class RyzenSMU:
 
         Mapping rules, per L3 group (falling back to ``core_id // 8`` grouping
         when L3 info is absent):
+          - On Vermeer, the CCD-disable fuses map Linux's compact L3 groups
+            onto physical CCDs before reading core fuses or encoding commands.
           - A full 8-core group maps to identity slots under any numbering
             scheme -- no SMU traffic.
           - A group with a hole INTERNAL to its own 8-slot window proves the
@@ -219,8 +221,10 @@ class RyzenSMU:
         self._offline_hint = "" if fully_online else " (some present CPUs are offline — online all cores for CO tuning)"
         core_map: dict[int, tuple[int, int]] = {}
         try:
-            for encode_ccd in sorted(groups):
-                group_ids = groups[encode_ccd]
+            physical_ccds = self._physical_ccd_map(groups)
+            for logical_ccd in sorted(groups):
+                encode_ccd = physical_ccds[logical_ccd]
+                group_ids = groups[logical_ccd]
                 slots = self._derive_group_slots(group_ids, fully_online)
                 if slots is None:
                     slots = self._fuse_group_slots(encode_ccd, len(group_ids))
@@ -231,6 +235,26 @@ class RyzenSMU:
             return
         self._core_map = core_map
         self._core_map_error = None
+
+    def _physical_ccd_map(self, groups: dict[int, list[int]]) -> dict[int, int]:
+        addr = self.commands.ccd_fuse_addr
+        if addr is None:
+            return {ccd: ccd for ccd in groups}
+        ok, message = self.check_smn_readable()
+        if not ok:
+            raise CoreMapError(f"CCD/core-disable fuse discovery requires SMN access: {message}")
+        present = self.read_smn(addr)
+        down = self.read_smn(addr + 4)
+        if present is None or down is None:
+            raise CoreMapError("CCD fuse read failed; per-core CO stays disabled")
+        disabled = ((present >> 30) & 3) | ((down & 0x3F) << 2)
+        physical = [ccd for ccd in range(8) if not (disabled >> ccd) & 1]
+        if len(physical) != len(groups):
+            raise CoreMapError(
+                f"CCD fuses report active physical CCDs {physical} but the OS reports "
+                f"{len(groups)} CCD groups; per-core CO stays disabled{self._offline_hint}"
+            )
+        return dict(zip(sorted(groups), physical, strict=True))
 
     @staticmethod
     def _derive_group_slots(group_ids: list[int], holes_trusted: bool) -> list[int] | None:

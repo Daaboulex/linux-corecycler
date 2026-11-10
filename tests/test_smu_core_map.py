@@ -66,6 +66,13 @@ class _FakeSilicon:
         smu.read_smn = self._read_smn
 
     def _read_smn(self, address: int) -> int | None:
+        if self.commands.ccd_fuse_addr is not None:
+            enabled = sum(1 << ccd for ccd in self.live) or 1
+            disabled = (~enabled) & 0xFF
+            if address == self.commands.ccd_fuse_addr:
+                return ((enabled & 3) << 22) | ((disabled & 3) << 30)
+            if address == self.commands.ccd_fuse_addr + 4:
+                return disabled >> 2
         self.fuse_reads.append(address)
         base = self.commands.core_fuse_addr
         ccd = (address - base) >> 25
@@ -113,6 +120,12 @@ REPORTED_5600GE_FUSE_WORD = 0x281C70
 
 
 class TestRenumberedHarvested:
+    def test_write_uses_surviving_physical_ccd_and_skips_disabled_slots(self) -> None:
+        smu, silicon = _mapped_smu(VERMEER, dict.fromkeys(range(6), 0), {1: REPORTED_5600X_LIVE_SLOTS})
+        assert smu.set_co_offset(2, -1) is True
+        assert silicon.writes == [(1, 4, -1)]
+        assert smu.get_co_offset(2) == -1
+
     def test_5600x_renumbered_maps_onto_live_slots(self):
         smu, silicon = _mapped_smu(
             VERMEER,
