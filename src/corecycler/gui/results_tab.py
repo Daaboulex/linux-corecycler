@@ -35,17 +35,17 @@ class ResultsTab(QWidget):
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        # summary bar
         summary_group = QGroupBox("Summary")
         summary_layout = QHBoxLayout(summary_group)
 
-        self._total_label = QLabel(f"Cores: {PENDING_VALUE}")
-        self._passed_label = QLabel(f"Passed: {PENDING_VALUE}")
+        self._total_label = QLabel()
+        self._passed_label = QLabel()
         self._passed_label.setStyleSheet(f"color: {theme.COLOR_PASS}; font-weight: bold;")
-        self._failed_label = QLabel(f"Failed: {PENDING_VALUE}")
+        self._failed_label = QLabel()
         self._failed_label.setStyleSheet(f"color: {theme.COLOR_FAIL}; font-weight: bold;")
-        self._elapsed_label = QLabel("Start a test to see results")
-        self._cycle_label = QLabel("")
+        self._elapsed_label = QLabel()
+        self._cycle_label = QLabel()
+        self._show_no_summary()
 
         summary_widgets = [
             self._total_label,
@@ -60,10 +60,8 @@ class ResultsTab(QWidget):
 
         layout.addWidget(summary_group)
 
-        # splitter: table + log
         splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # results table
         self._table = QTableWidget()
         self._table.setColumnCount(7)
         self._table.setHorizontalHeaderLabels(["Core", "CCD", "Status", "Errors", "Iterations", "Time", "Last Error"])
@@ -81,7 +79,6 @@ class ResultsTab(QWidget):
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         splitter.addWidget(self._table)
 
-        # error log
         log_group = QGroupBox("Test Log")
         log_layout = QVBoxLayout(log_group)
         self._log = QPlainTextEdit()
@@ -94,21 +91,29 @@ class ResultsTab(QWidget):
         splitter.setSizes([400, 200])
         layout.addWidget(splitter)
 
-        self._core_rows: dict[int, int] = {}  # core_id -> row index
+        self._row_by_core: dict[int, int] = {}
+
+    def _show_no_summary(self) -> None:
+        self._total_label.setText(f"Cores: {PENDING_VALUE}")
+        self._passed_label.setText(f"Passed: {PENDING_VALUE}")
+        self._failed_label.setText(f"Failed: {PENDING_VALUE}")
+        self._elapsed_label.setText("Start a test to see results")
+        self._cycle_label.setText("")
 
     def init_cores(self, core_statuses: dict[int, CoreTestStatus]) -> None:
-        """Initialize the table with core entries — clears previous results."""
+        """Initialize the table with core entries; clears the previous run's results and summary."""
+        self._show_no_summary()
         self._log.clear()
         self._table.setRowCount(len(core_statuses))
-        self._core_rows.clear()
+        self._row_by_core.clear()
 
         for row, (core_id, status) in enumerate(sorted(core_statuses.items())):
-            self._core_rows[core_id] = row
+            self._row_by_core[core_id] = row
             self._set_row(row, core_id, status)
 
     def update_core(self, core_id: int, status: CoreTestStatus) -> None:
         """Update a single core's row."""
-        row = self._core_rows.get(core_id)
+        row = self._row_by_core.get(core_id)
         if row is None:
             return
         self._set_row(row, core_id, status)
@@ -136,11 +141,6 @@ class ResultsTab(QWidget):
 
         self._elapsed_label.setText(f"Elapsed: {duration_str(elapsed)}")
         self._cycle_label.setText(f"Cycle: {cycle}/{total_cycles}")
-
-    def clear(self) -> None:
-        self._table.setRowCount(0)
-        self._core_rows.clear()
-        self._log.clear()
 
     def _set_row(self, row: int, core_id: int, status: CoreTestStatus) -> None:
         self._table.setItem(row, 0, _item(str(core_id), Qt.AlignmentFlag.AlignCenter))

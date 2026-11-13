@@ -24,7 +24,7 @@ DEFAULT_PROFILE = CONFIG_DIR / "default.json"
 
 @dataclass(slots=True)
 class TestProfile:
-    __test__ = False  # Not a pytest test class
+    __test__ = False
     name: str = "Default"
     backend: str = "mprime"
     stress_mode: str = "SSE"
@@ -38,11 +38,8 @@ class TestProfile:
     stop_on_error: bool = False
     test_smt: bool = False
     cores_to_test: list[int] | None = None
-    # Safety
     max_temperature: float = 95.0
-    # Test mode preset
     test_mode: str = "STANDARD"
-    # Advanced testing
     variable_load: bool = False
     idle_stability_test: float = 0.0
     idle_between_cores: float = 0.0
@@ -64,11 +61,9 @@ class AppSettings:
     active_profile_idx: int = 0
     window_width: int = 1200
     window_height: int = 800
-    # History
     record_history: bool = True
     record_telemetry: bool = True
     history_retention_days: int = 90
-    # Notifications
     notify_on_completion: bool = True
 
     @property
@@ -92,7 +87,6 @@ def load_settings() -> AppSettings:
             data["work_dir"] = ""
         return AppSettings(**data, profiles=profiles)
     except (json.JSONDecodeError, TypeError, KeyError) as e:
-        # Never silently reset: preserve the bad file for diagnosis and say why.
         corrupt = settings_file.with_suffix(".json.corrupt")
         log.warning("Settings file unreadable (%s) — moved to %s, using defaults", e, corrupt)
         with contextlib.suppress(OSError):
@@ -148,5 +142,5 @@ def load_co_profile(path: Path) -> dict[int, int]:
     Returns {core_id: offset}. Ignores unknown fields for forward compatibility.
     """
     data = json.loads(path.read_text())
-    raw = data.get("offsets", data)  # support bare {core: offset} dicts too
+    raw = data.get("offsets", data)
     return {int(k): int(v) for k, v in raw.items() if k.lstrip("-").isdigit()}

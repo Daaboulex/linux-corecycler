@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import contextlib
+import signal
 import sys
 from pathlib import Path
 
-# direct-file execution (docs' from-source flow): make the corecycler package importable
+# docs/installation.md runs this file directly, so the package is put on the path.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -143,7 +143,7 @@ def _bus_is_usable(address: str, uid: int) -> bool:
             probe.connect(endpoint)
             probe.sendall(b"\0AUTH EXTERNAL " + str(uid).encode().hex().encode() + b"\r\n")
             return probe.recv(64).startswith(b"OK")
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
 
 
@@ -208,11 +208,24 @@ def _bootstrap_sudo_session() -> None:
         log.debug("session bus %s refuses this user; dropped so nothing tries it", address)
 
 
+def _install_signal_handlers(app, cleanup) -> None:
+    from PySide6.QtCore import QTimer
+
+    def quit_from_event_loop() -> None:
+        cleanup()
+        app.quit()
+
+    def handler(signum, frame) -> None:
+        QTimer.singleShot(0, quit_from_event_loop)  # equivalent-mutant: any delay defers the quit to the event loop
+
+    for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(number, handler)
+
+
 def _install_exception_hooks(window) -> None:
-    """Uncaught exceptions must SURFACE, never vanish: log the full traceback,
-    make the hardware safe (stop the tuner, which reverts CO toward baselines),
-    and tell the user. Silently continuing in an unknown state is how a
-    poisoned session gets written; this is the top of the fail-closed chain.
+    """Uncaught exceptions must SURFACE, never vanish: log the full traceback
+    and tell the user. The tuner runs in its own driver process, which a GUI
+    fault leaves running.
     """
     import logging
     import threading
@@ -226,11 +239,6 @@ def _install_exception_hooks(window) -> None:
             return
         hook_log.critical("UNCAUGHT EXCEPTION", exc_info=(exc_type, exc, tb))
         try:
-            if window._tuner_tab.is_running:
-                window._tuner_tab.force_stop()
-        except Exception:
-            hook_log.critical("Emergency tuner stop failed", exc_info=True)
-        try:
             from PySide6.QtWidgets import QMessageBox
 
             detail = "".join(traceback.format_exception_only(exc_type, exc)).strip()
@@ -238,16 +246,15 @@ def _install_exception_hooks(window) -> None:
                 window,
                 "Internal Error",
                 f"An internal error occurred:\n\n{detail}\n\n"
-                "The auto-tuner was stopped (CO offsets reverted toward "
-                "baseline). The full traceback is in the terminal/journal "
-                "log. This is a bug to report, not a tuning result.",
+                "A running tuner driver is a separate process and keeps going. "
+                "The full traceback is in the terminal/journal log. This is a "
+                "bug to report, not a tuning result.",
             )
         except Exception:
             hook_log.critical("Could not display the error dialog", exc_info=True)
 
     def _thread_handle(args) -> None:
-        # Non-GUI thread: no dialog (Qt forbids it off the main thread) — the
-        # traceback still lands in the log instead of dying silently.
+        # Qt forbids a dialog off the main thread, so a thread's exception is only logged.
         hook_log.critical(
             "UNCAUGHT EXCEPTION in thread %s",
             getattr(args.thread, "name", "?"),
@@ -258,41 +265,24 @@ def _install_exception_hooks(window) -> None:
     threading.excepthook = _thread_handle
 
 
-def _parse_auto_resume(argv: list[str]) -> int | None:
-    """--auto-resume [seconds]: resume the active mid-run session after a
-    settle delay (the login-autostart path). Returns None when absent."""
-    if "--auto-resume" not in argv:
-        return None
-    i = argv.index("--auto-resume")
-    if i + 1 < len(argv):
-        with contextlib.suppress(ValueError):
-            return max(0, int(argv[i + 1]))
-    return 120
-
-
 def setup_logging() -> None:
     import logging
 
-    # Two log surfaces from one root: the human narrative at INFO on stderr,
-    # and a rotating DEBUG file capturing what verdicts drop (detector polls,
-    # CO writes, cursor saves, lane lifecycle) for after-the-fact forensics.
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     stderr_handler = logging.StreamHandler(sys.stderr)
     stderr_handler.setLevel(logging.INFO)
     stderr_handler.setFormatter(fmt)
     handlers: list[logging.Handler] = [stderr_handler]
     try:
-        from logging.handlers import RotatingFileHandler
+        from corecycler.config.paths import HandedBackLog, data_dir, hand_back
 
-        from corecycler.config.paths import fix_sudo_ownership, user_home
-
-        log_dir = user_home() / ".local" / "share" / "corecycler" / "logs"
+        log_dir = data_dir() / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(log_dir / "corecycler.log", maxBytes=5_000_000, backupCount=3)
+        file_handler = HandedBackLog(log_dir / "corecycler.log", maxBytes=5_000_000, backupCount=3)
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(fmt)
         handlers.append(file_handler)
-        fix_sudo_ownership(log_dir, log_dir / "corecycler.log")
+        hand_back(log_dir / "corecycler.log")
     except OSError as e:
         print(f"corecycler: debug log unavailable: {e}", file=sys.stderr)
     logging.basicConfig(level=logging.DEBUG, handlers=handlers)
@@ -309,12 +299,14 @@ def main() -> int:
 
         print(USAGE)
         return 0
-    if argv and argv[0] in ("doctor", "status", "tune", "resume"):
+    from corecycler.cli import COMMANDS
+
+    if argv and argv[0] in COMMANDS:
         from corecycler.cli import cli_main
 
         return cli_main(argv)
 
-    # Silence the warning categories that fire for session services root cannot use
+    # These categories warn about session services a root process cannot use.
     os.environ.setdefault(
         "QT_LOGGING_RULES",
         "qt.qpa.services.warning=false;kf.windowsystem.warning=false",
@@ -322,10 +314,7 @@ def main() -> int:
 
     _bootstrap_sudo_session()
 
-    # Preflight: with no display reachable Qt aborts the whole process
-    # (SIGABRT) — fail closed with an actionable message instead. Skipped when
-    # the user explicitly chose a Qt platform (offscreen/vnc/linuxfb/eglfs
-    # need no display server at all).
+    # Qt aborts the process with SIGABRT when no display is reachable.
     if (
         not os.environ.get("QT_QPA_PLATFORM")
         and not os.environ.get("DISPLAY")
@@ -343,19 +332,21 @@ def main() -> int:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
-    # high DPI support
+    from corecycler.gui import style
+
+    style_problem = style.fall_back_to_fusion()
+
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     app = QApplication(sys.argv)
     app.setApplicationName("CoreCycler")
     app.setOrganizationName("corecycler")
 
-    # One instance only — two engines would fight over the SMU.
     from PySide6.QtCore import QLockFile
 
-    from corecycler.config.paths import user_home
+    from corecycler.config.paths import data_dir
 
-    lock_dir = user_home() / ".local" / "share" / "corecycler"
+    lock_dir = data_dir()
     lock_dir.mkdir(parents=True, exist_ok=True)
     instance_lock = QLockFile(str(lock_dir / "corecycler.lock"))
     if not instance_lock.tryLock(0):
@@ -363,10 +354,8 @@ def main() -> int:
         return 1
     app._corecycler_instance_lock = instance_lock
 
-    # Locate assets — dev mode (src/../assets) or installed ($out/share/...)
     assets_dir = _find_assets_dir()
 
-    # app icon
     from PySide6.QtGui import QIcon
 
     icon_path = assets_dir / "icon.svg"
@@ -374,7 +363,6 @@ def main() -> int:
         app.setWindowIcon(QIcon(str(icon_path)))
 
     from corecycler.config import tools
-    from corecycler.gui import style
     from corecycler.gui.main_window import MainWindow
 
     style.follow(app)
@@ -382,19 +370,12 @@ def main() -> int:
     tools.load_configured_paths()
 
     window = MainWindow()
-
-    auto_resume_delay = _parse_auto_resume(sys.argv[1:])
-    if auto_resume_delay is not None:
-        from PySide6.QtCore import QTimer
-
-        QTimer.singleShot(auto_resume_delay * 1000, window.attempt_auto_resume)
+    window.show_style_fallback(style_problem)
 
     import atexit
-    import signal
 
     def _cleanup_on_exit():
         """Kill any running stress processes on forced exit."""
-        # Each subsystem wrapped independently — one failure must not block others
         try:
             if window._worker and window._worker.isRunning():
                 window._worker.scheduler.force_stop()
@@ -405,28 +386,12 @@ def main() -> int:
             print(f"exit cleanup: stress worker stop failed: {e}", file=sys.stderr)
 
         try:
-            if window._tuner_tab.is_running:
-                window._tuner_tab.force_stop()
-        except Exception as e:
-            print(f"exit cleanup: tuner stop failed: {e}", file=sys.stderr)
-
-        try:
             window._memory_tab.force_stop()
         except Exception as e:
             print(f"exit cleanup: memory stop failed: {e}", file=sys.stderr)
 
     atexit.register(_cleanup_on_exit)
-
-    # Handle SIGTERM/SIGINT/SIGHUP gracefully — save tuner state on exit
-    def _signal_handler(signum, frame):
-        _cleanup_on_exit()
-        app.quit()
-
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
-    if hasattr(signal, "SIGHUP"):
-        signal.signal(signal.SIGHUP, _signal_handler)
-
+    _install_signal_handlers(app, _cleanup_on_exit)
     _install_exception_hooks(window)
 
     window.show()
@@ -436,16 +401,14 @@ def main() -> int:
 
 def _find_assets_dir() -> Path:
     """Find assets directory — works in dev mode and Nix-installed."""
-    # Dev mode: src/corecycler/../../assets
     dev_assets = Path(__file__).resolve().parents[2] / "assets"
     if dev_assets.is_dir():
         return dev_assets
-    # Nix installed: __file__ is $out/lib/python3.x/site-packages/corecycler/main.py
-    # so go up 5 levels to $out, then into share/corecycler/assets
+    # flake.nix installs this file in $out/lib/python3.x/site-packages, the assets in $out/share/corecycler.
     nix_assets = Path(__file__).resolve().parents[4] / "share" / "corecycler" / "assets"
     if nix_assets.is_dir():
         return nix_assets
-    return dev_assets  # fallback
+    return dev_assets
 
 
 if __name__ == "__main__":

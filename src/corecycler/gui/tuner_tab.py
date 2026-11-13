@@ -1,1168 +1,817 @@
-"""Auto-Tuner tab — automated PBO Curve Optimizer search UI."""
+"""Auto-Tuner tab: starts the tuner driver and follows its session in the history database."""
 
 from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
+import os
+import re
+import signal
+import subprocess
+import sys
+from dataclasses import dataclass, fields
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
-    QFileDialog,
-    QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
-    QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from corecycler.engine.backends.base import FFTPreset, StressMode
-from corecycler.gui.style import PHASE_TO_GRID, button_qss, phase_label, status_label, theme
+from corecycler.cli import EXIT_LOCKED, EXIT_MEANINGS, EXIT_REFUSED
+from corecycler.config import tools
+from corecycler.config.paths import atomic_write, child_environment, data_dir, hand_back
+from corecycler.engine import detector as kernel
+from corecycler.gui.style import (
+    SESSION_STATUS_LABELS,
+    button_qss,
+    pause_text,
+    power_text,
+    shown_status,
+    stage_label,
+    theme,
+    tuner_phase_label,
+)
 from corecycler.gui.tool_prompt import ensure_tool
-from corecycler.history.db import RESUMABLE_STATUSES
+from corecycler.gui.widgets import add_setting, note, setting_grid, spoken
 from corecycler.history.timefmt import format_local
-from corecycler.tuner import persistence as tp
-from corecycler.tuner.config import TunerConfig
-from corecycler.tuner.engine import TunerEngine
-from corecycler.tuner.state import TunerPhase
+from corecycler.monitor.frequency import cpu_ranges, read_power_state
+from corecycler.monitor.power_profile import power_profile
+from corecycler.smu.writer_lock import running_driver
+from corecycler.tuner.live import ONE_CORE_STAGES, config_to_json, read_stored
+from corecycler.tuner.live_hw import sched_ext_note
+from corecycler.tuner.machine.session import co_changed_since
+from corecycler.tuner.machine.types import (
+    HELD_STATUSES,
+    KNOB_FLOOR,
+    MachineConfig,
+    Mode,
+    PauseReason,
+    Phase,
+    Stage,
+    Stored,
+)
+from corecycler.tuner.orders import Method, default_method, order_problem
+from corecycler.tuner.stages import REST_MARGIN_C, WARM_HOLD
 
 if TYPE_CHECKING:
-    from corecycler.engine.backends.base import StressBackend
+    from collections.abc import Callable
+
     from corecycler.engine.topology import CPUTopology
     from corecycler.history.db import HistoryDB
-    from corecycler.smu.driver import RyzenSMU
 
 log = logging.getLogger(__name__)
 
-_PHASE_TO_GRID = PHASE_TO_GRID
+DEGREES = "°C"
+SHOWN = "Shown"
+KNOB_TEXT: dict[str, dict[str, tuple[str, str, str]]] = {
+    SHOWN: {
+        "max_offset": (
+            "Deepest offset to try",
+            "counts",
+            "The most negative Curve Optimizer value the search may reach. Each core settles at its own"
+            " stable value on the way.",
+        ),
+        "thermal_limit_c": (
+            "Temperature limit",
+            DEGREES,
+            "A test stops when the CPU reaches this, or its own maximum if that is lower, cools down and"
+            " repeats the same value.",
+        ),
+        "memory": (
+            "Memory test",
+            "",
+            "After the CPU stages, each core runs stressapptest. Skipped, with the reason, when memory is short.",
+        ),
+        "soak": ("Idle watch", "", "At the end the machine sits without load while the kernel log is watched."),
+        "endurance": ("Endurance", "", "A long extra run of mixed all-core loads after the main stages."),
+    },
+    "Search, one core at a time": {
+        "coarse_step": ("Coarse step", "counts", "How far each step of the first, quick search moves."),
+        "fine_step": ("Fine step", "counts", "How far each step moves once the quick search has found the edge."),
+        "k_1t": (
+            "Passes to prove, one thread",
+            "passes",
+            "Clean tests a value needs with one thread busy before it counts as stable.",
+        ),
+        "k_2t": ("Passes to prove, two threads", "passes", "The same with both threads of the core busy."),
+        "test_seconds_1t": ("Test length, one thread", "s", "How long each one-thread test runs."),
+        "test_seconds_2t": ("Test length, two threads", "s", "How long each two-thread test runs."),
+        "walk_budget_s": (
+            "Search time limit per core",
+            "s",
+            "When a core has searched this long, the search stops and proves the best value found so far.",
+        ),
+        "wait_between_cores_s": (
+            "Pause between cores",
+            "s",
+            "Rest before the next core's test, so the last test's heat does not carry over.",
+        ),
+    },
+    "All-core stages": {
+        "hot_seconds": ("Hot test length", "s", "Every core at once under the heaviest load."),
+        "bisect_seconds": (
+            "Narrowing test length",
+            "s",
+            "When the hot test reports a failure under steady heat without naming a core, groups of cores are"
+            " tested this long to find it.",
+        ),
+        "burst": (
+            "Burst segment",
+            "s",
+            "Groups of cores switch between load and rest every few seconds, which swings the voltage hardest.",
+        ),
+        "warm": (
+            "Warm segment",
+            "s",
+            f"Every core runs each test in turn while Tctl is held between {WARM_HOLD[1]:.0f} and"
+            f" {WARM_HOLD[0]:.0f} {DEGREES}, or from {REST_MARGIN_C:.0f} {DEGREES} above the Tctl read before its"
+            " load when that is warmer, over the same span and below the hot loads' hold.",
+        ),
+        "idle": ("Idle segment", "s", "A few cores wake briefly between long rests, where the clocks boost highest."),
+        "transient_window_s": (
+            "Clean time needed, changing loads",
+            "s",
+            "Burst, warm and idle repeat until this much time passes without a failure. Tighten uses the same.",
+        ),
+        "endurance_window_s": (
+            "Clean time needed, endurance",
+            "s",
+            "The endurance loads repeat until this much time passes without a failure.",
+        ),
+        "memory_seconds": ("Memory test length per core", "s", "How long stressapptest runs on each core."),
+        "soak_seconds": ("Idle watch length", "s", "How long the machine sits without load at the end."),
+    },
+    "Temperature": {
+        "cool_margin_c": (
+            "Cool below the limit by",
+            DEGREES,
+            "After a heat stop, wait until the CPU is this far under the limit.",
+        ),
+        "cool_min_s": ("Shortest cool-down", "s", "Always rest at least this long after a heat stop."),
+        "cool_cap_s": ("Longest cool-down", "s", "If the CPU is still too hot after this long, the session pauses."),
+        "thermal_retries": (
+            "Heat stops before pausing",
+            "times",
+            "Heat stops in a row on the same value before the session pauses.",
+        ),
+    },
+    "When a test goes wrong": {
+        "apparatus_retries": (
+            "Retries for a test that cannot be judged",
+            "times",
+            "A test that stalls, does not start, or is killed by something else runs again this many times,"
+            " then the session pauses.",
+        ),
+        "start_failure_threshold": (
+            "Pause after first-value failures",
+            "cores",
+            "Pause when this many cores in a row fail the first value they try, a sign the setup is wrong."
+            " 0 turns it off.",
+        ),
+        "stop_bound_s": (
+            "Time allowed to stop a test",
+            "s",
+            "How long a test may take to end when asked before it is left behind as hung.",
+        ),
+    },
+}
+ORDER_LABELS = {
+    Method.ALTERNATE: "Alternate across CCDs",
+    Method.SEQUENTIAL: "One after another",
+    Method.RANDOM: "Random",
+}
+THREADS = {"1t": "one thread", "2t": "two threads"}
+SINGULAR = {"counts": "count", "passes": "pass", "times": "time", "cores": "core"}
+SET_BY_THE_TAB = ("mode", "method", "selected", "stage_seconds", "starts")
+STAGE_DEFAULT = next(f.default for f in fields(MachineConfig) if f.name == "stage_seconds")
+STAGE_ORDER = tuple(load for load, _ in STAGE_DEFAULT)
+CEILING = 1_000_000_000
+DATABASE_FAILED = "database_failed: "
+BOX_WIDTH = 110
+CORES_PER_ROW = 4  # equivalent-mutant: five boxes a row are no wider than the setting rows, six are
+GRID_STATE = {
+    Phase.NOT_STARTED: "pending",
+    Phase.COARSE: "queued",
+    Phase.FINE: "queued",
+    Phase.PROVE: "queued",
+    Phase.PROVEN: "passed",
+}
+SCHEDULING_SERVICES = ("ananicy-cpp", "scx_loader", "scx")
+ENDED = frozenset({"completed", "aborted", "quarantined"})
+TOOLS = ("y-cruncher", "stressapptest")
 
-ACTIVE_STATUSES = ("running", "validating", "hunting")
+
+def _assert_every_knob_named() -> None:
+    named = [name for knobs in KNOB_TEXT.values() for name in knobs]
+    offered = [f.name for f in fields(MachineConfig) if f.name not in SET_BY_THE_TAB] + list(STAGE_ORDER)
+    if sorted(named) != sorted(offered):
+        raise AssertionError(f"KNOB_TEXT and the settings disagree: {sorted(set(named) ^ set(offered))}")
+
+
+_assert_every_knob_named()
+
+
+def settings_lines(cfg: MachineConfig) -> list[str]:
+    stage_seconds = dict(cfg.stage_seconds)
+    lines = [f"  Cores to tune: {', '.join(map(str, cfg.selected))}", f"  Core order: {ORDER_LABELS[cfg.method]}"]
+    if cfg.starts:
+        lines.append(f"  Starting values: {', '.join(f'core {core} at {value}' for core, value in cfg.starts)}")
+    for knobs in KNOB_TEXT.values():
+        for name, (label, unit, _) in knobs.items():
+            value = stage_seconds[name] if name in STAGE_ORDER else getattr(cfg, name)
+            if isinstance(value, bool):
+                lines.append(f"  {label}: {'on' if value else 'off'}")
+                continue
+            said = spoken(value) if unit == "s" else ""
+            shown = SINGULAR.get(unit, unit) if value == 1 else unit
+            lines.append(f"  {label}: {value:g} {shown}".rstrip() + (f" ({said})" if said else ""))
+    return lines
+
+
+def scope_text(test: dict) -> str:
+    cpus = json.loads(test["cpus_json"])
+    vector = json.loads(test["vector_json"])
+    load = f"cpus {cpu_ranges(cpus)}" if cpus else "no cpus loaded"
+    values = ", ".join(f"{core} at {value}" for core, value in vector) if vector else "none recorded"
+    return f"{load}, cores {values}"
+
+
+def power_now() -> tuple[tuple[str, str], ...]:
+    profile = power_profile()
+    return ((("power profile", profile),) if profile is not None else ()) + read_power_state().named()
+
+
+def stopped_services() -> list[str]:
+    systemctl = tools.resolve("systemctl").path
+    if systemctl is None:
+        return []
+
+    def answers(verb: str, unit: str) -> bool:
+        command = [str(systemctl), verb, "--quiet", f"{unit}.service"]
+        return subprocess.run(command, check=False, timeout=5).returncode == 0
+
+    return [unit for unit in SCHEDULING_SERVICES if answers("is-enabled", unit) and not answers("is-active", unit)]
+
+
+def labelled(text: str) -> str:
+    for knobs in KNOB_TEXT.values():
+        for name, (label, _, _) in knobs.items():
+            text = re.sub(rf"\b{name}\b", f"'{label}'", text)
+    return text
+
+
+@dataclass(frozen=True, slots=True)
+class SessionView:
+    session_id: int
+    status: str
+    stored: Stored | None
+    problem: str | None
+    test: dict | None
+    events: tuple[dict, ...]
+    endurance: tuple[int, int] | None = None
+
+    def setup_changed(self) -> bool:
+        paused = [event for event in self.events if event["severity"] == "paused"]
+        return (
+            self.status == "paused"
+            and bool(paused)
+            and paused[-1]["message"].startswith(f"{PauseReason.SETUP_CHANGED.value}:")
+        )
+
+
+def read_view(db: HistoryDB, boot: str) -> SessionView | None:
+    newest = db.list_machine_sessions(limit=1)
+    if not newest:
+        return None
+    session_id, status = newest[0].id, newest[0].status
+    stored, problem = read_stored(db, session_id)
+    test = db.open_tuner_test(session_id, boot)
+    enduring = test is not None and test["stage"] == Stage.ENDURANCE
+    return SessionView(
+        session_id,
+        status,
+        stored,
+        problem,
+        test,
+        tuple(db.get_tuner_events(session_id, limit=30)),
+        db.endurance_tally(session_id) if enduring else None,
+    )
 
 
 class TunerTab(QWidget):
-    """Auto-Tuner tab for the main window."""
-
-    # Emitted when tuner starts/stops so MainWindow can disable manual test
     tuner_running_changed = Signal(bool)
-    tuner_core_testing = Signal(int, str)  # core_id, state ("testing"/"passed"/"failed"/etc)
-    tuner_core_elapsed = Signal(int, float)  # core_id, elapsed_seconds
-    tuner_core_info = Signal(int, int, str)  # core_id, co_offset, phase — for sidebar enrichment
+    tuner_core_testing = Signal(int, str)
+    tuner_core_elapsed = Signal(int, float)
+    tuner_core_info = Signal(int, int, str)
 
     def __init__(
         self,
         db: HistoryDB | None,
         topology: CPUTopology | None,
-        smu: RyzenSMU | None,
-        backend_factory=None,
-        parent: QWidget | None = None,
+        co_range: tuple[int, int] | None,
+        read_co: Callable[[int], int | None] | None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__()
         self._db = db
         self._topology = topology
-        self._smu = smu
-        self._backend_factory = backend_factory
-        self._engine: TunerEngine | None = None
-        self._selected_core: int | None = None
-
-        self._tuner_timer = QTimer(self)
-        self._tuner_timer.timeout.connect(self._tick_tuner)
-        self._active_test_core: int | None = None
-        self._test_start_time: float = 0
-
-        self._setup_ui()
-        self._check_resume()
-
-    def _setup_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-
-        # Status bar
-        status_layout = QHBoxLayout()
-        self._status_label = QLabel("Status: Idle")
-        self._status_label.setFont(QFont("monospace", 11, QFont.Weight.Bold))
-        status_layout.addWidget(self._status_label)
-
-        self._progress_label = QLabel("")
-        self._progress_label.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM};")
-        status_layout.addWidget(self._progress_label)
-        status_layout.addStretch()
-        layout.addLayout(status_layout)
-
-        # Main splitter: config+table on top, log on bottom
-        splitter = QSplitter(Qt.Orientation.Vertical)
-
-        # Top section
-        top = QWidget()
-        top_layout = QVBoxLayout(top)
-        top_layout.setContentsMargins(0, 0, 0, 0)
-
-        # Config panel — no scroll, just a plain container
-        self._config_container = QWidget()
-        config_inner = QVBoxLayout(self._config_container)
-        config_inner.setContentsMargins(0, 0, 0, 0)
-        config_inner.setSpacing(8)
-        self._build_config_panel(config_inner)
-        top_layout.addWidget(self._config_container)
-
-        # Action buttons
-        btn_layout = QHBoxLayout()
-        self._start_btn = QPushButton("Start Tuning")
-        self._start_btn.setStyleSheet(button_qss(theme.BTN_GREEN))
-        self._start_btn.clicked.connect(self._on_start)
-        btn_layout.addWidget(self._start_btn)
-
-        self._pause_btn = QPushButton("Pause")
-        self._pause_btn.setEnabled(False)
-        self._pause_btn.clicked.connect(self._on_pause)
-        btn_layout.addWidget(self._pause_btn)
-
-        self._resume_btn = QPushButton("Resume")
-        self._resume_btn.setEnabled(False)
-        self._resume_btn.clicked.connect(self._on_resume)
-        btn_layout.addWidget(self._resume_btn)
-
-        self._abort_btn = QPushButton("Abort")
-        self._abort_btn.setEnabled(False)
-        self._abort_btn.setStyleSheet(button_qss(theme.BTN_RED))
-        self._abort_btn.clicked.connect(self._on_abort)
-        btn_layout.addWidget(self._abort_btn)
-
-        btn_layout.addStretch()
-
-        self._validate_btn = QPushButton("Validate Profile")
-        self._validate_btn.setEnabled(False)
-        self._validate_btn.clicked.connect(self._on_validate)
-        btn_layout.addWidget(self._validate_btn)
-
-        self._export_btn = QPushButton("Export Profile")
-        self._export_btn.setEnabled(False)
-        self._export_btn.clicked.connect(self._on_export)
-        btn_layout.addWidget(self._export_btn)
-
-        top_layout.addLayout(btn_layout)
-
-        # Core status table
-        self._core_table = QTableWidget()
-        self._core_table.setColumnCount(7)
-        self._core_table.setHorizontalHeaderLabels(
-            [
-                "Core",
-                "CCD",
-                "Phase",
-                "Current Offset",
-                "Best Offset",
-                "Tests Run",
-                "Last Result",
-            ]
-        )
-        self._core_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self._core_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._core_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._core_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
-        self._core_table.currentCellChanged.connect(self._on_core_selected)
-        self._install_copy_shortcut(self._core_table)
-        top_layout.addWidget(self._core_table)
-
-        splitter.addWidget(top)
-
-        # Bottom: test log
-        bottom = QWidget()
-        bottom_layout = QVBoxLayout(bottom)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-
-        log_header = QHBoxLayout()
-        log_label = QLabel("Test Log")
-        log_label.setFont(QFont("monospace", 10, QFont.Weight.Bold))
-        log_header.addWidget(log_label)
-
-        self._log_filter_label = QLabel("(all cores)")
-        self._log_filter_label.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM};")
-        log_header.addWidget(self._log_filter_label)
-        log_header.addStretch()
-
-        clear_log_btn = QPushButton("Clear")
-        clear_log_btn.setFixedWidth(60)
-        clear_log_btn.clicked.connect(lambda: self._log_table.setRowCount(0))
-        log_header.addWidget(clear_log_btn)
-
-        bottom_layout.addLayout(log_header)
-
-        self._log_table = QTableWidget()
-        self._log_table.setColumnCount(7)
-        self._log_table.setHorizontalHeaderLabels(
-            [
-                "Time",
-                "Core",
-                "Offset",
-                "Phase",
-                "Result",
-                "Duration",
-                "Error",
-            ]
-        )
-        self._log_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self._log_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._log_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
-        self._log_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._install_copy_shortcut(self._log_table)
-        bottom_layout.addWidget(self._log_table)
-
-        splitter.addWidget(bottom)
-        splitter.setSizes([400, 200])
-        layout.addWidget(splitter)
-
-    def _build_config_panel(self, parent_layout: QVBoxLayout) -> None:
-        # Two-column layout: search params on left, test settings on right
-        columns = QHBoxLayout()
-
-        # --- Left column: Search Parameters ---
-        search_group = QGroupBox("Search Parameters")
-        search_layout = QFormLayout(search_group)
-        search_layout.setSpacing(6)
-
-        self._start_offset_spin = QSpinBox()
-        self._start_offset_spin.setRange(-60, 30)
-        self._start_offset_spin.setValue(0)
-        self._start_offset_spin.setToolTip("Starting CO value for all cores (0 = BIOS baseline)")
-        search_layout.addRow("Start offset:", self._start_offset_spin)
-
-        self._inherit_current_check = QCheckBox("Inherit current CO from SMU")
-        self._inherit_current_check.setToolTip(
-            "Read current CO offsets from SMU at session start and use them\n"
-            "as starting points instead of the fixed start offset above.\n"
-            "Useful for incremental tuning from an existing baseline."
-        )
-        search_layout.addRow("", self._inherit_current_check)
-
-        self._auto_validate_check = QCheckBox("Auto-validate after all cores confirmed")
-        self._auto_validate_check.setChecked(True)
-        self._auto_validate_check.setToolTip(
-            "After all cores are individually confirmed, automatically run\n"
-            "3-stage multi-core validation:\n"
-            "  1. Per-core with all offsets live (catches power delivery interactions)\n"
-            "  2. All-core simultaneous stress (full power draw worst case)\n"
-            "  3. Alternating half-core load (catches boost ramp voltage transients)\n"
-            "Failed cores are backed off and retested automatically."
-        )
-        search_layout.addRow("", self._auto_validate_check)
-
-        self._coarse_step_spin = QSpinBox()
-        self._coarse_step_spin.setRange(1, 15)
-        self._coarse_step_spin.setValue(5)
-        self._coarse_step_spin.setToolTip("Step size during coarse search phase (bigger = faster but less precise)")
-        search_layout.addRow("Coarse step:", self._coarse_step_spin)
-
-        self._fine_step_spin = QSpinBox()
-        self._fine_step_spin.setRange(1, 5)
-        self._fine_step_spin.setValue(1)
-        self._fine_step_spin.setToolTip("Step size during fine search phase (1 = test every value)")
-        search_layout.addRow("Fine step:", self._fine_step_spin)
-
-        self._max_offset_spin = QSpinBox()
-        self._max_offset_spin.setRange(-60, 60)
-        self._max_offset_spin.setValue(-50)
-        self._max_offset_spin.setToolTip("Most aggressive offset to try (auto-clamped to CPU generation range)")
-        search_layout.addRow("Max offset:", self._max_offset_spin)
-
-        self._max_retries_spin = QSpinBox()
-        self._max_retries_spin.setRange(0, 5)
-        self._max_retries_spin.setValue(2)
-        self._max_retries_spin.setToolTip("How many times to retry confirmation before backing off")
-        search_layout.addRow("Confirm retries:", self._max_retries_spin)
-
-        self._stretch_threshold_spin = QDoubleSpinBox()
-        self._stretch_threshold_spin.setRange(0.0, 20.0)
-        self._stretch_threshold_spin.setSingleStep(0.5)
-        self._stretch_threshold_spin.setValue(3.0)
-        self._stretch_threshold_spin.setSuffix("%")
-        self._stretch_threshold_spin.setToolTip(
-            "Clock stretch threshold — if APERF/MPERF stretch exceeds this %\n"
-            "during a test, mark it as FAIL even if stress test passed.\n"
-            "0 = disabled. 3% = recommended. Requires root (MSR access)."
-        )
-
-        # Check MSR availability and warn if unavailable
-        import os
-
-        try:
-            fd = os.open("/dev/cpu/0/msr", os.O_RDONLY)
-            os.close(fd)
-            msr_available = True
-        except (OSError, PermissionError):
-            msr_available = False
-
-        if not msr_available:
-            self._stretch_threshold_spin.setEnabled(False)
-            self._stretch_threshold_spin.setToolTip(
-                "MSR access unavailable — clock stretch detection disabled.\n"
-                "Requires msr kernel module and read permission on /dev/cpu/*/msr."
-            )
-            self._stretch_threshold_spin.setStyleSheet(f"color: {theme.COLOR_MUTED};")
-
-        search_layout.addRow("Stretch threshold:", self._stretch_threshold_spin)
-
-        self._order_combo = QComboBox()
-        self._order_combo.addItems(["sequential", "round_robin", "weakest_first", "ccd_alternating", "ccd_round_robin"])
-        self._order_combo.setToolTip(
-            "sequential: finish each core before moving to next\n"
-            "round_robin: cycle through all cores, one test each\n"
-            "weakest_first: prioritize cores closest to settling\n"
-            "ccd_alternating: alternate between CCDs (catches thermal interactions)\n"
-            "ccd_round_robin: rotate one test per core, alternating CCDs (cool-down time)"
-        )
-        search_layout.addRow("Test order:", self._order_combo)
-
-        columns.addWidget(search_group)
-
-        # --- Right column: Stress Test + Timing ---
-        right_col = QVBoxLayout()
-
-        stress_group = QGroupBox("Stress Test")
-        stress_layout = QFormLayout(stress_group)
-        stress_layout.setSpacing(6)
-
-        from corecycler.engine.backends import available_backends
-
-        self._backend_combo = QComboBox()
-        self._backend_combo.addItems(available_backends())
-        self._backend_combo.setToolTip(
-            "mprime: Prime95 CLI — gold standard for CO testing (most sensitive)\n"
-            "stress-ng: general-purpose — good fallback\n"
-            "y-cruncher: multi-algorithm — supplementary testing"
-        )
-        stress_layout.addRow("Backend:", self._backend_combo)
-
-        self._mode_combo = QComboBox()
-        for mode in StressMode:
-            if mode != StressMode.CUSTOM:
-                self._mode_combo.addItem(mode.name)
-        self._mode_combo.setCurrentText("SSE")
-        self._mode_combo.setToolTip(
-            "SSE: highest single-core boost — most sensitive for CO testing\n"
-            "AVX/AVX2: different execution units — good for supplementary testing"
-        )
-        stress_layout.addRow("Mode:", self._mode_combo)
-
-        self._fft_combo = QComboBox()
-        for preset in FFTPreset:
-            if preset != FFTPreset.CUSTOM:
-                self._fft_combo.addItem(preset.name)
-        self._fft_combo.setCurrentText("SMALL")
-        self._fft_combo.setToolTip(
-            "SMALL: 36K-248K — fastest CO failure detection, FPU-bound\n"
-            "LARGE: 426K-8192K — tests memory controller interaction\n"
-            "HEAVY: 4K-1344K — broadest coverage of FPU paths"
-        )
-        stress_layout.addRow("FFT preset:", self._fft_combo)
-
-        right_col.addWidget(stress_group)
-
-        timing_group = QGroupBox("Timing")
-        timing_layout = QFormLayout(timing_group)
-        timing_layout.setSpacing(6)
-
-        self._search_dur_spin = QSpinBox()
-        self._search_dur_spin.setRange(10, 600)
-        self._search_dur_spin.setValue(60)
-        self._search_dur_spin.setSuffix("s")
-        self._search_dur_spin.setToolTip(
-            "Seconds per core during coarse/fine search (60s is sufficient for most failures)"
-        )
-        timing_layout.addRow("Search duration:", self._search_dur_spin)
-
-        self._confirm_dur_spin = QSpinBox()
-        self._confirm_dur_spin.setRange(30, 1800)
-        self._confirm_dur_spin.setValue(300)
-        self._confirm_dur_spin.setSuffix("s")
-        self._confirm_dur_spin.setToolTip("Seconds per core for confirmation run (longer = higher confidence)")
-        timing_layout.addRow("Confirm duration:", self._confirm_dur_spin)
-
-        self._validate_dur_spin = QSpinBox()
-        self._validate_dur_spin.setRange(30, 3600)
-        self._validate_dur_spin.setValue(300)
-        self._validate_dur_spin.setSuffix("s")
-        self._validate_dur_spin.setToolTip("Seconds per test during multi-core validation stages")
-        timing_layout.addRow("Validate duration:", self._validate_dur_spin)
-
-        right_col.addWidget(timing_group)
-
-        columns.addLayout(right_col)
-        parent_layout.addLayout(columns)
-
-        # Defaults button
-        btn_row = QHBoxLayout()
-        defaults_btn = QPushButton("Load Defaults")
-        defaults_btn.clicked.connect(self._load_defaults)
-        btn_row.addWidget(defaults_btn)
-        btn_row.addStretch()
-        parent_layout.addLayout(btn_row)
-
-    def _get_config(self) -> TunerConfig:
-        return TunerConfig(
-            start_offset=self._start_offset_spin.value(),
-            coarse_step=self._coarse_step_spin.value(),
-            fine_step=self._fine_step_spin.value(),
-            max_offset=self._max_offset_spin.value(),
-            search_duration_seconds=self._search_dur_spin.value(),
-            confirm_duration_seconds=self._confirm_dur_spin.value(),
-            validate_duration_seconds=self._validate_dur_spin.value(),
-            max_confirm_retries=self._max_retries_spin.value(),
-            stretch_threshold_pct=self._stretch_threshold_spin.value(),
-            inherit_current=self._inherit_current_check.isChecked(),
-            auto_validate=self._auto_validate_check.isChecked(),
-            test_order=self._order_combo.currentText(),
-            backend=self._backend_combo.currentText(),
-            stress_mode=self._mode_combo.currentText(),
-            fft_preset=self._fft_combo.currentText(),
-        )
-
-    def _load_defaults(self) -> None:
-        self._apply_config_to_ui(TunerConfig())
-
-    def _apply_config_to_ui(self, cfg: TunerConfig) -> None:
-        """Reflect a TunerConfig in the config panel widgets.
-
-        Used for defaults AND on resume: a resumed session runs its SAVED
-        config, so the panel must show those values — not whatever was left
-        in the boxes from before.
-        """
-        self._start_offset_spin.setValue(cfg.start_offset)
-        self._coarse_step_spin.setValue(cfg.coarse_step)
-        self._fine_step_spin.setValue(cfg.fine_step)
-        self._max_offset_spin.setValue(cfg.max_offset)
-        self._search_dur_spin.setValue(cfg.search_duration_seconds)
-        self._confirm_dur_spin.setValue(cfg.confirm_duration_seconds)
-        self._max_retries_spin.setValue(cfg.max_confirm_retries)
-        self._stretch_threshold_spin.setValue(cfg.stretch_threshold_pct)
-        self._validate_dur_spin.setValue(cfg.validate_duration_seconds)
-        self._inherit_current_check.setChecked(cfg.inherit_current)
-        self._auto_validate_check.setChecked(cfg.auto_validate)
-        self._order_combo.setCurrentText(cfg.test_order)
-        self._backend_combo.setCurrentText(cfg.backend)
-        self._mode_combo.setCurrentText(cfg.stress_mode)
-        self._fft_combo.setCurrentText(cfg.fft_preset)
-
-    # ------------------------------------------------------------------
-    # Actions
-    # ------------------------------------------------------------------
-
-    def _on_start(self) -> None:
-        if not self._db or not self._topology:
-            QMessageBox.warning(self, "Error", "Database or topology not available")
-            return
-
-        if self._engine is not None and (self._engine.status in ACTIVE_STATUSES or self._engine.status == "paused"):
-            QMessageBox.warning(
-                self,
-                "Session Active",
-                "A tuner session is already active or paused. Resume or abort it before starting a new one.",
-            )
-            return
-
-        if not self._smu or not self._smu.is_available():
-            QMessageBox.warning(
-                self,
-                "SMU Not Available",
-                "The ryzen_smu kernel module is not loaded.\n\n"
-                "The auto-tuner requires SMU access to write Curve Optimizer values.\n"
-                "Load the module with: sudo modprobe ryzen_smu",
-            )
-            return
-
-        reply = QMessageBox.warning(
-            self,
-            "Start Auto-Tuner",
-            "The Auto-Tuner will iteratively modify per-core Curve Optimizer "
-            "offsets via SMU writes. This may cause system instability or "
-            "crashes.\n\n"
-            "Positive CO offsets increase voltage and can degrade or damage "
-            "hardware (especially V-Cache / X3D processors).\n\n"
-            "Values are volatile and reset on reboot.\n\n"
-            "Continue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        backend = self._get_backend()
-        if backend is None:
-            return
-
-        config = self._get_config()
-        errors = config.validate()
-        if errors:
-            QMessageBox.warning(self, "Invalid Configuration", "\n".join(errors))
-            return
-        self._engine = TunerEngine(
-            db=self._db,
-            topology=self._topology,
-            smu=self._smu,
-            backend=backend,
-            config=config,
-        )
-        self._wire_engine()
-
-        self._engine.start()
-        if self._engine.status not in ACTIVE_STATUSES:
-            QMessageBox.warning(
-                self,
-                "Tuner Did Not Start",
-                "The engine refused to start — see the log for the reason.",
-            )
-            return
-        self._set_running_state(True)
-
-        # Initialize table with all cores
-        for core_id in self._engine.core_states:
-            self._update_core_row(core_id)
-
-    def _on_pause(self) -> None:
-        if self._engine:
-            self._engine.pause()
-            self._pause_btn.setEnabled(False)
-            self._resume_btn.setEnabled(True)
-
-    def _on_resume(self) -> None:
-        # If we have an active paused engine, resume it directly
-        if self._engine and self._engine.session_id and self._engine.status == "paused":
-            self._resume_session(self._engine.session_id)
-            return
-
-        # Otherwise show session picker from DB
-        if not self._db:
-            return
-        sessions = self._db.list_recoverable_tuner_sessions()
-        if not sessions:
-            QMessageBox.information(self, "No Sessions", "No recoverable tuner sessions found.")
-            return
-        if len(sessions) == 1 and sessions[0].status != "quarantined":
-            # Only one, and nothing about it needs a warning — resume it directly
-            self._resume_session(sessions[0].id)
-            return
-
-        # Multiple sessions — show picker dialog
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Resume Tuner Session")
-        dialog.setMinimumWidth(500)
-        dlg_layout = QVBoxLayout(dialog)
-        dlg_layout.addWidget(QLabel("Select a session to resume:"))
-
-        session_list = QListWidget()
-        for sess in sessions:
-            core_states = tp.load_core_states(self._db, sess.id)
-            total = len(core_states)
-            confirmed = sum(1 for cs in core_states.values() if cs.phase in (TunerPhase.CONFIRMED, TunerPhase.HARDENED))
-            started = format_local(sess.created_at) if sess.created_at else "?"
-            last = format_local(sess.updated_at) if sess.updated_at else started
-            label = (
-                f"#{sess.id}  started {started}  last {last}  "
-                f"[{status_label(sess.status)}]  "
-                f"{confirmed}/{total} cores confirmed  "
-                f"({sess.cpu_model[:30] if sess.cpu_model else '?'})"
-            )
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, sess.id)
-            session_list.addItem(item)
-        session_list.setCurrentRow(0)
-        dlg_layout.addWidget(session_list)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        dlg_layout.addWidget(buttons)
-
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        selected = session_list.currentItem()
-        if selected is None:
-            return
-        session_id = selected.data(Qt.ItemDataRole.UserRole)
-        chosen = next((s for s in sessions if s.id == session_id), None)
-        if chosen is not None and chosen.status == "quarantined" and not self._confirm_quarantined(chosen):
-            return
-        self._resume_session(session_id)
-
-    def _confirm_quarantined(self, session) -> bool:
-        """A quarantined session is only ever re-opened deliberately."""
-        return (
-            QMessageBox.question(
-                self,
-                "Session was quarantined",
-                f"Session #{session.id} was quarantined after "
-                f"{session.resume_crash_streak} crash-resumes: the machine kept dying "
-                "when its offsets were re-applied.\n\n"
-                "Resuming keeps everything it learned, but re-engages only offsets this "
-                "machine has already survived; anything unproven drops to stock. If it "
-                "quarantines again, the real limits are lower than the search assumed.\n\n"
-                "Resume it?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
-        )
-
-    def _resume_session(self, session_id: int) -> None:
-        """Resume a specific tuner session by ID."""
-        if not self._smu or not self._smu.is_available():
-            QMessageBox.warning(
-                self,
-                "SMU Not Available",
-                "The ryzen_smu kernel module is not loaded.\n\n"
-                "The auto-tuner requires SMU access to write Curve Optimizer values.\n"
-                "Load the module with: sudo modprobe ryzen_smu",
-            )
-            return
-
-        # Create engine if needed (cold start resume)
-        if self._engine is None:
-            if not self._db or not self._topology:
-                QMessageBox.warning(self, "Error", "Database or topology not available")
-                return
-            backend = self._get_backend()
-            if backend is None:
-                return
-            self._engine = TunerEngine(
-                db=self._db,
-                topology=self._topology,
-                smu=self._smu,
-                backend=backend,
-            )
-            self._wire_engine()
-
-        # The engine runs the session's SAVED config — mirror it into the
-        # config panel so the boxes show what is actually being executed.
-        session = tp.get_session(self._db, session_id) if self._db else None
-        if session is not None:
-            self._apply_config_to_ui(TunerConfig.from_json(session.config_json))
-        log.info("Resuming tuner session %d with its saved config", session_id)
-        for event in tp.get_events(self._db, session_id, limit=20):
-            log.info(
-                "[tuner] story: %s %s",
-                format_local(event.get("timestamp", "")),
-                event.get("message", ""),
-            )
-        self._engine.resume(session_id)
-        if self._engine.status not in ACTIVE_STATUSES:
-            QMessageBox.warning(
-                self,
-                "Resume Did Not Start",
-                "The engine did not resume — see the log for the reason.",
-            )
-            return
-        self._set_running_state(True)
-
-        # Initialize table with all cores
-        for core_id in self._engine.core_states:
-            self._update_core_row(core_id)
-
-    def _on_abort(self) -> None:
-        if self._engine:
-            self._engine.abort()
-            self._set_running_state(False)
-            # Reset core sidebar states to each core's actual phase — abort
-            # doesn't emit core_state_changed, and a blanket "pending" lied
-            # about confirmed/hardened cores.
-            for core_id, cs in self._engine.core_states.items():
-                self.tuner_core_testing.emit(core_id, _PHASE_TO_GRID[cs.phase])
-                self.tuner_core_info.emit(core_id, cs.current_offset, cs.phase)
-            # Stop elapsed timer
-            self._active_test_core = None
-            self._tuner_timer.stop()
-
-    def _on_validate(self) -> None:
-        if not self._engine or not self._engine.session_id:
-            return
-        backend = self._get_backend()
-        if backend is None:
-            return
-        self._engine.validate_profile(self._engine.session_id)
-        if self._engine.status not in ACTIVE_STATUSES:
-            QMessageBox.warning(
-                self,
-                "Validation Did Not Start",
-                "The engine refused to validate — see the log for the reason.",
-            )
-            return
-        self._set_running_state(True)
-
-    def _on_export(self) -> None:
-        """Export confirmed CO profile to a JSON file."""
-        if not self._engine or not self._engine.session_id or not self._db:
-            return
-        profile = tp.get_best_profile(self._db, self._engine.session_id)
-        if not profile:
-            QMessageBox.information(self, "Export", "No confirmed cores to export")
-            return
-
-        from corecycler.config.paths import user_home
-        from corecycler.config.settings import save_co_profile
-
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export CO Profile",
-            str(user_home() / "co-profile-tuner.json"),
-            "JSON (*.json)",
-        )
-        if not path:
-            return
-
-        cpu_model = ""
-        if self._topology:
-            cpu_model = self._topology.model_name
-
-        try:
-            save_co_profile(profile, Path(path), cpu_model=cpu_model, source="auto-tuner")
-            QMessageBox.information(self, "Exported", f"CO profile exported to {path}")
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to export: {e}")
-
-    # ------------------------------------------------------------------
-    # Engine signals
-    # ------------------------------------------------------------------
-
-    def _wire_engine(self) -> None:
-        if not self._engine:
-            return
-        self._engine.core_state_changed.connect(self._on_core_state_changed)
-        self._engine.worker_started.connect(self._on_worker_started)
-        self._engine.test_completed.connect(self._on_test_completed)
-        self._engine.session_completed.connect(self._on_session_completed)
-        self._engine.status_changed.connect(self._on_status_changed)
-        self._engine.progress_updated.connect(self._on_progress_updated)
-        self._engine.log_message.connect(self._on_log_message)
-        self._engine.co_drift_detected.connect(self._on_co_drift)
-        self._engine.validation_progress.connect(self._on_validation_progress)
-
-    @Slot(str)
-    def _on_co_drift(self, drift_json: str) -> None:
-        """Warn user that SMU CO values differ from session baselines."""
-        drift = json.loads(drift_json)
-        lines = [
-            f"Core {cid}: tuner last wrote {v['expected']}, found {v['actual']}"
-            for cid, v in sorted(drift.items(), key=lambda x: int(x[0]))
-        ]
-        QMessageBox.warning(
-            self,
-            "CO Drift Detected",
-            "CO offsets in the SMU differ from what the tuner last wrote — "
-            "something outside the tuner changed them (Curve Optimizer tab, "
-            "another tool).\n\n"
-            "The session's own values will be re-applied before testing resumes.\n\n" + "\n".join(lines),
-        )
-
-    @Slot(int, str, int)
-    def _on_core_state_changed(self, core_id: int, phase: str, offset: int) -> None:
-        self._update_core_row(core_id)
-        grid_state = _PHASE_TO_GRID.get(phase, "pending")
-
-        # Only override to "testing" if this core is actively being tested.
-        # _active_test_core is cleared in _on_test_completed (which fires
-        # before _advance_core), so post-test state changes won't re-apply
-        # the "testing" highlight to a core that just finished.
-        if core_id == self._active_test_core:
-            grid_state = "testing"
-
-        self.tuner_core_testing.emit(core_id, grid_state)
-        self.tuner_core_info.emit(core_id, offset, phase)
-
-    @Slot(int)
-    def _on_worker_started(self, core_id: int) -> None:
-        """Mark exactly this core as 'testing' in the sidebar."""
-        # Revert previous active core to its phase-appropriate state
-        if self._active_test_core is not None and self._active_test_core != core_id:
-            prev_cs = self._engine.core_states.get(self._active_test_core) if self._engine else None
-            if prev_cs:
-                prev_state = _PHASE_TO_GRID.get(prev_cs.phase, "pending")
-                self.tuner_core_testing.emit(self._active_test_core, prev_state)
-
-        self._active_test_core = core_id
-        self.tuner_core_testing.emit(core_id, "testing")
-        import time
-
-        self._test_start_time = time.monotonic()
-        if not self._tuner_timer.isActive():
-            self._tuner_timer.start(1000)
-
-    @Slot(int, int, bool)
-    def _on_test_completed(self, core_id: int, offset: int, passed: bool) -> None:
-        # Clear active test core BEFORE advance_core emits core_state_changed.
-        # Without this, the state_changed handler still overrides to "testing"
-        # for the just-finished core, causing brief dual-highlight in the sidebar.
-        if self._active_test_core == core_id:
-            self._active_test_core = None
-            self._tuner_timer.stop()
-        self._update_core_row(core_id)
-        self._add_log_entry(core_id, offset, passed)
-
-    @Slot(str)
-    def _on_session_completed(self, profile_json: str) -> None:
-        profile = json.loads(profile_json) if profile_json else {}
-        self._active_test_core = None
-        self._tuner_timer.stop()
-        self._set_running_state(False)
-        self._validate_btn.setEnabled(bool(profile))
-        self._export_btn.setEnabled(bool(profile))
-        self._notify(
-            "Tuning complete",
-            f"{len(profile)} core(s) confirmed. Load the profile from the Curve Optimizer or History tab.",
-        )
-
-    def _notify(self, title: str, body: str, *, urgency: str = "normal") -> None:
-        # A notification must never take the app down: swallow any failure
-        # (module missing, no D-Bus, no daemon) — the tune result already
-        # stands by the time this runs.
-        try:
-            from corecycler.config.settings import load_settings
-
-            if not load_settings().notify_on_completion:
-                return
-            from corecycler.notify import desktop_notify
-
-            desktop_notify(title, body, urgency=urgency)
-        except Exception:
-            log.debug("desktop notification failed", exc_info=True)
-
-    @Slot(str)
-    def _on_status_changed(self, status: str) -> None:
-        if status == "validating":
-            self._status_label.setText("Status: Validating")
-        else:
-            self._status_label.setText(f"Status: {status_label(status)}")
-            # Clear validation progress when leaving validation
-            self._progress_label.setText("")
-        # The engine pauses ITSELF on apparatus/SMU/startup faults ("fix the
-        # cause, then Resume") — the buttons must follow the engine's status,
-        # or every self-pause is a dead end with Resume greyed out.
-        if status == "paused":
-            self._pause_btn.setEnabled(False)
-            self._resume_btn.setEnabled(True)
-        elif status in ("running", "validating", "hunting"):
-            self._pause_btn.setEnabled(True)
-            self._resume_btn.setEnabled(False)
-            self._abort_btn.setEnabled(True)
-        elif status in ("idle", "quarantined"):
-            self._active_test_core = None
-            self._tuner_timer.stop()
-            self._set_running_state(False)
-            if self._engine is not None:
-                for core_id, cs in self._engine.core_states.items():
-                    self.tuner_core_testing.emit(core_id, _PHASE_TO_GRID[cs.phase])
-                    self.tuner_core_info.emit(core_id, cs.current_offset, cs.phase)
-            if status == "quarantined":
-                self._notify(
-                    "Tuning quarantined",
-                    "The machine kept crashing on resume — the profile is "
-                    "unsafe and every core was forced to stock. Investigate "
-                    "before retrying.",
-                    urgency="critical",
-                )
-
-    @Slot(int, int, int)
-    def _on_validation_progress(self, stage: int, current: int, total: int) -> None:
-        """Update status and progress labels during multi-core validation."""
-        stage_names = {
-            1: "per-core",
-            2: "all-core",
-            3: "half-core",
-            4: "transitions",
-            5: "spectrum",
-            6: "memory",
-            7: "soak",
-        }
-        stage_name = stage_names.get(stage, f"stage {stage}")
-        self._status_label.setText(f"Status: Validating S{stage} ({stage_name})")
-        self._progress_label.setText(f"S{stage}: {current}/{total}")
-
-    @Slot(int, int)
-    def _on_progress_updated(self, done: int, total: int) -> None:
-        self._progress_label.setText(f"{done}/{total} cores confirmed")
-
-    @Slot(str)
-    def _on_log_message(self, msg: str) -> None:
-        log.info("[tuner] %s", msg)
-
-    def _tick_tuner(self) -> None:
-        if self._active_test_core is not None:
-            import time
-
-            elapsed = time.monotonic() - self._test_start_time
-            self.tuner_core_elapsed.emit(self._active_test_core, elapsed)
-        elif self._engine is None or self._engine.status == "idle":
-            self._tuner_timer.stop()
-
-    # ------------------------------------------------------------------
-    # Table updates
-    # ------------------------------------------------------------------
-
-    def _update_core_row(self, core_id: int) -> None:
-        if not self._engine:
-            return
-        cs = self._engine.core_states.get(core_id)
-        if cs is None:
-            return
-
-        # Find or create row
-        row = self._find_core_row(core_id)
-        if row < 0:
-            row = self._core_table.rowCount()
-            self._core_table.insertRow(row)
-
-        core_info = self._topology.cores.get(core_id) if self._topology else None
-        ccd = core_info.ccd if core_info else None
-
-        items = [
-            str(core_id),
-            str(ccd) if ccd is not None else "-",
-            phase_label(cs.phase),
-            str(cs.current_offset),
-            str(cs.best_offset) if cs.best_offset is not None else "-",
-            str(self._count_tests(core_id)),
-            self._last_result(core_id),
-        ]
-
-        color = QColor(theme.PHASE_COLORS[cs.phase])
-        for col, text in enumerate(items):
-            item = QTableWidgetItem(text)
-            item.setForeground(color)
-            self._core_table.setItem(row, col, item)
-
-    def _find_core_row(self, core_id: int) -> int:
-        for row in range(self._core_table.rowCount()):
-            item = self._core_table.item(row, 0)
-            if item and item.text() == str(core_id):
-                return row
-        return -1
-
-    @staticmethod
-    def _real_test_count(entries: list[dict]) -> int:
-        """Count real stress tests, excluding synthetic crash-on-resume rows.
-
-        A crash recovered on resume is logged with duration=None (it records a
-        reboot, not a stress run); counting it inflates "Tests Run".
-        """
-        return sum(1 for e in entries if e.get("duration_seconds") is not None)
-
-    def _count_tests(self, core_id: int) -> int:
-        if not self._db or not self._engine or not self._engine.session_id:
-            return 0
-        entries = tp.get_test_log(self._db, self._engine.session_id, core_id=core_id)
-        return self._real_test_count(entries)
-
-    def _last_result(self, core_id: int) -> str:
-        if not self._db or not self._engine or not self._engine.session_id:
-            return "-"
-        entries = tp.get_test_log(self._db, self._engine.session_id, core_id=core_id)
-        if not entries:
-            return "-"
-        return "PASS" if entries[-1]["passed"] else "FAIL"
-
-    def _add_log_entry(self, core_id: int, offset: int, passed: bool) -> None:
-        if not self._db or not self._engine or not self._engine.session_id:
-            return
-        entries = tp.get_test_log(self._db, self._engine.session_id, core_id=core_id)
-        if not entries:
-            return
-        entry = entries[-1]
-
-        # If a core is selected, only show entries for that core
-        if self._selected_core is not None and core_id != self._selected_core:
-            return
-
-        MAX_LOG_ROWS = 2000
-        if self._log_table.rowCount() > MAX_LOG_ROWS:
-            self._log_table.removeRow(0)  # Remove oldest
-
-        row = self._log_table.rowCount()
-        self._log_table.insertRow(row)
-        items = [
-            format_local(entry.get("tested_at", "")),
-            str(core_id),
-            str(offset),
-            entry.get("phase", ""),
-            "PASS" if passed else "FAIL",
-            f"{entry.get('duration_seconds', 0):.1f}s" if entry.get("duration_seconds") else "-",
-            entry.get("error_message", "") or "",
-        ]
-        color = QColor(theme.COLOR_PASS) if passed else QColor(theme.COLOR_FAIL)
-        for col, text in enumerate(items):
-            item = QTableWidgetItem(text)
-            if col == 4:  # Result column
-                item.setForeground(color)
-            self._log_table.setItem(row, col, item)
-
-        self._log_table.scrollToBottom()
-
-    @Slot(int, int, int, int)
-    def _on_core_selected(self, row: int, col: int, prev_row: int, prev_col: int) -> None:
-        item = self._core_table.item(row, 0)
-        if item:
-            self._selected_core = int(item.text())
-            self._log_filter_label.setText(f"(core {self._selected_core})")
-            self._refresh_log_table()
-        else:
-            self._selected_core = None
-            self._log_filter_label.setText("(all cores)")
-            self._refresh_log_table()
-
-    def _refresh_log_table(self) -> None:
-        """Rebuild the log table based on the selected core filter."""
-        self._log_table.setRowCount(0)
-        if not self._db or not self._engine or not self._engine.session_id:
-            return
-
-        entries = tp.get_test_log(
-            self._db,
-            self._engine.session_id,
-            core_id=self._selected_core,
-        )
-        for entry in entries:
-            row = self._log_table.rowCount()
-            self._log_table.insertRow(row)
-            passed = bool(entry["passed"])
-            items = [
-                format_local(entry.get("tested_at", "")),
-                str(entry["core_id"]),
-                str(entry["offset_tested"]),
-                entry.get("phase", ""),
-                "PASS" if passed else "FAIL",
-                f"{entry.get('duration_seconds', 0):.1f}s" if entry.get("duration_seconds") else "-",
-                entry.get("error_message", "") or "",
-            ]
-            color = QColor(theme.COLOR_PASS) if passed else QColor(theme.COLOR_FAIL)
-            for col_idx, text in enumerate(items):
-                item = QTableWidgetItem(text)
-                if col_idx == 4:
-                    item.setForeground(color)
-                self._log_table.setItem(row, col_idx, item)
-
-    # ------------------------------------------------------------------
-    # Clipboard
-    # ------------------------------------------------------------------
-
-    def _install_copy_shortcut(self, table: QTableWidget) -> None:
-        """Add Ctrl+C support to a QTableWidget — copies selected rows as TSV."""
-        shortcut = QShortcut(QKeySequence.StandardKey.Copy, table)
-        shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
-        shortcut.activated.connect(lambda: self._copy_table_selection(table))
-
-    def _copy_table_selection(self, table: QTableWidget) -> None:
-        """Copy selected rows (or all rows if none selected) as tab-separated text."""
-        rows = sorted({idx.row() for idx in table.selectedIndexes()})
-        if not rows:
-            rows = list(range(table.rowCount()))
-        if not rows:
-            return
-
-        # Header
-        headers = []
-        for col in range(table.columnCount()):
-            h = table.horizontalHeaderItem(col)
-            headers.append(h.text() if h else "")
-        lines = ["\t".join(headers)]
-
-        # Data
-        for row in rows:
-            cells = []
-            for col in range(table.columnCount()):
-                item = table.item(row, col)
-                cells.append(item.text() if item else "")
-            lines.append("\t".join(cells))
-
-        clipboard = QApplication.clipboard()
-        if clipboard:
-            clipboard.setText("\n".join(lines))
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _set_running_state(self, running: bool) -> None:
-        self._start_btn.setEnabled(not running)
-        self._pause_btn.setEnabled(running)
-        self._resume_btn.setEnabled(False)
-        self._abort_btn.setEnabled(running)
-        self._config_container.setEnabled(not running)
-        if running:
-            self._validate_btn.setEnabled(False)
-            self._export_btn.setEnabled(False)
-        self.tuner_running_changed.emit(running)
-
-    def _get_backend(self) -> StressBackend | None:
-        if self._backend_factory:
-            backend = self._backend_factory(self._backend_combo.currentText())
-        else:
-            from corecycler.engine.backends import get_backend
-
-            name = self._backend_combo.currentText()
-            try:
-                backend = get_backend(name)
-            except KeyError:
-                QMessageBox.warning(self, "Error", f"Unknown backend: {name}")
-                return None
-
-        if backend and not backend.is_available() and not ensure_tool(self, self._backend_combo.currentText()):
-            return None
-        return backend
-
-    def _check_resume(self) -> None:
-        """Check for active tuner sessions on startup."""
-        if not self._db:
-            return
-        sessions = self._db.list_recoverable_tuner_sessions()
-        if sessions:
-            in_flight = [s for s in sessions if s.status in RESUMABLE_STATUSES]
-            if len(in_flight) == 1:
-                text = f"Status: RECOVERABLE SESSION #{in_flight[0].id} \u2014 click Resume to continue"
-            elif in_flight:
-                text = f"Status: {len(in_flight)} RECOVERABLE SESSIONS \u2014 click Resume to pick one"
-            else:
-                last = sessions[0]
-                text = (
-                    f"Status: LAST SESSION #{last.id} ENDED "
-                    f"{status_label(last.status).upper()} \u2014 click Resume to re-open it"
-                )
-            self._status_label.setText(text)
-            self._resume_btn.setEnabled(True)
-
-    def set_test_running(self, running: bool) -> None:
-        """Called by MainWindow to disable tuner Start when manual test is active."""
-        if running:
-            self._start_btn.setEnabled(False)
-            self._start_btn.setToolTip("Manual test is running")
-        else:
-            has_active = self._engine is not None and (
-                self._engine.status == "paused" or self._engine.status in ACTIVE_STATUSES
-            )
-            self._start_btn.setEnabled(not has_active)
-            if has_active:
-                self._start_btn.setToolTip("Tuner session is active — resume or abort first")
-            else:
-                self._start_btn.setToolTip("")
-
-    def force_stop(self) -> None:
-        """Force-stop the tuner engine and its worker — called on app exit."""
-        if self._engine:
-            self._engine.abort()
+        self._co_range = co_range
+        self._read_co = read_co
+        self._child: subprocess.Popen | None = None
+        self._running = False
+        self._test_running = False
+        self._view: SessionView | None = None
+        self._shown: dict[int, tuple[str, int, str]] = {}
+        self._newest_event: int | None = None
+        self._knobs: dict[str, QWidget] = {}
+        self._stage_spins: dict[str, QDoubleSpinBox] = {}
+        self._core_boxes: dict[int, QCheckBox] = {}
+        self._build()
+        self.refresh()
 
     @property
     def is_running(self) -> bool:
-        return self._engine is not None and self._engine.status in ACTIVE_STATUSES
+        return running_driver() is not None
+
+    def _build(self) -> None:
+        layout = QHBoxLayout(self)
+        layout.addWidget(self._build_settings(), 1)
+        layout.addLayout(self._build_live(), 1)
+
+    def _build_settings(self) -> QWidget:
+        group = QGroupBox("Settings")
+        self._settings = group
+        column = QVBoxLayout(group)
+        cores = QGridLayout()
+        domain_of = {}
+        for index, (core, info) in enumerate(sorted(self._topology.cores.items()) if self._topology else ()):
+            box = QCheckBox(f"C{core}")
+            box.setChecked(True)
+            self._core_boxes[core] = box
+            domain_of[core] = info.ccd
+            cores.addWidget(box, index // CORES_PER_ROW, index % CORES_PER_ROW)
+        column.addWidget(QLabel("Cores to tune"))
+        column.addLayout(cores)
+        column.addWidget(note("An unticked core keeps its value and is not tested."))
+        shown = setting_grid()
+        self._order = QComboBox()
+        for method in Method:
+            self._order.addItem(ORDER_LABELS[method], method.value)
+            problem = order_problem(method, tuple(self._core_boxes), domain_of)
+            if problem is not None:
+                item = self._order.model().item(self._order.count() - 1)
+                item.setEnabled(False)
+                item.setToolTip(problem)
+        self._order.setCurrentIndex(self._order.findData(default_method(tuple(self._core_boxes), domain_of).value))
+        add_setting(
+            shown,
+            0,
+            "Core order",
+            self._order,
+            "",
+            "Which core is tested next. Alternating across CCDs lets one cool while the other works.",
+        )
+        defaults = {f.name: f.default for f in fields(MachineConfig) if f.name not in SET_BY_THE_TAB}
+        defaults |= STAGE_DEFAULT
+        for row, (name, (label, unit, about)) in enumerate(KNOB_TEXT[SHOWN].items(), start=1):
+            add_setting(shown, row, label, self._knob(name, defaults[name]), unit, about)
+        column.addLayout(shown)
+        self._advanced_toggle = QToolButton()
+        self._advanced_toggle.setText("Advanced settings")
+        self._advanced_toggle.setCheckable(True)
+        column.addWidget(self._advanced_toggle)
+        self._advanced = QWidget()
+        advanced = QVBoxLayout(self._advanced)
+        advanced.setContentsMargins(0, 0, 0, 0)
+        for title, knobs in KNOB_TEXT.items():
+            if title == SHOWN:
+                continue
+            box = QGroupBox(title)
+            rows = setting_grid()
+            for row, (name, (label, unit, about)) in enumerate(knobs.items()):
+                add_setting(rows, row, label, self._knob(name, defaults[name]), unit, about)
+            box.setLayout(rows)
+            advanced.addWidget(box)
+        column.addWidget(self._advanced)
+        column.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setMinimumWidth(group.minimumSizeHint().width() + scroll.verticalScrollBar().sizeHint().width())
+        scroll.setWidget(group)
+        self._advanced.setVisible(False)
+        self._advanced_toggle.toggled.connect(self._advanced.setVisible)
+        return scroll
+
+    def _knob(self, name: str, default) -> QWidget:
+        if isinstance(default, bool):
+            widget = QCheckBox()
+            widget.setChecked(default)
+        elif isinstance(default, int):
+            widget = QSpinBox()
+            if name == "max_offset":
+                low = self._co_range[0] if self._co_range is not None else default
+                widget.setRange(low, -1)
+                widget.setValue(max(default, low))
+            else:
+                widget.setRange(int(KNOB_FLOOR[name]), CEILING)
+                widget.setValue(default)
+        else:
+            widget = QDoubleSpinBox()
+            widget.setDecimals(0)
+            widget.setRange(1.0 if name in STAGE_ORDER else KNOB_FLOOR[name], CEILING)
+            widget.setValue(default)
+        if not isinstance(widget, QCheckBox):
+            widget.setFixedWidth(BOX_WIDTH)
+        if name in STAGE_ORDER:
+            self._stage_spins[name] = widget
+        else:
+            self._knobs[name] = widget
+        return widget
+
+    def _build_live(self) -> QVBoxLayout:
+        column = QVBoxLayout()
+        self._status = QLabel("No tuning session")
+        self._range = QLabel("")
+        self._range.setWordWrap(True)
+        self._driver = QLabel("")
+        self._driver.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM};")
+        self._test = QLabel("")
+        self._test.setWordWrap(True)
+        self._reminder = QLabel("")
+        self._reminder.setWordWrap(True)
+        column.addWidget(self._status)
+        column.addWidget(self._range)
+        column.addWidget(self._driver)
+        column.addWidget(self._test)
+        column.addWidget(self._reminder)
+        buttons = QGridLayout()
+        self._buttons: dict[str, QPushButton] = {}
+        for name, action in (
+            ("Start", self._on_start),
+            ("Pause", lambda: self._signal(signal.SIGUSR1, "pause: a one-core test finishes, an all-core test stops")),
+            ("Stop", lambda: self._signal(signal.SIGTERM, "stop now; the session stays paused")),
+            ("Abort", self._on_abort),
+            ("Resume", lambda: self._on_session("resume")),
+            ("Validate", lambda: self._on_session("validate")),
+            ("Continue", lambda: self._on_session("continue")),
+            ("Restart", lambda: self._on_session("restart")),
+        ):
+            button = QPushButton(name)
+            button.clicked.connect(action)
+            buttons.addWidget(button, *divmod(len(self._buttons), 4))
+            self._buttons[name] = button
+        self._buttons["Start"].setStyleSheet(button_qss(theme.BTN_GREEN))
+        self._buttons["Abort"].setStyleSheet(button_qss(theme.BTN_RED))
+        column.addLayout(buttons)
+        self._cores = QTableWidget(0, 4)
+        self._cores.setHorizontalHeaderLabels(["Core", "Tuner value", "Phase", "Failed at"])
+        self._cores.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._cores.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        column.addWidget(self._cores, 1)
+        self._events = QPlainTextEdit()
+        self._events.setReadOnly(True)
+        column.addWidget(self._events, 1)
+        return column
+
+    def config(self) -> MachineConfig:
+        values = {
+            name: widget.isChecked() if isinstance(widget, QCheckBox) else widget.value()
+            for name, widget in self._knobs.items()
+        }
+        return MachineConfig(
+            Mode.CO,
+            Method(self._order.currentData()),
+            tuple(core for core, box in self._core_boxes.items() if box.isChecked()),
+            stage_seconds=tuple((load, self._stage_spins[load].value()) for load in STAGE_ORDER),
+            **values,
+        )
+
+    def _show_settings(self, view: SessionView | None) -> None:
+        held = view.stored if view is not None and view.status in HELD_STATUSES else None
+        if held is not None:
+            cfg = held.config
+            for name, widget in self._knobs.items():
+                if isinstance(widget, QCheckBox):
+                    widget.setChecked(getattr(cfg, name))
+                else:
+                    widget.setValue(getattr(cfg, name))
+            for load, seconds in cfg.stage_seconds:
+                self._stage_spins[load].setValue(seconds)
+            self._order.setCurrentIndex(self._order.findData(cfg.method.value))
+            for core, box in self._core_boxes.items():
+                box.setChecked(core in cfg.selected)
+        self._settings.setTitle("Settings" if held is None else f"Session {held.session_id} settings")
+        for widget in (*self._knobs.values(), *self._stage_spins.values(), self._order, *self._core_boxes.values()):
+            widget.setEnabled(held is None)
+
+    def set_test_running(self, running: bool) -> None:
+        self._test_running = running
+        self._enable_controls()
+
+    def refresh(self) -> None:
+        self._reap()
+        running = self.is_running
+        if running != self._running:
+            self._running = running
+            self.tuner_running_changed.emit(running)
+        seen = self._view
+        self._view = read_view(self._db, kernel.read_boot_id()) if self._db is not None else None
+        self._show_settings(self._view)
+        if seen is not None and self._view is not None and seen.status not in ENDED and self._view.status in ENDED:
+            self._remind()
+        self._range.setText("Power now: " + (power_text(power_now()) or "unreadable"))
+        self._show()
+        self._enable_controls()
+
+    def _remind(self) -> None:
+        try:
+            stopped = stopped_services()
+        except (OSError, subprocess.SubprocessError) as e:
+            self._reminder.setText(f"The scheduling services could not be checked: {e}")
+            return
+        commands = " && ".join(f"sudo systemctl start {unit}.service" for unit in stopped)
+        self._reminder.setText(
+            f"The session has ended and {' and '.join(stopped)} {'is' if len(stopped) == 1 else 'are'} enabled"
+            f" but stopped. Start {'it' if len(stopped) == 1 else 'them'} again with: {commands}"
+            if stopped
+            else ""
+        )
+
+    def waiting_session(self) -> SessionView | None:
+        view = self._view
+        return view if view is not None and view.status in HELD_STATUSES else None
+
+    def _show(self) -> None:
+        view = self._view
+        if view is None:
+            self._status.setText("No tuning session")
+            return
+        pause = [event for event in view.events if event["severity"] == "paused"]
+        reason = f". {pause_text(pause[-1]['message'])}" if view.status == "paused" and pause else ""
+        shown = shown_status(view.status, self._running)
+        status = SESSION_STATUS_LABELS.get(shown, shown)
+        unread = "" if view.problem is None else f"; {view.problem}"
+        self._status.setText(f"Session {view.session_id}: {status}{reason}{unread}")
+        self._show_test(view)
+        self._show_cores(view)
+        self._show_events(view)
+
+    def _show_test(self, view: SessionView) -> None:
+        test = view.test if self._running else None
+        if test is None:
+            self._test.setText("")
+            return
+        elapsed = (datetime.now(UTC) - datetime.fromisoformat(test["started_at"])).total_seconds()
+        if test["stage"] in ONE_CORE_STAGES:
+            what = f"core {test['core']} at {test['value']}, {THREADS.get(test['klass'], test['klass'])}"
+        else:
+            what = scope_text(test)
+        tally = "" if view.endurance is None else "; {} endurance tests ended, {} failed".format(*view.endurance)
+        self._test.setText(
+            f"Testing {what}: {stage_label(test['stage'])}, {elapsed:.0f} of {test['seconds_asked']:.0f} s{tally}"
+        )
+        for core in self._loaded_cores(test):
+            self.tuner_core_elapsed.emit(core, elapsed)
+
+    def _loaded_cores(self, test: dict) -> tuple[int, ...]:
+        if test["stage"] in ONE_CORE_STAGES:
+            return (test["core"],)
+        cpus = set(json.loads(test["cpus_json"]))
+        cores = sorted(self._topology.cores.items()) if self._topology is not None else ()
+        return tuple(core for core, info in cores if cpus.intersection(info.logical_cpus))
+
+    def _show_cores(self, view: SessionView) -> None:
+        records = view.stored.cores if view.stored is not None else ()
+        self._cores.setRowCount(len(records))
+        testing = self._loaded_cores(view.test) if view.test is not None and self._running else ()
+        for row, record in enumerate(records):
+            fail = "" if record.fb is None else str(record.fb)
+            texts = (str(record.core), str(record.value), tuner_phase_label(record.phase), fail)
+            for column, text in enumerate(texts):
+                self._cores.setItem(row, column, QTableWidgetItem(text))
+            state = "testing" if record.core in testing else GRID_STATE[record.phase]
+            shown = (state, record.value, record.phase.value)
+            if self._shown.get(record.core) != shown:
+                self._shown[record.core] = shown
+                self.tuner_core_testing.emit(record.core, state)
+                self.tuner_core_info.emit(record.core, record.value, record.phase.value)
+
+    def _show_events(self, view: SessionView) -> None:
+        newest = view.events[-1]["id"] if view.events else None
+        if newest == self._newest_event:
+            return
+        self._newest_event = newest
+        self._events.setPlainText(
+            "\n".join(
+                f"{format_local(event['timestamp'])}  {event['severity']}: {event['message']}" for event in view.events
+            )
+        )
+        self._events.verticalScrollBar().setValue(self._events.verticalScrollBar().maximum())
+
+    def _enable_controls(self) -> None:
+        view = self._view
+        idle = not self._running and not self._test_running and self._child is None
+        status = view.status if view is not None else None
+        readable = view is not None and view.stored is not None
+        self._buttons["Start"].setEnabled(idle and self._co_range is not None and bool(self._core_boxes))
+        for name in ("Pause", "Stop"):
+            self._buttons[name].setEnabled(self._running)
+        self._buttons["Abort"].setEnabled(self._running or (idle and status in ("running", "paused")))
+        self._buttons["Resume"].setEnabled(
+            idle and readable and status in ("running", "paused", "aborted", "quarantined")
+        )
+        self._buttons["Validate"].setEnabled(idle and readable and status == "completed")
+        for name in ("Continue", "Restart"):
+            self._buttons[name].setEnabled(idle and readable and view.setup_changed())
+
+    def _note(self, text: str) -> None:
+        log.info("tuner tab: %s", text)
+        self._driver.setText(text)
+
+    def _tools_ready(self) -> bool:
+        return all(ensure_tool(self, key) for key in TOOLS)
+
+    def _scheduler_allows(self) -> bool:
+        problem = sched_ext_note()
+        if problem is None:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Another scheduler is running",
+            f"{problem}\n\nFor clean results stop it first: scxctl stop, or systemctl stop scx_loader."
+            "\n\nStart anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _on_start(self) -> None:
+        if not self._tools_ready() or not self._scheduler_allows():
+            return
+        state = data_dir() / "tuner"
+        state.mkdir(parents=True, exist_ok=True)
+        path = state / "start-config.json"
+        config = self.config()
+        over = self._over_set_values(config.selected)
+        if over is None:
+            return
+        atomic_write(path, json.dumps(config_to_json(config)))
+        self._launch(["--start", "--config", str(path), *over])
+
+    def _over_set_values(self, cores: tuple[int, ...]) -> list[str] | None:
+        if self._read_co is None:
+            return []
+        values = {core: self._read_co(core) for core in cores}
+        already = ", ".join(f"C{core} {value}" for core, value in sorted(values.items()) if value not in (0, None))
+        newest = self._view
+        changed = (
+            [] if newest is None or newest.stored is None else co_changed_since(newest.stored.base_co, values, cores)
+        )
+        unread = None if newest is None else newest.problem
+        if not already and not changed and unread is None:
+            return []
+        said = []
+        if already:
+            said.append(
+                f"These cores already run a Curve Optimizer value, set by the BIOS or written since boot: {already}."
+                "\n\nThe tuner searches each core from 0, or from where the newest completed session with this setup"
+                " and power state ended, and replaces these values while it runs. A reboot brings the BIOS values back."
+            )
+        if changed:
+            said.append(f"The CO differs from when session {newest.session_id} started: {', '.join(changed)}.")
+        if unread is not None:
+            said.append(f"The newest {unread}, so whether the CO moved since it started cannot be judged.")
+        answer = QMessageBox.question(
+            self,
+            "Curve Optimizer values at Start",
+            "\n\n".join([*said, "Start anyway?"]),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return ["--acknowledge"] if answer == QMessageBox.StandardButton.Yes else None
+
+    def _on_session(self, action: str) -> None:
+        view = self._view
+        if view is None or not self._tools_ready() or not self._scheduler_allows():
+            return
+        extra: list[str] | None = []
+        if action == "restart":
+            extra = self._over_set_values(view.stored.config.selected)
+        if action == "resume" and view.status == "quarantined":
+            extra = self._reengage(view.session_id)
+        if extra is None:
+            return
+        self._launch([f"--{action}", "--session", str(view.session_id), *extra])
+
+    def _reengage(self, session_id: int) -> list[str] | None:
+        answer = QMessageBox.question(
+            self,
+            "Re-engage Tuning",
+            f"Session {session_id} is quarantined: it crashed three times in a row with no test surviving."
+            " Re-engage it on proven ground? Each core starts again from its last proven value, or from stock"
+            " where none is proven.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return ["--reengage"] if answer == QMessageBox.StandardButton.Yes else None
+
+    def _on_abort(self) -> None:
+        view = self._view
+        said = (
+            "Abort the session? Every owned core goes back to its baseline and the session stops as aborted;"
+            " Resume can take it up again."
+        )
+        if view is not None and view.stored is None:
+            said = (
+                f"Abort the session? It stops as aborted unread, as {view.problem}, and stays in History as stored."
+                " Every core its CO journal shows it wrote in this boot goes back to stock; when the journal cannot"
+                " be read or another session wrote after it, no CO is written: reboot or check the CO before tuning"
+                " again."
+            )
+        answer = QMessageBox.question(
+            self,
+            "Abort Tuning",
+            said,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if running_driver() is None and self._view is not None:
+            self._launch(["--abort", "--session", str(self._view.session_id)])
+        else:
+            self._signal(signal.SIGUSR2, "abort")
+
+    def _signal(self, number: signal.Signals, meaning: str) -> None:
+        pid = running_driver()
+        if pid is None:
+            self._note("no tuner driver is running")
+            return
+        try:
+            os.kill(pid, number)
+        except OSError as e:
+            self._note(f"could not ask driver {pid} to {meaning}: {e}")
+            return
+        self._note(f"asked driver {pid} to {meaning}")
+
+    def _launch(self, args: list[str]) -> None:
+        state = data_dir() / "tuner"
+        state.mkdir(parents=True, exist_ok=True)
+        output = state / "driver.log"
+        command = [sys.executable, "-m", "corecycler.tuner.live_hw", "--write", *args]
+        if self._db is not None:
+            command += ["--db", str(self._db.path)]
+        environment = child_environment()
+        with output.open("w") as out:
+            self._child = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+                env=environment,
+                start_new_session=True,
+            )
+        hand_back(output)
+        self._note(f"started the driver: {' '.join(args)}")
+        self._enable_controls()
+
+    def _reap(self) -> None:
+        if self._child is None:
+            return
+        code = self._child.poll()
+        if code is None:
+            return
+        self._child = None
+        meaning = EXIT_MEANINGS.get(code, f"exit {code}")
+        lines = self._driver_output()
+        last = (
+            next((line for line in reversed(lines) if line.strip()), "") if code in (EXIT_REFUSED, EXIT_LOCKED) else ""
+        )
+        self._note(f"the driver ended: {meaning}" + (f": {labelled(last)}" if last else ""))
+        failure = next((line.partition(DATABASE_FAILED)[2] for line in reversed(lines) if DATABASE_FAILED in line), "")
+        if failure:
+            QMessageBox.critical(self, "The history database failed", failure)
+
+    def _driver_output(self) -> list[str]:
+        try:
+            return (data_dir() / "tuner" / "driver.log").read_text().splitlines()
+        except OSError as e:
+            return [f"its output cannot be read: {e}"]

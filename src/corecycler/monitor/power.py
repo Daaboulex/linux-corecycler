@@ -12,7 +12,6 @@ log = logging.getLogger(__name__)
 RAPL_BASE = Path("/sys/class/powercap/intel-rapl")
 HWMON_BASE = Path("/sys/class/hwmon")
 
-# Hwmon drivers that expose package power via power1_input (microwatts)
 _POWER_HWMON_DRIVERS = ("zenpower", "zenpower3", "zenpower5", "k10temp")
 
 
@@ -26,20 +25,19 @@ class PowerMonitor:
 
     def __init__(self) -> None:
         self._package_path: Path | None = None
-        self._hwmon_power_path: Path | None = None  # fallback: power1_input
+        self._energy_range_uj: int | None = None
+        self._hwmon_power_path: Path | None = None
         self._last_energy_uj: int | None = None
         self._last_time: float | None = None
         self._find_package()
 
     def _find_package(self) -> None:
         """Find a readable RAPL package energy counter, or hwmon fallback."""
-        # Try primary RAPL path first
         pkg0 = RAPL_BASE / "intel-rapl:0" / "energy_uj"
         if self._try_read(pkg0):
-            self._package_path = pkg0
+            self._use_rapl(pkg0)
             return
 
-        # Scan all RAPL domains for a readable "package" counter
         if RAPL_BASE.exists():
             for rapl_dir in sorted(RAPL_BASE.parent.glob("intel-rapl*")):
                 energy = rapl_dir / "energy_uj"
@@ -49,10 +47,9 @@ class PowerMonitor:
                 except OSError:
                     continue
                 if "package" in name_text and self._try_read(energy):
-                    self._package_path = energy
+                    self._use_rapl(energy)
                     return
 
-        # Fallback: hwmon power1_input from zenpower/k10temp (world-readable)
         if HWMON_BASE.exists():
             for hwmon_dir in sorted(HWMON_BASE.iterdir()):
                 name_file = hwmon_dir / "name"
@@ -61,7 +58,6 @@ class PowerMonitor:
                 name = name_file.read_text().strip()
                 if name not in _POWER_HWMON_DRIVERS:
                     continue
-                # Find a power input labeled as package/RAPL
                 for pf in sorted(hwmon_dir.glob("power*_input")):
                     label_file = pf.parent / pf.name.replace("_input", "_label")
                     label = ""
@@ -78,13 +74,22 @@ class PowerMonitor:
         else:
             log.debug("RAPL sysfs not found")
 
+    def _use_rapl(self, energy: Path) -> None:
+        self._package_path = energy
+        try:
+            self._energy_range_uj = int(energy.with_name("max_energy_range_uj").read_text().strip())
+        except (OSError, ValueError) as exc:
+            log.warning(
+                "RAPL %s has no readable max_energy_range_uj (%s): a counter wrap drops one reading", energy, exc
+            )
+
     @staticmethod
     def _try_read(path: Path) -> bool:
         """Check if a sysfs file exists AND is readable."""
         try:
             int(path.read_text().strip())
             return True
-        except (OSError, ValueError, PermissionError):
+        except OSError, ValueError, PermissionError:
             return False
 
     def is_available(self) -> bool:
@@ -97,16 +102,16 @@ class PowerMonitor:
         Hwmon mode: instantaneous reading in microwatts.
         """
         if self._package_path:
-            return self._read_rapl()
+            return self._read_rapl(self._package_path)
         if self._hwmon_power_path:
-            return self._read_hwmon_power()
+            return self._read_hwmon_power(self._hwmon_power_path)
         return None
 
-    def _read_rapl(self) -> float | None:
+    def _read_rapl(self, path: Path) -> float | None:
         """Read power from RAPL energy counter (delta-based)."""
         try:
-            energy_uj = int(self._package_path.read_text().strip())  # type: ignore[union-attr]
-        except (ValueError, OSError):
+            energy_uj = int(path.read_text().strip())
+        except ValueError, OSError:
             return None
 
         now = time.monotonic()
@@ -115,21 +120,22 @@ class PowerMonitor:
             dt = now - self._last_time
             if dt > 0:
                 delta = energy_uj - self._last_energy_uj
-                if delta < 0:
-                    delta += 2**32  # 32-bit counter wraparound
-                watts = (delta / 1_000_000) / dt
                 self._last_energy_uj = energy_uj
                 self._last_time = now
-                return watts
+                if delta < 0:
+                    if self._energy_range_uj is None:
+                        return None
+                    delta += self._energy_range_uj
+                return (delta / 1_000_000) / dt
 
         self._last_energy_uj = energy_uj
         self._last_time = now
         return None
 
-    def _read_hwmon_power(self) -> float | None:
+    def _read_hwmon_power(self, path: Path) -> float | None:
         """Read instantaneous power from hwmon power*_input (microwatts)."""
         try:
-            uw = int(self._hwmon_power_path.read_text().strip())  # type: ignore[union-attr]
+            uw = int(path.read_text().strip())
             return uw / 1_000_000
-        except (ValueError, OSError):
+        except ValueError, OSError:
             return None

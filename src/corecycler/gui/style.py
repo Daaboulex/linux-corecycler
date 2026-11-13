@@ -8,12 +8,18 @@ value freezes it at import time and a scheme change is then never seen.
 
 from __future__ import annotations
 
+import logging
+import os
+import signal
+import subprocess
+import sys
 from datetime import datetime
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPalette
 
-from corecycler.tuner.state import TunerPhase
+from corecycler.config.paths import child_environment
+from corecycler.tuner.machine.types import Group, PauseReason, Phase, Stage
 
 DARK = "dark"
 LIGHT = "light"
@@ -42,15 +48,6 @@ _SEMANTIC: dict[str, dict[str, str]] = {
         "BG_BACKOFF": "#3a2a1a",
         "BG_MEM_STRESS": "#2a1a2e",
         "BG_ACTIVE_TINT": "#1a2a1a",
-        "PHASE_COARSE": "#b4b432",
-        "PHASE_FINE": "#c8c832",
-        "PHASE_SETTLED": "#c89632",
-        "PHASE_CONFIRMING": "#3296c8",
-        "PHASE_CONFIRMED": "#32b432",
-        "PHASE_FAILED_CONFIRM": "#dc8050",
-        "PHASE_HARDENING_T1": "#b39ddb",
-        "PHASE_HARDENING_T2": "#a084d6",
-        "PHASE_HARDENED": "#66bb6a",
     },
     LIGHT: {
         "COLOR_PASS": "#266b2a",
@@ -75,15 +72,6 @@ _SEMANTIC: dict[str, dict[str, str]] = {
         "BG_BACKOFF": "#f9eedd",
         "BG_MEM_STRESS": "#f1e6f6",
         "BG_ACTIVE_TINT": "#e9f3ea",
-        "PHASE_COARSE": "#6b6b1e",
-        "PHASE_FINE": "#5f5f1a",
-        "PHASE_SETTLED": "#7a5216",
-        "PHASE_CONFIRMING": "#1f5f80",
-        "PHASE_CONFIRMED": "#1f7a1f",
-        "PHASE_FAILED_CONFIRM": "#8f3a10",
-        "PHASE_HARDENING_T1": "#5e35b1",
-        "PHASE_HARDENING_T2": "#4527a0",
-        "PHASE_HARDENED": "#266b2a",
     },
 }
 
@@ -91,35 +79,66 @@ ABSENT = "-"
 PENDING_VALUE = "--"
 NOT_AVAILABLE = "N/A"
 
-PHASE_LABELS: dict[TunerPhase, str] = {
-    TunerPhase.NOT_STARTED: "Not started",
-    TunerPhase.COARSE_SEARCH: "Coarse search",
-    TunerPhase.FINE_SEARCH: "Fine search",
-    TunerPhase.SETTLED: "Settled",
-    TunerPhase.CONFIRMING: "Confirming",
-    TunerPhase.CONFIRMED: "Confirmed",
-    TunerPhase.FAILED_CONFIRM: "Failed confirm",
-    TunerPhase.BACKOFF_PRECONFIRM: "Backing off",
-    TunerPhase.BACKOFF_CONFIRMING: "Backoff confirm",
-    TunerPhase.HARDENING_T1: "Hardening 1",
-    TunerPhase.HARDENING_T2: "Hardening 2",
-    TunerPhase.HARDENED: "Hardened",
+TUNER_PHASE_LABELS: dict[Phase, str] = {
+    Phase.NOT_STARTED: "Not started",
+    Phase.COARSE: "Coarse",
+    Phase.FINE: "Fine",
+    Phase.PROVE: "Proving",
+    Phase.PROVEN: "Proven",
 }
 
-PHASE_TO_GRID: dict[TunerPhase, str] = {
-    TunerPhase.NOT_STARTED: "pending",
-    TunerPhase.COARSE_SEARCH: "queued",
-    TunerPhase.FINE_SEARCH: "queued",
-    TunerPhase.SETTLED: "queued",
-    TunerPhase.CONFIRMING: "queued",
-    TunerPhase.CONFIRMED: "passed",
-    TunerPhase.FAILED_CONFIRM: "backoff",
-    TunerPhase.BACKOFF_PRECONFIRM: "backoff",
-    TunerPhase.BACKOFF_CONFIRMING: "backoff",
-    TunerPhase.HARDENING_T1: "queued",
-    TunerPhase.HARDENING_T2: "queued",
-    TunerPhase.HARDENED: "passed",
+
+PAUSE_LABELS: dict[PauseReason, str] = {
+    PauseReason.USER: "Asked by you",
+    PauseReason.RESUMING: "Reading what the last boot left",
+    PauseReason.APPARATUS: "A test could not be judged",
+    PauseReason.SMU_WRITE: "A Curve Optimizer write failed",
+    PauseReason.SMU_READ: "A Curve Optimizer read failed",
+    PauseReason.THERMAL: "Too hot",
+    PauseReason.DATABASE: "The history database could not be written",
+    PauseReason.STOCK_UNSTABLE: "A core fails at its stock value",
+    PauseReason.INCIDENTS: "Incidents",
+    PauseReason.PROFILE_APPLY: "The found values could not be applied",
+    PauseReason.START_FAILURES: "Cores failed their first value",
+    PauseReason.INTERNAL: "Internal error",
+    PauseReason.OUTSIDE_WRITE: "Another program changed a Curve Optimizer value",
+    PauseReason.HELD_KNOB: "A core outside the session failed",
+    PauseReason.SETUP_CHANGED: "The setup changed",
+    PauseReason.KERNEL_LOG_UNREAD: "The kernel log could not be read",
 }
+
+STAGE_LABELS: dict[Stage, str] = {
+    Stage.SEARCH: "Search",
+    Stage.LIVE1: "Each core alone",
+    Stage.BISECT: "Narrowing",
+    Stage.STEADY: "Hot all-core",
+    Stage.TRANSIENT: "Changing loads",
+    Stage.TIGHTEN: "Tighten",
+    Stage.ENDURANCE: "Endurance",
+    Stage.MEMORY: "Memory",
+    Stage.SOAK: "Idle watch",
+    Stage.FINALIZE: "Finishing",
+}
+
+VERDICT_LABELS: dict[str, str] = {
+    Group.PASS: "Passed",
+    Group.SILICON: "Failed",
+    Group.THERMAL: "Too hot",
+    Group.ENVIRONMENT: "Machine fault no core is blamed for",
+    Group.APPARATUS: "Could not be judged",
+    Group.SLEPT: "Machine slept",
+    "internal_error": "Internal error",
+}
+
+POWER_LABELS = {
+    "power profile": "profile {}",
+    "platform profile": "platform profile {}",
+    "governor": "governor {}",
+    "EPP": "EPP {}",
+    "boost": "boost {}",
+    "scaling maximum MHz": "max MHz {}",
+}
+ON_OFF = {"1": "on", "0": "off"}
 
 GRID_STATE_LABELS: dict[str, str] = {
     "pending": "Pending",
@@ -136,6 +155,7 @@ GRID_STATE_LABELS: dict[str, str] = {
 SESSION_STATUS_LABELS: dict[str, str] = {
     "completed": "Completed",
     "running": "Running",
+    "interrupted": "Interrupted",
     "validating": "Validating",
     "paused": "Paused",
     "quarantined": "Quarantined",
@@ -196,23 +216,6 @@ def _state_colors(c: dict[str, str]) -> dict[str, tuple[str, str, str]]:
     }
 
 
-def _phase_colors(c: dict[str, str]) -> dict[TunerPhase, str]:
-    return {
-        TunerPhase.NOT_STARTED: c["COLOR_MUTED_DARK"],
-        TunerPhase.COARSE_SEARCH: c["PHASE_COARSE"],
-        TunerPhase.FINE_SEARCH: c["PHASE_FINE"],
-        TunerPhase.SETTLED: c["PHASE_SETTLED"],
-        TunerPhase.CONFIRMING: c["PHASE_CONFIRMING"],
-        TunerPhase.CONFIRMED: c["PHASE_CONFIRMED"],
-        TunerPhase.FAILED_CONFIRM: c["PHASE_FAILED_CONFIRM"],
-        TunerPhase.BACKOFF_PRECONFIRM: c["COLOR_ORANGE"],
-        TunerPhase.BACKOFF_CONFIRMING: c["COLOR_WARN_SOFT"],
-        TunerPhase.HARDENING_T1: c["PHASE_HARDENING_T1"],
-        TunerPhase.HARDENING_T2: c["PHASE_HARDENING_T2"],
-        TunerPhase.HARDENED: c["PHASE_HARDENED"],
-    }
-
-
 def _status_colors(c: dict[str, str]) -> dict[str, str]:
     return {
         "completed": c["COLOR_PASS"],
@@ -221,6 +224,7 @@ def _status_colors(c: dict[str, str]) -> dict[str, str]:
         "stopped": c["COLOR_WARN"],
         "aborted": c["COLOR_WARN"],
         "running": c["COLOR_ACTIVE"],
+        "interrupted": c["COLOR_WARN"],
         "validating": c["COLOR_ACTIVE"],
         "paused": c["COLOR_MUTED"],
         "idle": c["COLOR_MUTED"],
@@ -236,7 +240,6 @@ def resolve(scheme: str, palette: QPalette) -> dict[str, object]:
     colors["CHART_FREQ"] = colors["COLOR_ACTIVE"]
     values: dict[str, object] = dict(colors)
     values["STATE_COLORS"] = _state_colors(colors)
-    values["PHASE_COLORS"] = _phase_colors(colors)
     values["STATUS_COLORS"] = _status_colors(colors)
     values["scheme"] = scheme
     return values
@@ -300,19 +303,39 @@ def scheduler_phase_label(phase: str) -> str:
     return phase.capitalize() if phase else ""
 
 
-def phase_label(phase: TunerPhase | str) -> str:
-    try:
-        return PHASE_LABELS[TunerPhase(phase)]
-    except ValueError:
-        return str(phase)
+def tuner_phase_label(value: str) -> str:
+    return TUNER_PHASE_LABELS.get(value, value)
+
+
+def stage_label(value: str) -> str:
+    return STAGE_LABELS.get(value, value)
+
+
+def verdict_text(value: str) -> str:
+    return VERDICT_LABELS.get(value, value)
+
+
+def pause_text(message: str) -> str:
+    reason, colon, detail = message.partition(": ")
+    label = PAUSE_LABELS.get(reason)
+    return f"{label}: {detail}" if label is not None and colon else message
+
+
+def power_text(pairs: tuple[tuple[str, str], ...]) -> str:
+    return ", ".join(
+        POWER_LABELS[name].format(ON_OFF.get(value, value) if name == "boost" else value)
+        if name in POWER_LABELS
+        else f"{name} {value}"
+        for name, value in pairs
+    )
+
+
+def shown_status(status: str, driver_running: bool) -> str:
+    return "interrupted" if status == "running" and not driver_running else status
 
 
 def state_label(state: str) -> str:
     return GRID_STATE_LABELS.get(state, state)
-
-
-def status_label(status: str) -> str:
-    return SESSION_STATUS_LABELS.get(status, status)
 
 
 def duration_str(seconds: float | None) -> str:
@@ -334,30 +357,69 @@ def span_str(start_iso: str | None, end_iso: str | None) -> str:
     try:
         start = datetime.fromisoformat(start_iso)
         end = datetime.fromisoformat(end_iso)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return ABSENT
     return duration_str((end - start).total_seconds())
 
 
 def _assert_complete() -> None:
+    for table, members in (
+        (TUNER_PHASE_LABELS, Phase),
+        (PAUSE_LABELS, PauseReason),
+        (STAGE_LABELS, Stage),
+        (VERDICT_LABELS, Group),
+    ):
+        unlabelled = set(members) - set(table)
+        if unlabelled:
+            raise AssertionError(f"{members.__name__} has no label for {sorted(unlabelled)}")
     for scheme in _SEMANTIC:
         resolved = resolve(scheme, QPalette())
-        for name, mapping in (
-            ("PHASE_LABELS", PHASE_LABELS),
-            ("PHASE_TO_GRID", PHASE_TO_GRID),
-            ("PHASE_COLORS", resolved["PHASE_COLORS"]),
-        ):
-            missing = set(TunerPhase) - set(mapping)
-            if missing:
-                raise AssertionError(f"{name} is missing phases: {sorted(missing)}")
         if set(resolved["STATE_COLORS"]) != set(GRID_STATE_LABELS):
             raise AssertionError("STATE_COLORS and GRID_STATE_LABELS disagree on states")
-        unmapped = {s for s in PHASE_TO_GRID.values() if s not in resolved["STATE_COLORS"]}
-        if unmapped:
-            raise AssertionError(f"PHASE_TO_GRID targets unknown grid states: {unmapped}")
         unstyled = set(SESSION_STATUS_LABELS) - set(resolved["STATUS_COLORS"])
         if unstyled:
             raise AssertionError(f"STATUS_COLORS is missing statuses: {sorted(unstyled)}")
 
 
 _assert_complete()
+
+
+STYLE_PROBE = (
+    "import sys\nfrom PySide6.QtWidgets import QApplication\nprint(QApplication(sys.argv[:1]).style().name())\n"
+)
+STYLE_PROBE_S = 15
+
+
+def style_problem(run=subprocess.run) -> str | None:
+    if os.environ.get("QT_STYLE_OVERRIDE"):
+        return None
+    try:
+        probe = run(
+            [sys.executable, "-c", STYLE_PROBE],
+            capture_output=True,
+            text=True,
+            timeout=STYLE_PROBE_S,
+            env=child_environment(),
+        )
+    except subprocess.TimeoutExpired:
+        return f"system Qt style probe did not finish in {STYLE_PROBE_S} s"
+    except OSError as e:
+        return f"system Qt style probe could not run: {e}"
+    if probe.returncode < 0:
+        try:
+            name = signal.Signals(-probe.returncode).name
+        except ValueError:
+            name = f"signal {-probe.returncode}"
+        return f"system Qt style crashed in a probe ({name})"
+    if probe.returncode != 0:
+        said = [line for line in probe.stderr.splitlines() if line.strip()]
+        return f"system Qt style probe exited {probe.returncode}: {said[-1] if said else 'no output'}"
+    return None
+
+
+def fall_back_to_fusion(run=subprocess.run) -> str | None:
+    problem = style_problem(run)
+    if problem is not None:
+        os.environ["QT_STYLE_OVERRIDE"] = "Fusion"
+        logging.getLogger(__name__).warning("%s: running in Fusion", problem)
+    return problem

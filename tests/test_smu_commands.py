@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from corecycler.smu.commands import (
     COMMAND_SETS,
+    TJMAX_C,
     CPUGeneration,
     SMUCommandSet,
     decode_co_arg,
@@ -18,11 +19,8 @@ from corecycler.smu.commands import (
     encode_co_arg,
     encode_pbo_limit_arg,
     get_commands,
+    tjmax_c,
 )
-
-# ===========================================================================
-# Command-set completeness
-# ===========================================================================
 
 
 class TestCommandSetCompleteness:
@@ -39,52 +37,32 @@ class TestCommandSetCompleteness:
         assert get_commands(CPUGeneration.UNKNOWN) is None
 
 
-# ===========================================================================
-# Generation detection
-# ===========================================================================
-
-
 class TestDetectGeneration:
     @pytest.mark.parametrize(
         "family,model,name,expected",
         [
-            # Zen 2
             (23, 0x71, "AMD Ryzen 9 3950X", CPUGeneration.ZEN2_MATISSE),
-            # Zen 3 Vermeer
             (25, 0x21, "AMD Ryzen 9 5950X", CPUGeneration.ZEN3_VERMEER),
             (25, 0x21, "AMD Ryzen 7 5800X", CPUGeneration.ZEN3_VERMEER),
             (25, 0x2F, "AMD Ryzen 5 5600X", CPUGeneration.ZEN3_VERMEER),
-            # Zen 3D (X3D)
             (25, 0x21, "AMD Ryzen 7 5800X3D", CPUGeneration.ZEN3D_WARHOL),
             (25, 0x21, "AMD Ryzen 7 5800x3d", CPUGeneration.ZEN3D_WARHOL),
-            # Zen 3 Cezanne (APU)
             (25, 0x50, "AMD Ryzen 7 5700G", CPUGeneration.ZEN3_CEZANNE),
-            # Zen 4 Raphael
             (25, 0x61, "AMD Ryzen 9 7950X", CPUGeneration.ZEN4_RAPHAEL),
-            # Zen 4 Phoenix
             (25, 0x74, "AMD Ryzen 7 7840U", CPUGeneration.ZEN4_PHOENIX),
             (25, 0x75, "AMD Ryzen 7 8845HS", CPUGeneration.ZEN4_PHOENIX),
-            # Zen 4 Storm Peak (TR)
             (25, 0x18, "AMD Ryzen Threadripper 7980X", CPUGeneration.ZEN4_STORM_PEAK),
-            # Rembrandt (Cezanne commands, own identity)
             (25, 0x44, "AMD Ryzen 7 6800H", CPUGeneration.ZEN3_REMBRANDT),
-            # Zen 3 TR / Zen 4 TR model blocks
             (25, 0x08, "AMD Ryzen Threadripper PRO 5965WX", CPUGeneration.ZEN3_CHAGALL),
             (25, 0x10, "Unknown AMD CPU", CPUGeneration.ZEN4_STORM_PEAK),
-            # Phoenix2 heterogeneous block
             (25, 0x78, "AMD Ryzen 5 7540U", CPUGeneration.ZEN4_PHOENIX2),
-            # Unmatched model blocks fail closed
             (25, 0x35, "AMD Eng Sample", CPUGeneration.UNKNOWN),
             (26, 0x80, "AMD Eng Sample", CPUGeneration.UNKNOWN),
-            # Zen 5 Granite Ridge
             (26, 0x44, "AMD Ryzen 9 9950X3D", CPUGeneration.ZEN5_GRANITE_RIDGE),
             (26, 0x44, "AMD Ryzen 9 9950X", CPUGeneration.ZEN5_GRANITE_RIDGE),
             (26, 0x08, "AMD Ryzen Threadripper 9980X", CPUGeneration.ZEN5_SHIMADA_PEAK),
-            # Zen 5 Strix Point (APU)
             (26, 0x24, "AMD Ryzen AI 9 HX 370", CPUGeneration.ZEN5_STRIX_POINT),
-            # Zen 5 ThreadRipper
             (26, 0x44, "AMD Ryzen Threadripper something", CPUGeneration.ZEN5_SHIMADA_PEAK),
-            # Unknown
             (6, 167, "Intel Core i9-10900K", CPUGeneration.UNKNOWN),
             (0, 0, "", CPUGeneration.UNKNOWN),
         ],
@@ -99,16 +77,15 @@ class TestDetectGeneration:
         assert gen == CPUGeneration.ZEN3D_WARHOL
 
 
-# ===========================================================================
-# Command set lookups
-# ===========================================================================
-
-
 class TestGetCommands:
+    def test_zen_2_offers_no_curve_optimizer_and_no_range_for_one(self):
+        matisse = get_commands(CPUGeneration.ZEN2_MATISSE)
+        assert (matisse.has_co, matisse.co_range) == (False, (0, 0))
+
     def test_zen2_matisse(self):
         cmds = get_commands(CPUGeneration.ZEN2_MATISSE)
         assert cmds is not None
-        assert cmds.has_co is False  # Zen 2 has no CO
+        assert cmds.has_co is False
         assert cmds.has_pbo_limits is True
         assert cmds.set_ppt_cmd == 0x53
         assert cmds.mailbox == "rsmu"
@@ -179,11 +156,6 @@ class TestGetCommands:
             assert lo <= hi
 
 
-# ===========================================================================
-# Encode / decode round-trip tests
-# ===========================================================================
-
-
 class TestEncodeDecodeZen3:
     gen = CPUGeneration.ZEN3_VERMEER
 
@@ -211,22 +183,18 @@ class TestEncodeDecodeZen3:
         encoded_0 = encode_co_arg(0, 0, self.gen)
         encoded_8 = encode_co_arg(8, 0, self.gen)
         assert encoded_8 != encoded_0
-        # core 8 -> CCD 1 (bits [31:28]), core_in_ccd 0 (bits [23:20])
-        assert (encoded_8 >> 28) & 0xF == 1
-        assert (encoded_8 >> 20) & 0xF == 0
+        ccd, core_in_ccd = (encoded_8 >> 28) & 0xF, (encoded_8 >> 20) & 0xF
+        assert (ccd, core_in_ccd) == (1, 0)
 
     def test_harvested_slot_and_ccd_override_core_id(self):
         """Zen 3 must honor the topology-detected CCD and discovered slot, not derive
         them from core_id. On a harvested/2-CCD part (5900X 6+6, 5600X 6-of-8) the
         kernel renumbers cores contiguously, so deriving the slot from core_id alone
         targets the WRONG physical SMU slot — a silent wrong-core write."""
-        # Logical core 6 is physically CCD1, slot 0 (5900X). Must encode CCD1/slot0,
-        # NOT the core_id-derived CCD0/slot6.
         encoded = encode_co_arg(6, -30, self.gen, ccd=1, slot=0)
-        assert (encoded >> 28) & 0xF == 1  # CCD1, not CCD0
-        assert (encoded >> 20) & 0xF == 0  # slot 0, not slot 6
+        assert (encoded >> 28) & 0xF == 1
+        assert (encoded >> 20) & 0xF == 0
         assert (encoded & 0xFFFF) == (-30 & 0xFFFF)
-        # And it must match the Zen 4/5 encoding for the same authoritative topology.
         assert encoded == encode_co_arg(6, -30, CPUGeneration.ZEN4_RAPHAEL, ccd=1, slot=0)
 
 
@@ -254,7 +222,7 @@ class TestEncodeDecodeZen4:
     def test_encoding_format(self):
         """Zen 4 uses CCD-aware encoding: (ccd << 28) | (core_in_ccd << 20) | margin."""
         encoded = encode_co_arg(5, -10, self.gen)
-        # core 5 is in CCD 0, core_in_ccd = 5
+        assert (encoded >> 28) & 0xF == 0
         assert (encoded >> 20) & 0xF == 5
         assert (encoded & 0xFFFF) == (-10 & 0xFFFF)
 
@@ -383,22 +351,15 @@ class TestEncodeDecodeEdgeCases:
     def test_twos_complement_boundary(self):
         """Value 0x7FFF should decode as positive, 0x8000 as negative."""
         gen = CPUGeneration.ZEN5_GRANITE_RIDGE
-        # 0x7FFF = 32767 (positive)
         assert decode_co_arg(0, 0x7FFF, gen) == 32767
-        # 0x8000 = -32768 (negative, two's complement)
         assert decode_co_arg(0, 0x8000, gen) == -32768
-
-
-# ===========================================================================
-# SMUCommandSet dataclass tests
-# ===========================================================================
 
 
 class TestSMUCommandSet:
     def test_frozen(self):
         cmds = get_commands(CPUGeneration.ZEN3_VERMEER)
         with pytest.raises(AttributeError):
-            cmds.set_co_cmd = 0xFF  # type: ignore[misc]
+            cmds.set_co_cmd = 0xFF
 
     def test_co_range_semantics(self):
         """co_range[0] is min (most negative), co_range[1] is max."""
@@ -417,11 +378,6 @@ class TestSMUCommandSet:
         """All generations should have PBO limit support."""
         for gen, cmds in COMMAND_SETS.items():
             assert cmds.has_pbo_limits is True, f"{gen} should have PBO limits"
-
-
-# ===========================================================================
-# CPUGeneration enum tests
-# ===========================================================================
 
 
 class TestCPUGeneration:
@@ -469,3 +425,26 @@ class TestDetectGenerationDriftEdges:
     def test_encode_pbo_limit_arg_watts_to_milliwatts(self):
         assert encode_pbo_limit_arg(225) == 225000
         assert encode_pbo_limit_arg(0) == 0
+
+
+class TestTjmax:
+    @pytest.mark.parametrize(
+        ("model_name", "tjmax"),
+        [
+            ("AMD Ryzen 9 9950X3D 16-Core Processor", 95.0),
+            ("AMD Ryzen 7 7800X3D 8-Core Processor", 89.0),
+            ("AMD Ryzen 7 5800X3D 8-Core Processor", 90.0),
+            ("AMD Ryzen 7 5700 8-Core Processor", 95.0),
+            ("AMD Ryzen Threadripper PRO 3995WX 64-Cores", 90.0),
+            ("AMD Ryzen Threadripper 7980X 64-Cores", 95.0),
+        ],
+    )
+    def test_a_known_model_gets_its_own_tjmax(self, model_name, tjmax):
+        assert tjmax_c(model_name) == tjmax
+
+    @pytest.mark.parametrize(
+        "model_name",
+        ["AMD Ryzen 3 3100 4-Core Processor", "AMD Ryzen 7 PRO 8700G w/ Radeon 780M Graphics", "Apple M1 Max", ""],
+    )
+    def test_an_unknown_model_gets_the_lowest_tjmax_any_known_model_has(self, model_name):
+        assert tjmax_c(model_name) == min(TJMAX_C.values()) == 89.0

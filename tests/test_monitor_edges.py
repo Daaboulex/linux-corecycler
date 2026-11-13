@@ -6,11 +6,12 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from corecycler.monitor import frequency as freqmod
 from corecycler.monitor.cpu_usage import CPUUsageReader
-from corecycler.monitor.hwmon import HWMonReader
 from corecycler.monitor.power import PowerMonitor
 
 
@@ -42,7 +43,8 @@ class TestPowerMonitorEdges:
         base = self._powercap(tmp_path)
         dom = base.parent / "intel-rapl:1"
         dom.mkdir()
-        (dom / "name").mkdir()  # a directory: exists() True, read_text() raises OSError
+        directory_in_place_of_file = dom / "name"
+        directory_in_place_of_file.mkdir()
         with (
             patch("corecycler.monitor.power.RAPL_BASE", base),
             patch("corecycler.monitor.power.HWMON_BASE", tmp_path / "nohwmon"),
@@ -55,69 +57,15 @@ class TestPowerMonitorEdges:
         mon._package_path = tmp_path / "gone" / "energy_uj"
         mon._last_energy_uj = None
         mon._last_time = None
-        assert mon._read_rapl() is None
+        assert mon._read_rapl(mon._package_path) is None
 
     def test_read_hwmon_power_unreadable_returns_none(self, tmp_path):
         mon = PowerMonitor.__new__(PowerMonitor)
         mon._hwmon_power_path = tmp_path / "gone" / "power1_input"
-        assert mon._read_hwmon_power() is None
-
-
-class TestHWMonReaderEdges:
-    def test_name_unreadable_is_skipped(self, tmp_path):
-        base = tmp_path / "hwmon"
-        d = base / "hwmon0"
-        d.mkdir(parents=True)
-        (d / "name").mkdir()  # directory: exists() True, read_text() raises OSError
-        with patch("corecycler.monitor.hwmon.HWMON_BASE", base):
-            reader = HWMonReader()
-        assert reader.is_available() is False
-
-    def test_voltage_input_unreadable_is_skipped(self, tmp_path):
-        base = tmp_path / "hwmon"
-        d = base / "hwmon0"
-        d.mkdir(parents=True)
-        (d / "name").write_text("k10temp\n")
-        (d / "in1_input").write_text("not-an-int\n")
-        with patch("corecycler.monitor.hwmon.HWMON_BASE", base):
-            reader = HWMonReader()
-            data = reader.read()
-        assert data.vcore_v is None
+        assert mon._read_hwmon_power(mon._hwmon_power_path) is None
 
 
 class TestFrequencyEdges:
-    def test_read_falls_back_to_proc_when_cpufreq_absent(self, tmp_path):
-        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", tmp_path / "absent"):
-            out = freqmod.read_core_frequencies()
-        assert isinstance(out, dict)
-
-    def test_cpu_dir_without_freq_files_is_skipped(self, tmp_path):
-        base = tmp_path / "cpu"
-        (base / "cpu0").mkdir(parents=True)
-        with (
-            patch("corecycler.monitor.frequency.CPUFREQ_BASE", base),
-            patch("corecycler.monitor.frequency._read_from_proc", return_value={7: 1.0}),
-        ):
-            out = freqmod.read_core_frequencies()
-        assert out == {7: 1.0}
-
-    def test_read_from_proc_malformed_processor_line(self):
-        fake = "processor\t: notanum\ncpu MHz\t: 3000.0\n"
-        with patch("pathlib.Path.exists", return_value=True), patch("pathlib.Path.read_text", return_value=fake):
-            assert freqmod._read_from_proc() == {}
-
-    def test_dual_returns_empty_when_cpufreq_absent(self, tmp_path):
-        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", tmp_path / "absent"):
-            assert freqmod.read_core_frequencies_dual() == {}
-
-    def test_dual_actual_unreadable_is_skipped(self, tmp_path):
-        base = tmp_path / "cpu"
-        cf = base / "cpu0" / "cpufreq"
-        cf.mkdir(parents=True)
-        (cf / "cpuinfo_cur_freq").write_text("garbage\n")
-        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", base):
-            assert freqmod.read_core_frequencies_dual() == {}
-
     def test_read_max_frequency_unreadable_returns_none(self, tmp_path):
         base = tmp_path / "cpu"
         cf = base / "cpu0" / "cpufreq"
@@ -125,14 +73,6 @@ class TestFrequencyEdges:
         (cf / "cpuinfo_max_freq").write_text("garbage\n")
         with patch("corecycler.monitor.frequency.CPUFREQ_BASE", base):
             assert freqmod.read_max_frequency(0) is None
-
-    def test_read_min_frequency_unreadable_returns_none(self, tmp_path):
-        base = tmp_path / "cpu"
-        cf = base / "cpu0" / "cpufreq"
-        cf.mkdir(parents=True)
-        (cf / "cpuinfo_min_freq").write_text("garbage\n")
-        with patch("corecycler.monitor.frequency.CPUFREQ_BASE", base):
-            assert freqmod.read_min_frequency(0) is None
 
 
 class TestCpufreqSysfsReaders:
@@ -152,72 +92,19 @@ class TestCpufreqSysfsReaders:
         monkeypatch.setattr(freq, "CPUFREQ_BASE", base)
         return freq
 
-    def test_the_hardware_frequency_is_preferred_over_the_governor_target(self, tmp_path, monkeypatch):
+    def test_the_boost_limit_is_read(self, tmp_path, monkeypatch):
         freq = self._tree(
             tmp_path,
             monkeypatch,
             {
-                "cpu0": {"cpuinfo_cur_freq": "4200000\n", "scaling_cur_freq": "3000000\n"},
-            },
-        )
-        assert freq.read_core_frequencies() == {0: 4200.0}
-
-    def test_the_governor_target_is_the_fallback(self, tmp_path, monkeypatch):
-        freq = self._tree(tmp_path, monkeypatch, {"cpu1": {"scaling_cur_freq": "3600000\n"}})
-        assert freq.read_core_frequencies() == {1: 3600.0}
-
-    def test_unreadable_and_non_cpu_entries_are_skipped(self, tmp_path, monkeypatch):
-        freq = self._tree(
-            tmp_path,
-            monkeypatch,
-            {
-                "cpu0": {"scaling_cur_freq": "not a number\n"},
-                "cpu1": {},
-                "cpufreq": {"scaling_cur_freq": "3600000\n"},
-            },
-        )
-        monkeypatch.setattr(freq, "_read_from_proc", dict)
-        assert freq.read_core_frequencies() == {}
-
-    def test_the_dual_reader_pairs_actual_with_the_boost_ceiling(self, tmp_path, monkeypatch):
-        freq = self._tree(
-            tmp_path,
-            monkeypatch,
-            {
-                "cpu0": {"cpuinfo_avg_freq": "4100000\n", "scaling_max_freq": "5700000\n"},
-            },
-        )
-        reading = freq.read_core_frequencies_dual()[0]
-        assert reading.actual_mhz == 4100.0
-        assert reading.effective_max_mhz == 5700.0
-
-    def test_the_dual_reader_needs_both_halves(self, tmp_path, monkeypatch):
-        freq = self._tree(
-            tmp_path,
-            monkeypatch,
-            {
-                "cpu0": {"cpuinfo_cur_freq": "garbage\n"},
-                "cpu1": {"scaling_max_freq": "5700000\n"},
-                "cpuidle": {"scaling_cur_freq": "3600000\n"},
-            },
-        )
-        assert freq.read_core_frequencies_dual() == {}
-
-    def test_the_boost_and_floor_limits_are_read(self, tmp_path, monkeypatch):
-        freq = self._tree(
-            tmp_path,
-            monkeypatch,
-            {
-                "cpu0": {"cpuinfo_max_freq": "5700000\n", "cpuinfo_min_freq": "550000\n"},
+                "cpu0": {"cpuinfo_max_freq": "5700000\n"},
             },
         )
         assert freq.read_max_frequency(0) == 5700.0
-        assert freq.read_min_frequency(0) == 550.0
 
-    def test_absent_limits_read_as_unknown(self, tmp_path, monkeypatch):
+    def test_an_absent_boost_limit_reads_as_unknown(self, tmp_path, monkeypatch):
         freq = self._tree(tmp_path, monkeypatch, {"cpu0": {}})
         assert freq.read_max_frequency(0) is None
-        assert freq.read_min_frequency(0) is None
 
 
 class TestRaplPowerReader:
@@ -272,27 +159,32 @@ class TestRaplPowerReader:
     def test_power_is_the_energy_delta_over_time(self, tmp_path, monkeypatch):
         pw = self._rapl(tmp_path, monkeypatch, {"intel-rapl:0": {"energy_uj": "0\n"}})
         reader = pw.PowerMonitor()
-        assert reader._read_rapl() is None
+        assert reader._read_rapl(reader._package_path) is None
         reader._package_path.write_text("2000000\n")
         reader._last_time -= 2.0
-        watts = reader._read_rapl()
+        watts = reader._read_rapl(reader._package_path)
         assert watts is not None
         assert 0.0 < watts < 10.0
 
-    def test_a_wrapped_counter_stays_positive(self, tmp_path, monkeypatch):
+    def test_a_wrap_without_a_known_range_drops_that_one_reading(self, tmp_path, monkeypatch, caplog):
         pw = self._rapl(tmp_path, monkeypatch, {"intel-rapl:0": {"energy_uj": "10\n"}})
-        reader = pw.PowerMonitor()
-        reader._read_rapl()
-        reader._last_energy_uj = 2**32 - 1000
+        with caplog.at_level("WARNING", logger="corecycler.monitor.power"):
+            reader = pw.PowerMonitor()
+        assert "max_energy_range_uj" in caplog.text
+        reader._read_rapl(reader._package_path)
+        reader._last_energy_uj = 5_000_000
         reader._last_time -= 1.0
-        assert reader._read_rapl() > 0
+        assert reader._read_rapl(reader._package_path) is None
+        reader._package_path.write_text("1000010\n")
+        reader._last_time -= 1.0
+        assert reader._read_rapl(reader._package_path) == pytest.approx(1.0, rel=0.05)
 
     def test_an_unreadable_counter_reads_as_unknown(self, tmp_path, monkeypatch):
         pw = self._rapl(tmp_path, monkeypatch, {"intel-rapl:0": {"energy_uj": "junk\n"}})
         reader = pw.PowerMonitor()
         assert reader._package_path is None
         reader._package_path = tmp_path / "powercap" / "intel-rapl" / "intel-rapl:0" / "energy_uj"
-        assert reader._read_rapl() is None
+        assert reader._read_rapl(reader._package_path) is None
 
 
 class TestHwmonPowerFallback:

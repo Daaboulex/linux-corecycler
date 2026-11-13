@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from corecycler.config import settings
@@ -14,19 +16,32 @@ from corecycler.history.logger import TestRunLogger
 
 
 class TestHistoryContextEdges:
-    def test_read_bios_version_unreadable(self, tmp_path):
-        d = tmp_path / "bios_version"
-        d.mkdir()  # exists() True, read_text() raises OSError
-        assert context.read_bios_version(d) == ""
-
-    def test_capture_context_when_every_smu_read_fails(self, tmp_path):
+    def test_capture_context_when_every_smu_read_comes_back_unread(self, tmp_path, caplog):
         smu = MagicMock()
-        smu.get_all_co_offsets.side_effect = RuntimeError("x")
-        smu.get_pbo_scalar.side_effect = RuntimeError("x")
-        smu.get_boost_limit.side_effect = RuntimeError("x")
-        with patch("corecycler.smu.pmtable.read_power_limits", side_effect=RuntimeError("x")):
+        smu.get_all_co_offsets.return_value = dict.fromkeys(range(4))
+        smu.get_pbo_scalar.return_value = None
+        smu.get_boost_limit.return_value = None
+        smu.commands.has_co = True
+        with patch("corecycler.smu.pmtable.read_power_limits", return_value=(None, None, None)):
             rec = context.capture_system_context(smu=smu, num_cores=4, bios_path=tmp_path / "none")
         assert rec.co_hash == ""
+        assert "the CO of cores [0, 1, 2, 3] could not be read" in caplog.text
+
+    def test_a_cpu_without_co_reads_leaves_no_warning(self, tmp_path, caplog):
+        smu = MagicMock()
+        smu.get_all_co_offsets.return_value = dict.fromkeys(range(4))
+        smu.get_pbo_scalar.return_value = None
+        smu.get_boost_limit.return_value = None
+        smu.commands.has_co = False
+        with patch("corecycler.smu.pmtable.read_power_limits", return_value=(None, None, None)):
+            context.capture_system_context(smu=smu, num_cores=4, bios_path=tmp_path / "none")
+        assert "could not be read" not in caplog.text
+
+    def test_an_unexpected_error_in_a_read_is_not_swallowed(self, tmp_path):
+        smu = MagicMock()
+        smu.get_all_co_offsets.side_effect = RuntimeError("driver bug")
+        with pytest.raises(RuntimeError, match="driver bug"):
+            context.capture_system_context(smu=smu, num_cores=4, bios_path=tmp_path / "none")
 
 
 class TestSettingsCoProfile:
@@ -40,7 +55,7 @@ class TestSettingsCoProfile:
 class TestLoggerEarlyReturns:
     def _logger(self) -> TestRunLogger:
         lg = TestRunLogger.__new__(TestRunLogger)
-        lg._active_result_ids = {}
+        lg._result_id_by_core = {}
         return lg
 
     def test_on_status_updated_unknown_core_returns(self):

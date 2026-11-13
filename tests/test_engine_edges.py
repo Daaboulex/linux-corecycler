@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import subprocess
+import os
+import signal
 import sys
 import threading
 import time
@@ -16,19 +17,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from corecycler.engine import containment, execution
 from corecycler.engine import scheduler as scheduler_mod
-from corecycler.engine.backends.base import StressConfig, StressResult
+from corecycler.engine.backends.base import LaneSignal, Outcome, StressConfig
 from corecycler.engine.execution import Lane, SuperviseHooks, ThermalWatch, _LaneRun
-from corecycler.engine.scheduler import CoreScheduler
-
-
-class Event:
-    def __init__(self, cpu: int, message: str = "boom") -> None:
-        self.cpu = cpu
-        self.bank = 0
-        self.message = message
-        self.corrected = False
-        self.timestamp = 0.0
-        self.raw_ts = 0.0
+from corecycler.monitor.hwmon import SensorRead
 
 
 class TestContainmentProbe:
@@ -53,7 +44,9 @@ class TestContainmentProbe:
 
     def test_a_green_probe_names_the_user_mechanism_and_the_lanes_cgroup(self):
         good = SimpleNamespace(
-            returncode=0, stdout="0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u12.scope\n", stderr=""
+            returncode=0,
+            stdout="0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u12.scope\nCpus_allowed_list:\t0\n",
+            stderr="",
         )
         with (
             patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
@@ -63,10 +56,10 @@ class TestContainmentProbe:
             probe = containment._probe_mechanism()
         assert probe.mechanism == containment.MECHANISM_USER
         assert probe.lane_cgroup_parent == "/user.slice/user-1000.slice/user@1000.service/app.slice"
-        assert run.call_args[0][0][-2:] == ["cat", "/proc/self/cgroup"]
+        assert run.call_args[0][0][-3:] == ["cat", "/proc/self/cgroup", "/proc/self/status"]
 
     def test_a_green_probe_as_root_names_the_system_mechanism_and_the_system_slice(self):
-        good = SimpleNamespace(returncode=0, stdout="0::/system.slice/run-u5.scope\n", stderr="")
+        good = SimpleNamespace(returncode=0, stdout="0::/system.slice/run-u5.scope\nCpus_allowed_list:\t0\n", stderr="")
         with (
             patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
             patch.object(containment.subprocess, "run", return_value=good),
@@ -77,7 +70,7 @@ class TestContainmentProbe:
         assert probe.lane_cgroup_parent == "/system.slice"
 
     def test_a_scope_at_the_root_names_the_root(self):
-        good = SimpleNamespace(returncode=0, stdout="0::/run-u5.scope\n", stderr="")
+        good = SimpleNamespace(returncode=0, stdout="0::/run-u5.scope\nCpus_allowed_list:\t0\n", stderr="")
         with (
             patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
             patch.object(containment.subprocess, "run", return_value=good),
@@ -86,7 +79,9 @@ class TestContainmentProbe:
             assert containment._probe_mechanism().lane_cgroup_parent == "/"
 
     def test_a_probe_without_a_unified_hierarchy_knows_no_lane_cgroup(self):
-        good = SimpleNamespace(returncode=0, stdout="12:cpuset:/system.slice/run-u5.scope\n", stderr="")
+        good = SimpleNamespace(
+            returncode=0, stdout="12:cpuset:/system.slice/run-u5.scope\nCpus_allowed_list:\t0\n", stderr=""
+        )
         with (
             patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
             patch.object(containment.subprocess, "run", return_value=good),
@@ -95,6 +90,95 @@ class TestContainmentProbe:
             probe = containment._probe_mechanism()
         assert probe.mechanism == containment.MECHANISM_SYSTEM
         assert probe.lane_cgroup_parent is None
+
+    @pytest.mark.parametrize(
+        ("status", "ran"),
+        [("Cpus_allowed_list:\t0-9\n", "ran on CPUs 0,1,2,3,4,5,6,7,8,9"), ("", "ran on an unreadable set of CPUs")],
+    )
+    @pytest.mark.req("L01.7")
+    def test_a_probe_whose_cpu_limit_is_not_enforced_is_no_mechanism_and_says_why(self, status, ran):
+        loose = SimpleNamespace(
+            returncode=0,
+            stdout="0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u9.scope\n" + status,
+            stderr="",
+        )
+        with (
+            patch.object(containment, "_systemd_run_path", return_value="/bin/systemd-run"),
+            patch.object(containment.subprocess, "run", return_value=loose),
+            patch.object(containment.os, "geteuid", return_value=1000),
+        ):
+            probe = containment._probe_mechanism()
+        assert probe.mechanism is None
+        assert probe.lane_cgroup_parent == "/user.slice/user-1000.slice/user@1000.service/app.slice"
+        assert ran in probe.problem
+        assert "AllowedCPUs is not enforced" in probe.problem
+        assert "does not delegate the cpuset controller" in probe.problem
+
+    def test_the_refusal_names_the_controllers_the_lane_cgroup_offers(self, tmp_path):
+        lane = tmp_path / "user.slice" / "app.slice"
+        lane.mkdir(parents=True)
+        (lane / "cgroup.controllers").write_text("cpu io memory pids\n")
+        assert "(the lane cgroup offers: cpu io memory pids)" in containment._not_enforced(
+            set(range(4)), "/user.slice/app.slice", True, cgroup_base=tmp_path
+        )
+        assert "offers: unreadable (No such file or directory)" in containment._not_enforced(
+            {0, 1}, "/gone", True, cgroup_base=tmp_path
+        )
+        assert "offers: unknown, the probe reported no cgroup" in containment._not_enforced({0, 1}, None, False)
+
+
+class TestContainmentProblem:
+    @pytest.fixture(autouse=True)
+    def fresh_probe(self):
+        containment._probe_cache.clear()
+        yield
+        containment._probe_cache.clear()
+
+    @pytest.mark.parametrize(
+        ("probe", "expected"),
+        [
+            (containment.Probe(containment.MECHANISM_USER, "/app.slice"), None),
+            (containment.Probe(None, "/app.slice", "AllowedCPUs is not enforced"), "AllowedCPUs is not enforced"),
+            (containment.Probe(None, None), "no systemd scope could be started (the probe failed)"),
+        ],
+    )
+    def test_the_problem_is_the_probe_s_own_reason(self, probe, expected):
+        with patch.object(containment, "_probe_mechanism", return_value=probe):
+            problem = containment.containment_problem()
+        assert problem == expected or (expected is not None and expected in problem)
+
+    def test_the_probe_runs_once_until_a_refresh_is_asked_for(self):
+        probe = containment.Probe(None, "/a", "AllowedCPUs is not enforced")
+        with patch.object(containment, "_probe_mechanism", return_value=probe) as run:
+            containment.containment_problem()
+            containment.containment_problem()
+            assert run.call_count == 1
+            containment.containment_problem(refresh=True)
+            assert run.call_count == 2
+
+    @pytest.mark.req("L01.7")
+    def test_a_lane_problem_names_containment_before_memory_accounting(self):
+        with (
+            patch.object(containment, "containment_problem", return_value="cannot contain"),
+            patch.object(containment, "memory_accounting_problem", return_value="cannot count"),
+        ):
+            assert containment.lane_problem() == "cannot contain"
+        with (
+            patch.object(containment, "containment_problem", return_value=None),
+            patch.object(containment, "memory_accounting_problem", return_value="cannot count"),
+        ):
+            assert containment.lane_problem() == "cannot count"
+
+    def test_contain_refuses_naming_the_probe_s_reason(self):
+        with (
+            patch.object(
+                containment,
+                "_probe_mechanism",
+                return_value=containment.Probe(None, "/a", "AllowedCPUs is not enforced"),
+            ),
+            pytest.raises(containment.ContainmentUnavailable, match="AllowedCPUs is not enforced; refusing to launch"),
+        ):
+            containment.contain((0,))
 
 
 class TestContainRefusals:
@@ -187,35 +271,9 @@ class TestThermalEdges:
             grace_seconds=0.0,
             hard_margin=8,
             require_sensor=False,
-            read=lambda: 96.0,
         )
-        assert watch.safe() is False
-        assert watch.safe() is False
-
-
-class TestTemperatureSourceEdges:
-    def test_a_nameless_or_unreadable_hwmon_node_is_skipped(self, tmp_path):
-        nameless = tmp_path / "hwmon0"
-        nameless.mkdir()
-        unreadable = tmp_path / "hwmon1"
-        unreadable.mkdir()
-        (unreadable / "name").mkdir()
-        real = tmp_path / "hwmon2"
-        real.mkdir()
-        (real / "name").write_text("k10temp\n")
-        (real / "temp1_input").write_text("51000\n")
-        with patch.object(execution, "Path", lambda _p: tmp_path):
-            assert execution.read_cpu_temperature() == 51.0
-
-
-class TestReapEdges:
-    def test_an_unwaited_child_is_reaped(self):
-        proc = subprocess.Popen(["true"])
-        deadline = time.monotonic() + 5
-        while proc.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.01)
-        execution.reap_zombies()
-        execution.reap_zombies()
+        assert watch.safe(96.0) is False
+        assert watch.safe(96.0) is False
 
 
 def _idle_supervisor(backend=None, **overrides):
@@ -229,10 +287,11 @@ def _idle_supervisor(backend=None, **overrides):
             grace_seconds=3,
             hard_margin=8,
             require_sensor=False,
-            read=lambda: 40.0,
         ),
+        sensors=lambda: SensorRead(hottest=40.0),
         stop_event=threading.Event(),
         observed=[],
+        settle_s=0.0,
         poll_interval=0.01,
         containment_for=lambda cpus: None,
     )
@@ -240,25 +299,12 @@ def _idle_supervisor(backend=None, **overrides):
     return execution.Supervisor(**kwargs)
 
 
+class _ExitedProc:
+    def __init__(self, returncode: int) -> None:
+        self.returncode = returncode
+
+
 class TestSupervisorInternalsEdges:
-    def test_error_poll_skips_decided_lanes(self, tmp_path):
-        from test_execution import FakeBackend
-
-        backend = FakeBackend(poll_error="fake error: SUMOUT")
-        supervisor = _idle_supervisor(backend=backend)
-        decided = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
-        decided.verdict = StressResult(core_id=0, passed=True, duration_seconds=0.1)
-        open_run = _LaneRun(lane=Lane(core_id=1, cpus=(1,), work_dir=tmp_path))
-        open_run.proc = SimpleNamespace(returncode=None)
-        assert supervisor._poll_backend_errors([decided, open_run], time.monotonic()) is True
-        assert open_run.verdict is not None and not open_run.verdict.passed
-        assert decided.verdict.passed is True
-
-    def test_a_clean_error_poll_reports_nothing(self, tmp_path):
-        supervisor = _idle_supervisor()
-        open_run = _LaneRun(lane=Lane(core_id=1, cpus=(1,), work_dir=tmp_path))
-        assert supervisor._poll_backend_errors([open_run], time.monotonic()) is False
-
     def test_status_hooks_report_running_lanes(self, tmp_path):
         from test_execution import FakeBackend
 
@@ -269,16 +315,8 @@ class TestSupervisorInternalsEdges:
             hooks=SuperviseHooks(on_status=lambda cid, el: seen.append((cid, el))),
         )
         lane = Lane(core_id=3, cpus=(3,), work_dir=tmp_path / "core_3")
-        supervisor.run([lane], lambda _lane: StressConfig(), 5.0)
+        supervisor.run([lane], StressConfig(), 5.0)
         assert seen and all(cid == 3 for cid, _ in seen)
-
-    def test_an_unattributed_event_with_every_lane_decided_changes_nothing(self, tmp_path):
-        from test_execution import FakeDetector
-
-        supervisor = _idle_supervisor(detector=FakeDetector([[Event(cpu=-1)]]))
-        decided = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
-        decided.verdict = StressResult(core_id=0, passed=False, duration_seconds=0.1)
-        assert supervisor._apply_mce_events([decided], time.monotonic()) is False
 
     def test_containment_fault_ignores_a_dead_or_unverified_lane(self, tmp_path):
         supervisor = _idle_supervisor()
@@ -291,7 +329,7 @@ class TestSupervisorInternalsEdges:
         supervisor = _idle_supervisor()
         run = _LaneRun(lane=Lane(core_id=0, cpus=(0, 16), work_dir=tmp_path))
         run.proc = SimpleNamespace(pid=1234)
-        run.unit = "cc-test"
+        run.contained = containment.Containment(prefix=[], unit="cc-test", scope="/user.slice/cc-test.scope")
         run.started_at = time.monotonic()
         with (
             patch.object(containment, "payload_cgroup", return_value="/user.slice/cc-test.scope"),
@@ -300,54 +338,141 @@ class TestSupervisorInternalsEdges:
             assert supervisor._containment_fault(run, time.monotonic()) is None
         assert run.cgroup == "/user.slice/cc-test.scope"
 
-    def test_a_busy_cpu_sample_is_never_a_stall(self, tmp_path):
+    @pytest.mark.real_cpu_time
+    def test_a_busy_payload_sample_is_never_a_stall(self, tmp_path):
         supervisor = _idle_supervisor(stall_timeout=0.0)
         run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
-        with patch.object(execution, "cpu_times", side_effect=[(0, 100), (0, 200)]):
+        run.proc = SimpleNamespace(pid=4321)
+        with patch.object(containment, "process_group_cpu_seconds", side_effect=[0.0, 60.0, 60.0]):
             now = time.monotonic()
-            assert supervisor._is_stalled(run, now) is False
-            assert supervisor._is_stalled(run, now + 60.0) is False
+            supervisor._sample_cpu(run, now)
+            supervisor._sample_cpu(run, now + 60.0)
+            assert run.last_active == now + 60.0
+            supervisor._sample_cpu(run, now + 120.0)
+        assert run.last_active == now + 60.0
 
-    def test_a_late_unattributed_event_lands_on_the_anchor(self, tmp_path):
-        from test_execution import FakeBackend, FakeDetector
+    @staticmethod
+    def _watched_run(tmp_path, started: float) -> _LaneRun:
+        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
+        run.proc = SimpleNamespace(pid=4321, returncode=None, poll=lambda: None)
+        run.started_at = run.last_active = run.cpu_sampled_at = started
+        run.cpu_seconds = 0.0
+        run.last_watchdog = float("inf")
+        return run
+
+    @pytest.mark.req("T22.F15")
+    def test_a_stall_needs_its_whole_window_of_cpu_time_measured_near_zero(self, tmp_path):
+        supervisor = _idle_supervisor(stall_timeout=30.0)
+        started = 1000.0
+        run = self._watched_run(tmp_path, started)
+        seen = []
+        with patch.object(containment, "process_group_cpu_seconds", side_effect=[0.0, None, 0.0]):
+            for at in (30.0, 40.0, 41.0):
+                supervisor._check(run, started + at, started)
+                seen.append([found.outcome for found in run.signals])
+        assert seen == [[], [], [Outcome.STALL]]
+
+    @pytest.mark.req("T22.F15")
+    def test_cpu_time_unread_for_the_stall_window_is_named_unverified(self, tmp_path):
+        supervisor = _idle_supervisor(stall_timeout=30.0)
+        started = 1000.0
+        run = self._watched_run(tmp_path, started)
+        last_read = 20.0
+        seen = []
+        with patch.object(containment, "process_group_cpu_seconds", side_effect=[0.0, None, None, None]):
+            for at in (last_read, 35.0, 50.0, 51.0):
+                supervisor._check(run, started + at, started)
+                seen.append(list(run.signals))
+        unread = LaneSignal(
+            Outcome.UNVERIFIED,
+            f"payload CPU time on CPUs 0 unreadable for {51.0 - last_read:.0f}s: verdict unavailable",
+        )
+        assert seen == [[], [], [], [unread]]
+
+    @pytest.mark.req("T22.F15")
+    def test_unread_cpu_time_is_judged_from_the_end_of_the_stall_grace(self, tmp_path):
+        supervisor = _idle_supervisor(stall_timeout=1.0)
+        started = 1000.0
+        run = self._watched_run(tmp_path, started)
+        seen = []
+        with patch.object(containment, "process_group_cpu_seconds", return_value=None):
+            for at in (execution.STALL_GRACE_SECONDS - 2.0, execution.STALL_GRACE_SECONDS):
+                supervisor._check(run, started + at, started)
+                seen.append([found.outcome for found in run.signals])
+        assert seen == [[], [Outcome.UNVERIFIED]]
+
+    def test_a_late_unattributed_event_reaches_every_lane(self, tmp_path):
+        from test_execution import FakeBackend, FakeDetector, unblamed
 
         backend = FakeBackend([sys.executable, "-c", "import time; time.sleep(60)"])
         supervisor = _idle_supervisor(
             backend=backend,
-            detector=FakeDetector([[Event(cpu=-1)]]),
+            detector=FakeDetector([[unblamed()]]),
             poll_interval=1.0,
         )
-        lane = Lane(core_id=2, cpus=(2,), work_dir=tmp_path / "core_2")
-        verdict = supervisor.run([lane], lambda _lane: StressConfig(), 0.0)[2]
-        assert verdict is not None and not verdict.passed
-        assert verdict.error_type == "mce_unattributed"
+        lanes = [Lane(core_id=core, cpus=(core,), work_dir=tmp_path / f"core_{core}") for core in (2, 3)]
+        verdicts = supervisor.run(lanes, StressConfig(), 0.0)
+        assert [verdicts[core].outcome for core in (2, 3)] == [Outcome.UNATTRIBUTED_MCE] * 2
 
-    def test_final_verdict_flags_an_external_kill(self, tmp_path):
+    def test_our_own_stop_before_the_deadline_is_cut_short(self, tmp_path):
         supervisor = _idle_supervisor()
-        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
-        run.proc = SimpleNamespace(returncode=-9)
-        verdict = supervisor._final_verdict(run, elapsed=5.0, interrupted=False)
-        assert verdict is not None and verdict.error_type == "killed"
+        run = _LaneRun(
+            lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), deadline=10.0, stopped_at=5.0, sent=signal.SIGTERM
+        )
+        run.proc = _ExitedProc(-15)
+        supervisor._note_exit(run)
+        assert supervisor._grade(run).outcome is Outcome.CUT_SHORT
 
-    def test_final_verdict_flags_an_instant_nonzero_exit(self, tmp_path):
+    @pytest.mark.req("VERDICT.10")
+    def test_a_lane_never_reaped_after_sigkill_keeps_did_not_stop(self, tmp_path):
         supervisor = _idle_supervisor()
-        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
-        run.proc = SimpleNamespace(returncode=4)
-        verdict = supervisor._final_verdict(run, elapsed=0.5, interrupted=False)
-        assert verdict is not None and verdict.error_type == "startup"
+        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), stopped_at=5.0, sent=signal.SIGKILL)
+        run.proc = SimpleNamespace(returncode=None)
+        run.signals.append(LaneSignal(Outcome.DID_NOT_STOP, "stress process did not stop"))
+        supervisor._note_exit(run)
+        verdict = supervisor._grade(run)
+        assert verdict.outcome is Outcome.DID_NOT_STOP
+        assert verdict.detail == "stress process did not stop"
 
-    def test_final_verdict_prefers_the_live_error_file(self, tmp_path):
+    def test_a_killed_lane_keeps_the_failure_its_output_holds(self, tmp_path):
         from test_execution import FakeBackend
 
-        supervisor = _idle_supervisor(backend=FakeBackend(poll_error="fake error: SUMOUT"))
-        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
-        run.proc = SimpleNamespace(returncode=0)
-        supervisor._we_killed = True
-        verdict = supervisor._final_verdict(run, elapsed=5.0, interrupted=False)
-        assert verdict is not None and "SUMOUT" in verdict.error_message
+        supervisor = _idle_supervisor(
+            backend=FakeBackend(found=(LaneSignal(Outcome.COMPUTATION, "fake error: FATAL"),))
+        )
+        run = _LaneRun(
+            lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), run_dir=tmp_path, stopped_at=5.0, sent=signal.SIGKILL
+        )
+        (tmp_path / execution.STDOUT_LOG).write_bytes(b"")
+        (tmp_path / execution.STDERR_LOG).write_bytes(b"")
+        run.proc = _ExitedProc(-9)
+        run.signals.append(LaneSignal(Outcome.DID_NOT_STOP, "stress process did not stop"))
+        supervisor._note_exit(run)
+        supervisor._scan_output(run)
+        verdict = supervisor._grade(run)
+        assert verdict.outcome is Outcome.COMPUTATION
+        assert "FATAL" in verdict.detail
+        assert "did not stop" in verdict.detail
 
-    def test_classify_names_a_timeout(self):
-        assert execution.classify_error("test timeout reached") == "timeout"
+    @pytest.mark.real_cpu_time
+    def test_no_load_window_ever_proves_load(self, tmp_path):
+        supervisor = _idle_supervisor()
+        no_deadline = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path), stopped_at=5.0)
+        no_deadline.proc = _ExitedProc(0)
+        no_deadline.cpu_seconds = 1e9
+        empty_window = _LaneRun(
+            lane=Lane(core_id=1, cpus=(1,), work_dir=tmp_path),
+            started_at=5.0,
+            deadline=5.0,
+            stopped_at=5.0,
+            sent=signal.SIGTERM,
+        )
+        empty_window.proc = _ExitedProc(-15)
+        empty_window.cpu_seconds = 0.0
+        for run in (no_deadline, empty_window):
+            verdict = supervisor._grade(run)
+            assert verdict.outcome is Outcome.NO_WORK_DONE
+            assert "no work done" in verdict.detail
 
 
 class TestSchedulerHookGlue:
@@ -360,6 +485,8 @@ class TestSchedulerHookGlue:
         return make_scheduler(tmp_path, **config), ScriptedSupervisor
 
     def test_engine_hooks_reach_the_scheduler_callbacks(self, tmp_path, monkeypatch):
+        from test_scheduler import ok
+
         sched, scripted = self._scheduler(tmp_path, monkeypatch, cores_to_test=[0])
         stalls: list[int] = []
         temps: list[float] = []
@@ -370,13 +497,13 @@ class TestSchedulerHookGlue:
         sched.on_phase_change.append(lambda cid, ph: phases.append((cid, ph)))
         sched.on_status_update.append(lambda cid, st: statuses.append(st.elapsed_seconds))
 
-        def hook_driving(sup, lanes, config_for, duration):
+        def hook_driving(sup, lanes, config, duration):
             hooks = sup.kwargs["hooks"]
             hooks.on_status(0, 1.5)
             hooks.on_status(99, 1.0)
             hooks.on_stall(0)
             hooks.on_thermal(99.0)
-            return {0: StressResult(core_id=0, passed=True, duration_seconds=0.1)}
+            return {0: ok(0)}
 
         scripted.script = [hook_driving]
         sched.run()
@@ -386,11 +513,13 @@ class TestSchedulerHookGlue:
         assert phases[0] == (0, "stress")
 
     def test_a_stop_between_cycles_ends_the_run(self, tmp_path, monkeypatch):
+        from test_scheduler import ok
+
         sched, scripted = self._scheduler(tmp_path, monkeypatch, cycle_count=3)
 
-        def stop_after(sup, lanes, config_for, duration):
+        def stop_after(sup, lanes, config, duration):
             sup.kwargs["stop_event"].set()
-            return {one.core_id: StressResult(core_id=one.core_id, passed=True, duration_seconds=0.1) for one in lanes}
+            return {one.core_id: ok(one.core_id) for one in lanes}
 
         scripted.script = [stop_after]
         results = sched.run()
@@ -401,53 +530,40 @@ class TestSchedulerHookGlue:
         from test_scheduler import bad, ok
 
         sched, scripted = self._scheduler(
-            tmp_path, monkeypatch, cores_to_test=[0], variable_load=True, stop_on_error=True
+            tmp_path, monkeypatch, cores_to_test=[0], variable_load=True, variable_load_interval=0.1, stop_on_error=True
         )
         scripted.script = [
             lambda sup, lanes, c, d: {0: ok(0)},
             lambda sup, lanes, c, d: {0: bad(0)},
         ]
         results = sched.run()
-        assert results[0][0].passed is False
+        assert results[0][0].outcome is Outcome.COMPUTATION
         assert sched._stop_requested
 
     def test_a_variable_idle_error_latches_the_stop(self, tmp_path, monkeypatch):
         from test_scheduler import ok
 
-        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: "MCE during idle transition: bang")
+        found = LaneSignal(Outcome.OWN_CORE_MCE, "MCE during idle transition: bang")
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: found)
         sched, scripted = self._scheduler(
-            tmp_path, monkeypatch, cores_to_test=[0], variable_load=True, stop_on_error=True
+            tmp_path, monkeypatch, cores_to_test=[0], variable_load=True, variable_load_interval=0.1, stop_on_error=True
         )
         scripted.script = [
             lambda sup, lanes, c, d: {0: ok(0)},
             lambda sup, lanes, c, d: {0: ok(0)},
         ]
         results = sched.run()
-        assert results[0][0].passed is False
-        assert "idle transition" in results[0][0].error_message
+        assert results[0][0].outcome is Outcome.OWN_CORE_MCE
+        assert "idle transition" in results[0][0].detail
         assert sched._stop_requested
-
-    def test_rapid_honors_a_stop_landing_mid_cycle(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: None)
-        sched, scripted = self._scheduler(tmp_path, monkeypatch)
-
-        def stop_during(sup, lanes, config_for, duration):
-            time.sleep(0.02)
-            sup.kwargs["stop_event"].set()
-            return {lanes[0].core_id: None}
-
-        scripted.script = [stop_during]
-        passed, error = sched.run_rapid_transitions([0], total_duration=5.0, load_seconds=0.02)
-        assert (passed, error) == (True, None)
-
-    def test_the_temperature_delegate_reads_through_the_engine(self, monkeypatch):
-        monkeypatch.setattr(execution, "read_cpu_temperature", lambda: 33.5)
-        assert CoreScheduler._read_cpu_temperature() == 33.5
 
     def test_an_idle_error_with_stop_on_error_latches_the_stop(self, tmp_path, monkeypatch):
         from test_scheduler import ok
 
-        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: "MCE during inter-core idle: bang")
+        found = LaneSignal(Outcome.OWN_CORE_MCE, "MCE during inter-core idle: bang")
+        monkeypatch.setattr(
+            execution, "watch_idle", lambda **kwargs: found if kwargs["phase"] == "inter-core idle" else None
+        )
         sched, scripted = self._scheduler(tmp_path, monkeypatch, idle_between_cores=0.01, stop_on_error=True)
         scripted.script = [lambda sup, lanes, c, d: {0: ok(0)}]
         results = sched.run()
@@ -457,62 +573,48 @@ class TestSchedulerHookGlue:
 
 
 class TestRemainingLoopEdges:
-    def test_a_lone_nameless_hwmon_node_reads_as_no_sensor(self, tmp_path):
-        (tmp_path / "hwmon0").mkdir()
-        with patch.object(execution, "Path", lambda _p: tmp_path):
-            assert execution.read_cpu_temperature() is None
-
-    def test_a_lone_unreadable_name_reads_as_no_sensor(self, tmp_path):
-        node = tmp_path / "hwmon0"
-        node.mkdir()
-        (node / "name").mkdir()
-        with patch.object(execution, "Path", lambda _p: tmp_path):
-            assert execution.read_cpu_temperature() is None
-
-    def test_a_lone_foreign_sensor_reads_as_no_cpu_sensor(self, tmp_path):
-        node = tmp_path / "hwmon0"
-        node.mkdir()
-        (node / "name").write_text("nvme\n")
-        (node / "temp1_input").write_text("99000\n")
-        with patch.object(execution, "Path", lambda _p: tmp_path):
-            assert execution.read_cpu_temperature() is None
-
-    def test_reap_leaves_a_live_child_alone(self):
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
-        try:
-            execution.reap_zombies()
-            assert proc.poll() is None
-        finally:
-            proc.kill()
-            proc.wait(timeout=5)
-
-    def test_the_in_loop_error_poll_fails_the_lane_mid_run(self, tmp_path):
+    def test_the_in_loop_output_scan_fails_the_lane_mid_run(self, tmp_path):
         from test_execution import FakeBackend
 
         backend = FakeBackend(
             [sys.executable, "-c", "import time; time.sleep(20)"],
-            poll_error="fake error: SUMOUT",
+            found=(LaneSignal(Outcome.COMPUTATION, "fake error: SUMOUT"),),
         )
         supervisor = _idle_supervisor(backend=backend)
         lane = Lane(core_id=0, cpus=(0,), work_dir=tmp_path / "core_0")
-        with patch.object(execution, "ERROR_POLL_INTERVAL", 0.0):
-            verdict = supervisor.run([lane], lambda _lane: StressConfig(), 5.0)[0]
-        assert verdict is not None and not verdict.passed
-        assert "SUMOUT" in verdict.error_message
+        with patch.object(execution, "OUTPUT_SCAN_INTERVAL", 0.0):
+            verdict = supervisor.run([lane], StressConfig(), 5.0)[0]
+        assert verdict.outcome is Outcome.COMPUTATION
+        assert "SUMOUT" in verdict.detail
+        assert verdict.duration_seconds < 5.0
 
-    def test_exit_polling_skips_decided_and_unstarted_lanes(self, tmp_path):
-        supervisor = _idle_supervisor()
-        decided = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
-        decided.verdict = StressResult(core_id=0, passed=True, duration_seconds=0.1)
-        unstarted = _LaneRun(lane=Lane(core_id=1, cpus=(1,), work_dir=tmp_path))
-        assert supervisor._poll_exits_stalls_watchdog([decided, unstarted], time.monotonic()) is False
 
-    def test_final_verdict_attributes_a_parse_failure(self, tmp_path):
-        from test_execution import FakeBackend
+CUT_NAME = b"\xe2\x82x) R 1 2"
 
-        supervisor = _idle_supervisor(backend=FakeBackend(parse=(False, "fake error: BAD")))
-        run = _LaneRun(lane=Lane(core_id=0, cpus=(0,), work_dir=tmp_path))
-        run.proc = SimpleNamespace(returncode=0)
-        verdict = supervisor._final_verdict(run, elapsed=5.0, interrupted=False)
-        assert verdict is not None and not verdict.passed
-        assert "BAD" in verdict.error_message
+
+def proc_stat(pid: int, ppid: int, *, pgrp: int = 0, ticks: tuple[int, ...] = (0, 0, 0, 0)) -> bytes:
+    rest = ["S", str(ppid), str(pgrp), *["0"] * 8, *map(str, ticks), *["0"] * 40]
+    return f"{pid} (".encode() + CUT_NAME + b") " + " ".join(rest).encode() + b"\n"
+
+
+class TestNamesCutInsideACharacter:
+    def test_the_tree_walk_and_its_reads_keep_a_process_whose_name_is_not_utf8(self, tmp_path):
+        for pid, ppid in ((700, 1), (701, 700)):
+            task = tmp_path / str(pid) / "task" / str(pid)
+            task.mkdir(parents=True)
+            (tmp_path / str(pid) / "stat").write_bytes(proc_stat(pid, ppid))
+            (task / "stat").write_bytes(proc_stat(pid, ppid))
+            (task / "status").write_bytes(b"Name:\t" + CUT_NAME + b"\nCpus_allowed_list:\t" + str(pid - 697).encode())
+        assert containment.observed_tree_cpus(700, proc_base=tmp_path) == {3, 4}
+        assert sorted(
+            tid for _name, tid, _priority, _policy in containment.tree_scheduling(700, proc_base=tmp_path)
+        ) == [
+            700,
+            701,
+        ]
+
+    @pytest.mark.real_cpu_time
+    def test_a_group_member_whose_name_is_not_utf8_is_counted(self, tmp_path):
+        (tmp_path / "800").mkdir()
+        (tmp_path / "800" / "stat").write_bytes(proc_stat(800, 1, pgrp=800, ticks=(100, 50, 7, 3)))
+        assert containment.process_group_cpu_seconds(800, proc_base=tmp_path) == 160 / os.sysconf("SC_CLK_TCK")

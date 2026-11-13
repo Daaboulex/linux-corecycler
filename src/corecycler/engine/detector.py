@@ -1,372 +1,578 @@
-"""Error detection — MCE (Machine Check Exceptions) and kernel crash lines.
-
-The kernel log is the single source of truth. The legacy sysfs
-/sys/devices/system/machinecheck/*/bank* files are MCA control registers
-(constant enable masks), not error counters — they never change when an
-error is logged, so counting them cannot detect anything.
-"""
+"""Kernel hardware-error records and user programs' fault lines, read whole from /dev/kmsg and the systemd journal."""
 
 from __future__ import annotations
 
-import contextlib
-import logging
+import io
+import json
+import os
 import re
 import subprocess
 import time
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from corecycler.config import tools
 
-log = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Iterator, Sequence
+
+KMSG = Path("/dev/kmsg")
+MCE_POLL = Path("/sys/devices/system/machinecheck/machinecheck0/check_interval")
+MCE_POLL_MAX_S = 5
+MCE_POLL_KERNEL_DEFAULT_S = 300
+MCE_TIMER_ROUNDING_S = 1
+BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+KMSG_READ_SIZE = 8192
+KMSG_MAX_READS = 4096
+PROGRAM_FAULTS_KEPT = 50  # equivalent-mutant: every test reads this constant rather than restating its value
+KERNEL_FACILITY = 0
+JOURNALD = "systemd-journald"
+JOURNAL_STOPPED = "Journal stopped"
+STATUS_UC = 1 << 61
+STATUS_DEFERRED = 1 << 44
+CORE_BANK_TYPES: frozenset[tuple[int, int]] = frozenset(
+    {(0xB0, 0x0), (0xB0, 0x10), (0xB0, 0x1), (0xB0, 0x2), (0xB0, 0x3), (0xB0, 0x5), (0xB0, 0x6)}
+)
+CORE_BANK_NAMES: frozenset[str] = frozenset(
+    {"Load Store Unit", "Instruction Fetch Unit", "L2 Cache", "Decode Unit", "Execution Unit", "Floating Point Unit"}
+)
+_SEVERITIES: frozenset[str] = frozenset(
+    {
+        "System Fatal error.",
+        "Uncorrected, software restartable error.",
+        "Uncorrected, software containable error.",
+        "Deferred error, no action required.",
+        "Corrected error, no action required.",
+    }
+)
+_HARDWARE_ERROR = re.compile(r"(?:mce: )?\[Hardware Error\]: (.*)")
+_DECODER = re.compile(r"CPU:(\d+) \([0-9a-f]+:[0-9a-f]+:[0-9a-f]+\) MC(\d+)_STATUS\[[^\]]*\]: 0x([0-9a-f]{16})")
+_FALLBACK = re.compile(r"CPU (\d+): Machine Check(?: Exception)?: [0-9a-f]+ Bank (\d+): ([0-9a-f]{16})")
+_OPENERS_AND_LAST_LINES: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (_DECODER, ("cache level: ", "internal: ")),
+    (_FALLBACK, ("PROCESSOR ",)),
+)
+_DECODER_IPID = re.compile(r"IPID: 0x([0-9a-f]{16})")
+_FALLBACK_IPID = re.compile(r"TSC [0-9a-f]+ .*?\bIPID ([0-9a-f]+)")
+_BANK_NAME = re.compile(r"(.+) Ext\. Error Code: ")
+_TROUBLE = re.compile(
+    r"(?:NMI )?(?:watchdog: )?BUG: soft lockup - CPU#\d+ stuck"
+    r"|(?:NMI )?(?:watchdog: )?(?:CPU\d+: )?Watchdog detected hard LOCKUP on cpu \d+"
+    r"|Kernel panic - not syncing"
+    r"|Oops: "
+    r"|kernel BUG at "
+)
+_SEGFAULT = re.compile(r"(.+)\[(\d+)\]: segfault at ")
+_TRAP = re.compile(r"traps: (.+)\[(\d+)\] (?:trap |general protection fault)")
+_LIKELY_CPU = re.compile(r" likely on CPU (\d+) \(core (\d+), socket \d+\)$")
+_KMSG_RECORD = re.compile(r"(\d+),\d+,(\d+),[^;]*;(.*)")
+_BOOT_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+_STORED_BOOT_ID = re.compile(r"[0-9a-f]{32}")
+_JSON_WHOLE = ("-o", "json", "--all")
+_KERNEL_RECORDS = (*_JSON_WHOLE, "--output-fields=MESSAGE", "_TRANSPORT=kernel", f"SYSLOG_FACILITY={KERNEL_FACILITY}")
+_USERSPACE = ("_TRANSPORT=driver", "_TRANSPORT=journal", "_TRANSPORT=stdout", "_TRANSPORT=syslog")
+_NOT_OPEN = "kernel log not open: read before reset"
+RESET_REASON = "x86/amd: Previous system reset reason"
+_FLOOD = "kernel log flood: records left unread"
 
 
-@dataclass(slots=True)
-class MCEEvent:
-    timestamp: float
+@dataclass(frozen=True, slots=True)
+class CoreMachineCheck:
     cpu: int
     bank: int
-    message: str
     corrected: bool
-    raw_ts: float = 0.0  # kernel/journal timestamp of the source line
+    message: str
+    raw_ts: float
+
+
+@dataclass(frozen=True, slots=True)
+class UnblamedMachineCheck:
+    logged_by_cpu: int
+    bank: int
+    corrected: bool
+    message: str
+    raw_ts: float
+
+
+@dataclass(frozen=True, slots=True)
+class KernelTrouble:
+    message: str
+    raw_ts: float
+
+
+@dataclass(frozen=True, slots=True)
+class ProgramFault:
+    process: str
+    pid: int
+    cpu: int | None
+    core: int | None
+    message: str
+    raw_ts: float
+
+    @property
+    def named(self) -> str:
+        where = "no CPU named" if self.cpu is None else f"CPU {self.cpu}, core {self.core}"
+        return f"{self.process} (pid {self.pid}), {where}"
+
+
+@dataclass(frozen=True, slots=True)
+class ProgramFaults:
+    started_ns: int
+    kept: tuple[ProgramFault, ...]
+    dropped: int
+
+
+KernelEvent = CoreMachineCheck | UnblamedMachineCheck | KernelTrouble | ProgramFault
+
+
+@dataclass(frozen=True, slots=True)
+class KernelRead:
+    events: tuple[KernelEvent, ...]
+    problem: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class BootEnd:
+    clean: bool
+    problem: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _JournalEntry:
+    mono_us: int
+    realtime_us: int
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class HarvestFrom:
+    mono_ns: int | None
+    realtime_us: int | None
+
+    def precedes(self, entry: _JournalEntry) -> bool:
+        if self.mono_ns is not None:
+            return entry.mono_us * 1000 > self.mono_ns
+        return self.realtime_us is None or entry.realtime_us > self.realtime_us
+
+
+@dataclass(frozen=True, slots=True)
+class JournalHarvest:
+    dead_boot: tuple[KernelEvent, ...]
+    next_boot: tuple[KernelEvent, ...]
+    problem: str | None
+    unfinished_from_ns: int | None = None
+
+
+def bank_is_core(ipid: int | None, bank_name: str | None) -> bool:
+    if ipid is not None:
+        high = ipid >> 32
+        return (high & 0xFFF, (high >> 16) & 0xFFFF) in CORE_BANK_TYPES
+    return bank_name in CORE_BANK_NAMES
 
 
 @dataclass(slots=True)
-class ErrorState:
-    mce_events: list[MCEEvent] = field(default_factory=list)
-    computation_errors: list[str] = field(default_factory=list)
-    last_check_time: float = 0.0
+class _OpenRecord:
+    cpu: int
+    bank: int
+    status: int
+    message: str
+    raw_ts: float
+    lines: list[tuple[float, str]]
+    last_line_starts: tuple[str, ...]
+    ipid: int | None = None
+    bank_name: str | None = None
 
-    @property
-    def has_errors(self) -> bool:
-        return bool(self.mce_events or self.computation_errors)
+    def attach(self, raw_ts: float, text: str, body: str) -> None:
+        self.lines.append((raw_ts, text))
+        if (ipid := _DECODER_IPID.match(body) or _FALLBACK_IPID.match(body)) is not None:
+            self.ipid = int(ipid.group(1), 16)
+        elif (name := _BANK_NAME.match(body)) is not None:
+            self.bank_name = name.group(1)
 
-
-# AMD Zen decoded MCA block: exactly one line carries CPU, bank and severity
-# flags together — "[Hardware Error]: CPU:9 (1a:44:0) MC0_STATUS[Over|CE|...]".
-# Only that line produces an event; the block's header ("Machine check events
-# logged") and detail lines (Corrected error/Error Addr/IPID/Syndrome/unit)
-# describe the same event and must not double-count it.
-_AMD_STATUS_RE = re.compile(r"cpu[:\s]+(\d+).*?\bmc(\d+)_status\[([^\]]*)\]", re.IGNORECASE)
-_CPU_RE = re.compile(r"\bcpu[:\s]+(\d+)", re.IGNORECASE)
-_BANK_RE = re.compile(r"\bbank[:\s]+(\d+)", re.IGNORECASE)
-
-
-def classify_mce_line(body: str) -> MCEEvent | None:
-    """Classify one kernel message body (no timestamp prefix) into an event.
-
-    Returns None for non-error lines, informational MCE lines, and the
-    continuation lines of an AMD decoded block.
-    """
-    lower = body.lower()
-
-    m = _AMD_STATUS_RE.search(lower)
-    if m:
-        flags = {t.strip() for t in m.group(3).split("|")}
-        corrected = "ce" in flags and "ue" not in flags
-        return MCEEvent(
-            timestamp=time.time(),
-            cpu=int(m.group(1)),
-            bank=int(m.group(2)),
-            message=body.strip(),
-            corrected=corrected,
+    def event(self) -> CoreMachineCheck | UnblamedMachineCheck:
+        corrected = not self.status & (STATUS_UC | STATUS_DEFERRED)
+        if bank_is_core(self.ipid, self.bank_name):
+            return CoreMachineCheck(
+                cpu=self.cpu, bank=self.bank, corrected=corrected, message=self.message, raw_ts=self.raw_ts
+            )
+        return UnblamedMachineCheck(
+            logged_by_cpu=self.cpu, bank=self.bank, corrected=corrected, message=self.message, raw_ts=self.raw_ts
         )
 
-    if _is_mce_error_line(lower):
-        cpu_m = _CPU_RE.search(lower)
-        bank_m = _BANK_RE.search(lower)
-        corrected = bool(re.search(r"\bcorrected\b", lower)) and "uncorrect" not in lower
-        return MCEEvent(
-            timestamp=time.time(),
-            cpu=int(cpu_m.group(1)) if cpu_m else -1,
-            bank=int(bank_m.group(1)) if bank_m else -1,
-            message=body.strip(),
-            corrected=corrected,
-        )
 
-    if _is_kernel_error_line(lower):
-        return MCEEvent(
-            timestamp=time.time(),
-            cpu=-1,
-            bank=-1,
-            message=body.strip(),
-            corrected=False,
-        )
-
+def _open_record(raw_ts: float, text: str, body: str) -> _OpenRecord | None:
+    for opener, last_line_starts in _OPENERS_AND_LAST_LINES:
+        if (opened := opener.match(body)) is not None:
+            cpu, bank, status = opened.groups()
+            return _OpenRecord(
+                cpu=int(cpu),
+                bank=int(bank),
+                status=int(status, 16),
+                message=text.strip(),
+                raw_ts=raw_ts,
+                lines=[(raw_ts, text)],
+                last_line_starts=last_line_starts,
+            )
     return None
 
 
+def _program_fault(raw_ts: float, text: str) -> ProgramFault | None:
+    found = _SEGFAULT.match(text) or _TRAP.match(text)
+    if found is None:
+        return None
+    process, pid = found.groups()
+    likely = _LIKELY_CPU.search(text)
+    return ProgramFault(
+        process=process,
+        pid=int(pid),
+        cpu=None if likely is None else int(likely.group(1)),
+        core=None if likely is None else int(likely.group(2)),
+        message=text.strip(),
+        raw_ts=raw_ts,
+    )
+
+
+def kept_faults[T](faults: Sequence[T]) -> tuple[tuple[T, ...], int]:
+    kept = tuple(faults[-PROGRAM_FAULTS_KEPT:])
+    return kept, len(faults) - len(kept)
+
+
+def parse_kernel_records(
+    lines: Iterable[tuple[float, str]], *, final: bool
+) -> tuple[list[KernelEvent], list[tuple[float, str]]]:
+    events: list[KernelEvent] = []
+    record: _OpenRecord | None = None
+    for raw_ts, text in lines:
+        trouble = _TROUBLE.match(text) is not None
+        hardware = _HARDWARE_ERROR.match(text)
+        body = "" if hardware is None else hardware.group(1)
+        opened = None if hardware is None else _open_record(raw_ts, text, body)
+        if record is not None and (trouble or opened is not None or body in _SEVERITIES):
+            events.append(record.event())
+            record = None
+        if trouble:
+            events.append(KernelTrouble(message=text.strip(), raw_ts=raw_ts))
+        elif opened is not None:
+            record = opened
+        elif record is not None and hardware is not None:
+            record.attach(raw_ts, text, body)
+            if body.startswith(record.last_line_starts):
+                events.append(record.event())
+                record = None
+        elif (fault := _program_fault(raw_ts, text)) is not None:
+            events.append(fault)
+    if record is not None and final:
+        events.append(record.event())
+    return events, ([] if record is None or final else record.lines)
+
+
+def _kmsg_lines(chunk: bytes) -> tuple[list[tuple[float, str]], list[str]]:
+    lines: list[tuple[float, str]] = []
+    malformed: list[str] = []
+    for raw in chunk.decode("utf-8", errors="replace").split("\n"):
+        if not raw or raw.startswith(" "):
+            continue
+        record = _KMSG_RECORD.fullmatch(raw)
+        if record is None:
+            malformed.append(raw)
+        elif int(record.group(1)) >> 3 == KERNEL_FACILITY:
+            lines.append((int(record.group(2)) / 1e6, record.group(3)))
+    return lines, malformed
+
+
 class ErrorDetector:
-    """Watches the kernel log for hardware errors during stress tests.
-
-    ``check_mce()`` returns every NEW event since ``reset()`` exactly once
-    (consume semantics) so callers can both fail the current test on the
-    tested core's events and record other cores' events as evidence without
-    re-processing duplicates on each poll.
-    """
-
-    # Minimum interval between dmesg subprocess calls (seconds).
-    DMESG_MIN_INTERVAL: float = 5.0
-
-    def __init__(self) -> None:
-        self._dmesg_baseline_ts: float = 0.0  # raw monotonic timestamp
-        self._last_dmesg_time: float = 0.0
-        self._seen: set[tuple[float, int, int]] = set()
+    def __init__(self, kmsg: Path | None = None) -> None:
+        self._path = KMSG if kmsg is None else kmsg
+        self._file: io.FileIO | None = None
+        self._unopened = _NOT_OPEN
+        self._carry: list[tuple[float, str]] = []
+        self.read_started_ns: int | None = None
 
     def reset(self) -> None:
-        """Start a new observation window — only lines newer than now count."""
-        self._dmesg_baseline_ts = _get_dmesg_raw_timestamp()
-        self._last_dmesg_time = 0.0
-        self._seen.clear()
-
-    def check_mce(self) -> list[MCEEvent]:
-        """Return new MCE/kernel-error events since reset(), each exactly once.
-
-        Rate-limited: within DMESG_MIN_INTERVAL of the previous subprocess
-        call it returns [] instead of re-running dmesg; the event is delivered
-        on the first poll after the interval elapses.
-        """
-        now = time.monotonic()
-        if now - self._last_dmesg_time < self.DMESG_MIN_INTERVAL:
-            return []
-        self._last_dmesg_time = now
-
-        # No baseline means old and new lines are indistinguishable — treating
-        # boot-time history as fresh errors would fail every first test.
-        if self._dmesg_baseline_ts <= 0:
-            return []
-
-        events: list[MCEEvent] = []
+        self.close()
         try:
-            # No --level filter: AMD decoded corrected-error lines are logged
-            # below err/warn and a level filter silently hides them; the line
-            # classifier is the filter.
-            result = subprocess.run(
-                [tools.command_name("dmesg"), "--time-format=raw"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode != 0:
-                return []
-            for line in result.stdout.splitlines():
-                ts_match = re.match(r"\s*\[?\s*([\d.]+)\]?\s?", line)
-                if not ts_match:
-                    continue
-                try:
-                    raw_ts = float(ts_match.group(1))
-                except ValueError:
-                    continue
-                if raw_ts <= self._dmesg_baseline_ts:
-                    continue
-                event = classify_mce_line(line[ts_match.end() :])
-                if event is None:
-                    continue
-                event.raw_ts = raw_ts
-                key = (raw_ts, event.cpu, event.bank)
-                if key in self._seen:
-                    continue
-                self._seen.add(key)
-                events.append(event)
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError) as exc:
-            log.debug("dmesg check failed: %s", exc)
-            return events
-        log.debug(
-            "dmesg poll: %d new event(s)%s",
-            len(events),
-            "".join(f" [cpu={e.cpu} bank={e.bank} ce={e.corrected}]" for e in events),
-        )
-        return events
+            self._file = io.FileIO(self._path, "r", opener=lambda path, flags: os.open(path, flags | os.O_NONBLOCK))
+            self._file.seek(0, os.SEEK_END)
+        except OSError as exc:
+            self.close()
+            self._unopened = f"kernel log {self._path} unreadable: {exc}"
 
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
+        self._file = None
+        self._carry = []
+        self._unopened = _NOT_OPEN
 
-def harvest_kernel_mce(since_utc_iso: str, timeout: float = 15.0) -> tuple[list[MCEEvent], bool]:
-    """Read MCE/kernel-error events from the systemd journal since a UTC ISO
-    timestamp — across reboots, so it covers the boot(s) a hard crash killed.
-
-    Returns (events, harvest_ok). harvest_ok False means the journal could
-    not be read at all (journalctl missing, unreadable, bad timestamp) — the
-    caller must treat the crash as unattributed, never as a clean bill.
-    """
-    since = _iso_to_journal_since(since_utc_iso)
-    if since is None:
-        return [], False
-    try:
-        # _TRANSPORT=kernel, NOT -k: -k implies --boot (current boot only),
-        # which silently hides the crashed boot's MCE lines — the entire
-        # point of this harvest.
-        result = subprocess.run(
-            [
-                tools.command_name("journalctl"),
-                "-q",
-                "--no-pager",
-                "-o",
-                "short-unix",
-                "--since",
-                since,
-                "_TRANSPORT=kernel",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError) as exc:
-        log.warning("kernel-journal harvest failed: %s", exc)
-        return [], False
-    if result.returncode != 0:
-        log.warning(
-            "journalctl exited %d during harvest: %s",
-            result.returncode,
-            result.stderr.strip()[:200],
-        )
-        return [], False
-
-    events: list[MCEEvent] = []
-    seen: set[tuple[float, int, int]] = set()
-    for line in result.stdout.splitlines():
-        # short-unix format: "1626382113.123456 host kernel: <message>"
-        m = re.match(r"\s*([\d.]+)\s+\S+\s+kernel:\s?(.*)$", line)
-        if not m:
-            continue
-        event = classify_mce_line(m.group(2))
-        if event is None:
-            continue
-        try:
-            event.raw_ts = float(m.group(1))
-        except ValueError:
-            event.raw_ts = 0.0
-        key = (event.raw_ts, event.cpu, event.bank)
-        if key in seen:
-            continue
-        seen.add(key)
-        events.append(event)
-    return events, True
-
-
-def last_boot_ended_cleanly(timeout: float = 15.0) -> bool:
-    """True when the previous boot ended in an orderly shutdown.
-
-    Journald writes a final "Journal stopped" record on every clean shutdown;
-    a freeze or hard reset leaves the boot's journal without one. Fail closed:
-    any read problem returns False — an unproven shutdown is treated as dirty.
-    """
-    try:
-        result = subprocess.run(
-            [
-                tools.command_name("journalctl"),
-                "-q",
-                "--no-pager",
-                "-b",
-                "-1",
-                "-n",
-                "25",
-                "-o",
-                "cat",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError) as exc:
-        log.warning("clean-shutdown probe failed: %s", exc)
-        return False
-    if result.returncode != 0:
-        return False
-    return "Journal stopped" in result.stdout or "Shutting down." in result.stdout
-
-
-def _iso_to_journal_since(iso_ts: str) -> str | None:
-    """Convert an ISO-8601 timestamp to systemd's --since form, in UTC."""
-    try:
-        dt = datetime.fromisoformat(iso_ts)
-    except (ValueError, TypeError):
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
-def _is_mce_error_line(line_lower: str) -> bool:
-    """Return True if a dmesg line is an actual MCE error, not informational.
-
-    Excludes boot/info messages like:
-    - "mce: CPU supports N MCE banks"
-    - "Machine check events logged" (the AMD block header — the event itself
-      is counted from the MCx_STATUS line of the same block)
-    - "mce_cpu_quirks"
-    - "mce: [Hardware Error]:" informational lines about MCE configuration
-    """
-    # Must mention MCE or machine check at all
-    if "mce" not in line_lower and "machine check" not in line_lower:
-        return False
-
-    # Exclude known informational patterns
-    info_patterns = [
-        "cpu supports",
-        "mce banks",
-        "events logged",
-        "mce_cpu_quirks",
-        "mce: using",
-        "mce: cmci",
-        "mce_intel",
-        "check polling timer",
-    ]
-    for pat in info_patterns:
-        if pat in line_lower:
-            return False
-
-    # Real MCE error indicators
-    error_indicators = [
-        "hardware error",
-        "bank ",  # "Bank N:" with actual bank data
-        "machine check exception",
-        "fatal machine check",
-        "uncorrected",
-        "corrected error",
-        "mca:",
-        "status:",
-        "tsc:",
-        "addr:",
-        "misc:",
-        "severity:",
-    ]
-    return any(ind in line_lower for ind in error_indicators)
-
-
-def _is_kernel_error_line(line_lower: str) -> bool:
-    """Return True if a dmesg line indicates a kernel crash, oops, or BUG.
-
-    CO undervolting can cause kernel-level faults that manifest as oops or
-    BUG traps rather than MCE events — especially under heavy instruction
-    pressure with AVX/SSE workloads.
-    """
-    indicators = [
-        "kernel panic",
-        "oops:",
-        "bug:",
-        "bug at ",
-        "general protection fault",
-        "invalid opcode",
-        "rip:",
-        "call trace:",
-        "kernel bug at",
-    ]
-    return any(ind in line_lower for ind in indicators)
-
-
-def _get_dmesg_raw_timestamp() -> float:
-    """Get the latest dmesg raw monotonic timestamp for baseline filtering."""
-    with contextlib.suppress(subprocess.TimeoutExpired, FileNotFoundError, OSError, PermissionError):
-        result = subprocess.run(
-            [tools.command_name("dmesg"), "--time-format=raw"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        lines = result.stdout.strip().splitlines()
-        if lines:
-            ts_str = lines[-1].split()[0] if lines[-1] else ""
+    def read_new(self, *, final: bool = False) -> KernelRead:
+        if self._file is None:
+            return KernelRead((), self._unopened)
+        started_ns = monotonic_ns()
+        lines = list(self._carry)
+        problems: list[str] = []
+        overran = False
+        for _ in range(KMSG_MAX_READS):
             try:
-                return float(ts_str.strip("[]"))
-            except ValueError:
-                return 0.0
-    return 0.0
+                chunk = self._file.read(KMSG_READ_SIZE)
+            except BrokenPipeError:
+                problems.append("kernel log overran; records lost")
+                if overran:
+                    break
+                overran = True
+                continue
+            except OSError as exc:
+                problems.append(f"kernel log {self._path} read failed: {exc}")
+                break
+            if not chunk:
+                break
+            overran = False
+            found, malformed = _kmsg_lines(chunk)
+            lines.extend(found)
+            problems.extend(f"kernel log {self._path} record malformed: {raw[:160]!r}" for raw in malformed)
+        else:
+            if final:
+                problems.append(_FLOOD)
+        events, self._carry = parse_kernel_records(lines, final=final)
+        if not problems:
+            self.read_started_ns = started_ns
+        return KernelRead(tuple(events), problems[0] if problems else None)
+
+
+def _clock_ns(clock: int) -> int:
+    return time.clock_gettime_ns(clock)
+
+
+def monotonic_ns() -> int:
+    return _clock_ns(time.CLOCK_MONOTONIC)
+
+
+def _journalctl(args: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [tools.command_name("journalctl"), "-q", "--no-pager", *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def read_boot_id() -> str:
+    raw = BOOT_ID_PATH.read_text().strip()
+    if _BOOT_ID.fullmatch(raw) is None:
+        raise ValueError(f"{BOOT_ID_PATH} holds {raw[:60]!r}, not a boot id")
+    return raw.replace("-", "")
+
+
+def _journal_text(args: list[str], timeout: float) -> tuple[str, str | None]:
+    command = " ".join(["journalctl", *args])
+    try:
+        result = _journalctl(args, timeout)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return "", f"{command} failed: {exc}"
+    if result.returncode != 0:
+        return "", f"{command} exited {result.returncode}: {result.stderr.strip()[:200]}"
+    return result.stdout, None
+
+
+def _message(value: object) -> str:
+    if isinstance(value, list):
+        return bytes(value).decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return value
+    raise TypeError(f"MESSAGE is a {type(value).__name__}")
+
+
+def _journal_read[T](args: list[str], timeout: float, read: Callable[[list], T], unread: T) -> tuple[T, str | None]:
+    text, problem = _journal_text(args, timeout)
+    if problem is not None:
+        return unread, problem
+    try:
+        return read([json.loads(line) for line in filter(None, text.splitlines())]), None
+    except (KeyError, TypeError, ValueError) as exc:
+        return unread, f"journalctl {' '.join(args)} printed an unreadable entry: {exc!r}"
+
+
+def _entries(rows: list) -> list[_JournalEntry]:
+    return [
+        _JournalEntry(
+            mono_us=int(entry["__MONOTONIC_TIMESTAMP"]),
+            realtime_us=int(entry["__REALTIME_TIMESTAMP"]),
+            message=_message(entry["MESSAGE"]),
+        )
+        for entry in rows
+    ]
+
+
+def _journal_entries(args: list[str], timeout: float) -> tuple[list[_JournalEntry], str | None]:
+    return _journal_read(args, timeout, _entries, [])
+
+
+def _stopped_by_journald(rows: list) -> bool:
+    (last,) = rows
+    if not isinstance(last, dict):
+        raise TypeError(f"an entry is a {type(last).__name__}")
+    return last.get("SYSLOG_IDENTIFIER") == JOURNALD and _message(last["MESSAGE"]) == JOURNAL_STOPPED
+
+
+def _boot_problem(boot_id: str) -> str | None:
+    if not boot_id:
+        return "the session's boot is not recorded"
+    if _STORED_BOOT_ID.fullmatch(boot_id) is None:
+        return f"the session's boot id {boot_id!r} is not a boot id"
+    return None
+
+
+def boot_end(boot_id: str, timeout: float = 15.0) -> BootEnd:
+    if (problem := _boot_problem(boot_id)) is not None:
+        return BootEnd(clean=False, problem=problem)
+    clean, problem = _journal_read(["-b", boot_id, "-n", "1", *_JSON_WHOLE], timeout, _stopped_by_journald, False)
+    return BootEnd(clean=clean, problem=problem)
+
+
+def _next_boot(boot_id: str, timeout: float) -> tuple[str | None, str | None]:
+    text, problem = _journal_text(["--list-boots", "-o", "json"], timeout)
+    if problem is not None:
+        return None, problem
+    try:
+        listed = [boot["boot_id"] for boot in sorted(json.loads(text), key=lambda boot: boot["index"])]
+    except (KeyError, TypeError, ValueError) as exc:
+        return None, f"journalctl --list-boots printed an unreadable list: {exc!r}"
+    if boot_id not in listed:
+        return None, f"boot {boot_id} is not in the journal's boot list, so the boot after it cannot be named"
+    later = listed[listed.index(boot_id) + 1 :]
+    return (later[0] if later else None), None
+
+
+def _before_userspace(boot_id: str, timeout: float) -> tuple[list[_JournalEntry], str | None]:
+    first, problem = _journal_entries(
+        ["-b", boot_id, "-n", "+1", *_JSON_WHOLE, "--output-fields=MESSAGE", *_USERSPACE], timeout
+    )
+    if problem is not None:
+        return [], problem
+    records, problem = _journal_entries(["-b", boot_id, *_KERNEL_RECORDS], timeout)
+    return [record for record in records if not first or record.mono_us < first[0].mono_us], problem
+
+
+def reset_reasons(boot_id: str, timeout: float = 15.0) -> tuple[tuple[str, ...], str | None]:
+    early, problem = _before_userspace(boot_id, timeout)
+    return tuple(entry.message for entry in early if entry.message.startswith(RESET_REASON)), problem
+
+
+def _events(entries: Iterable[_JournalEntry]) -> tuple[KernelEvent, ...]:
+    events, _open = parse_kernel_records(((entry.mono_us / 1e6, entry.message) for entry in entries), final=True)
+    return tuple(events)
+
+
+def stamp_ns(raw_ts: float) -> int:
+    return round(raw_ts * 1_000_000) * 1000
+
+
+def harvest_after(
+    boot_id: str,
+    after: HarvestFrom | None,
+    *,
+    next_boot: bool,
+    through_mono_ns: int | None = None,
+    timeout: float = 15.0,
+) -> JournalHarvest:
+    if (problem := _boot_problem(boot_id)) is not None:
+        return JournalHarvest((), (), problem)
+    dead_boot: tuple[KernelEvent, ...] = ()
+    later: tuple[KernelEvent, ...] = ()
+    unfinished: int | None = None
+    problems: list[str | None] = []
+    if after is None:
+        problems.append("the session's last write time is unreadable")
+    else:
+        dead, problem = _journal_entries(["-b", boot_id, *_KERNEL_RECORDS], timeout)
+        events, open_lines = parse_kernel_records(
+            ((entry.mono_us / 1e6, entry.message) for entry in dead if after.precedes(entry)),
+            final=through_mono_ns is None,
+        )
+        opener = stamp_ns(open_lines[0][0]) if open_lines else None
+        unfinished = opener if opener is not None and opener <= through_mono_ns else None
+        dead_boot = tuple(
+            event
+            for event in events
+            if (through_mono_ns is None or stamp_ns(event.raw_ts) <= through_mono_ns)
+            and (unfinished is None or stamp_ns(event.raw_ts) < unfinished)
+        )
+        problems.append(problem)
+    if next_boot:
+        following, problem = _next_boot(boot_id, timeout)
+        problems.append(problem)
+        if following is not None:
+            early, problem = _before_userspace(following, timeout)
+            later = _events(early)
+            problems.append(problem)
+    return JournalHarvest(dead_boot, later, "; ".join(filter(None, problems)) or None, unfinished)
+
+
+def mce_poll_problem(path: Path = MCE_POLL) -> str | None:
+    command = f"echo {MCE_POLL_MAX_S} | sudo tee {path}, or on NixOS services.corecycler.machineCheckPoll.enable"
+    try:
+        seconds = int(path.read_text().strip())
+    except (OSError, ValueError) as exc:
+        return f"machine-check poll interval unreadable: {exc}; set it: {command}"
+    if seconds > MCE_POLL_MAX_S:
+        return (
+            f"machine-check poll every {seconds} s, above {MCE_POLL_MAX_S} s, so corrected errors log late: {command}"
+        )
+    return None
+
+
+def mce_settle_s(path: Path = MCE_POLL) -> float:
+    try:
+        seconds = int(path.read_text().strip())
+    except OSError, ValueError:
+        seconds = MCE_POLL_MAX_S
+    if seconds < 0:
+        seconds = MCE_POLL_MAX_S
+    return float(min(seconds, MCE_POLL_MAX_S) + MCE_TIMER_ROUNDING_S)
+
+
+@contextmanager
+def fast_mce_poll(say: Callable[[str], None], path: Path = MCE_POLL) -> Iterator[int]:
+    try:
+        before = int(path.read_text().strip())
+    except (OSError, ValueError) as exc:
+        say(f"machine-check poll not raised: {path} unreadable: {exc}")
+        before = None
+    raised = False
+    if before is not None and before > MCE_POLL_MAX_S:
+        try:
+            path.write_text(f"{MCE_POLL_MAX_S}\n")
+        except OSError as exc:
+            say(f"machine-check poll stays at {before} s: writing {MCE_POLL_MAX_S} to {path} failed: {exc}")
+        else:
+            raised = True
+            say(f"machine-check poll raised from {before} s to {MCE_POLL_MAX_S} s for this run")
+    try:
+        yield MCE_POLL_KERNEL_DEFAULT_S if before is None else before
+    finally:
+        if raised:
+            try:
+                path.write_text(f"{before}\n")
+            except OSError as exc:
+                say(f"machine-check poll stays at {MCE_POLL_MAX_S} s: writing {before} back to {path} failed: {exc}")
+            else:
+                say(f"machine-check poll back to {before} s")
+
+
+def kernel_log_problem(kmsg: Path | None = None, timeout: float = 15.0) -> str | None:
+    path = KMSG if kmsg is None else kmsg
+    try:
+        os.close(os.open(path, os.O_RDONLY | os.O_NONBLOCK))
+    except OSError as exc:
+        return f"the kernel log {path} cannot be read: {exc}"
+    try:
+        result = _journalctl(["-o", "short-unix", "-b", "0", "-n", "1", "_TRANSPORT=kernel"], timeout)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return f"the kernel journal cannot be read: {exc}"
+    if result.returncode != 0:
+        reason = result.stderr.strip()[:200]
+        return f"the kernel journal cannot be read: journalctl exited {result.returncode}: {reason}"
+    if not result.stdout.strip():
+        return "the kernel journal shows no kernel record for this boot, so it cannot be read"
+    return None

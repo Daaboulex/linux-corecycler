@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import os
 import struct
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from corecycler.gui.style import theme
-from corecycler.monitor.memory import SPD5118Reader, SPDTimingData, decode_spd_timings, parse_dmidecode_output
+from corecycler.monitor.memory import (
+    SPD_DRAM_TYPE_DDR5,
+    SPD5118Reader,
+    SPDTimingData,
+    decode_spd_timings,
+    parse_dmidecode_output,
+)
 from corecycler.smu.pmtable import PMTableData, compute_fclk_uclk_ratio
+from tests._sensors import a_tick
 
 SAMPLE_DMIDECODE = """\
 # dmidecode 3.6
@@ -83,7 +92,7 @@ class TestParseDmidecode:
         text = SAMPLE_DMIDECODE.replace("32 GB", "512 MB")
         dimms = parse_dmidecode_output(text)
         assert len(dimms) == 2
-        assert dimms[0].size_gb == 1  # 512MB rounds up to 1GB
+        assert dimms[0].size_gb == 1
 
     def test_dimm_with_gib_format(self):
         """dmidecode 3.7+ uses GiB instead of GB."""
@@ -235,21 +244,18 @@ def _make_headless_tab():
     tab._vdd_label = _MockLabel("VDD: --")
     tab._vddq_label = _MockLabel("VDDQ: --")
     tab._cal_label = _MockLabel("")
-    tab._pm_reader = MagicMock()
-    tab._pm_reader.is_available.return_value = True
+    tab._pm_available = True
     tab._spd_reader = MagicMock()
     tab._spd_reader.is_available.return_value = False
-    # SPD timing labels (added in Plan 04-02)
     tab._primary_label = _MockLabel("Primary: --")
     tab._secondary_label = _MockLabel("Secondary: --")
     tab._spd_unavailable_label = _MockLabel("")
     tab._spd_group = _MockGroupBox("SPD Timings (DDR5)")
-    # Bind MemoryTab methods to our namespace object
     tab._update_clock_labels = types.MethodType(MemoryTab._update_clock_labels, tab)
     tab._update_voltage_labels = types.MethodType(MemoryTab._update_voltage_labels, tab)
     tab._show_uncalibrated = types.MethodType(MemoryTab._show_uncalibrated, tab)
     tab._set_clocks_unavailable = types.MethodType(MemoryTab._set_clocks_unavailable, tab)
-    tab._update_live_data = types.MethodType(MemoryTab._update_live_data, tab)
+    tab.on_tick = types.MethodType(MemoryTab.on_tick, tab)
     tab._update_temperatures = types.MethodType(MemoryTab._update_temperatures, tab)
     tab._update_spd_labels = types.MethodType(MemoryTab._update_spd_labels, tab)
     tab._temp_labels = []
@@ -315,7 +321,7 @@ class TestMemoryTabBehavior:
         assert theme.COLOR_MUTED in tab._ratio_label.styleSheet()
         assert tab._cal_label.text() == ""
 
-    def test_update_live_data_calibrated_path(self):
+    def test_a_tick_calibrated_path(self):
         """Calibrated PM data updates clock labels with MHz values."""
         tab = _make_headless_tab()
         pm_data = PMTableData(
@@ -326,14 +332,13 @@ class TestMemoryTabBehavior:
             vdd_mem_v=1.395,
             pm_table_version=0x620205,
             is_calibrated=True,
-            is_verified=True,
+            offsets_verified=True,
         )
-        tab._pm_reader.read.return_value = pm_data
-        tab._update_live_data()
+        tab.on_tick(a_tick(pm=pm_data))
         assert "2000" in tab._fclk_label.text()
         assert "Verified" in tab._cal_label.text()
 
-    def test_update_live_data_community_sourced_path(self):
+    def test_a_tick_community_sourced_path(self):
         """Calibrated-but-unverified PM data renders values but labels them honestly."""
         tab = _make_headless_tab()
         pm_data = PMTableData(
@@ -343,15 +348,14 @@ class TestMemoryTabBehavior:
             vddcr_soc_v=1.10,
             pm_table_version=0x540104,
             is_calibrated=True,
-            is_verified=False,
+            offsets_verified=False,
         )
-        tab._pm_reader.read.return_value = pm_data
-        tab._update_live_data()
+        tab.on_tick(a_tick(pm=pm_data))
         assert "2000" in tab._fclk_label.text()
         assert "community-sourced" in tab._cal_label.text()
         assert "Verified" not in tab._cal_label.text()
 
-    def test_update_live_data_uncalibrated_path(self):
+    def test_a_tick_uncalibrated_path(self):
         """Uncalibrated PM data shows dashes and uncalibrated label."""
         tab = _make_headless_tab()
         pm_data = PMTableData(
@@ -359,28 +363,23 @@ class TestMemoryTabBehavior:
             is_calibrated=False,
             raw_floats=[0.0] * 50,
         )
-        tab._pm_reader.read.return_value = pm_data
-        tab._update_live_data()
+        tab.on_tick(a_tick(pm=pm_data))
         assert "--" in tab._fclk_label.text()
         assert "Uncalibrated" in tab._cal_label.text()
 
-    def test_update_live_data_none_read_greys_out(self):
+    def test_a_tick_none_read_greys_out(self):
         """None from pm_reader.read() greys out all labels."""
         tab = _make_headless_tab()
-        tab._pm_reader.read.return_value = None
-        tab._update_live_data()
+        tab.on_tick(a_tick(pm=None))
         assert "--" in tab._fclk_label.text()
         assert theme.COLOR_MUTED in tab._fclk_label.styleSheet()
         assert tab._cal_label.text() == ""
 
-    def test_update_live_data_recovery_after_failure(self):
+    def test_a_tick_recovery_after_failure(self):
         """Labels recover after a failed read followed by a successful read."""
         tab = _make_headless_tab()
-        # First: fail
-        tab._pm_reader.read.return_value = None
-        tab._update_live_data()
+        tab.on_tick(a_tick(pm=None))
         assert "--" in tab._fclk_label.text()
-        # Then: recover
         pm_data = PMTableData(
             fclk_mhz=2000.0,
             uclk_mhz=2000.0,
@@ -388,29 +387,50 @@ class TestMemoryTabBehavior:
             vdd_mem_v=1.395,
             pm_table_version=0x620205,
             is_calibrated=True,
-            is_verified=True,
+            offsets_verified=True,
         )
-        tab._pm_reader.read.return_value = pm_data
-        tab._update_live_data()
+        tab.on_tick(a_tick(pm=pm_data))
         assert "2000" in tab._fclk_label.text()
         assert "Verified" in tab._cal_label.text()
 
 
-def _make_ddr5_4800_eeprom() -> bytes:
-    """Build a synthetic 48-byte DDR5-4800 EEPROM for testing."""
+SPD_DRAM_TYPE_DDR4 = 0x0C
+SPD_TIMING_OFFSETS = {
+    "tck_ps": 20,
+    "tcl_ps": 30,
+    "trcd_ps": 32,
+    "trp_ps": 34,
+    "tras_ps": 36,
+    "trc_ps": 38,
+    "twr_ps": 40,
+    "trfc1_ns": 42,
+    "trfc2_ns": 44,
+    "trfcsb_ns": 46,
+}
+
+
+def _spd(dram_type: int = SPD_DRAM_TYPE_DDR5, **timings: int) -> bytes:
+    """A 48-byte SPD with each named timing packed at its JEDEC DDR5 byte offset."""
     data = bytearray(48)
-    data[2] = 0x12  # DDR5
-    struct.pack_into("<H", data, 20, 416)  # tCK = 416ps (DDR5-4800)
-    struct.pack_into("<H", data, 30, 16666)  # tCL
-    struct.pack_into("<H", data, 32, 16666)  # tRCD
-    struct.pack_into("<H", data, 34, 16666)  # tRP
-    struct.pack_into("<H", data, 36, 32000)  # tRAS
-    struct.pack_into("<H", data, 38, 48666)  # tRC
-    struct.pack_into("<H", data, 40, 30000)  # tWR
-    struct.pack_into("<H", data, 42, 295)  # tRFC1 (ns)
-    struct.pack_into("<H", data, 44, 160)  # tRFC2 (ns) - in data but not decoded
-    struct.pack_into("<H", data, 46, 130)  # tRFCsb (ns)
+    data[2] = dram_type
+    for name, value in timings.items():
+        struct.pack_into("<H", data, SPD_TIMING_OFFSETS[name], value)
     return bytes(data)
+
+
+def _make_ddr5_4800_eeprom() -> bytes:
+    return _spd(
+        tck_ps=416,
+        tcl_ps=16666,
+        trcd_ps=16666,
+        trp_ps=16666,
+        tras_ps=32000,
+        trc_ps=48666,
+        twr_ps=30000,
+        trfc1_ns=295,
+        trfc2_ns=160,
+        trfcsb_ns=130,
+    )
 
 
 class TestSPDTimingDecode:
@@ -443,9 +463,7 @@ class TestSPDTimingDecode:
 
     def test_non_ddr5_returns_none(self):
         """Non-DDR5 EEPROM (byte 2 != 0x12) returns None."""
-        data = bytearray(48)
-        data[2] = 0x0C  # DDR4 type
-        assert decode_spd_timings(bytes(data)) is None
+        assert decode_spd_timings(_spd(SPD_DRAM_TYPE_DDR4, tck_ps=416)) is None
 
     def test_short_data_returns_none(self):
         """Data shorter than 48 bytes returns None."""
@@ -453,51 +471,31 @@ class TestSPDTimingDecode:
 
     def test_zero_tck_returns_none(self):
         """Zero tCK_ps (bytes 20-21 = 0) returns None."""
-        data = bytearray(48)
-        data[2] = 0x12  # DDR5
-        # bytes 20-21 default to 0 — zero tCK
-        assert decode_spd_timings(bytes(data)) is None
+        assert decode_spd_timings(_spd(tcl_ps=16666)) is None
 
-    def test_tcl_rounds_to_even(self):
-        """tCL rounds to next even number per JEDEC convention."""
-        data = bytearray(48)
-        data[2] = 0x12
-        # Use tCK=500ps so we can control rounding
-        struct.pack_into("<H", data, 20, 500)  # tCK = 500ps
-        # Set tCL to a value that gives an odd number of cycles
-        # (14750 + 500 - 30) // 500 = 15220 // 500 = 30 (even, stays 30)
-        # (15250 + 500 - 30) // 500 = 15720 // 500 = 31 (odd, rounds to 32)
-        struct.pack_into("<H", data, 30, 15250)  # tCL -> 31 -> rounds to 32
-        struct.pack_into("<H", data, 32, 15250)  # tRCD
-        struct.pack_into("<H", data, 34, 15250)  # tRP
-        struct.pack_into("<H", data, 36, 15250)  # tRAS
-        struct.pack_into("<H", data, 38, 15250)  # tRC
-        struct.pack_into("<H", data, 40, 15000)  # tWR
-        struct.pack_into("<H", data, 42, 200)  # tRFC1
-        struct.pack_into("<H", data, 46, 100)  # tRFCsb
-        result = decode_spd_timings(bytes(data))
-        assert result is not None
-        assert result.tCL == 32  # odd 31 rounded up to even 32
+    @pytest.mark.parametrize(("tcl_ps", "clocks"), [(15250, 32), (14750, 30)])
+    def test_tcl_rounds_up_to_an_even_clock_count(self, tcl_ps, clocks):
+        assert decode_spd_timings(_spd(tck_ps=500, tcl_ps=tcl_ps)).tCL == clocks
 
-    def test_dimm_index_passed_through(self):
-        """dimm_index parameter is preserved in result."""
-        eeprom = _make_ddr5_4800_eeprom()
-        result = decode_spd_timings(eeprom, dimm_index=3)
+    def test_a_timing_under_30_ps_past_a_clock_rounds_down_and_one_30_ps_past_rounds_up(self):
+        for raw, clocks in ((16 * 416, 16), (16 * 416 + 29, 16), (16 * 416 + 30, 17)):
+            assert decode_spd_timings(_spd(tck_ps=416, trcd_ps=raw)).tRCD == clocks
+
+    def test_the_source_address_is_passed_through(self):
+        result = decode_spd_timings(_make_ddr5_4800_eeprom(), source="0x52")
         assert result is not None
-        assert result.dimm_index == 3
+        assert result.source == "0x52"
 
 
 class TestSPDEepromDiscovery:
     def _make_hwmon_with_eeprom(self, tmp_path, eeprom_data: bytes | None = None):
         """Create hwmon dir with device symlink to i2c dir containing eeprom."""
-        import os
-
         hwmon0 = tmp_path / "hwmon0"
         hwmon0.mkdir()
         (hwmon0 / "name").write_text("spd5118\n")
         (hwmon0 / "temp1_input").write_text("42500\n")
 
-        i2c_dir = tmp_path / "i2c-device"
+        i2c_dir = tmp_path / "15-0050"
         i2c_dir.mkdir()
 
         if eeprom_data is not None:
@@ -510,7 +508,7 @@ class TestSPDEepromDiscovery:
         """SPD5118Reader discovers eeprom path via hwmon device symlink."""
         self._make_hwmon_with_eeprom(tmp_path, _make_ddr5_4800_eeprom())
         reader = SPD5118Reader(hwmon_base=tmp_path)
-        assert len(reader._eeprom_paths) == 1
+        assert (reader.eeprom_count, reader.addresses, reader.spd_timings.source) == (1, ["0x50"], "0x50")
 
     def test_spd_timings_returns_data(self, tmp_path):
         """spd_timings property returns SPDTimingData from first available eeprom."""
@@ -528,15 +526,12 @@ class TestSPDEepromDiscovery:
         hwmon0.mkdir()
         (hwmon0 / "name").write_text("spd5118\n")
         (hwmon0 / "temp1_input").write_text("42500\n")
-        # No device symlink -> no eeprom
         reader = SPD5118Reader(hwmon_base=tmp_path)
         assert reader.spd_timings is None
 
     def test_spd_timings_none_when_non_ddr5(self, tmp_path):
         """spd_timings returns None when eeprom contains non-DDR5 data."""
-        non_ddr5 = bytearray(48)
-        non_ddr5[2] = 0x0C  # DDR4
-        self._make_hwmon_with_eeprom(tmp_path, bytes(non_ddr5))
+        self._make_hwmon_with_eeprom(tmp_path, _spd(SPD_DRAM_TYPE_DDR4, tck_ps=416))
         reader = SPD5118Reader(hwmon_base=tmp_path)
         assert reader.spd_timings is None
 
@@ -545,14 +540,12 @@ class TestSPDEepromDiscovery:
         _, i2c_dir = self._make_hwmon_with_eeprom(tmp_path, _make_ddr5_4800_eeprom())
         reader = SPD5118Reader(hwmon_base=tmp_path)
 
-        # First access reads eeprom
         result1 = reader.spd_timings
         assert result1 is not None
 
-        # Remove eeprom file -- second access should still return cached result
         (i2c_dir / "eeprom").unlink()
         result2 = reader.spd_timings
-        assert result2 is result1  # exact same object (cached)
+        assert result2 is result1
 
 
 @_needs_pyside6
@@ -588,7 +581,7 @@ class TestSPDTimingDisplay:
             tWR_ns=30.0,
             tRFC1_ns=295,
             tRFCsb_ns=130,
-            dimm_index=0,
+            source="0x50",
         )
         tab = self._make_spd_tab(spd)
         tab._update_spd_labels()
@@ -607,7 +600,7 @@ class TestSPDTimingDisplay:
             tWR_ns=30.0,
             tRFC1_ns=295,
             tRFCsb_ns=130,
-            dimm_index=0,
+            source="0x50",
         )
         tab = self._make_spd_tab(spd)
         tab._update_spd_labels()
@@ -623,7 +616,6 @@ class TestSPDTimingDisplay:
         assert not tab._secondary_label.isVisible()
 
     def test_group_title_shows_dimm_number(self):
-        """Group box title contains 'DIMM 1' when dimm_index=0."""
         spd = SPDTimingData(
             tCK_ps=416,
             freq_mt=4800,
@@ -635,11 +627,11 @@ class TestSPDTimingDisplay:
             tWR_ns=30.0,
             tRFC1_ns=295,
             tRFCsb_ns=130,
-            dimm_index=0,
+            source="0x50",
         )
         tab = self._make_spd_tab(spd)
         tab._update_spd_labels()
-        assert "DIMM 1" in tab._spd_group.title()
+        assert tab._spd_group.title().endswith("(DIMM at 0x50)")
 
     def test_labels_visible_when_data_available(self):
         """Primary and secondary labels are visible when SPD data exists."""
@@ -654,7 +646,7 @@ class TestSPDTimingDisplay:
             tWR_ns=30.0,
             tRFC1_ns=295,
             tRFCsb_ns=130,
-            dimm_index=0,
+            source="0x50",
         )
         tab = self._make_spd_tab(spd)
         tab._update_spd_labels()
@@ -683,7 +675,7 @@ class TestMemoryDriftEdges:
         from corecycler.monitor.memory import read_dimm_info
 
         with patch("corecycler.monitor.memory.subprocess.run", side_effect=FileNotFoundError):
-            assert read_dimm_info() == []
+            assert read_dimm_info() == ([], "dmidecode is not installed")
 
     def test_spd_scan_missing_hwmon_base(self, tmp_path):
         reader = SPD5118Reader(hwmon_base=tmp_path / "nonexistent")
@@ -704,8 +696,7 @@ class TestMemoryDriftEdges:
         (dev / "device").mkdir()
         with patch("pathlib.Path.resolve", side_effect=OSError):
             reader = SPD5118Reader(hwmon_base=tmp_path / "hwmon")
-        assert reader.is_available() is True
-        assert reader._eeprom_paths == []
+        assert (reader.is_available(), reader.eeprom_count, reader.addresses) == (True, 0, ["hwmon0"])
 
     def test_spd_timings_eeprom_read_failure_returns_none(self, tmp_path):
         dev = tmp_path / "hwmon" / "hwmon0"
@@ -714,9 +705,30 @@ class TestMemoryDriftEdges:
         reader = SPD5118Reader(hwmon_base=tmp_path / "hwmon")
         bad = MagicMock()
         bad.read_bytes.side_effect = OSError
-        reader._eeprom_paths = [bad]
+        reader._eeproms = [("0x50", bad)]
         reader._spd_loaded = False
         assert reader.spd_timings is None
+
+    @pytest.mark.req("T23.memory.facts")
+    def test_each_sensor_is_named_and_ordered_by_its_spd_address_not_its_hwmon_name(self, tmp_path):
+        for name, device, raw in (("hwmon10", "15-0052", "28750\n"), ("hwmon8", "15-0050", "28500\n")):
+            dev = tmp_path / "hwmon" / name
+            dev.mkdir(parents=True)
+            (dev / "name").write_text("spd5118\n")
+            (dev / "temp1_input").write_text(raw)
+            (tmp_path / device).mkdir()
+            os.symlink(str(tmp_path / device), str(dev / "device"))
+        reader = SPD5118Reader(hwmon_base=tmp_path / "hwmon")
+        assert (reader.addresses, reader.read_temperatures()) == (["0x50", "0x52"], [28.5, 28.75])
+
+    @pytest.mark.req("T22.memory.dimms")
+    def test_an_unreadable_dimm_sensor_keeps_its_place_as_none(self, tmp_path):
+        for name, raw in (("hwmon10", "garbage\n"), ("hwmon2", "39000\n")):
+            dev = tmp_path / name
+            dev.mkdir()
+            (dev / "name").write_text("spd5118\n")
+            (dev / "temp1_input").write_text(raw)
+        assert SPD5118Reader(hwmon_base=tmp_path).read_temperatures() == [None, 39.0]
 
     def test_read_temperatures_garbage_value_skipped(self, tmp_path):
         dev = tmp_path / "hwmon" / "hwmon0"
@@ -724,13 +736,13 @@ class TestMemoryDriftEdges:
         (dev / "name").write_text("spd5118\n")
         (dev / "temp1_input").write_text("not-a-number\n")
         reader = SPD5118Reader(hwmon_base=tmp_path / "hwmon")
-        assert reader.read_temperatures() == []
+        assert reader.read_temperatures() == [None]
 
 
 class TestDimmInfoReader:
     """dmidecode is optional and privileged: absent, slow, or refusing to run,
-    it must degrade to an empty inventory -- and a non-zero exit still gets
-    parsed, because some systems return 1 while printing usable output."""
+    it must degrade to an empty inventory that says why -- and a non-zero exit
+    still gets parsed, because some systems return 1 while printing usable output."""
 
     def _run(self, monkeypatch, **result):
         import subprocess as sp
@@ -740,16 +752,49 @@ class TestDimmInfoReader:
         monkeypatch.setattr(sp, "run", lambda *_a, **_kw: SimpleNamespace(**result))
         return mem.read_dimm_info()
 
-    def test_a_refusing_dmidecode_is_reported_and_still_parsed(self, monkeypatch, caplog):
+    def test_a_dmidecode_exiting_non_zero_is_still_parsed(self, monkeypatch):
         sample = "Handle 0x0001, DMI type 17, 92 bytes\nMemory Device\n\tSize: 32 GB\n\tLocator: DIMM 0\n\tType: DDR5\n"
-        with caplog.at_level("WARNING", logger="corecycler.monitor.memory"):
-            dimms = self._run(monkeypatch, returncode=1, stdout=sample, stderr="Permission denied")
-        assert "dmidecode exited with code 1" in caplog.text
-        assert len(dimms) == 1
-        assert dimms[0].size_gb == 32
+        dimms, why = self._run(monkeypatch, returncode=1, stdout=sample, stderr="Permission denied")
+        assert (len(dimms), dimms[0].size_gb, why) == (1, 32, "")
 
-    def test_output_that_parses_to_nothing_is_an_empty_inventory(self, monkeypatch):
-        assert self._run(monkeypatch, returncode=0, stdout="no devices here", stderr="") == []
+    @pytest.mark.req("T23.memory.facts")
+    @pytest.mark.parametrize(
+        ("returncode", "stderr", "why"),
+        [
+            (
+                1,
+                "/sys/firmware/dmi/tables/smbios_entry_point: Permission denied\n/dev/mem: Permission denied\n",
+                "dmidecode exited 1: /sys/firmware/dmi/tables/smbios_entry_point: Permission denied",
+            ),
+            (2, "\n", "dmidecode exited 2"),
+            (0, "", "dmidecode listed no DIMMs"),
+            (
+                0,
+                "/sys/firmware/dmi/tables/smbios_entry_point: Permission denied\n",
+                "dmidecode listed no DIMMs: /sys/firmware/dmi/tables/smbios_entry_point: Permission denied",
+            ),
+        ],
+    )
+    def test_no_dimm_listed_says_what_dmidecode_said(self, monkeypatch, returncode, stderr, why):
+        stdout = "# dmidecode 3.7\nScanning /dev/mem for entry point.\n"
+        assert self._run(monkeypatch, returncode=returncode, stdout=stdout, stderr=stderr) == ([], why)
+
+    @pytest.mark.req("T23.memory.facts")
+    @pytest.mark.parametrize(
+        ("raised", "why"),
+        [
+            (subprocess.TimeoutExpired("dmidecode", 5), "dmidecode did not answer in 5 s"),
+            (PermissionError("denied"), "dmidecode could not run: denied"),
+        ],
+    )
+    def test_a_dmidecode_that_cannot_answer_says_why(self, monkeypatch, raised, why):
+        from corecycler.monitor import memory as mem
+
+        def _fails(*_a, **_kw):
+            raise raised
+
+        monkeypatch.setattr(subprocess, "run", _fails)
+        assert mem.read_dimm_info() == ([], why)
 
     def test_an_absent_dmidecode_is_an_empty_inventory(self, monkeypatch):
         import subprocess as sp
@@ -760,4 +805,4 @@ class TestDimmInfoReader:
             raise FileNotFoundError("dmidecode")
 
         monkeypatch.setattr(sp, "run", _missing)
-        assert mem.read_dimm_info() == []
+        assert mem.read_dimm_info() == ([], "dmidecode is not installed")

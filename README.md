@@ -19,7 +19,7 @@ Per-core CPU stability testing and AMD PBO Curve Optimizer tuning for Linux -- a
 |---|---|
 | **Type** | Original project (no upstream) |
 | **License** | GPL-3.0-or-later |
-| **Platforms** | Linux (`x86_64`) |
+| **Platforms** | Linux (`x86_64`, `aarch64`) |
 
 <!-- END generated:upstream -->
 
@@ -29,23 +29,14 @@ AMD Precision Boost Overdrive Curve Optimizer (CO) adjusts the voltage-frequency
 
 All-core tests (Prime95 all threads, Cinebench) cannot find this: under all-core load every core runs at lower clocks and voltages than it would alone, so a core that passes all-core can still crash when it boosts to its single-threaded peak. CoreCycler tests one core at a time at full boost, cycling through every core, and adds idle and variable-load tests because CO instability often shows up on C-state wake and load transitions, not under sustained load.
 
-Design principles:
-
-- **Safety first** -- CO writes go only through the SMU and are volatile (reset on reboot); BIOS PBO settings are never touched. The automatic tuner can never settle on a configuration that crashes the machine (see [Safety](#safety)).
-- **Per-core, full-boost** -- one core under load at a time, the only way to expose per-core CO limits.
-- **Correctness over "did not crash"** -- instability is judged by MCE events and self-checking compute workloads, not merely the absence of a crash.
-- **Capability-driven** -- topology, sensors, and SMU support are probed; nothing is assumed.
-
 ## Safety
 
 Read this before using the Curve Optimizer features. Full scope in [SECURITY.md](./SECURITY.md).
 
-- **CO writes are volatile** -- they live only in the CPU's runtime SMU state and **always reset on reboot**. There is no path to BIOS/UEFI NVRAM; a reboot fully restores your BIOS settings.
-- **Your BIOS PBO settings are never modified** -- only the runtime SMU state changes, and only when you explicitly write a value.
-- **Stress testing changes nothing** -- it only runs workloads pinned to cores; it writes no CO, voltage, or frequency.
-- **CO is written in only two places** -- the Curve Optimizer tab (per-core, each write behind a confirmation dialog, with dry-run and backup/restore) and the Auto-Tuner. They are mutually exclusive -- the tab is locked while the tuner runs.
-- **The automatic tuner is crash-safe** -- a CO write-ahead journal records every value before it is applied, CO=0 (stock) is the only floor it trusts, and a resume-crash circuit breaker forces all cores to stock and quarantines a profile that keeps crashing -- so no sequence of crashes, reboots, or resumes can loop the machine into re-crashing. See [Crash safety](docs/usage.md#crash-safety).
-- **Thermal protection** -- a configurable temperature limit (default 95C) pauses testing; the tuner fails closed if no temperature sensor is readable.
+- **CO writes are volatile.** They live only in the CPU's runtime SMU state and reset on reboot. Your BIOS settings are never written.
+- **Two things write offsets.** The Curve-Tuner tab, which also writes the Curve Shaper as `corecycler shaper --set` does, and the tuner driver, `python -m corecycler.tuner.live_hw`, which writes only with `--write`; the Auto-Tuner tab and `corecycler tune`, `resume`, `validate`, `continue` and `restart` start it with that flag. Stress testing alone writes nothing. A tuner driver holds the CO writer lock for its whole run and the Curve-Tuner tab takes it for each write, so one driver runs at a time and the tab writes nothing while one runs. The driver is its own process: closing or crashing the GUI leaves a running session running.
+- **The Auto-Tuner is crash-safe.** See [Crash safety](docs/usage.md#crash-safety).
+- **Thermal protection.** A configurable temperature limit (default 95 C) stops the test. A manual run then ends. The Auto-Tuner cools down and retries the same offset, and fails closed when no temperature sensor is readable.
 
 ## Installation
 
@@ -64,13 +55,17 @@ Add the flake input and enable the NixOS module:
 
   services.corecycler = {
     enable = true;
-    deviceAccessUser = "your-username";  # required -- grants MSR/SMU access without sudo
+    deviceAccessUser = "your-username";  # required: SMU and CO access without sudo; MSR reads still need root
   };
+  hardware.corecycler.ryzenSmu.enable = true;  # the SMU driver the Curve-Tuner and Auto-Tuner talk to
 }
 ```
 
-The module handles the package, kernel modules (ryzen_smu and friends), udev rules, and
-permissions. Or run it directly:
+The module handles the package, the msr kernel module, udev rules, and permissions. The
+sensor drivers are a separate module, `nixosModules.drivers`, which the tuner module
+includes: ryzen_smu, zenpower5, asus-ec-sensors, nct6687d and it87 built from pinned sources
+with your kernel's own toolchain, and the in-tree board sensors loaded by name. Each is off
+until turned on, and a machine can import the drivers module alone. Or run it directly:
 
 ```bash
 nix run github:Daaboulex/linux-corecycler        # FOSS-only
@@ -83,10 +78,11 @@ setup are in [docs/installation.md](docs/installation.md).
 
 ## Usage
 
-Launch with `corecycler`. Full telemetry and Curve Optimizer access need MSR and SMU
-permissions: grant them to your user once (`deviceAccessUser` on NixOS, a udev rule and a
-group elsewhere -- see [docs/installation.md](docs/installation.md#device-access)) and no
-`sudo` is needed. `sudo corecycler` also works and stays supported.
+Launch with `corecycler`. Curve Optimizer access needs SMU permissions. Grant them to your
+user once (`deviceAccessUser` on NixOS, a group and a oneshot service elsewhere, see
+[Device access](docs/installation.md#device-access)). Clock stretch reads the SMU's PM table,
+which that access covers. Per-core power and MSR package power read model-specific
+registers, which need root today: run `sudo corecycler` for those.
 Pick a backend and preset in the Configuration tab and click **Start Test**, or use the
 **Auto-Tuner** tab to search every core's stable offset automatically. If a backend is
 reported as not found, `corecycler doctor` prints where it looked and what it found. The
@@ -102,14 +98,8 @@ full guide -- manual tuning workflow, the Auto-Tuner, and reading results -- is 
 
 ## Development
 
-```bash
-nix develop                                   # ruff, nixfmt, pre-commit
-ruff check src                                # lint
-nix develop '.#packages.x86_64-linux.default' \
-  --command python -m pytest -m 'not slow'    # the suite, in the build's own env
-nix flake check                               # build + every check (what CI runs)
-corecycler doctor                             # every external tool and how it resolved
-```
+The dev shell, the test suite and the gates are in [docs/development.md](docs/development.md);
+how to contribute is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 <!-- BEGIN generated:options -->
 ## Options

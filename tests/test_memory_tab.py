@@ -17,7 +17,7 @@ def _tab():
     QApplication.instance() or QApplication([])
     from corecycler.gui.memory_tab import MemoryTab
 
-    return MemoryTab()
+    return MemoryTab(False)
 
 
 class TestToolDetection:
@@ -32,6 +32,30 @@ class TestToolDetection:
             tools = tab._detect_available_tools()
         assert "stressapptest" in tools
         assert "stress-ng --vm" in tools
+
+    @pytest.mark.req("T23.memory.tools")
+    def test_refresh_offers_a_tool_found_since_the_tab_opened(self):
+        with patch("corecycler.config.tools.shutil.which", return_value=None):
+            tab = _tab()
+        assert [tab._stress_tool.itemText(i) for i in range(tab._stress_tool.count())] == ["(none installed)"]
+        with patch("corecycler.config.tools.shutil.which", lambda name: "/usr/bin/" + name):
+            tab._load_dimm_info()
+        offered = [tab._stress_tool.itemText(i) for i in range(tab._stress_tool.count())]
+        assert offered == ["stressapptest", "stress-ng --vm"]
+
+    @pytest.mark.req("T23.memory.tools")
+    @pytest.mark.parametrize("chosen", ["stressapptest", "stress-ng --vm"])
+    def test_refresh_keeps_the_chosen_tool_and_falls_back_to_the_first_when_it_is_gone(self, chosen):
+        with patch("corecycler.config.tools.shutil.which", lambda name: "/usr/bin/" + name):
+            tab = _tab()
+            tab._stress_tool.setCurrentText(chosen)
+            tab._load_dimm_info()
+        assert tab._stress_tool.currentText() == chosen
+        with patch(
+            "corecycler.config.tools.shutil.which", lambda name: None if name == "stress-ng" else "/usr/bin/" + name
+        ):
+            tab._load_dimm_info()
+        assert tab._stress_tool.currentText() == "stressapptest"
 
 
 class TestStressGuards:
@@ -62,9 +86,18 @@ class TestStressGuards:
     def test_on_stress_done_reenables_and_signals(self, qtbot=None):
         tab = _tab()
         seen = []
-        tab.memory_stress_done.connect(lambda ok: seen.append(ok))
-        with patch("corecycler.gui.memory_tab.QMessageBox.information"):
-            tab._on_stress_done(True, "Status: PASS")
-        assert seen == [True]
+        tab.memory_stress_done.connect(lambda: seen.append("done"))
+        with patch("corecycler.gui.memory_tab.QMessageBox.information") as shown:
+            tab._on_stress_done("PASS", "Status: PASS")
+        assert seen == ["done"]
+        assert tab._stress_status.text() == "Result: PASS"
+        assert shown.call_args.args[1] == "Memory Stress: PASS"
+
+    def test_a_stopped_run_says_stopped_without_a_result_box(self):
+        tab = _tab()
+        with patch("corecycler.gui.memory_tab.QMessageBox.information") as shown:
+            tab._on_stress_done("Stopped", "")
+        assert tab._stress_status.text() == "Result: Stopped"
+        shown.assert_not_called()
         assert tab._stress_btn.isEnabled()
         assert not tab._stop_btn.isEnabled()

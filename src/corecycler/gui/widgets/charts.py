@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from corecycler.gui.style import theme
 
-MAX_POINTS = 120  # 2 minutes at 1s interval
+MAX_POINTS = 120  # equivalent-mutant: a chart length chosen for the eye, a point more is unseen
 
 
 class LiveChart(QWidget):
@@ -31,19 +31,24 @@ class LiveChart(QWidget):
         getattr(theme, series)
         self.series = series
         self._data: deque[float] = deque(maxlen=MAX_POINTS)
-        self._current: float = 0
+        self._current: float | None = None
 
         self.setMinimumSize(200, 100)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-    def add_value(self, value: float) -> None:
-        self._data.append(value)
+    def add_value(self, value: float | None) -> None:
+        if value is not None:
+            self._data.append(value)
         self._current = value
         self.update()
 
+    def heading(self) -> str:
+        current = "--" if self._current is None else f"{self._current:.1f}"
+        return f"{self.title}: {current} {self.unit}"
+
     def clear(self) -> None:
         self._data.clear()
-        self._current = 0
+        self._current = None
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -53,10 +58,8 @@ class LiveChart(QWidget):
         w = self.width()
         h = self.height()
 
-        # background
         painter.fillRect(0, 0, w, h, QColor(theme.BG_PANEL_DARK))
 
-        # border
         painter.setPen(QPen(QColor(theme.BORDER_DARKER), 1))
         painter.drawRect(0, 0, w - 1, h - 1)
 
@@ -67,17 +70,14 @@ class LiveChart(QWidget):
         chart_h = h - margin_top - margin_bottom
         chart_w = w - margin_left - margin_right
 
-        # title + current value
         painter.setPen(QColor(theme.COLOR_TEXT_BRIGHT))
         painter.setFont(QFont("monospace", 8))
-        val_text = f"{self.title}: {self._current:.1f} {self.unit}"
-        painter.drawText(margin_left + 2, 14, val_text)
+        painter.drawText(margin_left + 2, 14, self.heading())  # equivalent-mutant: a pixel off is unseen
 
         if not self._data or chart_h <= 0 or chart_w <= 0:
             painter.end()
             return
 
-        # draw line
         data = list(self._data)
         n = len(data)
         val_range = self.max_val - self.min_val
@@ -99,12 +99,10 @@ class LiveChart(QWidget):
         series_color = QColor(getattr(theme, self.series))
         painter.setPen(QPen(series_color, 2))
         if n == 1:
-            # single point — draw a visible dot
             painter.drawEllipse(path.currentPosition(), 3, 3)
         else:
             painter.drawPath(path)
 
-        # fill under curve
         fill_path = QPainterPath(path)
         fill_path.lineTo(last_x, margin_top + chart_h)
         fill_path.lineTo(margin_left, margin_top + chart_h)

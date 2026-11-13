@@ -22,67 +22,67 @@ Please do **not** open public issues for security problems.
 
 ## Threat Model
 
-This tool directly accesses AMD CPU hardware via kernel interfaces. The security scope is broader than a typical Nix package.
-
 ### Hardware Write Surface
 
-The tool writes to AMD SMU (System Management Unit) registers via `/sys/kernel/ryzen_smu_drv/`:
+The tool changes two hardware settings, both sent to the AMD SMU (System Management Unit) through `/sys/kernel/ryzen_smu_drv/`: the per-core **Curve Optimizer offset** and, on Ryzen 9000, the **Curve Shaper**, a margin for each of five frequency bands at three temperatures that applies to every core on top of its offset (negative = undervolt, positive = overvolt, for both). The Curve Optimizer writers are the Curve-Tuner tab, the Auto-Tuner (its tab or `corecycler tune`) and the developer rig `python -m corecycler.tuner.live_hw --write`. The Curve Shaper writers are the Curve-Tuner tab and `corecycler shaper --set`; both refuse while a tuning session runs.
 
-- **Curve Optimizer offsets** — per-core voltage margin adjustment (negative = undervolt, positive = overvolt)
-- **PBO power limits** — PPT, TDC, EDC scalar modification
-- **Boost frequency limits** — per-core and package boost override
-- **OC mode** — enable/disable overclocking mode flag
+The SMU driver (`src/corecycler/smu/driver.py`) also has setters for the PPT, TDC and EDC limits, the boost limit and the PBO scalar. No GUI or CLI path calls them. There is no OC-mode write.
 
 All writes are volatile (reset on reboot) but can cause immediate instability, crashes, or hardware degradation during the active session.
 
 ### Hardware Damage Risk
 
-- **Positive CO offsets increase CPU voltage.** On V-Cache processors (5800X3D, 7800X3D, 9800X3D, 9950X3D), positive offsets can degrade or permanently damage the 3D V-Cache die under thermal load.
-- **The application enforces hardware-reported ranges, not "safe" ranges.** The full hardware range is exposed (e.g., -30 to +30 for Zen 3).
+- **Positive CO offsets and Curve Shaper margins increase CPU voltage.** On V-Cache processors (5800X3D, 7800X3D, 9800X3D, 9950X3D), positive offsets can degrade or permanently damage the 3D V-Cache die under thermal load.
+- **The application enforces a fixed CO range per CPU generation, not a "safe" range.** The range comes from a static table in `src/corecycler/smu/commands.py`, not from the hardware (e.g., -30 to +30 for Zen 3). Every Curve Shaper margin is held to -50 to +30 (`SHAPER_MARGINS` in `src/corecycler/smu/driver.py`), also not a safe range.
 - **The Auto-Tuner amplifies risk** by iteratively modifying offsets during extended stress tests.
 
 ### MSR Read Surface
 
 The tool reads Model-Specific Registers via `/dev/cpu/N/msr`:
 
-- APERF/MPERF (effective frequency / clock stretch detection)
+- MPERF, read once to check that the device opens
 - RAPL energy counters (per-core and package power)
 
 All MSR access is **read-only** (`O_RDONLY`). No MSR write path exists in the codebase.
 
-Note: Group read access to `/dev/cpu/N/msr` exposes ALL readable MSRs on all logical CPUs, including speculation control state and microarchitectural configuration. This is an accepted trade-off for non-root monitoring.
+The kernel's msr driver refuses to open `/dev/cpu/N/msr` without `CAP_SYS_RAWIO`, whatever the file mode, so MSR reads happen only in a root run.
 
 ### External Binary Execution
 
 The tool executes third-party stress binaries (mprime, y-cruncher, stress-ng,
-stressapptest) plus `systemd-run`, `setpriv`, `dmesg`, `journalctl`, `dmidecode`
-and `notify-send` -- as root whenever CoreCycler itself is run under sudo.
+stressapptest) plus `systemd-run`, `setpriv`, `journalctl`, `dmidecode` and
+`notify-send`, as root whenever CoreCycler itself is run under sudo.
 
-Each is resolved in one place (`config/tools.py`), most explicit first: the
-`CORECYCLER_<TOOL>_BIN` environment variable, then the path recorded in
-`~/.config/corecycler/tool-paths.json`, then PATH. The first two are user-writable, so
-whoever can write them chooses what root executes -- the same trust already implied by
-that user typing `sudo corecycler`.
-
-Binaries found by scanning the well-known extraction directories (`~`, `~/Downloads`,
-`/opt`, `/usr/local`, `/usr/local/lib`, `/usr/lib`) are only ever OFFERED. None is
-executed until the user designates it, because running a `$HOME` binary as root without
-being asked is exactly what sudo's `secure_path` exists to prevent.
+Each is resolved in `src/corecycler/config/tools.py`, in the order given in
+[Where CoreCycler looks for a backend](docs/installation.md#where-corecycler-looks-for-a-backend).
+The environment variable and `~/.config/corecycler/tool-paths.json` are user-writable, so
+whoever can write them chooses what a sudo run executes. That is the same trust the user
+already holds by typing `sudo corecycler`.
 
 ### Privilege Model
 
-- A dedicated `corecycler` system group provides device access without sudo.
-- **MSR:** `MODE="0640"` — root read/write, group read-only, world none.
+- A dedicated `corecycler` system group provides SMU and SMN access without sudo. It gives no MSR access.
+- **MSR:** `MODE="0640"`: root read/write, group read-only, world none. The kernel still refuses the group without `CAP_SYS_RAWIO`.
 - **SMU sysfs:** `0660 root:corecycler` — group read/write (enables CO writes without root).
+- **Machine-check poll:** `/sys/devices/system/machinecheck/machinecheck0/check_interval` is
+  `0664 root:corecycler` when `machineCheckPoll.enable` is on (the default with
+  `deviceAccess`). A group member can change how often the kernel polls every CPU's
+  machine-check banks; the tuner sets 5 s for its run and puts the old value back.
+- **Sysrq trigger:** `/proc/sysrq-trigger` is `0220 root:corecycler` from each boot when
+  `hangReset.enable` and `deviceAccess` are both on, so the hang watch can reset a hung
+  machine without root. A group member can then run every sysrq function, not only the sync
+  and reboot the watch uses: an immediate reboot or power-off, a kernel crash, killing every
+  process.
 - Any user in the `corecycler` group can send arbitrary SMU commands, not limited to CO.
 - **SMN (`smn`):** also `0660 root:corecycler`. Reading an SMN register is a *write* of its
   address, so read access is unobtainable without write access, and write access to that file
   is arbitrary read/write of the SMN address space — a wider surface than the SMU mailbox
   beside it, reaching data-fabric registers unrelated to CO. It is granted because the
   per-CCD core-disable fuse is the only thing that identifies the fused-off physical core
-  slots on a harvested CPU whose firmware renumbers core ids; without it the tool refuses
-  per-core CO on those parts rather than applying it to the wrong core. Grant the group only
-  to a user already trusted with the SMU mailbox.
+  slots on a harvested CPU whose firmware renumbers core ids, and on Vermeer the CCD-disable
+  fuses are the only thing that names each CCD's physical number; without it the tool refuses
+  per-core CO on those parts (every Vermeer among them) rather than applying it to the wrong
+  core. Grant the group only to a user already trusted with the SMU mailbox.
 
 ### System-Wide Side Effects
 
@@ -92,7 +92,7 @@ being asked is exactly what sudo's `secure_path` exists to prevent.
 
 - All Nix inputs are pinned via `flake.lock` with concrete revisions and NAR hashes.
 - Out-of-tree kernel module sources (ryzen_smu, zenpower5, it87) are fetched from pinned GitHub commits with integrity hashes.
-- No auto-update mechanism is active (upstream type is "none").
+- A scheduled workflow (`.github/workflows/maintenance.yml`) runs `nix flake update`, builds every check on each declared system, and pushes the new `flake.lock` to the default branch only when all of them pass.
 
 ### Out of Scope
 

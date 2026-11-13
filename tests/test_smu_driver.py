@@ -14,10 +14,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from corecycler.smu.commands import CPUGeneration, SMUCommandSet, get_commands
 from corecycler.smu.driver import SYSFS_BASE, RyzenSMU, SMUResponse
 
-# ===========================================================================
-# Fixtures
-# ===========================================================================
-
 
 @pytest.fixture
 def zen3_cmds():
@@ -72,7 +68,7 @@ class TestSMUResponse:
     def test_frozen(self):
         r = SMUResponse(success=True, args=(0,) * 6, raw=b"")
         with pytest.raises(AttributeError):
-            r.success = False  # type: ignore[misc]
+            r.success = False
 
 
 class TestIsAvailable:
@@ -276,12 +272,8 @@ class TestSetCOOffset:
         with patch.object(smu, "check_writable", return_value=(False, "No write permission")):
             assert smu.set_co_offset(0, -10) is False
 
-    def test_dry_run(self, smu_dir, zen5_cmds):
-        smu = RyzenSMU(zen5_cmds, smu_dir, dry_run=True)
-        assert smu.set_co_offset(0, -30) is True
-
-    def test_dry_run_validates_range(self, smu_dir, zen5_cmds):
-        smu = RyzenSMU(zen5_cmds, smu_dir, dry_run=True)
+    def test_an_out_of_range_value_raises(self, smu_dir, zen5_cmds):
+        smu = RyzenSMU(zen5_cmds, smu_dir)
         with pytest.raises(ValueError):
             smu.set_co_offset(0, -100)
 
@@ -304,9 +296,6 @@ class TestResetAllCO:
         fail = SMUResponse(success=False, args=(0,) * 6, raw=b"\x00" * 24)
         with patch.object(smu, "_send_command", return_value=fail):
             assert smu.reset_all_co() is False
-
-    def test_reset_dry_run(self, smu_dir, zen3_cmds):
-        assert RyzenSMU(zen3_cmds, smu_dir, dry_run=True).reset_all_co() is True
 
 
 class TestGetAllCOOffsets:
@@ -360,9 +349,6 @@ class TestBoostLimit:
         resp = SMUResponse(success=False, args=(0,) * 6, raw=b"\x00" * 24)
         with patch.object(smu, "_send_rsmu_command", return_value=resp):
             assert smu.set_boost_limit(5500) is False
-
-    def test_set_dry_run(self, smu_dir, zen5_cmds):
-        assert RyzenSMU(zen5_cmds, smu_dir, dry_run=True).set_boost_limit(5500) is True
 
 
 class TestCheckWritable:
@@ -432,7 +418,7 @@ class TestDeterministicSlotMapping:
         assert calls == [], "set_topology sent SMU traffic for an unambiguous topology"
         assert smu.core_map_error is None
         assert smu.core_map == {c: (c // 8, c % 8) for c in cores}
-        assert smu._topology_ccd == {c: c // 8 for c in cores}
+        assert smu._legacy_ccd_by_core == {c: c // 8 for c in cores}
 
     def test_set_topology_does_not_probe_unambiguous(self, smu_dir, zen5_cmds):
         """A provably-physical numbering must be mapped with NO SMU command."""
@@ -452,7 +438,7 @@ class TestDeterministicSlotMapping:
         writes, store = _stateful_smu(smu, zen5_cmds)
         for c in (0, 1, 4, 5, 6, 7):
             assert smu.set_co_offset(c, -20) is True
-            assert store[(0, c % 8)] == -20  # landed on physical slot core_id % 8
+            assert store[(0, c % 8)] == -20
         assert all(slot not in (2, 3) for _ccd, slot, _v in writes), "wrote a fused slot"
 
     def test_harvested_2ccd_writes_land_on_physical_slot(self, smu_dir, zen5_cmds):
@@ -471,8 +457,10 @@ class TestDeterministicSlotMapping:
             assert store[(0, c % 8)] == -15
         for c in ccd1:
             assert store[(1, c % 8)] == -15
-        # no cross-CCD or fused-slot bleed
-        assert {(ccd, slot) for ccd, slot, _v in writes} == ({(0, c % 8) for c in ccd0} | {(1, c % 8) for c in ccd1})
+        landed = {(ccd, slot) for ccd, slot, _v in writes}
+        assert landed == {(0, c % 8) for c in ccd0} | {(1, c % 8) for c in ccd1}, (
+            "a write bled across CCDs or into a fused slot"
+        )
 
     def test_readback_of_written_core_matches(self, smu_dir, zen5_cmds):
         """get_co_offset re-derives the same physical slot, so a written value reads
@@ -494,34 +482,38 @@ class TestPBOLimitValidation:
 
     @pytest.fixture
     def smu(self, smu_dir):
-        # Real Granite Ridge set has the PBO command ids; dry_run so a valid value
-        # is accepted without touching hardware (the guard runs before dry_run).
-        return RyzenSMU(get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE), smu_dir, dry_run=True)
+        smu = RyzenSMU(get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE), smu_dir)
+        smu._send_rsmu_command = MagicMock(return_value=SMUResponse(success=True, args=(0,) * 6, raw=b"\x00" * 24))
+        return smu
 
     @pytest.mark.parametrize("setter", ["set_ppt_limit", "set_tdc_limit", "set_edc_limit"])
     def test_in_range_limit_accepted(self, smu, setter):
-        assert getattr(smu, setter)(150) is True  # in range, dry-run
+        assert getattr(smu, setter)(150) is True
+        smu._send_rsmu_command.assert_called_once()
 
     @pytest.mark.parametrize("setter", ["set_ppt_limit", "set_tdc_limit", "set_edc_limit"])
     @pytest.mark.parametrize("bad", [0, -1, -50, 2001, 999999])
     def test_malformed_limit_raises_before_write(self, smu, setter, bad):
         with pytest.raises(ValueError):
             getattr(smu, setter)(bad)
+        smu._send_rsmu_command.assert_not_called()
 
     @pytest.mark.parametrize("scalar", [-0.1, 10.1, 100.0])
     def test_pbo_scalar_out_of_range_raises(self, smu, scalar):
         with pytest.raises(ValueError):
             smu.set_pbo_scalar(scalar)
+        smu._send_rsmu_command.assert_not_called()
 
     def test_pbo_scalar_in_range_accepted(self, smu):
-        assert smu.set_pbo_scalar(3.0) is True  # in range, dry-run
+        assert smu.set_pbo_scalar(3.0) is True
+        smu._send_rsmu_command.assert_called_once()
 
     def test_unsupported_generation_returns_false_not_raises(self, smu_dir, zen3_cmds):
         """A generation without the PBO command returns False (capability check)
         before validation -- never raises on a missing command."""
-        smu = RyzenSMU(zen3_cmds, smu_dir, dry_run=True)  # zen3_cmds has no PBO cmds
+        smu = RyzenSMU(zen3_cmds, smu_dir)
         assert smu.set_ppt_limit(150) is False
-        assert smu.set_ppt_limit(-999) is False  # no cmd -> False, not ValueError
+        assert smu.set_ppt_limit(-999) is False
 
 
 class TestBackupRestore:
@@ -597,11 +589,8 @@ class TestDriverWriteReadBranches:
         with pytest.raises(ValueError, match="out of range"):
             RyzenSMU(zen5_cmds, smu_dir).set_all_co(100)
 
-    def test_set_all_co_dry_run(self, smu_dir, zen5_cmds):
-        assert RyzenSMU(zen5_cmds, smu_dir, dry_run=True).set_all_co(0) is True
-
     def test_set_all_co_readback_mismatch_fails(self, smu_dir, zen5_cmds):
-        smu = RyzenSMU(zen5_cmds, smu_dir, dry_run=False)
+        smu = RyzenSMU(zen5_cmds, smu_dir)
         with (
             patch.object(smu, "_send_command", return_value=self._ok()),
             patch.object(smu, "get_co_offset", return_value=-5),
@@ -617,21 +606,21 @@ class TestDriverWriteReadBranches:
             set_co_cmd=0x06,
             get_co_cmd=0xD5,
         )
-        assert RyzenSMU(cmds, smu_dir, dry_run=False).set_all_co(-10) is False
+        assert RyzenSMU(cmds, smu_dir).set_all_co(-10) is False
 
     def test_set_ppt_limit_real_write(self, smu_dir):
-        smu = RyzenSMU(self._zen5_full(), smu_dir, dry_run=False)
+        smu = RyzenSMU(self._zen5_full(), smu_dir)
         with patch.object(smu, "_send_rsmu_command", return_value=self._ok()) as m:
             assert smu.set_ppt_limit(200) is True
         m.assert_called_once()
 
     def test_set_tdc_limit_real_write(self, smu_dir):
-        smu = RyzenSMU(self._zen5_full(), smu_dir, dry_run=False)
+        smu = RyzenSMU(self._zen5_full(), smu_dir)
         with patch.object(smu, "_send_rsmu_command", return_value=self._ok()):
             assert smu.set_tdc_limit(160) is True
 
     def test_set_edc_limit_real_write(self, smu_dir):
-        smu = RyzenSMU(self._zen5_full(), smu_dir, dry_run=False)
+        smu = RyzenSMU(self._zen5_full(), smu_dir)
         with patch.object(smu, "_send_rsmu_command", return_value=self._ok()):
             assert smu.set_edc_limit(200) is True
 
@@ -648,7 +637,7 @@ class TestDriverWriteReadBranches:
         assert RyzenSMU(zen3_cmds, smu_dir).set_pbo_scalar(2.0) is False
 
     def test_set_pbo_scalar_real_write(self, smu_dir):
-        smu = RyzenSMU(self._zen5_full(), smu_dir, dry_run=False)
+        smu = RyzenSMU(self._zen5_full(), smu_dir)
         with patch.object(smu, "_send_rsmu_command", return_value=self._ok()):
             assert smu.set_pbo_scalar(3.0) is True
 
@@ -672,17 +661,137 @@ class TestDriverWriteReadBranches:
             assert smu.get_fastest_core() is None
         send.assert_not_called()
 
-    def test_detect_system_state_reads_fastest_core_on_zen3(self, smu_dir):
-        smu = RyzenSMU(self._vermeer_full(), smu_dir)
-        with patch.object(smu, "_send_rsmu_command", return_value=self._resp(7)):
-            state = smu.detect_system_state(2)
-        assert state.fastest_core == 7
 
-    def test_read_max_freq_sysfs_handles_error(self):
-        from corecycler.smu.driver import _read_max_freq_sysfs
+class TestOneMailboxAcrossProcesses:
+    @pytest.mark.parametrize(("call", "anchor"), [("command", "smu_args"), ("rsmu", "smu_args"), ("smn", "smn")])
+    def test_a_sequence_waits_while_another_process_holds_its_file(self, smu_dir, zen5_cmds, call, anchor):
+        import fcntl
+        import threading
 
-        with (
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pathlib.Path.read_text", side_effect=OSError),
-        ):
-            assert _read_max_freq_sysfs() is None
+        (smu_dir / "smn").write_bytes(struct.pack("<I", 7))
+        smu = RyzenSMU(zen5_cmds, smu_dir)
+        calls = {
+            "command": lambda: smu._send_command(0x99),
+            "rsmu": lambda: smu._send_rsmu_command(0x99),
+            "smn": lambda: smu.read_smn(0x10),
+        }
+        done = threading.Event()
+        worker = threading.Thread(target=lambda: (calls[call](), done.set()))
+        with (smu_dir / anchor).open("rb") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            worker.start()
+            assert not done.wait(0.3)
+        assert done.wait(5)
+        worker.join()
+
+    def test_without_the_mailbox_file_a_command_fails_closed(self, smu_dir, zen5_cmds):
+        (smu_dir / "smu_args").unlink()
+        response = RyzenSMU(zen5_cmds, smu_dir)._send_command(0x99)
+        assert response.success is False
+        assert RyzenSMU(zen5_cmds, smu_dir)._send_rsmu_command(0x99).success is False
+
+
+SHAPER_WORDS_READ_ON_THE_9950X3D = (0x0, 0xF4E5E201, 0xF3EEE702, 0xF6EFEB03, 0xFEFDFA04, 0x0)
+
+
+@pytest.mark.req("TERMS.base_shaper", "D4")
+@pytest.mark.parametrize(
+    ("success", "words", "bands"),
+    [
+        (
+            True,
+            SHAPER_WORDS_READ_ON_THE_9950X3D,
+            ((0, 0, 0), (-30, -27, -12), (-25, -18, -13), (-21, -17, -10), (-6, -3, -2)),
+        ),
+        (False, SHAPER_WORDS_READ_ON_THE_9950X3D, None),
+        (True, (0,) * 6, None),
+        (True, (0x0, 0xF4E5E202, 0xF3EEE701, 0xF6EFEB03, 0xFEFDFA04, 0x0), None),
+    ],
+)
+def test_the_curve_shaper_read_gives_five_bands_only_when_every_band_names_its_own_index(success, words, bands):
+    smu = RyzenSMU(get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE), MagicMock())
+    smu._send_rsmu_command = lambda cmd, args=(0,) * 6: SMUResponse(success, words, b"")
+    assert smu.get_curve_shaper() == bands
+
+
+WRITES_FOR_THE_READ_TABLE = [0xF4E5E281, 0xF3EEE782, 0xF6EFEB83, 0xFEFDFA84]
+TABLE_WITH_MIN_RAISED = ((1, 1, 1), (-30, -27, -12), (-25, -18, -13), (-21, -17, -10), (-6, -3, -2))
+
+
+def shaper_smu(refuse: int | None = None, keep: bool = True):
+    smu = RyzenSMU(get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE), MagicMock())
+    smu.check_writable = lambda: (True, "OK")
+    table = {band: band for band in range(5)}
+    sent = []
+
+    def rsmu(cmd, args=(0,) * 6):
+        if cmd == smu.commands.set_curve_shaper_cmd:
+            sent.append(args[0])
+            band = args[0] & 0x7F
+            if band == refuse:
+                return SMUResponse(False, (0,) * 6, b"")
+            if keep:
+                table[band] = args[0] & ~0xFF | band
+            return SMUResponse(True, (args[0],) + (0,) * 5, b"")
+        return SMUResponse(True, (*(table[band] for band in range(5)), 0), b"")
+
+    smu._send_rsmu_command = rsmu
+    return smu, sent
+
+
+@pytest.mark.req("H5.w")
+def test_a_shaper_write_sends_every_band_as_measured_and_needs_the_whole_table_back():
+    smu, sent = shaper_smu()
+    assert smu.set_curve_shaper(TABLE_WITH_MIN_RAISED) is None
+    assert sent == [0x01010180, *WRITES_FOR_THE_READ_TABLE]
+    assert smu.get_curve_shaper() == TABLE_WITH_MIN_RAISED
+
+
+@pytest.mark.parametrize(
+    ("refuse", "keep", "says"),
+    [
+        (2, True, "the SMU refused band Medium"),
+        (None, False, "the read-back gave ((0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0))"),
+    ],
+)
+def test_a_shaper_write_that_is_refused_or_not_read_back_says_so(refuse, keep, says):
+    smu, _ = shaper_smu(refuse, keep)
+    assert smu.set_curve_shaper(TABLE_WITH_MIN_RAISED) == says
+
+
+@pytest.mark.parametrize(
+    "bands",
+    [
+        TABLE_WITH_MIN_RAISED[:4],
+        ((31, 0, 0), *TABLE_WITH_MIN_RAISED[1:]),
+        ((-51, 0, 0), *TABLE_WITH_MIN_RAISED[1:]),
+        ((0, 0), *TABLE_WITH_MIN_RAISED[1:]),
+    ],
+)
+def test_a_malformed_shaper_is_refused_before_anything_is_sent(bands):
+    smu, sent = shaper_smu()
+    with pytest.raises(ValueError, match="five bands of three margins within -50..30"):
+        smu.set_curve_shaper(bands)
+    assert sent == []
+
+
+def test_an_unwritable_driver_sends_no_shaper_write():
+    smu, sent = shaper_smu()
+    smu.check_writable = lambda: (False, "smu_args is not writable")
+    assert smu.set_curve_shaper(TABLE_WITH_MIN_RAISED) == "smu_args is not writable"
+    assert sent == []
+
+
+def test_smu_problem_names_smu_args_and_the_error_read_when_it_cannot_be_opened_for_writing(tmp_path):
+    import errno
+    import os
+
+    from corecycler.smu.driver import smu_problem
+
+    args = tmp_path / "smu_args"
+    assert smu_problem(tmp_path) == f"{args}: {os.strerror(errno.ENOENT)}"
+    args.write_bytes(b"")
+    assert smu_problem(tmp_path) is None
+    if os.geteuid() != 0:
+        args.chmod(0o444)
+        assert smu_problem(tmp_path) == f"{args}: {os.strerror(errno.EACCES)}"

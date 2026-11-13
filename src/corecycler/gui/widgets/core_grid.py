@@ -7,11 +7,21 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from corecycler.gui.style import duration_str, font_mono, phase_label, scheduler_phase_label, state_label, theme
+from corecycler.gui.style import duration_str, font_mono, scheduler_phase_label, state_label, theme, tuner_phase_label
 
 if TYPE_CHECKING:
     from corecycler.engine.scheduler import CoreTestStatus
-    from corecycler.engine.topology import CPUTopology
+    from corecycler.engine.topology import CPUTopology, PhysicalCore
+
+
+def ccd_groups(topology: CPUTopology) -> list[tuple[str, list[PhysicalCore]]]:
+    """The cores by CCD in CCD order, each group with its heading; cores whose CCD was not read come last."""
+    groups: dict[int | None, list[PhysicalCore]] = {}
+    for core in sorted(topology.cores.values(), key=lambda c: c.core_id):
+        groups.setdefault(core.ccd, []).append(core)
+    ordered = sorted(groups.items(), key=lambda group: (group[0] is None, group[0]))
+    return [(f"CCD {'unread' if ccd is None else ccd}", cores) for ccd, cores in ordered]
+
 
 CELL_HEIGHT_NORMAL = 22
 CELL_HEIGHT_ACTIVE = 38
@@ -31,7 +41,7 @@ class CoreCell(QWidget):
         self._state = "pending"
         self._scheduler_phase = ""
         self._tuner_phase: str | None = None
-        self._co_offset: int | None = None
+        self._tuner_value: int | None = None
         self._errors: int = 0
         self._elapsed: float = 0
 
@@ -84,7 +94,7 @@ class CoreCell(QWidget):
 
     def _refresh_labels(self) -> None:
         if self._tuner_phase:
-            text = phase_label(self._tuner_phase)
+            text = tuner_phase_label(self._tuner_phase)
         elif self._state == "testing" and self._scheduler_phase:
             text = scheduler_phase_label(self._scheduler_phase)
         else:
@@ -93,7 +103,7 @@ class CoreCell(QWidget):
             text += f" ({self._errors}e)"
         self._status_label.setText(text)
         self._time_label.setText(duration_str(self._elapsed) if self._elapsed > 0 else "")
-        self._detail_label.setText(f"CO:{self._co_offset}" if self._co_offset is not None else "")
+        self._detail_label.setText(f"tuner {self._tuner_value}" if self._tuner_value is not None else "")
 
     def update_status(self, status: CoreTestStatus) -> None:
         self._errors = status.errors
@@ -120,24 +130,24 @@ class CoreCell(QWidget):
 
     def update_telemetry(
         self,
-        freq_mhz: float = 0,
-        temp_c: float = 0,
+        freq_mhz: float | None = None,
+        temp_c: float | None = None,
         vcore_v: float | None = None,
         stretch_pct: float | None = None,
-        co_offset: int | None = None,
+        tuner_value: int | None = None,
         tuner_phase: str | None = None,
     ) -> None:
-        self._co_offset = co_offset
+        self._tuner_value = tuner_value
         self._tuner_phase = tuner_phase
         self._refresh_labels()
 
         if self._state in ("testing", "queued", "backoff"):
             parts = []
-            if freq_mhz > 0:
+            if freq_mhz is not None:
                 parts.append(f"{freq_mhz:.0f}MHz")
             if stretch_pct is not None:
                 parts.append(f"S:{stretch_pct:.1f}%")
-            if temp_c > 0:
+            if temp_c is not None:
                 parts.append(f"{temp_c:.0f}C")
             if vcore_v is not None:
                 parts.append(f"{vcore_v:.4f}V")
@@ -179,30 +189,17 @@ class CoreGridWidget(QWidget):
             elif item.layout():
                 self._clear_layout(item.layout())
 
-        ccd_groups: dict[int, list[int]] = {}
-        for core in sorted(topology.cores.values(), key=lambda c: c.core_id):
-            ccd = core.ccd if core.ccd is not None else 0
-            ccd_groups.setdefault(ccd, []).append(core.core_id)
-
-        for ccd_idx in sorted(ccd_groups.keys()):
-            core_ids = ccd_groups[ccd_idx]
-
-            has_vcache = any(topology.cores[cid].has_vcache for cid in core_ids if cid in topology.cores)
-            vcache_str = " (V-Cache)" if has_vcache else ""
-            ccd_label = QLabel(f"CCD {ccd_idx}{vcache_str}")
+        for heading, cores in ccd_groups(topology):
+            vcache_str = " (V-Cache)" if any(core.has_vcache for core in cores) else ""
+            ccd_label = QLabel(f"{heading}{vcache_str}")
             ccd_label.setFont(font_mono(8, bold=True))
             ccd_label.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 1px 4px;")
             ccd_label.setFixedHeight(18)
             self._layout.addWidget(ccd_label)
 
-            for core_id in core_ids:
-                core_info = topology.cores.get(core_id)
-                cell = CoreCell(
-                    core_id=core_id,
-                    ccd=ccd_idx,
-                    has_vcache=core_info.has_vcache if core_info else False,
-                )
-                self._cells[core_id] = cell
+            for core in cores:
+                cell = CoreCell(core_id=core.core_id, ccd=core.ccd, has_vcache=core.has_vcache)
+                self._cells[core.core_id] = cell
                 self._layout.addWidget(cell)
 
         self._layout.addStretch()
@@ -215,16 +212,16 @@ class CoreGridWidget(QWidget):
     def update_core_telemetry(
         self,
         core_id: int,
-        freq_mhz: float = 0,
-        temp_c: float = 0,
+        freq_mhz: float | None = None,
+        temp_c: float | None = None,
         vcore_v: float | None = None,
         stretch_pct: float | None = None,
-        co_offset: int | None = None,
+        tuner_value: int | None = None,
         tuner_phase: str | None = None,
     ) -> None:
         cell = self._cells.get(core_id)
         if cell:
-            cell.update_telemetry(freq_mhz, temp_c, vcore_v, stretch_pct, co_offset, tuner_phase)
+            cell.update_telemetry(freq_mhz, temp_c, vcore_v, stretch_pct, tuner_value, tuner_phase)
 
     def _clear_layout(self, layout) -> None:
         while layout.count():

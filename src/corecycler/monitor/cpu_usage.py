@@ -13,7 +13,7 @@ class CPUUsageReader:
     """
 
     def __init__(self) -> None:
-        self._prev: dict[int, tuple[int, int]] = {}  # cpu_id → (busy, total)
+        self._prev_busy_total_by_cpu: dict[int, tuple[int, int]] = {}
 
     def read(self) -> dict[int, float]:
         """Return per-logical-CPU usage % (0-100). Empty on first call."""
@@ -27,24 +27,21 @@ class CPUUsageReader:
             if not line.startswith("cpu") or line.startswith("cpu "):
                 continue
             parts = line.split()
-            # cpuN user nice system idle iowait irq softirq steal — skip a malformed
-            # line (non-numeric id/values, too few fields) rather than crashing.
             try:
                 cpu_id = int(parts[0][3:])
-                vals = [int(v) for v in parts[1:8]]
-                idle = vals[3] + vals[4]  # idle + iowait
-                total = sum(vals)
-            except (ValueError, IndexError):
+                user, nice, system, idle, iowait, irq, softirq = (int(v) for v in parts[1:8])
+            except ValueError, IndexError:
                 continue
-            busy = total - idle
+            total = user + nice + system + idle + iowait + irq + softirq
+            busy = total - idle - iowait
 
-            prev = self._prev.get(cpu_id)
+            prev = self._prev_busy_total_by_cpu.get(cpu_id)
             if prev is not None:
                 db = busy - prev[0]
                 dt = total - prev[1]
                 if dt > 0:
                     results[cpu_id] = (db / dt) * 100.0
 
-            self._prev[cpu_id] = (busy, total)
+            self._prev_busy_total_by_cpu[cpu_id] = (busy, total)
 
         return results

@@ -16,15 +16,13 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 from corecycler.config import tools
-from corecycler.engine import containment
+from corecycler.engine import containment, topology
 from corecycler.engine.backends import BACKEND_REGISTRY, load_all
-from corecycler.engine.execution import cpu_times as _cpu_times
 from corecycler.monitor.memory import parse_dmidecode_output
 from corecycler.monitor.msr import (
-    MSR_APERF,
     MSR_CORE_ENERGY,
     MSR_MPERF,
     MSR_PKG_ENERGY,
@@ -39,7 +37,6 @@ from corecycler.smu.commands import (
     get_commands,
 )
 from corecycler.smu.driver import RyzenSMU, SMUResponse
-from corecycler.tuner.engine import _read_cpu_times
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -105,7 +102,6 @@ def _pin_detect_generation_map() -> None:
 
 
 def _pin_msr_addresses() -> None:
-    assert MSR_APERF == 0xE8
     assert MSR_MPERF == 0xE7
     assert MSR_PWR_UNIT == 0xC0010299
     assert MSR_CORE_ENERGY == 0xC001029A
@@ -123,6 +119,13 @@ def _pin_dmidecode_dimm_parse() -> None:
     assert dimms[0].size_gb == 32
     assert dimms[0].speed_mt == 6000
     assert dimms[0].mem_type == "DDR5"
+
+
+def _pin_zen5_curve_shaper_ids() -> None:
+    for gen, cmds in COMMAND_SETS.items():
+        granite = gen is CPUGeneration.ZEN5_GRANITE_RIDGE
+        ids = (cmds.get_curve_shaper_cmd, cmds.set_curve_shaper_cmd)
+        assert ids == ((0x84, 0xA6) if granite else (None, None)), (gen.name, ids)
 
 
 def _pin_zen5_co_range() -> None:
@@ -146,7 +149,8 @@ def _pin_mprime_31x_config_keys() -> None:
         StressMode.AVX2: {"CpuSupportsAVX2=1", "CpuSupportsFMA3=1", "CpuSupportsAVX512F=0"},
         StressMode.AVX512: {"CpuSupportsAVX2=1", "CpuSupportsAVX512F=1"},
     }
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmp, patch.object(topology, "CPUINFO", Path(tmp) / "cpuinfo"):
+        (Path(tmp) / "cpuinfo").write_text("vendor_id\t: AuthenticAMD\nflags\t\t: avx fma avx2 avx512f\n")
         backend = MprimeBackend()
         for mode, wanted in expectations.items():
             backend.prepare(Path(tmp), StressConfig(mode=mode, threads=2))
@@ -159,7 +163,7 @@ def _pin_mprime_31x_config_keys() -> None:
                 assert "TortureWeak" not in content
                 assert "CpuSupportsAVX512=" not in content
                 assert "NumCPUs=1" in content
-                assert "CoresPerTest=1" in content
+                assert "TortureCores=1" in content
             assert "EnableSetAffinity=0" in prime
     assert MprimeBackend.parse_version("Mersenne Prime Test Program: Linux64,Untrusted Prime95,v31.4,build 2") == "31.4"
 
@@ -170,13 +174,6 @@ def _pin_proc_cpus_allowed_list() -> None:
         task.mkdir(parents=True)
         (task / "status").write_text("Name:\tstress\nCpus_allowed_list:\t0-1,4\n")
         assert containment.observed_tree_cpus(77, proc_base=Path(tmp)) == {0, 1, 4}
-
-
-def _pin_proc_stat_cpu_fields() -> None:
-    stat = "cpu  1 2 3 4 5 6 7 8\ncpu0 100 20 300 4000 50 6 7 8\n"
-    for reader in (_cpu_times, _read_cpu_times):
-        with patch("builtins.open", mock_open(read_data=stat)):
-            assert reader(0) == (4050, 4491), reader.__module__
 
 
 def _pin_apu_co_command_ids() -> None:
@@ -259,6 +256,7 @@ def _pin_core_slot_mapping() -> None:
     vermeer = get_commands(CPUGeneration.ZEN3_VERMEER)
     assert vermeer is not None and vermeer.uniform_8core_ccds
     assert vermeer.core_fuse_addr == 0x30081D98
+    assert vermeer.ccd_fuse_addr == 0x5D218
     smu = RyzenSMU(vermeer, Path("/nonexistent"))
     topo = MagicMock()
     topo.cores = {c: MagicMock(ccd=0) for c in range(6)}
@@ -272,6 +270,8 @@ def _pin_core_slot_mapping() -> None:
 
     def read_smn(address: int) -> int:
         fuse_reads.append(address)
+        if address in (0x5D218, 0x5D21C):
+            return {0x5D218: 1 << 22, 0x5D21C: 0}[address]
         return sum(1 << slot for slot in fused_off)
 
     smu._send_command = responder
@@ -279,8 +279,10 @@ def _pin_core_slot_mapping() -> None:
     smu.read_smn = read_smn
     smu.set_topology(topo)
     assert co_calls == []
-    assert fuse_reads == [vermeer.core_fuse_addr]
+    assert fuse_reads == [0x5D218, 0x5D21C, vermeer.core_fuse_addr]
     assert smu.core_map == {0: (0, 0), 1: (0, 1), 2: (0, 4), 3: (0, 5), 4: (0, 6), 5: (0, 7)}
+    ccd_fused = {gen: cmds.ccd_fuse_addr for gen, cmds in COMMAND_SETS.items() if cmds.ccd_fuse_addr is not None}
+    assert ccd_fused == {CPUGeneration.ZEN3_VERMEER: 0x5D218}
     fused = {
         gen: (cmds.core_fuse_addr, cmds.core_fuse_shift) for gen, cmds in COMMAND_SETS.items() if cmds.core_fuse_addr
     }
@@ -296,6 +298,7 @@ def _pin_core_slot_mapping() -> None:
     }
     assert all(cmds.core_fuse_shift == 0 for cmds in COMMAND_SETS.values() if not cmds.core_fuse_addr)
     assert {gen for gen, cmds in COMMAND_SETS.items() if cmds.core_fuse_die_wide} == {CPUGeneration.ZEN3_CEZANNE}
+    assert {gen for gen, cmds in COMMAND_SETS.items() if cmds.probe_co_baseline} == {CPUGeneration.ZEN5_STRIX_POINT}
     mapped = {gen for gen, cmds in COMMAND_SETS.items() if cmds.uniform_8core_ccds}
     assert mapped == {
         CPUGeneration.ZEN3_VERMEER,
@@ -355,7 +358,7 @@ CONTRACTS: list[Contract] = [
     Contract(
         name="msr-register-addresses",
         kind="arch",
-        source="AMD PPR Fam19h/1Ah APERF 0xE8 MPERF 0xE7 RAPL 0xC0010299/029A/029B",
+        source="AMD PPR Fam19h/1Ah MPERF 0xE7 RAPL 0xC0010299/029A/029B",
         ring_a=_pin_msr_addresses,
         live_verifiable=True,
         ring_b_test="test_hardware_contracts.py::test_msr_reads_are_plausible",
@@ -375,7 +378,9 @@ CONTRACTS: list[Contract] = [
             "mprime 31.04 undoc.txt CpuSupports*/EnableSetAffinity, verified live "
             "2026-08-11: SSE flags -> Pentium4 type-1 FFT, AVX -> AVX FFT, AVX2 -> "
             "FMA3 FFT, AVX512F -> AVX-512 FFT; EnableSetAffinity=0 held every "
-            "thread on the placed CPUs; TortureWeak is not an mprime option"
+            "thread on the placed CPUs; TortureWeak is not an mprime option; "
+            "-t sizes its workers from TortureCores, never TortureThreads or "
+            "CoresPerTest (linux/prime.c, 30.19 and 31.07)"
         ),
         ring_a=_pin_mprime_31x_config_keys,
         live_verifiable=True,
@@ -390,12 +395,17 @@ CONTRACTS: list[Contract] = [
         ring_b_test=("test_containment_live.py::test_a_contained_child_cannot_escape_its_cpuset"),
     ),
     Contract(
-        name="proc-stat-cpu-fields",
-        kind="os",
-        source="proc(5) /proc/stat cpuN fields: [3]=idle [4]=iowait, the stall watchdog's basis",
-        ring_a=_pin_proc_stat_cpu_fields,
-        live_verifiable=True,
-        ring_b_test="test_hardware_contracts.py::test_proc_stat_cpu_line_matches_the_pinned_fields",
+        name="zen5-curve-shaper-ids",
+        kind="arch",
+        source=(
+            "RSMU 0x84 with no arguments returns five words, byte 0 the band index 0 to 4 and bytes 1 to 3 "
+            "the -5C, 50C and 90C margins as signed bytes; RSMU 0xA6 writes one band, (90C << 24) | "
+            "(50C << 16) | (-5C << 8) | 0x80 | band (ZenStates-Core SetCurveShaperMargin); both measured on "
+            "the owner's 9950X3D 2026-10-13 (H5w: one band written, read back, restored); 0xA6 is "
+            "GetLN2Mode on Shimada Peak, and no other generation's ids are measured"
+        ),
+        ring_a=_pin_zen5_curve_shaper_ids,
+        live_verifiable=False,
     ),
     Contract(
         name="zen5-co-range",

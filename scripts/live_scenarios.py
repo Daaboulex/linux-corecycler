@@ -410,6 +410,11 @@ def scenario_gui_run(args) -> None:
             all(c["passed"] or c["error_type"] for c in last["cores"]),
             last["cores"],
         )
+        check(
+            "every_core_passed_at_the_machines_own_settings",
+            all(c["passed"] for c in last["cores"]),
+            last["cores"],
+        )
         if kernel_evidence:
             EVIDENCE["kernel_events_finding"] = kernel_evidence
     check("no_uncaught_exceptions", app_log_critical_lines() == [], app_log_critical_lines())
@@ -505,72 +510,6 @@ def scenario_gui_refusal(args) -> None:
     blocked.chmod(0o700)
 
 
-def scenario_engine_parallel(args) -> None:
-    from corecycler.engine.backends import get_backend, load_all
-    from corecycler.engine.backends.base import StressConfig, StressMode
-    from corecycler.engine.parallel import ParallelStress
-    from corecycler.engine.scheduler import SchedulerConfig
-    from corecycler.engine.topology import detect_topology
-
-    load_all()
-    runner = ParallelStress(
-        topology=detect_topology(),
-        backend=get_backend(args.backend),
-        stress_config=StressConfig(mode=StressMode[args.mode], threads=args.threads),
-        scheduler_config=SchedulerConfig(seconds_per_core=args.seconds, cores_to_test=args.cores, poll_interval=0.5),
-        work_dir=campaign_home() / "parallel-work",
-    )
-    import threading
-
-    expected = expected_cpus(args.cores, args.threads)
-    samples: list[set[int]] = []
-
-    def sampler() -> None:
-        comm = BACKEND_COMMS[args.backend]
-        while sampling[0]:
-            observed = observed_cpus_of(comm)
-            if observed:
-                samples.append(observed)
-            time.sleep(0.5)
-
-    sampling = [True]
-    thread = threading.Thread(target=sampler)
-    thread.start()
-    results = runner.run()
-    sampling[0] = False
-    thread.join()
-    check(
-        "every_lane_earned_a_pass",
-        sorted(results) == sorted(args.cores) and all(r.passed for r in results.values()),
-        {c: (r.passed, r.error_message) for c, r in results.items()},
-    )
-    check(
-        "parallel_affinity_stayed_inside",
-        bool(samples) and all(s <= expected for s in samples),
-        {"expected": sorted(expected), "distinct": sorted({tuple(sorted(s)) for s in samples})},
-    )
-
-
-def scenario_engine_rapid(args) -> None:
-    from corecycler.engine.backends import get_backend, load_all
-    from corecycler.engine.backends.base import StressConfig, StressMode
-    from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig
-    from corecycler.engine.topology import detect_topology
-
-    load_all()
-    scheduler = CoreScheduler(
-        topology=detect_topology(),
-        backend=get_backend(args.backend),
-        stress_config=StressConfig(mode=StressMode[args.mode], threads=1),
-        scheduler_config=SchedulerConfig(poll_interval=0.5),
-        work_dir=campaign_home() / "rapid-work",
-    )
-    passed, error = scheduler.run_rapid_transitions(
-        args.cores, total_duration=args.seconds, load_seconds=4.0, idle_seconds=2.0
-    )
-    check("rapid_transitions_passed", passed and error is None, {"passed": passed, "error": error})
-
-
 def scenario_memory_stress(args) -> None:
     write_settings({"backend": args.backend, "cores_to_test": args.cores})
     driver = GuiDriver()
@@ -638,8 +577,6 @@ SCENARIOS = {
     "gui-stop": scenario_gui_stop,
     "gui-close": scenario_gui_close,
     "gui-refusal": scenario_gui_refusal,
-    "parallel": scenario_engine_parallel,
-    "rapid": scenario_engine_rapid,
     "doctor": scenario_cli_doctor,
     "memory": scenario_memory_stress,
 }

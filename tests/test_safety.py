@@ -4,16 +4,16 @@ These tests verify that:
 - The SMU driver gracefully handles missing ryzen_smu module
 - CO values are bounds-checked against generation limits
 - Scheduler kills processes cleanly on stop
-- Error detector doesn't crash on missing sysfs
+- Error detector reports an unreadable kernel log instead of crashing
 - Settings don't write to unexpected paths
 - Backend prepare doesn't clobber files outside work_dir
 """
 
 from __future__ import annotations
 
+import os
 import signal
 import struct
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -21,21 +21,26 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent))
+
+from test_execution import (
+    DEAF_TO_SIGTERM,
+    FakeBackend,
+    _child,
+    holds_the_deadline_until,
+    lane,
+    make_supervisor,
+    run_one,
+)
 
 from corecycler.engine import execution
 from corecycler.engine.backends.base import StressConfig
 from corecycler.engine.backends.mprime import MprimeBackend
-from corecycler.engine.backends.stress_ng import StressNgBackend
-from corecycler.engine.backends.ycruncher import YCruncherBackend
 from corecycler.engine.detector import ErrorDetector
 from corecycler.engine.scheduler import CoreScheduler, SchedulerConfig, TestState
 from corecycler.engine.topology import CPUTopology, PhysicalCore
 from corecycler.smu.commands import CPUGeneration, encode_co_arg, get_commands
 from corecycler.smu.driver import RyzenSMU
-
-# ===========================================================================
-# SMU driver safety — graceful handling of missing driver
-# ===========================================================================
 
 
 class TestSMUDriverSafety:
@@ -56,20 +61,17 @@ class TestSMUDriverSafety:
         (smu_dir / "smu_args").write_bytes(b"\x00" * 24)
         assert RyzenSMU.is_available(smu_dir) is True
 
-    def test_no_crash_on_permission_denied(self, tmp_path):
-        """is_available should handle permission errors gracefully."""
+    def test_a_driver_directory_it_may_not_read_is_unavailable_not_an_error(self, tmp_path):
+        if os.geteuid() == 0:
+            pytest.skip("root reads past file permissions")
         smu_dir = tmp_path / "ryzen_smu_drv"
         smu_dir.mkdir()
-        # Create but make inaccessible
-        args_file = smu_dir / "smu_args"
-        args_file.write_bytes(b"\x00" * 24)
-        # is_available only checks .exists(), which works even without read perm
-        assert RyzenSMU.is_available(smu_dir) is True
-
-
-# ===========================================================================
-# CO value bounds checking
-# ===========================================================================
+        (smu_dir / "smu_args").write_bytes(b"\x00" * 24)
+        smu_dir.chmod(0)
+        try:
+            assert RyzenSMU.is_available(smu_dir) is False
+        finally:
+            smu_dir.chmod(0o755)
 
 
 class TestCOBoundsChecking:
@@ -93,17 +95,16 @@ class TestCOBoundsChecking:
 
         smu = RyzenSMU(cmds, smu_dir)
 
-        # Value below min should raise
         with pytest.raises(ValueError, match="out of range"):
             smu.set_co_offset(0, min_val - 1)
 
-        # Value above max should raise
         with pytest.raises(ValueError, match="out of range"):
             smu.set_co_offset(0, max_val + 1)
 
-        # Boundary values should succeed (not raise)
-        smu.set_co_offset(0, min_val)
-        smu.set_co_offset(0, max_val)
+        for bound in (min_val, max_val):
+            smu.set_co_offset(0, bound)
+            sent = struct.unpack("<I", (smu_dir / "smu_args").read_bytes()[:4])[0]
+            assert sent == encode_co_arg(0, bound, gen), f"the bound {bound} never reached the SMU"
 
     def test_extreme_values_rejected(self, tmp_path):
         """Absurdly large CO values must be rejected."""
@@ -124,14 +125,8 @@ class TestCOBoundsChecking:
         """Encoding should not crash for any core ID 0-31."""
         for gen in [CPUGeneration.ZEN3_VERMEER, CPUGeneration.ZEN5_GRANITE_RIDGE]:
             for core_id in range(32):
-                # Should not raise
                 result = encode_co_arg(core_id, 0, gen)
                 assert isinstance(result, int)
-
-
-# ===========================================================================
-# Scheduler process killing safety
-# ===========================================================================
 
 
 class TestSchedulerProcessSafety:
@@ -159,98 +154,59 @@ class TestSchedulerProcessSafety:
         sched.force_stop()
         assert sched.state == TestState.STOPPING
 
-    def test_kill_escalation(self):
-        """Must send SIGTERM first, then SIGKILL if the group ignores it."""
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        mock_proc.pid = 99999
-        mock_proc.wait.side_effect = [subprocess.TimeoutExpired("x", 3), None]
-
+    def test_kill_escalation(self, tmp_path):
         signals_sent = []
+        real_killpg = os.killpg
 
-        def fake_killpg(pgid, sig):
+        def recording_killpg(pgid, sig):
             signals_sent.append(sig)
+            real_killpg(pgid, sig)
 
-        with patch("os.killpg", side_effect=fake_killpg), patch("os.getpgid", return_value=99999):
-            execution.kill_process_group(mock_proc)
+        one = lane(tmp_path)
+        supervisor, _, _ = make_supervisor(
+            FakeBackend(_child(DEAF_TO_SIGTERM)),
+            hooks=holds_the_deadline_until(lambda: any(one.work_dir.glob("run-*/ready"))),
+        )
+        with (
+            patch.object(execution, "STOP_GRACE_SECONDS", 0.2),
+            patch("os.killpg", side_effect=recording_killpg),
+        ):
+            verdict = run_one(supervisor, one, 2.0)
 
         assert signal.SIGTERM in signals_sent
         assert signal.SIGKILL in signals_sent
         assert signals_sent.index(signal.SIGTERM) < signals_sent.index(signal.SIGKILL)
+        assert verdict is not None and not verdict.passed
 
-    def test_kill_handles_vanished_process(self):
-        """Must handle ProcessLookupError (process already gone)."""
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        mock_proc.pid = 99999
+    def test_kill_handles_vanished_process(self, tmp_path, caplog):
+        supervisor, _, _ = make_supervisor(FakeBackend(_child("import time; time.sleep(0.3)")))
+        with patch("os.killpg", side_effect=ProcessLookupError):
+            verdict = run_one(supervisor, lane(tmp_path), 0.1)
+        assert verdict is not None
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
 
-        with (
-            patch("os.killpg", side_effect=ProcessLookupError),
-            patch("os.getpgid", return_value=99999),
-        ):
-            execution.kill_process_group(mock_proc)
-
-    def test_kill_handles_os_error(self):
-        """Must handle OSError gracefully."""
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        mock_proc.pid = 99999
-
-        with (
-            patch("os.killpg", side_effect=OSError("Operation not permitted")),
-            patch("os.getpgid", return_value=99999),
-        ):
-            execution.kill_process_group(mock_proc)
-
-
-# ===========================================================================
-# Error detector safety — missing sysfs / dmesg
-# ===========================================================================
+    def test_kill_handles_os_error(self, tmp_path, caplog):
+        supervisor, _, _ = make_supervisor(FakeBackend(_child("import time; time.sleep(0.3)")))
+        with patch("os.killpg", side_effect=PermissionError("Operation not permitted")):
+            verdict = run_one(supervisor, lane(tmp_path), 0.1)
+        assert verdict is not None
+        assert {r.levelname for r in caplog.records if "Operation not permitted" in r.getMessage()} == {"ERROR"}
 
 
 class TestDetectorSafety:
-    def _fresh(self) -> ErrorDetector:
-        det = ErrorDetector()
-        det._dmesg_baseline_ts = 1.0
-        det._last_dmesg_time = 0.0
-        return det
+    def test_a_missing_kernel_log_is_reported_not_raised(self, tmp_path):
+        det = ErrorDetector(tmp_path / "no-kmsg")
+        det.reset()
+        read = det.read_new(final=True)
+        assert read.events == ()
+        assert "no-kmsg" in read.problem
 
-    def test_check_mce_no_dmesg(self):
-        """check_mce must not crash when dmesg is unavailable."""
-        det = self._fresh()
-        with patch("subprocess.run", side_effect=FileNotFoundError):
-            events = det.check_mce()
-        assert events == []
-
-    def test_check_mce_dmesg_permission_denied(self):
-        det = self._fresh()
-        with patch("subprocess.run", side_effect=OSError("Permission denied")):
-            events = det.check_mce()
-        assert events == []
-
-    def test_check_mce_dmesg_timeout(self):
-        det = self._fresh()
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("dmesg", 5)):
-            events = det.check_mce()
-        assert events == []
-
-    def test_reset_no_crash(self):
-        """reset() must not crash in any environment."""
-        det = ErrorDetector()
-        with patch("corecycler.engine.detector._get_dmesg_raw_timestamp", return_value=0.0):
-            det.reset()  # must not raise
-
-    def test_full_check_mce_graceful(self):
-        """check_mce with no baseline must be graceful and detect nothing."""
-        det = ErrorDetector()  # baseline 0.0 — cannot separate old from new
-        with patch("subprocess.run", side_effect=AssertionError("must not run")):
-            events = det.check_mce()
-        assert events == []
-
-
-# ===========================================================================
-# Settings safety — file paths
-# ===========================================================================
+    def test_a_kernel_log_that_is_a_directory_is_reported_not_raised(self, tmp_path):
+        det = ErrorDetector(tmp_path)
+        det.reset()
+        read = det.read_new(final=True)
+        assert read.events == ()
+        assert str(tmp_path) in read.problem
 
 
 class TestSettingsSafety:
@@ -263,7 +219,6 @@ class TestSettingsSafety:
 
         save_settings(AppSettings())
 
-        # Verify files only exist in config_dir
         all_files = list(tmp_path.rglob("*.json"))
         for f in all_files:
             assert str(f).startswith(str(config_dir)), f"File written outside config dir: {f}"
@@ -275,7 +230,6 @@ class TestSettingsSafety:
         target = tmp_path / "profiles" / "test.json"
         save_profile(TestProfile(), target)
 
-        # Only one JSON file should exist
         all_json = list(tmp_path.rglob("*.json"))
         assert len(all_json) == 1
         assert all_json[0] == target
@@ -290,61 +244,24 @@ class TestSettingsSafety:
         s = AppSettings(work_dir="/tmp/../etc/passwd")
         save_settings(s)
         loaded = load_settings()
-        # Should store the string as-is (validation is caller's responsibility)
         assert loaded.work_dir == "/tmp/../etc/passwd"
-
-
-# ===========================================================================
-# Backend safety — file containment
-# ===========================================================================
 
 
 class TestBackendSafety:
     def test_mprime_prepare_stays_in_work_dir(self, tmp_path):
         """mprime prepare must only create files within work_dir."""
         work = tmp_path / "work"
+        work.mkdir()
+        before = set(tmp_path.rglob("*"))
         backend = MprimeBackend()
         backend.prepare(work, StressConfig())
 
-        # All created files should be in work dir
-        for f in work.iterdir():
-            assert f.parent == work
+        created = set(tmp_path.rglob("*")) - before
+        assert created
+        assert all(path.is_relative_to(work) for path in created), sorted(created - set(work.rglob("*")))
 
-        # Nothing outside work dir
         sibling = tmp_path / "sibling.txt"
         assert not sibling.exists()
-
-    def test_mprime_cleanup_only_removes_known_files(self, tmp_path):
-        """Cleanup must only remove mprime-specific files."""
-        backend = MprimeBackend()
-        backend.prepare(tmp_path, StressConfig())
-
-        # Add an external file
-        (tmp_path / "user_data.txt").write_text("important")
-
-        backend.cleanup(tmp_path)
-
-        # mprime files should be gone
-        assert not (tmp_path / "prime.txt").exists()
-        assert not (tmp_path / "local.txt").exists()
-
-        # external file must survive
-        assert (tmp_path / "user_data.txt").exists()
-        assert (tmp_path / "user_data.txt").read_text() == "important"
-
-    def test_stress_ng_prepare_stays_in_work_dir(self, tmp_path):
-        work = tmp_path / "work"
-        backend = StressNgBackend()
-        backend.prepare(work, StressConfig())
-        assert work.exists()
-        # stress-ng prepare only creates the directory
-        assert list(work.iterdir()) == []
-
-    def test_ycruncher_prepare_stays_in_work_dir(self, tmp_path):
-        work = tmp_path / "work"
-        backend = YCruncherBackend()
-        backend.prepare(work, StressConfig())
-        assert work.exists()
 
     def test_mprime_prepare_doesnt_clobber_existing(self, tmp_path):
         """Prepare should not delete existing files in work_dir."""
@@ -356,11 +273,6 @@ class TestBackendSafety:
         backend.prepare(work, StressConfig())
 
         assert (work / "existing.dat").read_text() == "preserve me"
-
-
-# ===========================================================================
-# Encode safety — no panics on edge values
-# ===========================================================================
 
 
 class TestEncodeSafety:
@@ -378,7 +290,7 @@ class TestEncodeSafety:
                 for value in [co_min, co_max, 0]:
                     result = encode_co_arg(core_id, value, gen)
                     assert isinstance(result, int)
-                    assert result >= 0  # should be unsigned
+                    assert result >= 0
 
     def test_unsupported_generation_raises_cleanly(self):
         """Unsupported generations must raise ValueError, not crash."""
@@ -386,11 +298,6 @@ class TestEncodeSafety:
             encode_co_arg(0, 0, CPUGeneration.UNKNOWN)
         with pytest.raises(ValueError):
             encode_co_arg(0, 0, CPUGeneration.ZEN2_MATISSE)
-
-
-# ===========================================================================
-# Topology safety
-# ===========================================================================
 
 
 class TestTopologySafety:

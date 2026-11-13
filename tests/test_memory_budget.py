@@ -190,12 +190,24 @@ class TestCgroupLimit:
         assert budget.cgroup_limit_mb == 4096
         assert budget.cgroup_used_mb == 1024
 
-    def test_a_limit_with_no_usage_file_counts_nothing_as_used(self, machine):
+    @pytest.mark.req("T22.F14")
+    def test_a_limit_with_no_usage_file_refuses_the_budget(self, machine):
         cgroup = self._tree(**{"user.slice": {"memory.max": f"{2 * 1024**3}\n"}})
-        budget = _budget(machine, 16, 12, 4, cgroup=cgroup)
-        assert budget.cgroup_limit_mb == 2048
-        assert budget.cgroup_used_mb == 0
-        assert budget.ceiling_mb == 2048
+        with pytest.raises(MemoryBudgetUnavailable, match=r"user\.slice/memory\.current is missing"):
+            _budget(machine, 16, 12, 4, cgroup=cgroup)
+
+    @pytest.mark.req("T22.F14")
+    @pytest.mark.parametrize("unreadable", ["memory.max", "memory.high", "memory.current"])
+    def test_an_unreadable_cgroup_file_refuses_the_budget_naming_it(self, machine, unreadable):
+        files = {"memory.max": f"{2 * 1024**3}\n", "memory.current": f"{1024**3}\n", unreadable: {}}
+        cgroup = self._tree(**{"user.slice": files})
+        with pytest.raises(MemoryBudgetUnavailable, match=rf"user\.slice/{unreadable} is unreadable"):
+            _budget(machine, 16, 12, 4, cgroup=cgroup)
+
+    @pytest.mark.req("T22.F14")
+    def test_an_unreadable_cgroup_membership_refuses_the_budget(self, machine):
+        with pytest.raises(MemoryBudgetUnavailable, match=r"self/cgroup is unreadable"):
+            _budget(machine, 16, 12, 4, self_cgroup={})
 
     def test_a_limit_below_what_is_used_leaves_nothing(self, machine):
         cgroup = self._tree(**{"user.slice": {"memory.max": f"{1024**3}\n", "memory.current": f"{2 * 1024**3}\n"}})

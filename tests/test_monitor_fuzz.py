@@ -7,18 +7,16 @@ be malformed (other arch, truncated read, garbage EEPROM). A parser must fail cl
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from corecycler.monitor import frequency as freq_mod  # noqa: E402
-from corecycler.monitor.cpu_usage import CPUUsageReader  # noqa: E402
-from corecycler.monitor.memory import decode_spd_timings, parse_dmidecode_output  # noqa: E402
+from corecycler.monitor import frequency as freq_mod
+from corecycler.monitor.cpu_usage import CPUUsageReader
+from corecycler.monitor.memory import decode_spd_timings, parse_dmidecode_output
 
 
 class TestMemoryParsersRobust:
@@ -46,14 +44,14 @@ class TestProcStatRobust:
 
     def test_cpu_usage_parses_real_stat(self):
         reader = CPUUsageReader()
-        line = "cpu0 100 0 50 1000 10 0 5 0 0 0\ncpu1 200 0 60 900 20 0 5 0 0 0\n"
+        line = "cpu0 100 7 50 1000 10 3 5 0 0 0\ncpu1 200 0 60 900 20 0 5 0 0 0\n"
         with patch("pathlib.Path.read_text", return_value=line):
-            reader.read()  # baseline
-        line2 = "cpu0 150 0 70 1100 12 0 6 0 0 0\ncpu1 260 0 80 950 25 0 6 0 0 0\n"
+            reader.read()
+        line2 = "cpu0 150 9 70 1100 12 4 6 0 0 0\ncpu1 260 0 80 950 25 0 6 0 0 0\n"
         with patch("pathlib.Path.read_text", return_value=line2):
             usage = reader.read()
         assert set(usage) == {0, 1}
-        assert all(0.0 <= v <= 100.0 for v in usage.values())
+        assert usage[0] == pytest.approx(100.0 * 74 / 176)
 
     def test_cpu_usage_skips_malformed_cpu_lines(self):
         """A malformed cpuN line (non-numeric id/values, too few fields) is skipped,
@@ -66,10 +64,10 @@ class TestProcStatRobust:
         assert isinstance(result, dict)
 
 
-class TestProcCpuinfoFreqRobust:
+class TestClockFileRobust:
     @settings(max_examples=400, deadline=None)
-    @given(text=st.text(max_size=600))
-    def test_read_from_proc_never_crashes(self, text):
-        with patch("pathlib.Path.exists", return_value=True), patch("pathlib.Path.read_text", return_value=text):
-            result = freq_mod._read_from_proc()
-        assert isinstance(result, dict)
+    @given(text=st.text(max_size=60))
+    def test_any_clock_file_text_reads_as_a_number_or_none(self, text):
+        with patch("pathlib.Path.read_text", return_value=text):
+            result = freq_mod._mhz(Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"))
+        assert result is None or isinstance(result, float)

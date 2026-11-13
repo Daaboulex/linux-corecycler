@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import signal
 import subprocess
 import sys as _sys
@@ -58,8 +59,8 @@ def _run_worker(monkeypatch, tool, proc=None, budget=None, popen_error=None):
 
     _qapp()
     results: list = []
-    worker = mt._StressWorker(tool, 1)
-    worker.done.connect(lambda ok, out: results.append((ok, out)))
+    worker = mt._StressWorker(tool, 1, io.BytesIO())
+    worker.done.connect(lambda verdict, out: results.append((verdict, out)))
     monkeypatch.setattr(mt, "memory_budget", lambda *_a, **_kw: budget or _budget(2048))
     if popen_error is not None:
         monkeypatch.setattr("subprocess.Popen", MagicMock(side_effect=popen_error))
@@ -72,22 +73,38 @@ def _run_worker(monkeypatch, tool, proc=None, budget=None, popen_error=None):
 class TestStressWorkerRun:
     def test_unknown_tool_reports_failure(self, monkeypatch):
         results = _run_worker(monkeypatch, "bogus-tool")
-        assert results == [(False, "Unknown tool: bogus-tool")]
+        assert results == [("No verdict", "Unknown tool: bogus-tool")]
 
     def test_stressapptest_pass(self, monkeypatch):
         results = _run_worker(monkeypatch, "stressapptest", proc=_proc())
-        assert results[0][0] is True
+        assert results[0][0] == "PASS"
 
     def test_stressapptest_failure_text(self, monkeypatch):
-        results = _run_worker(monkeypatch, "stressapptest", proc=_proc(stdout="miscompare\n"))
-        assert results[0][0] is False
+        results = _run_worker(monkeypatch, "stressapptest", proc=_proc(stdout="Page Error: miscompare on CPU 3\n"))
+        assert results[0] == ("FAIL", "Page Error: miscompare on CPU 3")
+
+    @pytest.mark.req("EC.G9")
+    def test_stressapptest_ending_cleanly_without_its_status_line_says_so(self, monkeypatch):
+        results = _run_worker(monkeypatch, "stressapptest", proc=_proc(stdout="", returncode=0))
+        assert results[0][0] == "No verdict"
+        assert "ended with exit 0" in results[0][1]
+
+    def test_the_tool_gets_its_whole_duration_before_any_kill(self, monkeypatch):
+        proc = _proc()
+        _run_worker(monkeypatch, "stressapptest", proc=proc)
+        assert proc.communicate.call_args.kwargs["timeout"] >= 60
+
+    def test_stressapptest_without_its_status_line_gives_no_verdict(self, monkeypatch):
+        results = _run_worker(monkeypatch, "stressapptest", proc=_proc(stdout="", returncode=-9))
+        assert results[0][0] == "No verdict"
+        assert "killed by signal 9" in results[0][1]
 
     def test_stressapptest_is_sized_by_the_one_budget(self, monkeypatch):
         popen = MagicMock(return_value=_proc())
         import corecycler.gui.memory_tab as mt
 
         _qapp()
-        worker = mt._StressWorker("stressapptest", 2)
+        worker = mt._StressWorker("stressapptest", 2, io.BytesIO())
         asked = []
 
         def fake_budget(instances, minimum_per_instance_mb, **_kw):
@@ -109,7 +126,7 @@ class TestStressWorkerRun:
         monkeypatch.setattr("subprocess.Popen", popen)
         results = _run_worker(monkeypatch, "stressapptest", budget=_budget(3, minimum_mb=256))
         assert not popen.called
-        assert results[0][0] is False
+        assert results[0][0] == "No verdict"
         assert "1 x 3 MB" in results[0][1]
         assert "floor 256 MB" in results[0][1]
 
@@ -120,8 +137,8 @@ class TestStressWorkerRun:
         monkeypatch.setattr("subprocess.Popen", popen)
         _qapp()
         results: list = []
-        worker = mt._StressWorker("stressapptest", 1)
-        worker.done.connect(lambda ok, out: results.append((ok, out)))
+        worker = mt._StressWorker("stressapptest", 1, io.BytesIO())
+        worker.done.connect(lambda verdict, out: results.append((verdict, out)))
 
         def refuse(*_a, **_kw):
             raise MemoryBudgetUnavailable("/proc/meminfo lacks MemAvailable")
@@ -129,14 +146,40 @@ class TestStressWorkerRun:
         monkeypatch.setattr(mt, "memory_budget", refuse)
         worker.run()
         assert not popen.called
-        assert results == [(False, "/proc/meminfo lacks MemAvailable")]
+        assert results == [("No verdict", "/proc/meminfo lacks MemAvailable")]
 
-    def test_stress_ng_uses_returncode(self, monkeypatch):
-        results = _run_worker(monkeypatch, "stress-ng --vm", proc=_proc(returncode=0))
-        assert results[0][0] is True
-        results = _run_worker(monkeypatch, "stress-ng --vm", proc=_proc(returncode=3))
-        assert results[0][0] is False
+    def test_stress_ng_passes_only_on_a_clean_exit(self, monkeypatch):
+        results = _run_worker(monkeypatch, "stress-ng --vm", proc=_proc(stdout="", returncode=0))
+        assert results[0][0] == "PASS"
+        results = _run_worker(monkeypatch, "stress-ng --vm", proc=_proc(stdout="", returncode=3))
+        assert results[0][0] == "No verdict"
+        assert "exit 3" in results[0][1]
 
+    @pytest.mark.req("EC.G9")
+    @pytest.mark.req("EC.G9")
+    def test_a_finding_that_is_not_silicon_gives_no_verdict_naming_it(self, monkeypatch):
+        said = "Status: FAIL - test encountered procedural errors\n"
+        results = _run_worker(monkeypatch, "stressapptest", proc=_proc(stdout=said, returncode=1))
+        assert results[0] == ("No verdict", "Status: FAIL - test encountered procedural errors")
+
+    def test_the_reason_survives_the_tabs_cut_of_a_long_output(self, monkeypatch):
+        long = "x" * 2000
+        results = _run_worker(monkeypatch, "stress-ng --vm", proc=_proc(stdout=long, returncode=-9))
+        assert "killed by signal 9" in results[0][1][-500:]
+
+    def test_an_out_of_memory_kill_is_no_pass(self, monkeypatch):
+        results = _run_worker(monkeypatch, "stress-ng --vm", proc=_proc(stdout="", returncode=-9))
+        assert results[0][0] == "No verdict"
+        assert "killed by signal 9" in results[0][1]
+
+    @pytest.mark.req("EC.G9")
+    def test_a_stress_ng_verify_failure_fails(self, monkeypatch):
+        failed = "stress-ng: fail:  [4211] vm: detected 3 bit errors while stressing memory\n"
+        results = _run_worker(monkeypatch, "stress-ng --vm", proc=_proc(stdout=failed, returncode=2))
+        assert results[0][0] == "FAIL"
+        assert "detected 3 bit errors" in results[0][1]
+
+    @pytest.mark.req("EC.G9")
     def test_timeout_kills_process_group_then_collects(self, monkeypatch):
         proc = _proc(timeout_first=True)
         monkeypatch.setattr("os.getpgid", lambda _pid: 999)
@@ -144,20 +187,42 @@ class TestStressWorkerRun:
         monkeypatch.setattr("os.killpg", lambda pgid, s: killed.append((pgid, s)))
         results = _run_worker(monkeypatch, "stressapptest", proc=proc)
         assert killed and killed[0][0] == 999
-        assert results[0][0] is True
+        assert results[0][0] == "No verdict"
+        assert "did not stop" in results[0][1]
 
     def test_launch_failure_is_reported(self, monkeypatch):
         results = _run_worker(monkeypatch, "stressapptest", popen_error=OSError("no binary"))
-        assert results[0][0] is False
+        assert results[0][0] == "No verdict"
         assert "no binary" in results[0][1]
 
 
 class TestStressWorkerStop:
+    @pytest.mark.req("EC.G9")
+    def test_a_stop_by_the_user_says_stopped(self, monkeypatch):
+        import corecycler.gui.memory_tab as mt
+
+        _qapp()
+        proc = _proc(stdout="", returncode=-9)
+        worker = mt._StressWorker("stress-ng --vm", 1, io.BytesIO())
+        results: list = []
+        worker.done.connect(lambda verdict, _out: results.append(verdict))
+        monkeypatch.setattr("os.getpgid", lambda _pid: 999)
+        monkeypatch.setattr("os.killpg", lambda *_a: None)
+
+        def stopped_while_running(timeout=None):
+            worker.stop()
+            return ("", "")
+
+        proc.communicate.side_effect = stopped_while_running
+        monkeypatch.setattr("subprocess.Popen", MagicMock(return_value=proc))
+        worker.run()
+        assert results == ["Stopped"]
+
     def _worker(self, proc):
         import corecycler.gui.memory_tab as mt
 
         _qapp()
-        worker = mt._StressWorker("stressapptest", 1)
+        worker = mt._StressWorker("stressapptest", 1, io.BytesIO())
         worker._process = proc
         return worker
 
@@ -199,3 +264,17 @@ class TestStressWorkerStop:
         monkeypatch.setattr("os.getpgid", MagicMock(side_effect=ProcessLookupError))
         self._worker(proc).stop()
         proc.wait.assert_not_called()
+
+
+@pytest.mark.req("EC.real")
+@pytest.mark.parametrize(
+    ("tool", "captured"),
+    [("stress-ng --vm", "stress-ng-0.22.01-vm-clean.txt"), ("stressapptest", "stressapptest-1.0.11-clean.txt")],
+)
+def test_the_memory_test_passes_a_real_clean_run(tool, captured):
+    from pathlib import Path
+
+    from corecycler.gui.memory_tab import memory_verdict
+
+    output = (Path(__file__).parent / "fixtures" / "backends" / captured).read_text()
+    assert memory_verdict(tool, output, 0) == ("PASS", output)

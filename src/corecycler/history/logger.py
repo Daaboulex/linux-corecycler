@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from corecycler.history.context import capture_system_context, find_or_create_context
 from corecycler.history.db import (
+    SAMPLE_BLOCK_S,
     CoreResultRecord,
     EventRecord,
     HistoryDB,
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
     from corecycler.engine.backends.base import StressResult
     from corecycler.engine.scheduler import CoreTestStatus
     from corecycler.engine.topology import CPUTopology
+    from corecycler.monitor.hwmon import CoreRead
     from corecycler.smu.driver import RyzenSMU
 
 log = logging.getLogger(__name__)
@@ -39,7 +41,7 @@ class TestRunLogger:
     ``TestWorker`` signals, and discard it in ``_on_worker_finished()``.
     """
 
-    __test__ = False  # Not a pytest test class
+    __test__ = False
 
     def __init__(
         self,
@@ -50,19 +52,19 @@ class TestRunLogger:
     ) -> None:
         self._db = db
         self._start_time = time.monotonic()
-        self._active_result_ids: dict[int, int] = {}  # core_id → core_results.id
+        self._unwritten: list[TelemetrySample] = []
+        self._unwritten_since = self._start_time
+        self._result_id_by_core: dict[int, int] = {}
 
-        # Capture tuning context (CO offsets, BIOS version, PBO state)
         ctx = capture_system_context(smu=smu, num_cores=topology.physical_cores)
         context_id = find_or_create_context(db, ctx)
         log.info(
-            "Tuning context %d: BIOS=%s, CO hash=%s",
-            context_id,
+            "Tuning context %s: BIOS=%s, CO hash=%s",
+            "none" if context_id is None else context_id,
             ctx.bios_version,
             ctx.co_hash[:12] if ctx.co_hash else "none",
         )
 
-        # snapshot settings as JSON
         settings_json = json.dumps(asdict(profile), default=str)
 
         run = RunRecord(
@@ -92,10 +94,6 @@ class TestRunLogger:
     def run_id(self) -> int:
         return self._run_id
 
-    # ------------------------------------------------------------------
-    # Signal handlers (wire to TestWorker signals)
-    # ------------------------------------------------------------------
-
     def on_core_started(self, core_id: int, cycle: int) -> None:
         rec = CoreResultRecord(
             run_id=self._run_id,
@@ -103,7 +101,7 @@ class TestRunLogger:
             cycle=cycle,
         )
         result_id = self._db.insert_core_result(rec)
-        self._active_result_ids[core_id] = result_id
+        self._result_id_by_core[core_id] = result_id
 
         self._db.insert_event(
             EventRecord(
@@ -115,7 +113,7 @@ class TestRunLogger:
         )
 
     def on_core_finished(self, core_id: int, result: StressResult) -> None:
-        result_id = self._active_result_ids.pop(core_id, None)
+        result_id = self._result_id_by_core.pop(core_id, None)
         if result_id is None:
             return
 
@@ -123,17 +121,18 @@ class TestRunLogger:
             result_id,
             finished_at=HistoryDB._now_iso(),
             passed=result.passed,
-            error_message=result.error_message,
-            error_type=result.error_type,
+            error_message=None if result.passed else result.detail,
+            error_type=None if result.passed else result.outcome.value,
             elapsed_seconds=result.duration_seconds,
             iterations_completed=result.iterations_completed,
+            output=result.output,
         )
 
         event_type = "core_finish" if result.passed else "error"
         state = "PASS" if result.passed else "FAIL"
         msg = f"Core {core_id} {state}"
-        if result.error_message:
-            msg += f": {result.error_message}"
+        if not result.passed:
+            msg += f": {result.detail}"
 
         self._db.insert_event(
             EventRecord(
@@ -145,7 +144,7 @@ class TestRunLogger:
         )
 
     def on_status_updated(self, core_id: int, status: CoreTestStatus) -> None:
-        result_id = self._active_result_ids.get(core_id)
+        result_id = self._result_id_by_core.get(core_id)
         if result_id is None:
             return
         self._db.update_core_result(
@@ -163,15 +162,14 @@ class TestRunLogger:
         )
 
     def on_test_completed(self, results_json: str) -> None:
-        # Fail closed: a logging slot must never crash the GUI on a malformed or
-        # unexpectedly-shaped results payload.
+        self.write_telemetry()
         try:
             results = json.loads(results_json)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return
         if not isinstance(results, dict):
             return
-        tested = {k: v for k, v in results.items() if v}  # only cores with results
+        tested = {k: v for k, v in results.items() if v}
         total = len(tested)
         passed = sum(
             1
@@ -191,6 +189,7 @@ class TestRunLogger:
         )
 
     def on_test_stopped(self) -> None:
+        self.write_telemetry()
         elapsed = time.monotonic() - self._start_time
         self._db.finish_run(
             self._run_id,
@@ -205,10 +204,6 @@ class TestRunLogger:
             )
         )
 
-    # ------------------------------------------------------------------
-    # Telemetry recording (called from _poll_core_telemetry)
-    # ------------------------------------------------------------------
-
     def record_telemetry_sample(
         self,
         core_id: int,
@@ -216,19 +211,34 @@ class TestRunLogger:
         temp_c: float | None,
         vcore_v: float | None,
         effective_max_mhz: float | None = None,
+        core_read: CoreRead | None = None,
     ) -> None:
-        self._db.insert_telemetry_batch(
-            [
-                TelemetrySample(
-                    run_id=self._run_id,
-                    core_id=core_id,
-                    freq_mhz=freq_mhz,
-                    effective_max_mhz=effective_max_mhz,
-                    temp_c=temp_c,
-                    vcore_v=vcore_v,
-                )
-            ]
+        _, clock, effective, c0, volts = core_read if core_read is not None else (None, None, None, None, None)
+        now = time.monotonic()
+        if not self._unwritten:
+            self._unwritten_since = now
+        self._unwritten.append(
+            TelemetrySample(
+                run_id=self._run_id,
+                core_id=core_id,
+                timestamp=HistoryDB._now_iso(),
+                freq_mhz=freq_mhz,
+                effective_max_mhz=effective_max_mhz,
+                temp_c=temp_c,
+                vcore_v=vcore_v,
+                pm_clock_mhz=clock,
+                pm_effective_mhz=effective,
+                pm_c0_pct=c0,
+                pm_volts=volts,
+            )
         )
+        if now - self._unwritten_since >= SAMPLE_BLOCK_S:
+            self.write_telemetry()
+
+    def write_telemetry(self) -> None:
+        if self._unwritten:
+            self._db.insert_telemetry_block(self._unwritten)
+            self._unwritten = []
 
     def update_core_telemetry_peaks(
         self,
@@ -239,9 +249,8 @@ class TestRunLogger:
         min_vcore_v: float | None = None,
         max_vcore_v: float | None = None,
     ) -> None:
-        result_id = self._active_result_ids.get(core_id)
+        result_id = self._result_id_by_core.get(core_id)
         if result_id is None:
-            # Core already finished — look up the last result for this core
             return
         kwargs = {}
         if peak_freq_mhz is not None:
@@ -254,10 +263,6 @@ class TestRunLogger:
             kwargs["max_vcore_v"] = max_vcore_v
         if kwargs:
             self._db.update_core_result(result_id, **kwargs)
-
-    # ------------------------------------------------------------------
-    # Event helpers
-    # ------------------------------------------------------------------
 
     def record_phase_change(self, core_id: int, phase: str) -> None:
         self._db.insert_event(

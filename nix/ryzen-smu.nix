@@ -1,23 +1,10 @@
-# ryzen_smu kernel module — exposes AMD SMU interface for Curve Optimizer,
-# PBO limits, boost override, and PM table access.
-#
-# Supports both GCC and Clang/LLVM kernels (auto-detected from kernel makeFlags).
-# Source: https://github.com/amkillam/ryzen_smu (amkillam fork with Zen 5 support)
 {
   lib,
-  stdenv,
   fetchFromGitHub,
   kernel,
-  llvmPackages_latest,
 }:
 let
-  kernelUsesLLVM = builtins.any (
-    flag:
-    builtins.match ".*LLVM=1.*" (toString flag) != null
-    || builtins.match ".*CC=clang.*" (toString flag) != null
-  ) (kernel.makeFlags or [ ]);
-
-  buildStdenv = if kernelUsesLLVM then llvmPackages_latest.stdenv else stdenv;
+  toolchain = import ./kernel-toolchain.nix { inherit lib; } kernel;
 
   version = "0.1.7-unstable-2026-08-15";
 
@@ -28,34 +15,23 @@ let
     hash = "sha256-OmEoycRO3hGkqueLa0i6AzmwMEbdkkPrwJkMyYxOTek=";
   };
 in
-buildStdenv.mkDerivation {
+toolchain.stdenv.mkDerivation {
   pname = "ryzen-smu-${kernel.version}";
   inherit version src;
 
   hardeningDisable = [ "pic" ];
 
-  nativeBuildInputs =
-    kernel.moduleBuildDependencies
-    ++ lib.optionals kernelUsesLLVM [
-      llvmPackages_latest.lld
+  inherit (toolchain) nativeBuildInputs installFlags installTargets;
+
+  makeFlags =
+    toolchain.makeFlags
+    ++ [
+      "TARGET=${kernel.modDirVersion}"
+      "KERNEL_BUILD=${toolchain.build}"
+    ]
+    ++ lib.optionals toolchain.isClang [
+      "KCFLAGS=-Wno-unused-command-line-argument"
     ];
-
-  makeFlags = [
-    "TARGET=${kernel.modDirVersion}"
-    "KERNEL_BUILD=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
-  ]
-  ++ lib.optionals kernelUsesLLVM [
-    "LLVM=1"
-    "CC=clang"
-    "LD=ld.lld"
-    "KCFLAGS=-Wno-unused-command-line-argument"
-  ];
-
-  installPhase = ''
-    runHook preInstall
-    install ryzen_smu.ko -Dm444 -t $out/lib/modules/${kernel.modDirVersion}/kernel/drivers/ryzen_smu
-    runHook postInstall
-  '';
 
   meta = {
     description = "Linux kernel driver that exposes access to the SMU for AMD Ryzen Processors";

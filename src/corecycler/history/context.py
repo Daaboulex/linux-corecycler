@@ -14,24 +14,28 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from corecycler.history.db import TuningContextRecord
+from corecycler.smu import pmtable
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from corecycler.history.db import HistoryDB
     from corecycler.smu.driver import RyzenSMU
 
 log = logging.getLogger(__name__)
 
 BIOS_VERSION_PATH = Path("/sys/class/dmi/id/bios_version")
+UNREADABLE = "unreadable: "
 
 
 def read_bios_version(path: Path = BIOS_VERSION_PATH) -> str:
-    """Read BIOS version from DMI sysfs. Returns '' if unavailable."""
+    """The BIOS version from DMI sysfs: '' on a machine without one, "unreadable: <reason>" when the read fails."""
     try:
-        if path.exists():
-            return path.read_text().strip()
-    except OSError:
-        log.debug("Could not read BIOS version from %s", path)
-    return ""
+        return path.read_text().strip()
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        return f"{UNREADABLE}{exc.strerror}"
 
 
 def compute_co_hash(
@@ -78,29 +82,15 @@ def capture_system_context(
     ppt = tdc = edc = None
 
     if smu is not None and num_cores > 0:
-        try:
-            co_offsets = smu.get_all_co_offsets(num_cores)
-        except Exception:
-            log.warning("Failed to read CO offsets from SMU", exc_info=True)
-
-        try:
-            pbo_scalar = smu.get_pbo_scalar()
-        except Exception:
-            log.debug("Failed to read PBO scalar", exc_info=True)
-
-        try:
-            boost_limit = smu.get_boost_limit()
-        except Exception:
-            log.debug("Failed to read boost limit", exc_info=True)
-
-        # PBO power limits are part of the stability environment: the same CO
-        # profile can be stable at PPT 200 W and unstable at 230 W.
-        try:
-            from corecycler.smu.pmtable import read_power_limits
-
-            ppt, tdc, edc = read_power_limits(num_cores)
-        except Exception:
-            log.debug("Failed to read PBO power limits", exc_info=True)
+        co_offsets = smu.get_all_co_offsets(num_cores)
+        pbo_scalar = smu.get_pbo_scalar()
+        boost_limit = smu.get_boost_limit()
+        ppt, tdc, edc = pmtable.read_power_limits()
+        unread = sorted(core for core, value in co_offsets.items() if value is None)
+        if unread and smu.commands.has_co:
+            log.warning(
+                "Tuning context: the CO of cores %s could not be read, so they are left out of its identity", unread
+            )
 
     co_hash = compute_co_hash(co_offsets, (ppt, tdc, edc))
     co_json = json.dumps(
@@ -120,29 +110,40 @@ def capture_system_context(
     )
 
 
-def find_or_create_context(db: HistoryDB, ctx: TuningContextRecord) -> int:
-    """Find an existing context matching (co_hash, bios_version), or create one.
-
-    Returns the context id.
-    """
+def find_or_create_context(db: HistoryDB, ctx: TuningContextRecord) -> int | None:
+    """The id of the context matching (co_hash, bios_version), created when new; None when the BIOS version could
+    not be read, which is no context of its own."""
+    if ctx.bios_version.startswith(UNREADABLE):
+        return None
     existing = db.get_context_by_hash(ctx.co_hash, ctx.bios_version)
     if existing is not None:
         return existing.id
     return db.create_context(ctx)
 
 
-def detect_bios_change(
-    db: HistoryDB,
-    bios_path: Path = BIOS_VERSION_PATH,
-) -> tuple[bool, str, str]:
-    """Check if BIOS version changed since the most recent tuning context.
-
-    Returns (changed, old_version, current_version).
-    If no previous contexts exist, returns (False, '', current).
-    """
+def detect_bios_change(db: HistoryDB, bios_path: Path = BIOS_VERSION_PATH) -> str | None:
+    """The History warning about the BIOS version against the newest tuning context, or None when there is none."""
     current = read_bios_version(bios_path)
-    contexts = db.list_contexts(limit=1)
-    if not contexts:
-        return False, "", current
-    old = contexts[0].bios_version
-    return old != current, old, current
+    if current.startswith(UNREADABLE):
+        return f"BIOS version {current}, so a change cannot be judged"
+    contexts = db.list_contexts()
+    if not contexts or contexts[0].bios_version == current:
+        return None
+    earlier = last_recorded_bios(contexts)
+    if earlier == current:
+        return None
+    if bios_change_judged(earlier, current):
+        return f"BIOS changed: {earlier} -> {current}"
+    if earlier:
+        return f"BIOS version absent, {earlier} recorded before, so a change cannot be judged"
+    return f"BIOS version {current}, none recorded before, so a change cannot be judged"
+
+
+def last_recorded_bios(contexts: Sequence[TuningContextRecord]) -> str:
+    """The newest BIOS version among contexts given newest first, skipping any that recorded none; "" if none did."""
+    return next((ctx.bios_version for ctx in contexts if ctx.bios_version), "")
+
+
+def bios_change_judged(earlier: str, now: str) -> bool:
+    """Whether two recorded BIOS versions show a change: never when either one is missing."""
+    return bool(earlier and now) and earlier != now

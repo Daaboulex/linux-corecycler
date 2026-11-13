@@ -8,6 +8,7 @@ re-proven before its verdicts are trusted.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import time
 
@@ -84,8 +85,8 @@ def test_each_mode_produces_its_own_fft_path(mode, tmp_path):
         observed = containment.observed_tree_cpus(proc.pid)
         assert observed and observed <= set(CPUS), f"{mode.name}: threads on {sorted(observed)}, allowed {CPUS}"
     finally:
-        execution.kill_process_group(proc)
-        backend.cleanup(tmp_path)
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=10)
 
 
 def _flags_in_help(binary_key: str, names: tuple[str, ...], flags: set[str]) -> None:
@@ -113,6 +114,7 @@ def test_stress_ng_still_documents_every_flag_the_backend_uses():
         "stress-ng",
         ("stress-ng",),
         {
+            "--abort",
             "--cpu",
             "--cpu-method",
             "--verify",

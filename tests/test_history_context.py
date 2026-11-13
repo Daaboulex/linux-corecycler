@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import errno
+import hashlib
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -30,7 +33,7 @@ class TestComputeCoHash:
         h1 = compute_co_hash({0: -30, 1: -20, 2: -25})
         h2 = compute_co_hash({0: -30, 1: -20, 2: -25})
         assert h1 == h2
-        assert len(h1) == 64  # SHA-256 hex
+        assert len(h1) == len(hashlib.sha256().hexdigest())
 
     def test_order_independent(self):
         h1 = compute_co_hash({0: -30, 1: -20})
@@ -62,6 +65,12 @@ class TestReadBiosVersion:
 
     def test_missing_file(self, tmp_path):
         assert read_bios_version(tmp_path / "nonexistent") == ""
+
+    @pytest.mark.req("T22.F19")
+    def test_a_version_that_cannot_be_read_says_unreadable_with_its_reason(self, tmp_path):
+        bios = tmp_path / "bios_version"
+        bios.mkdir()
+        assert read_bios_version(bios) == f"unreadable: {os.strerror(errno.EISDIR)}"
 
     def test_strips_whitespace(self, tmp_path):
         bios_file = tmp_path / "bios_version"
@@ -152,28 +161,68 @@ class TestDetectBiosChange:
     def test_no_previous_contexts(self, db, tmp_path):
         bios_file = tmp_path / "bios_version"
         bios_file.write_text("2101")
-        changed, old, current = detect_bios_change(db, bios_path=bios_file)
-        assert changed is False
-        assert old == ""
-        assert current == "2101"
+        assert detect_bios_change(db, bios_path=bios_file) is None
 
     def test_same_bios(self, db, tmp_path):
         db.create_context(TuningContextRecord(bios_version="2101"))
 
         bios_file = tmp_path / "bios_version"
         bios_file.write_text("2101")
-        changed, old, current = detect_bios_change(db, bios_path=bios_file)
-        assert changed is False
+        assert detect_bios_change(db, bios_path=bios_file) is None
 
     def test_different_bios(self, db, tmp_path):
-        db.create_context(TuningContextRecord(bios_version="2101"))
+        old, new = "2101", "2201"
+        db.create_context(TuningContextRecord(bios_version=old))
 
         bios_file = tmp_path / "bios_version"
-        bios_file.write_text("2201")
-        changed, old, current = detect_bios_change(db, bios_path=bios_file)
-        assert changed is True
-        assert old == "2101"
-        assert current == "2201"
+        bios_file.write_text(new)
+        assert detect_bios_change(db, bios_path=bios_file) == f"BIOS changed: {old} -> {new}"
+
+    @pytest.mark.req("T22.F19")
+    @pytest.mark.parametrize(
+        ("stored", "read", "said"),
+        [
+            ("", "F12", "BIOS version F12, none recorded before, so a change cannot be judged"),
+            ("F12", "", "BIOS version absent, F12 recorded before, so a change cannot be judged"),
+        ],
+        ids=["not-recorded-before", "absent-now"],
+    )
+    def test_a_version_missing_on_either_side_says_so_and_judges_no_change(self, db, tmp_path, stored, read, said):
+        db.create_context(TuningContextRecord(bios_version=stored))
+        bios = tmp_path / "bios_version"
+        if read:
+            bios.write_text(f"{read}\n")
+        assert detect_bios_change(db, bios_path=bios) == said
+
+    @pytest.mark.req("T22.F19")
+    @pytest.mark.parametrize(
+        ("read", "said"), [("F11", None), ("F12", "BIOS changed: F11 -> F12")], ids=["same", "moved"]
+    )
+    def test_a_newest_context_without_a_version_is_judged_against_the_last_recorded(self, db, tmp_path, read, said):
+        db.create_context(TuningContextRecord(bios_version="F11"))
+        db.create_context(TuningContextRecord(bios_version=""))
+        bios = tmp_path / "bios_version"
+        bios.write_text(f"{read}\n")
+        assert detect_bios_change(db, bios_path=bios) == said
+
+    @pytest.mark.req("T22.F19")
+    @pytest.mark.parametrize("stored", ["F12", ""])
+    def test_a_version_that_cannot_be_read_says_so_and_judges_no_change(self, db, tmp_path, stored):
+        db.create_context(TuningContextRecord(bios_version=stored))
+        bios = tmp_path / "bios_version"
+        bios.mkdir()
+        reason = os.strerror(errno.EISDIR)
+        assert detect_bios_change(db, bios_path=bios) == (
+            f"BIOS version unreadable: {reason}, so a change cannot be judged"
+        )
+
+    @pytest.mark.req("T22.F19")
+    def test_a_version_that_cannot_be_read_is_no_tuning_context(self, db, tmp_path):
+        db.create_context(TuningContextRecord(bios_version="F12"))
+        bios = tmp_path / "bios_version"
+        bios.mkdir()
+        assert find_or_create_context(db, capture_system_context(bios_path=bios)) is None
+        assert [ctx.bios_version for ctx in db.list_contexts()] == ["F12"]
 
 
 class TestPowerLimitsInContext:
@@ -209,7 +258,7 @@ class TestPowerLimitsInContext:
         import corecycler.smu.pmtable as pmtable_mod
         from corecycler.history.context import capture_system_context
 
-        monkeypatch.setattr(pmtable_mod, "read_power_limits", lambda n: (225.0, 190.0, 230.0))
+        monkeypatch.setattr(pmtable_mod, "read_power_limits", lambda: (225.0, 190.0, 230.0))
         smu = MagicMock()
         smu.get_all_co_offsets.return_value = {0: -30}
         smu.get_pbo_scalar.return_value = 1.0
@@ -218,7 +267,6 @@ class TestPowerLimitsInContext:
         assert ctx.ppt_limit_w == 225.0
         assert ctx.tdc_limit_a == 190.0
         assert ctx.edc_limit_a == 230.0
-        # And the identity reflects them.
         from corecycler.history.context import compute_co_hash
 
         assert ctx.co_hash == compute_co_hash({0: -30}, (225.0, 190.0, 230.0))

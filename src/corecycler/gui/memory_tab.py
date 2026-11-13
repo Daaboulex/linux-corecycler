@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+from pathlib import Path
+from typing import TYPE_CHECKING, BinaryIO
 
-from PySide6.QtCore import QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QThread, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QComboBox,
@@ -24,30 +26,83 @@ from PySide6.QtWidgets import (
 )
 
 from corecycler.config import tools
-from corecycler.config.settings import load_settings
 from corecycler.engine import execution
-from corecycler.engine.backends.base import KILLED_BY_US_CODES
+from corecycler.engine.backends.base import OutcomeKind
+from corecycler.engine.backends.stress_ng import StressNgBackend
 from corecycler.engine.backends.stressapptest import StressapptestBackend
+from corecycler.engine.heavy_test_lock import HeavyTestRefused, take_heavy_test_lock
 from corecycler.engine.memory_budget import memory_budget
 from corecycler.gui.style import theme
 from corecycler.monitor.memory import DIMMInfo, SPD5118Reader, read_dimm_info
-from corecycler.smu.pmtable import PMTableReader, compute_fclk_uclk_ratio
+from corecycler.smu.pmtable import compute_fclk_uclk_ratio
+
+if TYPE_CHECKING:
+    from corecycler.monitor.tick import Tick
 
 log = logging.getLogger(__name__)
 
 PART_NUMBER_COL = 6
 
 
+PASS = "PASS"
+FAIL = "FAIL"
+STOPPED = "Stopped"
+NO_VERDICT = "No verdict"
+
+
+def memory_verdict(tool: str, output: str, returncode: int) -> tuple[str, str]:
+    backend = StressapptestBackend() if tool == "stressapptest" else StressNgBackend()
+    findings = backend.findings(output, Path())
+    silicon = [signal.text for signal in findings if signal.outcome.kind is OutcomeKind.SILICON]
+    if silicon:
+        return FAIL, "\n".join(silicon)
+    if findings:
+        return NO_VERDICT, "\n".join(signal.text for signal in findings)
+    clean = "Status: PASS" in output if tool == "stressapptest" else returncode == 0
+    if clean:
+        return PASS, output
+    ended = f"killed by signal {-returncode}" if returncode < 0 else f"exit {returncode}"
+    return NO_VERDICT, f"{output}\n{tool} ended with {ended} and reported no result"
+
+
+def _dimm_temperature(address: str, temp: float | None) -> str:
+    return f"DIMM at {address}: unread" if temp is None else f"DIMM at {address}: {temp:.1f}C"
+
+
+def _dimm_summary(dimms: list[DIMMInfo]) -> str:
+    total_gb = sum(d.size_gb for d in dimms)
+    types = "/".join(sorted({d.mem_type for d in dimms if d.mem_type})) or "type unread"
+    speeds = "/".join(f"{s} MT/s" for s in sorted({d.configured_speed_mt for d in dimms if d.configured_speed_mt}))
+    widths = [(d.data_width, d.total_width) for d in dimms if d.data_width and d.total_width]
+    ecc = "ECC unread" if not widths else "ECC" if any(total > data for data, total in widths) else "Non-ECC"
+    ranks = "/".join(f"{r}R" for r in sorted({d.rank for d in dimms if d.rank}))
+    return " ".join(part for part in (f"{len(dimms)} DIMMs | {total_gb} GB", types, speeds, ecc, ranks) if part)
+
+
+def _spd_unread(reader: SPD5118Reader) -> str:
+    if not reader.is_available():
+        return "no spd5118 sensor is loaded"
+    if not reader.eeprom_count:
+        return "the spd5118 sensors expose no EEPROM"
+    return "no SPD EEPROM could be read as DDR5"
+
+
+def _clock(name: str, mhz: float) -> tuple[str, str]:
+    return (f"{name}: {mhz:.0f} MHz", "") if mhz > 0 else (f"{name}: --", f"color: {theme.COLOR_MUTED};")
+
+
 class _StressWorker(QThread):
-    """Runs memory stress test in background."""
+    """Runs the memory stress test in the background and lets the shared heavy-test lock go when the run ends."""
 
-    done = Signal(bool, str)
+    done = Signal(str, str)
 
-    def __init__(self, tool: str, duration_minutes: int, parent=None) -> None:
+    def __init__(self, tool: str, duration_minutes: int, lock: BinaryIO, parent=None) -> None:
         super().__init__(parent)
         self._tool = tool
         self._duration = duration_minutes
+        self._lock = lock
         self._process: subprocess.Popen | None = None
+        self._stopped = False
 
     def run(self) -> None:
         import contextlib
@@ -56,10 +111,11 @@ class _StressWorker(QThread):
 
         try:
             seconds = self._duration * 60
+            window = seconds + 60  # equivalent-mutant: the grace past the tool's own timeout is a choice
             if self._tool == "stressapptest":
                 budget = memory_budget(1, StressapptestBackend.minimum_memory_mb(os.cpu_count() or 1))
                 if not budget.fits:
-                    self.done.emit(False, f"Not enough free memory for stressapptest: {budget.describe()}")
+                    self.done.emit(NO_VERDICT, f"Not enough free memory for stressapptest: {budget.describe()}")
                     return
                 cmd = [
                     tools.command_name("stressapptest"),
@@ -81,9 +137,12 @@ class _StressWorker(QThread):
                     f"{seconds}s",
                 ]
             else:
-                self.done.emit(False, f"Unknown tool: {self._tool}")
+                self.done.emit(NO_VERDICT, f"Unknown tool: {self._tool}")
                 return
 
+            if self._stopped:
+                self.done.emit(STOPPED, "")
+                return
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -91,23 +150,32 @@ class _StressWorker(QThread):
                 text=True,
                 preexec_fn=execution.make_preexec(),
             )
+            if self._stopped:
+                with contextlib.suppress(OSError, ProcessLookupError):
+                    os.killpg(os.getpgid(self._process.pid), sig.SIGKILL)
+            overran = False
             try:
-                stdout, stderr = self._process.communicate(timeout=seconds + 60)
+                stdout, stderr = self._process.communicate(timeout=window)
             except subprocess.TimeoutExpired:
+                overran = True
                 with contextlib.suppress(OSError, ProcessLookupError):
                     os.killpg(os.getpgid(self._process.pid), sig.SIGKILL)
                 stdout, stderr = self._process.communicate()
 
-            if self._tool == "stressapptest":
-                passed = "Status: PASS" in stdout
+            output = stdout + stderr
+            if self._stopped:
+                self.done.emit(STOPPED, output)
+            elif overran:
+                self.done.emit(NO_VERDICT, f"{self._tool} did not stop within {window} s and was killed")
             else:
-                passed = self._process.returncode == 0 or self._process.returncode in KILLED_BY_US_CODES
-            output = (stdout + stderr)[-500:]
-            self.done.emit(passed, output)
+                self.done.emit(*memory_verdict(self._tool, output, self._process.returncode))
         except Exception as e:
-            self.done.emit(False, str(e))
+            self.done.emit(NO_VERDICT, str(e))
+        finally:
+            self._lock.close()
 
     def stop(self) -> None:
+        self._stopped = True
         proc = self._process
         if proc is None or proc.poll() is not None:
             return
@@ -123,35 +191,26 @@ class MemoryTab(QWidget):
     """Memory information tab showing DIMM details and live temperatures."""
 
     memory_stress_started = Signal()
-    memory_stress_done = Signal(bool)  # passed
+    memory_stress_done = Signal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, pm_available: bool, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._dimms: list[DIMMInfo] = []
         self._spd_reader = SPD5118Reader()
-        self._pm_reader = PMTableReader()
+        self._pm_available = pm_available
         self._stress_worker: _StressWorker | None = None
         self._external_test_running: bool = False
         self._setup_ui()
         self._load_dimm_info()
         self._update_spd_labels()
 
-        # Unified timer for PM table + DIMM temperature polling
-        self._update_timer = QTimer(self)
-        self._update_timer.timeout.connect(self._update_live_data)
-        if self._pm_reader.is_available() or self._spd_reader.is_available():
-            settings = load_settings()
-            self._update_timer.start(int(settings.poll_interval * 1000))
-
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # Memory Controller group box (PM Table data)
         self._mc_group = QGroupBox("Memory Controller (PM Table)")
         mc_layout = QVBoxLayout(self._mc_group)
 
-        # Clock row: FCLK, UCLK, MCLK, ratio
         clk_row = QHBoxLayout()
         self._fclk_label = QLabel("FCLK: --")
         self._fclk_label.setFont(QFont("monospace", 10))
@@ -168,7 +227,6 @@ class MemoryTab(QWidget):
         clk_row.addStretch()
         mc_layout.addLayout(clk_row)
 
-        # Voltage row: VDD, VDDQ
         volt_row = QHBoxLayout()
         self._vdd_label = QLabel("VDD: --")
         self._vdd_label.setFont(QFont("monospace", 10))
@@ -179,19 +237,16 @@ class MemoryTab(QWidget):
         volt_row.addStretch()
         mc_layout.addLayout(volt_row)
 
-        # Calibration status
         self._cal_label = QLabel("")
         self._cal_label.setStyleSheet(f"color: {theme.COLOR_MUTED}; font: 9px monospace;")
         mc_layout.addWidget(self._cal_label)
 
-        # Driver-missing message (hidden by default)
         self._mc_missing_label = QLabel("Requires ryzen_smu driver")
         self._mc_missing_label.setStyleSheet(f"color: {theme.COLOR_MUTED}; font: 10px monospace; padding: 8px;")
         self._mc_missing_label.setVisible(False)
         mc_layout.addWidget(self._mc_missing_label)
 
-        if not self._pm_reader.is_available():
-            # Hide clock/voltage rows, show driver-missing message
+        if not self._pm_available:
             self._fclk_label.setVisible(False)
             self._uclk_label.setVisible(False)
             self._mclk_label.setVisible(False)
@@ -203,7 +258,6 @@ class MemoryTab(QWidget):
 
         layout.addWidget(self._mc_group)
 
-        # SPD Timings group box (DDR5 EEPROM data, cached at startup)
         self._spd_group = QGroupBox("SPD Timings — JEDEC Base Profile (DDR5)")
         self._spd_group.setToolTip(
             "JEDEC base profile timings from SPD EEPROM. XMP/EXPO overclocking profiles are not stored in SPD."
@@ -223,11 +277,12 @@ class MemoryTab(QWidget):
 
         self._summary_label = QLabel("Loading DIMM information...")
         self._summary_label.setFont(QFont("monospace", 11, QFont.Weight.Bold))
+        self._summary_label.setWordWrap(True)
         layout.addWidget(self._summary_label)
 
-        # Dependency status
         self._deps_label = QLabel("")
         self._deps_label.setStyleSheet(f"color: {theme.COLOR_MUTED}; font: 9px monospace;")
+        self._deps_label.setWordWrap(True)
         layout.addWidget(self._deps_label)
 
         self._temp_group = QGroupBox("DIMM Temperatures (SPD5118)")
@@ -264,7 +319,6 @@ class MemoryTab(QWidget):
         refresh_btn.clicked.connect(self._load_dimm_info)
         layout.addWidget(refresh_btn)
 
-        # Stress test controls
         stress_group = QGroupBox("Memory Stress Test")
         stress_layout = QHBoxLayout(stress_group)
 
@@ -277,7 +331,7 @@ class MemoryTab(QWidget):
 
         stress_layout.addWidget(QLabel("Tool:"))
         self._stress_tool = QComboBox()
-        self._stress_tool.addItems(self._detect_available_tools())
+        self._refill_tools()
         stress_layout.addWidget(self._stress_tool)
 
         self._stress_btn = QPushButton("Run")
@@ -312,25 +366,9 @@ class MemoryTab(QWidget):
         return available
 
     def _load_dimm_info(self) -> None:
-        self._dimms = read_dimm_info()
+        self._dimms, why = read_dimm_info()
         self._populate_table()
-
-        if self._dimms:
-            total_gb = sum(d.size_gb for d in self._dimms)
-            types = set(d.mem_type for d in self._dimms)
-            speeds = set(d.configured_speed_mt for d in self._dimms if d.configured_speed_mt)
-            type_str = "/".join(sorted(types)) if types else "Unknown"
-            speed_str = "/".join(f"{s} MT/s" for s in sorted(speeds)) if speeds else ""
-            # Detect ECC: total_width > data_width means ECC bits present
-            has_ecc = any(d.total_width > d.data_width for d in self._dimms if d.total_width and d.data_width)
-            ecc_str = "ECC" if has_ecc else "Non-ECC"
-            rank_set = set(d.rank for d in self._dimms if d.rank)
-            rank_str = f"{max(rank_set)}R" if rank_set else ""
-            self._summary_label.setText(
-                f"{len(self._dimms)} DIMMs | {total_gb} GB {type_str} {speed_str} {ecc_str} {rank_str}".rstrip()
-            )
-        else:
-            self._summary_label.setText("No DIMM info available (dmidecode requires root)")
+        self._summary_label.setText(_dimm_summary(self._dimms) if self._dimms else f"No DIMM info: {why}")
 
         if self._spd_reader.is_available():
             temps = self._spd_reader.read_temperatures()
@@ -339,20 +377,26 @@ class MemoryTab(QWidget):
             for lbl in self._temp_labels:
                 lbl.deleteLater()
             self._temp_labels.clear()
-            for i, temp in enumerate(temps):
-                lbl = QLabel(f"DIMM {i + 1}: {temp:.1f}C")
+            for address, temp in zip(self._spd_reader.addresses, temps, strict=True):
+                lbl = QLabel(_dimm_temperature(address, temp))
                 lbl.setFont(QFont("monospace", 10))
                 lbl.setStyleSheet("padding: 4px;")
                 temp_layout.addWidget(lbl)
                 self._temp_labels.append(lbl)
 
-        # Update dependency status
         deps = []
         for key in ("dmidecode", "stressapptest", "stress-ng"):
             deps.append(f"{key}: " + ("found" if tools.resolve(key).path else "missing"))
         deps.append("spd5118: " + ("available" if self._spd_reader.is_available() else "not loaded"))
-        deps.append("ryzen_smu: " + ("available" if self._pm_reader.is_available() else "not loaded"))
+        deps.append("ryzen_smu: " + ("available" if self._pm_available else "no PM table when the app started"))
         self._deps_label.setText("  |  ".join(deps))
+        self._refill_tools()
+
+    def _refill_tools(self) -> None:
+        chosen = self._stress_tool.currentText()
+        self._stress_tool.clear()
+        self._stress_tool.addItems(self._detect_available_tools())
+        self._stress_tool.setCurrentIndex(max(self._stress_tool.findText(chosen), 0))
 
     def _update_spd_labels(self) -> None:
         """Populate SPD timing labels from cached EEPROM data."""
@@ -360,7 +404,7 @@ class MemoryTab(QWidget):
         if spd is None:
             self._primary_label.setVisible(False)
             self._secondary_label.setVisible(False)
-            self._spd_unavailable_label.setText("SPD Timings unavailable \u2014 spd5118 eeprom not exposed")
+            self._spd_unavailable_label.setText(f"SPD Timings unavailable \u2014 {_spd_unread(self._spd_reader)}")
             self._spd_unavailable_label.setVisible(True)
             self._spd_group.setTitle("SPD Timings — JEDEC Base Profile (DDR5)")
             return
@@ -369,8 +413,7 @@ class MemoryTab(QWidget):
         self._secondary_label.setVisible(True)
         self._spd_unavailable_label.setVisible(False)
 
-        dimm_num = spd.dimm_index + 1
-        self._spd_group.setTitle(f"SPD Timings — JEDEC Base Profile (DDR5) (DIMM {dimm_num})")
+        self._spd_group.setTitle(f"SPD Timings — JEDEC Base Profile (DDR5) (DIMM at {spd.source})")
 
         self._primary_label.setText(f"Primary: {spd.tCL}-{spd.tRCD}-{spd.tRP}-{spd.tRAS}-{spd.tRC}")
 
@@ -386,11 +429,11 @@ class MemoryTab(QWidget):
             items = [
                 f"{d.locator} ({d.bank_locator})" if d.bank_locator else d.locator,
                 f"{d.size_gb} GB",
-                d.mem_type,
+                d.mem_type or "-",
                 f"{d.speed_mt} MT/s" if d.speed_mt else "-",
                 f"{d.configured_speed_mt} MT/s" if d.configured_speed_mt else "-",
-                d.manufacturer,
-                d.part_number,
+                d.manufacturer or "-",
+                d.part_number or "-",
                 d.serial_number or "-",
                 str(d.rank) if d.rank else "-",
                 d.form_factor or "-",
@@ -402,19 +445,16 @@ class MemoryTab(QWidget):
 
     def _update_temperatures(self) -> None:
         temps = self._spd_reader.read_temperatures()
-        for i, temp in enumerate(temps):
-            if i < len(self._temp_labels):
-                self._temp_labels[i].setText(f"DIMM {i + 1}: {temp:.1f}C")
+        for label, address, temp in zip(self._temp_labels, self._spd_reader.addresses, temps, strict=True):
+            label.setText(_dimm_temperature(address, temp))
 
-    def _update_live_data(self) -> None:
-        """Read PM table and DIMM temps in one tick."""
-        # PM table (controller clocks + voltages)
-        if self._pm_reader.is_available():
-            pm_data = self._pm_reader.read()
+    def on_tick(self, tick: Tick) -> None:
+        if self._pm_available:
+            pm_data = tick.pm
             if pm_data is not None and pm_data.is_calibrated:
                 self._update_clock_labels(pm_data)
                 self._update_voltage_labels(pm_data)
-                if pm_data.is_verified:
+                if pm_data.offsets_verified:
                     self._cal_label.setText(f"PM Table v{pm_data.pm_table_version:#010x} \u2014 Verified")
                 else:
                     self._cal_label.setText(
@@ -425,17 +465,18 @@ class MemoryTab(QWidget):
             else:
                 self._set_clocks_unavailable()
 
-        # DIMM temperatures (SPD5118 hwmon)
         if self._spd_reader.is_available():
             self._update_temperatures()
 
     def _update_clock_labels(self, pm_data) -> None:
-        self._fclk_label.setText(f"FCLK: {pm_data.fclk_mhz:.0f} MHz")
-        self._uclk_label.setText(f"UCLK: {pm_data.uclk_mhz:.0f} MHz")
-        self._mclk_label.setText(f"MCLK: {pm_data.mclk_mhz:.0f} MHz")
-        self._fclk_label.setStyleSheet("")
-        self._uclk_label.setStyleSheet("")
-        self._mclk_label.setStyleSheet("")
+        for label, name, mhz in (
+            (self._fclk_label, "FCLK", pm_data.fclk_mhz),
+            (self._uclk_label, "UCLK", pm_data.uclk_mhz),
+            (self._mclk_label, "MCLK", pm_data.mclk_mhz),
+        ):
+            text, style = _clock(name, mhz)
+            label.setText(text)
+            label.setStyleSheet(style)
         ratio = compute_fclk_uclk_ratio(pm_data.fclk_mhz, pm_data.uclk_mhz)
         if ratio is not None:
             self._ratio_label.setText(f"FCLK:UCLK {ratio[0]}:{ratio[1]}")
@@ -499,20 +540,25 @@ class MemoryTab(QWidget):
                 "No memory stress tools installed.\nInstall stressapptest or stress-ng.",
             )
             return
+        try:
+            lock = take_heavy_test_lock("corecycler-gui")
+        except HeavyTestRefused as refused:
+            QMessageBox.warning(self, "Cannot Start", f"Cannot start: {refused}")
+            return
         duration = self._stress_duration.value()
         self._stress_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
         self._stress_duration.setEnabled(False)
         self._stress_tool.setEnabled(False)
         self._stress_status.setText(f"Running {tool} for {duration}min...")
-        self._stress_worker = _StressWorker(tool, duration, parent=self)
+        self._stress_worker = _StressWorker(tool, duration, lock, parent=self)
         self._stress_worker.done.connect(self._on_stress_done)
         self.memory_stress_started.emit()
         self._stress_worker.start()
 
     def _stop_memory_stress(self) -> None:
-        self._stop_btn.setEnabled(False)
         """Stop the running memory stress test."""
+        self._stop_btn.setEnabled(False)
         if self._stress_worker and self._stress_worker.isRunning():
             self._stress_status.setText("Stopping...")
             self._stress_worker.stop()
@@ -525,15 +571,15 @@ class MemoryTab(QWidget):
             if self._stress_worker.isRunning():
                 self._stress_worker.terminate()
 
-    @Slot(bool, str)
-    def _on_stress_done(self, passed: bool, output: str) -> None:
+    @Slot(str, str)
+    def _on_stress_done(self, verdict: str, output: str) -> None:
         self._stress_btn.setEnabled(not self._external_test_running)
         self._stop_btn.setEnabled(False)
         self._stress_duration.setEnabled(True)
         self._stress_tool.setEnabled(True)
-        status = "PASS" if passed else "FAIL"
-        self._stress_status.setText(f"Result: {status}")
-        self.memory_stress_done.emit(passed)
-        # Strip ANSI escape sequences before displaying
+        self._stress_status.setText(f"Result: {verdict}")
+        self.memory_stress_done.emit()
+        if verdict == STOPPED:
+            return
         clean_output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", output[-500:])
-        QMessageBox.information(self, f"Memory Stress: {status}", clean_output)
+        QMessageBox.information(self, f"Memory Stress: {verdict}", clean_output)

@@ -7,48 +7,40 @@ import math
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
+
+    from corecycler.monitor.hwmon import CoreRead
 
 log = logging.getLogger(__name__)
 
 SYSFS_BASE = Path("/sys/kernel/ryzen_smu_drv")
 
 
-# ===========================================================================
-# Version-aware PM table offset registry
-# ===========================================================================
-
-
 @dataclass(frozen=True, slots=True)
 class PMTableOffsets:
     """Named byte offsets for a specific PM table version.
 
-    Offsets are in bytes (not float indices). A value of -1 means the
-    field is not available for this version. ``verified`` is True only for
+    Offsets are in bytes (not float indices). vdd_mem is None where the
+    version has no such field. ``verified`` is True only for
     offsets confirmed against real silicon; it defaults to False so an
     unconfirmed entry fails closed (surfaced as community-sourced, never as
     Verified).
     """
 
     table_size: int
-    fclk: int  # byte offset
+    fclk: int
     uclk: int
     mclk: int
     vddcr_soc: int
-    cldo_vddp: int
-    cldo_vddg_iod: int  # -1 if not available
-    cldo_vddg_ccd: int  # -1 if not available
-    vdd_misc: int
-    vdd_mem: int  # -1 if not calibrated
-    verified: bool = False  # True only if confirmed on real hardware
+    vddq: int
+    vdd_mem: int | None
+    verified: bool = False
 
 
-# Exact version match only. No Zen 4 prefix fallback: version 0x540208 uses a
-# +4-byte-shifted layout, so guessing by the 0x54 family would misread every
-# field. Source: ZenStates-Core PowerTable.cs. ``verified`` marks offsets
-# confirmed on real silicon; an unverified entry still parses but is gated by
-# the runtime plausibility check in PMTableReader.read() and never labelled
-# "Verified".
-# VDD_MEM at 0x0A8; VDDQ at 0x0E8 (per-channel pair at 0x0E8/0x0EC).
+# ZenStates-Core PowerTable.cs offsets. No 0x54 prefix fallback, 0x540208 shifts every field by 4 bytes.
 PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
     0x620205: PMTableOffsets(
         table_size=0x994,
@@ -56,10 +48,7 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         uclk=0x12C,
         mclk=0x13C,
         vddcr_soc=0x14C,
-        cldo_vddp=0x434,
-        cldo_vddg_iod=0x40C,
-        cldo_vddg_ccd=0x414,
-        vdd_misc=0xE8,
+        vddq=0xE8,
         vdd_mem=0x0A8,
         verified=True,
     ),
@@ -69,11 +58,8 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         uclk=0x12C,
         mclk=0x13C,
         vddcr_soc=0x14C,
-        cldo_vddp=0x434,
-        cldo_vddg_iod=0x40C,
-        cldo_vddg_ccd=0x414,
-        vdd_misc=0xE8,
-        vdd_mem=-1,
+        vddq=0xE8,
+        vdd_mem=None,
         verified=True,
     ),
     0x621202: PMTableOffsets(
@@ -82,10 +68,7 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         uclk=0x12C,
         mclk=0x13C,
         vddcr_soc=0x14C,
-        cldo_vddp=0x434,
-        cldo_vddg_iod=0x40C,
-        cldo_vddg_ccd=0x414,
-        vdd_misc=0xE8,
+        vddq=0xE8,
         vdd_mem=0x0A8,
         verified=True,
     ),
@@ -95,59 +78,47 @@ PM_TABLE_OFFSETS: dict[int, PMTableOffsets] = {
         uclk=0x12C,
         mclk=0x13C,
         vddcr_soc=0x14C,
-        cldo_vddp=0x434,
-        cldo_vddg_iod=0x40C,
-        cldo_vddg_ccd=0x414,
-        vdd_misc=0xE8,
-        vdd_mem=-1,
+        vddq=0xE8,
+        vdd_mem=None,
         verified=True,
     ),
-    # Zen 4 (Raphael, e.g. 7700X). Offsets from ZenStates-Core PowerTable.cs,
-    # whose Zen4 block is commented "offsets are not verified yet" — a single
-    # source with no independent corroboration (ryzen_smu / ryzen_monitor /
-    # RyzenAdj do not implement Raphael desktop). Shipped unverified; read()'s
-    # plausibility gate fails closed if these offsets decode nonsensical values.
+    # Zen 4 offsets from ZenStates-Core PowerTable.cs, which marks them unverified.
     0x540104: PMTableOffsets(
         table_size=0x6A8,
         fclk=0x118,
         uclk=0x128,
         mclk=0x138,
         vddcr_soc=0xD0,
-        cldo_vddp=0x430,
-        cldo_vddg_iod=-1,
-        cldo_vddg_ccd=-1,
-        vdd_misc=0xE0,
-        vdd_mem=-1,
+        vddq=0xE0,
+        vdd_mem=None,
         verified=False,
     ),
 }
 
-# Zen 5 version prefix for fallback matching (0x62xxxx family).
 _ZEN5_PREFIX = 0x62
 
-# Generic Zen 5 offsets used when exact version is not in PM_TABLE_OFFSETS
-# but the version prefix matches Zen 5. A family guess, so verified=False.
+
+def _version_prefix(version: int) -> int:
+    return (version >> 16) & 0xFF
+
+
 _ZEN5_GENERIC = PMTableOffsets(
     table_size=0x994,
     fclk=0x11C,
     uclk=0x12C,
     mclk=0x13C,
     vddcr_soc=0x14C,
-    cldo_vddp=0x434,
-    cldo_vddg_iod=0x40C,
-    cldo_vddg_ccd=0x414,
-    vdd_misc=0xE8,
-    vdd_mem=-1,
+    vddq=0xE8,
+    vdd_mem=None,
     verified=False,
 )
 
-# Generous physical bounds for the runtime plausibility gate. A field is
-# accepted when it is zero (absent for this version/state) or finite and within
-# range; anything else means the offset map decoded non-telemetry bytes.
+_RATIO_ROUND_MHZ = 100
 _CLOCK_MIN_MHZ = 200.0
 _CLOCK_MAX_MHZ = 6000.0
 _VOLT_MIN_V = 0.3
 _VOLT_MAX_V = 2.0
+_WATT_MAX_W = 1000.0
 
 
 def _plausible(value: float, lo: float, hi: float) -> bool:
@@ -157,14 +128,72 @@ def _plausible(value: float, lo: float, hi: float) -> bool:
     return math.isfinite(value) and lo <= value <= hi
 
 
+def package_watts(data: PMTableData) -> tuple[tuple[str, float | None], ...]:
+    if _version_prefix(data.pm_table_version) != _ZEN5_PREFIX:
+        return ()
+    value = data.package_power_w
+    return (("pm_table:package", value if value != 0.0 and _plausible(value, 0.0, _WATT_MAX_W) else None),)
+
+
+def rail_volts(data: PMTableData) -> tuple[tuple[str, float | None], ...]:
+    if _version_prefix(data.pm_table_version) != _ZEN5_PREFIX:
+        return ()
+    readings = (("pm_table:vdd", data.vdd_v), ("pm_table:vdd_vid", data.vdd_vid_v))
+    return tuple(
+        (source, value if value != 0.0 and _plausible(value, _VOLT_MIN_V, _VOLT_MAX_V) else None)
+        for source, value in readings
+    )
+
+
+CORE_TABLE_VERSION = 0x620205
+CORE_COUNT = 16
+MEASURED_CORE_IDS = frozenset(range(CORE_COUNT))
+CORE_ARRAYS = (
+    ("clock MHz", 349, 0.0, 6.5, 1000.0),
+    ("effective MHz", 365, 0.0, 6.5, 1000.0),
+    ("C0 %", 381, 0.0, 100.0, 1.0),
+    ("volts", 317, _VOLT_MIN_V, _VOLT_MAX_V, 1.0),
+)
+
+
+LOADED_C0_PCT = 95.0
+
+
+def stretch_pct(clock_mhz: float | None, effective_mhz: float | None, c0_pct: float | None) -> float | None:
+    """How far a loaded core's effective clock falls below the clock it runs at, in percent, or None unless the
+    core sat in C0 at LOADED_C0_PCT or more, where the hour probe of design/clock-stretch.md measured it."""
+    if not clock_mhz or not effective_mhz or c0_pct is None or c0_pct < LOADED_C0_PCT:
+        return None
+    return max(0.0, 1.0 - effective_mhz / (clock_mhz * c0_pct / 100.0)) * 100.0
+
+
+def core_reads(data: PMTableData, core_ids: Collection[int]) -> tuple[CoreRead, ...]:
+    """Each core's clock, effective clock, C0 and voltage on table 0x620205 only, each array at its first float,
+    and only on a machine whose core ids are 0 to 15, the layout whose index-to-core mapping was measured."""
+    if set(core_ids) != MEASURED_CORE_IDS:
+        return ()
+    floats = data.raw_floats
+    if data.pm_table_version != CORE_TABLE_VERSION or len(floats) < max(i for _, i, *_ in CORE_ARRAYS) + CORE_COUNT:
+        return ()
+
+    def read(first: int, lo: float, hi: float, scale: float, core: int) -> float | None:
+        value = floats[first + core]
+        return value * scale if math.isfinite(value) and lo <= value <= hi else None
+
+    return tuple(
+        (core, *(read(first, lo, hi, scale, core) for _, first, lo, hi, scale in CORE_ARRAYS))
+        for core in range(CORE_COUNT)
+    )
+
+
 def _find_prefix_offsets(version: int) -> PMTableOffsets | None:
     """Find offset map by version prefix family.
 
     For Zen 5 (0x62xxxx), clock offsets are consistent across all known
-    versions, so prefix fallback is safe for clocks. Voltage offsets
-    (especially vdd_mem) are conservative (-1).
+    versions, so prefix fallback is safe for clocks; vdd_mem, which the
+    versions do not share, is None.
     """
-    prefix = (version >> 16) & 0xFF
+    prefix = _version_prefix(version)
     if prefix == _ZEN5_PREFIX:
         return _ZEN5_GENERIC
     return None
@@ -180,63 +209,46 @@ def _read_float(raw: bytes, byte_offset: int) -> float:
     return struct.unpack_from("<f", raw, byte_offset)[0]
 
 
-# ===========================================================================
-# PM table data
-# ===========================================================================
-
-
 @dataclass(slots=True)
 class PMTableData:
     """Parsed PM table telemetry values."""
 
-    # per-core data
-    core_frequency_mhz: dict[int, float] = field(default_factory=dict)
-    core_voltage_v: dict[int, float] = field(default_factory=dict)
-    core_temperature_c: dict[int, float] = field(default_factory=dict)
-    core_power_w: dict[int, float] = field(default_factory=dict)
-    core_c0_residency: dict[int, float] = field(default_factory=dict)
-
-    # package-level
     package_power_w: float = 0.0
-    soc_power_w: float = 0.0
     ppt_limit_w: float = 0.0
     tdc_limit_a: float = 0.0
     edc_limit_a: float = 0.0
     ppt_value_w: float = 0.0
     tdc_value_a: float = 0.0
-    edc_value_a: float = 0.0
+    edc_value_a: float | None = None
     tctl_c: float = 0.0
-    tdie_c: float = 0.0
 
-    # memory controller clocks and voltages (version-aware parsing)
     fclk_mhz: float = 0.0
     uclk_mhz: float = 0.0
     mclk_mhz: float = 0.0
     vddcr_soc_v: float = 0.0
     vdd_mem_v: float = 0.0
     vddq_v: float = 0.0
+    vdd_vid_v: float = 0.0
+    vdd_v: float = 0.0
     pm_table_version: int = 0
     is_calibrated: bool = False
-    is_verified: bool = False  # offsets confirmed on real silicon (not just sourced)
+    offsets_verified: bool = False
 
     raw_floats: list[float] = field(default_factory=list)
 
 
-# Physical bounds for PBO limit plausibility (fail closed to None on garbage).
 _PPT_MIN_W, _PPT_MAX_W = 30.0, 1000.0
 _AMP_MIN_A, _AMP_MAX_A = 30.0, 2000.0
 
 
-def read_power_limits(
-    num_cores: int = 16, sysfs_path: Path | None = None
-) -> tuple[float | None, float | None, float | None]:
+def read_power_limits(sysfs_path: Path | None = None) -> tuple[float | None, float | None, float | None]:
     """Read the live PBO power limits (PPT W, TDC A, EDC A) from the PM table.
 
     Fails closed: unsupported generation, unreadable table, or an implausible
     decoded value yields None for that field — a wrong number stored as a
     limit would poison every context comparison built on it.
     """
-    reader = PMTableReader(num_cores, sysfs_path) if sysfs_path is not None else PMTableReader(num_cores)
+    reader = PMTableReader(sysfs_path) if sysfs_path is not None else PMTableReader()
     data = reader.read()
     if data is None:
         return None, None, None
@@ -251,11 +263,6 @@ def read_power_limits(
         _gate(data.tdc_limit_a, _AMP_MIN_A, _AMP_MAX_A),
         _gate(data.edc_limit_a, _AMP_MIN_A, _AMP_MAX_A),
     )
-
-
-# ===========================================================================
-# FCLK:UCLK ratio computation
-# ===========================================================================
 
 
 def compute_fclk_uclk_ratio(fclk_mhz: float, uclk_mhz: float) -> tuple[int, int] | None:
@@ -274,30 +281,23 @@ def compute_fclk_uclk_ratio(fclk_mhz: float, uclk_mhz: float) -> tuple[int, int]
         return None
     from math import gcd
 
-    # Round to nearest 100 MHz to handle measurement noise
-    f = round(fclk_mhz / 100)
-    u = round(uclk_mhz / 100)
+    f = round(fclk_mhz / _RATIO_ROUND_MHZ)
+    u = round(uclk_mhz / _RATIO_ROUND_MHZ)
     if f <= 0 or u <= 0:
         return None
     g = gcd(f, u)
     return (f // g, u // g)
 
 
-# ===========================================================================
-# PM table reader
-# ===========================================================================
-
-
 class PMTableReader:
     """Reads the SMU PM table for live telemetry data.
 
     Supports version-aware dispatch: reads pm_table_version from sysfs and
-    selects the correct offset map for known CPU generations. Falls back to
-    legacy approximate parsing for unknown versions.
+    selects the correct offset map for known CPU generations. A version
+    outside every known family parses nothing but the raw floats.
     """
 
-    def __init__(self, num_cores: int = 16, sysfs_path: Path = SYSFS_BASE) -> None:
-        self.num_cores = num_cores
+    def __init__(self, sysfs_path: Path = SYSFS_BASE) -> None:
         self.sysfs = sysfs_path
 
     def is_available(self) -> bool:
@@ -318,13 +318,11 @@ class PMTableReader:
         if len(raw) < 4:
             return None
 
-        # PM table is an array of 32-bit floats
         num_floats = len(raw) // 4
         floats = list(struct.unpack(f"<{num_floats}f", raw[: num_floats * 4]))
 
         data = PMTableData(raw_floats=floats)
 
-        # Try version-aware dispatch
         version = self._read_pm_table_version()
         if version is not None:
             data.pm_table_version = version
@@ -335,11 +333,8 @@ class PMTableReader:
                 self._parse_versioned(data, raw, offsets)
                 if self._memory_values_plausible(data):
                     data.is_calibrated = True
-                    data.is_verified = offsets.verified
+                    data.offsets_verified = offsets.verified
                 else:
-                    # Fail closed: a wrong offset map decoded garbage. Don't
-                    # present it as calibrated; blank the suspect fields so the
-                    # GUI shows "--" rather than nonsense.
                     log.warning(
                         "PM table v%#010x decoded implausible memory values "
                         "(fclk=%.1f uclk=%.1f mclk=%.1f vddcr_soc=%.3f) — "
@@ -351,9 +346,7 @@ class PMTableReader:
                         data.vddcr_soc_v,
                     )
                     self._blank_memory_values(data)
-            # else: unknown version, is_calibrated stays False
 
-        # Always parse legacy core-level data (per-core freq/voltage/temp/power)
         self._parse_granite_ridge(data, floats)
 
         return data
@@ -378,10 +371,9 @@ class PMTableReader:
         data.uclk_mhz = _read_float(raw, offsets.uclk)
         data.mclk_mhz = _read_float(raw, offsets.mclk)
         data.vddcr_soc_v = _read_float(raw, offsets.vddcr_soc)
-        if offsets.vdd_mem >= 0:
+        if offsets.vdd_mem is not None:
             data.vdd_mem_v = _read_float(raw, offsets.vdd_mem)
-        if offsets.vdd_misc >= 0:
-            data.vddq_v = _read_float(raw, offsets.vdd_misc)
+        data.vddq_v = _read_float(raw, offsets.vddq)
 
     @staticmethod
     def _memory_values_plausible(data: PMTableData) -> bool:
@@ -411,7 +403,7 @@ class PMTableReader:
         data.vdd_mem_v = 0.0
         data.vddq_v = 0.0
         data.is_calibrated = False
-        data.is_verified = False
+        data.offsets_verified = False
 
     def _parse_granite_ridge(self, data: PMTableData, floats: list[float]) -> None:
         """Parse PM table core arrays plus the Zen 5 power/thermal header.
@@ -427,30 +419,13 @@ class PMTableReader:
         if len(floats) < 200:
             return
 
-        if (data.pm_table_version >> 16) & 0xFF == _ZEN5_PREFIX:
+        if _version_prefix(data.pm_table_version) == _ZEN5_PREFIX:
             data.ppt_limit_w = floats[2]
             data.ppt_value_w = floats[3]
             data.tdc_limit_a = floats[8]
             data.tdc_value_a = floats[9]
             data.edc_limit_a = floats[63]
-            data.edc_value_a = 0.0  # value slot not located — absent, not a guess
             data.tctl_c = floats[11]
-            data.tdie_c = 0.0  # not located — absent, not a guess
-            # PPT value IS the package power the limit governs.
-            data.package_power_w = floats[3]
-            data.soc_power_w = 0.0  # not located — absent, not a guess
-
-        # per-core data typically starts around offset 100+
-        # each core has ~10 float fields (freq, voltage, power, temp, residency, ...)
-        core_base = 100
-        core_stride = 10
-
-        for core in range(min(self.num_cores, 32)):
-            offset = core_base + core * core_stride
-            if offset + core_stride > len(floats):
-                break
-            data.core_frequency_mhz[core] = floats[offset]
-            data.core_voltage_v[core] = floats[offset + 1]
-            data.core_power_w[core] = floats[offset + 2]
-            data.core_temperature_c[core] = floats[offset + 3]
-            data.core_c0_residency[core] = floats[offset + 4]
+            data.package_power_w = data.ppt_value_w
+            data.vdd_vid_v = floats[48]
+            data.vdd_v = floats[49]

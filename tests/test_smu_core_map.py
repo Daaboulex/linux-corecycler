@@ -26,7 +26,7 @@ from corecycler.smu.commands import (
     CPUGeneration,
     get_commands,
 )
-from corecycler.smu.driver import RyzenSMU, SMUResponse, core_map_blocked
+from corecycler.smu.driver import RyzenSMU, SMUResponse, core_map_blocked, physical_ccds
 
 VERMEER = get_commands(CPUGeneration.ZEN3_VERMEER)
 ZEN5 = get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE)
@@ -52,13 +52,24 @@ class _FakeSilicon:
     a ccd absent from ``live`` has no readable fuse.
     """
 
-    def __init__(self, smu: RyzenSMU, commands, live: dict[int, set[int]], *, smn: bool = True) -> None:
+    def __init__(
+        self,
+        smu: RyzenSMU,
+        commands,
+        live: dict[int, set[int]],
+        *,
+        smn: bool = True,
+        ccd_words: tuple[int | None, int | None] | None = None,
+    ) -> None:
         self.commands = commands
         self.live = live
         self.store: dict[tuple[int, int], int] = {}
         self.writes: list[tuple[int, int, int]] = []
         self.get_calls: list[tuple[int, int]] = []
         self.fuse_reads: list[int] = []
+        self.ccd_reads: list[int] = []
+        present = sum(1 << ccd for ccd in live) or 1
+        self.ccd_words = (present << 22, 0) if ccd_words is None else ccd_words
         smu._send_command = self._send
         smu._send_rsmu_command = self._send
         smu.check_writable = lambda: (True, "OK")
@@ -66,6 +77,10 @@ class _FakeSilicon:
         smu.read_smn = self._read_smn
 
     def _read_smn(self, address: int) -> int | None:
+        ccd_fuses = self.commands.ccd_fuse_addr
+        if ccd_fuses is not None and address in (ccd_fuses, ccd_fuses + 4):
+            self.ccd_reads.append(address)
+            return self.ccd_words[address - ccd_fuses >> 2]
         self.fuse_reads.append(address)
         base = self.commands.core_fuse_addr
         ccd = (address - base) >> 25
@@ -97,9 +112,17 @@ class _FakeSilicon:
         return SMUResponse(success=True, args=(0,) * 6, raw=b"")
 
 
-def _mapped_smu(commands, cores: dict[int, int], live: dict[int, set[int]], *, smn: bool = True, **kw):
+def _mapped_smu(
+    commands,
+    cores: dict[int, int],
+    live: dict[int, set[int]],
+    *,
+    smn: bool = True,
+    ccd_words: tuple[int | None, int | None] | None = None,
+    **kw,
+):
     smu = RyzenSMU(commands, MagicMock(), **kw)
-    silicon = _FakeSilicon(smu, commands, live, smn=smn)
+    silicon = _FakeSilicon(smu, commands, live, smn=smn, ccd_words=ccd_words)
     smu.set_topology(_topo(cores))
     return smu, silicon
 
@@ -110,6 +133,129 @@ def _fuse_addr(commands, ccd: int) -> int:
 
 REPORTED_5600X_LIVE_SLOTS = {0, 1, 4, 5, 6, 7}
 REPORTED_5600GE_FUSE_WORD = 0x281C70
+PR23_5600X_CCD_WORDS = (0x40C00000, 0x3F)
+PR23_5950X_CCD_WORDS = (0x00C00000, 0x3F)
+
+
+def pr23_5600x(_commands=None) -> RyzenSMU:
+    """The PR #23 5600X's driver: CCD 0 fused off, its six cores on topology CCD 0 and physical CCD 1."""
+    smu, _silicon = _mapped_smu(
+        VERMEER, dict.fromkeys(range(6), 0), {1: REPORTED_5600X_LIVE_SLOTS}, ccd_words=PR23_5600X_CCD_WORDS
+    )
+    return smu
+
+
+class TestPhysicalCcd:
+    """PR #23 (iam4x): the topology numbers CCDs by the rank of their L3 id, so on a Vermeer whose physical CCD 0
+    is fused off the surviving CCD 1 is group 0; the CCD-disable fuses name the physical CCD. Words read on the
+    PR's 5600X."""
+
+    def test_the_reported_5600x_maps_its_group_onto_physical_ccd_1(self):
+        smu, silicon = _mapped_smu(
+            VERMEER, dict.fromkeys(range(6), 0), {1: REPORTED_5600X_LIVE_SLOTS}, ccd_words=PR23_5600X_CCD_WORDS
+        )
+        assert smu.core_map_error is None
+        assert smu.core_map == {0: (1, 0), 1: (1, 1), 2: (1, 4), 3: (1, 5), 4: (1, 6), 5: (1, 7)}
+        assert silicon.fuse_reads == [_fuse_addr(VERMEER, 1)]
+
+    def test_a_write_lands_on_the_surviving_physical_ccd(self):
+        smu, silicon = _mapped_smu(
+            VERMEER, dict.fromkeys(range(6), 0), {1: REPORTED_5600X_LIVE_SLOTS}, ccd_words=PR23_5600X_CCD_WORDS
+        )
+        assert smu.set_co_offset(2, -1) is True
+        assert silicon.writes == [(1, 4, -1)]
+        assert smu.get_co_offset(2) == -1
+
+    def test_a_full_surviving_ccd_is_written_on_its_physical_number(self):
+        smu, silicon = _mapped_smu(
+            VERMEER, dict.fromkeys(range(8), 0), {1: set(range(8))}, ccd_words=PR23_5600X_CCD_WORDS
+        )
+        assert smu.core_map == {core: (1, core) for core in range(8)}
+        assert smu.set_co_offset(3, -2) is True
+        assert silicon.writes == [(1, 3, -2)]
+
+    def test_ccds_2_to_7_count_only_when_the_second_word_leaves_them_enabled(self):
+        every_ccd_enabled_ccd_0_off = (0xFF << 22) | (1 << 30)
+        smu, _silicon = _mapped_smu(
+            VERMEER,
+            dict.fromkeys(range(6), 0),
+            {1: REPORTED_5600X_LIVE_SLOTS},
+            ccd_words=(every_ccd_enabled_ccd_0_off, 0x3F),
+        )
+        assert smu.core_map == {0: (1, 0), 1: (1, 1), 2: (1, 4), 3: (1, 5), 4: (1, 6), 5: (1, 7)}
+        smu, _silicon = _mapped_smu(
+            VERMEER,
+            dict.fromkeys(range(6), 0),
+            {1: REPORTED_5600X_LIVE_SLOTS},
+            ccd_words=(every_ccd_enabled_ccd_0_off, 0x3E),
+        )
+        assert smu.core_map is None
+        assert "active CCDs [1, 2]" in smu.core_map_error
+
+    def test_ccd_1_fused_off_by_bit_31_leaves_the_group_on_ccd_0(self):
+        """The PR's words mirrored, not measured: CCD 0 alive, CCD 1 disabled, as a single-CCD 5600X or 5800X."""
+        smu, silicon = _mapped_smu(
+            VERMEER, dict.fromkeys(range(6), 0), {0: REPORTED_5600X_LIVE_SLOTS}, ccd_words=(0x80C00000, 0x3F)
+        )
+        assert smu.core_map == {0: (0, 0), 1: (0, 1), 2: (0, 4), 3: (0, 5), 4: (0, 6), 5: (0, 7)}
+        assert silicon.fuse_reads == [_fuse_addr(VERMEER, 0)]
+
+    def test_a_5950x_keeps_both_ccds_in_place(self):
+        smu, silicon = _mapped_smu(
+            VERMEER,
+            {core: core // 8 for core in range(16)},
+            {0: set(range(8)), 1: set(range(8))},
+            ccd_words=PR23_5950X_CCD_WORDS,
+        )
+        assert smu.core_map == {core: (core // 8, core % 8) for core in range(16)}
+        assert silicon.fuse_reads == []
+
+    def test_fuses_naming_more_ccds_than_the_os_shows_refuse(self):
+        smu, silicon = _mapped_smu(
+            VERMEER, dict.fromkeys(range(6), 0), {0: REPORTED_5600X_LIVE_SLOTS}, ccd_words=PR23_5950X_CCD_WORDS
+        )
+        assert smu.core_map is None
+        assert "active CCDs [0, 1]" in smu.core_map_error
+        assert smu.set_co_offset(0, -1) is False
+        assert silicon.writes == []
+
+    @pytest.mark.parametrize("words", [(None, 0x3F), (0x40C00000, None)], ids=["present", "down"])
+    def test_an_unreadable_ccd_fuse_refuses(self, words):
+        smu, _silicon = _mapped_smu(VERMEER, dict.fromkeys(range(8), 0), {0: set(range(8))}, ccd_words=words)
+        assert smu.core_map is None
+        assert "CCD-disable fuse read failed" in smu.core_map_error
+
+    def test_a_vermeer_without_smn_access_refuses_even_with_full_ccds(self):
+        smu, silicon = _mapped_smu(VERMEER, dict.fromkeys(range(8), 0), {0: set(range(8))}, smn=False)
+        assert smu.core_map is None
+        assert _SMN_DENIED in smu.core_map_error
+        assert silicon.ccd_reads == []
+
+    def test_granite_ridge_reads_no_fuse_at_all(self):
+        smu, silicon = _mapped_smu(
+            ZEN5, {core: core // 8 for core in range(16)}, {0: set(range(8)), 1: set(range(8))}, smn=False
+        )
+        assert smu.core_map == {core: (core // 8, core % 8) for core in range(16)}
+        assert silicon.fuse_reads == []
+
+    def test_the_5600x_s_cores_read_the_temperature_of_physical_ccd_1(self):
+        """hwmon labels physical CCD i as Tccd(i+1) (k10temp and zenpower5 alike), so these cores read Tccd2."""
+        assert physical_ccds(pr23_5600x(), _topo(dict.fromkeys(range(6), 0))) == dict.fromkeys(range(6), 1)
+
+    def test_a_refused_vermeer_map_keeps_the_topology_s_ccd_so_a_5950x_still_reads_both(self):
+        cores = {core: core // 8 for core in range(16)}
+        smu, _silicon = _mapped_smu(VERMEER, cores, {0: set(range(8)), 1: set(range(8))}, smn=False)
+        assert smu.core_map is None
+        assert physical_ccds(smu, _topo(cores)) == cores
+
+    def test_granite_ridge_keeps_the_topology_s_ccd_even_while_per_core_co_is_refused(self):
+        cores = dict.fromkeys(range(6), 1)
+        smu, _silicon = _mapped_smu(ZEN5, cores, {1: REPORTED_5600X_LIVE_SLOTS}, smn=False)
+        assert smu.core_map is None
+        assert physical_ccds(smu, _topo(cores)) == cores
+
+    def test_without_a_driver_the_topology_s_ccd_stands(self):
+        assert physical_ccds(None, _topo({0: 0, 8: 1, 9: None})) == {0: 0, 8: 1, 9: None}
 
 
 class TestRenumberedHarvested:
@@ -192,12 +338,23 @@ class TestFuseFailClosed:
             assert smu.set_co_offset(0, -5) is False
             assert smu.set_all_co(-5) is False
             assert smu.reset_all_co() is False
-        assert "refused" in caplog.text
+        assert f"CO read refused for core 0: {smu.core_map_error}" in caplog.text
+        assert f"CO write refused for core 0: {smu.core_map_error}" in caplog.text
+        assert silicon.writes == []
+
+    def test_a_core_outside_a_good_map_is_refused_naming_why(self, caplog):
+        smu, silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: REPORTED_5600X_LIVE_SLOTS})
+        assert smu.core_map_error is None
+        with caplog.at_level(logging.ERROR):
+            assert smu.get_co_offset(9) is None
+            assert smu.set_co_offset(9, -5) is False
+        assert "CO read refused for core 9: core is not in the discovered core map" in caplog.text
+        assert "CO write refused for core 9: core is not in the discovered core map" in caplog.text
         assert silicon.writes == []
 
     def test_unreadable_smn_names_the_permission_fix(self):
         smu, silicon = _mapped_smu(
-            VERMEER,
+            ZEN5,
             {c: 0 for c in range(6)},
             {0: REPORTED_5600X_LIVE_SLOTS},
             smn=False,
@@ -262,10 +419,12 @@ class TestFuseFailClosed:
         assert "CCD 1" in smu.core_map_error
         assert reads == [_fuse_addr(CEZANNE, 0)]
 
-    def test_dry_run_refuses_an_unaddressable_write(self):
-        smu, _silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: set(range(8))}, dry_run=True)
+    def test_an_unaddressable_write_is_refused(self):
+        smu, silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: set(range(8))})
+        silicon.writes.clear()
         assert smu.set_co_offset(0, -5) is False
         assert smu.reset_all_co() is False
+        assert silicon.writes == []
 
     def test_unknown_core_id_refuses_instead_of_guessing(self):
         smu, silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: REPORTED_5600X_LIVE_SLOTS})
@@ -325,12 +484,71 @@ class TestGenerationGating:
         assert strix is not None and not strix.uniform_8core_ccds
         smu = RyzenSMU(strix, MagicMock())
         silicon = _FakeSilicon(smu, strix, {0: set(range(8)), 1: set(range(8))})
-        smu.set_topology(_topo({c: (0 if c < 4 else 1) for c in range(12)}))
+        smu.set_topology(_topo({**dict.fromkeys(range(4), 0), **dict.fromkeys(range(8, 16), 1)}))
         assert silicon.fuse_reads == []
         assert smu.core_map is None
         assert smu.core_map_error is None
         assert smu.set_co_offset(9, -5) is True
         assert silicon.writes == [(1, 1, -5)]
+
+    def test_a_strix_point_co_read_out_of_range_refuses_per_core_co_without_a_write(self):
+        """PR #21 (chevydan6): an HX 370 on BIOS FA608WV.309 acknowledges the CO read and returns 600."""
+        strix = get_commands(CPUGeneration.ZEN5_STRIX_POINT)
+        smu = RyzenSMU(strix, MagicMock())
+        silicon = _FakeSilicon(smu, strix, {0: set(range(8)), 1: set(range(8))})
+        silicon.store[(0, 0)] = 600
+        smu.set_topology(_topo({**dict.fromkeys(range(4), 0), **dict.fromkeys(range(8, 16), 1)}))
+        assert "returned 600, outside -50..10" in smu.core_map_error
+        assert smu.get_co_offset(1) is None
+        assert smu.set_co_offset(1, -1) is False
+        assert smu.set_all_co(-1) is False
+        assert silicon.writes == []
+        assert silicon.get_calls == [(0, 0)]
+
+    def test_a_failed_strix_point_co_read_refuses_per_core_co(self):
+        strix = get_commands(CPUGeneration.ZEN5_STRIX_POINT)
+        smu = RyzenSMU(strix, MagicMock())
+        silicon = _FakeSilicon(smu, strix, {0: set(range(8))})
+        sent = []
+
+        def refused(cmd, args=(0,) * 6):
+            sent.append((cmd, args))
+            return SMUResponse(success=False, args=(0,) * 6, raw=b"")
+
+        smu._send_rsmu_command = refused
+        smu.set_topology(_topo({c: 0 for c in range(4)}))
+        assert sent == [(strix.get_co_cmd, (0,))]
+        assert "CO read failed" in smu.core_map_error
+        assert smu.set_co_offset(1, -1) is False
+        assert silicon.writes == []
+
+    def test_a_strix_point_without_mailbox_access_says_so(self):
+        strix = get_commands(CPUGeneration.ZEN5_STRIX_POINT)
+        smu = RyzenSMU(strix, MagicMock())
+        silicon = _FakeSilicon(smu, strix, {0: set(range(8))})
+        smu.check_writable = lambda: (False, "no write permission on mp1_smu_cmd")
+        smu.set_topology(_topo({c: 0 for c in range(4)}))
+        assert "no write permission on mp1_smu_cmd" in smu.core_map_error
+        assert silicon.get_calls == []
+
+    def test_the_strix_point_probe_reads_the_lowest_known_core_where_get_co_offset_would(self):
+        strix = get_commands(CPUGeneration.ZEN5_STRIX_POINT)
+        smu = RyzenSMU(strix, MagicMock())
+        silicon = _FakeSilicon(smu, strix, {1: set(range(8))})
+        silicon.store[(1, 0)] = 600
+        smu.set_topology(_topo({8: 1, 9: 1, 10: 1}))
+        assert silicon.get_calls == [(1, 0)]
+        assert "returned 600" in smu.core_map_error
+
+    @pytest.mark.parametrize("generation", [CPUGeneration.ZEN5_STRIX_HALO, CPUGeneration.ZEN5_GRANITE_RIDGE])
+    def test_only_strix_point_reads_a_co_at_topology_time(self, generation):
+        commands = get_commands(generation)
+        smu = RyzenSMU(commands, MagicMock())
+        silicon = _FakeSilicon(smu, commands, {0: set(range(8)), 1: set(range(8))})
+        silicon.store[(0, 0)] = 600
+        smu.set_topology(_topo({c: c // 8 for c in range(16)}))
+        assert silicon.get_calls == []
+        assert smu.core_map_error is None
 
     def test_zen2_has_no_co_and_no_map(self):
         matisse = get_commands(CPUGeneration.ZEN2_MATISSE)
@@ -386,50 +604,6 @@ class TestKnownCoreDomain:
         assert silicon.store[(0, 6)] == -7
 
 
-class TestTunerRefusesUnmappedSMU:
-    def _engine(self, smu):
-        from corecycler.history.db import HistoryDB
-        from corecycler.tuner.config import TunerConfig
-        from corecycler.tuner.engine import TunerEngine
-
-        topo = MagicMock()
-        topo.cores = {c: MagicMock(ccd=0, logical_cpus=(c,)) for c in range(4)}
-        topo.model_name = "Test"
-        db = HistoryDB(":memory:")
-        engine = TunerEngine(
-            db=db,
-            topology=topo,
-            smu=smu,
-            backend=MagicMock(name="mprime"),
-            config=TunerConfig(cores_to_test=[0, 1], inherit_current=False),
-        )
-        return engine, db
-
-    def test_start_refuses_with_the_map_error(self):
-        smu, _silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: set(range(8))})
-        engine, db = self._engine(smu)
-        messages: list[str] = []
-        engine.log_message.connect(messages.append)
-        engine.start()
-        db.close()
-        assert engine._session_id is None
-        assert any("Cannot start" in m and "disagrees with the OS" in m for m in messages)
-
-    def test_resume_refuses_with_the_map_error(self):
-        smu, _silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: set(range(8))})
-        engine, db = self._engine(smu)
-        from corecycler.tuner import persistence as tp
-        from corecycler.tuner.config import TunerConfig
-
-        session_id = tp.create_session(db, TunerConfig(), "bios-1.0", "Test", None)
-        messages: list[str] = []
-        engine.log_message.connect(messages.append)
-        engine.resume(session_id)
-        db.close()
-        assert engine._status != "running"
-        assert any("Cannot resume" in m for m in messages)
-
-
 class TestNoL3Grouping:
     def test_window_grouping_reads_the_window_ccd_fuse(self):
         smu = RyzenSMU(VERMEER, MagicMock())
@@ -454,8 +628,8 @@ class TestNoL3Grouping:
 
 class TestCliRefusal:
     def test_build_smu_prints_reason_and_returns_none(self, monkeypatch, capsys):
-        from corecycler import cli
         from corecycler.engine.topology import CPUTopology, PhysicalCore
+        from corecycler.tuner import live_hw
 
         monkeypatch.setattr(drv.RyzenSMU, "is_available", staticmethod(lambda *a, **k: True))
         monkeypatch.setattr(
@@ -466,45 +640,8 @@ class TestCliRefusal:
         topo = CPUTopology(model_name="AMD Ryzen 5 5600X 6-Core Processor", family=25, model=0x21)
         for cid in range(6):
             topo.cores[cid] = PhysicalCore(core_id=cid, ccd=0, ccx=None, logical_cpus=(cid,))
-        assert cli._build_smu(topo) is None
+        assert live_hw.build_smu(topo) is None
         assert "per-core CO disabled" in capsys.readouterr().err
-
-
-class TestTunerEndToEndOnRenumbered:
-    def test_engine_traffic_lands_on_mapped_slots(self, monkeypatch, tmp_path):
-        from corecycler.history.db import HistoryDB
-        from corecycler.tuner import engine as eng_mod
-        from corecycler.tuner.config import TunerConfig
-        from corecycler.tuner.engine import TunerEngine
-
-        smu, silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: REPORTED_5600X_LIVE_SLOTS})
-        topo = MagicMock()
-        topo.cores = {c: MagicMock(ccd=0, logical_cpus=(c,)) for c in range(6)}
-        topo.model_name = "AMD Ryzen 5 5600X 6-Core Processor"
-        db = HistoryDB(":memory:")
-        backend = MagicMock()
-        backend.name = "mprime"
-        engine = TunerEngine(
-            db=db,
-            topology=topo,
-            smu=smu,
-            backend=backend,
-            config=TunerConfig(cores_to_test=[2, 3], inherit_current=True),
-            work_dir=tmp_path,
-        )
-        monkeypatch.setattr(engine, "_start_worker", MagicMock())
-        monkeypatch.setattr(eng_mod.QTimer, "singleShot", lambda _ms, fn: None)
-        engine.start()
-        assert engine._session_id is not None
-        assert (0, 4) in silicon.get_calls
-        assert (0, 5) in silicon.get_calls
-        assert engine._apply_co(2, -5) is True
-        assert silicon.writes[-1] == (0, 4, -5)
-        assert engine._apply_co(3, -5) is True
-        assert silicon.writes[-1] == (0, 5, -5)
-        engine.abort()
-        db.close()
-        assert all(slot not in (2, 3) for _ccd, slot, _v in silicon.writes)
 
 
 class TestOfflineCpusDisableGapProof:
@@ -558,29 +695,3 @@ class TestPerCcdCompactionIsResolvedByFuse:
         assert smu.core_map_error is None
         assert silicon.fuse_reads == []
         assert smu.core_map[15] == (1, 7)
-
-
-class TestValidateProfileRefusesUnmappedSMU:
-    def test_validate_refuses_with_the_map_error(self):
-        from corecycler.history.db import HistoryDB
-        from corecycler.tuner.config import TunerConfig
-        from corecycler.tuner.engine import TunerEngine
-
-        smu, _silicon = _mapped_smu(VERMEER, {c: 0 for c in range(6)}, {0: set(range(8))})
-        topo = MagicMock()
-        topo.cores = {c: MagicMock(ccd=0, logical_cpus=(c,)) for c in range(4)}
-        topo.model_name = "Test"
-        db = HistoryDB(":memory:")
-        engine = TunerEngine(
-            db=db,
-            topology=topo,
-            smu=smu,
-            backend=MagicMock(name="mprime"),
-            config=TunerConfig(cores_to_test=[0, 1], inherit_current=False),
-        )
-        messages: list[str] = []
-        engine.log_message.connect(messages.append)
-        engine.validate_profile(1)
-        db.close()
-        assert engine._status != "running"
-        assert any("Cannot validate" in m for m in messages)

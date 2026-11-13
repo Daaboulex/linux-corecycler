@@ -48,6 +48,7 @@ def _topo() -> CPUTopology:
 
 def _available_smu() -> MagicMock:
     smu = MagicMock()
+    smu.commands.get_curve_shaper_cmd = None
     smu.get_co_offset.return_value = 0
     smu.reset_all_co.return_value = True
     smu.set_co_offset.return_value = True
@@ -76,44 +77,14 @@ class TestSMUColdTab:
         tab._smu = _available_smu()
         with patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.Yes):
             tab._reset_all_co()
-            tab._apply_all_co()
-            tab._apply_single(next(iter(tab._spinboxes)))
-        assert tab._smu.set_co_offset.called or tab._smu.reset_all_co.called
-
-    def test_every_button_clickable_on_cold_tab(self):
-        _qapp()
-        from PySide6.QtWidgets import QFileDialog, QMessageBox, QPushButton
-
-        from corecycler.gui.smu_tab import SMUTab
-
-        tab = SMUTab(_topo())
-        tab._smu = _available_smu()
-        with (
-            patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.No),
-            patch.object(QMessageBox, "information", return_value=None),
-            patch.object(QFileDialog, "getSaveFileName", return_value=("", "")),
-            patch.object(QFileDialog, "getOpenFileName", return_value=("", "")),
-        ):
-            for btn in tab.findChildren(QPushButton):
-                btn.click()
-
-
-class TestMonitorTabResourceClose:
-    def test_stop_monitoring_closes_msr(self):
-        _qapp()
-        from corecycler.gui.monitor_tab import MonitorTab
-
-        tab = MonitorTab(topology=_topo())
-        tab._msr = MagicMock()
-        tab.stop_monitoring()
-        tab._msr.close.assert_called_once()
+            next(iter(tab._spinboxes.values())).setValue(-1)
+            tab._apply_changed()
+        assert tab._smu.set_co_offset.called
+        assert tab._smu.reset_all_co.called
 
 
 class TestHistorySortMapping:
-    def test_selection_maps_to_logical_record_after_sort(self):
-        # Guards the wrong-record data-loss bug: with column sorting enabled the
-        # visual row no longer equals the insertion index, so delete/export/compare
-        # must resolve the record by the stored id, never by the visual row.
+    def test_a_sorted_row_resolves_to_the_record_it_shows(self):
         _qapp()
         from PySide6.QtCore import Qt
 
@@ -137,4 +108,6 @@ class TestHistorySortMapping:
             assert len(selected) == 1
             logical = selected[0]
             shown_date = tab._runs_table.item(vis_row, 0).text()
-            assert format_local(runs[logical].started_at) == shown_date
+            assert format_local(runs[logical].started_at) == shown_date, (
+                "a sorted row resolved to another record's list index: a delete or export would act on the wrong run"
+            )

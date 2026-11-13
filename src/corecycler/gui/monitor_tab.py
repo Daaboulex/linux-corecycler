@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import contextlib
 from collections import deque
+from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -19,21 +19,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from corecycler.config.settings import load_settings
 from corecycler.gui.style import theme
 from corecycler.gui.widgets.charts import LiveChart
-from corecycler.monitor.cpu_usage import CPUUsageReader
-from corecycler.monitor.frequency import (
-    read_core_frequencies,
-    read_core_frequencies_dual,
-    read_max_frequency,
-)
-from corecycler.monitor.hwmon import HWMonReader
-from corecycler.monitor.msr import MSRReader
-from corecycler.monitor.power import PowerMonitor
-from corecycler.smu.pmtable import PMTableReader
+from corecycler.gui.widgets.core_grid import ccd_groups
+from corecycler.monitor.frequency import fastest, read_max_frequency
+from corecycler.smu.driver import physical_ccds
 
-MAX_FREQ_HISTORY = 60  # 1 minute at 1s
+MAX_FREQ_HISTORY = 60  # equivalent-mutant: a sparkline length chosen for the eye, a sample more is unseen
+_IDLE_USAGE_PCT = 5
+
+
+if TYPE_CHECKING:
+    from corecycler.monitor.hwmon import Sensors
+    from corecycler.monitor.tick import Tick
+    from corecycler.smu.pmtable import PMTableData
 
 
 class CoreFreqBar(QWidget):
@@ -44,27 +43,27 @@ class CoreFreqBar(QWidget):
         self.core_id = core_id
         self._label = label
         self._max_freq = max_freq
-        self._freq: float = 0
-        self._eff_max: float = 0  # per-core boost ceiling (scaling_max_freq)
-        self._temp: float = 0
-        self._usage_pct: float = 0
+        self._freq: float | None = None
+        self._boost_ceiling_mhz: float = 0
+        self._temp: float | None = None
+        self._usage_pct: float | None = None
         self._stretch_pct: float | None = None
         self._core_watts: float | None = None
-        self._is_active: bool = False  # currently being tested
+        self._under_test: bool = False
         self._history: deque[float] = deque(maxlen=MAX_FREQ_HISTORY)
         self.setFixedHeight(24)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_active(self, active: bool) -> None:
-        if self._is_active != active:
-            self._is_active = active
+        if self._under_test != active:
+            self._under_test = active
             self.update()
 
     def update_data(
         self,
-        freq: float,
-        temp: float = 0,
-        usage_pct: float = 0,
+        freq: float | None,
+        temp: float | None = None,
+        usage_pct: float | None = None,
         stretch_pct: float | None = None,
         core_watts: float | None = None,
         eff_max_mhz: float = 0,
@@ -75,48 +74,95 @@ class CoreFreqBar(QWidget):
         self._stretch_pct = stretch_pct
         self._core_watts = core_watts
         if eff_max_mhz > 0:
-            self._eff_max = eff_max_mhz
-        self._history.append(freq)
+            self._boost_ceiling_mhz = eff_max_mhz
+        if freq is not None:
+            self._history.append(freq)
         self.update()
 
     @staticmethod
-    def _freq_text(freq: float, eff_max: float) -> str:
+    def _freq_text(freq: float | None, eff_max: float) -> str:
         """Per-core frequency readout, always unit-labelled.
 
         An idle core (freq <= 0) shows "-- MHz" with no ceiling, because
         "--/<max>" reads as a false live maximum. A live core shows its current
         MHz, with the boost ceiling appended only when it is known.
         """
-        if freq <= 0:
+        if freq is None or freq <= 0:
             return "  -- MHz"
         if eff_max > 0:
             return f"{freq:.0f}/{eff_max:.0f}MHz"
         return f"{freq:.0f}MHz"
+
+    def _fill_ratio(self) -> float:
+        return min((self._freq or 0) / self._max_freq, 1.0)
+
+    def _columns(self) -> list[tuple[str, str]]:
+        usage_str = " --%" if self._usage_pct is None else f"{self._usage_pct:3.0f}%"
+        busy = self._usage_pct is not None and self._usage_pct > 50
+        usage_color = theme.COLOR_PASS if busy else theme.COLOR_MUTED
+
+        freq_str = self._freq_text(self._freq, self._boost_ceiling_mhz)
+        freq_color = theme.COLOR_ACTIVE
+
+        if self._stretch_pct is not None and self._usage_pct is not None and self._usage_pct > _IDLE_USAGE_PCT:
+            stretch_str = f"S:{self._stretch_pct:4.1f}%"
+            if self._stretch_pct > 3.0:
+                stretch_color = theme.CHART_TEMP
+            elif self._stretch_pct > 1.0:
+                stretch_color = theme.COLOR_WARN_SOFT
+            else:
+                stretch_color = theme.COLOR_MUTED_DARK
+        else:
+            stretch_str = " " * len(f"S:{0:4.1f}%")  # equivalent-mutant: the sample digit does not change the width
+            stretch_color = theme.COLOR_MUTED_DARK
+
+        if self._core_watts is not None:
+            watts_str = f"{self._core_watts:5.1f}W"
+            watts_color = theme.COLOR_WARN_SOFT
+        else:
+            watts_str = " " * len(f"{0:5.1f}W")  # equivalent-mutant: the sample digit does not change the width
+            watts_color = theme.COLOR_MUTED_DARK
+
+        if self._temp is not None:
+            temp_str = f"{self._temp:3.0f}C"
+            if self._temp >= 85:
+                temp_color = theme.CHART_TEMP
+            elif self._temp >= 70:
+                temp_color = theme.COLOR_WARN_SOFT
+            else:
+                temp_color = theme.COLOR_MUTED
+        else:
+            temp_str = " --C"
+            temp_color = theme.COLOR_MUTED
+
+        return [
+            (usage_str, usage_color),
+            (freq_str, freq_color),
+            (stretch_str, stretch_color),
+            (watts_str, watts_color),
+            (temp_str, temp_color),
+        ]
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
 
-        # background — highlighted if this core is being tested
-        bg = QColor(theme.BG_ACTIVE_TINT) if self._is_active else QColor(theme.BG_PANEL_DARK)
+        bg = QColor(theme.BG_ACTIVE_TINT) if self._under_test else QColor(theme.BG_PANEL_DARK)
         painter.fillRect(0, 0, w, h, bg)
 
-        # label area
         label_w = 40
-        label_color = QColor(theme.COLOR_ACTIVE) if self._is_active else QColor(theme.COLOR_TEXT_DIM)
+        label_color = QColor(theme.COLOR_ACTIVE) if self._under_test else QColor(theme.COLOR_TEXT_DIM)
         painter.setPen(label_color)
         painter.setFont(QFont("monospace", 7, QFont.Weight.Bold))
         painter.drawText(4, 0, label_w - 4, h, Qt.AlignmentFlag.AlignVCenter, self._label)
 
-        # frequency bar
         bar_x = label_w
-        text_area_w = 260  # usage + actual/expected + stretch + watts + temp
-        bar_w = w - label_w - text_area_w
+        text_columns_w = 260  # equivalent-mutant: a pixel either way keeps every column inside the bar
+        bar_w = w - label_w - text_columns_w
         if bar_w > 0 and self._max_freq > 0:
-            fill_ratio = min(self._freq / self._max_freq, 1.0)
+            fill_ratio = self._fill_ratio()
 
-            # color: blue at low, cyan at mid, green at high
             if fill_ratio < 0.5:
                 color = QColor(theme.COLOR_BLUE_DEEP)
             elif fill_ratio < 0.8:
@@ -124,22 +170,18 @@ class CoreFreqBar(QWidget):
             else:
                 color = QColor(theme.COLOR_PASS)
 
-            # bar background
             painter.fillRect(bar_x, 3, bar_w, h - 6, QColor(theme.BG_PANEL))
-            # filled portion
             fill_w = int(bar_w * fill_ratio)
             if fill_w > 0:
                 painter.fillRect(bar_x, 3, fill_w, h - 6, color)
 
-            # boost ceiling marker (per-core scaling_max_freq) — yellow dashed line
-            if self._eff_max > 0:
-                eff_ratio = min(self._eff_max / self._max_freq, 1.0)
+            if self._boost_ceiling_mhz:
+                eff_ratio = min(self._boost_ceiling_mhz / self._max_freq, 1.0)
                 marker_x = int(bar_x + bar_w * eff_ratio)
                 pen = QPen(QColor(theme.COLOR_WARN_SOFT), 1, Qt.PenStyle.DashLine)
                 painter.setPen(pen)
                 painter.drawLine(marker_x, 3, marker_x, h - 3)
 
-            # sparkline overlay
             if len(self._history) > 1:
                 data = list(self._history)
                 pen = QPen(QColor(255, 255, 255, 80), 1)
@@ -152,128 +194,64 @@ class CoreFreqBar(QWidget):
                     y1 = 3 + (1.0 - min(data[i] / self._max_freq, 1.0)) * (h - 6)
                     painter.drawLine(int(x0), int(y0), int(x1), int(y1))
 
-        # text values on the right — fixed-width columns for stable layout
         text_x = bar_x + bar_w + 4 if bar_w > 0 else label_w
         mono = QFont("monospace", 7)
         painter.setFont(mono)
         fm = painter.fontMetrics()
         col_gap = fm.horizontalAdvance(" ")
 
-        # Column definitions: (text, color, fixed_chars)
-        # Usage
-        usage_str = f"{self._usage_pct:3.0f}%"
-        usage_color = QColor(theme.COLOR_PASS) if self._usage_pct > 50 else QColor(theme.COLOR_MUTED)
-
-        # Frequency — always unit-labelled; the boost ceiling shows only for a
-        # live core (the dashed bar marker also shows it).
-        freq_str = self._freq_text(self._freq, self._eff_max)
-        freq_color = QColor(theme.COLOR_ACTIVE)
-
-        # Stretch — fixed slot, blank when idle (keeps alignment stable)
-        if self._stretch_pct is not None and self._usage_pct > 5:
-            stretch_str = f"S:{self._stretch_pct:4.1f}%"
-            if self._stretch_pct > 3.0:
-                stretch_color = QColor(theme.CHART_TEMP)
-            elif self._stretch_pct > 1.0:
-                stretch_color = QColor(theme.COLOR_WARN_SOFT)
-            else:
-                stretch_color = QColor(theme.COLOR_MUTED_DARK)
-        else:
-            stretch_str = "       "  # 7 chars placeholder
-            stretch_color = QColor(theme.COLOR_MUTED_DARK)
-
-        # Power
-        if self._core_watts is not None:
-            watts_str = f"{self._core_watts:5.1f}W"
-            watts_color = QColor(theme.COLOR_WARN_SOFT)
-        else:
-            watts_str = "      "  # 6 chars placeholder
-            watts_color = QColor(theme.COLOR_MUTED_DARK)
-
-        # Temperature
-        if self._temp > 0:
-            temp_str = f"{self._temp:3.0f}C"
-            if self._temp >= 85:
-                temp_color = QColor(theme.CHART_TEMP)
-            elif self._temp >= 70:
-                temp_color = QColor(theme.COLOR_WARN_SOFT)
-            else:
-                temp_color = QColor(theme.COLOR_MUTED)
-        else:
-            temp_str = "    "  # 4 chars placeholder
-            temp_color = QColor(theme.COLOR_MUTED)
-
-        # Draw each column at fixed positions
-        cols = [
-            (usage_str, usage_color),
-            (freq_str, freq_color),
-            (stretch_str, stretch_color),
-            (watts_str, watts_color),
-            (temp_str, temp_color),
-        ]
+        cols = self._columns()
         cx = text_x
         for text, color in cols:
             tw = fm.horizontalAdvance(text)
-            painter.setPen(color)
+            painter.setPen(QColor(color))
             painter.drawText(cx, 0, tw + col_gap, h, Qt.AlignmentFlag.AlignVCenter, text)
             cx += tw + col_gap
 
-        # border — highlighted if active
-        border_color = QColor(theme.COLOR_ACTIVE) if self._is_active else QColor(theme.BORDER_DARKER)
-        border_width = 2 if self._is_active else 1
+        border_color = QColor(theme.COLOR_ACTIVE) if self._under_test else QColor(theme.BORDER_DARKER)
+        border_width = 2 if self._under_test else 1
         painter.setPen(QPen(border_color, border_width))
         painter.drawRect(0, 0, w - 1, h - 1)
 
         painter.end()
 
 
+STALE = " (stale)"
+
+
 class MonitorTab(QWidget):
     """Live system monitoring with package charts + per-core view toggle."""
 
-    # Staleness tracking — grey out labels after consecutive sensor read failures
-    _STALE_THRESHOLD = 3
     _NORMAL_STYLE = "font: bold 11px monospace; padding: 2px;"
 
     @staticmethod
     def _stale_style() -> str:
         return f"font: bold 11px monospace; padding: 2px; color: {theme.COLOR_MUTED_DARK};"
 
-    def __init__(self, topology=None) -> None:
+    def __init__(self, sensors: Sensors, power_available: bool, topology=None, smu=None) -> None:
         super().__init__()
         self._topology = topology
-        self._hwmon = HWMonReader()
-        self._power = PowerMonitor()
-        self._msr = MSRReader()
-        self._cpu_usage = CPUUsageReader()
-        self._pmtable = PMTableReader()
+        self._smu = smu
+        self._sensors = sensors
         self._per_core_bars: dict[int, CoreFreqBar] = {}
         self._per_core_visible = False
-        self._hwmon_fail_count: int = 0
-        self._power_fail_count: int = 0
+        self._last_read: dict[QLabel, str] = {}
 
         self._setup_ui()
 
-        # Check data source availability and set initial labels
-        if not self._hwmon.is_available():
+        if not self._sensors.available():
             self._tctl_label.setText("Tctl: N/A")
-        has_voltage = self._hwmon.is_available() and self._hwmon.read().vcore_v is not None
+        has_voltage = self._sensors.vcore_source is not None
         if not has_voltage:
-            self._vcore_label.setText("Vcore: N/A (no voltage source)")
-        has_power = self._power.is_available() or self._msr.is_available()
-        if not has_power:
-            self._power_label.setText("Package: N/A (needs root)")
-
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._update)
-        settings = load_settings()
-        self._timer.start(int(settings.poll_interval * 1000))
+            self._vcore_label.setText("Vcore: no sensor")
+        if not power_available:
+            self._power_label.setText("Package: unreadable")
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        # top bar: current values + view toggle
         top_bar = QHBoxLayout()
         top_bar.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
@@ -319,7 +297,6 @@ class MonitorTab(QWidget):
 
         layout.addLayout(top_bar)
 
-        # package charts view
         self._charts_widget = QWidget()
         charts_layout = QGridLayout(self._charts_widget)
         charts_layout.setContentsMargins(0, 0, 0, 0)
@@ -337,7 +314,6 @@ class MonitorTab(QWidget):
 
         layout.addWidget(self._charts_widget)
 
-        # per-core view (scrollable, hidden by default)
         self._per_core_scroll = QScrollArea()
         self._per_core_scroll.setWidgetResizable(True)
         self._per_core_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -348,37 +324,29 @@ class MonitorTab(QWidget):
         self._per_core_layout.setContentsMargins(0, 0, 0, 0)
         self._per_core_layout.setSpacing(2)
 
-        self._build_per_core_bars()
+        self._build_per_core_bars([])
 
         self._per_core_layout.addStretch()
         self._per_core_scroll.setWidget(per_core_container)
         self._per_core_scroll.setVisible(False)
         layout.addWidget(self._per_core_scroll)
 
-        # populate max boost
         max_freq = read_max_frequency()
         if max_freq:
             self._max_freq_label.setText(f"Max Boost: {max_freq:.0f}MHz")
             self._freq_chart.max_val = max_freq * 1.1
             self._max_core_freq = max_freq
         else:
+            self._max_freq_label.setText("Max Boost: unread")
             self._max_core_freq = 6000
 
-    def _build_per_core_bars(self) -> None:
-        """Create per-core frequency bars from topology or by scanning sysfs."""
+    def _build_per_core_bars(self, cpus: list[int]) -> None:
         self._per_core_bars.clear()
 
         if self._topology:
-            # group by CCD
-            ccd_groups: dict[int, list] = {}
-            for core in sorted(self._topology.cores.values(), key=lambda c: c.core_id):
-                ccd = core.ccd if core.ccd is not None else 0
-                ccd_groups.setdefault(ccd, []).append(core)
-
-            for ccd_idx in sorted(ccd_groups.keys()):
-                cores = ccd_groups[ccd_idx]
+            for heading, cores in ccd_groups(self._topology):
                 vcache_str = " (V-Cache)" if any(c.has_vcache for c in cores) else ""
-                header = QLabel(f"CCD {ccd_idx}{vcache_str}")
+                header = QLabel(f"{heading}{vcache_str}")
                 header.setFont(QFont("monospace", 8, QFont.Weight.Bold))
                 header.setStyleSheet(f"color: {theme.COLOR_TEXT_DIM}; padding: 1px 4px;")
                 header.setFixedHeight(16)
@@ -392,10 +360,7 @@ class MonitorTab(QWidget):
                     self._per_core_bars[core.core_id] = bar
                     self._per_core_layout.addWidget(bar)
         else:
-            # fallback: create bars from current frequency readings
-            # Label as "CPU N" (logical CPU IDs, not physical core IDs)
-            freqs = read_core_frequencies()
-            for cpu_id in sorted(freqs.keys()):
+            for cpu_id in cpus:
                 bar = CoreFreqBar(cpu_id, f"CPU{cpu_id}", max_freq=6000)
                 self._per_core_bars[cpu_id] = bar
                 self._per_core_layout.addWidget(bar)
@@ -406,49 +371,40 @@ class MonitorTab(QWidget):
         self._per_core_scroll.setVisible(checked)
         self._toggle_btn.setText("Package View" if checked else "Per-Core View")
 
-    def _update(self) -> None:
-        # legitimate sysfs/procfs read failures are dropped
-        with contextlib.suppress(OSError, ValueError, PermissionError):
-            self._do_update()
+    def _show_read(self, label: QLabel, text: str | None) -> None:
+        if text is not None:
+            self._last_read[label] = text
+            label.setStyleSheet(self._NORMAL_STYLE)
+            label.setText(text)
+        elif label in self._last_read:
+            label.setStyleSheet(self._stale_style())
+            label.setText(self._last_read[label] + STALE)
 
-    def _do_update(self) -> None:
-        # frequencies — read both actual and boost ceiling per-core
-        dual_freqs = read_core_frequencies_dual()
-        # Extract simple freq dict for chart + fallback
-        freqs: dict[int, float] = {cpu_id: r.actual_mhz for cpu_id, r in dual_freqs.items()}
-        # Also extract per-core boost ceilings
-        eff_max_freqs: dict[int, float] = {cpu_id: r.effective_max_mhz for cpu_id, r in dual_freqs.items()}
-        # Fallback to simple read if dual returned nothing
-        if not freqs:
-            freqs = read_core_frequencies()
+    def on_tick(self, tick: Tick) -> None:
+        clocks = tick.clocks
+        if self._topology is None and not self._per_core_bars and clocks:
+            self._rebuild_bars(sorted(clocks))
+        ceilings = tick.ceilings
+        freqs = {cpu: mhz for cpu, mhz in clocks.items() if mhz is not None}
 
         if freqs:
             max_freq = max(freqs.values())
-            # Dynamically update max if a core boosts above expected ceiling
             current_max = getattr(self, "_max_core_freq", 6000)
             if max_freq > current_max:
                 self._max_core_freq = max_freq
-                self._max_freq_label.setText(f"Max Boost: {max_freq:.0f}MHz")
                 self._freq_chart.max_val = max_freq * 1.1
-            self._freq_chart.add_value(max_freq)
+        self._freq_chart.add_value(max(freqs.values()) if freqs else None)
 
-        # hwmon
-        hwmon_data = self._hwmon.read()
-        tctl = hwmon_data.tctl_c
-        if tctl is not None:
-            self._hwmon_fail_count = 0
-            self._tctl_label.setStyleSheet(self._NORMAL_STYLE)
-            self._tctl_label.setText(f"Tctl: {tctl:.1f}°C")
-            self._temp_chart.add_value(tctl)
-        else:
-            self._hwmon_fail_count += 1
-            if self._hwmon_fail_count >= self._STALE_THRESHOLD:
-                self._tctl_label.setStyleSheet(self._stale_style())
-            # Keep last-known text — don't clear it
-        # Per-CCD temps — create labels dynamically on first appearance
-        for tccd_idx in sorted(hwmon_data.tccd_temps):
-            temp = hwmon_data.tccd_temps[tccd_idx]
-            ccd_idx = tccd_idx - 1  # Tccd1 → CCD 0
+        sensed = tick.sensed
+        tctl = sensed.tctl
+        self._show_read(self._tctl_label, None if tctl is None else f"Tctl: {tctl:.1f}°C")
+        self._temp_chart.add_value(tctl)
+        ccd_of = physical_ccds(self._smu, self._topology) if self._topology else {}
+        for ccd_idx, temp in sensed.tccd:
+            if temp is None:
+                if ccd_idx in self._ccd_temp_labels:
+                    self._show_read(self._ccd_temp_labels[ccd_idx], None)
+                continue
             if ccd_idx not in self._ccd_temp_labels:
                 label = QLabel()
                 label.setStyleSheet("font: bold 11px monospace; padding: 2px;")
@@ -460,87 +416,40 @@ class MonitorTab(QWidget):
                 self._ccd_temp_labels[ccd_idx] = label
             vcache_tag = ""
             if self._topology:
-                for core in self._topology.cores.values():
-                    if core.ccd == ccd_idx and core.has_vcache:
+                for core_id, core in self._topology.cores.items():
+                    if ccd_of[core_id] == ccd_idx and core.has_vcache:
                         vcache_tag = " VC"
                         break
-            self._ccd_temp_labels[ccd_idx].setText(f"CCD{ccd_idx}{vcache_tag}: {temp:.1f}°C")
-        if hwmon_data.vcore_v is not None:
-            self._vcore_label.setStyleSheet(self._NORMAL_STYLE)
-            self._vcore_label.setText(f"Vcore: {hwmon_data.vcore_v:.4f}V")
-            self._voltage_chart.add_value(hwmon_data.vcore_v)
-        else:
-            if self._hwmon_fail_count >= self._STALE_THRESHOLD:
-                self._vcore_label.setStyleSheet(self._stale_style())
+            self._show_read(self._ccd_temp_labels[ccd_idx], f"CCD{ccd_idx}{vcache_tag}: {temp:.1f}°C")
+        core_vcore = self._sensors.vcore(sensed)
+        self._show_read(self._vcore_label, None if core_vcore is None else f"Vcore: {core_vcore:.4f}V")
+        self._voltage_chart.add_value(core_vcore)
 
-        # power — sysfs RAPL (user-accessible) or MSR RAPL (root-only)
-        watts = self._power.read_power_watts()
-        if watts is not None:
-            self._power_fail_count = 0
-            self._power_label.setStyleSheet(self._NORMAL_STYLE)
-            self._power_label.setText(f"Package: {watts:.1f}W")
-            self._power_chart.add_value(watts)
-        elif self._msr.is_available():
-            # Fallback: read package energy from MSR RAPL
-            pkg_power = self._msr.read_package_power()
-            if pkg_power is not None:
-                self._power_fail_count = 0
-                self._power_label.setStyleSheet(self._NORMAL_STYLE)
-                self._power_label.setText(f"Package: {pkg_power:.1f}W")
-                self._power_chart.add_value(pkg_power)
-            else:
-                self._power_fail_count += 1
-                if self._power_fail_count >= self._STALE_THRESHOLD:
-                    self._power_label.setStyleSheet(self._stale_style())
-        else:
-            self._power_fail_count += 1
-            if self._power_fail_count >= self._STALE_THRESHOLD:
-                self._power_label.setStyleSheet(self._stale_style())
+        watts = tick.package_watts
+        self._show_read(self._power_label, None if watts is None else f"Package: {watts:.1f}W")
+        self._power_chart.add_value(watts)
 
-        # CPU usage from /proc/stat
-        usage_data = self._cpu_usage.read()  # logical cpu → usage %
+        usage_data = tick.usage
+        stretch_data = tick.stretch
+        power_data = tick.core_watts
 
-        # MSR: clock stretch + per-core power (for per-core bars)
-        stretch_data: dict[int, float] = {}  # logical cpu → stretch %
-        power_data: dict[int, float] = {}  # logical cpu → watts
-        if self._msr.is_available() and self._topology:
-            all_cpus = []
-            for core_info in self._topology.cores.values():
-                if core_info.logical_cpus:
-                    all_cpus.append(core_info.logical_cpus[0])
-            if all_cpus:
-                stretch_readings = self._msr.read_clock_stretch(all_cpus)
-                for cpu_id, reading in stretch_readings.items():
-                    stretch_data[cpu_id] = reading.stretch_pct
-                power_readings = self._msr.read_core_power(all_cpus)
-                for cpu_id, reading in power_readings.items():
-                    power_data[cpu_id] = reading.watts
+        ccd_temps = {ccd: temp for ccd, temp in sensed.tccd if temp is not None}
 
-        # Build CCD → temp mapping from hwmon tccd_temps
-        # k10temp: Tccd1 = CCD index 1, but topology CCD indices start at 0
-        ccd_temps: dict[int, float] = {}
-        for tccd_idx, temp in hwmon_data.tccd_temps.items():
-            ccd_temps[tccd_idx - 1] = temp  # Tccd1 → CCD 0, Tccd2 → CCD 1
-
-        # update per-core bars (even if hidden, so history accumulates)
-        if self._per_core_bars and freqs:
+        if self._per_core_bars:
             if self._topology:
                 for core_id, bar in self._per_core_bars.items():
                     core_info = self._topology.cores.get(core_id)
                     if core_info and core_info.logical_cpus:
                         logical_cpu = core_info.logical_cpus[0]
-                        cpu_freq = freqs.get(logical_cpu, 0)
-                        eff_max = eff_max_freqs.get(logical_cpu, 0)
-                        # Use per-CCD temp if available, fall back to Tctl
-                        ccd = core_info.ccd if core_info.ccd is not None else 0
-                        core_temp = ccd_temps.get(ccd, tctl or 0)
-                        # Sum usage across SMT siblings for this physical core
-                        core_usage = sum(usage_data.get(lc, 0) for lc in core_info.logical_cpus)
+                        cpu_freq = fastest(clocks, core_info.logical_cpus)
+                        eff_max = fastest(ceilings, core_info.logical_cpus) or 0
+                        core_temp = ccd_temps.get(ccd_of[core_id])
+                        loads = [usage_data[lc] for lc in core_info.logical_cpus if lc in usage_data]
                         bar.update_data(
                             cpu_freq,
                             core_temp,
-                            usage_pct=min(core_usage, 100.0),
-                            stretch_pct=stretch_data.get(logical_cpu),
+                            usage_pct=min(sum(loads), 100.0) if loads else None,
+                            stretch_pct=stretch_data.get(core_id),
                             core_watts=power_data.get(logical_cpu),
                             eff_max_mhz=eff_max,
                         )
@@ -550,16 +459,11 @@ class MonitorTab(QWidget):
                         bar._max_freq = mcf * 1.05
             else:
                 for cpu_id, bar in self._per_core_bars.items():
-                    bar.update_data(
-                        freqs.get(cpu_id, 0),
-                        tctl or 0,
-                        usage_pct=usage_data.get(cpu_id, 0),
-                    )
+                    bar.update_data(freqs.get(cpu_id), None, usage_pct=usage_data.get(cpu_id))
 
-        self._update_power_limits()
+        self._show_power_limits(tick.pm)
 
-    def _update_power_limits(self) -> None:
-        pm = self._pmtable.read() if self._pmtable.is_available() else None
+    def _show_power_limits(self, pm: PMTableData | None) -> None:
         if pm is None:
             self._ppt_label.setText("PPT: N/A")
             self._tdc_label.setText("TDC: N/A")
@@ -567,7 +471,9 @@ class MonitorTab(QWidget):
             return
 
         def fmt(label, name, value, limit, unit):
-            if limit > 0:
+            if limit > 0 and value is None:
+                label.setText(f"{name}: unread/{limit:.0f}{unit}")
+            elif limit > 0:
                 pct = (value / limit) * 100 if value >= 0 else 0
                 label.setText(f"{name}: {value:.0f}/{limit:.0f}{unit} ({pct:.0f}%)")
             else:
@@ -578,25 +484,21 @@ class MonitorTab(QWidget):
         fmt(self._edc_label, "EDC", pm.edc_value_a, pm.edc_limit_a, "A")
 
     def set_topology(self, topology) -> None:
-        """Update topology and rebuild per-core bars."""
         self._topology = topology
-        # clear existing bars
+        self._rebuild_bars([])
+
+    def _rebuild_bars(self, cpus: list[int]) -> None:
         for bar in self._per_core_bars.values():
             bar.deleteLater()
         self._per_core_bars.clear()
-        # clear layout (skip stretch)
         while self._per_core_layout.count():
             item = self._per_core_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self._build_per_core_bars()
+        self._build_per_core_bars(cpus)
         self._per_core_layout.addStretch()
 
     def set_active_core(self, core_id: int | None) -> None:
         """Highlight the core currently being tested (None to clear)."""
         for cid, bar in self._per_core_bars.items():
             bar.set_active(cid == core_id)
-
-    def stop_monitoring(self) -> None:
-        self._timer.stop()
-        self._msr.close()

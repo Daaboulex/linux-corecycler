@@ -9,6 +9,49 @@ following [Keep a Changelog](https://keepachangelog.com/) and
 Current version: 0.0.1. A per-core CPU stability tester and AMD PBO Curve
 Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
 
+### Fixed (2026-10-27 per-core temperatures on a Vermeer whose only CCD is CCD 1)
+
+- hwmon names each CCD's temperature by its physical CCD (k10temp and
+  zenpower5 label physical CCD 1 Tccd2), but the core grid, the Monitor tab's
+  per-core bars and V-Cache tag and each tuner test's coverage record looked
+  it up by the
+  topology's CCD, the rank of its L3 id. On a 5600X whose CCD 0
+  is fused off every core's temperature showed blank and the coverage record
+  counted every second unreadable. The thermal stop reads the hottest sensor
+  and was not affected. Each core now reads its physical CCD's temperature,
+  which the driver's core map holds on Vermeer and the topology holds on
+  every other generation. A Vermeer whose core map is refused keeps the
+  topology's CCD, which there is either right or names a sensor hwmon does
+  not expose.
+
+### Fixed (2026-10-27 Vermeer CCDs numbered apart from the SMU, PR #23 by iam4x)
+
+- The topology numbers CCDs by the rank of their L3 id, so a 5600X whose
+  physical CCD 0 is fused off showed its surviving CCD 1 as CCD 0; the driver
+  then read the dead CCD's core fuse and refused per-core CO, and a full
+  surviving CCD would have sent every CO command to the dead CCD. On Vermeer the CCD-disable fuses at SMN
+  `0x5D218` and `0x5D21C` are now read first, decoded as ryzen_smu's
+  `get_fuse_topology` does, and each L3 group maps onto its physical CCD; a
+  fuse that cannot be read or names a different CCD count refuses per-core CO.
+  Every Vermeer now needs SMN access for per-core CO. The fix and the 5600X's
+  register values come from iam4x's PR #23, ported by hand into the rewritten
+  driver; its Warhol entry waits for a 5800X3D's register values.
+
+### Fixed (2026-10-27 a Strix Point CO read out of range, PR #21 by chevydan6)
+
+- An HX 370 on BIOS FA608WV.309 acknowledges the Strix Point CO read and
+  returns 600 for every core, so a CO write was sent whose read-back could
+  never match, and the backup of 600 could never be restored. Strix Point now
+  reads the CO of its lowest core when the topology is set; a read the driver
+  reports as failed (a transport error or a timeout) or an answer outside the
+  CO range refuses every CO write with that reason. On the pinned ryzen_smu a
+  read the firmware rejects comes back as 0 and passes this check. The
+  finding and its
+  readback evidence come from chevydan6's PR #21, ported by hand into the
+  rewritten driver; the PR's exact-identity profile for that laptop is not
+  ported, since our pinned ryzen_smu reports a fast firmware rejection as
+  success and its probe would always refuse.
+
 ### Fixed (2026-09-23 Cezanne CO read-back sends the bare slot, issue #18)
 
 - With its cores mapped, the 5600GE then failed every CO write on read-back
@@ -131,7 +174,7 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
   so a tool that ignored SIGTERM was never escalated to SIGKILL. `stop()` now
   only signals the process group and the worker stays the one reaper.
 - A stress work directory that cannot be created (a read-only parent, found
-  live on ryzen) is reported as "Work directory unavailable" with the real
+  live on the test machine) is reported as "Work directory unavailable" with the real
   error and no worker starts, instead of an uncaught `PermissionError` out of
   the Start button.
 
@@ -345,7 +388,7 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
   `corecycler.main:main`); the packaging test pins the single-package
   invariant so nothing flat can return.
 
-### Fixed (2026-07-16 truth-and-attribution session, ryzen-9950x3d forensics)
+### Fixed (2026-07-16 truth-and-attribution session, test machine forensics)
 
 Field incident driving all of this: three freezes in one day during
 validation while the kernel logged corrected Load-Store MCEs naming cores 9
@@ -481,7 +524,7 @@ core 7 (the deepest, most-proven offset) on the next resume.
 - Tuner config: `hunt_slot_seconds` (default 60) and
   `max_unattributed_crash_hunts` (default 2), both validated.
 
-### Fixed (2026-07-09 field-debug session, ryzen-9950x3d logs)
+### Fixed (2026-07-09 field-debug session, test machine logs)
 
 - mprime stale-results false-failure cascade: `cleanup(preserve_on_error=True)`
   left `results.txt` in place, `prepare()` never removed it, and mprime appends,

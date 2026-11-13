@@ -12,7 +12,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -74,35 +73,19 @@ def test_msr_reads_are_plausible():
     )
     unit = reader._get_energy_unit()
     assert unit is not None and 1e-6 < unit < 1e-2, f"implausible RAPL energy unit {unit}"
-    reader.read_clock_stretch([0])
-    time.sleep(0.1)
-    stretch = reader.read_clock_stretch([0])
     reader.close()
-    if 0 in stretch:
-        assert 0.0 < stretch[0].ratio <= 1.6, f"implausible APERF/MPERF ratio {stretch[0].ratio}"
 
 
 def test_dmidecode_parses_real_dimms():
     require(shutil.which("dmidecode") is not None, "requires dmidecode")
     result = subprocess.run(["dmidecode", "-t", "memory"], capture_output=True, text=True, timeout=15)
-    require_privileged(result.returncode == 0 and bool(result.stdout), "dmidecode -t memory needs root")
+    require_privileged(
+        result.returncode == 0 and bool(result.stdout) and "Permission denied" not in result.stderr,
+        "dmidecode -t memory needs root: the DMI tables are root-only and dmidecode 3.7 exits 0 without them",
+    )
     dimms = parse_dmidecode_output(result.stdout)
     assert len(dimms) >= 1, "no DIMMs parsed from real dmidecode output"
     assert all(d.size_gb > 0 for d in dimms)
-
-
-def test_proc_stat_cpu_line_matches_the_pinned_fields():
-    """The stall watchdog reads idle+iowait from /proc/stat; drift here blinds it."""
-    from corecycler.engine.execution import cpu_times as _cpu_times
-
-    require(Path("/proc/stat").exists(), "/proc/stat not readable")
-    sample = _cpu_times(0)
-    require(sample is not None, "no cpu0 line in /proc/stat")
-    idle, total = sample
-    assert 0 < idle < total
-    fields = next(line.split() for line in Path("/proc/stat").read_text().splitlines() if line.startswith("cpu0 "))
-    assert len(fields) >= 6
-    assert idle == int(fields[4]) + int(fields[5])
 
 
 def test_core_slot_map_matches_the_live_core_disable_fuse():
@@ -163,9 +146,10 @@ def test_co_read_answers_on_every_slot_so_it_cannot_find_fused_off_cores():
     require(RyzenSMU.is_available(), "requires the ryzen_smu module")
     smu = RyzenSMU(commands)
     require(smu.check_writable()[0], "requires ryzen_smu mailbox access")
-    ccds = {c.ccd for c in detect_topology().cores.values() if c.ccd is not None}
-    require(bool(ccds), "requires L3-detected CCDs")
-    for ccd in sorted(ccds):
+    smu.set_topology(detect_topology())
+    core_map = smu.core_map
+    require_privileged(core_map is not None, f"requires the driver's core map: {smu.core_map_error}")
+    for ccd in sorted({ccd for ccd, _slot in core_map.values()}):
         answered = [
             slot for slot in range(8) if smu._send_get_co(encode_co_arg(0, 0, generation, ccd=ccd, slot=slot)).success
         ]

@@ -66,7 +66,7 @@ class TestTunerLock:
         tab._smu.is_available.return_value = True
         tab.set_tuner_running(True)
         assert tab._tuner_active is True
-        assert not tab._apply_all_btn.isEnabled()
+        assert not tab._set_changed_btn.isEnabled()
         assert not tab._reset_btn.isEnabled()
         for spin in tab._spinboxes.values():
             assert not spin.isEnabled()
@@ -76,21 +76,36 @@ class TestTunerLock:
         tab._smu = MagicMock()
         tab._smu.is_available.return_value = True
         tab._smu.has_backup.return_value = False
-        tab._smu.get_co_offset.return_value = 0
+        tab._smu.get_co_offset.return_value = -7
+        tab._smu.commands.get_curve_shaper_cmd = None
         tab.set_tuner_running(True)
+        assert tab._table.item(0, 2).text() == "--"
         tab.set_tuner_running(False)
         assert tab._tuner_active is False
-        assert tab._apply_all_btn.isEnabled()
+        assert tab._set_changed_btn.isEnabled()
+        assert not tab._restore_btn.isEnabled()
+        assert tab._table.item(0, 2).text() == "-7"
         for spin in tab._spinboxes.values():
             assert spin.isEnabled()
 
 
 class TestLiveUpdate:
-    def test_update_current_co_writes_the_cell(self):
+    @pytest.mark.req("T22.F1")
+    @pytest.mark.parametrize(("read", "shown"), [(-37, "-37"), (None, "unreadable")])
+    def test_a_tuner_update_shows_the_co_read_from_the_cpu_never_the_tuner_s_value(self, read, shown):
         tab = _tab()
-        tab.update_current_co(3, -37)
-        row = tab._core_row_map()[3]
-        assert tab._table.item(row, 2).text() == "-37"
+        tab._smu = MagicMock()
+        tab._smu.get_co_offset.return_value = read
+        tab._smu.core_map_error = None
+        tab.read_core(3)
+        tab._smu.get_co_offset.assert_called_once_with(3)
+        assert tab._table.item(tab._core_row_map()[3], 2).text() == shown
+
+    def test_without_a_driver_a_tuner_update_reads_nothing(self):
+        tab = _tab()
+        tab._smu = None
+        tab.read_core(3)
+        assert tab._table.item(tab._core_row_map()[3], 2).text() == "--"
 
     def test_core_row_map_matches_sorted_cores(self):
         tab = _tab()
@@ -102,15 +117,9 @@ class TestReadBack:
         tab = _tab()
         tab._smu = MagicMock()
         tab._smu.get_co_offset.return_value = None
-        tab._read_all_co()
-        assert tab._table.item(0, 2).text() == "ERR"
-
-    def test_dry_run_toggle_propagates_to_driver(self):
-        tab = _tab()
-        tab._smu = MagicMock()
-        tab._dry_run_cb.setChecked(True)
-        assert tab._smu.dry_run is True
-        assert "[DRY]" in tab._apply_all_btn.text()
+        tab._smu.commands.get_curve_shaper_cmd = None
+        tab._fill_from_cpu()
+        assert tab._table.item(0, 2).text() == "unreadable"
 
 
 class TestCoreMapRefusal:
@@ -131,11 +140,47 @@ class TestCoreMapRefusal:
         tab = st.SMUTab(topo)
         assert tab._smu is not None
         assert tab._smu.core_map_error is not None
-        assert not tab._apply_all_btn.isEnabled()
+        assert not tab._set_changed_btn.isEnabled()
         assert not tab._reset_btn.isEnabled()
         assert not tab._backup_btn.isEnabled()
-        assert "CO disabled" in tab._range_label.text()
-        row0_btn = tab._table.cellWidget(0, 4)
-        assert row0_btn is not None and not row0_btn.isEnabled()
-        tab._read_all_co()
+        assert "Writes are off: " in tab._range_label.text()
+        assert tab._gen_label.text().startswith("CPU generation Zen ")
+        tab._fill_from_cpu()
         assert tab._table.item(0, 2).text() == "--"
+
+
+class TestPlainWords:
+    ACRONYMS = frozenset({"CCD", "CO", "CPU", "BIOS", "SMU", "JSON"})
+
+    @pytest.mark.req("UI2")
+    def test_no_visible_text_keeps_a_code_name(self):
+        import re
+
+        from PySide6.QtWidgets import QAbstractButton, QGroupBox, QLabel
+
+        tab = _tab()
+        texts = [w.text() for w in tab.findChildren(QLabel) + tab.findChildren(QAbstractButton)]
+        texts += [w.title() for w in tab.findChildren(QGroupBox)]
+        texts += [tab._table.horizontalHeaderItem(c).text() for c in range(tab._table.columnCount())]
+        for text in texts:
+            assert "_" not in text.replace("ryzen_smu", ""), text
+            shouting = set(re.findall(r"\b[A-Z][A-Z0-9]+\b", text)) - self.ACRONYMS
+            assert not shouting, text
+
+    @pytest.mark.parametrize(
+        ("name", "said"),
+        [("ZEN5_GRANITE_RIDGE", "Zen 5 Granite Ridge"), ("ZEN3D_WARHOL", "Zen 3D Warhol"), ("UNKNOWN", "Unknown")],
+    )
+    def test_a_generation_is_named_as_amd_names_it(self, name, said):
+        from corecycler.gui.smu_tab import generation_text
+        from corecycler.smu.commands import CPUGeneration
+
+        assert generation_text(CPUGeneration[name]) == said
+
+    def test_a_profile_s_source_is_named_in_the_banner(self):
+        tab = _tab()
+        tab.set_co_profile({0: -5})
+        assert (
+            tab._profile_banner.text()
+            == "Values from a tuning session are in Value to set. Press Set changed to write them."
+        )

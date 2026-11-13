@@ -40,7 +40,10 @@ def _mw(**over):
     ns._core_grid._cells = {0: None, 1: None}
     ns._elapsed_timer = MagicMock()
     ns._core_status_cache = {0: MagicMock(state="passed")}
-    ns._cached_cycle = 3
+    ns._run_cores = 2
+    ns._run_rounds = 2
+    ns._run_round = 1
+    ns._rounds_done = 0
     ns._active_test_core = 1
     ns._worker = None
     ns._status_msg = MagicMock()
@@ -129,10 +132,10 @@ class TestGridAndCacheSlots:
         _call("_on_status_cached", ns, 2, st)
         assert ns._core_status_cache[2] is st
 
-    def test_cycle_cached(self):
+    def test_a_completed_round_is_counted(self):
         ns = _mw()
         _call("_on_cycle_cached", ns, 7)
-        assert ns._cached_cycle == 7
+        assert ns._rounds_done == 8
 
     def test_tuner_core_update_pushes_grid_status(self):
         ns = _mw()
@@ -143,16 +146,10 @@ class TestGridAndCacheSlots:
         ns = _mw()
         _call("_on_tuner_core_info", ns, 3, -35, "confirm")
         ns._core_grid.update_core_telemetry.assert_called()
-        ns._smu_tab.update_current_co.assert_called_with(3, -35)
+        ns._smu_tab.read_core.assert_called_with(3)
 
     def test_core_finished_failed_adds_error(self):
         ns = _mw(_core_status_cache={4: MagicMock(state="failed")})
-        result = MagicMock(passed=False, error_message="rounding")
+        result = MagicMock(passed=False, detail="rounding")
         _call("_on_core_finished", ns, 4, result)
         ns._results_tab.add_error.assert_called_with(4, "rounding")
-
-    def test_core_finished_unknown_error_message(self):
-        ns = _mw(_core_status_cache={0: MagicMock(state="failed")})
-        result = MagicMock(passed=False, error_message=None)
-        _call("_on_core_finished", ns, 0, result)
-        ns._results_tab.add_error.assert_called_with(0, "Unknown error")

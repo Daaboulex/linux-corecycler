@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
 
+from corecycler.engine import detector as kernel
 from corecycler.engine import execution
 from corecycler.engine import scheduler as scheduler_mod
-from corecycler.engine.backends.base import StressConfig, StressResult
+from corecycler.engine.backends.base import LaneSignal, Outcome, StressConfig, StressResult
 from corecycler.engine.scheduler import (
     CoreScheduler,
     CoreTestStatus,
@@ -19,22 +22,17 @@ from corecycler.engine.scheduler import (
     TestState,
 )
 from corecycler.engine.topology import CPUTopology, PhysicalCore
+from corecycler.monitor.hwmon import SensorRead
 
 
 class RecordingBackend:
     name = "fake"
-
-    def __init__(self) -> None:
-        self.cleaned: list[tuple[Path, bool]] = []
 
     def prepare(self, work_dir, config) -> None:
         pass
 
     def assert_prepared(self, work_dir) -> None:
         pass
-
-    def cleanup(self, work_dir, *, preserve_on_error: bool = False) -> None:
-        self.cleaned.append((Path(work_dir), preserve_on_error))
 
 
 class ScriptedSupervisor:
@@ -45,9 +43,13 @@ class ScriptedSupervisor:
         self.kwargs = kwargs
         ScriptedSupervisor.created.append(self)
 
-    def run(self, lanes, config_for, duration):
+    def run(self, lanes, config, duration):
         step = ScriptedSupervisor.script.pop(0)
-        return step(self, lanes, config_for, duration)
+        return step(self, lanes, config, duration)
+
+
+def sensors_at(temperature: float):
+    return lambda: SimpleNamespace(read=lambda: SensorRead(hottest=temperature))
 
 
 @pytest.fixture(autouse=True)
@@ -76,31 +78,35 @@ def make_scheduler(tmp_path, *, topo=None, backend=None, **config) -> CoreSchedu
 
 
 def ok(core_id: int) -> StressResult:
-    return StressResult(core_id=core_id, passed=True, duration_seconds=0.1)
+    return StressResult(core_id=core_id, outcome=Outcome.PASS, detail="", duration_seconds=0.1)
 
 
-def bad(core_id: int, msg: str = "mprime error: FATAL ERROR") -> StressResult:
-    return StressResult(
-        core_id=core_id,
-        passed=False,
-        duration_seconds=0.1,
-        error_message=msg,
-        error_type=execution.classify_error(msg),
-    )
+def bad(core_id: int, msg: str = "mprime error: FATAL ERROR", outcome: Outcome = Outcome.COMPUTATION) -> StressResult:
+    return StressResult(core_id=core_id, outcome=outcome, detail=msg, duration_seconds=0.1)
 
 
-def step_pass(sup, lanes, config_for, duration):
-    for one in lanes:
-        config_for(one)
+def cut(core_id: int) -> StressResult:
+    return StressResult(core_id=core_id, outcome=Outcome.CUT_SHORT, detail="stopped", duration_seconds=0.1)
+
+
+def step_pass(sup, lanes, config, duration):
     return {one.core_id: ok(one.core_id) for one in lanes}
 
 
-def step_fail(sup, lanes, config_for, duration):
+def step_fail(sup, lanes, config, duration):
     return {one.core_id: bad(one.core_id) for one in lanes}
 
 
-def step_none(sup, lanes, config_for, duration):
-    return {one.core_id: None for one in lanes}
+def pass_then_stop(sup, lanes, config, duration):
+    sup.kwargs["stop_event"].set()
+    return {one.core_id: ok(one.core_id) for one in lanes}
+
+
+def returns(outcome: Outcome, detail: str):
+    def step(sup, lanes, config, duration):
+        return {one.core_id: bad(one.core_id, detail, outcome) for one in lanes}
+
+    return step
 
 
 class TestDataShapes:
@@ -152,77 +158,75 @@ class TestInit:
         assert sched.on_core_start == []
         assert sched.on_test_complete == []
 
-    def test_classify_delegates_to_the_engine(self):
-        message = "MCE during stress (CPU 0,16): bang"
-        assert CoreScheduler._classify_error(message) == execution.classify_error(message)
-
 
 class TestRunOrchestration:
     def test_a_clean_run_records_a_pass_per_core(self, tmp_path):
         sched = make_scheduler(tmp_path)
         ScriptedSupervisor.script = [step_pass, step_pass]
         results = sched.run()
-        assert all(sup.kwargs["stop_on_first_failure"] is False for sup in ScriptedSupervisor.created)
         assert sched.state == TestState.FINISHED
-        assert [r[0].passed for r in results.values()] == [True, True]
+        assert [r[0].outcome for r in results.values()] == [Outcome.PASS, Outcome.PASS]
         assert all(s.state == "passed" for s in sched.core_status.values())
         assert all(s.iterations == 1 for s in sched.core_status.values())
-        assert sched.work_dir.is_dir()
 
     def test_one_thread_means_one_logical_cpu(self, tmp_path):
         sched = make_scheduler(tmp_path)
-        seen: list[tuple[tuple[int, ...], int]] = []
+        seen: list[tuple[int, ...]] = []
 
-        def capture(sup, lanes, config_for, duration):
-            seen.extend((one.cpus, config_for(one).threads) for one in lanes)
+        def capture(sup, lanes, config, duration):
+            seen.extend(one.cpus for one in lanes)
             return {one.core_id: ok(one.core_id) for one in lanes}
 
         ScriptedSupervisor.script = [capture, capture]
         sched.run()
-        assert seen == [((0,), 1), ((1,), 1)]
+        assert seen == [(0,), (1,)]
 
     def test_two_threads_mean_both_smt_siblings(self, tmp_path):
         sched = make_scheduler(tmp_path)
         sched.stress_config.threads = 2
         sched._requested_threads = 2
-        seen: list[tuple[tuple[int, ...], int]] = []
+        seen: list[tuple[int, ...]] = []
 
-        def capture(sup, lanes, config_for, duration):
-            seen.extend((one.cpus, config_for(one).threads) for one in lanes)
+        def capture(sup, lanes, config, duration):
+            seen.extend(one.cpus for one in lanes)
             return {one.core_id: ok(one.core_id) for one in lanes}
 
         ScriptedSupervisor.script = [capture, capture]
         sched.run()
-        assert seen == [((0, 16), 2), ((1, 17), 2)]
+        assert seen == [(0, 16), (1, 17)]
 
     def test_the_requested_width_survives_a_narrow_core(self, tmp_path):
         topo = make_topo({0: (0,), 1: (1, 17)})
         sched = make_scheduler(tmp_path, topo=topo)
         sched.stress_config.threads = 2
         sched._requested_threads = 2
-        seen: list[tuple[int, ...]] = []
+        seen: list[tuple[tuple[int, ...], int]] = []
 
-        def capture(sup, lanes, config_for, duration):
-            seen.extend(one.cpus for one in lanes)
-            for one in lanes:
-                config_for(one)
+        def capture(sup, lanes, config, duration):
+            seen.extend((one.cpus, config.threads) for one in lanes)
             return {one.core_id: ok(one.core_id) for one in lanes}
 
         ScriptedSupervisor.script = [capture, capture]
         sched.run()
-        assert seen == [(0,), (1, 17)]
+        assert seen == [((0,), 2), ((1, 17), 2)]
 
     def test_a_failed_core_is_recorded_and_the_run_continues(self, tmp_path):
-        backend = RecordingBackend()
-        sched = make_scheduler(tmp_path, backend=backend)
+        sched = make_scheduler(tmp_path)
         ScriptedSupervisor.script = [step_fail, step_pass]
         results = sched.run()
-        assert results[0][0].passed is False
-        assert results[1][0].passed is True
+        assert results[0][0].outcome is Outcome.COMPUTATION
+        assert results[1][0].outcome is Outcome.PASS
         assert sched.core_status[0].state == "failed"
         assert sched.core_status[0].errors == 1
-        assert backend.cleaned[0][1] is True
-        assert backend.cleaned[1][1] is False
+        assert sched.core_status[0].last_error == "mprime error: FATAL ERROR"
+
+    def test_a_failed_cores_output_reaches_the_result(self, tmp_path):
+        sched = make_scheduler(tmp_path, cores_to_test=[0])
+        kept = StressResult(
+            core_id=0, outcome=Outcome.COMPUTATION, detail="fail", duration_seconds=0.1, output="the tool's last lines"
+        )
+        ScriptedSupervisor.script = [lambda sup, lanes, c, d: {0: kept}]
+        assert sched.run()[0][0].output == "the tool's last lines"
 
     def test_stop_on_error_ends_the_run_at_the_failure(self, tmp_path):
         sched = make_scheduler(tmp_path, stop_on_error=True)
@@ -232,14 +236,48 @@ class TestRunOrchestration:
         assert results[1] == []
         assert sched.core_status[1].state == "pending"
 
+    def test_the_supervisors_outcome_reaches_the_result_unchanged(self, tmp_path):
+        sched = make_scheduler(tmp_path, cores_to_test=[0])
+        ScriptedSupervisor.script = [returns(Outcome.NOT_STARTED, "stress exited with code 2 at startup")]
+        results = sched.run()
+        assert results[0][0].outcome is Outcome.NOT_STARTED
+        assert results[0][0].detail == "stress exited with code 2 at startup"
+
+    def test_the_result_carries_the_slot_time_and_iteration(self, tmp_path):
+        sched = make_scheduler(tmp_path, cores_to_test=[0], cycle_count=2)
+
+        def slow_pass(sup, lanes, config, duration):
+            time.sleep(0.05)
+            return {one.core_id: ok(one.core_id) for one in lanes}
+
+        ScriptedSupervisor.script = [slow_pass, slow_pass]
+        results = sched.run()
+        assert [r.iterations_completed for r in results[0]] == [1, 2]
+        assert all(r.duration_seconds >= 0.05 for r in results[0])
+
+    def test_an_environment_outcome_ends_the_run_without_stop_on_error(self, tmp_path):
+        sched = make_scheduler(tmp_path)
+        ScriptedSupervisor.script = [returns(Outcome.THERMAL, "CPU temperature exceeded 95.0 C")]
+        results = sched.run()
+        assert results[0][0].outcome is Outcome.THERMAL
+        assert results[1] == []
+        assert sched._stop_requested
+
+    def test_a_silicon_outcome_without_stop_on_error_keeps_going(self, tmp_path):
+        sched = make_scheduler(tmp_path)
+        ScriptedSupervisor.script = [returns(Outcome.OWN_CORE_MCE, "MCE during stress: x"), step_pass]
+        results = sched.run()
+        assert [r[0].outcome for r in results.values()] == [Outcome.OWN_CORE_MCE, Outcome.PASS]
+        assert not sched._stop_requested
+
     def test_an_interrupted_core_gets_no_invented_result(self, tmp_path):
         sched = make_scheduler(tmp_path)
 
-        def step_stop_then_none(sup, lanes, config_for, duration):
+        def step_stop_then_cut(sup, lanes, config, duration):
             sup.kwargs["stop_event"].set()
-            return {one.core_id: None for one in lanes}
+            return {one.core_id: cut(one.core_id) for one in lanes}
 
-        ScriptedSupervisor.script = [step_stop_then_none]
+        ScriptedSupervisor.script = [step_stop_then_cut]
         results = sched.run()
         assert results[0] == []
         assert results[1] == []
@@ -286,7 +324,36 @@ class TestRunOrchestration:
         assert sched._stop_requested
 
 
+def in_phase(phase: str, found: LaneSignal):
+    return lambda **kwargs: found if kwargs["phase"] == phase else None
+
+
 class TestIdleComposition:
+    @pytest.mark.req("EC.G1.scheduler")
+    def test_a_record_logged_one_poll_after_a_core_s_last_phase_fails_that_core(self, tmp_path, monkeypatch):
+        found = LaneSignal(Outcome.OWN_CORE_MCE, "MCE during late machine checks: bang")
+        watched = []
+
+        def watch(**kwargs):
+            watched.append((kwargs["phase"], kwargs["cpus"], kwargs["duration"]))
+            return found if kwargs["phase"] == "late machine checks" else None
+
+        monkeypatch.setattr(execution, "watch_idle", watch)
+        monkeypatch.setattr(kernel, "mce_settle_s", lambda: 6.0)
+        sched = make_scheduler(tmp_path, cores_to_test=[0])
+        ScriptedSupervisor.script = [step_pass]
+        results = sched.run()
+        assert results[0][0].outcome is Outcome.OWN_CORE_MCE
+        assert watched == [("late machine checks", sched.topology.cores[0].logical_cpus, 6.0)]
+
+    def test_a_failed_core_is_not_watched_again_after_its_test(self, tmp_path, monkeypatch):
+        watched = []
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: watched.append(kwargs["phase"]))
+        sched = make_scheduler(tmp_path, cores_to_test=[0])
+        ScriptedSupervisor.script = [step_fail]
+        sched.run()
+        assert watched == []
+
     def test_inter_core_idle_runs_between_cores(self, tmp_path, monkeypatch):
         calls: list[str] = []
 
@@ -298,103 +365,168 @@ class TestIdleComposition:
         sched = make_scheduler(tmp_path, idle_between_cores=0.01)
         ScriptedSupervisor.script = [step_pass, step_pass]
         sched.run()
-        assert calls == ["inter-core idle", "inter-core idle"]
+        assert calls == ["late machine checks", "inter-core idle", "late machine checks", "inter-core idle"]
 
     def test_an_idle_error_is_recorded_without_a_verdict_change(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: "MCE during inter-core idle: bang")
+        found = LaneSignal(Outcome.OWN_CORE_MCE, "MCE during inter-core idle: bang")
+        monkeypatch.setattr(execution, "watch_idle", in_phase("inter-core idle", found))
         sched = make_scheduler(tmp_path, idle_between_cores=0.01)
         ScriptedSupervisor.script = [step_pass, step_pass]
         results = sched.run()
         assert results[0][0].passed is True
         assert sched.core_status[0].errors == 1
         assert "MCE" in sched.core_status[0].last_error
+        assert results[1][0].passed is True
+
+    def test_an_environment_event_while_idle_between_cores_stops_the_run(self, tmp_path, monkeypatch):
+        found = LaneSignal(Outcome.THERMAL, "CPU temperature exceeded 95.0 C safety limit during inter-core idle")
+        monkeypatch.setattr(execution, "watch_idle", in_phase("inter-core idle", found))
+        sched = make_scheduler(tmp_path, idle_between_cores=0.01)
+        ScriptedSupervisor.script = [step_pass, step_pass]
+        results = sched.run()
+        assert results[0][0].passed is True
+        assert results[1] == []
 
     def test_an_idle_stability_error_fails_the_core(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: "MCE during idle stability: bang")
+        found = LaneSignal(Outcome.OWN_CORE_MCE, "MCE during idle stability: bang")
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: found)
         sched = make_scheduler(tmp_path, cores_to_test=[0], idle_stability_test=0.01)
         ScriptedSupervisor.script = [step_pass]
         results = sched.run()
-        assert results[0][0].passed is False
-        assert results[0][0].error_type == "mce"
+        assert results[0][0].outcome is Outcome.OWN_CORE_MCE
+        assert results[0][0].detail == "MCE during idle stability: bang"
+
+    def test_a_quiet_idle_stability_keeps_the_pass(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: None)
+        sched = make_scheduler(tmp_path, cores_to_test=[0], idle_stability_test=0.01)
+        ScriptedSupervisor.script = [step_pass]
+        results = sched.run()
+        assert [result.outcome for result in results[0]] == [Outcome.PASS]
+        assert sched.core_status[0].state == "passed"
+
+    def test_an_idle_phase_failure_keeps_its_own_outcome(self, tmp_path, monkeypatch):
+        found = LaneSignal(Outcome.UNATTRIBUTED_MCE, "Machine check without core attribution during idle stability")
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: found)
+        sched = make_scheduler(tmp_path, idle_stability_test=0.01)
+        ScriptedSupervisor.script = [step_pass]
+        results = sched.run()
+        assert results[0][0].outcome is Outcome.UNATTRIBUTED_MCE
+        assert results[1] == []
 
 
 class TestVariableLoadComposition:
     def test_a_variable_segment_failure_is_attributed(self, tmp_path):
-        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load=True)
+        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load=True, variable_load_interval=0.1)
         ScriptedSupervisor.script = [step_pass, step_fail]
         results = sched.run()
-        assert results[0][0].passed is False
-        assert "FATAL" in results[0][0].error_message
+        assert results[0][0].outcome is Outcome.COMPUTATION
+        assert "FATAL" in results[0][0].detail
+
+    def test_a_variable_phase_too_short_for_one_segment_is_no_work_done(self, tmp_path):
+        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load=True, stop_on_error=True)
+        ScriptedSupervisor.script = [step_pass]
+        results = sched.run()
+        assert results[0][0].outcome is Outcome.NO_WORK_DONE
+        assert "no work done" in results[0][0].detail
+        assert sched._stop_requested
 
     def test_a_clean_variable_phase_keeps_the_pass(self, tmp_path, monkeypatch):
         monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: None)
-        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load=True)
+        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load=True, variable_load_interval=0.02)
 
-        def quick_pass(sup, lanes, config_for, duration):
+        def quick_pass(sup, lanes, config, duration):
             time.sleep(0.05)
             return {one.core_id: ok(one.core_id) for one in lanes}
 
         ScriptedSupervisor.script = [step_pass] + [quick_pass] * 40
         sched.config.seconds_per_core = 0.3
         results = sched.run()
-        assert results[0][0].passed is True
+        assert results[0][0].outcome is Outcome.PASS
 
+    def test_an_idle_transition_failure_keeps_its_outcome(self, tmp_path, monkeypatch):
+        found = LaneSignal(Outcome.UNATTRIBUTED_MCE, "Machine check without core attribution during idle transition")
+        monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: found)
+        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load=True, variable_load_interval=0.1)
+        ScriptedSupervisor.script = [step_pass, step_pass]
+        results = sched.run()
+        assert results[0][0].outcome is Outcome.UNATTRIBUTED_MCE
 
-class TestRapidTransitions:
-    def test_cycles_run_and_report_a_pass(self, tmp_path, monkeypatch):
+    def test_a_stop_during_the_variable_phase_is_cut_short_not_a_pass(self, tmp_path, monkeypatch):
         monkeypatch.setattr(execution, "watch_idle", lambda **kwargs: None)
-        sched = make_scheduler(tmp_path)
+        sched = make_scheduler(tmp_path, variable_load_interval=0.02)
+        ScriptedSupervisor.script = [pass_then_stop]
+        result = sched._run_variable_load(sched._lane_for(0), 1.0)
+        assert result.outcome is Outcome.CUT_SHORT
 
-        def timed_pass(sup, lanes, config_for, duration):
-            time.sleep(0.03)
+    def test_the_variable_phase_never_launches_a_sliver_segment(self, tmp_path, monkeypatch):
+        def idle(**kwargs):
+            time.sleep(kwargs["duration"])
+
+        monkeypatch.setattr(execution, "watch_idle", idle)
+        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load_interval=0.4)
+        segments: list[float] = []
+
+        def timed_pass(sup, lanes, config, duration):
+            segments.append(duration)
+            time.sleep(duration)
             return {one.core_id: ok(one.core_id) for one in lanes}
 
-        ScriptedSupervisor.script = [timed_pass] * 40
-        passed, error = sched.run_rapid_transitions([0, 1], total_duration=0.1, load_seconds=0.03, idle_seconds=0.01)
-        assert passed is True and error is None
-        assert sched.state == TestState.FINISHED
+        ScriptedSupervisor.script = [timed_pass] * 5
+        sched._run_variable_load(sched._lane_for(0), 1.0)
+        assert segments
+        assert min(segments) >= 0.4
 
-    def test_a_failure_names_its_cycle(self, tmp_path):
-        sched = make_scheduler(tmp_path)
 
-        def timed_fail(sup, lanes, config_for, duration):
-            time.sleep(0.02)
-            return {one.core_id: bad(one.core_id, "mprime crashed with SIGSEGV (exit -11)") for one in lanes}
+class TestAStopBeforeTheLastPhase:
+    def test_a_stop_during_idle_stability_leaves_the_core_without_a_verdict(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(scheduler_mod, "Sensors", sensors_at(40.0))
+        sched = make_scheduler(tmp_path, cores_to_test=[0], idle_stability_test=10.0)
+        ScriptedSupervisor.script = [step_pass]
+        timers: list[threading.Timer] = []
 
-        ScriptedSupervisor.script = [timed_fail]
-        passed, error = sched.run_rapid_transitions([0], total_duration=1.0, load_seconds=0.02)
-        assert passed is False
-        assert "rapid transition cycle 1" in error
+        def stop_into_the_idle(core_id, phase):
+            if phase == "idle stability":
+                timers.append(threading.Timer(0.5, sched.stop))
+                timers[-1].start()
 
-    def test_a_prior_stop_is_honored_without_running(self, tmp_path):
-        sched = make_scheduler(tmp_path)
-        sched.stop()
-        passed, error = sched.run_rapid_transitions([0], total_duration=5.0)
-        assert (passed, error) == (True, None)
-        assert ScriptedSupervisor.created == []
+        finished: list[StressResult] = []
+        sched.on_phase_change.append(stop_into_the_idle)
+        sched.on_core_finish.append(lambda core_id, result: finished.append(result))
+        start = time.monotonic()
+        with caplog.at_level(logging.INFO, logger=scheduler_mod.log.name):
+            results = sched.run()
+        assert len(timers) == 1
+        assert time.monotonic() - start < 5.0
+        assert results[0] == []
+        assert finished == []
+        assert sched.core_status[0].state == "pending"
+        assert any("idle stability phase stopped before its end" in r.getMessage() for r in caplog.records)
 
-    def test_unknown_cores_are_a_harness_error(self, tmp_path):
-        sched = make_scheduler(tmp_path, topo=make_topo({0: (0,)}))
-        passed, error = sched.run_rapid_transitions([7], total_duration=0.1)
-        assert passed is False
-        assert "harness error" in error
+    @pytest.mark.parametrize(
+        ("later", "skipped"),
+        [
+            ({"variable_load": True, "idle_stability_test": 5.0}, "variable load"),
+            ({"variable_load": True}, "variable load"),
+            ({"idle_stability_test": 5.0}, "idle stability"),
+        ],
+    )
+    def test_a_stop_that_skips_the_later_phases_leaves_the_core_without_a_verdict(
+        self, tmp_path, caplog, later, skipped
+    ):
+        sched = make_scheduler(tmp_path, cores_to_test=[0], variable_load_interval=0.1, **later)
+        ScriptedSupervisor.script = [pass_then_stop]
+        with caplog.at_level(logging.INFO, logger=scheduler_mod.log.name):
+            results = sched.run()
+        assert results[0] == []
+        assert sched.core_status[0].state == "pending"
+        assert any(f"{skipped} phase stopped before its end" in r.getMessage() for r in caplog.records)
 
-    def test_an_idle_mce_ends_the_cycling(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            execution,
-            "watch_idle",
-            lambda **kwargs: f"MCE during {kwargs['phase']}: bang",
-        )
-        sched = make_scheduler(tmp_path)
-
-        def timed_pass(sup, lanes, config_for, duration):
-            time.sleep(0.02)
-            return {one.core_id: ok(one.core_id) for one in lanes}
-
-        ScriptedSupervisor.script = [timed_pass]
-        passed, error = sched.run_rapid_transitions([0], total_duration=1.0, load_seconds=0.02, idle_seconds=0.02)
-        assert passed is False
-        assert "idle phase of rapid transition cycle 1" in error
+    def test_a_stop_after_the_only_configured_phase_keeps_the_pass(self, tmp_path):
+        sched = make_scheduler(tmp_path, cores_to_test=[0])
+        ScriptedSupervisor.script = [pass_then_stop]
+        results = sched.run()
+        assert [result.outcome for result in results[0]] == [Outcome.PASS]
+        assert sched.core_status[0].state == "passed"
 
 
 class TestSignalMarshallingAudit:
@@ -418,10 +550,10 @@ class TestStopThreadSafety:
     def test_stop_from_another_thread_ends_a_running_cycle(self, tmp_path):
         sched = make_scheduler(tmp_path, cores_to_test=[0, 1])
 
-        def slow_pass(sup, lanes, config_for, duration):
+        def slow_pass(sup, lanes, config, duration):
             for _ in range(200):
                 if sup.kwargs["stop_event"].is_set():
-                    return {one.core_id: None for one in lanes}
+                    return {one.core_id: cut(one.core_id) for one in lanes}
                 time.sleep(0.01)
             return {one.core_id: ok(one.core_id) for one in lanes}
 

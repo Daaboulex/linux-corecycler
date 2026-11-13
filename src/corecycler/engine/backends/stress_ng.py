@@ -1,4 +1,4 @@
-"""stress-ng stress test backend — always available on NixOS."""
+"""stress-ng stress test backend."""
 
 from __future__ import annotations
 
@@ -7,10 +7,26 @@ from typing import TYPE_CHECKING
 
 from corecycler.engine.backends import register_backend
 
-from .base import CRASH_SIGNALS, KILLED_BY_US_CODES, StressBackend, StressConfig, StressMode
+from .base import LaneSignal, Outcome, StressBackend, StressConfig, StressMode, scan
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from .base import FindingTable
+
+FINDINGS: FindingTable = (
+    (re.compile(r"stress-ng: fail:(?!.*out of memory)"), Outcome.COMPUTATION),
+    (re.compile(r"\(stressor failed\)"), Outcome.COMPUTATION),
+    (re.compile(r"aborted early, no system resources"), Outcome.NOT_STARTED),
+    (re.compile(r"choice '[^']*' not known"), Outcome.NOT_STARTED),
+)
+
+STRESSOR_SIGNAL: FindingTable = (
+    (re.compile(r"stressor terminated with unexpected signal (?:4|7|8|11)\b"), Outcome.CPU_SIGNAL),
+    (re.compile(r"stressor terminated with unexpected signal \d+"), Outcome.UNEXPLAINED),
+)
+
+FAILURE_SUMMARY: FindingTable = ((re.compile(r"unsuccessful run completed"), Outcome.COMPUTATION),)
 
 
 @register_backend("stress-ng")
@@ -19,8 +35,6 @@ class StressNgBackend(StressBackend):
 
     def get_command(self, config: StressConfig, work_dir: Path) -> list[str]:
         binary = self.require_binary()
-
-        # select stressor method based on mode
         method = _mode_to_method(config.mode)
 
         cmd = [
@@ -29,15 +43,14 @@ class StressNgBackend(StressBackend):
             str(config.threads),
             "--cpu-method",
             method,
-            "--verify",  # verify computations for error detection
+            "--verify",
+            "--abort",
             "--metrics-brief",
             "--temp-path",
             str(work_dir),
         ]
 
-        # Add matrix verification stressor alongside cpu for SSE mode.
-        # matrixprod has no built-in verification — adding matrix stressor
-        # with --verify provides actual computation checking.
+        # cpu-method matrixprod verifies nothing; the --matrix twin is the checked computation
         if method == "matrixprod":
             cmd += ["--matrix", str(config.threads), "--matrix-method", "prod"]
 
@@ -46,49 +59,16 @@ class StressNgBackend(StressBackend):
     def get_supported_modes(self) -> list[StressMode]:
         return [StressMode.SSE, StressMode.AVX, StressMode.AVX2]
 
-    def prepare(self, work_dir: Path, config: StressConfig) -> None:
-        work_dir.mkdir(parents=True, exist_ok=True)
-
-    def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
-        combined = stdout + "\n" + stderr
-
-        # stress-ng verification failures
-        # Note: avoid matching "0 FAILED" in metrics output (false positive)
-        error_patterns = [
-            r"[1-9]\d*\s+FAILED",  # "N FAILED" where N > 0
-            r"\bFAIL\b(?!\w)",  # standalone FAIL (not part of FAILED)
-            r"verification error",
-            r"computation mismatch",
-            r"error.*incorrect",
-            r"killed by signal \d+",
-            r"out of memory",
-        ]
-        for pattern in error_patterns:
-            match = re.search(pattern, combined, re.IGNORECASE)
-            if match:
-                return False, f"stress-ng error: {match.group(0)}"
-
-        # killed by us (timeout) = passed, but only if no error patterns matched above
-        if returncode in KILLED_BY_US_CODES or returncode == 0:
-            return True, None
-
-        # SIGSEGV/SIGABRT/SIGBUS = likely CO instability crash
-        if returncode in CRASH_SIGNALS:
-            return False, f"stress-ng crashed with {CRASH_SIGNALS[returncode]} (exit {returncode})"
-
-        return False, f"stress-ng exited with code {returncode}"
-
-    def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
-        pass
+    def findings(self, output: str, work_dir: Path) -> tuple[LaneSignal, ...]:
+        signalled = scan(output, STRESSOR_SIGNAL)
+        return (*scan(output, FINDINGS), *(signalled or scan(output, FAILURE_SUMMARY)))
 
 
 def _mode_to_method(mode: StressMode) -> str:
     match mode:
         case StressMode.SSE:
             return "matrixprod"
-        case StressMode.AVX:
+        case StressMode.AVX | StressMode.AVX2:
             return "fft"
-        case StressMode.AVX2:
-            return "fft"  # stress-ng doesn't distinguish AVX/AVX2 methods
         case _:
             return "matrixprod"

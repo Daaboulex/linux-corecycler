@@ -7,18 +7,14 @@ map, or a NaN clock value must never crash the parser -- they must fail closed.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-import corecycler.engine.topology as topo_mod  # noqa: E402
-from corecycler.engine.topology import CPUTopology, _field_int, _parse_cpuinfo  # noqa: E402
-from corecycler.smu.pmtable import PMTableReader, compute_fclk_uclk_ratio  # noqa: E402
+import corecycler.engine.topology as topo_mod
+from corecycler.engine.topology import CPUTopology, _field_int, _parse_cpuinfo
+from corecycler.smu.pmtable import PMTableReader, compute_fclk_uclk_ratio
 
 
 class TestCpuinfoParserRobust:
@@ -31,7 +27,7 @@ class TestCpuinfoParserRobust:
         orig = topo_mod.CPUINFO
         topo_mod.CPUINFO = mock
         try:
-            _parse_cpuinfo(CPUTopology())  # must not raise on any input
+            _parse_cpuinfo(CPUTopology())
         finally:
             topo_mod.CPUINFO = orig
 
@@ -70,7 +66,7 @@ class TestCpuinfoParserRobust:
         orig = topo_mod.CPUINFO
         topo_mod.CPUINFO = mock
         try:
-            _parse_cpuinfo(CPUTopology())  # must not raise IndexError
+            _parse_cpuinfo(CPUTopology())
         finally:
             topo_mod.CPUINFO = orig
 
@@ -82,7 +78,7 @@ class TestPmTableParserRobust:
         (tmp_path / "pm_table").write_bytes(raw)
         if ver:
             (tmp_path / "pm_table_version").write_bytes(ver)
-        result = PMTableReader(num_cores=16, sysfs_path=tmp_path).read()
+        result = PMTableReader(sysfs_path=tmp_path).read()
         assert result is None or hasattr(result, "raw_floats")
 
 

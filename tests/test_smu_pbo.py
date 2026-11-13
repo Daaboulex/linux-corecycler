@@ -1,18 +1,22 @@
 """SMU PBO-limit write guards: every setter range-checks and RAISES before any
-hardware write, returns False on a generation that lacks the command, and honors
-dry-run. These are the last line before a bad watt/amp/scalar reaches the SMU.
+hardware write and returns False on a generation that lacks the command. These are
+the last line before a bad watt/amp/scalar reaches the SMU.
 """
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from corecycler.smu.commands import CPUGeneration, SMUCommandSet, get_commands
-from corecycler.smu.driver import RyzenSMU
+from corecycler.smu.driver import RyzenSMU, SMUResponse
 
 
-def _smu(gen=CPUGeneration.ZEN5_GRANITE_RIDGE, dry_run=True):
-    return RyzenSMU(get_commands(gen), dry_run=dry_run)
+def _smu(gen=CPUGeneration.ZEN5_GRANITE_RIDGE):
+    smu = RyzenSMU(get_commands(gen))
+    smu._send_rsmu_command = MagicMock(return_value=SMUResponse(success=True, args=(0,) * 6, raw=b"\x00" * 24))
+    return smu
 
 
 LIMIT_SETTERS = ["set_ppt_limit", "set_tdc_limit", "set_edc_limit"]
@@ -20,14 +24,18 @@ LIMIT_SETTERS = ["set_ppt_limit", "set_tdc_limit", "set_edc_limit"]
 
 class TestPboLimitGuards:
     @pytest.mark.parametrize("setter", LIMIT_SETTERS)
-    def test_valid_dry_run_ok(self, setter):
-        assert getattr(_smu(), setter)(200) is True
+    def test_a_valid_limit_is_sent(self, setter):
+        smu = _smu()
+        assert getattr(smu, setter)(200) is True
+        smu._send_rsmu_command.assert_called_once()
 
     @pytest.mark.parametrize("setter", LIMIT_SETTERS)
     @pytest.mark.parametrize("bad", [0, -1, -500, 2001, 100000])
     def test_out_of_range_raises(self, setter, bad):
+        smu = _smu()
         with pytest.raises(ValueError):
-            getattr(_smu(), setter)(bad)
+            getattr(smu, setter)(bad)
+        smu._send_rsmu_command.assert_not_called()
 
     @pytest.mark.parametrize("setter", LIMIT_SETTERS)
     @pytest.mark.parametrize("edge", [1, 2000])
@@ -42,13 +50,15 @@ class TestPboLimitGuards:
             mailbox="rsmu",
             encoding_scheme="none",
         )
-        smu = RyzenSMU(cmds, dry_run=True)
+        smu = RyzenSMU(cmds)
         assert getattr(smu, setter)(200) is False
 
 
 class TestPboScalar:
-    def test_valid_dry_run(self):
-        assert _smu().set_pbo_scalar(5.0) is True
+    def test_a_valid_scalar_is_sent(self):
+        smu = _smu()
+        assert smu.set_pbo_scalar(5.0) is True
+        smu._send_rsmu_command.assert_called_once()
 
     @pytest.mark.parametrize("edge", [0.0, 10.0])
     def test_boundaries(self, edge):
@@ -61,8 +71,10 @@ class TestPboScalar:
 
 
 class TestBoostLimit:
-    def test_dry_run_ok(self):
-        assert _smu().set_boost_limit(5500) is True
+    def test_a_valid_limit_is_sent(self):
+        smu = _smu()
+        assert smu.set_boost_limit(5500) is True
+        smu._send_rsmu_command.assert_called_once()
 
     def test_generation_without_command_returns_false(self):
         assert _smu(CPUGeneration.ZEN3_VERMEER).set_boost_limit(5000) is False
@@ -71,12 +83,6 @@ class TestBoostLimit:
 class TestSystemStateReads:
     def _drv(self, tmp_path):
         return RyzenSMU(get_commands(CPUGeneration.ZEN5_GRANITE_RIDGE), tmp_path)
-
-    def test_detect_system_state_aggregates_without_crash(self, tmp_path):
-        state = self._drv(tmp_path).detect_system_state(num_cores=4)
-        assert state.smu_available is True
-        assert state.generation.name == "ZEN5_GRANITE_RIDGE"
-        assert len(state.co_offsets) == 4
 
     def test_get_pbo_scalar_none_on_failed_read(self, tmp_path):
         assert self._drv(tmp_path).get_pbo_scalar() is None

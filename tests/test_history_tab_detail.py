@@ -27,9 +27,7 @@ from corecycler.history.db import (
     TelemetrySample,
     TuningContextRecord,
 )
-from corecycler.tuner import persistence as tp
-from corecycler.tuner.config import TunerConfig
-from corecycler.tuner.state import CoreState, TunerPhase
+from tests._tuner_world import save_machine_session
 
 
 def _qapp():
@@ -103,50 +101,33 @@ def _seed_run(db, started_at, *, status="completed", cores_failed=0, context_id=
     )
 
 
-def _seed_session(db, status="completed"):
-    sid = tp.create_session(db, TunerConfig(), bios_version="2402", cpu_model="Test 8C")
-    tp.update_session_status(db, sid, status)
-    return sid
+class TestViewSelector:
+    def _show(self, tab, mode):
+        tab._view_select.setCurrentIndex(tab._view_select.findData(mode))
 
-
-class TestViewToggles:
-    def test_checked_view_toggle_selects_all_runs(self, db):
+    def test_each_choice_selects_its_view(self, db):
         tab = _tab(db)
-        tab._tuner_toggle.setChecked(True)
-        tab._view_toggle.setChecked(True)
-        tab._toggle_view()
-        assert tab._view_mode == tab.VIEW_ALL
-        assert not tab._tuner_toggle.isChecked()
-
-    def test_unchecked_view_toggle_returns_to_grouped(self, db):
-        tab = _tab(db)
-        tab._view_toggle.setChecked(True)
-        tab._toggle_view()
-        tab._view_toggle.setChecked(False)
-        tab._toggle_view()
-        assert tab._view_mode == tab.VIEW_GROUPED
-
-    def test_checked_tuner_toggle_selects_tuner_view(self, db):
-        tab = _tab(db)
-        tab._view_toggle.setChecked(True)
-        tab._tuner_toggle.setChecked(True)
-        tab._toggle_tuner_view()
-        assert tab._view_mode == tab.VIEW_TUNER
-        assert not tab._view_toggle.isChecked()
-
-    def test_unchecked_tuner_toggle_returns_to_grouped(self, db):
-        tab = _tab(db)
-        tab._tuner_toggle.setChecked(False)
-        tab._toggle_tuner_view()
-        assert tab._view_mode == tab.VIEW_GROUPED
+        for mode in (tab.VIEW_ALL, tab.VIEW_TUNER, tab.VIEW_GROUPED):
+            self._show(tab, mode)
+            assert tab._view_mode == mode
+            assert tab._view_select.currentData() == mode
+        assert not tab._context_table.isHidden()
 
     def test_all_view_populates_runs_table(self, db):
         _seed_run(db, "2026-07-20T10:00:00+00:00")
-        _seed_run(db, "2026-07-21T10:00:00+00:00")
+        _seed_run(db, "2026-07-21T10:00:00+00:00", status="crashed")
         tab = _tab(db)
-        tab._view_toggle.setChecked(True)
-        tab._toggle_view()
+        self._show(tab, tab.VIEW_ALL)
         assert tab._runs_table.rowCount() == 2
+        assert tab._context_table.isHidden()
+        assert tab._total_label.text() == "Stress test runs: 2"
+        assert "Completed: 1" in tab._counts_label.text()
+        assert "Crashed: 1" in tab._counts_label.text()
+
+    def test_the_choices_read_as_words(self, db):
+        tab = _tab(db)
+        shown = [tab._view_select.itemText(i) for i in range(tab._view_select.count())]
+        assert shown == ["Stress tests by setup", "All stress tests", "Tuning sessions"]
 
 
 class TestWithoutDatabase:
@@ -168,6 +149,11 @@ class TestWithoutDatabase:
         with patch("corecycler.gui.history_tab.QFileDialog.getSaveFileName") as dlg:
             tab._export_bulk_csv([0])
         assert not dlg.called
+
+    @pytest.mark.req("T22.history.off")
+    def test_without_a_database_the_tab_says_history_is_off_not_zero_runs(self, db):
+        assert _tab(None)._total_label.text() == "History is off: no history database is open, so nothing is shown"
+        assert _tab(db)._total_label.text() == "Stress test runs: 0"
 
     def test_run_delete_is_a_noop(self):
         tab = _tab(None)
@@ -250,6 +236,30 @@ class TestContextTable:
         assert tab._context_table.item(1, 0).text() == "2402"
         assert not tab._context_table.item(1, 0).toolTip()
 
+    @pytest.mark.req("T22.F19")
+    @pytest.mark.parametrize(
+        ("older", "newer"),
+        [("", "F12"), ("F12", ""), ("F12", "F12")],
+        ids=["not-recorded-before", "absent-now", "same"],
+    )
+    def test_no_bios_change_is_marked_beside_a_missing_or_equal_version(self, db, older, newer):
+        old = _seed_context(db, older, {"0": -20})
+        new = _seed_context(db, newer, {"0": -25})
+        _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=old)
+        _seed_run(db, "2026-07-21T10:00:00+00:00", context_id=new)
+        tab = _grouped_tab(db)
+        shown = [(tab._context_table.item(row, 0).text(), tab._context_table.item(row, 0).toolTip()) for row in (0, 1)]
+        assert shown == [(newer or "-", ""), (older or "-", "")]
+
+    @pytest.mark.req("T22.F19")
+    def test_a_change_across_a_context_without_a_version_is_marked_on_the_newer_one(self, db):
+        for day, version in ((20, "F12"), (21, ""), (22, "F13")):
+            cid = _seed_context(db, version, {"0": -20 - day})
+            _seed_run(db, f"2026-07-{day}T10:00:00+00:00", context_id=cid)
+        tab = _grouped_tab(db)
+        shown = [tab._context_table.item(row, 0).text() for row in (0, 1, 2)]
+        assert shown == ["F13 *", "-", "F12"]
+
     def test_context_row_summarises_runs_and_scalar(self, db):
         cid = _seed_context(db, "2402", {"0": -20, "1": -20}, notes="tuned", scalar=3.0)
         _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
@@ -318,6 +328,34 @@ class TestContextTable:
         assert tab._context_table.maximumHeight() >= 100
 
 
+class TestNothingLeftBehind:
+    @pytest.mark.req("T23.history.freed")
+    def test_menus_and_the_export_dialog_are_freed_after_use(self, db, monkeypatch, tmp_path):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QApplication, QMenu
+
+        cid = _seed_context(db, "2402", {"0": -20})
+        _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
+        tab = _grouped_tab(db)
+        tab._context_table.selectRow(0)
+        tab._runs_table.selectRow(0)
+
+        class ClosedAtOnce(QMenu):
+            def exec(self, *args):
+                return None
+
+        monkeypatch.setattr(ht, "QMenu", ClosedAtOnce)
+        monkeypatch.setattr(ht._ExportOptionsDialog, "exec", lambda self: ht.QDialog.DialogCode.Rejected)
+        monkeypatch.setattr(ht.QFileDialog, "getSaveFileName", lambda *a, **k: (str(tmp_path / "r.json"), ""))
+        for _ in range(3):
+            tab._show_context_table_menu(_point())
+            tab._show_context_menu(_point())
+            tab._export_json(0)
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert tab.findChildren(QMenu) == []
+        assert tab.findChildren(ht._ExportOptionsDialog) == []
+
+
 class TestContextMenus:
     def test_context_table_menu_offers_a_note_action(self, db, monkeypatch):
         cid = _seed_context(db, "2402", {"0": -20})
@@ -381,8 +419,8 @@ class TestContextMenus:
         labels = [c.args[0] for c in menu_cls.return_value.addAction.call_args_list]
         assert labels == ["Compare", "Export All as CSV...", "Delete"]
 
-    def test_runs_menu_is_suppressed_in_tuner_view(self, db, monkeypatch):
-        _seed_session(db)
+    def test_runs_menu_is_suppressed_in_tuner_view(self, db, monkeypatch, tmp_path):
+        save_machine_session(db, tmp_path, "completed")
         tab = _tab(db)
         tab._view_mode = tab.VIEW_TUNER
         tab.refresh()
@@ -459,16 +497,20 @@ def _seed_detailed_run(db, ctx_id=None, settings_json='{"backend": "mprime"}'):
 
 def _seed_telemetry(db, rid):
     samples = []
-    for i in range(3):
+    for i, effective in enumerate((4900.0, 5000.0, 4975.0)):
         samples.append(
             TelemetrySample(
                 run_id=rid,
                 core_id=0,
                 timestamp=f"2026-07-20T10:0{i}:00+00:00",
                 freq_mhz=3000.0 + i * 1000.0,
-                effective_max_mhz=5000.0,
+                effective_max_mhz=5000.0 + i * 100.0,
                 temp_c=70.0 + i,
                 vcore_v=1.1 + i * 0.01,
+                pm_clock_mhz=5000.0,
+                pm_effective_mhz=effective,
+                pm_c0_pct=100.0,
+                pm_volts=1.1,
             )
         )
         samples.append(
@@ -477,12 +519,14 @@ def _seed_telemetry(db, rid):
                 core_id=1,
                 timestamp=f"2026-07-20T10:0{i}:00+00:00",
                 freq_mhz=4900.0 + i * 50.0,
-                effective_max_mhz=5000.0,
                 temp_c=72.0 + i,
                 vcore_v=1.2 + i * 0.01,
+                pm_clock_mhz=5000.0,
+                pm_effective_mhz=2400.0,
+                pm_c0_pct=50.0,
             )
         )
-    db.insert_telemetry_batch(samples)
+    db.insert_telemetry_block(samples)
 
 
 def _run_by_id(db, rid):
@@ -490,6 +534,7 @@ def _run_by_id(db, rid):
 
 
 class TestRunDetail:
+    @pytest.mark.req("T34.telemetry", "O19.stretch")
     def test_detail_renders_context_events_and_telemetry(self, db):
         cid = _seed_context(db, "2402", {"0": -20, "1": -25}, notes="tuned", scalar=3.0, boost=5200)
         rid = _seed_detailed_run(db, cid)
@@ -531,9 +576,12 @@ class TestRunDetail:
         assert "[error] boom" in text
         assert "[info] note" in text
         assert "Total samples: 6" in text
-        assert "Boost ceiling: 5000 MHz" in text
-        assert "Clock stretch: 40.0%" in text
-        assert "Clock stretch: none" in text
+        core_0, core_1 = text.split("Telemetry Summary")[1].split("Settings Snapshot")[0].split("  Core 1: ")
+        assert "Boost ceiling: 5200 MHz" in core_0
+        assert "Clock stretch: peak 2.0% (median 0.5%) over 3 loaded samples" in core_0
+        assert "Boost ceiling" not in core_1
+        assert "stretch" not in core_1.lower()
+        assert "Freq: 4900-5000 MHz" in core_1
         assert "Temp: 70.0-72.0 C" in text
         assert "Vcore: 1.1000-1.1200V" in text
         assert "Settings Snapshot" in text
@@ -577,53 +625,9 @@ class TestRunDetail:
         tab.hide()
 
 
-class TestTunerSessionDetail:
-    def test_detail_renders_states_test_log_and_profile(self, db):
-        sid = _seed_session(db, "completed")
-        tp.save_core_state(
-            db,
-            sid,
-            CoreState(core_id=0, phase=TunerPhase.HARDENED, current_offset=-30, best_offset=-30),
-        )
-        tp.save_core_state(
-            db,
-            sid,
-            CoreState(core_id=1, phase=TunerPhase.FINE_SEARCH, current_offset=-18, best_offset=None),
-        )
-        tp.log_test_result(db, sid, 0, -30, "confirm", True, duration=300.0)
-        tp.log_test_result(db, sid, 1, -18, "coarse", False, error_msg="rounding error", duration=12.5)
-        tab = _tab(db)
-        tab._view_mode = tab.VIEW_TUNER
-        tab.refresh()
-        sess = db.list_tuner_sessions()[0]
-        tab._show_tuner_session_detail(sess)
-
-        assert tab._core_results_table.item(0, 5).text() == "PASS"
-        assert tab._core_results_table.item(1, 5).text() == "FAIL"
-        assert tab._core_results_table.item(0, 4).text() == "1"
-        assert tab._core_results_table.item(1, 3).text() == "-"
-
-        text = tab._events_log.toPlainText()
-        assert "Test Log" in text
-        assert "offset -30" in text
-        assert "[confirm] PASS" in text
-        assert "rounding error" in text
-        assert "300.0s" in text
-        assert "Confirmed CO Profile" in text
-
-    def test_unparsable_config_falls_back_to_empty(self, db):
-        sid = _seed_session(db, "completed")
-        tp.save_core_state(db, sid, CoreState(core_id=0, phase=TunerPhase.NOT_STARTED))
-        tab = _tab(db)
-        tab._view_mode = tab.VIEW_TUNER
-        tab.refresh()
-        sess = db.get_tuner_session(sid)
-        sess.config_json = "{not json"
-        tab._show_tuner_session_detail(sess)
-        assert "coarse=?" in tab._detail_info.text()
-
-    def test_rows_are_skipped_without_a_database(self, db):
-        _seed_session(db)
+class TestMachineSessionDetail:
+    def test_rows_are_skipped_without_a_database(self, db, tmp_path):
+        save_machine_session(db, tmp_path, "completed")
         tab = _tab(db)
         tab._view_mode = tab.VIEW_TUNER
         tab.refresh()
@@ -643,55 +647,47 @@ class TestLoadCoProfile:
         tab._on_load_co_profile()
         assert emitted == []
 
-    def test_a_session_without_offsets_informs_the_user(self, db):
-        sid = _seed_session(db)
-        tp.save_core_state(db, sid, CoreState(core_id=0, phase=TunerPhase.NOT_STARTED, best_offset=None))
-        tab = _tab(db)
-        tab._view_mode = tab.VIEW_TUNER
-        tab.refresh()
-        tab._selected_tuner_session = db.get_tuner_session(sid)
-        emitted = []
-        tab.load_profile_requested.connect(emitted.append)
-        with patch("corecycler.gui.history_tab.QMessageBox.information") as info:
-            tab._on_load_co_profile()
-        assert info.called
-        assert emitted == []
 
-    def test_offsets_are_emitted(self, db):
-        sid = _seed_session(db)
-        tp.save_core_state(
-            db,
-            sid,
-            CoreState(core_id=0, phase=TunerPhase.CONFIRMED, current_offset=-30, best_offset=-30),
-        )
-        tab = _tab(db)
-        tab._view_mode = tab.VIEW_TUNER
-        tab.refresh()
-        tab._selected_tuner_session = db.get_tuner_session(sid)
-        emitted = []
-        tab.load_profile_requested.connect(emitted.append)
-        tab._on_load_co_profile()
-        assert emitted == [{0: -30}]
+@pytest.mark.req("T23.history.uncapped")
+def test_every_run_session_and_setup_is_listed_and_counted_past_the_old_caps(db, tmp_path):
+    setup = _seed_context(db, "2402", {"0": -20})
+    for second in range(501):
+        _seed_run(db, f"2026-07-20T10:{second // 60:02d}:{second % 60:02d}+00:00", context_id=setup)
+    for number in range(100):
+        _seed_context(db, f"b{number}", {"0": -number})
+    for number in range(1, 103):
+        save_machine_session(db, tmp_path, "completed", session_id=number)
+    tab = _grouped_tab(db)
+    assert (tab._context_table.rowCount(), tab._context_table.item(100, 3).text()) == (101, "501")
+    with patch("corecycler.gui.history_tab.QMessageBox.question", return_value=_no()) as ask:
+        tab._delete_contexts([100])
+    assert "ALL 501 associated test run(s)" in ask.call_args.args[2]
+    tab._view_mode = tab.VIEW_ALL
+    tab.refresh()
+    assert tab._runs_table.rowCount() == 501
+    tab._view_mode = tab.VIEW_TUNER
+    tab.refresh()
+    assert tab._runs_table.rowCount() == 102
 
 
 class TestDeleteSelected:
-    def test_tuner_view_deletes_the_selected_session(self, db):
-        _seed_session(db, "completed")
+    def test_tuner_view_deletes_the_selected_session(self, db, tmp_path):
+        save_machine_session(db, tmp_path, "completed")
         tab = _tab(db)
         tab._view_mode = tab.VIEW_TUNER
         tab.refresh()
         with patch("corecycler.gui.history_tab.QMessageBox.question", return_value=_yes()):
             tab._delete_selected()
-        assert db.list_tuner_sessions() == []
+        assert db.list_machine_sessions() == []
 
-    def test_declined_session_delete_keeps_it(self, db):
-        _seed_session(db, "completed")
+    def test_declined_session_delete_keeps_it(self, db, tmp_path):
+        save_machine_session(db, tmp_path, "completed")
         tab = _tab(db)
         tab._view_mode = tab.VIEW_TUNER
         tab.refresh()
         with patch("corecycler.gui.history_tab.QMessageBox.question", return_value=_no()):
             tab._delete_selected()
-        assert len(db.list_tuner_sessions()) == 1
+        assert len(db.list_machine_sessions()) == 1
 
     def test_grouped_view_deletes_the_selected_context_and_its_runs(self, db):
         cid = _seed_context(db, "2402", {"0": -20})
@@ -705,6 +701,27 @@ class TestDeleteSelected:
         assert "2 associated test run(s)" in ask.call_args.args[2]
         assert db.list_contexts() == []
         assert db.list_runs() == []
+
+    @pytest.mark.req("T23.history.delete")
+    def test_a_setup_holding_tuner_sessions_is_refused_naming_them_and_nothing_is_asked_or_deleted(self, db, tmp_path):
+        cid = _seed_context(db, "2402", {"0": -20})
+        _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
+        saved = save_machine_session(db, tmp_path, "running")
+        db._execute_raw("UPDATE tuner_sessions SET context_id=? WHERE id=?", (cid, saved.session_id))
+        tab = _grouped_tab(db)
+        tab._context_table.selectRow(0)
+        tab._runs_table.clearSelection()
+        with (
+            patch("corecycler.gui.history_tab.QMessageBox.question") as ask,
+            patch("corecycler.gui.history_tab.QMessageBox.warning") as warn,
+        ):
+            tab._delete_selected()
+        assert not ask.called
+        assert warn.call_args.args[1:] == (
+            "Setup Holds Tuner Sessions",
+            f"setup {cid} holds tuner sessions [{saved.session_id}]: delete those under Tuning sessions first.",
+        )
+        assert (len(db.list_contexts()), len(db.list_runs()), len(db.list_machine_sessions())) == (1, 1, 1)
 
     def test_declined_context_delete_keeps_everything(self, db):
         cid = _seed_context(db, "2402", {"0": -20})
@@ -724,6 +741,19 @@ class TestDeleteSelected:
             tab._delete_contexts([99])
         assert not ask.called
         assert len(db.list_contexts()) == 1
+
+    @pytest.mark.req("T22.history.unjudged")
+    @pytest.mark.parametrize(("status", "shown"), [("running", "..."), ("crashed", "no verdict")])
+    def test_a_core_without_a_verdict_reads_running_only_while_its_run_runs(self, db, status, shown):
+        rid = _seed_run(db, "2026-07-20T10:00:00+00:00", status=status)
+        db.insert_core_result(
+            CoreResultRecord(run_id=rid, core_id=0, ccd=0, cycle=0, started_at="2026-07-20T10:00:00+00:00", passed=None)
+        )
+        tab = _tab(db)
+        tab._view_mode = tab.VIEW_ALL
+        tab.refresh()
+        tab._show_run_detail(_run_by_id(db, rid))
+        assert tab._core_results_table.item(0, 3).text() == shown
 
     def test_flat_view_deletes_the_selected_run(self, db):
         _seed_run(db, "2026-07-20T10:00:00+00:00")
@@ -745,14 +775,14 @@ class TestDeleteSelected:
         assert not ask.called
         assert len(db.list_runs()) == 1
 
-    def test_declined_tuner_session_delete_keeps_it(self, db):
-        _seed_session(db, "completed")
+    def test_declined_tuner_session_delete_keeps_it(self, db, tmp_path):
+        save_machine_session(db, tmp_path, "completed")
         tab = _tab(db)
         tab._view_mode = tab.VIEW_TUNER
         tab.refresh()
         with patch("corecycler.gui.history_tab.QMessageBox.question", return_value=_no()):
             tab._delete_tuner_sessions([0])
-        assert len(db.list_tuner_sessions()) == 1
+        assert len(db.list_machine_sessions()) == 1
 
 
 class TestCompare:
@@ -818,10 +848,10 @@ class TestCompare:
 
 class TestHelpers:
     def test_co_summary_rejects_unparsable_json(self):
-        assert ht._co_summary("not json") == "none"
+        assert ht._co_summary("not json") == "unreadable"
 
     def test_co_summary_rejects_a_missing_value(self):
-        assert ht._co_summary(None) == "none"
+        assert ht._co_summary(None) == "unreadable"
 
     def test_co_summary_reads_an_empty_map_as_none(self):
         assert ht._co_summary("{}") == "none"
@@ -851,10 +881,11 @@ class TestMalformedContextData:
     """A stored CO profile is DB content: a hand-edited row or a database merged
     from elsewhere can hold anything, and a display slot must never raise."""
 
-    def test_a_non_object_profile_reads_as_none(self):
-        assert ht._co_summary("[1, 2, 3]") == "none"
-        assert ht._co_summary('"abc"') == "none"
-        assert ht._co_summary("5") == "none"
+    @pytest.mark.req("T22.history.co")
+    def test_a_non_object_profile_reads_as_unreadable_never_as_none(self):
+        assert ht._co_summary("[1, 2, 3]") == "unreadable"
+        assert ht._co_summary('"abc"') == "unreadable"
+        assert ht._co_summary("5") == "unreadable"
 
     def test_mixed_value_types_still_summarise(self):
         assert ht._co_summary('{"0": -20, "1": "x"}') == "mixed"
@@ -864,7 +895,7 @@ class TestMalformedContextData:
         _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
         tab = _grouped_tab(db)
         assert tab._context_table.rowCount() == 1
-        assert tab._context_table.item(0, 1).text() == "none"
+        assert tab._context_table.item(0, 1).text() == "unreadable"
 
     def test_non_numeric_core_ids_still_render_in_the_detail(self, db):
         cid = db.create_context(
@@ -898,3 +929,160 @@ class TestMalformedContextData:
     )
     def test_no_stored_json_value_can_break_the_summary(self, value):
         assert isinstance(ht._co_summary(json.dumps(value)), str)
+
+
+@pytest.mark.req("T22.F25")
+def test_the_counts_name_every_status_read_in_the_label_order_with_its_colour():
+    from collections import Counter
+
+    from corecycler.gui.style import theme
+
+    shown = ht.counts_html(Counter({"stopped": 2, "new-status": 1, "completed": 3, "paused": 0}))
+    assert shown.index("Completed: 3") < shown.index("Stopped: 2") < shown.index("new-status: 1")
+    assert "Paused" not in shown
+    assert f'color: {theme.STATUS_COLORS["completed"]};">Completed: 3' in shown
+    assert f'color: {theme.COLOR_MUTED};">new-status: 1' in shown
+    assert ht.counts_html(Counter()) == ""
+
+
+HISTORY_CONTROLS = {
+    "Delete Selected": "after a yes, deletes the selected runs, setups or sessions",
+    "Compare Selected": "compares the selected runs core by core",
+    "Load these values into Curve-Tuner": "sends the session's values to the Curve-Tuner tab's Value to set",
+    "QTableCornerButton": "Qt's, hidden with the row headers, so nothing reaches it",
+}
+HISTORY_INPUTS = {"_view_select": "chooses the view: tuning sessions, stress tests by setup, or every stress test"}
+HISTORY_TABLES = {
+    "setup row selected": "the runs table shows that setup's runs and the detail closes",
+    "setup row clicked": "the runs of the clicked setup are shown again and the detail closes",
+    "setup right-click": "offers Add Note...",
+    "run rows selected": "Delete and Compare follow the selection and the run's or session's detail opens",
+    "run right-click": "offers the exports, Compare and Delete for the selected runs",
+}
+
+
+def _flat_tab(db):
+    tab = _tab(db)
+    tab._view_mode = tab.VIEW_ALL
+    tab.refresh()
+    return tab
+
+
+@pytest.mark.req("T23.contract.history")
+def test_every_control_of_the_history_tab_is_listed_with_its_reaction(db):
+    from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QComboBox, QLineEdit
+
+    tab = _tab(db)
+    assert {b.text() or b.metaObject().className() for b in tab.findChildren(QAbstractButton)} == set(HISTORY_CONTROLS)
+    assert set(tab.findChildren(QComboBox)) == {getattr(tab, name) for name in HISTORY_INPUTS}
+    assert [*tab.findChildren(QAbstractSpinBox), *tab.findChildren(QLineEdit)] == []
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_the_view_box_switches_the_view_only_through_its_connection(db, connected):
+    tab = _tab(db)
+    if not connected:
+        tab._view_select.currentIndexChanged.disconnect()
+    tab._view_select.setCurrentIndex(tab._view_select.findData(tab.VIEW_ALL))
+    assert (tab._view_mode == tab.VIEW_ALL) is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_delete_selected_deletes_only_through_its_connection(db, connected):
+    _seed_run(db, "2026-07-20T10:00:00+00:00")
+    tab = _flat_tab(db)
+    tab._runs_table.selectRow(0)
+    if not connected:
+        tab._delete_btn.clicked.disconnect()
+    with patch("corecycler.gui.history_tab.QMessageBox.question", return_value=_yes()):
+        tab._delete_btn.click()
+    assert (db.list_runs() == []) is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_compare_selected_compares_only_through_its_connection(db, connected):
+    _seed_run(db, "2026-07-20T10:00:00+00:00")
+    _seed_run(db, "2026-07-21T10:00:00+00:00")
+    tab = _flat_tab(db)
+    tab._runs_table.selectAll()
+    if not connected:
+        tab._compare_btn.clicked.disconnect()
+    tab._compare_btn.click()
+    assert ("Run Comparison" in tab._events_log.toPlainText()) is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_load_these_values_sends_them_only_through_its_connection(db, tmp_path, connected):
+    save_machine_session(db, tmp_path, "completed")
+    tab = _tab(db)
+    tab._view_mode = tab.VIEW_TUNER
+    tab.refresh()
+    sent = []
+    tab.load_profile_requested.connect(sent.append)
+    if not connected:
+        tab._load_co_btn.clicked.disconnect()
+    tab._load_co_btn.click()
+    assert bool(sent) is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_selecting_a_setup_shows_its_runs_only_through_its_connection(db, connected):
+    one = _seed_context(db, "2402", {"0": -20})
+    two = _seed_context(db, "2403", {"0": -25})
+    _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=one)
+    _seed_run(db, "2026-07-21T10:00:00+00:00", context_id=two)
+    _seed_run(db, "2026-07-22T10:00:00+00:00", context_id=two)
+    tab = _grouped_tab(db)
+    tab._context_table.selectRow(0)
+    if not connected:
+        tab._context_table.selectionModel().selectionChanged.disconnect()
+    tab._context_table.selectRow(1)
+    assert (tab._runs_table.rowCount() == 1) is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_clicking_the_selected_setup_closes_the_detail_only_through_its_connection(db, connected):
+    cid = _seed_context(db, "2402", {"0": -20})
+    _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
+    tab = _grouped_tab(db)
+    tab._context_table.selectRow(0)
+    tab._runs_table.selectRow(0)
+    assert not tab._detail_widget.isHidden()
+    if not connected:
+        tab._context_table.clicked.disconnect()
+    tab._context_table.clicked.emit(tab._context_table.model().index(0, 0))
+    assert tab._detail_widget.isHidden() is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+@pytest.mark.parametrize("table", ["_context_table", "_runs_table"])
+def test_a_right_click_opens_its_menu_only_through_its_connection(db, monkeypatch, table, connected):
+    cid = _seed_context(db, "2402", {"0": -20})
+    _seed_run(db, "2026-07-20T10:00:00+00:00", context_id=cid)
+    tab = _grouped_tab(db)
+    tab._context_table.selectRow(0)
+    tab._runs_table.selectRow(0)
+    menu = MagicMock()
+    monkeypatch.setattr(ht, "QMenu", menu)
+    if not connected:
+        getattr(tab, table).customContextMenuRequested.disconnect()
+    getattr(tab, table).customContextMenuRequested.emit(_point())
+    assert menu.return_value.exec.called is connected
+
+
+@pytest.mark.req("T23.contract.history")
+@pytest.mark.parametrize("connected", [True, False])
+def test_selecting_a_run_opens_its_detail_only_through_its_connection(db, connected):
+    _seed_run(db, "2026-07-20T10:00:00+00:00")
+    tab = _flat_tab(db)
+    if not connected:
+        tab._runs_table.selectionModel().selectionChanged.disconnect()
+    tab._runs_table.selectRow(0)
+    assert tab._delete_btn.isEnabled() is connected

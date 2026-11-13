@@ -1,27 +1,19 @@
 """Crash-resistance fuzzing of the IO-boundary parsers: the SMU sysfs command
-primitive, the MCE/dmesg detector, and the timestamp formatter. Each must fail
+primitive, the kernel record parser and reader, and the timestamp formatter. Each must fail
 closed on a truncated/garbage response rather than raise into its caller.
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from corecycler.engine.detector import (  # noqa: E402
-    ErrorDetector,
-    _is_kernel_error_line,
-    _is_mce_error_line,
-)
-from corecycler.history.timefmt import format_local  # noqa: E402
-from corecycler.smu.commands import CPUGeneration, SMUCommandSet  # noqa: E402
-from corecycler.smu.driver import RyzenSMU  # noqa: E402
+from corecycler.engine.detector import ErrorDetector, parse_kernel_records
+from corecycler.history.timefmt import format_local
+from corecycler.smu.commands import CPUGeneration, SMUCommandSet
+from corecycler.smu.driver import RyzenSMU
 
 _ZEN5 = SMUCommandSet(
     generation=CPUGeneration.ZEN5_GRANITE_RIDGE,
@@ -44,34 +36,32 @@ class TestSmuPrimitiveFailsClosed:
         with patch("pathlib.Path.read_bytes", return_value=resp):
             r = smu._send_command(0x06, (0, 1, 2))
             assert isinstance(r.success, bool)
-            # A truncated response (< 24 bytes) must fail closed, never raise.
             if len(resp) < 24:
                 assert r.success is False
-            # And the higher-level CO read must not raise either.
             assert smu.get_co_offset(0) is None or isinstance(smu.get_co_offset(0), int)
 
 
 class TestDetectorParsersRobust:
     @settings(max_examples=300, deadline=None)
-    @given(line=st.text(max_size=200))
-    def test_classifiers_never_crash(self, line):
-        assert isinstance(_is_mce_error_line(line.lower()), bool)
-        assert isinstance(_is_kernel_error_line(line.lower()), bool)
-
-    @settings(max_examples=300, deadline=None)
-    @given(dmesg_out=st.text(max_size=800))
-    def test_check_mce_never_crashes(self, dmesg_out):
-        det = ErrorDetector()
-        det._dmesg_baseline_ts = 1.0  # so the timestamp filter runs the parse path
-        det._last_dmesg_time = 0.0
-        fake = MagicMock(returncode=0, stdout=dmesg_out)
-        with patch("subprocess.run", return_value=fake):
-            events = det.check_mce()
+    @given(lines=st.lists(st.text(max_size=200), max_size=12), final=st.booleans())
+    def test_the_record_parser_never_crashes(self, lines, final):
+        events, carry = parse_kernel_records([(1.0, line) for line in lines], final=final)
         assert isinstance(events, list)
+        assert carry == [] or not final
 
-    def test_real_mce_line_is_classified(self):
-        line = "mce: [hardware error]: cpu 3 bank 5: status: ...".lower()
-        assert _is_mce_error_line(line) is True
+    @settings(max_examples=300, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    @given(raw=st.binary(max_size=800))
+    def test_the_kmsg_reader_never_crashes(self, raw, tmp_path):
+        kmsg = tmp_path / "kmsg"
+        kmsg.write_bytes(b"")
+        det = ErrorDetector(kmsg)
+        det.reset()
+        with kmsg.open("ab") as log:
+            log.write(raw)
+        read = det.read_new(final=True)
+        det.close()
+        assert isinstance(read.events, tuple)
+        assert read.problem is None or isinstance(read.problem, str)
 
 
 class TestTimefmtRobust:

@@ -9,16 +9,17 @@ POST, and SMU writes here overlay (replace) them until the next power cycle.
 
 from __future__ import annotations
 
-import contextlib
+import fcntl
 import logging
 import os
 import struct
 import threading
-from dataclasses import dataclass, field
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .commands import (
-    CPUGeneration,
     SMUCommandSet,
     decode_co_arg,
     encode_boost_limit_arg,
@@ -27,26 +28,30 @@ from .commands import (
     encode_pbo_scalar_arg,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 log = logging.getLogger(__name__)
 
 SYSFS_BASE = Path("/sys/kernel/ryzen_smu_drv")
 
-# Sane bounds for PBO power/current limits (PPT watts, TDC/EDC amps). The firmware
-# enforces the true per-chip cap; this only rejects the unambiguously malformed:
-# non-positive (a negative wraps to a huge unsigned limit once encoded as value*1000,
-# effectively removing the cap) or absurdly large (a caller/UI bug). No real or
-# near-future AMD CPU approaches 2000 W / 2000 A.
+
+def smu_problem(sysfs: Path = SYSFS_BASE) -> str | None:
+    args = sysfs / "smu_args"
+    try:
+        os.close(os.open(args, os.O_WRONLY))
+    except OSError as exc:
+        return f"{args}: {exc.strerror}"
+    return None
+
+
 _PBO_LIMIT_MIN: int = 1
 _PBO_LIMIT_MAX: int = 2000
 
-# Physical core slots per CCD on every CO-capable generation this tool models
-# (Zen 3/4/5 classic layouts: one 8-core CCX per CCD). Dense-CCX APU dies
-# (Zen 4c/5c, >8 cores per L3 group) fall outside this model and keep the
-# legacy core_id-derived addressing.
 _SLOTS_PER_CCD: int = 8
+_CCD_POSITIONS: int = 8
 
-# CCD stride inside the core-disable fuse address space: CCD n's fuse sits at
-# ``core_fuse_addr + (n << 25)`` (ZenStates-Core Cpu.cs, ryzen_monitor).
+# Per-CCD fuse stride, from ZenStates-Core Cpu.cs and ryzen_monitor.
 _CCD_FUSE_SHIFT: int = 25
 
 
@@ -54,6 +59,11 @@ def _check_pbo_limit(name: str, value: int) -> None:
     """Fail closed on a malformed PBO limit before it is encoded and written."""
     if not _PBO_LIMIT_MIN <= value <= _PBO_LIMIT_MAX:
         raise ValueError(f"{name} limit {value} out of sane range [{_PBO_LIMIT_MIN}, {_PBO_LIMIT_MAX}]")
+
+
+SHAPER_BAND_NAMES = ("Min", "Low", "Medium", "High", "Max")
+SHAPER_MARGINS = (-50, 30)
+SHAPER_SET_BIT = 0x80
 
 
 class CoreMapError(Exception):
@@ -77,48 +87,27 @@ def core_map_blocked(smu) -> str | None:
     return None
 
 
+def physical_ccds(smu: RyzenSMU | None, topology) -> dict[int, int | None]:
+    """Each topology core's physical CCD, the CCD a TccdN temperature label numbers from 1.
+
+    The topology ranks CCDs by L3 id, which is the physical number unless the generation names its CCD-disable
+    fuses; there the driver's core map holds it, and a core a present map does not hold is None. Without a driver
+    or with its map refused the topology's CCD stands: on Vermeer's two CCD positions it is either right or names a
+    sensor hwmon does not expose, never another CCD's.
+    """
+    ranked = {core: info.ccd for core, info in topology.cores.items()}
+    mapped = None if smu is None or smu.commands.ccd_fuse_addr is None else smu.core_map
+    if mapped is None:
+        return ranked
+    return {core: mapped[core][0] if core in mapped else None for core in ranked}
+
+
 @dataclass(frozen=True, slots=True)
 class SMUResponse:
     success: bool
     args: tuple[int, ...]
     raw: bytes
 
-
-@dataclass(slots=True)
-class SystemPBOState:
-    """Snapshot of the current PBO/CO state from SMU and sysfs.
-
-    Populated by ``RyzenSMU.detect_system_state()``. All values are
-    runtime state — they reflect BIOS settings plus any SMU overrides.
-    """
-
-    # Per-core CO offsets (physical core id -> offset)
-    co_offsets: dict[int, int | None] = field(default_factory=dict)
-
-    # PBO power limits (from PM table or SMU query)
-    ppt_limit_w: float | None = None
-    tdc_limit_a: float | None = None
-    edc_limit_a: float | None = None
-
-    # PBO scalar (1.0 to 10.0)
-    pbo_scalar: float | None = None
-
-    # Boost frequency limit (MHz)
-    boost_limit_mhz: int | None = None
-
-    # Max observed frequency from cpufreq (accounts for boost override + BCLK)
-    max_freq_mhz: float | None = None
-
-    # Whether OC mode is enabled
-    oc_mode: bool | None = None
-
-    # Fastest core index (from SMU)
-    fastest_core: int | None = None
-
-    # CPU generation detected
-    generation: CPUGeneration | None = None
-
-    # Whether ryzen_smu driver is available
     smu_available: bool = False
 
 
@@ -130,7 +119,6 @@ class RyzenSMU:
     are never touched.
 
     Safety features:
-      - ``dry_run`` mode: logs intended writes without touching hardware
       - Read-back verification after every CO write
       - ``backup_co_offsets()`` / ``restore_co_offsets()`` for save/restore
       - Permission pre-check before attempting writes
@@ -140,22 +128,14 @@ class RyzenSMU:
         self,
         commands: SMUCommandSet,
         sysfs_path: Path = SYSFS_BASE,
-        dry_run: bool = False,
     ) -> None:
         self.commands = commands
         self.sysfs = sysfs_path
-        self.dry_run = dry_run
         self._smu_lock = threading.Lock()
         self._backup: dict[int, int] | None = None
-        # Legacy CCD map {core_id: ccd_index} from L3 topology, used only when
-        # no discovered core map exists (set_topology never called, or a dense
-        # layout outside the 8-slot-per-CCD model). The full addressing truth
-        # lives in _core_map.
-        self._topology_ccd: dict[int, int] | None = None
-        # Discovered addressing map {core_id: (ccd_index, physical_slot)} and
-        # its fail-closed error state. See set_topology.
-        self._core_map: dict[int, tuple[int, int]] | None = None
-        self._core_map_error: str | None = None
+        self._legacy_ccd_by_core: dict[int, int] | None = None
+        self._ccd_slot_by_core: dict[int, tuple[int, int]] | None = None
+        self._ccd_slot_error: str | None = None
         self._known_core_ids: list[int] | None = None
         self._offline_hint = ""
 
@@ -172,8 +152,13 @@ class RyzenSMU:
 
         Mapping rules, per L3 group (falling back to ``core_id // 8`` grouping
         when L3 info is absent):
+          - The topology numbers CCDs by the rank of their L3 id, so a generation that names its
+            CCD-disable fuses (Vermeer) has them read first and each group
+            mapped onto its physical CCD, which every core-fuse read and CO
+            command then uses: a 5600X with physical CCD 0 fused off shows its
+            CCD 1 as group 0 (PR #23).
           - A full 8-core group maps to identity slots under any numbering
-            scheme -- no SMU traffic.
+            scheme -- no core-fuse read.
           - A group with a hole INTERNAL to its own 8-slot window proves the
             physical numbering: slot = ``core_id % 8``, CCD from L3. Only
             internal holes count -- a hole BETWEEN windows proves nothing,
@@ -200,37 +185,73 @@ class RyzenSMU:
         Zen 4c/5c CCX dies), keeps the legacy core_id-derived addressing
         bit-for-bit.
         """
-        self._topology_ccd = {}
+        self._legacy_ccd_by_core = {}
         for core_id, core_info in topology.cores.items():
             if core_info.ccd is not None:
-                self._topology_ccd[core_id] = core_info.ccd
-        self._core_map = None
-        self._core_map_error = "core map discovery in progress"
+                self._legacy_ccd_by_core[core_id] = core_info.ccd
+        self._ccd_slot_by_core = None
+        self._ccd_slot_error = "core map discovery in progress"
         ids = sorted(topology.cores)
         self._known_core_ids = ids or None
+        baseline = self._co_baseline_problem() if ids and self.commands.probe_co_baseline else None
+        if baseline is not None:
+            self._ccd_slot_error = baseline
+            log.error("SMU core mapping unavailable: %s", baseline)
+            return
         if not ids or not self.commands.has_co or not self.commands.uniform_8core_ccds:
-            self._core_map_error = None
+            self._ccd_slot_error = None
             return
         groups = self._group_cores(topology, ids)
         if groups is None:
-            self._core_map_error = None
+            self._ccd_slot_error = None
             return
         fully_online = getattr(topology, "cpus_all_online", True) is not False
         self._offline_hint = "" if fully_online else " (some present CPUs are offline — online all cores for CO tuning)"
         core_map: dict[int, tuple[int, int]] = {}
         try:
-            for encode_ccd in sorted(groups):
-                group_ids = groups[encode_ccd]
+            physical = self._physical_ccds(groups)
+            for group in sorted(groups):
+                encode_ccd = physical[group]
+                group_ids = groups[group]
                 slots = self._derive_group_slots(group_ids, fully_online)
                 if slots is None:
                     slots = self._fuse_group_slots(encode_ccd, len(group_ids))
                 core_map.update((cid, (encode_ccd, slot)) for cid, slot in zip(group_ids, slots, strict=True))
         except CoreMapError as exc:
-            self._core_map_error = str(exc)
+            self._ccd_slot_error = str(exc)
             log.error("SMU core mapping unavailable: %s", exc)
             return
-        self._core_map = core_map
-        self._core_map_error = None
+        self._ccd_slot_by_core = core_map
+        self._ccd_slot_error = None
+
+    def _co_baseline_problem(self) -> str | None:
+        """Why this generation's CO read cannot be trusted as a baseline, or None when one read is in range.
+
+        An HX 370 on BIOS FA608WV.309 acknowledges the Strix Point CO read and returns 600 for every core (PR #21),
+        so a CO write is sent whose read-back can never match and the backup can never be restored; one read of the
+        lowest known core, addressed as get_co_offset would address it, decides. A read the pinned ryzen_smu reports
+        as failed or an answer outside the CO range refuses; a read the firmware rejects comes back from that driver
+        as 0 and passes.
+        """
+        ok, msg = self.check_writable()
+        if not ok:
+            return f"the {self.commands.generation.name} CO read has to be checked first: {msg}"
+        core = self._known_core_ids[0]
+        ccd = self._legacy_ccd_by_core.get(core)
+        response = self._send_get_co(encode_co_arg(core, 0, self.commands.generation, ccd=ccd, slot=None))
+        if not response.success:
+            return (
+                f"the {self.commands.generation.name} CO read failed -- per-core CO stays disabled until its "
+                f"readback is verified"
+            )
+        value = decode_co_arg(core, response.args[0], self.commands.generation)
+        low, high = self.commands.co_range
+        if not low <= value <= high:
+            return (
+                f"the {self.commands.generation.name} CO read returned {value}, outside {low}..{high} -- per-core "
+                f"CO stays disabled until its readback is verified; please report this output"
+            )
+        return None
 
     @staticmethod
     def _derive_group_slots(group_ids: list[int], holes_trusted: bool) -> list[int] | None:
@@ -295,13 +316,52 @@ class RyzenSMU:
         decay into the previous read's value: it returns None.
         """
         path = self.sysfs / "smn"
-        with self._smu_lock:
-            try:
+        try:
+            with self._held(path):
                 path.write_bytes(struct.pack("<I", address))
                 return struct.unpack("<I", path.read_bytes()[:4])[0]
-            except (OSError, struct.error) as exc:
-                log.debug("SMN read of %#010x failed: %s", address, exc)
-                return None
+        except (OSError, struct.error) as exc:
+            log.debug("SMN read of %#010x failed: %s", address, exc)
+            return None
+
+    @contextmanager
+    def _held(self, anchor: Path) -> Iterator[None]:
+        with self._smu_lock, anchor.open("rb") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
+
+    def _physical_ccds(self, groups: dict[int, list[int]]) -> dict[int, int]:
+        """Each OS L3 group's physical CCD: identity unless the generation names its CCD-disable fuses.
+
+        The fuses are decoded as ryzen_smu's get_fuse_topology does: the enabled CCDs in bits 29:22 of the first
+        word, CCDs 0 and 1 disabled by its bits 31:30 and CCDs 2 to 7 by bits 5:0 of the next. Groups map onto the
+        active CCDs in ascending order; an unreadable fuse or a count that differs from the groups raises
+        CoreMapError.
+        """
+        addr = self.commands.ccd_fuse_addr
+        if addr is None:
+            return {group: group for group in groups}
+        ok, msg = self.check_smn_readable()
+        if not ok:
+            raise CoreMapError(
+                f"Linux may number this CPU's CCDs apart from the SMU, so the CCD-disable fuses have to be read: "
+                f"{msg} -- per-core CO stays disabled until then"
+            )
+        present, down = self.read_smn(addr), self.read_smn(addr + 4)
+        if present is None or down is None:
+            raise CoreMapError(
+                "the CCD-disable fuse read failed on an otherwise writable smn file -- per-core CO stays disabled "
+                "instead of writing to the wrong CCD; please report this output"
+            )
+        disabled = ((down & 0x3F) << 2) | ((present >> 30) & 3)
+        active = [ccd for ccd in range(_CCD_POSITIONS) if ((present >> 22) & ~disabled) >> ccd & 1]
+        if len(active) != len(groups):
+            raise CoreMapError(
+                f"the CCD-disable fuses show active CCDs {active} but the OS shows {len(groups)} CCD groups -- "
+                f"per-core CO stays disabled instead of writing to the wrong CCD; please report this "
+                f"output{self._offline_hint}"
+            )
+        return dict(zip(sorted(groups), active, strict=True))  # equivalent-mutant: the count check equals the lengths
 
     def _fuse_group_slots(self, encode_ccd: int, want: int) -> list[int]:
         """This CCD's live physical slots, from its SMN core-disable fuse.
@@ -359,12 +419,12 @@ class RyzenSMU:
     @property
     def core_map(self) -> dict[int, tuple[int, int]] | None:
         """Discovered {core_id: (ccd, slot)} addressing map, if any."""
-        return dict(self._core_map) if self._core_map is not None else None
+        return dict(self._ccd_slot_by_core) if self._ccd_slot_by_core is not None else None
 
     @property
     def core_map_error(self) -> str | None:
         """Why per-core CO is refused, or None when addressing is usable."""
-        return self._core_map_error
+        return self._ccd_slot_error
 
     def _co_address(self, core_id: int) -> tuple[int | None, int | None] | None:
         """(ccd, slot) for encode_co_arg, or None when the write must refuse.
@@ -372,11 +432,11 @@ class RyzenSMU:
         None means either the map discovery failed (core_map_error holds why)
         or the caller named a core the discovered map does not contain.
         """
-        if self._core_map_error is not None:
+        if self._ccd_slot_error is not None:
             return None
-        if self._core_map is not None:
-            return self._core_map.get(core_id)
-        ccd = self._topology_ccd.get(core_id) if self._topology_ccd else None
+        if self._ccd_slot_by_core is not None:
+            return self._ccd_slot_by_core.get(core_id)
+        ccd = self._legacy_ccd_by_core.get(core_id) if self._legacy_ccd_by_core else None
         return (ccd, None)
 
     @staticmethod
@@ -398,10 +458,6 @@ class RyzenSMU:
                 return False, f"No write permission on {p} — run as root or fix udev rules"
         return True, "OK"
 
-    # ------------------------------------------------------------------
-    # Backup / restore
-    # ------------------------------------------------------------------
-
     def backup_co_offsets(self, num_cores: int) -> dict[int, int]:
         """Save current CO offsets for all cores before modification.
 
@@ -413,7 +469,6 @@ class RyzenSMU:
         This backup guards against accidental *within-session* mistakes only.
         """
         offsets = self.get_all_co_offsets(num_cores)
-        # Only store successfully-read values
         self._backup = {k: v for k, v in offsets.items() if v is not None}
         log.info("Backed up CO offsets for %d cores: %s", len(self._backup), self._backup)
         return dict(self._backup)
@@ -441,10 +496,6 @@ class RyzenSMU:
         """Return True if a backup has been taken this session."""
         return self._backup is not None
 
-    # ------------------------------------------------------------------
-    # Low-level SMU communication
-    # ------------------------------------------------------------------
-
     def _get_cmd_filename(self) -> str:
         if self.commands.mailbox == "mp1":
             return "mp1_smu_cmd"
@@ -467,63 +518,32 @@ class RyzenSMU:
 
     def _send_command(self, cmd: int, args: tuple[int, ...] = (0, 0, 0, 0, 0, 0)) -> SMUResponse:
         """Send an SMU command and read the response."""
-        with self._smu_lock:
-            args_path = self.sysfs / "smu_args"
-            cmd_path = self._get_cmd_path()
+        return self._mailbox(self._get_cmd_path(), cmd, args, "SMU")
 
-            # pack 6 x uint32 arguments
-            if len(args) < 6:
-                args = args + (0,) * (6 - len(args))
-            # Fail closed: an out-of-range arg, a permission error, or a truncated
-            # sysfs response must return a failed SMUResponse, never raise or write a
-            # coerced wrong value. A failed pack means we never write at all.
-            try:
-                packed_args = struct.pack("<6I", *args[:6])
+    def _mailbox(self, cmd_path: Path, cmd: int, args: tuple[int, ...], name: str) -> SMUResponse:
+        args_path = self.sysfs / "smu_args"
+        if len(args) < 6:
+            args = args + (0,) * (6 - len(args))
+        try:
+            packed_args = struct.pack("<6I", *args[:6])
+            with self._held(args_path):
                 args_path.write_bytes(packed_args)
                 cmd_path.write_bytes(struct.pack("<I", cmd))
                 resp_cmd = cmd_path.read_bytes()
                 resp_args_raw = args_path.read_bytes()
-                status = struct.unpack("<I", resp_cmd[:4])[0]
-                resp_args = struct.unpack("<6I", resp_args_raw[:24])
-            except (OSError, struct.error) as exc:
-                log.debug("SMU command %#x failed: %s", cmd, exc)
-                return SMUResponse(success=False, args=(0,) * 6, raw=b"")
-
-            return SMUResponse(
-                success=(status == 1),
-                args=resp_args,
-                raw=resp_args_raw,
-            )
+            status = struct.unpack("<I", resp_cmd[:4])[0]
+            resp_args = struct.unpack("<6I", resp_args_raw[:24])
+        except (OSError, struct.error) as exc:
+            log.debug("%s command %#x failed: %s", name, cmd, exc)
+            return SMUResponse(success=False, args=(0,) * 6, raw=b"")
+        return SMUResponse(success=(status == 1), args=resp_args, raw=resp_args_raw)
 
     def _send_rsmu_command(self, cmd: int, args: tuple[int, ...] = (0, 0, 0, 0, 0, 0)) -> SMUResponse:
         """Send an RSMU command regardless of the default mailbox.
 
         PBO limit commands use RSMU even on Zen 3 (which defaults to MP1 for CO).
         """
-        with self._smu_lock:
-            args_path = self.sysfs / "smu_args"
-            cmd_path = self.sysfs / "rsmu_cmd"
-
-            if len(args) < 6:
-                args = args + (0,) * (6 - len(args))
-            # Fail closed on a bad arg / permission error / truncated response.
-            try:
-                packed_args = struct.pack("<6I", *args[:6])
-                args_path.write_bytes(packed_args)
-                cmd_path.write_bytes(struct.pack("<I", cmd))
-                resp_cmd = cmd_path.read_bytes()
-                resp_args_raw = args_path.read_bytes()
-                status = struct.unpack("<I", resp_cmd[:4])[0]
-                resp_args = struct.unpack("<6I", resp_args_raw[:24])
-            except (OSError, struct.error) as exc:
-                log.debug("RSMU command %#x failed: %s", cmd, exc)
-                return SMUResponse(success=False, args=(0,) * 6, raw=b"")
-
-            return SMUResponse(success=(status == 1), args=resp_args, raw=resp_args_raw)
-
-    # ------------------------------------------------------------------
-    # CO offset read/write
-    # ------------------------------------------------------------------
+        return self._mailbox(self.sysfs / "rsmu_cmd", cmd, args, "RSMU")
 
     def get_co_offset(self, core_id: int) -> int | None:
         """Read the current CO offset for a physical core.
@@ -537,7 +557,7 @@ class RyzenSMU:
             log.error(
                 "CO read refused for core %d: %s",
                 core_id,
-                self._core_map_error or "core is not in the discovered core map",
+                self._ccd_slot_error or "core is not in the discovered core map",
             )
             return None
         ccd, slot = addr
@@ -565,7 +585,6 @@ class RyzenSMU:
 
         Safety:
           - Range-checked against the generation's CO limits
-          - In ``dry_run`` mode, logs the intended write without touching HW
           - Verifies via read-back that the value was applied correctly
           - Pre-checks file permissions before writing
         """
@@ -580,23 +599,15 @@ class RyzenSMU:
         if not co_min <= value <= co_max:
             raise ValueError(f"CO value {value} out of range [{co_min}, {co_max}] for {self.commands.generation.name}")
 
-        # --- core-address guard (before dry-run: never simulate an
-        # unaddressable write) ---
         addr = self._co_address(core_id)
         if addr is None:
             log.error(
                 "CO write refused for core %d: %s",
                 core_id,
-                self._core_map_error or "core is not in the discovered core map",
+                self._ccd_slot_error or "core is not in the discovered core map",
             )
             return False
 
-        # --- dry-run guard ---
-        if self.dry_run:
-            log.info("[DRY RUN] Would set core %d CO to %d (not written)", core_id, value)
-            return True
-
-        # --- permission pre-check ---
         ok, msg = self.check_writable()
         if not ok:
             log.error("Permission check failed before CO write: %s", msg)
@@ -609,7 +620,6 @@ class RyzenSMU:
             log.error("SMU rejected CO write for core %d value %d", core_id, value)
             return False
 
-        # --- read-back verification ---
         readback = self.get_co_offset(core_id)
         if readback != value:
             log.error(
@@ -636,16 +646,9 @@ class RyzenSMU:
         if not co_min <= value <= co_max:
             raise ValueError(f"CO value {value} out of range [{co_min}, {co_max}] for {self.commands.generation.name}")
 
-        # The all-cores command takes no core address, but its read-back
-        # verification does — with no usable core map the write would be
-        # unverifiable, so it refuses like the per-core path.
-        if self._core_map_error is not None:
-            log.error("set_all_co refused: %s", self._core_map_error)
+        if self._ccd_slot_error is not None:
+            log.error("set_all_co refused: %s", self._ccd_slot_error)
             return False
-
-        if self.dry_run:
-            log.info("[DRY RUN] Would set all cores CO to %d (not written)", value)
-            return True
 
         if self.commands.set_all_co_cmd is not None:
             margin = value & 0xFFFF
@@ -654,8 +657,6 @@ class RyzenSMU:
                 log.error("SMU rejected set_all_co with value %d", value)
                 return False
 
-            # Read-back verification on the first known core (core id 0 can be
-            # a fused-off slot on harvested parts) to confirm the write took.
             readback_core = self._known_core_ids[0] if self._known_core_ids else 0
             readback = self.get_co_offset(readback_core)
             if readback != value:
@@ -673,8 +674,8 @@ class RyzenSMU:
         """Reset all CO offsets to 0 by delegating to ``set_all_co``.
 
         The delegate owns the whole refusal contract (range check, core-map
-        guard, dry-run), so a dry-run reset can never report success for an
-        operation the real path refuses.
+        guard, read-back), so a reset never reports success for a
+        write ``set_all_co`` refuses.
 
         CO values are VOLATILE — this resets them to 0 for the current
         session only.  On reboot they return to whatever the BIOS sets.
@@ -694,9 +695,37 @@ class RyzenSMU:
         core_ids = self._known_core_ids if self._known_core_ids is not None else range(num_cores)
         return {core_id: self.get_co_offset(core_id) for core_id in core_ids}
 
-    # ------------------------------------------------------------------
-    # Boost frequency
-    # ------------------------------------------------------------------
+    def get_curve_shaper(self) -> tuple[tuple[int, int, int], ...] | None:
+        cmd = self.commands.get_curve_shaper_cmd
+        if cmd is None:
+            return None
+        resp = self._send_rsmu_command(cmd)
+        bands = [struct.unpack("<Bbbb", struct.pack("<I", word)) for word in resp.args[:5]]
+        if not resp.success or [band[0] for band in bands] != list(range(5)):
+            return None
+        return tuple(band[1:] for band in bands)
+
+    def set_curve_shaper(self, bands: tuple[tuple[int, int, int], ...]) -> str | None:
+        cmd = self.commands.set_curve_shaper_cmd
+        if cmd is None:
+            return f"{self.commands.generation.name} has no Curve Shaper write"
+        low, high = SHAPER_MARGINS
+        if len(bands) != len(SHAPER_BAND_NAMES) or any(
+            len(band) != 3 or not all(low <= margin <= high for margin in band) for band in bands
+        ):
+            raise ValueError(f"a Curve Shaper is five bands of three margins within {low}..{high}, not {bands}")
+        ok, msg = self.check_writable()
+        if not ok:
+            return msg
+        for index, margins in enumerate(bands):
+            cold, warm, hot = (margin & 0xFF for margin in margins)
+            resp = self._send_rsmu_command(cmd, ((hot << 24) | (warm << 16) | (cold << 8) | SHAPER_SET_BIT | index,))
+            if not resp.success:
+                return f"the SMU refused band {SHAPER_BAND_NAMES[index]}"
+        back = self.get_curve_shaper()
+        if back != tuple(tuple(band) for band in bands):
+            return f"the read-back gave {back}"
+        return None
 
     def get_boost_limit(self) -> int | None:
         """Read the boost frequency limit (MHz). Zen 4/5 only."""
@@ -719,15 +748,8 @@ class RyzenSMU:
         cmd = self.commands.set_boost_limit_cmd
         if cmd is None:
             return False
-        if self.dry_run:
-            log.info("[DRY RUN] Would set boost limit to %d MHz (not written)", mhz)
-            return True
         resp = self._send_rsmu_command(cmd, (encode_boost_limit_arg(mhz),))
         return resp.success
-
-    # ------------------------------------------------------------------
-    # PBO limits (PPT, TDC, EDC)
-    # ------------------------------------------------------------------
 
     def set_ppt_limit(self, watts: int) -> bool:
         """Set PPT (Package Power Tracking) limit in watts. VOLATILE.
@@ -738,9 +760,6 @@ class RyzenSMU:
         if cmd is None:
             return False
         _check_pbo_limit("PPT", watts)
-        if self.dry_run:
-            log.info("[DRY RUN] Would set PPT limit to %d W", watts)
-            return True
         resp = self._send_rsmu_command(cmd, (encode_pbo_limit_arg(watts),))
         return resp.success
 
@@ -753,9 +772,6 @@ class RyzenSMU:
         if cmd is None:
             return False
         _check_pbo_limit("TDC", amps)
-        if self.dry_run:
-            log.info("[DRY RUN] Would set TDC limit to %d A", amps)
-            return True
         resp = self._send_rsmu_command(cmd, (encode_pbo_limit_arg(amps),))
         return resp.success
 
@@ -768,15 +784,8 @@ class RyzenSMU:
         if cmd is None:
             return False
         _check_pbo_limit("EDC", amps)
-        if self.dry_run:
-            log.info("[DRY RUN] Would set EDC limit to %d A", amps)
-            return True
         resp = self._send_rsmu_command(cmd, (encode_pbo_limit_arg(amps),))
         return resp.success
-
-    # ------------------------------------------------------------------
-    # PBO scalar
-    # ------------------------------------------------------------------
 
     def get_pbo_scalar(self) -> float | None:
         """Read current PBO scalar (1.0 to 10.0)."""
@@ -786,7 +795,6 @@ class RyzenSMU:
         resp = self._send_rsmu_command(cmd)
         if not resp.success:
             return None
-        # Response is an IEEE 754 float in the first arg word
         raw_bytes = struct.pack("<I", resp.args[0])
         return struct.unpack("<f", raw_bytes)[0]
 
@@ -797,52 +805,8 @@ class RyzenSMU:
             return False
         if not 0.0 <= scalar <= 10.0:
             raise ValueError(f"PBO scalar {scalar} out of range [0.0, 10.0]")
-        if self.dry_run:
-            log.info("[DRY RUN] Would set PBO scalar to %.1f", scalar)
-            return True
         resp = self._send_rsmu_command(cmd, (encode_pbo_scalar_arg(scalar),))
         return resp.success
-
-    # ------------------------------------------------------------------
-    # System state detection
-    # ------------------------------------------------------------------
-
-    def detect_system_state(self, num_cores: int) -> SystemPBOState:
-        """Read the current PBO/CO state from SMU and sysfs.
-
-        This provides a snapshot of the system's current configuration,
-        including CO offsets, PBO limits, boost override, and max frequency.
-        Call this before starting a test to understand the baseline.
-        """
-        state = SystemPBOState(
-            generation=self.commands.generation,
-            smu_available=True,
-        )
-
-        # Read CO offsets
-        if self.commands.has_co:
-            state.co_offsets = self.get_all_co_offsets(num_cores)
-
-        # Read boost limit
-        state.boost_limit_mhz = self.get_boost_limit()
-
-        # Read PBO scalar
-        state.pbo_scalar = self.get_pbo_scalar()
-
-        # Read fastest core
-        if self.commands.get_fastest_core_cmd is not None:
-            resp = self._send_rsmu_command(self.commands.get_fastest_core_cmd)
-            if resp.success:
-                state.fastest_core = resp.args[0]
-
-        # Read max frequency from cpufreq sysfs (accounts for boost override + BCLK)
-        state.max_freq_mhz = _read_max_freq_sysfs()
-
-        return state
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def get_fastest_core(self) -> int | None:
         """Query the SMU for the fastest core index."""
@@ -853,21 +817,3 @@ class RyzenSMU:
         if not resp.success:
             return None
         return resp.args[0]
-
-
-# ===========================================================================
-# Sysfs helpers for system state detection
-# ===========================================================================
-
-
-def _read_max_freq_sysfs() -> float | None:
-    """Read max boost frequency from cpufreq sysfs (MHz).
-
-    This reflects the actual boost limit including PBO boost override
-    and BCLK scaling.
-    """
-    path = Path("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
-    with contextlib.suppress(ValueError, OSError):
-        if path.exists():
-            return int(path.read_text().strip()) / 1000.0
-    return None

@@ -26,7 +26,7 @@ GRAPHIC_MIN = 3.0
 
 VERDICT_STATES = ("testing", "passed", "failed", "warned", "backoff", "mem_stress")
 QUIET_STATES = ("pending", "queued", "skipped")
-VERDICT_STATUSES = ("completed", "crashed", "quarantined", "stopped", "aborted", "running", "validating")
+VERDICT_STATUSES = ("completed", "crashed", "quarantined", "stopped", "aborted", "running", "interrupted", "validating")
 QUIET_STATUSES = ("paused", "idle")
 
 
@@ -106,7 +106,7 @@ class TestEveryStateCellIsReadable:
             assert border != bg, f"{scheme}/{state}: border invisible on its own cell"
 
 
-class TestStatusAndPhaseTextIsReadable:
+class TestStatusTextIsReadable:
     def test_every_status_is_classified(self):
         assert set(VERDICT_STATUSES) | set(QUIET_STATUSES) == set(style.SESSION_STATUS_LABELS)
 
@@ -132,28 +132,6 @@ class TestStatusAndPhaseTextIsReadable:
             if contrast(colors[status], window) < DIM_MIN
         }
         assert not failures, f"{scheme}: quiet status below {DIM_MIN}:1 -- {failures}"
-
-    @pytest.mark.parametrize(("scheme", "palette"), SCHEMES)
-    def test_every_running_phase_reads_on_window_and_base(self, scheme, palette):
-        from corecycler.tuner.state import TunerPhase
-
-        colors = style.resolve(scheme, palette)["PHASE_COLORS"]
-        window = palette.color(QPalette.ColorRole.Window).name()
-        base = palette.color(QPalette.ColorRole.Base).name()
-        failures = {
-            phase.value: (round(contrast(color, window), 2), round(contrast(color, base), 2))
-            for phase, color in colors.items()
-            if phase is not TunerPhase.NOT_STARTED and min(contrast(color, window), contrast(color, base)) < TEXT_MIN
-        }
-        assert not failures, f"{scheme}: phase text below {TEXT_MIN}:1 (window, base) -- {failures}"
-
-    @pytest.mark.parametrize(("scheme", "palette"), SCHEMES)
-    def test_the_not_started_phase_stays_legible(self, scheme, palette):
-        from corecycler.tuner.state import TunerPhase
-
-        colors = style.resolve(scheme, palette)["PHASE_COLORS"]
-        window = palette.color(QPalette.ColorRole.Window).name()
-        assert contrast(colors[TunerPhase.NOT_STARTED], window) >= DIM_MIN
 
 
 class TestChartsAndNeutralsAreReadable:

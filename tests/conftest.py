@@ -2,88 +2,25 @@
 
 from __future__ import annotations
 
-import struct
+import importlib.util
 import sys
+import time
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-# add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-# Mock PySide6 if not installed — allows running state machine tests without Qt.
-# TunerEngine inherits QObject and uses Signal/Slot, but the state machine logic
-# (_advance_core, _apply_crash_penalty, etc.) is pure Python and testable without Qt.
-if "PySide6" not in sys.modules:
-    try:
-        import PySide6  # noqa: F401
-    except ImportError:
-        _qt = ModuleType("PySide6")
-        _qtcore = ModuleType("PySide6.QtCore")
-
-        class _FakeSignal:
-            def __init__(self, *args, **kwargs):
-                self._slots = []
-
-            def emit(self, *args):
-                for slot in self._slots:
-                    slot(*args)
-
-            def connect(self, slot):
-                self._slots.append(slot)
-
-            def disconnect(self, slot=None):
-                if slot is None:
-                    self._slots.clear()
-                elif slot in self._slots:
-                    self._slots.remove(slot)
-
-        class _FakeQObject:
-            pass
-
-        class _FakeQThread:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def start(self):
-                pass
-
-            def wait(self, *args):
-                return True
-
-            def isRunning(self):
-                return False
-
-            def terminate(self):
-                pass
-
-            def deleteLater(self):
-                pass
-
-        class _FakeQTimer:
-            @staticmethod
-            def singleShot(ms, func):
-                func()
-
-        _qtcore.QObject = _FakeQObject
-        _qtcore.QThread = _FakeQThread
-        _qtcore.QTimer = _FakeQTimer
-        _qtcore.Signal = _FakeSignal
-        _qtcore.Slot = lambda *a, **k: lambda f: f
-        _qt.QtCore = _qtcore
-
-        sys.modules["PySide6"] = _qt
-        sys.modules["PySide6.QtCore"] = _qtcore
-
+from corecycler.engine import containment
 from corecycler.engine.backends.base import StressBackend, StressConfig, StressMode
+from corecycler.engine.execution import Supervisor
 from corecycler.engine.topology import CPUTopology, PhysicalCore
-from corecycler.smu.commands import CPUGeneration, SMUCommandSet
 
-# ---------------------------------------------------------------------------
-# Mock cpuinfo data for various CPU configurations
-# ---------------------------------------------------------------------------
+QT_INSTALLED = importlib.util.find_spec("PySide6") is not None
+if QT_INSTALLED:
+    importlib.import_module("PySide6")
+
 
 CPUINFO_DUAL_CCD_SMT = """\
 processor\t: 0
@@ -366,91 +303,12 @@ def _gen_cpuinfo(family: int, model: int, name: str, cores: list[tuple[int, int]
     return "\n".join(lines) + "\n"
 
 
-# Zen 1 Summit Ridge (1700) — family 23, model 1, 8 cores single CCD
-CPUINFO_ZEN1_SUMMIT_RIDGE = _gen_cpuinfo(
-    23,
-    0x01,
-    "AMD Ryzen 7 1700 Eight-Core Processor",
-    [(i, 0) for i in range(8)],
-)
-
-# Zen+ Pinnacle Ridge (2600) — family 23, model 8, 6 cores
-CPUINFO_ZEN_PLUS = _gen_cpuinfo(
-    23,
-    0x08,
-    "AMD Ryzen 5 2600 Six-Core Processor",
-    [(i, 0) for i in range(6)],
-)
-
-# Zen 3 Cezanne APU (5700G) — family 25, model 0x50, 8 cores single CCD
-CPUINFO_ZEN3_CEZANNE_APU = _gen_cpuinfo(
-    25,
-    0x50,
-    "AMD Ryzen 7 5700G with Radeon Graphics",
-    [(i, 0) for i in range(8)],
-)
-
-# Zen 4 X3D single-CCD (7800X3D) — family 25, model 0x61, 8 cores
-CPUINFO_ZEN4_7800X3D = _gen_cpuinfo(
-    25,
-    0x61,
-    "AMD Ryzen 7 7800X3D 8-Core Processor",
-    [(i, 0) for i in range(8)],
-)
-
-# Zen 4 X3D dual-CCD (7950X3D) — family 25, model 0x61, 16 cores (8+8)
-CPUINFO_ZEN4_7950X3D = _gen_cpuinfo(
-    25,
-    0x61,
-    "AMD Ryzen 9 7950X3D 16-Core Processor",
-    [(i, 0) for i in range(8)] + [(i, 0) for i in range(8)],
-)
-
-# Zen 4 Phoenix APU (7840U) — family 25, model 0x74, 8 cores
-CPUINFO_ZEN4_PHOENIX_APU = _gen_cpuinfo(
-    25,
-    0x74,
-    "AMD Ryzen 7 7840U w/ Radeon 780M Graphics",
-    [(i, 0) for i in range(8)],
-)
-
-# Zen 4 Storm Peak ThreadRipper (7980X) — family 25, model 0x18, 64 cores (8 CCDs)
-CPUINFO_ZEN4_STORM_PEAK = _gen_cpuinfo(
-    25,
-    0x18,
-    "AMD Ryzen Threadripper PRO 7980X 64-Core Processor",
-    [(i % 8, 0) for i in range(64)],
-)
-
-# Zen 5 harvested (9900X) — family 26, model 0x44, 12 cores (6+6)
-# Kernel renumbers: CCD0 cores 0-5, CCD1 cores 8-13 (skipping 6,7)
 CPUINFO_ZEN5_9900X_HARVESTED = _gen_cpuinfo(
     26,
     0x44,
     "AMD Ryzen 9 9900X 12-Core Processor",
     [(i, 0) for i in range(6)] + [(i, 0) for i in range(8, 14)],
 )
-
-# Zen 5 Strix Point APU — family 26, model 0x24, 12 cores
-CPUINFO_ZEN5_STRIX_POINT = _gen_cpuinfo(
-    26,
-    0x24,
-    "AMD Ryzen AI 9 HX 370",
-    [(i, 0) for i in range(12)],
-)
-
-# Zen 5 Shimada Peak ThreadRipper — family 26, different SMU cmds
-CPUINFO_ZEN5_SHIMADA_PEAK = _gen_cpuinfo(
-    26,
-    0x44,
-    "AMD Ryzen Threadripper 9980X 64-Core Processor",
-    [(i % 8, 0) for i in range(64)],
-)
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -509,8 +367,6 @@ def build_topology(
         finally:
             tmod.CPUINFO = orig_cpuinfo
 
-    # build PhysicalCore entries manually (since we skip sysfs)
-    # collect unique physical cores first, then assign CCDs
     core_lcpus: dict[int, tuple[int, ...]] = {}
     for lcpu in topo.logical_map.values():
         pc = lcpu.physical_core
@@ -534,23 +390,10 @@ def build_topology(
 def topo_dual_ccd_x3d():
     """Topology fixture: 8-core dual-CCD X3D with SMT (16 logical)."""
     topo = build_topology(CPUINFO_DUAL_CCD_SMT, num_ccds=2)
-    # assign CCD manually: cores 0-3 = CCD0, cores 4-7 = CCD1
     for pc in topo.cores.values():
         ccd = 0 if pc.core_id < 4 else 1
         object.__setattr__(pc, "ccd", ccd)
     return topo
-
-
-@pytest.fixture
-def topo_single_ccd():
-    """Topology fixture: 4-core single CCD, no SMT."""
-    return build_topology(CPUINFO_SINGLE_CCD_NO_SMT, num_ccds=1)
-
-
-@pytest.fixture
-def topo_intel():
-    """Topology fixture: 2-core Intel with SMT (4 logical)."""
-    return build_topology(CPUINFO_INTEL_10CORE_SMT, num_ccds=1)
 
 
 @pytest.fixture
@@ -561,10 +404,7 @@ def mock_backend():
         name = "mock"
 
         def __init__(self):
-            self.should_pass = True
-            self.error_message = None
             self.prepared_dirs: list[Path] = []
-            self.cleaned_dirs: list[Path] = []
             self.commands_generated: list[list[str]] = []
             self._available = True
 
@@ -576,8 +416,8 @@ def mock_backend():
             self.commands_generated.append(cmd)
             return cmd
 
-        def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
-            return self.should_pass, self.error_message
+        def findings(self, output: str, work_dir: Path) -> tuple:
+            return ()
 
         def get_supported_modes(self) -> list[StressMode]:
             return [StressMode.SSE, StressMode.AVX, StressMode.AVX2]
@@ -586,54 +426,7 @@ def mock_backend():
             work_dir.mkdir(parents=True, exist_ok=True)
             self.prepared_dirs.append(work_dir)
 
-        def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:
-            self.cleaned_dirs.append(work_dir)
-
     return ControllableMockBackend()
-
-
-@pytest.fixture
-def zen3_commands():
-    return SMUCommandSet(
-        generation=CPUGeneration.ZEN3_VERMEER,
-        set_co_cmd=0x35,
-        get_co_cmd=0x48,
-        set_all_co_cmd=0x36,
-        mailbox="mp1",
-        co_range=(-30, 30),
-        encoding_scheme="zen3",
-    )
-
-
-@pytest.fixture
-def zen5_commands():
-    return SMUCommandSet(
-        generation=CPUGeneration.ZEN5_GRANITE_RIDGE,
-        set_co_cmd=0x06,
-        get_co_cmd=0xD5,
-        set_all_co_cmd=0x07,
-        mailbox="rsmu",
-        co_range=(-60, 10),
-        encoding_scheme="zen4_5",
-        set_boost_limit_cmd=0x70,
-        get_boost_limit_cmd=0x6E,
-    )
-
-
-@pytest.fixture
-def mock_ryzen_smu_sysfs(tmp_path):
-    """Create a mock ryzen_smu_drv sysfs tree that responds to reads/writes."""
-    smu_dir = tmp_path / "ryzen_smu_drv"
-    smu_dir.mkdir()
-
-    # create sysfs files with default content
-    (smu_dir / "smu_args").write_bytes(struct.pack("<6I", 0, 0, 0, 0, 0, 0))
-    # status=1 means success
-    (smu_dir / "rsmu_cmd").write_bytes(struct.pack("<I", 1))
-    (smu_dir / "mp1_smu_cmd").write_bytes(struct.pack("<I", 1))
-    (smu_dir / "pm_table").write_bytes(b"")
-
-    return smu_dir
 
 
 @pytest.fixture(autouse=True)
@@ -657,12 +450,67 @@ def tool_search_roots(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def writer_dir(monkeypatch, tmp_path_factory):
+    from corecycler.smu import writer_lock
+
+    folder = tmp_path_factory.mktemp("data")
+    monkeypatch.setattr(writer_lock, "data_dir", lambda: folder)
+    return folder
+
+
+@pytest.fixture(autouse=True)
+def heavy_lock(monkeypatch, tmp_path_factory):
+    from corecycler.engine import heavy_test_lock
+
+    path = tmp_path_factory.mktemp("runtime") / "heavy-test.lock"
+    monkeypatch.setattr(heavy_test_lock, "heavy_test_lock_path", lambda uid: path)
+    return path
+
+
+@pytest.fixture(autouse=True)
+def no_machine_check_settle(monkeypatch):
+    from corecycler.engine import detector
+
+    monkeypatch.setattr(detector, "mce_settle_s", lambda: 0.0)
+
+
+@pytest.fixture(autouse=True)
+def no_system_bus(monkeypatch):
+    from corecycler.gui import tuner_tab
+
+    monkeypatch.setattr(tuner_tab, "power_profile", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def no_widget_outlives_its_test():
+    """Delete every top-level widget a test leaves, here on the main thread.
+
+    A test double that records a widget (a MagicMock's call history, a bound slot) keeps its tree alive
+    only through a reference cycle; garbage collection then frees it at an arbitrary moment, and a
+    later test's PySide call that lists widgets crashes on the freed pointers (the theme segfault).
+    """
+    yield
+    if not hasattr(sys.modules.get("PySide6"), "__path__"):
+        return
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        return
+    for widget in app.topLevelWidgets():
+        widget.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+@pytest.fixture(autouse=True)
 def no_blocking_dialogs(monkeypatch):
     """A modal dialog in a test hangs the suite forever -- fail loudly instead.
 
     Tests that exercise the missing-tool prompt patch ensure_tool, _run_dialog
-    or _browse themselves; anything else reaching the real Qt modal is a bug in
-    the test, and a named failure beats a stuck run.
+    or _browse themselves, and tests of a dialog stub QMessageBox or the dialog;
+    anything else reaching a real Qt modal is a bug in the test, and a named
+    failure beats a stuck run.
     """
     try:
         from corecycler.gui import tool_prompt
@@ -677,6 +525,16 @@ def no_blocking_dialogs(monkeypatch):
 
     monkeypatch.setattr(tool_prompt, "_run_dialog", refuse)
     monkeypatch.setattr(tool_prompt, "_browse", refuse)
+
+    from PySide6.QtWidgets import QDialog, QMessageBox
+
+    def refuse_modal(*_args, **_kwargs):
+        raise AssertionError("a test opened a real modal dialog: stub QMessageBox or the dialog in that test")
+
+    for name in ("information", "warning", "question", "critical"):
+        monkeypatch.setattr(QMessageBox, name, refuse_modal)
+    monkeypatch.setattr(QMessageBox, "exec", refuse_modal)
+    monkeypatch.setattr(QDialog, "exec", refuse_modal)
 
 
 @pytest.fixture
@@ -713,68 +571,58 @@ def on_path(monkeypatch):
     return install
 
 
-@pytest.fixture(autouse=True)
-def assume_rebooted(monkeypatch):
-    """Resume-time crash detection is gated on an actual reboot since the
-    session's last write (tuner.engine._rebooted_since). A test process never
-    rebooted, so default the gate to "rebooted" here; tests covering the
-    no-reboot path override it explicitly.
-    """
-    import corecycler.tuner.engine as engine_mod
+@pytest.fixture
+def fake_git(exec_tmp_path, monkeypatch):
+    """Put first on PATH a git that runs the given Python program: the package build's sandbox has no git."""
+    import os
 
-    real = engine_mod._rebooted_since
-    monkeypatch.setattr(engine_mod, "_rebooted_since", lambda *a, **k: True)
-    return real
+    def install(program: str):
+        git = exec_tmp_path / "git"
+        git.write_text(f"#!{sys.executable}\n{program}")
+        git.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{exec_tmp_path}{os.pathsep}{os.environ['PATH']}")
 
-
-@pytest.fixture(autouse=True)
-def no_real_forensics(monkeypatch):
-    """Resume runs a kernel-journal harvest (journalctl) on the host. Tests
-    must stay hermetic: a dev machine's real journal could contain real MCE
-    lines and nondeterministically penalize cores mid-test. Default to a
-    clean, available harvest; forensics tests set engine._forensics directly.
-    """
-    import corecycler.tuner.engine as engine_mod
-
-    monkeypatch.setattr(engine_mod, "harvest_kernel_mce", lambda since, timeout=15.0: ([], True))
+    return install
 
 
 @pytest.fixture(autouse=True)
-def synthetic_memory_budget(monkeypatch, tmp_path_factory):
-    """The memory stage sizes its stressors from the live machine
-    (tuner.engine.memory_budget reads /proc/meminfo and the cgroup tree, and
-    the containment probe launches a scope to learn the lanes' cgroup). A unit
-    test never reads the real box: the real budget reader runs against an
-    injected 32 GB desktop with 28 GB available and no cgroup limit, and the
-    lanes' cgroup is unknown. Budget tests inject their own machines. Returns
-    the injected bases and ``budget_for(instances, minimum)`` so a test can
-    derive its expectations from the same machine.
-    """
-    import corecycler.tuner.engine as engine_mod
-    from corecycler.engine.memory_budget import memory_budget as real_budget
+def machine(monkeypatch, tmp_path_factory):
+    from tests._machine import installed
 
-    root = tmp_path_factory.mktemp("synthetic-machine")
-    proc = root / "proc"
-    (proc / "self").mkdir(parents=True)
-    (proc / "meminfo").write_text(f"MemTotal:       {32 * 1024 * 1024} kB\nMemAvailable:   {28 * 1024 * 1024} kB\n")
-    (proc / "self" / "cgroup").write_text("0::/user.slice/user-1000.slice/user@1000.service/app.slice\n")
-    cgroup = root / "cgroup"
-    cgroup.mkdir()
+    return installed(tmp_path_factory.mktemp("machine"), monkeypatch)
 
-    def fake(instances, launch_minimum_mb, *, lane_cgroup=None, **_kw):
-        return real_budget(instances, launch_minimum_mb, lane_cgroup=lane_cgroup, proc_base=proc, cgroup_base=cgroup)
 
-    monkeypatch.setattr(engine_mod, "memory_budget", fake)
-    monkeypatch.setattr(engine_mod, "lane_cgroup_parent", lambda: None)
-    return SimpleNamespace(proc_base=proc, cgroup_base=cgroup, budget_for=fake)
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_cpu_time: the payload's CPU time is read from the machine, not faked by payloads_load_every_lane_cpu",
+    )
 
 
 @pytest.fixture(autouse=True)
-def assume_clean_shutdown(monkeypatch):
-    """Resume probes the host journal to tell a freeze from a deliberate
-    reboot (tuner.engine.last_boot_ended_cleanly). Default it to clean so the
-    unattributed-incident gate stays quiet; incident tests override with False.
-    """
-    import corecycler.tuner.engine as engine_mod
+def payloads_load_every_lane_cpu(request, monkeypatch):
+    if request.node.get_closest_marker("real_cpu_time"):
+        return
+    launched = []
+    launch = Supervisor._launch
 
-    monkeypatch.setattr(engine_mod, "last_boot_ended_cleanly", lambda timeout=15.0: True)
+    def recorded(self, run, config):
+        launched.append(run)
+        return launch(self, run, config)
+
+    def busy_since_launch(launched_as):
+        def read(source):
+            owners = [run for run in launched if launched_as(run, source)]
+            if not owners:
+                raise AssertionError(f"no lane was launched as {source!r}: a test reading CPU time is real_cpu_time")
+            return len(owners[-1].lane.cpus) * (time.monotonic() - owners[-1].started_at)
+
+        return read
+
+    monkeypatch.setattr(Supervisor, "_launch", recorded)
+    monkeypatch.setattr(
+        containment,
+        "process_group_cpu_seconds",
+        busy_since_launch(lambda run, pid: run.proc is not None and run.proc.pid == pid),
+    )
+    monkeypatch.setattr(containment, "scope_cpu_seconds", busy_since_launch(lambda run, cgroup: run.cgroup == cgroup))

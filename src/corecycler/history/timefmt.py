@@ -28,7 +28,7 @@ def format_local(iso: str, *, date_only: bool = False) -> str:
         return ""
     try:
         dt = datetime.fromisoformat(iso)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return iso[:10] if date_only else iso[:19].replace("T", " ")
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)

@@ -20,10 +20,6 @@ from corecycler.config.settings import (
 )
 from corecycler.engine.backends.base import FFTPreset, StressMode
 
-# ===========================================================================
-# TestProfile tests
-# ===========================================================================
-
 
 class TestTestProfile:
     def test_defaults(self):
@@ -91,11 +87,6 @@ class TestTestProfile:
         assert p.threads == 4
 
 
-# ===========================================================================
-# AppSettings tests
-# ===========================================================================
-
-
 class TestAppSettings:
     def test_defaults(self):
         s = AppSettings()
@@ -122,8 +113,7 @@ class TestAppSettings:
 
     def test_active_profile_out_of_range(self):
         s = AppSettings(active_profile_idx=99)
-        # should fall back to profiles[0]
-        assert s.active_profile.name == "Default"
+        assert s.active_profile is s.profiles[0]
 
     def test_active_profile_negative_index(self):
         s = AppSettings(active_profile_idx=-1)
@@ -131,14 +121,8 @@ class TestAppSettings:
 
     def test_active_profile_empty_profiles(self):
         s = AppSettings(profiles=[], active_profile_idx=0)
-        # should return a new default profile
         p = s.active_profile
         assert p.name == "Default"
-
-
-# ===========================================================================
-# save_settings / load_settings
-# ===========================================================================
 
 
 class TestSaveLoadSettings:
@@ -194,11 +178,9 @@ class TestSaveLoadSettings:
     def test_load_wrong_types(self, tmp_path, monkeypatch):
         monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
         (tmp_path / "settings.json").write_text('{"work_dir": 42, "profiles": "bad"}')
-        s = load_settings()
-        # should fall back to defaults
-        assert isinstance(s, AppSettings)
+        assert load_settings() == AppSettings()
 
-    def test_load_extra_fields_ignored(self, tmp_path, monkeypatch):
+    def test_a_file_with_an_unknown_key_is_set_aside_and_the_defaults_load(self, tmp_path, monkeypatch):
         monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
         data = {
             "work_dir": "/tmp/test",
@@ -212,9 +194,8 @@ class TestSaveLoadSettings:
             "profiles": [{"name": "Default"}],
         }
         (tmp_path / "settings.json").write_text(json.dumps(data))
-        # This will likely raise TypeError on the extra field
-        s = load_settings()
-        assert isinstance(s, AppSettings)
+        assert load_settings() == AppSettings()
+        assert json.loads((tmp_path / "settings.json.corrupt").read_text()) == data
 
     def test_save_creates_dir(self, tmp_path, monkeypatch):
         config_dir = tmp_path / "deep" / "nested"
@@ -263,11 +244,6 @@ class TestSaveLoadSettings:
         save_settings(AppSettings(profiles=[p]))
         loaded = load_settings()
         assert loaded.profiles[0].cores_to_test is None
-
-
-# ===========================================================================
-# save_profile / load_profile
-# ===========================================================================
 
 
 class TestSaveLoadProfile:
@@ -343,11 +319,6 @@ class TestSaveLoadProfile:
         assert loaded.cores_to_test == [0, 1, 2, 3]
 
 
-# ===========================================================================
-# JSON serialization edge cases
-# ===========================================================================
-
-
 class TestJSONEdgeCases:
     def test_empty_profiles_list(self, tmp_path, monkeypatch):
         monkeypatch.setattr("corecycler.config.settings.CONFIG_DIR", tmp_path)
@@ -385,6 +356,6 @@ class TestCorruptSettingsPreserved:
         bad.write_text("{not valid json")
 
         loaded = settings_mod.load_settings()
-        assert loaded.work_dir == settings_mod.AppSettings().work_dir  # defaults
-        assert not bad.exists()  # moved, not deleted
+        assert loaded.work_dir == settings_mod.AppSettings().work_dir
+        assert not bad.exists()
         assert (tmp_path / "settings.json.corrupt").read_text() == "{not valid json"

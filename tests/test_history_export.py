@@ -50,7 +50,7 @@ def populated_db(db):
                 core_id=cid,
                 ccd=0,
                 cycle=0,
-                passed=cid == 0,  # core 0 passes, core 1 fails
+                passed=cid == 0,
                 elapsed_seconds=600.0 if cid == 0 else 120.0,
                 error_message=None if cid == 0 else "MCE detected",
                 error_type=None if cid == 0 else "mce",
@@ -64,10 +64,19 @@ def populated_db(db):
     db.insert_event(EventRecord(run_id=run_id, event_type="core_start", core_id=0, message="Core 0 started"))
     db.insert_event(EventRecord(run_id=run_id, event_type="error", core_id=1, message="MCE detected"))
 
-    db.insert_telemetry_batch(
+    db.insert_telemetry_block(
         [
-            TelemetrySample(run_id=run_id, core_id=0, freq_mhz=5500, temp_c=75.0, vcore_v=1.2),
-            TelemetrySample(run_id=run_id, core_id=0, freq_mhz=5600, temp_c=76.0, vcore_v=1.21),
+            TelemetrySample(
+                run_id=run_id, core_id=0, timestamp="2026-10-07T10:00:00+00:00", freq_mhz=5500, temp_c=75.0, vcore_v=1.2
+            ),
+            TelemetrySample(
+                run_id=run_id,
+                core_id=0,
+                timestamp="2026-10-07T10:00:00+00:00",
+                freq_mhz=5600,
+                temp_c=76.0,
+                vcore_v=1.21,
+            ),
         ]
     )
 

@@ -3,7 +3,9 @@ in every combination the window can meet them, against the real widgets."""
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import sys as _sys
 import time
 from pathlib import Path
@@ -18,6 +20,7 @@ _sys.path.insert(0, str(Path(__file__).parent))
 
 from test_main_window_wiring import _build, _qapp
 
+from corecycler.engine.scheduler import CoreTestStatus
 from corecycler.gui import main_window as mw
 from corecycler.history.db import HistoryDB
 
@@ -96,7 +99,7 @@ class TestCloseDuringTest:
         assert event.ignore.called
         assert not event.accept.called
         assert window._closing is False
-        assert db.list_runs(limit=5) == []
+        assert db.list_runs() == []
         window._worker = None
         window._on_worker_finished()
 
@@ -105,25 +108,29 @@ class TestCloseDuringTest:
         assert event.accept.called
         assert mw.save_settings.called
         with pytest.raises(Exception, match="[Cc]losed"):
-            db.list_runs(limit=1)
+            db.list_runs()
 
-    def test_close_stops_a_running_tuner_and_memory_stress(self, window, no_modal, monkeypatch):
-        monkeypatch.setattr(
-            type(window._tuner_tab),
-            "is_running",
-            property(lambda self: True),
-            raising=False,
-        )
-        tuner_stop = MagicMock()
-        monkeypatch.setattr(window._tuner_tab, "force_stop", tuner_stop)
+    @pytest.mark.req("E6.B2.close")
+    def test_close_leaves_a_tuner_driver_running_and_stops_memory_stress(self, window, no_modal, monkeypatch):
+        from corecycler.smu.writer_lock import co_writer, running_driver
+
         memory_stop = MagicMock()
         monkeypatch.setattr(window._memory_tab, "force_stop", memory_stop)
         window._memory_tab._stress_worker = _running_worker()
         _answer(no_modal, "Yes")
-        event = _close(window)
+        with co_writer(record=True):
+            event = _close(window)
+            assert running_driver() == os.getpid()
         assert event.accept.called
-        assert tuner_stop.called
         assert memory_stop.called
+
+    def test_a_tuner_driver_alone_does_not_hold_the_close(self, window, no_modal):
+        from corecycler.smu.writer_lock import co_writer
+
+        with co_writer(record=True):
+            event = _close(window)
+        assert event.accept.called
+        assert not no_modal.question.called
 
 
 class TestWorkerFinishAlive:
@@ -138,7 +145,7 @@ class TestWorkerFinishAlive:
         _qapp()
         scheduler = MagicMock()
         scheduler.run.side_effect = RuntimeError("boom")
-        worker = mw.TestWorker(scheduler)
+        worker = mw.TestWorker(scheduler, io.BytesIO())
         seen: list[str] = []
         worker.crashed.connect(seen.append)
         worker.run()
@@ -148,6 +155,12 @@ class TestWorkerFinishAlive:
         window._on_worker_crashed("boom")
         assert "boom" in window._status_msg.text()
 
+    @pytest.mark.req("T23.window.crash")
+    def test_a_crash_still_reads_crashed_after_the_worker_finishes(self, window):
+        window._on_worker_crashed("boom")
+        window._on_worker_finished()
+        assert window._status_msg.text() == "Test worker crashed: boom"
+
     def test_a_crash_after_close_stays_silent(self, window):
         window._closing = True
         before = window._status_msg.text()
@@ -156,12 +169,34 @@ class TestWorkerFinishAlive:
 
 
 class TestHonestSummary:
-    def _summary(self, window, monkeypatch, payload: dict) -> dict:
+    def _summary(self, window, monkeypatch, payload: dict, rounds: tuple[int, int] = (1, 1)) -> dict:
         update = MagicMock()
         monkeypatch.setattr(window._results_tab, "update_summary", update)
         window._test_start_time = time.monotonic()
+        window._run_rounds, window._rounds_done = rounds
         window._on_test_completed(json.dumps(payload))
         return update.call_args.kwargs
+
+    @pytest.mark.req("T23.results.summary")
+    def test_a_run_stopped_in_its_first_round_says_no_round_completed_of_the_run_s_rounds(self, window, monkeypatch):
+        window._config_tab._cycles_spin.setValue(7)
+        kwargs = self._summary(window, monkeypatch, {"0": [{"passed": True}], "1": []}, rounds=(3, 0))
+        assert (kwargs["cycle"], kwargs["total_cycles"]) == (0, 3)
+
+    @pytest.mark.req("T23.results.summary")
+    def test_the_live_summary_counts_the_run_s_cores_and_the_round_under_test(self, window, monkeypatch):
+        update = MagicMock()
+        monkeypatch.setattr(window._results_tab, "update_summary", update)
+        window._worker = MagicMock(isRunning=MagicMock(return_value=True))
+        window._test_start_time = time.monotonic()
+        window._run_cores, window._run_rounds = 8, 3
+        window._config_tab._cycles_spin.setValue(5)
+        window._on_core_started(0, 1)
+        window._on_status_cached(0, CoreTestStatus(core_id=0, state="passed"))
+        window._update_elapsed()
+        kwargs = update.call_args.kwargs
+        assert (kwargs["total"], kwargs["passed"], kwargs["cycle"], kwargs["total_cycles"]) == (8, 1, 2, 3)
+        window._worker = None
 
     def test_a_stopped_core_is_not_counted_as_failed(self, window, monkeypatch):
         kwargs = self._summary(window, monkeypatch, {"0": [{"passed": True}], "1": []})

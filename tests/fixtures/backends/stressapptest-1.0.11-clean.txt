@@ -1,0 +1,20 @@
+2026/10/14-02:09:36(CEST) Log: Commandline - stressapptest -W -M 64 -s 5
+2026/10/14-02:09:36(CEST) Stats: SAT revision 1.0.11_autoconf, 64 bit binary
+2026/10/14-02:09:36(CEST) Log: reproducible @ reproducible on Tue Jan  1 00:00:00 UTC 1980 from open source release
+2026/10/14-02:09:36(CEST) Log: 1 nodes, 10 cpus.
+2026/10/14-02:09:36(CEST) Log: Defaulting to 10 copy threads
+2026/10/14-02:09:36(CEST) Log: Prefer plain malloc memory allocation.
+2026/10/14-02:09:36(CEST) Log: Using mmap() allocation at 0x7dd6ae000000.
+2026/10/14-02:09:36(CEST) Stats: Starting SAT, 64M, 5 seconds
+2026/10/14-02:09:36(CEST) Log: Region mask: 0x1
+2026/10/14-02:09:41(CEST) Stats: Found 0 hardware incidents
+2026/10/14-02:09:41(CEST) Stats: Completed: 531776.00M in 5.00s 106344.71MB/s, with 0 hardware incidents, 0 errors
+2026/10/14-02:09:41(CEST) Stats: Memory Copy: 531776.00M at 106349.77MB/s
+2026/10/14-02:09:41(CEST) Stats: File Copy: 0.00M at 0.00MB/s
+2026/10/14-02:09:41(CEST) Stats: Net Copy: 0.00M at 0.00MB/s
+2026/10/14-02:09:41(CEST) Stats: Data Check: 0.00M at 0.00MB/s
+2026/10/14-02:09:41(CEST) Stats: Invert Data: 0.00M at 0.00MB/s
+2026/10/14-02:09:41(CEST) Stats: Disk: 0.00M at 0.00MB/s
+2026/10/14-02:09:41(CEST)
+2026/10/14-02:09:41(CEST) Status: PASS - please verify no corrected errors
+2026/10/14-02:09:41(CEST)

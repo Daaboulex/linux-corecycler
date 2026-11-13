@@ -9,6 +9,8 @@ import pytest
 if not hasattr(_sys.modules.get("PySide6", None), "__path__"):
     pytest.skip("GUI tests require real PySide6", allow_module_level=True)
 
+from PySide6.QtWidgets import QLabel
+
 from corecycler.engine.scheduler import CoreTestStatus
 
 
@@ -35,7 +37,7 @@ class TestResultsTab:
         tab = _tab()
         tab.init_cores(_statuses(4))
         tab.update_core(2, CoreTestStatus(core_id=2, state="passed", iterations=9))
-        assert tab._table.item(tab._core_rows[2], 4).text() == "9"
+        assert tab._table.item(tab._row_by_core[2], 4).text() == "9"
 
     def test_update_unknown_core_is_noop(self):
         tab = _tab()
@@ -52,7 +54,7 @@ class TestResultsTab:
         tab = _tab()
         tab.init_cores(_statuses(1))
         tab.update_core(0, CoreTestStatus(core_id=0, state="failed", errors=3, last_error="rounding"))
-        row = tab._core_rows[0]
+        row = tab._row_by_core[0]
         assert tab._table.item(row, 3).text() == "3"
         assert tab._table.item(row, 6).toolTip() == "rounding"
 
@@ -68,11 +70,30 @@ class TestResultsTab:
         text = tab._log.toPlainText()
         assert "boom" in text and "note" in text
 
-    def test_summary_and_clear(self):
+    @pytest.mark.req("T23.results.fresh")
+    def test_a_new_run_starts_with_no_summary_rows_or_log_from_the_last(self):
         tab = _tab()
+        fresh = [label.text() for label in tab.findChildren(QLabel)]
         tab.init_cores(_statuses(3))
         tab.update_summary(total=3, passed=2, failed=1, elapsed=61.0, cycle=1, total_cycles=2)
-        assert "2" in tab._passed_label.text()
-        tab.clear()
-        assert tab._table.rowCount() == 0
-        assert tab._log.toPlainText() == ""
+        tab.add_error(1, "boom")
+        assert tab._passed_label.text() == "Passed: 2"
+        tab.init_cores(_statuses(2))
+        assert [label.text() for label in tab.findChildren(QLabel)] == fresh
+        assert (tab._table.rowCount(), tab._log.toPlainText()) == (2, "")
+
+
+RESULTS_CONTROLS = {"QTableCornerButton": "selects every cell of the core table"}
+
+
+@pytest.mark.req("T23.contract.results")
+def test_every_control_of_the_results_tab_is_listed_with_its_reaction():
+    from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QComboBox, QLineEdit
+
+    tab = _tab()
+    tab.init_cores(_statuses(2))
+    buttons = {button.text() or button.metaObject().className() for button in tab.findChildren(QAbstractButton)}
+    assert buttons == set(RESULTS_CONTROLS)
+    assert [*tab.findChildren(QAbstractSpinBox), *tab.findChildren(QComboBox), *tab.findChildren(QLineEdit)] == []
+    tab.findChild(QAbstractButton).click()
+    assert len(tab._table.selectedItems()) == 2 * tab._table.columnCount()

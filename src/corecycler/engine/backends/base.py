@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import Enum, StrEnum, auto
 from typing import TYPE_CHECKING
 
 from corecycler.config import tools
@@ -12,20 +13,73 @@ from corecycler.config import tools
 if TYPE_CHECKING:
     from pathlib import Path
 
-# Return codes indicating the process was intentionally killed by the scheduler
-KILLED_BY_US_CODES: frozenset[int] = frozenset({-9, -15, 137, 143})
 
-# Signal codes indicating CPU instability (CO too aggressive, hardware fault).
-# SIGILL/SIGFPE are included: aggressive undervolting corrupts instruction decode
-# and FPU results, so a worker dying with -4/-8 is instability, not a clean exit.
-CRASH_SIGNALS: dict[int, str] = {
-    -4: "SIGILL",
-    -5: "SIGTRAP",
-    -6: "SIGABRT",
-    -7: "SIGBUS",
-    -8: "SIGFPE",
-    -11: "SIGSEGV",
-}
+class OutcomeKind(Enum):
+    SILICON = auto()
+    ENVIRONMENT = auto()
+    APPARATUS = auto()
+    PASS = auto()
+
+
+class Outcome(StrEnum):
+    kind: OutcomeKind
+
+    CPU_SIGNAL = "crash", OutcomeKind.SILICON
+    OWN_CORE_MCE = "mce", OutcomeKind.SILICON
+    COMPUTATION = "computation", OutcomeKind.SILICON
+    CLOCK_STRETCH = "clock_stretch", OutcomeKind.SILICON
+    THERMAL = "thermal", OutcomeKind.ENVIRONMENT
+    UNATTRIBUTED_MCE = "mce_unattributed", OutcomeKind.ENVIRONMENT
+    KERNEL_TROUBLE = "kernel_trouble", OutcomeKind.ENVIRONMENT
+    OUTSIDE_KILL = "killed", OutcomeKind.APPARATUS
+    DID_NOT_STOP = "did_not_stop", OutcomeKind.APPARATUS
+    CONTAINMENT_BROKE = "containment_broke", OutcomeKind.APPARATUS
+    STALL = "stall", OutcomeKind.APPARATUS
+    NOT_STARTED = "startup", OutcomeKind.APPARATUS
+    UNEXPLAINED = "unexplained", OutcomeKind.APPARATUS
+    NO_WORK_DONE = "no_work_done", OutcomeKind.APPARATUS
+    UNVERIFIED = "unverified", OutcomeKind.APPARATUS
+    HELD_TOO_LONG = "held_too_long", OutcomeKind.APPARATUS
+    CUT_SHORT = "cut_short", OutcomeKind.APPARATUS
+    PASS = "pass", OutcomeKind.PASS
+
+    def __new__(cls, stored: str, kind: OutcomeKind) -> Outcome:
+        member = str.__new__(cls, stored)
+        member._value_ = stored
+        member.kind = kind
+        return member
+
+    @property
+    def rank(self) -> int:
+        return _RANK_BY_DECLARATION_ORDER[self]
+
+
+_RANK_BY_DECLARATION_ORDER: dict[Outcome, int] = {outcome: position for position, outcome in enumerate(Outcome)}
+
+
+@dataclass(frozen=True, slots=True)
+class LaneSignal:
+    outcome: Outcome
+    text: str
+
+    def __post_init__(self) -> None:
+        if self.outcome is Outcome.PASS:
+            raise ValueError("a pass is the absence of every signal, never a signal")
+
+
+FindingTable = tuple[tuple[re.Pattern[str], Outcome], ...]
+
+
+def scan(text: str, table: FindingTable) -> tuple[LaneSignal, ...]:
+    return tuple(
+        LaneSignal(outcome, text[text.rfind("\n", 0, match.start()) + 1 :].partition("\n")[0].strip())
+        for pattern, outcome in table
+        if (match := pattern.search(text))
+    )
+
+
+def read_text(path: Path) -> str:
+    return path.read_bytes().decode("utf-8", errors="replace")
 
 
 class StressMode(Enum):
@@ -37,14 +91,14 @@ class StressMode(Enum):
 
 
 class FFTPreset(Enum):
-    SMALLEST = "smallest"  # 4K-21K
-    SMALL = "small"  # 36K-248K
-    LARGE = "large"  # 426K-8192K
-    HUGE = "huge"  # 8960K-65536K
-    ALL = "all"  # 4K-65536K
-    MODERATE = "moderate"  # 1344K-4096K
-    HEAVY = "heavy"  # 4K-1344K
-    HEAVY_SHORT = "heavy_short"  # 4K-160K
+    SMALLEST = "smallest"
+    SMALL = "small"
+    LARGE = "large"
+    HUGE = "huge"
+    ALL = "all"
+    MODERATE = "moderate"
+    HEAVY = "heavy"
+    HEAVY_SHORT = "heavy_short"
     CUSTOM = "custom"
 
 
@@ -52,25 +106,35 @@ class FFTPreset(Enum):
 class StressConfig:
     mode: StressMode = StressMode.SSE
     fft_preset: FFTPreset = FFTPreset.SMALL
-    fft_min: int | None = None  # custom range
+    fft_min: int | None = None
     fft_max: int | None = None
     threads: int = 1
-    memory_mb: int | None = None  # for linpack-style tests
+    memory_mb: int | None = None
+    cpus: tuple[int, ...] = ()
+    tests: tuple[str, ...] = ()
+    seconds_per_test: int | None = None
+    binary: str | None = None
+    longest_rest_s: float = 0.0
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class StressResult:
     core_id: int
-    passed: bool
+    outcome: Outcome
+    detail: str
     duration_seconds: float
-    error_message: str | None = None
-    error_type: str | None = None  # "computation", "mce", "timeout", "crash"
+    output: str = ""
     iterations_completed: int = 0
-    last_fft_size: int | None = None
+    speeds: tuple[tuple[str, float, bool], ...] = ()
+    frozen_seconds: float = 0.0
+
+    @property
+    def passed(self) -> bool:
+        return self.outcome is Outcome.PASS
 
 
 class StressBackend(ABC):
-    """Base class for stress test backends (mprime, y-cruncher, stress-ng)."""
+    """Base class for every stress test backend."""
 
     name: str = "base"
 
@@ -100,8 +164,21 @@ class StressBackend(ABC):
         """Build the command line for the stress test (without the containment prefix)."""
 
     @abstractmethod
-    def parse_output(self, stdout: str, stderr: str, returncode: int) -> tuple[bool, str | None]:
-        """Parse stress test output. Returns (passed, error_message)."""
+    def findings(self, output: str, work_dir: Path) -> tuple[LaneSignal, ...]:
+        """Every signal this backend's own text names: the lane's output plus any results file it keeps."""
+
+    def speeds(self, output: str) -> tuple[tuple[str, float, bool], ...]:
+        """Each finished test's own speed figure, as (test, value, passed); none for a backend that prints none."""
+        return ()
+
+    def finished(self, output: str) -> int:
+        """How many tests the output shows finished, passed or failed; by default one per speed figure."""
+        return len(self.speeds(output))
+
+    def progress_window(self, config: StressConfig) -> float | None:
+        """Seconds with no newly finished test after which a run is hung, counting the run's planned rests and never
+        its heat or unread holds; None when the backend cannot tell."""
+        return None
 
     @abstractmethod
     def get_supported_modes(self) -> list[StressMode]:
@@ -111,42 +188,14 @@ class StressBackend(ABC):
         """Return list of FFT presets this backend supports. Override if applicable."""
         return []
 
-    def prepare(self, work_dir: Path, config: StressConfig) -> None:  # noqa: B027
+    def prepare(self, work_dir: Path, config: StressConfig) -> None:
         """Prepare working directory and config files before running. Override if needed."""
+        return None
 
-    def assert_prepared(self, work_dir: Path) -> None:  # noqa: B027
+    def assert_prepared(self, work_dir: Path) -> None:
         """Raise OSError when the prepared state a launch depends on is not readable.
 
         A backend that launches against absent config silently falls back to its
         own defaults (mprime: one self-pinned worker per detected core), so the
         launch must be refused instead. Override where config files exist."""
-
-    def poll_errors(self, work_dir: Path) -> str | None:
-        """Check for fatal errors mid-run (e.g. a results file the stress tool
-        appends to while continuing). Returns an error message or None.
-        Override for backends whose errors do not stop the process."""
-        return None
-
-    def cleanup(self, work_dir: Path, *, preserve_on_error: bool = False) -> None:  # noqa: B027
-        """Clean up after test run. Override if needed.
-
-        Args:
-            preserve_on_error: If True, keep diagnostic files (results, logs)
-                for post-mortem analysis of failures.
-        """
-
-    @staticmethod
-    def classify_exit_code(returncode: int) -> str | None:
-        """Classify a process exit code.
-
-        Returns:
-            "killed_by_us" if intentionally terminated by scheduler
-            "crash:<SIGNAL>" if killed by a crash signal (CPU instability)
-            None for normal exit (check stdout/stderr for pass/fail)
-        """
-        if returncode in KILLED_BY_US_CODES:
-            return "killed_by_us"
-        signal_name = CRASH_SIGNALS.get(returncode)
-        if signal_name:
-            return f"crash:{signal_name}"
         return None

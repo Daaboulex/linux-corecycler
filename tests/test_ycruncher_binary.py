@@ -1,125 +1,172 @@
-"""Contract tests that run a real y-cruncher binary.
-
-They fail loudly if an upstream y-cruncher update breaks a backend assumption
-(CLI flags, algorithm names, output format, or the kill-signal exit code),
-rather than letting the fixture-based unit tests pass on stale assumptions.
-Skipped only when no y-cruncher binary is present.
-"""
-
 from __future__ import annotations
 
-import contextlib
 import os
 import re
 import signal
 import subprocess
-import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+from corecycler.engine.backends.base import Outcome, StressConfig, StressMode, read_text
+from corecycler.engine.backends.ycruncher import ALL_TESTS, CONFIG_FILE, YCruncherBackend
+from corecycler.engine.execution import exit_signal
+from tests._contract_hw import require
 
-from corecycler.engine.backends.base import KILLED_BY_US_CODES, StressConfig, StressMode
-from corecycler.engine.backends.ycruncher import MODE_TO_ALGORITHMS, YCruncherBackend
-
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.contract]
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_STARTUP_SECONDS = 6.0
+_FIRST_TEST_SECONDS = 40.0
+_STOP_SECONDS = 20.0
 
 
-def _discover_binary() -> str | None:
-    override = os.environ.get("YCRUNCHER_BIN")
-    if override and Path(override).is_file():
-        return override
+@dataclass(frozen=True, slots=True)
+class _Run:
+    output: str
+    alive_at_stop: bool
+    thread_cpus: frozenset[int]
+    returncode: int
+
+
+def _backend() -> YCruncherBackend:
     backend = YCruncherBackend()
-    if backend.is_available():
-        return backend._binary
-    return None
+    require(backend.is_available(), "y-cruncher is not installed (PATH or CORECYCLER_Y_CRUNCHER_BIN)")
+    return backend
 
 
-_BINARY = _discover_binary()
-_WORKDIR = str(Path(_BINARY).parent) if _BINARY else "."
-_MAPPED_ALGORITHMS = sorted({algo for algos in MODE_TO_ALGORITHMS.values() for algo in algos})
-
-requires_ycruncher = pytest.mark.skipif(
-    _BINARY is None,
-    reason="no y-cruncher binary (set YCRUNCHER_BIN or put y-cruncher on PATH)",
-)
+def _two_cpus() -> tuple[int, ...]:
+    allowed = sorted(os.sched_getaffinity(0))
+    require(len(allowed) >= 2, "this process may run on fewer than two CPUs")
+    return tuple(allowed[:2])
 
 
-def _run(args: list[str], run_seconds: float) -> tuple[int, str]:
-    proc = subprocess.Popen(
-        [_BINARY, *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        cwd=_WORKDIR,
-        start_new_session=True,
-        stdin=subprocess.DEVNULL,
-    )
-    time.sleep(run_seconds)
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+def _command(work_dir: Path, config: StressConfig) -> list[str]:
+    backend = _backend()
+    backend.prepare(work_dir, config)
+    return backend.get_command(config, work_dir)
+
+
+def _compute_thread_cpus(pid: int) -> frozenset[int]:
+    compute = [int(task.name) for task in Path(f"/proc/{pid}/task").iterdir() if int(task.name) != pid]
+    return frozenset().union(*(os.sched_getaffinity(tid) for tid in compute))
+
+
+def _run(command: list[str], work_dir: Path, seconds: float) -> _Run:
+    log_path = work_dir / "output.log"
+    with log_path.open("wb") as sink:
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+            cwd=work_dir,
+            start_new_session=True,
+        )
     try:
-        out, _ = proc.communicate(timeout=20)
-    except subprocess.TimeoutExpired:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        out, _ = proc.communicate()
-    return proc.returncode, out
+        time.sleep(seconds)
+        alive = proc.poll() is None
+        thread_cpus = _compute_thread_cpus(proc.pid) if alive else frozenset()
+        proc.send_signal(signal.SIGTERM)
+        returncode = proc.wait(timeout=_STOP_SECONDS)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    return _Run(_ANSI_RE.sub("", read_text(log_path)), alive, thread_cpus, returncode)
 
 
-def _stress(algorithms: list[str], run_seconds: float) -> tuple[int, str]:
-    return _run(
-        ["skip-warnings", "pause:-2", "status:none", "stress", "-M:200M", "-D:2", *algorithms],
-        run_seconds,
-    )
+def _outcomes(run: _Run, work_dir: Path) -> set[Outcome]:
+    return {hit.outcome for hit in YCruncherBackend().findings(run.output, work_dir)}
 
 
-@requires_ycruncher
-class TestYCruncherBinaryContract:
-    def test_backend_command_reaches_stress_loop(self):
-        backend = YCruncherBackend()
-        backend._binary = _BINARY
-        cmd = backend.get_command(StressConfig(mode=StressMode.SSE), Path(_WORKDIR))
-        assert cmd[0] == _BINARY
-        rc, out = _run(cmd[1:], 6)
-        assert "Invalid Parameter" not in out
-        assert "Press ENTER" not in out
-        assert "Start Stress-Testing!" in out
-        assert "Iteration:" in out
+@pytest.fixture(scope="module")
+def lane_run(tmp_path_factory) -> tuple[tuple[int, ...], _Run]:
+    cpus = _two_cpus()
+    work_dir = tmp_path_factory.mktemp("ycruncher-lane")
+    config = StressConfig(mode=StressMode.SSE, cpus=cpus, threads=len(cpus), memory_mb=200)
+    return cpus, _run(_command(work_dir, config), work_dir, _FIRST_TEST_SECONDS)
 
-    def test_scheduler_kill_yields_killed_by_us_code(self):
-        rc, _out = _stress(["BKT"], 4)
-        assert rc in KILLED_BY_US_CODES, (
-            f"SIGTERM produced exit {rc}; the backend treats any non-killed exit as a failure, "
-            "so a trapped signal here would flip every real run to a false verdict"
+
+def test_the_compute_binary_reaches_the_stress_loop(lane_run):
+    _, run = lane_run
+    assert "Iteration:" in run.output, run.output
+    assert "Press ENTER" not in run.output
+
+
+def test_a_clean_first_test_prints_its_pass_line_and_no_finding(lane_run):
+    _, run = lane_run
+    assert re.search(r"Running\s+BKT:\s*Passed", run.output), run.output
+    assert YCruncherBackend().findings(run.output, Path(".")) == ()
+
+
+def test_every_compute_thread_may_run_only_on_the_lanes_cpus(lane_run):
+    cpus, run = lane_run
+    assert run.alive_at_stop, run.output
+    assert run.thread_cpus and run.thread_cpus <= set(cpus), f"threads may run on {sorted(run.thread_cpus)}"
+
+
+def test_our_sigterm_is_graded_as_our_stop(lane_run):
+    _, run = lane_run
+    assert run.alive_at_stop, run.output
+    assert exit_signal(run.returncode, signal.SIGTERM) is None, f"SIGTERM produced exit {run.returncode}"
+
+
+@pytest.mark.parametrize("mode", list(StressMode))
+def test_every_modes_config_starts_the_stress_loop(tmp_path, mode):
+    config = StressConfig(mode=mode, cpus=_two_cpus(), threads=2, memory_mb=200)
+    run = _run(_command(tmp_path, config), tmp_path, _STARTUP_SECONDS)
+    assert "Iteration:" in run.output, run.output
+    assert _outcomes(run, tmp_path) == set(), run.output
+
+
+def test_an_unknown_test_tag_is_not_started(tmp_path):
+    config = StressConfig(mode=StressMode.SSE, cpus=_two_cpus(), threads=2, memory_mb=200)
+    command = _command(tmp_path, config)
+    stress_cfg = tmp_path / CONFIG_FILE
+    stress_cfg.write_text(stress_cfg.read_text().replace('"BKT"', '"NOSUCHTEST"'))
+    run = _run(command, tmp_path, _STARTUP_SECONDS)
+    assert _outcomes(run, tmp_path) == {Outcome.NOT_STARTED}, run.output
+
+
+def test_a_core_id_beyond_the_machine_is_not_started(tmp_path):
+    config = StressConfig(mode=StressMode.SSE, cpus=((os.cpu_count() or 0) + 64,), memory_mb=200)
+    run = _run(_command(tmp_path, config), tmp_path, _STARTUP_SECONDS)
+    assert _outcomes(run, tmp_path) == {Outcome.NOT_STARTED}, run.output
+
+
+def test_the_binary_offers_exactly_the_tests_we_name(tmp_path):
+    backend = _backend()
+    backend.prepare(tmp_path, StressConfig(mode=StressMode.SSE, cpus=_two_cpus(), memory_mb=200))
+    compute = backend.get_command(StressConfig(cpus=_two_cpus()), tmp_path)[0]
+    run = _run([compute, "skip-warnings", "colors:0", "stress", "-M:64m", "-D:1"], tmp_path, _STARTUP_SECONDS)
+    offered = tuple(tag for number, tag in re.findall(r"^\s*(\d+)\s+(\w+)\s+\S", run.output, re.M) if int(number) >= 11)
+    assert offered == ALL_TESTS, run.output
+
+
+def test_the_backend_picks_the_binary_the_launcher_picks(tmp_path):
+    backend = _backend()
+    config = StressConfig(mode=StressMode.SSE, cpus=_two_cpus(), threads=2, memory_mb=200)
+    backend.prepare(tmp_path, config)
+    command = backend.get_command(config, tmp_path)
+    log_path = tmp_path / "launcher.log"
+    with log_path.open("wb") as sink:
+        launcher = subprocess.Popen(
+            [backend.require_binary(), *command[1:]],
+            stdin=subprocess.DEVNULL,
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+            cwd=tmp_path,
+            start_new_session=True,
         )
-
-    def test_pass_line_format_present(self):
-        rc, out = _stress(["BKT"], 6)
-        assert re.search(r"Running\s+BKT:\s*Passed", _ANSI_RE.sub("", out)), (
-            "y-cruncher stopped emitting the 'Running <algo>: Passed' line the backend was built against"
-        )
-
-    @pytest.mark.parametrize("algo", _MAPPED_ALGORITHMS)
-    def test_mapped_algorithm_still_accepted(self, algo):
-        rc, out = _stress([algo], 3)
-        assert "Invalid Parameter" not in out, f"y-cruncher rejected {algo!r}; upstream may have renamed it"
-        assert "Start Stress-Testing!" in out
-
-    def test_invalid_algorithm_is_rejected_loudly(self):
-        rc, out = _stress(["NOSUCHTEST"], 3)
-        assert "Invalid Parameter" in out
-
-    def test_parse_output_agrees_with_real_killed_run(self):
-        rc, out = _stress(["BKT"], 5)
-        passed, msg = YCruncherBackend().parse_output(out, "", rc)
-        assert passed, msg
-
-    def test_parse_output_fails_a_real_invalid_parameter(self):
-        rc, out = _stress(["NOSUCHTEST"], 3)
-        passed, msg = YCruncherBackend().parse_output(out, "", rc)
-        assert not passed
-        assert "Invalid Parameter" in msg
+    try:
+        deadline = time.monotonic() + _STARTUP_SECONDS
+        while "Iteration:" not in read_text(log_path) and time.monotonic() < deadline:
+            time.sleep(0.2)
+    finally:
+        os.killpg(launcher.pid, signal.SIGKILL)
+        launcher.wait()
+    output = _ANSI_RE.sub("", read_text(log_path))
+    assert f"Auto-Selecting: {Path(command[0]).name}" in output, output

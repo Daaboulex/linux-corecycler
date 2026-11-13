@@ -11,42 +11,30 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from corecycler.smu.pmtable import (
+    MEASURED_CORE_IDS,
     PM_TABLE_OFFSETS,
     PMTableData,
     PMTableOffsets,
     PMTableReader,
     compute_fclk_uclk_ratio,
+    core_reads,
+    package_watts,
+    rail_volts,
 )
-
-# ===========================================================================
-# PMTableData tests
-# ===========================================================================
 
 
 class TestPMTableData:
     def test_defaults(self):
         data = PMTableData()
-        assert data.core_frequency_mhz == {}
-        assert data.core_voltage_v == {}
-        assert data.core_temperature_c == {}
-        assert data.core_power_w == {}
-        assert data.core_c0_residency == {}
         assert data.package_power_w == 0.0
-        assert data.soc_power_w == 0.0
         assert data.ppt_limit_w == 0.0
         assert data.tdc_limit_a == 0.0
         assert data.edc_limit_a == 0.0
         assert data.ppt_value_w == 0.0
         assert data.tdc_value_a == 0.0
-        assert data.edc_value_a == 0.0
+        assert data.edc_value_a is None
         assert data.tctl_c == 0.0
-        assert data.tdie_c == 0.0
         assert data.raw_floats == []
-
-
-# ===========================================================================
-# PMTableReader tests
-# ===========================================================================
 
 
 class TestPMTableReader:
@@ -87,7 +75,7 @@ class TestPMTableReader:
     def test_read_too_short(self, tmp_path):
         smu_dir = tmp_path / "ryzen_smu_drv"
         smu_dir.mkdir()
-        (smu_dir / "pm_table").write_bytes(b"\x00\x00")  # < 4 bytes
+        (smu_dir / "pm_table").write_bytes(b"\x00\x00")
         reader = PMTableReader(sysfs_path=smu_dir)
         assert reader.read() is None
 
@@ -112,34 +100,19 @@ class TestPMTableReader:
         smu_dir.mkdir()
         (smu_dir / "pm_table_version").write_bytes(struct.pack("<I", 0x00620205))
 
-        # Build 420 floats (enough for 16 cores with stride 10 starting at 100)
         floats = [0.0] * 420
 
-        floats[2] = 225.0  # PPT limit
-        floats[3] = 142.0  # PPT value / package power
-        floats[8] = 190.0  # TDC limit
-        floats[9] = 95.0  # TDC value
-        floats[11] = 70.0  # hotspot temperature
-        floats[63] = 230.0  # EDC limit
-
-        # Per-core data (core 0 at offset 100)
-        floats[100] = 5700.0  # core 0 freq
-        floats[101] = 1.35  # core 0 voltage
-        floats[102] = 12.5  # core 0 power
-        floats[103] = 68.0  # core 0 temp
-        floats[104] = 95.0  # core 0 C0 residency
-
-        # Core 1 at offset 110
-        floats[110] = 5500.0
-        floats[111] = 1.30
-        floats[112] = 11.0
-        floats[113] = 66.0
-        floats[114] = 80.0
+        floats[2] = 225.0
+        floats[3] = 142.0
+        floats[8] = 190.0
+        floats[9] = 95.0
+        floats[11] = 70.0
+        floats[63] = 230.0
 
         raw = struct.pack(f"<{len(floats)}f", *floats)
         (smu_dir / "pm_table").write_bytes(raw)
 
-        reader = PMTableReader(num_cores=16, sysfs_path=smu_dir)
+        reader = PMTableReader(sysfs_path=smu_dir)
         result = reader.read()
 
         assert result is not None
@@ -148,48 +121,81 @@ class TestPMTableReader:
         assert result.tdc_limit_a == pytest.approx(190.0)
         assert result.tdc_value_a == pytest.approx(95.0)
         assert result.edc_limit_a == pytest.approx(230.0)
-        assert result.edc_value_a == 0.0  # value slot not located — absent
+        assert result.edc_value_a is None
         assert result.tctl_c == pytest.approx(70.0)
-        assert result.tdie_c == 0.0  # not located — absent
         assert result.package_power_w == pytest.approx(142.0)
-        assert result.soc_power_w == 0.0  # not located — absent
 
-        assert result.core_frequency_mhz[0] == pytest.approx(5700.0)
-        assert result.core_voltage_v[0] == pytest.approx(1.35)
-        assert result.core_power_w[0] == pytest.approx(12.5)
-        assert result.core_temperature_c[0] == pytest.approx(68.0)
-        assert result.core_c0_residency[0] == pytest.approx(95.0)
-
-        assert result.core_frequency_mhz[1] == pytest.approx(5500.0)
-        assert result.core_voltage_v[1] == pytest.approx(1.30)
-
-    def test_partial_core_data(self, tmp_path):
-        """PM table that's too short for all cores should parse what it can."""
+    def test_granite_ridge_reads_the_core_rail_request_and_measured_voltage(self, tmp_path):
         smu_dir = tmp_path / "ryzen_smu_drv"
         smu_dir.mkdir()
+        (smu_dir / "pm_table_version").write_bytes(struct.pack("<I", 0x00620205))
+        floats = [0.0] * 420
+        floats[48] = 1.296
+        floats[49] = 1.291
+        (smu_dir / "pm_table").write_bytes(struct.pack(f"<{len(floats)}f", *floats))
 
-        # 210 floats: enough to trigger parsing (>= 200) and cover core 0
-        # (offset 100) and core 1 (offset 110), but NOT core 11+ (offset 210+)
-        floats = [0.0] * 210
-        floats[100] = 4800.0  # core 0 freq
-        floats[110] = 5100.0  # core 1 freq
-
-        raw = struct.pack(f"<{len(floats)}f", *floats)
-        (smu_dir / "pm_table").write_bytes(raw)
-
-        reader = PMTableReader(num_cores=16, sysfs_path=smu_dir)
-        result = reader.read()
+        result = PMTableReader(sysfs_path=smu_dir).read()
 
         assert result is not None
-        assert result.core_frequency_mhz[0] == pytest.approx(4800.0)
-        assert result.core_frequency_mhz[1] == pytest.approx(5100.0)
-        # Core 11+ should not be present (offset 210+ out of range)
-        assert 11 not in result.core_frequency_mhz
+        assert (result.vdd_vid_v, result.vdd_v) == (pytest.approx(1.296), pytest.approx(1.291))
+        assert rail_volts(result) == (
+            ("pm_table:vdd", pytest.approx(1.291)),
+            ("pm_table:vdd_vid", pytest.approx(1.296)),
+        )
+
+    @pytest.mark.parametrize("vid", [0.0, 0.1, 3.5, float("nan")])
+    def test_a_core_rail_value_outside_physical_bounds_is_stored_as_unread(self, vid):
+        data = PMTableData(vdd_vid_v=vid, vdd_v=1.2, pm_table_version=0x00620205)
+        assert dict(rail_volts(data)) == {"pm_table:vdd": pytest.approx(1.2), "pm_table:vdd_vid": None}
+
+    def test_a_table_other_than_zen_5_names_no_core_rail_source(self):
+        assert rail_volts(PMTableData(vdd_vid_v=1.3, vdd_v=1.2, pm_table_version=0x00540208)) == ()
+
+    @pytest.mark.req("L25.d.power")
+    @pytest.mark.parametrize(("watts", "read"), [(142.5, 142.5), (0.0, None), (1500.0, None), (float("nan"), None)])
+    def test_the_package_power_is_read_on_zen_5_and_an_impossible_value_is_unread(self, watts, read):
+        data = PMTableData(package_power_w=watts, pm_table_version=0x00620205)
+        assert package_watts(data) == (("pm_table:package", read),)
+        assert package_watts(PMTableData(package_power_w=watts, pm_table_version=0x00540208)) == ()
+
+    @pytest.mark.req("O19.record")
+    def test_each_core_reads_its_clock_effective_clock_c0_and_voltage_from_the_measured_table(self):
+        floats = [0.0] * 613
+        for offset, value in ((0x574, 5.438), (0x5B4, 5.459), (0x5F4, 99.87), (0x4F4, 1.149)):
+            floats[offset // 4 + 12] = value
+        floats[0x4F4 // 4 + 3], floats[0x574 // 4 + 4], floats[0x5F4 // 4 + 5] = 2.5, float("nan"), 100.5
+        reads = core_reads(PMTableData(pm_table_version=0x00620205, raw_floats=floats), MEASURED_CORE_IDS)
+        assert [read[0] for read in reads] == list(range(16))
+        assert reads[12] == (
+            12,
+            pytest.approx(5438.0),
+            pytest.approx(5459.0),
+            pytest.approx(99.87),
+            pytest.approx(1.149),
+        )
+        assert reads[0] == (0, 0.0, 0.0, 0.0, None)
+        assert (reads[3][4], reads[4][1], reads[5][3]) == (None, None, None)
+
+    @pytest.mark.req("O19.record")
+    @pytest.mark.parametrize(("version", "count"), [(0x00620105, 613), (0x00540208, 613), (0x00620205, 396)])
+    def test_a_table_whose_core_layout_was_not_measured_records_no_core(self, version, count):
+        assert core_reads(PMTableData(pm_table_version=version, raw_floats=[1.0] * count), MEASURED_CORE_IDS) == ()
+
+    @pytest.mark.req("O19.record")
+    def test_a_table_just_long_enough_for_the_last_core_reads_every_core(self):
+        reads = core_reads(PMTableData(pm_table_version=0x00620205, raw_floats=[1.0] * 397), MEASURED_CORE_IDS)
+        assert [read[0] for read in reads] == list(range(16))
+
+    @pytest.mark.req("O19.stretch")
+    @pytest.mark.parametrize("core_ids", [(*range(6), *range(8, 14)), range(8), (), range(17)])
+    def test_a_machine_whose_core_ids_are_not_the_measured_0_to_15_reads_no_core(self, core_ids):
+        assert core_reads(PMTableData(pm_table_version=0x00620205, raw_floats=[1.0] * 397), core_ids) == ()
 
     def test_fewer_than_200_floats_skips_parsing(self, tmp_path):
         """PM table with < 200 floats should skip Granite Ridge parsing."""
         smu_dir = tmp_path / "ryzen_smu_drv"
         smu_dir.mkdir()
+        (smu_dir / "pm_table_version").write_bytes(struct.pack("<I", 0x00620205))
 
         floats = [1.0] * 50
         raw = struct.pack(f"<{len(floats)}f", *floats)
@@ -200,8 +206,6 @@ class TestPMTableReader:
 
         assert result is not None
         assert len(result.raw_floats) == 50
-        # No parsed fields (< 200 floats triggers early return)
-        assert result.core_frequency_mhz == {}
         assert result.ppt_limit_w == 0.0
 
     def test_raw_floats_always_available(self, tmp_path):
@@ -221,60 +225,18 @@ class TestPMTableReader:
         assert result.raw_floats[0] == pytest.approx(0.0)
         assert result.raw_floats[299] == pytest.approx(299.0)
 
-    def test_num_cores_limits_parsing(self, tmp_path):
-        """num_cores parameter should limit how many cores are parsed."""
-        smu_dir = tmp_path / "ryzen_smu_drv"
-        smu_dir.mkdir()
-
-        floats = [0.0] * 420
-        for i in range(16):
-            floats[100 + i * 10] = 5000.0 + i * 100  # freq per core
-
-        raw = struct.pack(f"<{len(floats)}f", *floats)
-        (smu_dir / "pm_table").write_bytes(raw)
-
-        # Only parse 4 cores
-        reader = PMTableReader(num_cores=4, sysfs_path=smu_dir)
-        result = reader.read()
-
-        assert result is not None
-        assert len(result.core_frequency_mhz) == 4
-        assert 4 not in result.core_frequency_mhz
-
-    def test_32_core_limit(self, tmp_path):
-        """Parser should cap at 32 cores even if num_cores is higher."""
-        smu_dir = tmp_path / "ryzen_smu_drv"
-        smu_dir.mkdir()
-
-        # Need enough floats for 33+ cores
-        floats = [0.0] * 600
-        for i in range(40):
-            floats[100 + i * 10] = 4000.0 + i
-
-        raw = struct.pack(f"<{len(floats)}f", *floats)
-        (smu_dir / "pm_table").write_bytes(raw)
-
-        reader = PMTableReader(num_cores=40, sysfs_path=smu_dir)
-        result = reader.read()
-
-        assert result is not None
-        # Should cap at 32 cores
-        assert len(result.core_frequency_mhz) <= 32
-
     def test_os_error_reading(self, tmp_path):
         """OSError on read should return None."""
         smu_dir = tmp_path / "ryzen_smu_drv"
         smu_dir.mkdir()
         pm_table = smu_dir / "pm_table"
         pm_table.write_bytes(b"\x00" * 100)
-        # Make it unreadable
         pm_table.chmod(0o000)
 
         reader = PMTableReader(sysfs_path=smu_dir)
         result = reader.read()
         assert result is None
 
-        # Restore permissions for cleanup
         pm_table.chmod(0o644)
 
     def test_non_aligned_data(self, tmp_path):
@@ -282,7 +244,6 @@ class TestPMTableReader:
         smu_dir = tmp_path / "ryzen_smu_drv"
         smu_dir.mkdir()
 
-        # 201 floats + 2 extra bytes
         floats = [1.0] * 201
         raw = struct.pack(f"<{len(floats)}f", *floats) + b"\xaa\xbb"
         (smu_dir / "pm_table").write_bytes(raw)
@@ -291,13 +252,7 @@ class TestPMTableReader:
         result = reader.read()
 
         assert result is not None
-        # Should parse 201 floats (ignoring trailing 2 bytes)
         assert len(result.raw_floats) == 201
-
-
-# ===========================================================================
-# Helper for version-aware sysfs mocking
-# ===========================================================================
 
 
 def _make_smu_dir(
@@ -336,38 +291,32 @@ def _build_versioned_pm_table(
     vddcr_soc: float = 0.0,
     vdd_mem: float = 0.0,
 ) -> bytes:
-    """Build a raw PM table with values at the correct byte offsets for a version.
-
-    Creates a zeroed byte array of the appropriate table_size and inserts
-    float values at the known offsets. Also populates enough data for
-    legacy _parse_granite_ridge (200+ floats).
-    """
-    offsets = PM_TABLE_OFFSETS.get(version)
-    # 0x994 is a generic size for unknown versions
-    table_size = 0x994 if offsets is None else offsets.table_size
-
-    # Ensure table is large enough for legacy parsing (>= 200 floats = 800 bytes)
-    table_size = max(table_size, 800)
-    raw = bytearray(table_size)
-
-    if offsets is not None:
-        if fclk != 0.0:
-            struct.pack_into("<f", raw, offsets.fclk, fclk)
-        if uclk != 0.0:
-            struct.pack_into("<f", raw, offsets.uclk, uclk)
-        if mclk != 0.0:
-            struct.pack_into("<f", raw, offsets.mclk, mclk)
-        if vddcr_soc != 0.0:
-            struct.pack_into("<f", raw, offsets.vddcr_soc, vddcr_soc)
-        if vdd_mem != 0.0 and offsets.vdd_mem >= 0:
-            struct.pack_into("<f", raw, offsets.vdd_mem, vdd_mem)
+    """A zeroed table of a known version's size with each given value at that version's offset."""
+    offsets = PM_TABLE_OFFSETS[version]
+    raw = bytearray(offsets.table_size)
+    for offset, value in (
+        (offsets.fclk, fclk),
+        (offsets.uclk, uclk),
+        (offsets.mclk, mclk),
+        (offsets.vddcr_soc, vddcr_soc),
+    ):
+        if value:
+            struct.pack_into("<f", raw, offset, value)
+    if vdd_mem:
+        if offsets.vdd_mem is None:
+            raise ValueError(f"version {version:#x} has no vdd_mem offset to write {vdd_mem} at")
+        struct.pack_into("<f", raw, offsets.vdd_mem, vdd_mem)
 
     return bytes(raw)
 
 
-# ===========================================================================
-# PMTableOffsets tests
-# ===========================================================================
+class TestVddqOffset:
+    @pytest.mark.parametrize("version", [0x00620205, 0x00621102, 0x00621202, 0x00620105, 0x00620999])
+    def test_vddq_is_read_at_0xe8_on_every_zen_5_table(self, tmp_path, version):
+        raw = bytearray(0x994)
+        struct.pack_into("<f", raw, 0xE8, 1.1)
+        smu_dir = _make_smu_dir(tmp_path, version_int=version, raw_bytes=bytes(raw))
+        assert PMTableReader(sysfs_path=smu_dir).read().vddq_v == pytest.approx(1.1)
 
 
 class TestPMTableOffsets:
@@ -379,19 +328,14 @@ class TestPMTableOffsets:
             uclk=0x12C,
             mclk=0x13C,
             vddcr_soc=0x14C,
-            cldo_vddp=0x434,
-            cldo_vddg_iod=0x40C,
-            cldo_vddg_ccd=0x414,
-            vdd_misc=0xE8,
+            vddq=0xE8,
             vdd_mem=0x0A8,
         )
         assert offsets.fclk == 0x11C
         assert offsets.uclk == 0x12C
         assert offsets.mclk == 0x13C
-        # Verify frozen
         with pytest.raises(AttributeError):
-            offsets.fclk = 0x200  # type: ignore[misc]
-        # Verify slots
+            offsets.fclk = 0x200
         assert hasattr(offsets, "__slots__")
 
     def test_known_version_0x620205_exists(self):
@@ -409,7 +353,7 @@ class TestPMTableOffsets:
         assert offsets.fclk == 0x11C
         assert offsets.uclk == 0x12C
         assert offsets.mclk == 0x13C
-        assert offsets.vdd_mem == -1  # not available on this version
+        assert offsets.vdd_mem is None
 
     def test_known_version_0x540104_exists(self):
         """7700X (Zen 4) version 0x540104 exists with community offsets, unverified."""
@@ -419,11 +363,8 @@ class TestPMTableOffsets:
         assert offsets.uclk == 0x128
         assert offsets.mclk == 0x138
         assert offsets.vddcr_soc == 0xD0
-        assert offsets.cldo_vddp == 0x430
-        assert offsets.vdd_misc == 0xE0
-        assert offsets.vdd_mem == -1
-        assert offsets.cldo_vddg_iod == -1
-        assert offsets.cldo_vddg_ccd == -1
+        assert offsets.vddq == 0xE0
+        assert offsets.vdd_mem is None
         assert offsets.verified is False
 
     def test_verified_defaults_false(self):
@@ -434,22 +375,14 @@ class TestPMTableOffsets:
             uclk=0x128,
             mclk=0x138,
             vddcr_soc=0xD0,
-            cldo_vddp=0x430,
-            cldo_vddg_iod=-1,
-            cldo_vddg_ccd=-1,
-            vdd_misc=0xE0,
-            vdd_mem=-1,
+            vddq=0xE0,
+            vdd_mem=None,
         )
         assert offsets.verified is False
 
     def test_zen5_baseline_is_verified(self):
         """The empirically-confirmed table version 0x620205 is marked verified."""
         assert PM_TABLE_OFFSETS[0x620205].verified is True
-
-
-# ===========================================================================
-# PMTableData new fields tests
-# ===========================================================================
 
 
 class TestPMTableDataNewFields:
@@ -465,13 +398,8 @@ class TestPMTableDataNewFields:
         assert data.is_calibrated is False
 
     def test_is_verified_defaults_false(self):
-        """PMTableData.is_verified is False until a verified version sets it."""
-        assert PMTableData().is_verified is False
-
-
-# ===========================================================================
-# Version-dispatch tests
-# ===========================================================================
+        """PMTableData.offsets_verified is False until a verified version sets it."""
+        assert PMTableData().offsets_verified is False
 
 
 class TestVersionDispatch:
@@ -497,7 +425,7 @@ class TestVersionDispatch:
         assert result.mclk_mhz == pytest.approx(3000.0)
         assert result.vddcr_soc_v == pytest.approx(1.25)
         assert result.vdd_mem_v == pytest.approx(1.395)
-        assert result.is_verified is True
+        assert result.offsets_verified is True
 
     def test_zen4_7700x_dispatch_unverified(self, tmp_path):
         """0x540104 with plausible values calibrates but is not verified."""
@@ -513,7 +441,7 @@ class TestVersionDispatch:
 
         assert result is not None
         assert result.is_calibrated is True
-        assert result.is_verified is False
+        assert result.offsets_verified is False
         assert result.fclk_mhz == pytest.approx(2000.0)
         assert result.uclk_mhz == pytest.approx(2400.0)
         assert result.mclk_mhz == pytest.approx(2400.0)
@@ -528,8 +456,8 @@ class TestVersionDispatch:
 
         assert result is not None
         assert result.is_calibrated is False
-        assert result.is_verified is False
-        assert result.fclk_mhz == 0.0  # blanked, not shown as nonsense
+        assert result.offsets_verified is False
+        assert result.fclk_mhz == 0.0
 
     def test_implausible_voltage_fails_closed(self, tmp_path):
         """A garbage VDDCR_SOC also fails closed."""
@@ -547,7 +475,7 @@ class TestVersionDispatch:
 
     def test_all_zero_stays_calibrated(self, tmp_path):
         """All-zero memory fields (absent) remain calibrated — zero is plausible."""
-        raw = _build_versioned_pm_table(0x540104)  # all defaults 0.0
+        raw = _build_versioned_pm_table(0x540104)
         smu_dir = _make_smu_dir(tmp_path, version_int=0x00540104, raw_bytes=raw)
         result = PMTableReader(sysfs_path=smu_dir).read()
         assert result.is_calibrated is True
@@ -555,7 +483,6 @@ class TestVersionDispatch:
 
     def test_unknown_version_uncalibrated(self, tmp_path):
         """read() with unknown version produces is_calibrated=False."""
-        # Use a table big enough for legacy parsing
         floats = [0.0] * 300
         raw = struct.pack(f"<{len(floats)}f", *floats)
         smu_dir = _make_smu_dir(tmp_path, version_int=0x99999999, raw_bytes=raw)
@@ -567,22 +494,18 @@ class TestVersionDispatch:
         assert result.pm_table_version == 0x99999999
         assert len(result.raw_floats) > 0
 
-    def test_no_version_file_falls_back_to_legacy(self, tmp_path):
-        """Without a version, core arrays still parse but the power header
-        does NOT: its layout is version-family-specific, and labeling unknown
-        bytes as PPT/TDC/EDC is exactly the mislabeling this fixed."""
+    def test_no_version_file_parses_no_power_header(self, tmp_path):
+        """Without a version the power header is not parsed: its layout is version-family-specific, and labeling
+        unknown bytes as PPT/TDC/EDC is the mislabeling this guards against."""
         floats = [0.0] * 420
-        floats[2] = 225.0  # would be PPT limit on a known Zen 5 table
-        floats[100] = 5700.0  # core 0 freq
+        floats[2] = 225.0
         raw = struct.pack(f"<{len(floats)}f", *floats)
         smu_dir = _make_smu_dir(tmp_path, version_int=None, raw_bytes=raw)
-        reader = PMTableReader(num_cores=16, sysfs_path=smu_dir)
+        reader = PMTableReader(sysfs_path=smu_dir)
         result = reader.read()
 
         assert result is not None
-        assert result.ppt_limit_w == 0.0  # fail closed — unknown layout
-        assert result.core_frequency_mhz[0] == pytest.approx(5700.0)
-        # No version dispatch happened
+        assert result.ppt_limit_w == 0.0
         assert result.pm_table_version == 0
         assert result.is_calibrated is False
 
@@ -607,13 +530,12 @@ class TestVersionDispatch:
 
     def test_zen5_unknown_exact_prefix_fallback(self, tmp_path):
         """read() with unknown 0x62xxxx version falls back to Zen 5 prefix offsets."""
-        # 0x62FFFF is not in PM_TABLE_OFFSETS but matches Zen 5 prefix 0x62
-        # Build raw bytes large enough with values at Zen 5 clock offsets
+        assert 0x0062FFFF not in PM_TABLE_OFFSETS
         raw = bytearray(0x994)
-        struct.pack_into("<f", raw, 0x11C, 1900.0)  # fclk
-        struct.pack_into("<f", raw, 0x12C, 1900.0)  # uclk
-        struct.pack_into("<f", raw, 0x13C, 1900.0)  # mclk
-        struct.pack_into("<f", raw, 0x14C, 1.1)  # vddcr_soc
+        struct.pack_into("<f", raw, 0x11C, 1900.0)
+        struct.pack_into("<f", raw, 0x12C, 1900.0)
+        struct.pack_into("<f", raw, 0x13C, 1900.0)
+        struct.pack_into("<f", raw, 0x14C, 1.1)
         smu_dir = _make_smu_dir(tmp_path, version_int=0x0062FFFF, raw_bytes=bytes(raw))
         reader = PMTableReader(sysfs_path=smu_dir)
         result = reader.read()
@@ -622,42 +544,29 @@ class TestVersionDispatch:
         assert result.is_calibrated is True
         assert result.fclk_mhz == pytest.approx(1900.0)
 
-    def test_vdd_mem_negative_offset_stays_zero(self, tmp_path):
-        """offset -1 for vdd_mem means field stays at 0.0 (not read)."""
-        # 0x621102 has vdd_mem=-1
-        raw = _build_versioned_pm_table(
-            0x621102,
-            fclk=2000.0,
-            uclk=3000.0,
-            mclk=3000.0,
-            vddcr_soc=1.25,
-            vdd_mem=1.4,  # this should NOT be written since offset is -1
-        )
-        smu_dir = _make_smu_dir(tmp_path, version_int=0x00621102, raw_bytes=raw)
+    def test_a_version_without_a_vdd_mem_offset_leaves_vdd_mem_unread(self, tmp_path):
+        raw = bytearray(_build_versioned_pm_table(0x621102, fclk=2000.0, uclk=3000.0, mclk=3000.0, vddcr_soc=1.25))
+        struct.pack_into("<f", raw, PM_TABLE_OFFSETS[0x620205].vdd_mem, 1.4)
+        smu_dir = _make_smu_dir(tmp_path, version_int=0x00621102, raw_bytes=bytes(raw))
         reader = PMTableReader(sysfs_path=smu_dir)
         result = reader.read()
 
         assert result is not None
         assert result.is_calibrated is True
-        assert result.vdd_mem_v == 0.0  # not read because offset is -1
+        assert result.vdd_mem_v == 0.0
 
     def test_out_of_range_offset_returns_zero(self, tmp_path):
         """Out-of-range offset (beyond raw bytes) returns 0.0, no crash."""
-        # Create a PM table that is smaller than the expected table_size
-        # so some offsets will be out of range
-        small_raw = bytearray(256)  # much smaller than 0x994
-        struct.pack_into("<f", small_raw, 0x11C % 256, 2000.0)  # may or may not work
+        small_raw = bytearray(256)
+        struct.pack_into("<f", small_raw, 0x11C % 256, 2000.0)
         smu_dir = _make_smu_dir(tmp_path, version_int=0x00620205, raw_bytes=bytes(small_raw))
         reader = PMTableReader(sysfs_path=smu_dir)
         result = reader.read()
 
-        # Should not crash -- out-of-range offsets produce 0.0
         assert result is not None
-        # vdd_mem at 0x0A8 is beyond 256 bytes but within range -- check it's parsed or 0.0
-        # (depends on whether the test data is large enough)
+        assert (result.fclk_mhz, result.uclk_mhz, result.mclk_mhz, result.vddcr_soc_v) == (0.0, 0.0, 0.0, 0.0)
 
-    def test_legacy_core_data_still_parsed_with_version(self, tmp_path):
-        """Legacy _parse_granite_ridge core data is still parsed when version is known."""
+    def test_power_header_is_parsed_with_a_known_version(self, tmp_path):
         raw = bytearray(
             _build_versioned_pm_table(
                 0x620205,
@@ -668,32 +577,25 @@ class TestVersionDispatch:
                 vdd_mem=1.395,
             )
         )
-        # PPT limit at float index 2 (byte offset 8) — Zen 5 header layout
         struct.pack_into("<f", raw, 8, 225.0)
-        # Core 0 freq at float index 100 (byte offset 400)
-        struct.pack_into("<f", raw, 400, 5700.0)
         smu_dir = _make_smu_dir(tmp_path, version_int=0x00620205, raw_bytes=bytes(raw))
-        reader = PMTableReader(num_cores=16, sysfs_path=smu_dir)
+        reader = PMTableReader(sysfs_path=smu_dir)
         result = reader.read()
 
         assert result is not None
-        # Versioned data
         assert result.is_calibrated is True
         assert result.fclk_mhz == pytest.approx(2000.0)
-        # Power header + core data also parsed
+
         assert result.ppt_limit_w == pytest.approx(225.0)
-        assert result.core_frequency_mhz[0] == pytest.approx(5700.0)
-
-
-# ===========================================================================
-# compute_fclk_uclk_ratio tests
-# ===========================================================================
 
 
 class TestComputeFclkUclkRatio:
     def test_ratio_1_1(self):
         """FCLK=UCLK produces (1, 1) ratio."""
         assert compute_fclk_uclk_ratio(2000.0, 2000.0) == (1, 1)
+
+    def test_the_clocks_are_rounded_to_100_mhz_before_the_ratio(self):
+        assert compute_fclk_uclk_ratio(2150.0, 4300.0) == (22, 43)
 
     def test_ratio_1_2(self):
         """UCLK=2*FCLK produces (1, 2) ratio."""
@@ -725,11 +627,6 @@ class TestComputeFclkUclkRatio:
         assert compute_fclk_uclk_ratio(1000.0, 1999.0) == (1, 2)
 
 
-# ===========================================================================
-# read_power_limits — PBO limits for the tuning context
-# ===========================================================================
-
-
 class TestReadPowerLimits:
     def _tree(self, tmp_path, version: int | None, floats: list[float]):
         smu_dir = tmp_path / "ryzen_smu_drv"
@@ -750,27 +647,50 @@ class TestReadPowerLimits:
         from corecycler.smu.pmtable import read_power_limits
 
         smu_dir = self._tree(tmp_path, 0x00620205, self._floats())
-        assert read_power_limits(16, smu_dir) == (225.0, 190.0, 230.0)
+        assert read_power_limits(smu_dir) == (225.0, 190.0, 230.0)
 
     def test_unknown_generation_fails_closed(self, tmp_path):
         from corecycler.smu.pmtable import read_power_limits
 
         smu_dir = self._tree(tmp_path, 0x00540104, self._floats())
-        assert read_power_limits(16, smu_dir) == (None, None, None)
+        assert read_power_limits(smu_dir) == (None, None, None)
 
     def test_implausible_values_fail_closed_per_field(self, tmp_path):
         from corecycler.smu.pmtable import read_power_limits
 
         smu_dir = self._tree(tmp_path, 0x00620205, self._floats(ppt=1e9, tdc=190.0, edc=5.0))
-        assert read_power_limits(16, smu_dir) == (None, 190.0, None)
+        assert read_power_limits(smu_dir) == (None, 190.0, None)
 
     def test_zero_reads_as_absent(self, tmp_path):
         from corecycler.smu.pmtable import read_power_limits
 
         smu_dir = self._tree(tmp_path, 0x00620205, self._floats(ppt=0.0, tdc=0.0, edc=0.0))
-        assert read_power_limits(16, smu_dir) == (None, None, None)
+        assert read_power_limits(smu_dir) == (None, None, None)
 
     def test_missing_table_fails_closed(self, tmp_path):
         from corecycler.smu.pmtable import read_power_limits
 
-        assert read_power_limits(16, tmp_path / "nope") == (None, None, None)
+        assert read_power_limits(tmp_path / "nope") == (None, None, None)
+
+
+@pytest.mark.req("O19.stretch")
+@pytest.mark.parametrize(
+    ("clock", "effective", "c0", "stretch"),
+    [
+        (5000.0, 4900.0, 100.0, 2.0),
+        (5000.0, 4655.0, 95.0, 2.0),
+        (5000.0, 4655.0, 94.9, None),
+        (5000.0, 5100.0, 100.0, 0.0),
+        (None, 4900.0, 100.0, None),
+        (5000.0, None, 100.0, None),
+        (5000.0, 4900.0, None, None),
+        (0.0, 4900.0, 100.0, None),
+        (5000.0, 0.0, 100.0, None),
+    ],
+)
+def test_stretch_is_the_effective_clock_below_the_clock_for_a_core_at_least_95_percent_in_c0(
+    clock, effective, c0, stretch
+):
+    from corecycler.smu.pmtable import stretch_pct
+
+    assert stretch_pct(clock, effective, c0) == (None if stretch is None else pytest.approx(stretch))

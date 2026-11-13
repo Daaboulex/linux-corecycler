@@ -7,6 +7,8 @@ matches the kernel's own record.
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import sys
 import time
@@ -21,8 +23,20 @@ ALLOWED = (0, 1)
 
 
 def _require_mechanism() -> None:
-    if containment.available_mechanism(refresh=True) is None:
-        pytest.skip("no systemd cgroup scope available on this host")
+    problem = containment.containment_problem(refresh=True)
+    if problem is not None:
+        pytest.skip(f"this host cannot contain a stress test: {problem}")
+
+
+@pytest.mark.req("L01.7")
+def test_a_host_that_does_not_enforce_allowed_cpus_refuses_to_contain():
+    problem = containment.containment_problem(refresh=True)
+    if problem is None:
+        pytest.skip("this host enforces AllowedCPUs; the containment tests below cover it")
+    if "AllowedCPUs is not enforced" not in problem:
+        pytest.skip(f"no systemd scope runs here at all: {problem}")
+    with pytest.raises(containment.ContainmentUnavailable, match="does not delegate the cpuset controller"):
+        containment.contain(ALLOWED)
 
 
 def test_a_contained_child_cannot_escape_its_cpuset():
@@ -70,6 +84,8 @@ def test_the_watchdog_observation_matches_the_kernel_record():
         assert observed <= set(ALLOWED), f"observed CPUs {sorted(observed)} outside AllowedCPUs={ALLOWED}"
         cgroup = containment.payload_cgroup(proc.pid, contained.unit)
         assert cgroup is not None, "payload never showed the named scope in /proc"
+        assert cgroup == contained.scope, f"the kernel placed the scope at {cgroup}, not at {contained.scope}"
         assert containment.scope_effective_cpus(cgroup) == set(ALLOWED)
     finally:
-        execution.kill_process_group(proc)
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate(timeout=10)

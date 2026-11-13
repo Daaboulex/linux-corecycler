@@ -32,10 +32,6 @@ from conftest import (
     CPUINFO_X3D_SINGLE_CCD,
 )
 
-# ---------------------------------------------------------------------------
-# Helper to run _parse_cpuinfo with fake data
-# ---------------------------------------------------------------------------
-
 
 def parse_cpuinfo_from_text(text: str) -> CPUTopology:
     topo = CPUTopology()
@@ -45,11 +41,6 @@ def parse_cpuinfo_from_text(text: str) -> CPUTopology:
     with patch("corecycler.engine.topology.CPUINFO", mock_path):
         _parse_cpuinfo(topo)
     return topo
-
-
-# ---------------------------------------------------------------------------
-# _parse_cpuinfo tests
-# ---------------------------------------------------------------------------
 
 
 class TestParseCpuinfo:
@@ -145,9 +136,12 @@ class TestParseCpuinfo:
         assert topo.family == 25
 
 
-# ---------------------------------------------------------------------------
-# _parse_sysfs tests
-# ---------------------------------------------------------------------------
+def _cores_from_logical_map(topo: CPUTopology, ccd_of) -> None:
+    for lcpu in topo.logical_map.values():
+        if lcpu.physical_core not in topo.cores:
+            topo.cores[lcpu.physical_core] = PhysicalCore(
+                core_id=lcpu.physical_core, ccd=ccd_of(lcpu.physical_core), ccx=None, logical_cpus=lcpu.core_cpus
+            )
 
 
 class TestParseSysfs:
@@ -157,7 +151,7 @@ class TestParseSysfs:
         mock_path.exists.return_value = False
         with patch("corecycler.engine.topology.SYSFS_CPU", mock_path):
             _parse_sysfs(topo)
-        # should not crash
+        assert (topo.logical_cpus_count, topo.cpus_all_online) == (0, True)
 
     def test_online_range_simple(self, tmp_path):
         cpu_dir = tmp_path / "cpu"
@@ -194,13 +188,7 @@ class TestParseSysfs:
         topo.logical_cpus_count = 99
         with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _parse_sysfs(topo)
-        # should keep existing count (99), not overwrite
         assert topo.logical_cpus_count == 99
-
-
-# ---------------------------------------------------------------------------
-# _detect_ccd_layout tests
-# ---------------------------------------------------------------------------
 
 
 class TestDetectCCDLayout:
@@ -233,7 +221,6 @@ class TestDetectCCDLayout:
             cache_dir = cpu_dir / f"cpu{i}" / "cache" / "index3"
             cache_dir.mkdir(parents=True)
             (cache_dir / "level").write_text("3")
-            # cores 0-3 -> L3 id=0, cores 4-7 -> L3 id=1
             l3_id = "0" if phys_core < 4 else "1"
             (cache_dir / "id").write_text(l3_id)
 
@@ -266,20 +253,15 @@ class TestDetectCCDLayout:
             (cache_dir / "level").write_text("3")
             (cache_dir / "id").write_text(bad_id)
         with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
-            _detect_ccd_layout(topo)  # must not raise
+            _detect_ccd_layout(topo)
         assert topo.ccds >= 1
 
     def test_l3_id_sort_key_orders_numeric_then_malformed(self):
         """Numeric ids sort by value; malformed ids sort last, deterministically."""
         groups = {"2": [0], "0x0": [1], "0": [2], "": [3], "10": [4]}
         ordered = [k for k, _ in sorted(groups.items(), key=_l3_id_sort_key)]
-        assert ordered[:3] == ["0", "2", "10"]  # numerics by value, not lexically
-        assert set(ordered[3:]) == {"0x0", ""}  # malformed pushed to the end
-
-
-# ---------------------------------------------------------------------------
-# _detect_x3d tests
-# ---------------------------------------------------------------------------
+        assert ordered[:3] == ["0", "2", "10"]
+        assert set(ordered[3:]) == {"0x0", ""}
 
 
 class TestDetectX3D:
@@ -306,18 +288,7 @@ class TestDetectX3D:
         """Single CCD X3D: the one CCD should be marked as V-Cache."""
         topo = parse_cpuinfo_from_text(CPUINFO_X3D_SINGLE_CCD)
         topo.ccds = 1
-        # Build cores from logical_map (parse_cpuinfo_from_text doesn't populate cores)
-        seen: set[int] = set()
-        for lcpu in topo.logical_map.values():
-            pc = lcpu.physical_core
-            if pc not in seen:
-                seen.add(pc)
-                topo.cores[pc] = PhysicalCore(
-                    core_id=pc,
-                    ccd=0,
-                    ccx=None,
-                    logical_cpus=lcpu.core_cpus,
-                )
+        _cores_from_logical_map(topo, lambda core: 0)
 
         with patch("corecycler.engine.topology.SYSFS_CPU", MagicMock()):
             _detect_x3d(topo)
@@ -332,21 +303,8 @@ class TestDetectX3D:
         topo = parse_cpuinfo_from_text(CPUINFO_DUAL_CCD_SMT)
         topo.ccds = 2
 
-        # Build cores from logical_map and assign CCDs
-        seen: set[int] = set()
-        for lcpu in topo.logical_map.values():
-            pc = lcpu.physical_core
-            if pc not in seen:
-                seen.add(pc)
-                ccd = 0 if pc < 4 else 1
-                topo.cores[pc] = PhysicalCore(
-                    core_id=pc,
-                    ccd=ccd,
-                    ccx=None,
-                    logical_cpus=lcpu.core_cpus,
-                )
+        _cores_from_logical_map(topo, lambda core: 0 if core < 4 else 1)
 
-        # Create sysfs with L3 sizes: CCD0 = 96M (V-Cache), CCD1 = 32M
         cpu_dir = tmp_path / "cpu"
         for core in topo.cores.values():
             first_cpu = core.logical_cpus[0]
@@ -372,13 +330,7 @@ class TestDetectX3D:
         topo = parse_cpuinfo_from_text(CPUINFO_DUAL_CCD_SMT)
         topo.ccds = 2
 
-        seen: set[int] = set()
-        for lcpu in topo.logical_map.values():
-            pc = lcpu.physical_core
-            if pc not in seen:
-                seen.add(pc)
-                ccd = 0 if pc < 4 else 1
-                topo.cores[pc] = PhysicalCore(core_id=pc, ccd=ccd, ccx=None, logical_cpus=lcpu.core_cpus)
+        _cores_from_logical_map(topo, lambda core: 0 if core < 4 else 1)
 
         cpu_dir = tmp_path / "cpu"
         for core in topo.cores.values():
@@ -399,13 +351,7 @@ class TestDetectX3D:
         topo = parse_cpuinfo_from_text(CPUINFO_DUAL_CCD_SMT)
         topo.ccds = 2
 
-        seen: set[int] = set()
-        for lcpu in topo.logical_map.values():
-            pc = lcpu.physical_core
-            if pc not in seen:
-                seen.add(pc)
-                ccd = 0 if pc < 4 else 1
-                topo.cores[pc] = PhysicalCore(core_id=pc, ccd=ccd, ccx=None, logical_cpus=lcpu.core_cpus)
+        _cores_from_logical_map(topo, lambda core: 0 if core < 4 else 1)
 
         cpu_dir = tmp_path / "cpu"
         for core in topo.cores.values():
@@ -421,16 +367,34 @@ class TestDetectX3D:
 
         assert topo.vcache_ccd == 0
 
+    def test_dual_ccd_x3d_names_no_vcache_ccd_when_one_ccd_l3_is_unread(self, tmp_path):
+        sizes = {0: "96M", 1: None}
+        topo = parse_cpuinfo_from_text(CPUINFO_DUAL_CCD_SMT)
+        topo.ccds = 2
+        _cores_from_logical_map(topo, lambda core: 0 if core < 4 else 1)
+
+        cpu_dir = tmp_path / "cpu"
+        for core in topo.cores.values():
+            size = sizes[core.ccd]
+            if size is None:
+                continue
+            cache_dir = cpu_dir / f"cpu{core.logical_cpus[0]}" / "cache" / "index3"
+            cache_dir.mkdir(parents=True)
+            (cache_dir / "level").write_text("3")
+            (cache_dir / "size").write_text(size)
+
+        with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
+            _detect_x3d(topo)
+
+        assert topo.is_x3d is True
+        assert topo.vcache_ccd is None
+        assert [core.core_id for core in topo.cores.values() if core.has_vcache] == []
+
     def test_non_x3d_skips_vcache_detection(self):
         topo = CPUTopology(model_name="AMD Ryzen 9 5950X", ccds=2)
         _detect_x3d(topo)
         assert topo.is_x3d is False
         assert topo.vcache_ccd is None
-
-
-# ---------------------------------------------------------------------------
-# Helper function tests
-# ---------------------------------------------------------------------------
 
 
 class TestHelpers:
@@ -453,11 +417,6 @@ class TestHelpers:
     def test_get_physical_core_list_empty(self):
         topo = CPUTopology()
         assert get_physical_core_list(topo) == []
-
-
-# ---------------------------------------------------------------------------
-# Integration-style test using detect_topology with full mocking
-# ---------------------------------------------------------------------------
 
 
 class TestDetectTopologyIntegration:
@@ -505,21 +464,16 @@ class TestDetectTopologyIntegration:
         assert topo.logical_cpus_count == 0
 
 
-# ---------------------------------------------------------------------------
-# Dataclass tests
-# ---------------------------------------------------------------------------
-
-
 class TestDataclasses:
     def test_logical_cpu_frozen(self):
         lcpu = LogicalCPU(logical_id=0, physical_core=0, package_id=0, core_cpus=(0, 8))
         with pytest.raises(AttributeError):
-            lcpu.logical_id = 1  # type: ignore[misc]
+            lcpu.logical_id = 1
 
     def test_physical_core_frozen(self):
         pc = PhysicalCore(core_id=0, ccd=0, ccx=None, logical_cpus=(0, 8))
         with pytest.raises(AttributeError):
-            pc.core_id = 1  # type: ignore[misc]
+            pc.core_id = 1
 
     def test_physical_core_vcache_default(self):
         pc = PhysicalCore(core_id=0, ccd=0, ccx=None, logical_cpus=(0,))
@@ -534,11 +488,6 @@ class TestDataclasses:
         assert topo.vcache_ccd is None
         assert topo.cores == {}
         assert topo.logical_map == {}
-
-
-# ---------------------------------------------------------------------------
-# Edge case tests — hardware variations and fallback scenarios
-# ---------------------------------------------------------------------------
 
 
 class TestTopologyEdgeCases:
@@ -613,7 +562,7 @@ class TestTopologyEdgeCases:
         assert topo.vcache_ccd == 0
 
     def test_x3d_equal_l3_sizes_no_vcache_detected(self, tmp_path):
-        """If both CCDs report same L3 size, V-Cache CCD detection is arbitrary but doesn't crash."""
+        """Two CCDs with the same L3 size cannot be told apart, so neither is named V-Cache."""
         topo = CPUTopology()
         topo.model_name = "AMD Ryzen 9 7950X3D 16-Core Processor"
         topo.ccds = 2
@@ -633,7 +582,9 @@ class TestTopologyEdgeCases:
         with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _detect_x3d(topo)
 
-        assert topo.vcache_ccd is not None
+        assert topo.is_x3d is True
+        assert topo.vcache_ccd is None
+        assert [core.core_id for core in topo.cores.values() if core.has_vcache] == []
 
     def test_missing_core_id_in_cpuinfo(self):
         """cpuinfo with processor but no core_id should not crash."""
@@ -670,9 +621,9 @@ class TestTopologyDriftEdges:
             _parse_sysfs(topo)
         assert topo.logical_cpus_count == 5
 
-    def test_x3d_multi_ccd_skips_none_ccd_and_missing_cache(self, tmp_path):
-        """The multi-CCD X3D L3-size scan tolerates a core with no CCD assignment
-        and a core whose cache sysfs is absent, still picking the largest-L3 CCD."""
+    def test_x3d_multi_ccd_skips_none_ccd(self, tmp_path):
+        """The multi-CCD X3D L3-size scan tolerates a core with no CCD assignment,
+        still picking the largest-L3 CCD."""
         topo = CPUTopology(model_name="AMD Ryzen 9 7950X3D 16-Core Processor", ccds=2)
         topo.cores = {
             0: PhysicalCore(core_id=0, ccd=0, ccx=None, logical_cpus=(0,)),
@@ -680,10 +631,11 @@ class TestTopologyDriftEdges:
             8: PhysicalCore(core_id=8, ccd=1, ccx=None, logical_cpus=(8,)),
         }
         cpu_dir = tmp_path / "cpu"
-        cache_dir = cpu_dir / "cpu0" / "cache" / "index3"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "level").write_text("3")
-        (cache_dir / "size").write_text("96M")
+        for cpu, size in ((0, "96M"), (8, "32M")):
+            cache_dir = cpu_dir / f"cpu{cpu}" / "cache" / "index3"
+            cache_dir.mkdir(parents=True)
+            (cache_dir / "level").write_text("3")
+            (cache_dir / "size").write_text(size)
         with patch("corecycler.engine.topology.SYSFS_CPU", cpu_dir):
             _detect_x3d(topo)
         assert topo.is_x3d is True

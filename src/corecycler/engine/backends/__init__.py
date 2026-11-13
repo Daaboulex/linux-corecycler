@@ -1,14 +1,13 @@
-"""Stress test backend registry — auto-discovers available backends."""
+"""Stress test backend registry: load_all imports each backend module, which registers itself."""
 
 from __future__ import annotations
 
+import importlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from corecycler.engine.backends.base import StressBackend
 
-# Registry: display_name -> backend class
-# Populated by register_backend() calls in each backend module.
 BACKEND_REGISTRY: dict[str, type[StressBackend]] = {}
 
 
@@ -32,9 +31,10 @@ def available_backends() -> list[str]:
     return list(BACKEND_REGISTRY.keys())
 
 
+BACKEND_MODULES = ("mprime", "stress_ng", "stressapptest", "ycruncher")
+
+
 def load_all() -> None:
     """Import all backend modules to trigger registration."""
-    import corecycler.engine.backends.mprime  # noqa: F401
-    import corecycler.engine.backends.stress_ng  # noqa: F401
-    import corecycler.engine.backends.stressapptest  # noqa: F401
-    import corecycler.engine.backends.ycruncher  # noqa: F401
+    for name in BACKEND_MODULES:
+        importlib.import_module(f"{__name__}.{name}")

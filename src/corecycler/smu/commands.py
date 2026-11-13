@@ -6,33 +6,30 @@ Command sets are derived from the SMUSettings/*.cs files in ZenStates-Core.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
 from enum import Enum, auto
+from typing import Literal
 
 
 class CPUGeneration(Enum):
-    ZEN2_MATISSE = auto()  # 3000 series desktop (family 0x17, model 0x71)
-    ZEN2_CASTLE_PEAK = auto()  # 3000 TR (family 0x17, model 0x31) — same SMU as Matisse
-    ZEN3_VERMEER = auto()  # 5000 series desktop (family 0x19, model 0x20-0x2F)
-    ZEN3_CHAGALL = auto()  # 5000 TR + Milan (family 0x19, model 0x00-0x0F) — Vermeer SMU
-    ZEN3_CEZANNE = auto()  # 5000 APU (family 0x19, model 0x50-0x5F)
-    ZEN3_REMBRANDT = auto()  # 6000 APU (family 0x19, model 0x40-0x4F) —
-    # Phoenix-class CO commands, get_co=0x2F
-    ZEN3D_WARHOL = auto()  # 5800X3D (family 0x19, model 0x20-0x21 + X3D name)
-    ZEN4_RAPHAEL = auto()  # 7000 desktop + Dragon Range (family 0x19, model 0x60-0x6F)
-    ZEN4_PHOENIX = auto()  # 7040/8040 APU (family 0x19, model 0x74 Phoenix,
-    # 0x75 Hawk Point — classic monolithic 8-core CCX)
-    ZEN4_PHOENIX2 = auto()  # Small het APU (family 0x19, 0x78 Phoenix2 2+4c,
-    # 0x7C Hawk Point 2) — Phoenix commands, no slot map
-    ZEN4_DRAGON_RANGE = auto()  # 7045 mobile — uses Raphael commands
-    ZEN4_STORM_PEAK = auto()  # Zen 4 TR (family 0x19, model 0x10-0x1F)
-    ZEN5_GRANITE_RIDGE = auto()  # 9000 desktop + Fire Range (family 0x1A, model 0x40-0x4F)
-    ZEN5_STRIX_POINT = auto()  # Ryzen AI APU (family 0x1A, model 0x20-0x2F het 4+8c;
-    # 0x60-0x6F Krackan Point 4+4c / 1+3c het routes here too)
-    ZEN5_STRIX_HALO = auto()  # Ryzen AI Max APU (family 0x1A, model 0x70-0x7F)
-    ZEN5_SHIMADA_PEAK = auto()  # Zen 5 TR (family 0x1A, model 0x00-0x0F, 9980X dump
-    # B00F81; different RSMU addresses, get_co=0xA3)
+    ZEN2_MATISSE = auto()
+    ZEN2_CASTLE_PEAK = auto()
+    ZEN3_VERMEER = auto()
+    ZEN3_CHAGALL = auto()
+    ZEN3_CEZANNE = auto()
+    ZEN3_REMBRANDT = auto()
+    ZEN3D_WARHOL = auto()
+    ZEN4_RAPHAEL = auto()
+    ZEN4_PHOENIX = auto()
+    ZEN4_PHOENIX2 = auto()
+    ZEN4_DRAGON_RANGE = auto()
+    ZEN4_STORM_PEAK = auto()
+    ZEN5_GRANITE_RIDGE = auto()
+    ZEN5_STRIX_POINT = auto()
+    ZEN5_STRIX_HALO = auto()
+    ZEN5_SHIMADA_PEAK = auto()
     UNKNOWN = auto()
 
 
@@ -41,76 +38,49 @@ class SMUCommandSet:
     """SMU command opcodes for CO and PBO read/write."""
 
     generation: CPUGeneration
-    co_range: tuple[int, int]  # (min, max) CO values this generation supports
-    mailbox: str  # "rsmu" or "mp1"
-    encoding_scheme: str  # "none" | "zen3" | "zen4_5"
-    # True where the CO core address space is verified to be uniform 8-slot
-    # CCDs (one 8-core CCX per CCD): classic desktop/TR dies and monolithic
-    # 8-core-CCX APUs. Gates RyzenSMU's core-map discovery (the fuse read and
-    # its fail-closed refusals); False keeps the legacy core_id-derived
-    # addressing untouched. Deliberately False for heterogeneous Zen4c/5c
-    # parts (Phoenix2/Hawk Point 2, Strix Point, Krackan), for Strix Halo
-    # (classic CCDs, but per-core CO tuning there is unverified with known
-    # tool failures), and for any future generation until verified.
+    # The range the firmware accepts, not a safe range.
+    co_range: tuple[int, int]
+    mailbox: Literal["rsmu", "mp1"]
+    encoding_scheme: Literal["none", "zen3", "zen4_5"]
     uniform_8core_ccds: bool = False
 
-    # SMN address of CCD 0's core-disable fuse; CCD n sits at
-    # ``addr + (n << 25)`` and the 8 bits from ``core_fuse_shift`` up mark the
-    # fused-off physical slots (bit set = slot disabled). This is the SMU's
-    # own record of which slots exist, and the only thing that resolves a
-    # renumbered core-id space (issue #11) -- the CO read answers on every
-    # in-range slot and proves nothing. None where no address is verified for
-    # the die, which fails per-core CO closed on a renumbered part rather than
-    # guessing: the APU dies other than Cezanne, and Shimada Peak, whose
-    # address ZenStates-Core itself marks uncertain. A die-wide fuse has no
-    # CCD stride, so a topology showing a second CCD refuses.
     core_fuse_addr: int | None = None
     core_fuse_shift: int = 0
     core_fuse_die_wide: bool = False
+    ccd_fuse_addr: int | None = None
+    probe_co_baseline: bool = False
 
-    # CO (Curve Optimizer / DldoPsmMargin) commands — None if generation lacks CO.
-    # get_co_mailbox overrides the mailbox for the GET command only: the APU
-    # classes set CO via MP1 but read it back via RSMU (ZenStates-Core
-    # APUSettings1*); None means the default mailbox. get_co_by_slot: the read
-    # takes the bare physical slot, not the packed word the set takes
-    # (ZenStates-Core GetPsmMarginSingleCore on its APU SMU types).
     set_co_cmd: int | None = None
     set_all_co_cmd: int | None = None
     get_co_cmd: int | None = None
-    get_co_mailbox: str | None = None
+    # APU dies set CO over MP1 but read it over RSMU (ZenStates-Core APUSettings1).
+    get_co_mailbox: Literal["rsmu", "mp1"] | None = None
+    # The APU CO read takes the bare slot, not the packed word (ZenStates-Core GetPsmMarginSingleCore).
     get_co_by_slot: bool = False
+    get_curve_shaper_cmd: int | None = None
+    set_curve_shaper_cmd: int | None = None
 
-    # PBO power limits, all sent on the RSMU mailbox. Desktop dies use the
-    # RSMU SetFastLimit(=PPT)/SetTDCVDDLimit/SetEDCVDDLimit/SetTctlMax ids.
-    # APU dies have no desktop PPT command: set_ppt carries the APU RSMU
-    # SetSlowLimit (the sustained package-power analogue), tdc/edc the APU
-    # TDC/EDC-VDD ids, htc SetTctlMax (ZenStates-Core APUSettings1 block,
-    # ids corroborated by RyzenAdj's RSMU retry paths).
+    # On APU dies set_ppt_cmd is RSMU SetSlowLimit, APUs have no desktop PPT id (ZenStates-Core APUSettings1).
     set_ppt_cmd: int | None = None
     set_tdc_cmd: int | None = None
     set_edc_cmd: int | None = None
     set_htc_cmd: int | None = None
 
-    # PBO scalar
     set_pbo_scalar_cmd: int | None = None
     get_pbo_scalar_cmd: int | None = None
 
-    # Boost frequency
     set_boost_limit_cmd: int | None = None
     get_boost_limit_cmd: int | None = None
     set_oc_freq_all_cmd: int | None = None
     set_oc_freq_per_core_cmd: int | None = None
 
-    # OC mode
     enable_oc_cmd: int | None = None
     disable_oc_cmd: int | None = None
     is_overclockable_cmd: int | None = None
 
-    # Info queries
     get_fastest_core_cmd: int | None = None
     get_ln2_mode_cmd: int | None = None
 
-    # PM table
     transfer_table_cmd: int | None = None
     get_dram_base_cmd: int | None = None
     get_table_version_cmd: int | None = None
@@ -126,52 +96,28 @@ class SMUCommandSet:
         return self.set_ppt_cmd is not None
 
 
-# ===========================================================================
-# Known command sets per generation
-# ===========================================================================
-#
-# CO ranges: These are the hardware-supported ranges, NOT "safe" ranges.
-# The hardware will accept values outside typical recommendations.
-# - Zen 3: -30 to +30 (positive increases voltage, rarely useful)
-# - Zen 3D: -30 to +30 (V-Cache sensitive, be conservative)
-# - Zen 4: -50 to +30 (extended negative range confirmed by community)
-# - Zen 5: -50 to +10 (firmware clamps at -50; -60 is a BIOS input ceiling only)
-#
-# Zen 2 has NO Curve Optimizer but does have PBO scalar/limits.
-#
-# Core-disable fuse addresses (core_fuse_addr): ZenStates-Core Cpu.cs
-# GetCpuTopology computes coreDisableMapAddress as 0x30081800 + a family
-# offset, except family 0x1A which carries its own address; ryzen_monitor's
-# get_processor_topology independently derives the same family 0x17/0x19
-# values, and ZenStates' own per-codename fuse table lists them verbatim.
-# Cezanne is the exception: the family address reads 0xFFFFFFFF there, and
-# its map sits in bits 18:11 of 0x5D448 (ryzen_monitor_ng), confirmed on a
-# 5600GE against the PM table's all-zero core rows (issue #18).
-# ===========================================================================
+CO_MARGIN_MASK = 0xFFFF
+CO_CCD_SHIFT = 28
+CO_SLOT_SHIFT = 20
 
-# family 0x19 offset 0x598 -- Vermeer, Warhol, Chagall, Storm Peak
-_FUSE_ZEN3_CLASS = 0x30081D98
-# Cezanne, bits 18:11
+# Fuse addresses from ZenStates-Core Cpu.cs GetCpuTopology, Cezanne's from ryzen_monitor_ng, the Zen 3 CCD-disable
+# fuses from ryzen_smu userspace/monitor_cpu.c get_fuse_topology.
+_FUSE_FAMILY_BASE = 0x30081800
+_FUSE_ZEN3_CLASS = _FUSE_FAMILY_BASE + 0x598
+_CCD_FUSE_ZEN3 = 0x5D218
 _FUSE_CEZANNE = 0x5D448
-# family 0x19 offset 0x4D0 -- Raphael, Dragon Range
-_FUSE_RAPHAEL = 0x30081CD0
-# family 0x1A -- Granite Ridge
+_FUSE_RAPHAEL = _FUSE_FAMILY_BASE + 0x4D0
 _FUSE_GRANITE_RIDGE = 0x304A03DC
 
 COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
-    # -----------------------------------------------------------------------
-    # Zen 2 — NO Curve Optimizer, PBO limits only
-    # -----------------------------------------------------------------------
     CPUGeneration.ZEN2_MATISSE: SMUCommandSet(
         generation=CPUGeneration.ZEN2_MATISSE,
-        co_range=(0, 0),  # no CO support
+        co_range=(0, 0),
         mailbox="rsmu",
         encoding_scheme="none",
-        # no CO commands
         set_co_cmd=None,
         set_all_co_cmd=None,
         get_co_cmd=None,
-        # PBO limits (RSMU)
         set_ppt_cmd=0x53,
         set_tdc_cmd=0x54,
         set_edc_cmd=0x55,
@@ -189,12 +135,36 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         get_dram_base_cmd=0x06,
         get_table_version_cmd=0x08,
     ),
-    # Castle Peak (Zen 2 TR) — aliased from Matisse after dict definition
-    # -----------------------------------------------------------------------
-    # Zen 3 Vermeer — first generation with CO (MP1 mailbox)
-    # -----------------------------------------------------------------------
     CPUGeneration.ZEN3_VERMEER: SMUCommandSet(
         generation=CPUGeneration.ZEN3_VERMEER,
+        co_range=(-30, 30),
+        mailbox="mp1",
+        encoding_scheme="zen3",
+        uniform_8core_ccds=True,
+        core_fuse_addr=_FUSE_ZEN3_CLASS,
+        ccd_fuse_addr=_CCD_FUSE_ZEN3,
+        set_co_cmd=0x35,
+        set_all_co_cmd=0x36,
+        get_co_cmd=0x48,
+        set_ppt_cmd=0x53,
+        set_tdc_cmd=0x54,
+        set_edc_cmd=0x55,
+        set_htc_cmd=0x56,
+        set_pbo_scalar_cmd=0x58,
+        get_pbo_scalar_cmd=0x6C,
+        set_oc_freq_all_cmd=0x5C,
+        set_oc_freq_per_core_cmd=0x5D,
+        enable_oc_cmd=0x5A,
+        disable_oc_cmd=0x5B,
+        is_overclockable_cmd=0x6F,
+        get_fastest_core_cmd=0x59,
+        get_boost_limit_cmd=0x6E,
+        transfer_table_cmd=0x05,
+        get_dram_base_cmd=0x06,
+        get_table_version_cmd=0x08,
+    ),
+    CPUGeneration.ZEN3D_WARHOL: SMUCommandSet(
+        generation=CPUGeneration.ZEN3D_WARHOL,
         co_range=(-30, 30),
         mailbox="mp1",
         encoding_scheme="zen3",
@@ -203,38 +173,6 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         set_co_cmd=0x35,
         set_all_co_cmd=0x36,
         get_co_cmd=0x48,
-        # PBO limits (RSMU — Zen 3 uses RSMU for limits, MP1 for CO)
-        set_ppt_cmd=0x53,
-        set_tdc_cmd=0x54,
-        set_edc_cmd=0x55,
-        set_htc_cmd=0x56,
-        set_pbo_scalar_cmd=0x58,
-        get_pbo_scalar_cmd=0x6C,
-        set_oc_freq_all_cmd=0x5C,
-        set_oc_freq_per_core_cmd=0x5D,
-        enable_oc_cmd=0x5A,
-        disable_oc_cmd=0x5B,
-        is_overclockable_cmd=0x6F,
-        get_fastest_core_cmd=0x59,
-        get_boost_limit_cmd=0x6E,
-        transfer_table_cmd=0x05,
-        get_dram_base_cmd=0x06,
-        get_table_version_cmd=0x08,
-    ),
-    # -----------------------------------------------------------------------
-    # Zen 3D (5800X3D) — CO officially locked by AMD, but accessible via SMU.
-    # V-Cache has strict voltage limits. Conservative tuning recommended.
-    # -----------------------------------------------------------------------
-    CPUGeneration.ZEN3D_WARHOL: SMUCommandSet(
-        generation=CPUGeneration.ZEN3D_WARHOL,
-        co_range=(-30, 30),  # hardware accepts this; V-Cache makes >-25 risky
-        mailbox="mp1",
-        encoding_scheme="zen3",
-        uniform_8core_ccds=True,
-        core_fuse_addr=_FUSE_ZEN3_CLASS,
-        set_co_cmd=0x35,
-        set_all_co_cmd=0x36,
-        get_co_cmd=0x48,
         set_ppt_cmd=0x53,
         set_tdc_cmd=0x54,
         set_edc_cmd=0x55,
@@ -249,9 +187,6 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         get_dram_base_cmd=0x06,
         get_table_version_cmd=0x08,
     ),
-    # -----------------------------------------------------------------------
-    # Zen 3 Cezanne (APU) — same CO commands as Vermeer
-    # -----------------------------------------------------------------------
     CPUGeneration.ZEN3_CEZANNE: SMUCommandSet(
         generation=CPUGeneration.ZEN3_CEZANNE,
         co_range=(-30, 30),
@@ -282,12 +217,9 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         get_dram_base_cmd=0x66,
         get_table_version_cmd=0x06,
     ),
-    # -----------------------------------------------------------------------
-    # Zen 4 Raphael — RSMU mailbox, extended negative CO range
-    # -----------------------------------------------------------------------
     CPUGeneration.ZEN4_RAPHAEL: SMUCommandSet(
         generation=CPUGeneration.ZEN4_RAPHAEL,
-        co_range=(-50, 30),  # -40 confirmed working, allow -50 for headroom
+        co_range=(-50, 30),
         mailbox="rsmu",
         encoding_scheme="zen4_5",
         uniform_8core_ccds=True,
@@ -313,9 +245,6 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         get_dram_base_cmd=0x04,
         get_table_version_cmd=0x05,
     ),
-    # -----------------------------------------------------------------------
-    # Zen 4 Phoenix/Hawk Point APU
-    # -----------------------------------------------------------------------
     CPUGeneration.ZEN4_PHOENIX: SMUCommandSet(
         generation=CPUGeneration.ZEN4_PHOENIX,
         co_range=(-50, 30),
@@ -344,9 +273,6 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         get_dram_base_cmd=0x66,
         get_table_version_cmd=0x06,
     ),
-    # -----------------------------------------------------------------------
-    # Zen 4 Storm Peak (ThreadRipper)
-    # -----------------------------------------------------------------------
     CPUGeneration.ZEN4_STORM_PEAK: SMUCommandSet(
         generation=CPUGeneration.ZEN4_STORM_PEAK,
         co_range=(-50, 30),
@@ -372,10 +298,6 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         get_dram_base_cmd=0x04,
         get_table_version_cmd=0x05,
     ),
-    # Dragon Range (Zen 4 mobile) — aliased from Raphael after dict definition
-    # -----------------------------------------------------------------------
-    # Zen 5 Granite Ridge — same RSMU cmd IDs as Zen 4, wider CO range
-    # -----------------------------------------------------------------------
     CPUGeneration.ZEN5_GRANITE_RIDGE: SMUCommandSet(
         generation=CPUGeneration.ZEN5_GRANITE_RIDGE,
         co_range=(-50, 10),
@@ -386,6 +308,8 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
         get_co_cmd=0xD5,
+        get_curve_shaper_cmd=0x84,
+        set_curve_shaper_cmd=0xA6,
         set_ppt_cmd=0x56,
         set_tdc_cmd=0x57,
         set_edc_cmd=0x58,
@@ -404,14 +328,12 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         get_dram_base_cmd=0x04,
         get_table_version_cmd=0x05,
     ),
-    # -----------------------------------------------------------------------
-    # Zen 5 Strix Point (APU)
-    # -----------------------------------------------------------------------
     CPUGeneration.ZEN5_STRIX_POINT: SMUCommandSet(
         generation=CPUGeneration.ZEN5_STRIX_POINT,
         co_range=(-50, 10),
         mailbox="mp1",
         encoding_scheme="zen4_5",
+        probe_co_baseline=True,
         set_co_cmd=0x4B,
         set_all_co_cmd=0x4C,
         get_co_cmd=0xAF,
@@ -434,11 +356,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         get_dram_base_cmd=0x66,
         get_table_version_cmd=0x06,
     ),
-    # -----------------------------------------------------------------------
-    # Zen 5 Shimada Peak (ThreadRipper) — different RSMU base addresses!
-    # GetDldoPsmMargin = 0xA3 (NOT 0xD5), GetLN2Mode = 0xA6 (NOT 0xDD)
-    # SMU_ADDR_MSG = 0x03B10924 (vs 0x03B10524 for desktop)
-    # -----------------------------------------------------------------------
+    # ZenStates-Core marks the Shimada Peak fuse address uncertain, so it has none here.
     CPUGeneration.ZEN5_SHIMADA_PEAK: SMUCommandSet(
         generation=CPUGeneration.ZEN5_SHIMADA_PEAK,
         co_range=(-50, 10),
@@ -447,7 +365,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         uniform_8core_ccds=True,
         set_co_cmd=0x06,
         set_all_co_cmd=0x07,
-        get_co_cmd=0xA3,  # different from desktop!
+        get_co_cmd=0xA3,
         set_ppt_cmd=0x56,
         set_tdc_cmd=0x57,
         set_edc_cmd=0x58,
@@ -459,7 +377,7 @@ COMMAND_SETS: dict[CPUGeneration, SMUCommandSet] = {
         enable_oc_cmd=0x5D,
         disable_oc_cmd=0x5E,
         is_overclockable_cmd=0x6F,
-        get_ln2_mode_cmd=0xA6,  # different from desktop!
+        get_ln2_mode_cmd=0xA6,
         transfer_table_cmd=0x03,
         get_dram_base_cmd=0x04,
         get_table_version_cmd=0x05,
@@ -481,13 +399,12 @@ def _alias_commands(source: CPUGeneration, target: CPUGeneration, **overrides) -
     return SMUCommandSet(**fields)
 
 
-# -----------------------------------------------------------------------
-# Aliased command sets — identical SMU commands, different generation enum
-# -----------------------------------------------------------------------
 COMMAND_SETS[CPUGeneration.ZEN2_CASTLE_PEAK] = _alias_commands(
     CPUGeneration.ZEN2_MATISSE, CPUGeneration.ZEN2_CASTLE_PEAK
 )
-COMMAND_SETS[CPUGeneration.ZEN3_CHAGALL] = _alias_commands(CPUGeneration.ZEN3_VERMEER, CPUGeneration.ZEN3_CHAGALL)
+COMMAND_SETS[CPUGeneration.ZEN3_CHAGALL] = _alias_commands(
+    CPUGeneration.ZEN3_VERMEER, CPUGeneration.ZEN3_CHAGALL, ccd_fuse_addr=None
+)
 COMMAND_SETS[CPUGeneration.ZEN3_REMBRANDT] = _alias_commands(
     CPUGeneration.ZEN4_PHOENIX,
     CPUGeneration.ZEN3_REMBRANDT,
@@ -497,39 +414,17 @@ COMMAND_SETS[CPUGeneration.ZEN3_REMBRANDT] = _alias_commands(
 COMMAND_SETS[CPUGeneration.ZEN4_DRAGON_RANGE] = _alias_commands(
     CPUGeneration.ZEN4_RAPHAEL, CPUGeneration.ZEN4_DRAGON_RANGE
 )
-# Phoenix2 (2x Zen4 + 4x Zen4c in one shared CCX) and Hawk Point 2 share
-# Phoenix's mailbox commands but not its classic 8-core CCX layout, so the
-# slot-map discovery stays off for them.
 COMMAND_SETS[CPUGeneration.ZEN4_PHOENIX2] = _alias_commands(
     CPUGeneration.ZEN4_PHOENIX,
     CPUGeneration.ZEN4_PHOENIX2,
     uniform_8core_ccds=False,
 )
-# Strix Halo shares Strix Point's SMU interface. The completeness test pins
-# "every known generation has a set", so a routed generation can never build
-# RyzenSMU(commands=None).
 COMMAND_SETS[CPUGeneration.ZEN5_STRIX_HALO] = _alias_commands(
-    CPUGeneration.ZEN5_STRIX_POINT, CPUGeneration.ZEN5_STRIX_HALO
+    CPUGeneration.ZEN5_STRIX_POINT, CPUGeneration.ZEN5_STRIX_HALO, probe_co_baseline=False
 )
 
 
-# The single model-routing table: (family, model_lo, model_hi, generation),
-# first match wins; an unmatched family/model is UNKNOWN (no SMU commands —
-# fail closed for future dies rather than inheriting a probing generation:
-# Zen 6 CPUID sightings already sit at family 0x1A model 0x80+). Grounded in
-# the ryzen_smu driver's own CPUID table (smu.c smu_resolve_cpu_class,
-# amkillam fork rev 21c1e2c — the exact source pinned in nix/ryzen-smu.nix,
-# and the transport every SMU feature here rides on), the documented block
-# scheme from Zen 3 on (AMD reserves 16 model ids per die: Chagall 0x00-0x0F,
-# Storm Peak 0x10-0x1F, Vermeer 0x20-0x2F, ..., which Ryzen Master keys on),
-# and InstLatx64 CPUID dumps (Chagall A00F82, Storm Peak A10F81, Phoenix2
-# A70F80-class, Hawk Point 2 A70FC0, Granite Ridge B40F40, Strix Point
-# B20F40, Krackan B60F00/B60F80, Strix Halo B70F00, Shimada Peak B00F81).
-# Heterogeneous Zen4c/5c blocks (Phoenix2/HP2 0x76-0x7F, Strix 0x20-0x2F,
-# Krackan 0x60-0x6F) route to generations declaring uniform_8core_ccds=False.
-# Family 0x17 (Zen1/+/2) has no CO, so the whole family safely shares the
-# Matisse PBO-only set, Castle Peak excepted for its own display identity.
-# Name-based adjustments (X3D, Zen 5 Threadripper) live in detect_generation.
+# Model ranges from ryzen_smu smu.c smu_resolve_cpu_class and InstLatx64 CPUID dumps.
 _MODEL_TABLE: tuple[tuple[int, int, int, CPUGeneration], ...] = (
     (23, 0x31, 0x31, CPUGeneration.ZEN2_CASTLE_PEAK),
     (23, 0x00, 0xFF, CPUGeneration.ZEN2_MATISSE),
@@ -622,19 +517,12 @@ def encode_co_arg(
         raise ValueError(f"Unsupported generation: {generation}")
     scheme = commands.encoding_scheme
 
-    # Encode the CO value: negative values use two's complement in 16 bits.
-    # ZenStates uses: offset = 0x100000 if margin < 0 else 0; (offset + margin) & 0xFFFF
-    # This is equivalent to standard 16-bit two's complement.
-    margin = value & 0xFFFF
+    margin = value & CO_MARGIN_MASK
 
     if scheme in ("zen3", "zen4_5"):
-        # Zen 3/4/5 per-core layout: CCD in bits [31:28], physical core-in-CCD
-        # in bits [23:20]. The core_id-derived defaults hold only for the
-        # gap-preserving physical numbering; RyzenSMU.set_topology discovers
-        # each core's true (ccd, slot) and passes both explicitly.
         detected_ccd = ccd if ccd is not None else core_id // 8
         core_in_ccd = slot if slot is not None else core_id % 8
-        return (detected_ccd << 28) | (core_in_ccd << 20) | margin
+        return (detected_ccd << CO_CCD_SHIFT) | (core_in_ccd << CO_SLOT_SHIFT) | margin
 
     raise ValueError(f"Zen 2 ({generation.name}) does not support Curve Optimizer")
 
@@ -650,7 +538,7 @@ def decode_co_arg(core_id: int, response: int, generation: CPUGeneration) -> int
     scheme = commands.encoding_scheme
 
     if scheme in ("zen3", "zen4_5"):
-        raw = response & 0xFFFF
+        raw = response & CO_MARGIN_MASK
         return raw if raw < 0x8000 else raw - 0x10000
 
     raise ValueError(f"Unsupported generation: {generation}")
@@ -672,3 +560,127 @@ def encode_pbo_scalar_arg(scalar: float) -> int:
 def encode_boost_limit_arg(freq_mhz: int) -> int:
     """Encode boost frequency limit (MHz) for SMU. 20-bit value."""
     return freq_mhz & 0xFFFFF
+
+
+TJMAX_C: dict[str, float] = {
+    **dict.fromkeys(
+        (
+            "9950X3D2",
+            "9950X3D",
+            "9950X",
+            "9900X3D",
+            "9900X",
+            "9850X3D",
+            "9800X3D",
+            "9700X",
+            "9700F",
+            "9600X",
+            "9600",
+            "9500F",
+            "9980X",
+            "9970X",
+            "9960X",
+            "PRO 9995WX",
+            "PRO 9985WX",
+            "PRO 9975WX",
+            "PRO 9965WX",
+            "PRO 9955WX",
+            "PRO 9945WX",
+            "7950X",
+            "7900X",
+            "7900",
+            "7700X",
+            "7700",
+            "7600X",
+            "7600",
+            "7500F",
+            "7400F",
+            "7400",
+            "8700G",
+            "8700F",
+            "8705G",
+            "8600G",
+            "8605G",
+            "8500G",
+            "8500GE",
+            "8505G",
+            "8505GE",
+            "8400F",
+            "8300G",
+            "8300GE",
+            "8305G",
+            "8305GE",
+            "7980X",
+            "7970X",
+            "7960X",
+            "PRO 7995WX",
+            "PRO 7985WX",
+            "PRO 7975WX",
+            "PRO 7965WX",
+            "PRO 7955WX",
+            "PRO 7945WX",
+            "5600XT",
+            "5600X",
+            "5600T",
+            "5600F",
+            "5500F",
+            "5700G",
+            "5700GE",
+            "5700",
+            "5600GT",
+            "5600G",
+            "5605GE",
+            "5500GT",
+            "5300G",
+            "5300GE",
+            "PRO 5995WX",
+            "PRO 5975WX",
+            "3950X",
+            "3900XT",
+            "3900X",
+            "3900",
+            "3800XT",
+            "3800X",
+            "3700X",
+            "3600XT",
+            "3600X",
+            "3600",
+            "3500X",
+            "3500",
+            "3990X",
+            "3970X",
+            "3960X",
+        ),
+        95.0,
+    ),
+    **dict.fromkeys(
+        (
+            "5950X",
+            "5900XT",
+            "5900X",
+            "5800XT",
+            "5800X3D",
+            "5800X",
+            "5700X3D",
+            "5700X",
+            "5600X3D",
+            "5600",
+            "5500X3D",
+            "5500",
+            "PRO 3995WX",
+            "PRO 3975WX",
+            "PRO 3955WX",
+            "PRO 3945WX",
+        ),
+        90.0,
+    ),
+    **dict.fromkeys(("7950X3D", "7900X3D", "7800X3D", "7700X3D", "7600X3D", "7500X3D"), 89.0),
+}
+UNKNOWN_TJMAX_C = min(TJMAX_C.values())
+_SKU_RE = re.compile(r"Ryzen (?:\d+ |Threadripper )(PRO )?(\w+)")
+
+
+def tjmax_c(model_name: str) -> float:
+    """The model's Tjmax; a model the table does not name gets the lowest one known (D53)."""
+    found = _SKU_RE.search(model_name)
+    return UNKNOWN_TJMAX_C if found is None else TJMAX_C.get(f"{found.group(1) or ''}{found.group(2)}", UNKNOWN_TJMAX_C)
