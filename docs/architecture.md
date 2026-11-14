@@ -90,7 +90,7 @@ from the registry, so no GUI file changes when a backend is added.
 ## Development
 
 Dev environment, the test suite and gates, and how to add a stress backend:
-[CONTRIBUTING.md](../CONTRIBUTING.md).
+[development.md](development.md).
 
 ## Driver and kernel module sources
 

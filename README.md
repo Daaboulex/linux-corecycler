@@ -98,7 +98,8 @@ full guide -- manual tuning workflow, the Auto-Tuner, and reading results -- is 
 
 ## Development
 
-The dev shell, the test suite and the gates are in [CONTRIBUTING.md](CONTRIBUTING.md).
+The dev shell, the test suite and the gates are in [docs/development.md](docs/development.md);
+how to contribute is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 <!-- BEGIN generated:options -->
 ## Options
