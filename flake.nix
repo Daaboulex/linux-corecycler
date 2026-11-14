@@ -234,10 +234,10 @@
             # a patch's blank context lines are a single space that trimming would break
             pre-commit.settings.hooks.trim-trailing-whitespace.excludes = [ "\\.patch$" ];
 
-            pre-commit.settings.hooks.commit-task = {
+            pre-commit.settings.hooks.commit-req = {
               enable = true;
-              name = "commit-task";
-              entry = "${b.pkgs.python3}/bin/python3 scripts/check_commit_task.py";
+              name = "commit-req";
+              entry = "${b.pkgs.python3}/bin/python3 scripts/check_commit_req.py";
               language = "system";
               stages = [ "commit-msg" ];
               always_run = true;
