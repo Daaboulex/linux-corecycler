@@ -65,7 +65,7 @@ def test_warm_is_one_sixty_second_slice_per_test_in_the_record_order_with_the_wa
 @pytest.mark.parametrize(
     ("rest_c", "band"),
     [(40.0, (65.0, 55.0)), (53.0, (65.0, 55.0)), (56.0, (68.0, 58.0)), (60.0, (72.0, 62.0))],
-    ids=["cool", "at the margin", "the ryzen's Tctl at rest", "warmer"],
+    ids=["cool", "at the margin", "the test machine's Tctl at rest", "warmer"],
 )
 def test_the_warm_release_point_is_never_below_two_degrees_over_the_rest_and_the_band_keeps_its_span(rest_c, band):
     assert {s.hold for s in plan(Load.WARM, rest_c=rest_c)} == {band}

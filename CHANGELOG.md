@@ -174,7 +174,7 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
   so a tool that ignored SIGTERM was never escalated to SIGKILL. `stop()` now
   only signals the process group and the worker stays the one reaper.
 - A stress work directory that cannot be created (a read-only parent, found
-  live on ryzen) is reported as "Work directory unavailable" with the real
+  live on the test machine) is reported as "Work directory unavailable" with the real
   error and no worker starts, instead of an uncaught `PermissionError` out of
   the Start button.
 
@@ -388,7 +388,7 @@ Optimizer tuner for Linux, packaged as a NixOS module with an overlay.
   `corecycler.main:main`); the packaging test pins the single-package
   invariant so nothing flat can return.
 
-### Fixed (2026-07-16 truth-and-attribution session, ryzen-9950x3d forensics)
+### Fixed (2026-07-16 truth-and-attribution session, test machine forensics)
 
 Field incident driving all of this: three freezes in one day during
 validation while the kernel logged corrected Load-Store MCEs naming cores 9
@@ -524,7 +524,7 @@ core 7 (the deepest, most-proven offset) on the next resume.
 - Tuner config: `hunt_slot_seconds` (default 60) and
   `max_unattributed_crash_hunts` (default 2), both validated.
 
-### Fixed (2026-07-09 field-debug session, ryzen-9950x3d logs)
+### Fixed (2026-07-09 field-debug session, test machine logs)
 
 - mprime stale-results false-failure cascade: `cleanup(preserve_on_error=True)`
   left `results.txt` in place, `prepare()` never removed it, and mprime appends,

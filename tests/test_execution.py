@@ -2357,9 +2357,9 @@ for index, test in enumerate(("BBP", "SFTv4", "SNT", "SVT", "FFTv4", "N63", "VT3
 
 
 class YCruncherByItsWallClock(YCruncherBackend):
-    """y-cruncher as the ryzen ran it, sped up speedup times: each test ends at the first iteration after its seconds
-    of wall time, a clock that keeps running while the payload is frozen; from test hang_after on it computes without
-    ever finishing."""
+    """y-cruncher as the test machine ran it, sped up speedup times: each test ends at the first iteration after its
+    seconds of wall time, a clock that keeps running while the payload is frozen; from test hang_after on it computes
+    without ever finishing."""
 
     def __init__(self, hang_after: int, speedup: float = REPLAY_SPEEDUP) -> None:
         super().__init__()

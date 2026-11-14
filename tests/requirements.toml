@@ -375,7 +375,7 @@ proof = "built"
 
 [[requirement]]
 id = "K21.hang.frozen"
-statement = "A finished test that a scan first sees while the load is frozen is progress from the moment the freeze began, never from the scan; a planned rest goes on counting while a heat or unread hold stops the count, so a load frozen in a planned rest is accused once its window passes (D123; PLAN Next 91: on the ryzen, transient burst test 409 and its three replays each ended stall though y-cruncher finished a test every 15 s, each finish first seen by a frozen scan)"
+statement = "A finished test that a scan first sees while the load is frozen is progress from the moment the freeze began, never from the scan; a planned rest goes on counting while a heat or unread hold stops the count, so a load frozen in a planned rest is accused once its window passes (D123; PLAN Next 91: on the test machine, transient burst test 409 and its three replays each ended stall though y-cruncher finished a test every 15 s, each finish first seen by a frozen scan)"
 proof = "built"
 
 [[requirement]]
@@ -4221,7 +4221,7 @@ proof = "built"
 
 [[requirement]]
 id = "D119"
-statement = "A WARM slice lasts its asked wall seconds with its hold cycling inside them: its heat holds neither lengthen it nor count toward the cap as a sum, and a heat hold still on at its end is followed to its release, so one unbroken hold past 300 s, the CPU never cooling to the release point, ends it with no verdict (APPARATUS, held_too_long), retried at once and pausing after the apparatus retries, even in a slice shorter than the cap (PLAN Next 87, the ryzen under balanced: the all-core warm load heats 55 to 65 C in one to two seconds and cools in about ten, so the summed cap ended every warm test at stock)"
+statement = "A WARM slice lasts its asked wall seconds with its hold cycling inside them: its heat holds neither lengthen it nor count toward the cap as a sum, and a heat hold still on at its end is followed to its release, so one unbroken hold past 300 s, the CPU never cooling to the release point, ends it with no verdict (APPARATUS, held_too_long), retried at once and pausing after the apparatus retries, even in a slice shorter than the cap (PLAN Next 87, the test machine under balanced: the all-core warm load heats 55 to 65 C in one to two seconds and cools in about ten, so the summed cap ended every warm test at stock)"
 proof = "built"
 
 [[requirement]]
@@ -4241,7 +4241,7 @@ proof = "built"
 
 [[requirement]]
 id = "D121"
-statement = "A WARM slice whose Tctl went unread, its hold on or released, for more than half its wall time is no verdict (APPARATUS, held_too_long) whatever share the load ran, its words giving the seconds unread, the 50 percent limit, the release point and the last reading; exactly half passes; a HOT, BURST or IDLE segment has no such limit (D121, the Next 87 review round 2: Tctl unread 11 of every 12 readings passed at 7 percent load; a healthy sensor read unread in none of 525,494 samples on the ryzen)"
+statement = "A WARM slice whose Tctl went unread, its hold on or released, for more than half its wall time is no verdict (APPARATUS, held_too_long) whatever share the load ran, its words giving the seconds unread, the 50 percent limit, the release point and the last reading; exactly half passes; a HOT, BURST or IDLE segment has no such limit (D121, the Next 87 review round 2: Tctl unread 11 of every 12 readings passed at 7 percent load; a healthy sensor read unread in none of 525,494 samples on the test machine)"
 proof = "built"
 
 [[requirement]]
@@ -4271,12 +4271,12 @@ proof = "built"
 
 [[requirement]]
 id = "D124"
-statement = "A full 60 s WARM slice whose y-cruncher finished no test by the slice's end, its hold followed to its release, is a STALL (APPARATUS), judged per slice; a last slice shorter than 60 s, which may end before its 30 s test can finish, is not judged; since its holds leave the D123 window short of run time: a spin-hang from the slice's start ends STALL while a healthy slice that finishes its one test late in the slice passes; a slice cut short, held too long or with no work done keeps that verdict (D124, the Next 93 builder's replay: a spin-hang reached 8.5 to 9.1 s of its 60 s window and passed; the ryzen's 4 healthy warm passes finished a test in every slice)"
+statement = "A full 60 s WARM slice whose y-cruncher finished no test by the slice's end, its hold followed to its release, is a STALL (APPARATUS), judged per slice; a last slice shorter than 60 s, which may end before its 30 s test can finish, is not judged; since its holds leave the D123 window short of run time: a spin-hang from the slice's start ends STALL while a healthy slice that finishes its one test late in the slice passes; a slice cut short, held too long or with no work done keeps that verdict (D124, the Next 93 builder's replay: a spin-hang reached 8.5 to 9.1 s of its 60 s window and passed; the test machine's 4 healthy warm passes finished a test in every slice)"
 proof = "built"
 
 [[requirement]]
 id = "D124.idle"
-statement = "An IDLE test of 360 stage seconds or more, the default, whose y-cruncher finished no test in its whole run is a STALL (APPARATUS), judged once per test over its one segment and whatever cores it drew, one, two or four; one that finished a test passes, its rests as long as they come; a shorter IDLE is not judged, as before, since every plan seed gives a 360 s idle at least 2.08 s of run time and a shorter one less; the field has not yet measured a one-core draw (D124 as amended by the main session; the ryzen's 3 healthy idle passes on 32 CPUs finished 2, 3 and 13 tests, their draws unrecorded)"
+statement = "An IDLE test of 360 stage seconds or more, the default, whose y-cruncher finished no test in its whole run is a STALL (APPARATUS), judged once per test over its one segment and whatever cores it drew, one, two or four; one that finished a test passes, its rests as long as they come; a shorter IDLE is not judged, as before, since every plan seed gives a 360 s idle at least 2.08 s of run time and a shorter one less; the field has not yet measured a one-core draw (D124 as amended by the main session; the test machine's 3 healthy idle passes on 32 CPUs finished 2, 3 and 13 tests, their draws unrecorded)"
 proof = "built"
 
 [[requirement]]
@@ -4291,7 +4291,7 @@ proof = "built"
 
 [[requirement]]
 id = "WARM.rest"
-statement = "A WARM test reads Tctl once before its load and releases its hold at the higher of 55 C and the Tctl read before its load plus 2 C, never above the thermal limit less 20 C, holding at 10 C above the release, so its hold edge never passes the hot hold's release; a reading at or below 53 C keeps 55 to 65 C; the reading follows the last run's machine-check settle, not a cool-down, so the heat BURST leaves raises the band no further than that ceiling, and a reading of 84 C at a 95 C limit holds at 85 C and releases below 75 C (PLAN Next 79, the ryzen at Tctl 56 C, Tccd2 60 C under balanced; the ceiling from review round 1)"
+statement = "A WARM test reads Tctl once before its load and releases its hold at the higher of 55 C and the Tctl read before its load plus 2 C, never above the thermal limit less 20 C, holding at 10 C above the release, so its hold edge never passes the hot hold's release; a reading at or below 53 C keeps 55 to 65 C; the reading follows the last run's machine-check settle, not a cool-down, so the heat BURST leaves raises the band no further than that ceiling, and a reading of 84 C at a 95 C limit holds at 85 C and releases below 75 C (PLAN Next 79, the test machine at Tctl 56 C, Tccd2 60 C under balanced; the ceiling from review round 1)"
 proof = "built"
 
 [[requirement]]
@@ -4301,7 +4301,7 @@ proof = "built"
 
 [[requirement]]
 id = "WARM.tctl"
-statement = "The warm hold judges Tctl, the package's own reading: at rest on the ryzen its CCDs read 42 and 60 C beside Tctl 56 C, and the hottest input, one CCD's own sensor there, read 60, 56.0 and 55.1 C within minutes; the hot hold of HOT, BURST and IDLE and the thermal stop judge the hottest input (PLAN Next 79)"
+statement = "The warm hold judges Tctl, the package's own reading: at rest on the test machine its CCDs read 42 and 60 C beside Tctl 56 C, and the hottest input, one CCD's own sensor there, read 60, 56.0 and 55.1 C within minutes; the hot hold of HOT, BURST and IDLE and the thermal stop judge the hottest input (PLAN Next 79)"
 proof = "built"
 
 [[requirement]]
@@ -5126,7 +5126,7 @@ proof = "built"
 
 [[requirement]]
 id = "T22.F6"
-statement = "A CO read at Start is named the CO read at Start; a BIOS value is stated only from a read before any write that boot (confirmed on the ryzen 2026-10-13: session 2 recorded 0 as the BIOS CO after a runtime write)."
+statement = "A CO read at Start is named the CO read at Start; a BIOS value is stated only from a read before any write that boot (confirmed on the test machine 2026-10-13: session 2 recorded 0 as the BIOS CO after a runtime write)."
 proof = "built"
 
 [[requirement]]
@@ -5242,7 +5242,7 @@ proof = "built"
 
 [[requirement]]
 id = "T23.memory.facts"
-statement = "The Memory tab shows only what it read: no DIMM listed says what dmidecode said (on the ryzen, smbios_entry_point: Permission denied), each SPD sensor is named and ordered by its i2c address (0x50), ECC, type and an unread clock say unread instead of Non-ECC, a blank or 0 MHz, mixed ranks are all named, the SPD timings say which part could not be read, and ryzen_smu says it was read at start (scratch/design/t23-monitor-memory-window.md, Memory)."
+statement = "The Memory tab shows only what it read: no DIMM listed says what dmidecode said (on the test machine, smbios_entry_point: Permission denied), each SPD sensor is named and ordered by its i2c address (0x50), ECC, type and an unread clock say unread instead of Non-ECC, a blank or 0 MHz, mixed ranks are all named, the SPD timings say which part could not be read, and ryzen_smu says it was read at start (scratch/design/t23-monitor-memory-window.md, Memory)."
 proof = "built"
 
 [[requirement]]
@@ -5473,7 +5473,7 @@ proof = "built"
 
 [[requirement]]
 id = "EC.real"
-statement = "A real clean run of stress-ng 0.22.01 (the tuner's cpu fft verify shape and the memory test's vm verify shape) and of stressapptest 1.0.11, captured 2026-10-14 on the M1 from the repository's pinned nixpkgs, raises no finding in its backend, and the GUI memory test calls each a pass (scratch/design/error-capture.md gaps 4 and 12, the clean half)."
+statement = "A real clean run of stress-ng 0.22.01 (the tuner's cpu fft verify shape and the memory test's vm verify shape) and of stressapptest 1.0.11, captured 2026-10-14 on an aarch64 machine from the repository's pinned nixpkgs, raises no finding in its backend, and the GUI memory test calls each a pass (scratch/design/error-capture.md gaps 4 and 12, the clean half)."
 proof = "built"
 
 [[requirement]]
