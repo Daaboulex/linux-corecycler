@@ -1,0 +1,17 @@
+name: Task
+description: Work to do, with when it counts as done
+labels:
+  - type/task
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What to do
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+    validations:
+      required: true

@@ -1,0 +1,15 @@
+name: Request
+description: Something new or different you need
+labels:
+  - type/feature
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you need
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why

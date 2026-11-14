@@ -1,0 +1,19 @@
+name: Bug
+description: Something does not work as described
+labels:
+  - type/bug
+body:
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+  - type: textarea
+    id: repeat
+    attributes:
+      label: How to see it again

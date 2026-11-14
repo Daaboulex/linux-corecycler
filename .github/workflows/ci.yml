@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, testing]
   pull_request:
   workflow_dispatch:
 
@@ -15,3 +15,5 @@ concurrency:
 jobs:
   ci:
     uses: Daaboulex/nix-packaging-standard/.github/workflows/package-ci.yml@release
+    with:
+      reclaim-disk: ${{ vars.RECLAIM_DISK || 'off' }}
