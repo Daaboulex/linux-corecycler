@@ -36,6 +36,9 @@ Open an issue with the bug, request or task form.
   one short file in `docs/`.
 - A fix names the cause it removes. When a later fix names another cause for the same failure, the
   earlier fix comes out in that change unless it is proven on its own. Unmeasured is not proven.
+- A test that uses one shared thing, such as a device, a lock or a fixed path or port, runs alone
+  behind a lock. Every other test runs on as many workers as the free cores and memory allow, and
+  a parallel run counts only once it gave the same result as the sequential one.
 - A doc says only what the code cannot: a decision, a fact about an outside system, or a trap no
   check catches. It never repeats what the code, a check's message or a command's usage says, and
   never copies state such as counts, versions or what runs where: that is read at its source. A
