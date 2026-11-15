@@ -146,6 +146,8 @@ class MprimeBackend(StressBackend):
                 MinTortureFFT={fft_min}
                 MaxTortureFFT={fft_max}
                 TortureHyperthreading={1 if config.threads > 1 else 0}
+                TortureMem=0
+                TortureTime=1
             """)
             + flags_block
         )
@@ -161,6 +163,8 @@ class MprimeBackend(StressBackend):
                 MinTortureFFT={fft_min}
                 MaxTortureFFT={fft_max}
                 TortureHyperthreading={1 if config.threads > 1 else 0}
+                TortureMem=0
+                TortureTime=1
             """)
             + flags_block
             + "EnableSetAffinity=0\nEnableSetPriority=0\n"

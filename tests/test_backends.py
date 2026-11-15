@@ -381,6 +381,14 @@ class TestMprimeBackend:
             assert f"TortureHyperthreading={hyperthreading}" in lines
             assert not [line for line in lines if line.startswith(("TortureThreads=", "CoresPerTest="))]
 
+    def test_prepare_runs_in_place_and_moves_to_a_new_fft_size_every_minute(self, tmp_path):
+        MprimeBackend().prepare(tmp_path, StressConfig())
+
+        for name in ("local.txt", "prime.txt"):
+            lines = (tmp_path / name).read_text().splitlines()
+            assert "TortureMem=0" in lines
+            assert "TortureTime=1" in lines
+
     def test_prepare_creates_both_files(self, tmp_path):
         backend = MprimeBackend()
         backend.prepare(tmp_path, StressConfig())
