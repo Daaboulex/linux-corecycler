@@ -4,12 +4,18 @@ labels:
   - type/feature
 body:
   - type: textarea
+    id: goal
+    attributes:
+      label: What we want to achieve
+    validations:
+      required: true
+  - type: textarea
     id: need
     attributes:
       label: What you need
     validations:
       required: true
   - type: textarea
-    id: why
+    id: done
     attributes:
-      label: Why
+      label: Done when

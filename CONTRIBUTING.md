@@ -17,9 +17,12 @@ Open an issue with the bug, request or task form.
   is not finished when work ends, or it verified a defect.
 - An idea, a maybe or a question is said once and dropped. It becomes an issue, with `later`, only
   when that person says keep it.
-- An issue has one type, which its form sets. Add `later` to an idea nobody owes and `waiting` to
-  one blocked on a person, a delivery or a decision. An issue that is not ours to solve, or no
-  longer true, is closed with one sentence saying why.
+- An issue's title starts with the part it concerns and a colon, the scope a commit for it would
+  carry. A matter that sits in another project carries that project's name.
+- An issue has one type, which its form sets. Add `later` to an idea nobody owes, `waiting` to one
+  blocked on a person, a delivery or a decision, and `upstream` to one that needs another project
+  to change first. An issue we want nothing from, that is answered or no longer true, is closed
+  with one sentence saying why.
 - An issue's goal stays in the words it was opened with. Later work ticks its "Done when" list and
   comments; it does not rewrite the goal.
 - Never record state, such as what was exported, what runs where or what was done: that is read at
@@ -36,6 +39,9 @@ Open an issue with the bug, request or task form.
   one short file in `docs/`.
 - A fix names the cause it removes. When a later fix names another cause for the same failure, the
   earlier fix comes out in that change unless it is proven on its own. Unmeasured is not proven.
+- What differs from one delivery, machine or target to the next is declared once as data, or read
+  from the machine where it can be. The code that uses it is written once for any value and names
+  none.
 - A test that uses one shared thing, such as a device, a lock or a fixed path or port, runs alone
   behind a lock. Every other test runs on as many workers as the free cores and memory allow, and
   a parallel run counts only once it gave the same result as the sequential one.

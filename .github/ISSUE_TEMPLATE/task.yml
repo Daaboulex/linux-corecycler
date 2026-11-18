@@ -4,6 +4,12 @@ labels:
   - type/task
 body:
   - type: textarea
+    id: goal
+    attributes:
+      label: What we want to achieve
+    validations:
+      required: true
+  - type: textarea
     id: what
     attributes:
       label: What to do
