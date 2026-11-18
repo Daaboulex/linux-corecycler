@@ -45,7 +45,19 @@
                 version = "0.0.1";
                 pyproject = true;
 
-                src = ./.;
+                src = pkgs.lib.fileset.toSource {
+                  root = ./.;
+                  fileset = pkgs.lib.fileset.unions [
+                    ./pyproject.toml
+                    ./README.md
+                    ./src
+                    ./tests
+                    ./scripts
+                    ./assets
+                    ./docs/controls.md
+                    ./nix/module.nix
+                  ];
+                };
 
                 build-system = [
                   pythonPkgs.setuptools
@@ -265,6 +277,16 @@
                 drv = b.default;
                 package = "corecycler";
               };
+
+              package-source-holds-no-rule-file = b.pkgs.runCommand "package-source-holds-no-rule-file" { } ''
+                for outside in AGENTS.md CONTRIBUTING.md CHANGELOG.md SECURITY.md .github flake.lock flake.nix; do
+                  if [ -e ${b.default.src}/$outside ]; then
+                    echo "the package source holds $outside, so a change to it rebuilds the package" >&2
+                    exit 1
+                  fi
+                done
+                touch $out
+              '';
 
               module-eval-nixos = inputs.std.lib.nixosModuleCheck {
                 inherit (inputs) nixpkgs;
